@@ -1,4 +1,4 @@
-\# Printer V1 Build Rules
+# Printer V1 Build Rules
 
 
 
@@ -12,13 +12,13 @@ Printer V1 is paper-trading only.
 
 Use these documents as the source of truth:
 
-\- docs/printer-v1-clean-master-spec.md
+- docs/printer-v1-clean-master-spec.md
 
-\- docs/printer-v1-final-build-order.md
+- docs/printer-v1-final-build-order.md
 
 
 
-\## Core Goal
+## Core Goal
 
 
 
@@ -30,55 +30,55 @@ Printer must avoid fake profit, dirty memory, forced trades, and rushed implemen
 
 
 
-\## Locked V1 Rules
+## Locked V1 Rules
 
 
 
 Do not add:
 
-\- live trading
+- live trading
 
-\- wallet connection
+- wallet connection
 
-\- private keys
+- private keys
 
-\- real fund movement
+- real fund movement
 
-\- paid API dependencies
+- paid API dependencies
 
-\- scoring systems
+- scoring systems
 
-\- buy score
+- buy score
 
-\- confidence score
+- confidence score
 
-\- safety score
+- safety score
 
-\- liquidity score
+- liquidity score
 
-\- chart score
+- chart score
 
-\- flow score
+- flow score
 
-\- market score
+- market score
 
-\- combined score
+- combined score
 
 
 
 Printer decisions can only be:
 
-\- BUY
+- BUY
 
-\- SELL
+- SELL
 
-\- HOLD
+- HOLD
 
-\- WAIT
+- WAIT
 
-\- AVOID
+- AVOID
 
-\- NO\_ACTION
+- NO_ACTION
 
 
 
@@ -86,11 +86,99 @@ All decisions must come from clean historical memory comparison.
 
 
 
-If there is not enough clean memory, Printer must choose WAIT, AVOID, or NO\_ACTION depending on risk.
+If there is not enough clean memory, Printer must choose WAIT, AVOID, or NO_ACTION depending on risk.
 
 
 
-\## Architecture Rules
+## Future Build Order Anchor
+
+
+
+Before any phase after Phase 21, Codex must read:
+
+
+
+`docs/printer-v1-future-build-order.md`
+
+
+
+Codex must follow that future build order unless the operator explicitly replaces it.
+
+
+
+Rules:
+
+
+
+* Do not skip phases.
+
+* Do not convert future phases into live trading.
+
+* Do not build runtime before the runtime phase.
+
+* Do not build scheduler execution before the scheduler execution phase.
+
+* Do not build source adapters before the source adapter phase.
+
+* Do not fetch real data before the real source smoke-check phase.
+
+* Do not create token/pair rows from real data before the controlled intake phase.
+
+* Do not create real token snapshots before the snapshot phase.
+
+* Do not create real memory before the real memory phase.
+
+* Do not create real-data paper decisions before the paper decision phase.
+
+* Do not open simulated paper positions before the simulated paper position phase.
+
+* Do not introduce wallet/private-key/signing/transaction/live-trading logic.
+
+* Do not introduce scoring/ranking/confidence systems.
+
+* Do not introduce vectors/embeddings unless explicitly approved as out-of-scope for V1.
+
+
+
+Printer V1 remains:
+
+
+
+* Solana-only
+
+* Solana memecoin-only
+
+* paper-trading only
+
+* no live wallet
+
+* no private keys
+
+* no real funds
+
+* no live execution
+
+* no paid API dependency
+
+* no scoring system
+
+* no engine bypassing Source Governor
+
+* no engine bypassing Central Scheduler
+
+* no paper decision without clean memory comparison
+
+* no paper position without valid clean-memory-backed paper decision
+
+
+
+Codex must stop after the requested phase and provide a pass/fail report.
+
+
+
+
+
+## Architecture Rules
 
 
 
@@ -122,7 +210,7 @@ Token-level snapshots and open paper-trade monitoring always take priority over 
 
 
 
-\## Resource Priority Order
+## Resource Priority Order
 
 
 
@@ -134,9 +222,9 @@ When resources, rate limits, or scheduling capacity are tight, use this priority
 
 2\. Exit-risk token snapshots
 
-3\. TRACK\_FAST / micro-event token snapshots
+3\. TRACK_FAST / micro-event token snapshots
 
-4\. TRACK\_NORMAL token snapshots
+4\. TRACK_NORMAL token snapshots
 
 5\. Memory-window close snapshots
 
@@ -152,7 +240,7 @@ When resources, rate limits, or scheduling capacity are tight, use this priority
 
 
 
-\## Build Order
+## Build Order
 
 
 
@@ -212,7 +300,7 @@ Do not build future phases early.
 
 
 
-\## Source Rules
+## Source Rules
 
 
 
@@ -222,41 +310,41 @@ Printer V1 may only use free/public data sources.
 
 Allowed free-first sources:
 
-\- DexScreener
+- DexScreener
 
-\- GeckoTerminal
+- GeckoTerminal
 
-\- PumpPortal free launch/migration streams
+- PumpPortal free launch/migration streams
 
-\- Alternative.me Fear \& Greed
+- Alternative.me Fear \& Greed
 
-\- CoinGecko free/public/Demo
+- CoinGecko free/public/Demo
 
-\- DefiLlama
+- DefiLlama
 
-\- GoPlus where available
+- GoPlus where available
 
-\- Solana public RPC
+- Solana public RPC
 
-\- Helius free tier
+- Helius free tier
 
-\- Jupiter quote API for paper simulation only
+- Jupiter quote API for paper simulation only
 
 
 
 Do not add dependency on:
 
-\- paid Birdeye
+- paid Birdeye
 
-\- paid LunarCrush
+- paid LunarCrush
 
-\- paid X API
+- paid X API
 
-\- paid smart-wallet tools
+- paid smart-wallet tools
 
-\- paid social sentiment tools
+- paid social sentiment tools
 
-\- paid execution infrastructure
+- paid execution infrastructure
 
 
 
@@ -264,7 +352,7 @@ If a feature requires paid data, do not build it in Printer V1.
 
 
 
-\## Memory Rules
+## Memory Rules
 
 
 
@@ -274,21 +362,21 @@ Printer only learns from completed memory windows.
 
 Main memory windows:
 
-\- 15 minutes
+- 15 minutes
 
-\- 1 hour
+- 1 hour
 
-\- 4 hours
+- 4 hours
 
-\- 12 hours
+- 12 hours
 
-\- 24 hours
+- 24 hours
 
 
 
 Support micro-event window:
 
-\- 5 minutes
+- 5 minutes
 
 
 
@@ -302,21 +390,21 @@ Dirty, stale, incomplete, delayed, or broken data must not become clean memory.
 
 Use memory quality labels:
 
-\- CLEAN\_MEMORY
+- CLEAN_MEMORY
 
-\- PARTIAL\_MEMORY
+- PARTIAL_MEMORY
 
-\- DIRTY\_MEMORY
+- DIRTY_MEMORY
 
-\- DO\_NOT\_TRAIN
-
-
-
-DIRTY\_MEMORY and DO\_NOT\_TRAIN must never be used for decisions.
+- DO_NOT_TRAIN
 
 
 
-\## Decision Rules
+DIRTY_MEMORY and DO_NOT_TRAIN must never be used for decisions.
+
+
+
+## Decision Rules
 
 
 
@@ -378,7 +466,7 @@ Trading flow and chart behavior are memory labels, not standalone signals.
 
 
 
-\## Paper Trading Rules
+## Paper Trading Rules
 
 
 
@@ -388,29 +476,29 @@ Printer V1 is paper trading only.
 
 Paper trades must record:
 
-\- entry time
+- entry time
 
-\- entry price
+- entry price
 
-\- entry liquidity
+- entry liquidity
 
-\- entry source status
+- entry source status
 
-\- matched clean memories
+- matched clean memories
 
-\- decision reason
+- decision reason
 
-\- invalidation condition
+- invalidation condition
 
-\- exit condition
+- exit condition
 
-\- exit time
+- exit time
 
-\- exit price
+- exit price
 
-\- exit liquidity
+- exit liquidity
 
-\- realistic or unrealistic profit result
+- realistic or unrealistic profit result
 
 
 
@@ -422,7 +510,7 @@ If the chart moved but Printer could not realistically enter or exit, the result
 
 
 
-\## Build Discipline
+## Build Discipline
 
 
 
@@ -466,7 +554,7 @@ Each phase must have a clear pass/fail result before moving to the next phase.
 
 
 
-\## Required Response Format
+## Required Response Format
 
 
 
@@ -474,17 +562,17 @@ Every Codex task must end with:
 
 
 
-\- Files changed
+- Files changed
 
-\- What was built
+- What was built
 
-\- What was not touched
+- What was not touched
 
-\- Tests/checks run
+- Tests/checks run
 
-\- Pass/fail status
+- Pass/fail status
 
-\- Risks or concerns
+- Risks or concerns
 
-\- Next recommended phase
+- Next recommended phase
 
