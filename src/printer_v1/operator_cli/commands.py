@@ -33,6 +33,7 @@ from printer_v1.operator_db.status import (
     STATE_CONTROLLED_INTAKE,
     STATE_CONTROLLED_CONTEXT,
     STATE_CONTROLLED_SNAPSHOTS,
+    STATE_FIRST_MEMORY_WINDOW,
     STATE_MEMORY_ROWS,
     STATE_NO_DB,
     STATE_PAPER_ROWS,
@@ -79,6 +80,7 @@ READINESS_READY_SOURCE_ONLY_SMOKE_CHECK = "READY_SOURCE_ONLY_SMOKE_CHECK"
 READINESS_READY_CONTROLLED_INTAKE = "READY_CONTROLLED_INTAKE"
 READINESS_READY_CONTROLLED_SNAPSHOTS = "READY_CONTROLLED_SNAPSHOTS"
 READINESS_READY_CONTROLLED_CONTEXT = "READY_CONTROLLED_CONTEXT"
+READINESS_READY_FIRST_MEMORY_WINDOW = "READY_FIRST_MEMORY_WINDOW"
 READINESS_READY_WITH_LOCAL_DATA = "READY_WITH_LOCAL_DATA"
 READINESS_BLOCKED = "BLOCKED"
 READINESS_STATE_UNKNOWN = "STATE_UNKNOWN"
@@ -190,6 +192,26 @@ CONTROLLED_CONTEXT_GUARD_TABLES = [
     "printer_paper_trade_events",
     "printer_paper_trade_audits",
     "printer_paper_audit_reports",
+]
+
+FIRST_MEMORY_GUARD_TABLES = [
+    "printer_tracking_queue",
+    "printer_scheduler_jobs",
+    "printer_memory_retrieval_queries",
+    "printer_memory_retrieval_matches",
+    "printer_paper_decisions",
+    "printer_paper_positions",
+    "printer_paper_trade_events",
+    "printer_paper_trade_audits",
+    "printer_paper_audit_reports",
+]
+
+MEMORY_OUTPUT_TABLES = [
+    "printer_memory_windows",
+    "printer_episodes",
+    "printer_episode_snapshots",
+    "printer_episode_outcomes",
+    "printer_memory_fingerprints",
 ]
 
 
@@ -1386,6 +1408,413 @@ def main_collect_context_once(argv: Sequence[str] | None = None) -> int:
         return _print_error(exc)
 
 
+def _normalize_memory_window(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"15m", "window_15m"}:
+        return "WINDOW_15M"
+    raise ValueError("Phase 29 supports only the 15m memory window")
+
+
+def _validate_memory_window_command_args(args: argparse.Namespace) -> None:
+    if not args.operator_approved:
+        raise ValueError("memory-window review requires explicit operator approval")
+    if str(args.chain or "").strip().lower() != "solana":
+        raise ValueError("memory-window review is Solana-only")
+    if not (args.token_mint or args.token_id):
+        raise ValueError("memory-window review requires token_mint or token_id")
+    if not (args.pair_address or args.pair_id):
+        raise ValueError("memory-window review requires pair_address or pair_id")
+    _normalize_memory_window(args.memory_window)
+
+
+def _resolve_memory_context_rows(connection: sqlite3.Connection, target: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    token_id = target["token_id"]
+    pair_id = target["pair_id"]
+    context: dict[str, dict[str, Any]] = {}
+    table_to_key = {
+        "printer_safety_rug_snapshots": ("safety", "captured_at"),
+        "printer_liquidity_exit_snapshots": ("liquidity_exit", "captured_at"),
+        "printer_trading_flow_snapshots": ("trading_flow", "captured_at"),
+        "printer_chart_volatility_snapshots": ("chart_volatility", "captured_at"),
+        "printer_micro_events": ("micro_event", "detected_at"),
+    }
+    for table, (key, order_column) in table_to_key.items():
+        row = connection.execute(
+            f"""
+            SELECT *
+            FROM {table}
+            WHERE token_id = ? AND pair_id = ?
+            ORDER BY {order_column} DESC, id DESC
+            LIMIT 1
+            """,
+            (token_id, pair_id),
+        ).fetchone()
+        context[key] = _row_to_dict(row)
+    market_row = connection.execute(
+        "SELECT * FROM printer_market_regime_snapshots ORDER BY captured_at DESC, id DESC LIMIT 1"
+    ).fetchone()
+    chain_row = connection.execute(
+        "SELECT * FROM printer_solana_chain_heat_snapshots ORDER BY captured_at DESC, id DESC LIMIT 1"
+    ).fetchone()
+    context["market"] = _row_to_dict(market_row)
+    context["chain_heat"] = _row_to_dict(chain_row)
+    return context
+
+
+def _context_is_present(context_rows: dict[str, dict[str, Any]]) -> bool:
+    required = {"market", "chain_heat", "safety", "liquidity_exit", "trading_flow", "chart_volatility", "micro_event"}
+    return all(context_rows.get(key) for key in required)
+
+
+def _context_memory_labels(context_rows: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "market_regime_label": context_rows.get("market", {}).get("market_regime_label"),
+        "chain_heat_label": context_rows.get("chain_heat", {}).get("chain_heat_label"),
+        "safety_status_label": context_rows.get("safety", {}).get("safety_status_label"),
+        "rug_risk_label": context_rows.get("safety", {}).get("rug_risk_label"),
+        "liquidity_state_label": context_rows.get("liquidity_exit", {}).get("liquidity_state_label"),
+        "entry_realism_label": context_rows.get("liquidity_exit", {}).get("entry_realism_label"),
+        "exit_realism_label": context_rows.get("liquidity_exit", {}).get("exit_realism_label"),
+        "realism_gate_label": context_rows.get("liquidity_exit", {}).get("realism_gate_label"),
+        "flow_direction_label": context_rows.get("trading_flow", {}).get("flow_direction_label"),
+        "flow_pressure_label": context_rows.get("trading_flow", {}).get("flow_pressure_label"),
+        "trend_structure_label": context_rows.get("chart_volatility", {}).get("trend_structure_label"),
+        "volatility_label": context_rows.get("chart_volatility", {}).get("volatility_label"),
+        "micro_event_state_label": context_rows.get("micro_event", {}).get("micro_event_state_label"),
+        "held_to_15m_result_label": context_rows.get("micro_event", {}).get("held_to_15m_result_label"),
+    }
+
+
+def _memory_storage_status(memory_quality_label: str) -> str:
+    return {
+        "CLEAN_MEMORY": "CLEAN_MEMORY",
+        "PARTIAL_MEMORY": "PARTIAL_MEMORY",
+        "DIRTY_MEMORY": "DIRTY_MEMORY",
+        "AUDIT_ONLY_MEMORY": "AUDIT_ONLY",
+        "DO_NOT_TRAIN_MEMORY": "DO_NOT_TRAIN",
+    }[memory_quality_label]
+
+
+def _existing_memory_for_target(connection: sqlite3.Connection, target: dict[str, Any], window_kind: str) -> sqlite3.Row | None:
+    return connection.execute(
+        """
+        SELECT *
+        FROM printer_memory_windows
+        WHERE token_id = ? AND pair_id = ? AND window_kind = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (target["token_id"], target["pair_id"], window_kind),
+    ).fetchone()
+
+
+def _classify_first_memory_review(snapshots: list[dict[str, Any]], context_rows: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    rejection_reasons: list[str] = []
+    if len(snapshots) < 2:
+        rejection_reasons.extend(["REJECT_MISSING_SNAPSHOTS", "INCOMPLETE_15M_WINDOW", "INSUFFICIENT_SNAPSHOT_COVERAGE"])
+    if any(row.get("price_usd") is None or row.get("liquidity_usd") is None for row in snapshots):
+        rejection_reasons.append("REJECT_MISSING_CRITICAL_FIELDS")
+    if not _context_is_present(context_rows):
+        rejection_reasons.append("MISSING_OR_UNKNOWN_CONTEXT")
+    labels = _context_memory_labels(context_rows)
+    if any(value in {None, "UNKNOWN", "SOLANA_UNKNOWN", "SAFETY_UNKNOWN", "ENTRY_UNKNOWN", "EXIT_UNKNOWN", "FLOW_UNKNOWN", "TREND_UNKNOWN", "MICRO_EVENT_UNKNOWN"} for value in labels.values()):
+        rejection_reasons.append("MISSING_OR_UNKNOWN_CONTEXT")
+    if not rejection_reasons:
+        memory_quality = "CLEAN_MEMORY"
+    elif len(snapshots) < 2:
+        memory_quality = "DIRTY_MEMORY"
+    else:
+        memory_quality = "AUDIT_ONLY_MEMORY"
+    unique_reasons = list(dict.fromkeys(rejection_reasons or ["REVIEW_PASSED"]))
+    return {
+        "outcome_label": "OUTCOME_UNKNOWN" if memory_quality != "CLEAN_MEMORY" else "NO_PUMP",
+        "action_lesson_label": "ACTION_LESSON_UNKNOWN",
+        "memory_quality_label": memory_quality,
+        "memory_status": _memory_storage_status(memory_quality),
+        "data_quality_label": "MISSING_CRITICAL_DATA" if memory_quality != "CLEAN_MEMORY" else "CLEAN_DATA",
+        "do_not_train": 0 if memory_quality == "CLEAN_MEMORY" else 1,
+        "rejection_reasons": unique_reasons,
+        "retrieval_ready": memory_quality == "CLEAN_MEMORY",
+    }
+
+
+def _snapshot_price_path_for_memory(snapshots: list[dict[str, Any]]) -> dict[str, Any]:
+    if len(snapshots) < 2:
+        price = snapshots[0].get("price_usd") if snapshots else None
+        return {
+            "price_start": price,
+            "price_high": price,
+            "price_low": price,
+            "price_end": price,
+            "price_change_percent": None,
+            "max_runup_percent": None,
+            "max_drawdown_percent": None,
+        }
+    prices = [float(row["price_usd"]) for row in snapshots if row.get("price_usd") is not None]
+    if not prices:
+        return {
+            "price_start": None,
+            "price_high": None,
+            "price_low": None,
+            "price_end": None,
+            "price_change_percent": None,
+            "max_runup_percent": None,
+            "max_drawdown_percent": None,
+        }
+    start, end = prices[0], prices[-1]
+    high, low = max(prices), min(prices)
+    pct = None if start == 0 else ((end - start) / start) * 100.0
+    runup = None if start == 0 else ((high - start) / start) * 100.0
+    drawdown = None if start == 0 else ((low - start) / start) * 100.0
+    return {
+        "price_start": start,
+        "price_high": high,
+        "price_low": low,
+        "price_end": end,
+        "price_change_percent": pct,
+        "max_runup_percent": runup,
+        "max_drawdown_percent": drawdown,
+    }
+
+
+def _record_first_memory_window(
+    connection: sqlite3.Connection,
+    target: dict[str, Any],
+    snapshot: dict[str, Any],
+    context_rows: dict[str, dict[str, Any]],
+    window_kind: str,
+    source_reference: str | None,
+) -> dict[str, Any]:
+    opened_at = snapshot["captured_at"]
+    closed_at = (datetime.fromisoformat(str(opened_at).replace("Z", "+00:00")) + timedelta(minutes=15)).isoformat()
+    snapshots = [snapshot]
+    classification = _classify_first_memory_review(snapshots, context_rows)
+    path = _snapshot_price_path_for_memory(snapshots)
+    supporting_context = {
+        "phase": "29",
+        "source_reference": source_reference,
+        "snapshot_ids": [snapshot["id"]],
+        "expected_snapshot_count": 2,
+        "actual_snapshot_count": len(snapshots),
+        "context_row_ids": {
+            "market": context_rows["market"].get("id"),
+            "chain_heat": context_rows["chain_heat"].get("id"),
+            "safety": context_rows["safety"].get("id"),
+            "liquidity_exit": context_rows["liquidity_exit"].get("id"),
+            "trading_flow": context_rows["trading_flow"].get("id"),
+            "chart_volatility": context_rows["chart_volatility"].get("id"),
+            "micro_event": context_rows["micro_event"].get("id"),
+        },
+        "context_labels": _context_memory_labels(context_rows),
+        "retrieval_ready": classification["retrieval_ready"],
+    }
+    cursor = connection.execute(
+        """
+        INSERT INTO printer_memory_windows (
+            token_id, pair_id, window_kind, opened_at, closed_at,
+            expected_snapshot_count, actual_snapshot_count, missing_snapshot_count, coverage_state,
+            memory_status, data_quality_label, do_not_train, window_status, outcome_label,
+            memory_quality_label, rejection_reasons_json, supporting_context_json, created_by_phase
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            target["token_id"], target["pair_id"], window_kind, opened_at, closed_at,
+            2, len(snapshots), max(0, 2 - len(snapshots)), "INCOMPLETE_15M_WINDOW",
+            classification["memory_status"], classification["data_quality_label"], classification["do_not_train"],
+            "WINDOW_AUDIT_ONLY" if classification["do_not_train"] else "WINDOW_CLOSED",
+            classification["outcome_label"], classification["memory_quality_label"],
+            json.dumps(classification["rejection_reasons"], sort_keys=True),
+            json.dumps(supporting_context, sort_keys=True), "phase29",
+        ),
+    )
+    memory_window_id = int(cursor.lastrowid)
+    episode_status = "EPISODE_DIRTY" if classification["memory_quality_label"] == "DIRTY_MEMORY" else "EPISODE_AUDIT_ONLY"
+    cursor = connection.execute(
+        """
+        INSERT INTO printer_episodes (
+            memory_window_id, token_id, pair_id, episode_kind, episode_status,
+            memory_status, data_quality_label, do_not_train, window_kind,
+            episode_outcome_label, memory_quality_label, action_lesson_label,
+            rejection_reasons_json, episode_summary_json, supporting_context_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            memory_window_id, target["token_id"], target["pair_id"], "TOKEN_WINDOW_EPISODE",
+            episode_status, classification["memory_status"], classification["data_quality_label"],
+            classification["do_not_train"], window_kind, classification["outcome_label"],
+            classification["memory_quality_label"], classification["action_lesson_label"],
+            json.dumps(classification["rejection_reasons"], sort_keys=True),
+            json.dumps({"price_path": path, "coverage_state": "INCOMPLETE_15M_WINDOW"}, sort_keys=True),
+            json.dumps(supporting_context, sort_keys=True),
+        ),
+    )
+    episode_id = int(cursor.lastrowid)
+    connection.execute(
+        "INSERT INTO printer_episode_snapshots (episode_id, token_snapshot_id, position_in_episode) VALUES (?, ?, 0)",
+        (episode_id, snapshot["id"]),
+    )
+    cursor = connection.execute(
+        """
+        INSERT INTO printer_episode_outcomes (
+            episode_id, memory_window_id, token_id, pair_id, window_kind,
+            outcome_label, action_lesson_label, price_start, price_high,
+            price_low, price_end, price_change_percent, max_runup_percent,
+            max_drawdown_percent, realistic_entry_available, realistic_exit_available,
+            realistic_profit_possible, capital_protection_possible, memory_quality_label,
+            rejection_reasons_json, outcome_payload_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?)
+        """,
+        (
+            episode_id, memory_window_id, target["token_id"], target["pair_id"], window_kind,
+            classification["outcome_label"], classification["action_lesson_label"],
+            path["price_start"], path["price_high"], path["price_low"], path["price_end"],
+            path["price_change_percent"], path["max_runup_percent"], path["max_drawdown_percent"],
+            classification["memory_quality_label"],
+            json.dumps(classification["rejection_reasons"], sort_keys=True),
+            json.dumps({"price_path": path, "outcome_determinable": False}, sort_keys=True),
+        ),
+    )
+    outcome_id = int(cursor.lastrowid)
+    fingerprint_payload = {
+        "phase": "29",
+        "window_kind": window_kind,
+        "outcome_label": classification["outcome_label"],
+        "memory_quality_label": classification["memory_quality_label"],
+        "retrieval_ready": classification["retrieval_ready"],
+        "coverage_state": "INCOMPLETE_15M_WINDOW",
+        **_context_memory_labels(context_rows),
+    }
+    cursor = connection.execute(
+        """
+        INSERT INTO printer_memory_fingerprints (
+            episode_id, fingerprint_kind, fingerprint_payload_json,
+            memory_status, data_quality_label, do_not_train
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            episode_id, "STATIC_CONDITION_SUMMARY",
+            json.dumps(fingerprint_payload, sort_keys=True),
+            classification["memory_status"], classification["data_quality_label"],
+            classification["do_not_train"],
+        ),
+    )
+    fingerprint_id = int(cursor.lastrowid)
+    return {
+        "memory_window_id": memory_window_id,
+        "episode_id": episode_id,
+        "outcome_id": outcome_id,
+        "fingerprint_id": fingerprint_id,
+        **classification,
+    }
+
+
+def build_memory_window_once_payload(args: argparse.Namespace) -> dict[str, Any]:
+    _validate_memory_window_command_args(args)
+    project_root = _project_root(args.project_root)
+    resolved = resolve_operator_db_path(args.db_path, project_root)
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Operator DB does not exist: {resolved}")
+
+    window_kind = _normalize_memory_window(args.memory_window)
+    before_counts = get_core_table_counts(resolved, project_root)
+    connection = sqlite3.connect(resolved)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    try:
+        target = _resolve_approved_context_target(connection, args)
+        snapshot = _resolve_context_snapshot(connection, args, target)
+        context_rows = _resolve_memory_context_rows(connection, target)
+        if not _context_is_present(context_rows):
+            raise ValueError("memory-window review requires existing Phase 28 context rows")
+        existing = _existing_memory_for_target(connection, target, window_kind)
+        if existing is not None:
+            result = {
+                "memory_window_id": int(existing["id"]),
+                "episode_id": None,
+                "outcome_id": None,
+                "fingerprint_id": None,
+                "memory_quality_label": existing["memory_quality_label"],
+                "memory_status": existing["memory_status"],
+                "data_quality_label": existing["data_quality_label"],
+                "do_not_train": int(existing["do_not_train"]),
+                "rejection_reasons": json.loads(existing["rejection_reasons_json"] or "[]"),
+                "retrieval_ready": int(existing["do_not_train"]) == 0 and existing["memory_quality_label"] == "CLEAN_MEMORY",
+                "outcome_label": existing["outcome_label"],
+                "action_lesson_label": "ACTION_LESSON_UNKNOWN",
+                "skipped_reason": "memory_window_already_exists_for_target",
+            }
+        else:
+            result = _record_first_memory_window(
+                connection, target, snapshot, context_rows, window_kind, args.source_reference
+            )
+            result["skipped_reason"] = None
+        connection.commit()
+    finally:
+        connection.close()
+
+    after_counts = get_core_table_counts(resolved, project_root)
+    deltas = {
+        table: (after_counts.get(table) or 0) - (before_counts.get(table) or 0)
+        for table in sorted(after_counts)
+    }
+    memory_deltas = {table: deltas.get(table, 0) for table in MEMORY_OUTPUT_TABLES}
+    context_deltas = {table: deltas.get(table, 0) for table in CONTEXT_TABLES}
+    guard_deltas = {table: deltas[table] for table in FIRST_MEMORY_GUARD_TABLES if deltas.get(table)}
+    status = get_operator_db_status(resolved, project_root)
+    return {
+        "command": "printer-build-memory-window-once",
+        "db_path": str(resolved),
+        "operator_approved": True,
+        "token_id": target["token_id"],
+        "pair_id": target["pair_id"],
+        "token_mint": target["token_mint"],
+        "pair_address": target["pair_address"],
+        "snapshot_id": snapshot["id"],
+        "memory_window": "15m",
+        "window_kind": window_kind,
+        "memory_result": result,
+        "memory_table_deltas": memory_deltas,
+        "context_table_deltas": context_deltas,
+        "guard_table_deltas": guard_deltas,
+        "guard_tables_unchanged": not guard_deltas,
+        "source_request_delta": deltas.get("printer_source_requests", 0),
+        "source_response_delta": deltas.get("printer_source_responses", 0),
+        "source_failure_delta": deltas.get("printer_source_failures", 0),
+        "token_delta": deltas.get("printer_tokens", 0),
+        "pair_delta": deltas.get("printer_pairs", 0),
+        "snapshot_delta": deltas.get("printer_token_snapshots", 0),
+        "context_delta_total": sum(context_deltas.values()),
+        "retrieval_delta": deltas.get("printer_memory_retrieval_queries", 0) + deltas.get("printer_memory_retrieval_matches", 0),
+        "paper_decision_delta": deltas.get("printer_paper_decisions", 0),
+        "paper_position_delta": deltas.get("printer_paper_positions", 0),
+        "counts_after": after_counts,
+        "db_state_classification": status["state_classification"],
+        "memory_has_started": status["memory_has_started"],
+        "paper_trading_has_started": status["paper_trading_has_started"],
+        "runtime_has_started": status["runtime_has_started"],
+    }
+
+
+def main_build_memory_window_once(argv: Sequence[str] | None = None) -> int:
+    parser = _base_parser("Build one controlled 15m memory-window review from local evidence.", ("json", "text"))
+    parser.add_argument("--operator-approved", action="store_true")
+    parser.add_argument("--token-mint")
+    parser.add_argument("--token-id", type=int)
+    parser.add_argument("--pair-address")
+    parser.add_argument("--pair-id", type=int)
+    parser.add_argument("--snapshot-id", type=int)
+    parser.add_argument("--chain", default="solana")
+    parser.add_argument("--memory-window", default="15m")
+    parser.add_argument("--source-reference")
+    args = parser.parse_args(argv)
+    try:
+        payload = build_memory_window_once_payload(args)
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
 def classify_readiness(status: dict[str, Any], migration_status: dict[str, Any], source_scan: dict[str, Any], runtime_scan: dict[str, Any]) -> str:
     if status["state_classification"] == STATE_NO_DB:
         return READINESS_NEEDS_DB_INIT
@@ -1407,6 +1836,8 @@ def classify_readiness(status: dict[str, Any], migration_status: dict[str, Any],
         return READINESS_READY_CONTROLLED_SNAPSHOTS
     if status["state_classification"] == STATE_CONTROLLED_CONTEXT:
         return READINESS_READY_CONTROLLED_CONTEXT
+    if status["state_classification"] == STATE_FIRST_MEMORY_WINDOW:
+        return READINESS_READY_FIRST_MEMORY_WINDOW
     if status["state_classification"] in {STATE_TOKEN_ROWS, STATE_TEST_ONLY, STATE_MEMORY_ROWS, STATE_PAPER_ROWS}:
         return READINESS_READY_WITH_LOCAL_DATA
     return READINESS_STATE_UNKNOWN

@@ -15,6 +15,7 @@ STATE_SOURCE_ONLY_SMOKE_CHECK = "PERSISTENT_DB_SOURCE_ONLY_SMOKE_CHECK"
 STATE_CONTROLLED_INTAKE = "PERSISTENT_DB_CONTROLLED_INTAKE"
 STATE_CONTROLLED_SNAPSHOTS = "PERSISTENT_DB_CONTROLLED_SNAPSHOTS"
 STATE_CONTROLLED_CONTEXT = "PERSISTENT_DB_CONTROLLED_CONTEXT"
+STATE_FIRST_MEMORY_WINDOW = "PERSISTENT_DB_FIRST_MEMORY_WINDOW"
 STATE_TEST_ONLY = "PERSISTENT_DB_HAS_TEST_ONLY_ROWS"
 STATE_TOKEN_ROWS = "PERSISTENT_DB_HAS_REAL_TOKEN_ROWS"
 STATE_MEMORY_ROWS = "PERSISTENT_DB_HAS_REAL_MEMORY_ROWS"
@@ -28,6 +29,7 @@ STATE_CLASSIFICATIONS = {
     STATE_CONTROLLED_INTAKE,
     STATE_CONTROLLED_SNAPSHOTS,
     STATE_CONTROLLED_CONTEXT,
+    STATE_FIRST_MEMORY_WINDOW,
     STATE_TEST_ONLY,
     STATE_TOKEN_ROWS,
     STATE_MEMORY_ROWS,
@@ -77,6 +79,14 @@ SOURCE_TABLES = [
 ]
 
 MEMORY_TABLES = [
+    "printer_memory_windows",
+    "printer_episodes",
+    "printer_episode_snapshots",
+    "printer_episode_outcomes",
+    "printer_memory_fingerprints",
+]
+
+FIRST_MEMORY_TABLES = [
     "printer_memory_windows",
     "printer_episodes",
     "printer_episode_snapshots",
@@ -155,6 +165,14 @@ CONTROLLED_CONTEXT_BLOCKER_TABLES = [
     "printer_tracking_queue",
     "printer_scheduler_jobs",
     *MEMORY_TABLES,
+    "printer_memory_retrieval_queries",
+    "printer_memory_retrieval_matches",
+    *PAPER_TABLES,
+]
+
+FIRST_MEMORY_BLOCKER_TABLES = [
+    "printer_tracking_queue",
+    "printer_scheduler_jobs",
     "printer_memory_retrieval_queries",
     "printer_memory_retrieval_matches",
     *PAPER_TABLES,
@@ -264,6 +282,19 @@ def controlled_context_rows_exist(counts: dict[str, int | None]) -> bool:
     return row_count_sum(counts, CONTROLLED_CONTEXT_BLOCKER_TABLES) == 0
 
 
+def first_memory_window_rows_exist(counts: dict[str, int | None]) -> bool:
+    token_count = counts.get("printer_tokens") or 0
+    pair_count = counts.get("printer_pairs") or 0
+    snapshot_count = counts.get("printer_token_snapshots") or 0
+    context_count = row_count_sum(counts, CONTEXT_TABLES)
+    memory_count = row_count_sum(counts, FIRST_MEMORY_TABLES)
+    if token_count < 1 or pair_count < 1 or snapshot_count < 1 or context_count < 1 or memory_count < 1:
+        return False
+    if token_count > 3 or pair_count > 3:
+        return False
+    return row_count_sum(counts, FIRST_MEMORY_BLOCKER_TABLES) == 0
+
+
 def token_rows_look_test_only(db_path: Path) -> bool:
     with connect_read_only(db_path) as connection:
         if not table_exists(connection, "printer_tokens"):
@@ -282,6 +313,8 @@ def classify_operator_db_state(db_path: str | Path | None = None, project_root: 
     counts = get_core_table_counts(resolved, project_root)
     if row_count_sum(counts, PAPER_TABLES) > 0:
         return STATE_PAPER_ROWS
+    if first_memory_window_rows_exist(counts):
+        return STATE_FIRST_MEMORY_WINDOW
     if row_count_sum(counts, MEMORY_TABLES) > 0:
         return STATE_MEMORY_ROWS
     if controlled_context_rows_exist(counts):
