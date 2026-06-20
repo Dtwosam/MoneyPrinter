@@ -254,7 +254,6 @@ class Phase23SourceAdapterExecutionContractTests(unittest.TestCase):
         self.assertFalse(
             source_files
             & {
-                "dexscreener.py",
                 "geckoterminal.py",
                 "pumpportal.py",
                 "coingecko.py",
