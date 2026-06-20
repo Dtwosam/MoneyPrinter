@@ -24,6 +24,7 @@ printer-create-paper-decision-once = "printer_v1.operator_cli.commands:main_crea
 printer-monitor-simulated-paper-position-once = "printer_v1.operator_cli.commands:main_monitor_simulated_paper_position_once"
 printer-audit-paper-decision-once = "printer_v1.operator_cli.commands:main_audit_paper_decision_once"
 printer-run-scheduler-single-tick = "printer_v1.operator_cli.commands:main_run_scheduler_single_tick"
+printer-run-bounded = "printer_v1.operator_cli.commands:main_run_bounded"
 
 [tool.unittest]
 start-directory = "tests"
