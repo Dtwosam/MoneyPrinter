@@ -39,6 +39,7 @@ from printer_v1.operator_db.status import (
     STATE_NO_DB,
     STATE_PAPER_ROWS,
     STATE_REAL_MEMORY_RETRIEVAL,
+    STATE_REAL_DATA_PAPER_DECISION,
     STATE_SCHEMA_ONLY,
     STATE_SOURCE_ONLY_SMOKE_CHECK,
     STATE_TEST_ONLY,
@@ -87,6 +88,7 @@ READINESS_READY_CONTROLLED_CONTEXT = "READY_CONTROLLED_CONTEXT"
 READINESS_READY_FIRST_MEMORY_WINDOW = "READY_FIRST_MEMORY_WINDOW"
 READINESS_READY_MEMORY_QUALITY_AUDITED = "READY_MEMORY_QUALITY_AUDITED"
 READINESS_READY_REAL_MEMORY_RETRIEVAL = "READY_REAL_MEMORY_RETRIEVAL"
+READINESS_READY_REAL_DATA_PAPER_DECISION = "READY_REAL_DATA_PAPER_DECISION"
 READINESS_READY_WITH_LOCAL_DATA = "READY_WITH_LOCAL_DATA"
 READINESS_BLOCKED = "BLOCKED"
 READINESS_STATE_UNKNOWN = "STATE_UNKNOWN"
@@ -2374,6 +2376,330 @@ def main_retrieve_clean_memory_once(argv: Sequence[str] | None = None) -> int:
         return _print_error(exc)
 
 
+def _validate_paper_decision_once_args(args: argparse.Namespace) -> None:
+    if not args.operator_approved:
+        raise ValueError("paper decision activation requires explicit operator approval")
+    if str(args.chain or "").strip().lower() != "solana":
+        raise ValueError("paper decision activation is Solana-only")
+    if args.retrieval_query_id is None and args.snapshot_id is None and not (args.token_mint or args.token_id):
+        raise ValueError("paper decision activation requires retrieval_query_id, snapshot_id, token_mint, or token_id")
+    if args.retrieval_query_id is None and args.snapshot_id is None and not (args.pair_address or args.pair_id):
+        raise ValueError("paper decision activation requires pair_address or pair_id with token input")
+
+
+def _resolve_paper_decision_target(connection: sqlite3.Connection, args: argparse.Namespace) -> dict[str, Any]:
+    if args.retrieval_query_id is not None:
+        query = connection.execute(
+            "SELECT * FROM printer_memory_retrieval_queries WHERE id = ?",
+            (args.retrieval_query_id,),
+        ).fetchone()
+        if query is None:
+            raise ValueError("paper decision activation requires an existing retrieval query")
+        token = connection.execute("SELECT * FROM printer_tokens WHERE id = ?", (query["token_id"],)).fetchone()
+        pair = connection.execute("SELECT * FROM printer_pairs WHERE id = ?", (query["pair_id"],)).fetchone()
+        if token is None or pair is None:
+            raise ValueError("retrieval query must reference an approved token and pair")
+        if token["chain"] != "solana":
+            raise ValueError("paper decision target must be Solana")
+        snapshot = _resolve_context_snapshot(
+            connection,
+            argparse.Namespace(snapshot_id=args.snapshot_id, **{
+                "token_id": int(token["id"]),
+                "token_mint": None,
+                "pair_id": int(pair["id"]),
+                "pair_address": None,
+            }),
+            {
+                "token_id": int(token["id"]),
+                "pair_id": int(pair["id"]),
+                "token_mint": token["token_mint"],
+                "pair_address": pair["pair_address"],
+            },
+        )
+        return {
+            "token_id": int(token["id"]),
+            "pair_id": int(pair["id"]),
+            "token_mint": token["token_mint"],
+            "pair_address": pair["pair_address"],
+            "snapshot_id": int(snapshot["id"]),
+            "retrieval_query_id": int(query["id"]),
+        }
+    target = _resolve_memory_retrieval_target(connection, args)
+    query = _latest_row(
+        connection,
+        "printer_memory_retrieval_queries",
+        "WHERE token_id = ? AND pair_id = ?",
+        (target["token_id"], target["pair_id"]),
+    )
+    if not query:
+        raise ValueError("paper decision activation requires an existing real retrieval query")
+    return {
+        **target,
+        "retrieval_query_id": int(query["id"]),
+    }
+
+
+def _summarize_decision_retrieval_gate(connection: sqlite3.Connection, retrieval_query_id: int) -> dict[str, Any]:
+    query = _latest_row(connection, "printer_memory_retrieval_queries", "WHERE id = ?", (retrieval_query_id,))
+    matches = [
+        _row_to_dict(row)
+        for row in connection.execute(
+            """
+            SELECT *
+            FROM printer_memory_retrieval_matches
+            WHERE retrieval_query_id = ?
+            ORDER BY id ASC
+            """,
+            (retrieval_query_id,),
+        ).fetchall()
+    ]
+    clean_matches = [match for match in matches if int(match.get("included_as_clean_evidence") or 0) == 1]
+    dirty_memory_count = int(connection.execute("SELECT COUNT(*) FROM printer_memory_windows WHERE memory_quality_label = 'DIRTY_MEMORY'").fetchone()[0])
+    retrieval_ready_false_count = int(connection.execute("SELECT COUNT(*) FROM printer_memory_fingerprints WHERE do_not_train = 1 OR memory_status != 'CLEAN_MEMORY'").fetchone()[0])
+    blocked_dirty_count = dirty_memory_count if query.get("retrieval_result_label") == "RETRIEVAL_BLOCKED_NO_CLEAN_MEMORY" else 0
+    return {
+        "retrieval_query": query,
+        "clean_matches": clean_matches,
+        "clean_eligible_memory_count": len(clean_matches),
+        "dirty_memory_count": dirty_memory_count,
+        "blocked_dirty_memory_count": blocked_dirty_count,
+        "clean_matches_returned": len(clean_matches),
+        "dirty_matches_used_for_decision": 0,
+        "dirty_memory_used": False,
+        "retrieval_ready_false_count": retrieval_ready_false_count,
+        "retrieval_allowed": bool(clean_matches),
+        "decision_allowed": False,
+        "buy_allowed": False,
+        "paper_position_allowed": False,
+        "blocked_reason": "BLOCKED_NO_CLEAN_MEMORY",
+    }
+
+
+def _latest_snapshot_for_target(connection: sqlite3.Connection, target: dict[str, Any]) -> dict[str, Any]:
+    return _resolve_context_snapshot(
+        connection,
+        argparse.Namespace(snapshot_id=target.get("snapshot_id")),
+        target,
+    )
+
+
+def _build_paper_decision_report(connection: sqlite3.Connection, target: dict[str, Any], gate_summary: dict[str, Any]) -> dict[str, Any]:
+    snapshot = _latest_snapshot_for_target(connection, target)
+    context_rows = _resolve_memory_context_rows(connection, target)
+    labels = _context_memory_labels(context_rows)
+    return {
+        "Decision": "NO_ACTION",
+        "Current setup": {
+            "token_id": target["token_id"],
+            "pair_id": target["pair_id"],
+            "token_mint": target["token_mint"],
+            "pair_address": target["pair_address"],
+            "snapshot_id": snapshot.get("id"),
+        },
+        "Market condition": labels.get("market_regime_label") or "UNKNOWN",
+        "Solana condition": labels.get("chain_heat_label") or "SOLANA_UNKNOWN",
+        "Safety condition": labels.get("safety_status_label") or "SAFETY_UNKNOWN",
+        "Liquidity / exit condition": {
+            "liquidity_state_label": labels.get("liquidity_state_label"),
+            "entry_realism_label": labels.get("entry_realism_label"),
+            "exit_realism_label": labels.get("exit_realism_label"),
+            "realism_gate_label": labels.get("realism_gate_label"),
+        },
+        "Trading flow condition": {
+            "flow_direction_label": labels.get("flow_direction_label"),
+            "flow_pressure_label": labels.get("flow_pressure_label"),
+        },
+        "Chart / volatility condition": {
+            "trend_structure_label": labels.get("trend_structure_label"),
+            "volatility_label": labels.get("volatility_label"),
+        },
+        "Similar clean memories found": gate_summary["clean_eligible_memory_count"],
+        "What happened in those memories": "NO_CLEAN_MEMORY_AVAILABLE",
+        "Best historical action": "NOT_AVAILABLE",
+        "Worst historical action": "NOT_AVAILABLE",
+        "Current action": "NO_ACTION",
+        "Reason": "Clean memory retrieval returned zero eligible matches; dirty memory remains blocked.",
+        "Invalidation condition": "Revisit only after clean retrieval evidence exists.",
+        "Paper trade status": "NO_POSITION_OPENED",
+        "Audit plan": "Review decision after additional clean 15m memory evidence is available.",
+        "blocked_reason": gate_summary["blocked_reason"],
+        "clean_eligible_memory_count": gate_summary["clean_eligible_memory_count"],
+        "dirty_memory_count": gate_summary["dirty_memory_count"],
+        "blocked_dirty_memory_count": gate_summary["blocked_dirty_memory_count"],
+        "dirty_memory_used": False,
+        "buy_allowed": False,
+        "paper_position_allowed": False,
+    }
+
+
+def _insert_blocked_paper_decision(
+    connection: sqlite3.Connection,
+    target: dict[str, Any],
+    gate_summary: dict[str, Any],
+    report: dict[str, Any],
+) -> int:
+    decided_at = _utc_now_text()
+    reasons = ["REASON_NOT_ENOUGH_CLEAN_MEMORY"]
+    blocking = [
+        "BLOCKED_NO_CLEAN_MEMORY",
+        "BLOCKED_RETRIEVAL_NOT_ALLOWED",
+        "BLOCKED_DIRTY_MEMORY_ONLY",
+    ]
+    cursor = connection.execute(
+        """
+        INSERT INTO printer_paper_decisions (
+            token_id, pair_id, token_mint, pair_address, decided_at,
+            requested_action_label, final_action_label, decision_gate_label,
+            memory_evidence_gate_label, paper_decision_status_label,
+            retrieval_query_id, matched_episode_ids_json,
+            supporting_memory_match_ids_json, decision_reasons_json,
+            blocking_reasons_json, current_context_json,
+            memory_evidence_summary_json, decision_report_json, expires_at,
+            decision_action, decision_status, source_status, data_quality_label
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            target["token_id"],
+            target["pair_id"],
+            target["token_mint"],
+            target["pair_address"],
+            decided_at,
+            "NO_ACTION",
+            "NO_ACTION",
+            "DECISION_BLOCKED_NO_CLEAN_MEMORY",
+            "MEMORY_GATE_DIRTY_ONLY",
+            "PAPER_DECISION_BLOCKED",
+            target["retrieval_query_id"],
+            json.dumps([], sort_keys=True),
+            json.dumps([], sort_keys=True),
+            json.dumps(reasons, sort_keys=True),
+            json.dumps(blocking, sort_keys=True),
+            json.dumps(report.get("Current setup", {}), sort_keys=True),
+            json.dumps(
+                {
+                    "retrieval_result_label": gate_summary["retrieval_query"].get("retrieval_result_label"),
+                    "memory_evidence_label": gate_summary["retrieval_query"].get("memory_evidence_label"),
+                    "clean_eligible_memory_count": gate_summary["clean_eligible_memory_count"],
+                    "dirty_memory_count": gate_summary["dirty_memory_count"],
+                    "blocked_dirty_memory_count": gate_summary["blocked_dirty_memory_count"],
+                    "dirty_memory_used": False,
+                },
+                sort_keys=True,
+            ),
+            json.dumps(report, sort_keys=True),
+            decided_at,
+            "NO_ACTION",
+            "PAPER_DECISION_BLOCKED",
+            "PARTIAL",
+            "MISSING_CRITICAL_DATA",
+        ),
+    )
+    return int(cursor.lastrowid)
+
+
+def build_create_paper_decision_once_payload(args: argparse.Namespace) -> dict[str, Any]:
+    _validate_paper_decision_once_args(args)
+    project_root = _project_root(args.project_root)
+    resolved = resolve_operator_db_path(args.db_path, project_root)
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Operator DB does not exist: {resolved}")
+
+    before_counts = get_core_table_counts(resolved, project_root)
+    connection = sqlite3.connect(resolved)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    try:
+        target = _resolve_paper_decision_target(connection, args)
+        gate_summary = _summarize_decision_retrieval_gate(connection, target["retrieval_query_id"])
+        report = _build_paper_decision_report(connection, target, gate_summary)
+        decision_id = _insert_blocked_paper_decision(connection, target, gate_summary, report)
+        connection.commit()
+    finally:
+        connection.close()
+
+    after_counts = get_core_table_counts(resolved, project_root)
+    deltas = {
+        table: (after_counts.get(table) or 0) - (before_counts.get(table) or 0)
+        for table in sorted(after_counts)
+    }
+    guarded_tables = [
+        "printer_tokens",
+        "printer_pairs",
+        "printer_source_requests",
+        "printer_source_responses",
+        "printer_source_failures",
+        "printer_token_snapshots",
+        *CONTEXT_TABLES,
+        *MEMORY_OUTPUT_TABLES,
+        "printer_memory_audit_reports",
+        "printer_memory_retrieval_queries",
+        "printer_memory_retrieval_matches",
+        "printer_paper_positions",
+        "printer_paper_trade_events",
+        "printer_scheduler_jobs",
+    ]
+    guard_deltas = {table: deltas[table] for table in guarded_tables if deltas.get(table)}
+    status = get_operator_db_status(resolved, project_root)
+    action_counts = _paper_decision_action_counts(resolved)
+    return {
+        "command": "printer-create-paper-decision-once",
+        "db_path": str(resolved),
+        "operator_approved": True,
+        "paper_decision_id": decision_id,
+        "paper_decision_delta": deltas.get("printer_paper_decisions", 0),
+        "guard_table_deltas": guard_deltas,
+        "guard_tables_unchanged": not guard_deltas,
+        "decision_report": report,
+        "decision_action": "NO_ACTION",
+        "paper_decision_status_label": "PAPER_DECISION_BLOCKED",
+        "decision_gate_label": "DECISION_BLOCKED_NO_CLEAN_MEMORY",
+        "memory_evidence_gate_label": "MEMORY_GATE_DIRTY_ONLY",
+        "retrieval_summary": gate_summary,
+        "action_counts": action_counts,
+        "counts_after": after_counts,
+        "db_state_classification": status["state_classification"],
+        "memory_has_started": status["memory_has_started"],
+        "paper_trading_has_started": status["paper_trading_has_started"],
+        "runtime_has_started": status["runtime_has_started"],
+    }
+
+
+def _paper_decision_action_counts(db_path: Path) -> dict[str, int]:
+    actions = ["BUY", "WAIT", "AVOID", "NO_ACTION", "SELL", "HOLD"]
+    connection = sqlite3.connect(db_path)
+    try:
+        return {
+            action: int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM printer_paper_decisions WHERE COALESCE(final_action_label, decision_action) = ?",
+                    (action,),
+                ).fetchone()[0]
+            )
+            for action in actions
+        }
+    finally:
+        connection.close()
+
+
+def main_create_paper_decision_once(argv: Sequence[str] | None = None) -> int:
+    parser = _base_parser("Create one paper-only decision after real clean-memory retrieval gates.", ("json", "text"))
+    parser.add_argument("--operator-approved", action="store_true")
+    parser.add_argument("--retrieval-query-id", type=int)
+    parser.add_argument("--snapshot-id", type=int)
+    parser.add_argument("--token-mint")
+    parser.add_argument("--token-id", type=int)
+    parser.add_argument("--pair-address")
+    parser.add_argument("--pair-id", type=int)
+    parser.add_argument("--chain", default="solana")
+    args = parser.parse_args(argv)
+    try:
+        payload = build_create_paper_decision_once_payload(args)
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
 def classify_readiness(status: dict[str, Any], migration_status: dict[str, Any], source_scan: dict[str, Any], runtime_scan: dict[str, Any]) -> str:
     if status["state_classification"] == STATE_NO_DB:
         return READINESS_NEEDS_DB_INIT
@@ -2401,6 +2727,8 @@ def classify_readiness(status: dict[str, Any], migration_status: dict[str, Any],
         return READINESS_READY_MEMORY_QUALITY_AUDITED
     if status["state_classification"] == STATE_REAL_MEMORY_RETRIEVAL:
         return READINESS_READY_REAL_MEMORY_RETRIEVAL
+    if status["state_classification"] == STATE_REAL_DATA_PAPER_DECISION:
+        return READINESS_READY_REAL_DATA_PAPER_DECISION
     if status["state_classification"] in {STATE_TOKEN_ROWS, STATE_TEST_ONLY, STATE_MEMORY_ROWS, STATE_PAPER_ROWS}:
         return READINESS_READY_WITH_LOCAL_DATA
     return READINESS_STATE_UNKNOWN

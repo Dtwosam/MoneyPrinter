@@ -67,6 +67,7 @@ class Phase21ControlledOperatorCommandLayerTest(unittest.TestCase):
             "printer-build-memory-window-once": "printer_v1.operator_cli.commands:main_build_memory_window_once",
             "printer-audit-memory-quality-once": "printer_v1.operator_cli.commands:main_audit_memory_quality_once",
             "printer-retrieve-clean-memory-once": "printer_v1.operator_cli.commands:main_retrieve_clean_memory_once",
+            "printer-create-paper-decision-once": "printer_v1.operator_cli.commands:main_create_paper_decision_once",
         }
         self.assertEqual({key: scripts[key] for key in expected}, expected)
 
