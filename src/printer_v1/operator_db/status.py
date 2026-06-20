@@ -11,6 +11,7 @@ from printer_v1.operator_db.paths import resolve_operator_db_path
 
 STATE_NO_DB = "NO_PERSISTENT_DB_FOUND"
 STATE_SCHEMA_ONLY = "PERSISTENT_DB_EMPTY_SCHEMA_ONLY"
+STATE_SOURCE_ONLY_SMOKE_CHECK = "PERSISTENT_DB_SOURCE_ONLY_SMOKE_CHECK"
 STATE_TEST_ONLY = "PERSISTENT_DB_HAS_TEST_ONLY_ROWS"
 STATE_TOKEN_ROWS = "PERSISTENT_DB_HAS_REAL_TOKEN_ROWS"
 STATE_MEMORY_ROWS = "PERSISTENT_DB_HAS_REAL_MEMORY_ROWS"
@@ -20,6 +21,7 @@ STATE_UNCLEAR = "PERSISTENT_DB_STATE_UNCLEAR"
 STATE_CLASSIFICATIONS = {
     STATE_NO_DB,
     STATE_SCHEMA_ONLY,
+    STATE_SOURCE_ONLY_SMOKE_CHECK,
     STATE_TEST_ONLY,
     STATE_TOKEN_ROWS,
     STATE_MEMORY_ROWS,
@@ -62,6 +64,12 @@ CORE_TABLES = [
     "printer_validation_items",
 ]
 
+SOURCE_TABLES = [
+    "printer_source_requests",
+    "printer_source_responses",
+    "printer_source_failures",
+]
+
 MEMORY_TABLES = [
     "printer_memory_windows",
     "printer_episodes",
@@ -87,6 +95,18 @@ SNAPSHOT_TABLES = [
     "printer_trading_flow_snapshots",
     "printer_chart_volatility_snapshots",
     "printer_micro_events",
+]
+
+SOURCE_ONLY_BLOCKER_TABLES = [
+    "printer_tokens",
+    "printer_pairs",
+    "printer_tracking_queue",
+    "printer_scheduler_jobs",
+    *SNAPSHOT_TABLES,
+    *MEMORY_TABLES,
+    "printer_memory_retrieval_queries",
+    "printer_memory_retrieval_matches",
+    *PAPER_TABLES,
 ]
 
 
@@ -154,6 +174,12 @@ def only_schema_rows_exist(counts: dict[str, int | None]) -> bool:
     return (counts.get("printer_schema_migrations") or 0) > 0
 
 
+def only_source_smoke_rows_exist(counts: dict[str, int | None]) -> bool:
+    if row_count_sum(counts, SOURCE_TABLES) <= 0:
+        return False
+    return row_count_sum(counts, SOURCE_ONLY_BLOCKER_TABLES) == 0
+
+
 def token_rows_look_test_only(db_path: Path) -> bool:
     with connect_read_only(db_path) as connection:
         if not table_exists(connection, "printer_tokens"):
@@ -174,6 +200,8 @@ def classify_operator_db_state(db_path: str | Path | None = None, project_root: 
         return STATE_PAPER_ROWS
     if row_count_sum(counts, MEMORY_TABLES) > 0:
         return STATE_MEMORY_ROWS
+    if only_source_smoke_rows_exist(counts):
+        return STATE_SOURCE_ONLY_SMOKE_CHECK
     if counts.get("printer_tokens"):
         return STATE_TEST_ONLY if token_rows_look_test_only(resolved) else STATE_TOKEN_ROWS
     if only_schema_rows_exist(counts):

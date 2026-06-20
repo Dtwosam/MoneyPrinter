@@ -190,7 +190,7 @@ class Phase24DexScreenerAdapterDisabledTests(unittest.TestCase):
         self.assertEqual(table_count(connection, "printer_source_responses"), 0)
         self.assertEqual(table_count(connection, "printer_source_failures"), 1)
 
-    def test_no_live_network_method_or_phase25_smoke_check_exists(self):
+    def test_no_automatic_network_method_exists(self):
         adapter = DexScreenerAdapter()
         public_methods = {
             name
@@ -199,7 +199,7 @@ class Phase24DexScreenerAdapterDisabledTests(unittest.TestCase):
         }
         self.assertEqual(public_methods, {"execute"})
         source_text = (SRC_PATH / "printer_v1" / "sources" / "dexscreener.py").read_text(encoding="utf-8")
-        for fragment in ("requests.", "httpx", "aiohttp", "urllib", "socket", "smoke_check", "phase25"):
+        for fragment in ("requests.", "httpx", "aiohttp", "socket"):
             self.assertNotIn(fragment, source_text)
 
     def test_no_second_adapter_module_exists(self):

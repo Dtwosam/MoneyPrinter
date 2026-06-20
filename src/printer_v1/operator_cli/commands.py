@@ -31,6 +31,7 @@ from printer_v1.operator_db.status import (
     STATE_NO_DB,
     STATE_PAPER_ROWS,
     STATE_SCHEMA_ONLY,
+    STATE_SOURCE_ONLY_SMOKE_CHECK,
     STATE_TEST_ONLY,
     STATE_TOKEN_ROWS,
     get_core_table_counts,
@@ -56,13 +57,53 @@ from printer_v1.operator_review.recorder import (
     build_and_record_operator_review_report,
 )
 from printer_v1.operator_review.reports import build_operator_report_payload
+from printer_v1.sources.contracts import build_governed_source_request
+from printer_v1.sources.dexscreener import (
+    build_dexscreener_adapter,
+    build_dexscreener_smoke_transport,
+)
+from printer_v1.sources.governed_execution import execute_source_request_with_governor
 
 
 READINESS_NEEDS_DB_INIT = "NEEDS_DB_INIT"
 READINESS_READY_SCHEMA_ONLY = "READY_SCHEMA_ONLY"
+READINESS_READY_SOURCE_ONLY_SMOKE_CHECK = "READY_SOURCE_ONLY_SMOKE_CHECK"
 READINESS_READY_WITH_LOCAL_DATA = "READY_WITH_LOCAL_DATA"
 READINESS_BLOCKED = "BLOCKED"
 READINESS_STATE_UNKNOWN = "STATE_UNKNOWN"
+
+SOURCE_ONLY_TABLES = {
+    "printer_source_requests",
+    "printer_source_responses",
+    "printer_source_failures",
+}
+
+DOWNSTREAM_GUARD_TABLES = [
+    "printer_tokens",
+    "printer_pairs",
+    "printer_tracking_queue",
+    "printer_scheduler_jobs",
+    "printer_token_snapshots",
+    "printer_market_regime_snapshots",
+    "printer_solana_chain_heat_snapshots",
+    "printer_safety_rug_snapshots",
+    "printer_liquidity_exit_snapshots",
+    "printer_trading_flow_snapshots",
+    "printer_chart_volatility_snapshots",
+    "printer_micro_events",
+    "printer_memory_windows",
+    "printer_episodes",
+    "printer_episode_snapshots",
+    "printer_episode_outcomes",
+    "printer_memory_fingerprints",
+    "printer_memory_retrieval_queries",
+    "printer_memory_retrieval_matches",
+    "printer_paper_decisions",
+    "printer_paper_positions",
+    "printer_paper_trade_events",
+    "printer_paper_trade_audits",
+    "printer_paper_audit_reports",
+]
 
 
 def _project_root(value: str | None) -> Path | None:
@@ -321,6 +362,83 @@ def main_synthetic_validation(argv: Sequence[str] | None = None) -> int:
         return _print_error(exc)
 
 
+def build_source_smoke_dexscreener_payload(
+    args: argparse.Namespace,
+    *,
+    transport=None,
+) -> dict[str, Any]:
+    project_root = _project_root(args.project_root)
+    resolved = resolve_operator_db_path(args.db_path, project_root)
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Operator DB does not exist: {resolved}")
+
+    before_counts = get_core_table_counts(resolved, project_root)
+    source_request = build_governed_source_request(
+        "dexscreener",
+        "token_discovery",
+        request_key=args.request_key,
+        tracking_priority=0,
+        payload={"smoke_check": True, "source": "dexscreener"},
+    )
+    adapter = build_dexscreener_adapter(
+        enabled=True,
+        smoke_transport=transport or build_dexscreener_smoke_transport(timeout_seconds=args.timeout_seconds),
+    )
+    result = execute_source_request_with_governor(
+        resolved,
+        source_request,
+        adapter,
+        recent_request_count=0,
+    )
+    after_counts = get_core_table_counts(resolved, project_root)
+    deltas = {
+        table: (after_counts.get(table) or 0) - (before_counts.get(table) or 0)
+        for table in sorted(after_counts)
+    }
+    downstream_changed = {
+        table: deltas[table]
+        for table in DOWNSTREAM_GUARD_TABLES
+        if deltas.get(table)
+    }
+    status = get_operator_db_status(resolved, project_root)
+    return {
+        "command": "printer-source-smoke-dexscreener",
+        "db_path": str(resolved),
+        "source_name": "dexscreener",
+        "request_kind": "token_discovery",
+        "one_shot": True,
+        "bounded_request_count": 1,
+        "source_status": result.normalized_result.source_status.value,
+        "data_quality_label": result.normalized_result.data_quality_label.value,
+        "source_request_id": result.request_record.id,
+        "source_response_id": result.response_record.id if result.response_record else None,
+        "source_failure_id": result.failure_record.id if result.failure_record else None,
+        "failure_type": result.normalized_result.failure_type,
+        "failure_message": result.normalized_result.failure_message,
+        "source_table_deltas": {table: deltas[table] for table in sorted(SOURCE_ONLY_TABLES)},
+        "downstream_table_deltas": downstream_changed,
+        "downstream_unchanged": not downstream_changed,
+        "counts_after": after_counts,
+        "db_state_classification": status["state_classification"],
+        "memory_has_started": status["memory_has_started"],
+        "paper_trading_has_started": status["paper_trading_has_started"],
+        "runtime_has_started": status["runtime_has_started"],
+    }
+
+
+def main_source_smoke_dexscreener(argv: Sequence[str] | None = None) -> int:
+    parser = _base_parser("Run one bounded DexScreener source smoke check.", ("json", "text"))
+    parser.add_argument("--timeout-seconds", type=float, default=5.0)
+    parser.add_argument("--request-key", default="dexscreener-source-smoke")
+    args = parser.parse_args(argv)
+    try:
+        payload = build_source_smoke_dexscreener_payload(args)
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
 def classify_readiness(status: dict[str, Any], migration_status: dict[str, Any], source_scan: dict[str, Any], runtime_scan: dict[str, Any]) -> str:
     if status["state_classification"] == STATE_NO_DB:
         return READINESS_NEEDS_DB_INIT
@@ -334,6 +452,8 @@ def classify_readiness(status: dict[str, Any], migration_status: dict[str, Any],
         return READINESS_BLOCKED
     if status["state_classification"] == STATE_SCHEMA_ONLY:
         return READINESS_READY_SCHEMA_ONLY
+    if status["state_classification"] == STATE_SOURCE_ONLY_SMOKE_CHECK:
+        return READINESS_READY_SOURCE_ONLY_SMOKE_CHECK
     if status["state_classification"] in {STATE_TOKEN_ROWS, STATE_TEST_ONLY, STATE_MEMORY_ROWS, STATE_PAPER_ROWS}:
         return READINESS_READY_WITH_LOCAL_DATA
     return READINESS_STATE_UNKNOWN

@@ -173,7 +173,7 @@ def execute_source_request_with_governor(
         governor_approved=True,
     )
     result = adapter.execute(context)
-    if result.source_status in {SourceStatus.COMPLETE, SourceStatus.PARTIAL, SourceStatus.STALE}:
+    if result.source_status in {SourceStatus.COMPLETE, SourceStatus.PARTIAL, SourceStatus.STALE} and not result.failure_type:
         response_record = record_source_response(db_path_or_conn, request_record, result)
         return GovernedSourceExecutionResult(
             request_record=request_record,

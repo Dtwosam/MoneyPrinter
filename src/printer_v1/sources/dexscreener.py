@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
+from urllib import error as url_error
+from urllib import request as url_request
 
 from printer_v1.contracts.enums import DataQualityLabel, SourceStatus
 from printer_v1.sources.contracts import (
@@ -19,6 +22,8 @@ from printer_v1.sources.contracts import (
 
 
 DEXSCREENER_SOURCE_NAME = "dexscreener"
+DEXSCREENER_SMOKE_URL = "https://api.dexscreener.com/latest/dex/search?q=SOL"
+DEXSCREENER_SMOKE_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -32,25 +37,26 @@ class DexScreenerAdapterMetadata:
 
 
 class DexScreenerAdapter:
-    """DexScreener adapter shell with fixture-only execution for Phase 24."""
+    """DexScreener adapter shell, disabled unless an operator path enables it."""
 
     def __init__(
         self,
         *,
         enabled: bool = False,
         fixture_transport: Callable[[SourceAdapterContext], Mapping[str, Any]] | None = None,
+        smoke_transport: Callable[[SourceAdapterContext], Mapping[str, Any]] | None = None,
     ) -> None:
         self.metadata = DexScreenerAdapterMetadata()
         self.contract = build_dexscreener_adapter_contract()
         self.enabled = enabled
-        self.fixture_transport = fixture_transport
+        self.transport = fixture_transport or smoke_transport
         self.call_count = 0
 
     def execute(self, context: SourceAdapterContext) -> NormalizedSourceResult:
         if not self.enabled:
             raise PermissionError("DexScreener adapter is disabled by default")
-        if self.fixture_transport is None:
-            raise PermissionError("DexScreener adapter requires an explicit fixture transport in Phase 24")
+        if self.transport is None:
+            raise PermissionError("DexScreener adapter requires an explicit transport")
         if not context or not context.governor_approved:
             raise PermissionError("DexScreener adapter execution requires Source Governor approval")
         if context.execution_path != GOVERNOR_ONLY_EXECUTION_PATH:
@@ -61,11 +67,18 @@ class DexScreenerAdapter:
             raise ValueError("source request kind is not allowed for DexScreener")
 
         self.call_count += 1
-        fixture_payload = self.fixture_transport(context)
-        return normalize_dexscreener_fixture_result(
-            fixture_payload,
-            request_kind=context.request.request_kind,
-        )
+        try:
+            payload = self.transport(context)
+        except Exception as exc:
+            return NormalizedSourceResult(
+                source_name=DEXSCREENER_SOURCE_NAME,
+                request_kind=context.request.request_kind,
+                source_status=SourceStatus.FAILED,
+                data_quality_label=DataQualityLabel.MISSING_CRITICAL_DATA,
+                failure_type="dexscreener_transport_error",
+                failure_message=str(exc),
+            )
+        return normalize_dexscreener_fixture_result(payload, request_kind=context.request.request_kind)
 
 
 def build_dexscreener_adapter_contract() -> SourceAdapterContract:
@@ -83,8 +96,13 @@ def build_dexscreener_adapter(
     *,
     enabled: bool = False,
     fixture_transport: Callable[[SourceAdapterContext], Mapping[str, Any]] | None = None,
+    smoke_transport: Callable[[SourceAdapterContext], Mapping[str, Any]] | None = None,
 ) -> DexScreenerAdapter:
-    return DexScreenerAdapter(enabled=enabled, fixture_transport=fixture_transport)
+    return DexScreenerAdapter(
+        enabled=enabled,
+        fixture_transport=fixture_transport,
+        smoke_transport=smoke_transport,
+    )
 
 
 def fixture_success_transport(payload: Mapping[str, Any]) -> Callable[[SourceAdapterContext], Mapping[str, Any]]:
@@ -99,6 +117,48 @@ def fixture_rate_limited_transport() -> Callable[[SourceAdapterContext], Mapping
     def transport(context: SourceAdapterContext) -> Mapping[str, Any]:
         del context
         return MappingProxyType({"fixture_status": "rate_limited", "retry_after_seconds": 60})
+
+    return transport
+
+
+def build_dexscreener_smoke_transport(
+    *,
+    timeout_seconds: float = DEXSCREENER_SMOKE_TIMEOUT_SECONDS,
+    endpoint: str = DEXSCREENER_SMOKE_URL,
+) -> Callable[[SourceAdapterContext], Mapping[str, Any]]:
+    def transport(context: SourceAdapterContext) -> Mapping[str, Any]:
+        del context
+        request = url_request.Request(
+            endpoint,
+            headers={"User-Agent": "PrinterV1SourceSmokeCheck/1.0"},
+            method="GET",
+        )
+        try:
+            with url_request.urlopen(request, timeout=timeout_seconds) as response:
+                raw_body = response.read(512_000)
+                payload = json.loads(raw_body.decode("utf-8"))
+                if isinstance(payload, dict):
+                    payload["_source_status_code"] = getattr(response, "status", None)
+                    return MappingProxyType(payload)
+                return MappingProxyType({"fixture_status": "failure", "failure_message": "DexScreener returned non-object payload"})
+        except url_error.HTTPError as exc:
+            if exc.code == 429:
+                return MappingProxyType({"fixture_status": "rate_limited", "retry_after_seconds": 60})
+            return MappingProxyType(
+                {
+                    "fixture_status": "failure",
+                    "failure_type": "dexscreener_http_error",
+                    "failure_message": f"DexScreener HTTP error {exc.code}",
+                }
+            )
+        except (OSError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            return MappingProxyType(
+                {
+                    "fixture_status": "failure",
+                    "failure_type": "dexscreener_transport_failure",
+                    "failure_message": str(exc),
+                }
+            )
 
     return transport
 
@@ -185,7 +245,7 @@ def normalize_dexscreener_fixture_result(
                 "pairs": normalized_pairs,
             }
         ),
-        status_code=200,
+        status_code=int(payload.get("_source_status_code") or 200),
     )
 
 
