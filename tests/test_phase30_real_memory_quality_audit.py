@@ -325,7 +325,6 @@ class Phase30RealMemoryQualityAuditTests(unittest.TestCase):
 
     def test_no_phase31_or_phase32_behavior_exists(self):
         cli_text = (SRC_PATH / "printer_v1" / "operator_cli" / "commands.py").read_text(encoding="utf-8")
-        self.assertNotIn("printer-memory-retrieval", cli_text)
         self.assertNotIn("printer-paper-decision", cli_text)
 
 

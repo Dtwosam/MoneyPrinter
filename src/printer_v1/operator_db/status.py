@@ -17,6 +17,7 @@ STATE_CONTROLLED_SNAPSHOTS = "PERSISTENT_DB_CONTROLLED_SNAPSHOTS"
 STATE_CONTROLLED_CONTEXT = "PERSISTENT_DB_CONTROLLED_CONTEXT"
 STATE_FIRST_MEMORY_WINDOW = "PERSISTENT_DB_FIRST_MEMORY_WINDOW"
 STATE_MEMORY_QUALITY_AUDITED = "PERSISTENT_DB_MEMORY_QUALITY_AUDITED"
+STATE_REAL_MEMORY_RETRIEVAL = "PERSISTENT_DB_REAL_MEMORY_RETRIEVAL"
 STATE_TEST_ONLY = "PERSISTENT_DB_HAS_TEST_ONLY_ROWS"
 STATE_TOKEN_ROWS = "PERSISTENT_DB_HAS_REAL_TOKEN_ROWS"
 STATE_MEMORY_ROWS = "PERSISTENT_DB_HAS_REAL_MEMORY_ROWS"
@@ -32,6 +33,7 @@ STATE_CLASSIFICATIONS = {
     STATE_CONTROLLED_CONTEXT,
     STATE_FIRST_MEMORY_WINDOW,
     STATE_MEMORY_QUALITY_AUDITED,
+    STATE_REAL_MEMORY_RETRIEVAL,
     STATE_TEST_ONLY,
     STATE_TOKEN_ROWS,
     STATE_MEMORY_ROWS,
@@ -308,6 +310,28 @@ def memory_quality_audited_rows_exist(counts: dict[str, int | None]) -> bool:
     return row_count_sum(counts, MEMORY_AUDIT_TABLES) > 0
 
 
+def real_memory_retrieval_rows_exist(counts: dict[str, int | None]) -> bool:
+    token_count = counts.get("printer_tokens") or 0
+    pair_count = counts.get("printer_pairs") or 0
+    snapshot_count = counts.get("printer_token_snapshots") or 0
+    context_count = row_count_sum(counts, CONTEXT_TABLES)
+    memory_count = row_count_sum(counts, FIRST_MEMORY_TABLES)
+    audit_count = row_count_sum(counts, MEMORY_AUDIT_TABLES)
+    if token_count < 1 or pair_count < 1:
+        return False
+    if token_count > 3 or pair_count > 3:
+        return False
+    if snapshot_count < 1 or context_count < 1 or memory_count < 1 or audit_count < 1:
+        return False
+    if (counts.get("printer_memory_retrieval_queries") or 0) < 1:
+        return False
+    blockers = [
+        "printer_scheduler_jobs",
+        *PAPER_TABLES,
+    ]
+    return row_count_sum(counts, blockers) == 0
+
+
 def token_rows_look_test_only(db_path: Path) -> bool:
     with connect_read_only(db_path) as connection:
         if not table_exists(connection, "printer_tokens"):
@@ -326,6 +350,8 @@ def classify_operator_db_state(db_path: str | Path | None = None, project_root: 
     counts = get_core_table_counts(resolved, project_root)
     if row_count_sum(counts, PAPER_TABLES) > 0:
         return STATE_PAPER_ROWS
+    if real_memory_retrieval_rows_exist(counts):
+        return STATE_REAL_MEMORY_RETRIEVAL
     if memory_quality_audited_rows_exist(counts):
         return STATE_MEMORY_QUALITY_AUDITED
     if first_memory_window_rows_exist(counts):

@@ -38,6 +38,7 @@ from printer_v1.operator_db.status import (
     STATE_MEMORY_ROWS,
     STATE_NO_DB,
     STATE_PAPER_ROWS,
+    STATE_REAL_MEMORY_RETRIEVAL,
     STATE_SCHEMA_ONLY,
     STATE_SOURCE_ONLY_SMOKE_CHECK,
     STATE_TEST_ONLY,
@@ -73,6 +74,8 @@ from printer_v1.sources.dexscreener import (
 )
 from printer_v1.sources.governed_execution import execute_source_request_with_governor
 from printer_v1.snapshots.recorder import record_token_snapshot
+from printer_v1.memory_retrieval.recorder import record_memory_retrieval_query, record_memory_retrieval_matches
+from printer_v1.memory_retrieval.retriever import retrieve_memory_matches_for_current_setup
 
 
 READINESS_NEEDS_DB_INIT = "NEEDS_DB_INIT"
@@ -83,6 +86,7 @@ READINESS_READY_CONTROLLED_SNAPSHOTS = "READY_CONTROLLED_SNAPSHOTS"
 READINESS_READY_CONTROLLED_CONTEXT = "READY_CONTROLLED_CONTEXT"
 READINESS_READY_FIRST_MEMORY_WINDOW = "READY_FIRST_MEMORY_WINDOW"
 READINESS_READY_MEMORY_QUALITY_AUDITED = "READY_MEMORY_QUALITY_AUDITED"
+READINESS_READY_REAL_MEMORY_RETRIEVAL = "READY_REAL_MEMORY_RETRIEVAL"
 READINESS_READY_WITH_LOCAL_DATA = "READY_WITH_LOCAL_DATA"
 READINESS_BLOCKED = "BLOCKED"
 READINESS_STATE_UNKNOWN = "STATE_UNKNOWN"
@@ -2144,6 +2148,232 @@ def main_audit_memory_quality_once(argv: Sequence[str] | None = None) -> int:
         return _print_error(exc)
 
 
+def _validate_clean_memory_retrieval_args(args: argparse.Namespace) -> None:
+    if not args.operator_approved:
+        raise ValueError("clean memory retrieval requires explicit operator approval")
+    if str(args.chain or "").strip().lower() != "solana":
+        raise ValueError("clean memory retrieval is Solana-only")
+    if args.snapshot_id is None and not (args.token_mint or args.token_id):
+        raise ValueError("clean memory retrieval requires snapshot_id, token_mint, or token_id")
+    if args.snapshot_id is None and not (args.pair_address or args.pair_id):
+        raise ValueError("clean memory retrieval requires pair_address or pair_id with token input")
+
+
+def _resolve_memory_retrieval_target(connection: sqlite3.Connection, args: argparse.Namespace) -> dict[str, Any]:
+    if args.snapshot_id is not None:
+        row = connection.execute(
+            """
+            SELECT s.*, t.token_mint, t.chain, p.pair_address
+            FROM printer_token_snapshots s
+            JOIN printer_tokens t ON t.id = s.token_id
+            JOIN printer_pairs p ON p.id = s.pair_id
+            WHERE s.id = ?
+            """,
+            (args.snapshot_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("clean memory retrieval requires an existing approved snapshot")
+        if row["chain"] != "solana":
+            raise ValueError("clean memory retrieval target must be Solana")
+        return {
+            "token_id": int(row["token_id"]),
+            "pair_id": int(row["pair_id"]),
+            "token_mint": row["token_mint"],
+            "pair_address": row["pair_address"],
+            "snapshot_id": int(row["id"]),
+        }
+    target = _resolve_approved_context_target(connection, args)
+    snapshot = _resolve_context_snapshot(connection, args, target)
+    return {
+        **target,
+        "snapshot_id": int(snapshot["id"]),
+    }
+
+
+def _build_current_retrieval_context(connection: sqlite3.Connection, target: dict[str, Any]) -> dict[str, Any]:
+    context_rows = _resolve_memory_context_rows(connection, target)
+    labels = _context_memory_labels(context_rows)
+    window = _latest_row(
+        connection,
+        "printer_memory_windows",
+        "WHERE token_id = ? AND pair_id = ?",
+        (target["token_id"], target["pair_id"]),
+    )
+    latest_audit = _latest_row(
+        connection,
+        "printer_memory_audit_reports",
+        "WHERE token_id = ? AND pair_id = ?",
+        (target["token_id"], target["pair_id"]),
+    )
+    current_fingerprint = {
+        **labels,
+        "window_kind": window.get("window_kind") or "WINDOW_15M",
+        "memory_quality_label": window.get("memory_quality_label"),
+        "retrieval_ready": False,
+        "source_status": "PARTIAL",
+        "data_quality_label": window.get("data_quality_label") or "MISSING_CRITICAL_DATA",
+        "snapshot_id": target.get("snapshot_id"),
+    }
+    return {
+        "context_rows_present": {key: bool(value) for key, value in context_rows.items()},
+        "current_fingerprint": current_fingerprint,
+        "latest_memory_quality_label": window.get("memory_quality_label"),
+        "latest_memory_retrieval_ready": False,
+        "latest_audit_status": latest_audit.get("audit_status"),
+        "latest_audit_id": latest_audit.get("id"),
+    }
+
+
+def _dirty_block_reasons(match: dict[str, Any]) -> list[str]:
+    reasons = []
+    if match.get("memory_quality_label") == "DIRTY_MEMORY":
+        reasons.append("DIRTY_MEMORY_NOT_RETRIEVAL_READY")
+    if match.get("match_strength_label") == "DO_NOT_TRAIN_EXCLUDED":
+        reasons.append("DO_NOT_TRAIN")
+    payload = match.get("memory_fingerprint") or {}
+    if payload.get("retrieval_ready") is False:
+        reasons.append("RETRIEVAL_READY_FALSE")
+    if payload.get("coverage_state") == "INCOMPLETE_15M_WINDOW":
+        reasons.append("INSUFFICIENT_SNAPSHOT_COVERAGE")
+    return list(dict.fromkeys(reasons or ["NOT_CLEAN_MEMORY"]))
+
+
+def _build_clean_memory_retrieval_report(
+    connection: sqlite3.Connection,
+    target: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    context = _build_current_retrieval_context(connection, target)
+    query_payload = {
+        "query_type": "CLEAN_MEMORY_ONLY_QUERY",
+        "token_id": target["token_id"],
+        "pair_id": target["pair_id"],
+        "token_mint": target["token_mint"],
+        "pair_address": target["pair_address"],
+        "query_at": _utc_now_text(),
+        "context": context["current_fingerprint"],
+        "source_status": "PARTIAL",
+        "data_quality_label": "MISSING_CRITICAL_DATA",
+    }
+    all_matches = retrieve_memory_matches_for_current_setup(connection, query_payload)
+    clean_matches = [match for match in all_matches if match.get("included_as_clean_evidence")]
+    dirty_matches = [match for match in all_matches if match.get("memory_quality_label") == "DIRTY_MEMORY"]
+    blocked_reasons: dict[str, list[str]] = {
+        str(match.get("memory_window_id")): _dirty_block_reasons(match)
+        for match in dirty_matches
+    }
+    retrieval_result_label = "RETRIEVAL_HAS_CLEAN_MATCHES" if clean_matches else "RETRIEVAL_BLOCKED_NO_CLEAN_MEMORY"
+    memory_evidence_label = "MEMORY_EVIDENCE_STRONG" if clean_matches else "MEMORY_EVIDENCE_NOT_ENOUGH"
+    report = {
+        "token_id": target["token_id"],
+        "pair_id": target["pair_id"],
+        "token_mint": target["token_mint"],
+        "pair_address": target["pair_address"],
+        "snapshot_id": target["snapshot_id"],
+        "query_type": "CLEAN_MEMORY_ONLY_QUERY",
+        "retrieval_result_label": retrieval_result_label,
+        "memory_evidence_label": memory_evidence_label,
+        "clean_memory_count": int(connection.execute("SELECT COUNT(*) FROM printer_memory_windows WHERE memory_quality_label = 'CLEAN_MEMORY'").fetchone()[0]),
+        "clean_eligible_memory_count": len(clean_matches),
+        "dirty_memory_count": len(dirty_matches),
+        "blocked_dirty_memory_count": len(dirty_matches),
+        "retrieval_ready_false_count": len([match for match in all_matches if (match.get("memory_fingerprint") or {}).get("retrieval_ready") is False]),
+        "clean_matches_returned": len(clean_matches),
+        "dirty_or_audit_only_matches_returned_as_clean": 0,
+        "blocked_match_reasons": blocked_reasons,
+        "retrieval_allowed": bool(clean_matches),
+        "paper_decision_allowed": False,
+        "decision_allowed": False,
+        "similar_clean_memories_found": len(clean_matches),
+        "memory_evidence_summary": "memory evidence is insufficient for decision support" if not clean_matches else "clean memory evidence exists",
+        "dirty_memory_blocked": bool(dirty_matches),
+        "current_setup_context": context,
+    }
+    result_payload = {
+        "current_fingerprint": context["current_fingerprint"],
+        "retrieval_result_label": retrieval_result_label,
+        "memory_evidence_label": memory_evidence_label,
+        "report": report,
+    }
+    return report, clean_matches, {"query_payload": query_payload, "result_payload": result_payload}
+
+
+def build_retrieve_clean_memory_once_payload(args: argparse.Namespace) -> dict[str, Any]:
+    _validate_clean_memory_retrieval_args(args)
+    project_root = _project_root(args.project_root)
+    resolved = resolve_operator_db_path(args.db_path, project_root)
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Operator DB does not exist: {resolved}")
+
+    before_counts = get_core_table_counts(resolved, project_root)
+    connection = sqlite3.connect(resolved)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    try:
+        target = _resolve_memory_retrieval_target(connection, args)
+        report, clean_matches, payloads = _build_clean_memory_retrieval_report(connection, target)
+        query_id = record_memory_retrieval_query(connection, payloads["query_payload"], payloads["result_payload"])
+        record_memory_retrieval_matches(connection, query_id, clean_matches)
+        connection.commit()
+    finally:
+        connection.close()
+
+    after_counts = get_core_table_counts(resolved, project_root)
+    deltas = {
+        table: (after_counts.get(table) or 0) - (before_counts.get(table) or 0)
+        for table in sorted(after_counts)
+    }
+    guarded_tables = [
+        "printer_tokens",
+        "printer_pairs",
+        "printer_source_requests",
+        "printer_source_responses",
+        "printer_source_failures",
+        "printer_token_snapshots",
+        *CONTEXT_TABLES,
+        *MEMORY_OUTPUT_TABLES,
+        "printer_memory_audit_reports",
+        "printer_paper_decisions",
+        "printer_paper_positions",
+        "printer_scheduler_jobs",
+    ]
+    guard_deltas = {table: deltas[table] for table in guarded_tables if deltas.get(table)}
+    status = get_operator_db_status(resolved, project_root)
+    return {
+        "command": "printer-retrieve-clean-memory-once",
+        "db_path": str(resolved),
+        "operator_approved": True,
+        "retrieval_query_id": query_id,
+        "retrieval_report": report,
+        "retrieval_query_delta": deltas.get("printer_memory_retrieval_queries", 0),
+        "retrieval_match_delta": deltas.get("printer_memory_retrieval_matches", 0),
+        "guard_table_deltas": guard_deltas,
+        "guard_tables_unchanged": not guard_deltas,
+        "counts_after": after_counts,
+        "db_state_classification": status["state_classification"],
+        "memory_has_started": status["memory_has_started"],
+        "paper_trading_has_started": status["paper_trading_has_started"],
+        "runtime_has_started": status["runtime_has_started"],
+    }
+
+
+def main_retrieve_clean_memory_once(argv: Sequence[str] | None = None) -> int:
+    parser = _base_parser("Retrieve clean eligible memory for one approved setup without paper decisions.", ("json", "text"))
+    parser.add_argument("--operator-approved", action="store_true")
+    parser.add_argument("--snapshot-id", type=int)
+    parser.add_argument("--token-mint")
+    parser.add_argument("--token-id", type=int)
+    parser.add_argument("--pair-address")
+    parser.add_argument("--pair-id", type=int)
+    parser.add_argument("--chain", default="solana")
+    args = parser.parse_args(argv)
+    try:
+        payload = build_retrieve_clean_memory_once_payload(args)
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
 def classify_readiness(status: dict[str, Any], migration_status: dict[str, Any], source_scan: dict[str, Any], runtime_scan: dict[str, Any]) -> str:
     if status["state_classification"] == STATE_NO_DB:
         return READINESS_NEEDS_DB_INIT
@@ -2169,6 +2399,8 @@ def classify_readiness(status: dict[str, Any], migration_status: dict[str, Any],
         return READINESS_READY_FIRST_MEMORY_WINDOW
     if status["state_classification"] == STATE_MEMORY_QUALITY_AUDITED:
         return READINESS_READY_MEMORY_QUALITY_AUDITED
+    if status["state_classification"] == STATE_REAL_MEMORY_RETRIEVAL:
+        return READINESS_READY_REAL_MEMORY_RETRIEVAL
     if status["state_classification"] in {STATE_TOKEN_ROWS, STATE_TEST_ONLY, STATE_MEMORY_ROWS, STATE_PAPER_ROWS}:
         return READINESS_READY_WITH_LOCAL_DATA
     return READINESS_STATE_UNKNOWN
