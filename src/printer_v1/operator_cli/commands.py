@@ -2700,6 +2700,232 @@ def main_create_paper_decision_once(argv: Sequence[str] | None = None) -> int:
         return _print_error(exc)
 
 
+def _validate_simulated_monitor_once_args(args: argparse.Namespace) -> None:
+    if not args.operator_approved:
+        raise ValueError("simulated paper position monitor requires explicit operator approval")
+    if str(args.chain or "").strip().lower() != "solana":
+        raise ValueError("simulated paper position monitor is Solana-only")
+    if args.decision_id is None and not (args.token_mint or args.token_id):
+        raise ValueError("simulated paper position monitor requires decision_id, token_mint, or token_id")
+    if args.decision_id is None and not (args.pair_address or args.pair_id):
+        raise ValueError("simulated paper position monitor requires pair_address or pair_id with token input")
+
+
+def _resolve_monitor_decision(connection: sqlite3.Connection, args: argparse.Namespace) -> dict[str, Any]:
+    if args.decision_id is not None:
+        decision = _latest_row(connection, "printer_paper_decisions", "WHERE id = ?", (args.decision_id,))
+        if not decision:
+            raise ValueError("simulated paper position monitor requires an existing paper decision")
+    else:
+        target = _resolve_approved_snapshot_target(connection, args)
+        decision = _latest_row(
+            connection,
+            "printer_paper_decisions",
+            "WHERE token_id = ? AND pair_id = ?",
+            (target["token_id"], target["pair_id"]),
+        )
+        if not decision:
+            raise ValueError("simulated paper position monitor requires an existing paper decision")
+    token = connection.execute("SELECT * FROM printer_tokens WHERE id = ?", (decision["token_id"],)).fetchone()
+    pair = connection.execute("SELECT * FROM printer_pairs WHERE id = ?", (decision["pair_id"],)).fetchone()
+    if token is None or pair is None:
+        raise ValueError("paper decision must reference an approved token and pair")
+    if token["chain"] != "solana":
+        raise ValueError("simulated paper position monitor target must be Solana")
+    if args.snapshot_id is not None:
+        snapshot = connection.execute(
+            """
+            SELECT *
+            FROM printer_token_snapshots
+            WHERE id = ? AND token_id = ? AND pair_id = ?
+            """,
+            (args.snapshot_id, decision["token_id"], decision["pair_id"]),
+        ).fetchone()
+        if snapshot is None:
+            raise ValueError("snapshot_id must belong to the paper decision token/pair")
+    return {
+        **decision,
+        "token_mint": decision.get("token_mint") or token["token_mint"],
+        "pair_address": decision.get("pair_address") or pair["pair_address"],
+    }
+
+
+def _paper_decision_report_json(decision: dict[str, Any]) -> dict[str, Any]:
+    raw = decision.get("decision_report_json")
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+
+
+def _paper_decision_blocking_reasons(decision: dict[str, Any]) -> list[str]:
+    raw = decision.get("blocking_reasons_json")
+    if not raw:
+        return []
+    try:
+        values = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    return [str(value) for value in values if value]
+
+
+def _open_paper_position_count(connection: sqlite3.Connection, token_id: int, pair_id: int) -> int:
+    return int(
+        connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM printer_paper_positions
+            WHERE token_id = ?
+              AND pair_id = ?
+              AND (
+                  paper_position_status_label IN ('PAPER_POSITION_OPEN', 'PAPER_POSITION_MONITORING', 'PAPER_POSITION_EXIT_WATCH')
+                  OR position_status IN ('PAPER_POSITION_OPEN', 'PAPER_POSITION_MONITORING', 'PAPER_POSITION_EXIT_WATCH', 'OPEN', 'MONITORING')
+              )
+            """,
+            (token_id, pair_id),
+        ).fetchone()[0]
+    )
+
+
+def _build_simulated_position_monitor_report(connection: sqlite3.Connection, decision: dict[str, Any]) -> dict[str, Any]:
+    report = _paper_decision_report_json(decision)
+    decision_action = decision.get("final_action_label") or decision.get("decision_action")
+    decision_status = decision.get("paper_decision_status_label") or decision.get("decision_status")
+    decision_gate = decision.get("decision_gate_label")
+    clean_count = int(report.get("clean_eligible_memory_count") or report.get("Similar clean memories found") or 0)
+    dirty_memory_used = bool(report.get("dirty_memory_used"))
+    paper_position_allowed = bool(report.get("paper_position_allowed"))
+    existing_open_count = _open_paper_position_count(connection, int(decision["token_id"]), int(decision["pair_id"]))
+    blocking_reasons = _paper_decision_blocking_reasons(decision)
+    buy_allowed = decision_action == "BUY" and decision_status == "DECISION_ALLOWED" and decision_gate == "DECISION_ALLOWED"
+    buy_unlocked = buy_allowed and clean_count > 0 and not dirty_memory_used
+    position_allowed = buy_unlocked and paper_position_allowed and existing_open_count == 0
+    blocked_reasons: list[str] = []
+    if decision_action != "BUY":
+        blocked_reasons.append("BLOCKED_DECISION_NOT_BUY")
+    if decision_status != "DECISION_ALLOWED" or decision_gate != "DECISION_ALLOWED":
+        blocked_reasons.append("BLOCKED_DECISION_NOT_ALLOWED")
+    if clean_count <= 0:
+        blocked_reasons.append("BLOCKED_NO_CLEAN_MEMORY")
+    if not paper_position_allowed:
+        blocked_reasons.append("BLOCKED_PAPER_POSITION_NOT_ALLOWED")
+    if dirty_memory_used:
+        blocked_reasons.append("BLOCKED_DIRTY_MEMORY_USED")
+    if existing_open_count > 0:
+        blocked_reasons.append("BLOCKED_EXISTING_OPEN_POSITION")
+    monitor_action = "POSITION_ALLOWED" if position_allowed else "POSITION_BLOCKED"
+    return {
+        "monitor_action": monitor_action,
+        "decision_id": int(decision["id"]),
+        "decision_action": decision_action,
+        "decision_status": decision_status,
+        "decision_gate_label": decision_gate,
+        "decision_blocked_reason": blocking_reasons,
+        "buy_allowed": buy_allowed,
+        "buy_unlocked": buy_unlocked,
+        "clean_eligible_memory_count": clean_count,
+        "dirty_memory_used": dirty_memory_used,
+        "paper_position_allowed": paper_position_allowed,
+        "existing_open_position_count": existing_open_count,
+        "position_opened": False,
+        "position_id": None,
+        "blocked_reason": blocked_reasons,
+        "paper_trade_event_created": False,
+        "simulated_pnl_created": False,
+        "runtime_started": False,
+        "scheduler_executed": False,
+        "report_mode": "OUTPUT_ONLY_BLOCKED_MONITOR" if not position_allowed else "OUTPUT_ONLY_POSITION_GATE_PASSED",
+    }
+
+
+def build_monitor_simulated_paper_position_once_payload(args: argparse.Namespace) -> dict[str, Any]:
+    _validate_simulated_monitor_once_args(args)
+    project_root = _project_root(args.project_root)
+    resolved = resolve_operator_db_path(args.db_path, project_root)
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Operator DB does not exist: {resolved}")
+
+    before_counts = get_core_table_counts(resolved, project_root)
+    connection = sqlite3.connect(resolved)
+    connection.row_factory = sqlite3.Row
+    try:
+        decision = _resolve_monitor_decision(connection, args)
+        monitor_report = _build_simulated_position_monitor_report(connection, decision)
+    finally:
+        connection.close()
+
+    after_counts = get_core_table_counts(resolved, project_root)
+    deltas = {
+        table: (after_counts.get(table) or 0) - (before_counts.get(table) or 0)
+        for table in sorted(after_counts)
+    }
+    guarded_tables = [
+        "printer_tokens",
+        "printer_pairs",
+        "printer_source_requests",
+        "printer_source_responses",
+        "printer_source_failures",
+        "printer_token_snapshots",
+        *CONTEXT_TABLES,
+        *MEMORY_OUTPUT_TABLES,
+        "printer_memory_audit_reports",
+        "printer_memory_retrieval_queries",
+        "printer_memory_retrieval_matches",
+        "printer_paper_decisions",
+        "printer_paper_positions",
+        "printer_paper_trade_events",
+        "printer_paper_trade_audits",
+        "printer_paper_audit_reports",
+        "printer_scheduler_jobs",
+    ]
+    guard_deltas = {table: deltas[table] for table in guarded_tables if deltas.get(table)}
+    status = get_operator_db_status(resolved, project_root)
+    action_counts = _paper_decision_action_counts(resolved)
+    return {
+        "command": "printer-monitor-simulated-paper-position-once",
+        "db_path": str(resolved),
+        "operator_approved": True,
+        "monitor_attempt_recorded": False,
+        "monitor_attempt_rows": 0,
+        "monitor_report": monitor_report,
+        "monitor_action": monitor_report["monitor_action"],
+        "monitor_blocked_reason": monitor_report["blocked_reason"],
+        "position_opened": monitor_report["position_opened"],
+        "position_id": monitor_report["position_id"],
+        "paper_trade_event_created": monitor_report["paper_trade_event_created"],
+        "simulated_pnl_created": monitor_report["simulated_pnl_created"],
+        "guard_table_deltas": guard_deltas,
+        "guard_tables_unchanged": not guard_deltas,
+        "action_counts": action_counts,
+        "counts_after": after_counts,
+        "db_state_classification": status["state_classification"],
+        "memory_has_started": status["memory_has_started"],
+        "paper_trading_has_started": status["paper_trading_has_started"],
+        "runtime_has_started": status["runtime_has_started"],
+    }
+
+
+def main_monitor_simulated_paper_position_once(argv: Sequence[str] | None = None) -> int:
+    parser = _base_parser("Check one paper decision for simulated paper position eligibility.", ("json", "text"))
+    parser.add_argument("--operator-approved", action="store_true")
+    parser.add_argument("--decision-id", type=int)
+    parser.add_argument("--snapshot-id", type=int)
+    parser.add_argument("--token-mint")
+    parser.add_argument("--token-id", type=int)
+    parser.add_argument("--pair-address")
+    parser.add_argument("--pair-id", type=int)
+    parser.add_argument("--chain", default="solana")
+    args = parser.parse_args(argv)
+    try:
+        payload = build_monitor_simulated_paper_position_once_payload(args)
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
 def classify_readiness(status: dict[str, Any], migration_status: dict[str, Any], source_scan: dict[str, Any], runtime_scan: dict[str, Any]) -> str:
     if status["state_classification"] == STATE_NO_DB:
         return READINESS_NEEDS_DB_INIT
