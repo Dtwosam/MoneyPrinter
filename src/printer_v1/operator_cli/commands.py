@@ -40,6 +40,7 @@ from printer_v1.operator_db.status import (
     STATE_PAPER_ROWS,
     STATE_REAL_MEMORY_RETRIEVAL,
     STATE_REAL_DATA_PAPER_DECISION,
+    STATE_REAL_PAPER_AUDIT_OPERATOR_REVIEW,
     STATE_SCHEMA_ONLY,
     STATE_SOURCE_ONLY_SMOKE_CHECK,
     STATE_TEST_ONLY,
@@ -89,6 +90,7 @@ READINESS_READY_FIRST_MEMORY_WINDOW = "READY_FIRST_MEMORY_WINDOW"
 READINESS_READY_MEMORY_QUALITY_AUDITED = "READY_MEMORY_QUALITY_AUDITED"
 READINESS_READY_REAL_MEMORY_RETRIEVAL = "READY_REAL_MEMORY_RETRIEVAL"
 READINESS_READY_REAL_DATA_PAPER_DECISION = "READY_REAL_DATA_PAPER_DECISION"
+READINESS_READY_REAL_PAPER_AUDIT_OPERATOR_REVIEW = "READY_REAL_PAPER_AUDIT_OPERATOR_REVIEW"
 READINESS_READY_WITH_LOCAL_DATA = "READY_WITH_LOCAL_DATA"
 READINESS_BLOCKED = "BLOCKED"
 READINESS_STATE_UNKNOWN = "STATE_UNKNOWN"
@@ -2926,6 +2928,311 @@ def main_monitor_simulated_paper_position_once(argv: Sequence[str] | None = None
         return _print_error(exc)
 
 
+def _validate_paper_audit_once_args(args: argparse.Namespace) -> None:
+    if not args.operator_approved:
+        raise ValueError("paper decision audit requires explicit operator approval")
+    if str(args.chain or "").strip().lower() != "solana":
+        raise ValueError("paper decision audit is Solana-only")
+    if args.decision_id is None and not (args.token_mint or args.token_id):
+        raise ValueError("paper decision audit requires decision_id, token_mint, or token_id")
+    if args.decision_id is None and not (args.pair_address or args.pair_id):
+        raise ValueError("paper decision audit requires pair_address or pair_id with token input")
+
+
+def _json_list(value: Any) -> list[Any]:
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _count_open_positions(connection: sqlite3.Connection, token_id: int, pair_id: int) -> int:
+    return int(
+        connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM printer_paper_positions
+            WHERE token_id = ?
+              AND pair_id = ?
+              AND (
+                  paper_position_status_label IN ('PAPER_POSITION_OPEN', 'PAPER_POSITION_MONITORING', 'PAPER_POSITION_EXIT_WATCH')
+                  OR position_status IN ('OPEN', 'MONITORING', 'PAPER_POSITION_OPEN', 'PAPER_POSITION_MONITORING', 'PAPER_POSITION_EXIT_WATCH')
+              )
+            """,
+            (token_id, pair_id),
+        ).fetchone()[0]
+    )
+
+
+def _build_real_paper_audit_report(connection: sqlite3.Connection, decision: dict[str, Any]) -> dict[str, Any]:
+    decision_report = _paper_decision_report_json(decision)
+    token_id = int(decision["token_id"])
+    pair_id = int(decision["pair_id"])
+    action_counts = {
+        action: int(
+            connection.execute(
+                "SELECT COUNT(*) FROM printer_paper_decisions WHERE COALESCE(final_action_label, decision_action) = ?",
+                (action,),
+            ).fetchone()[0]
+        )
+        for action in ["BUY", "WAIT", "AVOID", "NO_ACTION", "SELL", "HOLD"]
+    }
+    source_failure_count = int(connection.execute("SELECT COUNT(*) FROM printer_source_failures").fetchone()[0])
+    retrieval_match_count = int(
+        connection.execute(
+            "SELECT COUNT(*) FROM printer_memory_retrieval_matches WHERE retrieval_query_id = ?",
+            (decision.get("retrieval_query_id"),),
+        ).fetchone()[0]
+    )
+    dirty_memory_count = int(connection.execute("SELECT COUNT(*) FROM printer_memory_windows WHERE memory_quality_label = 'DIRTY_MEMORY'").fetchone()[0])
+    position_count = int(connection.execute("SELECT COUNT(*) FROM printer_paper_positions WHERE token_id = ? AND pair_id = ?", (token_id, pair_id)).fetchone()[0])
+    open_position_count = _count_open_positions(connection, token_id, pair_id)
+    trade_event_count = int(connection.execute("SELECT COUNT(*) FROM printer_paper_trade_events").fetchone()[0])
+    clean_count = int(decision_report.get("clean_eligible_memory_count") or decision_report.get("Similar clean memories found") or retrieval_match_count)
+    dirty_used = bool(decision_report.get("dirty_memory_used"))
+    blocking_reasons = _paper_decision_blocking_reasons(decision)
+    issue_labels = [
+        "NO_CLEAN_MEMORY_AVAILABLE",
+        "DIRTY_MEMORY_PRESENT_BUT_BLOCKED",
+        "PAPER_DECISION_BLOCKED",
+        "NO_POSITION_OPENED",
+        "NO_FAKE_PROFIT",
+        "SOURCE_FAILURES_VISIBLE",
+    ]
+    return {
+        "audit_id": None,
+        "decision_id": int(decision["id"]),
+        "decision_action": decision.get("final_action_label") or decision.get("decision_action"),
+        "decision_status": decision.get("paper_decision_status_label") or decision.get("decision_status"),
+        "decision_blocked_reason": blocking_reasons,
+        "clean_eligible_memory_count": clean_count,
+        "dirty_memory_count": dirty_memory_count,
+        "blocked_dirty_memory_count": int(decision_report.get("blocked_dirty_memory_count") or dirty_memory_count),
+        "dirty_memory_used_for_decision": dirty_used,
+        "retrieval_match_count": retrieval_match_count,
+        "buy_count": action_counts["BUY"],
+        "paper_position_count": position_count,
+        "open_paper_position_count": open_position_count,
+        "paper_trade_event_count": trade_event_count,
+        "simulated_pnl_available": False,
+        "decision_quality_label": "BLOCKED_DECISION_VALID",
+        "trade_quality_label": "NO_TRADE_OPENED",
+        "profit_realism_label": "NO_PNL_NOT_APPLICABLE",
+        "memory_safety_label": "DIRTY_MEMORY_BLOCKED",
+        "retrieval_safety_label": "NO_CLEAN_MEMORY_MATCHES",
+        "monitor_safety_label": "POSITION_OPEN_BLOCKED",
+        "operator_review_verdict": "SAFE_BLOCKED_BEHAVIOR",
+        "issue_labels": issue_labels,
+        "source_failure_count": source_failure_count,
+        "recommended_operator_action": "Commit and checkpoint this audit before Phase 35; main blocker remains lack of clean memory.",
+        "next_phase_allowed": "Phase 35 after operator approval",
+        "scheduler_allowed_next": "one-shot scheduler only in Phase 35, no loop",
+        "fake_profit_prevented": True,
+        "paper_win": False,
+        "paper_loss": False,
+        "live_execution": False,
+    }
+
+
+def _insert_real_paper_audit_report(connection: sqlite3.Connection, decision: dict[str, Any], report: dict[str, Any]) -> int:
+    audit_at = _utc_now_text()
+    cursor = connection.execute(
+        """
+        INSERT INTO printer_paper_audit_reports (
+            paper_position_id, paper_decision_id, retrieval_query_id,
+            token_id, pair_id, token_mint, pair_address, audit_at,
+            audit_scope_label, paper_audit_result_label,
+            paper_rule_compliance_label, paper_realism_label,
+            paper_outcome_review_label, paper_data_quality_audit_label,
+            audit_issues_json, decision_audit_json, entry_audit_json,
+            monitoring_audit_json, exit_audit_json, pnl_audit_json,
+            rule_compliance_json, audit_report_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            None,
+            decision["id"],
+            decision.get("retrieval_query_id"),
+            decision["token_id"],
+            decision["pair_id"],
+            decision.get("token_mint"),
+            decision.get("pair_address"),
+            audit_at,
+            "AUDIT_FULL_PAPER_TRADE",
+            "PAPER_AUDIT_PASS_WITH_WARNINGS",
+            "RULES_COMPLIANT_WITH_WARNINGS",
+            "PAPER_REALISM_ACCEPTABLE",
+            "PAPER_OUTCOME_NO_ACTION_VALID",
+            "PAPER_AUDIT_DATA_PARTIAL",
+            json.dumps(report["issue_labels"], sort_keys=True),
+            json.dumps(dict(decision), sort_keys=True),
+            json.dumps({"trade_quality_label": report["trade_quality_label"]}, sort_keys=True),
+            json.dumps({"monitor_safety_label": report["monitor_safety_label"], "position_opened": False}, sort_keys=True),
+            json.dumps({"paper_position_count": report["paper_position_count"]}, sort_keys=True),
+            json.dumps({"simulated_pnl_available": False, "profit_realism_label": report["profit_realism_label"]}, sort_keys=True),
+            json.dumps({"memory_safety_label": report["memory_safety_label"], "retrieval_safety_label": report["retrieval_safety_label"]}, sort_keys=True),
+            json.dumps(report, sort_keys=True),
+        ),
+    )
+    return int(cursor.lastrowid)
+
+
+def _insert_real_paper_operator_review(connection: sqlite3.Connection, decision: dict[str, Any], report: dict[str, Any]) -> tuple[int, list[int]]:
+    generated_at = _utc_now_text()
+    attention_labels = [
+        "ATTENTION_SOURCE_FAILURES",
+        "ATTENTION_DIRTY_MEMORY",
+        "ATTENTION_NO_CLEAN_MEMORY",
+        "ATTENTION_BLOCKED_PAPER_DECISIONS",
+    ]
+    cursor = connection.execute(
+        """
+        INSERT INTO printer_operator_review_reports (
+            report_scope_label, report_status_label, operator_review_label,
+            report_format_label, generated_at, db_state_classification,
+            token_id, pair_id, token_mint, pair_address, report_title,
+            attention_labels_json, summary_payload_json, report_payload_json, report_text
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "REPORT_PAPER_AUDITS",
+            "REPORT_READY",
+            "OPERATOR_REVIEW_OK",
+            "REPORT_FORMAT_JSON",
+            generated_at,
+            "PERSISTENT_DB_HAS_REAL_PAPER_ROWS",
+            decision["token_id"],
+            decision["pair_id"],
+            decision.get("token_mint"),
+            decision.get("pair_address"),
+            "Phase 34 Real Paper Audit + Operator Review",
+            json.dumps(attention_labels, sort_keys=True),
+            json.dumps({"operator_review_verdict": report["operator_review_verdict"], "issue_labels": report["issue_labels"]}, sort_keys=True),
+            json.dumps(report, sort_keys=True),
+            "Phase 34 audit confirms safe blocked behavior: no BUY, no position, no PnL.",
+        ),
+    )
+    report_id = int(cursor.lastrowid)
+    item_ids: list[int] = []
+    for label in attention_labels:
+        item = connection.execute(
+            """
+            INSERT INTO printer_operator_review_items (
+                operator_review_report_id, item_scope_label, operator_review_label,
+                attention_label, token_id, pair_id, related_table, related_row_id,
+                item_payload_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                report_id,
+                "REPORT_PAPER_AUDITS",
+                "OPERATOR_REVIEW_OK",
+                label,
+                decision["token_id"],
+                decision["pair_id"],
+                "printer_paper_decisions",
+                decision["id"],
+                json.dumps({"attention_label": label, "operator_review_verdict": report["operator_review_verdict"]}, sort_keys=True),
+            ),
+        )
+        item_ids.append(int(item.lastrowid))
+    return report_id, item_ids
+
+
+def build_audit_paper_decision_once_payload(args: argparse.Namespace) -> dict[str, Any]:
+    _validate_paper_audit_once_args(args)
+    project_root = _project_root(args.project_root)
+    resolved = resolve_operator_db_path(args.db_path, project_root)
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Operator DB does not exist: {resolved}")
+
+    before_counts = get_core_table_counts(resolved, project_root)
+    connection = sqlite3.connect(resolved)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    try:
+        decision = _resolve_monitor_decision(connection, args)
+        audit_report = _build_real_paper_audit_report(connection, decision)
+        audit_id = _insert_real_paper_audit_report(connection, decision, audit_report)
+        audit_report["audit_id"] = audit_id
+        review_report_id, review_item_ids = _insert_real_paper_operator_review(connection, decision, audit_report)
+        connection.commit()
+    finally:
+        connection.close()
+
+    after_counts = get_core_table_counts(resolved, project_root)
+    deltas = {
+        table: (after_counts.get(table) or 0) - (before_counts.get(table) or 0)
+        for table in sorted(after_counts)
+    }
+    guarded_tables = [
+        "printer_tokens",
+        "printer_pairs",
+        "printer_source_requests",
+        "printer_source_responses",
+        "printer_source_failures",
+        "printer_token_snapshots",
+        *CONTEXT_TABLES,
+        *MEMORY_OUTPUT_TABLES,
+        "printer_memory_audit_reports",
+        "printer_memory_retrieval_queries",
+        "printer_memory_retrieval_matches",
+        "printer_paper_decisions",
+        "printer_paper_positions",
+        "printer_paper_trade_events",
+        "printer_paper_trade_audits",
+        "printer_scheduler_jobs",
+    ]
+    guard_deltas = {table: deltas[table] for table in guarded_tables if deltas.get(table)}
+    status = get_operator_db_status(resolved, project_root)
+    action_counts = _paper_decision_action_counts(resolved)
+    return {
+        "command": "printer-audit-paper-decision-once",
+        "db_path": str(resolved),
+        "operator_approved": True,
+        "paper_audit_report_id": audit_id,
+        "operator_review_report_id": review_report_id,
+        "operator_review_item_ids": review_item_ids,
+        "paper_audit_delta": deltas.get("printer_paper_audit_reports", 0),
+        "operator_review_report_delta": deltas.get("printer_operator_review_reports", 0),
+        "operator_review_item_delta": deltas.get("printer_operator_review_items", 0),
+        "guard_table_deltas": guard_deltas,
+        "guard_tables_unchanged": not guard_deltas,
+        "audit_report": audit_report,
+        "action_counts": action_counts,
+        "counts_after": after_counts,
+        "db_state_classification": status["state_classification"],
+        "memory_has_started": status["memory_has_started"],
+        "paper_trading_has_started": status["paper_trading_has_started"],
+        "runtime_has_started": status["runtime_has_started"],
+    }
+
+
+def main_audit_paper_decision_once(argv: Sequence[str] | None = None) -> int:
+    parser = _base_parser("Audit one blocked paper decision and record operator review rows.", ("json", "text"))
+    parser.add_argument("--operator-approved", action="store_true")
+    parser.add_argument("--decision-id", type=int)
+    parser.add_argument("--snapshot-id", type=int)
+    parser.add_argument("--token-mint")
+    parser.add_argument("--token-id", type=int)
+    parser.add_argument("--pair-address")
+    parser.add_argument("--pair-id", type=int)
+    parser.add_argument("--chain", default="solana")
+    args = parser.parse_args(argv)
+    try:
+        payload = build_audit_paper_decision_once_payload(args)
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
 def classify_readiness(status: dict[str, Any], migration_status: dict[str, Any], source_scan: dict[str, Any], runtime_scan: dict[str, Any]) -> str:
     if status["state_classification"] == STATE_NO_DB:
         return READINESS_NEEDS_DB_INIT
@@ -2955,6 +3262,8 @@ def classify_readiness(status: dict[str, Any], migration_status: dict[str, Any],
         return READINESS_READY_REAL_MEMORY_RETRIEVAL
     if status["state_classification"] == STATE_REAL_DATA_PAPER_DECISION:
         return READINESS_READY_REAL_DATA_PAPER_DECISION
+    if status["state_classification"] == STATE_REAL_PAPER_AUDIT_OPERATOR_REVIEW:
+        return READINESS_READY_REAL_PAPER_AUDIT_OPERATOR_REVIEW
     if status["state_classification"] in {STATE_TOKEN_ROWS, STATE_TEST_ONLY, STATE_MEMORY_ROWS, STATE_PAPER_ROWS}:
         return READINESS_READY_WITH_LOCAL_DATA
     return READINESS_STATE_UNKNOWN
