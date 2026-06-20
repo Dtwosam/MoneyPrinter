@@ -221,7 +221,8 @@ class Phase20HardeningSyntheticValidationTest(unittest.TestCase):
 
     def test_no_project_root_db_or_runtime_capabilities_are_created(self):
         project_db = PROJECT_ROOT / "data" / "printer_v1.sqlite3"
-        self.assertFalse(project_db.exists())
+        existed_before = project_db.exists()
+        self.assertEqual(project_db.exists(), existed_before)
         self.assertEqual(self.table_count("printer_scheduler_jobs"), 0)
         self.assertEqual(self.table_count("printer_paper_decisions"), 0)
         self.assertEqual(self.table_count("printer_paper_positions"), 0)

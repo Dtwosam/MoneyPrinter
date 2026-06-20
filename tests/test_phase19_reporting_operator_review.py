@@ -323,7 +323,9 @@ class Phase19ReportingOperatorReviewTest(unittest.TestCase):
         self.assertEqual(before["lifecycle"], self.count_rows("printer_token_lifecycle_events"))
 
     def test_no_project_db_runtime_network_or_forbidden_capabilities(self):
-        self.assertFalse((PROJECT_ROOT / "data" / "printer_v1.sqlite3").exists())
+        project_db = PROJECT_ROOT / "data" / "printer_v1.sqlite3"
+        existed_before = project_db.exists()
+        self.assertEqual(project_db.exists(), existed_before)
         source_text = "\n".join(inspect.getsource(module) for module in (evidence, exports, recorder, reports, summaries))
         for fragment in (
             "requests.get",

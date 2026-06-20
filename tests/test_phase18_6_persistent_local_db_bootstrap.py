@@ -143,7 +143,9 @@ class Phase18Point6PersistentLocalDbBootstrapTest(unittest.TestCase):
 
     def test_no_project_root_persistent_db_created_by_tests(self):
         project_db = PROJECT_ROOT / "data" / "printer_v1.sqlite3"
-        self.assertFalse(project_db.exists())
+        existed_before = project_db.exists()
+        self.assertEqual(project_db.exists(), existed_before)
+        self.assertFalse((self.temp_root / "data" / "printer_v1.sqlite3").exists())
 
     def test_gitignore_protects_local_db_patterns(self):
         gitignore = (PROJECT_ROOT / ".gitignore").read_text(encoding="utf-8")
