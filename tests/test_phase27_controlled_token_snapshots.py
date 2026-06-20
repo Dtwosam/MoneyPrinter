@@ -275,11 +275,9 @@ class Phase27ControlledTokenSnapshotTests(unittest.TestCase):
             connection.close()
         self.assertNotEqual(classify_operator_db_state(db_path), "PERSISTENT_DB_CONTROLLED_SNAPSHOTS")
 
-    def test_no_phase28_or_phase29_behavior_exists(self):
+    def test_no_phase29_behavior_exists(self):
         cli_text = (SRC_PATH / "printer_v1" / "operator_cli" / "commands.py").read_text(encoding="utf-8")
-        self.assertNotIn("printer-collect-context", cli_text)
         self.assertNotIn("printer-build-memory", cli_text)
-        self.assertNotIn("main_context", cli_text)
         self.assertNotIn("main_memory", cli_text)
 
 

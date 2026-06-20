@@ -31,6 +31,7 @@ from printer_v1.operator_db.bootstrap import initialize_operator_db
 from printer_v1.operator_db.paths import resolve_operator_db_path
 from printer_v1.operator_db.status import (
     STATE_CONTROLLED_INTAKE,
+    STATE_CONTROLLED_CONTEXT,
     STATE_CONTROLLED_SNAPSHOTS,
     STATE_MEMORY_ROWS,
     STATE_NO_DB,
@@ -77,6 +78,7 @@ READINESS_READY_SCHEMA_ONLY = "READY_SCHEMA_ONLY"
 READINESS_READY_SOURCE_ONLY_SMOKE_CHECK = "READY_SOURCE_ONLY_SMOKE_CHECK"
 READINESS_READY_CONTROLLED_INTAKE = "READY_CONTROLLED_INTAKE"
 READINESS_READY_CONTROLLED_SNAPSHOTS = "READY_CONTROLLED_SNAPSHOTS"
+READINESS_READY_CONTROLLED_CONTEXT = "READY_CONTROLLED_CONTEXT"
 READINESS_READY_WITH_LOCAL_DATA = "READY_WITH_LOCAL_DATA"
 READINESS_BLOCKED = "BLOCKED"
 READINESS_STATE_UNKNOWN = "STATE_UNKNOWN"
@@ -149,6 +151,33 @@ CONTROLLED_SNAPSHOT_GUARD_TABLES = [
     "printer_trading_flow_snapshots",
     "printer_chart_volatility_snapshots",
     "printer_micro_events",
+    "printer_memory_windows",
+    "printer_episodes",
+    "printer_episode_snapshots",
+    "printer_episode_outcomes",
+    "printer_memory_fingerprints",
+    "printer_memory_retrieval_queries",
+    "printer_memory_retrieval_matches",
+    "printer_paper_decisions",
+    "printer_paper_positions",
+    "printer_paper_trade_events",
+    "printer_paper_trade_audits",
+    "printer_paper_audit_reports",
+]
+
+CONTEXT_TABLES = [
+    "printer_market_regime_snapshots",
+    "printer_solana_chain_heat_snapshots",
+    "printer_safety_rug_snapshots",
+    "printer_liquidity_exit_snapshots",
+    "printer_trading_flow_snapshots",
+    "printer_chart_volatility_snapshots",
+    "printer_micro_events",
+]
+
+CONTROLLED_CONTEXT_GUARD_TABLES = [
+    "printer_tracking_queue",
+    "printer_scheduler_jobs",
     "printer_memory_windows",
     "printer_episodes",
     "printer_episode_snapshots",
@@ -945,6 +974,418 @@ def main_collect_token_snapshots_once(argv: Sequence[str] | None = None) -> int:
         return _print_error(exc)
 
 
+def _validate_context_command_args(args: argparse.Namespace) -> None:
+    if not args.operator_approved:
+        raise ValueError("context collection requires explicit operator approval")
+    if str(args.chain or "").strip().lower() != "solana":
+        raise ValueError("context collection is Solana-only")
+    if args.source_name != "dexscreener":
+        raise ValueError("Phase 28 context collection supports DexScreener evidence only")
+    if not (args.token_mint or args.token_id):
+        raise ValueError("context collection requires token_mint or token_id")
+    if not (args.pair_address or args.pair_id):
+        raise ValueError("context collection requires pair_address or pair_id")
+
+
+def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any]:
+    return dict(row) if row is not None else {}
+
+
+def _resolve_approved_context_target(connection: sqlite3.Connection, args: argparse.Namespace) -> dict[str, Any]:
+    return _resolve_approved_snapshot_target(connection, args)
+
+
+def _resolve_context_snapshot(connection: sqlite3.Connection, args: argparse.Namespace, target: dict[str, Any]) -> dict[str, Any]:
+    if args.snapshot_id is not None:
+        row = connection.execute(
+            """
+            SELECT *
+            FROM printer_token_snapshots
+            WHERE id = ? AND token_id = ? AND pair_id = ?
+            """,
+            (args.snapshot_id, target["token_id"], target["pair_id"]),
+        ).fetchone()
+    else:
+        row = connection.execute(
+            """
+            SELECT *
+            FROM printer_token_snapshots
+            WHERE token_id = ? AND pair_id = ?
+            ORDER BY captured_at DESC, id DESC
+            LIMIT 1
+            """,
+            (target["token_id"], target["pair_id"]),
+        ).fetchone()
+    if row is None:
+        raise ValueError("context collection requires an existing approved token snapshot")
+    return _row_to_dict(row)
+
+
+def _json_or_empty(value: Any) -> dict[str, Any]:
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _base_context_payload(target: dict[str, Any], snapshot: dict[str, Any], category: str) -> dict[str, Any]:
+    return {
+        "phase": "28",
+        "category": category,
+        "token_id": target["token_id"],
+        "pair_id": target["pair_id"],
+        "token_mint": target["token_mint"],
+        "pair_address": target["pair_address"],
+        "snapshot_id": snapshot["id"],
+        "snapshot_captured_at": snapshot.get("captured_at"),
+        "source_name": "dexscreener",
+        "source_status": snapshot.get("source_status"),
+        "snapshot_data_quality_label": snapshot.get("data_quality_label"),
+        "evidence_boundary": "existing_snapshot_and_recorded_source_evidence_only",
+    }
+
+
+def _context_rows_for_target(connection: sqlite3.Connection, target: dict[str, Any]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for table in CONTEXT_TABLES:
+        if table in {"printer_market_regime_snapshots", "printer_solana_chain_heat_snapshots"}:
+            counts[table] = int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        else:
+            counts[table] = int(
+                connection.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE token_id = ? AND pair_id = ?",
+                    (target["token_id"], target["pair_id"]),
+                ).fetchone()[0]
+            )
+    return counts
+
+
+def _liquidity_state_label(liquidity_usd: Any) -> str:
+    if liquidity_usd is None:
+        return "LIQUIDITY_UNKNOWN"
+    try:
+        value = float(liquidity_usd)
+    except (TypeError, ValueError):
+        return "LIQUIDITY_UNKNOWN"
+    if value <= 0:
+        return "LIQUIDITY_DANGEROUS"
+    if value < 5_000:
+        return "LIQUIDITY_THIN"
+    if value < 25_000:
+        return "LIQUIDITY_USABLE"
+    return "LIQUIDITY_DEEP"
+
+
+def _insert_controlled_context_rows(connection: sqlite3.Connection, target: dict[str, Any], snapshot: dict[str, Any], captured_at: str) -> dict[str, int]:
+    raw_snapshot = _json_or_empty(snapshot.get("raw_snapshot_payload_json"))
+    normalized_snapshot = _json_or_empty(snapshot.get("normalized_snapshot_payload_json"))
+    price_usd = snapshot.get("price_usd")
+    liquidity_usd = snapshot.get("liquidity_usd")
+    source_status = snapshot.get("source_status") or "PARTIAL"
+    snapshot_quality = snapshot.get("data_quality_label") or "ACCEPTABLE_PARTIAL_DATA"
+    snapshot_payload = {
+        "raw_snapshot": raw_snapshot,
+        "normalized_snapshot": normalized_snapshot,
+        "limitations": [
+            "one real token snapshot is not enough for trend, micro-event, holder, authority, or broad-market claims",
+            "no quote source is available in Phase 28, so route, slippage, and price impact remain unknown",
+        ],
+    }
+
+    inserts: dict[str, int] = {}
+
+    safety_payload = _base_context_payload(target, snapshot, "safety_rug")
+    safety_payload["known_fields"] = {"liquidity_usd": liquidity_usd}
+    safety_payload["missing_fields"] = ["holder_distribution", "mint_authority", "freeze_authority", "liquidity_lock"]
+    connection.execute(
+        """
+        INSERT INTO printer_safety_rug_snapshots (
+            token_id, pair_id, token_mint, pair_address, captured_at, liquidity_usd, source_name,
+            safety_status_label, rug_risk_label, liquidity_safety_label, authority_label,
+            distribution_label, safety_payload_quality_label, safety_gate_label, data_quality_label,
+            source_status, raw_safety_payload_json, normalized_safety_payload_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            target["token_id"], target["pair_id"], target["token_mint"], target["pair_address"], captured_at,
+            liquidity_usd, "dexscreener", "SAFETY_UNKNOWN", "RUG_RISK_UNKNOWN",
+            "LIQUIDITY_SAFETY_UNKNOWN", "AUTHORITY_UNKNOWN", "DISTRIBUTION_UNKNOWN",
+            "SAFETY_CONTEXT_UNKNOWN", "MANUAL_REVIEW_REQUIRED", "MISSING_CRITICAL_DATA",
+            "PARTIAL", json.dumps(snapshot_payload, sort_keys=True), json.dumps(safety_payload, sort_keys=True),
+        ),
+    )
+    inserts["printer_safety_rug_snapshots"] = 1
+
+    liquidity_payload = _base_context_payload(target, snapshot, "liquidity_exit")
+    liquidity_payload["known_fields"] = {
+        "price_usd": price_usd,
+        "liquidity_usd": liquidity_usd,
+        "volume_5m": snapshot.get("volume_5m"),
+        "volume_1h": snapshot.get("volume_1h"),
+        "volume_24h": snapshot.get("volume_24h"),
+        "txns_5m": snapshot.get("txns_5m"),
+        "txns_1h": snapshot.get("txns_1h"),
+        "txns_24h": snapshot.get("txns_24h"),
+    }
+    liquidity_payload["unknown_fields"] = ["route", "quote", "slippage", "price_impact"]
+    connection.execute(
+        """
+        INSERT INTO printer_liquidity_exit_snapshots (
+            token_id, pair_id, token_mint, pair_address, captured_at, price_usd, liquidity_usd,
+            volume_5m, volume_1h, volume_24h, txns_5m, txns_1h, txns_24h,
+            liquidity_state_label, entry_realism_label, exit_realism_label, slippage_label,
+            price_impact_label, route_label, quote_age_label, liquidity_drain_label,
+            liquidity_exit_payload_quality_label, realism_gate_label, data_quality_label, source_status,
+            raw_liquidity_exit_payload_json, normalized_liquidity_exit_payload_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            target["token_id"], target["pair_id"], target["token_mint"], target["pair_address"], captured_at,
+            price_usd, liquidity_usd, snapshot.get("volume_5m"), snapshot.get("volume_1h"),
+            snapshot.get("volume_24h"), snapshot.get("txns_5m"), snapshot.get("txns_1h"),
+            snapshot.get("txns_24h"), _liquidity_state_label(liquidity_usd), "ENTRY_UNKNOWN",
+            "EXIT_UNKNOWN", "SLIPPAGE_UNKNOWN", "PRICE_IMPACT_UNKNOWN", "ROUTE_UNKNOWN",
+            "QUOTE_MISSING", "LIQUIDITY_DRAIN_UNKNOWN", "LIQUIDITY_EXIT_CONTEXT_PARTIAL",
+            "REALISM_CONTEXT_AUDIT_ONLY", snapshot_quality, source_status,
+            json.dumps(snapshot_payload, sort_keys=True), json.dumps(liquidity_payload, sort_keys=True),
+        ),
+    )
+    inserts["printer_liquidity_exit_snapshots"] = 1
+
+    flow_payload = _base_context_payload(target, snapshot, "trading_flow")
+    flow_payload["known_fields"] = {
+        "volume_5m": snapshot.get("volume_5m"),
+        "volume_1h": snapshot.get("volume_1h"),
+        "volume_24h": snapshot.get("volume_24h"),
+        "txns_5m": snapshot.get("txns_5m"),
+        "txns_1h": snapshot.get("txns_1h"),
+        "txns_24h": snapshot.get("txns_24h"),
+    }
+    flow_payload["unknown_fields"] = ["buy_sell_split", "wallet_participation"]
+    connection.execute(
+        """
+        INSERT INTO printer_trading_flow_snapshots (
+            token_id, pair_id, token_mint, pair_address, captured_at, price_usd, liquidity_usd,
+            volume_5m, volume_1h, volume_24h, txns_5m, txns_1h, txns_24h,
+            flow_direction_label, flow_pressure_label, imbalance_label, volume_activity_label,
+            tx_activity_label, wallet_participation_label, trading_flow_payload_quality_label,
+            flow_memory_gate_label, data_quality_label, source_status,
+            raw_trading_flow_payload_json, normalized_trading_flow_payload_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            target["token_id"], target["pair_id"], target["token_mint"], target["pair_address"], captured_at,
+            price_usd, liquidity_usd, snapshot.get("volume_5m"), snapshot.get("volume_1h"),
+            snapshot.get("volume_24h"), snapshot.get("txns_5m"), snapshot.get("txns_1h"),
+            snapshot.get("txns_24h"), "FLOW_UNKNOWN", "PRESSURE_UNKNOWN", "IMBALANCE_UNKNOWN",
+            "VOLUME_UNKNOWN", "TX_ACTIVITY_UNKNOWN", "WALLETS_UNKNOWN",
+            "TRADING_FLOW_CONTEXT_PARTIAL", "FLOW_CONTEXT_AUDIT_ONLY", snapshot_quality, source_status,
+            json.dumps(snapshot_payload, sort_keys=True), json.dumps(flow_payload, sort_keys=True),
+        ),
+    )
+    inserts["printer_trading_flow_snapshots"] = 1
+
+    chart_payload = _base_context_payload(target, snapshot, "chart_volatility")
+    chart_payload["known_fields"] = {
+        "price_usd": price_usd,
+        "price_change_5m": snapshot.get("price_change_5m"),
+        "price_change_1h": snapshot.get("price_change_1h"),
+        "price_change_24h": snapshot.get("price_change_24h"),
+    }
+    chart_payload["unknown_fields"] = ["multi_candle_path", "trend", "volatility_window"]
+    connection.execute(
+        """
+        INSERT INTO printer_chart_volatility_snapshots (
+            token_id, pair_id, token_mint, pair_address, captured_at, window_start_at, window_end_at,
+            price_open, price_high, price_low, price_close, price_change_percent, candle_count,
+            trend_structure_label, volatility_label, range_behavior_label, momentum_label,
+            drawdown_recovery_label, candle_path_label, chart_payload_quality_label, chart_memory_gate_label,
+            data_quality_label, source_status, raw_chart_payload_json, normalized_chart_payload_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            target["token_id"], target["pair_id"], target["token_mint"], target["pair_address"], captured_at,
+            snapshot.get("captured_at"), captured_at, price_usd, price_usd, price_usd, price_usd,
+            snapshot.get("price_change_5m"), 1, "TREND_UNKNOWN", "VOLATILITY_UNKNOWN",
+            "RANGE_UNKNOWN", "MOMENTUM_UNKNOWN", "DRAWDOWN_RECOVERY_UNKNOWN", "PATH_UNKNOWN",
+            "CHART_CONTEXT_PARTIAL", "CHART_CONTEXT_AUDIT_ONLY", snapshot_quality, source_status,
+            json.dumps(snapshot_payload, sort_keys=True), json.dumps(chart_payload, sort_keys=True),
+        ),
+    )
+    inserts["printer_chart_volatility_snapshots"] = 1
+
+    micro_payload = _base_context_payload(target, snapshot, "micro_event")
+    micro_payload["known_fields"] = {
+        "price_usd": price_usd,
+        "price_change_5m": snapshot.get("price_change_5m"),
+        "volume_5m": snapshot.get("volume_5m"),
+        "txns_5m": snapshot.get("txns_5m"),
+    }
+    micro_payload["limitations"] = ["single snapshot is insufficient for 5m micro-event confirmation"]
+    connection.execute(
+        """
+        INSERT INTO printer_micro_events (
+            token_id, pair_id, token_mint, pair_address, detected_at, event_window_start_at, event_window_end_at,
+            price_start, price_high, price_low, price_end, price_change_5m_percent, volume_5m, txns_5m,
+            liquidity_start_usd, liquidity_end_usd, liquidity_exit_realism_label, slippage_label,
+            price_impact_label, route_label, safety_status_label, liquidity_state_label, flow_direction_label,
+            candle_path_label, micro_event_state_label, micro_event_move_label, micro_exit_realism_label,
+            late_buy_trap_label, held_to_15m_result_label, micro_event_payload_quality_label,
+            micro_event_memory_gate_label, data_quality_label, source_status,
+            raw_micro_event_payload_json, normalized_micro_event_payload_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            target["token_id"], target["pair_id"], target["token_mint"], target["pair_address"], captured_at,
+            snapshot.get("captured_at"), captured_at, price_usd, price_usd, price_usd, price_usd,
+            snapshot.get("price_change_5m"), snapshot.get("volume_5m"), snapshot.get("txns_5m"),
+            liquidity_usd, liquidity_usd, "EXIT_UNKNOWN", "SLIPPAGE_UNKNOWN", "PRICE_IMPACT_UNKNOWN",
+            "ROUTE_UNKNOWN", "SAFETY_UNKNOWN", _liquidity_state_label(liquidity_usd), "FLOW_UNKNOWN",
+            "PATH_UNKNOWN", "MICRO_EVENT_UNKNOWN", "MOVE_UNKNOWN", "MICRO_EXIT_UNKNOWN",
+            "LATE_BUY_TRAP_UNKNOWN", "HELD_TO_15M_UNKNOWN", "MICRO_EVENT_CONTEXT_UNKNOWN",
+            "MICRO_EVENT_AUDIT_ONLY", "MISSING_CRITICAL_DATA", "PARTIAL",
+            json.dumps(snapshot_payload, sort_keys=True), json.dumps(micro_payload, sort_keys=True),
+        ),
+    )
+    inserts["printer_micro_events"] = 1
+
+    market_payload = {
+        "phase": "28",
+        "category": "market_regime",
+        "evidence_boundary": "no governed broad-market source exists in Phase 28",
+        "skip_reason": "missing_governed_market_source",
+        "attached_token_id": target["token_id"],
+        "attached_pair_id": target["pair_id"],
+        "snapshot_id": snapshot["id"],
+    }
+    connection.execute(
+        """
+        INSERT INTO printer_market_regime_snapshots (
+            captured_at, market_regime_label, market_transition_label, market_payload_quality_label,
+            data_quality_label, source_status, raw_market_payload_json, normalized_market_payload_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            captured_at, "UNKNOWN", "UNKNOWN_TRANSITION", "MARKET_CONTEXT_UNKNOWN",
+            "MISSING_CRITICAL_DATA", "PARTIAL", json.dumps({}, sort_keys=True),
+            json.dumps(market_payload, sort_keys=True),
+        ),
+    )
+    inserts["printer_market_regime_snapshots"] = 1
+
+    chain_payload = {
+        "phase": "28",
+        "category": "solana_chain_heat",
+        "evidence_boundary": "no governed Solana chain-heat source exists in Phase 28",
+        "skip_reason": "missing_governed_chain_heat_source",
+        "attached_token_id": target["token_id"],
+        "attached_pair_id": target["pair_id"],
+        "snapshot_id": snapshot["id"],
+    }
+    connection.execute(
+        """
+        INSERT INTO printer_solana_chain_heat_snapshots (
+            captured_at, chain_heat_label, activity_label, liquidity_label, congestion_label,
+            chain_heat_payload_quality_label, data_quality_label, source_status,
+            raw_chain_heat_payload_json, normalized_chain_heat_payload_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            captured_at, "SOLANA_UNKNOWN", "ACTIVITY_UNKNOWN", "LIQUIDITY_UNKNOWN",
+            "CONGESTION_UNKNOWN", "CHAIN_HEAT_CONTEXT_UNKNOWN", "MISSING_CRITICAL_DATA",
+            "PARTIAL", json.dumps({}, sort_keys=True), json.dumps(chain_payload, sort_keys=True),
+        ),
+    )
+    inserts["printer_solana_chain_heat_snapshots"] = 1
+
+    return inserts
+
+
+def build_collect_context_once_payload(args: argparse.Namespace) -> dict[str, Any]:
+    _validate_context_command_args(args)
+    project_root = _project_root(args.project_root)
+    resolved = resolve_operator_db_path(args.db_path, project_root)
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Operator DB does not exist: {resolved}")
+
+    before_counts = get_core_table_counts(resolved, project_root)
+    connection = sqlite3.connect(resolved)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    try:
+        target = _resolve_approved_context_target(connection, args)
+        snapshot = _resolve_context_snapshot(connection, args, target)
+        existing_context_counts = _context_rows_for_target(connection, target)
+        if sum(existing_context_counts.values()) > 0:
+            inserted_context_rows = {}
+            skipped_reason = "context_already_exists_for_target"
+        else:
+            inserted_context_rows = _insert_controlled_context_rows(connection, target, snapshot, _utc_now_text())
+            skipped_reason = None
+        connection.commit()
+    finally:
+        connection.close()
+
+    after_counts = get_core_table_counts(resolved, project_root)
+    deltas = {
+        table: (after_counts.get(table) or 0) - (before_counts.get(table) or 0)
+        for table in sorted(after_counts)
+    }
+    guard_deltas = {table: deltas[table] for table in CONTROLLED_CONTEXT_GUARD_TABLES if deltas.get(table)}
+    context_deltas = {table: deltas.get(table, 0) for table in CONTEXT_TABLES}
+    status = get_operator_db_status(resolved, project_root)
+    return {
+        "command": "printer-collect-context-once",
+        "db_path": str(resolved),
+        "source_name": "dexscreener",
+        "operator_approved": True,
+        "token_id": target["token_id"],
+        "pair_id": target["pair_id"],
+        "token_mint": target["token_mint"],
+        "pair_address": target["pair_address"],
+        "snapshot_id": snapshot["id"],
+        "inserted_context_rows": inserted_context_rows,
+        "skipped_reason": skipped_reason,
+        "context_table_deltas": context_deltas,
+        "context_rows_created": sum(context_deltas.values()),
+        "source_request_delta": deltas.get("printer_source_requests", 0),
+        "source_response_delta": deltas.get("printer_source_responses", 0),
+        "source_failure_delta": deltas.get("printer_source_failures", 0),
+        "token_delta": deltas.get("printer_tokens", 0),
+        "pair_delta": deltas.get("printer_pairs", 0),
+        "snapshot_delta": deltas.get("printer_token_snapshots", 0),
+        "guard_table_deltas": guard_deltas,
+        "guard_tables_unchanged": not guard_deltas,
+        "counts_after": after_counts,
+        "db_state_classification": status["state_classification"],
+        "memory_has_started": status["memory_has_started"],
+        "paper_trading_has_started": status["paper_trading_has_started"],
+        "runtime_has_started": status["runtime_has_started"],
+    }
+
+
+def main_collect_context_once(argv: Sequence[str] | None = None) -> int:
+    parser = _base_parser("Collect controlled context rows from approved snapshot evidence.", ("json", "text"))
+    parser.add_argument("--operator-approved", action="store_true")
+    parser.add_argument("--token-mint")
+    parser.add_argument("--token-id", type=int)
+    parser.add_argument("--pair-address")
+    parser.add_argument("--pair-id", type=int)
+    parser.add_argument("--snapshot-id", type=int)
+    parser.add_argument("--chain", default="solana")
+    parser.add_argument("--source-name", default="dexscreener")
+    args = parser.parse_args(argv)
+    try:
+        payload = build_collect_context_once_payload(args)
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
 def classify_readiness(status: dict[str, Any], migration_status: dict[str, Any], source_scan: dict[str, Any], runtime_scan: dict[str, Any]) -> str:
     if status["state_classification"] == STATE_NO_DB:
         return READINESS_NEEDS_DB_INIT
@@ -964,6 +1405,8 @@ def classify_readiness(status: dict[str, Any], migration_status: dict[str, Any],
         return READINESS_READY_CONTROLLED_INTAKE
     if status["state_classification"] == STATE_CONTROLLED_SNAPSHOTS:
         return READINESS_READY_CONTROLLED_SNAPSHOTS
+    if status["state_classification"] == STATE_CONTROLLED_CONTEXT:
+        return READINESS_READY_CONTROLLED_CONTEXT
     if status["state_classification"] in {STATE_TOKEN_ROWS, STATE_TEST_ONLY, STATE_MEMORY_ROWS, STATE_PAPER_ROWS}:
         return READINESS_READY_WITH_LOCAL_DATA
     return READINESS_STATE_UNKNOWN

@@ -14,6 +14,7 @@ STATE_SCHEMA_ONLY = "PERSISTENT_DB_EMPTY_SCHEMA_ONLY"
 STATE_SOURCE_ONLY_SMOKE_CHECK = "PERSISTENT_DB_SOURCE_ONLY_SMOKE_CHECK"
 STATE_CONTROLLED_INTAKE = "PERSISTENT_DB_CONTROLLED_INTAKE"
 STATE_CONTROLLED_SNAPSHOTS = "PERSISTENT_DB_CONTROLLED_SNAPSHOTS"
+STATE_CONTROLLED_CONTEXT = "PERSISTENT_DB_CONTROLLED_CONTEXT"
 STATE_TEST_ONLY = "PERSISTENT_DB_HAS_TEST_ONLY_ROWS"
 STATE_TOKEN_ROWS = "PERSISTENT_DB_HAS_REAL_TOKEN_ROWS"
 STATE_MEMORY_ROWS = "PERSISTENT_DB_HAS_REAL_MEMORY_ROWS"
@@ -26,6 +27,7 @@ STATE_CLASSIFICATIONS = {
     STATE_SOURCE_ONLY_SMOKE_CHECK,
     STATE_CONTROLLED_INTAKE,
     STATE_CONTROLLED_SNAPSHOTS,
+    STATE_CONTROLLED_CONTEXT,
     STATE_TEST_ONLY,
     STATE_TOKEN_ROWS,
     STATE_MEMORY_ROWS,
@@ -101,6 +103,16 @@ SNAPSHOT_TABLES = [
     "printer_micro_events",
 ]
 
+CONTEXT_TABLES = [
+    "printer_market_regime_snapshots",
+    "printer_solana_chain_heat_snapshots",
+    "printer_safety_rug_snapshots",
+    "printer_liquidity_exit_snapshots",
+    "printer_trading_flow_snapshots",
+    "printer_chart_volatility_snapshots",
+    "printer_micro_events",
+]
+
 SOURCE_ONLY_BLOCKER_TABLES = [
     "printer_tokens",
     "printer_pairs",
@@ -133,6 +145,15 @@ CONTROLLED_SNAPSHOT_BLOCKER_TABLES = [
     "printer_trading_flow_snapshots",
     "printer_chart_volatility_snapshots",
     "printer_micro_events",
+    *MEMORY_TABLES,
+    "printer_memory_retrieval_queries",
+    "printer_memory_retrieval_matches",
+    *PAPER_TABLES,
+]
+
+CONTROLLED_CONTEXT_BLOCKER_TABLES = [
+    "printer_tracking_queue",
+    "printer_scheduler_jobs",
     *MEMORY_TABLES,
     "printer_memory_retrieval_queries",
     "printer_memory_retrieval_matches",
@@ -231,6 +252,18 @@ def controlled_snapshot_rows_exist(counts: dict[str, int | None]) -> bool:
     return row_count_sum(counts, CONTROLLED_SNAPSHOT_BLOCKER_TABLES) == 0
 
 
+def controlled_context_rows_exist(counts: dict[str, int | None]) -> bool:
+    token_count = counts.get("printer_tokens") or 0
+    pair_count = counts.get("printer_pairs") or 0
+    snapshot_count = counts.get("printer_token_snapshots") or 0
+    context_count = row_count_sum(counts, CONTEXT_TABLES)
+    if token_count < 1 or pair_count < 1 or snapshot_count < 1 or context_count < 1:
+        return False
+    if token_count > 3 or pair_count > 3:
+        return False
+    return row_count_sum(counts, CONTROLLED_CONTEXT_BLOCKER_TABLES) == 0
+
+
 def token_rows_look_test_only(db_path: Path) -> bool:
     with connect_read_only(db_path) as connection:
         if not table_exists(connection, "printer_tokens"):
@@ -251,6 +284,8 @@ def classify_operator_db_state(db_path: str | Path | None = None, project_root: 
         return STATE_PAPER_ROWS
     if row_count_sum(counts, MEMORY_TABLES) > 0:
         return STATE_MEMORY_ROWS
+    if controlled_context_rows_exist(counts):
+        return STATE_CONTROLLED_CONTEXT
     if controlled_snapshot_rows_exist(counts):
         return STATE_CONTROLLED_SNAPSHOTS
     if controlled_intake_rows_exist(counts):

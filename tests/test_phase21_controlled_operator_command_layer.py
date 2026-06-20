@@ -63,6 +63,7 @@ class Phase21ControlledOperatorCommandLayerTest(unittest.TestCase):
             "printer-source-smoke-dexscreener": "printer_v1.operator_cli.commands:main_source_smoke_dexscreener",
             "printer-manual-intake-token-pair": "printer_v1.operator_cli.commands:main_manual_intake_token_pair",
             "printer-collect-token-snapshots-once": "printer_v1.operator_cli.commands:main_collect_token_snapshots_once",
+            "printer-collect-context-once": "printer_v1.operator_cli.commands:main_collect_context_once",
         }
         self.assertEqual({key: scripts[key] for key in expected}, expected)
 
