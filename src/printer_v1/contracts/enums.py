@@ -1,0 +1,56 @@
+"""Shared enum contracts locked by the Printer V1 Phase 0 rules."""
+
+from enum import StrEnum
+
+
+class PaperAction(StrEnum):
+    BUY = "BUY"
+    SELL = "SELL"
+    HOLD = "HOLD"
+    WAIT = "WAIT"
+    AVOID = "AVOID"
+    NO_ACTION = "NO_ACTION"
+
+
+class DiscoveryTrackingOutput(StrEnum):
+    TRACK_FAST = "TRACK_FAST"
+    TRACK_NORMAL = "TRACK_NORMAL"
+    WATCH_ONLY = "WATCH_ONLY"
+    IGNORE = "IGNORE"
+    INSTANT_REJECT = "INSTANT_REJECT"
+
+
+class TrackingLane(StrEnum):
+    PAPER_MONITORING = "PAPER_MONITORING"
+    TRACK_FAST = "TRACK_FAST"
+    TRACK_NORMAL = "TRACK_NORMAL"
+    WATCH_ONLY = "WATCH_ONLY"
+    COOLDOWN = "COOLDOWN"
+    ARCHIVED = "ARCHIVED"
+    INSTANT_REJECT_MEMORY_ONLY = "INSTANT_REJECT_MEMORY_ONLY"
+
+
+class SourceStatus(StrEnum):
+    COMPLETE = "COMPLETE"
+    PARTIAL = "PARTIAL"
+    FAILED = "FAILED"
+    STALE = "STALE"
+    CONFLICTING = "CONFLICTING"
+
+
+class DataQualityLabel(StrEnum):
+    CLEAN_DATA = "CLEAN_DATA"
+    ACCEPTABLE_PARTIAL_DATA = "ACCEPTABLE_PARTIAL_DATA"
+    DIRTY_DATA = "DIRTY_DATA"
+    STALE_DATA = "STALE_DATA"
+    MISSING_CRITICAL_DATA = "MISSING_CRITICAL_DATA"
+    CONFLICTING_DATA = "CONFLICTING_DATA"
+    DO_NOT_TRAIN = "DO_NOT_TRAIN"
+
+
+class MemoryStatus(StrEnum):
+    CLEAN_MEMORY = "CLEAN_MEMORY"
+    PARTIAL_MEMORY = "PARTIAL_MEMORY"
+    DIRTY_MEMORY = "DIRTY_MEMORY"
+    DO_NOT_TRAIN = "DO_NOT_TRAIN"
+    AUDIT_ONLY = "AUDIT_ONLY"

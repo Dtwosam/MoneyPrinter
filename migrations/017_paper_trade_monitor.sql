@@ -1,0 +1,61 @@
+ALTER TABLE printer_paper_positions ADD COLUMN retrieval_query_id INTEGER REFERENCES printer_memory_retrieval_queries(id);
+ALTER TABLE printer_paper_positions ADD COLUMN token_mint TEXT;
+ALTER TABLE printer_paper_positions ADD COLUMN pair_address TEXT;
+ALTER TABLE printer_paper_positions ADD COLUMN entry_price_usd REAL;
+ALTER TABLE printer_paper_positions ADD COLUMN exit_price_usd REAL;
+ALTER TABLE printer_paper_positions ADD COLUMN paper_token_amount REAL;
+ALTER TABLE printer_paper_positions ADD COLUMN current_price_usd REAL;
+ALTER TABLE printer_paper_positions ADD COLUMN unrealized_pnl_usd REAL;
+ALTER TABLE printer_paper_positions ADD COLUMN unrealized_pnl_percent REAL;
+ALTER TABLE printer_paper_positions ADD COLUMN realized_pnl_usd REAL;
+ALTER TABLE printer_paper_positions ADD COLUMN realized_pnl_percent REAL;
+ALTER TABLE printer_paper_positions ADD COLUMN max_runup_percent REAL;
+ALTER TABLE printer_paper_positions ADD COLUMN max_drawdown_percent REAL;
+ALTER TABLE printer_paper_positions ADD COLUMN entry_status_label TEXT CHECK (entry_status_label IN ('PAPER_ENTRY_ALLOWED', 'PAPER_ENTRY_BLOCKED_NO_DECISION', 'PAPER_ENTRY_BLOCKED_DECISION_NOT_ALLOWED', 'PAPER_ENTRY_BLOCKED_NOT_BUY_ACTION', 'PAPER_ENTRY_BLOCKED_STALE_CONTEXT', 'PAPER_ENTRY_BLOCKED_UNREALISTIC_ENTRY', 'PAPER_ENTRY_BLOCKED_UNSAFE_TOKEN', 'PAPER_ENTRY_AUDIT_ONLY'));
+ALTER TABLE printer_paper_positions ADD COLUMN paper_position_status_label TEXT CHECK (paper_position_status_label IN ('PAPER_POSITION_PENDING_ENTRY', 'PAPER_POSITION_OPEN', 'PAPER_POSITION_MONITORING', 'PAPER_POSITION_EXIT_WATCH', 'PAPER_POSITION_CLOSED', 'PAPER_POSITION_CANCELLED', 'PAPER_POSITION_BLOCKED', 'PAPER_POSITION_EXPIRED'));
+ALTER TABLE printer_paper_positions ADD COLUMN paper_monitor_state_label TEXT CHECK (paper_monitor_state_label IN ('MONITOR_HEALTHY', 'MONITOR_PROFIT_WATCH', 'MONITOR_DRAWDOWN_WATCH', 'MONITOR_EXIT_RISK', 'MONITOR_ROUTE_RISK', 'MONITOR_LIQUIDITY_RISK', 'MONITOR_SAFETY_RISK', 'MONITOR_STALE_DATA', 'MONITOR_CLOSED', 'MONITOR_UNKNOWN'));
+ALTER TABLE printer_paper_positions ADD COLUMN paper_exit_reason_label TEXT CHECK (paper_exit_reason_label IN ('EXIT_REASON_TARGET_REACHED', 'EXIT_REASON_STOP_REACHED', 'EXIT_REASON_TRAILING_DRAWDOWN', 'EXIT_REASON_LIQUIDITY_EXIT_RISK', 'EXIT_REASON_ROUTE_FAILED', 'EXIT_REASON_SAFETY_RISK', 'EXIT_REASON_MEMORY_INVALIDATION', 'EXIT_REASON_TIME_EXPIRY', 'EXIT_REASON_MANUAL_AUDIT', 'EXIT_REASON_NO_EXIT'));
+ALTER TABLE printer_paper_positions ADD COLUMN paper_pnl_state_label TEXT CHECK (paper_pnl_state_label IN ('PNL_UNREALIZED_PROFIT', 'PNL_UNREALIZED_LOSS', 'PNL_REALIZED_PROFIT', 'PNL_REALIZED_LOSS', 'PNL_BREAKEVEN', 'PNL_UNKNOWN'));
+ALTER TABLE printer_paper_positions ADD COLUMN entry_context_json TEXT;
+ALTER TABLE printer_paper_positions ADD COLUMN latest_monitor_context_json TEXT;
+ALTER TABLE printer_paper_positions ADD COLUMN exit_context_json TEXT;
+
+ALTER TABLE printer_paper_trade_events ADD COLUMN paper_decision_id INTEGER REFERENCES printer_paper_decisions(id);
+ALTER TABLE printer_paper_trade_events ADD COLUMN token_id INTEGER REFERENCES printer_tokens(id);
+ALTER TABLE printer_paper_trade_events ADD COLUMN pair_id INTEGER REFERENCES printer_pairs(id);
+ALTER TABLE printer_paper_trade_events ADD COLUMN paper_trade_event_label TEXT CHECK (paper_trade_event_label IN ('PAPER_EVENT_ENTRY_CREATED', 'PAPER_EVENT_ENTRY_BLOCKED', 'PAPER_EVENT_POSITION_OPENED', 'PAPER_EVENT_SNAPSHOT_MONITORED', 'PAPER_EVENT_EXIT_RISK_DETECTED', 'PAPER_EVENT_POSITION_CLOSED', 'PAPER_EVENT_POSITION_EXPIRED', 'PAPER_EVENT_AUDIT_RECORDED'));
+ALTER TABLE printer_paper_trade_events ADD COLUMN paper_monitor_state_label TEXT CHECK (paper_monitor_state_label IN ('MONITOR_HEALTHY', 'MONITOR_PROFIT_WATCH', 'MONITOR_DRAWDOWN_WATCH', 'MONITOR_EXIT_RISK', 'MONITOR_ROUTE_RISK', 'MONITOR_LIQUIDITY_RISK', 'MONITOR_SAFETY_RISK', 'MONITOR_STALE_DATA', 'MONITOR_CLOSED', 'MONITOR_UNKNOWN'));
+ALTER TABLE printer_paper_trade_events ADD COLUMN paper_exit_reason_label TEXT CHECK (paper_exit_reason_label IN ('EXIT_REASON_TARGET_REACHED', 'EXIT_REASON_STOP_REACHED', 'EXIT_REASON_TRAILING_DRAWDOWN', 'EXIT_REASON_LIQUIDITY_EXIT_RISK', 'EXIT_REASON_ROUTE_FAILED', 'EXIT_REASON_SAFETY_RISK', 'EXIT_REASON_MEMORY_INVALIDATION', 'EXIT_REASON_TIME_EXPIRY', 'EXIT_REASON_MANUAL_AUDIT', 'EXIT_REASON_NO_EXIT'));
+ALTER TABLE printer_paper_trade_events ADD COLUMN paper_pnl_state_label TEXT CHECK (paper_pnl_state_label IN ('PNL_UNREALIZED_PROFIT', 'PNL_UNREALIZED_LOSS', 'PNL_REALIZED_PROFIT', 'PNL_REALIZED_LOSS', 'PNL_BREAKEVEN', 'PNL_UNKNOWN'));
+
+ALTER TABLE printer_paper_trade_audits ADD COLUMN paper_decision_id INTEGER REFERENCES printer_paper_decisions(id);
+ALTER TABLE printer_paper_trade_audits ADD COLUMN token_id INTEGER REFERENCES printer_tokens(id);
+ALTER TABLE printer_paper_trade_audits ADD COLUMN pair_id INTEGER REFERENCES printer_pairs(id);
+ALTER TABLE printer_paper_trade_audits ADD COLUMN audit_label TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_printer_paper_positions_decision_id ON printer_paper_positions(paper_decision_id);
+CREATE INDEX IF NOT EXISTS idx_printer_paper_positions_retrieval_query ON printer_paper_positions(retrieval_query_id);
+CREATE INDEX IF NOT EXISTS idx_printer_paper_positions_token_id ON printer_paper_positions(token_id);
+CREATE INDEX IF NOT EXISTS idx_printer_paper_positions_pair_id ON printer_paper_positions(pair_id);
+CREATE INDEX IF NOT EXISTS idx_printer_paper_positions_token_mint ON printer_paper_positions(token_mint);
+CREATE INDEX IF NOT EXISTS idx_printer_paper_positions_pair_address ON printer_paper_positions(pair_address);
+CREATE INDEX IF NOT EXISTS idx_printer_paper_positions_opened_at ON printer_paper_positions(opened_at);
+CREATE INDEX IF NOT EXISTS idx_printer_paper_positions_closed_at ON printer_paper_positions(closed_at);
+CREATE INDEX IF NOT EXISTS idx_printer_paper_positions_status_label ON printer_paper_positions(paper_position_status_label);
+CREATE INDEX IF NOT EXISTS idx_printer_paper_positions_monitor_state ON printer_paper_positions(paper_monitor_state_label);
+CREATE INDEX IF NOT EXISTS idx_printer_paper_positions_exit_reason ON printer_paper_positions(paper_exit_reason_label);
+CREATE INDEX IF NOT EXISTS idx_printer_paper_positions_pnl_state ON printer_paper_positions(paper_pnl_state_label);
+CREATE INDEX IF NOT EXISTS idx_printer_paper_positions_created ON printer_paper_positions(created_at);
+
+CREATE INDEX IF NOT EXISTS idx_printer_paper_trade_events_decision_id ON printer_paper_trade_events(paper_decision_id);
+CREATE INDEX IF NOT EXISTS idx_printer_paper_trade_events_token_id ON printer_paper_trade_events(token_id);
+CREATE INDEX IF NOT EXISTS idx_printer_paper_trade_events_pair_id ON printer_paper_trade_events(pair_id);
+CREATE INDEX IF NOT EXISTS idx_printer_paper_trade_events_label ON printer_paper_trade_events(paper_trade_event_label);
+CREATE INDEX IF NOT EXISTS idx_printer_paper_trade_events_monitor_state ON printer_paper_trade_events(paper_monitor_state_label);
+CREATE INDEX IF NOT EXISTS idx_printer_paper_trade_events_created ON printer_paper_trade_events(created_at);
+
+CREATE INDEX IF NOT EXISTS idx_printer_paper_trade_audits_decision_id ON printer_paper_trade_audits(paper_decision_id);
+CREATE INDEX IF NOT EXISTS idx_printer_paper_trade_audits_token_id ON printer_paper_trade_audits(token_id);
+CREATE INDEX IF NOT EXISTS idx_printer_paper_trade_audits_pair_id ON printer_paper_trade_audits(pair_id);
+CREATE INDEX IF NOT EXISTS idx_printer_paper_trade_audits_label ON printer_paper_trade_audits(audit_label);
+CREATE INDEX IF NOT EXISTS idx_printer_paper_trade_audits_created ON printer_paper_trade_audits(created_at);

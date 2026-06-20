@@ -1,0 +1,9 @@
+[project]
+name = "printer-v1"
+version = "0.0.0"
+description = "Printer V1 Solana-only paper-trading memory machine contracts."
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.unittest]
+start-directory = "tests"
