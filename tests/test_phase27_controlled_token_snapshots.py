@@ -4,6 +4,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SRC_PATH = PROJECT_ROOT / "src"
@@ -17,6 +18,7 @@ from printer_v1.operator_cli.commands import (
     build_readiness_check_payload,
 )
 from printer_v1.operator_db.status import classify_operator_db_state
+from printer_v1.sources.dexscreener import build_dexscreener_pair_snapshot_transport
 
 
 def table_count(connection, table_name):
@@ -123,6 +125,23 @@ class Phase27ControlledTokenSnapshotTests(unittest.TestCase):
         pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
         self.assertIn("printer-collect-token-snapshots-once", pyproject)
         self.assertIn("main_collect_token_snapshots_once", pyproject)
+
+    def test_dexscreener_transport_uses_public_api_headers(self):
+        captured_requests = []
+
+        def fake_urlopen(request, timeout):
+            del timeout
+            captured_requests.append(request)
+            raise OSError("stop before network")
+
+        transport = build_dexscreener_pair_snapshot_transport("phase27-pair", timeout_seconds=1.0)
+        with mock.patch("printer_v1.sources.dexscreener.url_request.urlopen", side_effect=fake_urlopen):
+            payload = transport(None)
+
+        self.assertEqual(payload["fixture_status"], "failure")
+        request = captured_requests[0]
+        self.assertEqual(request.get_header("User-agent"), "PrinterV1/0.1 (+paper-only source check)")
+        self.assertEqual(request.get_header("Accept"), "application/json")
 
     def test_snapshot_command_requires_explicit_operator_approval(self):
         db_path = self.make_db()

@@ -25,6 +25,10 @@ DEXSCREENER_SOURCE_NAME = "dexscreener"
 DEXSCREENER_SMOKE_URL = "https://api.dexscreener.com/latest/dex/search?q=SOL"
 DEXSCREENER_PAIR_URL_TEMPLATE = "https://api.dexscreener.com/latest/dex/pairs/solana/{pair_address}"
 DEXSCREENER_SMOKE_TIMEOUT_SECONDS = 5.0
+DEXSCREENER_PUBLIC_API_HEADERS = {
+    "User-Agent": "PrinterV1/0.1 (+paper-only source check)",
+    "Accept": "application/json",
+}
 
 
 @dataclass(frozen=True)
@@ -131,7 +135,7 @@ def build_dexscreener_smoke_transport(
         del context
         request = url_request.Request(
             endpoint,
-            headers={"User-Agent": "PrinterV1SourceSmokeCheck/1.0"},
+            headers=DEXSCREENER_PUBLIC_API_HEADERS,
             method="GET",
         )
         try:
