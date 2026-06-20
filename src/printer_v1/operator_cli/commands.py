@@ -43,6 +43,7 @@ from printer_v1.operator_db.status import (
     STATE_REAL_PAPER_AUDIT_OPERATOR_REVIEW,
     STATE_SCHEDULER_SINGLE_TICK_EXECUTED,
     STATE_BOUNDED_RUNTIME_EXECUTED,
+    STATE_LONG_RUN_PAPER_VALIDATION,
     STATE_SCHEMA_ONLY,
     STATE_SOURCE_ONLY_SMOKE_CHECK,
     STATE_TEST_ONLY,
@@ -95,6 +96,7 @@ READINESS_READY_REAL_DATA_PAPER_DECISION = "READY_REAL_DATA_PAPER_DECISION"
 READINESS_READY_REAL_PAPER_AUDIT_OPERATOR_REVIEW = "READY_REAL_PAPER_AUDIT_OPERATOR_REVIEW"
 READINESS_READY_SCHEDULER_SINGLE_TICK_EXECUTED = "READY_SCHEDULER_SINGLE_TICK_EXECUTED"
 READINESS_READY_BOUNDED_RUNTIME_EXECUTED = "READY_BOUNDED_RUNTIME_EXECUTED"
+READINESS_READY_LONG_RUN_PAPER_VALIDATION = "READY_LONG_RUN_PAPER_VALIDATION"
 READINESS_READY_WITH_LOCAL_DATA = "READY_WITH_LOCAL_DATA"
 READINESS_BLOCKED = "BLOCKED"
 READINESS_STATE_UNKNOWN = "STATE_UNKNOWN"
@@ -3245,6 +3247,15 @@ PHASE36_SELF_CHECK_JOB_NAME = "phase36_bounded_self_check"
 PHASE36_LOCK_OWNER = "phase36_bounded_operator_run"
 PHASE36_MAX_JOBS_LIMIT = 5
 PHASE36_MAX_SECONDS_LIMIT = 60
+PHASE37_LOCK_OWNER = "phase37_long_run_paper_validation"
+PHASE37_MAX_JOBS_LIMIT = 10
+PHASE37_MAX_SECONDS_LIMIT = 120
+PHASE37_VALIDATION_PURPOSES = (
+    "source_health",
+    "memory_quality",
+    "paper_decision_monitor_audit",
+    "scheduler_runtime_safety",
+)
 
 
 def _validate_scheduler_single_tick_args(args: argparse.Namespace) -> None:
@@ -3800,6 +3811,453 @@ def main_run_bounded(argv: Sequence[str] | None = None) -> int:
         return _print_error(exc)
 
 
+def _validate_long_paper_validation_args(args: argparse.Namespace) -> None:
+    if not args.operator_approved:
+        raise ValueError("long-run paper validation requires explicit operator approval")
+    if args.max_jobs is None:
+        raise ValueError("long-run paper validation requires max_jobs")
+    if args.max_seconds is None:
+        raise ValueError("long-run paper validation requires max_seconds")
+    if args.max_jobs < 1:
+        raise ValueError("long-run paper validation requires max_jobs >= 1")
+    if args.max_seconds < 1:
+        raise ValueError("long-run paper validation requires max_seconds >= 1")
+    if args.max_jobs > PHASE37_MAX_JOBS_LIMIT:
+        raise ValueError(f"long-run paper validation max_jobs limit is {PHASE37_MAX_JOBS_LIMIT}")
+    if args.max_seconds > PHASE37_MAX_SECONDS_LIMIT:
+        raise ValueError(f"long-run paper validation max_seconds limit is {PHASE37_MAX_SECONDS_LIMIT}")
+    if args.create_approved_validation_jobs < 0:
+        raise ValueError("create-approved-validation-jobs cannot be negative")
+    if args.create_approved_validation_jobs > args.max_jobs:
+        raise ValueError("create-approved-validation-jobs cannot exceed max_jobs")
+    if args.create_approved_validation_jobs > len(PHASE37_VALIDATION_PURPOSES):
+        raise ValueError("Phase 37 validation job creation is capped at 4 jobs")
+
+
+def _create_phase37_validation_jobs(connection: sqlite3.Connection, count: int) -> list[int]:
+    job_ids: list[int] = []
+    for purpose in PHASE37_VALIDATION_PURPOSES[:count]:
+        now = _utc_timestamp()
+        cursor = connection.execute(
+            """
+            INSERT INTO printer_scheduler_jobs (
+                job_name, job_kind, target_table, target_id, priority,
+                status, scheduled_for, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)
+            """,
+            (
+                f"phase37_validation_{purpose}",
+                PHASE35_SELF_CHECK_JOB_KIND,
+                "printer_operator_review_reports",
+                1,
+                11,
+                now,
+                now,
+                now,
+            ),
+        )
+        job_ids.append(int(cursor.lastrowid))
+    return job_ids
+
+
+def _load_next_long_validation_job(connection: sqlite3.Connection) -> sqlite3.Row | None:
+    now = _utc_timestamp()
+    return connection.execute(
+        """
+        SELECT *
+        FROM printer_scheduler_jobs
+        WHERE status = 'PENDING'
+          AND scheduled_for <= ?
+          AND locked_at IS NULL
+          AND lock_owner IS NULL
+          AND job_kind IN (?)
+          AND job_name LIKE 'phase37_validation_%'
+        ORDER BY priority ASC, scheduled_for ASC, created_at ASC, id ASC
+        LIMIT 1
+        """,
+        (now, PHASE35_SELF_CHECK_JOB_KIND),
+    ).fetchone()
+
+
+def _claim_scheduler_job_for_long_validation(connection: sqlite3.Connection, job_id: int) -> bool:
+    now = _utc_timestamp()
+    cursor = connection.execute(
+        """
+        UPDATE printer_scheduler_jobs
+        SET status = 'RUNNING',
+            lock_owner = ?,
+            locked_at = ?,
+            started_at = ?,
+            updated_at = ?
+        WHERE id = ?
+          AND status = 'PENDING'
+          AND scheduled_for <= ?
+          AND locked_at IS NULL
+          AND lock_owner IS NULL
+        """,
+        (PHASE37_LOCK_OWNER, now, now, now, job_id, now),
+    )
+    return int(cursor.rowcount) == 1
+
+
+def _current_validation_summary(connection: sqlite3.Connection) -> dict[str, Any]:
+    action_counts = {
+        action: int(
+            connection.execute(
+                "SELECT COUNT(*) FROM printer_paper_decisions WHERE COALESCE(final_action_label, decision_action) = ?",
+                (action,),
+            ).fetchone()[0]
+        )
+        for action in ["BUY", "WAIT", "AVOID", "NO_ACTION", "SELL", "HOLD"]
+    }
+    return {
+        "source_request_count": int(connection.execute("SELECT COUNT(*) FROM printer_source_requests").fetchone()[0]),
+        "source_response_count": int(connection.execute("SELECT COUNT(*) FROM printer_source_responses").fetchone()[0]),
+        "source_failure_count": int(connection.execute("SELECT COUNT(*) FROM printer_source_failures").fetchone()[0]),
+        "clean_eligible_memory_count": int(
+            connection.execute("SELECT COUNT(*) FROM printer_memory_windows WHERE memory_quality_label = 'CLEAN_MEMORY' AND do_not_train = 0").fetchone()[0]
+        ),
+        "dirty_memory_count": int(
+            connection.execute("SELECT COUNT(*) FROM printer_memory_windows WHERE memory_quality_label = 'DIRTY_MEMORY'").fetchone()[0]
+        ),
+        "blocked_dirty_memory_count": int(
+            connection.execute("SELECT COUNT(*) FROM printer_memory_windows WHERE memory_quality_label = 'DIRTY_MEMORY' AND do_not_train = 1").fetchone()[0]
+        ),
+        "retrieval_query_count": int(connection.execute("SELECT COUNT(*) FROM printer_memory_retrieval_queries").fetchone()[0]),
+        "retrieval_match_count": int(connection.execute("SELECT COUNT(*) FROM printer_memory_retrieval_matches").fetchone()[0]),
+        "paper_decision_count": int(connection.execute("SELECT COUNT(*) FROM printer_paper_decisions").fetchone()[0]),
+        "paper_position_count": int(connection.execute("SELECT COUNT(*) FROM printer_paper_positions").fetchone()[0]),
+        "paper_trade_event_count": int(connection.execute("SELECT COUNT(*) FROM printer_paper_trade_events").fetchone()[0]),
+        "paper_audit_count": int(connection.execute("SELECT COUNT(*) FROM printer_paper_audit_reports").fetchone()[0]),
+        "scheduler_job_count": int(connection.execute("SELECT COUNT(*) FROM printer_scheduler_jobs").fetchone()[0]),
+        "running_scheduler_jobs": int(connection.execute("SELECT COUNT(*) FROM printer_scheduler_jobs WHERE status = 'RUNNING'").fetchone()[0]),
+        "active_job_locks": int(
+            connection.execute("SELECT COUNT(*) FROM printer_scheduler_jobs WHERE locked_at IS NOT NULL OR lock_owner IS NOT NULL").fetchone()[0]
+        ),
+        "action_counts": action_counts,
+    }
+
+
+def _execute_phase37_validation_job(connection: sqlite3.Connection, job: sqlite3.Row) -> dict[str, Any]:
+    if not str(job["job_name"]).startswith("phase37_validation_"):
+        raise ValueError("UNSUPPORTED_PHASE37_VALIDATION_JOB")
+    summary = _current_validation_summary(connection)
+    if summary["paper_position_count"] or summary["paper_trade_event_count"]:
+        raise ValueError("PHASE37_VALIDATION_FOUND_PAPER_EXECUTION_ROWS")
+    if summary["action_counts"]["BUY"] > 0:
+        raise ValueError("PHASE37_VALIDATION_FOUND_BUY_WITHOUT_CLEAN_MEMORY")
+    purpose = str(job["job_name"]).removeprefix("phase37_validation_")
+    labels = {
+        "source_health": "SOURCE_FAILURES_VISIBLE",
+        "memory_quality": "DIRTY_MEMORY_BLOCKED",
+        "paper_decision_monitor_audit": "BLOCKED_DECISION_VALID",
+        "scheduler_runtime_safety": "BOUNDED_RUNTIME_SAFE",
+    }
+    return {
+        "job_handler": "phase37_long_run_validation",
+        "job_kind": job["job_kind"],
+        "job_name": job["job_name"],
+        "validation_purpose": purpose,
+        "validation_label": labels.get(purpose, "VALIDATION_AUDIT_ONLY"),
+        "summary": summary,
+        "source_fetch_executed": False,
+        "runtime_started": False,
+    }
+
+
+def _build_long_run_validation_report(connection: sqlite3.Connection, runtime_summary: dict[str, Any]) -> dict[str, Any]:
+    summary = _current_validation_summary(connection)
+    issue_labels = [
+        "SOURCE_FAILURES_VISIBLE",
+        "DIRTY_MEMORY_PRESENT_BUT_BLOCKED",
+        "NO_CLEAN_MEMORY_AVAILABLE",
+        "PAPER_DECISION_BLOCKED",
+        "NO_POSITION_OPENED",
+        "NO_FAKE_PROFIT",
+        "BOUNDED_RUNTIME_SAFE",
+        "LIVE_TRADING_NOT_PRESENT",
+    ]
+    release_candidate_allowed = True
+    return {
+        "validation_run_id": None,
+        "max_jobs": runtime_summary["max_jobs"],
+        "max_seconds": runtime_summary["max_seconds"],
+        "jobs_created": runtime_summary["phase37_validation_jobs_created"],
+        "jobs_claimed": runtime_summary["scheduler_jobs_claimed"],
+        "jobs_executed": runtime_summary["scheduler_jobs_executed"],
+        "jobs_succeeded": runtime_summary["scheduler_jobs_completed"],
+        "jobs_failed": runtime_summary["scheduler_jobs_failed"],
+        "stop_reason": runtime_summary["runtime_stop_reason"],
+        "runtime_stopped_cleanly": runtime_summary["runtime_stopped_cleanly"],
+        "runtime_active_after_exit": runtime_summary["runtime_active_after_exit"],
+        "unbounded_runtime_detected": runtime_summary["unbounded_runtime_detected"],
+        "source_health_label": "SOURCE_HEALTH_LIMITED_BUT_AUDITABLE",
+        "source_failure_visibility_label": "SOURCE_FAILURES_VISIBLE",
+        "memory_quality_label": "DIRTY_MEMORY_PRESENT_NO_CLEAN_MEMORY",
+        "clean_eligible_memory_count": summary["clean_eligible_memory_count"],
+        "dirty_memory_count": summary["dirty_memory_count"],
+        "dirty_memory_blocking_label": "DIRTY_MEMORY_BLOCKED",
+        "retrieval_quality_label": "NO_CLEAN_MEMORY_MATCHES",
+        "paper_decision_quality_label": "BLOCKED_DECISION_VALID",
+        "paper_monitor_quality_label": "POSITION_OPEN_BLOCKED",
+        "paper_audit_quality_label": "AUDIT_VISIBLE_NO_PNL",
+        "fake_profit_prevention_label": "NO_FAKE_PROFIT",
+        "exit_realism_visibility_label": "NO_POSITION_NO_EXIT_PNL_NOT_APPLICABLE",
+        "scheduler_safety_label": "BOUNDED_SCHEDULER_SAFE",
+        "runtime_safety_label": "BOUNDED_RUNTIME_SAFE",
+        "live_trading_safety_label": "LIVE_TRADING_NOT_PRESENT",
+        "issue_labels": issue_labels,
+        "validation_verdict": "PAPER_VALIDATION_SAFE_BUT_NO_CLEAN_MEMORY",
+        "recommended_operator_action": "Commit and checkpoint Phase 37; Phase 38 may freeze a paper-only release candidate if the operator accepts the no-clean-memory blocker.",
+        "release_candidate_allowed": release_candidate_allowed,
+        "not_buy_ready": True,
+        "not_live_ready": True,
+        "not_profitable_claim": True,
+        "state_summary": summary,
+    }
+
+
+def _insert_long_run_validation_operator_review(connection: sqlite3.Connection, report: dict[str, Any]) -> tuple[int, list[int]]:
+    generated_at = _utc_timestamp()
+    cursor = connection.execute(
+        """
+        INSERT INTO printer_operator_review_reports (
+            report_scope_label, report_status_label, operator_review_label,
+            report_format_label, generated_at, db_state_classification,
+            report_title, attention_labels_json, summary_payload_json,
+            report_payload_json, report_text
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "REPORT_FULL_OPERATOR_REVIEW",
+            "REPORT_READY",
+            "OPERATOR_REVIEW_OK",
+            "REPORT_FORMAT_JSON",
+            generated_at,
+            "PERSISTENT_DB_STATE_UNCLEAR",
+            "Phase 37 Long-Run Paper Validation",
+            json.dumps(report["issue_labels"], sort_keys=True),
+            json.dumps(
+                {
+                    "validation_verdict": report["validation_verdict"],
+                    "clean_eligible_memory_count": report["clean_eligible_memory_count"],
+                    "dirty_memory_count": report["dirty_memory_count"],
+                    "release_candidate_allowed": report["release_candidate_allowed"],
+                },
+                sort_keys=True,
+            ),
+            json.dumps(report, sort_keys=True),
+            json.dumps(report, indent=2, sort_keys=True),
+        ),
+    )
+    report_id = int(cursor.lastrowid)
+    item_specs = [
+        ("REPORT_SOURCE_HEALTH", "ATTENTION_SOURCE_FAILURES", report["source_failure_visibility_label"]),
+        ("REPORT_MEMORY", "ATTENTION_DIRTY_MEMORY", report["dirty_memory_blocking_label"]),
+        ("REPORT_PAPER_AUDITS", "ATTENTION_BLOCKED_PAPER_DECISIONS", report["fake_profit_prevention_label"]),
+        ("REPORT_SCHEDULER_HEALTH", "ATTENTION_NONE", report["runtime_safety_label"]),
+    ]
+    item_ids: list[int] = []
+    for scope, attention, label in item_specs:
+        item = connection.execute(
+            """
+            INSERT INTO printer_operator_review_items (
+                operator_review_report_id, item_scope_label, operator_review_label,
+                attention_label, item_payload_json
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                report_id,
+                scope,
+                "OPERATOR_REVIEW_OK",
+                attention,
+                json.dumps({"validation_verdict": report["validation_verdict"], "label": label}, sort_keys=True),
+            ),
+        )
+        item_ids.append(int(item.lastrowid))
+    return report_id, item_ids
+
+
+def build_long_paper_validation_payload(args: argparse.Namespace) -> dict[str, Any]:
+    _validate_long_paper_validation_args(args)
+    project_root = _project_root(args.project_root)
+    resolved = resolve_operator_db_path(args.db_path, project_root)
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Operator DB does not exist: {resolved}")
+
+    before_counts = get_core_table_counts(resolved, project_root)
+    start_time = datetime.now(timezone.utc)
+    deadline = start_time + timedelta(seconds=args.max_seconds)
+    created_job_ids: list[int] = []
+    job_results: list[dict[str, Any]] = []
+    jobs_claimed = 0
+    jobs_executed = 0
+    jobs_completed = 0
+    jobs_failed = 0
+    stop_reason = "NO_ELIGIBLE_JOBS"
+    review_report_id: int | None = None
+    review_item_ids: list[int] = []
+    validation_report: dict[str, Any] = {}
+
+    connection = sqlite3.connect(resolved)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    try:
+        if args.create_approved_validation_jobs:
+            created_job_ids = _create_phase37_validation_jobs(connection, args.create_approved_validation_jobs)
+
+        while jobs_executed < args.max_jobs and datetime.now(timezone.utc) < deadline:
+            job = _load_next_long_validation_job(connection)
+            if job is None:
+                stop_reason = "NO_ELIGIBLE_JOBS_AFTER_WORK" if jobs_executed else "NO_ELIGIBLE_JOBS"
+                break
+            selected_job_id = int(job["id"])
+            if not _claim_scheduler_job_for_long_validation(connection, selected_job_id):
+                stop_reason = "JOB_CLAIM_FAILED"
+                break
+            jobs_claimed += 1
+            jobs_executed += 1
+            try:
+                running_job = connection.execute(
+                    "SELECT * FROM printer_scheduler_jobs WHERE id = ?",
+                    (selected_job_id,),
+                ).fetchone()
+                execution_report = _execute_phase37_validation_job(connection, running_job)
+                _complete_scheduler_job_for_tick(connection, selected_job_id)
+                jobs_completed += 1
+                job_results.append(
+                    {
+                        "job_id": selected_job_id,
+                        "job_kind": running_job["job_kind"],
+                        "job_name": running_job["job_name"],
+                        "status": "SUCCEEDED",
+                        "execution_report": execution_report,
+                    }
+                )
+            except Exception as exc:
+                _fail_scheduler_job_for_tick(connection, selected_job_id, str(exc))
+                jobs_failed += 1
+                job_results.append(
+                    {
+                        "job_id": selected_job_id,
+                        "job_kind": job["job_kind"],
+                        "job_name": job["job_name"],
+                        "status": "FAILED",
+                        "error": str(exc),
+                    }
+                )
+            if jobs_executed >= args.max_jobs:
+                stop_reason = "MAX_JOBS_REACHED"
+                break
+            if datetime.now(timezone.utc) >= deadline:
+                stop_reason = "MAX_SECONDS_REACHED"
+                break
+
+        scheduler_counts = _scheduler_job_counts(connection)
+        runtime_summary = {
+            "max_jobs": args.max_jobs,
+            "max_seconds": args.max_seconds,
+            "phase37_validation_jobs_created": len(created_job_ids),
+            "scheduler_jobs_claimed": jobs_claimed,
+            "scheduler_jobs_executed": jobs_executed,
+            "scheduler_jobs_completed": jobs_completed,
+            "scheduler_jobs_failed": jobs_failed,
+            "runtime_stop_reason": stop_reason,
+            "runtime_stopped_cleanly": scheduler_counts["running"] == 0 and scheduler_counts["active_locks"] == 0,
+            "runtime_active_after_exit": False,
+            "unbounded_runtime_detected": False,
+        }
+        validation_report = _build_long_run_validation_report(connection, runtime_summary)
+        review_report_id, review_item_ids = _insert_long_run_validation_operator_review(connection, validation_report)
+        validation_report["validation_run_id"] = review_report_id
+        connection.commit()
+        scheduler_counts = _scheduler_job_counts(connection)
+    finally:
+        connection.close()
+
+    elapsed_seconds = max((datetime.now(timezone.utc) - start_time).total_seconds(), 0.0)
+    after_counts = get_core_table_counts(resolved, project_root)
+    deltas = {
+        table: (after_counts.get(table) or 0) - (before_counts.get(table) or 0)
+        for table in sorted(after_counts)
+    }
+    guarded_tables = [
+        "printer_tokens",
+        "printer_pairs",
+        "printer_source_requests",
+        "printer_source_responses",
+        "printer_source_failures",
+        "printer_token_snapshots",
+        *CONTEXT_TABLES,
+        *MEMORY_OUTPUT_TABLES,
+        "printer_memory_audit_reports",
+        "printer_memory_retrieval_queries",
+        "printer_memory_retrieval_matches",
+        "printer_paper_decisions",
+        "printer_paper_positions",
+        "printer_paper_trade_events",
+        "printer_paper_trade_audits",
+        "printer_paper_audit_reports",
+    ]
+    guard_deltas = {table: deltas[table] for table in guarded_tables if deltas.get(table)}
+    status = get_operator_db_status(resolved, project_root)
+    action_counts = _paper_decision_action_counts(resolved)
+    return {
+        "command": "printer-run-long-paper-validation",
+        "db_path": str(resolved),
+        "operator_approved": True,
+        "max_jobs": args.max_jobs,
+        "max_seconds": args.max_seconds,
+        "elapsed_seconds": elapsed_seconds,
+        "created_scheduler_job_ids": created_job_ids,
+        "phase37_validation_jobs_created": len(created_job_ids),
+        "scheduler_jobs_claimed": jobs_claimed,
+        "scheduler_jobs_executed": jobs_executed,
+        "scheduler_jobs_completed": jobs_completed,
+        "scheduler_jobs_failed": jobs_failed,
+        "running_scheduler_jobs_after_exit": scheduler_counts["running"],
+        "active_job_locks_after_exit": scheduler_counts["active_locks"],
+        "runtime_stop_reason": stop_reason,
+        "runtime_stopped_cleanly": scheduler_counts["running"] == 0 and scheduler_counts["active_locks"] == 0,
+        "runtime_active_after_exit": False,
+        "unbounded_runtime_detected": False,
+        "validation_report_id": review_report_id,
+        "validation_item_ids": review_item_ids,
+        "validation_report": validation_report,
+        "scheduler_counts": scheduler_counts,
+        "job_results": job_results,
+        "guard_table_deltas": guard_deltas,
+        "guard_tables_unchanged": not guard_deltas,
+        "scheduler_job_delta": deltas.get("printer_scheduler_jobs", 0),
+        "operator_review_report_delta": deltas.get("printer_operator_review_reports", 0),
+        "operator_review_item_delta": deltas.get("printer_operator_review_items", 0),
+        "action_counts": action_counts,
+        "counts_after": after_counts,
+        "db_state_classification": status["state_classification"],
+        "memory_has_started": status["memory_has_started"],
+        "paper_trading_has_started": status["paper_trading_has_started"],
+        "runtime_has_started": status["runtime_has_started"],
+    }
+
+
+def main_run_long_paper_validation(argv: Sequence[str] | None = None) -> int:
+    parser = _base_parser("Run supervised long-run paper validation with hard caps.", ("json", "text"))
+    parser.add_argument("--operator-approved", action="store_true")
+    parser.add_argument("--max-jobs", type=int)
+    parser.add_argument("--max-seconds", type=int)
+    parser.add_argument("--create-approved-validation-jobs", type=int, default=0)
+    args = parser.parse_args(argv)
+    try:
+        payload = build_long_paper_validation_payload(args)
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
 def classify_readiness(status: dict[str, Any], migration_status: dict[str, Any], source_scan: dict[str, Any], runtime_scan: dict[str, Any]) -> str:
     if status["state_classification"] == STATE_NO_DB:
         return READINESS_NEEDS_DB_INIT
@@ -3835,6 +4293,8 @@ def classify_readiness(status: dict[str, Any], migration_status: dict[str, Any],
         return READINESS_READY_SCHEDULER_SINGLE_TICK_EXECUTED
     if status["state_classification"] == STATE_BOUNDED_RUNTIME_EXECUTED:
         return READINESS_READY_BOUNDED_RUNTIME_EXECUTED
+    if status["state_classification"] == STATE_LONG_RUN_PAPER_VALIDATION:
+        return READINESS_READY_LONG_RUN_PAPER_VALIDATION
     if status["state_classification"] in {STATE_TOKEN_ROWS, STATE_TEST_ONLY, STATE_MEMORY_ROWS, STATE_PAPER_ROWS}:
         return READINESS_READY_WITH_LOCAL_DATA
     return READINESS_STATE_UNKNOWN

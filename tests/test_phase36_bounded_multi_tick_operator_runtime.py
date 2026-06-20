@@ -198,10 +198,10 @@ class Phase36BoundedMultiTickOperatorRuntimeTests(Phase35SchedulerSingleTickExec
             connection.close()
         self.assertNotEqual(classify_operator_db_state(db_path, PROJECT_ROOT), "PERSISTENT_DB_BOUNDED_RUNTIME_EXECUTED")
 
-    def test_no_phase37_long_run_validation_command_exists(self):
+    def test_no_phase38_release_candidate_command_exists(self):
         scripts = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["scripts"]
-        self.assertNotIn("printer-run-long-paper-validation", scripts)
-        self.assertNotIn("printer-run-phase37", scripts)
+        self.assertNotIn("printer-freeze-release-candidate", scripts)
+        self.assertNotIn("printer-run-phase38", scripts)
 
 
 if __name__ == "__main__":
