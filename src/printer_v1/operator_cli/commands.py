@@ -6,7 +6,7 @@ import argparse
 import json
 import sqlite3
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -31,6 +31,7 @@ from printer_v1.operator_db.bootstrap import initialize_operator_db
 from printer_v1.operator_db.paths import resolve_operator_db_path
 from printer_v1.operator_db.status import (
     STATE_CONTROLLED_INTAKE,
+    STATE_CONTROLLED_SNAPSHOTS,
     STATE_MEMORY_ROWS,
     STATE_NO_DB,
     STATE_PAPER_ROWS,
@@ -64,15 +65,18 @@ from printer_v1.operator_review.reports import build_operator_report_payload
 from printer_v1.sources.contracts import build_governed_source_request
 from printer_v1.sources.dexscreener import (
     build_dexscreener_adapter,
+    build_dexscreener_pair_snapshot_transport,
     build_dexscreener_smoke_transport,
 )
 from printer_v1.sources.governed_execution import execute_source_request_with_governor
+from printer_v1.snapshots.recorder import record_token_snapshot
 
 
 READINESS_NEEDS_DB_INIT = "NEEDS_DB_INIT"
 READINESS_READY_SCHEMA_ONLY = "READY_SCHEMA_ONLY"
 READINESS_READY_SOURCE_ONLY_SMOKE_CHECK = "READY_SOURCE_ONLY_SMOKE_CHECK"
 READINESS_READY_CONTROLLED_INTAKE = "READY_CONTROLLED_INTAKE"
+READINESS_READY_CONTROLLED_SNAPSHOTS = "READY_CONTROLLED_SNAPSHOTS"
 READINESS_READY_WITH_LOCAL_DATA = "READY_WITH_LOCAL_DATA"
 READINESS_BLOCKED = "BLOCKED"
 READINESS_STATE_UNKNOWN = "STATE_UNKNOWN"
@@ -114,6 +118,30 @@ MANUAL_INTAKE_GUARD_TABLES = [
     "printer_tracking_queue",
     "printer_scheduler_jobs",
     "printer_token_snapshots",
+    "printer_market_regime_snapshots",
+    "printer_solana_chain_heat_snapshots",
+    "printer_safety_rug_snapshots",
+    "printer_liquidity_exit_snapshots",
+    "printer_trading_flow_snapshots",
+    "printer_chart_volatility_snapshots",
+    "printer_micro_events",
+    "printer_memory_windows",
+    "printer_episodes",
+    "printer_episode_snapshots",
+    "printer_episode_outcomes",
+    "printer_memory_fingerprints",
+    "printer_memory_retrieval_queries",
+    "printer_memory_retrieval_matches",
+    "printer_paper_decisions",
+    "printer_paper_positions",
+    "printer_paper_trade_events",
+    "printer_paper_trade_audits",
+    "printer_paper_audit_reports",
+]
+
+CONTROLLED_SNAPSHOT_GUARD_TABLES = [
+    "printer_tracking_queue",
+    "printer_scheduler_jobs",
     "printer_market_regime_snapshots",
     "printer_solana_chain_heat_snapshots",
     "printer_safety_rug_snapshots",
@@ -685,6 +713,238 @@ def main_manual_intake_token_pair(argv: Sequence[str] | None = None) -> int:
         return _print_error(exc)
 
 
+def _validate_snapshot_command_args(args: argparse.Namespace) -> None:
+    if not args.operator_approved:
+        raise ValueError("snapshot collection requires explicit operator approval")
+    if str(args.chain or "").strip().lower() != "solana":
+        raise ValueError("snapshot collection is Solana-only")
+    if args.snapshot_count < 1 or args.snapshot_count > 3:
+        raise ValueError("snapshot_count must be between 1 and 3")
+    if args.max_seconds <= 0 or args.max_seconds > 30:
+        raise ValueError("max_seconds must be greater than 0 and no more than 30")
+    if args.source_name != "dexscreener":
+        raise ValueError("Phase 27 snapshot collection supports DexScreener only")
+    if not (args.token_mint or args.token_id):
+        raise ValueError("snapshot collection requires token_mint or token_id")
+    if not (args.pair_address or args.pair_id):
+        raise ValueError("snapshot collection requires pair_address or pair_id")
+
+
+def _resolve_approved_snapshot_target(connection: sqlite3.Connection, args: argparse.Namespace) -> dict[str, Any]:
+    token_clause = "id = ?" if args.token_id is not None else "token_mint = ?"
+    token_value = args.token_id if args.token_id is not None else args.token_mint
+    token_row = connection.execute(
+        f"SELECT * FROM printer_tokens WHERE {token_clause}",
+        (token_value,),
+    ).fetchone()
+    if token_row is None:
+        raise ValueError("snapshot target token is not already approved in DB")
+
+    pair_clause = "id = ?" if args.pair_id is not None else "pair_address = ?"
+    pair_value = args.pair_id if args.pair_id is not None else args.pair_address
+    pair_row = connection.execute(
+        f"SELECT * FROM printer_pairs WHERE {pair_clause}",
+        (pair_value,),
+    ).fetchone()
+    if pair_row is None:
+        raise ValueError("snapshot target pair is not already approved in DB")
+    if int(pair_row["token_id"]) != int(token_row["id"]):
+        raise ValueError("snapshot target pair does not belong to the approved token")
+    if token_row["chain"] != "solana":
+        raise ValueError("approved snapshot target must be Solana")
+
+    return {
+        "token_id": int(token_row["id"]),
+        "pair_id": int(pair_row["id"]),
+        "token_mint": token_row["token_mint"],
+        "pair_address": pair_row["pair_address"],
+    }
+
+
+def _pick_snapshot_pair(normalized_payload: dict[str, Any], token_mint: str, pair_address: str) -> dict[str, Any] | None:
+    for item in normalized_payload.get("pairs") or []:
+        if (
+            item.get("chain") == "solana"
+            and item.get("token_mint") == token_mint
+            and item.get("pair_address") == pair_address
+        ):
+            return dict(item)
+    return None
+
+
+def _build_snapshot_payload_from_pair(
+    *,
+    target: dict[str, Any],
+    pair_payload: dict[str, Any],
+    source_status: str,
+    data_quality_label: str,
+    captured_at: datetime,
+) -> dict[str, Any]:
+    return {
+        "token_id": target["token_id"],
+        "pair_id": target["pair_id"],
+        "token_mint": target["token_mint"],
+        "pair_address": target["pair_address"],
+        "captured_at": captured_at.isoformat(),
+        "tracking_lane": "TRACK_NORMAL",
+        "snapshot_mode": "NORMAL_MODE",
+        "price_usd": pair_payload.get("price_usd"),
+        "liquidity_usd": pair_payload.get("liquidity_usd"),
+        "volume_5m": pair_payload.get("volume_5m"),
+        "volume_1h": pair_payload.get("volume_1h"),
+        "volume_24h": pair_payload.get("volume_24h"),
+        "txns_5m": pair_payload.get("txns_5m"),
+        "txns_1h": pair_payload.get("txns_1h"),
+        "txns_24h": pair_payload.get("txns_24h"),
+        "fdv": pair_payload.get("fdv"),
+        "market_cap": pair_payload.get("market_cap"),
+        "price_change_5m": pair_payload.get("price_change_5m"),
+        "price_change_1h": pair_payload.get("price_change_1h"),
+        "price_change_24h": pair_payload.get("price_change_24h"),
+        "source_status": source_status,
+        "data_quality_label": data_quality_label,
+    }
+
+
+def build_collect_token_snapshots_once_payload(
+    args: argparse.Namespace,
+    *,
+    transport=None,
+) -> dict[str, Any]:
+    _validate_snapshot_command_args(args)
+    project_root = _project_root(args.project_root)
+    resolved = resolve_operator_db_path(args.db_path, project_root)
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Operator DB does not exist: {resolved}")
+
+    before_counts = get_core_table_counts(resolved, project_root)
+    connection = sqlite3.connect(resolved)
+    connection.row_factory = sqlite3.Row
+    try:
+        target = _resolve_approved_snapshot_target(connection, args)
+    finally:
+        connection.close()
+
+    adapter_transport = transport or build_dexscreener_pair_snapshot_transport(
+        target["pair_address"],
+        timeout_seconds=args.max_seconds,
+    )
+    adapter = build_dexscreener_adapter(enabled=True, smoke_transport=adapter_transport)
+    snapshot_results: list[dict[str, Any]] = []
+
+    for index in range(args.snapshot_count):
+        captured_at = datetime.now(timezone.utc) + timedelta(microseconds=index)
+        source_request = build_governed_source_request(
+            "dexscreener",
+            "pair_market_snapshot",
+            request_key=f"dexscreener-pair-snapshot-{target['pair_address']}-{index + 1}",
+            tracking_priority=0,
+            payload={
+                "phase": "27",
+                "token_mint": target["token_mint"],
+                "pair_address": target["pair_address"],
+                "snapshot_count": args.snapshot_count,
+            },
+        )
+        result = execute_source_request_with_governor(
+            resolved,
+            source_request,
+            adapter,
+            recent_request_count=0,
+        )
+        normalized = dict(result.normalized_result.normalized_payload or {})
+        pair_payload = _pick_snapshot_pair(normalized, target["token_mint"], target["pair_address"])
+        snapshot_created = False
+        snapshot_id = None
+        skip_reason = None
+        if (
+            result.response_record
+            and result.normalized_result.source_status.value == "COMPLETE"
+            and result.normalized_result.data_quality_label.value in {"CLEAN_DATA", "ACCEPTABLE_PARTIAL_DATA"}
+            and pair_payload
+            and pair_payload.get("price_usd") is not None
+            and pair_payload.get("liquidity_usd") is not None
+        ):
+            snapshot_payload = _build_snapshot_payload_from_pair(
+                target=target,
+                pair_payload=pair_payload,
+                source_status=result.normalized_result.source_status.value,
+                data_quality_label=result.normalized_result.data_quality_label.value,
+                captured_at=captured_at,
+            )
+            snapshot_created, snapshot_id = record_token_snapshot(resolved, snapshot_payload, captured_at)
+        else:
+            skip_reason = result.normalized_result.failure_type or "missing_snapshot_required_fields"
+
+        snapshot_results.append(
+            {
+                "source_request_id": result.request_record.id,
+                "source_response_id": result.response_record.id if result.response_record else None,
+                "source_failure_id": result.failure_record.id if result.failure_record else None,
+                "source_status": result.normalized_result.source_status.value,
+                "data_quality_label": result.normalized_result.data_quality_label.value,
+                "snapshot_created": snapshot_created,
+                "snapshot_id": snapshot_id,
+                "skip_reason": skip_reason,
+            }
+        )
+
+    after_counts = get_core_table_counts(resolved, project_root)
+    deltas = {
+        table: (after_counts.get(table) or 0) - (before_counts.get(table) or 0)
+        for table in sorted(after_counts)
+    }
+    guard_deltas = {table: deltas[table] for table in CONTROLLED_SNAPSHOT_GUARD_TABLES if deltas.get(table)}
+    status = get_operator_db_status(resolved, project_root)
+    return {
+        "command": "printer-collect-token-snapshots-once",
+        "db_path": str(resolved),
+        "source_name": "dexscreener",
+        "operator_approved": True,
+        "token_id": target["token_id"],
+        "pair_id": target["pair_id"],
+        "token_mint": target["token_mint"],
+        "pair_address": target["pair_address"],
+        "snapshot_count_requested": args.snapshot_count,
+        "snapshot_rows_created": sum(1 for item in snapshot_results if item["snapshot_created"]),
+        "results": snapshot_results,
+        "source_request_delta": deltas.get("printer_source_requests", 0),
+        "source_response_delta": deltas.get("printer_source_responses", 0),
+        "source_failure_delta": deltas.get("printer_source_failures", 0),
+        "token_delta": deltas.get("printer_tokens", 0),
+        "pair_delta": deltas.get("printer_pairs", 0),
+        "snapshot_delta": deltas.get("printer_token_snapshots", 0),
+        "guard_table_deltas": guard_deltas,
+        "guard_tables_unchanged": not guard_deltas,
+        "counts_after": after_counts,
+        "db_state_classification": status["state_classification"],
+        "memory_has_started": status["memory_has_started"],
+        "paper_trading_has_started": status["paper_trading_has_started"],
+        "runtime_has_started": status["runtime_has_started"],
+    }
+
+
+def main_collect_token_snapshots_once(argv: Sequence[str] | None = None) -> int:
+    parser = _base_parser("Collect controlled one-shot DexScreener token snapshots.", ("json", "text"))
+    parser.add_argument("--operator-approved", action="store_true")
+    parser.add_argument("--token-mint")
+    parser.add_argument("--token-id", type=int)
+    parser.add_argument("--pair-address")
+    parser.add_argument("--pair-id", type=int)
+    parser.add_argument("--chain", default="solana")
+    parser.add_argument("--snapshot-count", type=int, default=1)
+    parser.add_argument("--max-seconds", type=float, default=5.0)
+    parser.add_argument("--source-name", default="dexscreener")
+    parser.add_argument("--source-reference")
+    args = parser.parse_args(argv)
+    try:
+        payload = build_collect_token_snapshots_once_payload(args)
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
 def classify_readiness(status: dict[str, Any], migration_status: dict[str, Any], source_scan: dict[str, Any], runtime_scan: dict[str, Any]) -> str:
     if status["state_classification"] == STATE_NO_DB:
         return READINESS_NEEDS_DB_INIT
@@ -702,6 +962,8 @@ def classify_readiness(status: dict[str, Any], migration_status: dict[str, Any],
         return READINESS_READY_SOURCE_ONLY_SMOKE_CHECK
     if status["state_classification"] == STATE_CONTROLLED_INTAKE:
         return READINESS_READY_CONTROLLED_INTAKE
+    if status["state_classification"] == STATE_CONTROLLED_SNAPSHOTS:
+        return READINESS_READY_CONTROLLED_SNAPSHOTS
     if status["state_classification"] in {STATE_TOKEN_ROWS, STATE_TEST_ONLY, STATE_MEMORY_ROWS, STATE_PAPER_ROWS}:
         return READINESS_READY_WITH_LOCAL_DATA
     return READINESS_STATE_UNKNOWN

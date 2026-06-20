@@ -23,6 +23,7 @@ from printer_v1.sources.contracts import (
 
 DEXSCREENER_SOURCE_NAME = "dexscreener"
 DEXSCREENER_SMOKE_URL = "https://api.dexscreener.com/latest/dex/search?q=SOL"
+DEXSCREENER_PAIR_URL_TEMPLATE = "https://api.dexscreener.com/latest/dex/pairs/solana/{pair_address}"
 DEXSCREENER_SMOKE_TIMEOUT_SECONDS = 5.0
 
 
@@ -163,6 +164,19 @@ def build_dexscreener_smoke_transport(
     return transport
 
 
+def build_dexscreener_pair_snapshot_transport(
+    pair_address: str,
+    *,
+    timeout_seconds: float = DEXSCREENER_SMOKE_TIMEOUT_SECONDS,
+    endpoint_template: str = DEXSCREENER_PAIR_URL_TEMPLATE,
+) -> Callable[[SourceAdapterContext], Mapping[str, Any]]:
+    endpoint = endpoint_template.format(pair_address=pair_address)
+    return build_dexscreener_smoke_transport(
+        timeout_seconds=timeout_seconds,
+        endpoint=endpoint,
+    )
+
+
 def normalize_dexscreener_fixture_result(
     payload: Mapping[str, Any],
     *,
@@ -218,6 +232,15 @@ def normalize_dexscreener_fixture_result(
                 "liquidity_usd": _to_float((pair.get("liquidity") or {}).get("usd") if isinstance(pair.get("liquidity"), Mapping) else None),
                 "volume_5m": _to_float((pair.get("volume") or {}).get("m5") if isinstance(pair.get("volume"), Mapping) else None),
                 "volume_1h": _to_float((pair.get("volume") or {}).get("h1") if isinstance(pair.get("volume"), Mapping) else None),
+                "volume_24h": _to_float((pair.get("volume") or {}).get("h24") if isinstance(pair.get("volume"), Mapping) else None),
+                "txns_5m": _to_int(_transaction_count((pair.get("txns") or {}).get("m5") if isinstance(pair.get("txns"), Mapping) else None)),
+                "txns_1h": _to_int(_transaction_count((pair.get("txns") or {}).get("h1") if isinstance(pair.get("txns"), Mapping) else None)),
+                "txns_24h": _to_int(_transaction_count((pair.get("txns") or {}).get("h24") if isinstance(pair.get("txns"), Mapping) else None)),
+                "fdv": _to_float(pair.get("fdv")),
+                "market_cap": _to_float(pair.get("marketCap")),
+                "price_change_5m": _to_float((pair.get("priceChange") or {}).get("m5") if isinstance(pair.get("priceChange"), Mapping) else None),
+                "price_change_1h": _to_float((pair.get("priceChange") or {}).get("h1") if isinstance(pair.get("priceChange"), Mapping) else None),
+                "price_change_24h": _to_float((pair.get("priceChange") or {}).get("h24") if isinstance(pair.get("priceChange"), Mapping) else None),
                 "pair_created_at": pair.get("pairCreatedAt"),
             }
         )
@@ -256,3 +279,20 @@ def _to_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _to_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _transaction_count(value: Any) -> int | None:
+    if not isinstance(value, Mapping):
+        return None
+    buys = _to_int(value.get("buys")) or 0
+    sells = _to_int(value.get("sells")) or 0
+    return buys + sells

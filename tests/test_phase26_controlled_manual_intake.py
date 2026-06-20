@@ -219,7 +219,8 @@ class Phase26ControlledManualIntakeTests(unittest.TestCase):
     def test_manual_intake_does_not_call_live_sources(self):
         source_text = (SRC_PATH / "printer_v1" / "operator_cli" / "commands.py").read_text(encoding="utf-8")
         manual_start = source_text.index("def build_manual_intake_token_pair_payload")
-        manual_block = source_text[manual_start:]
+        manual_end = source_text.index("def _validate_snapshot_command_args")
+        manual_block = source_text[manual_start:manual_end]
         self.assertNotIn("build_dexscreener_smoke_transport(", manual_block)
         self.assertNotIn("execute_source_request_with_governor(", manual_block)
 
