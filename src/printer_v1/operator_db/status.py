@@ -20,6 +20,7 @@ STATE_MEMORY_QUALITY_AUDITED = "PERSISTENT_DB_MEMORY_QUALITY_AUDITED"
 STATE_REAL_MEMORY_RETRIEVAL = "PERSISTENT_DB_REAL_MEMORY_RETRIEVAL"
 STATE_REAL_DATA_PAPER_DECISION = "PERSISTENT_DB_REAL_DATA_PAPER_DECISION"
 STATE_REAL_PAPER_AUDIT_OPERATOR_REVIEW = "PERSISTENT_DB_REAL_PAPER_AUDIT_OPERATOR_REVIEW"
+STATE_SCHEDULER_SINGLE_TICK_EXECUTED = "PERSISTENT_DB_SCHEDULER_SINGLE_TICK_EXECUTED"
 STATE_TEST_ONLY = "PERSISTENT_DB_HAS_TEST_ONLY_ROWS"
 STATE_TOKEN_ROWS = "PERSISTENT_DB_HAS_REAL_TOKEN_ROWS"
 STATE_MEMORY_ROWS = "PERSISTENT_DB_HAS_REAL_MEMORY_ROWS"
@@ -38,6 +39,7 @@ STATE_CLASSIFICATIONS = {
     STATE_REAL_MEMORY_RETRIEVAL,
     STATE_REAL_DATA_PAPER_DECISION,
     STATE_REAL_PAPER_AUDIT_OPERATOR_REVIEW,
+    STATE_SCHEDULER_SINGLE_TICK_EXECUTED,
     STATE_TEST_ONLY,
     STATE_TOKEN_ROWS,
     STATE_MEMORY_ROWS,
@@ -411,6 +413,70 @@ def real_paper_audit_operator_review_rows_exist(db_path: Path, counts: dict[str,
     return int(unsafe_decisions) == 0 and int(unsafe_audits) == 0
 
 
+def scheduler_single_tick_executed_rows_exist(db_path: Path, counts: dict[str, int | None]) -> bool:
+    token_count = counts.get("printer_tokens") or 0
+    pair_count = counts.get("printer_pairs") or 0
+    if token_count < 1 or pair_count < 1:
+        return False
+    if token_count > 3 or pair_count > 3:
+        return False
+    if (counts.get("printer_paper_decisions") or 0) < 1:
+        return False
+    if (counts.get("printer_paper_audit_reports") or 0) < 1:
+        return False
+    if (counts.get("printer_operator_review_reports") or 0) < 1:
+        return False
+    if (counts.get("printer_operator_review_items") or 0) < 1:
+        return False
+    if (counts.get("printer_scheduler_jobs") or 0) != 1:
+        return False
+    blockers = [
+        "printer_paper_positions",
+        "printer_paper_trade_events",
+        "printer_paper_trade_audits",
+    ]
+    if row_count_sum(counts, blockers) > 0:
+        return False
+    with connect_read_only(db_path) as connection:
+        unsafe_decisions = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM printer_paper_decisions
+            WHERE COALESCE(final_action_label, decision_action) IN ('BUY', 'SELL', 'HOLD')
+               OR COALESCE(paper_decision_status_label, decision_status) != 'PAPER_DECISION_BLOCKED'
+               OR COALESCE(decision_gate_label, '') = 'DECISION_ALLOWED'
+            """
+        ).fetchone()[0]
+        unsafe_audits = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM printer_paper_audit_reports
+            WHERE paper_outcome_review_label IN ('PAPER_OUTCOME_WORKED', 'PAPER_OUTCOME_FAILED')
+               OR paper_realism_label = 'PAPER_REALISM_CLEAN'
+            """
+        ).fetchone()[0]
+        scheduler_rows = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM printer_scheduler_jobs
+            WHERE status = 'SUCCEEDED'
+              AND job_name = 'phase35_scheduler_single_tick_self_check'
+              AND job_kind = 'BACKUP_SOURCE_CHECK'
+              AND locked_at IS NULL
+              AND lock_owner IS NULL
+            """
+        ).fetchone()[0]
+        running_rows = connection.execute(
+            "SELECT COUNT(*) FROM printer_scheduler_jobs WHERE status = 'RUNNING' OR locked_at IS NOT NULL OR lock_owner IS NOT NULL"
+        ).fetchone()[0]
+    return (
+        int(unsafe_decisions) == 0
+        and int(unsafe_audits) == 0
+        and int(scheduler_rows) == 1
+        and int(running_rows) == 0
+    )
+
+
 def token_rows_look_test_only(db_path: Path) -> bool:
     with connect_read_only(db_path) as connection:
         if not table_exists(connection, "printer_tokens"):
@@ -427,6 +493,8 @@ def classify_operator_db_state(db_path: str | Path | None = None, project_root: 
     if not resolved.is_file():
         return STATE_NO_DB
     counts = get_core_table_counts(resolved, project_root)
+    if scheduler_single_tick_executed_rows_exist(resolved, counts):
+        return STATE_SCHEDULER_SINGLE_TICK_EXECUTED
     if real_paper_audit_operator_review_rows_exist(resolved, counts):
         return STATE_REAL_PAPER_AUDIT_OPERATOR_REVIEW
     if real_data_paper_decision_rows_exist(resolved, counts):

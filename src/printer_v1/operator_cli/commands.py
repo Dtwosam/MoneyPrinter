@@ -41,6 +41,7 @@ from printer_v1.operator_db.status import (
     STATE_REAL_MEMORY_RETRIEVAL,
     STATE_REAL_DATA_PAPER_DECISION,
     STATE_REAL_PAPER_AUDIT_OPERATOR_REVIEW,
+    STATE_SCHEDULER_SINGLE_TICK_EXECUTED,
     STATE_SCHEMA_ONLY,
     STATE_SOURCE_ONLY_SMOKE_CHECK,
     STATE_TEST_ONLY,
@@ -91,6 +92,7 @@ READINESS_READY_MEMORY_QUALITY_AUDITED = "READY_MEMORY_QUALITY_AUDITED"
 READINESS_READY_REAL_MEMORY_RETRIEVAL = "READY_REAL_MEMORY_RETRIEVAL"
 READINESS_READY_REAL_DATA_PAPER_DECISION = "READY_REAL_DATA_PAPER_DECISION"
 READINESS_READY_REAL_PAPER_AUDIT_OPERATOR_REVIEW = "READY_REAL_PAPER_AUDIT_OPERATOR_REVIEW"
+READINESS_READY_SCHEDULER_SINGLE_TICK_EXECUTED = "READY_SCHEDULER_SINGLE_TICK_EXECUTED"
 READINESS_READY_WITH_LOCAL_DATA = "READY_WITH_LOCAL_DATA"
 READINESS_BLOCKED = "BLOCKED"
 READINESS_STATE_UNKNOWN = "STATE_UNKNOWN"
@@ -3233,6 +3235,321 @@ def main_audit_paper_decision_once(argv: Sequence[str] | None = None) -> int:
         return _print_error(exc)
 
 
+PHASE35_SELF_CHECK_JOB_NAME = "phase35_scheduler_single_tick_self_check"
+PHASE35_SELF_CHECK_JOB_KIND = "BACKUP_SOURCE_CHECK"
+PHASE35_LOCK_OWNER = "phase35_scheduler_single_tick"
+PHASE35_SAFE_JOB_KINDS = {PHASE35_SELF_CHECK_JOB_KIND}
+
+
+def _validate_scheduler_single_tick_args(args: argparse.Namespace) -> None:
+    if not args.operator_approved:
+        raise ValueError("scheduler single-tick requires explicit operator approval")
+    if args.max_jobs != 1:
+        raise ValueError("scheduler single-tick is limited to max_jobs=1")
+    if args.job_id is not None and args.create_approved_self_check_job:
+        raise ValueError("scheduler single-tick accepts either job_id or create-approved-self-check-job, not both")
+
+
+def _utc_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _scheduler_job_counts(connection: sqlite3.Connection) -> dict[str, int]:
+    return {
+        "total": int(connection.execute("SELECT COUNT(*) FROM printer_scheduler_jobs").fetchone()[0]),
+        "pending": int(connection.execute("SELECT COUNT(*) FROM printer_scheduler_jobs WHERE status = 'PENDING'").fetchone()[0]),
+        "running": int(connection.execute("SELECT COUNT(*) FROM printer_scheduler_jobs WHERE status = 'RUNNING'").fetchone()[0]),
+        "succeeded": int(connection.execute("SELECT COUNT(*) FROM printer_scheduler_jobs WHERE status = 'SUCCEEDED'").fetchone()[0]),
+        "failed": int(connection.execute("SELECT COUNT(*) FROM printer_scheduler_jobs WHERE status = 'FAILED'").fetchone()[0]),
+        "active_locks": int(
+            connection.execute(
+                "SELECT COUNT(*) FROM printer_scheduler_jobs WHERE locked_at IS NOT NULL OR lock_owner IS NOT NULL"
+            ).fetchone()[0]
+        ),
+    }
+
+
+def _create_phase35_self_check_job(connection: sqlite3.Connection) -> int:
+    existing = int(connection.execute("SELECT COUNT(*) FROM printer_scheduler_jobs").fetchone()[0])
+    if existing:
+        raise ValueError("create-approved-self-check-job requires zero existing scheduler jobs")
+    now = _utc_timestamp()
+    cursor = connection.execute(
+        """
+        INSERT INTO printer_scheduler_jobs (
+            job_name, job_kind, target_table, target_id, priority,
+            status, scheduled_for, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)
+        """,
+        (
+            PHASE35_SELF_CHECK_JOB_NAME,
+            PHASE35_SELF_CHECK_JOB_KIND,
+            "printer_operator_review_reports",
+            1,
+            11,
+            now,
+            now,
+            now,
+        ),
+    )
+    return int(cursor.lastrowid)
+
+
+def _load_scheduler_job_for_tick(connection: sqlite3.Connection, job_id: int | None) -> sqlite3.Row | None:
+    now = _utc_timestamp()
+    if job_id is not None:
+        return connection.execute("SELECT * FROM printer_scheduler_jobs WHERE id = ?", (job_id,)).fetchone()
+    return connection.execute(
+        """
+        SELECT *
+        FROM printer_scheduler_jobs
+        WHERE status = 'PENDING'
+          AND scheduled_for <= ?
+          AND locked_at IS NULL
+          AND lock_owner IS NULL
+          AND job_kind IN (?)
+        ORDER BY priority ASC, scheduled_for ASC, created_at ASC, id ASC
+        LIMIT 1
+        """,
+        (now, PHASE35_SELF_CHECK_JOB_KIND),
+    ).fetchone()
+
+
+def _claim_scheduler_job_for_tick(connection: sqlite3.Connection, job_id: int) -> bool:
+    now = _utc_timestamp()
+    cursor = connection.execute(
+        """
+        UPDATE printer_scheduler_jobs
+        SET status = 'RUNNING',
+            lock_owner = ?,
+            locked_at = ?,
+            started_at = ?,
+            updated_at = ?
+        WHERE id = ?
+          AND status = 'PENDING'
+          AND scheduled_for <= ?
+          AND locked_at IS NULL
+          AND lock_owner IS NULL
+        """,
+        (PHASE35_LOCK_OWNER, now, now, now, job_id, now),
+    )
+    return int(cursor.rowcount) == 1
+
+
+def _complete_scheduler_job_for_tick(connection: sqlite3.Connection, job_id: int) -> None:
+    now = _utc_timestamp()
+    connection.execute(
+        """
+        UPDATE printer_scheduler_jobs
+        SET status = 'SUCCEEDED',
+            finished_at = ?,
+            locked_at = NULL,
+            lock_owner = NULL,
+            last_error = NULL,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (now, now, job_id),
+    )
+
+
+def _fail_scheduler_job_for_tick(connection: sqlite3.Connection, job_id: int, error: str) -> None:
+    now = _utc_timestamp()
+    connection.execute(
+        """
+        UPDATE printer_scheduler_jobs
+        SET status = 'FAILED',
+            finished_at = ?,
+            locked_at = NULL,
+            lock_owner = NULL,
+            retry_count = retry_count + 1,
+            last_error = ?,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (now, error, now, job_id),
+    )
+
+
+def _execute_phase35_scheduler_job(connection: sqlite3.Connection, job: sqlite3.Row) -> dict[str, Any]:
+    if str(job["job_kind"]) not in PHASE35_SAFE_JOB_KINDS:
+        raise ValueError("UNSUPPORTED_JOB_KIND_PHASE35")
+
+    decision = connection.execute(
+        "SELECT * FROM printer_paper_decisions ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    if decision is None:
+        raise ValueError("SCHEDULER_SELF_CHECK_MISSING_PAPER_DECISION")
+    action = decision["final_action_label"] or decision["decision_action"]
+    status = decision["paper_decision_status_label"] or decision["decision_status"]
+    if action != "NO_ACTION" or status != "PAPER_DECISION_BLOCKED":
+        raise ValueError("SCHEDULER_SELF_CHECK_UNSAFE_DECISION_STATE")
+
+    checks = {
+        "source_failures_visible": int(connection.execute("SELECT COUNT(*) FROM printer_source_failures").fetchone()[0]) > 0,
+        "dirty_memory_blocked": int(
+            connection.execute("SELECT COUNT(*) FROM printer_memory_windows WHERE memory_quality_label = 'DIRTY_MEMORY'").fetchone()[0]
+        )
+        > 0,
+        "paper_decision_blocked": True,
+        "paper_position_rows": int(connection.execute("SELECT COUNT(*) FROM printer_paper_positions").fetchone()[0]),
+        "paper_trade_event_rows": int(connection.execute("SELECT COUNT(*) FROM printer_paper_trade_events").fetchone()[0]),
+        "runtime_started": False,
+    }
+    if checks["paper_position_rows"] or checks["paper_trade_event_rows"]:
+        raise ValueError("SCHEDULER_SELF_CHECK_FOUND_PAPER_EXECUTION_ROWS")
+    return {
+        "job_handler": "phase35_scheduler_self_check",
+        "job_kind": job["job_kind"],
+        "job_name": job["job_name"],
+        "checks": checks,
+        "scheduler_executed": True,
+        "runtime_started": False,
+        "source_fetch_executed": False,
+    }
+
+
+def build_scheduler_single_tick_payload(args: argparse.Namespace) -> dict[str, Any]:
+    _validate_scheduler_single_tick_args(args)
+    project_root = _project_root(args.project_root)
+    resolved = resolve_operator_db_path(args.db_path, project_root)
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Operator DB does not exist: {resolved}")
+
+    before_counts = get_core_table_counts(resolved, project_root)
+    connection = sqlite3.connect(resolved)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    job_created = False
+    created_job_id: int | None = None
+    selected_job_id: int | None = None
+    selected_job_kind: str | None = None
+    selected_job_status: str | None = None
+    execution_report: dict[str, Any] = {}
+    jobs_claimed = 0
+    jobs_executed = 0
+    jobs_completed = 0
+    jobs_failed = 0
+    try:
+        if args.create_approved_self_check_job:
+            created_job_id = _create_phase35_self_check_job(connection)
+            job_created = True
+
+        job = _load_scheduler_job_for_tick(connection, args.job_id)
+        if job is None:
+            connection.commit()
+        else:
+            selected_job_id = int(job["id"])
+            selected_job_kind = str(job["job_kind"])
+            selected_job_status = str(job["status"])
+            if selected_job_status != "PENDING":
+                raise ValueError("scheduler single-tick can only claim pending due jobs")
+            if not _claim_scheduler_job_for_tick(connection, selected_job_id):
+                raise ValueError("scheduler single-tick could not claim the selected job")
+            jobs_claimed = 1
+            jobs_executed = 1
+            try:
+                running_job = connection.execute(
+                    "SELECT * FROM printer_scheduler_jobs WHERE id = ?",
+                    (selected_job_id,),
+                ).fetchone()
+                execution_report = _execute_phase35_scheduler_job(connection, running_job)
+                _complete_scheduler_job_for_tick(connection, selected_job_id)
+                selected_job_status = "SUCCEEDED"
+                jobs_completed = 1
+            except Exception as exc:
+                _fail_scheduler_job_for_tick(connection, selected_job_id, str(exc))
+                selected_job_status = "FAILED"
+                execution_report = {
+                    "job_handler": "phase35_scheduler_self_check",
+                    "job_kind": selected_job_kind,
+                    "job_name": job["job_name"],
+                    "error": str(exc),
+                    "scheduler_executed": True,
+                    "runtime_started": False,
+                    "source_fetch_executed": False,
+                }
+                jobs_failed = 1
+        connection.commit()
+        scheduler_counts = _scheduler_job_counts(connection)
+    finally:
+        connection.close()
+
+    after_counts = get_core_table_counts(resolved, project_root)
+    deltas = {
+        table: (after_counts.get(table) or 0) - (before_counts.get(table) or 0)
+        for table in sorted(after_counts)
+    }
+    guarded_tables = [
+        "printer_tokens",
+        "printer_pairs",
+        "printer_source_requests",
+        "printer_source_responses",
+        "printer_source_failures",
+        "printer_token_snapshots",
+        *CONTEXT_TABLES,
+        *MEMORY_OUTPUT_TABLES,
+        "printer_memory_audit_reports",
+        "printer_memory_retrieval_queries",
+        "printer_memory_retrieval_matches",
+        "printer_paper_decisions",
+        "printer_paper_positions",
+        "printer_paper_trade_events",
+        "printer_paper_trade_audits",
+        "printer_paper_audit_reports",
+        "printer_operator_review_reports",
+        "printer_operator_review_items",
+    ]
+    guard_deltas = {table: deltas[table] for table in guarded_tables if deltas.get(table)}
+    status = get_operator_db_status(resolved, project_root)
+    action_counts = _paper_decision_action_counts(resolved)
+    return {
+        "command": "printer-run-scheduler-single-tick",
+        "db_path": str(resolved),
+        "operator_approved": True,
+        "max_jobs": 1,
+        "scheduler_job_created": job_created,
+        "created_scheduler_job_id": created_job_id,
+        "selected_scheduler_job_id": selected_job_id,
+        "scheduler_job_kind": selected_job_kind,
+        "scheduler_job_status": selected_job_status,
+        "scheduler_jobs_claimed": jobs_claimed,
+        "scheduler_jobs_executed": jobs_executed,
+        "scheduler_jobs_completed": jobs_completed,
+        "scheduler_jobs_failed": jobs_failed,
+        "running_scheduler_jobs_after_exit": scheduler_counts["running"],
+        "active_job_locks_after_exit": scheduler_counts["active_locks"],
+        "scheduler_counts": scheduler_counts,
+        "execution_report": execution_report,
+        "guard_table_deltas": guard_deltas,
+        "guard_tables_unchanged": not guard_deltas,
+        "scheduler_job_delta": deltas.get("printer_scheduler_jobs", 0),
+        "action_counts": action_counts,
+        "counts_after": after_counts,
+        "db_state_classification": status["state_classification"],
+        "memory_has_started": status["memory_has_started"],
+        "paper_trading_has_started": status["paper_trading_has_started"],
+        "runtime_has_started": status["runtime_has_started"],
+        "single_tick_boundary_check": "PASS_SINGLE_TICK_ONLY",
+    }
+
+
+def main_run_scheduler_single_tick(argv: Sequence[str] | None = None) -> int:
+    parser = _base_parser("Run exactly one approved scheduler job and exit.", ("json", "text"))
+    parser.add_argument("--operator-approved", action="store_true")
+    parser.add_argument("--job-id", type=int)
+    parser.add_argument("--create-approved-self-check-job", action="store_true")
+    parser.add_argument("--max-jobs", type=int, default=1)
+    args = parser.parse_args(argv)
+    try:
+        payload = build_scheduler_single_tick_payload(args)
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
 def classify_readiness(status: dict[str, Any], migration_status: dict[str, Any], source_scan: dict[str, Any], runtime_scan: dict[str, Any]) -> str:
     if status["state_classification"] == STATE_NO_DB:
         return READINESS_NEEDS_DB_INIT
@@ -3264,6 +3581,8 @@ def classify_readiness(status: dict[str, Any], migration_status: dict[str, Any],
         return READINESS_READY_REAL_DATA_PAPER_DECISION
     if status["state_classification"] == STATE_REAL_PAPER_AUDIT_OPERATOR_REVIEW:
         return READINESS_READY_REAL_PAPER_AUDIT_OPERATOR_REVIEW
+    if status["state_classification"] == STATE_SCHEDULER_SINGLE_TICK_EXECUTED:
+        return READINESS_READY_SCHEDULER_SINGLE_TICK_EXECUTED
     if status["state_classification"] in {STATE_TOKEN_ROWS, STATE_TEST_ONLY, STATE_MEMORY_ROWS, STATE_PAPER_ROWS}:
         return READINESS_READY_WITH_LOCAL_DATA
     return READINESS_STATE_UNKNOWN
