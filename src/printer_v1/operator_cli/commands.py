@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import json
+import sqlite3
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -27,6 +30,7 @@ from printer_v1.operator_cli.formatting import (
 from printer_v1.operator_db.bootstrap import initialize_operator_db
 from printer_v1.operator_db.paths import resolve_operator_db_path
 from printer_v1.operator_db.status import (
+    STATE_CONTROLLED_INTAKE,
     STATE_MEMORY_ROWS,
     STATE_NO_DB,
     STATE_PAPER_ROWS,
@@ -68,6 +72,7 @@ from printer_v1.sources.governed_execution import execute_source_request_with_go
 READINESS_NEEDS_DB_INIT = "NEEDS_DB_INIT"
 READINESS_READY_SCHEMA_ONLY = "READY_SCHEMA_ONLY"
 READINESS_READY_SOURCE_ONLY_SMOKE_CHECK = "READY_SOURCE_ONLY_SMOKE_CHECK"
+READINESS_READY_CONTROLLED_INTAKE = "READY_CONTROLLED_INTAKE"
 READINESS_READY_WITH_LOCAL_DATA = "READY_WITH_LOCAL_DATA"
 READINESS_BLOCKED = "BLOCKED"
 READINESS_STATE_UNKNOWN = "STATE_UNKNOWN"
@@ -81,6 +86,31 @@ SOURCE_ONLY_TABLES = {
 DOWNSTREAM_GUARD_TABLES = [
     "printer_tokens",
     "printer_pairs",
+    "printer_tracking_queue",
+    "printer_scheduler_jobs",
+    "printer_token_snapshots",
+    "printer_market_regime_snapshots",
+    "printer_solana_chain_heat_snapshots",
+    "printer_safety_rug_snapshots",
+    "printer_liquidity_exit_snapshots",
+    "printer_trading_flow_snapshots",
+    "printer_chart_volatility_snapshots",
+    "printer_micro_events",
+    "printer_memory_windows",
+    "printer_episodes",
+    "printer_episode_snapshots",
+    "printer_episode_outcomes",
+    "printer_memory_fingerprints",
+    "printer_memory_retrieval_queries",
+    "printer_memory_retrieval_matches",
+    "printer_paper_decisions",
+    "printer_paper_positions",
+    "printer_paper_trade_events",
+    "printer_paper_trade_audits",
+    "printer_paper_audit_reports",
+]
+
+MANUAL_INTAKE_GUARD_TABLES = [
     "printer_tracking_queue",
     "printer_scheduler_jobs",
     "printer_token_snapshots",
@@ -439,6 +469,222 @@ def main_source_smoke_dexscreener(argv: Sequence[str] | None = None) -> int:
         return _print_error(exc)
 
 
+def _utc_now_text() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_intake_items(args: argparse.Namespace) -> list[dict[str, Any]]:
+    if args.intake_json:
+        parsed = json.loads(args.intake_json)
+        if isinstance(parsed, dict):
+            items = [parsed]
+        elif isinstance(parsed, list):
+            items = parsed
+        else:
+            raise ValueError("manual intake JSON must be an object or list")
+    else:
+        items = [
+            {
+                "token_mint": args.token_mint,
+                "pair_address": args.pair_address or args.pool_address,
+                "chain": args.chain,
+                "intake_reason": args.intake_reason,
+                "source_reference": args.source_reference,
+                "source_request_id": args.source_request_id,
+                "token_symbol": args.token_symbol,
+                "token_name": args.token_name,
+                "dex_id": args.dex_id,
+            }
+        ]
+    if not 1 <= len(items) <= 3:
+        raise ValueError("manual intake accepts 1 to 3 token/pair items")
+    return [dict(item) for item in items]
+
+
+def _validate_manual_intake_item(item: dict[str, Any], operator_approved: bool) -> dict[str, Any]:
+    if not operator_approved:
+        raise ValueError("manual intake requires explicit operator approval")
+    token_mint = str(item.get("token_mint") or "").strip()
+    pair_address = str(item.get("pair_address") or item.get("pool_address") or "").strip()
+    chain = str(item.get("chain") or "solana").strip().lower()
+    intake_reason = str(item.get("intake_reason") or "").strip()
+    source_reference = item.get("source_reference")
+    source_request_id = item.get("source_request_id")
+    if chain != "solana":
+        raise ValueError("manual intake is Solana-only")
+    if not token_mint:
+        raise ValueError("manual intake requires token_mint")
+    if not pair_address:
+        raise ValueError("manual intake requires pair_address or pool_address")
+    if not intake_reason:
+        raise ValueError("manual intake requires intake_reason")
+    if not source_reference and source_request_id is None:
+        raise ValueError("manual intake requires source_reference or source_request_id")
+    return {
+        "token_mint": token_mint,
+        "pair_address": pair_address,
+        "chain": chain,
+        "intake_reason": intake_reason,
+        "source_reference": source_reference,
+        "source_request_id": source_request_id,
+        "token_symbol": item.get("token_symbol") or item.get("symbol"),
+        "token_name": item.get("token_name") or item.get("name"),
+        "dex_id": item.get("dex_id") or item.get("dex"),
+    }
+
+
+def _connect_manual_intake(db_path: Path) -> sqlite3.Connection:
+    connection = sqlite3.connect(db_path)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    return connection
+
+
+def _upsert_manual_token_pair(connection: sqlite3.Connection, item: dict[str, Any]) -> dict[str, Any]:
+    now_text = _utc_now_text()
+    token_row = connection.execute(
+        "SELECT id FROM printer_tokens WHERE token_mint = ?",
+        (item["token_mint"],),
+    ).fetchone()
+    token_created = token_row is None
+    if token_created:
+        cursor = connection.execute(
+            """
+            INSERT INTO printer_tokens (
+                token_mint,
+                chain,
+                symbol,
+                name,
+                first_seen_at,
+                last_seen_at,
+                token_status
+            ) VALUES (?, 'solana', ?, ?, ?, ?, ?)
+            """,
+            (
+                item["token_mint"],
+                item.get("token_symbol"),
+                item.get("token_name"),
+                now_text,
+                now_text,
+                "MANUAL_INTAKE_PENDING_SNAPSHOT",
+            ),
+        )
+        token_id = int(cursor.lastrowid)
+    else:
+        token_id = int(token_row["id"])
+
+    pair_row = connection.execute(
+        "SELECT id FROM printer_pairs WHERE pair_address = ?",
+        (item["pair_address"],),
+    ).fetchone()
+    pair_created = pair_row is None
+    if pair_created:
+        cursor = connection.execute(
+            """
+            INSERT INTO printer_pairs (
+                token_id,
+                pair_address,
+                dex,
+                pool_source,
+                base_token_mint,
+                first_seen_at,
+                last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                token_id,
+                item["pair_address"],
+                item.get("dex_id"),
+                "manual_operator_intake",
+                item["token_mint"],
+                now_text,
+                now_text,
+            ),
+        )
+        pair_id = int(cursor.lastrowid)
+    else:
+        pair_id = int(pair_row["id"])
+
+    return {
+        "token_id": token_id,
+        "pair_id": pair_id,
+        "token_mint": item["token_mint"],
+        "pair_address": item["pair_address"],
+        "token_created": token_created,
+        "pair_created": pair_created,
+        "intake_reason": item["intake_reason"],
+        "source_reference": item.get("source_reference"),
+        "source_request_id": item.get("source_request_id"),
+    }
+
+
+def build_manual_intake_token_pair_payload(args: argparse.Namespace) -> dict[str, Any]:
+    project_root = _project_root(args.project_root)
+    resolved = resolve_operator_db_path(args.db_path, project_root)
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Operator DB does not exist: {resolved}")
+
+    before_counts = get_core_table_counts(resolved, project_root)
+    items = [
+        _validate_manual_intake_item(item, args.operator_approved)
+        for item in _parse_intake_items(args)
+    ]
+
+    connection = _connect_manual_intake(resolved)
+    try:
+        results = [_upsert_manual_token_pair(connection, item) for item in items]
+        connection.commit()
+    finally:
+        connection.close()
+
+    after_counts = get_core_table_counts(resolved, project_root)
+    deltas = {
+        table: (after_counts.get(table) or 0) - (before_counts.get(table) or 0)
+        for table in sorted(after_counts)
+    }
+    guard_deltas = {table: deltas[table] for table in MANUAL_INTAKE_GUARD_TABLES if deltas.get(table)}
+    status = get_operator_db_status(resolved, project_root)
+    return {
+        "command": "printer-manual-intake-token-pair",
+        "db_path": str(resolved),
+        "operator_approved": True,
+        "intake_count": len(items),
+        "results": results,
+        "token_delta": deltas.get("printer_tokens", 0),
+        "pair_delta": deltas.get("printer_pairs", 0),
+        "guard_table_deltas": guard_deltas,
+        "guard_tables_unchanged": not guard_deltas,
+        "counts_after": after_counts,
+        "db_state_classification": status["state_classification"],
+        "memory_has_started": status["memory_has_started"],
+        "paper_trading_has_started": status["paper_trading_has_started"],
+        "runtime_has_started": status["runtime_has_started"],
+    }
+
+
+def main_manual_intake_token_pair(argv: Sequence[str] | None = None) -> int:
+    parser = _base_parser("Manually intake 1 to 3 operator-approved Solana token/pair rows.", ("json", "text"))
+    parser.add_argument("--operator-approved", action="store_true")
+    parser.add_argument("--token-mint")
+    parser.add_argument("--pair-address")
+    parser.add_argument("--pool-address")
+    parser.add_argument("--chain", default="solana")
+    parser.add_argument("--intake-reason")
+    parser.add_argument("--source-reference")
+    parser.add_argument("--source-request-id", type=int)
+    parser.add_argument("--token-symbol")
+    parser.add_argument("--token-name")
+    parser.add_argument("--dex-id")
+    parser.add_argument("--intake-json")
+    args = parser.parse_args(argv)
+    try:
+        payload = build_manual_intake_token_pair_payload(args)
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
 def classify_readiness(status: dict[str, Any], migration_status: dict[str, Any], source_scan: dict[str, Any], runtime_scan: dict[str, Any]) -> str:
     if status["state_classification"] == STATE_NO_DB:
         return READINESS_NEEDS_DB_INIT
@@ -454,6 +700,8 @@ def classify_readiness(status: dict[str, Any], migration_status: dict[str, Any],
         return READINESS_READY_SCHEMA_ONLY
     if status["state_classification"] == STATE_SOURCE_ONLY_SMOKE_CHECK:
         return READINESS_READY_SOURCE_ONLY_SMOKE_CHECK
+    if status["state_classification"] == STATE_CONTROLLED_INTAKE:
+        return READINESS_READY_CONTROLLED_INTAKE
     if status["state_classification"] in {STATE_TOKEN_ROWS, STATE_TEST_ONLY, STATE_MEMORY_ROWS, STATE_PAPER_ROWS}:
         return READINESS_READY_WITH_LOCAL_DATA
     return READINESS_STATE_UNKNOWN

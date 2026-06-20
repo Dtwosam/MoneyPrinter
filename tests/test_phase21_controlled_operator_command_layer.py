@@ -61,6 +61,7 @@ class Phase21ControlledOperatorCommandLayerTest(unittest.TestCase):
             "printer-synthetic-validation": "printer_v1.operator_cli.commands:main_synthetic_validation",
             "printer-readiness-check": "printer_v1.operator_cli.commands:main_readiness_check",
             "printer-source-smoke-dexscreener": "printer_v1.operator_cli.commands:main_source_smoke_dexscreener",
+            "printer-manual-intake-token-pair": "printer_v1.operator_cli.commands:main_manual_intake_token_pair",
         }
         self.assertEqual({key: scripts[key] for key in expected}, expected)
 

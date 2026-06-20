@@ -12,6 +12,7 @@ from printer_v1.operator_db.paths import resolve_operator_db_path
 STATE_NO_DB = "NO_PERSISTENT_DB_FOUND"
 STATE_SCHEMA_ONLY = "PERSISTENT_DB_EMPTY_SCHEMA_ONLY"
 STATE_SOURCE_ONLY_SMOKE_CHECK = "PERSISTENT_DB_SOURCE_ONLY_SMOKE_CHECK"
+STATE_CONTROLLED_INTAKE = "PERSISTENT_DB_CONTROLLED_INTAKE"
 STATE_TEST_ONLY = "PERSISTENT_DB_HAS_TEST_ONLY_ROWS"
 STATE_TOKEN_ROWS = "PERSISTENT_DB_HAS_REAL_TOKEN_ROWS"
 STATE_MEMORY_ROWS = "PERSISTENT_DB_HAS_REAL_MEMORY_ROWS"
@@ -22,6 +23,7 @@ STATE_CLASSIFICATIONS = {
     STATE_NO_DB,
     STATE_SCHEMA_ONLY,
     STATE_SOURCE_ONLY_SMOKE_CHECK,
+    STATE_CONTROLLED_INTAKE,
     STATE_TEST_ONLY,
     STATE_TOKEN_ROWS,
     STATE_MEMORY_ROWS,
@@ -109,6 +111,16 @@ SOURCE_ONLY_BLOCKER_TABLES = [
     *PAPER_TABLES,
 ]
 
+CONTROLLED_INTAKE_BLOCKER_TABLES = [
+    "printer_tracking_queue",
+    "printer_scheduler_jobs",
+    *SNAPSHOT_TABLES,
+    *MEMORY_TABLES,
+    "printer_memory_retrieval_queries",
+    "printer_memory_retrieval_matches",
+    *PAPER_TABLES,
+]
+
 
 @contextmanager
 def connect_read_only(db_path: str | Path) -> Iterator[sqlite3.Connection]:
@@ -180,6 +192,16 @@ def only_source_smoke_rows_exist(counts: dict[str, int | None]) -> bool:
     return row_count_sum(counts, SOURCE_ONLY_BLOCKER_TABLES) == 0
 
 
+def controlled_intake_rows_exist(counts: dict[str, int | None]) -> bool:
+    token_count = counts.get("printer_tokens") or 0
+    pair_count = counts.get("printer_pairs") or 0
+    if token_count < 1 or pair_count < 1:
+        return False
+    if token_count > 3 or pair_count > 3:
+        return False
+    return row_count_sum(counts, CONTROLLED_INTAKE_BLOCKER_TABLES) == 0
+
+
 def token_rows_look_test_only(db_path: Path) -> bool:
     with connect_read_only(db_path) as connection:
         if not table_exists(connection, "printer_tokens"):
@@ -200,6 +222,8 @@ def classify_operator_db_state(db_path: str | Path | None = None, project_root: 
         return STATE_PAPER_ROWS
     if row_count_sum(counts, MEMORY_TABLES) > 0:
         return STATE_MEMORY_ROWS
+    if controlled_intake_rows_exist(counts):
+        return STATE_CONTROLLED_INTAKE
     if only_source_smoke_rows_exist(counts):
         return STATE_SOURCE_ONLY_SMOKE_CHECK
     if counts.get("printer_tokens"):
