@@ -34,6 +34,7 @@ from printer_v1.operator_db.status import (
     STATE_CONTROLLED_CONTEXT,
     STATE_CONTROLLED_SNAPSHOTS,
     STATE_FIRST_MEMORY_WINDOW,
+    STATE_MEMORY_QUALITY_AUDITED,
     STATE_MEMORY_ROWS,
     STATE_NO_DB,
     STATE_PAPER_ROWS,
@@ -81,6 +82,7 @@ READINESS_READY_CONTROLLED_INTAKE = "READY_CONTROLLED_INTAKE"
 READINESS_READY_CONTROLLED_SNAPSHOTS = "READY_CONTROLLED_SNAPSHOTS"
 READINESS_READY_CONTROLLED_CONTEXT = "READY_CONTROLLED_CONTEXT"
 READINESS_READY_FIRST_MEMORY_WINDOW = "READY_FIRST_MEMORY_WINDOW"
+READINESS_READY_MEMORY_QUALITY_AUDITED = "READY_MEMORY_QUALITY_AUDITED"
 READINESS_READY_WITH_LOCAL_DATA = "READY_WITH_LOCAL_DATA"
 READINESS_BLOCKED = "BLOCKED"
 READINESS_STATE_UNKNOWN = "STATE_UNKNOWN"
@@ -212,6 +214,10 @@ MEMORY_OUTPUT_TABLES = [
     "printer_episode_snapshots",
     "printer_episode_outcomes",
     "printer_memory_fingerprints",
+]
+
+MEMORY_AUDIT_TABLES = [
+    "printer_memory_audit_reports",
 ]
 
 
@@ -1815,6 +1821,329 @@ def main_build_memory_window_once(argv: Sequence[str] | None = None) -> int:
         return _print_error(exc)
 
 
+def _validate_memory_audit_args(args: argparse.Namespace) -> None:
+    if not args.operator_approved:
+        raise ValueError("memory quality audit requires explicit operator approval")
+    if str(args.chain or "").strip().lower() != "solana":
+        raise ValueError("memory quality audit is Solana-only")
+    if not (args.memory_window_id or args.episode_id or args.token_mint or args.token_id):
+        raise ValueError("memory quality audit requires memory_window_id, episode_id, token_mint, or token_id")
+
+
+def _resolve_memory_audit_target(connection: sqlite3.Connection, args: argparse.Namespace) -> dict[str, Any]:
+    if args.memory_window_id:
+        window = connection.execute("SELECT * FROM printer_memory_windows WHERE id = ?", (args.memory_window_id,)).fetchone()
+    elif args.episode_id:
+        episode_row = connection.execute("SELECT memory_window_id FROM printer_episodes WHERE id = ?", (args.episode_id,)).fetchone()
+        if episode_row is None:
+            raise ValueError("memory quality audit target episode not found")
+        window = connection.execute("SELECT * FROM printer_memory_windows WHERE id = ?", (episode_row["memory_window_id"],)).fetchone()
+    else:
+        target = _resolve_approved_context_target(connection, args)
+        window = connection.execute(
+            """
+            SELECT *
+            FROM printer_memory_windows
+            WHERE token_id = ? AND pair_id = ? AND window_kind = 'WINDOW_15M'
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (target["token_id"], target["pair_id"]),
+        ).fetchone()
+    if window is None:
+        raise ValueError("memory quality audit target memory window not found")
+
+    token = connection.execute("SELECT * FROM printer_tokens WHERE id = ?", (window["token_id"],)).fetchone()
+    pair = connection.execute("SELECT * FROM printer_pairs WHERE id = ?", (window["pair_id"],)).fetchone()
+    episode = connection.execute(
+        "SELECT * FROM printer_episodes WHERE memory_window_id = ? ORDER BY id DESC LIMIT 1",
+        (window["id"],),
+    ).fetchone()
+    if token is None or pair is None or episode is None:
+        raise ValueError("memory quality audit requires token, pair, and episode rows")
+    if token["chain"] != "solana":
+        raise ValueError("memory quality audit target must be Solana")
+    return {
+        "window": _row_to_dict(window),
+        "token": _row_to_dict(token),
+        "pair": _row_to_dict(pair),
+        "episode": _row_to_dict(episode),
+    }
+
+
+def _latest_row(connection: sqlite3.Connection, table: str, where: str = "", params: tuple[Any, ...] = ()) -> dict[str, Any]:
+    query = f"SELECT * FROM {table} {where} ORDER BY id DESC LIMIT 1"
+    return _row_to_dict(connection.execute(query, params).fetchone())
+
+
+def _memory_audit_snapshot_summary(connection: sqlite3.Connection, window: dict[str, Any]) -> dict[str, Any]:
+    rows = connection.execute(
+        """
+        SELECT s.*
+        FROM printer_episode_snapshots es
+        JOIN printer_token_snapshots s ON s.id = es.token_snapshot_id
+        WHERE es.episode_id = (
+            SELECT id FROM printer_episodes WHERE memory_window_id = ? ORDER BY id DESC LIMIT 1
+        )
+        ORDER BY es.position_in_episode ASC, s.captured_at ASC
+        """,
+        (window["id"],),
+    ).fetchall()
+    snapshots = [_row_to_dict(row) for row in rows]
+    expected = int(window.get("expected_snapshot_count") or 2)
+    actual = len(snapshots)
+    times = [row.get("captured_at") for row in snapshots if row.get("captured_at")]
+    observed_span = None
+    if len(times) >= 2:
+        observed_span = (
+            datetime.fromisoformat(times[-1].replace("Z", "+00:00"))
+            - datetime.fromisoformat(times[0].replace("Z", "+00:00"))
+        ).total_seconds()
+    return {
+        "snapshot_count": actual,
+        "expected_min_snapshot_count": expected,
+        "missing_snapshot_count": max(0, expected - actual),
+        "observed_window_span_seconds": observed_span,
+        "missing_start_coverage": actual < 2,
+        "missing_mid_window_coverage": actual < 2,
+        "missing_end_coverage": actual < 2,
+        "incomplete_15m_window": bool(window.get("coverage_state") == "INCOMPLETE_15M_WINDOW" or actual < expected),
+        "insufficient_snapshot_coverage": actual < expected,
+        "status": "INSUFFICIENT_SNAPSHOT_COVERAGE" if actual < expected else "SNAPSHOT_COVERAGE_SUFFICIENT",
+        "snapshot_ids": [row["id"] for row in snapshots],
+    }
+
+
+def _memory_audit_source_summary(connection: sqlite3.Connection) -> dict[str, Any]:
+    request_count = int(connection.execute("SELECT COUNT(*) FROM printer_source_requests").fetchone()[0])
+    response_count = int(connection.execute("SELECT COUNT(*) FROM printer_source_responses").fetchone()[0])
+    failure_count = int(connection.execute("SELECT COUNT(*) FROM printer_source_failures").fetchone()[0])
+    latest_failure = _latest_row(connection, "printer_source_failures")
+    statuses = {
+        "snapshot_source_statuses": [
+            row[0] for row in connection.execute("SELECT DISTINCT source_status FROM printer_token_snapshots").fetchall()
+        ],
+        "snapshot_data_quality_labels": [
+            row[0] for row in connection.execute("SELECT DISTINCT data_quality_label FROM printer_token_snapshots").fetchall()
+        ],
+    }
+    return {
+        "source_request_count": request_count,
+        "source_response_count": response_count,
+        "source_failure_count": failure_count,
+        "latest_source_failure": latest_failure,
+        "source_status_summary": statuses,
+        "required_evidence_failed_or_missing": failure_count > 0,
+        "status": "SOURCE_ISSUES_VISIBLE" if failure_count else "SOURCE_QUALITY_ACCEPTABLE",
+    }
+
+
+def _memory_audit_context_summary(connection: sqlite3.Connection, token_id: int, pair_id: int) -> dict[str, Any]:
+    context_rows = _resolve_memory_context_rows(connection, {"token_id": token_id, "pair_id": pair_id})
+    labels = _context_memory_labels(context_rows)
+    unknown_labels = {
+        key: value for key, value in labels.items()
+        if value in {None, "UNKNOWN", "SOLANA_UNKNOWN", "SAFETY_UNKNOWN", "ENTRY_UNKNOWN", "EXIT_UNKNOWN", "FLOW_UNKNOWN", "TREND_UNKNOWN", "MICRO_EVENT_UNKNOWN"}
+    }
+    return {
+        "context_rows_present": {key: bool(value) for key, value in context_rows.items()},
+        "context_labels": labels,
+        "unknown_or_audit_only_context": unknown_labels,
+        "liquidity_exit_realism_known": labels.get("entry_realism_label") == "ENTRY_REALISTIC" and labels.get("exit_realism_label") == "EXIT_REALISTIC",
+        "market_context_real": labels.get("market_regime_label") not in {None, "UNKNOWN"},
+        "chain_context_real": labels.get("chain_heat_label") not in {None, "SOLANA_UNKNOWN"},
+        "micro_event_sufficient": labels.get("micro_event_state_label") not in {None, "MICRO_EVENT_UNKNOWN"},
+        "status": "MISSING_OR_UNKNOWN_CONTEXT" if unknown_labels else "CONTEXT_SUFFICIENT_FOR_AUDIT",
+    }
+
+
+def _memory_audit_outcome_summary(connection: sqlite3.Connection, window_id: int) -> dict[str, Any]:
+    outcome = _latest_row(connection, "printer_episode_outcomes", "WHERE memory_window_id = ?", (window_id,))
+    return {
+        "outcome_exists": bool(outcome),
+        "outcome_label": outcome.get("outcome_label"),
+        "action_lesson_label": outcome.get("action_lesson_label"),
+        "realistic_profit_possible": bool(outcome.get("realistic_profit_possible")) if outcome else False,
+        "capital_protection_possible": bool(outcome.get("capital_protection_possible")) if outcome else False,
+        "status": "OUTCOME_NOT_DETERMINABLE" if outcome.get("outcome_label") == "OUTCOME_UNKNOWN" else "OUTCOME_REVIEW_REQUIRED",
+        "no_paper_result": True,
+    }
+
+
+def _memory_audit_fingerprint_summary(connection: sqlite3.Connection, episode_id: int) -> dict[str, Any]:
+    fingerprint = _latest_row(connection, "printer_memory_fingerprints", "WHERE episode_id = ?", (episode_id,))
+    payload = _json_or_empty(fingerprint.get("fingerprint_payload_json"))
+    return {
+        "fingerprint_exists": bool(fingerprint),
+        "fingerprint_memory_status": fingerprint.get("memory_status"),
+        "fingerprint_do_not_train": bool(fingerprint.get("do_not_train")) if fingerprint else True,
+        "fingerprint_retrieval_ready": bool(payload.get("retrieval_ready")) if payload else False,
+        "learned_representation_present": False,
+        "numeric_similarity_artifact_present": False,
+        "decision_metric_artifact_present": False,
+        "similarity_retrieval_executed": False,
+        "status": "FINGERPRINT_NOT_RETRIEVAL_READY" if not payload.get("retrieval_ready") else "FINGERPRINT_RETRIEVAL_READY",
+    }
+
+
+def _build_memory_quality_audit_report(connection: sqlite3.Connection, target: dict[str, Any]) -> dict[str, Any]:
+    window = target["window"]
+    token = target["token"]
+    pair = target["pair"]
+    episode = target["episode"]
+    dirty_reasons = json.loads(window.get("rejection_reasons_json") or "[]")
+    snapshot_summary = _memory_audit_snapshot_summary(connection, window)
+    source_summary = _memory_audit_source_summary(connection)
+    context_summary = _memory_audit_context_summary(connection, int(window["token_id"]), int(window["pair_id"]))
+    outcome_summary = _memory_audit_outcome_summary(connection, int(window["id"]))
+    fingerprint_summary = _memory_audit_fingerprint_summary(connection, int(episode["id"]))
+    retrieval_ready = not bool(window.get("do_not_train")) and window.get("memory_quality_label") == "CLEAN_MEMORY" and fingerprint_summary["fingerprint_retrieval_ready"]
+    clean_eligible = window.get("memory_quality_label") == "CLEAN_MEMORY" and not dirty_reasons and retrieval_ready
+    audit_verdict = [
+        "DIRTY_MEMORY_CONFIRMED" if window.get("memory_quality_label") == "DIRTY_MEMORY" else "MEMORY_QUALITY_REVIEW_REQUIRED",
+        "CLEAN_MEMORY_BLOCKED" if not clean_eligible else "CLEAN_MEMORY_ELIGIBLE",
+        "MEMORY_NOT_TRUSTWORTHY_FOR_RETRIEVAL" if not retrieval_ready else "MEMORY_RETRIEVAL_READY",
+        "RETRIEVAL_NOT_ALLOWED" if not retrieval_ready else "RETRIEVAL_ALLOWED",
+        "PAPER_DECISION_NOT_ALLOWED" if not retrieval_ready else "PAPER_DECISION_REQUIRES_PHASE_32",
+    ]
+    return {
+        "memory_window_id": window["id"],
+        "episode_id": episode["id"],
+        "token_id": window["token_id"],
+        "pair_id": window["pair_id"],
+        "token_mint": token["token_mint"],
+        "pair_address": pair["pair_address"],
+        "memory_window_label": window["window_kind"],
+        "memory_quality_label": window["memory_quality_label"],
+        "retrieval_ready": retrieval_ready,
+        "audit_status": "PHASE30_MEMORY_QUALITY_AUDIT",
+        "audit_verdict": audit_verdict,
+        "dirty_reasons": dirty_reasons,
+        "snapshot_coverage_status": snapshot_summary["status"],
+        "snapshot_gap_summary": snapshot_summary,
+        "source_quality_summary": source_summary,
+        "context_quality_summary": context_summary,
+        "outcome_quality_summary": outcome_summary,
+        "fingerprint_quality_summary": fingerprint_summary,
+        "clean_memory_eligible": clean_eligible,
+        "retrieval_allowed": False,
+        "paper_decision_allowed": False,
+        "recommended_next_action": "Collect enough complete 15m snapshot coverage and replace unknown/audit-only context before Phase 31 retrieval testing.",
+    }
+
+
+def _record_memory_quality_audit_report(connection: sqlite3.Connection, report: dict[str, Any]) -> tuple[bool, int]:
+    existing = connection.execute(
+        """
+        SELECT id
+        FROM printer_memory_audit_reports
+        WHERE memory_window_id = ? AND audit_status = 'PHASE30_MEMORY_QUALITY_AUDIT'
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (report["memory_window_id"],),
+    ).fetchone()
+    if existing:
+        return False, int(existing["id"])
+    cursor = connection.execute(
+        """
+        INSERT INTO printer_memory_audit_reports (
+            episode_id, memory_window_id, token_id, pair_id, audit_status,
+            memory_quality_label, rejection_reasons_json, audit_payload_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            report["episode_id"],
+            report["memory_window_id"],
+            report["token_id"],
+            report["pair_id"],
+            report["audit_status"],
+            report["memory_quality_label"],
+            json.dumps(report["dirty_reasons"], sort_keys=True),
+            json.dumps(report, sort_keys=True),
+        ),
+    )
+    return True, int(cursor.lastrowid)
+
+
+def build_memory_quality_audit_once_payload(args: argparse.Namespace) -> dict[str, Any]:
+    _validate_memory_audit_args(args)
+    project_root = _project_root(args.project_root)
+    resolved = resolve_operator_db_path(args.db_path, project_root)
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Operator DB does not exist: {resolved}")
+
+    before_counts = get_core_table_counts(resolved, project_root)
+    connection = sqlite3.connect(resolved)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    try:
+        target = _resolve_memory_audit_target(connection, args)
+        report = _build_memory_quality_audit_report(connection, target)
+        created, audit_report_id = _record_memory_quality_audit_report(connection, report)
+        connection.commit()
+    finally:
+        connection.close()
+
+    after_counts = get_core_table_counts(resolved, project_root)
+    deltas = {
+        table: (after_counts.get(table) or 0) - (before_counts.get(table) or 0)
+        for table in sorted(after_counts)
+    }
+    guarded_tables = [
+        "printer_tokens",
+        "printer_pairs",
+        "printer_source_requests",
+        "printer_source_responses",
+        "printer_source_failures",
+        "printer_token_snapshots",
+        *CONTEXT_TABLES,
+        *MEMORY_OUTPUT_TABLES,
+        "printer_memory_retrieval_queries",
+        "printer_memory_retrieval_matches",
+        "printer_paper_decisions",
+        "printer_paper_positions",
+        "printer_scheduler_jobs",
+    ]
+    guard_deltas = {table: deltas[table] for table in guarded_tables if deltas.get(table)}
+    status = get_operator_db_status(resolved, project_root)
+    return {
+        "command": "printer-audit-memory-quality-once",
+        "db_path": str(resolved),
+        "operator_approved": True,
+        "audit_report_id": audit_report_id,
+        "audit_report_created": created,
+        "audit_report": report,
+        "memory_audit_report_delta": deltas.get("printer_memory_audit_reports", 0),
+        "guard_table_deltas": guard_deltas,
+        "guard_tables_unchanged": not guard_deltas,
+        "counts_after": after_counts,
+        "db_state_classification": status["state_classification"],
+        "memory_has_started": status["memory_has_started"],
+        "paper_trading_has_started": status["paper_trading_has_started"],
+        "runtime_has_started": status["runtime_has_started"],
+    }
+
+
+def main_audit_memory_quality_once(argv: Sequence[str] | None = None) -> int:
+    parser = _base_parser("Audit one existing memory window without retrieval or paper decisions.", ("json", "text"))
+    parser.add_argument("--operator-approved", action="store_true")
+    parser.add_argument("--memory-window-id", type=int)
+    parser.add_argument("--episode-id", type=int)
+    parser.add_argument("--token-mint")
+    parser.add_argument("--token-id", type=int)
+    parser.add_argument("--pair-address")
+    parser.add_argument("--pair-id", type=int)
+    parser.add_argument("--chain", default="solana")
+    args = parser.parse_args(argv)
+    try:
+        payload = build_memory_quality_audit_once_payload(args)
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
 def classify_readiness(status: dict[str, Any], migration_status: dict[str, Any], source_scan: dict[str, Any], runtime_scan: dict[str, Any]) -> str:
     if status["state_classification"] == STATE_NO_DB:
         return READINESS_NEEDS_DB_INIT
@@ -1838,6 +2167,8 @@ def classify_readiness(status: dict[str, Any], migration_status: dict[str, Any],
         return READINESS_READY_CONTROLLED_CONTEXT
     if status["state_classification"] == STATE_FIRST_MEMORY_WINDOW:
         return READINESS_READY_FIRST_MEMORY_WINDOW
+    if status["state_classification"] == STATE_MEMORY_QUALITY_AUDITED:
+        return READINESS_READY_MEMORY_QUALITY_AUDITED
     if status["state_classification"] in {STATE_TOKEN_ROWS, STATE_TEST_ONLY, STATE_MEMORY_ROWS, STATE_PAPER_ROWS}:
         return READINESS_READY_WITH_LOCAL_DATA
     return READINESS_STATE_UNKNOWN
