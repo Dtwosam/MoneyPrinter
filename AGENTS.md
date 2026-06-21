@@ -1,4 +1,4 @@
-# Printer V1 Build Rules
+﻿# Printer V1 Build Rules
 
 
 
@@ -90,6 +90,53 @@ If there is not enough clean memory, Printer must choose WAIT, AVOID, or NO_ACTI
 
 
 
+
+## Post-RC Build Order Anchor
+
+The Future Build Order has been completed through Phase 38 / V1 Paper Release Candidate.
+
+For all work after Phase 38, Codex must read and follow:
+
+`docs/printer-v1-post-rc-build-order.md`
+
+This Post-RC Build Order supersedes `docs/printer-v1-future-build-order.md` only for work after Phase 38.
+
+The Future Build Order remains preserved as the historical roadmap for Phases 22 through 38.
+
+The Final Build Order remains preserved as the historical roadmap for the original Phase 0 through Phase 21 sequence.
+
+Post-RC work must not loosen any V1 restriction.
+
+Printer V1 remains:
+
+* Solana-only
+* Solana memecoin-only
+* paper-trading only
+* no live wallet
+* no private keys
+* no real funds
+* no live execution
+* no paid API dependency
+* no scoring system
+* no ranking system
+* no confidence percentage system
+* no weighted decision logic
+* no engine bypassing Source Governor
+* no engine bypassing Central Scheduler
+* no paper decision without clean memory comparison
+* no paper position without valid clean-memory-backed paper decision
+* no dirty memory training decisions
+* no broad context engine acting as a direct trade signal
+
+Post-RC work must proceed lane by lane.
+
+Do not skip lanes.
+
+Do not convert post-RC memory growth into live trading.
+
+Do not unlock BUY without an explicit future operator-approved BUY unlock lane.
+
+Do not open paper positions without a valid clean-memory-backed paper decision.
 ## Future Build Order Anchor
 
 
@@ -575,4 +622,5 @@ Every Codex task must end with:
 - Risks or concerns
 
 - Next recommended phase
+
 
