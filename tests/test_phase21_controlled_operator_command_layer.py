@@ -100,7 +100,7 @@ class Phase21ControlledOperatorCommandLayerTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         db_path = get_default_db_path(self.temp_root)
         self.assertTrue(db_path.is_file())
-        self.assertEqual(payload["latest_migration"], "020_hardening_synthetic_validation.sql")
+        self.assertEqual(payload["latest_migration"], "021_repeatable_evidence_windows.sql")
         self.assertEqual(payload["state_classification"], "PERSISTENT_DB_EMPTY_SCHEMA_ONLY")
         for table in (
             "printer_tokens",
@@ -130,7 +130,7 @@ class Phase21ControlledOperatorCommandLayerTest(unittest.TestCase):
         self.assertEqual(counts_exit, 0)
         self.assertEqual(migration_exit, 0)
         self.assertEqual(counts_payload["counts"]["printer_tokens"], 0)
-        self.assertEqual(migration_payload["latest_migration"], "020_hardening_synthetic_validation.sql")
+        self.assertEqual(migration_payload["latest_migration"], "021_repeatable_evidence_windows.sql")
         self.assertEqual(migration_payload["missing_migrations"], [])
         self.assertEqual(self.table_count(db_path, "printer_operator_review_reports"), before)
 

@@ -56,7 +56,7 @@ def classify_episode_outcome(
     drawdown = path["max_drawdown_percent"]
     liquidity = dict(liquidity_exit_context or {})
     micro = dict(micro_event_context or {})
-    if window_kind == "WINDOW_5M":
+    if window_kind in {"WINDOW_5M", "WINDOW_5M_MICRO_EVENT"}:
         return EpisodeOutcomeLabel.OUTCOME_UNKNOWN
     if change is None or runup is None or drawdown is None:
         return EpisodeOutcomeLabel.OUTCOME_UNKNOWN

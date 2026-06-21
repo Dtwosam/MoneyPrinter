@@ -124,7 +124,7 @@ class Phase14EpisodeMemoryEngineTest(unittest.TestCase):
             self.assertTrue(inspect.ismodule(module))
 
     def test_required_contract_labels_exist(self):
-        self.assertEqual({label.value for label in MemoryWindowKind}, {"WINDOW_15M", "WINDOW_1H", "WINDOW_4H", "WINDOW_12H", "WINDOW_24H"})
+        self.assertEqual({label.value for label in MemoryWindowKind}, {"WINDOW_5M_MICRO_EVENT", "WINDOW_15M", "WINDOW_1H", "WINDOW_4H", "WINDOW_12H", "WINDOW_24H"})
         self.assertEqual({label.value for label in MemoryWindowStatus}, {"WINDOW_OPEN", "WINDOW_CLOSING", "WINDOW_CLOSED", "WINDOW_BROKEN", "WINDOW_SKIPPED", "WINDOW_AUDIT_ONLY"})
         self.assertEqual({label.value for label in EpisodeStatus}, {"EPISODE_BUILDABLE", "EPISODE_BUILT", "EPISODE_DIRTY", "EPISODE_AUDIT_ONLY", "EPISODE_SKIPPED", "EPISODE_INCOMPLETE"})
         self.assertEqual({label.value for label in EpisodeOutcomeLabel}, {
@@ -143,6 +143,7 @@ class Phase14EpisodeMemoryEngineTest(unittest.TestCase):
             self.assertEqual(self.column_names(table) & FORBIDDEN_COLUMNS, set(), table)
 
     def test_window_durations_and_5m_rejection(self):
+        self.assertEqual(get_window_duration_seconds(MemoryWindowKind.WINDOW_5M_MICRO_EVENT), 300)
         self.assertEqual(get_window_duration_seconds(MemoryWindowKind.WINDOW_15M), 900)
         self.assertEqual(get_window_duration_seconds(MemoryWindowKind.WINDOW_1H), 3600)
         self.assertEqual(get_window_duration_seconds(MemoryWindowKind.WINDOW_4H), 14400)

@@ -249,6 +249,7 @@ class Phase1DatabaseSchemaTest(unittest.TestCase):
                 ("018_paper_audit_engine.sql",),
                 ("019_reporting_operator_review.sql",),
                 ("020_hardening_synthetic_validation.sql",),
+                ("021_repeatable_evidence_windows.sql",),
             ],
         )
 

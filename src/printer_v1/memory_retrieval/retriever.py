@@ -42,8 +42,15 @@ def retrieve_candidate_memory_episodes(db_path_or_conn: str | Path | sqlite3.Con
     with connect(db_path_or_conn) as connection:
         return connection.execute(
             """
-            SELECT e.*, f.fingerprint_payload_json
+            SELECT e.*, f.fingerprint_payload_json,
+                   w.evidence_identity_hash AS evidence_identity_hash,
+                   w.evidence_role AS evidence_role,
+                   w.snapshot_start_id AS snapshot_start_id,
+                   w.snapshot_end_id AS snapshot_end_id,
+                   w.memory_diversity_label AS memory_diversity_label,
+                   w.concentration_audit_reason AS concentration_audit_reason
             FROM printer_episodes e
+            LEFT JOIN printer_memory_windows w ON w.id = e.memory_window_id
             LEFT JOIN printer_memory_fingerprints f ON f.episode_id = e.id
             ORDER BY e.created_at DESC, e.id DESC
             """
@@ -67,10 +74,17 @@ def build_match(row: sqlite3.Row, current_fingerprint: Mapping[str, Any]) -> dic
         "outcome_label": row["episode_outcome_label"],
         "action_lesson_label": row["action_lesson_label"],
         "memory_quality_label": quality,
+        "evidence_identity_hash": row["evidence_identity_hash"],
+        "evidence_role": row["evidence_role"],
+        "snapshot_start_id": row["snapshot_start_id"],
+        "snapshot_end_id": row["snapshot_end_id"],
+        "memory_diversity_label": row["memory_diversity_label"],
+        "concentration_audit_reason": row["concentration_audit_reason"],
         "memory_fingerprint": memory_fingerprint,
         "comparison_payload": comparison,
         **comparison,
     }
+    payload["retrieval_group_key"] = row["evidence_identity_hash"] or f"{row['token_id']}:{row['pair_id']}:{row['window_kind']}:{row['id']}"
     payload["included_as_clean_evidence"] = memory_match_can_be_clean_evidence(payload)
     payload["included_as_audit_context"] = quality in {
         MemoryQualityLabel.PARTIAL_MEMORY.value,
@@ -85,7 +99,7 @@ def retrieve_memory_matches_for_current_setup(db_path_or_conn: str | Path | sqli
         build_match(row, current)
         for row in retrieve_candidate_memory_episodes(db_path_or_conn, query_payload)
     ]
-    return sorted(
+    sorted_matches = sorted(
         matches,
         key=lambda match: (
             STRENGTH_ORDER.get(match["match_strength_label"], 9),
@@ -94,6 +108,21 @@ def retrieve_memory_matches_for_current_setup(db_path_or_conn: str | Path | sqli
             -int(match["episode_id"]),
         ),
     )
+    seen_clean_groups: set[str] = set()
+    for match in sorted_matches:
+        group_key = str(match.get("retrieval_group_key") or "")
+        if match.get("included_as_clean_evidence") and group_key in seen_clean_groups:
+            match["included_as_clean_evidence"] = False
+            match["included_as_audit_context"] = True
+            match["match_strength_label"] = MatchStrengthLabel.NO_USABLE_MATCH.value
+            reasons = list(match.get("mismatch_reasons") or [])
+            reasons.append("DUPLICATE_EVIDENCE_EXCLUDED")
+            match["mismatch_reasons"] = list(dict.fromkeys(reasons))
+            match["duplicate_guard_status"] = "DUPLICATE_EVIDENCE_EXCLUDED"
+        elif match.get("included_as_clean_evidence"):
+            seen_clean_groups.add(group_key)
+            match["duplicate_guard_status"] = "UNIQUE_CLEAN_EVIDENCE"
+    return sorted_matches
 
 
 def retrieve_clean_memory_matches(db_path_or_conn: str | Path | sqlite3.Connection, query_payload: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -116,6 +145,37 @@ def group_matches_by_outcome(matches: list[Mapping[str, Any]]) -> dict[str, int]
         label = match.get("outcome_label") or "OUTCOME_UNKNOWN"
         grouped[label] = grouped.get(label, 0) + 1
     return grouped
+
+
+def build_memory_diversity_summary(matches: list[Mapping[str, Any]]) -> dict[str, Any]:
+    clean = [match for match in matches if match.get("included_as_clean_evidence")]
+    token_pair_counts: dict[str, int] = {}
+    for match in clean:
+        key = f"{match.get('token_id')}:{match.get('pair_id')}"
+        token_pair_counts[key] = token_pair_counts.get(key, 0) + 1
+    distinct_token_count = len({match.get("token_id") for match in clean})
+    dominant_token_pair_count = max(token_pair_counts.values(), default=0)
+    clean_count = len(clean)
+    if clean_count == 0:
+        label = "NO_CLEAN_MEMORY_DIVERSITY"
+        reason = "no_clean_memory_available"
+    elif distinct_token_count <= 1 and clean_count >= 2:
+        label = "TOKEN_MEMORY_CONCENTRATED"
+        reason = "clean_memory_heavily_concentrated_in_one_token_pair"
+    elif dominant_token_pair_count > max(1, clean_count // 2) and clean_count >= 3:
+        label = "TOKEN_MEMORY_OVERREPRESENTED"
+        reason = "dominant_token_pair_exceeds_broad_market_context"
+    else:
+        label = "NORMAL_TOKEN_MEMORY_DISTRIBUTION"
+        reason = "clean_memory_distribution_normal"
+    return {
+        "memory_diversity_label": label,
+        "concentration_audit_reason": reason,
+        "clean_memory_count": clean_count,
+        "distinct_token_count": distinct_token_count,
+        "dominant_token_pair_count": dominant_token_pair_count,
+        "token_pair_clean_memory_counts": token_pair_counts,
+    }
 
 
 def build_retrieval_result_label(matches: list[Mapping[str, Any]]) -> RetrievalResultLabel:

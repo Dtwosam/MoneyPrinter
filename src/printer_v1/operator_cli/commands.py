@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sqlite3
 import tempfile
@@ -87,7 +88,7 @@ from printer_v1.sources.dexscreener import (
 from printer_v1.sources.governed_execution import execute_source_request_with_governor
 from printer_v1.snapshots.recorder import record_token_snapshot
 from printer_v1.memory_retrieval.recorder import record_memory_retrieval_query, record_memory_retrieval_matches
-from printer_v1.memory_retrieval.retriever import retrieve_memory_matches_for_current_setup
+from printer_v1.memory_retrieval.retriever import build_memory_diversity_summary, retrieve_memory_matches_for_current_setup
 
 
 READINESS_NEEDS_DB_INIT = "NEEDS_DB_INIT"
@@ -1325,17 +1326,40 @@ def _base_context_payload(target: dict[str, Any], snapshot: dict[str, Any], cate
     }
 
 
-def _context_rows_for_target(connection: sqlite3.Connection, target: dict[str, Any]) -> dict[str, int]:
+def _context_payload_column(table: str) -> str:
+    return {
+        "printer_market_regime_snapshots": "normalized_market_payload_json",
+        "printer_solana_chain_heat_snapshots": "normalized_chain_heat_payload_json",
+        "printer_safety_rug_snapshots": "normalized_safety_payload_json",
+        "printer_liquidity_exit_snapshots": "normalized_liquidity_exit_payload_json",
+        "printer_trading_flow_snapshots": "normalized_trading_flow_payload_json",
+        "printer_chart_volatility_snapshots": "normalized_chart_payload_json",
+        "printer_micro_events": "normalized_micro_event_payload_json",
+    }[table]
+
+
+def _context_row_matches_snapshot(row: sqlite3.Row, payload_column: str, snapshot_id: int) -> bool:
+    payload = _json_or_empty(row[payload_column])
+    return int(payload.get("snapshot_id") or -1) == int(snapshot_id)
+
+
+def _context_rows_for_target(connection: sqlite3.Connection, target: dict[str, Any], snapshot: dict[str, Any] | None = None) -> dict[str, int]:
     counts: dict[str, int] = {}
     for table in CONTEXT_TABLES:
+        payload_column = _context_payload_column(table)
         if table in {"printer_market_regime_snapshots", "printer_solana_chain_heat_snapshots"}:
-            counts[table] = 0
+            rows = connection.execute(f"SELECT {payload_column} FROM {table}").fetchall()
         else:
-            counts[table] = int(
-                connection.execute(
-                    f"SELECT COUNT(*) FROM {table} WHERE token_id = ? AND pair_id = ?",
-                    (target["token_id"], target["pair_id"]),
-                ).fetchone()[0]
+            rows = connection.execute(
+                f"SELECT {payload_column} FROM {table} WHERE token_id = ? AND pair_id = ?",
+                (target["token_id"], target["pair_id"]),
+            ).fetchall()
+        if snapshot is None:
+            counts[table] = len(rows)
+        else:
+            counts[table] = sum(
+                1 for row in rows
+                if _context_row_matches_snapshot(row, payload_column, int(snapshot["id"]))
             )
     return counts
 
@@ -1595,10 +1619,10 @@ def build_collect_context_once_payload(args: argparse.Namespace) -> dict[str, An
     try:
         target = _resolve_approved_context_target(connection, args)
         snapshot = _resolve_context_snapshot(connection, args, target)
-        existing_context_counts = _context_rows_for_target(connection, target)
+        existing_context_counts = _context_rows_for_target(connection, target, snapshot)
         if sum(existing_context_counts.values()) > 0:
             inserted_context_rows = {}
-            skipped_reason = "context_already_exists_for_target"
+            skipped_reason = "context_already_exists_for_evidence"
         else:
             inserted_context_rows = _insert_controlled_context_rows(connection, target, snapshot, _utc_now_text())
             skipped_reason = None
@@ -1665,9 +1689,41 @@ def main_collect_context_once(argv: Sequence[str] | None = None) -> int:
 
 def _normalize_memory_window(value: str | None) -> str:
     normalized = str(value or "").strip().lower()
-    if normalized in {"15m", "window_15m"}:
-        return "WINDOW_15M"
-    raise ValueError("Phase 29 supports only the 15m memory window")
+    windows = {
+        "5m": "WINDOW_5M_MICRO_EVENT",
+        "window_5m": "WINDOW_5M_MICRO_EVENT",
+        "window_5m_micro_event": "WINDOW_5M_MICRO_EVENT",
+        "15m": "WINDOW_15M",
+        "window_15m": "WINDOW_15M",
+        "1h": "WINDOW_1H",
+        "window_1h": "WINDOW_1H",
+        "4h": "WINDOW_4H",
+        "window_4h": "WINDOW_4H",
+        "12h": "WINDOW_12H",
+        "window_12h": "WINDOW_12H",
+        "24h": "WINDOW_24H",
+        "window_24h": "WINDOW_24H",
+    }
+    if normalized in windows:
+        return windows[normalized]
+    raise ValueError("memory-window review requires a supported V1 window kind")
+
+
+def _memory_window_duration_minutes(window_kind: str) -> int:
+    return {
+        "WINDOW_5M_MICRO_EVENT": 5,
+        "WINDOW_15M": 15,
+        "WINDOW_1H": 60,
+        "WINDOW_4H": 240,
+        "WINDOW_12H": 720,
+        "WINDOW_24H": 1440,
+    }[window_kind]
+
+
+def _memory_evidence_role(window_kind: str) -> str:
+    if window_kind == "WINDOW_5M_MICRO_EVENT":
+        return "SUPPORT_MICRO_EVENT"
+    return "MAIN_OUTCOME"
 
 
 def _validate_memory_window_command_args(args: argparse.Namespace) -> None:
@@ -1682,35 +1738,46 @@ def _validate_memory_window_command_args(args: argparse.Namespace) -> None:
     _normalize_memory_window(args.memory_window)
 
 
-def _resolve_memory_context_rows(connection: sqlite3.Connection, target: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def _context_row_for_snapshot(rows: list[sqlite3.Row], payload_column: str, snapshot_id: int | None) -> sqlite3.Row | None:
+    if snapshot_id is None:
+        return rows[0] if rows else None
+    for row in rows:
+        if _context_row_matches_snapshot(row, payload_column, snapshot_id):
+            return row
+    return rows[0] if rows else None
+
+
+def _resolve_memory_context_rows(connection: sqlite3.Connection, target: dict[str, Any], snapshot_id: int | None = None) -> dict[str, dict[str, Any]]:
     token_id = target["token_id"]
     pair_id = target["pair_id"]
     context: dict[str, dict[str, Any]] = {}
     table_to_key = {
-        "printer_safety_rug_snapshots": ("safety", "captured_at"),
-        "printer_liquidity_exit_snapshots": ("liquidity_exit", "captured_at"),
-        "printer_trading_flow_snapshots": ("trading_flow", "captured_at"),
-        "printer_chart_volatility_snapshots": ("chart_volatility", "captured_at"),
-        "printer_micro_events": ("micro_event", "detected_at"),
+        "printer_safety_rug_snapshots": ("safety", "captured_at", "normalized_safety_payload_json"),
+        "printer_liquidity_exit_snapshots": ("liquidity_exit", "captured_at", "normalized_liquidity_exit_payload_json"),
+        "printer_trading_flow_snapshots": ("trading_flow", "captured_at", "normalized_trading_flow_payload_json"),
+        "printer_chart_volatility_snapshots": ("chart_volatility", "captured_at", "normalized_chart_payload_json"),
+        "printer_micro_events": ("micro_event", "detected_at", "normalized_micro_event_payload_json"),
     }
-    for table, (key, order_column) in table_to_key.items():
-        row = connection.execute(
+    for table, (key, order_column, payload_column) in table_to_key.items():
+        rows = connection.execute(
             f"""
             SELECT *
             FROM {table}
             WHERE token_id = ? AND pair_id = ?
             ORDER BY {order_column} DESC, id DESC
-            LIMIT 1
             """,
             (token_id, pair_id),
-        ).fetchone()
+        ).fetchall()
+        row = _context_row_for_snapshot(rows, payload_column, snapshot_id)
         context[key] = _row_to_dict(row)
-    market_row = connection.execute(
-        "SELECT * FROM printer_market_regime_snapshots ORDER BY captured_at DESC, id DESC LIMIT 1"
-    ).fetchone()
-    chain_row = connection.execute(
-        "SELECT * FROM printer_solana_chain_heat_snapshots ORDER BY captured_at DESC, id DESC LIMIT 1"
-    ).fetchone()
+    market_rows = connection.execute(
+        "SELECT * FROM printer_market_regime_snapshots ORDER BY captured_at DESC, id DESC"
+    ).fetchall()
+    chain_rows = connection.execute(
+        "SELECT * FROM printer_solana_chain_heat_snapshots ORDER BY captured_at DESC, id DESC"
+    ).fetchall()
+    market_row = _context_row_for_snapshot(market_rows, "normalized_market_payload_json", snapshot_id)
+    chain_row = _context_row_for_snapshot(chain_rows, "normalized_chain_heat_payload_json", snapshot_id)
     context["market"] = _row_to_dict(market_row)
     context["chain_heat"] = _row_to_dict(chain_row)
     return context
@@ -1750,23 +1817,115 @@ def _memory_storage_status(memory_quality_label: str) -> str:
     }[memory_quality_label]
 
 
-def _existing_memory_for_target(connection: sqlite3.Connection, target: dict[str, Any], window_kind: str) -> sqlite3.Row | None:
+def _parse_iso_datetime(value: Any) -> datetime:
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(timezone.utc)
+
+
+def _snapshot_rows_for_memory_evidence(
+    connection: sqlite3.Connection,
+    target: dict[str, Any],
+    end_snapshot: dict[str, Any],
+    window_kind: str,
+) -> tuple[list[dict[str, Any]], str, str]:
+    end_at = _parse_iso_datetime(end_snapshot["captured_at"])
+    start_at = end_at - timedelta(minutes=_memory_window_duration_minutes(window_kind))
+    rows = connection.execute(
+        """
+        SELECT *
+        FROM printer_token_snapshots
+        WHERE token_id = ?
+          AND pair_id = ?
+          AND datetime(captured_at) >= datetime(?)
+          AND datetime(captured_at) <= datetime(?)
+        ORDER BY datetime(captured_at) ASC, id ASC
+        """,
+        (target["token_id"], target["pair_id"], start_at.isoformat(), end_at.isoformat()),
+    ).fetchall()
+    snapshots = [_row_to_dict(row) for row in rows]
+    if not any(int(row["id"]) == int(end_snapshot["id"]) for row in snapshots):
+        snapshots.append(end_snapshot)
+        snapshots.sort(key=lambda row: (str(row.get("captured_at") or ""), int(row["id"])))
+    return snapshots, start_at.isoformat(), end_at.isoformat()
+
+
+def _memory_evidence_identity(
+    target: dict[str, Any],
+    window_kind: str,
+    snapshots: list[dict[str, Any]],
+    window_start_at: str,
+    window_end_at: str,
+    source_reference: str | None,
+    evidence_role: str,
+) -> tuple[str, str]:
+    payload = {
+        "token_id": target["token_id"],
+        "pair_id": target["pair_id"],
+        "window_kind": window_kind,
+        "window_start_at": window_start_at,
+        "window_end_at": window_end_at,
+        "snapshot_ids": [int(row["id"]) for row in snapshots],
+        "snapshot_start_id": int(snapshots[0]["id"]) if snapshots else None,
+        "snapshot_end_id": int(snapshots[-1]["id"]) if snapshots else None,
+        "source_reference": source_reference,
+        "evidence_role": evidence_role,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest(), encoded
+
+
+def _existing_memory_for_evidence(connection: sqlite3.Connection, evidence_identity_hash: str) -> sqlite3.Row | None:
     return connection.execute(
         """
         SELECT *
         FROM printer_memory_windows
-        WHERE token_id = ? AND pair_id = ? AND window_kind = ?
+        WHERE evidence_identity_hash = ?
         ORDER BY id DESC
         LIMIT 1
         """,
-        (target["token_id"], target["pair_id"], window_kind),
+        (evidence_identity_hash,),
     ).fetchone()
 
 
-def _classify_first_memory_review(snapshots: list[dict[str, Any]], context_rows: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def _evidence_difference_reason(
+    connection: sqlite3.Connection,
+    target: dict[str, Any],
+    window_kind: str,
+    snapshots: list[dict[str, Any]],
+    source_reference: str | None,
+    evidence_role: str,
+) -> str:
+    row = connection.execute(
+        """
+        SELECT *
+        FROM printer_memory_windows
+        WHERE token_id = ? AND pair_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (target["token_id"], target["pair_id"]),
+    ).fetchone()
+    if row is None:
+        return "first_evidence_window_for_token_pair"
+    if row["window_kind"] != window_kind:
+        return "distinct_window_kind"
+    if row["evidence_role"] and row["evidence_role"] != evidence_role:
+        return "distinct_evidence_role"
+    start_id = int(snapshots[0]["id"]) if snapshots else None
+    end_id = int(snapshots[-1]["id"]) if snapshots else None
+    if row["snapshot_start_id"] != start_id or row["snapshot_end_id"] != end_id:
+        return "distinct_snapshot_range"
+    if (row["source_reference"] or None) != (source_reference or None):
+        return "distinct_source_reference"
+    return "distinct_evidence_identity"
+
+
+def _classify_first_memory_review(snapshots: list[dict[str, Any]], context_rows: dict[str, dict[str, Any]], window_kind: str) -> dict[str, Any]:
     rejection_reasons: list[str] = []
+    expected_snapshot_count = 2
+    if window_kind == "WINDOW_5M_MICRO_EVENT":
+        rejection_reasons.append("REJECT_5M_ONLY_WINDOW")
     if len(snapshots) < 2:
-        rejection_reasons.extend(["REJECT_MISSING_SNAPSHOTS", "INCOMPLETE_15M_WINDOW", "INSUFFICIENT_SNAPSHOT_COVERAGE"])
+        rejection_reasons.extend(["REJECT_MISSING_SNAPSHOTS", f"INCOMPLETE_{window_kind.replace('WINDOW_', '')}_WINDOW", "INSUFFICIENT_SNAPSHOT_COVERAGE"])
     if any(row.get("price_usd") is None or row.get("liquidity_usd") is None for row in snapshots):
         rejection_reasons.append("REJECT_MISSING_CRITICAL_FIELDS")
     if not _context_is_present(context_rows):
@@ -1774,7 +1933,9 @@ def _classify_first_memory_review(snapshots: list[dict[str, Any]], context_rows:
     labels = _context_memory_labels(context_rows)
     if any(value in {None, "UNKNOWN", "SOLANA_UNKNOWN", "SAFETY_UNKNOWN", "ENTRY_UNKNOWN", "EXIT_UNKNOWN", "FLOW_UNKNOWN", "TREND_UNKNOWN", "MICRO_EVENT_UNKNOWN"} for value in labels.values()):
         rejection_reasons.append("MISSING_OR_UNKNOWN_CONTEXT")
-    if not rejection_reasons:
+    if window_kind == "WINDOW_5M_MICRO_EVENT":
+        memory_quality = "AUDIT_ONLY_MEMORY"
+    elif not rejection_reasons:
         memory_quality = "CLEAN_MEMORY"
     elif len(snapshots) < 2:
         memory_quality = "DIRTY_MEMORY"
@@ -1790,6 +1951,10 @@ def _classify_first_memory_review(snapshots: list[dict[str, Any]], context_rows:
         "do_not_train": 0 if memory_quality == "CLEAN_MEMORY" else 1,
         "rejection_reasons": unique_reasons,
         "retrieval_ready": memory_quality == "CLEAN_MEMORY",
+        "expected_snapshot_count": expected_snapshot_count,
+        "actual_snapshot_count": len(snapshots),
+        "missing_snapshot_count": max(0, expected_snapshot_count - len(snapshots)),
+        "coverage_state": "COMPLETE_WINDOW_COVERAGE" if len(snapshots) >= expected_snapshot_count else f"INCOMPLETE_{window_kind.replace('WINDOW_', '')}_WINDOW",
     }
 
 
@@ -1836,21 +2001,38 @@ def _record_first_memory_window(
     connection: sqlite3.Connection,
     target: dict[str, Any],
     snapshot: dict[str, Any],
+    snapshots: list[dict[str, Any]],
     context_rows: dict[str, dict[str, Any]],
     window_kind: str,
     source_reference: str | None,
+    window_start_at: str,
+    window_end_at: str,
+    evidence_role: str,
+    evidence_identity_hash: str,
+    evidence_fingerprint: str,
+    evidence_difference_reason: str,
 ) -> dict[str, Any]:
-    opened_at = snapshot["captured_at"]
-    closed_at = (datetime.fromisoformat(str(opened_at).replace("Z", "+00:00")) + timedelta(minutes=15)).isoformat()
-    snapshots = [snapshot]
-    classification = _classify_first_memory_review(snapshots, context_rows)
+    opened_at = window_start_at
+    closed_at = window_end_at
+    classification = _classify_first_memory_review(snapshots, context_rows, window_kind)
     path = _snapshot_price_path_for_memory(snapshots)
+    snapshot_ids = [int(row["id"]) for row in snapshots]
     supporting_context = {
-        "phase": "29",
+        "phase": "post_rc_lane2",
         "source_reference": source_reference,
-        "snapshot_ids": [snapshot["id"]],
-        "expected_snapshot_count": 2,
-        "actual_snapshot_count": len(snapshots),
+        "snapshot_ids": snapshot_ids,
+        "snapshot_start_id": snapshot_ids[0] if snapshot_ids else None,
+        "snapshot_end_id": snapshot_ids[-1] if snapshot_ids else None,
+        "window_start_at": window_start_at,
+        "window_end_at": window_end_at,
+        "evidence_role": evidence_role,
+        "evidence_identity_hash": evidence_identity_hash,
+        "evidence_difference_reason": evidence_difference_reason,
+        "duplicate_guard_status": "NEW_DISTINCT_EVIDENCE_WINDOW",
+        "expected_snapshot_count": classification["expected_snapshot_count"],
+        "actual_snapshot_count": classification["actual_snapshot_count"],
+        "missing_snapshot_count": classification["missing_snapshot_count"],
+        "coverage_state": classification["coverage_state"],
         "context_row_ids": {
             "market": context_rows["market"].get("id"),
             "chain_heat": context_rows["chain_heat"].get("id"),
@@ -1869,17 +2051,25 @@ def _record_first_memory_window(
             token_id, pair_id, window_kind, opened_at, closed_at,
             expected_snapshot_count, actual_snapshot_count, missing_snapshot_count, coverage_state,
             memory_status, data_quality_label, do_not_train, window_status, outcome_label,
-            memory_quality_label, rejection_reasons_json, supporting_context_json, created_by_phase
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            memory_quality_label, rejection_reasons_json, supporting_context_json, created_by_phase,
+            snapshot_start_id, snapshot_end_id, window_start_at, window_end_at, source_reference,
+            evidence_role, evidence_fingerprint, evidence_identity_hash, evidence_difference_reason,
+            duplicate_guard_status, memory_diversity_label, concentration_audit_reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             target["token_id"], target["pair_id"], window_kind, opened_at, closed_at,
-            2, len(snapshots), max(0, 2 - len(snapshots)), "INCOMPLETE_15M_WINDOW",
+            classification["expected_snapshot_count"], classification["actual_snapshot_count"],
+            classification["missing_snapshot_count"], classification["coverage_state"],
             classification["memory_status"], classification["data_quality_label"], classification["do_not_train"],
             "WINDOW_AUDIT_ONLY" if classification["do_not_train"] else "WINDOW_CLOSED",
             classification["outcome_label"], classification["memory_quality_label"],
             json.dumps(classification["rejection_reasons"], sort_keys=True),
-            json.dumps(supporting_context, sort_keys=True), "phase29",
+            json.dumps(supporting_context, sort_keys=True), "post_rc_lane2",
+            snapshot_ids[0] if snapshot_ids else None, snapshot_ids[-1] if snapshot_ids else None,
+            window_start_at, window_end_at, source_reference, evidence_role, evidence_fingerprint,
+            evidence_identity_hash, evidence_difference_reason, "NEW_DISTINCT_EVIDENCE_WINDOW",
+            "NORMAL_TOKEN_MEMORY_DISTRIBUTION", "distribution_not_evaluated_at_memory_write",
         ),
     )
     memory_window_id = int(cursor.lastrowid)
@@ -1899,15 +2089,16 @@ def _record_first_memory_window(
             classification["do_not_train"], window_kind, classification["outcome_label"],
             classification["memory_quality_label"], classification["action_lesson_label"],
             json.dumps(classification["rejection_reasons"], sort_keys=True),
-            json.dumps({"price_path": path, "coverage_state": "INCOMPLETE_15M_WINDOW"}, sort_keys=True),
+            json.dumps({"price_path": path, "coverage_state": classification["coverage_state"], "evidence_identity_hash": evidence_identity_hash}, sort_keys=True),
             json.dumps(supporting_context, sort_keys=True),
         ),
     )
     episode_id = int(cursor.lastrowid)
-    connection.execute(
-        "INSERT INTO printer_episode_snapshots (episode_id, token_snapshot_id, position_in_episode) VALUES (?, ?, 0)",
-        (episode_id, snapshot["id"]),
-    )
+    for position, row in enumerate(snapshots):
+        connection.execute(
+            "INSERT INTO printer_episode_snapshots (episode_id, token_snapshot_id, position_in_episode) VALUES (?, ?, ?)",
+            (episode_id, row["id"], position),
+        )
     cursor = connection.execute(
         """
         INSERT INTO printer_episode_outcomes (
@@ -1931,12 +2122,17 @@ def _record_first_memory_window(
     )
     outcome_id = int(cursor.lastrowid)
     fingerprint_payload = {
-        "phase": "29",
+        "phase": "post_rc_lane2",
         "window_kind": window_kind,
         "outcome_label": classification["outcome_label"],
         "memory_quality_label": classification["memory_quality_label"],
         "retrieval_ready": classification["retrieval_ready"],
-        "coverage_state": "INCOMPLETE_15M_WINDOW",
+        "coverage_state": classification["coverage_state"],
+        "evidence_role": evidence_role,
+        "evidence_identity_hash": evidence_identity_hash,
+        "snapshot_start_id": snapshot_ids[0] if snapshot_ids else None,
+        "snapshot_end_id": snapshot_ids[-1] if snapshot_ids else None,
+        "snapshot_ids": snapshot_ids,
         **_context_memory_labels(context_rows),
     }
     cursor = connection.execute(
@@ -1959,6 +2155,16 @@ def _record_first_memory_window(
         "episode_id": episode_id,
         "outcome_id": outcome_id,
         "fingerprint_id": fingerprint_id,
+        "snapshot_start_id": snapshot_ids[0] if snapshot_ids else None,
+        "snapshot_end_id": snapshot_ids[-1] if snapshot_ids else None,
+        "snapshot_ids": snapshot_ids,
+        "window_start_at": window_start_at,
+        "window_end_at": window_end_at,
+        "evidence_role": evidence_role,
+        "evidence_identity_hash": evidence_identity_hash,
+        "evidence_difference_reason": evidence_difference_reason,
+        "duplicate_guard_status": "NEW_DISTINCT_EVIDENCE_WINDOW",
+        "coverage_state": classification["coverage_state"],
         **classification,
     }
 
@@ -1978,10 +2184,15 @@ def build_memory_window_once_payload(args: argparse.Namespace) -> dict[str, Any]
     try:
         target = _resolve_approved_context_target(connection, args)
         snapshot = _resolve_context_snapshot(connection, args, target)
-        context_rows = _resolve_memory_context_rows(connection, target)
+        snapshots, window_start_at, window_end_at = _snapshot_rows_for_memory_evidence(connection, target, snapshot, window_kind)
+        evidence_role = _memory_evidence_role(window_kind)
+        evidence_identity_hash, evidence_fingerprint = _memory_evidence_identity(
+            target, window_kind, snapshots, window_start_at, window_end_at, args.source_reference, evidence_role
+        )
+        context_rows = _resolve_memory_context_rows(connection, target, int(snapshot["id"]))
         if not _context_is_present(context_rows):
             raise ValueError("memory-window review requires existing Phase 28 context rows")
-        existing = _existing_memory_for_target(connection, target, window_kind)
+        existing = _existing_memory_for_evidence(connection, evidence_identity_hash)
         if existing is not None:
             result = {
                 "memory_window_id": int(existing["id"]),
@@ -1996,11 +2207,26 @@ def build_memory_window_once_payload(args: argparse.Namespace) -> dict[str, Any]
                 "retrieval_ready": int(existing["do_not_train"]) == 0 and existing["memory_quality_label"] == "CLEAN_MEMORY",
                 "outcome_label": existing["outcome_label"],
                 "action_lesson_label": "ACTION_LESSON_UNKNOWN",
-                "skipped_reason": "memory_window_already_exists_for_target",
+                "snapshot_start_id": existing["snapshot_start_id"],
+                "snapshot_end_id": existing["snapshot_end_id"],
+                "snapshot_ids": [int(row["id"]) for row in snapshots],
+                "window_start_at": existing["window_start_at"] or window_start_at,
+                "window_end_at": existing["window_end_at"] or window_end_at,
+                "evidence_role": existing["evidence_role"] or evidence_role,
+                "evidence_identity_hash": evidence_identity_hash,
+                "evidence_difference_reason": existing["evidence_difference_reason"] or "existing_evidence_window_targeted",
+                "duplicate_guard_status": "DUPLICATE_SAME_EVIDENCE_NOOP",
+                "coverage_state": existing["coverage_state"],
+                "skipped_reason": "duplicate_same_evidence_noop",
             }
         else:
+            evidence_difference_reason = _evidence_difference_reason(
+                connection, target, window_kind, snapshots, args.source_reference, evidence_role
+            )
             result = _record_first_memory_window(
-                connection, target, snapshot, context_rows, window_kind, args.source_reference
+                connection, target, snapshot, snapshots, context_rows, window_kind, args.source_reference,
+                window_start_at, window_end_at, evidence_role, evidence_identity_hash,
+                evidence_fingerprint, evidence_difference_reason
             )
             result["skipped_reason"] = None
         connection.commit()
@@ -2025,7 +2251,7 @@ def build_memory_window_once_payload(args: argparse.Namespace) -> dict[str, Any]
         "token_mint": target["token_mint"],
         "pair_address": target["pair_address"],
         "snapshot_id": snapshot["id"],
-        "memory_window": "15m",
+        "memory_window": args.memory_window,
         "window_kind": window_kind,
         "memory_result": result,
         "memory_table_deltas": memory_deltas,
@@ -2051,7 +2277,7 @@ def build_memory_window_once_payload(args: argparse.Namespace) -> dict[str, Any]
 
 
 def main_build_memory_window_once(argv: Sequence[str] | None = None) -> int:
-    parser = _base_parser("Build one controlled 15m memory-window review from local evidence.", ("json", "text"))
+    parser = _base_parser("Build one controlled memory-window review from local evidence.", ("json", "text"))
     parser.add_argument("--operator-approved", action="store_true")
     parser.add_argument("--token-mint")
     parser.add_argument("--token-id", type=int)
@@ -2502,6 +2728,7 @@ def _build_clean_memory_retrieval_report(
     all_matches = retrieve_memory_matches_for_current_setup(connection, query_payload)
     clean_matches = [match for match in all_matches if match.get("included_as_clean_evidence")]
     dirty_matches = [match for match in all_matches if match.get("memory_quality_label") == "DIRTY_MEMORY"]
+    diversity = build_memory_diversity_summary(all_matches)
     blocked_reasons: dict[str, list[str]] = {
         str(match.get("memory_window_id")): _dirty_block_reasons(match)
         for match in dirty_matches
@@ -2531,6 +2758,11 @@ def _build_clean_memory_retrieval_report(
         "similar_clean_memories_found": len(clean_matches),
         "memory_evidence_summary": "memory evidence is insufficient for decision support" if not clean_matches else "clean memory evidence exists",
         "dirty_memory_blocked": bool(dirty_matches),
+        "memory_diversity_label": diversity["memory_diversity_label"],
+        "concentration_audit_reason": diversity["concentration_audit_reason"],
+        "distinct_token_count_in_retrieval": diversity["distinct_token_count"],
+        "dominant_token_pair_count": diversity["dominant_token_pair_count"],
+        "token_pair_clean_memory_counts": diversity["token_pair_clean_memory_counts"],
         "current_setup_context": context,
     }
     result_payload = {

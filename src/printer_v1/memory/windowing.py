@@ -12,6 +12,7 @@ from printer_v1.memory.contracts import MemoryQualityLabel, MemoryWindowKind, Me
 
 
 WINDOW_DURATIONS = {
+    MemoryWindowKind.WINDOW_5M_MICRO_EVENT: 5 * 60,
     MemoryWindowKind.WINDOW_15M: 15 * 60,
     MemoryWindowKind.WINDOW_1H: 60 * 60,
     MemoryWindowKind.WINDOW_4H: 4 * 60 * 60,

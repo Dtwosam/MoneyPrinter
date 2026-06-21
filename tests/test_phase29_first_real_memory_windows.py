@@ -179,12 +179,12 @@ class Phase29FirstRealMemoryWindowTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_memory_window_once_payload(self.memory_args(db_path, pair_address="unknown-pair"))
 
-    def test_memory_command_rejects_unsupported_windows(self):
+    def test_memory_command_accepts_supported_v1_window_kinds(self):
         db_path = self.make_db()
         self.seed_through_context(db_path)
-        for window in ("1h", "4h", "12h", "24h"):
-            with self.assertRaises(ValueError):
-                build_memory_window_once_payload(self.memory_args(db_path, memory_window=window))
+        for window in ("5m", "15m", "1h", "4h", "12h", "24h"):
+            payload = build_memory_window_once_payload(self.memory_args(db_path, memory_window=window, source_reference=f"phase29_supported_{window}"))
+            self.assertIn(payload["window_kind"], {"WINDOW_5M_MICRO_EVENT", "WINDOW_15M", "WINDOW_1H", "WINDOW_4H", "WINDOW_12H", "WINDOW_24H"})
 
     def test_memory_command_rejects_missing_snapshot_evidence(self):
         db_path = self.make_db()

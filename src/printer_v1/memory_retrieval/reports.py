@@ -3,7 +3,7 @@
 from typing import Any, Mapping
 
 from printer_v1.memory_retrieval.contracts import RetrievalResultLabel
-from printer_v1.memory_retrieval.retriever import group_matches_by_outcome
+from printer_v1.memory_retrieval.retriever import build_memory_diversity_summary, group_matches_by_outcome
 
 
 def summarize_historical_outcomes(matches: list[Mapping[str, Any]]) -> dict[str, int]:
@@ -28,6 +28,7 @@ def summarize_blocking_reasons(matches: list[Mapping[str, Any]]) -> dict[str, in
 
 def build_memory_comparison_report(query_payload: Mapping[str, Any], matches: list[Mapping[str, Any]]) -> dict[str, Any]:
     clean_matches = [match for match in matches if match.get("included_as_clean_evidence")]
+    diversity = build_memory_diversity_summary(matches)
     return {
         "query_type": query_payload.get("query_type"),
         "clean_match_count": len(clean_matches),
@@ -35,6 +36,10 @@ def build_memory_comparison_report(query_payload: Mapping[str, Any], matches: li
         "historical_outcomes": summarize_historical_outcomes(clean_matches),
         "action_lessons": summarize_action_lessons(clean_matches),
         "blocking_reasons": summarize_blocking_reasons(matches),
+        "memory_diversity_label": diversity["memory_diversity_label"],
+        "concentration_audit_reason": diversity["concentration_audit_reason"],
+        "distinct_token_count": diversity["distinct_token_count"],
+        "dominant_token_pair_count": diversity["dominant_token_pair_count"],
         "recommendation": None,
     }
 

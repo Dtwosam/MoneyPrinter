@@ -4,6 +4,7 @@ from enum import StrEnum
 
 
 class MemoryWindowKind(StrEnum):
+    WINDOW_5M_MICRO_EVENT = "WINDOW_5M_MICRO_EVENT"
     WINDOW_15M = "WINDOW_15M"
     WINDOW_1H = "WINDOW_1H"
     WINDOW_4H = "WINDOW_4H"
