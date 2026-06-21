@@ -26,6 +26,7 @@ printer-audit-paper-decision-once = "printer_v1.operator_cli.commands:main_audit
 printer-run-scheduler-single-tick = "printer_v1.operator_cli.commands:main_run_scheduler_single_tick"
 printer-run-bounded = "printer_v1.operator_cli.commands:main_run_bounded"
 printer-run-long-paper-validation = "printer_v1.operator_cli.commands:main_run_long_paper_validation"
+printer-freeze-v1-paper-rc = "printer_v1.operator_cli.commands:main_freeze_v1_paper_rc"
 
 [tool.unittest]
 start-directory = "tests"

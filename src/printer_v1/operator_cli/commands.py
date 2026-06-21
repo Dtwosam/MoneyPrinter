@@ -44,6 +44,7 @@ from printer_v1.operator_db.status import (
     STATE_SCHEDULER_SINGLE_TICK_EXECUTED,
     STATE_BOUNDED_RUNTIME_EXECUTED,
     STATE_LONG_RUN_PAPER_VALIDATION,
+    STATE_V1_PAPER_RELEASE_CANDIDATE,
     STATE_SCHEMA_ONLY,
     STATE_SOURCE_ONLY_SMOKE_CHECK,
     STATE_TEST_ONLY,
@@ -97,6 +98,7 @@ READINESS_READY_REAL_PAPER_AUDIT_OPERATOR_REVIEW = "READY_REAL_PAPER_AUDIT_OPERA
 READINESS_READY_SCHEDULER_SINGLE_TICK_EXECUTED = "READY_SCHEDULER_SINGLE_TICK_EXECUTED"
 READINESS_READY_BOUNDED_RUNTIME_EXECUTED = "READY_BOUNDED_RUNTIME_EXECUTED"
 READINESS_READY_LONG_RUN_PAPER_VALIDATION = "READY_LONG_RUN_PAPER_VALIDATION"
+READINESS_READY_V1_PAPER_RELEASE_CANDIDATE = "READY_V1_PAPER_RELEASE_CANDIDATE"
 READINESS_READY_WITH_LOCAL_DATA = "READY_WITH_LOCAL_DATA"
 READINESS_BLOCKED = "BLOCKED"
 READINESS_STATE_UNKNOWN = "STATE_UNKNOWN"
@@ -4258,6 +4260,478 @@ def main_run_long_paper_validation(argv: Sequence[str] | None = None) -> int:
         return _print_error(exc)
 
 
+def _validate_v1_paper_rc_args(args: argparse.Namespace) -> None:
+    if not args.operator_approved:
+        raise ValueError("V1 paper RC freeze requires explicit operator approval")
+    if not args.rc_name:
+        raise ValueError("V1 paper RC freeze requires rc_name")
+    if not args.acknowledge_no_clean_memory_blocker:
+        raise ValueError("V1 paper RC freeze requires acknowledgement of the no-clean-memory blocker")
+    if not args.acknowledge_paper_only:
+        raise ValueError("V1 paper RC freeze requires acknowledgement that this is paper-only")
+
+
+def _latest_phase37_report(connection: sqlite3.Connection) -> dict[str, Any]:
+    row = connection.execute(
+        """
+        SELECT report_payload_json
+        FROM printer_operator_review_reports
+        WHERE report_title = 'Phase 37 Long-Run Paper Validation'
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if row is None or not row["report_payload_json"]:
+        raise ValueError("Phase 38 requires a Phase 37 long-run validation report")
+    return json.loads(row["report_payload_json"])
+
+
+def _current_rc_freeze_summary(connection: sqlite3.Connection) -> dict[str, Any]:
+    counts = {
+        table: int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        for table in [
+            "printer_source_requests",
+            "printer_source_responses",
+            "printer_source_failures",
+            "printer_tokens",
+            "printer_pairs",
+            "printer_token_snapshots",
+            "printer_market_regime_snapshots",
+            "printer_solana_chain_heat_snapshots",
+            "printer_safety_rug_snapshots",
+            "printer_liquidity_exit_snapshots",
+            "printer_trading_flow_snapshots",
+            "printer_chart_volatility_snapshots",
+            "printer_micro_events",
+            "printer_memory_windows",
+            "printer_episodes",
+            "printer_episode_snapshots",
+            "printer_episode_outcomes",
+            "printer_memory_fingerprints",
+            "printer_memory_audit_reports",
+            "printer_memory_retrieval_queries",
+            "printer_memory_retrieval_matches",
+            "printer_paper_decisions",
+            "printer_paper_positions",
+            "printer_paper_trade_events",
+            "printer_paper_trade_audits",
+            "printer_paper_audit_reports",
+            "printer_operator_review_reports",
+            "printer_operator_review_items",
+            "printer_scheduler_jobs",
+        ]
+    }
+    action_counts = {
+        action: int(
+            connection.execute(
+                "SELECT COUNT(*) FROM printer_paper_decisions WHERE COALESCE(final_action_label, decision_action) = ?",
+                (action,),
+            ).fetchone()[0]
+        )
+        for action in ["BUY", "WAIT", "AVOID", "NO_ACTION", "SELL", "HOLD"]
+    }
+    latest_decision = connection.execute(
+        """
+        SELECT COALESCE(final_action_label, decision_action) AS action,
+               COALESCE(paper_decision_status_label, decision_status) AS status,
+               blocking_reasons_json
+        FROM printer_paper_decisions
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    return {
+        "counts": counts,
+        "action_counts": action_counts,
+        "latest_paper_decision_action": latest_decision["action"] if latest_decision else None,
+        "latest_paper_decision_status": latest_decision["status"] if latest_decision else None,
+        "latest_paper_decision_blocked_reason": json.loads(latest_decision["blocking_reasons_json"] or "[]")
+        if latest_decision
+        else [],
+        "clean_eligible_memory_count": int(
+            connection.execute(
+                "SELECT COUNT(*) FROM printer_memory_windows WHERE memory_quality_label = 'CLEAN_MEMORY' AND do_not_train = 0"
+            ).fetchone()[0]
+        ),
+        "dirty_memory_count": int(
+            connection.execute("SELECT COUNT(*) FROM printer_memory_windows WHERE memory_quality_label = 'DIRTY_MEMORY'").fetchone()[0]
+        ),
+        "blocked_dirty_memory_count": int(
+            connection.execute(
+                "SELECT COUNT(*) FROM printer_memory_windows WHERE memory_quality_label = 'DIRTY_MEMORY' AND do_not_train = 1"
+            ).fetchone()[0]
+        ),
+        "running_scheduler_jobs": int(
+            connection.execute("SELECT COUNT(*) FROM printer_scheduler_jobs WHERE status = 'RUNNING'").fetchone()[0]
+        ),
+        "active_job_locks": int(
+            connection.execute("SELECT COUNT(*) FROM printer_scheduler_jobs WHERE locked_at IS NOT NULL OR lock_owner IS NOT NULL").fetchone()[0]
+        ),
+    }
+
+
+def _assert_v1_paper_rc_safety_gates(
+    connection: sqlite3.Connection,
+    project_root: Path,
+    state_classification: str,
+    summary: dict[str, Any],
+    phase37_report: dict[str, Any],
+) -> None:
+    if state_classification != STATE_LONG_RUN_PAPER_VALIDATION:
+        raise ValueError("V1 paper RC freeze requires READY_LONG_RUN_PAPER_VALIDATION state")
+    source_scan = check_no_live_capability_terms_in_source(project_root)
+    runtime_scan = check_no_runtime_loop_terms_in_source(project_root)
+    if source_scan["validation_result_label"] != "VALIDATION_PASS":
+        raise ValueError("V1 paper RC freeze blocked by live/wallet/source capability marker")
+    if runtime_scan["validation_result_label"] != "VALIDATION_PASS":
+        raise ValueError("V1 paper RC freeze blocked by runtime loop marker")
+    if phase37_report.get("validation_verdict") != "PAPER_VALIDATION_SAFE_BUT_NO_CLEAN_MEMORY":
+        raise ValueError("V1 paper RC freeze requires honest Phase 37 no-clean-memory verdict")
+    if phase37_report.get("source_failure_visibility_label") != "SOURCE_FAILURES_VISIBLE":
+        raise ValueError("V1 paper RC freeze requires visible source failures")
+    if phase37_report.get("runtime_active_after_exit"):
+        raise ValueError("V1 paper RC freeze requires runtime inactive after exit")
+    if phase37_report.get("unbounded_runtime_detected"):
+        raise ValueError("V1 paper RC freeze blocked by unbounded runtime")
+    if phase37_report.get("live_trading_safety_label") != "LIVE_TRADING_NOT_PRESENT":
+        raise ValueError("V1 paper RC freeze requires live trading absence")
+    if summary["clean_eligible_memory_count"] != 0:
+        raise ValueError("Phase 38 persistent RC is scoped to the known no-clean-memory blocker")
+    if summary["dirty_memory_count"] < 1 or summary["blocked_dirty_memory_count"] < 1:
+        raise ValueError("V1 paper RC freeze requires dirty memory to remain blocked")
+    if summary["action_counts"]["BUY"] > 0:
+        raise ValueError("V1 paper RC freeze blocked because BUY exists")
+    if summary["latest_paper_decision_action"] != "NO_ACTION":
+        raise ValueError("V1 paper RC freeze requires latest decision to remain NO_ACTION")
+    if summary["latest_paper_decision_status"] != "PAPER_DECISION_BLOCKED":
+        raise ValueError("V1 paper RC freeze requires latest decision to remain blocked")
+    if summary["counts"]["printer_paper_positions"] > 0 or summary["counts"]["printer_paper_trade_events"] > 0:
+        raise ValueError("V1 paper RC freeze blocked by paper execution rows")
+    if summary["counts"]["printer_paper_trade_audits"] > 0:
+        raise ValueError("V1 paper RC freeze blocked by PnL/audit trade rows")
+    if summary["running_scheduler_jobs"] or summary["active_job_locks"]:
+        raise ValueError("V1 paper RC freeze requires zero running jobs and locks")
+
+
+def _build_v1_paper_rc_manifest(
+    rc_name: str,
+    summary: dict[str, Any],
+    phase37_report: dict[str, Any],
+    current_state: str,
+    readiness_label: str,
+) -> dict[str, Any]:
+    counts = summary["counts"]
+    action_counts = summary["action_counts"]
+    known_blockers = [
+        "NO_CLEAN_ELIGIBLE_MEMORY",
+        "BUY_LOCKED",
+        "NO_PAPER_POSITION_HISTORY",
+        "SOURCE_FAILURES_VISIBLE",
+        "NOT_PROFIT_CLAIM_READY",
+        "NOT_LIVE_READY",
+    ]
+    known_limitations = [
+        "Only one real token snapshot exists",
+        "Only dirty memory exists and remains blocked",
+        "Clean retrieval returned zero matches",
+        "Paper decision is blocked NO_ACTION",
+        "No paper position, trade event, or PnL history exists",
+        "Earlier DexScreener source failures remain visible",
+    ]
+    forbidden_claims = [
+        "PROFITABLE",
+        "LIVE_READY",
+        "BUY_READY",
+        "AUTONOMOUS_READY",
+        "PRODUCTION_TRADING_READY",
+        "CLEAN_MEMORY_READY",
+        "WALLET_READY",
+    ]
+    allowed_scope = [
+        "paper-only local/operator-controlled RC",
+        "safe for further controlled data collection and paper validation only",
+        "not safe for live trading",
+        "not safe for real funds",
+        "not safe to claim profitability",
+        "not safe to unlock BUY",
+    ]
+    return {
+        "rc_name": rc_name,
+        "rc_type": "PAPER_ONLY",
+        "rc_status": "PAPER_RC_FROZEN_WITH_BLOCKER",
+        "rc_verdict": "PAPER_ONLY_RC_SAFE_BUT_NO_CLEAN_MEMORY",
+        "rc_created_at": _utc_timestamp(),
+        "git_commit_expected": "31c90dc",
+        "expected_phase_tag": "printer-v1-phase38-v1-paper-release-candidate",
+        "db_checkpoint_recommendation": "data/printer_v1.phase38-v1-paper-release-candidate.sqlite3",
+        "db_state": current_state,
+        "readiness_label": readiness_label,
+        "source_request_rows": counts["printer_source_requests"],
+        "source_response_rows": counts["printer_source_responses"],
+        "source_failure_rows": counts["printer_source_failures"],
+        "token_rows": counts["printer_tokens"],
+        "pair_rows": counts["printer_pairs"],
+        "snapshot_rows": counts["printer_token_snapshots"],
+        "context_rows_by_table": {
+            "printer_market_regime_snapshots": counts["printer_market_regime_snapshots"],
+            "printer_solana_chain_heat_snapshots": counts["printer_solana_chain_heat_snapshots"],
+            "printer_safety_rug_snapshots": counts["printer_safety_rug_snapshots"],
+            "printer_liquidity_exit_snapshots": counts["printer_liquidity_exit_snapshots"],
+            "printer_trading_flow_snapshots": counts["printer_trading_flow_snapshots"],
+            "printer_chart_volatility_snapshots": counts["printer_chart_volatility_snapshots"],
+            "printer_micro_events": counts["printer_micro_events"],
+        },
+        "memory_window_rows": counts["printer_memory_windows"],
+        "episode_rows": counts["printer_episodes"],
+        "episode_snapshot_link_rows": counts["printer_episode_snapshots"],
+        "outcome_rows": counts["printer_episode_outcomes"],
+        "memory_fingerprint_rows": counts["printer_memory_fingerprints"],
+        "memory_audit_report_rows": counts["printer_memory_audit_reports"],
+        "retrieval_query_rows": counts["printer_memory_retrieval_queries"],
+        "retrieval_match_rows": counts["printer_memory_retrieval_matches"],
+        "clean_eligible_memory_count": summary["clean_eligible_memory_count"],
+        "dirty_memory_count": summary["dirty_memory_count"],
+        "blocked_dirty_memory_count": summary["blocked_dirty_memory_count"],
+        "paper_decision_rows": counts["printer_paper_decisions"],
+        "latest_paper_decision_action": summary["latest_paper_decision_action"],
+        "latest_paper_decision_status": summary["latest_paper_decision_status"],
+        "paper_decision_action_counts": action_counts,
+        "paper_position_rows": counts["printer_paper_positions"],
+        "paper_trade_event_rows": counts["printer_paper_trade_events"],
+        "pnl_rows": counts["printer_paper_trade_audits"],
+        "paper_audit_report_rows": counts["printer_paper_audit_reports"],
+        "operator_review_report_rows_before_rc": counts["printer_operator_review_reports"],
+        "operator_review_item_rows_before_rc": counts["printer_operator_review_items"],
+        "scheduler_job_rows": counts["printer_scheduler_jobs"],
+        "bounded_runtime_safety_summary": {
+            "runtime_stopped_cleanly": phase37_report.get("runtime_stopped_cleanly"),
+            "runtime_active_after_exit": phase37_report.get("runtime_active_after_exit"),
+            "unbounded_runtime_detected": phase37_report.get("unbounded_runtime_detected"),
+        },
+        "long_run_validation_summary": {
+            "validation_verdict": phase37_report.get("validation_verdict"),
+            "jobs_succeeded": phase37_report.get("jobs_succeeded"),
+            "jobs_failed": phase37_report.get("jobs_failed"),
+            "stop_reason": phase37_report.get("stop_reason"),
+        },
+        "source_health_label": phase37_report.get("source_health_label"),
+        "memory_quality_label": phase37_report.get("memory_quality_label"),
+        "paper_decision_quality_label": phase37_report.get("paper_decision_quality_label"),
+        "paper_monitor_quality_label": phase37_report.get("paper_monitor_quality_label"),
+        "paper_audit_quality_label": phase37_report.get("paper_audit_quality_label"),
+        "fake_profit_prevention_label": phase37_report.get("fake_profit_prevention_label"),
+        "live_trading_safety_label": phase37_report.get("live_trading_safety_label"),
+        "clean_memory_status": "NO_CLEAN_ELIGIBLE_MEMORY",
+        "buy_status": "BUY_LOCKED",
+        "live_status": "LIVE_TRADING_NOT_PRESENT",
+        "profit_claim_status": "NOT_PROFIT_CLAIM_READY",
+        "paper_position_status": "NO_POSITION_OPENED",
+        "memory_safety_status": "DIRTY_MEMORY_BLOCKED",
+        "source_status": "SOURCE_FAILURES_VISIBLE",
+        "scheduler_status": "BOUNDED_SCHEDULER_SAFE",
+        "runtime_status": "BOUNDED_RUNTIME_SAFE",
+        "fake_profit_status": "NO_FAKE_PROFIT",
+        "operator_status": "OPERATOR_REVIEW_REQUIRED_FOR_NEXT_REAL_DATA_CYCLE",
+        "known_blockers": known_blockers,
+        "known_limitations": known_limitations,
+        "release_candidate_allowed_scope": allowed_scope,
+        "release_candidate_forbidden_claims": forbidden_claims,
+        "operator_acknowledgements_required": [
+            "ACKNOWLEDGE_NO_CLEAN_MEMORY_BLOCKER",
+            "ACKNOWLEDGE_PAPER_ONLY",
+        ],
+        "operator_acknowledgements_recorded": [
+            "ACKNOWLEDGE_NO_CLEAN_MEMORY_BLOCKER",
+            "ACKNOWLEDGE_PAPER_ONLY",
+        ],
+        "rollback_instructions": [
+            "Restore the Phase 37 checkpoint DB if RC freeze needs to be undone",
+            "Do not unlock BUY until clean eligible memory exists in a later controlled cycle",
+        ],
+        "next_operator_action": "Create a Phase 38 checkpoint/tag if accepted; no new build phase until the operator chooses the next controlled data-collection cycle.",
+        "suggested_release_tag": "printer-v1-phase38-v1-paper-release-candidate",
+    }
+
+
+def _insert_v1_paper_rc_operator_review(connection: sqlite3.Connection, manifest: dict[str, Any]) -> tuple[int, list[int]]:
+    attention_labels = [
+        "ATTENTION_NO_CLEAN_MEMORY",
+        "ATTENTION_SOURCE_FAILURES",
+        "ATTENTION_DIRTY_MEMORY",
+        "ATTENTION_BLOCKED_PAPER_DECISIONS",
+    ]
+    generated_at = manifest["rc_created_at"]
+    cursor = connection.execute(
+        """
+        INSERT INTO printer_operator_review_reports (
+            report_scope_label, report_status_label, operator_review_label,
+            report_format_label, generated_at, db_state_classification,
+            report_title, attention_labels_json, summary_payload_json,
+            report_payload_json, report_text
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "REPORT_FULL_OPERATOR_REVIEW",
+            "REPORT_READY",
+            "OPERATOR_REVIEW_OK",
+            "REPORT_FORMAT_JSON",
+            generated_at,
+            "PERSISTENT_DB_STATE_UNCLEAR",
+            "Phase 38 V1 Paper Release Candidate",
+            json.dumps(attention_labels, sort_keys=True),
+            json.dumps(
+                {
+                    "rc_name": manifest["rc_name"],
+                    "rc_status": manifest["rc_status"],
+                    "rc_verdict": manifest["rc_verdict"],
+                    "known_blockers": manifest["known_blockers"],
+                },
+                sort_keys=True,
+            ),
+            json.dumps(manifest, sort_keys=True),
+            json.dumps(manifest, indent=2, sort_keys=True),
+        ),
+    )
+    report_id = int(cursor.lastrowid)
+    item_specs = [
+        ("REPORT_FULL_OPERATOR_REVIEW", "ATTENTION_NO_CLEAN_MEMORY", "NO_CLEAN_ELIGIBLE_MEMORY"),
+        ("REPORT_MEMORY", "ATTENTION_DIRTY_MEMORY", "DIRTY_MEMORY_BLOCKED"),
+        ("REPORT_SOURCE_HEALTH", "ATTENTION_SOURCE_FAILURES", "SOURCE_FAILURES_VISIBLE"),
+        ("REPORT_PAPER_DECISIONS", "ATTENTION_BLOCKED_PAPER_DECISIONS", "BUY_LOCKED"),
+    ]
+    item_ids: list[int] = []
+    for scope, attention, label in item_specs:
+        item = connection.execute(
+            """
+            INSERT INTO printer_operator_review_items (
+                operator_review_report_id, item_scope_label, operator_review_label,
+                attention_label, item_payload_json
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                report_id,
+                scope,
+                "OPERATOR_REVIEW_OK",
+                attention,
+                json.dumps({"rc_name": manifest["rc_name"], "label": label, "rc_verdict": manifest["rc_verdict"]}, sort_keys=True),
+            ),
+        )
+        item_ids.append(int(item.lastrowid))
+    return report_id, item_ids
+
+
+def build_v1_paper_rc_payload(args: argparse.Namespace) -> dict[str, Any]:
+    _validate_v1_paper_rc_args(args)
+    project_root = _project_root(args.project_root)
+    resolved = resolve_operator_db_path(args.db_path, project_root)
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Operator DB does not exist: {resolved}")
+
+    before_counts = get_core_table_counts(resolved, project_root)
+    before_status = get_operator_db_status(resolved, project_root)
+
+    connection = sqlite3.connect(resolved)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    rc_report_id: int | None = None
+    rc_item_ids: list[int] = []
+    manifest: dict[str, Any] = {}
+    try:
+        phase37_report = _latest_phase37_report(connection)
+        summary = _current_rc_freeze_summary(connection)
+        _assert_v1_paper_rc_safety_gates(
+            connection,
+            project_root,
+            before_status["state_classification"],
+            summary,
+            phase37_report,
+        )
+        manifest = _build_v1_paper_rc_manifest(
+            args.rc_name,
+            summary,
+            phase37_report,
+            before_status["state_classification"],
+            "READY_LONG_RUN_PAPER_VALIDATION",
+        )
+        rc_report_id, rc_item_ids = _insert_v1_paper_rc_operator_review(connection, manifest)
+        connection.commit()
+    finally:
+        connection.close()
+
+    after_counts = get_core_table_counts(resolved, project_root)
+    deltas = {
+        table: (after_counts.get(table) or 0) - (before_counts.get(table) or 0)
+        for table in sorted(after_counts)
+    }
+    guarded_tables = [
+        "printer_tokens",
+        "printer_pairs",
+        "printer_source_requests",
+        "printer_source_responses",
+        "printer_source_failures",
+        "printer_scheduler_jobs",
+        "printer_token_snapshots",
+        *CONTEXT_TABLES,
+        *MEMORY_OUTPUT_TABLES,
+        "printer_memory_audit_reports",
+        "printer_memory_retrieval_queries",
+        "printer_memory_retrieval_matches",
+        "printer_paper_decisions",
+        "printer_paper_positions",
+        "printer_paper_trade_events",
+        "printer_paper_trade_audits",
+        "printer_paper_audit_reports",
+    ]
+    guard_deltas = {table: deltas[table] for table in guarded_tables if deltas.get(table)}
+    status = get_operator_db_status(resolved, project_root)
+    action_counts = _paper_decision_action_counts(resolved)
+    return {
+        "command": "printer-freeze-v1-paper-rc",
+        "db_path": str(resolved),
+        "operator_approved": True,
+        "rc_name": args.rc_name,
+        "rc_report_id": rc_report_id,
+        "rc_item_ids": rc_item_ids,
+        "rc_report_manifest": manifest,
+        "rc_report_manifest_rows": 1 if rc_report_id is not None else 0,
+        "rc_status": manifest.get("rc_status"),
+        "rc_verdict": manifest.get("rc_verdict"),
+        "guard_table_deltas": guard_deltas,
+        "guard_tables_unchanged": not guard_deltas,
+        "operator_review_report_delta": deltas.get("printer_operator_review_reports", 0),
+        "operator_review_item_delta": deltas.get("printer_operator_review_items", 0),
+        "action_counts": action_counts,
+        "counts_after": after_counts,
+        "db_state_classification": status["state_classification"],
+        "readiness_label": classify_readiness(
+            status,
+            get_schema_migration_status(resolved, project_root),
+            check_no_live_capability_terms_in_source(project_root),
+            check_no_runtime_loop_terms_in_source(project_root),
+        ),
+        "memory_has_started": status["memory_has_started"],
+        "paper_trading_has_started": status["paper_trading_has_started"],
+        "runtime_has_started": status["runtime_has_started"],
+    }
+
+
+def main_freeze_v1_paper_rc(argv: Sequence[str] | None = None) -> int:
+    parser = _base_parser("Freeze an honest V1 paper-only release candidate manifest.", ("json", "text"))
+    parser.add_argument("--operator-approved", action="store_true")
+    parser.add_argument("--rc-name", required=True)
+    parser.add_argument("--acknowledge-no-clean-memory-blocker", action="store_true")
+    parser.add_argument("--acknowledge-paper-only", action="store_true")
+    args = parser.parse_args(argv)
+    try:
+        payload = build_v1_paper_rc_payload(args)
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
 def classify_readiness(status: dict[str, Any], migration_status: dict[str, Any], source_scan: dict[str, Any], runtime_scan: dict[str, Any]) -> str:
     if status["state_classification"] == STATE_NO_DB:
         return READINESS_NEEDS_DB_INIT
@@ -4271,6 +4745,8 @@ def classify_readiness(status: dict[str, Any], migration_status: dict[str, Any],
         return READINESS_BLOCKED
     if status["state_classification"] == STATE_SCHEMA_ONLY:
         return READINESS_READY_SCHEMA_ONLY
+    if status["state_classification"] == STATE_V1_PAPER_RELEASE_CANDIDATE:
+        return READINESS_READY_V1_PAPER_RELEASE_CANDIDATE
     if status["state_classification"] == STATE_SOURCE_ONLY_SMOKE_CHECK:
         return READINESS_READY_SOURCE_ONLY_SMOKE_CHECK
     if status["state_classification"] == STATE_CONTROLLED_INTAKE:

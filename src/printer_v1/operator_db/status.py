@@ -23,6 +23,7 @@ STATE_REAL_PAPER_AUDIT_OPERATOR_REVIEW = "PERSISTENT_DB_REAL_PAPER_AUDIT_OPERATO
 STATE_SCHEDULER_SINGLE_TICK_EXECUTED = "PERSISTENT_DB_SCHEDULER_SINGLE_TICK_EXECUTED"
 STATE_BOUNDED_RUNTIME_EXECUTED = "PERSISTENT_DB_BOUNDED_RUNTIME_EXECUTED"
 STATE_LONG_RUN_PAPER_VALIDATION = "PERSISTENT_DB_LONG_RUN_PAPER_VALIDATION"
+STATE_V1_PAPER_RELEASE_CANDIDATE = "PERSISTENT_DB_V1_PAPER_RELEASE_CANDIDATE"
 STATE_TEST_ONLY = "PERSISTENT_DB_HAS_TEST_ONLY_ROWS"
 STATE_TOKEN_ROWS = "PERSISTENT_DB_HAS_REAL_TOKEN_ROWS"
 STATE_MEMORY_ROWS = "PERSISTENT_DB_HAS_REAL_MEMORY_ROWS"
@@ -44,6 +45,7 @@ STATE_CLASSIFICATIONS = {
     STATE_SCHEDULER_SINGLE_TICK_EXECUTED,
     STATE_BOUNDED_RUNTIME_EXECUTED,
     STATE_LONG_RUN_PAPER_VALIDATION,
+    STATE_V1_PAPER_RELEASE_CANDIDATE,
     STATE_TEST_ONLY,
     STATE_TOKEN_ROWS,
     STATE_MEMORY_ROWS,
@@ -664,6 +666,66 @@ def long_run_paper_validation_rows_exist(db_path: Path, counts: dict[str, int | 
     )
 
 
+def v1_paper_release_candidate_rows_exist(db_path: Path, counts: dict[str, int | None]) -> bool:
+    if not long_run_paper_validation_rows_exist(db_path, counts):
+        return False
+    if (counts.get("printer_operator_review_reports") or 0) < 3:
+        return False
+    if (counts.get("printer_operator_review_items") or 0) < 12:
+        return False
+    with connect_read_only(db_path) as connection:
+        report = connection.execute(
+            """
+            SELECT report_payload_json
+            FROM printer_operator_review_reports
+            WHERE report_title = 'Phase 38 V1 Paper Release Candidate'
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if report is None:
+            return False
+        payload = report["report_payload_json"] or ""
+        running_rows = connection.execute(
+            "SELECT COUNT(*) FROM printer_scheduler_jobs WHERE status = 'RUNNING' OR locked_at IS NOT NULL OR lock_owner IS NOT NULL"
+        ).fetchone()[0]
+        unsafe_decisions = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM printer_paper_decisions
+            WHERE COALESCE(final_action_label, decision_action) IN ('BUY', 'SELL', 'HOLD')
+               OR COALESCE(paper_decision_status_label, decision_status) != 'PAPER_DECISION_BLOCKED'
+               OR COALESCE(decision_gate_label, '') = 'DECISION_ALLOWED'
+            """
+        ).fetchone()[0]
+    required_visible_terms = (
+        "PAPER_ONLY_RC_SAFE_BUT_NO_CLEAN_MEMORY",
+        "NO_CLEAN_ELIGIBLE_MEMORY",
+        "BUY_LOCKED",
+        "NOT_LIVE_READY",
+        "NOT_PROFIT_CLAIM_READY",
+        "SOURCE_FAILURES_VISIBLE",
+        "DIRTY_MEMORY_BLOCKED",
+        "NO_FAKE_PROFIT",
+        "LIVE_TRADING_NOT_PRESENT",
+    )
+    forbidden_terms = (
+        '"profit_claim_status": "PROFITABLE"',
+        '"live_status": "LIVE_READY"',
+        '"buy_status": "BUY_READY"',
+        '"autonomy_status": "AUTONOMOUS_READY"',
+        '"production_trading_status": "PRODUCTION_TRADING_READY"',
+        '"clean_memory_status": "CLEAN_MEMORY_READY"',
+        '"wallet_status": "WALLET_READY"',
+    )
+    return (
+        int(running_rows) == 0
+        and int(unsafe_decisions) == 0
+        and all(term in payload for term in required_visible_terms)
+        and not any(term in payload for term in forbidden_terms)
+    )
+
+
 def token_rows_look_test_only(db_path: Path) -> bool:
     with connect_read_only(db_path) as connection:
         if not table_exists(connection, "printer_tokens"):
@@ -680,6 +742,8 @@ def classify_operator_db_state(db_path: str | Path | None = None, project_root: 
     if not resolved.is_file():
         return STATE_NO_DB
     counts = get_core_table_counts(resolved, project_root)
+    if v1_paper_release_candidate_rows_exist(resolved, counts):
+        return STATE_V1_PAPER_RELEASE_CANDIDATE
     if long_run_paper_validation_rows_exist(resolved, counts):
         return STATE_LONG_RUN_PAPER_VALIDATION
     if bounded_runtime_executed_rows_exist(resolved, counts):
