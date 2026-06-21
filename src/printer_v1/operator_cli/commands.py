@@ -9,6 +9,7 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Sequence
+from urllib.parse import quote
 
 from printer_v1.db.migrate import MIGRATIONS_DIR
 from printer_v1.hardening.flow_validation import (
@@ -44,6 +45,7 @@ from printer_v1.operator_db.status import (
     STATE_SCHEDULER_SINGLE_TICK_EXECUTED,
     STATE_BOUNDED_RUNTIME_EXECUTED,
     STATE_LONG_RUN_PAPER_VALIDATION,
+    STATE_POST_RC_DISCOVERY_MEMORY_CYCLE,
     STATE_V1_PAPER_RELEASE_CANDIDATE,
     STATE_SCHEMA_ONLY,
     STATE_SOURCE_ONLY_SMOKE_CHECK,
@@ -53,6 +55,10 @@ from printer_v1.operator_db.status import (
     get_operator_db_status,
     get_schema_migration_status,
 )
+from printer_v1.discovery.classifier import classify_discovery_candidate
+from printer_v1.discovery.contracts import DiscoveryOutputAction
+from printer_v1.discovery.discovery import process_discovery_payload
+from printer_v1.discovery.parser import normalize_candidates
 from printer_v1.operator_review.contracts import ReportFormatLabel, ReportScopeLabel
 from printer_v1.operator_review.evidence import (
     collect_db_state_evidence,
@@ -99,6 +105,7 @@ READINESS_READY_SCHEDULER_SINGLE_TICK_EXECUTED = "READY_SCHEDULER_SINGLE_TICK_EX
 READINESS_READY_BOUNDED_RUNTIME_EXECUTED = "READY_BOUNDED_RUNTIME_EXECUTED"
 READINESS_READY_LONG_RUN_PAPER_VALIDATION = "READY_LONG_RUN_PAPER_VALIDATION"
 READINESS_READY_V1_PAPER_RELEASE_CANDIDATE = "READY_V1_PAPER_RELEASE_CANDIDATE"
+READINESS_READY_POST_RC_DISCOVERY_MEMORY_CYCLE = "READY_POST_RC_DISCOVERY_MEMORY_CYCLE"
 READINESS_READY_WITH_LOCAL_DATA = "READY_WITH_LOCAL_DATA"
 READINESS_BLOCKED = "BLOCKED"
 READINESS_STATE_UNKNOWN = "STATE_UNKNOWN"
@@ -564,6 +571,232 @@ def main_source_smoke_dexscreener(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         payload = build_source_smoke_dexscreener_payload(args)
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
+def _validate_discover_candidates_args(args: argparse.Namespace) -> None:
+    if not args.operator_approved:
+        raise ValueError("controlled discovery requires explicit operator approval")
+    if str(args.chain or "").strip().lower() != "solana":
+        raise ValueError("controlled discovery is Solana-only")
+    if args.max_candidates < 1 or args.max_candidates > 3:
+        raise ValueError("max_candidates must be between 1 and 3")
+    if args.source_name != "dexscreener":
+        raise ValueError("controlled discovery supports DexScreener only")
+    if args.timeout_seconds <= 0 or args.timeout_seconds > 10:
+        raise ValueError("timeout_seconds must be greater than 0 and no more than 10")
+
+
+def _existing_token_pair_sets(connection: sqlite3.Connection) -> tuple[set[str], set[str]]:
+    token_rows = connection.execute("SELECT token_mint FROM printer_tokens").fetchall()
+    pair_rows = connection.execute("SELECT pair_address FROM printer_pairs").fetchall()
+    return (
+        {row["token_mint"] for row in token_rows if row["token_mint"]},
+        {row["pair_address"] for row in pair_rows if row["pair_address"]},
+    )
+
+
+def _select_discovery_candidates(
+    normalized_pairs: list[dict[str, Any]],
+    *,
+    existing_token_mints: set[str],
+    existing_pair_addresses: set[str],
+    max_candidates: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    accepted_actions = {
+        DiscoveryOutputAction.TRACK_FAST,
+        DiscoveryOutputAction.TRACK_NORMAL,
+        DiscoveryOutputAction.WATCH_ONLY,
+    }
+    accepted: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    inspected: list[dict[str, Any]] = []
+    for candidate in normalized_pairs:
+        token_mint = candidate.get("token_mint")
+        pair_address = candidate.get("pair_address")
+        classification = classify_discovery_candidate(candidate)
+        item = {
+            "token_mint": token_mint,
+            "pair_address": pair_address,
+            "classification": classification.discovery_action.value,
+            "tracking_label": classification.discovery_action.value,
+        }
+        inspected.append(item)
+        reject_reason = None
+        if candidate.get("chain") != "solana":
+            reject_reason = "non_solana_candidate"
+        elif token_mint in existing_token_mints or pair_address in existing_pair_addresses:
+            reject_reason = "duplicate_existing_token_or_pair"
+        elif classification.discovery_action not in accepted_actions:
+            reject_reason = f"classified_{classification.discovery_action.value.lower()}"
+        elif len(accepted) >= max_candidates:
+            reject_reason = "max_candidates_reached"
+
+        if reject_reason:
+            rejected.append({**item, "reject_reason": reject_reason})
+        else:
+            accepted.append(candidate)
+    return accepted, rejected, inspected
+
+
+def build_discover_candidates_once_payload(
+    args: argparse.Namespace,
+    *,
+    transport=None,
+) -> dict[str, Any]:
+    _validate_discover_candidates_args(args)
+    project_root = _project_root(args.project_root)
+    resolved = resolve_operator_db_path(args.db_path, project_root)
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Operator DB does not exist: {resolved}")
+
+    before_counts = get_core_table_counts(resolved, project_root)
+    with sqlite3.connect(resolved) as connection:
+        connection.row_factory = sqlite3.Row
+        existing_token_mints, existing_pair_addresses = _existing_token_pair_sets(connection)
+
+    query = str(args.query or "pump").strip() or "pump"
+    endpoint = f"https://api.dexscreener.com/latest/dex/search?q={quote(query)}"
+    source_request = build_governed_source_request(
+        "dexscreener",
+        "token_discovery",
+        request_key=args.request_key or f"post-rc-discovery-{query}",
+        tracking_priority=0,
+        payload={
+            "post_rc_cycle": "cycle1",
+            "query": query,
+            "max_candidates": args.max_candidates,
+            "chain": "solana",
+        },
+    )
+    adapter = build_dexscreener_adapter(
+        enabled=True,
+        smoke_transport=transport or build_dexscreener_smoke_transport(timeout_seconds=args.timeout_seconds, endpoint=endpoint),
+    )
+    result = execute_source_request_with_governor(
+        resolved,
+        source_request,
+        adapter,
+        recent_request_count=0,
+    )
+
+    normalized_payload = dict(result.normalized_result.normalized_payload or {})
+    normalized_pairs = normalize_candidates("dexscreener", normalized_payload) if normalized_payload else []
+    accepted: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    inspected: list[dict[str, Any]] = []
+    discovery_results: list[dict[str, Any]] = []
+    if result.response_record and result.normalized_result.source_status.value == "COMPLETE":
+        accepted, rejected, inspected = _select_discovery_candidates(
+            normalized_pairs,
+            existing_token_mints=existing_token_mints,
+            existing_pair_addresses=existing_pair_addresses,
+            max_candidates=args.max_candidates,
+        )
+        if accepted:
+            discovery_payload = {
+                "source_status": result.normalized_result.source_status.value,
+                "source_response_id": result.response_record.id,
+                "pairs": accepted,
+            }
+            discovery_results = process_discovery_payload(resolved, "dexscreener", discovery_payload)
+
+    after_counts = get_core_table_counts(resolved, project_root)
+    deltas = {
+        table: (after_counts.get(table) or 0) - (before_counts.get(table) or 0)
+        for table in sorted(after_counts)
+    }
+    with sqlite3.connect(resolved) as connection:
+        connection.row_factory = sqlite3.Row
+        discovery_count_after = connection.execute("SELECT COUNT(*) FROM printer_discovery_candidates").fetchone()[0]
+        accepted_rows = connection.execute(
+            """
+            SELECT token_id, pair_id, discovery_action, tracking_lane
+            FROM printer_discovery_candidates
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (len(discovery_results),),
+        ).fetchall()
+    status = get_operator_db_status(resolved, project_root)
+    return {
+        "command": "printer-discover-candidates-once",
+        "db_path": str(resolved),
+        "operator_approved": True,
+        "source_name": "dexscreener",
+        "request_kind": "token_discovery",
+        "query": query,
+        "endpoint": endpoint,
+        "max_candidates": args.max_candidates,
+        "source_status": result.normalized_result.source_status.value,
+        "data_quality_label": result.normalized_result.data_quality_label.value,
+        "source_request_id": result.request_record.id,
+        "source_response_id": result.response_record.id if result.response_record else None,
+        "source_failure_id": result.failure_record.id if result.failure_record else None,
+        "failure_type": result.normalized_result.failure_type,
+        "failure_message": result.normalized_result.failure_message,
+        "candidates_found": len(normalized_pairs),
+        "candidates_inspected": inspected,
+        "candidates_accepted": len(discovery_results),
+        "candidates_rejected": len(rejected),
+        "rejected_candidates": rejected,
+        "accepted_candidates": [
+            {
+                "token_mint": candidate.get("token_mint"),
+                "pair_address": candidate.get("pair_address"),
+                "tracking_label": classify_discovery_candidate(candidate).discovery_action.value,
+            }
+            for candidate in accepted[: len(discovery_results)]
+        ],
+        "discovery_results": [
+            {
+                "discovery_candidate_id": item["discovery_candidate_id"],
+                "token_id": item["token_id"],
+                "pair_id": item["pair_id"],
+                "tracking_queue_id": item["tracking_queue_id"],
+                "scheduler_job_id": item["scheduler_job_id"],
+                "tracking_lane": item["tracking_lane"].value if item["tracking_lane"] else None,
+                "classification": item["classification"].discovery_action.value,
+            }
+            for item in discovery_results
+        ],
+        "latest_discovery_rows": [dict(row) for row in accepted_rows],
+        "source_request_delta": deltas.get("printer_source_requests", 0),
+        "source_response_delta": deltas.get("printer_source_responses", 0),
+        "source_failure_delta": deltas.get("printer_source_failures", 0),
+        "token_delta": deltas.get("printer_tokens", 0),
+        "pair_delta": deltas.get("printer_pairs", 0),
+        "tracking_queue_delta": deltas.get("printer_tracking_queue", 0),
+        "scheduler_job_delta": deltas.get("printer_scheduler_jobs", 0),
+        "snapshot_delta": deltas.get("printer_token_snapshots", 0),
+        "memory_delta": deltas.get("printer_memory_windows", 0),
+        "retrieval_delta": deltas.get("printer_memory_retrieval_queries", 0) + deltas.get("printer_memory_retrieval_matches", 0),
+        "paper_decision_delta": deltas.get("printer_paper_decisions", 0),
+        "paper_position_delta": deltas.get("printer_paper_positions", 0),
+        "discovery_candidate_rows_after": int(discovery_count_after),
+        "counts_after": after_counts,
+        "db_state_classification": status["state_classification"],
+        "memory_has_started": status["memory_has_started"],
+        "paper_trading_has_started": status["paper_trading_has_started"],
+        "runtime_has_started": status["runtime_has_started"],
+    }
+
+
+def main_discover_candidates_once(argv: Sequence[str] | None = None) -> int:
+    parser = _base_parser("Discover 1 to 3 controlled post-RC Solana candidates through Source Governor.", ("json", "text"))
+    parser.add_argument("--operator-approved", action="store_true")
+    parser.add_argument("--chain", default="solana")
+    parser.add_argument("--max-candidates", type=int, default=1)
+    parser.add_argument("--query", default="pump")
+    parser.add_argument("--timeout-seconds", type=float, default=5.0)
+    parser.add_argument("--source-name", default="dexscreener")
+    parser.add_argument("--request-key")
+    args = parser.parse_args(argv)
+    try:
+        payload = build_discover_candidates_once_payload(args)
         _print_payload(payload, args.format)
         return 0
     except Exception as exc:
@@ -1096,7 +1329,7 @@ def _context_rows_for_target(connection: sqlite3.Connection, target: dict[str, A
     counts: dict[str, int] = {}
     for table in CONTEXT_TABLES:
         if table in {"printer_market_regime_snapshots", "printer_solana_chain_heat_snapshots"}:
-            counts[table] = int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            counts[table] = 0
         else:
             counts[table] = int(
                 connection.execute(
@@ -4747,6 +4980,8 @@ def classify_readiness(status: dict[str, Any], migration_status: dict[str, Any],
         return READINESS_READY_SCHEMA_ONLY
     if status["state_classification"] == STATE_V1_PAPER_RELEASE_CANDIDATE:
         return READINESS_READY_V1_PAPER_RELEASE_CANDIDATE
+    if status["state_classification"] == STATE_POST_RC_DISCOVERY_MEMORY_CYCLE:
+        return READINESS_READY_POST_RC_DISCOVERY_MEMORY_CYCLE
     if status["state_classification"] == STATE_SOURCE_ONLY_SMOKE_CHECK:
         return READINESS_READY_SOURCE_ONLY_SMOKE_CHECK
     if status["state_classification"] == STATE_CONTROLLED_INTAKE:
