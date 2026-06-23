@@ -2838,13 +2838,161 @@ def _memory_audit_source_summary(connection: sqlite3.Connection, window: dict[st
     }
 
 
+def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
+    row = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _clean_safety_evidence_row(row: dict[str, Any] | None) -> bool:
+    return bool(row) and (
+        row.get("source_status") in {"COMPLETE", "PARTIAL"}
+        and row.get("data_quality_label") in {"CLEAN_DATA", "ACCEPTABLE_PARTIAL_DATA"}
+        and row.get("target_status") == "TARGET_MATCH"
+        and row.get("freshness_label") in {"SAFETY_EVIDENCE_FRESH", "SAFETY_EVIDENCE_ACCEPTABLE"}
+        and row.get("safety_context_label") == "SAFETY_CLEAN"
+        and bool(row.get("paper_only_context"))
+        and row.get("source_request_id") is not None
+        and row.get("source_response_id") is not None
+        and row.get("source_failure_id") is None
+    )
+
+
+def _clean_quote_evidence_row(row: dict[str, Any] | None, direction: str) -> bool:
+    if not row:
+        return False
+    clean_label = (
+        row.get("entry_realism_label") in {"ENTRY_REALISTIC", "ENTRY_ROUTE_AVAILABLE"}
+        if direction == "ENTRY"
+        else row.get("exit_realism_label") in {"EXIT_REALISTIC", "EXIT_ROUTE_AVAILABLE"}
+    )
+    return (
+        row.get("source_status") in {"COMPLETE", "PARTIAL"}
+        and row.get("data_quality_label") in {"CLEAN_DATA", "ACCEPTABLE_PARTIAL_DATA"}
+        and row.get("target_status") == "TARGET_MATCH"
+        and row.get("freshness_label") in {"QUOTE_FRESH", "QUOTE_ACCEPTABLE"}
+        and row.get("quote_context_label") == "QUOTE_ROUTE_AVAILABLE"
+        and row.get("route_available_label") == "ROUTE_AVAILABLE"
+        and row.get("quote_direction") == direction
+        and row.get("quote_purpose") == "PAPER_REALISM_ONLY"
+        and clean_label
+        and bool(row.get("paper_only_context"))
+        and row.get("source_request_id") is not None
+        and row.get("source_response_id") is not None
+        and row.get("source_failure_id") is None
+    )
+
+
+def _latest_audit_evidence_row(
+    connection: sqlite3.Connection,
+    table_name: str,
+    *,
+    token_id: int,
+    pair_id: int | None,
+    snapshot_id: int | None,
+    memory_window_id: int | None,
+    extra_where: str = "",
+    extra_params: tuple[Any, ...] = (),
+) -> dict[str, Any]:
+    if not _table_exists(connection, table_name):
+        return {}
+    where = ["token_id = ?"]
+    params: list[Any] = [token_id]
+    if pair_id is not None:
+        where.append("(pair_id = ? OR pair_id IS NULL)")
+        params.append(pair_id)
+    if snapshot_id is not None:
+        where.append("snapshot_id = ?")
+        params.append(snapshot_id)
+    if memory_window_id is not None:
+        where.append("(memory_window_id = ? OR memory_window_id IS NULL)")
+        params.append(memory_window_id)
+    if extra_where:
+        where.append(extra_where)
+        params.extend(extra_params)
+    row = connection.execute(
+        f"""
+        SELECT *
+        FROM {table_name}
+        WHERE {" AND ".join(where)}
+        ORDER BY
+            CASE WHEN memory_window_id = ? THEN 0 ELSE 1 END,
+            evidence_captured_at DESC,
+            id DESC
+        LIMIT 1
+        """,
+        (*params, memory_window_id),
+    ).fetchone()
+    return _row_to_dict(row)
+
+
+def _apply_clean_audit_evidence_labels(
+    connection: sqlite3.Connection,
+    *,
+    window: dict[str, Any],
+    labels: dict[str, Any],
+) -> dict[str, Any]:
+    effective = dict(labels)
+    token_id = int(window["token_id"])
+    pair_id = int(window["pair_id"]) if window.get("pair_id") is not None else None
+    snapshot_id = int(window["snapshot_end_id"]) if window.get("snapshot_end_id") is not None else None
+    memory_window_id = int(window["id"])
+    overlays: dict[str, Any] = {
+        "safety_evidence_applied": False,
+        "entry_quote_evidence_applied": False,
+        "exit_quote_evidence_applied": False,
+    }
+
+    safety_row = _latest_audit_evidence_row(
+        connection,
+        "printer_solana_safety_evidence",
+        token_id=token_id,
+        pair_id=pair_id,
+        snapshot_id=snapshot_id,
+        memory_window_id=memory_window_id,
+    )
+    overlays["safety_evidence_row_id"] = safety_row.get("id")
+    if _clean_safety_evidence_row(safety_row):
+        effective["safety_status_label"] = safety_row["safety_context_label"]
+        overlays["safety_evidence_applied"] = True
+
+    for direction, overlay_key, label_key in (
+        ("ENTRY", "entry_quote_evidence_applied", "entry_realism_label"),
+        ("EXIT", "exit_quote_evidence_applied", "exit_realism_label"),
+    ):
+        quote_row = _latest_audit_evidence_row(
+            connection,
+            "printer_paper_quote_evidence",
+            token_id=token_id,
+            pair_id=pair_id,
+            snapshot_id=snapshot_id,
+            memory_window_id=memory_window_id,
+            extra_where="quote_direction = ?",
+            extra_params=(direction,),
+        )
+        overlays[f"{direction.lower()}_quote_evidence_row_id"] = quote_row.get("id")
+        if _clean_quote_evidence_row(quote_row, direction):
+            effective[label_key] = quote_row[label_key]
+            overlays[overlay_key] = True
+
+    return {"labels": effective, "overlays": overlays}
+
+
 def _memory_audit_context_summary(connection: sqlite3.Connection, window: dict[str, Any]) -> dict[str, Any]:
     supporting_context = _json_or_empty(window.get("supporting_context_json"))
     context_freshness = supporting_context.get("context_freshness_report") or {}
     target = {"token_id": int(window["token_id"]), "pair_id": int(window["pair_id"])}
     snapshot_id = window.get("snapshot_end_id")
     context_rows = _resolve_memory_context_rows(connection, target, int(snapshot_id) if snapshot_id else None)
-    labels = _context_memory_labels(context_rows)
+    raw_labels = _context_memory_labels(context_rows)
+    evidence_result = _apply_clean_audit_evidence_labels(
+        connection,
+        window=window,
+        labels=raw_labels,
+    )
+    labels = evidence_result["labels"]
     unknown_labels = {
         key: value for key, value in labels.items()
         if value in {None, "UNKNOWN", "SOLANA_UNKNOWN", "SAFETY_UNKNOWN", "ENTRY_UNKNOWN", "EXIT_UNKNOWN", "FLOW_UNKNOWN", "TREND_UNKNOWN", "MICRO_EVENT_UNKNOWN"}
@@ -2853,6 +3001,8 @@ def _memory_audit_context_summary(connection: sqlite3.Connection, window: dict[s
     return {
         "context_rows_present": {key: bool(value) for key, value in context_rows.items()},
         "context_labels": labels,
+        "raw_context_labels": raw_labels,
+        "audit_evidence_overlays": evidence_result["overlays"],
         "context_freshness_report": context_freshness,
         "context_blocking_reasons": freshness_blockers,
         "unknown_or_audit_only_context": unknown_labels,
