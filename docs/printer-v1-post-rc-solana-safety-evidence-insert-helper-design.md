@@ -320,17 +320,45 @@ These tests prove:
 
 The tests are pure in-memory fixtures. They do not import or implement `insert_solana_safety_evidence(...)`, do not insert into `printer_solana_safety_evidence`, do not mutate the persistent DB, and do not add runtime behavior.
 
+## Implementation Status
+
+Isolated DB insert helper implemented in:
+
+`src/printer_v1/safety/evidence.py`
+
+Targeted isolated temporary DB tests were added in:
+
+`tests/test_post_rc_solana_safety_evidence_isolated_db_insert_helper.py`
+
+Status:
+
+- Low-level insert helper implemented.
+- Helper requires a caller-provided SQLite connection or explicit DB path.
+- Helper has no default persistent DB path.
+- Helper does not infer or open the operator DB by itself.
+- Helper validates Source Governor trace inputs.
+- Helper validates scheduler/operator boundary guard inputs.
+- Helper validates target, freshness, source status, data quality, paper-only context, safety label, and forbidden fields.
+- Helper inserts exactly one `printer_solana_safety_evidence` row when insert guards pass.
+- Helper returns an audit-oriented result.
+- Helper does not return trade-oriented signals.
+- Helper does not create source request, response, or failure rows.
+- Helper does not call live APIs, Solana RPC, GoPlus, RugCheck, Helius, Jupiter, or any source.
+- Helper is not wired into CLI, scheduler, source adapters, memory audit, retrieval, paper decisions, positions, trade events, or PnL.
+- Tests use isolated temporary DBs only.
+- No persistent DB writes are performed.
+- Lane 7 remains blocked.
+
 ## Non-Goals
 
 This task does not:
 
-- Implement a helper.
 - Write to the persistent DB.
-- Insert rows into `printer_solana_safety_evidence`.
+- Insert rows into persistent `printer_solana_safety_evidence`.
 - Create persistent evidence rows.
-- Create source request rows.
-- Create source response rows.
-- Create source failure rows.
+- Create persistent source request rows.
+- Create persistent source response rows.
+- Create persistent source failure rows.
 - Add a source adapter.
 - Add Solana RPC integration.
 - Add GoPlus integration.
@@ -355,7 +383,7 @@ This task does not:
 
 Recommended next safe task:
 
-`Solana Safety Evidence Isolated DB Insert Helper Design`
+`Solana Safety Evidence Operator Command Design`
 
 Why:
 
@@ -364,6 +392,7 @@ Why:
 - The write-path design and fixture tests exist.
 - This document defines the future helper contract without implementing it.
 - Fixture-only insert-helper contract tests now exist.
-- The next narrow step is to design the isolated temp-DB insert-helper implementation boundary before any production helper, operator command, scheduler integration, source adapter, or live source work.
+- The isolated DB helper and temp-DB tests now exist.
+- The next narrow step is to design a future bounded operator command shape without live source collection, scheduler runtime wiring, source adapter work, retrieval, paper decisions, BUY, positions, or PnL.
 
 Lane 7 remains blocked until clean eligible memory exists.

@@ -19,6 +19,10 @@ from printer_v1.safety.contracts import (
     SafetyPayloadQualityLabel,
     SafetyStatusLabel,
 )
+from printer_v1.safety.evidence import (
+    SolanaSafetyEvidenceInsertResult,
+    insert_solana_safety_evidence,
+)
 from printer_v1.safety.lookup import find_latest_safety_rug_snapshot
 from printer_v1.safety.parser import normalize_safety_payload
 from printer_v1.safety.recorder import record_safety_rug_snapshot
@@ -31,6 +35,7 @@ __all__ = [
     "SafetyGateLabel",
     "SafetyPayloadQualityLabel",
     "SafetyStatusLabel",
+    "SolanaSafetyEvidenceInsertResult",
     "classify_authority_safety",
     "classify_distribution_safety",
     "classify_liquidity_safety",
@@ -39,6 +44,7 @@ __all__ = [
     "classify_safety_payload_quality",
     "classify_safety_status",
     "find_latest_safety_rug_snapshot",
+    "insert_solana_safety_evidence",
     "normalize_safety_payload",
     "record_safety_rug_snapshot",
     "safety_context_can_support_clean_memory",
