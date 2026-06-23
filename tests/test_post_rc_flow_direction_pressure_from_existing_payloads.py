@@ -193,6 +193,34 @@ class PostRcFlowDirectionPressureFromExistingPayloadsTest(unittest.TestCase):
         self.assertEqual(flow["flow_direction_label"], FlowDirectionLabel.FLOW_CHOPPY.value)
         self.assertEqual(flow["flow_pressure_label"], FlowPressureLabel.PRESSURE_BALANCED.value)
 
+    def test_observed_zero_side_flow_is_not_missing_bullish_or_bearish(self):
+        payload = self.pair_payload(
+            txns={
+                "m5": {"buys": 0, "sells": 0},
+                "h1": {"buys": 7, "sells": 2},
+                "h24": {"buys": 438, "sells": 386},
+            }
+        )
+        payload["volume_5m"] = 0
+        flow = self.create_snapshot_and_flow(payload)
+
+        self.assertEqual(flow["buys_5m"], 0)
+        self.assertEqual(flow["sells_5m"], 0)
+        self.assertEqual(flow["flow_direction_label"], FlowDirectionLabel.FLOW_EXHAUSTION.value)
+        self.assertEqual(flow["flow_pressure_label"], FlowPressureLabel.PRESSURE_BALANCED.value)
+        self.assertNotIn(
+            flow["flow_direction_label"],
+            {
+                FlowDirectionLabel.FLOW_ACCUMULATION.value,
+                FlowDirectionLabel.FLOW_DISTRIBUTION.value,
+            },
+        )
+        self.assertEqual(
+            flow["trading_flow_payload_quality_label"],
+            TradingFlowPayloadQualityLabel.TRADING_FLOW_CONTEXT_PARTIAL.value,
+        )
+        self.assertEqual(flow["flow_memory_gate_label"], FlowMemoryGateLabel.FLOW_CONTEXT_CAUTION.value)
+
     def test_missing_side_evidence_stays_unknown_or_audit_only(self):
         payload = self.pair_payload(txns={})
         flow = self.create_snapshot_and_flow(payload)

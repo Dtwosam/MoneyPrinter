@@ -26,6 +26,10 @@ def safe_ratio(left: float | int | None, right: float | int | None) -> float | N
     return float(left) / float(right)
 
 
+def observed_zero_pair(left: float | int | None, right: float | int | None) -> bool:
+    return left == 0 and right == 0
+
+
 def buy_sell_totals(payload: Mapping[str, Any]) -> tuple[int | None, int | None]:
     buys = payload.get("buys_5m") if payload.get("buys_5m") is not None else payload.get("buys_15m")
     sells = payload.get("sells_5m") if payload.get("sells_5m") is not None else payload.get("sells_15m")
@@ -41,6 +45,8 @@ def volume_totals(payload: Mapping[str, Any]) -> tuple[float | None, float | Non
 def classify_imbalance(normalized_payload: Mapping[str, Any]) -> ImbalanceLabel:
     buys, sells = buy_sell_totals(normalized_payload)
     buy_volume, sell_volume = volume_totals(normalized_payload)
+    if observed_zero_pair(buys, sells) or observed_zero_pair(buy_volume, sell_volume):
+        return ImbalanceLabel.IMBALANCE_BALANCED
     count_ratio = safe_ratio(buys, sells)
     volume_ratio = safe_ratio(buy_volume, sell_volume)
     if count_ratio is None and volume_ratio is None:
@@ -64,9 +70,13 @@ def classify_imbalance(normalized_payload: Mapping[str, Any]) -> ImbalanceLabel:
 
 def classify_flow_pressure(normalized_payload: Mapping[str, Any]) -> FlowPressureLabel:
     buy_volume, sell_volume = volume_totals(normalized_payload)
+    if observed_zero_pair(buy_volume, sell_volume):
+        return FlowPressureLabel.PRESSURE_BALANCED
     ratio = safe_ratio(buy_volume, sell_volume)
     if ratio is None:
         buys, sells = buy_sell_totals(normalized_payload)
+        if observed_zero_pair(buys, sells):
+            return FlowPressureLabel.PRESSURE_BALANCED
         ratio = safe_ratio(buys, sells)
     if ratio is None:
         return FlowPressureLabel.PRESSURE_UNKNOWN
@@ -82,7 +92,7 @@ def classify_flow_pressure(normalized_payload: Mapping[str, Any]) -> FlowPressur
 
 
 def classify_volume_activity(normalized_payload: Mapping[str, Any]) -> VolumeActivityLabel:
-    volume = normalized_payload.get("volume_5m") or normalized_payload.get("volume_15m")
+    volume = normalized_payload.get("volume_5m") if normalized_payload.get("volume_5m") is not None else normalized_payload.get("volume_15m")
     if volume is None:
         return VolumeActivityLabel.VOLUME_UNKNOWN
     if volume >= 100_000:
@@ -97,7 +107,7 @@ def classify_volume_activity(normalized_payload: Mapping[str, Any]) -> VolumeAct
 
 
 def classify_tx_activity(normalized_payload: Mapping[str, Any]) -> TxActivityLabel:
-    txns = normalized_payload.get("txns_5m") or normalized_payload.get("txns_15m")
+    txns = normalized_payload.get("txns_5m") if normalized_payload.get("txns_5m") is not None else normalized_payload.get("txns_15m")
     if txns is None:
         return TxActivityLabel.TX_ACTIVITY_UNKNOWN
     if txns >= 120:

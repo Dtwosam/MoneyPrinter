@@ -170,13 +170,48 @@ class PostRCSolanaChainHeatExistingContextTests(unittest.TestCase):
         self.assertEqual(row["congestion_label"], "CONGESTION_SEVERE")
         self.assertEqual(row["chain_heat_payload_quality_label"], "CHAIN_HEAT_CONTEXT_CLEAN")
 
+    def test_congestion_is_not_required_when_contract_critical_fields_are_present(self):
+        record_chain_heat_snapshot(
+            self.db_path,
+            self.base_payload(
+                captured_at=(self.now + timedelta(minutes=3)).isoformat(),
+                network_context={
+                    "active_addresses": 1_100_000,
+                    "tx_count_24h": 15_000_000,
+                    "new_token_count": 2500,
+                },
+            ),
+            self.now,
+        )
+        row = self.latest_chain_heat()
+
+        self.assertEqual(row["chain_heat_payload_quality_label"], "CHAIN_HEAT_CONTEXT_CLEAN")
+        self.assertEqual(row["congestion_label"], "CONGESTION_UNKNOWN")
+        self.assertNotEqual(row["activity_label"], "ACTIVITY_UNKNOWN")
+
+    def test_missing_required_activity_fields_stays_partial_even_with_price_and_liquidity(self):
+        record_chain_heat_snapshot(
+            self.db_path,
+            self.base_payload(
+                captured_at=(self.now + timedelta(minutes=4)).isoformat(),
+                network_context={},
+                meme_context={},
+            ),
+            self.now,
+        )
+        row = self.latest_chain_heat()
+
+        self.assertEqual(row["chain_heat_payload_quality_label"], "CHAIN_HEAT_CONTEXT_PARTIAL")
+        self.assertEqual(row["activity_label"], "ACTIVITY_UNKNOWN")
+        self.assertNotEqual(row["liquidity_label"], "LIQUIDITY_UNKNOWN")
+
     def test_missing_stale_failed_conflicting_and_dirty_context_remain_unknown_or_audit_only(self):
         cases = [
-            self.base_payload(captured_at=(self.now + timedelta(minutes=3)).isoformat(), network_context={}, liquidity_context={}, meme_context={}, assets={}),
+            self.base_payload(captured_at=(self.now + timedelta(minutes=5)).isoformat(), network_context={}, liquidity_context={}, meme_context={}, assets={}),
             self.base_payload(captured_at=(self.now - timedelta(hours=4)).isoformat()),
-            self.base_payload(captured_at=(self.now + timedelta(minutes=4)).isoformat(), source_status=SourceStatus.FAILED.value),
-            self.base_payload(captured_at=(self.now + timedelta(minutes=5)).isoformat(), source_status=SourceStatus.CONFLICTING.value),
-            self.base_payload(captured_at=(self.now + timedelta(minutes=6)).isoformat(), data_quality_label=DataQualityLabel.DIRTY_DATA.value),
+            self.base_payload(captured_at=(self.now + timedelta(minutes=6)).isoformat(), source_status=SourceStatus.FAILED.value),
+            self.base_payload(captured_at=(self.now + timedelta(minutes=7)).isoformat(), source_status=SourceStatus.CONFLICTING.value),
+            self.base_payload(captured_at=(self.now + timedelta(minutes=8)).isoformat(), data_quality_label=DataQualityLabel.DIRTY_DATA.value),
         ]
 
         for payload in cases:
