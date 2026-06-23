@@ -270,7 +270,13 @@ class PostRCCleanContextBlockerReviewTests(unittest.TestCase):
         self.assertNotEqual(safety["liquidity_safety_label"], "LIQUIDITY_SAFETY_UNKNOWN")
         self.assertNotEqual(flow["volume_activity_label"], "VOLUME_UNKNOWN")
         self.assertNotEqual(flow["tx_activity_label"], "TX_ACTIVITY_UNKNOWN")
-        self.assertEqual(flow["flow_direction_label"], "FLOW_UNKNOWN")
+        self.assertEqual(flow["buys_5m"], 42)
+        self.assertEqual(flow["sells_5m"], 18)
+        self.assertNotEqual(flow["flow_direction_label"], "FLOW_UNKNOWN")
+        self.assertIn(
+            flow["flow_pressure_label"],
+            {"PRESSURE_MODERATE_INFLOW", "PRESSURE_STRONG_INFLOW"},
+        )
         self.assertNotEqual(chart["trend_structure_label"], "TREND_UNKNOWN")
         self.assertIn(micro["micro_event_state_label"], {"FAST_MICRO_PUMP", "NO_MICRO_EVENT", "MICRO_EVENT_UNKNOWN"})
         self.assertEqual(micro["micro_exit_realism_label"], "MICRO_EXIT_UNKNOWN")

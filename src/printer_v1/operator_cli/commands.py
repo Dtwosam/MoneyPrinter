@@ -110,6 +110,7 @@ from printer_v1.trading_flow.classifier import (
     classify_volume_activity,
     classify_wallet_participation,
 )
+from printer_v1.trading_flow.parser import normalize_trading_flow_payload
 from printer_v1.operator_review.contracts import ReportFormatLabel, ReportScopeLabel
 from printer_v1.operator_review.evidence import (
     collect_db_state_evidence,
@@ -1155,6 +1156,12 @@ def _build_snapshot_payload_from_pair(
         "txns_5m": pair_payload.get("txns_5m"),
         "txns_1h": pair_payload.get("txns_1h"),
         "txns_24h": pair_payload.get("txns_24h"),
+        "buys_5m": pair_payload.get("buys_5m"),
+        "sells_5m": pair_payload.get("sells_5m"),
+        "buys_1h": pair_payload.get("buys_1h"),
+        "sells_1h": pair_payload.get("sells_1h"),
+        "buys_24h": pair_payload.get("buys_24h"),
+        "sells_24h": pair_payload.get("sells_24h"),
         "fdv": pair_payload.get("fdv"),
         "market_cap": pair_payload.get("market_cap"),
         "price_change_5m": pair_payload.get("price_change_5m"),
@@ -1597,7 +1604,13 @@ def _insert_controlled_context_rows(connection: sqlite3.Connection, target: dict
     base_context = _snapshot_context_payload(target, snapshot, captured_at)
     safety_context = dict(base_context)
     liquidity_context = dict(base_context)
-    flow_context = dict(base_context)
+    flow_context = normalize_trading_flow_payload(
+        {
+            **base_context,
+            "raw_snapshot_payload_json": snapshot.get("raw_snapshot_payload_json"),
+            "normalized_snapshot_payload_json": snapshot.get("normalized_snapshot_payload_json"),
+        }
+    )
     chart_context = {
         **base_context,
         "window_start_at": snapshot.get("captured_at"),
@@ -1744,29 +1757,58 @@ def _insert_controlled_context_rows(connection: sqlite3.Connection, target: dict
     flow_payload = _base_context_payload(target, snapshot, "trading_flow")
     flow_payload["known_fields"] = {
         "volume_5m": snapshot.get("volume_5m"),
+        "volume_15m": snapshot.get("volume_15m"),
         "volume_1h": snapshot.get("volume_1h"),
         "volume_24h": snapshot.get("volume_24h"),
         "txns_5m": snapshot.get("txns_5m"),
+        "txns_15m": snapshot.get("txns_15m"),
         "txns_1h": snapshot.get("txns_1h"),
         "txns_24h": snapshot.get("txns_24h"),
+        "buys_5m": flow_context.get("buys_5m"),
+        "sells_5m": flow_context.get("sells_5m"),
+        "buys_15m": flow_context.get("buys_15m"),
+        "sells_15m": flow_context.get("sells_15m"),
+        "buys_1h": flow_context.get("buys_1h"),
+        "sells_1h": flow_context.get("sells_1h"),
+        "buys_4h": flow_context.get("buys_4h"),
+        "sells_4h": flow_context.get("sells_4h"),
+        "buys_24h": flow_context.get("buys_24h"),
+        "sells_24h": flow_context.get("sells_24h"),
     }
-    flow_payload["unknown_fields"] = ["buy_sell_split", "wallet_participation"]
+    flow_payload["unknown_fields"] = [
+        field
+        for field in ("buy_sell_split", "wallet_participation")
+        if field != "buy_sell_split"
+        or (
+            flow_context.get("buys_5m") is None
+            and flow_context.get("sells_5m") is None
+            and flow_context.get("buys_1h") is None
+            and flow_context.get("sells_1h") is None
+        )
+    ]
     connection.execute(
         """
         INSERT INTO printer_trading_flow_snapshots (
             token_id, pair_id, token_mint, pair_address, captured_at, price_usd, liquidity_usd,
             volume_5m, volume_1h, volume_24h, txns_5m, txns_1h, txns_24h,
+            buys_5m, sells_5m, buys_15m, sells_15m, buys_1h, sells_1h,
+            buys_4h, sells_4h, buys_24h, sells_24h,
             flow_direction_label, flow_pressure_label, imbalance_label, volume_activity_label,
             tx_activity_label, wallet_participation_label, trading_flow_payload_quality_label,
             flow_memory_gate_label, data_quality_label, source_status,
             raw_trading_flow_payload_json, normalized_trading_flow_payload_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             target["token_id"], target["pair_id"], target["token_mint"], target["pair_address"], captured_at,
             price_usd, liquidity_usd, snapshot.get("volume_5m"), snapshot.get("volume_1h"),
             snapshot.get("volume_24h"), snapshot.get("txns_5m"), snapshot.get("txns_1h"),
-            snapshot.get("txns_24h"), flow_labels["flow_direction_label"], flow_labels["flow_pressure_label"], flow_labels["imbalance_label"],
+            snapshot.get("txns_24h"), flow_context.get("buys_5m"), flow_context.get("sells_5m"),
+            flow_context.get("buys_15m"), flow_context.get("sells_15m"),
+            flow_context.get("buys_1h"), flow_context.get("sells_1h"),
+            flow_context.get("buys_4h"), flow_context.get("sells_4h"),
+            flow_context.get("buys_24h"), flow_context.get("sells_24h"),
+            flow_labels["flow_direction_label"], flow_labels["flow_pressure_label"], flow_labels["imbalance_label"],
             flow_labels["volume_activity_label"], flow_labels["tx_activity_label"], flow_labels["wallet_participation_label"],
             flow_labels["payload_quality_label"], flow_labels["memory_gate_label"], snapshot_quality, source_status,
             json.dumps(snapshot_payload, sort_keys=True), json.dumps(flow_payload, sort_keys=True),
