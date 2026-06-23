@@ -148,6 +148,27 @@ class PostRCLane2RepeatableEvidenceWindowTests(unittest.TestCase):
             self.assertEqual(count_rows(connection, "printer_memory_windows"), 2)
             self.assertGreaterEqual(count_rows(connection, "printer_episode_snapshots"), 10)
 
+    def test_source_reference_only_difference_is_duplicate_noop(self):
+        snapshot_ids = self.seed_snapshots(6)
+        self.collect_context(snapshot_ids[-1])
+
+        first = self.memory_payload(snapshot_ids[-1], source_reference="lane2-original-build")
+        duplicate = self.memory_payload(snapshot_ids[-1], source_reference="lane2-renamed-manual-run")
+
+        self.assertIsNone(first["memory_result"]["skipped_reason"])
+        self.assertEqual(duplicate["memory_result"]["skipped_reason"], "duplicate_same_evidence_noop")
+        self.assertEqual(duplicate["memory_result"]["duplicate_guard_status"], "DUPLICATE_SAME_EVIDENCE_NOOP")
+        self.assertEqual(duplicate["memory_result"]["duplicate_block_reason"], "source_reference_only_difference_blocked")
+        self.assertEqual(duplicate["memory_result"]["evidence_difference_reason"], "source_reference_only_difference_blocked")
+        self.assertEqual(duplicate["memory_table_deltas"]["printer_memory_windows"], 0)
+        self.assertEqual(duplicate["memory_table_deltas"]["printer_episodes"], 0)
+        self.assertEqual(duplicate["memory_table_deltas"]["printer_episode_snapshots"], 0)
+        with self.connect() as connection:
+            self.assertEqual(count_rows(connection, "printer_memory_windows"), 1)
+            self.assertEqual(count_rows(connection, "printer_paper_decisions"), 0)
+            self.assertEqual(count_rows(connection, "printer_paper_positions"), 0)
+            self.assertEqual(count_rows(connection, "printer_paper_trade_events"), 0)
+
     def test_5m_micro_event_is_repeatable_support_only_and_not_retrieval_ready(self):
         snapshot_ids = self.seed_snapshots(3)
         self.collect_context(snapshot_ids[-1])

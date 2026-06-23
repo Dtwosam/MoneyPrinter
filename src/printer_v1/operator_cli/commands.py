@@ -2023,6 +2023,84 @@ def _existing_memory_for_evidence(connection: sqlite3.Connection, evidence_ident
     ).fetchone()
 
 
+def _context_row_ids_for_memory(context_rows: dict[str, dict[str, Any]]) -> dict[str, int | None]:
+    return {
+        "market": context_rows.get("market", {}).get("id"),
+        "chain_heat": context_rows.get("chain_heat", {}).get("id"),
+        "safety": context_rows.get("safety", {}).get("id"),
+        "liquidity_exit": context_rows.get("liquidity_exit", {}).get("id"),
+        "trading_flow": context_rows.get("trading_flow", {}).get("id"),
+        "chart_volatility": context_rows.get("chart_volatility", {}).get("id"),
+        "micro_event": context_rows.get("micro_event", {}).get("id"),
+    }
+
+
+def _memory_snapshot_ids_from_row(connection: sqlite3.Connection, row: sqlite3.Row) -> list[int]:
+    supporting_context = _json_or_empty(row["supporting_context_json"])
+    snapshot_ids = supporting_context.get("snapshot_ids")
+    if isinstance(snapshot_ids, list) and snapshot_ids:
+        return [int(value) for value in snapshot_ids]
+    rows = connection.execute(
+        """
+        SELECT token_snapshot_id
+        FROM printer_episode_snapshots es
+        JOIN printer_episodes e ON e.id = es.episode_id
+        WHERE e.memory_window_id = ?
+        ORDER BY es.position_in_episode ASC, es.id ASC
+        """,
+        (row["id"],),
+    ).fetchall()
+    return [int(snapshot["token_snapshot_id"]) for snapshot in rows]
+
+
+def _memory_context_row_ids_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    supporting_context = _json_or_empty(row["supporting_context_json"])
+    return supporting_context.get("context_row_ids") or {}
+
+
+def _existing_memory_for_functional_evidence(
+    connection: sqlite3.Connection,
+    target: dict[str, Any],
+    window_kind: str,
+    snapshots: list[dict[str, Any]],
+    window_start_at: str,
+    window_end_at: str,
+    evidence_role: str,
+    context_rows: dict[str, dict[str, Any]],
+) -> sqlite3.Row | None:
+    if not snapshots:
+        return None
+    snapshot_ids = [int(row["id"]) for row in snapshots]
+    context_row_ids = _context_row_ids_for_memory(context_rows)
+    candidates = connection.execute(
+        """
+        SELECT *
+        FROM printer_memory_windows
+        WHERE token_id = ?
+          AND pair_id = ?
+          AND window_kind = ?
+          AND snapshot_start_id = ?
+          AND snapshot_end_id = ?
+          AND window_start_at = ?
+          AND window_end_at = ?
+          AND evidence_role = ?
+        ORDER BY id DESC
+        """,
+        (
+            target["token_id"], target["pair_id"], window_kind, snapshot_ids[0], snapshot_ids[-1],
+            window_start_at, window_end_at, evidence_role,
+        ),
+    ).fetchall()
+    for row in candidates:
+        if _memory_snapshot_ids_from_row(connection, row) != snapshot_ids:
+            continue
+        existing_context_ids = _memory_context_row_ids_from_row(row)
+        if existing_context_ids and existing_context_ids != context_row_ids:
+            continue
+        return row
+    return None
+
+
 def _evidence_difference_reason(
     connection: sqlite3.Connection,
     target: dict[str, Any],
@@ -2052,7 +2130,7 @@ def _evidence_difference_reason(
     if row["snapshot_start_id"] != start_id or row["snapshot_end_id"] != end_id:
         return "distinct_snapshot_range"
     if (row["source_reference"] or None) != (source_reference or None):
-        return "distinct_source_reference"
+        return "source_reference_only_difference_blocked"
     return "distinct_evidence_identity"
 
 
@@ -2344,6 +2422,13 @@ def build_memory_window_once_payload(args: argparse.Namespace) -> dict[str, Any]
         if not _context_is_present(context_rows):
             raise ValueError("memory-window review requires existing Phase 28 context rows")
         existing = _existing_memory_for_evidence(connection, evidence_identity_hash)
+        duplicate_block_reason = "existing_evidence_window_targeted"
+        if existing is None:
+            existing = _existing_memory_for_functional_evidence(
+                connection, target, window_kind, snapshots, window_start_at, window_end_at, evidence_role, context_rows
+            )
+            if existing is not None:
+                duplicate_block_reason = "source_reference_only_difference_blocked"
         if existing is not None:
             existing_support = _json_or_empty(existing["supporting_context_json"])
             result = {
@@ -2366,8 +2451,9 @@ def build_memory_window_once_payload(args: argparse.Namespace) -> dict[str, Any]
                 "window_end_at": existing["window_end_at"] or window_end_at,
                 "evidence_role": existing["evidence_role"] or evidence_role,
                 "evidence_identity_hash": evidence_identity_hash,
-                "evidence_difference_reason": existing["evidence_difference_reason"] or "existing_evidence_window_targeted",
+                "evidence_difference_reason": duplicate_block_reason,
                 "duplicate_guard_status": "DUPLICATE_SAME_EVIDENCE_NOOP",
+                "duplicate_block_reason": duplicate_block_reason,
                 "coverage_state": existing["coverage_state"],
                 "context_freshness_report": existing_support.get("context_freshness_report"),
                 "context_blocking_reasons": existing_support.get("context_blocking_reasons", []),
