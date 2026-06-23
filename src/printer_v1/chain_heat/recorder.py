@@ -15,6 +15,7 @@ from printer_v1.chain_heat.classifier import (
     classify_solana_congestion,
     classify_solana_liquidity,
 )
+from printer_v1.chain_heat.contracts import ChainHeatPayloadQualityLabel
 from printer_v1.chain_heat.parser import normalize_chain_heat_payload, to_timestamp
 from printer_v1.contracts.enums import DataQualityLabel, SourceStatus
 from printer_v1.scheduler.contracts import JobKind, LockResult
@@ -105,14 +106,26 @@ def record_chain_heat_snapshot(
     normalized["captured_at"] = normalized.get("captured_at") or to_timestamp(current_time)
     normalized["source_status"] = SourceStatus(normalized["source_status"]).value
     normalized["data_quality_label"] = DataQualityLabel(normalized["data_quality_label"]).value
-    normalized["chain_heat_label"] = classify_chain_heat(normalized).value
-    normalized["activity_label"] = classify_solana_activity(normalized).value
-    normalized["liquidity_label"] = classify_solana_liquidity(normalized).value
-    normalized["congestion_label"] = classify_solana_congestion(normalized).value
-    normalized["chain_heat_payload_quality_label"] = classify_chain_heat_payload_quality(
+    quality = classify_chain_heat_payload_quality(
         normalized,
         current_time,
-    ).value
+    )
+    normalized["chain_heat_payload_quality_label"] = quality.value
+    if quality in {
+        ChainHeatPayloadQualityLabel.CHAIN_HEAT_CONTEXT_STALE,
+        ChainHeatPayloadQualityLabel.CHAIN_HEAT_CONTEXT_CONFLICTING,
+        ChainHeatPayloadQualityLabel.CHAIN_HEAT_CONTEXT_UNKNOWN,
+        ChainHeatPayloadQualityLabel.CHAIN_HEAT_CONTEXT_DO_NOT_USE_FOR_MEMORY,
+    }:
+        normalized["chain_heat_label"] = "SOLANA_UNKNOWN"
+        normalized["activity_label"] = "ACTIVITY_UNKNOWN"
+        normalized["liquidity_label"] = "LIQUIDITY_UNKNOWN"
+        normalized["congestion_label"] = "CONGESTION_UNKNOWN"
+    else:
+        normalized["chain_heat_label"] = classify_chain_heat(normalized).value
+        normalized["activity_label"] = classify_solana_activity(normalized).value
+        normalized["liquidity_label"] = classify_solana_liquidity(normalized).value
+        normalized["congestion_label"] = classify_solana_congestion(normalized).value
 
     with connect(db_path_or_conn) as connection:
         duplicate_id = existing_snapshot_id(connection, normalized["captured_at"])
