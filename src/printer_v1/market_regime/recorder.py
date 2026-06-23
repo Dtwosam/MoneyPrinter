@@ -14,7 +14,7 @@ from printer_v1.market_regime.classifier import (
     classify_market_regime,
     classify_market_transition,
 )
-from printer_v1.market_regime.contracts import MarketTransitionLabel
+from printer_v1.market_regime.contracts import MarketPayloadQualityLabel, MarketTransitionLabel
 from printer_v1.market_regime.parser import normalize_market_payload, to_timestamp
 from printer_v1.scheduler.contracts import JobKind, LockResult
 from printer_v1.scheduler.scheduler import enqueue_job
@@ -106,12 +106,20 @@ def record_market_regime_snapshot(
     normalized["captured_at"] = normalized.get("captured_at") or to_timestamp(current_time)
     normalized["source_status"] = SourceStatus(normalized["source_status"]).value
     normalized["data_quality_label"] = DataQualityLabel(normalized["data_quality_label"]).value
-    regime = classify_market_regime(normalized)
-    normalized["market_regime_label"] = regime.value
-    normalized["market_payload_quality_label"] = classify_market_payload_quality(
+    quality = classify_market_payload_quality(
         normalized,
         current_time,
-    ).value
+    )
+    normalized["market_payload_quality_label"] = quality.value
+    if quality in {
+        MarketPayloadQualityLabel.MARKET_CONTEXT_STALE,
+        MarketPayloadQualityLabel.MARKET_CONTEXT_CONFLICTING,
+        MarketPayloadQualityLabel.MARKET_CONTEXT_UNKNOWN,
+        MarketPayloadQualityLabel.MARKET_CONTEXT_DO_NOT_USE_FOR_MEMORY,
+    }:
+        normalized["market_regime_label"] = "UNKNOWN"
+    else:
+        normalized["market_regime_label"] = classify_market_regime(normalized).value
 
     with connect(db_path_or_conn) as connection:
         duplicate_id = existing_snapshot_id(connection, normalized["captured_at"])
