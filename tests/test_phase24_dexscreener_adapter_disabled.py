@@ -210,14 +210,16 @@ class Phase24DexScreenerAdapterDisabledTests(unittest.TestCase):
             & {
                 "geckoterminal.py",
                 "pumpportal.py",
-                "coingecko.py",
-                "defillama.py",
                 "goplus.py",
                 "solana_rpc.py",
                 "helius.py",
                 "jupiter.py",
             }
         )
+        for adapter_name in ("alternative_me.py", "coingecko.py", "defillama.py"):
+            text = (SRC_PATH / "printer_v1" / "sources" / adapter_name).read_text(encoding="utf-8")
+            for fragment in ("requests.", "httpx", "aiohttp", "socket"):
+                self.assertNotIn(fragment, text)
 
 
 if __name__ == "__main__":
