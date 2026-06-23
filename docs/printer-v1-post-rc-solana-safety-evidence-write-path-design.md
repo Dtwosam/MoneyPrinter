@@ -201,9 +201,13 @@ Recommended future split:
 7. Later memory audit integration review.
    - Only after evidence write path exists, review how memory audit may read safety rows while preserving all clean-memory gates.
 
-## Test Plan
+## Fixture Test Status
 
-If fixture tests are added in a later task, they should prove:
+Fixture-only write-path guard tests were added in:
+
+`tests/test_post_rc_solana_safety_evidence_write_path_fixture_tests.py`
+
+These tests prove:
 
 - Design requires Source Governor trace.
 - Design requires scheduler/operator boundary.
@@ -224,6 +228,8 @@ If fixture tests are added in a later task, they should prove:
 - Safety write path does not create positions.
 - Safety write path does not create trade events.
 - Safety write path does not create PnL.
+
+The tests are in-memory only. They do not insert into `printer_solana_safety_evidence`, do not mutate the persistent DB, and do not implement a runtime write helper.
 
 ## Non-Goals
 
@@ -256,12 +262,13 @@ This task does not:
 
 Recommended next safe task:
 
-`Solana Safety Evidence Write-Path Fixture Tests`
+`Solana Safety Evidence Insert Helper Design`
 
 Why:
 
 - The schema exists.
 - The write path is now defined.
-- The next narrow step is to prove the write-path guards with fixture-only tests before any insert helper, operator command, scheduler integration, source adapter, or live source work.
+- Fixture-only write-path guard tests now exist.
+- The next narrow step is to design the future insert helper contract without live source collection, runtime wiring, paper decisions, BUY unlocks, or persistent DB mutation outside temp tests.
 
 Lane 7 remains blocked until clean eligible memory exists.
