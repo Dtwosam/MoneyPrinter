@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
+from urllib import error as url_error
+from urllib import request as url_request
 
 from printer_v1.contracts.enums import DataQualityLabel, SourceStatus
 from printer_v1.market_regime.parser import market_payload_has_required_fields, normalize_market_payload
@@ -20,6 +23,12 @@ from printer_v1.sources.contracts import (
 
 
 ALTERNATIVE_ME_SOURCE_NAME = "alternative_me"
+ALTERNATIVE_ME_FEAR_GREED_URL = "https://api.alternative.me/fng/?limit=2&format=json"
+ALTERNATIVE_ME_TIMEOUT_SECONDS = 5.0
+ALTERNATIVE_ME_PUBLIC_API_HEADERS = {
+    "User-Agent": "PrinterV1/0.1 (+paper-only source check)",
+    "Accept": "application/json",
+}
 
 
 @dataclass(frozen=True)
@@ -103,6 +112,18 @@ def fixture_failure_transport(message: str = "Alternative.me fixture failure") -
     return transport
 
 
+def build_alternative_me_fear_greed_transport(
+    *,
+    timeout_seconds: float = ALTERNATIVE_ME_TIMEOUT_SECONDS,
+    endpoint: str = ALTERNATIVE_ME_FEAR_GREED_URL,
+) -> Callable[[SourceAdapterContext], Mapping[str, Any]]:
+    def transport(context: SourceAdapterContext) -> Mapping[str, Any]:
+        del context
+        return _load_public_json(endpoint, timeout_seconds=timeout_seconds)
+
+    return transport
+
+
 def normalize_alternative_me_payload(
     payload: Mapping[str, Any],
     *,
@@ -174,3 +195,43 @@ def _failure_result(request_kind: str, failure_type: str, failure_message: str) 
         failure_type=failure_type,
         failure_message=failure_message,
     )
+
+
+def _load_public_json(endpoint: str, *, timeout_seconds: float) -> Mapping[str, Any]:
+    request = url_request.Request(
+        endpoint,
+        headers=ALTERNATIVE_ME_PUBLIC_API_HEADERS,
+        method="GET",
+    )
+    try:
+        with url_request.urlopen(request, timeout=timeout_seconds) as response:
+            raw_body = response.read(512_000)
+            payload = json.loads(raw_body.decode("utf-8"))
+            if isinstance(payload, dict):
+                payload["_source_status_code"] = getattr(response, "status", None)
+                return MappingProxyType(payload)
+            return MappingProxyType(
+                {
+                    "fixture_status": "failure",
+                    "failure_type": "alternative_me_non_object_payload",
+                    "failure_message": "Alternative.me returned non-object payload",
+                }
+            )
+    except url_error.HTTPError as exc:
+        if exc.code == 429:
+            return MappingProxyType({"fixture_status": "rate_limited", "retry_after_seconds": 300})
+        return MappingProxyType(
+            {
+                "fixture_status": "failure",
+                "failure_type": "alternative_me_http_error",
+                "failure_message": f"Alternative.me HTTP error {exc.code}",
+            }
+        )
+    except (OSError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        return MappingProxyType(
+            {
+                "fixture_status": "failure",
+                "failure_type": "alternative_me_transport_failure",
+                "failure_message": str(exc),
+            }
+        )

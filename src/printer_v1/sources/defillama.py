@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
+from urllib import error as url_error
+from urllib import request as url_request
 
 from printer_v1.chain_heat.parser import chain_heat_payload_has_required_fields, normalize_chain_heat_payload
 from printer_v1.contracts.enums import DataQualityLabel, SourceStatus
@@ -21,6 +24,12 @@ from printer_v1.sources.contracts import (
 
 
 DEFILLAMA_SOURCE_NAME = "defillama"
+DEFILLAMA_CHAINS_URL = "https://api.llama.fi/v2/chains"
+DEFILLAMA_TIMEOUT_SECONDS = 8.0
+DEFILLAMA_PUBLIC_API_HEADERS = {
+    "User-Agent": "PrinterV1/0.1 (+paper-only source check)",
+    "Accept": "application/json",
+}
 
 
 @dataclass(frozen=True)
@@ -96,6 +105,21 @@ def fixture_failure_transport(message: str = "DefiLlama fixture failure") -> Cal
                 "failure_message": message,
             }
         )
+
+    return transport
+
+
+def build_defillama_chain_liquidity_transport(
+    *,
+    timeout_seconds: float = DEFILLAMA_TIMEOUT_SECONDS,
+    endpoint: str = DEFILLAMA_CHAINS_URL,
+) -> Callable[[SourceAdapterContext], Mapping[str, Any]]:
+    def transport(context: SourceAdapterContext) -> Mapping[str, Any]:
+        del context
+        payload = _load_public_json(endpoint, timeout_seconds=timeout_seconds)
+        if isinstance(payload, Mapping) and payload.get("fixture_status"):
+            return payload
+        return MappingProxyType(_prepare_chains_payload(payload))
 
     return transport
 
@@ -176,6 +200,29 @@ def _prepare_liquidity_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     return prepared
 
 
+def _prepare_chains_payload(payload: Any) -> dict[str, Any]:
+    if isinstance(payload, Mapping):
+        return _prepare_liquidity_payload(payload)
+    solana_row = None
+    if isinstance(payload, list):
+        for item in payload:
+            if isinstance(item, Mapping) and str(item.get("name") or item.get("chain") or "").lower() == "solana":
+                solana_row = item
+                break
+    if solana_row is None:
+        return {
+            "fixture_status": "failure",
+            "failure_type": "defillama_missing_solana_chain",
+            "failure_message": "DefiLlama chains payload missing Solana",
+        }
+    return _prepare_liquidity_payload(
+        {
+            "captured_at": datetime.now(timezone.utc).isoformat(),
+            "solana_tvl_usd": solana_row.get("tvl"),
+        }
+    )
+
+
 def _validate_context(context: SourceAdapterContext, source_name: str, contract: SourceAdapterContract) -> None:
     if not context or not context.governor_approved:
         raise PermissionError("source adapter execution requires Source Governor approval")
@@ -196,3 +243,42 @@ def _failure_result(request_kind: str, failure_type: str, failure_message: str) 
         failure_type=failure_type,
         failure_message=failure_message,
     )
+
+
+def _load_public_json(endpoint: str, *, timeout_seconds: float) -> Any:
+    request = url_request.Request(
+        endpoint,
+        headers=DEFILLAMA_PUBLIC_API_HEADERS,
+        method="GET",
+    )
+    try:
+        with url_request.urlopen(request, timeout=timeout_seconds) as response:
+            raw_body = response.read(1_000_000)
+            payload = json.loads(raw_body.decode("utf-8"))
+            if isinstance(payload, (dict, list)):
+                return payload
+            return MappingProxyType(
+                {
+                    "fixture_status": "failure",
+                    "failure_type": "defillama_unexpected_payload",
+                    "failure_message": "DefiLlama returned unsupported payload",
+                }
+            )
+    except url_error.HTTPError as exc:
+        if exc.code == 429:
+            return MappingProxyType({"fixture_status": "rate_limited", "retry_after_seconds": 120})
+        return MappingProxyType(
+            {
+                "fixture_status": "failure",
+                "failure_type": "defillama_http_error",
+                "failure_message": f"DefiLlama HTTP error {exc.code}",
+            }
+        )
+    except (OSError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        return MappingProxyType(
+            {
+                "fixture_status": "failure",
+                "failure_type": "defillama_transport_failure",
+                "failure_message": str(exc),
+            }
+        )

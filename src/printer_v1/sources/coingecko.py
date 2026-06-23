@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
+from urllib import error as url_error
+from urllib import request as url_request
 
 from printer_v1.chain_heat.parser import chain_heat_payload_has_required_fields, normalize_chain_heat_payload
 from printer_v1.contracts.enums import DataQualityLabel, SourceStatus
@@ -21,6 +24,18 @@ from printer_v1.sources.contracts import (
 
 
 COINGECKO_SOURCE_NAME = "coingecko"
+COINGECKO_MARKET_URL = (
+    "https://api.coingecko.com/api/v3/simple/price"
+    "?ids=bitcoin,ethereum,solana"
+    "&vs_currencies=usd"
+    "&include_24hr_change=true"
+    "&include_24hr_vol=true"
+)
+COINGECKO_TIMEOUT_SECONDS = 8.0
+COINGECKO_PUBLIC_API_HEADERS = {
+    "User-Agent": "PrinterV1/0.1 (+paper-only source check)",
+    "Accept": "application/json",
+}
 
 
 @dataclass(frozen=True)
@@ -100,6 +115,21 @@ def fixture_failure_transport(message: str = "CoinGecko fixture failure") -> Cal
     return transport
 
 
+def build_coingecko_market_transport(
+    *,
+    timeout_seconds: float = COINGECKO_TIMEOUT_SECONDS,
+    endpoint: str = COINGECKO_MARKET_URL,
+) -> Callable[[SourceAdapterContext], Mapping[str, Any]]:
+    def transport(context: SourceAdapterContext) -> Mapping[str, Any]:
+        del context
+        payload = dict(_load_public_json(endpoint, timeout_seconds=timeout_seconds))
+        if payload.get("fixture_status"):
+            return MappingProxyType(payload)
+        return MappingProxyType(_prepare_simple_price_payload(payload))
+
+    return transport
+
+
 def normalize_coingecko_payload(
     payload: Mapping[str, Any],
     *,
@@ -126,8 +156,9 @@ def normalize_coingecko_payload(
             retry_after_at=retry_at,
         )
 
-    normalized_market = normalize_market_payload(payload)
-    normalized_chain = normalize_chain_heat_payload(payload)
+    prepared = _prepare_simple_price_payload(payload)
+    normalized_market = normalize_market_payload(prepared)
+    normalized_chain = normalize_chain_heat_payload(prepared)
     if not (
         market_payload_has_required_fields(normalized_market)
         or chain_heat_payload_has_required_fields(normalized_chain)
@@ -145,6 +176,7 @@ def normalize_coingecko_payload(
         normalized_payload=MappingProxyType(
             {
                 **dict(payload),
+                **prepared,
                 "source_name": COINGECKO_SOURCE_NAME,
                 "request_kind": request_kind,
             }
@@ -173,3 +205,63 @@ def _failure_result(request_kind: str, failure_type: str, failure_message: str) 
         failure_type=failure_type,
         failure_message=failure_message,
     )
+
+
+def _prepare_simple_price_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    prepared = dict(payload)
+    assets = dict(prepared.get("assets") or {})
+    for asset_name in ("bitcoin", "ethereum", "solana"):
+        asset = prepared.get(asset_name)
+        if isinstance(asset, Mapping):
+            assets.setdefault(
+                asset_name,
+                {
+                    "price_usd": asset.get("usd"),
+                    "price_change_percentage_24h": asset.get("usd_24h_change"),
+                    "volume_24h": asset.get("usd_24h_vol"),
+                },
+            )
+    if assets:
+        prepared["assets"] = assets
+    prepared.setdefault("captured_at", datetime.now(timezone.utc).isoformat())
+    return prepared
+
+
+def _load_public_json(endpoint: str, *, timeout_seconds: float) -> Mapping[str, Any]:
+    request = url_request.Request(
+        endpoint,
+        headers=COINGECKO_PUBLIC_API_HEADERS,
+        method="GET",
+    )
+    try:
+        with url_request.urlopen(request, timeout=timeout_seconds) as response:
+            raw_body = response.read(512_000)
+            payload = json.loads(raw_body.decode("utf-8"))
+            if isinstance(payload, dict):
+                payload["_source_status_code"] = getattr(response, "status", None)
+                return MappingProxyType(payload)
+            return MappingProxyType(
+                {
+                    "fixture_status": "failure",
+                    "failure_type": "coingecko_non_object_payload",
+                    "failure_message": "CoinGecko returned non-object payload",
+                }
+            )
+    except url_error.HTTPError as exc:
+        if exc.code == 429:
+            return MappingProxyType({"fixture_status": "rate_limited", "retry_after_seconds": 120})
+        return MappingProxyType(
+            {
+                "fixture_status": "failure",
+                "failure_type": "coingecko_http_error",
+                "failure_message": f"CoinGecko HTTP error {exc.code}",
+            }
+        )
+    except (OSError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        return MappingProxyType(
+            {
+                "fixture_status": "failure",
+                "failure_type": "coingecko_transport_failure",
+                "failure_message": str(exc),
+            }
+        )
