@@ -2287,6 +2287,7 @@ def _classify_first_memory_review(
     context_rows: dict[str, dict[str, Any]],
     window_kind: str,
     context_freshness: dict[str, Any] | None = None,
+    effective_labels: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     rejection_reasons: list[str] = []
     expected_snapshot_count = 2
@@ -2298,7 +2299,7 @@ def _classify_first_memory_review(
         rejection_reasons.append("REJECT_MISSING_CRITICAL_FIELDS")
     if not _context_is_present(context_rows):
         rejection_reasons.append("MISSING_OR_UNKNOWN_CONTEXT")
-    labels = _context_memory_labels(context_rows)
+    labels = effective_labels or _context_memory_labels(context_rows)
     if any(value in {None, "UNKNOWN", "SOLANA_UNKNOWN", "SAFETY_UNKNOWN", "ENTRY_UNKNOWN", "EXIT_UNKNOWN", "FLOW_UNKNOWN", "TREND_UNKNOWN", "MICRO_EVENT_UNKNOWN"} for value in labels.values()):
         rejection_reasons.append("MISSING_OR_UNKNOWN_CONTEXT")
     if context_freshness:
@@ -2386,7 +2387,25 @@ def _record_first_memory_window(
     opened_at = window_start_at
     closed_at = window_end_at
     context_freshness = _context_freshness_report(context_rows, snapshot, window_start_at, window_end_at)
-    classification = _classify_first_memory_review(snapshots, context_rows, window_kind, context_freshness)
+    raw_context_labels = _context_memory_labels(context_rows)
+    evidence_result = _apply_clean_audit_evidence_labels(
+        connection,
+        window={
+            "id": None,
+            "token_id": target["token_id"],
+            "pair_id": target["pair_id"],
+            "snapshot_end_id": snapshot["id"],
+        },
+        labels=raw_context_labels,
+    )
+    effective_context_labels = evidence_result["labels"]
+    classification = _classify_first_memory_review(
+        snapshots,
+        context_rows,
+        window_kind,
+        context_freshness,
+        effective_labels=effective_context_labels,
+    )
     path = _snapshot_price_path_for_memory(snapshots)
     snapshot_ids = [int(row["id"]) for row in snapshots]
     supporting_context = {
@@ -2414,7 +2433,9 @@ def _record_first_memory_window(
             "chart_volatility": context_rows["chart_volatility"].get("id"),
             "micro_event": context_rows["micro_event"].get("id"),
         },
-        "context_labels": _context_memory_labels(context_rows),
+        "context_labels": effective_context_labels,
+        "raw_context_labels": raw_context_labels,
+        "memory_build_evidence_overlays": evidence_result["overlays"],
         "context_freshness_report": context_freshness,
         "context_blocking_reasons": context_freshness["context_blocking_reasons"],
         "retrieval_ready": classification["retrieval_ready"],
@@ -2508,7 +2529,9 @@ def _record_first_memory_window(
         "snapshot_end_id": snapshot_ids[-1] if snapshot_ids else None,
         "snapshot_ids": snapshot_ids,
         "context_blocking_reasons": context_freshness["context_blocking_reasons"],
-        **_context_memory_labels(context_rows),
+        **effective_context_labels,
+        "raw_context_labels": raw_context_labels,
+        "memory_build_evidence_overlays": evidence_result["overlays"],
     }
     cursor = connection.execute(
         """
@@ -2909,6 +2932,8 @@ def _latest_audit_evidence_row(
     if memory_window_id is not None:
         where.append("(memory_window_id = ? OR memory_window_id IS NULL)")
         params.append(memory_window_id)
+    else:
+        where.append("memory_window_id IS NULL")
     if extra_where:
         where.append(extra_where)
         params.extend(extra_params)
@@ -2938,7 +2963,7 @@ def _apply_clean_audit_evidence_labels(
     token_id = int(window["token_id"])
     pair_id = int(window["pair_id"]) if window.get("pair_id") is not None else None
     snapshot_id = int(window["snapshot_end_id"]) if window.get("snapshot_end_id") is not None else None
-    memory_window_id = int(window["id"])
+    memory_window_id = int(window["id"]) if window.get("id") is not None else None
     overlays: dict[str, Any] = {
         "safety_evidence_applied": False,
         "entry_quote_evidence_applied": False,
