@@ -4,7 +4,13 @@ This is a pre-Lane-7 Post-RC storage design document.
 
 It is not Lane 7. It is not Jupiter implementation. It is not live quote collection. It is not source adapter work. It is not a migration implementation. It is not a paper decision task.
 
-No migration is added by this document.
+Implementation status update:
+
+- Migration `023_paper_quote_evidence.sql` now implements isolated paper quote evidence storage.
+- Low-level helper `insert_paper_quote_evidence(...)` now inserts caller-provided fixture evidence into caller-provided SQLite DB handles only.
+- Tests cover isolated temporary DB migration and helper behavior only.
+- There is still no live quote fetching, no Jupiter adapter, no Source Governor adapter wiring, no scheduler/operator command wiring, no audit/retrieval/paper-decision integration, no BUY unlock, no positions, no trade events, and no PnL.
+- Lane 7 remains blocked because clean eligible memory still does not exist.
 
 Printer V1 remains Solana-only, Solana memecoin-only, paper-trading only, free/public-source only, no live wallet, no private keys, no real funds, no live execution, no paid API dependency, no scoring, no ranking, no confidence percentages, no weighted decision logic, no dirty-memory retrieval, no BUY unlock, no paper positions, no paper trade events, and no PnL.
 
@@ -44,13 +50,13 @@ The design must preserve the current blockers:
 
 Lane 7 remains blocked because clean eligible memory still does not exist.
 
-## Proposed Future Table Shape
+## Implemented Table Shape
 
-Proposed future table name:
+Implemented table name:
 
 - `printer_paper_quote_evidence`
 
-This is only a proposed design. It is not a migration.
+This table is implemented as isolated fixture/evidence storage only. It is not wired to live quote collection, memory rebuilds, retrieval, paper decisions, or scheduler/operator commands.
 
 Candidate future table shape:
 
@@ -325,15 +331,12 @@ Fixture tests must not:
 
 ## Non-Goals
 
-This task does not:
+This implemented storage/helper path still does not:
 
-- Add a real migration.
-- Mutate the database.
-- Apply migrations.
 - Implement a Jupiter adapter.
 - Call an API.
 - Fetch live data.
-- Create quote rows.
+- Create quote rows in the persistent operator DB.
 - Rebuild memory.
 - Run retrieval.
 - Create paper decisions.
@@ -346,9 +349,9 @@ This task does not:
 
 Recommended next safe task:
 
-- Real migration proposal review for quote evidence storage.
+- Flow direction/pressure fixture review from existing governed DexScreener/source payloads, or a quote evidence audit-readiness fixture task that remains isolated and does not call Jupiter.
 
-That task should review whether `printer_paper_quote_evidence` should become a migration, confirm field names, confirm constraints, and decide whether a dedicated table is better than storing quote evidence only inside governed source response payloads.
+The quote evidence migration/helper path now exists, but it only reduces the `ENTRY_UNKNOWN` and `EXIT_UNKNOWN` storage blocker. It does not solve safety, market, chain, flow, or clean-memory eligibility by itself.
 
 Alternative safe tasks:
 

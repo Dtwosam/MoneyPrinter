@@ -252,6 +252,7 @@ class Phase1DatabaseSchemaTest(unittest.TestCase):
                 ("020_hardening_synthetic_validation.sql",),
                 ("021_repeatable_evidence_windows.sql",),
                 ("022_solana_safety_evidence.sql",),
+                ("023_paper_quote_evidence.sql",),
             ],
         )
 
