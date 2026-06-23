@@ -289,9 +289,13 @@ Recommended safe sequence:
 7. Later Memory Audit Integration Review.
    - Only after evidence write path exists, review how memory audit may read safety rows while preserving all clean-memory gates.
 
-## Test Plan
+## Fixture Test Status
 
-If fixture tests are added in the next task, they should prove:
+Fixture-only insert-helper contract tests were added in:
+
+`tests/test_post_rc_solana_safety_evidence_insert_helper_fixture_tests.py`
+
+These tests prove:
 
 - Design requires Source Governor trace.
 - Design requires scheduler/operator boundary.
@@ -313,6 +317,8 @@ If fixture tests are added in the next task, they should prove:
 - Design does not unlock retrieval.
 - Design does not create paper decisions.
 - Design does not create positions, trade events, or PnL.
+
+The tests are pure in-memory fixtures. They do not import or implement `insert_solana_safety_evidence(...)`, do not insert into `printer_solana_safety_evidence`, do not mutate the persistent DB, and do not add runtime behavior.
 
 ## Non-Goals
 
@@ -349,7 +355,7 @@ This task does not:
 
 Recommended next safe task:
 
-`Solana Safety Evidence Insert Helper Fixture Tests`
+`Solana Safety Evidence Isolated DB Insert Helper Design`
 
 Why:
 
@@ -357,6 +363,7 @@ Why:
 - The safety evidence fixture contract exists.
 - The write-path design and fixture tests exist.
 - This document defines the future helper contract without implementing it.
-- The next narrow step is to prove the helper contract with fixture-only tests before any temp-DB insert helper, operator command, scheduler integration, source adapter, or live source work.
+- Fixture-only insert-helper contract tests now exist.
+- The next narrow step is to design the isolated temp-DB insert-helper implementation boundary before any production helper, operator command, scheduler integration, source adapter, or live source work.
 
 Lane 7 remains blocked until clean eligible memory exists.
