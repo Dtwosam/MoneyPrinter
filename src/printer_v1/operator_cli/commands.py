@@ -60,6 +60,56 @@ from printer_v1.discovery.classifier import classify_discovery_candidate
 from printer_v1.discovery.contracts import DiscoveryOutputAction
 from printer_v1.discovery.discovery import process_discovery_payload
 from printer_v1.discovery.parser import normalize_candidates
+from printer_v1.chart_volatility.classifier import (
+    classify_candle_path,
+    classify_chart_memory_gate,
+    classify_chart_payload_quality,
+    classify_drawdown_recovery,
+    classify_momentum,
+    classify_range_behavior,
+    classify_trend_structure,
+    classify_volatility,
+)
+from printer_v1.liquidity_exit.classifier import (
+    classify_entry_realism,
+    classify_exit_realism,
+    classify_liquidity_drain,
+    classify_liquidity_exit_payload_quality,
+    classify_liquidity_state,
+    classify_price_impact,
+    classify_quote_age,
+    classify_realism_gate,
+    classify_route_availability,
+    classify_slippage,
+)
+from printer_v1.micro_event.classifier import (
+    classify_holding_to_15m_result,
+    classify_late_buy_trap,
+    classify_micro_event_memory_gate,
+    classify_micro_event_move,
+    classify_micro_event_payload_quality,
+    classify_micro_event_state,
+    classify_micro_exit_realism,
+)
+from printer_v1.safety.classifier import (
+    classify_authority_safety,
+    classify_distribution_safety,
+    classify_liquidity_safety,
+    classify_rug_risk,
+    classify_safety_gate,
+    classify_safety_payload_quality,
+    classify_safety_status,
+)
+from printer_v1.trading_flow.classifier import (
+    classify_flow_direction,
+    classify_flow_memory_gate,
+    classify_flow_pressure,
+    classify_imbalance,
+    classify_trading_flow_payload_quality,
+    classify_tx_activity,
+    classify_volume_activity,
+    classify_wallet_participation,
+)
 from printer_v1.operator_review.contracts import ReportFormatLabel, ReportScopeLabel
 from printer_v1.operator_review.evidence import (
     collect_db_state_evidence,
@@ -1501,20 +1551,30 @@ def _context_rows_for_target(connection: sqlite3.Connection, target: dict[str, A
     return counts
 
 
-def _liquidity_state_label(liquidity_usd: Any) -> str:
-    if liquidity_usd is None:
-        return "LIQUIDITY_UNKNOWN"
-    try:
-        value = float(liquidity_usd)
-    except (TypeError, ValueError):
-        return "LIQUIDITY_UNKNOWN"
-    if value <= 0:
-        return "LIQUIDITY_DANGEROUS"
-    if value < 5_000:
-        return "LIQUIDITY_THIN"
-    if value < 25_000:
-        return "LIQUIDITY_USABLE"
-    return "LIQUIDITY_DEEP"
+def _label_value(label: Any) -> str:
+    return str(getattr(label, "value", label))
+
+
+def _snapshot_context_payload(target: dict[str, Any], snapshot: dict[str, Any], captured_at: str) -> dict[str, Any]:
+    return {
+        "token_id": target["token_id"],
+        "pair_id": target["pair_id"],
+        "token_mint": target["token_mint"],
+        "pair_address": target["pair_address"],
+        "captured_at": captured_at,
+        "price_usd": snapshot.get("price_usd"),
+        "liquidity_usd": snapshot.get("liquidity_usd"),
+        "volume_5m": snapshot.get("volume_5m"),
+        "volume_15m": snapshot.get("volume_15m"),
+        "volume_1h": snapshot.get("volume_1h"),
+        "volume_24h": snapshot.get("volume_24h"),
+        "txns_5m": snapshot.get("txns_5m"),
+        "txns_15m": snapshot.get("txns_15m"),
+        "txns_1h": snapshot.get("txns_1h"),
+        "txns_24h": snapshot.get("txns_24h"),
+        "source_status": snapshot.get("source_status") or "PARTIAL",
+        "data_quality_label": snapshot.get("data_quality_label") or "ACCEPTABLE_PARTIAL_DATA",
+    }
 
 
 def _insert_controlled_context_rows(connection: sqlite3.Connection, target: dict[str, Any], snapshot: dict[str, Any], captured_at: str) -> dict[str, int]:
@@ -1534,6 +1594,94 @@ def _insert_controlled_context_rows(connection: sqlite3.Connection, target: dict
     }
 
     inserts: dict[str, int] = {}
+    base_context = _snapshot_context_payload(target, snapshot, captured_at)
+    safety_context = dict(base_context)
+    liquidity_context = dict(base_context)
+    flow_context = dict(base_context)
+    chart_context = {
+        **base_context,
+        "window_start_at": snapshot.get("captured_at"),
+        "window_end_at": captured_at,
+        "price_open": price_usd,
+        "price_high": price_usd,
+        "price_low": price_usd,
+        "price_close": price_usd,
+        "price_change_percent": snapshot.get("price_change_5m"),
+        "candle_count": 1,
+    }
+    micro_context = {
+        **base_context,
+        "detected_at": captured_at,
+        "event_window_start_at": snapshot.get("captured_at"),
+        "event_window_end_at": captured_at,
+        "price_start": price_usd,
+        "price_high": price_usd,
+        "price_low": price_usd,
+        "price_end": price_usd,
+        "price_change_5m_percent": snapshot.get("price_change_5m"),
+        "volume_5m": snapshot.get("volume_5m"),
+        "txns_5m": snapshot.get("txns_5m"),
+        "liquidity_start_usd": liquidity_usd,
+        "liquidity_end_usd": liquidity_usd,
+        "liquidity_exit_realism_label": _label_value(classify_exit_realism(liquidity_context)),
+        "slippage_label": _label_value(classify_slippage(liquidity_context)),
+        "price_impact_label": _label_value(classify_price_impact(liquidity_context)),
+        "route_label": _label_value(classify_route_availability(liquidity_context)),
+        "safety_status_label": _label_value(classify_safety_status(safety_context)),
+        "liquidity_state_label": _label_value(classify_liquidity_state(liquidity_context)),
+        "flow_direction_label": _label_value(classify_flow_direction(flow_context)),
+        "candle_path_label": _label_value(classify_candle_path(chart_context)),
+    }
+    safety_labels = {
+        "liquidity_safety_label": _label_value(classify_liquidity_safety(safety_context)),
+        "authority_label": _label_value(classify_authority_safety(safety_context)),
+        "distribution_label": _label_value(classify_distribution_safety(safety_context)),
+        "rug_risk_label": _label_value(classify_rug_risk(safety_context)),
+        "safety_status_label": _label_value(classify_safety_status(safety_context)),
+        "payload_quality_label": _label_value(classify_safety_payload_quality(safety_context)),
+        "gate_label": _label_value(classify_safety_gate(safety_context)),
+    }
+    liquidity_labels = {
+        "liquidity_state_label": _label_value(classify_liquidity_state(liquidity_context)),
+        "entry_realism_label": _label_value(classify_entry_realism(liquidity_context)),
+        "exit_realism_label": _label_value(classify_exit_realism(liquidity_context)),
+        "slippage_label": _label_value(classify_slippage(liquidity_context)),
+        "price_impact_label": _label_value(classify_price_impact(liquidity_context)),
+        "route_label": _label_value(classify_route_availability(liquidity_context)),
+        "quote_age_label": _label_value(classify_quote_age(liquidity_context)),
+        "liquidity_drain_label": _label_value(classify_liquidity_drain(liquidity_context)),
+        "payload_quality_label": _label_value(classify_liquidity_exit_payload_quality(liquidity_context)),
+        "realism_gate_label": _label_value(classify_realism_gate(liquidity_context)),
+    }
+    flow_labels = {
+        "flow_direction_label": _label_value(classify_flow_direction(flow_context)),
+        "flow_pressure_label": _label_value(classify_flow_pressure(flow_context)),
+        "imbalance_label": _label_value(classify_imbalance(flow_context)),
+        "volume_activity_label": _label_value(classify_volume_activity(flow_context)),
+        "tx_activity_label": _label_value(classify_tx_activity(flow_context)),
+        "wallet_participation_label": _label_value(classify_wallet_participation(flow_context)),
+        "payload_quality_label": _label_value(classify_trading_flow_payload_quality(flow_context)),
+        "memory_gate_label": _label_value(classify_flow_memory_gate(flow_context)),
+    }
+    chart_labels = {
+        "trend_structure_label": _label_value(classify_trend_structure(chart_context)),
+        "volatility_label": _label_value(classify_volatility(chart_context)),
+        "range_behavior_label": _label_value(classify_range_behavior(chart_context)),
+        "momentum_label": _label_value(classify_momentum(chart_context)),
+        "drawdown_recovery_label": _label_value(classify_drawdown_recovery(chart_context)),
+        "candle_path_label": _label_value(classify_candle_path(chart_context)),
+        "payload_quality_label": _label_value(classify_chart_payload_quality(chart_context)),
+        "memory_gate_label": _label_value(classify_chart_memory_gate(chart_context)),
+    }
+    micro_labels = {
+        "micro_event_state_label": _label_value(classify_micro_event_state(micro_context)),
+        "micro_event_move_label": _label_value(classify_micro_event_move(micro_context)),
+        "micro_exit_realism_label": _label_value(classify_micro_exit_realism(micro_context)),
+        "late_buy_trap_label": _label_value(classify_late_buy_trap(micro_context)),
+        "held_to_15m_result_label": _label_value(classify_holding_to_15m_result(micro_context)),
+        "payload_quality_label": _label_value(classify_micro_event_payload_quality(micro_context)),
+        "memory_gate_label": _label_value(classify_micro_event_memory_gate(micro_context)),
+    }
 
     safety_payload = _base_context_payload(target, snapshot, "safety_rug")
     safety_payload["known_fields"] = {"liquidity_usd": liquidity_usd}
@@ -1549,9 +1697,9 @@ def _insert_controlled_context_rows(connection: sqlite3.Connection, target: dict
         """,
         (
             target["token_id"], target["pair_id"], target["token_mint"], target["pair_address"], captured_at,
-            liquidity_usd, "dexscreener", "SAFETY_UNKNOWN", "RUG_RISK_UNKNOWN",
-            "LIQUIDITY_SAFETY_UNKNOWN", "AUTHORITY_UNKNOWN", "DISTRIBUTION_UNKNOWN",
-            "SAFETY_CONTEXT_UNKNOWN", "MANUAL_REVIEW_REQUIRED", "MISSING_CRITICAL_DATA",
+            liquidity_usd, "dexscreener", safety_labels["safety_status_label"], safety_labels["rug_risk_label"],
+            safety_labels["liquidity_safety_label"], safety_labels["authority_label"], safety_labels["distribution_label"],
+            safety_labels["payload_quality_label"], safety_labels["gate_label"], "MISSING_CRITICAL_DATA",
             "PARTIAL", json.dumps(snapshot_payload, sort_keys=True), json.dumps(safety_payload, sort_keys=True),
         ),
     )
@@ -1584,10 +1732,10 @@ def _insert_controlled_context_rows(connection: sqlite3.Connection, target: dict
             target["token_id"], target["pair_id"], target["token_mint"], target["pair_address"], captured_at,
             price_usd, liquidity_usd, snapshot.get("volume_5m"), snapshot.get("volume_1h"),
             snapshot.get("volume_24h"), snapshot.get("txns_5m"), snapshot.get("txns_1h"),
-            snapshot.get("txns_24h"), _liquidity_state_label(liquidity_usd), "ENTRY_UNKNOWN",
-            "EXIT_UNKNOWN", "SLIPPAGE_UNKNOWN", "PRICE_IMPACT_UNKNOWN", "ROUTE_UNKNOWN",
-            "QUOTE_MISSING", "LIQUIDITY_DRAIN_UNKNOWN", "LIQUIDITY_EXIT_CONTEXT_PARTIAL",
-            "REALISM_CONTEXT_AUDIT_ONLY", snapshot_quality, source_status,
+            snapshot.get("txns_24h"), liquidity_labels["liquidity_state_label"], liquidity_labels["entry_realism_label"],
+            liquidity_labels["exit_realism_label"], liquidity_labels["slippage_label"], liquidity_labels["price_impact_label"], liquidity_labels["route_label"],
+            liquidity_labels["quote_age_label"], liquidity_labels["liquidity_drain_label"], liquidity_labels["payload_quality_label"],
+            liquidity_labels["realism_gate_label"], snapshot_quality, source_status,
             json.dumps(snapshot_payload, sort_keys=True), json.dumps(liquidity_payload, sort_keys=True),
         ),
     )
@@ -1618,9 +1766,9 @@ def _insert_controlled_context_rows(connection: sqlite3.Connection, target: dict
             target["token_id"], target["pair_id"], target["token_mint"], target["pair_address"], captured_at,
             price_usd, liquidity_usd, snapshot.get("volume_5m"), snapshot.get("volume_1h"),
             snapshot.get("volume_24h"), snapshot.get("txns_5m"), snapshot.get("txns_1h"),
-            snapshot.get("txns_24h"), "FLOW_UNKNOWN", "PRESSURE_UNKNOWN", "IMBALANCE_UNKNOWN",
-            "VOLUME_UNKNOWN", "TX_ACTIVITY_UNKNOWN", "WALLETS_UNKNOWN",
-            "TRADING_FLOW_CONTEXT_PARTIAL", "FLOW_CONTEXT_AUDIT_ONLY", snapshot_quality, source_status,
+            snapshot.get("txns_24h"), flow_labels["flow_direction_label"], flow_labels["flow_pressure_label"], flow_labels["imbalance_label"],
+            flow_labels["volume_activity_label"], flow_labels["tx_activity_label"], flow_labels["wallet_participation_label"],
+            flow_labels["payload_quality_label"], flow_labels["memory_gate_label"], snapshot_quality, source_status,
             json.dumps(snapshot_payload, sort_keys=True), json.dumps(flow_payload, sort_keys=True),
         ),
     )
@@ -1647,9 +1795,9 @@ def _insert_controlled_context_rows(connection: sqlite3.Connection, target: dict
         (
             target["token_id"], target["pair_id"], target["token_mint"], target["pair_address"], captured_at,
             snapshot.get("captured_at"), captured_at, price_usd, price_usd, price_usd, price_usd,
-            snapshot.get("price_change_5m"), 1, "TREND_UNKNOWN", "VOLATILITY_UNKNOWN",
-            "RANGE_UNKNOWN", "MOMENTUM_UNKNOWN", "DRAWDOWN_RECOVERY_UNKNOWN", "PATH_UNKNOWN",
-            "CHART_CONTEXT_PARTIAL", "CHART_CONTEXT_AUDIT_ONLY", snapshot_quality, source_status,
+            snapshot.get("price_change_5m"), 1, chart_labels["trend_structure_label"], chart_labels["volatility_label"],
+            chart_labels["range_behavior_label"], chart_labels["momentum_label"], chart_labels["drawdown_recovery_label"], chart_labels["candle_path_label"],
+            chart_labels["payload_quality_label"], chart_labels["memory_gate_label"], snapshot_quality, source_status,
             json.dumps(snapshot_payload, sort_keys=True), json.dumps(chart_payload, sort_keys=True),
         ),
     )
@@ -1680,11 +1828,11 @@ def _insert_controlled_context_rows(connection: sqlite3.Connection, target: dict
             target["token_id"], target["pair_id"], target["token_mint"], target["pair_address"], captured_at,
             snapshot.get("captured_at"), captured_at, price_usd, price_usd, price_usd, price_usd,
             snapshot.get("price_change_5m"), snapshot.get("volume_5m"), snapshot.get("txns_5m"),
-            liquidity_usd, liquidity_usd, "EXIT_UNKNOWN", "SLIPPAGE_UNKNOWN", "PRICE_IMPACT_UNKNOWN",
-            "ROUTE_UNKNOWN", "SAFETY_UNKNOWN", _liquidity_state_label(liquidity_usd), "FLOW_UNKNOWN",
-            "PATH_UNKNOWN", "MICRO_EVENT_UNKNOWN", "MOVE_UNKNOWN", "MICRO_EXIT_UNKNOWN",
-            "LATE_BUY_TRAP_UNKNOWN", "HELD_TO_15M_UNKNOWN", "MICRO_EVENT_CONTEXT_UNKNOWN",
-            "MICRO_EVENT_AUDIT_ONLY", "MISSING_CRITICAL_DATA", "PARTIAL",
+            liquidity_usd, liquidity_usd, liquidity_labels["exit_realism_label"], liquidity_labels["slippage_label"], liquidity_labels["price_impact_label"],
+            liquidity_labels["route_label"], safety_labels["safety_status_label"], liquidity_labels["liquidity_state_label"], flow_labels["flow_direction_label"],
+            chart_labels["candle_path_label"], micro_labels["micro_event_state_label"], micro_labels["micro_event_move_label"], micro_labels["micro_exit_realism_label"],
+            micro_labels["late_buy_trap_label"], micro_labels["held_to_15m_result_label"], micro_labels["payload_quality_label"],
+            micro_labels["memory_gate_label"], "MISSING_CRITICAL_DATA", "PARTIAL",
             json.dumps(snapshot_payload, sort_keys=True), json.dumps(micro_payload, sort_keys=True),
         ),
     )
@@ -2629,11 +2777,41 @@ def _memory_audit_snapshot_summary(connection: sqlite3.Connection, window: dict[
     }
 
 
-def _memory_audit_source_summary(connection: sqlite3.Connection) -> dict[str, Any]:
+def _snapshot_rows_for_memory_window(connection: sqlite3.Connection, window_id: int) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT s.*
+        FROM printer_episode_snapshots es
+        JOIN printer_token_snapshots s ON s.id = es.token_snapshot_id
+        WHERE es.episode_id = (
+            SELECT id FROM printer_episodes WHERE memory_window_id = ? ORDER BY id DESC LIMIT 1
+        )
+        ORDER BY es.position_in_episode ASC, s.captured_at ASC
+        """,
+        (window_id,),
+    ).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
+def _memory_audit_source_summary(connection: sqlite3.Connection, window: dict[str, Any] | None = None) -> dict[str, Any]:
     request_count = int(connection.execute("SELECT COUNT(*) FROM printer_source_requests").fetchone()[0])
     response_count = int(connection.execute("SELECT COUNT(*) FROM printer_source_responses").fetchone()[0])
     failure_count = int(connection.execute("SELECT COUNT(*) FROM printer_source_failures").fetchone()[0])
     latest_failure = _latest_row(connection, "printer_source_failures")
+    window_snapshots = _snapshot_rows_for_memory_window(connection, int(window["id"])) if window else []
+    window_source_statuses = sorted({
+        row.get("source_status") for row in window_snapshots if row.get("source_status")
+    })
+    window_quality_labels = sorted({
+        row.get("data_quality_label") for row in window_snapshots if row.get("data_quality_label")
+    })
+    blocking_statuses = {"FAILED", "STALE", "CONFLICTING"}
+    blocking_quality = {"MISSING_CRITICAL_DATA", "DIRTY_DATA", "STALE_DATA", "CONFLICTING_DATA", "DO_NOT_TRAIN"}
+    window_evidence_failed_or_missing = (
+        not window_snapshots
+        or any(status in blocking_statuses for status in window_source_statuses)
+        or any(label in blocking_quality for label in window_quality_labels)
+    )
     statuses = {
         "snapshot_source_statuses": [
             row[0] for row in connection.execute("SELECT DISTINCT source_status FROM printer_token_snapshots").fetchall()
@@ -2641,15 +2819,22 @@ def _memory_audit_source_summary(connection: sqlite3.Connection) -> dict[str, An
         "snapshot_data_quality_labels": [
             row[0] for row in connection.execute("SELECT DISTINCT data_quality_label FROM printer_token_snapshots").fetchall()
         ],
+        "evidence_window_snapshot_source_statuses": window_source_statuses,
+        "evidence_window_snapshot_data_quality_labels": window_quality_labels,
     }
     return {
         "source_request_count": request_count,
         "source_response_count": response_count,
         "source_failure_count": failure_count,
         "latest_source_failure": latest_failure,
+        "historical_source_failures_visible": failure_count > 0,
         "source_status_summary": statuses,
-        "required_evidence_failed_or_missing": failure_count > 0,
-        "status": "SOURCE_ISSUES_VISIBLE" if failure_count else "SOURCE_QUALITY_ACCEPTABLE",
+        "required_evidence_failed_or_missing": window_evidence_failed_or_missing,
+        "status": (
+            "SOURCE_EVIDENCE_WINDOW_BLOCKED"
+            if window_evidence_failed_or_missing
+            else "SOURCE_QUALITY_ACCEPTABLE_WITH_HISTORICAL_FAILURES_VISIBLE" if failure_count else "SOURCE_QUALITY_ACCEPTABLE"
+        ),
     }
 
 
@@ -2719,7 +2904,7 @@ def _build_memory_quality_audit_report(connection: sqlite3.Connection, target: d
     episode = target["episode"]
     dirty_reasons = json.loads(window.get("rejection_reasons_json") or "[]")
     snapshot_summary = _memory_audit_snapshot_summary(connection, window)
-    source_summary = _memory_audit_source_summary(connection)
+    source_summary = _memory_audit_source_summary(connection, window)
     context_summary = _memory_audit_context_summary(connection, window)
     outcome_summary = _memory_audit_outcome_summary(connection, int(window["id"]))
     fingerprint_summary = _memory_audit_fingerprint_summary(connection, int(episode["id"]))

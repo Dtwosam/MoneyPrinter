@@ -206,11 +206,12 @@ class Phase28ControlledContextCollectionTests(unittest.TestCase):
             market = connection.execute("SELECT * FROM printer_market_regime_snapshots").fetchone()
             micro = connection.execute("SELECT * FROM printer_micro_events").fetchone()
             self.assertEqual(safety["authority_label"], "AUTHORITY_UNKNOWN")
-            self.assertEqual(safety["safety_gate_label"], "MANUAL_REVIEW_REQUIRED")
+            self.assertNotEqual(safety["liquidity_safety_label"], "LIQUIDITY_SAFETY_UNKNOWN")
+            self.assertEqual(safety["safety_gate_label"], "CAUTION_SAFETY_CONTEXT")
             self.assertEqual(market["market_regime_label"], "UNKNOWN")
             self.assertEqual(market["data_quality_label"], "MISSING_CRITICAL_DATA")
-            self.assertEqual(micro["micro_event_state_label"], "MICRO_EVENT_UNKNOWN")
-            self.assertEqual(micro["micro_event_memory_gate_label"], "MICRO_EVENT_AUDIT_ONLY")
+            self.assertEqual(micro["micro_event_state_label"], "NO_MICRO_EVENT")
+            self.assertEqual(micro["micro_event_memory_gate_label"], "MICRO_EVENT_IGNORE")
         finally:
             connection.close()
 
