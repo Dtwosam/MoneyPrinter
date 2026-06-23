@@ -11,6 +11,7 @@ from typing import Any, Mapping
 from printer_v1.contracts.enums import DataQualityLabel, SourceStatus
 from printer_v1.scheduler.contracts import JobKind, LockResult
 from printer_v1.scheduler.scheduler import enqueue_job
+from printer_v1.trading_flow.contracts import TradingFlowPayloadQualityLabel
 from printer_v1.trading_flow.classifier import (
     classify_flow_direction,
     classify_flow_memory_gate,
@@ -170,16 +171,26 @@ def record_trading_flow_snapshot(
     normalized["captured_at"] = normalized.get("captured_at") or to_timestamp(current_time)
     normalized["source_status"] = SourceStatus(normalized["source_status"]).value
     normalized["data_quality_label"] = DataQualityLabel(normalized["data_quality_label"]).value
-    normalized["flow_direction_label"] = classify_flow_direction(normalized).value
-    normalized["flow_pressure_label"] = classify_flow_pressure(normalized).value
+    payload_quality = classify_trading_flow_payload_quality(
+        normalized,
+        current_time,
+    )
+    if payload_quality in {
+        TradingFlowPayloadQualityLabel.TRADING_FLOW_CONTEXT_STALE,
+        TradingFlowPayloadQualityLabel.TRADING_FLOW_CONTEXT_CONFLICTING,
+        TradingFlowPayloadQualityLabel.TRADING_FLOW_CONTEXT_UNKNOWN,
+        TradingFlowPayloadQualityLabel.TRADING_FLOW_CONTEXT_DO_NOT_USE_FOR_MEMORY,
+    }:
+        normalized["flow_direction_label"] = "FLOW_UNKNOWN"
+        normalized["flow_pressure_label"] = "PRESSURE_UNKNOWN"
+    else:
+        normalized["flow_direction_label"] = classify_flow_direction(normalized).value
+        normalized["flow_pressure_label"] = classify_flow_pressure(normalized).value
     normalized["imbalance_label"] = classify_imbalance(normalized).value
     normalized["volume_activity_label"] = classify_volume_activity(normalized).value
     normalized["tx_activity_label"] = classify_tx_activity(normalized).value
     normalized["wallet_participation_label"] = classify_wallet_participation(normalized).value
-    normalized["trading_flow_payload_quality_label"] = classify_trading_flow_payload_quality(
-        normalized,
-        current_time,
-    ).value
+    normalized["trading_flow_payload_quality_label"] = payload_quality.value
     normalized["flow_memory_gate_label"] = classify_flow_memory_gate(normalized, current_time).value
 
     with connect(db_path_or_conn) as connection:

@@ -1,6 +1,7 @@
 """Local Trading Flow payload parser for Printer V1."""
 
 from datetime import datetime, timezone
+import json
 from typing import Any, Mapping
 
 from printer_v1.contracts.enums import DataQualityLabel, SourceStatus
@@ -149,7 +150,8 @@ def extract_wallet_participation_context(payload: Mapping[str, Any]) -> dict[str
 
 
 def extract_flow_from_token_snapshot(payload: Mapping[str, Any]) -> dict[str, Any]:
-    return {
+    nested_flow = extract_embedded_snapshot_flow_payload(payload)
+    extracted = {
         "token_id": payload.get("token_id"),
         "pair_id": payload.get("pair_id"),
         "captured_at": payload.get("captured_at"),
@@ -166,6 +168,32 @@ def extract_flow_from_token_snapshot(payload: Mapping[str, Any]) -> dict[str, An
         "txns_4h": payload.get("txns_4h"),
         "txns_24h": payload.get("txns_24h"),
     }
+    for key, value in nested_flow.items():
+        if extracted.get(key) is None and value is not None:
+            extracted[key] = value
+    return extracted
+
+
+def parse_json_object(value: Any) -> Mapping[str, Any]:
+    if isinstance(value, Mapping):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, Mapping) else {}
+
+
+def extract_embedded_snapshot_flow_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    embedded: dict[str, Any] = {}
+    for field in ("normalized_snapshot_payload_json", "raw_snapshot_payload_json"):
+        parsed = parse_json_object(payload.get(field))
+        for key, value in parsed.items():
+            if embedded.get(key) is None and value is not None:
+                embedded[key] = value
+    return embedded
 
 
 def normalize_trading_flow_payload(

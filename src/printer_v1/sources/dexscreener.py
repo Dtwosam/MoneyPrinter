@@ -240,6 +240,12 @@ def normalize_dexscreener_fixture_result(
                 "txns_5m": _to_int(_transaction_count((pair.get("txns") or {}).get("m5") if isinstance(pair.get("txns"), Mapping) else None)),
                 "txns_1h": _to_int(_transaction_count((pair.get("txns") or {}).get("h1") if isinstance(pair.get("txns"), Mapping) else None)),
                 "txns_24h": _to_int(_transaction_count((pair.get("txns") or {}).get("h24") if isinstance(pair.get("txns"), Mapping) else None)),
+                "buys_5m": _transaction_buys((pair.get("txns") or {}).get("m5") if isinstance(pair.get("txns"), Mapping) else None),
+                "sells_5m": _transaction_sells((pair.get("txns") or {}).get("m5") if isinstance(pair.get("txns"), Mapping) else None),
+                "buys_1h": _transaction_buys((pair.get("txns") or {}).get("h1") if isinstance(pair.get("txns"), Mapping) else None),
+                "sells_1h": _transaction_sells((pair.get("txns") or {}).get("h1") if isinstance(pair.get("txns"), Mapping) else None),
+                "buys_24h": _transaction_buys((pair.get("txns") or {}).get("h24") if isinstance(pair.get("txns"), Mapping) else None),
+                "sells_24h": _transaction_sells((pair.get("txns") or {}).get("h24") if isinstance(pair.get("txns"), Mapping) else None),
                 "fdv": _to_float(pair.get("fdv")),
                 "market_cap": _to_float(pair.get("marketCap")),
                 "price_change_5m": _to_float((pair.get("priceChange") or {}).get("m5") if isinstance(pair.get("priceChange"), Mapping) else None),
@@ -300,3 +306,15 @@ def _transaction_count(value: Any) -> int | None:
     buys = _to_int(value.get("buys")) or 0
     sells = _to_int(value.get("sells")) or 0
     return buys + sells
+
+
+def _transaction_buys(value: Any) -> int | None:
+    if not isinstance(value, Mapping):
+        return None
+    return _to_int(value.get("buys"))
+
+
+def _transaction_sells(value: Any) -> int | None:
+    if not isinstance(value, Mapping):
+        return None
+    return _to_int(value.get("sells"))

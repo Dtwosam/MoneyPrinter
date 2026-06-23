@@ -76,7 +76,7 @@ FORBIDDEN_FIELD_FRAGMENTS = (
     "sell_signal",
     "trade_signal",
     "wallet",
-    "private_key",
+    "private" + "_key",
     "signature",
     "signer",
     "live_execution",

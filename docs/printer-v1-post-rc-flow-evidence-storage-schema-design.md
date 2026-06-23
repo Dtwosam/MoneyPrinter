@@ -22,6 +22,15 @@ Current state:
 
 The existing `printer_trading_flow_snapshots` table already has useful side-aware columns such as `buys_5m`, `sells_5m`, `buy_volume_5m`, and `sell_volume_5m`. This proposed design focuses on future evidence storage and auditability: governed source traces, token/pair/snapshot/window targeting, freshness, target match, and paper-only context.
 
+Implementation status update:
+
+- No new flow migration was added.
+- Existing governed DexScreener fixture normalization now preserves side-aware buy/sell transaction counts where the stored source payload contains them.
+- Existing token snapshot payload JSON can now feed those side-aware fields into `printer_trading_flow_snapshots` when trading-flow context is built from a stored token snapshot.
+- Failed, stale, conflicting, unknown, or dirty flow evidence remains audit-only/unknown for direction and pressure.
+- Flow labels still do not unlock clean memory, retrieval, paper decisions, BUY, paper positions, paper trade events, or PnL.
+- Lane 7 remains blocked until clean eligible memory exists.
+
 ## Proposed Future Table Shape
 
 Proposed future table name:
