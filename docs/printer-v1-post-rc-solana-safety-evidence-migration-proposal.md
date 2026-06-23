@@ -293,11 +293,32 @@ CREATE INDEX IF NOT EXISTS idx_printer_solana_safety_evidence_created_at
 
 `READY_FOR_FUTURE_MIGRATION_IMPLEMENTATION`
 
-The proposed table is narrow, uses existing migration conventions, preserves source traceability, keeps safety evidence paper-only, and does not introduce decision shortcuts or live-trading concepts. The actual migration must still be implemented in a separate operator-approved task.
+The proposed table is narrow, uses existing migration conventions, preserves source traceability, keeps safety evidence paper-only, and does not introduce decision shortcuts or live-trading concepts.
+
+## Implementation Status
+
+Implemented as schema-only storage in:
+
+`migrations/022_solana_safety_evidence.sql`
+
+Status:
+
+- Migration implemented.
+- Schema-only.
+- No source adapter added.
+- No Solana RPC, GoPlus, RugCheck, Helius, Jupiter, or live API call added.
+- No source collection added.
+- No persistent evidence rows created by this task.
+- No runtime clean-memory behavior changed.
+- No retrieval behavior changed.
+- No paper decision behavior changed.
+- No BUY unlock added.
+- No paper position, trade event, or PnL behavior added.
+- Lane 7 remains blocked.
 
 ## Recommended Next Safe Task
 
-Implement the Solana safety evidence migration in a separate approved task, using this proposal as the source of truth. That task should add the actual `022` migration and fixture-only schema tests, but still must not add a source adapter, fetch live data, mutate persistent evidence, unlock clean memory, run retrieval, or start Lane 7.
+Add fixture-only migration/readiness review for the next approved evidence blocker, or add source-governed safety evidence write-path design in a separate task. The next task still must not add a source adapter, fetch live data, mutate persistent evidence, unlock clean memory, run retrieval, or start Lane 7.
 
 ## Non-Goals
 

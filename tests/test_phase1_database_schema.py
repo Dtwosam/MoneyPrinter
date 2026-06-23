@@ -48,6 +48,7 @@ REQUIRED_TABLES = {
     "printer_trading_flow_snapshots",
     "printer_chart_volatility_snapshots",
     "printer_micro_events",
+    "printer_solana_safety_evidence",
 }
 
 KEY_COLUMNS = {
@@ -250,6 +251,7 @@ class Phase1DatabaseSchemaTest(unittest.TestCase):
                 ("019_reporting_operator_review.sql",),
                 ("020_hardening_synthetic_validation.sql",),
                 ("021_repeatable_evidence_windows.sql",),
+                ("022_solana_safety_evidence.sql",),
             ],
         )
 
