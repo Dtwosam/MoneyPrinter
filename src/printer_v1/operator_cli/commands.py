@@ -203,6 +203,8 @@ CONTEXT_TABLES = [
     "printer_micro_events",
 ]
 
+CONTEXT_FRESHNESS_TOLERANCE_MINUTES = 10
+
 CONTROLLED_CONTEXT_GUARD_TABLES = [
     "printer_tracking_queue",
     "printer_scheduler_jobs",
@@ -1338,6 +1340,141 @@ def _context_payload_column(table: str) -> str:
     }[table]
 
 
+def _context_table_for_key(key: str) -> str:
+    return {
+        "market": "printer_market_regime_snapshots",
+        "chain_heat": "printer_solana_chain_heat_snapshots",
+        "safety": "printer_safety_rug_snapshots",
+        "liquidity_exit": "printer_liquidity_exit_snapshots",
+        "trading_flow": "printer_trading_flow_snapshots",
+        "chart_volatility": "printer_chart_volatility_snapshots",
+        "micro_event": "printer_micro_events",
+    }[key]
+
+
+def _context_row_timestamp(row: dict[str, Any], payload: dict[str, Any], key: str) -> str | None:
+    payload_time = payload.get("snapshot_captured_at")
+    if payload_time:
+        return str(payload_time)
+    if key == "micro_event":
+        return row.get("detected_at") or row.get("captured_at")
+    return row.get("captured_at") or row.get("detected_at")
+
+
+def _try_parse_iso_datetime(value: Any) -> datetime | None:
+    if value in {None, ""}:
+        return None
+    try:
+        return _parse_iso_datetime(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _context_freshness_report(
+    context_rows: dict[str, dict[str, Any]],
+    snapshot: dict[str, Any],
+    window_start_at: str,
+    window_end_at: str,
+) -> dict[str, Any]:
+    expected_snapshot_id = int(snapshot["id"])
+    window_start = _try_parse_iso_datetime(window_start_at)
+    window_end = _try_parse_iso_datetime(window_end_at)
+    tolerance = timedelta(minutes=CONTEXT_FRESHNESS_TOLERANCE_MINUTES)
+    details: dict[str, Any] = {}
+    blockers: list[str] = []
+    for key in ("market", "chain_heat", "safety", "liquidity_exit", "trading_flow", "chart_volatility", "micro_event"):
+        row = context_rows.get(key) or {}
+        table = _context_table_for_key(key)
+        payload_column = _context_payload_column(table)
+        payload = _json_or_empty(row.get(payload_column))
+        source_status = row.get("source_status")
+        data_quality_label = row.get("data_quality_label")
+        attached_snapshot_id = payload.get("snapshot_id")
+        captured_at = _context_row_timestamp(row, payload, key) if row else None
+        if row and payload.get("snapshot_captured_at") in {None, ""} and attached_snapshot_id is not None and int(attached_snapshot_id) == expected_snapshot_id:
+            captured_at = snapshot.get("captured_at") or captured_at
+        captured_dt = _try_parse_iso_datetime(captured_at)
+        freshness_label = "CONTEXT_UNKNOWN"
+        target_status = "CONTEXT_TARGET_UNKNOWN"
+        blocker_reason: str | None = None
+
+        if not row:
+            freshness_label = "CONTEXT_MISSING"
+            target_status = "CONTEXT_TARGET_MISSING"
+            blocker_reason = "MISSING_OR_UNKNOWN_CONTEXT"
+        elif str(source_status or "").upper() in {"FAILED", "SOURCE_FAILED"}:
+            freshness_label = "CONTEXT_SOURCE_FAILED"
+            blocker_reason = "CONTEXT_SOURCE_FAILED"
+        elif str(source_status or "").upper() in {"STALE", "SOURCE_STALE"}:
+            freshness_label = "CONTEXT_STALE"
+            blocker_reason = "CONTEXT_STALE"
+        elif str(data_quality_label or "").upper() in {"DO_NOT_TRAIN", "CONTEXT_DO_NOT_TRAIN"}:
+            freshness_label = "CONTEXT_DO_NOT_TRAIN"
+            blocker_reason = "CONTEXT_DO_NOT_TRAIN"
+        elif str(data_quality_label or "").upper() in {"CONFLICTING", "CONFLICTING_DATA", "CONTEXT_CONFLICTING"}:
+            freshness_label = "CONTEXT_CONFLICTING"
+            blocker_reason = "CONTEXT_CONFLICTING"
+        else:
+            if attached_snapshot_id is None:
+                target_status = "CONTEXT_TARGET_UNKNOWN"
+                blocker_reason = "CONTEXT_TARGET_MISMATCH"
+            elif int(attached_snapshot_id) == expected_snapshot_id:
+                target_status = "CONTEXT_TARGET_MATCH"
+            else:
+                target_status = "CONTEXT_TARGET_MISMATCH"
+                freshness_label = "CONTEXT_TARGET_MISMATCH"
+                blocker_reason = "CONTEXT_TARGET_MISMATCH"
+
+            if blocker_reason is None:
+                if captured_dt is None or window_start is None or window_end is None:
+                    freshness_label = "CONTEXT_UNKNOWN"
+                    blocker_reason = "MISSING_OR_UNKNOWN_CONTEXT"
+                elif window_start <= captured_dt <= window_end:
+                    freshness_label = "CONTEXT_FRESH"
+                elif (window_start - tolerance) <= captured_dt <= (window_end + tolerance):
+                    freshness_label = "CONTEXT_ACCEPTABLE"
+                else:
+                    freshness_label = "CONTEXT_OUTSIDE_WINDOW"
+                    blocker_reason = "CONTEXT_OUTSIDE_WINDOW"
+
+        if blocker_reason:
+            blockers.append(blocker_reason)
+        details[key] = {
+            "context_table": table,
+            "context_type": key,
+            "context_role": "SUPPORT_MICRO_EVENT" if key == "micro_event" else "MAIN_WINDOW_CONTEXT",
+            "context_row_id": row.get("id"),
+            "source_status": source_status,
+            "data_quality_label": data_quality_label,
+            "context_freshness_label": freshness_label,
+            "context_target_status": target_status,
+            "context_blocker_reason": blocker_reason,
+            "context_captured_at": captured_at,
+            "expected_snapshot_id": expected_snapshot_id,
+            "attached_snapshot_id": attached_snapshot_id,
+            "window_start_at": window_start_at,
+            "window_end_at": window_end_at,
+        }
+    unique_blockers = list(dict.fromkeys(blockers))
+    return {
+        "context_freshness_tolerance_minutes": CONTEXT_FRESHNESS_TOLERANCE_MINUTES,
+        "all_context_fresh_enough": not unique_blockers,
+        "context_blocking_reasons": unique_blockers,
+        "context_details": details,
+        "context_target_mismatch_count": sum(
+            1 for item in details.values() if item["context_target_status"] == "CONTEXT_TARGET_MISMATCH"
+        ),
+        "stale_context_count": sum(
+            1 for item in details.values()
+            if item["context_freshness_label"] in {"CONTEXT_STALE", "CONTEXT_OUTSIDE_WINDOW"}
+        ),
+        "missing_or_unknown_context_count": sum(
+            1 for item in details.values()
+            if item["context_freshness_label"] in {"CONTEXT_MISSING", "CONTEXT_UNKNOWN"}
+        ),
+    }
+
+
 def _context_row_matches_snapshot(row: sqlite3.Row, payload_column: str, snapshot_id: int) -> bool:
     payload = _json_or_empty(row[payload_column])
     return int(payload.get("snapshot_id") or -1) == int(snapshot_id)
@@ -1919,7 +2056,12 @@ def _evidence_difference_reason(
     return "distinct_evidence_identity"
 
 
-def _classify_first_memory_review(snapshots: list[dict[str, Any]], context_rows: dict[str, dict[str, Any]], window_kind: str) -> dict[str, Any]:
+def _classify_first_memory_review(
+    snapshots: list[dict[str, Any]],
+    context_rows: dict[str, dict[str, Any]],
+    window_kind: str,
+    context_freshness: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     rejection_reasons: list[str] = []
     expected_snapshot_count = 2
     if window_kind == "WINDOW_5M_MICRO_EVENT":
@@ -1933,6 +2075,9 @@ def _classify_first_memory_review(snapshots: list[dict[str, Any]], context_rows:
     labels = _context_memory_labels(context_rows)
     if any(value in {None, "UNKNOWN", "SOLANA_UNKNOWN", "SAFETY_UNKNOWN", "ENTRY_UNKNOWN", "EXIT_UNKNOWN", "FLOW_UNKNOWN", "TREND_UNKNOWN", "MICRO_EVENT_UNKNOWN"} for value in labels.values()):
         rejection_reasons.append("MISSING_OR_UNKNOWN_CONTEXT")
+    if context_freshness:
+        for reason in context_freshness.get("context_blocking_reasons", []):
+            rejection_reasons.append(reason)
     if window_kind == "WINDOW_5M_MICRO_EVENT":
         memory_quality = "AUDIT_ONLY_MEMORY"
     elif not rejection_reasons:
@@ -2014,11 +2159,12 @@ def _record_first_memory_window(
 ) -> dict[str, Any]:
     opened_at = window_start_at
     closed_at = window_end_at
-    classification = _classify_first_memory_review(snapshots, context_rows, window_kind)
+    context_freshness = _context_freshness_report(context_rows, snapshot, window_start_at, window_end_at)
+    classification = _classify_first_memory_review(snapshots, context_rows, window_kind, context_freshness)
     path = _snapshot_price_path_for_memory(snapshots)
     snapshot_ids = [int(row["id"]) for row in snapshots]
     supporting_context = {
-        "phase": "post_rc_lane2",
+        "phase": "post_rc_lane3",
         "source_reference": source_reference,
         "snapshot_ids": snapshot_ids,
         "snapshot_start_id": snapshot_ids[0] if snapshot_ids else None,
@@ -2043,6 +2189,8 @@ def _record_first_memory_window(
             "micro_event": context_rows["micro_event"].get("id"),
         },
         "context_labels": _context_memory_labels(context_rows),
+        "context_freshness_report": context_freshness,
+        "context_blocking_reasons": context_freshness["context_blocking_reasons"],
         "retrieval_ready": classification["retrieval_ready"],
     }
     cursor = connection.execute(
@@ -2065,7 +2213,7 @@ def _record_first_memory_window(
             "WINDOW_AUDIT_ONLY" if classification["do_not_train"] else "WINDOW_CLOSED",
             classification["outcome_label"], classification["memory_quality_label"],
             json.dumps(classification["rejection_reasons"], sort_keys=True),
-            json.dumps(supporting_context, sort_keys=True), "post_rc_lane2",
+            json.dumps(supporting_context, sort_keys=True), "post_rc_lane3",
             snapshot_ids[0] if snapshot_ids else None, snapshot_ids[-1] if snapshot_ids else None,
             window_start_at, window_end_at, source_reference, evidence_role, evidence_fingerprint,
             evidence_identity_hash, evidence_difference_reason, "NEW_DISTINCT_EVIDENCE_WINDOW",
@@ -2122,7 +2270,7 @@ def _record_first_memory_window(
     )
     outcome_id = int(cursor.lastrowid)
     fingerprint_payload = {
-        "phase": "post_rc_lane2",
+        "phase": "post_rc_lane3",
         "window_kind": window_kind,
         "outcome_label": classification["outcome_label"],
         "memory_quality_label": classification["memory_quality_label"],
@@ -2133,6 +2281,7 @@ def _record_first_memory_window(
         "snapshot_start_id": snapshot_ids[0] if snapshot_ids else None,
         "snapshot_end_id": snapshot_ids[-1] if snapshot_ids else None,
         "snapshot_ids": snapshot_ids,
+        "context_blocking_reasons": context_freshness["context_blocking_reasons"],
         **_context_memory_labels(context_rows),
     }
     cursor = connection.execute(
@@ -2165,6 +2314,8 @@ def _record_first_memory_window(
         "evidence_difference_reason": evidence_difference_reason,
         "duplicate_guard_status": "NEW_DISTINCT_EVIDENCE_WINDOW",
         "coverage_state": classification["coverage_state"],
+        "context_freshness_report": context_freshness,
+        "context_blocking_reasons": context_freshness["context_blocking_reasons"],
         **classification,
     }
 
@@ -2194,6 +2345,7 @@ def build_memory_window_once_payload(args: argparse.Namespace) -> dict[str, Any]
             raise ValueError("memory-window review requires existing Phase 28 context rows")
         existing = _existing_memory_for_evidence(connection, evidence_identity_hash)
         if existing is not None:
+            existing_support = _json_or_empty(existing["supporting_context_json"])
             result = {
                 "memory_window_id": int(existing["id"]),
                 "episode_id": None,
@@ -2217,6 +2369,8 @@ def build_memory_window_once_payload(args: argparse.Namespace) -> dict[str, Any]
                 "evidence_difference_reason": existing["evidence_difference_reason"] or "existing_evidence_window_targeted",
                 "duplicate_guard_status": "DUPLICATE_SAME_EVIDENCE_NOOP",
                 "coverage_state": existing["coverage_state"],
+                "context_freshness_report": existing_support.get("context_freshness_report"),
+                "context_blocking_reasons": existing_support.get("context_blocking_reasons", []),
                 "skipped_reason": "duplicate_same_evidence_noop",
             }
         else:
@@ -2413,22 +2567,33 @@ def _memory_audit_source_summary(connection: sqlite3.Connection) -> dict[str, An
     }
 
 
-def _memory_audit_context_summary(connection: sqlite3.Connection, token_id: int, pair_id: int) -> dict[str, Any]:
-    context_rows = _resolve_memory_context_rows(connection, {"token_id": token_id, "pair_id": pair_id})
+def _memory_audit_context_summary(connection: sqlite3.Connection, window: dict[str, Any]) -> dict[str, Any]:
+    supporting_context = _json_or_empty(window.get("supporting_context_json"))
+    context_freshness = supporting_context.get("context_freshness_report") or {}
+    target = {"token_id": int(window["token_id"]), "pair_id": int(window["pair_id"])}
+    snapshot_id = window.get("snapshot_end_id")
+    context_rows = _resolve_memory_context_rows(connection, target, int(snapshot_id) if snapshot_id else None)
     labels = _context_memory_labels(context_rows)
     unknown_labels = {
         key: value for key, value in labels.items()
         if value in {None, "UNKNOWN", "SOLANA_UNKNOWN", "SAFETY_UNKNOWN", "ENTRY_UNKNOWN", "EXIT_UNKNOWN", "FLOW_UNKNOWN", "TREND_UNKNOWN", "MICRO_EVENT_UNKNOWN"}
     }
+    freshness_blockers = context_freshness.get("context_blocking_reasons", [])
     return {
         "context_rows_present": {key: bool(value) for key, value in context_rows.items()},
         "context_labels": labels,
+        "context_freshness_report": context_freshness,
+        "context_blocking_reasons": freshness_blockers,
         "unknown_or_audit_only_context": unknown_labels,
         "liquidity_exit_realism_known": labels.get("entry_realism_label") == "ENTRY_REALISTIC" and labels.get("exit_realism_label") == "EXIT_REALISTIC",
         "market_context_real": labels.get("market_regime_label") not in {None, "UNKNOWN"},
         "chain_context_real": labels.get("chain_heat_label") not in {None, "SOLANA_UNKNOWN"},
         "micro_event_sufficient": labels.get("micro_event_state_label") not in {None, "MICRO_EVENT_UNKNOWN"},
-        "status": "MISSING_OR_UNKNOWN_CONTEXT" if unknown_labels else "CONTEXT_SUFFICIENT_FOR_AUDIT",
+        "status": (
+            "CONTEXT_BLOCKED_FOR_WINDOW"
+            if freshness_blockers
+            else "MISSING_OR_UNKNOWN_CONTEXT" if unknown_labels else "CONTEXT_SUFFICIENT_FOR_AUDIT"
+        ),
     }
 
 
@@ -2469,7 +2634,7 @@ def _build_memory_quality_audit_report(connection: sqlite3.Connection, target: d
     dirty_reasons = json.loads(window.get("rejection_reasons_json") or "[]")
     snapshot_summary = _memory_audit_snapshot_summary(connection, window)
     source_summary = _memory_audit_source_summary(connection)
-    context_summary = _memory_audit_context_summary(connection, int(window["token_id"]), int(window["pair_id"]))
+    context_summary = _memory_audit_context_summary(connection, window)
     outcome_summary = _memory_audit_outcome_summary(connection, int(window["id"]))
     fingerprint_summary = _memory_audit_fingerprint_summary(connection, int(episode["id"]))
     retrieval_ready = not bool(window.get("do_not_train")) and window.get("memory_quality_label") == "CLEAN_MEMORY" and fingerprint_summary["fingerprint_retrieval_ready"]
