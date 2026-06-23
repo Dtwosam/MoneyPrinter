@@ -34,6 +34,11 @@ NORMALIZED_FIELDS = (
     "tracked_solana_new_pair_count",
     "source_status",
     "data_quality_label",
+    "snapshot_id",
+    "attached_token_id",
+    "attached_pair_id",
+    "source_request_id",
+    "source_response_id",
 )
 
 
@@ -211,6 +216,11 @@ def normalize_market_payload(
         "fear_greed_previous_value",
         "tracked_solana_hot_pair_count",
         "tracked_solana_new_pair_count",
+        "snapshot_id",
+        "attached_token_id",
+        "attached_pair_id",
+        "source_request_id",
+        "source_response_id",
     ):
         normalized[field] = to_int(normalized.get(field))
     return normalized

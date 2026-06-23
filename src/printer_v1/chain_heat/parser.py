@@ -30,6 +30,11 @@ NORMALIZED_FIELDS = (
     "solana_meme_failed_pair_count",
     "source_status",
     "data_quality_label",
+    "snapshot_id",
+    "attached_token_id",
+    "attached_pair_id",
+    "source_request_id",
+    "source_response_id",
 )
 
 
@@ -201,6 +206,11 @@ def normalize_chain_heat_payload(
         "solana_meme_new_pair_count",
         "solana_meme_graduation_count",
         "solana_meme_failed_pair_count",
+        "snapshot_id",
+        "attached_token_id",
+        "attached_pair_id",
+        "source_request_id",
+        "source_response_id",
     ):
         normalized[field] = to_int(normalized.get(field))
     return normalized

@@ -56,6 +56,7 @@ from printer_v1.operator_db.status import (
     get_operator_db_status,
     get_schema_migration_status,
 )
+from printer_v1.chain_heat.recorder import record_chain_heat_snapshot
 from printer_v1.discovery.classifier import classify_discovery_candidate
 from printer_v1.discovery.contracts import DiscoveryOutputAction
 from printer_v1.discovery.discovery import process_discovery_payload
@@ -91,6 +92,7 @@ from printer_v1.micro_event.classifier import (
     classify_micro_event_state,
     classify_micro_exit_realism,
 )
+from printer_v1.market_regime.recorder import record_market_regime_snapshot
 from printer_v1.safety.classifier import (
     classify_authority_safety,
     classify_distribution_safety,
@@ -1584,7 +1586,119 @@ def _snapshot_context_payload(target: dict[str, Any], snapshot: dict[str, Any], 
     }
 
 
-def _insert_controlled_context_rows(connection: sqlite3.Connection, target: dict[str, Any], snapshot: dict[str, Any], captured_at: str) -> dict[str, int]:
+def _governed_context_payload_from_source_response(
+    connection: sqlite3.Connection,
+    *,
+    source_response_id: int,
+    target: dict[str, Any],
+    snapshot: dict[str, Any],
+    captured_at: str,
+    allowed_sources: set[str],
+    allowed_request_kinds: set[str],
+) -> dict[str, Any]:
+    row = connection.execute(
+        """
+        SELECT
+            response.*,
+            request.request_kind AS request_kind
+        FROM printer_source_responses AS response
+        JOIN printer_source_requests AS request
+          ON request.id = response.source_request_id
+        WHERE response.id = ?
+        """,
+        (source_response_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"governed context source response not found: {source_response_id}")
+    if row["source_name"] not in allowed_sources:
+        raise ValueError(f"governed context source is not allowed for this context: {row['source_name']}")
+    if row["request_kind"] not in allowed_request_kinds:
+        raise ValueError(f"governed context request kind is not allowed: {row['request_kind']}")
+    payload = _json_or_empty(row["normalized_payload_json"])
+    payload.update(
+        {
+            "source_status": row["source_status"],
+            "data_quality_label": row["data_quality_label"],
+            "captured_at": captured_at,
+            "snapshot_id": snapshot["id"],
+            "snapshot_captured_at": snapshot.get("captured_at"),
+            "attached_token_id": target["token_id"],
+            "attached_pair_id": target["pair_id"],
+            "token_mint": target["token_mint"],
+            "pair_address": target["pair_address"],
+            "source_request_id": row["source_request_id"],
+            "source_response_id": row["id"],
+            "governed_context_source": row["source_name"],
+            "governed_context_request_kind": row["request_kind"],
+        }
+    )
+    return payload
+
+
+def _insert_market_context_from_source_response(
+    connection: sqlite3.Connection,
+    *,
+    source_response_id: int,
+    target: dict[str, Any],
+    snapshot: dict[str, Any],
+    captured_at: str,
+) -> int:
+    payload = _governed_context_payload_from_source_response(
+        connection,
+        source_response_id=source_response_id,
+        target=target,
+        snapshot=snapshot,
+        captured_at=captured_at,
+        allowed_sources={"alternative_me", "coingecko", "defillama"},
+        allowed_request_kinds={
+            "fear_greed_context",
+            "broad_market_context",
+            "asset_context",
+            "chain_liquidity_context",
+            "tvl_context",
+            "dex_volume_context",
+        },
+    )
+    _created, row_id = record_market_regime_snapshot(connection, payload, _parse_iso_datetime(captured_at))
+    return row_id
+
+
+def _insert_chain_heat_context_from_source_response(
+    connection: sqlite3.Connection,
+    *,
+    source_response_id: int,
+    target: dict[str, Any],
+    snapshot: dict[str, Any],
+    captured_at: str,
+) -> int:
+    payload = _governed_context_payload_from_source_response(
+        connection,
+        source_response_id=source_response_id,
+        target=target,
+        snapshot=snapshot,
+        captured_at=captured_at,
+        allowed_sources={"coingecko", "defillama"},
+        allowed_request_kinds={
+            "broad_market_context",
+            "asset_context",
+            "chain_liquidity_context",
+            "tvl_context",
+            "dex_volume_context",
+        },
+    )
+    _created, row_id = record_chain_heat_snapshot(connection, payload, _parse_iso_datetime(captured_at))
+    return row_id
+
+
+def _insert_controlled_context_rows(
+    connection: sqlite3.Connection,
+    target: dict[str, Any],
+    snapshot: dict[str, Any],
+    captured_at: str,
+    *,
+    market_source_response_id: int | None = None,
+    chain_heat_source_response_id: int | None = None,
+) -> dict[str, int]:
     raw_snapshot = _json_or_empty(snapshot.get("raw_snapshot_payload_json"))
     normalized_snapshot = _json_or_empty(snapshot.get("normalized_snapshot_payload_json"))
     price_usd = snapshot.get("price_usd")
@@ -1880,54 +1994,74 @@ def _insert_controlled_context_rows(connection: sqlite3.Connection, target: dict
     )
     inserts["printer_micro_events"] = 1
 
-    market_payload = {
-        "phase": "28",
-        "category": "market_regime",
-        "evidence_boundary": "no governed broad-market source exists in Phase 28",
-        "skip_reason": "missing_governed_market_source",
-        "attached_token_id": target["token_id"],
-        "attached_pair_id": target["pair_id"],
-        "snapshot_id": snapshot["id"],
-    }
-    connection.execute(
-        """
-        INSERT INTO printer_market_regime_snapshots (
-            captured_at, market_regime_label, market_transition_label, market_payload_quality_label,
-            data_quality_label, source_status, raw_market_payload_json, normalized_market_payload_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            captured_at, "UNKNOWN", "UNKNOWN_TRANSITION", "MARKET_CONTEXT_UNKNOWN",
-            "MISSING_CRITICAL_DATA", "PARTIAL", json.dumps({}, sort_keys=True),
-            json.dumps(market_payload, sort_keys=True),
-        ),
-    )
-    inserts["printer_market_regime_snapshots"] = 1
+    if market_source_response_id is not None:
+        _insert_market_context_from_source_response(
+            connection,
+            source_response_id=market_source_response_id,
+            target=target,
+            snapshot=snapshot,
+            captured_at=captured_at,
+        )
+        inserts["printer_market_regime_snapshots"] = 1
+    else:
+        market_payload = {
+            "phase": "28",
+            "category": "market_regime",
+            "evidence_boundary": "no governed broad-market source response was provided",
+            "skip_reason": "missing_governed_market_source",
+            "attached_token_id": target["token_id"],
+            "attached_pair_id": target["pair_id"],
+            "snapshot_id": snapshot["id"],
+        }
+        connection.execute(
+            """
+            INSERT INTO printer_market_regime_snapshots (
+                captured_at, market_regime_label, market_transition_label, market_payload_quality_label,
+                data_quality_label, source_status, raw_market_payload_json, normalized_market_payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                captured_at, "UNKNOWN", "UNKNOWN_TRANSITION", "MARKET_CONTEXT_UNKNOWN",
+                "MISSING_CRITICAL_DATA", "PARTIAL", json.dumps({}, sort_keys=True),
+                json.dumps(market_payload, sort_keys=True),
+            ),
+        )
+        inserts["printer_market_regime_snapshots"] = 1
 
-    chain_payload = {
-        "phase": "28",
-        "category": "solana_chain_heat",
-        "evidence_boundary": "no governed Solana chain-heat source exists in Phase 28",
-        "skip_reason": "missing_governed_chain_heat_source",
-        "attached_token_id": target["token_id"],
-        "attached_pair_id": target["pair_id"],
-        "snapshot_id": snapshot["id"],
-    }
-    connection.execute(
-        """
-        INSERT INTO printer_solana_chain_heat_snapshots (
-            captured_at, chain_heat_label, activity_label, liquidity_label, congestion_label,
-            chain_heat_payload_quality_label, data_quality_label, source_status,
-            raw_chain_heat_payload_json, normalized_chain_heat_payload_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            captured_at, "SOLANA_UNKNOWN", "ACTIVITY_UNKNOWN", "LIQUIDITY_UNKNOWN",
-            "CONGESTION_UNKNOWN", "CHAIN_HEAT_CONTEXT_UNKNOWN", "MISSING_CRITICAL_DATA",
-            "PARTIAL", json.dumps({}, sort_keys=True), json.dumps(chain_payload, sort_keys=True),
-        ),
-    )
-    inserts["printer_solana_chain_heat_snapshots"] = 1
+    if chain_heat_source_response_id is not None:
+        _insert_chain_heat_context_from_source_response(
+            connection,
+            source_response_id=chain_heat_source_response_id,
+            target=target,
+            snapshot=snapshot,
+            captured_at=captured_at,
+        )
+        inserts["printer_solana_chain_heat_snapshots"] = 1
+    else:
+        chain_payload = {
+            "phase": "28",
+            "category": "solana_chain_heat",
+            "evidence_boundary": "no governed Solana chain-heat source response was provided",
+            "skip_reason": "missing_governed_chain_heat_source",
+            "attached_token_id": target["token_id"],
+            "attached_pair_id": target["pair_id"],
+            "snapshot_id": snapshot["id"],
+        }
+        connection.execute(
+            """
+            INSERT INTO printer_solana_chain_heat_snapshots (
+                captured_at, chain_heat_label, activity_label, liquidity_label, congestion_label,
+                chain_heat_payload_quality_label, data_quality_label, source_status,
+                raw_chain_heat_payload_json, normalized_chain_heat_payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                captured_at, "SOLANA_UNKNOWN", "ACTIVITY_UNKNOWN", "LIQUIDITY_UNKNOWN",
+                "CONGESTION_UNKNOWN", "CHAIN_HEAT_CONTEXT_UNKNOWN", "MISSING_CRITICAL_DATA",
+                "PARTIAL", json.dumps({}, sort_keys=True), json.dumps(chain_payload, sort_keys=True),
+            ),
+        )
+        inserts["printer_solana_chain_heat_snapshots"] = 1
 
     return inserts
 
@@ -1951,7 +2085,14 @@ def build_collect_context_once_payload(args: argparse.Namespace) -> dict[str, An
             inserted_context_rows = {}
             skipped_reason = "context_already_exists_for_evidence"
         else:
-            inserted_context_rows = _insert_controlled_context_rows(connection, target, snapshot, _utc_now_text())
+            inserted_context_rows = _insert_controlled_context_rows(
+                connection,
+                target,
+                snapshot,
+                _utc_now_text(),
+                market_source_response_id=getattr(args, "market_source_response_id", None),
+                chain_heat_source_response_id=getattr(args, "chain_heat_source_response_id", None),
+            )
             skipped_reason = None
         connection.commit()
     finally:
@@ -1969,6 +2110,8 @@ def build_collect_context_once_payload(args: argparse.Namespace) -> dict[str, An
         "command": "printer-collect-context-once",
         "db_path": str(resolved),
         "source_name": "dexscreener",
+        "market_source_response_id": getattr(args, "market_source_response_id", None),
+        "chain_heat_source_response_id": getattr(args, "chain_heat_source_response_id", None),
         "operator_approved": True,
         "token_id": target["token_id"],
         "pair_id": target["pair_id"],
@@ -2005,6 +2148,8 @@ def main_collect_context_once(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--snapshot-id", type=int)
     parser.add_argument("--chain", default="solana")
     parser.add_argument("--source-name", default="dexscreener")
+    parser.add_argument("--market-source-response-id", type=int)
+    parser.add_argument("--chain-heat-source-response-id", type=int)
     args = parser.parse_args(argv)
     try:
         payload = build_collect_context_once_payload(args)

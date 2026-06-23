@@ -21,6 +21,11 @@ from printer_v1.operator_cli.commands import (
     build_memory_window_once_payload,
     build_retrieve_clean_memory_once_payload,
 )
+from printer_v1.sources.contracts import build_governed_source_request
+from printer_v1.sources.governed_execution import (
+    build_fixture_source_adapter,
+    execute_source_request_with_governor,
+)
 
 
 def count_rows(connection, table):
@@ -141,8 +146,29 @@ class PostRCCleanContextBlockerReviewTests(unittest.TestCase):
                 )
         return snapshot_ids
 
-    def collect_context(self, snapshot_id):
-        return build_collect_context_once_payload(self.args(snapshot_id=snapshot_id, source_name="dexscreener"))
+    def collect_context(self, snapshot_id, **overrides):
+        return build_collect_context_once_payload(
+            self.args(snapshot_id=snapshot_id, source_name="dexscreener", **overrides)
+        )
+
+    def governed_source_response_id(self, source_name, request_kind, payload):
+        with self.connect() as connection:
+            request = build_governed_source_request(
+                source_name,
+                request_kind,
+                request_key=f"{source_name}-{request_kind}-test",
+                payload={"test_scope": "post_rc_clean_context"},
+                now=self.base_time,
+            )
+            adapter = build_fixture_source_adapter(source_name, fixture_payload=payload)
+            result = execute_source_request_with_governor(
+                connection,
+                request,
+                adapter,
+                now=self.base_time,
+            )
+            self.assertIsNotNone(result.response_record)
+            return int(result.response_record.id)
 
     def memory_payload(self, snapshot_id, source_reference="clean-context-memory"):
         return build_memory_window_once_payload(self.args(
@@ -280,6 +306,82 @@ class PostRCCleanContextBlockerReviewTests(unittest.TestCase):
         self.assertNotEqual(chart["trend_structure_label"], "TREND_UNKNOWN")
         self.assertIn(micro["micro_event_state_label"], {"FAST_MICRO_PUMP", "NO_MICRO_EVENT", "MICRO_EVENT_UNKNOWN"})
         self.assertEqual(micro["micro_exit_realism_label"], "MICRO_EXIT_UNKNOWN")
+
+    def test_context_collection_consumes_governed_market_and_chain_source_responses(self):
+        snapshot_ids = self.seed_snapshots()
+        market_response_id = self.governed_source_response_id(
+            "coingecko",
+            "broad_market_context",
+            {
+                "captured_at": self.base_time.isoformat(),
+                "assets": {
+                    "bitcoin": {"price_usd": 65000, "change_24h": 2.4},
+                    "solana": {
+                        "price_usd": 155,
+                        "change_1h": 1.2,
+                        "change_24h": 4.2,
+                        "volume_24h": 2_000_000_000,
+                    },
+                },
+                "fear_greed": {"value": 62, "label": "Greed"},
+            },
+        )
+        chain_response_id = self.governed_source_response_id(
+            "defillama",
+            "chain_liquidity_context",
+            {
+                "captured_at": self.base_time.isoformat(),
+                "solana": {
+                    "price_usd": 155,
+                    "change_24h": 4.2,
+                    "volume_24h": 2_000_000_000,
+                },
+                "network_context": {
+                    "active_addresses": 1_200_000,
+                    "tx_count_24h": 45_000_000,
+                    "congestion_context": "low",
+                },
+                "liquidity_context": {
+                    "tvl_usd": 5_000_000_000,
+                    "dex_volume_24h": 1_100_000_000,
+                },
+                "meme_context": {
+                    "hot_pair_count": 35,
+                    "meme_volume_24h": 120_000_000,
+                    "meme_liquidity_usd": 50_000_000,
+                    "meme_new_pair_count": 80,
+                },
+            },
+        )
+
+        self.collect_context(
+            snapshot_ids[-1],
+            market_source_response_id=market_response_id,
+            chain_heat_source_response_id=chain_response_id,
+        )
+
+        with self.connect() as connection:
+            market = connection.execute("SELECT * FROM printer_market_regime_snapshots").fetchone()
+            chain = connection.execute("SELECT * FROM printer_solana_chain_heat_snapshots").fetchone()
+            market_payload = json.loads(market["normalized_market_payload_json"])
+            chain_payload = json.loads(chain["normalized_chain_heat_payload_json"])
+
+            self.assertNotEqual(market["market_regime_label"], "UNKNOWN")
+            self.assertEqual(market["market_payload_quality_label"], "MARKET_CONTEXT_CLEAN")
+            self.assertEqual(market_payload["source_response_id"], market_response_id)
+            self.assertEqual(market_payload["snapshot_id"], snapshot_ids[-1])
+
+            self.assertNotEqual(chain["chain_heat_label"], "SOLANA_UNKNOWN")
+            self.assertEqual(chain["chain_heat_payload_quality_label"], "CHAIN_HEAT_CONTEXT_CLEAN")
+            self.assertEqual(chain_payload["source_response_id"], chain_response_id)
+            self.assertEqual(chain_payload["snapshot_id"], snapshot_ids[-1])
+
+            self.assertEqual(count_rows(connection, "printer_memory_windows"), 0)
+            self.assertEqual(count_rows(connection, "printer_memory_fingerprints"), 0)
+            self.assertEqual(count_rows(connection, "printer_memory_retrieval_matches"), 0)
+            self.assertEqual(count_rows(connection, "printer_paper_decisions"), 0)
+            self.assertEqual(count_rows(connection, "printer_paper_positions"), 0)
+            self.assertEqual(count_rows(connection, "printer_paper_trade_events"), 0)
 
     def test_missing_fixture_inputs_remain_unknown_and_audit_only(self):
         snapshot_ids = self.seed_snapshots(transport=self.transport_missing_context_fields)
