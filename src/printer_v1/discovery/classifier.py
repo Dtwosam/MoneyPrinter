@@ -13,6 +13,12 @@ MIN_TRACK_NORMAL_LIQUIDITY_USD = 1_000.0
 MIN_TRACK_FAST_LIQUIDITY_USD = 5_000.0
 MIN_TRACK_FAST_VOLUME_5M_USD = 1_000.0
 MIN_TRACK_FAST_TXNS_5M = 10
+MIN_MEMORY_GROWTH_VOLUME_1H_USD = 100.0
+MIN_MEMORY_GROWTH_TXNS_1H = 3
+MIN_MEMORY_GROWTH_VOLUME_24H_USD = 100.0
+MIN_MEMORY_GROWTH_TXNS_24H = 5
+TINY_VOLUME_24H_USD = 10.0
+TINY_TXNS_24H = 2
 
 
 @dataclass(frozen=True)
@@ -46,6 +52,12 @@ def classify_discovery_candidate(candidate: Mapping[str, Any]) -> DiscoveryClass
             DiscoveryCandidateLabel.TRACK_NORMAL_CANDIDATE,
             DiscoveryOutputAction.TRACK_NORMAL,
             "clean_solana_candidate_with_basic_market_fields",
+        )
+    if is_dead_or_near_zero_activity_candidate(candidate):
+        return DiscoveryClassification(
+            DiscoveryCandidateLabel.WATCH_ONLY_CANDIDATE,
+            DiscoveryOutputAction.WATCH_ONLY,
+            "insufficient_activity_for_memory_growth",
         )
     if should_watch_only_candidate(candidate):
         return DiscoveryClassification(
@@ -119,6 +131,7 @@ def should_track_normal_candidate(candidate: Mapping[str, Any]) -> bool:
         and candidate_is_solana(candidate)
         and has_basic_market_fields(candidate)
         and has_track_normal_liquidity(candidate)
+        and is_activity_sufficient_for_memory_growth(candidate)
     )
 
 
@@ -139,3 +152,39 @@ def has_basic_market_fields(candidate: Mapping[str, Any]) -> bool:
 
 def has_track_normal_liquidity(candidate: Mapping[str, Any]) -> bool:
     return (candidate.get("liquidity_usd") or 0) >= MIN_TRACK_NORMAL_LIQUIDITY_USD
+
+
+def _numeric_or_zero(value: Any) -> float:
+    return 0.0 if value is None else float(value)
+
+
+def is_dead_or_near_zero_activity_candidate(candidate: Mapping[str, Any]) -> bool:
+    volume_5m = _numeric_or_zero(candidate.get("volume_5m"))
+    txns_5m = _numeric_or_zero(candidate.get("txns_5m"))
+    volume_1h = _numeric_or_zero(candidate.get("volume_1h"))
+    txns_1h = _numeric_or_zero(candidate.get("txns_1h"))
+    volume_24h = _numeric_or_zero(candidate.get("volume_24h"))
+    txns_24h = _numeric_or_zero(candidate.get("txns_24h"))
+    return (
+        volume_5m <= 0
+        and txns_5m <= 0
+        and volume_1h <= 0
+        and txns_1h <= 0
+        and volume_24h <= TINY_VOLUME_24H_USD
+        and txns_24h <= TINY_TXNS_24H
+    )
+
+
+def is_activity_sufficient_for_memory_growth(candidate: Mapping[str, Any]) -> bool:
+    if is_dead_or_near_zero_activity_candidate(candidate):
+        return False
+    volume_1h = _numeric_or_zero(candidate.get("volume_1h"))
+    txns_1h = _numeric_or_zero(candidate.get("txns_1h"))
+    volume_24h = _numeric_or_zero(candidate.get("volume_24h"))
+    txns_24h = _numeric_or_zero(candidate.get("txns_24h"))
+    return (
+        volume_1h >= MIN_MEMORY_GROWTH_VOLUME_1H_USD
+        or txns_1h >= MIN_MEMORY_GROWTH_TXNS_1H
+        or volume_24h >= MIN_MEMORY_GROWTH_VOLUME_24H_USD
+        or txns_24h >= MIN_MEMORY_GROWTH_TXNS_24H
+    )

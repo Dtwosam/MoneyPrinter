@@ -340,6 +340,12 @@ class PostRCNewMemoryBuildSafetyQuoteEvidenceReadTests(unittest.TestCase):
         self.assertTrue(result["retrieval_ready"])
         self.assertEqual(result["do_not_train"], 0)
         self.assertEqual(result["rejection_reasons"], ["REVIEW_PASSED"])
+        self.assertEqual(result["coverage_policy_used"], "WINDOW_15M_TRACKED_SPACED_6_SNAPSHOT_POLICY")
+        self.assertEqual(result["expected_snapshot_count"], 6)
+        self.assertEqual(result["actual_snapshot_count"], 6)
+        self.assertEqual(result["missing_snapshot_count"], 0)
+        self.assertEqual(result["unknown_context_blockers"], [])
+        self.assertEqual(result["evidence_blockers"], [])
         self.assertTrue(result["snapshot_start_id"] > 1)
         fingerprint, payload = self.latest_fingerprint(result["memory_window_id"])
         self.assertEqual(fingerprint["memory_status"], "CLEAN_MEMORY")
@@ -365,10 +371,52 @@ class PostRCNewMemoryBuildSafetyQuoteEvidenceReadTests(unittest.TestCase):
     def test_missing_or_unsafe_safety_or_quote_evidence_keeps_new_memory_blocked(self):
         self.seed_token_pair()
         cases = [
-            ("missing_safety", {"safety": False, "entry": True, "exit": True}),
-            ("stale_safety", {"safety": True, "entry": True, "exit": True, "safety_overrides": {"freshness_label": "SAFETY_EVIDENCE_STALE"}}),
-            ("missing_quote", {"safety": True, "entry": False, "exit": False}),
-            ("stale_quote", {"safety": True, "entry": True, "exit": True, "quote_overrides": {"freshness_label": "QUOTE_STALE"}}),
+            ("missing_safety", {
+                "safety": False,
+                "entry": True,
+                "exit": True,
+                "expected_blockers": ["NO_VALID_SAFETY_EVIDENCE_FOR_TARGET"],
+            }),
+            ("stale_safety", {
+                "safety": True,
+                "entry": True,
+                "exit": True,
+                "safety_overrides": {"freshness_label": "SAFETY_EVIDENCE_STALE"},
+                "expected_blockers": ["SAFETY_EVIDENCE_STALE"],
+            }),
+            ("mismatched_safety", {
+                "safety": True,
+                "entry": True,
+                "exit": True,
+                "safety_overrides": {"target_status": "TARGET_MISMATCH"},
+                "expected_blockers": ["SAFETY_EVIDENCE_TARGET_MISMATCH"],
+            }),
+            ("missing_quote", {
+                "safety": True,
+                "entry": False,
+                "exit": False,
+                "expected_blockers": [
+                    "ENTRY_QUOTE_EVIDENCE_TARGET_MISMATCH",
+                    "EXIT_QUOTE_EVIDENCE_TARGET_MISMATCH",
+                ],
+            }),
+            ("stale_quote", {
+                "safety": True,
+                "entry": True,
+                "exit": True,
+                "quote_overrides": {"freshness_label": "QUOTE_STALE"},
+                "expected_blockers": ["ENTRY_QUOTE_EVIDENCE_STALE", "EXIT_QUOTE_EVIDENCE_STALE"],
+            }),
+            ("mismatched_quote", {
+                "safety": True,
+                "entry": True,
+                "exit": True,
+                "quote_overrides": {"target_status": "TARGET_MISMATCH"},
+                "expected_blockers": [
+                    "ENTRY_QUOTE_EVIDENCE_TARGET_MISMATCH",
+                    "EXIT_QUOTE_EVIDENCE_TARGET_MISMATCH",
+                ],
+            }),
         ]
         for case_index, (name, toggles) in enumerate(cases):
             with self.subTest(name=name):
@@ -396,6 +444,59 @@ class PostRCNewMemoryBuildSafetyQuoteEvidenceReadTests(unittest.TestCase):
                 self.assertFalse(result["retrieval_ready"])
                 self.assertEqual(result["do_not_train"], 1)
                 self.assertIn("MISSING_OR_UNKNOWN_CONTEXT", result["rejection_reasons"])
+                self.assertTrue(result["context_blocking_reasons"])
+                self.assertTrue(result["unknown_context_blockers"] or result["evidence_blockers"])
+                for blocker in toggles["expected_blockers"]:
+                    self.assertIn(blocker, result["evidence_blockers"])
+
+    def test_two_snapshot_15m_window_reports_sparse_coverage_not_full_proof(self):
+        self.seed_token_pair()
+        snapshot_ids = [
+            self.collect_snapshot_at(index, self.base_time + timedelta(minutes=index * 3))
+            for index in range(2)
+        ]
+        build_collect_context_once_payload(self.args(snapshot_id=snapshot_ids[-1], source_name="dexscreener"))
+        self.force_known_context_except_safety_and_quotes()
+        self.insert_valid_safety_and_quotes(snapshot_ids[-1])
+
+        memory = build_memory_window_once_payload(self.args(
+            snapshot_id=snapshot_ids[-1],
+            memory_window="15m",
+            source_reference="sparse-15m-window",
+        ))
+        result = memory["memory_result"]
+
+        self.assertEqual(result["coverage_policy_used"], "WINDOW_15M_TRACKED_SPACED_6_SNAPSHOT_POLICY")
+        self.assertEqual(result["expected_snapshot_count"], 6)
+        self.assertEqual(result["actual_snapshot_count"], 2)
+        self.assertEqual(result["missing_snapshot_count"], 4)
+        self.assertEqual(result["coverage_state"], "INCOMPLETE_15M_WINDOW")
+        self.assertEqual(result["memory_quality_label"], "DIRTY_MEMORY")
+        self.assertFalse(result["retrieval_ready"])
+        self.assertIn("INSUFFICIENT_SNAPSHOT_COVERAGE", result["rejection_reasons"])
+
+    def test_missing_evidence_reports_exact_overlay_blockers(self):
+        self.seed_token_pair()
+        snapshot_ids = [
+            self.collect_snapshot_at(index, self.base_time + timedelta(minutes=index * 3))
+            for index in range(6)
+        ]
+        build_collect_context_once_payload(self.args(snapshot_id=snapshot_ids[-1], source_name="dexscreener"))
+        self.force_known_context_except_safety_and_quotes()
+
+        memory = build_memory_window_once_payload(self.args(
+            snapshot_id=snapshot_ids[-1],
+            memory_window="15m",
+            source_reference="missing-overlays",
+        ))
+        result = memory["memory_result"]
+
+        self.assertEqual(result["memory_quality_label"], "AUDIT_ONLY_MEMORY")
+        self.assertIn("NO_VALID_SAFETY_EVIDENCE_FOR_TARGET", result["evidence_blockers"])
+        self.assertIn("NO_VALID_ENTRY_QUOTE_EVIDENCE_FOR_TARGET", result["evidence_blockers"])
+        self.assertIn("NO_VALID_EXIT_QUOTE_EVIDENCE_FOR_TARGET", result["evidence_blockers"])
+        self.assertTrue(result["context_blocking_reasons"])
+        self.assertFalse(result["retrieval_ready"])
 
     def test_5m_micro_event_remains_support_only_even_with_valid_safety_and_quote_evidence(self):
         self.seed_token_pair()

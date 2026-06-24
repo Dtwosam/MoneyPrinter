@@ -419,7 +419,7 @@ class PostRCCleanContextBlockerReviewTests(unittest.TestCase):
             self.assertEqual(count_rows(connection, "printer_paper_positions"), 0)
             self.assertEqual(count_rows(connection, "printer_paper_trade_events"), 0)
 
-    def test_known_fixture_context_can_make_memory_eligible_only_with_complete_snapshot_evidence(self):
+    def test_known_fixture_context_still_blocks_without_required_safety_and_quote_overlays(self):
         snapshot_ids = self.seed_snapshots()
         self.collect_context(snapshot_ids[-1])
         self.force_context_known_for_fixture()
@@ -428,9 +428,12 @@ class PostRCCleanContextBlockerReviewTests(unittest.TestCase):
         result = memory["memory_result"]
 
         self.assertEqual(result["coverage_state"], "COMPLETE_WINDOW_COVERAGE")
-        self.assertEqual(result["memory_quality_label"], "CLEAN_MEMORY")
-        self.assertTrue(result["retrieval_ready"])
-        self.assertEqual(result["rejection_reasons"], ["REVIEW_PASSED"])
+        self.assertEqual(result["memory_quality_label"], "AUDIT_ONLY_MEMORY")
+        self.assertFalse(result["retrieval_ready"])
+        self.assertIn("MISSING_OR_UNKNOWN_CONTEXT", result["rejection_reasons"])
+        self.assertIn("NO_VALID_SAFETY_EVIDENCE_FOR_TARGET", result["evidence_blockers"])
+        self.assertIn("NO_VALID_ENTRY_QUOTE_EVIDENCE_FOR_TARGET", result["evidence_blockers"])
+        self.assertIn("NO_VALID_EXIT_QUOTE_EVIDENCE_FOR_TARGET", result["evidence_blockers"])
         with self.connect() as connection:
             self.assertEqual(count_rows(connection, "printer_paper_decisions"), 0)
             self.assertEqual(count_rows(connection, "printer_paper_positions"), 0)

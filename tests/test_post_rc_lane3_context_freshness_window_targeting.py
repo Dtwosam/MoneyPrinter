@@ -171,6 +171,9 @@ class PostRCLane3ContextFreshnessWindowTargetingTests(unittest.TestCase):
         self.assertEqual(result["memory_quality_label"], "AUDIT_ONLY_MEMORY")
         report = result["context_freshness_report"]
         self.assertEqual(report["context_blocking_reasons"], [])
+        self.assertTrue(result["context_blocking_reasons"])
+        self.assertTrue(result["unknown_context_blockers"])
+        self.assertIn("entry_realism_label=ENTRY_UNKNOWN", result["unknown_context_blockers"])
         self.assertTrue(report["all_context_fresh_enough"])
         for item in report["context_details"].values():
             self.assertEqual(item["context_target_status"], "CONTEXT_TARGET_MATCH")

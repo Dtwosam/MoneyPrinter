@@ -243,6 +243,25 @@ class Phase5DiscoveryEngineTest(unittest.TestCase):
         classification = classify_discovery_candidate(candidate)
         self.assertEqual(classification.discovery_action, DiscoveryOutputAction.TRACK_NORMAL)
 
+    def test_dead_1h_and_weak_24h_candidate_is_not_memory_growth_tracking(self):
+        candidate = normalize_candidates("dexscreener", self.dexscreener_payload())[0]
+        candidate.update(
+            {
+                "volume_5m": 0,
+                "txns_5m": 0,
+                "volume_1h": 0,
+                "txns_1h": 0,
+                "volume_24h": 4.65,
+                "txns_24h": 2,
+            }
+        )
+        classification = classify_discovery_candidate(candidate)
+
+        self.assertEqual(classification.discovery_action, DiscoveryOutputAction.WATCH_ONLY)
+        self.assertNotEqual(classification.discovery_action, DiscoveryOutputAction.TRACK_NORMAL)
+        self.assertNotEqual(classification.discovery_action, DiscoveryOutputAction.TRACK_FAST)
+        self.assertEqual(classification.reason, "insufficient_activity_for_memory_growth")
+
     def test_classifier_sends_strong_fresh_candidate_to_track_fast(self):
         candidate = normalize_candidates("dexscreener", self.dexscreener_payload())[0]
         classification = classify_discovery_candidate(candidate)

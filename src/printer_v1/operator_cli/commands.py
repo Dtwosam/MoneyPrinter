@@ -57,7 +57,10 @@ from printer_v1.operator_db.status import (
     get_schema_migration_status,
 )
 from printer_v1.chain_heat.recorder import record_chain_heat_snapshot
-from printer_v1.discovery.classifier import classify_discovery_candidate
+from printer_v1.discovery.classifier import (
+    classify_discovery_candidate,
+    is_dead_or_near_zero_activity_candidate,
+)
 from printer_v1.discovery.contracts import DiscoveryOutputAction
 from printer_v1.discovery.discovery import process_discovery_payload
 from printer_v1.discovery.parser import normalize_candidates
@@ -646,12 +649,25 @@ def _validate_discover_candidates_args(args: argparse.Namespace) -> None:
         raise ValueError("timeout_seconds must be greater than 0 and no more than 10")
 
 
-def _existing_token_pair_sets(connection: sqlite3.Connection) -> tuple[set[str], set[str]]:
-    token_rows = connection.execute("SELECT token_mint FROM printer_tokens").fetchall()
+def _identity_key(value: Any) -> str | None:
+    if value in {None, ""}:
+        return None
+    return str(value).strip().lower()
+
+
+def _existing_token_pair_sets(connection: sqlite3.Connection) -> tuple[set[str], set[str], set[str]]:
+    token_rows = connection.execute("SELECT token_mint, symbol, name FROM printer_tokens").fetchall()
     pair_rows = connection.execute("SELECT pair_address FROM printer_pairs").fetchall()
+    identity_keys = {
+        key
+        for row in token_rows
+        for key in (_identity_key(row["symbol"]), _identity_key(row["name"]))
+        if key
+    }
     return (
         {row["token_mint"] for row in token_rows if row["token_mint"]},
         {row["pair_address"] for row in pair_rows if row["pair_address"]},
+        identity_keys,
     )
 
 
@@ -660,6 +676,7 @@ def _select_discovery_candidates(
     *,
     existing_token_mints: set[str],
     existing_pair_addresses: set[str],
+    existing_symbol_name_keys: set[str] | None = None,
     max_candidates: int,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     accepted_actions = {
@@ -685,7 +702,23 @@ def _select_discovery_candidates(
         if candidate.get("chain") != "solana":
             reject_reason = "non_solana_candidate"
         elif token_mint in existing_token_mints or pair_address in existing_pair_addresses:
-            reject_reason = "duplicate_existing_token_or_pair"
+            if token_mint in existing_token_mints and pair_address in existing_pair_addresses:
+                reject_reason = "duplicate_existing_token_or_pair"
+            elif token_mint in existing_token_mints:
+                reject_reason = "duplicate_existing_token_mint"
+            else:
+                reject_reason = "duplicate_pair_address"
+        elif (
+            existing_symbol_name_keys
+            and is_dead_or_near_zero_activity_candidate(candidate)
+            and (
+                _identity_key(candidate.get("symbol")) in existing_symbol_name_keys
+                or _identity_key(candidate.get("name")) in existing_symbol_name_keys
+            )
+        ):
+            reject_reason = "weak_copycat_candidate"
+        elif classification.reason == "insufficient_activity_for_memory_growth":
+            reject_reason = "insufficient_activity_for_memory_growth"
         elif classification.discovery_action not in accepted_actions:
             reject_reason = f"classified_{classification.discovery_action.value.lower()}"
         elif len(accepted) >= max_candidates:
@@ -712,7 +745,7 @@ def build_discover_candidates_once_payload(
     before_counts = get_core_table_counts(resolved, project_root)
     with sqlite3.connect(resolved) as connection:
         connection.row_factory = sqlite3.Row
-        existing_token_mints, existing_pair_addresses = _existing_token_pair_sets(connection)
+        existing_token_mints, existing_pair_addresses, existing_symbol_name_keys = _existing_token_pair_sets(connection)
 
     query = str(args.query or "pump").strip() or "pump"
     endpoint = f"https://api.dexscreener.com/latest/dex/search?q={quote(query)}"
@@ -750,6 +783,7 @@ def build_discover_candidates_once_payload(
             normalized_pairs,
             existing_token_mints=existing_token_mints,
             existing_pair_addresses=existing_pair_addresses,
+            existing_symbol_name_keys=existing_symbol_name_keys,
             max_candidates=args.max_candidates,
         )
         if accepted:
@@ -2279,6 +2313,45 @@ def _context_memory_labels(context_rows: dict[str, dict[str, Any]]) -> dict[str,
     }
 
 
+UNKNOWN_CONTEXT_VALUES = {
+    None,
+    "UNKNOWN",
+    "SOLANA_UNKNOWN",
+    "SAFETY_UNKNOWN",
+    "RUG_RISK_UNKNOWN",
+    "ENTRY_UNKNOWN",
+    "EXIT_UNKNOWN",
+    "FLOW_UNKNOWN",
+    "PRESSURE_UNKNOWN",
+    "TREND_UNKNOWN",
+    "VOLATILITY_UNKNOWN",
+    "MICRO_EVENT_UNKNOWN",
+    "HELD_TO_15M_UNKNOWN",
+}
+
+
+def _collect_unknown_context_blockers(labels: dict[str, Any]) -> list[str]:
+    return [
+        f"{key}={value if value is not None else 'UNKNOWN'}"
+        for key, value in labels.items()
+        if value in UNKNOWN_CONTEXT_VALUES
+    ]
+
+
+def _window_coverage_policy(window_kind: str, snapshots: list[dict[str, Any]]) -> dict[str, Any]:
+    if window_kind == "WINDOW_15M":
+        return {
+            "coverage_policy_used": "WINDOW_15M_TRACKED_SPACED_6_SNAPSHOT_POLICY",
+            "expected_snapshot_count": 6,
+            "requires_close_snapshot": True,
+        }
+    return {
+        "coverage_policy_used": f"{window_kind}_MINIMUM_2_SNAPSHOT_FIXTURE_POLICY",
+        "expected_snapshot_count": 2,
+        "requires_close_snapshot": False,
+    }
+
+
 def _memory_storage_status(memory_quality_label: str) -> str:
     return {
         "CLEAN_MEMORY": "CLEAN_MEMORY",
@@ -2475,28 +2548,43 @@ def _classify_first_memory_review(
     window_kind: str,
     context_freshness: dict[str, Any] | None = None,
     effective_labels: dict[str, Any] | None = None,
+    evidence_blockers: list[str] | None = None,
 ) -> dict[str, Any]:
     rejection_reasons: list[str] = []
-    expected_snapshot_count = 2
+    coverage_policy = _window_coverage_policy(window_kind, snapshots)
+    expected_snapshot_count = int(coverage_policy["expected_snapshot_count"])
+    actual_snapshot_count = len(snapshots)
+    missing_snapshot_count = max(0, expected_snapshot_count - actual_snapshot_count)
+    coverage_state = (
+        "COMPLETE_WINDOW_COVERAGE"
+        if actual_snapshot_count >= expected_snapshot_count
+        else f"INCOMPLETE_{window_kind.replace('WINDOW_', '')}_WINDOW"
+    )
     if window_kind == "WINDOW_5M_MICRO_EVENT":
         rejection_reasons.append("REJECT_5M_ONLY_WINDOW")
-    if len(snapshots) < 2:
-        rejection_reasons.extend(["REJECT_MISSING_SNAPSHOTS", f"INCOMPLETE_{window_kind.replace('WINDOW_', '')}_WINDOW", "INSUFFICIENT_SNAPSHOT_COVERAGE"])
+    if actual_snapshot_count < expected_snapshot_count:
+        rejection_reasons.extend(["REJECT_MISSING_SNAPSHOTS", coverage_state, "INSUFFICIENT_SNAPSHOT_COVERAGE"])
     if any(row.get("price_usd") is None or row.get("liquidity_usd") is None for row in snapshots):
         rejection_reasons.append("REJECT_MISSING_CRITICAL_FIELDS")
     if not _context_is_present(context_rows):
         rejection_reasons.append("MISSING_OR_UNKNOWN_CONTEXT")
     labels = effective_labels or _context_memory_labels(context_rows)
-    if any(value in {None, "UNKNOWN", "SOLANA_UNKNOWN", "SAFETY_UNKNOWN", "ENTRY_UNKNOWN", "EXIT_UNKNOWN", "FLOW_UNKNOWN", "TREND_UNKNOWN", "MICRO_EVENT_UNKNOWN"} for value in labels.values()):
+    unknown_context_blockers = _collect_unknown_context_blockers(labels)
+    if unknown_context_blockers:
         rejection_reasons.append("MISSING_OR_UNKNOWN_CONTEXT")
     if context_freshness:
         for reason in context_freshness.get("context_blocking_reasons", []):
             rejection_reasons.append(reason)
+    exact_evidence_blockers = list(evidence_blockers or [])
+    if exact_evidence_blockers:
+        rejection_reasons.append("MISSING_OR_UNKNOWN_CONTEXT")
+    for reason in exact_evidence_blockers:
+        rejection_reasons.append(reason)
     if window_kind == "WINDOW_5M_MICRO_EVENT":
         memory_quality = "AUDIT_ONLY_MEMORY"
     elif not rejection_reasons:
         memory_quality = "CLEAN_MEMORY"
-    elif len(snapshots) < 2:
+    elif actual_snapshot_count < expected_snapshot_count:
         memory_quality = "DIRTY_MEMORY"
     else:
         memory_quality = "AUDIT_ONLY_MEMORY"
@@ -2510,10 +2598,13 @@ def _classify_first_memory_review(
         "do_not_train": 0 if memory_quality == "CLEAN_MEMORY" else 1,
         "rejection_reasons": unique_reasons,
         "retrieval_ready": memory_quality == "CLEAN_MEMORY",
+        "coverage_policy_used": coverage_policy["coverage_policy_used"],
         "expected_snapshot_count": expected_snapshot_count,
-        "actual_snapshot_count": len(snapshots),
-        "missing_snapshot_count": max(0, expected_snapshot_count - len(snapshots)),
-        "coverage_state": "COMPLETE_WINDOW_COVERAGE" if len(snapshots) >= expected_snapshot_count else f"INCOMPLETE_{window_kind.replace('WINDOW_', '')}_WINDOW",
+        "actual_snapshot_count": actual_snapshot_count,
+        "missing_snapshot_count": missing_snapshot_count,
+        "coverage_state": coverage_state,
+        "unknown_context_blockers": unknown_context_blockers,
+        "evidence_blockers": list(dict.fromkeys(evidence_blockers or [])),
     }
 
 
@@ -2592,6 +2683,7 @@ def _record_first_memory_window(
         window_kind,
         context_freshness,
         effective_labels=effective_context_labels,
+        evidence_blockers=evidence_result["overlays"].get("evidence_blockers", []),
     )
     path = _snapshot_price_path_for_memory(snapshots)
     snapshot_ids = [int(row["id"]) for row in snapshots]
@@ -2608,6 +2700,7 @@ def _record_first_memory_window(
         "evidence_difference_reason": evidence_difference_reason,
         "duplicate_guard_status": "NEW_DISTINCT_EVIDENCE_WINDOW",
         "expected_snapshot_count": classification["expected_snapshot_count"],
+        "coverage_policy_used": classification["coverage_policy_used"],
         "actual_snapshot_count": classification["actual_snapshot_count"],
         "missing_snapshot_count": classification["missing_snapshot_count"],
         "coverage_state": classification["coverage_state"],
@@ -2624,7 +2717,15 @@ def _record_first_memory_window(
         "raw_context_labels": raw_context_labels,
         "memory_build_evidence_overlays": evidence_result["overlays"],
         "context_freshness_report": context_freshness,
-        "context_blocking_reasons": context_freshness["context_blocking_reasons"],
+        "context_blocking_reasons": list(
+            dict.fromkeys(
+                context_freshness["context_blocking_reasons"]
+                + classification["unknown_context_blockers"]
+                + classification["evidence_blockers"]
+            )
+        ),
+        "unknown_context_blockers": classification["unknown_context_blockers"],
+        "evidence_blockers": classification["evidence_blockers"],
         "retrieval_ready": classification["retrieval_ready"],
     }
     cursor = connection.execute(
@@ -2710,12 +2811,15 @@ def _record_first_memory_window(
         "memory_quality_label": classification["memory_quality_label"],
         "retrieval_ready": classification["retrieval_ready"],
         "coverage_state": classification["coverage_state"],
+        "coverage_policy_used": classification["coverage_policy_used"],
         "evidence_role": evidence_role,
         "evidence_identity_hash": evidence_identity_hash,
         "snapshot_start_id": snapshot_ids[0] if snapshot_ids else None,
         "snapshot_end_id": snapshot_ids[-1] if snapshot_ids else None,
         "snapshot_ids": snapshot_ids,
-        "context_blocking_reasons": context_freshness["context_blocking_reasons"],
+        "context_blocking_reasons": supporting_context["context_blocking_reasons"],
+        "unknown_context_blockers": classification["unknown_context_blockers"],
+        "evidence_blockers": classification["evidence_blockers"],
         **effective_context_labels,
         "raw_context_labels": raw_context_labels,
         "memory_build_evidence_overlays": evidence_result["overlays"],
@@ -2751,7 +2855,9 @@ def _record_first_memory_window(
         "duplicate_guard_status": "NEW_DISTINCT_EVIDENCE_WINDOW",
         "coverage_state": classification["coverage_state"],
         "context_freshness_report": context_freshness,
-        "context_blocking_reasons": context_freshness["context_blocking_reasons"],
+        "context_blocking_reasons": supporting_context["context_blocking_reasons"],
+        "unknown_context_blockers": classification["unknown_context_blockers"],
+        "evidence_blockers": classification["evidence_blockers"],
         **classification,
     }
 
@@ -3095,6 +3201,45 @@ def _clean_quote_evidence_row(row: dict[str, Any] | None, direction: str) -> boo
     )
 
 
+def _safety_evidence_blocker(row: dict[str, Any] | None) -> str:
+    if not row:
+        return "NO_VALID_SAFETY_EVIDENCE_FOR_TARGET"
+    if row.get("target_status") != "TARGET_MATCH":
+        return "SAFETY_EVIDENCE_TARGET_MISMATCH"
+    if row.get("freshness_label") not in {"SAFETY_EVIDENCE_FRESH", "SAFETY_EVIDENCE_ACCEPTABLE"}:
+        return "SAFETY_EVIDENCE_STALE"
+    if row.get("source_status") not in {"COMPLETE", "PARTIAL"} or row.get("data_quality_label") not in {
+        "CLEAN_DATA",
+        "ACCEPTABLE_PARTIAL_DATA",
+    }:
+        return "SAFETY_EVIDENCE_SOURCE_NOT_CLEAN"
+    if row.get("source_request_id") is None or row.get("source_response_id") is None or row.get("source_failure_id") is not None:
+        return "SAFETY_EVIDENCE_SOURCE_NOT_CLEAN"
+    if not bool(row.get("paper_only_context")):
+        return "SAFETY_EVIDENCE_SOURCE_NOT_CLEAN"
+    return "NO_VALID_SAFETY_EVIDENCE_FOR_TARGET"
+
+
+def _quote_evidence_blocker(row: dict[str, Any] | None, direction: str) -> str:
+    prefix = "ENTRY" if direction == "ENTRY" else "EXIT"
+    if not row:
+        return f"NO_VALID_{prefix}_QUOTE_EVIDENCE_FOR_TARGET"
+    if row.get("target_status") != "TARGET_MATCH":
+        return f"{prefix}_QUOTE_EVIDENCE_TARGET_MISMATCH"
+    if row.get("freshness_label") not in {"QUOTE_FRESH", "QUOTE_ACCEPTABLE"}:
+        return f"{prefix}_QUOTE_EVIDENCE_STALE"
+    if row.get("source_status") not in {"COMPLETE", "PARTIAL"} or row.get("data_quality_label") not in {
+        "CLEAN_DATA",
+        "ACCEPTABLE_PARTIAL_DATA",
+    }:
+        return f"{prefix}_QUOTE_EVIDENCE_SOURCE_NOT_CLEAN"
+    if row.get("source_request_id") is None or row.get("source_response_id") is None or row.get("source_failure_id") is not None:
+        return f"{prefix}_QUOTE_EVIDENCE_SOURCE_NOT_CLEAN"
+    if row.get("quote_direction") != direction or row.get("quote_purpose") != "PAPER_REALISM_ONLY" or not bool(row.get("paper_only_context")):
+        return f"{prefix}_QUOTE_EVIDENCE_SOURCE_NOT_CLEAN"
+    return f"NO_VALID_{prefix}_QUOTE_EVIDENCE_FOR_TARGET"
+
+
 def _latest_audit_evidence_row(
     connection: sqlite3.Connection,
     table_name: str,
@@ -3113,9 +3258,6 @@ def _latest_audit_evidence_row(
     if pair_id is not None:
         where.append("(pair_id = ? OR pair_id IS NULL)")
         params.append(pair_id)
-    if snapshot_id is not None:
-        where.append("snapshot_id = ?")
-        params.append(snapshot_id)
     if memory_window_id is not None:
         where.append("(memory_window_id = ? OR memory_window_id IS NULL)")
         params.append(memory_window_id)
@@ -3130,14 +3272,18 @@ def _latest_audit_evidence_row(
         FROM {table_name}
         WHERE {" AND ".join(where)}
         ORDER BY
+            CASE WHEN snapshot_id = ? THEN 0 WHEN snapshot_id IS NULL THEN 1 ELSE 2 END,
             CASE WHEN memory_window_id = ? THEN 0 ELSE 1 END,
             evidence_captured_at DESC,
             id DESC
         LIMIT 1
         """,
-        (*params, memory_window_id),
+        (*params, snapshot_id, memory_window_id),
     ).fetchone()
-    return _row_to_dict(row)
+    result = _row_to_dict(row)
+    if result and snapshot_id is not None and result.get("snapshot_id") not in {None, snapshot_id}:
+        result["target_status"] = "TARGET_MISMATCH"
+    return result
 
 
 def _apply_clean_audit_evidence_labels(
@@ -3155,6 +3301,7 @@ def _apply_clean_audit_evidence_labels(
         "safety_evidence_applied": False,
         "entry_quote_evidence_applied": False,
         "exit_quote_evidence_applied": False,
+        "evidence_blockers": [],
     }
 
     safety_row = _latest_audit_evidence_row(
@@ -3168,7 +3315,10 @@ def _apply_clean_audit_evidence_labels(
     overlays["safety_evidence_row_id"] = safety_row.get("id")
     if _clean_safety_evidence_row(safety_row):
         effective["safety_status_label"] = safety_row["safety_context_label"]
+        effective["rug_risk_label"] = "RUG_RISK_LOW"
         overlays["safety_evidence_applied"] = True
+    else:
+        overlays["evidence_blockers"].append(_safety_evidence_blocker(safety_row))
 
     for direction, overlay_key, label_key in (
         ("ENTRY", "entry_quote_evidence_applied", "entry_realism_label"),
@@ -3188,7 +3338,10 @@ def _apply_clean_audit_evidence_labels(
         if _clean_quote_evidence_row(quote_row, direction):
             effective[label_key] = quote_row[label_key]
             overlays[overlay_key] = True
+        else:
+            overlays["evidence_blockers"].append(_quote_evidence_blocker(quote_row, direction))
 
+    overlays["evidence_blockers"] = list(dict.fromkeys(overlays["evidence_blockers"]))
     return {"labels": effective, "overlays": overlays}
 
 
@@ -3207,16 +3360,21 @@ def _memory_audit_context_summary(connection: sqlite3.Connection, window: dict[s
     labels = evidence_result["labels"]
     unknown_labels = {
         key: value for key, value in labels.items()
-        if value in {None, "UNKNOWN", "SOLANA_UNKNOWN", "SAFETY_UNKNOWN", "ENTRY_UNKNOWN", "EXIT_UNKNOWN", "FLOW_UNKNOWN", "TREND_UNKNOWN", "MICRO_EVENT_UNKNOWN"}
+        if value in UNKNOWN_CONTEXT_VALUES
     }
+    unknown_context_blockers = _collect_unknown_context_blockers(labels)
+    evidence_blockers = evidence_result["overlays"].get("evidence_blockers", [])
     freshness_blockers = context_freshness.get("context_blocking_reasons", [])
+    context_blocking_reasons = list(dict.fromkeys(list(freshness_blockers) + unknown_context_blockers + evidence_blockers))
     return {
         "context_rows_present": {key: bool(value) for key, value in context_rows.items()},
         "context_labels": labels,
         "raw_context_labels": raw_labels,
         "audit_evidence_overlays": evidence_result["overlays"],
         "context_freshness_report": context_freshness,
-        "context_blocking_reasons": freshness_blockers,
+        "context_blocking_reasons": context_blocking_reasons,
+        "unknown_context_blockers": unknown_context_blockers,
+        "evidence_blockers": evidence_blockers,
         "unknown_or_audit_only_context": unknown_labels,
         "liquidity_exit_realism_known": labels.get("entry_realism_label") == "ENTRY_REALISTIC" and labels.get("exit_realism_label") == "EXIT_REALISTIC",
         "market_context_real": labels.get("market_regime_label") not in {None, "UNKNOWN"},
@@ -3224,7 +3382,7 @@ def _memory_audit_context_summary(connection: sqlite3.Connection, window: dict[s
         "micro_event_sufficient": labels.get("micro_event_state_label") not in {None, "MICRO_EVENT_UNKNOWN"},
         "status": (
             "CONTEXT_BLOCKED_FOR_WINDOW"
-            if freshness_blockers
+            if context_blocking_reasons
             else "MISSING_OR_UNKNOWN_CONTEXT" if unknown_labels else "CONTEXT_SUFFICIENT_FOR_AUDIT"
         ),
     }

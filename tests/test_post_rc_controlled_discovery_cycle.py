@@ -72,6 +72,42 @@ class PostRcControlledDiscoveryCycleTests(unittest.TestCase):
             ]
         }
 
+    def weak_copycat_transport(self, context):
+        del context
+        return {
+            "pairs": [
+                {
+                    "chainId": "solana",
+                    "pairAddress": "copycat-pair-1",
+                    "baseToken": {"address": "copycat-mint-1", "symbol": "PUMP", "name": "Pump.fun"},
+                    "quoteToken": {"address": "So11111111111111111111111111111111111111112"},
+                    "dexId": "raydium",
+                    "priceUsd": "0.001",
+                    "liquidity": {"usd": 8000},
+                    "volume": {"m5": 0, "h1": 0, "h24": 4.65},
+                    "txns": {"m5": 0, "h1": 0, "h24": 2},
+                }
+            ]
+        }
+
+    def active_same_symbol_transport(self, context):
+        del context
+        return {
+            "pairs": [
+                {
+                    "chainId": "solana",
+                    "pairAddress": "active-pump-pair",
+                    "baseToken": {"address": "active-pump-mint", "symbol": "PUMP", "name": "Pump.fun"},
+                    "quoteToken": {"address": "So11111111111111111111111111111111111111112"},
+                    "dexId": "raydium",
+                    "priceUsd": "0.003",
+                    "liquidity": {"usd": 9000},
+                    "volume": {"m5": 1800, "h1": 12000, "h24": 50000},
+                    "txns": {"m5": 15, "h1": 80, "h24": 300},
+                }
+            ]
+        }
+
     def test_command_exists_in_pyproject(self):
         scripts = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["scripts"]
         self.assertEqual(
@@ -143,6 +179,65 @@ class PostRcControlledDiscoveryCycleTests(unittest.TestCase):
         self.assertEqual(payload["candidates_accepted"], 1)
         self.assertEqual(payload["accepted_candidates"][0]["token_mint"], "fresh-mint-2")
         self.assertEqual(payload["accepted_candidates"][0]["tracking_label"], "TRACK_NORMAL")
+
+    def test_weak_same_symbol_candidate_is_not_promoted_to_memory_growth(self):
+        db_path = self.make_db()
+        connection = sqlite3.connect(db_path)
+        try:
+            connection.execute(
+                """
+                INSERT INTO printer_tokens (token_mint, chain, symbol, name, token_status)
+                VALUES ('old-pump-mint', 'solana', 'PUMP', 'Pump.fun', 'TRACK_NORMAL')
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        payload = build_discover_candidates_once_payload(self.args(db_path), transport=self.weak_copycat_transport)
+
+        self.assertEqual(payload["candidates_accepted"], 0)
+        self.assertEqual(payload["candidates_rejected"], 1)
+        self.assertEqual(payload["rejected_candidates"][0]["reject_reason"], "weak_copycat_candidate")
+        self.assertEqual(payload["tracking_queue_delta"], 0)
+
+    def test_active_distinct_same_symbol_candidate_is_not_globally_blocked(self):
+        db_path = self.make_db()
+        connection = sqlite3.connect(db_path)
+        try:
+            connection.execute(
+                """
+                INSERT INTO printer_tokens (token_mint, chain, symbol, name, token_status)
+                VALUES ('old-pump-mint', 'solana', 'PUMP', 'Pump.fun', 'TRACK_NORMAL')
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        payload = build_discover_candidates_once_payload(self.args(db_path), transport=self.active_same_symbol_transport)
+
+        self.assertEqual(payload["candidates_accepted"], 1)
+        self.assertIn(payload["accepted_candidates"][0]["tracking_label"], {"TRACK_FAST", "TRACK_NORMAL"})
+
+    def test_same_token_mint_different_pair_is_explicit_duplicate(self):
+        db_path = self.make_db()
+        connection = sqlite3.connect(db_path)
+        try:
+            connection.execute(
+                """
+                INSERT INTO printer_tokens (token_mint, chain, symbol, name, token_status)
+                VALUES ('copycat-mint-1', 'solana', 'PUMP', 'Pump.fun', 'TRACK_NORMAL')
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        payload = build_discover_candidates_once_payload(self.args(db_path), transport=self.weak_copycat_transport)
+
+        self.assertEqual(payload["candidates_accepted"], 0)
+        self.assertEqual(payload["rejected_candidates"][0]["reject_reason"], "duplicate_existing_token_mint")
 
 
 if __name__ == "__main__":
