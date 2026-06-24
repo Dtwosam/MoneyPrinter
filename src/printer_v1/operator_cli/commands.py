@@ -148,6 +148,18 @@ from printer_v1.sources.dexscreener import (
     build_dexscreener_pair_snapshot_transport,
     build_dexscreener_smoke_transport,
 )
+from printer_v1.sources.alternative_me import (
+    build_alternative_me_adapter,
+    build_alternative_me_fear_greed_transport,
+)
+from printer_v1.sources.coingecko import (
+    build_coingecko_adapter,
+    build_coingecko_market_transport,
+)
+from printer_v1.sources.defillama import (
+    build_defillama_adapter,
+    build_defillama_chain_liquidity_transport,
+)
 from printer_v1.sources.governed_execution import execute_source_request_with_governor
 from printer_v1.snapshots.recorder import record_token_snapshot
 from printer_v1.memory_retrieval.recorder import record_memory_retrieval_query, record_memory_retrieval_matches
@@ -186,6 +198,42 @@ DOWNSTREAM_GUARD_TABLES = [
     "printer_tracking_queue",
     "printer_scheduler_jobs",
     "printer_token_snapshots",
+    "printer_market_regime_snapshots",
+    "printer_solana_chain_heat_snapshots",
+    "printer_safety_rug_snapshots",
+    "printer_liquidity_exit_snapshots",
+    "printer_trading_flow_snapshots",
+    "printer_chart_volatility_snapshots",
+    "printer_micro_events",
+    "printer_memory_windows",
+    "printer_episodes",
+    "printer_episode_snapshots",
+    "printer_episode_outcomes",
+    "printer_memory_fingerprints",
+    "printer_memory_retrieval_queries",
+    "printer_memory_retrieval_matches",
+    "printer_paper_decisions",
+    "printer_paper_positions",
+    "printer_paper_trade_events",
+    "printer_paper_trade_audits",
+    "printer_paper_audit_reports",
+]
+
+BROAD_CONTEXT_SOURCE_NAMES = {"coingecko", "defillama", "alternative_me"}
+
+BROAD_CONTEXT_DEFAULT_REQUEST_KINDS: dict[str, str] = {
+    "coingecko": "broad_market_context",
+    "defillama": "chain_liquidity_context",
+    "alternative_me": "fear_greed_context",
+}
+
+BROAD_CONTEXT_ALLOWED_REQUEST_KINDS: dict[str, set[str]] = {
+    "coingecko": {"broad_market_context", "asset_context"},
+    "defillama": {"chain_liquidity_context", "tvl_context", "dex_volume_context"},
+    "alternative_me": {"fear_greed_context"},
+}
+
+BROAD_CONTEXT_GUARD_TABLES = [
     "printer_market_regime_snapshots",
     "printer_solana_chain_heat_snapshots",
     "printer_safety_rug_snapshots",
@@ -922,7 +970,6 @@ def _select_discovery_candidates(
     accepted_actions = {
         DiscoveryOutputAction.TRACK_FAST,
         DiscoveryOutputAction.TRACK_NORMAL,
-        DiscoveryOutputAction.WATCH_ONLY,
     }
     accepted: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
@@ -959,6 +1006,8 @@ def _select_discovery_candidates(
             reject_reason = "weak_copycat_candidate"
         elif classification.reason == "insufficient_activity_for_memory_growth":
             reject_reason = "insufficient_activity_for_memory_growth"
+        elif classification.discovery_action == DiscoveryOutputAction.WATCH_ONLY:
+            reject_reason = "watch_only_not_eligible_for_15m_memory_proof_cycle"
         elif classification.discovery_action not in accepted_actions:
             reject_reason = f"classified_{classification.discovery_action.value.lower()}"
         elif len(accepted) >= max_candidates:
@@ -1499,14 +1548,19 @@ def build_collect_token_snapshots_once_payload(
         snapshot_created = False
         snapshot_id = None
         skip_reason = None
-        if (
-            result.response_record
-            and result.normalized_result.source_status.value == "COMPLETE"
-            and result.normalized_result.data_quality_label.value in {"CLEAN_DATA", "ACCEPTABLE_PARTIAL_DATA"}
-            and pair_payload
-            and pair_payload.get("price_usd") is not None
-            and pair_payload.get("liquidity_usd") is not None
-        ):
+        if not result.response_record:
+            skip_reason = result.normalized_result.failure_type or "no_response_record"
+        elif result.normalized_result.source_status.value != "COMPLETE":
+            skip_reason = result.normalized_result.failure_type or "source_status_not_complete"
+        elif result.normalized_result.data_quality_label.value not in {"CLEAN_DATA", "ACCEPTABLE_PARTIAL_DATA"}:
+            skip_reason = result.normalized_result.failure_type or "data_quality_not_acceptable"
+        elif pair_payload is None:
+            skip_reason = "pair_not_in_response"
+        elif pair_payload.get("price_usd") is None:
+            skip_reason = "price_usd_missing"
+        elif pair_payload.get("liquidity_usd") is None:
+            skip_reason = "liquidity_usd_missing"
+        else:
             snapshot_payload = _build_snapshot_payload_from_pair(
                 target=target,
                 pair_payload=pair_payload,
@@ -1515,8 +1569,6 @@ def build_collect_token_snapshots_once_payload(
                 captured_at=captured_at,
             )
             snapshot_created, snapshot_id = record_token_snapshot(resolved, snapshot_payload, captured_at)
-        else:
-            skip_reason = result.normalized_result.failure_type or "missing_snapshot_required_fields"
 
         snapshot_results.append(
             {
@@ -2434,6 +2486,178 @@ def build_collect_context_once_payload(args: argparse.Namespace) -> dict[str, An
         "paper_trading_has_started": status["paper_trading_has_started"],
         "runtime_has_started": status["runtime_has_started"],
     }
+
+
+def _build_broad_context_adapter(
+    source_name: str,
+    *,
+    transport=None,
+    timeout_seconds: float = 8.0,
+):
+    if source_name == "coingecko":
+        return build_coingecko_adapter(
+            enabled=True,
+            fixture_transport=transport or build_coingecko_market_transport(timeout_seconds=timeout_seconds),
+        )
+    if source_name == "defillama":
+        return build_defillama_adapter(
+            enabled=True,
+            fixture_transport=transport or build_defillama_chain_liquidity_transport(timeout_seconds=timeout_seconds),
+        )
+    if source_name == "alternative_me":
+        return build_alternative_me_adapter(
+            enabled=True,
+            fixture_transport=transport or build_alternative_me_fear_greed_transport(timeout_seconds=timeout_seconds),
+        )
+    raise ValueError(f"broad context source not supported: {source_name}")
+
+
+def _validate_broad_context_args(args: argparse.Namespace) -> None:
+    if not args.operator_approved:
+        raise ValueError("broad context collection requires explicit operator approval")
+    source_name = str(args.source_name or "").strip().lower()
+    if source_name not in BROAD_CONTEXT_SOURCE_NAMES:
+        raise ValueError(
+            f"broad context source must be one of: {sorted(BROAD_CONTEXT_SOURCE_NAMES)}"
+        )
+    request_kind = str(
+        args.request_kind or BROAD_CONTEXT_DEFAULT_REQUEST_KINDS.get(source_name, "")
+    ).strip()
+    allowed = BROAD_CONTEXT_ALLOWED_REQUEST_KINDS.get(source_name, set())
+    if request_kind not in allowed:
+        raise ValueError(
+            f"request_kind '{request_kind}' is not allowed for {source_name}; "
+            f"allowed: {sorted(allowed)}"
+        )
+    timeout = float(args.timeout_seconds or 8.0)
+    if timeout <= 0 or timeout > 15:
+        raise ValueError("timeout_seconds must be between 0 and 15")
+
+
+def build_collect_broad_context_once_payload(
+    args: argparse.Namespace,
+    *,
+    transport=None,
+) -> dict[str, Any]:
+    _validate_broad_context_args(args)
+    project_root = _project_root(args.project_root)
+    resolved = resolve_operator_db_path(args.db_path, project_root)
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Operator DB does not exist: {resolved}")
+
+    source_name = str(args.source_name).strip().lower()
+    request_kind = str(
+        args.request_kind or BROAD_CONTEXT_DEFAULT_REQUEST_KINDS[source_name]
+    ).strip()
+    request_key = str(
+        args.request_key or f"broad-context-{source_name}-{request_kind}"
+    ).strip()
+    timeout_seconds = float(args.timeout_seconds or 8.0)
+
+    before_counts = get_core_table_counts(resolved, project_root)
+
+    source_request = build_governed_source_request(
+        source_name,
+        request_kind,
+        request_key=request_key,
+        tracking_priority=8,
+        payload={
+            "broad_context_cycle": "operator_controlled",
+            "source_name": source_name,
+            "request_kind": request_kind,
+        },
+    )
+    adapter = _build_broad_context_adapter(
+        source_name, transport=transport, timeout_seconds=timeout_seconds
+    )
+    result = execute_source_request_with_governor(
+        resolved,
+        source_request,
+        adapter,
+        recent_request_count=0,
+    )
+
+    after_counts = get_core_table_counts(resolved, project_root)
+    deltas = {
+        table: (after_counts.get(table) or 0) - (before_counts.get(table) or 0)
+        for table in sorted(after_counts)
+    }
+    guard_deltas = {
+        table: deltas[table]
+        for table in BROAD_CONTEXT_GUARD_TABLES
+        if deltas.get(table)
+    }
+    response_id = result.response_record.id if result.response_record else None
+    next_step = None
+    if response_id is not None:
+        if source_name in {"coingecko", "defillama", "alternative_me"}:
+            next_step = (
+                f"Pass --market-source-response-id {response_id} "
+                f"(or --chain-heat-source-response-id {response_id}) "
+                f"to printer-collect-context-once"
+            )
+    return {
+        "command": "printer-collect-broad-context-once",
+        "db_path": str(resolved),
+        "operator_approved": True,
+        "source_name": source_name,
+        "request_kind": request_kind,
+        "request_key": request_key,
+        "source_status": result.normalized_result.source_status.value,
+        "data_quality_label": result.normalized_result.data_quality_label.value,
+        "source_request_id": result.request_record.id,
+        "source_response_id": response_id,
+        "source_failure_id": result.failure_record.id if result.failure_record else None,
+        "failure_type": result.normalized_result.failure_type,
+        "failure_message": result.normalized_result.failure_message,
+        "source_table_deltas": {
+            "printer_source_requests": deltas.get("printer_source_requests", 0),
+            "printer_source_responses": deltas.get("printer_source_responses", 0),
+            "printer_source_failures": deltas.get("printer_source_failures", 0),
+        },
+        "guard_table_deltas": guard_deltas,
+        "guard_tables_unchanged": not guard_deltas,
+        "next_step_hint": next_step,
+        "counts_after": after_counts,
+    }
+
+
+def main_collect_broad_context_once(argv: Sequence[str] | None = None) -> int:
+    parser = _base_parser(
+        "Fetch governed broad market or chain-heat context from a free public source.",
+        ("json", "text"),
+    )
+    parser.add_argument("--operator-approved", action="store_true")
+    parser.add_argument(
+        "--source-name",
+        choices=sorted(BROAD_CONTEXT_SOURCE_NAMES),
+        required=True,
+        help=(
+            "Broad context source: coingecko (market + chain heat), "
+            "defillama (chain liquidity), or alternative_me (fear/greed)."
+        ),
+    )
+    parser.add_argument(
+        "--request-kind",
+        help=(
+            "Request kind: broad_market_context or asset_context (coingecko); "
+            "chain_liquidity_context, tvl_context, or dex_volume_context (defillama); "
+            "fear_greed_context (alternative_me). "
+            "Defaults to the primary kind for each source if omitted."
+        ),
+    )
+    parser.add_argument(
+        "--request-key",
+        help="Idempotency key for this governed source request (auto-generated if omitted).",
+    )
+    parser.add_argument("--timeout-seconds", type=float, default=8.0)
+    args = parser.parse_args(argv)
+    try:
+        payload = build_collect_broad_context_once_payload(args)
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
 
 
 def main_collect_context_once(argv: Sequence[str] | None = None) -> int:
