@@ -28,18 +28,74 @@ def classify_solana_activity(normalized_payload: Mapping[str, Any]) -> SolanaAct
     new_tokens = normalized_payload.get("solana_new_token_count")
     meme_volume = normalized_payload.get("solana_meme_volume_24h")
     tx_count = normalized_payload.get("solana_tx_count_24h")
-    observed = [value for value in (hot_pairs, new_pairs, new_tokens, meme_volume, tx_count) if value is not None]
+    dex_volume = normalized_payload.get("solana_dex_volume_24h")
+    sol_volume = normalized_payload.get("sol_volume_24h")
+    observed = [
+        value
+        for value in (
+            hot_pairs,
+            new_pairs,
+            new_tokens,
+            meme_volume,
+            tx_count,
+            dex_volume,
+            sol_volume,
+        )
+        if value is not None
+    ]
     if not observed:
         return SolanaActivityLabel.ACTIVITY_UNKNOWN
-    if (hot_pairs or 0) >= 40 or (new_pairs or 0) >= 80 or (meme_volume or 0) >= 50_000_000:
+    if (
+        (hot_pairs or 0) >= 40
+        or (new_pairs or 0) >= 80
+        or (meme_volume or 0) >= 50_000_000
+        or (dex_volume or 0) >= 2_000_000_000
+        or (sol_volume or 0) >= 5_000_000_000
+    ):
         return SolanaActivityLabel.ACTIVITY_SURGING
-    if (hot_pairs or 0) >= 20 or (new_pairs or 0) >= 35 or (tx_count or 0) >= 25_000_000:
+    if (
+        (hot_pairs or 0) >= 20
+        or (new_pairs or 0) >= 35
+        or (tx_count or 0) >= 25_000_000
+        or (dex_volume or 0) >= 500_000_000
+        or (sol_volume or 0) >= 1_000_000_000
+    ):
         return SolanaActivityLabel.ACTIVITY_ELEVATED
-    if (hot_pairs or 0) <= 2 and (new_pairs or 0) <= 5 and (meme_volume or 0) <= 1_000_000:
+    if (
+        (hot_pairs or 0) <= 2
+        and (new_pairs or 0) <= 5
+        and (meme_volume or 0) <= 1_000_000
+        and (dex_volume or 0) <= 100_000_000
+        and (sol_volume or 0) <= 250_000_000
+    ):
         return SolanaActivityLabel.ACTIVITY_DEAD
-    if (hot_pairs or 0) <= 8 and (new_pairs or 0) <= 15 and (meme_volume or 0) <= 5_000_000:
+    if (
+        (hot_pairs or 0) <= 8
+        and (new_pairs or 0) <= 15
+        and (meme_volume or 0) <= 5_000_000
+        and (dex_volume or 0) <= 250_000_000
+        and (sol_volume or 0) <= 750_000_000
+    ):
         return SolanaActivityLabel.ACTIVITY_WEAK
     return SolanaActivityLabel.ACTIVITY_NORMAL
+
+
+def chain_heat_has_sol_context(normalized_payload: Mapping[str, Any]) -> bool:
+    return normalized_payload.get("sol_price_usd") is not None
+
+
+def chain_heat_has_activity_evidence(normalized_payload: Mapping[str, Any]) -> bool:
+    return any(
+        normalized_payload.get(field) is not None
+        for field in (
+            "solana_tx_count_24h",
+            "solana_meme_volume_24h",
+            "solana_meme_new_pair_count",
+            "solana_hot_pair_count",
+            "solana_dex_volume_24h",
+            "sol_volume_24h",
+        )
+    )
 
 
 def classify_solana_liquidity(normalized_payload: Mapping[str, Any]) -> SolanaLiquidityLabel:
@@ -138,13 +194,11 @@ def classify_chain_heat_payload_quality(
         return ChainHeatPayloadQualityLabel.CHAIN_HEAT_CONTEXT_STALE
     if not chain_heat_payload_has_required_fields(normalized_payload):
         return ChainHeatPayloadQualityLabel.CHAIN_HEAT_CONTEXT_UNKNOWN
-    required_clean_fields = (
-        normalized_payload.get("sol_price_usd"),
-        normalized_payload.get("solana_tx_count_24h"),
-        normalized_payload.get("solana_meme_volume_24h"),
-    )
-    if source_status == SourceStatus.PARTIAL or data_quality == DataQualityLabel.ACCEPTABLE_PARTIAL_DATA or any(
-        value is None for value in required_clean_fields
+    if (
+        source_status == SourceStatus.PARTIAL
+        or data_quality == DataQualityLabel.ACCEPTABLE_PARTIAL_DATA
+        or not chain_heat_has_sol_context(normalized_payload)
+        or not chain_heat_has_activity_evidence(normalized_payload)
     ):
         return ChainHeatPayloadQualityLabel.CHAIN_HEAT_CONTEXT_PARTIAL
     return ChainHeatPayloadQualityLabel.CHAIN_HEAT_CONTEXT_CLEAN
