@@ -7,6 +7,7 @@ import hashlib
 import json
 import sqlite3
 import tempfile
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Sequence
@@ -74,6 +75,11 @@ from printer_v1.chart_volatility.classifier import (
     classify_trend_structure,
     classify_volatility,
 )
+from printer_v1.chart_volatility.parser import build_chart_payload_from_token_snapshots
+from printer_v1.evidence_fill.controlled import (
+    ControlledEvidenceFillTarget,
+    fill_controlled_governed_evidence,
+)
 from printer_v1.liquidity_exit.classifier import (
     classify_entry_realism,
     classify_exit_realism,
@@ -95,6 +101,7 @@ from printer_v1.micro_event.classifier import (
     classify_micro_event_state,
     classify_micro_exit_realism,
 )
+from printer_v1.micro_event.parser import build_micro_event_payload_from_token_snapshots
 from printer_v1.market_regime.recorder import record_market_regime_snapshot
 from printer_v1.safety.classifier import (
     classify_authority_safety,
@@ -630,6 +637,239 @@ def main_source_smoke_dexscreener(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         payload = build_source_smoke_dexscreener_payload(args)
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
+CONTROLLED_EVIDENCE_FILL_TABLES = (
+    "printer_source_requests",
+    "printer_source_responses",
+    "printer_source_failures",
+    "printer_solana_safety_evidence",
+    "printer_paper_quote_evidence",
+    "printer_memory_windows",
+    "printer_memory_fingerprints",
+    "printer_memory_retrieval_queries",
+    "printer_memory_retrieval_matches",
+    "printer_paper_decisions",
+    "printer_paper_positions",
+    "printer_paper_trade_events",
+    "printer_paper_trade_audits",
+    "printer_paper_pl_calculations",
+)
+
+
+def _connection_table_count(connection: sqlite3.Connection, table_name: str) -> int | None:
+    row = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    if row is None:
+        return None
+    return int(connection.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0])
+
+
+def _controlled_evidence_counts(connection: sqlite3.Connection) -> dict[str, int | None]:
+    return {
+        table: _connection_table_count(connection, table)
+        for table in CONTROLLED_EVIDENCE_FILL_TABLES
+    }
+
+
+def _read_optional_json_payload(*, inline_json: str | None, path: str | None, label: str) -> dict[str, Any] | None:
+    if inline_json and path:
+        raise ValueError(f"{label} accepts either inline JSON or a path, not both")
+    if not inline_json and not path:
+        return None
+    if path:
+        text = Path(path).read_text(encoding="utf-8")
+    else:
+        text = inline_json or ""
+    parsed = json.loads(text)
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{label} payload must be a JSON object")
+    return parsed
+
+
+def _resolve_controlled_evidence_fill_target(
+    connection: sqlite3.Connection,
+    args: argparse.Namespace,
+) -> ControlledEvidenceFillTarget:
+    token = connection.execute(
+        "SELECT * FROM printer_tokens WHERE id = ?",
+        (args.token_id,),
+    ).fetchone()
+    if token is None:
+        raise ValueError("controlled evidence fill target token not found")
+    if token["chain"] != "solana":
+        raise ValueError("controlled evidence fill is Solana-only")
+    pair = connection.execute(
+        "SELECT * FROM printer_pairs WHERE id = ? AND token_id = ?",
+        (args.pair_id, args.token_id),
+    ).fetchone()
+    if pair is None:
+        raise ValueError("controlled evidence fill target pair not found or token-mismatched")
+    snapshot = connection.execute(
+        """
+        SELECT *
+        FROM printer_token_snapshots
+        WHERE id = ? AND token_id = ? AND pair_id = ?
+        """,
+        (args.snapshot_id, args.token_id, args.pair_id),
+    ).fetchone()
+    if snapshot is None:
+        raise ValueError("controlled evidence fill target snapshot not found or target-mismatched")
+    if args.memory_window_id is not None:
+        window = connection.execute(
+            """
+            SELECT *
+            FROM printer_memory_windows
+            WHERE id = ? AND token_id = ? AND pair_id = ? AND snapshot_end_id = ?
+            """,
+            (args.memory_window_id, args.token_id, args.pair_id, args.snapshot_id),
+        ).fetchone()
+        if window is None:
+            raise ValueError("controlled evidence fill memory window target not found or mismatched")
+    return ControlledEvidenceFillTarget(
+        token_id=args.token_id,
+        pair_id=args.pair_id,
+        snapshot_id=args.snapshot_id,
+        memory_window_id=args.memory_window_id,
+        evidence_window_id=args.evidence_window_id,
+    )
+
+
+def _validate_fill_controlled_evidence_args(args: argparse.Namespace) -> None:
+    if not args.operator_approved:
+        raise ValueError("controlled evidence fill requires explicit operator approval")
+    if args.token_id is None or args.pair_id is None or args.snapshot_id is None:
+        raise ValueError("controlled evidence fill requires token_id, pair_id, and snapshot_id")
+    if not any((
+        args.safety_payload_json,
+        args.safety_payload_path,
+        args.entry_quote_payload_json,
+        args.entry_quote_payload_path,
+        args.exit_quote_payload_json,
+        args.exit_quote_payload_path,
+    )):
+        raise ValueError("controlled evidence fill requires at least one evidence payload")
+
+
+def build_fill_controlled_evidence_once_payload(args: argparse.Namespace) -> dict[str, Any]:
+    _validate_fill_controlled_evidence_args(args)
+    project_root = _project_root(args.project_root)
+    resolved = resolve_operator_db_path(args.db_path, project_root)
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Operator DB does not exist: {resolved}")
+
+    safety_payload = _read_optional_json_payload(
+        inline_json=args.safety_payload_json,
+        path=args.safety_payload_path,
+        label="safety",
+    )
+    entry_quote_payload = _read_optional_json_payload(
+        inline_json=args.entry_quote_payload_json,
+        path=args.entry_quote_payload_path,
+        label="entry quote",
+    )
+    exit_quote_payload = _read_optional_json_payload(
+        inline_json=args.exit_quote_payload_json,
+        path=args.exit_quote_payload_path,
+        label="exit quote",
+    )
+    connection = sqlite3.connect(resolved)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    try:
+        before_counts = _controlled_evidence_counts(connection)
+        target = _resolve_controlled_evidence_fill_target(connection, args)
+        result = fill_controlled_governed_evidence(
+            connection,
+            target=target,
+            safety_payload=safety_payload,
+            entry_quote_payload=entry_quote_payload,
+            exit_quote_payload=exit_quote_payload,
+            dry_run=bool(args.dry_run),
+        )
+        if args.dry_run:
+            connection.rollback()
+        else:
+            connection.commit()
+        after_counts = _controlled_evidence_counts(connection)
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+    deltas = {
+        table: (after_counts.get(table) or 0) - (before_counts.get(table) or 0)
+        for table in CONTROLLED_EVIDENCE_FILL_TABLES
+    }
+    locked_gate_counts = {
+        "retrieval_queries": after_counts.get("printer_memory_retrieval_queries"),
+        "retrieval_matches": after_counts.get("printer_memory_retrieval_matches"),
+        "paper_decisions": after_counts.get("printer_paper_decisions"),
+        "paper_positions": after_counts.get("printer_paper_positions"),
+        "paper_trade_events": after_counts.get("printer_paper_trade_events"),
+        "paper_trade_audits": after_counts.get("printer_paper_trade_audits"),
+        "paper_pl_calculations": after_counts.get("printer_paper_pl_calculations"),
+    }
+    return {
+        "command": "printer-fill-controlled-evidence-once",
+        "db_path": str(resolved),
+        "operator_approved": True,
+        "dry_run": bool(args.dry_run),
+        "target": asdict(target),
+        "item_results": [asdict(item) for item in result.item_results],
+        "safety_evidence_inserted": result.safety_evidence_inserted,
+        "quote_evidence_inserted": result.quote_evidence_inserted,
+        "clean_evidence_inserted": result.clean_evidence_inserted,
+        "audit_only_evidence_inserted": result.audit_only_evidence_inserted,
+        "rejected_or_failed": result.rejected_or_failed,
+        "source_table_deltas": {
+            "printer_source_requests": deltas["printer_source_requests"],
+            "printer_source_responses": deltas["printer_source_responses"],
+            "printer_source_failures": deltas["printer_source_failures"],
+        },
+        "evidence_table_deltas": {
+            "printer_solana_safety_evidence": deltas["printer_solana_safety_evidence"],
+            "printer_paper_quote_evidence": deltas["printer_paper_quote_evidence"],
+        },
+        "locked_gate_counts": locked_gate_counts,
+        "downstream_unlocks": {
+            "clean_memory": False,
+            "retrieval": False,
+            "paper_decision": False,
+            "buy": False,
+            "paper_position": False,
+            "paper_trade_event": False,
+            "pnl": False,
+        },
+        "counts_after": after_counts,
+    }
+
+
+def main_fill_controlled_evidence_once(argv: Sequence[str] | None = None) -> int:
+    parser = _base_parser("Fill controlled governed safety/quote evidence once.", ("json", "text"))
+    parser.add_argument("--operator-approved", action="store_true")
+    parser.add_argument("--token-id", type=int, required=True)
+    parser.add_argument("--pair-id", type=int, required=True)
+    parser.add_argument("--snapshot-id", type=int, required=True)
+    parser.add_argument("--memory-window-id", type=int)
+    parser.add_argument("--evidence-window-id", type=int)
+    parser.add_argument("--safety-payload-json")
+    parser.add_argument("--safety-payload-path")
+    parser.add_argument("--entry-quote-payload-json")
+    parser.add_argument("--entry-quote-payload-path")
+    parser.add_argument("--exit-quote-payload-json")
+    parser.add_argument("--exit-quote-payload-path")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args(argv)
+    try:
+        payload = build_fill_controlled_evidence_once_payload(args)
         _print_payload(payload, args.format)
         return 0
     except Exception as exc:
@@ -2115,17 +2355,41 @@ def build_collect_context_once_payload(args: argparse.Namespace) -> dict[str, An
         target = _resolve_approved_context_target(connection, args)
         snapshot = _resolve_context_snapshot(connection, args, target)
         existing_context_counts = _context_rows_for_target(connection, target, snapshot)
-        if sum(existing_context_counts.values()) > 0:
+        market_source_response_id = getattr(args, "market_source_response_id", None)
+        chain_heat_source_response_id = getattr(args, "chain_heat_source_response_id", None)
+        if sum(existing_context_counts.values()) > 0 and not (market_source_response_id or chain_heat_source_response_id):
             inserted_context_rows = {}
             skipped_reason = "context_already_exists_for_evidence"
+        elif sum(existing_context_counts.values()) > 0:
+            captured_at = _utc_now_text()
+            inserted_context_rows = {}
+            if market_source_response_id is not None:
+                _insert_market_context_from_source_response(
+                    connection,
+                    source_response_id=market_source_response_id,
+                    target=target,
+                    snapshot=snapshot,
+                    captured_at=captured_at,
+                )
+                inserted_context_rows["printer_market_regime_snapshots"] = 1
+            if chain_heat_source_response_id is not None:
+                _insert_chain_heat_context_from_source_response(
+                    connection,
+                    source_response_id=chain_heat_source_response_id,
+                    target=target,
+                    snapshot=snapshot,
+                    captured_at=captured_at,
+                )
+                inserted_context_rows["printer_solana_chain_heat_snapshots"] = 1
+            skipped_reason = None
         else:
             inserted_context_rows = _insert_controlled_context_rows(
                 connection,
                 target,
                 snapshot,
                 _utc_now_text(),
-                market_source_response_id=getattr(args, "market_source_response_id", None),
-                chain_heat_source_response_id=getattr(args, "chain_heat_source_response_id", None),
+                market_source_response_id=market_source_response_id,
+                chain_heat_source_response_id=chain_heat_source_response_id,
             )
             skipped_reason = None
         connection.commit()
@@ -2549,6 +2813,7 @@ def _classify_first_memory_review(
     context_freshness: dict[str, Any] | None = None,
     effective_labels: dict[str, Any] | None = None,
     evidence_blockers: list[str] | None = None,
+    outcome_label: str | None = None,
 ) -> dict[str, Any]:
     rejection_reasons: list[str] = []
     coverage_policy = _window_coverage_policy(window_kind, snapshots)
@@ -2566,6 +2831,14 @@ def _classify_first_memory_review(
         rejection_reasons.extend(["REJECT_MISSING_SNAPSHOTS", coverage_state, "INSUFFICIENT_SNAPSHOT_COVERAGE"])
     if any(row.get("price_usd") is None or row.get("liquidity_usd") is None for row in snapshots):
         rejection_reasons.append("REJECT_MISSING_CRITICAL_FIELDS")
+    if any(str(row.get("source_status") or "").upper() in {"FAILED", "STALE", "CONFLICTING"} for row in snapshots):
+        rejection_reasons.append("REJECT_BAD_SNAPSHOT_SOURCE_STATUS")
+    if any(
+        str(row.get("data_quality_label") or "").upper()
+        in {"MISSING_CRITICAL_DATA", "DIRTY_DATA", "STALE_DATA", "CONFLICTING_DATA", "DO_NOT_TRAIN"}
+        for row in snapshots
+    ):
+        rejection_reasons.append("REJECT_BAD_SNAPSHOT_DATA_QUALITY")
     if not _context_is_present(context_rows):
         rejection_reasons.append("MISSING_OR_UNKNOWN_CONTEXT")
     labels = effective_labels or _context_memory_labels(context_rows)
@@ -2590,7 +2863,7 @@ def _classify_first_memory_review(
         memory_quality = "AUDIT_ONLY_MEMORY"
     unique_reasons = list(dict.fromkeys(rejection_reasons or ["REVIEW_PASSED"]))
     return {
-        "outcome_label": "OUTCOME_UNKNOWN" if memory_quality != "CLEAN_MEMORY" else "NO_PUMP",
+        "outcome_label": "OUTCOME_UNKNOWN" if memory_quality != "CLEAN_MEMORY" else (outcome_label or "NO_PUMP"),
         "action_lesson_label": "ACTION_LESSON_UNKNOWN",
         "memory_quality_label": memory_quality,
         "memory_status": _memory_storage_status(memory_quality),
@@ -2647,6 +2920,96 @@ def _snapshot_price_path_for_memory(snapshots: list[dict[str, Any]]) -> dict[str
     }
 
 
+def _snapshots_are_clean_window_evidence(snapshots: list[dict[str, Any]], expected_snapshot_count: int) -> bool:
+    if len(snapshots) < expected_snapshot_count:
+        return False
+    for row in snapshots:
+        if row.get("price_usd") is None or row.get("liquidity_usd") is None:
+            return False
+        if str(row.get("source_status") or "").upper() not in {"COMPLETE", "PARTIAL"}:
+            return False
+        if str(row.get("data_quality_label") or "").upper() not in {"CLEAN_DATA", "ACCEPTABLE_PARTIAL_DATA"}:
+            return False
+    return True
+
+
+def _outcome_label_from_held_to_15m(held_label: str | None) -> str:
+    return {
+        "HELD_TO_15M_CONTINUED": "SHORT_TERM_PUMP",
+        "HELD_TO_15M_CONSOLIDATED": "CONSOLIDATION",
+        "HELD_TO_15M_FADED": "SLOW_BLEED",
+        "HELD_TO_15M_DUMPED": "DUMP",
+        "HELD_TO_15M_DEAD": "DEAD",
+    }.get(str(held_label or ""), "UNKNOWN_OUTCOME")
+
+
+def _derive_15m_window_context_from_snapshots(
+    snapshots: list[dict[str, Any]],
+    window_kind: str,
+) -> dict[str, Any]:
+    coverage_policy = _window_coverage_policy(window_kind, snapshots)
+    if window_kind != "WINDOW_15M" or not _snapshots_are_clean_window_evidence(
+        snapshots,
+        int(coverage_policy["expected_snapshot_count"]),
+    ):
+        return {
+            "labels": {},
+            "outcome_label": None,
+            "payload": {
+                "derived": False,
+                "reason": "requires_clean_complete_window_15m_snapshot_evidence",
+                "coverage_policy_used": coverage_policy["coverage_policy_used"],
+                "actual_snapshot_count": len(snapshots),
+            },
+        }
+
+    chart_context = build_chart_payload_from_token_snapshots(snapshots)
+    chart_labels = {
+        "trend_structure_label": _label_value(classify_trend_structure(chart_context)),
+        "volatility_label": _label_value(classify_volatility(chart_context)),
+        "range_behavior_label": _label_value(classify_range_behavior(chart_context)),
+        "momentum_label": _label_value(classify_momentum(chart_context)),
+        "drawdown_recovery_label": _label_value(classify_drawdown_recovery(chart_context)),
+        "candle_path_label": _label_value(classify_candle_path(chart_context)),
+        "chart_payload_quality_label": _label_value(classify_chart_payload_quality(chart_context)),
+        "chart_memory_gate_label": _label_value(classify_chart_memory_gate(chart_context)),
+    }
+    path = _snapshot_price_path_for_memory(snapshots)
+    micro_context = build_micro_event_payload_from_token_snapshots(snapshots)
+    micro_context["held_to_15m_price_change_percent"] = path["price_change_percent"]
+    micro_context["held_to_15m_liquidity_usd"] = snapshots[-1].get("liquidity_usd") if snapshots else None
+    held_label = _label_value(classify_holding_to_15m_result(micro_context))
+    micro_labels = {
+        "micro_event_state_label": _label_value(classify_micro_event_state(micro_context)),
+        "micro_event_move_label": _label_value(classify_micro_event_move(micro_context)),
+        "micro_exit_realism_label": _label_value(classify_micro_exit_realism(micro_context)),
+        "late_buy_trap_label": _label_value(classify_late_buy_trap(micro_context)),
+        "held_to_15m_result_label": held_label,
+        "micro_event_payload_quality_label": _label_value(classify_micro_event_payload_quality(micro_context)),
+        "micro_event_memory_gate_label": _label_value(classify_micro_event_memory_gate(micro_context)),
+    }
+    return {
+        "labels": {
+            "trend_structure_label": chart_labels["trend_structure_label"],
+            "volatility_label": chart_labels["volatility_label"],
+            "micro_event_state_label": micro_labels["micro_event_state_label"],
+            "held_to_15m_result_label": held_label,
+        },
+        "outcome_label": _outcome_label_from_held_to_15m(held_label),
+        "payload": {
+            "derived": True,
+            "source": "stored_token_snapshots",
+            "window_kind": window_kind,
+            "snapshot_ids": [int(row["id"]) for row in snapshots],
+            "coverage_policy_used": coverage_policy["coverage_policy_used"],
+            "chart_context": chart_context,
+            "chart_labels": chart_labels,
+            "held_outcome_context": micro_context,
+            "held_outcome_labels": micro_labels,
+        },
+    }
+
+
 def _record_first_memory_window(
     connection: sqlite3.Connection,
     target: dict[str, Any],
@@ -2661,15 +3024,27 @@ def _record_first_memory_window(
     evidence_identity_hash: str,
     evidence_fingerprint: str,
     evidence_difference_reason: str,
+    existing_memory_window_id: int | None = None,
+    evidence_revision_created: bool = False,
+    evidence_revision_reason: str | None = None,
+    evidence_lookup_memory_window_id: int | None = None,
 ) -> dict[str, Any]:
     opened_at = window_start_at
     closed_at = window_end_at
     context_freshness = _context_freshness_report(context_rows, snapshot, window_start_at, window_end_at)
     raw_context_labels = _context_memory_labels(context_rows)
+    derived_window_context = _derive_15m_window_context_from_snapshots(snapshots, window_kind)
+    if derived_window_context["labels"]:
+        raw_context_labels.update(derived_window_context["labels"])
+    evidence_lookup_id = (
+        evidence_lookup_memory_window_id
+        if evidence_lookup_memory_window_id is not None
+        else existing_memory_window_id
+    )
     evidence_result = _apply_clean_audit_evidence_labels(
         connection,
         window={
-            "id": None,
+            "id": evidence_lookup_id,
             "token_id": target["token_id"],
             "pair_id": target["pair_id"],
             "snapshot_end_id": snapshot["id"],
@@ -2684,9 +3059,30 @@ def _record_first_memory_window(
         context_freshness,
         effective_labels=effective_context_labels,
         evidence_blockers=evidence_result["overlays"].get("evidence_blockers", []),
+        outcome_label=derived_window_context.get("outcome_label"),
     )
     path = _snapshot_price_path_for_memory(snapshots)
     snapshot_ids = [int(row["id"]) for row in snapshots]
+    remaining_blockers = list(
+        dict.fromkeys(
+            context_freshness["context_blocking_reasons"]
+            + classification["unknown_context_blockers"]
+            + classification["evidence_blockers"]
+        )
+    )
+    overlays = evidence_result["overlays"]
+    applied_safety_evidence_row_id = overlays.get("safety_evidence_row_id") if overlays.get("safety_evidence_applied") else None
+    applied_entry_quote_evidence_row_id = (
+        overlays.get("entry_quote_evidence_row_id") if overlays.get("entry_quote_evidence_applied") else None
+    )
+    applied_exit_quote_evidence_row_id = (
+        overlays.get("exit_quote_evidence_row_id") if overlays.get("exit_quote_evidence_applied") else None
+    )
+    duplicate_guard_status = (
+        "EVIDENCE_REVISION_CREATED"
+        if evidence_revision_created
+        else "NEW_DISTINCT_EVIDENCE_WINDOW"
+    )
     supporting_context = {
         "phase": "post_rc_lane3",
         "source_reference": source_reference,
@@ -2698,7 +3094,15 @@ def _record_first_memory_window(
         "evidence_role": evidence_role,
         "evidence_identity_hash": evidence_identity_hash,
         "evidence_difference_reason": evidence_difference_reason,
-        "duplicate_guard_status": "NEW_DISTINCT_EVIDENCE_WINDOW",
+        "duplicate_guard_status": duplicate_guard_status,
+        "existing_memory_window_id": existing_memory_window_id,
+        "evidence_revision_created": evidence_revision_created,
+        "evidence_revision_reason": evidence_revision_reason,
+        "evidence_lookup_memory_window_id": evidence_lookup_id,
+        "applied_safety_evidence_row_id": applied_safety_evidence_row_id,
+        "applied_entry_quote_evidence_row_id": applied_entry_quote_evidence_row_id,
+        "applied_exit_quote_evidence_row_id": applied_exit_quote_evidence_row_id,
+        "remaining_blockers": remaining_blockers,
         "expected_snapshot_count": classification["expected_snapshot_count"],
         "coverage_policy_used": classification["coverage_policy_used"],
         "actual_snapshot_count": classification["actual_snapshot_count"],
@@ -2715,15 +3119,10 @@ def _record_first_memory_window(
         },
         "context_labels": effective_context_labels,
         "raw_context_labels": raw_context_labels,
+        "derived_window_context": derived_window_context["payload"],
         "memory_build_evidence_overlays": evidence_result["overlays"],
         "context_freshness_report": context_freshness,
-        "context_blocking_reasons": list(
-            dict.fromkeys(
-                context_freshness["context_blocking_reasons"]
-                + classification["unknown_context_blockers"]
-                + classification["evidence_blockers"]
-            )
-        ),
+        "context_blocking_reasons": remaining_blockers,
         "unknown_context_blockers": classification["unknown_context_blockers"],
         "evidence_blockers": classification["evidence_blockers"],
         "retrieval_ready": classification["retrieval_ready"],
@@ -2751,7 +3150,7 @@ def _record_first_memory_window(
             json.dumps(supporting_context, sort_keys=True), "post_rc_lane3",
             snapshot_ids[0] if snapshot_ids else None, snapshot_ids[-1] if snapshot_ids else None,
             window_start_at, window_end_at, source_reference, evidence_role, evidence_fingerprint,
-            evidence_identity_hash, evidence_difference_reason, "NEW_DISTINCT_EVIDENCE_WINDOW",
+            evidence_identity_hash, evidence_difference_reason, duplicate_guard_status,
             "NORMAL_TOKEN_MEMORY_DISTRIBUTION", "distribution_not_evaluated_at_memory_write",
         ),
     )
@@ -2820,8 +3219,17 @@ def _record_first_memory_window(
         "context_blocking_reasons": supporting_context["context_blocking_reasons"],
         "unknown_context_blockers": classification["unknown_context_blockers"],
         "evidence_blockers": classification["evidence_blockers"],
+        "existing_memory_window_id": existing_memory_window_id,
+        "evidence_revision_created": evidence_revision_created,
+        "evidence_revision_reason": evidence_revision_reason,
+        "evidence_lookup_memory_window_id": evidence_lookup_id,
+        "applied_safety_evidence_row_id": applied_safety_evidence_row_id,
+        "applied_entry_quote_evidence_row_id": applied_entry_quote_evidence_row_id,
+        "applied_exit_quote_evidence_row_id": applied_exit_quote_evidence_row_id,
+        "remaining_blockers": remaining_blockers,
         **effective_context_labels,
         "raw_context_labels": raw_context_labels,
+        "derived_window_context": derived_window_context["payload"],
         "memory_build_evidence_overlays": evidence_result["overlays"],
     }
     cursor = connection.execute(
@@ -2852,12 +3260,21 @@ def _record_first_memory_window(
         "evidence_role": evidence_role,
         "evidence_identity_hash": evidence_identity_hash,
         "evidence_difference_reason": evidence_difference_reason,
-        "duplicate_guard_status": "NEW_DISTINCT_EVIDENCE_WINDOW",
+        "duplicate_guard_status": duplicate_guard_status,
+        "existing_memory_window_id": existing_memory_window_id,
+        "evidence_revision_created": evidence_revision_created,
+        "evidence_revision_reason": evidence_revision_reason,
+        "evidence_lookup_memory_window_id": evidence_lookup_id,
+        "applied_safety_evidence_row_id": applied_safety_evidence_row_id,
+        "applied_entry_quote_evidence_row_id": applied_entry_quote_evidence_row_id,
+        "applied_exit_quote_evidence_row_id": applied_exit_quote_evidence_row_id,
+        "remaining_blockers": remaining_blockers,
         "coverage_state": classification["coverage_state"],
         "context_freshness_report": context_freshness,
         "context_blocking_reasons": supporting_context["context_blocking_reasons"],
         "unknown_context_blockers": classification["unknown_context_blockers"],
         "evidence_blockers": classification["evidence_blockers"],
+        **effective_context_labels,
         **classification,
     }
 
@@ -2895,34 +3312,65 @@ def build_memory_window_once_payload(args: argparse.Namespace) -> dict[str, Any]
                 duplicate_block_reason = "source_reference_only_difference_blocked"
         if existing is not None:
             existing_support = _json_or_empty(existing["supporting_context_json"])
-            result = {
-                "memory_window_id": int(existing["id"]),
-                "episode_id": None,
-                "outcome_id": None,
-                "fingerprint_id": None,
-                "memory_quality_label": existing["memory_quality_label"],
-                "memory_status": existing["memory_status"],
-                "data_quality_label": existing["data_quality_label"],
-                "do_not_train": int(existing["do_not_train"]),
-                "rejection_reasons": json.loads(existing["rejection_reasons_json"] or "[]"),
-                "retrieval_ready": int(existing["do_not_train"]) == 0 and existing["memory_quality_label"] == "CLEAN_MEMORY",
-                "outcome_label": existing["outcome_label"],
-                "action_lesson_label": "ACTION_LESSON_UNKNOWN",
-                "snapshot_start_id": existing["snapshot_start_id"],
-                "snapshot_end_id": existing["snapshot_end_id"],
-                "snapshot_ids": [int(row["id"]) for row in snapshots],
-                "window_start_at": existing["window_start_at"] or window_start_at,
-                "window_end_at": existing["window_end_at"] or window_end_at,
-                "evidence_role": existing["evidence_role"] or evidence_role,
-                "evidence_identity_hash": evidence_identity_hash,
-                "evidence_difference_reason": duplicate_block_reason,
-                "duplicate_guard_status": "DUPLICATE_SAME_EVIDENCE_NOOP",
-                "duplicate_block_reason": duplicate_block_reason,
-                "coverage_state": existing["coverage_state"],
-                "context_freshness_report": existing_support.get("context_freshness_report"),
-                "context_blocking_reasons": existing_support.get("context_blocking_reasons", []),
-                "skipped_reason": "duplicate_same_evidence_noop",
-            }
+            evidence_result = _apply_clean_audit_evidence_labels(
+                connection,
+                window={
+                    "id": int(existing["id"]),
+                    "token_id": target["token_id"],
+                    "pair_id": target["pair_id"],
+                    "snapshot_end_id": snapshot["id"],
+                },
+                labels=_context_memory_labels(context_rows),
+            )
+            revision_reason = _memory_revision_reason(existing, context_rows, evidence_result["overlays"])
+            if revision_reason is not None:
+                result = _record_first_memory_window(
+                    connection, target, snapshot, snapshots, context_rows, window_kind, args.source_reference,
+                    window_start_at, window_end_at, evidence_role, evidence_identity_hash,
+                    evidence_fingerprint, revision_reason,
+                    existing_memory_window_id=int(existing["id"]),
+                    evidence_revision_created=True,
+                    evidence_revision_reason=revision_reason,
+                    evidence_lookup_memory_window_id=int(existing["id"]),
+                )
+                result["skipped_reason"] = None
+                result["duplicate_block_reason"] = duplicate_block_reason
+            else:
+                result = {
+                    "memory_window_id": int(existing["id"]),
+                    "episode_id": None,
+                    "outcome_id": None,
+                    "fingerprint_id": None,
+                    "memory_quality_label": existing["memory_quality_label"],
+                    "memory_status": existing["memory_status"],
+                    "data_quality_label": existing["data_quality_label"],
+                    "do_not_train": int(existing["do_not_train"]),
+                    "rejection_reasons": json.loads(existing["rejection_reasons_json"] or "[]"),
+                    "retrieval_ready": int(existing["do_not_train"]) == 0 and existing["memory_quality_label"] == "CLEAN_MEMORY",
+                    "outcome_label": existing["outcome_label"],
+                    "action_lesson_label": "ACTION_LESSON_UNKNOWN",
+                    "snapshot_start_id": existing["snapshot_start_id"],
+                    "snapshot_end_id": existing["snapshot_end_id"],
+                    "snapshot_ids": [int(row["id"]) for row in snapshots],
+                    "window_start_at": existing["window_start_at"] or window_start_at,
+                    "window_end_at": existing["window_end_at"] or window_end_at,
+                    "evidence_role": existing["evidence_role"] or evidence_role,
+                    "evidence_identity_hash": evidence_identity_hash,
+                    "evidence_difference_reason": duplicate_block_reason,
+                    "duplicate_guard_status": "DUPLICATE_SAME_EVIDENCE_NOOP",
+                    "duplicate_block_reason": duplicate_block_reason,
+                    "existing_memory_window_id": None,
+                    "evidence_revision_created": False,
+                    "evidence_revision_reason": None,
+                    "applied_safety_evidence_row_id": existing_support.get("applied_safety_evidence_row_id"),
+                    "applied_entry_quote_evidence_row_id": existing_support.get("applied_entry_quote_evidence_row_id"),
+                    "applied_exit_quote_evidence_row_id": existing_support.get("applied_exit_quote_evidence_row_id"),
+                    "remaining_blockers": existing_support.get("remaining_blockers", existing_support.get("context_blocking_reasons", [])),
+                    "coverage_state": existing["coverage_state"],
+                    "context_freshness_report": existing_support.get("context_freshness_report"),
+                    "context_blocking_reasons": existing_support.get("context_blocking_reasons", []),
+                    "skipped_reason": "duplicate_same_evidence_noop",
+                }
         else:
             evidence_difference_reason = _evidence_difference_reason(
                 connection, target, window_kind, snapshots, args.source_reference, evidence_role
@@ -2989,7 +3437,7 @@ def main_build_memory_window_once(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--pair-id", type=int)
     parser.add_argument("--snapshot-id", type=int)
     parser.add_argument("--chain", default="solana")
-    parser.add_argument("--memory-window", default="15m")
+    parser.add_argument("--memory-window", "--window-kind", dest="memory_window", default="15m")
     parser.add_argument("--source-reference")
     args = parser.parse_args(argv)
     try:
@@ -3343,6 +3791,37 @@ def _apply_clean_audit_evidence_labels(
 
     overlays["evidence_blockers"] = list(dict.fromkeys(overlays["evidence_blockers"]))
     return {"labels": effective, "overlays": overlays}
+
+
+def _memory_revision_reason(
+    existing: sqlite3.Row,
+    context_rows: dict[str, dict[str, Any]],
+    evidence_overlays: dict[str, Any],
+) -> str | None:
+    if existing["memory_quality_label"] == "CLEAN_MEMORY" and int(existing["do_not_train"]) == 0:
+        return None
+    existing_support = _json_or_empty(existing["supporting_context_json"])
+    existing_overlays = existing_support.get("memory_build_evidence_overlays") or {}
+    existing_context_ids = existing_support.get("context_row_ids") or {}
+    current_context_ids = _context_row_ids_for_memory(context_rows)
+
+    newly_applied = []
+    for old_key, applied_key, reason in (
+        ("safety_evidence_row_id", "safety_evidence_applied", "new_clean_safety_evidence"),
+        ("entry_quote_evidence_row_id", "entry_quote_evidence_applied", "new_clean_entry_quote_evidence"),
+        ("exit_quote_evidence_row_id", "exit_quote_evidence_applied", "new_clean_exit_quote_evidence"),
+    ):
+        if evidence_overlays.get(applied_key) and evidence_overlays.get(old_key) != existing_overlays.get(old_key):
+            newly_applied.append(reason)
+    changed_context = [
+        key
+        for key, value in current_context_ids.items()
+        if value is not None and existing_context_ids.get(key) not in {None, value}
+    ]
+    reasons = newly_applied + [f"new_context_row_{key}" for key in changed_context]
+    if not reasons:
+        return None
+    return "evidence_revision_due_to_" + "_and_".join(reasons)
 
 
 def _memory_audit_context_summary(connection: sqlite3.Connection, window: dict[str, Any]) -> dict[str, Any]:

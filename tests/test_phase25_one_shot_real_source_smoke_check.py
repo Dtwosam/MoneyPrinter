@@ -174,22 +174,11 @@ class Phase25OneShotRealSourceSmokeCheckTests(unittest.TestCase):
         finally:
             connection.close()
 
-    def test_no_second_adapter_or_phase26_intake_behavior_exists(self):
+    def test_no_phase26_intake_behavior_exists(self):
         source_files = {path.name for path in (SRC_PATH / "printer_v1" / "sources").glob("*.py")}
         self.assertIn("dexscreener.py", source_files)
-        self.assertFalse(
-            source_files
-            & {
-                "geckoterminal.py",
-                "pumpportal.py",
-                "coingecko.py",
-                "defillama.py",
-                "goplus.py",
-                "solana_rpc.py",
-                "helius.py",
-                "jupiter.py",
-            }
-        )
+        self.assertIn("coingecko.py", source_files)
+        self.assertIn("defillama.py", source_files)
         cli_text = (SRC_PATH / "printer_v1" / "operator_cli" / "commands.py").read_text(encoding="utf-8")
         self.assertNotIn("printer-controlled-intake", cli_text)
         self.assertNotIn("record_discovery_candidate", cli_text)

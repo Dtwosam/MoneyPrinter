@@ -170,6 +170,64 @@ class PostRCCleanContextBlockerReviewTests(unittest.TestCase):
             self.assertIsNotNone(result.response_record)
             return int(result.response_record.id)
 
+    def test_explicit_governed_market_and_chain_responses_refresh_existing_partial_context(self):
+        snapshot_ids = self.seed_snapshots()
+        first = self.collect_context(snapshot_ids[-1])
+        self.assertEqual(first["skipped_reason"], None)
+        market_response_id = self.governed_source_response_id(
+            "coingecko",
+            "broad_market_context",
+            {
+                "captured_at": self.base_time.isoformat(),
+                "btc_price_usd": 64000,
+                "btc_change_24h": 2.5,
+                "sol_price_usd": 150,
+                "sol_change_24h": 6.0,
+                "sol_volume_24h": 2500000000,
+                "fear_greed_value": 62,
+                "fear_greed_label": "GREED",
+                "source_status": "COMPLETE",
+                "data_quality_label": "CLEAN_DATA",
+            },
+        )
+        chain_response_id = self.governed_source_response_id(
+            "coingecko",
+            "asset_context",
+            {
+                "captured_at": self.base_time.isoformat(),
+                "sol_price_usd": 150,
+                "sol_change_24h": 6.0,
+                "sol_volume_24h": 2500000000,
+                "solana_dex_volume_24h": 900000000,
+                "solana_meme_volume_24h": 25000000,
+                "solana_hot_pair_count": 22,
+                "solana_meme_new_pair_count": 15,
+                "source_status": "COMPLETE",
+                "data_quality_label": "CLEAN_DATA",
+            },
+        )
+
+        refreshed = self.collect_context(
+            snapshot_ids[-1],
+            market_source_response_id=market_response_id,
+            chain_heat_source_response_id=chain_response_id,
+        )
+
+        self.assertIsNone(refreshed["skipped_reason"])
+        self.assertEqual(refreshed["inserted_context_rows"]["printer_market_regime_snapshots"], 1)
+        self.assertEqual(refreshed["inserted_context_rows"]["printer_solana_chain_heat_snapshots"], 1)
+        with self.connect() as connection:
+            market = connection.execute(
+                "SELECT * FROM printer_market_regime_snapshots ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            chain = connection.execute(
+                "SELECT * FROM printer_solana_chain_heat_snapshots ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            self.assertNotEqual(market["market_regime_label"], "UNKNOWN")
+            self.assertEqual(market["source_status"], "COMPLETE")
+            self.assertNotEqual(chain["chain_heat_label"], "SOLANA_UNKNOWN")
+            self.assertEqual(chain["source_status"], "COMPLETE")
+
     def memory_payload(self, snapshot_id, source_reference="clean-context-memory"):
         return build_memory_window_once_payload(self.args(
             snapshot_id=snapshot_id,

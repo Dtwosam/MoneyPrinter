@@ -77,10 +77,10 @@ class Phase18Point6PersistentLocalDbBootstrapTest(unittest.TestCase):
         self.assertTrue(operator_db_exists(project_root=self.temp_root))
         self.assertEqual(report["db_path"], str(db_path.resolve(strict=False)))
         schema = get_schema_migration_status(db_path)
-        self.assertEqual(schema["latest_migration"], "022_solana_safety_evidence.sql")
-        self.assertEqual(len(schema["applied_migrations"]), 22)
+        self.assertEqual(schema["latest_migration"], "023_paper_quote_evidence.sql")
+        self.assertEqual(len(schema["applied_migrations"]), 23)
         counts = get_core_table_counts(db_path)
-        self.assertEqual(counts["printer_schema_migrations"], 22)
+        self.assertEqual(counts["printer_schema_migrations"], 23)
         for table in (
             "printer_tokens",
             "printer_token_snapshots",
@@ -124,7 +124,7 @@ class Phase18Point6PersistentLocalDbBootstrapTest(unittest.TestCase):
         self.assertTrue(explicit.is_file())
         self.assertEqual(report["status"]["state_classification"], "PERSISTENT_DB_EMPTY_SCHEMA_ONLY")
         second = get_operator_db_bootstrap_report(explicit, project_root=self.temp_root)
-        self.assertEqual(second["schema"]["latest_migration"], "022_solana_safety_evidence.sql")
+        self.assertEqual(second["schema"]["latest_migration"], "023_paper_quote_evidence.sql")
         self.assertEqual(second["status"]["table_counts"]["printer_tokens"], 0)
 
     def test_status_helpers_are_read_only(self):

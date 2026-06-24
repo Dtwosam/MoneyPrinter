@@ -204,6 +204,42 @@ class PostRCNewMemoryBuildSafetyQuoteEvidenceReadTests(unittest.TestCase):
                 """
             )
 
+    def force_known_broad_and_flow_context_only(self):
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE printer_market_regime_snapshots
+                SET market_regime_label = 'RISK_ON',
+                    market_transition_label = 'RISK_OFF_TO_RISK_ON',
+                    market_payload_quality_label = 'MARKET_CONTEXT_CLEAN',
+                    data_quality_label = 'CLEAN_DATA',
+                    source_status = 'COMPLETE'
+                """
+            )
+            connection.execute(
+                """
+                UPDATE printer_solana_chain_heat_snapshots
+                SET chain_heat_label = 'SOLANA_WARM',
+                    activity_label = 'ACTIVITY_ELEVATED',
+                    liquidity_label = 'LIQUIDITY_STABLE',
+                    congestion_label = 'CONGESTION_LOW',
+                    chain_heat_payload_quality_label = 'CHAIN_HEAT_CONTEXT_CLEAN',
+                    data_quality_label = 'CLEAN_DATA',
+                    source_status = 'COMPLETE'
+                """
+            )
+            connection.execute(
+                """
+                UPDATE printer_trading_flow_snapshots
+                SET flow_direction_label = 'FLOW_ACCUMULATION',
+                    flow_pressure_label = 'PRESSURE_MODERATE_INFLOW',
+                    trading_flow_payload_quality_label = 'TRADING_FLOW_CONTEXT_CLEAN',
+                    flow_memory_gate_label = 'FLOW_CONTEXT_ACCEPTABLE',
+                    data_quality_label = 'CLEAN_DATA',
+                    source_status = 'COMPLETE'
+                """
+            )
+
     def seed_source_trace(self, source_name, request_id, response_id):
         with self.connect() as connection:
             connection.execute(
@@ -322,6 +358,15 @@ class PostRCNewMemoryBuildSafetyQuoteEvidenceReadTests(unittest.TestCase):
             payload = json.loads(row["fingerprint_payload_json"] or "{}")
             return row, payload
 
+    def assert_no_downstream_unlocks(self):
+        with self.connect() as connection:
+            self.assertEqual(count_rows(connection, "printer_memory_retrieval_queries"), 0)
+            self.assertEqual(count_rows(connection, "printer_memory_retrieval_matches"), 0)
+            self.assertEqual(count_rows(connection, "printer_paper_decisions"), 0)
+            self.assertEqual(count_rows(connection, "printer_paper_positions"), 0)
+            self.assertEqual(count_rows(connection, "printer_paper_trade_events"), 0)
+            self.assertEqual(count_rows(connection, "printer_paper_trade_audits"), 0)
+
     def test_new_distinct_window_can_be_clean_with_valid_controlled_safety_and_quote_evidence(self):
         _old_snapshot_ids, old_window_id = self.seed_initial_audit_only_window()
         new_snapshot_id = self.add_distinct_window_snapshot_and_context()
@@ -367,6 +412,178 @@ class PostRCNewMemoryBuildSafetyQuoteEvidenceReadTests(unittest.TestCase):
             self.assertEqual(count_rows(connection, "printer_paper_decisions"), 0)
             self.assertEqual(count_rows(connection, "printer_paper_positions"), 0)
             self.assertEqual(count_rows(connection, "printer_paper_trade_events"), 0)
+
+    def test_six_snapshot_window_derives_chart_and_held_outcome_without_manual_context_patching(self):
+        self.seed_token_pair()
+        snapshot_ids = [
+            self.collect_snapshot_at(index, self.base_time + timedelta(minutes=index * 3))
+            for index in range(6)
+        ]
+        build_collect_context_once_payload(self.args(snapshot_id=snapshot_ids[-1], source_name="dexscreener"))
+        self.force_known_broad_and_flow_context_only()
+        self.insert_valid_safety_and_quotes(snapshot_ids[-1])
+
+        memory = build_memory_window_once_payload(self.args(
+            snapshot_id=snapshot_ids[-1],
+            memory_window="15m",
+            source_reference="derived-chart-held-outcome",
+        ))
+        result = memory["memory_result"]
+
+        self.assertEqual(result["memory_quality_label"], "CLEAN_MEMORY")
+        self.assertTrue(result["retrieval_ready"])
+        self.assertNotEqual(result["volatility_label"], "VOLATILITY_UNKNOWN")
+        self.assertEqual(result["held_to_15m_result_label"], "HELD_TO_15M_CONSOLIDATED")
+        self.assertEqual(result["unknown_context_blockers"], [])
+        self.assertEqual(result["evidence_blockers"], [])
+        with self.connect() as connection:
+            window = connection.execute(
+                "SELECT supporting_context_json FROM printer_memory_windows WHERE id = ?",
+                (result["memory_window_id"],),
+            ).fetchone()
+            support = json.loads(window["supporting_context_json"])
+            self.assertTrue(support["derived_window_context"]["derived"])
+            self.assertEqual(support["derived_window_context"]["snapshot_ids"], snapshot_ids)
+
+    def test_existing_clean_memory_same_evidence_remains_duplicate_noop(self):
+        self.seed_token_pair()
+        snapshot_ids = [
+            self.collect_snapshot_at(index, self.base_time + timedelta(minutes=index * 3))
+            for index in range(6)
+        ]
+        build_collect_context_once_payload(self.args(snapshot_id=snapshot_ids[-1], source_name="dexscreener"))
+        self.force_known_context_except_safety_and_quotes()
+        self.insert_valid_safety_and_quotes(snapshot_ids[-1])
+
+        first = build_memory_window_once_payload(self.args(
+            snapshot_id=snapshot_ids[-1],
+            memory_window="15m",
+            source_reference="clean-duplicate-proof",
+        ))
+        first_result = first["memory_result"]
+        self.assertEqual(first_result["memory_quality_label"], "CLEAN_MEMORY")
+        self.assertTrue(first_result["retrieval_ready"])
+
+        second = build_memory_window_once_payload(self.args(
+            snapshot_id=snapshot_ids[-1],
+            memory_window="15m",
+            source_reference="clean-duplicate-proof",
+        ))
+        second_result = second["memory_result"]
+
+        self.assertEqual(second_result["memory_window_id"], first_result["memory_window_id"])
+        self.assertEqual(second_result["duplicate_guard_status"], "DUPLICATE_SAME_EVIDENCE_NOOP")
+        self.assertEqual(second_result["skipped_reason"], "duplicate_same_evidence_noop")
+        self.assertFalse(second_result["evidence_revision_created"])
+        with self.connect() as connection:
+            self.assertEqual(count_rows(connection, "printer_memory_windows"), 1)
+        self.assert_no_downstream_unlocks()
+
+    def test_existing_audit_only_without_new_evidence_remains_duplicate_noop(self):
+        _snapshot_ids, old_window_id = self.seed_initial_audit_only_window()
+
+        duplicate = build_memory_window_once_payload(self.args(
+            snapshot_id=None,
+            memory_window="15m",
+            source_reference="old-audit-only-window",
+        ))
+        result = duplicate["memory_result"]
+
+        self.assertEqual(result["memory_window_id"], old_window_id)
+        self.assertEqual(result["memory_quality_label"], "AUDIT_ONLY_MEMORY")
+        self.assertEqual(result["duplicate_guard_status"], "DUPLICATE_SAME_EVIDENCE_NOOP")
+        self.assertEqual(result["skipped_reason"], "duplicate_same_evidence_noop")
+        self.assertFalse(result["evidence_revision_created"])
+        with self.connect() as connection:
+            self.assertEqual(count_rows(connection, "printer_memory_windows"), 1)
+        self.assert_no_downstream_unlocks()
+
+    def test_existing_audit_only_with_new_memory_bound_evidence_creates_revision_row(self):
+        snapshot_ids, old_window_id = self.seed_initial_audit_only_window()
+        safety = self.insert_safety(snapshot_ids[-1], memory_window_id=old_window_id)
+        entry = self.insert_quote(snapshot_ids[-1], "ENTRY", 200, 201, memory_window_id=old_window_id)
+        exit_quote = self.insert_quote(snapshot_ids[-1], "EXIT", 300, 301, memory_window_id=old_window_id)
+
+        revision = build_memory_window_once_payload(self.args(
+            snapshot_id=snapshot_ids[-1],
+            memory_window="15m",
+            source_reference="old-audit-only-window",
+        ))
+        result = revision["memory_result"]
+
+        self.assertNotEqual(result["memory_window_id"], old_window_id)
+        self.assertEqual(result["existing_memory_window_id"], old_window_id)
+        self.assertTrue(result["evidence_revision_created"])
+        self.assertIn("new_clean_safety_evidence", result["evidence_revision_reason"])
+        self.assertIn("new_clean_entry_quote_evidence", result["evidence_revision_reason"])
+        self.assertIn("new_clean_exit_quote_evidence", result["evidence_revision_reason"])
+        self.assertEqual(result["duplicate_guard_status"], "EVIDENCE_REVISION_CREATED")
+        self.assertEqual(result["applied_safety_evidence_row_id"], safety.evidence_id)
+        self.assertEqual(result["applied_entry_quote_evidence_row_id"], entry.evidence_id)
+        self.assertEqual(result["applied_exit_quote_evidence_row_id"], exit_quote.evidence_id)
+        self.assertEqual(result["safety_status_label"], "SAFETY_CLEAN")
+        self.assertEqual(result["entry_realism_label"], "ENTRY_REALISTIC")
+        self.assertEqual(result["exit_realism_label"], "EXIT_REALISTIC")
+        self.assertEqual(result["memory_quality_label"], "AUDIT_ONLY_MEMORY")
+        self.assertFalse(result["retrieval_ready"])
+        self.assertTrue(result["remaining_blockers"])
+
+        with self.connect() as connection:
+            old = connection.execute(
+                "SELECT * FROM printer_memory_windows WHERE id = ?",
+                (old_window_id,),
+            ).fetchone()
+            self.assertEqual(old["memory_quality_label"], "AUDIT_ONLY_MEMORY")
+            self.assertEqual(old["do_not_train"], 1)
+            self.assertEqual(count_rows(connection, "printer_memory_windows"), 2)
+            revision_row = connection.execute(
+                "SELECT supporting_context_json FROM printer_memory_windows WHERE id = ?",
+                (result["memory_window_id"],),
+            ).fetchone()
+            support = json.loads(revision_row["supporting_context_json"])
+            self.assertTrue(support["evidence_revision_created"])
+            self.assertEqual(support["existing_memory_window_id"], old_window_id)
+            self.assertEqual(support["applied_safety_evidence_row_id"], safety.evidence_id)
+        self.assert_no_downstream_unlocks()
+
+    def test_dirty_or_stale_memory_bound_evidence_does_not_create_revision(self):
+        snapshot_ids, old_window_id = self.seed_initial_audit_only_window()
+        self.insert_safety(
+            snapshot_ids[-1],
+            memory_window_id=old_window_id,
+            freshness_label="SAFETY_EVIDENCE_STALE",
+        )
+        self.insert_quote(
+            snapshot_ids[-1],
+            "ENTRY",
+            200,
+            201,
+            memory_window_id=old_window_id,
+            freshness_label="QUOTE_STALE",
+        )
+        self.insert_quote(
+            snapshot_ids[-1],
+            "EXIT",
+            300,
+            301,
+            memory_window_id=old_window_id,
+            freshness_label="QUOTE_STALE",
+        )
+
+        duplicate = build_memory_window_once_payload(self.args(
+            snapshot_id=snapshot_ids[-1],
+            memory_window="15m",
+            source_reference="old-audit-only-window",
+        ))
+        result = duplicate["memory_result"]
+
+        self.assertEqual(result["memory_window_id"], old_window_id)
+        self.assertEqual(result["duplicate_guard_status"], "DUPLICATE_SAME_EVIDENCE_NOOP")
+        self.assertEqual(result["skipped_reason"], "duplicate_same_evidence_noop")
+        self.assertFalse(result["evidence_revision_created"])
+        with self.connect() as connection:
+            self.assertEqual(count_rows(connection, "printer_memory_windows"), 1)
+        self.assert_no_downstream_unlocks()
 
     def test_missing_or_unsafe_safety_or_quote_evidence_keeps_new_memory_blocked(self):
         self.seed_token_pair()

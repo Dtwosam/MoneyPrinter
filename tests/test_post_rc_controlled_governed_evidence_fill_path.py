@@ -1,7 +1,9 @@
+import json
 import pathlib
 import sqlite3
 import sys
 import tempfile
+import tomllib
 import unittest
 
 
@@ -14,6 +16,7 @@ from printer_v1.evidence_fill.controlled import (
     ControlledEvidenceFillTarget,
     fill_controlled_governed_evidence,
 )
+from printer_v1.operator_cli.commands import build_fill_controlled_evidence_once_payload
 from printer_v1.paper_quote.evidence import ALLOWED_CALLER as QUOTE_ALLOWED_CALLER
 from printer_v1.paper_quote.evidence import insert_paper_quote_evidence
 from printer_v1.paper_quote.jupiter_fixture import normalize_jupiter_quote_fixture_payload
@@ -143,6 +146,13 @@ class PostRcControlledGovernedEvidenceFillPathTest(unittest.TestCase):
         )
         return {table: self.row_count(table) for table in tables if table in self.table_names()}
 
+    def test_pyproject_exposes_controlled_evidence_fill_command(self):
+        scripts = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["scripts"]
+        self.assertEqual(
+            scripts["printer-fill-controlled-evidence-once"],
+            "printer_v1.operator_cli.commands:main_fill_controlled_evidence_once",
+        )
+
     def test_dry_run_reports_intended_safety_and_quote_inserts_but_inserts_zero_rows(self):
         result = fill_controlled_governed_evidence(
             self.connection,
@@ -163,6 +173,67 @@ class PostRcControlledGovernedEvidenceFillPathTest(unittest.TestCase):
         self.assertTrue(
             all(item.audit_status.startswith("DRY_RUN_WOULD_INSERT") for item in result.item_results)
         )
+
+    def cli_args(self, **overrides):
+        values = {
+            "db_path": str(self.db_path),
+            "project_root": str(PROJECT_ROOT),
+            "format": "json",
+            "no_color": True,
+            "operator_approved": True,
+            "token_id": 1,
+            "pair_id": 1,
+            "snapshot_id": 1,
+            "memory_window_id": None,
+            "evidence_window_id": None,
+            "safety_payload_json": None,
+            "safety_payload_path": None,
+            "entry_quote_payload_json": None,
+            "entry_quote_payload_path": None,
+            "exit_quote_payload_json": None,
+            "exit_quote_payload_path": None,
+            "dry_run": False,
+        }
+        values.update(overrides)
+        return type("Args", (), values)()
+
+    def test_cli_command_requires_operator_approval(self):
+        with self.assertRaises(ValueError):
+            build_fill_controlled_evidence_once_payload(self.cli_args(
+                operator_approved=False,
+                safety_payload_json=json.dumps(valid_safety_payload()),
+            ))
+
+    def test_cli_dry_run_creates_zero_rows(self):
+        payload = build_fill_controlled_evidence_once_payload(self.cli_args(
+            dry_run=True,
+            safety_payload_json=json.dumps(valid_safety_payload()),
+            entry_quote_payload_json=json.dumps(valid_quote_payload()),
+            exit_quote_payload_json=json.dumps(valid_quote_payload()),
+        ))
+
+        self.assertTrue(payload["dry_run"])
+        self.assertEqual(payload["evidence_table_deltas"]["printer_solana_safety_evidence"], 0)
+        self.assertEqual(payload["evidence_table_deltas"]["printer_paper_quote_evidence"], 0)
+        self.assertEqual(self.row_count("printer_solana_safety_evidence"), 0)
+        self.assertEqual(self.row_count("printer_paper_quote_evidence"), 0)
+
+    def test_cli_valid_target_matched_payload_creates_safety_and_two_quote_rows(self):
+        payload = build_fill_controlled_evidence_once_payload(self.cli_args(
+            safety_payload_json=json.dumps(valid_safety_payload()),
+            entry_quote_payload_json=json.dumps(valid_quote_payload()),
+            exit_quote_payload_json=json.dumps(valid_quote_payload()),
+        ))
+
+        self.assertFalse(payload["dry_run"])
+        self.assertEqual(payload["safety_evidence_inserted"], 1)
+        self.assertEqual(payload["quote_evidence_inserted"], 2)
+        self.assertEqual(payload["clean_evidence_inserted"], 3)
+        self.assertEqual(payload["evidence_table_deltas"]["printer_solana_safety_evidence"], 1)
+        self.assertEqual(payload["evidence_table_deltas"]["printer_paper_quote_evidence"], 2)
+        self.assertEqual(payload["locked_gate_counts"]["retrieval_matches"], 0)
+        self.assertEqual(payload["locked_gate_counts"]["paper_decisions"], 0)
+        self.assertEqual(payload["locked_gate_counts"]["paper_positions"], 0)
 
     def test_controlled_fill_inserts_valid_safety_and_quote_through_guarded_helpers(self):
         result = fill_controlled_governed_evidence(

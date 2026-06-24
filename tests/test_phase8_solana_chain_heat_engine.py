@@ -138,6 +138,7 @@ class Phase8SolanaChainHeatEngineTest(unittest.TestCase):
         meme_volume=60_000_000,
         meme_liquidity=12_000_000,
         dex_volume=1_500_000_000,
+        sol_volume=2_000_000_000,
         tx_count=30_000_000,
         priority_fee="normal",
         congestion="normal",
@@ -148,10 +149,10 @@ class Phase8SolanaChainHeatEngineTest(unittest.TestCase):
             "assets": {
                 "solana": {
                     "market_data": {
-                        "current_price": {"usd": 150},
-                        "price_change_percentage_24h": sol_change_24h,
-                        "price_change_percentage_7d": 12.0,
-                        "total_volume": {"usd": 2_000_000_000},
+                    "current_price": {"usd": 150},
+                    "price_change_percentage_24h": sol_change_24h,
+                    "price_change_percentage_7d": 12.0,
+                    "total_volume": {"usd": sol_volume},
                     },
                     "price_change_percentage_1h": 1.0,
                 }
@@ -253,7 +254,7 @@ class Phase8SolanaChainHeatEngineTest(unittest.TestCase):
             self.now,
         )
         neutral = normalize_chain_heat_payload(
-            self.full_payload(sol_change_24h=0.5, hot_pairs=12, new_pairs=22, meme_volume=7_000_000, meme_liquidity=5_000_000, dex_volume=400_000_000, tx_count=12_000_000),
+            self.full_payload(sol_change_24h=0.5, hot_pairs=12, new_pairs=22, meme_volume=7_000_000, meme_liquidity=5_000_000, dex_volume=400_000_000, sol_volume=500_000_000, tx_count=12_000_000),
             self.now,
         )
         cool = normalize_chain_heat_payload(
@@ -261,7 +262,7 @@ class Phase8SolanaChainHeatEngineTest(unittest.TestCase):
             self.now,
         )
         cold = normalize_chain_heat_payload(
-            self.full_payload(sol_change_24h=-4, hot_pairs=5, new_pairs=10, meme_volume=700_000, meme_liquidity=300_000, dex_volume=80_000_000, tx_count=5_000_000),
+            self.full_payload(sol_change_24h=-4, hot_pairs=5, new_pairs=10, meme_volume=700_000, meme_liquidity=300_000, dex_volume=80_000_000, sol_volume=100_000_000, tx_count=5_000_000),
             self.now,
         )
         congested = normalize_chain_heat_payload(
@@ -269,7 +270,7 @@ class Phase8SolanaChainHeatEngineTest(unittest.TestCase):
             self.now,
         )
         quiet = normalize_chain_heat_payload(
-            self.full_payload(sol_change_24h=0.1, hot_pairs=1, new_pairs=3, meme_volume=500_000, meme_liquidity=3_000_000, dex_volume=350_000_000, tx_count=4_000_000),
+            self.full_payload(sol_change_24h=0.1, hot_pairs=1, new_pairs=3, meme_volume=500_000, meme_liquidity=3_000_000, dex_volume=50_000_000, sol_volume=100_000_000, tx_count=4_000_000),
             self.now,
         )
         self.assertEqual(classify_chain_heat(hot), ChainHeatLabel.SOLANA_HOT)
