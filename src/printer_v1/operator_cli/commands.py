@@ -3930,11 +3930,10 @@ def _latest_audit_evidence_row(
     if pair_id is not None:
         where.append("(pair_id = ? OR pair_id IS NULL)")
         params.append(pair_id)
-    if memory_window_id is not None:
-        where.append("(memory_window_id = ? OR memory_window_id IS NULL)")
-        params.append(memory_window_id)
-    else:
-        where.append("memory_window_id IS NULL")
+    # Do not filter by memory_window_id in WHERE. Evidence bound to any
+    # memory_window_id for this token/pair/snapshot is a candidate for safe
+    # context-only revisions. The ordering below prioritises exact-window
+    # matches; _clean_*_evidence_row predicates enforce all quality guards.
     if extra_where:
         where.append(extra_where)
         params.extend(extra_params)
@@ -3945,7 +3944,7 @@ def _latest_audit_evidence_row(
         WHERE {" AND ".join(where)}
         ORDER BY
             CASE WHEN snapshot_id = ? THEN 0 WHEN snapshot_id IS NULL THEN 1 ELSE 2 END,
-            CASE WHEN memory_window_id = ? THEN 0 ELSE 1 END,
+            CASE WHEN memory_window_id = ? THEN 0 WHEN memory_window_id IS NULL THEN 2 ELSE 1 END,
             evidence_captured_at DESC,
             id DESC
         LIMIT 1

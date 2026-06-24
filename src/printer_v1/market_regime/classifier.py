@@ -48,7 +48,9 @@ def classify_market_regime(normalized_payload: Mapping[str, Any]) -> MarketRegim
         return MarketRegimeLabel.RISK_ON
     if abs(btc) <= 1.5 and abs(sol) <= 2.0:
         return MarketRegimeLabel.CHOPPY
-    return fear_regime or MarketRegimeLabel.UNKNOWN
+    # BTC/SOL data is present and clean but does not meet any named threshold.
+    # NEUTRAL is correct; UNKNOWN is reserved for missing, stale, or dirty context.
+    return fear_regime or MarketRegimeLabel.NEUTRAL
 
 
 def row_label(snapshot: Mapping[str, Any] | None) -> MarketRegimeLabel | None:
