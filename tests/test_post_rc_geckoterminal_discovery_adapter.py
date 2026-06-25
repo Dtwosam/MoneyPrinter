@@ -312,6 +312,121 @@ class GeckoTerminalPayloadNormalizationTests(unittest.TestCase):
         )
         self.assertEqual(result.source_status.value, "COMPLETE")
 
+    # ------------------------------------------------------------------
+    # Real API shape tests — no network relationship, chain from pool id
+    # ------------------------------------------------------------------
+
+    def _real_api_pool(self, *, pool_id="solana_BDMpDHtFJf4apQD4cB9Y9vZVMBL3LGiPvZoMFP1Zt4Pe",
+                       pool_address="BDMpDHtFJf4apQD4cB9Y9vZVMBL3LGiPvZoMFP1Zt4Pe",
+                       base_token_id="solana_AdMUXQvPPirB62KJWukkBS2t1fP9ErreaMbwt9mRpump",
+                       reserve_in_usd=None, vol_h1="3.10", txns_m5_buys=1):
+        """Pool shaped exactly like the real GeckoTerminal v2 API response.
+        Key differences from the old fixture: no network relationship in rels.
+        """
+        return {
+            "data": [{
+                "id": pool_id,
+                "type": "pool",
+                "attributes": {
+                    "address": pool_address,
+                    "name": "THESECRET / SOL",
+                    "base_token_price_usd": "0.00000257",
+                    "base_token_price_native_currency": "0.000000017",
+                    "quote_token_price_usd": "152.5",
+                    "reserve_in_usd": reserve_in_usd,
+                    "fdv_usd": "2570",
+                    "market_cap_usd": None,
+                    "pool_created_at": "2026-06-25T11:18:22Z",
+                    "volume_usd": {
+                        "m5": "3.10", "m15": "3.10", "m30": "3.10",
+                        "h1": vol_h1, "h6": "3.10", "h24": "3.10",
+                    },
+                    "transactions": {
+                        "m5": {"buys": txns_m5_buys, "sells": 0, "buyers": txns_m5_buys, "sellers": 0},
+                        "m15": {"buys": txns_m5_buys, "sells": 0},
+                        "h1": {"buys": txns_m5_buys, "sells": 0},
+                        "h24": {"buys": txns_m5_buys, "sells": 0},
+                    },
+                    "price_change_percentage": {"m5": "0.0", "h1": "0.0", "h24": "0.0"},
+                },
+                "relationships": {
+                    # No "network" key — this is what the real API returns for
+                    # network-scoped endpoints like /networks/solana/new_pools.
+                    "base_token": {
+                        "data": {"id": base_token_id, "type": "token"}
+                    },
+                    "quote_token": {
+                        "data": {"id": "solana_So11111111111111111111111111111111111111112", "type": "token"}
+                    },
+                    "dex": {
+                        "data": {"id": "pump-fun", "type": "dex"}
+                    },
+                },
+            }]
+        }
+
+    def test_real_api_shape_new_pool_without_network_rel_normalizes(self):
+        """Real GT new_pools shape: no network relationship, chain inferred from pool id."""
+        result = self._normalize(self._real_api_pool())
+        self.assertEqual(result.source_status.value, "COMPLETE")
+        self.assertIsNotNone(result.normalized_payload)
+        pairs = result.normalized_payload.get("pairs")
+        self.assertEqual(len(pairs), 1)
+        pool = pairs[0]
+        self.assertEqual(pool["chainId"], "solana")
+        self.assertEqual(pool["pairAddress"], "BDMpDHtFJf4apQD4cB9Y9vZVMBL3LGiPvZoMFP1Zt4Pe")
+        self.assertEqual(pool["baseToken"]["address"], "AdMUXQvPPirB62KJWukkBS2t1fP9ErreaMbwt9mRpump")
+
+    def test_real_api_shape_trending_pool_with_liquidity_normalizes(self):
+        """Real GT trending_pools shape: no network rel, has reserve_in_usd."""
+        result = self._normalize(
+            self._real_api_pool(
+                pool_id="solana_3Qhv2Z6n5aknNzx56A2n4qvqUZ4CvbCkUh24KcK9T9qY",
+                pool_address="3Qhv2Z6n5aknNzx56A2n4qvqUZ4CvbCkUh24KcK9T9qY",
+                base_token_id="solana_AXLmMWkRmSPdPxkuMqAD4nzYBK7QRssNkYZ6RXzLpump",
+                reserve_in_usd=28759.74,
+                vol_h1="23867.72",
+                txns_m5_buys=2,
+            ),
+            request_kind="geckoterminal_trending_pool_reference",
+        )
+        self.assertEqual(result.source_status.value, "COMPLETE")
+        pool = result.normalized_payload["pairs"][0]
+        self.assertEqual(pool["chainId"], "solana")
+        self.assertAlmostEqual(float(pool["liquidity"]["usd"]), 28759.74, places=1)
+        self.assertAlmostEqual(float(pool["volume"]["h1"]), 23867.72, places=1)
+        self.assertEqual(pool["txns"]["m5"], 2)
+
+    def test_real_api_shape_with_null_reserve_still_normalizes(self):
+        """New pools often have null reserve_in_usd — pool is valid but has no liquidity data."""
+        result = self._normalize(self._real_api_pool(reserve_in_usd=None))
+        self.assertEqual(result.source_status.value, "COMPLETE")
+        pool = result.normalized_payload["pairs"][0]
+        self.assertIsNone(pool["liquidity"]["usd"])
+
+    def test_real_api_shape_non_solana_id_prefix_is_still_rejected(self):
+        """Pool with non-Solana id prefix must be rejected even without network rel."""
+        payload = {
+            "data": [{
+                "id": "ethereum_0xSomeEthPool",
+                "type": "pool",
+                "attributes": {
+                    "address": "0xSomeEthPool",
+                    "name": "ETH Pool",
+                    "base_token_price_usd": "1.0",
+                    "reserve_in_usd": "10000",
+                    "volume_usd": {"h1": "1000"},
+                    "transactions": {"m5": {"buys": 5, "sells": 3}},
+                },
+                "relationships": {
+                    "base_token": {"data": {"id": "ethereum_0xSomeMint", "type": "token"}},
+                },
+            }]
+        }
+        result = self._normalize(payload)
+        self.assertEqual(result.source_status.value, "FAILED")
+        self.assertIn("no_valid_solana_pools", result.failure_type)
+
 
 # ---------------------------------------------------------------------------
 # Class 4: Governed execution through Source Governor

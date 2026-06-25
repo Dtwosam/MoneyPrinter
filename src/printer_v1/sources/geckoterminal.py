@@ -227,6 +227,13 @@ def _normalize_geckoterminal_pool(pool: Mapping[str, Any]) -> dict[str, Any] | N
         network_rel = rels.get("network") or {}
         network_data = (network_rel.get("data") or {}) if isinstance(network_rel, Mapping) else {}
         chain_val = network_data.get("id") if isinstance(network_data, Mapping) else None
+    if not chain_val:
+        # GeckoTerminal network-scoped endpoints (e.g. /networks/solana/new_pools) omit the
+        # network relationship because the chain is already implied by the URL.  The pool id
+        # field always carries the network prefix: "<network>_<pool_address>".
+        pool_id = pool.get("id")
+        if isinstance(pool_id, str) and "_" in pool_id:
+            chain_val = pool_id.split("_")[0]
     if str(chain_val or "").lower() not in _SOLANA_NETWORK_IDS:
         return None
 
