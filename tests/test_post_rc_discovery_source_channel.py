@@ -167,6 +167,10 @@ class DiscoveryChannelLabelContractTests(unittest.TestCase):
             "PUMPFUN_OLDEST",
             "PUMPFUN_LAST_TRADE",
             "PUMPFUN_CHARITIES",
+            # PumpSwap read-only confirmation labels added in Sprint D
+            "PUMPSWAP_POOL_CONFIRMATION",
+            "PUMPSWAP_MIGRATION_POOL_REFERENCE",
+            "PUMPSWAP_LIQUIDITY_REFERENCE",
         }
         defined = {label.value for label in DiscoveryChannelLabel}
         self.assertEqual(required, defined)

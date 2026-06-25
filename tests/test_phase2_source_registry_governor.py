@@ -29,6 +29,7 @@ EXPECTED_SOURCES = {
     "dexscreener",
     "geckoterminal",
     "pumpportal",
+    "pumpswap",
     "alternative_me",
     "coingecko",
     "defillama",

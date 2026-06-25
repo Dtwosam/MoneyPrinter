@@ -169,6 +169,9 @@ from printer_v1.sources.geckoterminal import (
 from printer_v1.sources.pumpportal import (
     build_pumpportal_adapter,
 )
+from printer_v1.sources.pumpswap import (
+    build_pumpswap_adapter,
+)
 from printer_v1.sources.governed_execution import execute_source_request_with_governor
 from printer_v1.snapshots.recorder import record_token_snapshot
 from printer_v1.memory_retrieval.recorder import record_memory_retrieval_query, record_memory_retrieval_matches
@@ -960,6 +963,15 @@ def _source_channel_for_pumpportal(request_kind: str | None = None) -> tuple[str
     return DiscoveryChannelLabel.PUMPFUN_NEW_TOKEN.value, "pumpportal_launch_stream"
 
 
+def _source_channel_for_pumpswap(request_kind: str | None = None) -> tuple[str, str]:
+    """Return (source_channel, source_channel_reason) for a PumpSwap request."""
+    if request_kind == "pumpswap_migration_pool_reference":
+        return DiscoveryChannelLabel.PUMPSWAP_MIGRATION_POOL_REFERENCE.value, "pumpswap_migration_pool_reference"
+    if request_kind == "pumpswap_liquidity_reference":
+        return DiscoveryChannelLabel.PUMPSWAP_LIQUIDITY_REFERENCE.value, "pumpswap_liquidity_reference"
+    return DiscoveryChannelLabel.PUMPSWAP_POOL_CONFIRMATION.value, "pumpswap_pool_confirmation"
+
+
 def _validate_discover_candidates_args(args: argparse.Namespace) -> None:
     if not args.operator_approved:
         raise ValueError("controlled discovery requires explicit operator approval")
@@ -967,8 +979,8 @@ def _validate_discover_candidates_args(args: argparse.Namespace) -> None:
         raise ValueError("controlled discovery is Solana-only")
     if args.max_candidates < 1 or args.max_candidates > 3:
         raise ValueError("max_candidates must be between 1 and 3")
-    if args.source_name not in {"dexscreener", "geckoterminal", "pumpportal"}:
-        raise ValueError("controlled discovery supports DexScreener, GeckoTerminal, and PumpPortal")
+    if args.source_name not in {"dexscreener", "geckoterminal", "pumpportal", "pumpswap"}:
+        raise ValueError("controlled discovery supports DexScreener, GeckoTerminal, PumpPortal, and PumpSwap")
     if args.timeout_seconds <= 0 or args.timeout_seconds > 10:
         raise ValueError("timeout_seconds must be greater than 0 and no more than 10")
 
@@ -1129,6 +1141,35 @@ def build_discover_candidates_once_payload(
         )
         query = request_kind
         display_request_kind = request_kind
+    elif args.source_name == "pumpswap":
+        request_kind = str(
+            getattr(args, "request_kind", None) or "pumpswap_pool_confirmation"
+        ).strip()
+        source_channel, source_channel_reason = _source_channel_for_pumpswap(request_kind)
+        endpoint = "pumpswap_fixture_only"
+        source_request = build_governed_source_request(
+            "pumpswap",
+            request_kind,
+            request_key=args.request_key or f"post-rc-pumpswap-{request_kind}",
+            tracking_priority=0,
+            payload={
+                "post_rc_cycle": "cycle1",
+                "request_kind": request_kind,
+                "max_candidates": args.max_candidates,
+                "chain": "solana",
+            },
+        )
+        if transport is None:
+            raise ValueError(
+                "PumpSwap confirmation requires an operator-provided fixture transport; "
+                "read-only confirmation only"
+            )
+        adapter = build_pumpswap_adapter(
+            enabled=True,
+            fixture_transport=transport,
+        )
+        query = request_kind
+        display_request_kind = request_kind
     else:
         source_channel, source_channel_reason = _source_channel_for_dexscreener(
             getattr(args, "request_kind", None)
@@ -1284,8 +1325,8 @@ def main_discover_candidates_once(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--query", default="pump")
     parser.add_argument("--timeout-seconds", type=float, default=5.0)
     parser.add_argument("--source-name", default="dexscreener",
-        choices=["dexscreener", "geckoterminal", "pumpportal"],
-        help="Discovery source: dexscreener (default), geckoterminal, or pumpportal")
+        choices=["dexscreener", "geckoterminal", "pumpportal", "pumpswap"],
+        help="Discovery source: dexscreener (default), geckoterminal, pumpportal, or pumpswap")
     parser.add_argument("--request-kind",
         help=(
             "GeckoTerminal: geckoterminal_new_pool_discovery (default) or "
