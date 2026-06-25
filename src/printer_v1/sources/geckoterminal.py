@@ -41,6 +41,17 @@ ALLOWED_REQUEST_KINDS = frozenset({
 
 _SOLANA_NETWORK_IDS = frozenset({"solana", "sol"})
 
+# Native, reserve, and stablecoin mint addresses that are not Solana memecoins.
+# GeckoTerminal sometimes lists pools where one of these is the base_token
+# (e.g. a WSOL/USDC pool or a WSOL/memecoin pool inverted).  Pools whose
+# base_token resolves to one of these mints must be skipped: the extracted
+# token_mint would be a quote/infrastructure asset, not a memecoin candidate.
+_SOLANA_NATIVE_QUOTE_MINTS = frozenset({
+    "So11111111111111111111111111111111111111112",   # WSOL (Wrapped SOL / native SOL)
+    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEt67tw2CH8Ej",  # USDC
+    "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",  # USDT
+})
+
 
 @dataclass(frozen=True)
 class GeckoTerminalAdapterMetadata:
@@ -249,6 +260,10 @@ def _normalize_geckoterminal_pool(pool: Mapping[str, Any]) -> dict[str, Any] | N
         if raw_id:
             base_mint = _strip_network_prefix(str(raw_id), "solana")
     if not base_mint:
+        return None
+    if base_mint in _SOLANA_NATIVE_QUOTE_MINTS:
+        # base_token is a native/reserve/stablecoin asset, not a memecoin.
+        # Skip this pool rather than recording a quote asset as a discovery target.
         return None
 
     price = (

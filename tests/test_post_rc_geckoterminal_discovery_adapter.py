@@ -427,6 +427,118 @@ class GeckoTerminalPayloadNormalizationTests(unittest.TestCase):
         self.assertEqual(result.source_status.value, "FAILED")
         self.assertIn("no_valid_solana_pools", result.failure_type)
 
+    # ------------------------------------------------------------------
+    # WSOL / native-quote asset leak prevention tests
+    # ------------------------------------------------------------------
+
+    WSOL = "So11111111111111111111111111111111111111112"
+    USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEt67tw2CH8Ej"
+    USDT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
+
+    def _pool_with_base(self, base_mint, pool_address="wsol-test-pool", reserve="28000",
+                        vol_h1="10000"):
+        """Build a pool payload where the given mint is the base_token."""
+        return {
+            "data": [{
+                "id": f"solana_{pool_address}",
+                "type": "pool",
+                "attributes": {
+                    "address": pool_address,
+                    "name": "WSOL / USDC",
+                    "base_token_price_usd": "152.0",
+                    "reserve_in_usd": reserve,
+                    "fdv_usd": "999999999",
+                    "volume_usd": {"m5": "1000", "h1": vol_h1, "h24": "50000"},
+                    "transactions": {
+                        "m5": {"buys": 20, "sells": 15},
+                        "h1": {"buys": 80, "sells": 60},
+                        "h24": {"buys": 300, "sells": 250},
+                    },
+                    "pool_created_at": "2026-06-25T10:00:00Z",
+                },
+                "relationships": {
+                    "base_token": {
+                        "data": {"id": f"solana_{base_mint}", "type": "token"}
+                    },
+                    "quote_token": {
+                        "data": {"id": f"solana_{self.USDC}", "type": "token"}
+                    },
+                    "dex": {"data": {"id": "orca", "type": "dex"}},
+                },
+            }]
+        }
+
+    def test_wsol_as_base_token_is_skipped_not_discovered(self):
+        """WSOL/USDC pool: WSOL as base_token must produce no valid Solana pools."""
+        result = self._normalize(self._pool_with_base(self.WSOL))
+        self.assertEqual(result.source_status.value, "FAILED")
+        self.assertIn("no_valid_solana_pools", result.failure_type)
+
+    def test_usdc_as_base_token_is_skipped(self):
+        """USDC as base_token must also be skipped — not a memecoin candidate."""
+        result = self._normalize(self._pool_with_base(self.USDC))
+        self.assertEqual(result.source_status.value, "FAILED")
+        self.assertIn("no_valid_solana_pools", result.failure_type)
+
+    def test_usdt_as_base_token_is_skipped(self):
+        """USDT as base_token must also be skipped."""
+        result = self._normalize(self._pool_with_base(self.USDT))
+        self.assertEqual(result.source_status.value, "FAILED")
+        self.assertIn("no_valid_solana_pools", result.failure_type)
+
+    def test_memecoin_with_wsol_as_quote_still_discovered(self):
+        """Normal memecoin/SOL pool: memecoin as base_token passes through."""
+        memecoin_mint = "AdMUXQvPPirB62KJWukkBS2t1fP9ErreaMbwt9mRpump"
+        payload = {
+            "data": [{
+                "id": "solana_meme-sol-pool-1",
+                "type": "pool",
+                "attributes": {
+                    "address": "meme-sol-pool-1",
+                    "name": "MEME / SOL",
+                    "base_token_price_usd": "0.00050",
+                    "reserve_in_usd": "12000",
+                    "fdv_usd": "500000",
+                    "volume_usd": {"m5": "500", "h1": "3000", "h24": "15000"},
+                    "transactions": {
+                        "m5": {"buys": 8, "sells": 5},
+                        "h1": {"buys": 40, "sells": 30},
+                        "h24": {"buys": 150, "sells": 110},
+                    },
+                    "pool_created_at": "2026-06-25T10:00:00Z",
+                },
+                "relationships": {
+                    "base_token": {
+                        "data": {"id": f"solana_{memecoin_mint}", "type": "token"}
+                    },
+                    "quote_token": {
+                        "data": {"id": f"solana_{self.WSOL}", "type": "token"}
+                    },
+                    "dex": {"data": {"id": "pump-fun", "type": "dex"}},
+                },
+            }]
+        }
+        result = self._normalize(payload)
+        self.assertEqual(result.source_status.value, "COMPLETE")
+        pairs = result.normalized_payload["pairs"]
+        self.assertEqual(len(pairs), 1)
+        self.assertEqual(pairs[0]["baseToken"]["address"], memecoin_mint)
+        self.assertNotEqual(pairs[0]["baseToken"]["address"], self.WSOL)
+
+    def test_real_trending_pool_wsol_base_shape_is_skipped(self):
+        """Real-shape trending pool with WSOL as base_token (WSOL/USDC pair) is skipped."""
+        result = self._normalize(
+            self._pool_with_base(
+                self.WSOL,
+                pool_address="FpCMFDFGYotvufJ7sPBGY4sKoKFVPeBtpVpzaJcDnxV8",
+                reserve="28759",
+                vol_h1="23867",
+            ),
+            request_kind="geckoterminal_trending_pool_reference",
+        )
+        self.assertEqual(result.source_status.value, "FAILED")
+        self.assertIn("no_valid_solana_pools", result.failure_type)
+
 
 # ---------------------------------------------------------------------------
 # Class 4: Governed execution through Source Governor
