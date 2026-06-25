@@ -62,7 +62,7 @@ from printer_v1.discovery.classifier import (
     classify_discovery_candidate,
     is_dead_or_near_zero_activity_candidate,
 )
-from printer_v1.discovery.contracts import DiscoveryOutputAction
+from printer_v1.discovery.contracts import DiscoveryChannelLabel, DiscoveryOutputAction
 from printer_v1.discovery.discovery import process_discovery_payload
 from printer_v1.discovery.parser import normalize_candidates
 from printer_v1.chart_volatility.classifier import (
@@ -924,6 +924,13 @@ def main_fill_controlled_evidence_once(argv: Sequence[str] | None = None) -> int
         return _print_error(exc)
 
 
+def _source_channel_for_dexscreener(request_kind: str | None = None) -> tuple[str, str]:
+    """Return (source_channel, source_channel_reason) for a DexScreener request."""
+    if request_kind == "boosted_token_reference":
+        return DiscoveryChannelLabel.DEXSCREENER_LATEST_BOOSTED.value, "dexscreener_boosted_token_reference"
+    return DiscoveryChannelLabel.DEXSCREENER_SEARCH.value, "dexscreener_default_search_query"
+
+
 def _validate_discover_candidates_args(args: argparse.Namespace) -> None:
     if not args.operator_approved:
         raise ValueError("controlled discovery requires explicit operator approval")
@@ -1061,8 +1068,14 @@ def build_discover_candidates_once_payload(
         recent_request_count=0,
     )
 
+    source_channel, source_channel_reason = _source_channel_for_dexscreener(
+        getattr(args, "request_kind", None)
+    )
     normalized_payload = dict(result.normalized_result.normalized_payload or {})
     normalized_pairs = normalize_candidates("dexscreener", normalized_payload) if normalized_payload else []
+    for candidate in normalized_pairs:
+        candidate["source_channel"] = source_channel
+        candidate["source_channel_reason"] = source_channel_reason
     accepted: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
     inspected: list[dict[str, Any]] = []
@@ -1081,7 +1094,13 @@ def build_discover_candidates_once_payload(
                 "source_response_id": result.response_record.id,
                 "pairs": accepted,
             }
-            discovery_results = process_discovery_payload(resolved, "dexscreener", discovery_payload)
+            discovery_results = process_discovery_payload(
+                resolved,
+                "dexscreener",
+                discovery_payload,
+                source_channel=source_channel,
+                source_channel_reason=source_channel_reason,
+            )
 
     after_counts = get_core_table_counts(resolved, project_root)
     deltas = {
@@ -1093,7 +1112,7 @@ def build_discover_candidates_once_payload(
         discovery_count_after = connection.execute("SELECT COUNT(*) FROM printer_discovery_candidates").fetchone()[0]
         accepted_rows = connection.execute(
             """
-            SELECT token_id, pair_id, discovery_action, tracking_lane
+            SELECT token_id, pair_id, discovery_action, tracking_lane, source_channel, source_channel_reason
             FROM printer_discovery_candidates
             ORDER BY id DESC
             LIMIT ?
@@ -1122,11 +1141,14 @@ def build_discover_candidates_once_payload(
         "candidates_accepted": len(discovery_results),
         "candidates_rejected": len(rejected),
         "rejected_candidates": rejected,
+        "source_channel": source_channel,
+        "source_channel_reason": source_channel_reason,
         "accepted_candidates": [
             {
                 "token_mint": candidate.get("token_mint"),
                 "pair_address": candidate.get("pair_address"),
                 "tracking_label": classify_discovery_candidate(candidate).discovery_action.value,
+                "source_channel": candidate.get("source_channel"),
             }
             for candidate in accepted[: len(discovery_results)]
         ],

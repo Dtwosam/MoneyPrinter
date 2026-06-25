@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Mapping, Any
 
 from printer_v1.contracts.rules import PRINTER_CHAIN
-from printer_v1.discovery.contracts import DiscoveryCandidateLabel, DiscoveryOutputAction
+from printer_v1.discovery.contracts import DiscoveryCandidateLabel, DiscoveryChannelLabel, DiscoveryOutputAction
 from printer_v1.lifecycle.contracts import TokenLifecycleState
 from printer_v1.discovery.parser import candidate_has_required_fields, candidate_is_solana
 
@@ -19,6 +19,16 @@ MIN_MEMORY_GROWTH_VOLUME_24H_USD = 100.0
 MIN_MEMORY_GROWTH_TXNS_24H = 5
 TINY_VOLUME_24H_USD = 10.0
 TINY_TXNS_24H = 2
+
+# Channels that confirm a token graduated or migrated to a real pool.
+# These channels justify a lower TRACK_FAST liquidity floor because graduation
+# itself is evidence of real activity — the high-liquidity threshold is not
+# the primary gate when the channel proves the token already crossed a bridge.
+_GRADUATION_CHANNELS = frozenset({
+    DiscoveryChannelLabel.PUMPFUN_MIGRATION.value,
+    DiscoveryChannelLabel.PUMPSWAP_GRADUATED.value,
+})
+CHANNEL_MIGRATION_MINIMUM_LIQUIDITY_USD = 2_000.0
 
 
 @dataclass(frozen=True)
@@ -64,6 +74,12 @@ def classify_discovery_candidate(candidate: Mapping[str, Any]) -> DiscoveryClass
             DiscoveryCandidateLabel.WATCH_ONLY_CANDIDATE,
             DiscoveryOutputAction.WATCH_ONLY,
             "partial_market_fields_or_low_activity",
+        )
+    if has_basic_market_fields(candidate) and has_track_normal_liquidity(candidate):
+        return DiscoveryClassification(
+            DiscoveryCandidateLabel.WATCH_ONLY_CANDIDATE,
+            DiscoveryOutputAction.WATCH_ONLY,
+            "no_recent_activity_pulse_for_memory_growth",
         )
     return DiscoveryClassification(
         DiscoveryCandidateLabel.DUPLICATE_IGNORED,
@@ -119,6 +135,33 @@ def should_instant_reject_candidate(candidate: Mapping[str, Any]) -> bool:
     return False
 
 
+def channel_specific_minimum_liquidity_floor(source_channel: str | None) -> float:
+    """Return the minimum liquidity floor for TRACK_FAST based on source channel.
+
+    This is a deterministic hard gate. Graduation channels (PUMPFUN_MIGRATION,
+    PUMPSWAP_GRADUATED) use a lower floor because the graduation event itself
+    confirms real pool activity. All other channels use the standard floor.
+    """
+    if source_channel in _GRADUATION_CHANNELS:
+        return CHANNEL_MIGRATION_MINIMUM_LIQUIDITY_USD
+    return MIN_TRACK_FAST_LIQUIDITY_USD
+
+
+def has_recent_activity_pulse(candidate: Mapping[str, Any]) -> bool:
+    """Return True if the candidate shows meaningful activity in the recent 5m or 1h window.
+
+    A token that only passes 24h thresholds with zero 5m/1h activity is likely
+    stale and should not qualify for TRACK_NORMAL. TRACK_NORMAL requires a
+    recent signal, not just historical 24h residue.
+    """
+    return (
+        _numeric_or_zero(candidate.get("volume_5m")) > 0
+        or _numeric_or_zero(candidate.get("txns_5m")) > 0
+        or _numeric_or_zero(candidate.get("volume_1h")) >= MIN_MEMORY_GROWTH_VOLUME_1H_USD
+        or _numeric_or_zero(candidate.get("txns_1h")) >= MIN_MEMORY_GROWTH_TXNS_1H
+    )
+
+
 def should_watch_only_candidate(candidate: Mapping[str, Any]) -> bool:
     if not candidate_has_required_fields(candidate) or not candidate_is_solana(candidate):
         return False
@@ -131,6 +174,7 @@ def should_track_normal_candidate(candidate: Mapping[str, Any]) -> bool:
         and candidate_is_solana(candidate)
         and has_basic_market_fields(candidate)
         and has_track_normal_liquidity(candidate)
+        and has_recent_activity_pulse(candidate)
         and is_activity_sufficient_for_memory_growth(candidate)
     )
 
@@ -139,9 +183,10 @@ def should_track_fast_candidate(candidate: Mapping[str, Any]) -> bool:
     volume_5m = candidate.get("volume_5m") or 0
     txns_5m = candidate.get("txns_5m") or 0
     liquidity = candidate.get("liquidity_usd") or 0
+    min_liquidity = channel_specific_minimum_liquidity_floor(candidate.get("source_channel"))
     return (
         should_track_normal_candidate(candidate)
-        and liquidity >= MIN_TRACK_FAST_LIQUIDITY_USD
+        and liquidity >= min_liquidity
         and (volume_5m >= MIN_TRACK_FAST_VOLUME_5M_USD or txns_5m >= MIN_TRACK_FAST_TXNS_5M)
     )
 

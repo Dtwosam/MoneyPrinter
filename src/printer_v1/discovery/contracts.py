@@ -32,6 +32,29 @@ class DiscoveryOutputAction(StrEnum):
     INSTANT_REJECT_MEMORY_ONLY = "INSTANT_REJECT_MEMORY_ONLY"
 
 
+class DiscoveryChannelLabel(StrEnum):
+    """Source channel labels for discovery candidates.
+
+    These are informational labels that record how and from which channel a
+    candidate arrived. A channel label is a fact about intake origin, not a
+    selection criterion. Hard numeric gates in the classifier determine
+    eligibility; channel labels are stored for audit and context only.
+    """
+
+    DEXSCREENER_SEARCH = "DEXSCREENER_SEARCH"
+    DEXSCREENER_LATEST_BOOSTED = "DEXSCREENER_LATEST_BOOSTED"
+    DEXSCREENER_TOP_BOOSTED = "DEXSCREENER_TOP_BOOSTED"
+    GECKOTERMINAL_NEW_POOL = "GECKOTERMINAL_NEW_POOL"
+    GECKOTERMINAL_TRENDING_POOL = "GECKOTERMINAL_TRENDING_POOL"
+    PUMPFUN_NEW_TOKEN = "PUMPFUN_NEW_TOKEN"
+    PUMPFUN_MIGRATION = "PUMPFUN_MIGRATION"
+    PUMPSWAP_GRADUATED = "PUMPSWAP_GRADUATED"
+    RAYDIUM_POOL_CONFIRMATION = "RAYDIUM_POOL_CONFIRMATION"
+    MANUAL_BASELINE = "MANUAL_BASELINE"
+    BASELINE_MEMORY = "BASELINE_MEMORY"
+
+
 DISCOVERY_PAYLOAD_STATES = tuple(DiscoveryPayloadState)
 DISCOVERY_CANDIDATE_LABELS = tuple(DiscoveryCandidateLabel)
 DISCOVERY_OUTPUT_ACTIONS = tuple(DiscoveryOutputAction)
+DISCOVERY_CHANNEL_LABELS = tuple(DiscoveryChannelLabel)

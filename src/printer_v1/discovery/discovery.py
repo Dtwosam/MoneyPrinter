@@ -54,6 +54,8 @@ def process_discovery_payload(
     source_name: str,
     payload: Mapping[str, Any],
     now: datetime | None = None,
+    source_channel: str | None = None,
+    source_channel_reason: str | None = None,
 ) -> list[dict[str, Any]]:
     current_time = now or utc_now()
     validate_discovery_payload(source_name, payload, current_time)
@@ -62,6 +64,8 @@ def process_discovery_payload(
         payload_candidates(source_name, payload),
         normalize_candidates(source_name, payload),
     ):
+        candidate["source_channel"] = source_channel
+        candidate["source_channel_reason"] = source_channel_reason
         classification = classify_discovery_candidate(candidate)
         token_id = None
         pair_id = None
@@ -88,6 +92,8 @@ def process_discovery_payload(
             lifecycle_state=lifecycle_state,
             tracking_lane=tracking_lane,
             priority_reason=priority_reason,
+            source_channel=candidate.get("source_channel"),
+            source_channel_reason=candidate.get("source_channel_reason"),
         )
         if token_id is not None:
             route_candidate_to_lifecycle(
@@ -254,6 +260,8 @@ def record_discovery_candidate(
     lifecycle_state: TokenLifecycleState,
     tracking_lane: TokenLifecycleState | None,
     priority_reason: str,
+    source_channel: str | None = None,
+    source_channel_reason: str | None = None,
 ) -> int:
     with connect(db_or_connection) as connection:
         cursor = connection.execute(
@@ -271,9 +279,11 @@ def record_discovery_candidate(
                 normalized_candidate_payload_json,
                 lifecycle_state,
                 tracking_lane,
-                priority_reason
+                priority_reason,
+                source_channel,
+                source_channel_reason
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 source_response_id,
@@ -289,6 +299,8 @@ def record_discovery_candidate(
                 lifecycle_state.value,
                 tracking_lane.value if tracking_lane else None,
                 priority_reason,
+                source_channel,
+                source_channel_reason,
             ),
         )
         return int(cursor.lastrowid)
