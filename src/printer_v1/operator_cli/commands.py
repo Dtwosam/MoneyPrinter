@@ -160,6 +160,12 @@ from printer_v1.sources.defillama import (
     build_defillama_adapter,
     build_defillama_chain_liquidity_transport,
 )
+from printer_v1.sources.geckoterminal import (
+    GECKOTERMINAL_NEW_POOLS_URL,
+    GECKOTERMINAL_TRENDING_POOLS_URL,
+    build_geckoterminal_adapter,
+    build_geckoterminal_pools_transport,
+)
 from printer_v1.sources.governed_execution import execute_source_request_with_governor
 from printer_v1.snapshots.recorder import record_token_snapshot
 from printer_v1.memory_retrieval.recorder import record_memory_retrieval_query, record_memory_retrieval_matches
@@ -931,6 +937,19 @@ def _source_channel_for_dexscreener(request_kind: str | None = None) -> tuple[st
     return DiscoveryChannelLabel.DEXSCREENER_SEARCH.value, "dexscreener_default_search_query"
 
 
+def _source_channel_for_geckoterminal(request_kind: str | None = None) -> tuple[str, str]:
+    """Return (source_channel, source_channel_reason) for a GeckoTerminal request."""
+    if request_kind == "geckoterminal_trending_pool_reference":
+        return DiscoveryChannelLabel.GECKOTERMINAL_TRENDING_POOL.value, "geckoterminal_trending_pool_reference"
+    return DiscoveryChannelLabel.GECKOTERMINAL_NEW_POOL.value, "geckoterminal_new_pool_discovery"
+
+
+_GECKOTERMINAL_ENDPOINT_BY_REQUEST_KIND: dict[str, str] = {
+    "geckoterminal_new_pool_discovery": GECKOTERMINAL_NEW_POOLS_URL,
+    "geckoterminal_trending_pool_reference": GECKOTERMINAL_TRENDING_POOLS_URL,
+}
+
+
 def _validate_discover_candidates_args(args: argparse.Namespace) -> None:
     if not args.operator_approved:
         raise ValueError("controlled discovery requires explicit operator approval")
@@ -938,8 +957,8 @@ def _validate_discover_candidates_args(args: argparse.Namespace) -> None:
         raise ValueError("controlled discovery is Solana-only")
     if args.max_candidates < 1 or args.max_candidates > 3:
         raise ValueError("max_candidates must be between 1 and 3")
-    if args.source_name != "dexscreener":
-        raise ValueError("controlled discovery supports DexScreener only")
+    if args.source_name not in {"dexscreener", "geckoterminal"}:
+        raise ValueError("controlled discovery supports DexScreener and GeckoTerminal")
     if args.timeout_seconds <= 0 or args.timeout_seconds > 10:
         raise ValueError("timeout_seconds must be greater than 0 and no more than 10")
 
@@ -1043,36 +1062,68 @@ def build_discover_candidates_once_payload(
         connection.row_factory = sqlite3.Row
         existing_token_mints, existing_pair_addresses, existing_symbol_name_keys = _existing_token_pair_sets(connection)
 
-    query = str(args.query or "pump").strip() or "pump"
-    endpoint = f"https://api.dexscreener.com/latest/dex/search?q={quote(query)}"
-    source_request = build_governed_source_request(
-        "dexscreener",
-        "token_discovery",
-        request_key=args.request_key or f"post-rc-discovery-{query}",
-        tracking_priority=0,
-        payload={
-            "post_rc_cycle": "cycle1",
-            "query": query,
-            "max_candidates": args.max_candidates,
-            "chain": "solana",
-        },
-    )
-    adapter = build_dexscreener_adapter(
-        enabled=True,
-        smoke_transport=transport or build_dexscreener_smoke_transport(timeout_seconds=args.timeout_seconds, endpoint=endpoint),
-    )
+    if args.source_name == "geckoterminal":
+        request_kind = str(
+            getattr(args, "request_kind", None) or "geckoterminal_new_pool_discovery"
+        ).strip()
+        source_channel, source_channel_reason = _source_channel_for_geckoterminal(request_kind)
+        endpoint = _GECKOTERMINAL_ENDPOINT_BY_REQUEST_KIND.get(
+            request_kind, GECKOTERMINAL_NEW_POOLS_URL
+        )
+        source_request = build_governed_source_request(
+            "geckoterminal",
+            request_kind,
+            request_key=args.request_key or f"post-rc-geckoterminal-{request_kind}",
+            tracking_priority=0,
+            payload={
+                "post_rc_cycle": "cycle1",
+                "request_kind": request_kind,
+                "max_candidates": args.max_candidates,
+                "chain": "solana",
+            },
+        )
+        adapter = build_geckoterminal_adapter(
+            enabled=True,
+            fixture_transport=transport or build_geckoterminal_pools_transport(
+                timeout_seconds=args.timeout_seconds, endpoint=endpoint
+            ),
+        )
+        query = request_kind
+        display_request_kind = request_kind
+    else:
+        source_channel, source_channel_reason = _source_channel_for_dexscreener(
+            getattr(args, "request_kind", None)
+        )
+        query = str(args.query or "pump").strip() or "pump"
+        endpoint = f"https://api.dexscreener.com/latest/dex/search?q={quote(query)}"
+        source_request = build_governed_source_request(
+            "dexscreener",
+            "token_discovery",
+            request_key=args.request_key or f"post-rc-discovery-{query}",
+            tracking_priority=0,
+            payload={
+                "post_rc_cycle": "cycle1",
+                "query": query,
+                "max_candidates": args.max_candidates,
+                "chain": "solana",
+            },
+        )
+        adapter = build_dexscreener_adapter(
+            enabled=True,
+            smoke_transport=transport or build_dexscreener_smoke_transport(
+                timeout_seconds=args.timeout_seconds, endpoint=endpoint
+            ),
+        )
+        display_request_kind = "token_discovery"
+
     result = execute_source_request_with_governor(
         resolved,
         source_request,
         adapter,
         recent_request_count=0,
     )
-
-    source_channel, source_channel_reason = _source_channel_for_dexscreener(
-        getattr(args, "request_kind", None)
-    )
     normalized_payload = dict(result.normalized_result.normalized_payload or {})
-    normalized_pairs = normalize_candidates("dexscreener", normalized_payload) if normalized_payload else []
+    normalized_pairs = normalize_candidates(args.source_name, normalized_payload) if normalized_payload else []
     for candidate in normalized_pairs:
         candidate["source_channel"] = source_channel
         candidate["source_channel_reason"] = source_channel_reason
@@ -1096,7 +1147,7 @@ def build_discover_candidates_once_payload(
             }
             discovery_results = process_discovery_payload(
                 resolved,
-                "dexscreener",
+                args.source_name,
                 discovery_payload,
                 source_channel=source_channel,
                 source_channel_reason=source_channel_reason,
@@ -1124,8 +1175,8 @@ def build_discover_candidates_once_payload(
         "command": "printer-discover-candidates-once",
         "db_path": str(resolved),
         "operator_approved": True,
-        "source_name": "dexscreener",
-        "request_kind": "token_discovery",
+        "source_name": args.source_name,
+        "request_kind": display_request_kind,
         "query": query,
         "endpoint": endpoint,
         "max_candidates": args.max_candidates,
@@ -1193,7 +1244,14 @@ def main_discover_candidates_once(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--max-candidates", type=int, default=1)
     parser.add_argument("--query", default="pump")
     parser.add_argument("--timeout-seconds", type=float, default=5.0)
-    parser.add_argument("--source-name", default="dexscreener")
+    parser.add_argument("--source-name", default="dexscreener",
+        choices=["dexscreener", "geckoterminal"],
+        help="Discovery source: dexscreener (default) or geckoterminal")
+    parser.add_argument("--request-kind",
+        help=(
+            "GeckoTerminal: geckoterminal_new_pool_discovery (default) or "
+            "geckoterminal_trending_pool_reference. Ignored for DexScreener."
+        ))
     parser.add_argument("--request-key")
     args = parser.parse_args(argv)
     try:

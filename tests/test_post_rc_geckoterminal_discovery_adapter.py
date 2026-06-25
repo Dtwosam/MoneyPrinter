@@ -1,0 +1,540 @@
+"""Sprint B: GeckoTerminal adapter, governor-only, fixture-first discovery tests."""
+
+import argparse
+import pathlib
+import sqlite3
+import sys
+import tempfile
+import unittest
+from contextlib import contextmanager
+
+PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
+SRC_PATH = PROJECT_ROOT / "src"
+sys.path.insert(0, str(SRC_PATH))
+
+from printer_v1.db import apply_migrations
+from printer_v1.discovery.contracts import DiscoveryChannelLabel, DiscoveryOutputAction
+from printer_v1.operator_cli.commands import build_discover_candidates_once_payload
+from printer_v1.sources import (
+    SOURCE_REGISTRY,
+    build_governed_source_request,
+    execute_source_request_with_governor,
+    validate_source_adapter_contract,
+)
+from printer_v1.sources.geckoterminal import (
+    GECKOTERMINAL_SOURCE_NAME,
+    GeckoTerminalAdapterMetadata,
+    build_geckoterminal_adapter,
+    build_geckoterminal_adapter_contract,
+    fixture_failure_transport,
+    fixture_success_transport,
+    normalize_geckoterminal_payload,
+)
+
+
+DOWNSTREAM_TABLES = (
+    "printer_memory_retrieval_queries",
+    "printer_memory_retrieval_matches",
+    "printer_paper_decisions",
+    "printer_paper_positions",
+    "printer_paper_trade_events",
+    "printer_paper_trade_audits",
+)
+
+FORBIDDEN_FRAGMENTS = (
+    "score",
+    "rank",
+    "confidence",
+    "weighted",
+    "buy_signal",
+    "sell_signal",
+    "trade_signal",
+    "wallet",
+    "private_key",
+    "live_execution",
+    "buy_unlock",
+    "pnl",
+)
+
+
+def count_rows(db_path, table):
+    conn = sqlite3.connect(db_path)
+    try:
+        return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+    finally:
+        conn.close()
+
+
+def make_db():
+    tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    db_path = pathlib.Path(tmp.name) / "sprint-b.sqlite3"
+    apply_migrations(db_path)
+    return tmp, db_path
+
+
+def _cli_args(db_path, **kw):
+    values = {
+        "db_path": str(db_path),
+        "project_root": str(PROJECT_ROOT),
+        "format": "json",
+        "no_color": True,
+        "operator_approved": True,
+        "chain": "solana",
+        "max_candidates": 1,
+        "query": "pump",
+        "timeout_seconds": 5.0,
+        "source_name": "geckoterminal",
+        "request_kind": "geckoterminal_new_pool_discovery",
+        "request_key": "sprint-b-test",
+    }
+    values.update(kw)
+    return argparse.Namespace(**values)
+
+
+def _gt_new_pool_payload(*,
+    pair_address="gt-sprint-b-pool-1",
+    base_mint="gt-sprint-b-mint-1",
+    price_usd="0.002",
+    reserve_in_usd="9000",
+    vol_m5="300", vol_h1="2000", vol_h24="12000",
+    txns_m5=8, txns_h1=40, txns_h24=150,
+    fdv_usd="500000",
+    network_id="solana",
+):
+    return {
+        "data": [
+            {
+                "id": f"solana_{pair_address}",
+                "type": "pool",
+                "attributes": {
+                    "address": pair_address,
+                    "name": "SBTEST / SOL",
+                    "base_token_price_usd": price_usd,
+                    "reserve_in_usd": reserve_in_usd,
+                    "fdv_usd": fdv_usd,
+                    "market_cap_usd": None,
+                    "volume_usd": {"m5": vol_m5, "h1": vol_h1, "h24": vol_h24},
+                    "transactions": {
+                        "m5": {"buys": txns_m5 // 2, "sells": txns_m5 - txns_m5 // 2},
+                        "h1": {"buys": txns_h1 // 2, "sells": txns_h1 - txns_h1 // 2},
+                        "h24": {"buys": txns_h24 // 2, "sells": txns_h24 - txns_h24 // 2},
+                    },
+                    "pool_created_at": "2026-06-25T10:00:00Z",
+                },
+                "relationships": {
+                    "base_token": {
+                        "data": {"id": f"solana_{base_mint}", "type": "token"}
+                    },
+                    "network": {
+                        "data": {"id": network_id, "type": "network"}
+                    },
+                },
+            }
+        ]
+    }
+
+
+# ---------------------------------------------------------------------------
+# Class 1: Source registry contract
+# ---------------------------------------------------------------------------
+
+class GeckoTerminalRegistryContractTests(unittest.TestCase):
+
+    def test_geckoterminal_is_registered(self):
+        self.assertIn("geckoterminal", SOURCE_REGISTRY)
+
+    def test_geckoterminal_is_free_public_no_paid_plan(self):
+        defn = SOURCE_REGISTRY["geckoterminal"]
+        self.assertFalse(defn.requires_paid_plan)
+        self.assertEqual(defn.dependency_type, "free_public")
+
+    def test_geckoterminal_supports_solana(self):
+        defn = SOURCE_REGISTRY["geckoterminal"]
+        self.assertEqual(defn.supports_solana, True)
+
+    def test_geckoterminal_has_sprint_b_request_kinds(self):
+        defn = SOURCE_REGISTRY["geckoterminal"]
+        self.assertIn("geckoterminal_new_pool_discovery", defn.allowed_request_kinds)
+        self.assertIn("geckoterminal_trending_pool_reference", defn.allowed_request_kinds)
+        self.assertNotIn("geckoterminal_pair_market_reference", defn.allowed_request_kinds)
+
+    def test_geckoterminal_contract_validates(self):
+        contract = build_geckoterminal_adapter_contract()
+        self.assertTrue(validate_source_adapter_contract(contract))
+
+    def test_geckoterminal_contract_is_fixture_only_and_governed(self):
+        contract = build_geckoterminal_adapter_contract()
+        self.assertTrue(contract.fixture_only)
+        self.assertFalse(contract.supports_network_execution)
+        self.assertTrue(contract.requires_governor_context)
+        self.assertFalse(contract.enabled_by_default)
+
+
+# ---------------------------------------------------------------------------
+# Class 2: Adapter metadata and safety
+# ---------------------------------------------------------------------------
+
+class GeckoTerminalAdapterMetadataTests(unittest.TestCase):
+
+    def test_adapter_is_disabled_by_default(self):
+        adapter = build_geckoterminal_adapter()
+        self.assertFalse(adapter.enabled)
+
+    def test_adapter_requires_explicit_transport(self):
+        adapter = build_geckoterminal_adapter()
+        with self.assertRaises(PermissionError):
+            adapter.execute(None)
+
+    def test_adapter_metadata_source_name(self):
+        meta = GeckoTerminalAdapterMetadata()
+        self.assertEqual(meta.source_name, GECKOTERMINAL_SOURCE_NAME)
+        self.assertFalse(meta.enabled_by_default)
+        self.assertTrue(meta.requires_governor_context)
+        self.assertFalse(meta.supports_network_execution)
+        self.assertTrue(meta.fixture_transport_only)
+
+    def test_adapter_source_module_does_not_contain_forbidden_terms(self):
+        source_text = (
+            SRC_PATH / "printer_v1" / "sources" / "geckoterminal.py"
+        ).read_text(encoding="utf-8")
+        for term in FORBIDDEN_FRAGMENTS:
+            self.assertNotIn(term, source_text, f"Forbidden term '{term}' in geckoterminal.py")
+
+    def test_adapter_does_not_import_requests_or_httpx(self):
+        source_text = (
+            SRC_PATH / "printer_v1" / "sources" / "geckoterminal.py"
+        ).read_text(encoding="utf-8")
+        for fragment in ("requests.get", "requests.post", "httpx", "aiohttp"):
+            self.assertNotIn(fragment, source_text)
+
+
+# ---------------------------------------------------------------------------
+# Class 3: Payload normalization
+# ---------------------------------------------------------------------------
+
+class GeckoTerminalPayloadNormalizationTests(unittest.TestCase):
+
+    def _normalize(self, payload, *, request_kind="geckoterminal_new_pool_discovery"):
+        return normalize_geckoterminal_payload(payload, request_kind=request_kind)
+
+    def test_valid_solana_pool_normalizes_to_complete_result(self):
+        result = self._normalize(_gt_new_pool_payload())
+        self.assertEqual(result.source_status.value, "COMPLETE")
+        self.assertEqual(result.data_quality_label.value, "CLEAN_DATA")
+        self.assertIsNotNone(result.normalized_payload)
+        pairs = result.normalized_payload.get("pairs")
+        self.assertIsInstance(pairs, list)
+        self.assertEqual(len(pairs), 1)
+
+    def test_normalized_pool_has_correct_identity_fields(self):
+        result = self._normalize(_gt_new_pool_payload(
+            pair_address="test-pool-addr",
+            base_mint="test-base-mint",
+        ))
+        pool = result.normalized_payload["pairs"][0]
+        self.assertEqual(pool["pairAddress"], "test-pool-addr")
+        self.assertEqual(pool["baseToken"]["address"], "test-base-mint")
+        self.assertEqual(pool["chainId"], "solana")
+
+    def test_base_mint_extracted_from_relationships_id_with_prefix_stripped(self):
+        result = self._normalize(_gt_new_pool_payload(base_mint="abc123"))
+        pool = result.normalized_payload["pairs"][0]
+        self.assertEqual(pool["baseToken"]["address"], "abc123")
+
+    def test_non_solana_pool_is_filtered_out(self):
+        result = self._normalize(_gt_new_pool_payload(network_id="ethereum"))
+        self.assertEqual(result.source_status.value, "FAILED")
+        self.assertIn("no_valid_solana_pools", result.failure_type)
+
+    def test_missing_pool_address_skips_pool(self):
+        payload = {"data": [{"id": "solana_pool", "attributes": {}, "relationships": {}}]}
+        result = self._normalize(payload)
+        self.assertEqual(result.source_status.value, "FAILED")
+
+    def test_missing_base_mint_skips_pool(self):
+        payload = {
+            "data": [{
+                "id": "solana_pool",
+                "attributes": {"address": "some-pair"},
+                "relationships": {
+                    "network": {"data": {"id": "solana", "type": "network"}},
+                },
+            }]
+        }
+        result = self._normalize(payload)
+        self.assertEqual(result.source_status.value, "FAILED")
+
+    def test_fixture_failure_transport_returns_failed_result(self):
+        adapter = build_geckoterminal_adapter(
+            enabled=True, fixture_transport=fixture_failure_transport()
+        )
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        db_path = pathlib.Path(tmp.name) / "gt-fail.sqlite3"
+        apply_migrations(db_path)
+        try:
+            req = build_governed_source_request(
+                "geckoterminal", "geckoterminal_new_pool_discovery",
+                request_key="gt-fail-test",
+            )
+            res = execute_source_request_with_governor(db_path, req, adapter)
+            self.assertEqual(res.normalized_result.source_status.value, "FAILED")
+            self.assertIsNone(res.response_record)
+            self.assertIsNotNone(res.failure_record)
+        finally:
+            tmp.cleanup()
+
+    def test_rate_limited_fixture_returns_stale_result(self):
+        result = self._normalize({"fixture_status": "rate_limited", "retry_after_seconds": 60})
+        self.assertEqual(result.source_status.value, "STALE")
+        self.assertIsNotNone(result.failure_type)
+
+    def test_invalid_request_kind_returns_failed_result(self):
+        result = self._normalize(_gt_new_pool_payload(), request_kind="unsupported_kind")
+        self.assertEqual(result.source_status.value, "FAILED")
+        self.assertIn("not_allowed", result.failure_type)
+
+    def test_txns_extracted_as_integer_totals(self):
+        result = self._normalize(_gt_new_pool_payload(txns_m5=10, txns_h1=50))
+        pool = result.normalized_payload["pairs"][0]
+        m5 = pool["txns"]["m5"]
+        self.assertIsInstance(m5, int)
+        self.assertEqual(m5, 10)
+
+    def test_volumes_extracted_from_volume_usd_nested_dict(self):
+        result = self._normalize(_gt_new_pool_payload(vol_m5="200", vol_h1="1500", vol_h24="8000"))
+        pool = result.normalized_payload["pairs"][0]
+        self.assertEqual(float(pool["volume"]["h1"]), 1500.0)
+        self.assertEqual(float(pool["volume"]["h24"]), 8000.0)
+
+    def test_trending_pool_request_kind_also_works(self):
+        result = self._normalize(
+            _gt_new_pool_payload(), request_kind="geckoterminal_trending_pool_reference"
+        )
+        self.assertEqual(result.source_status.value, "COMPLETE")
+
+
+# ---------------------------------------------------------------------------
+# Class 4: Governed execution through Source Governor
+# ---------------------------------------------------------------------------
+
+class GeckoTerminalGovernedExecutionTests(unittest.TestCase):
+
+    def setUp(self):
+        self._tmp, self.db_path = make_db()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _run(self, payload, *, request_kind="geckoterminal_new_pool_discovery"):
+        adapter = build_geckoterminal_adapter(
+            enabled=True,
+            fixture_transport=fixture_success_transport(payload),
+        )
+        req = build_governed_source_request(
+            "geckoterminal", request_kind, request_key=f"gt-governed-{request_kind}"
+        )
+        return execute_source_request_with_governor(self.db_path, req, adapter)
+
+    def test_governed_execution_records_source_request_and_response(self):
+        result = self._run(_gt_new_pool_payload())
+        self.assertIsNotNone(result.request_record)
+        self.assertIsNotNone(result.response_record)
+        self.assertIsNone(result.failure_record)
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            req_row = conn.execute("SELECT * FROM printer_source_requests WHERE id = ?",
+                                   (result.request_record.id,)).fetchone()
+            resp_row = conn.execute("SELECT * FROM printer_source_responses WHERE id = ?",
+                                    (result.response_record.id,)).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(req_row["source_name"], "geckoterminal")
+        self.assertEqual(resp_row["source_status"], "COMPLETE")
+
+    def test_governed_execution_does_not_write_downstream_tables(self):
+        self._run(_gt_new_pool_payload())
+        for table in DOWNSTREAM_TABLES:
+            self.assertEqual(count_rows(self.db_path, table), 0, table)
+
+    def test_adapter_requires_governor_approval_to_execute(self):
+        from printer_v1.sources.contracts import SourceAdapterContext, SourceRequest
+        adapter = build_geckoterminal_adapter(
+            enabled=True,
+            fixture_transport=fixture_success_transport(_gt_new_pool_payload()),
+        )
+        fake_req = SourceRequest(
+            source_name="geckoterminal",
+            request_kind="geckoterminal_new_pool_discovery",
+            request_key="bad-context",
+        )
+        bad_context = SourceAdapterContext(
+            request=fake_req,
+            request_record=None,
+            decision=None,
+            governor_approved=False,
+        )
+        with self.assertRaises(PermissionError):
+            adapter.execute(bad_context)
+
+
+# ---------------------------------------------------------------------------
+# Class 5: Discovery CLI integration
+# ---------------------------------------------------------------------------
+
+class GeckoTerminalCLIDiscoveryTests(unittest.TestCase):
+
+    def setUp(self):
+        self._tmp, self.db_path = make_db()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    @contextmanager
+    def connect(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    def _transport(self, ctx):
+        del ctx
+        return _gt_new_pool_payload()
+
+    def _trending_transport(self, ctx):
+        del ctx
+        return _gt_new_pool_payload(
+            pair_address="gt-trending-pool",
+            base_mint="gt-trending-mint",
+        )
+
+    def test_new_pool_discovery_records_geckoterminal_new_pool_channel(self):
+        result = build_discover_candidates_once_payload(
+            _cli_args(self.db_path, request_kind="geckoterminal_new_pool_discovery"),
+            transport=self._transport,
+        )
+        self.assertEqual(result["source_name"], "geckoterminal")
+        self.assertEqual(result["source_channel"], DiscoveryChannelLabel.GECKOTERMINAL_NEW_POOL.value)
+        self.assertEqual(result["source_channel_reason"], "geckoterminal_new_pool_discovery")
+
+    def test_trending_pool_discovery_records_geckoterminal_trending_pool_channel(self):
+        result = build_discover_candidates_once_payload(
+            _cli_args(self.db_path, request_kind="geckoterminal_trending_pool_reference"),
+            transport=self._trending_transport,
+        )
+        self.assertEqual(result["source_channel"], DiscoveryChannelLabel.GECKOTERMINAL_TRENDING_POOL.value)
+
+    def test_accepted_candidate_has_source_channel_set(self):
+        result = build_discover_candidates_once_payload(
+            _cli_args(self.db_path), transport=self._transport
+        )
+        if result["candidates_accepted"] > 0:
+            for cand in result["accepted_candidates"]:
+                self.assertEqual(cand["source_channel"], DiscoveryChannelLabel.GECKOTERMINAL_NEW_POOL.value)
+
+    def test_source_channel_stored_in_discovery_candidates_table(self):
+        build_discover_candidates_once_payload(
+            _cli_args(self.db_path), transport=self._transport
+        )
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT source_channel FROM printer_discovery_candidates"
+            ).fetchall()
+        for row in rows:
+            if row["source_channel"] is not None:
+                self.assertEqual(row["source_channel"], DiscoveryChannelLabel.GECKOTERMINAL_NEW_POOL.value)
+
+    def test_valid_pool_accepted_as_track_normal_or_track_fast(self):
+        result = build_discover_candidates_once_payload(
+            _cli_args(self.db_path), transport=self._transport
+        )
+        if result["candidates_accepted"] > 0:
+            for cand in result["accepted_candidates"]:
+                self.assertIn(cand["tracking_label"], {"TRACK_NORMAL", "TRACK_FAST"})
+
+    def test_no_downstream_unlocks_after_geckoterminal_discovery(self):
+        build_discover_candidates_once_payload(
+            _cli_args(self.db_path), transport=self._transport
+        )
+        for table in DOWNSTREAM_TABLES:
+            self.assertEqual(count_rows(self.db_path, table), 0, table)
+
+    def test_stale_24h_only_pool_rejected_from_proof_cycle(self):
+        def stale_transport(ctx):
+            del ctx
+            return _gt_new_pool_payload(
+                pair_address="gt-stale-pool",
+                base_mint="gt-stale-mint",
+                vol_m5="0",
+                vol_h1="0",
+                vol_h24="5000",
+                txns_m5=0,
+                txns_h1=0,
+                txns_h24=50,
+            )
+
+        result = build_discover_candidates_once_payload(
+            _cli_args(self.db_path), transport=stale_transport
+        )
+        self.assertEqual(result["candidates_accepted"], 0)
+        self.assertGreater(result["candidates_rejected"], 0)
+        for rej in result["rejected_candidates"]:
+            self.assertIn(
+                rej.get("reject_reason"),
+                {
+                    "watch_only_not_eligible_for_15m_memory_proof_cycle",
+                    "no_recent_activity_pulse_for_memory_growth",
+                    "insufficient_activity_for_memory_growth",
+                    "classified_watch_only",
+                },
+            )
+
+    def test_non_solana_pool_rejected_as_non_solana_candidate(self):
+        def non_solana_transport(ctx):
+            del ctx
+            return _gt_new_pool_payload(network_id="ethereum")
+
+        result = build_discover_candidates_once_payload(
+            _cli_args(self.db_path), transport=non_solana_transport
+        )
+        self.assertEqual(result["source_status"], "FAILED")
+
+    def test_dexscreener_source_name_still_works_after_geckoterminal_added(self):
+        def dex_transport(ctx):
+            del ctx
+            return {
+                "pairs": [{
+                    "chainId": "solana",
+                    "pairAddress": "dex-control-pair",
+                    "baseToken": {"address": "dex-control-mint", "symbol": "DCT", "name": "Control"},
+                    "dexId": "raydium",
+                    "priceUsd": "0.003",
+                    "liquidity": {"usd": 10000},
+                    "volume": {"m5": 2000, "h1": 15000, "h24": 60000},
+                    "txns": {"m5": {"buys": 12, "sells": 8}},
+                }]
+            }
+
+        result = build_discover_candidates_once_payload(
+            _cli_args(self.db_path, source_name="dexscreener", request_kind=None, request_key=None),
+            transport=dex_transport,
+        )
+        self.assertEqual(result["source_name"], "dexscreener")
+        self.assertEqual(result["source_channel"], DiscoveryChannelLabel.DEXSCREENER_SEARCH.value)
+
+    def test_source_channel_does_not_unlock_paper_decisions_or_retrieval(self):
+        build_discover_candidates_once_payload(
+            _cli_args(self.db_path), transport=self._transport
+        )
+        with self.connect() as conn:
+            self.assertEqual(count_rows(self.db_path, "printer_memory_retrieval_matches"), 0)
+            self.assertEqual(count_rows(self.db_path, "printer_paper_decisions"), 0)
+            self.assertEqual(count_rows(self.db_path, "printer_paper_positions"), 0)
+            self.assertEqual(count_rows(self.db_path, "printer_paper_trade_events"), 0)
+            self.assertEqual(count_rows(self.db_path, "printer_paper_trade_audits"), 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

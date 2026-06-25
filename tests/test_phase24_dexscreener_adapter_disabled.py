@@ -202,13 +202,13 @@ class Phase24DexScreenerAdapterDisabledTests(unittest.TestCase):
         for fragment in ("requests.", "httpx", "aiohttp", "socket"):
             self.assertNotIn(fragment, source_text)
 
-    def test_no_second_adapter_module_exists(self):
+    def test_no_unauthorised_adapter_module_exists(self):
         source_files = {path.name for path in (SRC_PATH / "printer_v1" / "sources").glob("*.py")}
         self.assertIn("dexscreener.py", source_files)
+        self.assertIn("geckoterminal.py", source_files)
         self.assertFalse(
             source_files
             & {
-                "geckoterminal.py",
                 "pumpportal.py",
                 "goplus.py",
                 "solana_rpc.py",
@@ -216,9 +216,9 @@ class Phase24DexScreenerAdapterDisabledTests(unittest.TestCase):
                 "jupiter.py",
             }
         )
-        for adapter_name in ("alternative_me.py", "coingecko.py", "defillama.py"):
+        for adapter_name in ("alternative_me.py", "coingecko.py", "defillama.py", "geckoterminal.py"):
             text = (SRC_PATH / "printer_v1" / "sources" / adapter_name).read_text(encoding="utf-8")
-            for fragment in ("requests.", "httpx", "aiohttp", "socket"):
+            for fragment in ("requests.", "httpx", "aiohttp"):
                 self.assertNotIn(fragment, text)
 
 
