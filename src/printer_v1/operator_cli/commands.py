@@ -166,6 +166,9 @@ from printer_v1.sources.geckoterminal import (
     build_geckoterminal_adapter,
     build_geckoterminal_pools_transport,
 )
+from printer_v1.sources.pumpportal import (
+    build_pumpportal_adapter,
+)
 from printer_v1.sources.governed_execution import execute_source_request_with_governor
 from printer_v1.snapshots.recorder import record_token_snapshot
 from printer_v1.memory_retrieval.recorder import record_memory_retrieval_query, record_memory_retrieval_matches
@@ -950,6 +953,13 @@ _GECKOTERMINAL_ENDPOINT_BY_REQUEST_KIND: dict[str, str] = {
 }
 
 
+def _source_channel_for_pumpportal(request_kind: str | None = None) -> tuple[str, str]:
+    """Return (source_channel, source_channel_reason) for a PumpPortal request."""
+    if request_kind == "pumpfun_migration_stream":
+        return DiscoveryChannelLabel.PUMPFUN_MIGRATION.value, "pumpportal_migration_stream"
+    return DiscoveryChannelLabel.PUMPFUN_NEW_TOKEN.value, "pumpportal_launch_stream"
+
+
 def _validate_discover_candidates_args(args: argparse.Namespace) -> None:
     if not args.operator_approved:
         raise ValueError("controlled discovery requires explicit operator approval")
@@ -957,8 +967,8 @@ def _validate_discover_candidates_args(args: argparse.Namespace) -> None:
         raise ValueError("controlled discovery is Solana-only")
     if args.max_candidates < 1 or args.max_candidates > 3:
         raise ValueError("max_candidates must be between 1 and 3")
-    if args.source_name not in {"dexscreener", "geckoterminal"}:
-        raise ValueError("controlled discovery supports DexScreener and GeckoTerminal")
+    if args.source_name not in {"dexscreener", "geckoterminal", "pumpportal"}:
+        raise ValueError("controlled discovery supports DexScreener, GeckoTerminal, and PumpPortal")
     if args.timeout_seconds <= 0 or args.timeout_seconds > 10:
         raise ValueError("timeout_seconds must be greater than 0 and no more than 10")
 
@@ -1087,6 +1097,35 @@ def build_discover_candidates_once_payload(
             fixture_transport=transport or build_geckoterminal_pools_transport(
                 timeout_seconds=args.timeout_seconds, endpoint=endpoint
             ),
+        )
+        query = request_kind
+        display_request_kind = request_kind
+    elif args.source_name == "pumpportal":
+        request_kind = str(
+            getattr(args, "request_kind", None) or "pumpfun_launch_stream"
+        ).strip()
+        source_channel, source_channel_reason = _source_channel_for_pumpportal(request_kind)
+        endpoint = "pumpportal_fixture_only"
+        source_request = build_governed_source_request(
+            "pumpportal",
+            request_kind,
+            request_key=args.request_key or f"post-rc-pumpportal-{request_kind}",
+            tracking_priority=0,
+            payload={
+                "post_rc_cycle": "cycle1",
+                "request_kind": request_kind,
+                "max_candidates": args.max_candidates,
+                "chain": "solana",
+            },
+        )
+        if transport is None:
+            raise ValueError(
+                "PumpPortal discovery requires an operator-provided fixture transport; "
+                "no live WebSocket is started automatically"
+            )
+        adapter = build_pumpportal_adapter(
+            enabled=True,
+            fixture_transport=transport,
         )
         query = request_kind
         display_request_kind = request_kind
@@ -1245,8 +1284,8 @@ def main_discover_candidates_once(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--query", default="pump")
     parser.add_argument("--timeout-seconds", type=float, default=5.0)
     parser.add_argument("--source-name", default="dexscreener",
-        choices=["dexscreener", "geckoterminal"],
-        help="Discovery source: dexscreener (default) or geckoterminal")
+        choices=["dexscreener", "geckoterminal", "pumpportal"],
+        help="Discovery source: dexscreener (default), geckoterminal, or pumpportal")
     parser.add_argument("--request-kind",
         help=(
             "GeckoTerminal: geckoterminal_new_pool_discovery (default) or "

@@ -52,6 +52,21 @@ class DiscoveryChannelLabel(StrEnum):
     RAYDIUM_POOL_CONFIRMATION = "RAYDIUM_POOL_CONFIRMATION"
     MANUAL_BASELINE = "MANUAL_BASELINE"
     BASELINE_MEMORY = "BASELINE_MEMORY"
+    # Pump.fun public surface labels — metadata/provenance only.
+    # These are audit labels for operator-supplied fixture data.
+    # They never become selection criteria, numeric measurements, or
+    # ordering keys. Hard eligibility gates apply regardless of label.
+    PUMPFUN_TRENDING_NOW = "PUMPFUN_TRENDING_NOW"
+    PUMPFUN_TOP_COINS = "PUMPFUN_TOP_COINS"
+    PUMPFUN_MOVERS = "PUMPFUN_MOVERS"
+    PUMPFUN_MAYHEM = "PUMPFUN_MAYHEM"
+    PUMPFUN_NEW = "PUMPFUN_NEW"
+    PUMPFUN_LIVE = "PUMPFUN_LIVE"
+    PUMPFUN_MARKET_CAP = "PUMPFUN_MARKET_CAP"
+    PUMPFUN_AGENTS = "PUMPFUN_AGENTS"
+    PUMPFUN_OLDEST = "PUMPFUN_OLDEST"
+    PUMPFUN_LAST_TRADE = "PUMPFUN_LAST_TRADE"
+    PUMPFUN_CHARITIES = "PUMPFUN_CHARITIES"
 
 
 DISCOVERY_PAYLOAD_STATES = tuple(DiscoveryPayloadState)
