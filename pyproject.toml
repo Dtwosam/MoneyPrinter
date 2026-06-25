@@ -20,6 +20,7 @@ printer-collect-token-snapshots-once = "printer_v1.operator_cli.commands:main_co
 printer-collect-broad-context-once = "printer_v1.operator_cli.commands:main_collect_broad_context_once"
 printer-collect-context-once = "printer_v1.operator_cli.commands:main_collect_context_once"
 printer-fill-controlled-evidence-once = "printer_v1.operator_cli.commands:main_fill_controlled_evidence_once"
+printer-collect-real-evidence-once = "printer_v1.operator_cli.commands:main_collect_real_evidence_once"
 printer-build-memory-window-once = "printer_v1.operator_cli.commands:main_build_memory_window_once"
 printer-audit-memory-quality-once = "printer_v1.operator_cli.commands:main_audit_memory_quality_once"
 printer-retrieve-clean-memory-once = "printer_v1.operator_cli.commands:main_retrieve_clean_memory_once"

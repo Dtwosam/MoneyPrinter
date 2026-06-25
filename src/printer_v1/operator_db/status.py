@@ -78,6 +78,8 @@ CORE_TABLES = [
     "printer_episode_outcomes",
     "printer_memory_fingerprints",
     "printer_memory_audit_reports",
+    "printer_solana_safety_evidence",
+    "printer_paper_quote_evidence",
     "printer_memory_retrieval_queries",
     "printer_memory_retrieval_matches",
     "printer_paper_decisions",

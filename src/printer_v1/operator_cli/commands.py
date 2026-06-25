@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sqlite3
 import tempfile
 from dataclasses import asdict
@@ -79,6 +80,21 @@ from printer_v1.chart_volatility.parser import build_chart_payload_from_token_sn
 from printer_v1.evidence_fill.controlled import (
     ControlledEvidenceFillTarget,
     fill_controlled_governed_evidence,
+)
+from printer_v1.evidence_fill.real import (
+    RealEvidenceFillResult,
+    RealEvidenceTarget,
+    collect_real_evidence,
+)
+from printer_v1.sources.jupiter_quote import (
+    DEFAULT_PAPER_AMOUNT_LAMPORTS as JUPITER_DEFAULT_PAPER_AMOUNT,
+    DEFAULT_SLIPPAGE_BPS as JUPITER_DEFAULT_SLIPPAGE_BPS,
+    WSOL_MINT,
+)
+from printer_v1.sources.solana_rpc_holder import (
+    SOLANA_PUBLIC_RPC_URL,
+    SOLANA_RPC_RATE_LIMIT_FAILURE_TYPE,
+    redacted_solana_rpc_source,
 )
 from printer_v1.liquidity_exit.classifier import (
     classify_entry_realism,
@@ -930,6 +946,340 @@ def main_fill_controlled_evidence_once(argv: Sequence[str] | None = None) -> int
     args = parser.parse_args(argv)
     try:
         payload = build_fill_controlled_evidence_once_payload(args)
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
+REAL_EVIDENCE_GUARD_TABLES = [
+    "printer_memory_windows",
+    "printer_episodes",
+    "printer_memory_fingerprints",
+    "printer_memory_retrieval_queries",
+    "printer_memory_retrieval_matches",
+    "printer_paper_decisions",
+    "printer_paper_positions",
+    "printer_paper_trade_events",
+    "printer_paper_trade_audits",
+]
+
+
+def _validate_real_evidence_args(args: argparse.Namespace) -> None:
+    if not args.operator_approved:
+        raise ValueError("real evidence collection requires explicit operator approval")
+    if args.token_id is None and not getattr(args, "token_mint", None):
+        raise ValueError("real evidence collection requires --token-id or --token-mint")
+    if args.snapshot_id is None:
+        raise ValueError("real evidence collection requires --snapshot-id")
+
+
+def _resolve_real_evidence_target(
+    connection: sqlite3.Connection, args: argparse.Namespace
+) -> RealEvidenceTarget:
+    if args.token_id is not None:
+        token_row = connection.execute(
+            "SELECT * FROM printer_tokens WHERE id = ?", (args.token_id,)
+        ).fetchone()
+    else:
+        token_row = connection.execute(
+            "SELECT * FROM printer_tokens WHERE token_mint = ?",
+            (args.token_mint,),
+        ).fetchone()
+    if token_row is None:
+        raise ValueError("real evidence target token not found in DB")
+    if token_row["chain"] != "solana":
+        raise ValueError("real evidence collection is Solana-only")
+
+    pair_id = getattr(args, "pair_id", None)
+    if pair_id is None and getattr(args, "pair_address", None):
+        pair_row = connection.execute(
+            "SELECT id FROM printer_pairs WHERE pair_address = ? AND token_id = ?",
+            (args.pair_address, int(token_row["id"])),
+        ).fetchone()
+        if pair_row:
+            pair_id = int(pair_row["id"])
+
+    snapshot_row = connection.execute(
+        "SELECT * FROM printer_token_snapshots WHERE id = ? AND token_id = ?",
+        (args.snapshot_id, int(token_row["id"])),
+    ).fetchone()
+    if snapshot_row is None:
+        raise ValueError("real evidence target snapshot not found or does not belong to this token")
+
+    return RealEvidenceTarget(
+        token_id=int(token_row["id"]),
+        snapshot_id=int(args.snapshot_id),
+        token_mint=str(token_row["token_mint"]),
+        pair_id=int(pair_id) if pair_id is not None else None,
+        memory_window_id=int(args.memory_window_id) if getattr(args, "memory_window_id", None) else None,
+        evidence_window_id=int(args.evidence_window_id) if getattr(args, "evidence_window_id", None) else None,
+    )
+
+
+def _safety_field_resolution(
+    connection: sqlite3.Connection,
+    result: RealEvidenceFillResult,
+) -> tuple[list[str], list[str], str]:
+    """Read back the best inserted safety evidence row and compute which required fields
+    are resolved (at their clean value) vs still unresolved.
+
+    Returns (resolved_fields, unresolved_fields, safety_context_label).
+    Prefers the RPC holder merged row over the raw GoPlus row when both exist,
+    because the merged row has the updated holder_concentration_label.
+    """
+    from printer_v1.safety.goplus_normalizer import REQUIRED_CLEAN_SAFETY_FIELDS
+
+    evidence_row: dict[str, Any] | None = None
+    for type_name in ("solana_rpc_holder", "goplus_safety"):
+        for item in result.item_results:
+            if item.evidence_type == type_name and item.inserted and item.evidence_id is not None:
+                row = connection.execute(
+                    "SELECT * FROM printer_solana_safety_evidence WHERE id = ?",
+                    (item.evidence_id,),
+                ).fetchone()
+                if row is not None:
+                    evidence_row = dict(row)
+                    break
+        if evidence_row is not None:
+            break
+
+    if evidence_row is None:
+        return [], list(REQUIRED_CLEAN_SAFETY_FIELDS.keys()), "SAFETY_UNKNOWN"
+
+    resolved = [k for k, v in REQUIRED_CLEAN_SAFETY_FIELDS.items() if evidence_row.get(k) == v]
+    unresolved = [k for k in REQUIRED_CLEAN_SAFETY_FIELDS if k not in resolved]
+    safety_label = str(evidence_row.get("safety_context_label") or "SAFETY_UNKNOWN")
+    return resolved, unresolved, safety_label
+
+
+def _holder_rpc_summary(
+    result: RealEvidenceFillResult,
+    *,
+    configured_rpc_url: str,
+) -> dict[str, Any]:
+    holder_items = [item for item in result.item_results if item.evidence_type == "solana_rpc_holder"]
+    if not holder_items:
+        return {
+            "holder_rpc_status": "NOT_ATTEMPTED",
+            "holder_rpc_failure_type": None,
+            "holder_rpc_rate_limited": False,
+            "holder_rpc_source_used": redacted_solana_rpc_source(configured_rpc_url),
+        }
+    item = holder_items[-1]
+    return {
+        "holder_rpc_status": item.holder_rpc_status or ("COMPLETE" if item.inserted else "FAILED"),
+        "holder_rpc_failure_type": item.holder_rpc_failure_type,
+        "holder_rpc_rate_limited": bool(item.holder_rpc_rate_limited),
+        "holder_rpc_source_used": item.holder_rpc_source_used or redacted_solana_rpc_source(configured_rpc_url),
+    }
+
+
+def build_collect_real_evidence_once_payload(args: argparse.Namespace) -> dict[str, Any]:
+    _validate_real_evidence_args(args)
+    project_root = _project_root(args.project_root)
+    resolved = resolve_operator_db_path(args.db_path, project_root)
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Operator DB does not exist: {resolved}")
+
+    paper_amount = int(getattr(args, "paper_amount_lamports", None) or JUPITER_DEFAULT_PAPER_AMOUNT)
+    slippage_bps = int(getattr(args, "slippage_bps", None) or JUPITER_DEFAULT_SLIPPAGE_BPS)
+    quote_currency = str(getattr(args, "quote_currency_mint", None) or WSOL_MINT).strip()
+    solana_rpc_url = str(
+        getattr(args, "solana_rpc_url", None)
+        or os.environ.get("PRINTER_SOLANA_RPC_URL")
+        or SOLANA_PUBLIC_RPC_URL
+    ).strip()
+    solana_rpc_fallback_url = getattr(args, "solana_rpc_fallback_url", None)
+    solana_rpc_fallback_url = str(solana_rpc_fallback_url).strip() if solana_rpc_fallback_url else None
+
+    before_counts = get_core_table_counts(resolved, project_root)
+
+    connection = sqlite3.connect(resolved)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    try:
+        target = _resolve_real_evidence_target(connection, args)
+        result = collect_real_evidence(
+            connection,
+            target,
+            paper_amount_lamports=paper_amount,
+            slippage_bps=slippage_bps,
+            paper_quote_currency_mint=quote_currency,
+            holder_rpc_url=solana_rpc_url,
+            holder_rpc_fallback_url=solana_rpc_fallback_url,
+        )
+        connection.commit()
+        resolved_fields, unresolved_fields, safety_context_label = _safety_field_resolution(
+            connection, result
+        )
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+    after_counts = get_core_table_counts(resolved, project_root)
+    deltas = {
+        table: (after_counts.get(table) or 0) - (before_counts.get(table) or 0)
+        for table in sorted(after_counts)
+    }
+    guard_deltas = {table: deltas.get(table, 0) for table in REAL_EVIDENCE_GUARD_TABLES if deltas.get(table)}
+    status = get_operator_db_status(resolved, project_root)
+
+    safety_sources_used = [
+        item.evidence_type
+        for item in result.item_results
+        if item.evidence_type in {"goplus_safety", "solana_rpc_holder"} and item.inserted
+    ]
+    quote_sources_used = [
+        item.evidence_type
+        for item in result.item_results
+        if item.evidence_type.startswith("jupiter_quote_") and item.inserted
+    ]
+    holder_rpc = _holder_rpc_summary(result, configured_rpc_url=solana_rpc_url)
+    overall_clean_eligible = len(unresolved_fields) == 0 and bool(resolved_fields)
+    overall_audit_only = not overall_clean_eligible
+
+    if unresolved_fields:
+        if holder_rpc["holder_rpc_rate_limited"]:
+            holder_hint = (
+                "Holder concentration remains unresolved because Solana RPC was rate limited. "
+                "Use an operator-approved free/read-only RPC endpoint with --solana-rpc-url "
+                "or retry later. "
+            )
+        elif "holder_concentration_label" in unresolved_fields:
+            holder_hint = (
+                "Holder concentration remains unresolved. Use an operator-approved "
+                "free/read-only RPC endpoint with --solana-rpc-url or retry later. "
+            )
+        else:
+            holder_hint = ""
+        next_step_hint = (
+            f"Safety context is {safety_context_label}. "
+            f"Unresolved fields: {unresolved_fields}. "
+            f"{holder_hint}"
+            "Memory remains AUDIT_ONLY — do not rebuild as clean. "
+            "Do not use this memory for Lane 7. "
+            "Collect missing evidence (holder concentration, liquidity lock/burn, risk flags) "
+            "before attempting a clean memory window build."
+        )
+    else:
+        next_step_hint = (
+            "All required safety fields resolved. "
+            "Run printer-build-memory-window-once to attempt evidence revision "
+            "after real evidence rows are inserted."
+        )
+
+    return {
+        "command": "printer-collect-real-evidence-once",
+        "db_path": str(resolved),
+        "operator_approved": True,
+        "token_id": target.token_id,
+        "token_mint": target.token_mint,
+        "pair_id": target.pair_id,
+        "snapshot_id": target.snapshot_id,
+        "memory_window_id": target.memory_window_id,
+        "paper_amount_lamports": paper_amount,
+        "slippage_bps": slippage_bps,
+        "quote_currency_mint": quote_currency,
+        "holder_rpc_status": holder_rpc["holder_rpc_status"],
+        "holder_rpc_failure_type": holder_rpc["holder_rpc_failure_type"],
+        "holder_rpc_rate_limited": holder_rpc["holder_rpc_rate_limited"],
+        "holder_rpc_source_used": holder_rpc["holder_rpc_source_used"],
+        "safety_evidence_inserted": result.safety_evidence_inserted,
+        "quote_evidence_inserted": result.quote_evidence_inserted,
+        "clean_evidence_inserted": result.clean_evidence_inserted,
+        "audit_only_evidence_inserted": result.audit_only_evidence_inserted,
+        "rejected_or_failed": result.rejected_or_failed,
+        "resolved_safety_fields": resolved_fields,
+        "unresolved_safety_fields": unresolved_fields,
+        "safety_sources_used": safety_sources_used,
+        "quote_sources_used": quote_sources_used,
+        "clean_eligible": overall_clean_eligible,
+        "audit_only": overall_audit_only,
+        "item_results": [
+            {
+                "evidence_type": item.evidence_type,
+                "inserted": item.inserted,
+                "evidence_id": item.evidence_id,
+                "clean_eligible": item.clean_eligible,
+                "audit_status": item.audit_status,
+                "rejection_reasons": list(item.rejection_reasons),
+                "source_request_id": item.source_request_id,
+                "source_response_id": item.source_response_id,
+                "source_failure_id": item.source_failure_id,
+                "source_request_recorded": item.source_request_id is not None,
+                "source_failed": item.source_failure_id is not None,
+                "holder_rpc_status": item.holder_rpc_status,
+                "holder_rpc_failure_type": item.holder_rpc_failure_type,
+                "holder_rpc_rate_limited": item.holder_rpc_rate_limited,
+                "holder_rpc_source_used": item.holder_rpc_source_used,
+                "downstream_unlocks": item.downstream_unlocks,
+            }
+            for item in result.item_results
+        ],
+        "source_table_deltas": {
+            "printer_source_requests": deltas.get("printer_source_requests", 0),
+            "printer_source_responses": deltas.get("printer_source_responses", 0),
+            "printer_source_failures": deltas.get("printer_source_failures", 0),
+        },
+        "evidence_table_deltas": {
+            "printer_solana_safety_evidence": deltas.get("printer_solana_safety_evidence", 0),
+            "printer_paper_quote_evidence": deltas.get("printer_paper_quote_evidence", 0),
+        },
+        "guard_table_deltas": guard_deltas,
+        "guard_tables_unchanged": not guard_deltas,
+        "next_step_hint": next_step_hint,
+        "counts_after": after_counts,
+        "db_state_classification": status["state_classification"],
+        "memory_has_started": status["memory_has_started"],
+        "paper_trading_has_started": status["paper_trading_has_started"],
+        "runtime_has_started": status["runtime_has_started"],
+    }
+
+
+def main_collect_real_evidence_once(argv: Sequence[str] | None = None) -> int:
+    parser = _base_parser(
+        "Collect real governed safety and paper quote evidence for a token snapshot.",
+        ("json", "text"),
+    )
+    parser.add_argument("--operator-approved", action="store_true")
+    parser.add_argument("--token-id", type=int)
+    parser.add_argument("--token-mint")
+    parser.add_argument("--pair-id", type=int)
+    parser.add_argument("--pair-address")
+    parser.add_argument("--snapshot-id", type=int, required=True)
+    parser.add_argument("--memory-window-id", type=int)
+    parser.add_argument("--evidence-window-id", type=int)
+    parser.add_argument(
+        "--paper-amount-lamports",
+        type=int,
+        default=JUPITER_DEFAULT_PAPER_AMOUNT,
+        help=f"Paper simulation amount in lamports (default: {JUPITER_DEFAULT_PAPER_AMOUNT})",
+    )
+    parser.add_argument(
+        "--slippage-bps",
+        type=int,
+        default=JUPITER_DEFAULT_SLIPPAGE_BPS,
+        help=f"Quote slippage basis points (default: {JUPITER_DEFAULT_SLIPPAGE_BPS})",
+    )
+    parser.add_argument(
+        "--quote-currency-mint",
+        default=WSOL_MINT,
+        help="Quote currency mint for paper simulation (default: WSOL)",
+    )
+    parser.add_argument(
+        "--solana-rpc-url",
+        help="Optional operator-approved free/read-only Solana RPC URL for holder fallback.",
+    )
+    parser.add_argument(
+        "--solana-rpc-fallback-url",
+        help="Optional single operator-approved free/read-only fallback RPC URL.",
+    )
+    args = parser.parse_args(argv)
+    try:
+        payload = build_collect_real_evidence_once_payload(args)
         _print_payload(payload, args.format)
         return 0
     except Exception as exc:

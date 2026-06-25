@@ -254,16 +254,17 @@ class Phase23SourceAdapterExecutionContractTests(unittest.TestCase):
         self.assertIn("geckoterminal.py", source_files)
         self.assertIn("pumpportal.py", source_files)
         self.assertIn("pumpswap.py", source_files)
+        self.assertIn("goplus.py", source_files)
+        self.assertIn("jupiter_quote.py", source_files)
         self.assertFalse(
             source_files
             & {
-                "goplus.py",
                 "solana_rpc.py",
                 "helius.py",
                 "jupiter.py",
             }
         )
-        for adapter_name in ("alternative_me.py", "coingecko.py", "defillama.py", "geckoterminal.py", "pumpportal.py", "pumpswap.py"):
+        for adapter_name in ("alternative_me.py", "coingecko.py", "defillama.py", "geckoterminal.py", "pumpportal.py", "pumpswap.py", "goplus.py", "jupiter_quote.py"):
             text = (SRC_PATH / "printer_v1" / "sources" / adapter_name).read_text(encoding="utf-8")
             for fragment in ("requests.get", "requests.post", "httpx", "aiohttp"):
                 self.assertNotIn(fragment, text)

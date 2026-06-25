@@ -141,6 +141,7 @@ SOURCE_REGISTRY: dict[str, SourceDefinition] = {
             "onchain_reference",
             "mint_account_reference",
             "pool_reference",
+            "holder_concentration_reference",
         ),
         default_rate_limit_per_minute=30,
         stale_after_seconds=120,
