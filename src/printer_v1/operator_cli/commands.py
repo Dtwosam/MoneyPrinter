@@ -8438,3 +8438,374 @@ def main_create_conservative_paper_decision_once(
         return 0
     except Exception as exc:
         return _print_error(exc)
+
+
+# ---------------------------------------------------------------------------
+# Post-RC Lane 8C — Conservative Paper Decision Audit Review
+# ---------------------------------------------------------------------------
+# Report-only audit/review of WAIT/AVOID/NO_ACTION paper decision rows.
+# No writes.  No BUY unlock.  No positions.  No trade events.  No PnL.
+# No live execution.  Solana-only.  Paper-only.  No paid API.
+# No scoring, ranking, confidence, or weighted logic.
+# Memory window must pass Lane 7 eligibility for review to pass.
+# ---------------------------------------------------------------------------
+
+_LANE8C_ALLOWED_CONSERVATIVE_ACTIONS: frozenset[str] = frozenset({"WAIT", "AVOID", "NO_ACTION"})
+_LANE8C_BLOCKED_ACTIONS: list[str] = ["BUY", "SELL", "HOLD"]
+_LANE8C_AUDIT_PASSED = "PASSED"
+_LANE8C_AUDIT_FAILED = "FAILED"
+
+
+def _validate_lane8c_args(args: argparse.Namespace) -> None:
+    if not args.operator_approved:
+        raise ValueError(
+            "conservative paper decision audit review requires explicit operator approval"
+        )
+    if str(args.chain or "").strip().lower() != "solana":
+        raise ValueError("conservative paper decision audit review is Solana-only")
+
+
+def _lane8c_fetch_decision(
+    connection: sqlite3.Connection,
+    paper_decision_id: int,
+) -> dict[str, Any] | None:
+    row = connection.execute(
+        "SELECT * FROM printer_paper_decisions WHERE id = ?", (paper_decision_id,)
+    ).fetchone()
+    return _row_to_dict(row) if row is not None else None
+
+
+def _lane8c_check_window_eligibility(
+    connection: sqlite3.Connection,
+    memory_window_id: int,
+) -> dict[str, Any]:
+    """Apply Lane 7 eligibility to a specific memory window by ID."""
+    win_row = connection.execute(
+        "SELECT * FROM printer_memory_windows WHERE id = ?", (memory_window_id,)
+    ).fetchone()
+    if win_row is None:
+        return {
+            "eligible": False,
+            "reason": f"memory_window_id {memory_window_id} not found",
+        }
+
+    window = _row_to_dict(win_row)
+
+    if window.get("window_kind") == _LANE7_EXCLUDED_WINDOW_KIND_5M:
+        return {
+            "eligible": False,
+            "reason": "WINDOW_5M_MICRO_EVENT_cannot_back_paper_decisions",
+        }
+    if (
+        window.get("memory_status") == _LANE7_EXCLUDED_MEMORY_STATUS_AUDIT_ONLY
+        or window.get("memory_quality_label") == _LANE7_EXCLUDED_MEMORY_QUALITY_AUDIT_ONLY
+    ):
+        return {
+            "eligible": False,
+            "reason": "AUDIT_ONLY_memory_cannot_back_paper_decisions",
+        }
+    if int(window.get("do_not_train") or 0) == 1:
+        return {
+            "eligible": False,
+            "reason": "do_not_train=1_cannot_back_paper_decisions",
+        }
+    if window.get("data_quality_label") == _LANE7_EXCLUDED_DATA_QUALITY_MISSING:
+        return {
+            "eligible": False,
+            "reason": "MISSING_CRITICAL_DATA_cannot_back_paper_decisions",
+        }
+
+    is_clean_memory = (
+        window.get("memory_status") == _LANE7_CLEAN_ELIGIBILITY_MEMORY_STATUS
+        or window.get("memory_quality_label") == _LANE7_CLEAN_ELIGIBILITY_MEMORY_QUALITY_LABEL
+    )
+    is_clean_data = window.get("data_quality_label") == _LANE7_CLEAN_ELIGIBILITY_DATA_QUALITY
+    is_closed = window.get("window_status") == _LANE7_CLEAN_ELIGIBILITY_WINDOW_STATUS
+
+    if not (is_clean_memory and is_clean_data and is_closed):
+        parts: list[str] = []
+        if not is_clean_memory:
+            parts.append(
+                "NOT_CLEAN_MEMORY:"
+                + str(
+                    window.get("memory_quality_label")
+                    or window.get("memory_status")
+                    or "UNKNOWN"
+                )
+            )
+        if not is_clean_data:
+            parts.append("NOT_CLEAN_DATA:" + str(window.get("data_quality_label") or "UNKNOWN"))
+        if not is_closed:
+            parts.append(
+                "WINDOW_NOT_CLOSED:" + str(window.get("window_status") or "UNKNOWN")
+            )
+        return {
+            "eligible": False,
+            "reason": ",".join(parts) or "NOT_LANE7_ELIGIBLE",
+        }
+
+    return {"eligible": True, "reason": None, "window": window}
+
+
+def _lane8c_count_downstream(
+    connection: sqlite3.Connection,
+    paper_decision_id: int,
+) -> tuple[int, int, int]:
+    """Return (position_count, trade_event_count, trade_audit_count) for a decision."""
+    pos_count = int(
+        connection.execute(
+            "SELECT COUNT(*) FROM printer_paper_positions WHERE paper_decision_id = ?",
+            (paper_decision_id,),
+        ).fetchone()[0]
+    )
+    event_count = int(
+        connection.execute(
+            "SELECT COUNT(*) FROM printer_paper_trade_events WHERE paper_decision_id = ?",
+            (paper_decision_id,),
+        ).fetchone()[0]
+    )
+    audit_count = int(
+        connection.execute(
+            "SELECT COUNT(*) FROM printer_paper_trade_audits WHERE paper_decision_id = ?",
+            (paper_decision_id,),
+        ).fetchone()[0]
+    )
+    return pos_count, event_count, audit_count
+
+
+def _lane8c_not_found_payload(
+    *,
+    resolved: Any,
+    paper_decision_id: int,
+    before_counts: dict[str, Any],
+    after_counts: dict[str, Any],
+) -> dict[str, Any]:
+    deltas = {
+        table: (after_counts.get(table) or 0) - (before_counts.get(table) or 0)
+        for table in sorted(after_counts)
+    }
+    guard_deltas = {table: delta for table, delta in deltas.items() if delta}
+    return {
+        "command": "printer-review-conservative-paper-decision-once",
+        "db_path": str(resolved),
+        "lane": "post_rc_lane8c",
+        "lane_label": "CONSERVATIVE_PAPER_DECISION_AUDIT_REVIEW",
+        "operator_approved": True,
+        "report_only": True,
+        "review_rows_created": 0,
+        "chain": "solana",
+        "paper_decision_id": paper_decision_id,
+        "decision_action": None,
+        "conservative_action_valid": False,
+        "memory_window_id": None,
+        "memory_window_retrieval_eligible": False,
+        "clean_memory_backed": False,
+        "audit_review_status": _LANE8C_AUDIT_FAILED,
+        "audit_review_reasons": [
+            f"FAIL:paper_decision_id_{paper_decision_id}_not_found_in_printer_paper_decisions"
+        ],
+        "blocked_actions": _LANE8C_BLOCKED_ACTIONS,
+        "buy_unlock": False,
+        "position_unlock": False,
+        "pnl_unlock": False,
+        "paper_position_count_for_decision": 0,
+        "paper_trade_event_count_for_decision": 0,
+        "paper_trade_audit_count_for_decision": 0,
+        "paper_position_delta": 0,
+        "paper_trade_event_delta": 0,
+        "paper_trade_audit_delta": 0,
+        "guard_table_deltas": guard_deltas,
+        "guard_tables_unchanged": not guard_deltas,
+        "next_required_operator_step": (
+            "confirm_paper_decision_id_exists_before_review"
+        ),
+    }
+
+
+def build_conservative_paper_decision_audit_review_payload(
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    _validate_lane8c_args(args)
+    project_root = _project_root(args.project_root)
+    resolved = resolve_operator_db_path(args.db_path, project_root)
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Operator DB does not exist: {resolved}")
+
+    paper_decision_id = int(args.paper_decision_id)
+
+    before_counts = get_core_table_counts(resolved, project_root)
+
+    connection = sqlite3.connect(resolved)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    decision: dict[str, Any] | None = None
+    decision_action: str | None = None
+    memory_window_id: int | None = None
+    conservative_action_valid = False
+    window_eligible = False
+    clean_memory_backed = False
+    pos_count = 0
+    event_count = 0
+    audit_count = 0
+    audit_reasons: list[str] = []
+    audit_failures: list[str] = []
+    try:
+        decision = _lane8c_fetch_decision(connection, paper_decision_id)
+        if decision is None:
+            after_counts = get_core_table_counts(resolved, project_root)
+            return _lane8c_not_found_payload(
+                resolved=resolved,
+                paper_decision_id=paper_decision_id,
+                before_counts=before_counts,
+                after_counts=after_counts,
+            )
+
+        decision_action = decision.get("decision_action")
+        raw_window_id = decision.get("memory_window_id")
+        memory_window_id = int(raw_window_id) if raw_window_id is not None else None
+
+        # Check 1: conservative action (WAIT/AVOID/NO_ACTION)
+        conservative_action_valid = decision_action in _LANE8C_ALLOWED_CONSERVATIVE_ACTIONS
+        if conservative_action_valid:
+            audit_reasons.append(
+                f"decision_action={decision_action}_is_conservative_WAIT_AVOID_NO_ACTION"
+            )
+        else:
+            audit_failures.append(
+                f"decision_action={decision_action}_is_NOT_conservative_BUY_SELL_HOLD_blocked"
+            )
+
+        # Check 2: memory window Lane 7 eligibility
+        if memory_window_id is None:
+            window_eligible = False
+            audit_failures.append(
+                "memory_window_id_is_null_cannot_verify_clean_memory_backing"
+            )
+        else:
+            window_check = _lane8c_check_window_eligibility(connection, memory_window_id)
+            window_eligible = bool(window_check.get("eligible"))
+            if window_eligible:
+                audit_reasons.append(
+                    f"memory_window_id={memory_window_id}_is_Lane7_eligible_CLEAN_MEMORY"
+                )
+            else:
+                audit_failures.append(
+                    f"memory_window_id={memory_window_id}_not_Lane7_eligible:"
+                    + str(window_check.get("reason") or "UNKNOWN")
+                )
+        clean_memory_backed = window_eligible
+
+        # Check 3: decision source and data quality
+        source_status = decision.get("source_status")
+        data_quality_label = decision.get("data_quality_label")
+        if source_status == "COMPLETE" and data_quality_label == "CLEAN_DATA":
+            audit_reasons.append(
+                "decision_source_status=COMPLETE_data_quality_label=CLEAN_DATA"
+            )
+        else:
+            audit_failures.append(
+                f"decision_source_status={source_status}_data_quality_label={data_quality_label}_not_clean"
+            )
+
+        # Check 4: no downstream paper positions, trade events, or trade audits
+        pos_count, event_count, audit_count = _lane8c_count_downstream(
+            connection, paper_decision_id
+        )
+        if pos_count == 0:
+            audit_reasons.append("no_paper_positions_linked_to_this_decision")
+        else:
+            audit_failures.append(
+                f"paper_position_count={pos_count}_positions_must_not_exist_from_conservative_decision"
+            )
+        if event_count == 0:
+            audit_reasons.append("no_paper_trade_events_linked_to_this_decision")
+        else:
+            audit_failures.append(
+                f"paper_trade_event_count={event_count}_trade_events_must_not_exist_from_conservative_decision"
+            )
+        if audit_count == 0:
+            audit_reasons.append("no_paper_trade_audits_linked_to_this_decision")
+        else:
+            audit_failures.append(
+                f"paper_trade_audit_count={audit_count}_trade_audits_must_not_exist_from_conservative_decision"
+            )
+
+        # Confirm hard locks
+        audit_reasons.append("BUY_SELL_HOLD_remain_blocked_conservative_decision_only")
+        audit_reasons.append("buy_unlock=false_position_unlock=false_pnl_unlock=false")
+        # read-only — no commit, no writes
+    finally:
+        connection.close()
+
+    after_counts = get_core_table_counts(resolved, project_root)
+    deltas = {
+        table: (after_counts.get(table) or 0) - (before_counts.get(table) or 0)
+        for table in sorted(after_counts)
+    }
+    guard_deltas = {table: delta for table, delta in deltas.items() if delta}
+
+    audit_passed = not audit_failures
+    audit_status = _LANE8C_AUDIT_PASSED if audit_passed else _LANE8C_AUDIT_FAILED
+    combined_reasons = audit_reasons + [f"FAIL:{r}" for r in audit_failures]
+
+    return {
+        "command": "printer-review-conservative-paper-decision-once",
+        "db_path": str(resolved),
+        "lane": "post_rc_lane8c",
+        "lane_label": "CONSERVATIVE_PAPER_DECISION_AUDIT_REVIEW",
+        "operator_approved": True,
+        "report_only": True,
+        "review_rows_created": 0,
+        "chain": "solana",
+        "paper_decision_id": paper_decision_id,
+        "decision_action": decision_action,
+        "conservative_action_valid": conservative_action_valid,
+        "memory_window_id": memory_window_id,
+        "memory_window_retrieval_eligible": window_eligible,
+        "clean_memory_backed": clean_memory_backed,
+        "audit_review_status": audit_status,
+        "audit_review_reasons": combined_reasons,
+        "blocked_actions": _LANE8C_BLOCKED_ACTIONS,
+        "buy_unlock": False,
+        "position_unlock": False,
+        "pnl_unlock": False,
+        "paper_position_count_for_decision": pos_count,
+        "paper_trade_event_count_for_decision": event_count,
+        "paper_trade_audit_count_for_decision": audit_count,
+        "paper_position_delta": 0,
+        "paper_trade_event_delta": 0,
+        "paper_trade_audit_delta": 0,
+        "guard_table_deltas": guard_deltas,
+        "guard_tables_unchanged": not guard_deltas,
+        "next_required_operator_step": (
+            "conservative_paper_decision_audit_review_passed_no_further_action_required"
+            if audit_passed
+            else "investigate_audit_failures_before_proceeding"
+        ),
+    }
+
+
+def main_review_conservative_paper_decision_once(
+    argv: Sequence[str] | None = None,
+) -> int:
+    parser = _base_parser(
+        "Audit-review one conservative WAIT/AVOID/NO_ACTION paper decision (report-only)."
+        " No writes.  No BUY unlock.  No positions, trade events, or PnL.",
+        ("json", "text"),
+    )
+    parser.add_argument("--operator-approved", action="store_true")
+    parser.add_argument("--chain", default="solana")
+    parser.add_argument(
+        "--paper-decision-id",
+        required=True,
+        type=int,
+        dest="paper_decision_id",
+        help="ID of the paper decision row to audit-review.",
+    )
+    args = parser.parse_args(argv)
+    try:
+        payload = build_conservative_paper_decision_audit_review_payload(args)
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
