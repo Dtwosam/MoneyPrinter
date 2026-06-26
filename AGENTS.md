@@ -20,6 +20,8 @@ Use these documents as the source of truth:
 
 - docs/printer-v1-buy-unlock-preconditions.md
 
+- docs/printer-v1-paper-position-reactivation-review.md
+
 
 
 ## Core Goal
@@ -147,6 +149,12 @@ Post-RC Lane 9 BUY unlock preconditions are documentation-only policy:
 `docs/printer-v1-buy-unlock-preconditions.md`
 
 This policy defines future BUY review preconditions only. It does not unlock BUY, authorize BUY/SELL/HOLD decisions, allow paper positions, create PnL, or loosen any V1 restriction.
+
+Post-RC Lane 10 paper position re-activation review is documentation-only policy:
+
+`docs/printer-v1-paper-position-reactivation-review.md`
+
+This policy defines future paper-position review preconditions only. It does not reactivate paper positions, authorize BUY/SELL/HOLD decisions, create trade events, create paper trade audits, create PnL, or loosen any V1 restriction.
 ## Future Build Order Anchor
 
 
