@@ -31,6 +31,7 @@ printer-run-scheduler-single-tick = "printer_v1.operator_cli.commands:main_run_s
 printer-run-bounded = "printer_v1.operator_cli.commands:main_run_bounded"
 printer-run-long-paper-validation = "printer_v1.operator_cli.commands:main_run_long_paper_validation"
 printer-freeze-v1-paper-rc = "printer_v1.operator_cli.commands:main_freeze_v1_paper_rc"
+printer-build-clean-memory-retrieval-report-once = "printer_v1.operator_cli.commands:main_build_clean_memory_retrieval_report_once"
 
 [tool.unittest]
 start-directory = "tests"

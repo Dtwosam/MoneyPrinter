@@ -7505,3 +7505,229 @@ def main_readiness_check(argv: Sequence[str] | None = None) -> int:
         return 0
     except Exception as exc:
         return _print_error(exc)
+
+
+# ---------------------------------------------------------------------------
+# Post-RC Lane 7 — Controlled Clean-Memory Retrieval Reporting
+# ---------------------------------------------------------------------------
+# Reporting/audit only.  No paper decisions, positions, trades, PnL, BUY
+# unlock, or live execution.  Solana-only.  Paper-only.  No paid API.
+# No scoring, ranking, confidence, or weighted logic.
+# ---------------------------------------------------------------------------
+
+_LANE7_CLEAN_ELIGIBILITY_MEMORY_STATUS = "CLEAN_MEMORY"
+_LANE7_CLEAN_ELIGIBILITY_MEMORY_QUALITY_LABEL = "CLEAN_MEMORY"
+_LANE7_CLEAN_ELIGIBILITY_DATA_QUALITY = "CLEAN_DATA"
+_LANE7_CLEAN_ELIGIBILITY_WINDOW_STATUS = "WINDOW_CLOSED"
+_LANE7_EXCLUDED_MEMORY_STATUS_AUDIT_ONLY = "AUDIT_ONLY"
+_LANE7_EXCLUDED_MEMORY_QUALITY_AUDIT_ONLY = "AUDIT_ONLY_MEMORY"
+_LANE7_EXCLUDED_DATA_QUALITY_MISSING = "MISSING_CRITICAL_DATA"
+_LANE7_EXCLUDED_WINDOW_KIND_5M = "WINDOW_5M_MICRO_EVENT"
+
+
+def _validate_clean_memory_retrieval_report_args(args: argparse.Namespace) -> None:
+    if not args.operator_approved:
+        raise ValueError("clean memory retrieval report requires explicit operator approval")
+    if str(args.chain or "").strip().lower() != "solana":
+        raise ValueError("clean memory retrieval report is Solana-only")
+
+
+def _lane7_window_retrieval_row(window: dict[str, Any]) -> dict[str, Any]:
+    support_ctx = _json_or_empty(window.get("supporting_context_json"))
+    context_labels = support_ctx.get("context_labels") or {}
+    return {
+        "memory_window_id": window["id"],
+        "token_id": window["token_id"],
+        "pair_id": window.get("pair_id"),
+        "window_kind": window.get("window_kind"),
+        "outcome_label": window.get("outcome_label"),
+        "memory_quality_label": window.get("memory_quality_label"),
+        "data_quality_label": window.get("data_quality_label"),
+        "do_not_train": int(window.get("do_not_train") or 0),
+        "window_status": window.get("window_status"),
+        "snapshot_start_id": window.get("snapshot_start_id"),
+        "snapshot_end_id": window.get("snapshot_end_id"),
+        "source_reference": window.get("source_reference"),
+        "evidence_identity_hash": window.get("evidence_identity_hash"),
+        "duplicate_guard_status": window.get("duplicate_guard_status"),
+        "market_regime_label": context_labels.get("market_regime_label"),
+        "chain_heat_label": context_labels.get("chain_heat_label"),
+        "safety_status_label": context_labels.get("safety_status_label"),
+        "retrieval_eligible": True,
+        "exclusion_reason": None,
+    }
+
+
+def _scan_memory_windows_for_retrieval_eligibility(connection: sqlite3.Connection) -> dict[str, Any]:
+    all_windows = connection.execute(
+        "SELECT * FROM printer_memory_windows ORDER BY id ASC"
+    ).fetchall()
+
+    eligible: list[dict[str, Any]] = []
+    excluded_audit_only: list[int] = []
+    excluded_do_not_train: list[int] = []
+    excluded_missing_critical: list[int] = []
+    excluded_5m: list[int] = []
+    excluded_dirty: list[dict[str, Any]] = []
+
+    for row in all_windows:
+        window = _row_to_dict(row)
+        wid = int(window["id"])
+
+        # 5m micro-event windows cannot unlock retrieval by themselves
+        if window.get("window_kind") == _LANE7_EXCLUDED_WINDOW_KIND_5M:
+            excluded_5m.append(wid)
+            continue
+
+        # AUDIT_ONLY (either column agrees)
+        if (
+            window.get("memory_status") == _LANE7_EXCLUDED_MEMORY_STATUS_AUDIT_ONLY
+            or window.get("memory_quality_label") == _LANE7_EXCLUDED_MEMORY_QUALITY_AUDIT_ONLY
+        ):
+            excluded_audit_only.append(wid)
+            continue
+
+        # do_not_train = 1
+        if int(window.get("do_not_train") or 0) == 1:
+            excluded_do_not_train.append(wid)
+            continue
+
+        # MISSING_CRITICAL_DATA
+        if window.get("data_quality_label") == _LANE7_EXCLUDED_DATA_QUALITY_MISSING:
+            excluded_missing_critical.append(wid)
+            continue
+
+        # Now check positive clean-eligibility
+        is_clean_memory = (
+            window.get("memory_status") == _LANE7_CLEAN_ELIGIBILITY_MEMORY_STATUS
+            or window.get("memory_quality_label") == _LANE7_CLEAN_ELIGIBILITY_MEMORY_QUALITY_LABEL
+        )
+        is_clean_data = window.get("data_quality_label") == _LANE7_CLEAN_ELIGIBILITY_DATA_QUALITY
+        is_window_closed = window.get("window_status") == _LANE7_CLEAN_ELIGIBILITY_WINDOW_STATUS
+
+        if is_clean_memory and is_clean_data and is_window_closed:
+            eligible.append(_lane7_window_retrieval_row(window))
+        else:
+            reasons: list[str] = []
+            if not is_clean_memory:
+                reasons.append(
+                    "NOT_CLEAN_MEMORY:" + str(window.get("memory_quality_label") or window.get("memory_status") or "UNKNOWN")
+                )
+            if not is_clean_data:
+                reasons.append("NOT_CLEAN_DATA:" + str(window.get("data_quality_label") or "UNKNOWN"))
+            if not is_window_closed:
+                reasons.append("WINDOW_NOT_CLOSED:" + str(window.get("window_status") or "UNKNOWN"))
+            excluded_dirty.append({
+                "memory_window_id": wid,
+                "exclusion_reason": ",".join(reasons) or "NOT_CLEAN_ELIGIBLE",
+                "memory_status": window.get("memory_status"),
+                "memory_quality_label": window.get("memory_quality_label"),
+                "data_quality_label": window.get("data_quality_label"),
+                "window_status": window.get("window_status"),
+                "do_not_train": int(window.get("do_not_train") or 0),
+            })
+
+    return {
+        "total_memory_window_count": len(all_windows),
+        "clean_memory_candidates_count": len(eligible),
+        "excluded_dirty_memory_count": len(excluded_dirty),
+        "excluded_audit_only_count": len(excluded_audit_only),
+        "excluded_do_not_train_count": len(excluded_do_not_train),
+        "excluded_missing_critical_data_count": len(excluded_missing_critical),
+        "excluded_5m_micro_event_count": len(excluded_5m),
+        "eligible_clean_memories": eligible,
+        "excluded_dirty_summary": excluded_dirty,
+        "excluded_audit_only_window_ids": excluded_audit_only,
+        "excluded_do_not_train_window_ids": excluded_do_not_train,
+        "excluded_missing_critical_data_window_ids": excluded_missing_critical,
+        "excluded_5m_micro_event_window_ids": excluded_5m,
+    }
+
+
+def build_clean_memory_retrieval_report_once_payload(args: argparse.Namespace) -> dict[str, Any]:
+    _validate_clean_memory_retrieval_report_args(args)
+    project_root = _project_root(args.project_root)
+    resolved = resolve_operator_db_path(args.db_path, project_root)
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Operator DB does not exist: {resolved}")
+
+    before_counts = get_core_table_counts(resolved, project_root)
+    connection = sqlite3.connect(resolved)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    try:
+        scan = _scan_memory_windows_for_retrieval_eligibility(connection)
+        paper_decision_count = int(
+            connection.execute("SELECT COUNT(*) FROM printer_paper_decisions").fetchone()[0]
+        )
+        paper_position_count = int(
+            connection.execute("SELECT COUNT(*) FROM printer_paper_positions").fetchone()[0]
+        )
+        paper_trade_event_count = int(
+            connection.execute("SELECT COUNT(*) FROM printer_paper_trade_events").fetchone()[0]
+        )
+        paper_trade_audit_count = int(
+            connection.execute("SELECT COUNT(*) FROM printer_paper_trade_audits").fetchone()[0]
+        )
+        # read-only — no commit, no writes
+    finally:
+        connection.close()
+
+    after_counts = get_core_table_counts(resolved, project_root)
+    deltas = {
+        table: (after_counts.get(table) or 0) - (before_counts.get(table) or 0)
+        for table in sorted(after_counts)
+    }
+    guard_deltas = {table: delta for table, delta in deltas.items() if delta}
+
+    return {
+        "command": "printer-build-clean-memory-retrieval-report-once",
+        "db_path": str(resolved),
+        "operator_approved": True,
+        "lane": "post_rc_lane7",
+        "lane_label": "CONTROLLED_CLEAN_MEMORY_RETRIEVAL_REPORTING",
+        "report_only": True,
+        # Core eligibility scan
+        "retrieval_report": scan,
+        # Safety/audit counters (top-level for easy inspection)
+        "clean_memory_candidates_count": scan["clean_memory_candidates_count"],
+        "excluded_dirty_memory_count": scan["excluded_dirty_memory_count"],
+        "excluded_audit_only_count": scan["excluded_audit_only_count"],
+        "excluded_do_not_train_count": scan["excluded_do_not_train_count"],
+        "excluded_missing_critical_data_count": scan["excluded_missing_critical_data_count"],
+        "excluded_5m_micro_event_count": scan["excluded_5m_micro_event_count"],
+        # Retrieval rows created: zero — report-only, no writes
+        "retrieval_matches_created": 0,
+        # Downstream gate outputs — all locked
+        "paper_decision_delta": 0,
+        "paper_position_delta": 0,
+        "paper_trade_event_delta": 0,
+        "paper_trade_audit_delta": 0,
+        "buy_unlock": False,
+        "pnl_unlock": False,
+        # Existing paper row counts (for audit visibility, not deltas)
+        "existing_paper_decision_count": paper_decision_count,
+        "existing_paper_position_count": paper_position_count,
+        "existing_paper_trade_event_count": paper_trade_event_count,
+        "existing_paper_trade_audit_count": paper_trade_audit_count,
+        # Guard deltas: must all be zero
+        "guard_table_deltas": guard_deltas,
+        "guard_tables_unchanged": not guard_deltas,
+        "counts_after": after_counts,
+    }
+
+
+def main_build_clean_memory_retrieval_report_once(argv: Sequence[str] | None = None) -> int:
+    parser = _base_parser(
+        "Build a controlled clean-memory retrieval report (Lane 7, report-only, no paper decisions).",
+        ("json", "text"),
+    )
+    parser.add_argument("--operator-approved", action="store_true")
+    parser.add_argument("--chain", default="solana")
+    args = parser.parse_args(argv)
+    try:
+        payload = build_clean_memory_retrieval_report_once_payload(args)
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
