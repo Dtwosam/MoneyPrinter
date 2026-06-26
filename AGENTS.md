@@ -22,6 +22,8 @@ Use these documents as the source of truth:
 
 - docs/printer-v1-paper-position-reactivation-review.md
 
+- docs/printer-v1-post-lane10-proposed-next-build-order.md
+
 
 
 ## Core Goal
@@ -155,6 +157,23 @@ Post-RC Lane 10 paper position re-activation review is documentation-only policy
 `docs/printer-v1-paper-position-reactivation-review.md`
 
 This policy defines future paper-position review preconditions only. It does not reactivate paper positions, authorize BUY/SELL/HOLD decisions, create trade events, create paper trade audits, create PnL, or loosen any V1 restriction.
+
+## Post-Lane 10 Active Roadmap Extension
+
+After completed Post-RC Lane 10 and the post-Lane-10 architecture planning checkpoint, the active roadmap extension is:
+
+`docs/printer-v1-post-lane10-proposed-next-build-order.md`
+
+The original Post-RC Build Order remains preserved as the completed Lane 1-10 source. The post-Lane-10 next build order is active only as the roadmap extension after Lane 10 and architecture planning were completed.
+
+This adoption does not unlock BUY, SELL/HOLD, paper positions, trade events, paper trade audits, PnL, live trading, wallets, private keys, paid APIs, scoring, ranking, confidence percentages, weighted logic, embeddings, or vectors.
+
+The next active lane is Proposed Lane A / Architecture and Document Adoption Checkpoint unless the operator explicitly chooses a different approved lane.
+
+The 5m window remains support-only.
+
+The first Memory Factory implementation must keep paper decisions off.
+
 ## Future Build Order Anchor
 
 
