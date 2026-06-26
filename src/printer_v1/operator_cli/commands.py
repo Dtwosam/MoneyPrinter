@@ -8809,3 +8809,180 @@ def main_review_conservative_paper_decision_once(
         return 0
     except Exception as exc:
         return _print_error(exc)
+
+
+# ---------------------------------------------------------------------------
+# Post-Lane 10 Lane E1 — Conservative 15m Memory Factory Dry-Run Scaffold
+# ---------------------------------------------------------------------------
+# Dry-run planning report only.  No source fetching.  No scheduler execution.
+# No snapshot writes.  No memory writes.  No retrieval activation.
+# No paper decisions.  No BUY, SELL, HOLD.  No positions, trade events, or PnL.
+# No live execution.  Solana-only.  Paper-only.  No paid API.
+# No scoring, ranking, confidence, or weighted logic.  No embeddings or vectors.
+# 5m remains support-only.  15m is the first main Memory Factory target.
+# Zero clean memories is an allowed outcome when evidence fails.
+# Clean memory must never be forced.
+# ---------------------------------------------------------------------------
+
+_LANE_E1_MODE: str = "conservative"
+_LANE_E1_TARGET_WINDOW_KIND: str = "WINDOW_15M"
+_LANE_E1_SUPPORT_WINDOW_KIND: str = "WINDOW_5M_MICRO_EVENT"
+_LANE_E1_MAX_ACTIVE_TOKENS_DEFAULT: int = 10
+_LANE_E1_MAX_TRACK_FAST_DEFAULT: int = 3
+_LANE_E1_MAX_TRACK_NORMAL_DEFAULT: int = 7
+
+_LANE_E1_LOCKED_CAPABILITIES: list[str] = [
+    "source_fetching",
+    "scheduler_execution",
+    "memory_creation",
+    "retrieval_activation",
+    "paper_decisions",
+    "BUY",
+    "SELL",
+    "HOLD",
+    "paper_positions",
+    "trade_events",
+    "paper_trade_audits",
+    "pnl_calculation",
+    "live_execution",
+    "real_funds",
+    "wallet_private_key_signing",
+    "paid_api_dependencies",
+    "scoring_ranking_confidence_weighted",
+    "embeddings_vectors",
+    "5m_as_main_outcome_memory",
+    "5m_unlocking_retrieval_or_decisions",
+]
+
+_LANE_E1_STOP_CONDITIONS: list[str] = [
+    "source_failure_rate_exceeds_40_percent",
+    "snapshot_gap_rate_exceeds_30_percent",
+    "source_governor_detects_repeated_stale_data",
+    "source_budget_exhausted",
+    "central_scheduler_queue_falls_behind",
+    "job_remains_running_after_exit",
+    "lock_remains_active_after_exit",
+    "window_close_snapshots_repeatedly_missed",
+    "data_quality_labels_missing_on_critical_records",
+    "clean_memory_would_be_created_from_incomplete_evidence",
+    "dirty_or_audit_only_memory_appears_in_retrieval",
+    "any_path_creates_paper_decisions_unexpectedly",
+    "any_path_creates_buy_sell_hold_unexpectedly",
+    "any_path_creates_paper_positions_unexpectedly",
+    "any_path_creates_trade_events_audits_pnl_unexpectedly",
+    "any_engine_bypasses_source_governor",
+    "any_engine_bypasses_central_scheduler",
+    "unbounded_runtime_appears",
+]
+
+_LANE_E1_REQUIRED_FUTURE_GATES: list[str] = [
+    "operator_approves_lane_e1_active_lane_commit_and_tag",
+    "source_budget_headroom_confirmed_for_approved_token_list",
+    "scheduler_end_to_end_cycle_confirmed_in_test",
+    "lane_7_eligibility_confirmed_for_each_new_window",
+    "memory_audit_passes_for_each_new_window",
+    "operator_reviews_cycle_report_before_next_cycle",
+    "full_test_suite_passes",
+    "buy_remains_locked_throughout",
+    "positions_remain_locked_throughout",
+    "pnl_remains_locked_throughout",
+]
+
+
+def _lane_e1_resolve_int(value: int | None, default: int) -> int:
+    return default if value is None else int(value)
+
+
+def _validate_lane_e1_args(args: argparse.Namespace) -> None:
+    if not args.operator_approved:
+        raise ValueError(
+            "conservative 15m memory factory dry-run plan requires explicit operator approval"
+        )
+    if str(args.chain or "").strip().lower() != "solana":
+        raise ValueError("conservative 15m memory factory dry-run plan is Solana-only")
+    max_active = _lane_e1_resolve_int(args.max_active_tokens, _LANE_E1_MAX_ACTIVE_TOKENS_DEFAULT)
+    max_fast = _lane_e1_resolve_int(args.max_track_fast, _LANE_E1_MAX_TRACK_FAST_DEFAULT)
+    max_normal = _lane_e1_resolve_int(args.max_track_normal, _LANE_E1_MAX_TRACK_NORMAL_DEFAULT)
+    if max_active < 1 or max_active > 30:
+        raise ValueError("max_active_tokens must be between 1 and 30")
+    if max_fast < 1 or max_fast > 10:
+        raise ValueError("max_track_fast must be between 1 and 10")
+    if max_normal < 1 or max_normal > 20:
+        raise ValueError("max_track_normal must be between 1 and 20")
+    if max_fast + max_normal > max_active:
+        raise ValueError("max_track_fast + max_track_normal must not exceed max_active_tokens")
+
+
+def build_plan_conservative_15m_memory_factory_once_payload(
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    _validate_lane_e1_args(args)
+    max_active = _lane_e1_resolve_int(args.max_active_tokens, _LANE_E1_MAX_ACTIVE_TOKENS_DEFAULT)
+    max_fast = _lane_e1_resolve_int(args.max_track_fast, _LANE_E1_MAX_TRACK_FAST_DEFAULT)
+    max_normal = _lane_e1_resolve_int(args.max_track_normal, _LANE_E1_MAX_TRACK_NORMAL_DEFAULT)
+    return {
+        "command": "printer-plan-conservative-15m-memory-factory-once",
+        "operator_approved": True,
+        "dry_run": True,
+        "mode": _LANE_E1_MODE,
+        "target_window_kind": _LANE_E1_TARGET_WINDOW_KIND,
+        "support_window_kind": _LANE_E1_SUPPORT_WINDOW_KIND,
+        "support_window_only": True,
+        "source_fetching_enabled": False,
+        "scheduler_execution_enabled": False,
+        "memory_creation_enabled": False,
+        "paper_decisions_enabled": False,
+        "buy_enabled": False,
+        "positions_enabled": False,
+        "pnl_enabled": False,
+        "zero_clean_memories_allowed": True,
+        "clean_memory_forced": False,
+        "max_active_tokens": max_active,
+        "max_track_fast": max_fast,
+        "max_track_normal": max_normal,
+        "locked_capabilities": list(_LANE_E1_LOCKED_CAPABILITIES),
+        "stop_conditions": list(_LANE_E1_STOP_CONDITIONS),
+        "required_future_gates": list(_LANE_E1_REQUIRED_FUTURE_GATES),
+    }
+
+
+def main_plan_conservative_15m_memory_factory_once(
+    argv: Sequence[str] | None = None,
+) -> int:
+    parser = _base_parser(
+        "Dry-run planning report for a future bounded conservative 15m Memory Factory cycle."
+        " No source fetching.  No scheduler execution.  No snapshot writes."
+        " No memory writes.  No retrieval.  No paper decisions."
+        " No BUY, SELL, HOLD.  No positions, trade events, or PnL.",
+        ("json", "text"),
+    )
+    parser.add_argument("--operator-approved", action="store_true")
+    parser.add_argument("--chain", default="solana")
+    parser.add_argument(
+        "--max-active-tokens",
+        type=int,
+        default=_LANE_E1_MAX_ACTIVE_TOKENS_DEFAULT,
+        dest="max_active_tokens",
+        help=f"Max concurrent actively tracked tokens (default: {_LANE_E1_MAX_ACTIVE_TOKENS_DEFAULT}).",
+    )
+    parser.add_argument(
+        "--max-track-fast",
+        type=int,
+        default=_LANE_E1_MAX_TRACK_FAST_DEFAULT,
+        dest="max_track_fast",
+        help=f"Max TRACK_FAST tokens (default: {_LANE_E1_MAX_TRACK_FAST_DEFAULT}).",
+    )
+    parser.add_argument(
+        "--max-track-normal",
+        type=int,
+        default=_LANE_E1_MAX_TRACK_NORMAL_DEFAULT,
+        dest="max_track_normal",
+        help=f"Max TRACK_NORMAL tokens (default: {_LANE_E1_MAX_TRACK_NORMAL_DEFAULT}).",
+    )
+    args = parser.parse_args(argv)
+    try:
+        payload = build_plan_conservative_15m_memory_factory_once_payload(args)
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)

@@ -35,6 +35,7 @@ printer-build-clean-memory-retrieval-report-once = "printer_v1.operator_cli.comm
 printer-review-wait-avoid-no-action-readiness-once = "printer_v1.operator_cli.commands:main_review_wait_avoid_no_action_readiness_once"
 printer-create-conservative-paper-decision-once = "printer_v1.operator_cli.commands:main_create_conservative_paper_decision_once"
 printer-review-conservative-paper-decision-once = "printer_v1.operator_cli.commands:main_review_conservative_paper_decision_once"
+printer-plan-conservative-15m-memory-factory-once = "printer_v1.operator_cli.commands:main_plan_conservative_15m_memory_factory_once"
 
 [tool.unittest]
 start-directory = "tests"
