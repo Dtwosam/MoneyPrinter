@@ -18,6 +18,8 @@ Use these documents as the source of truth:
 
 - docs/printer-v1-memory-factory-guide.md
 
+- docs/printer-v1-buy-unlock-preconditions.md
+
 
 
 ## Core Goal
@@ -139,6 +141,12 @@ Do not convert post-RC memory growth into live trading.
 Do not unlock BUY without an explicit future operator-approved BUY unlock lane.
 
 Do not open paper positions without a valid clean-memory-backed paper decision.
+
+Post-RC Lane 9 BUY unlock preconditions are documentation-only policy:
+
+`docs/printer-v1-buy-unlock-preconditions.md`
+
+This policy defines future BUY review preconditions only. It does not unlock BUY, authorize BUY/SELL/HOLD decisions, allow paper positions, create PnL, or loosen any V1 restriction.
 ## Future Build Order Anchor
 
 
