@@ -8006,3 +8006,435 @@ def main_review_wait_avoid_no_action_readiness_once(
         return 0
     except Exception as exc:
         return _print_error(exc)
+
+
+# ---------------------------------------------------------------------------
+# Post-RC Lane 8B — Conservative Paper Decision Creation
+# ---------------------------------------------------------------------------
+# Operator-controlled creation of WAIT/AVOID/NO_ACTION paper decisions backed
+# by a Lane 7 eligible clean memory window.  BUY/SELL/HOLD remain blocked.
+# No positions, trade events, PnL, or live execution.  Solana-only.
+# Paper-only.  No paid API.  No scoring, ranking, confidence, or weighted logic.
+# Memory window must pass Lane 7 eligibility before any decision is written.
+# ---------------------------------------------------------------------------
+
+_LANE8B_ALLOWED_CONSERVATIVE_ACTIONS: frozenset[str] = frozenset({"WAIT", "AVOID", "NO_ACTION"})
+_LANE8B_BLOCKED_ACTIONS: list[str] = ["BUY", "SELL", "HOLD"]
+
+
+def _validate_lane8b_args(args: argparse.Namespace) -> None:
+    if not args.operator_approved:
+        raise ValueError(
+            "conservative paper decision creation requires explicit operator approval"
+        )
+    if str(args.chain or "").strip().lower() != "solana":
+        raise ValueError("conservative paper decision creation is Solana-only")
+
+
+def _lane8b_verify_entities(
+    connection: sqlite3.Connection,
+    token_id: int,
+    pair_id: int,
+    memory_window_id: int,
+    window_kind: str,
+) -> dict[str, Any]:
+    """Verify token/pair/window exist and the window is Lane 7 eligible."""
+    token_row = connection.execute(
+        "SELECT id FROM printer_tokens WHERE id = ?", (token_id,)
+    ).fetchone()
+    if token_row is None:
+        return {
+            "verified": False,
+            "eligible": False,
+            "rejection_reason": f"token_id {token_id} not found",
+        }
+
+    pair_row = connection.execute(
+        "SELECT id FROM printer_pairs WHERE id = ? AND token_id = ?",
+        (pair_id, token_id),
+    ).fetchone()
+    if pair_row is None:
+        return {
+            "verified": False,
+            "eligible": False,
+            "rejection_reason": (
+                f"pair_id {pair_id} not found or does not belong to token_id {token_id}"
+            ),
+        }
+
+    win_row = connection.execute(
+        "SELECT * FROM printer_memory_windows WHERE id = ?", (memory_window_id,)
+    ).fetchone()
+    if win_row is None:
+        return {
+            "verified": False,
+            "eligible": False,
+            "rejection_reason": f"memory_window_id {memory_window_id} not found",
+        }
+
+    window = _row_to_dict(win_row)
+
+    if int(window.get("token_id") or 0) != token_id:
+        return {
+            "verified": True,
+            "eligible": False,
+            "rejection_reason": (
+                f"window token_id {window.get('token_id')} does not match {token_id}"
+            ),
+        }
+    if int(window.get("pair_id") or 0) != pair_id:
+        return {
+            "verified": True,
+            "eligible": False,
+            "rejection_reason": (
+                f"window pair_id {window.get('pair_id')} does not match {pair_id}"
+            ),
+        }
+    if window.get("window_kind") != window_kind:
+        return {
+            "verified": True,
+            "eligible": False,
+            "rejection_reason": (
+                f"window_kind mismatch: window has {window.get('window_kind')!r},"
+                f" argument is {window_kind!r}"
+            ),
+        }
+
+    # Apply Lane 7 eligibility (constants shared with Lane 7 and 8A)
+    if window.get("window_kind") == _LANE7_EXCLUDED_WINDOW_KIND_5M:
+        return {
+            "verified": True,
+            "eligible": False,
+            "rejection_reason": "WINDOW_5M_MICRO_EVENT_cannot_unlock_paper_decisions",
+        }
+    if (
+        window.get("memory_status") == _LANE7_EXCLUDED_MEMORY_STATUS_AUDIT_ONLY
+        or window.get("memory_quality_label") == _LANE7_EXCLUDED_MEMORY_QUALITY_AUDIT_ONLY
+    ):
+        return {
+            "verified": True,
+            "eligible": False,
+            "rejection_reason": "AUDIT_ONLY_memory_excluded_from_decisions",
+        }
+    if int(window.get("do_not_train") or 0) == 1:
+        return {
+            "verified": True,
+            "eligible": False,
+            "rejection_reason": "do_not_train=1_excluded_from_decisions",
+        }
+    if window.get("data_quality_label") == _LANE7_EXCLUDED_DATA_QUALITY_MISSING:
+        return {
+            "verified": True,
+            "eligible": False,
+            "rejection_reason": "MISSING_CRITICAL_DATA_excluded_from_decisions",
+        }
+
+    is_clean_memory = (
+        window.get("memory_status") == _LANE7_CLEAN_ELIGIBILITY_MEMORY_STATUS
+        or window.get("memory_quality_label") == _LANE7_CLEAN_ELIGIBILITY_MEMORY_QUALITY_LABEL
+    )
+    is_clean_data = window.get("data_quality_label") == _LANE7_CLEAN_ELIGIBILITY_DATA_QUALITY
+    is_closed = window.get("window_status") == _LANE7_CLEAN_ELIGIBILITY_WINDOW_STATUS
+
+    if not (is_clean_memory and is_clean_data and is_closed):
+        parts: list[str] = []
+        if not is_clean_memory:
+            parts.append(
+                "NOT_CLEAN_MEMORY:"
+                + str(
+                    window.get("memory_quality_label")
+                    or window.get("memory_status")
+                    or "UNKNOWN"
+                )
+            )
+        if not is_clean_data:
+            parts.append("NOT_CLEAN_DATA:" + str(window.get("data_quality_label") or "UNKNOWN"))
+        if not is_closed:
+            parts.append(
+                "WINDOW_NOT_CLOSED:" + str(window.get("window_status") or "UNKNOWN")
+            )
+        return {
+            "verified": True,
+            "eligible": False,
+            "rejection_reason": ",".join(parts) or "NOT_LANE7_ELIGIBLE",
+        }
+
+    return {"verified": True, "eligible": True, "rejection_reason": None, "window": window}
+
+
+def _lane8b_insert_conservative_decision(
+    connection: sqlite3.Connection,
+    token_id: int,
+    pair_id: int,
+    memory_window_id: int,
+    action: str,
+    window_kind: str,
+) -> int:
+    """Direct controlled INSERT of one conservative paper decision row."""
+    decided_at = datetime.now(timezone.utc).isoformat()
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
+
+    decision_reasons = ["REASON_CLEAN_MEMORY_MATCH_SUPPORTS_ACTION"]
+    memory_evidence_summary = {
+        "clean_match_count": 1,
+        "memory_evidence_label": "MEMORY_EVIDENCE_LANE7_ELIGIBLE",
+        "memory_window_id": memory_window_id,
+        "retrieval_result_label": "LANE8B_CONTROLLED_CLEAN_WINDOW",
+    }
+    explanation = {
+        "action": action,
+        "controlled_decision": True,
+        "lane": "post_rc_lane8b",
+        "memory_window_id": memory_window_id,
+        "operator_controlled": True,
+        "window_kind": window_kind,
+    }
+    decision_report = {
+        "action": action,
+        "buy_unlock": False,
+        "lane": "post_rc_lane8b",
+        "memory_window_id": memory_window_id,
+        "pnl_unlock": False,
+        "position_unlock": False,
+    }
+
+    cursor = connection.execute(
+        """
+        INSERT INTO printer_paper_decisions (
+            token_id, pair_id,
+            decision_action, decision_status,
+            memory_window_id,
+            explanation_json, source_status, data_quality_label,
+            decided_at, requested_action_label, final_action_label,
+            decision_gate_label, memory_evidence_gate_label,
+            paper_decision_status_label,
+            matched_episode_ids_json, supporting_memory_match_ids_json,
+            decision_reasons_json, blocking_reasons_json,
+            current_context_json, memory_evidence_summary_json,
+            decision_report_json, expires_at
+        ) VALUES (
+            ?, ?,
+            ?, 'PAPER_DECISION_PROPOSED',
+            ?,
+            ?, 'COMPLETE', 'CLEAN_DATA',
+            ?, ?, ?,
+            'DECISION_ALLOWED', 'MEMORY_GATE_CLEAN_MATCH',
+            'PAPER_DECISION_PROPOSED',
+            '[]', '[]',
+            ?, '[]',
+            '{}', ?, ?, ?
+        )
+        """,
+        (
+            token_id,
+            pair_id,
+            action,
+            memory_window_id,
+            json.dumps(explanation, sort_keys=True),
+            decided_at,
+            action,
+            action,
+            json.dumps(decision_reasons, sort_keys=True),
+            json.dumps(memory_evidence_summary, sort_keys=True),
+            json.dumps(decision_report, sort_keys=True),
+            expires_at,
+        ),
+    )
+    connection.commit()
+    return int(cursor.lastrowid)
+
+
+def _lane8b_rejection_result(
+    *,
+    resolved: Any,
+    token_id: int,
+    pair_id: int,
+    memory_window_id: int,
+    window_kind: str,
+    requested_decision: str,
+    rejection_reason: str,
+    before_counts: dict[str, Any],
+    after_counts: dict[str, Any],
+) -> dict[str, Any]:
+    deltas = {
+        table: (after_counts.get(table) or 0) - (before_counts.get(table) or 0)
+        for table in sorted(after_counts)
+    }
+    guard_deltas = {table: delta for table, delta in deltas.items() if delta}
+    return {
+        "command": "printer-create-conservative-paper-decision-once",
+        "db_path": str(resolved),
+        "lane": "post_rc_lane8b",
+        "lane_label": "CONSERVATIVE_PAPER_DECISION_CREATION",
+        "operator_approved": True,
+        "report_only": False,
+        "chain": "solana",
+        "token_id": token_id,
+        "pair_id": pair_id,
+        "memory_window_id": memory_window_id,
+        "window_kind": window_kind,
+        "requested_decision": requested_decision,
+        "rejected_decision": requested_decision,
+        "rejection_reason": rejection_reason,
+        "paper_decision_created": False,
+        "paper_decision_id": None,
+        "paper_decision_delta": 0,
+        "paper_position_delta": 0,
+        "paper_trade_event_delta": 0,
+        "paper_trade_audit_delta": 0,
+        "buy_unlock": False,
+        "position_unlock": False,
+        "pnl_unlock": False,
+        "blocked_actions": _LANE8B_BLOCKED_ACTIONS,
+        "memory_window_retrieval_eligible": False,
+        "eligible_clean_memory_window_ids": [],
+        "guard_table_deltas": guard_deltas,
+        "guard_tables_unchanged_except_paper_decisions": not guard_deltas,
+    }
+
+
+def build_conservative_paper_decision_payload(args: argparse.Namespace) -> dict[str, Any]:
+    _validate_lane8b_args(args)
+    project_root = _project_root(args.project_root)
+    resolved = resolve_operator_db_path(args.db_path, project_root)
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Operator DB does not exist: {resolved}")
+
+    token_id = int(args.token_id)
+    pair_id = int(args.pair_id)
+    memory_window_id = int(args.memory_window_id)
+    window_kind = str(args.window_kind).strip()
+    requested_decision = str(args.decision).strip().upper()
+
+    before_counts = get_core_table_counts(resolved, project_root)
+
+    # Reject BUY/SELL/HOLD before any DB access — no writes
+    if requested_decision not in _LANE8B_ALLOWED_CONSERVATIVE_ACTIONS:
+        after_counts = get_core_table_counts(resolved, project_root)
+        return _lane8b_rejection_result(
+            resolved=resolved,
+            token_id=token_id,
+            pair_id=pair_id,
+            memory_window_id=memory_window_id,
+            window_kind=window_kind,
+            requested_decision=requested_decision,
+            rejection_reason=(
+                requested_decision
+                + "_NOT_ALLOWED_LANE8B_CONSERVATIVE_ONLY_WAIT_AVOID_NO_ACTION"
+            ),
+            before_counts=before_counts,
+            after_counts=after_counts,
+        )
+
+    connection = sqlite3.connect(resolved)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    try:
+        entity_check = _lane8b_verify_entities(
+            connection, token_id, pair_id, memory_window_id, window_kind
+        )
+        if not entity_check.get("eligible"):
+            after_counts = get_core_table_counts(resolved, project_root)
+            return _lane8b_rejection_result(
+                resolved=resolved,
+                token_id=token_id,
+                pair_id=pair_id,
+                memory_window_id=memory_window_id,
+                window_kind=window_kind,
+                requested_decision=requested_decision,
+                rejection_reason=(
+                    entity_check.get("rejection_reason") or "ENTITY_VERIFICATION_FAILED"
+                ),
+                before_counts=before_counts,
+                after_counts=after_counts,
+            )
+
+        decision_id = _lane8b_insert_conservative_decision(
+            connection, token_id, pair_id, memory_window_id, requested_decision, window_kind
+        )
+        scan = _scan_memory_windows_for_retrieval_eligibility(connection)
+    finally:
+        connection.close()
+
+    after_counts = get_core_table_counts(resolved, project_root)
+    deltas = {
+        table: (after_counts.get(table) or 0) - (before_counts.get(table) or 0)
+        for table in sorted(after_counts)
+    }
+    guard_deltas = {table: delta for table, delta in deltas.items() if delta}
+    non_decision_guard_deltas = {
+        table: delta
+        for table, delta in guard_deltas.items()
+        if table != "printer_paper_decisions"
+    }
+
+    eligible_window_ids = [m["memory_window_id"] for m in scan["eligible_clean_memories"]]
+
+    return {
+        "command": "printer-create-conservative-paper-decision-once",
+        "db_path": str(resolved),
+        "lane": "post_rc_lane8b",
+        "lane_label": "CONSERVATIVE_PAPER_DECISION_CREATION",
+        "operator_approved": True,
+        "report_only": False,
+        "chain": "solana",
+        "token_id": token_id,
+        "pair_id": pair_id,
+        "memory_window_id": memory_window_id,
+        "window_kind": window_kind,
+        # Decision outcome
+        "requested_decision": requested_decision,
+        "accepted_decision": requested_decision,
+        "paper_decision_created": True,
+        "paper_decision_id": decision_id,
+        # Memory retrieval eligibility
+        "memory_window_retrieval_eligible": True,
+        "eligible_clean_memory_window_ids": eligible_window_ids,
+        "clean_memory_candidates_count": scan["clean_memory_candidates_count"],
+        # Deltas
+        "paper_decision_delta": (
+            (after_counts.get("printer_paper_decisions") or 0)
+            - (before_counts.get("printer_paper_decisions") or 0)
+        ),
+        "paper_position_delta": 0,
+        "paper_trade_event_delta": 0,
+        "paper_trade_audit_delta": 0,
+        # Hard locks
+        "buy_unlock": False,
+        "position_unlock": False,
+        "pnl_unlock": False,
+        # Action boundary
+        "blocked_actions": _LANE8B_BLOCKED_ACTIONS,
+        # Guard integrity
+        "guard_table_deltas": guard_deltas,
+        "guard_tables_unchanged_except_paper_decisions": not non_decision_guard_deltas,
+    }
+
+
+def main_create_conservative_paper_decision_once(
+    argv: Sequence[str] | None = None,
+) -> int:
+    parser = _base_parser(
+        "Create exactly one conservative paper decision (WAIT/AVOID/NO_ACTION)."
+        " BUY/SELL/HOLD are hard-blocked.  No positions, trade events, or PnL.",
+        ("json", "text"),
+    )
+    parser.add_argument("--operator-approved", action="store_true")
+    parser.add_argument("--chain", default="solana")
+    parser.add_argument(
+        "--decision",
+        required=True,
+        choices=["WAIT", "AVOID", "NO_ACTION", "BUY", "SELL", "HOLD"],
+        help="Paper action.  WAIT/AVOID/NO_ACTION accepted; BUY/SELL/HOLD rejected.",
+    )
+    parser.add_argument("--token-id", required=True, type=int, dest="token_id")
+    parser.add_argument("--pair-id", required=True, type=int, dest="pair_id")
+    parser.add_argument("--memory-window-id", required=True, type=int, dest="memory_window_id")
+    parser.add_argument("--window-kind", required=True, dest="window_kind")
+    args = parser.parse_args(argv)
+    try:
+        payload = build_conservative_paper_decision_payload(args)
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
