@@ -7731,3 +7731,278 @@ def main_build_clean_memory_retrieval_report_once(argv: Sequence[str] | None = N
         return 0
     except Exception as exc:
         return _print_error(exc)
+
+
+# ---------------------------------------------------------------------------
+# Post-RC Lane 8A — Paper Decision Unlock Review, WAIT/AVOID/NO_ACTION First
+# ---------------------------------------------------------------------------
+# Report-only.  No paper decisions, positions, trades, PnL, BUY unlock, or
+# live execution.  Solana-only.  Paper-only.  No paid API.
+# No scoring, ranking, confidence, or weighted logic.
+# Reuses Lane 7 clean-memory eligibility scan without duplicating the policy.
+# ---------------------------------------------------------------------------
+
+_LANE8A_ALLOWED_FUTURE_REVIEW_ACTIONS: list[str] = ["WAIT", "AVOID", "NO_ACTION"]
+_LANE8A_BLOCKED_ACTIONS: list[str] = ["BUY", "SELL", "HOLD"]
+
+_LANE8A_READINESS_FULL = "WAIT_AVOID_NO_ACTION_REVIEW_READY"
+_LANE8A_READINESS_NO_ACTION_ONLY = "NO_ACTION_REVIEW_READY"
+_LANE8A_READINESS_GUARD_DELTA = "NOT_READY_GUARD_TABLE_DELTA"
+
+# Required future decision template fields per AGENTS.md / clean-master-spec
+_LANE8A_TEMPLATE_FIELDS_FROM_MEMORY = [
+    "similar_clean_memories_found",
+    "what_happened_in_those_memories",
+    "best_historical_action",
+    "worst_historical_action",
+    "market_condition",
+    "solana_condition",
+    "safety_condition",
+]
+_LANE8A_TEMPLATE_FIELDS_CURRENT_CONTEXT = [
+    "current_setup",
+    "liquidity_exit_condition",
+    "trading_flow_condition",
+    "chart_volatility_condition",
+]
+_LANE8A_TEMPLATE_FIELDS_AT_DECISION_TIME = [
+    "decision",
+    "current_action",
+    "reason",
+    "invalidation_condition",
+    "paper_trade_status",
+]
+
+
+def _validate_lane8a_args(args: argparse.Namespace) -> None:
+    if not args.operator_approved:
+        raise ValueError(
+            "wait/avoid/no_action readiness review requires explicit operator approval"
+        )
+    if str(args.chain or "").strip().lower() != "solana":
+        raise ValueError("wait/avoid/no_action readiness review is Solana-only")
+
+
+def _derive_lane8a_readiness(
+    scan: dict[str, Any],
+    guard_deltas: dict[str, int],
+) -> tuple[str, list[str]]:
+    reasons: list[str] = []
+
+    if guard_deltas:
+        reasons.append(f"guard_table_delta_detected:{sorted(guard_deltas.keys())}")
+        return _LANE8A_READINESS_GUARD_DELTA, reasons
+
+    clean_count = scan["clean_memory_candidates_count"]
+
+    if clean_count >= 1:
+        reasons.append(f"clean_memory_candidates_count={clean_count}")
+        reasons.append(
+            "WAIT_review_can_proceed_with_clean_memory_comparison_at_decision_time"
+        )
+        reasons.append(
+            "AVOID_review_can_proceed_with_clean_memory_comparison_at_decision_time"
+        )
+        reasons.append(
+            "NO_ACTION_always_valid_when_clean_data_is_missing_or_insufficient"
+        )
+        reasons.append(
+            "BUY_remains_locked_requires_separate_operator_approved_buy_unlock_lane"
+        )
+        reasons.append("SELL_remains_blocked_no_open_positions_exist")
+        reasons.append("HOLD_remains_blocked_no_open_positions_exist")
+        return _LANE8A_READINESS_FULL, reasons
+
+    reasons.append("clean_memory_candidates_count=0")
+    reasons.append(
+        "NO_ACTION_always_valid_when_clean_data_is_missing_or_insufficient"
+    )
+    reasons.append("WAIT_requires_at_least_1_clean_memory_candidate")
+    reasons.append("AVOID_requires_at_least_1_clean_memory_candidate")
+    reasons.append("BUY_remains_locked")
+    reasons.append("SELL_remains_blocked_no_open_positions_exist")
+    reasons.append("HOLD_remains_blocked_no_open_positions_exist")
+    return _LANE8A_READINESS_NO_ACTION_ONLY, reasons
+
+
+def _lane8a_decision_template_summary(
+    eligible_memories: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not eligible_memories:
+        return {
+            "similar_clean_memories_found": "MISSING_NO_ELIGIBLE_MEMORY",
+            "what_happened_in_those_memories": "MISSING_NO_ELIGIBLE_MEMORY",
+            "best_historical_action": "MISSING_NO_ELIGIBLE_MEMORY",
+            "worst_historical_action": "MISSING_NO_ELIGIBLE_MEMORY",
+            "market_condition": "MISSING_NO_ELIGIBLE_MEMORY",
+            "solana_condition": "MISSING_NO_ELIGIBLE_MEMORY",
+            "safety_condition": "MISSING_NO_ELIGIBLE_MEMORY",
+            "current_setup": "WILL_REQUIRE_CURRENT_TOKEN_CONTEXT_AT_DECISION_TIME",
+            "liquidity_exit_condition": "WILL_REQUIRE_CURRENT_TOKEN_CONTEXT_AT_DECISION_TIME",
+            "trading_flow_condition": "WILL_REQUIRE_CURRENT_TOKEN_CONTEXT_AT_DECISION_TIME",
+            "chart_volatility_condition": "WILL_REQUIRE_CURRENT_TOKEN_CONTEXT_AT_DECISION_TIME",
+            "decision": "WILL_BE_SET_AT_DECISION_TIME",
+            "current_action": "WILL_BE_SET_AT_DECISION_TIME",
+            "reason": "WILL_BE_SET_AT_DECISION_TIME",
+            "invalidation_condition": "WILL_BE_SET_AT_DECISION_TIME",
+            "paper_trade_status": "WILL_BE_SET_AT_DECISION_TIME",
+        }
+
+    outcome_labels = [
+        m.get("outcome_label")
+        for m in eligible_memories
+        if m.get("outcome_label")
+    ]
+    has_market = any(m.get("market_regime_label") for m in eligible_memories)
+    has_solana = any(m.get("chain_heat_label") for m in eligible_memories)
+    has_safety = any(m.get("safety_status_label") for m in eligible_memories)
+
+    return {
+        "similar_clean_memories_found": len(eligible_memories),
+        "what_happened_in_those_memories": outcome_labels,
+        "best_historical_action": "AVAILABLE_FROM_OUTCOME_LABELS_AT_DECISION_TIME",
+        "worst_historical_action": "AVAILABLE_FROM_OUTCOME_LABELS_AT_DECISION_TIME",
+        "market_condition": "AVAILABLE" if has_market else "MISSING_FROM_MEMORY_CONTEXT",
+        "solana_condition": "AVAILABLE" if has_solana else "MISSING_FROM_MEMORY_CONTEXT",
+        "safety_condition": "AVAILABLE" if has_safety else "MISSING_FROM_MEMORY_CONTEXT",
+        "current_setup": "WILL_REQUIRE_CURRENT_TOKEN_CONTEXT_AT_DECISION_TIME",
+        "liquidity_exit_condition": "WILL_REQUIRE_CURRENT_TOKEN_CONTEXT_AT_DECISION_TIME",
+        "trading_flow_condition": "WILL_REQUIRE_CURRENT_TOKEN_CONTEXT_AT_DECISION_TIME",
+        "chart_volatility_condition": "WILL_REQUIRE_CURRENT_TOKEN_CONTEXT_AT_DECISION_TIME",
+        "decision": "WILL_BE_SET_AT_DECISION_TIME",
+        "current_action": "WILL_BE_SET_AT_DECISION_TIME",
+        "reason": "WILL_BE_SET_AT_DECISION_TIME",
+        "invalidation_condition": "WILL_BE_SET_AT_DECISION_TIME",
+        "paper_trade_status": "WILL_BE_SET_AT_DECISION_TIME",
+    }
+
+
+def build_wait_avoid_no_action_readiness_payload(
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    _validate_lane8a_args(args)
+    project_root = _project_root(args.project_root)
+    resolved = resolve_operator_db_path(args.db_path, project_root)
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Operator DB does not exist: {resolved}")
+
+    before_counts = get_core_table_counts(resolved, project_root)
+    connection = sqlite3.connect(resolved)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    try:
+        scan = _scan_memory_windows_for_retrieval_eligibility(connection)
+        paper_decision_count = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM printer_paper_decisions"
+            ).fetchone()[0]
+        )
+        paper_position_count = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM printer_paper_positions"
+            ).fetchone()[0]
+        )
+        paper_trade_event_count = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM printer_paper_trade_events"
+            ).fetchone()[0]
+        )
+        paper_trade_audit_count = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM printer_paper_trade_audits"
+            ).fetchone()[0]
+        )
+        # read-only — no commit, no writes
+    finally:
+        connection.close()
+
+    after_counts = get_core_table_counts(resolved, project_root)
+    deltas = {
+        table: (after_counts.get(table) or 0) - (before_counts.get(table) or 0)
+        for table in sorted(after_counts)
+    }
+    guard_deltas = {table: delta for table, delta in deltas.items() if delta}
+
+    eligible_memories = scan["eligible_clean_memories"]
+    eligible_window_ids = [m["memory_window_id"] for m in eligible_memories]
+    has_clean_memory = scan["clean_memory_candidates_count"] >= 1
+
+    readiness_label, readiness_reasons = _derive_lane8a_readiness(scan, guard_deltas)
+    decision_template = _lane8a_decision_template_summary(eligible_memories)
+
+    return {
+        "command": "printer-review-wait-avoid-no-action-readiness-once",
+        "db_path": str(resolved),
+        "lane": "post_rc_lane8a",
+        "lane_label": "PAPER_DECISION_UNLOCK_REVIEW_WAIT_AVOID_NO_ACTION_FIRST",
+        "operator_approved": True,
+        "report_only": True,
+        "chain": "solana",
+        # Clean memory visibility (reuses Lane 7 eligibility policy)
+        "clean_memory_candidates_count": scan["clean_memory_candidates_count"],
+        "eligible_clean_memory_window_ids": eligible_window_ids,
+        "excluded_dirty_memory_count": scan["excluded_dirty_memory_count"],
+        "excluded_audit_only_count": scan["excluded_audit_only_count"],
+        "excluded_do_not_train_count": scan["excluded_do_not_train_count"],
+        "excluded_missing_critical_data_count": scan["excluded_missing_critical_data_count"],
+        "excluded_5m_micro_event_count": scan["excluded_5m_micro_event_count"],
+        # Conservative action readiness flags
+        "wait_review_ready": has_clean_memory,
+        "avoid_review_ready": has_clean_memory,
+        "no_action_review_ready": True,
+        "conservative_actions_review_ready": has_clean_memory,
+        # Action boundary — only conservative actions allowed in future review
+        "allowed_future_review_actions": _LANE8A_ALLOWED_FUTURE_REVIEW_ACTIONS,
+        "blocked_actions": _LANE8A_BLOCKED_ACTIONS,
+        # Hard locks — all false; no unlock possible from this command
+        "buy_unlock": False,
+        "position_unlock": False,
+        "pnl_unlock": False,
+        # Paper row creation counters — all zero (report-only)
+        "paper_decisions_created": 0,
+        "paper_positions_created": 0,
+        "paper_trade_events_created": 0,
+        "paper_trade_audits_created": 0,
+        # Downstream gate deltas — all zero
+        "paper_decision_delta": 0,
+        "paper_position_delta": 0,
+        "paper_trade_event_delta": 0,
+        "paper_trade_audit_delta": 0,
+        # Existing paper row counts (audit visibility, not deltas)
+        "existing_paper_decision_count": paper_decision_count,
+        "existing_paper_position_count": paper_position_count,
+        "existing_paper_trade_event_count": paper_trade_event_count,
+        "existing_paper_trade_audit_count": paper_trade_audit_count,
+        # Guard integrity
+        "guard_table_deltas": guard_deltas,
+        "guard_tables_unchanged": not guard_deltas,
+        # Readiness assessment
+        "readiness_label": readiness_label,
+        "readiness_reasons": readiness_reasons,
+        "next_required_operator_step": (
+            "operator_may_proceed_to_lane8b_conservative_decision_creation"
+            if has_clean_memory
+            else "collect_more_clean_memory_windows_before_proceeding_to_lane8b"
+        ),
+        # Decision template field availability preview (informational, no values invented)
+        "decision_template_field_readiness": decision_template,
+    }
+
+
+def main_review_wait_avoid_no_action_readiness_once(
+    argv: Sequence[str] | None = None,
+) -> int:
+    parser = _base_parser(
+        "Review Lane 8A readiness for WAIT/AVOID/NO_ACTION conservative paper decisions"
+        " (report-only, no paper decisions created, no BUY unlock).",
+        ("json", "text"),
+    )
+    parser.add_argument("--operator-approved", action="store_true")
+    parser.add_argument("--chain", default="solana")
+    args = parser.parse_args(argv)
+    try:
+        payload = build_wait_avoid_no_action_readiness_payload(args)
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
