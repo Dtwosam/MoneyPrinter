@@ -4,8 +4,10 @@ Maps the GoPlus Solana token security API response into the field shape
 expected by ``insert_solana_safety_evidence``. All analysis is read-only.
 No keys or execution paths are involved.
 
-If critical fields are missing, the corresponding label is set to UNKNOWN,
-which causes safety_context_label = SAFETY_UNKNOWN and prevents clean memory.
+If critical hard-gate fields are missing, the corresponding label is set to
+UNKNOWN, which causes safety_context_label = SAFETY_UNKNOWN and prevents clean
+memory. Some source-coverage gaps are allowed for 15m memory learning only, but
+they are never labeled SAFETY_CLEAN.
 """
 
 from __future__ import annotations
@@ -192,12 +194,105 @@ REQUIRED_CLEAN_SAFETY_FIELDS: dict[str, str] = {
     "token_program_label": "SPL_TOKEN_OR_TOKEN_2022_VERIFIED",
 }
 
+SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY = "SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY"
+
+HARD_SAFETY_FIELD_EXPECTATIONS: dict[str, str] = {
+    "mint_authority_status": "MINT_AUTHORITY_RENOUNCED",
+    "freeze_authority_status": "FREEZE_AUTHORITY_DISABLED",
+    "metadata_mutability_status": "METADATA_IMMUTABLE",
+    "supply_sanity_label": "SUPPLY_SANITY_OK",
+    "token_program_label": "SPL_TOKEN_OR_TOKEN_2022_VERIFIED",
+}
+
+SOURCE_COVERAGE_PENDING_VALUES: dict[str, str] = {
+    "holder_concentration_label": "HOLDER_CONCENTRATION_UNKNOWN",
+    "liquidity_lock_or_burn_label": "LIQUIDITY_LOCK_OR_BURN_UNKNOWN",
+    "known_risk_flag_label": "KNOWN_RISK_FLAGS_UNKNOWN",
+}
+
+RESOLVED_HOLDER_CONCENTRATION_LABELS = {
+    "HOLDER_CONCENTRATION_HEALTHY",
+    "HOLDER_CONCENTRATION_CONCENTRATED",
+    "HOLDER_CONCENTRATION_EXTREME",
+}
+
+EXPLICIT_SAFETY_BLOCKERS: dict[str, set[str]] = {
+    "mint_authority_status": {"MINT_AUTHORITY_PRESENT"},
+    "freeze_authority_status": {"FREEZE_AUTHORITY_PRESENT"},
+    "metadata_mutability_status": {"METADATA_MUTABLE"},
+    "supply_sanity_label": {"SUPPLY_SANITY_CAUTION", "SUPPLY_SANITY_FAILED"},
+    "token_program_label": {"TOKEN_PROGRAM_UNSUPPORTED"},
+    "liquidity_lock_or_burn_label": {"LIQUIDITY_UNLOCKED_OR_DANGEROUS"},
+    "known_risk_flag_label": {"KNOWN_RISK_FLAGS_PRESENT"},
+}
+
+
+def safety_memory_policy_summary(evidence: Mapping[str, Any]) -> dict[str, Any]:
+    """Categorize safety evidence for memory use without turning it fully clean.
+
+    The 15m policy lets Printer learn from real memecoin behavior when hard
+    safety gates pass but some free-source coverage is still pending. This is
+    not a trading approval and not a SAFETY_CLEAN label.
+    """
+    hard_blocking: list[str] = []
+    unresolved: list[str] = []
+    source_coverage_pending: list[str] = []
+    observed_risk: list[str] = []
+    resolved: list[str] = []
+
+    for field, expected in HARD_SAFETY_FIELD_EXPECTATIONS.items():
+        value = evidence.get(field)
+        if value == expected:
+            resolved.append(field)
+            continue
+        if value is None or str(value).endswith("_UNKNOWN"):
+            unresolved.append(field)
+        hard_blocking.append(field)
+
+    holder_value = evidence.get("holder_concentration_label")
+    if holder_value in RESOLVED_HOLDER_CONCENTRATION_LABELS:
+        resolved.append("holder_concentration_label")
+        if holder_value != "HOLDER_CONCENTRATION_HEALTHY":
+            observed_risk.append("holder_concentration_label")
+    elif holder_value == SOURCE_COVERAGE_PENDING_VALUES["holder_concentration_label"]:
+        source_coverage_pending.append("holder_concentration_label")
+    else:
+        hard_blocking.append("holder_concentration_label")
+
+    for field in ("liquidity_lock_or_burn_label", "known_risk_flag_label"):
+        value = evidence.get(field)
+        if value == REQUIRED_CLEAN_SAFETY_FIELDS[field]:
+            resolved.append(field)
+        elif value == SOURCE_COVERAGE_PENDING_VALUES[field]:
+            source_coverage_pending.append(field)
+        else:
+            hard_blocking.append(field)
+
+    for field, blocked_values in EXPLICIT_SAFETY_BLOCKERS.items():
+        if evidence.get(field) in blocked_values and field not in hard_blocking:
+            hard_blocking.append(field)
+
+    return {
+        "resolved_safety_fields": list(dict.fromkeys(resolved)),
+        "unresolved_safety_fields": list(dict.fromkeys(unresolved)),
+        "source_coverage_pending_fields": list(dict.fromkeys(source_coverage_pending)),
+        "observed_risk_fields": list(dict.fromkeys(observed_risk)),
+        "hard_blocking_safety_fields": list(dict.fromkeys(hard_blocking)),
+        "safety_15m_memory_policy_label": (
+            SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY
+            if not hard_blocking
+            else "SAFETY_BLOCKED_FOR_15M_MEMORY"
+        ),
+        "safety_acceptable_for_15m_memory": not hard_blocking,
+    }
+
 
 def compute_safety_context_label(evidence: Mapping[str, Any]) -> str:
     """Compute the safety_context_label from an evidence field dict.
 
     SAFETY_CLEAN requires every required field to be its clean value.
-    Any UNKNOWN field forces SAFETY_UNKNOWN.
+    Optional unavailable source coverage remains SAFETY_UNKNOWN in storage,
+    while safety_memory_policy_summary exposes 15m-only memory eligibility.
     TOKEN_PROGRAM_UNSUPPORTED forces SAFETY_UNSAFE.
     Otherwise SAFETY_CAUTION.
     """

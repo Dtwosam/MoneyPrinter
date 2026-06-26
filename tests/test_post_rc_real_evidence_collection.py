@@ -31,6 +31,7 @@ from printer_v1.evidence_fill.real import (
     collect_real_evidence,
 )
 from printer_v1.operator_cli.commands import (
+    _clean_safety_evidence_row,
     build_collect_real_evidence_once_payload,
     build_collect_context_once_payload,
     build_collect_token_snapshots_once_payload,
@@ -1651,7 +1652,9 @@ class KnownRiskFlagTests(unittest.TestCase):
 
 from printer_v1.safety.goplus_normalizer import (
     REQUIRED_CLEAN_SAFETY_FIELDS,
+    SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY,
     compute_safety_context_label,
+    safety_memory_policy_summary,
 )
 
 
@@ -1677,14 +1680,25 @@ class EffectiveSafetyMergeTests(unittest.TestCase):
     def test_missing_liquidity_lock_produces_safety_unknown(self):
         ev = {**self._all_clean(), "liquidity_lock_or_burn_label": "LIQUIDITY_LOCK_OR_BURN_UNKNOWN"}
         self.assertEqual(compute_safety_context_label(ev), "SAFETY_UNKNOWN")
+        self.assertEqual(
+            safety_memory_policy_summary(ev)["safety_15m_memory_policy_label"],
+            SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY,
+        )
 
     def test_missing_known_risk_produces_safety_unknown(self):
         ev = {**self._all_clean(), "known_risk_flag_label": "KNOWN_RISK_FLAGS_UNKNOWN"}
         self.assertEqual(compute_safety_context_label(ev), "SAFETY_UNKNOWN")
+        self.assertEqual(
+            safety_memory_policy_summary(ev)["safety_15m_memory_policy_label"],
+            SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY,
+        )
 
     def test_missing_holder_concentration_produces_safety_unknown(self):
         ev = {**self._all_clean(), "holder_concentration_label": "HOLDER_CONCENTRATION_UNKNOWN"}
         self.assertEqual(compute_safety_context_label(ev), "SAFETY_UNKNOWN")
+        policy = safety_memory_policy_summary(ev)
+        self.assertEqual(policy["safety_15m_memory_policy_label"], SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY)
+        self.assertIn("holder_concentration_label", policy["source_coverage_pending_fields"])
 
     def test_missing_mint_authority_produces_safety_unknown(self):
         ev = {**self._all_clean(), "mint_authority_status": "MINT_AUTHORITY_UNKNOWN"}
@@ -1725,6 +1739,52 @@ class EffectiveSafetyMergeTests(unittest.TestCase):
     def test_concentrated_holders_does_not_produce_safety_clean(self):
         ev = {**self._all_clean(), "holder_concentration_label": "HOLDER_CONCENTRATION_CONCENTRATED"}
         self.assertNotEqual(compute_safety_context_label(ev), "SAFETY_CLEAN")
+        policy = safety_memory_policy_summary(ev)
+        self.assertEqual(policy["safety_15m_memory_policy_label"], SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY)
+        self.assertIn("holder_concentration_label", policy["observed_risk_fields"])
+
+    def test_extreme_holders_are_observed_risk_not_15m_hard_blocker(self):
+        ev = {**self._all_clean(), "holder_concentration_label": "HOLDER_CONCENTRATION_EXTREME"}
+        self.assertNotEqual(compute_safety_context_label(ev), "SAFETY_CLEAN")
+        policy = safety_memory_policy_summary(ev)
+        self.assertEqual(policy["safety_15m_memory_policy_label"], SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY)
+        self.assertIn("holder_concentration_label", policy["observed_risk_fields"])
+        self.assertNotIn("holder_concentration_label", policy["hard_blocking_safety_fields"])
+
+    def test_optional_source_pending_is_15m_only_memory_acceptable(self):
+        ev = {
+            **self._all_clean(),
+            "holder_concentration_label": "HOLDER_CONCENTRATION_UNKNOWN",
+            "liquidity_lock_or_burn_label": "LIQUIDITY_LOCK_OR_BURN_UNKNOWN",
+            "known_risk_flag_label": "KNOWN_RISK_FLAGS_UNKNOWN",
+            "safety_context_label": "SAFETY_UNKNOWN",
+            "source_status": "COMPLETE",
+            "data_quality_label": "CLEAN_DATA",
+            "target_status": "TARGET_MATCH",
+            "freshness_label": "SAFETY_EVIDENCE_FRESH",
+            "paper_only_context": 1,
+            "source_request_id": 1,
+            "source_response_id": 1,
+            "source_failure_id": None,
+        }
+        self.assertTrue(_clean_safety_evidence_row(ev, window_kind="WINDOW_15M"))
+        self.assertFalse(_clean_safety_evidence_row(ev, window_kind="WINDOW_1H"))
+
+    def test_hard_safety_blocker_is_not_15m_memory_acceptable(self):
+        ev = {
+            **self._all_clean(),
+            "mint_authority_status": "MINT_AUTHORITY_PRESENT",
+            "safety_context_label": "SAFETY_CAUTION",
+            "source_status": "COMPLETE",
+            "data_quality_label": "CLEAN_DATA",
+            "target_status": "TARGET_MATCH",
+            "freshness_label": "SAFETY_EVIDENCE_FRESH",
+            "paper_only_context": 1,
+            "source_request_id": 1,
+            "source_response_id": 1,
+            "source_failure_id": None,
+        }
+        self.assertFalse(_clean_safety_evidence_row(ev, window_kind="WINDOW_15M"))
 
     def test_empty_evidence_is_safety_unknown(self):
         self.assertEqual(compute_safety_context_label({}), "SAFETY_UNKNOWN")
@@ -1989,7 +2049,10 @@ class OperatorOutputEnhancedTests(unittest.TestCase):
     def test_partial_safety_gives_nonempty_unresolved_fields(self):
         """GoPlus partial payload (missing holder + liquidity) → unresolved fields present."""
         payload = self._run_with_transports(_goplus_real_solana_payload("out-mint"))
-        self.assertGreater(len(payload["unresolved_safety_fields"]), 0)
+        self.assertEqual(payload["unresolved_safety_fields"], [])
+        self.assertIn("holder_concentration_label", payload["source_coverage_pending_fields"])
+        self.assertIn("liquidity_lock_or_burn_label", payload["source_coverage_pending_fields"])
+        self.assertTrue(payload["safety_acceptable_for_15m_memory"])
 
     def test_partial_safety_gives_clean_eligible_false(self):
         payload = self._run_with_transports(_goplus_real_solana_payload("out-mint"))
@@ -2052,7 +2115,7 @@ class OperatorOutputEnhancedTests(unittest.TestCase):
         self.assertEqual(payload["holder_rpc_failure_type"], "solana_rpc_rate_limited")
         self.assertTrue(payload["holder_rpc_rate_limited"])
         self.assertEqual(payload["holder_rpc_source_used"], "rpc.example.test")
-        self.assertIn("holder_concentration_label", payload["unresolved_safety_fields"])
+        self.assertIn("holder_concentration_label", payload["source_coverage_pending_fields"])
         self.assertIn("rate limited", payload["next_step_hint"].lower())
         self.assertIn("operator-approved free/read-only RPC endpoint", payload["next_step_hint"])
         self.assertNotIn("secret-token", json.dumps(payload))

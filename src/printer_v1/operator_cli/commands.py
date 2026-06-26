@@ -86,6 +86,9 @@ from printer_v1.evidence_fill.real import (
     RealEvidenceTarget,
     collect_real_evidence,
 )
+from printer_v1.safety.goplus_normalizer import (
+    safety_memory_policy_summary,
+)
 from printer_v1.sources.jupiter_quote import (
     DEFAULT_PAPER_AMOUNT_LAMPORTS as JUPITER_DEFAULT_PAPER_AMOUNT,
     DEFAULT_SLIPPAGE_BPS as JUPITER_DEFAULT_SLIPPAGE_BPS,
@@ -1020,11 +1023,11 @@ def _resolve_real_evidence_target(
 def _safety_field_resolution(
     connection: sqlite3.Connection,
     result: RealEvidenceFillResult,
-) -> tuple[list[str], list[str], str]:
+) -> dict[str, Any]:
     """Read back the best inserted safety evidence row and compute which required fields
     are resolved (at their clean value) vs still unresolved.
 
-    Returns (resolved_fields, unresolved_fields, safety_context_label).
+    Returns resolved/pending/observed/blocking safety buckets plus label.
     Prefers the RPC holder merged row over the raw GoPlus row when both exist,
     because the merged row has the updated holder_concentration_label.
     """
@@ -1045,12 +1048,24 @@ def _safety_field_resolution(
             break
 
     if evidence_row is None:
-        return [], list(REQUIRED_CLEAN_SAFETY_FIELDS.keys()), "SAFETY_UNKNOWN"
+        return {
+            "resolved_safety_fields": [],
+            "unresolved_safety_fields": list(REQUIRED_CLEAN_SAFETY_FIELDS.keys()),
+            "source_coverage_pending_fields": [],
+            "observed_risk_fields": [],
+            "hard_blocking_safety_fields": list(REQUIRED_CLEAN_SAFETY_FIELDS.keys()),
+            "safety_context_label": "SAFETY_UNKNOWN",
+            "safety_15m_memory_policy_label": "SAFETY_BLOCKED_FOR_15M_MEMORY",
+            "safety_acceptable_for_15m_memory": False,
+        }
 
-    resolved = [k for k, v in REQUIRED_CLEAN_SAFETY_FIELDS.items() if evidence_row.get(k) == v]
-    unresolved = [k for k in REQUIRED_CLEAN_SAFETY_FIELDS if k not in resolved]
+    policy = safety_memory_policy_summary(evidence_row)
     safety_label = str(evidence_row.get("safety_context_label") or "SAFETY_UNKNOWN")
-    return resolved, unresolved, safety_label
+
+    return {
+        **policy,
+        "safety_context_label": safety_label,
+    }
 
 
 def _holder_rpc_summary(
@@ -1110,9 +1125,7 @@ def build_collect_real_evidence_once_payload(args: argparse.Namespace) -> dict[s
             holder_rpc_fallback_url=solana_rpc_fallback_url,
         )
         connection.commit()
-        resolved_fields, unresolved_fields, safety_context_label = _safety_field_resolution(
-            connection, result
-        )
+        safety_resolution = _safety_field_resolution(connection, result)
     except Exception:
         connection.rollback()
         raise
@@ -1138,19 +1151,27 @@ def build_collect_real_evidence_once_payload(args: argparse.Namespace) -> dict[s
         if item.evidence_type.startswith("jupiter_quote_") and item.inserted
     ]
     holder_rpc = _holder_rpc_summary(result, configured_rpc_url=solana_rpc_url)
-    overall_clean_eligible = len(unresolved_fields) == 0 and bool(resolved_fields)
+    resolved_fields = safety_resolution["resolved_safety_fields"]
+    unresolved_fields = safety_resolution["unresolved_safety_fields"]
+    source_coverage_pending_fields = safety_resolution["source_coverage_pending_fields"]
+    observed_risk_fields = safety_resolution["observed_risk_fields"]
+    hard_blocking_safety_fields = safety_resolution["hard_blocking_safety_fields"]
+    safety_context_label = safety_resolution["safety_context_label"]
+    safety_15m_memory_policy_label = safety_resolution["safety_15m_memory_policy_label"]
+    safety_acceptable_for_15m_memory = bool(safety_resolution["safety_acceptable_for_15m_memory"])
+    overall_clean_eligible = safety_context_label == "SAFETY_CLEAN" and bool(resolved_fields)
     overall_audit_only = not overall_clean_eligible
 
-    if unresolved_fields:
+    if hard_blocking_safety_fields or unresolved_fields or source_coverage_pending_fields:
         if holder_rpc["holder_rpc_rate_limited"]:
             holder_hint = (
                 "Holder concentration remains unresolved because Solana RPC was rate limited. "
                 "Use an operator-approved free/read-only RPC endpoint with --solana-rpc-url "
                 "or retry later. "
             )
-        elif "holder_concentration_label" in unresolved_fields:
+        elif "holder_concentration_label" in source_coverage_pending_fields:
             holder_hint = (
-                "Holder concentration remains unresolved. Use an operator-approved "
+                "Holder concentration is still source coverage pending. Use an operator-approved "
                 "free/read-only RPC endpoint with --solana-rpc-url or retry later. "
             )
         else:
@@ -1194,6 +1215,11 @@ def build_collect_real_evidence_once_payload(args: argparse.Namespace) -> dict[s
         "rejected_or_failed": result.rejected_or_failed,
         "resolved_safety_fields": resolved_fields,
         "unresolved_safety_fields": unresolved_fields,
+        "source_coverage_pending_fields": source_coverage_pending_fields,
+        "observed_risk_fields": observed_risk_fields,
+        "hard_blocking_safety_fields": hard_blocking_safety_fields,
+        "safety_15m_memory_policy_label": safety_15m_memory_policy_label,
+        "safety_acceptable_for_15m_memory": safety_acceptable_for_15m_memory,
         "safety_sources_used": safety_sources_used,
         "quote_sources_used": quote_sources_used,
         "clean_eligible": overall_clean_eligible,
@@ -3782,6 +3808,7 @@ def _record_first_memory_window(
             "token_id": target["token_id"],
             "pair_id": target["pair_id"],
             "snapshot_end_id": snapshot["id"],
+            "window_kind": window_kind,
         },
         labels=raw_context_labels,
     )
@@ -4053,6 +4080,7 @@ def build_memory_window_once_payload(args: argparse.Namespace) -> dict[str, Any]
                     "token_id": target["token_id"],
                     "pair_id": target["pair_id"],
                     "snapshot_end_id": snapshot["id"],
+                    "window_kind": window_kind,
                 },
                 labels=_context_memory_labels(context_rows),
             )
@@ -4344,18 +4372,29 @@ def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
     return row is not None
 
 
-def _clean_safety_evidence_row(row: dict[str, Any] | None) -> bool:
-    return bool(row) and (
+def _clean_safety_evidence_row(
+    row: dict[str, Any] | None,
+    *,
+    window_kind: str | None = None,
+) -> bool:
+    if not row:
+        return False
+    base_clean = (
         row.get("source_status") in {"COMPLETE", "PARTIAL"}
         and row.get("data_quality_label") in {"CLEAN_DATA", "ACCEPTABLE_PARTIAL_DATA"}
         and row.get("target_status") == "TARGET_MATCH"
         and row.get("freshness_label") in {"SAFETY_EVIDENCE_FRESH", "SAFETY_EVIDENCE_ACCEPTABLE"}
-        and row.get("safety_context_label") == "SAFETY_CLEAN"
         and bool(row.get("paper_only_context"))
         and row.get("source_request_id") is not None
         and row.get("source_response_id") is not None
         and row.get("source_failure_id") is None
     )
+    if not base_clean:
+        return False
+    if row.get("safety_context_label") == "SAFETY_CLEAN":
+        return True
+    policy = safety_memory_policy_summary(row)
+    return window_kind == "WINDOW_15M" and bool(policy["safety_acceptable_for_15m_memory"])
 
 
 def _clean_quote_evidence_row(row: dict[str, Any] | None, direction: str) -> bool:
@@ -4399,6 +4438,10 @@ def _safety_evidence_blocker(row: dict[str, Any] | None) -> str:
         return "SAFETY_EVIDENCE_SOURCE_NOT_CLEAN"
     if not bool(row.get("paper_only_context")):
         return "SAFETY_EVIDENCE_SOURCE_NOT_CLEAN"
+    policy = safety_memory_policy_summary(row)
+    hard_blockers = policy.get("hard_blocking_safety_fields") or []
+    if hard_blockers:
+        return "SAFETY_EVIDENCE_HARD_BLOCKER_" + "_".join(str(field).upper() for field in hard_blockers)
     return "NO_VALID_SAFETY_EVIDENCE_FOR_TARGET"
 
 
@@ -4478,6 +4521,7 @@ def _apply_clean_audit_evidence_labels(
     pair_id = int(window["pair_id"]) if window.get("pair_id") is not None else None
     snapshot_id = int(window["snapshot_end_id"]) if window.get("snapshot_end_id") is not None else None
     memory_window_id = int(window["id"]) if window.get("id") is not None else None
+    window_kind = str(window.get("window_kind") or "")
     overlays: dict[str, Any] = {
         "safety_evidence_applied": False,
         "entry_quote_evidence_applied": False,
@@ -4494,9 +4538,22 @@ def _apply_clean_audit_evidence_labels(
         memory_window_id=memory_window_id,
     )
     overlays["safety_evidence_row_id"] = safety_row.get("id")
-    if _clean_safety_evidence_row(safety_row):
-        effective["safety_status_label"] = safety_row["safety_context_label"]
-        effective["rug_risk_label"] = "RUG_RISK_LOW"
+    safety_policy = safety_memory_policy_summary(safety_row) if safety_row else {}
+    overlays["safety_15m_memory_policy_label"] = safety_policy.get("safety_15m_memory_policy_label")
+    overlays["source_coverage_pending_fields"] = safety_policy.get("source_coverage_pending_fields", [])
+    overlays["observed_risk_fields"] = safety_policy.get("observed_risk_fields", [])
+    overlays["hard_blocking_safety_fields"] = safety_policy.get("hard_blocking_safety_fields", [])
+    if _clean_safety_evidence_row(safety_row, window_kind=window_kind):
+        if safety_row["safety_context_label"] == "SAFETY_CLEAN":
+            effective["safety_status_label"] = safety_row["safety_context_label"]
+            effective["rug_risk_label"] = "RUG_RISK_LOW"
+        else:
+            effective["safety_status_label"] = safety_policy.get("safety_15m_memory_policy_label")
+            effective["rug_risk_label"] = (
+                "RUG_RISK_OBSERVED_FOR_15M"
+                if safety_policy.get("observed_risk_fields")
+                else "RUG_RISK_ACCEPTABLE_FOR_15M"
+            )
         overlays["safety_evidence_applied"] = True
     else:
         overlays["evidence_blockers"].append(_safety_evidence_blocker(safety_row))
