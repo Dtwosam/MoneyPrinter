@@ -16,6 +16,8 @@ Use these documents as the source of truth:
 
 - docs/printer-v1-final-build-order.md
 
+- docs/printer-v1-memory-factory-guide.md
+
 
 
 ## Core Goal
