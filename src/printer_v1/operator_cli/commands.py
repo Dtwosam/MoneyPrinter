@@ -5934,7 +5934,7 @@ def main_audit_paper_decision_once(argv: Sequence[str] | None = None) -> int:
 PHASE35_SELF_CHECK_JOB_NAME = "phase35_scheduler_single_tick_self_check"
 PHASE35_SELF_CHECK_JOB_KIND = "BACKUP_SOURCE_CHECK"
 PHASE35_LOCK_OWNER = "phase35_scheduler_single_tick"
-PHASE35_SAFE_JOB_KINDS = {PHASE35_SELF_CHECK_JOB_KIND}
+PHASE35_SAFE_JOB_KINDS = {PHASE35_SELF_CHECK_JOB_KIND, "TRACK_FAST_FIRST_15M"}
 PHASE36_SELF_CHECK_JOB_NAME = "phase36_bounded_self_check"
 PHASE36_LOCK_OWNER = "phase36_bounded_operator_run"
 PHASE36_MAX_JOBS_LIMIT = 5
@@ -6084,6 +6084,18 @@ def _fail_scheduler_job_for_tick(connection: sqlite3.Connection, job_id: int, er
 def _execute_phase35_scheduler_job(connection: sqlite3.Connection, job: sqlite3.Row) -> dict[str, Any]:
     if str(job["job_kind"]) not in PHASE35_SAFE_JOB_KINDS:
         raise ValueError("UNSUPPORTED_JOB_KIND_PHASE35")
+
+    if str(job["job_kind"]) == "TRACK_FAST_FIRST_15M":
+        from printer_v1.operator_cli.e2h_runtime_handler import (
+            execute_track_fast_first_15m_job,
+        )
+        result = execute_track_fast_first_15m_job(connection, job)
+        if not result.get("executed", False):
+            blocked_reason = result.get("blocked_reason") or "; ".join(
+                result.get("blocked_gates", ["handler blocked"])
+            )
+            raise ValueError(f"TRACK_FAST_FIRST_15M_HANDLER_BLOCKED: {blocked_reason}")
+        return result
 
     decision = connection.execute(
         "SELECT * FROM printer_paper_decisions ORDER BY id DESC LIMIT 1"

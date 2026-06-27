@@ -167,24 +167,47 @@ _AUDIT_TABLES: tuple[str, ...] = (
 
 
 def _check_15m_cycle_runtime_available() -> tuple[bool, str]:
-    """Check if a real TRACK_FAST_FIRST_15M cycle runtime handler is implemented.
+    """Check if a real TRACK_FAST_FIRST_15M cycle runtime handler is available.
 
     Returns (available: bool, reason: str).
 
-    Currently returns (False, reason) because the handler does not exist.
-    Phase 35/36 bounded runner only handles BACKUP_SOURCE_CHECK jobs.
-    TRACK_FAST_FIRST_15M is not in PHASE35_SAFE_JOB_KINDS.
+    Lane E2H registered TRACK_FAST_FIRST_15M in PHASE35_SAFE_JOB_KINDS.
+    However, real source transport is still fixture-only (Phase 23 boundary).
+    Returns (False, reason) until a real source adapter replaces FixtureSourceAdapter.
 
-    When a real handler is built in a future lane, update this function
-    and the gate that depends on it.
+    When real source transport is implemented, e2h_runtime_handler
+    check_real_source_transport_available() will return (True, ''), and this
+    function will return (True, ...).
+
+    Patchable by tests for happy-path E2G testing.
     """
+    try:
+        from printer_v1.operator_cli.e2h_runtime_handler import (
+            check_real_source_transport_available,
+            is_handler_registered,
+        )
+    except ImportError:
+        return (
+            False,
+            "TRACK_FAST_FIRST_15M handler module not importable (e2h_runtime_handler)",
+        )
+
+    if not is_handler_registered():
+        return (False, "TRACK_FAST_FIRST_15M runtime handler is not registered")
+
+    transport_ok, transport_reason = check_real_source_transport_available()
+    if not transport_ok:
+        return (
+            False,
+            (
+                "TRACK_FAST_FIRST_15M handler registered (Lane E2H) but real"
+                " source transport unavailable: " + transport_reason
+            ),
+        )
+
     return (
-        False,
-        (
-            "TRACK_FAST_FIRST_15M runtime job handler not implemented;"
-            " Phase 35/36 bounded runner only handles BACKUP_SOURCE_CHECK;"
-            " a real 15m cycle handler must be built before this gate can pass"
-        ),
+        True,
+        "TRACK_FAST_FIRST_15M handler registered and real source transport available",
     )
 
 

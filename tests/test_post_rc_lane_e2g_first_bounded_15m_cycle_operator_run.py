@@ -270,11 +270,12 @@ class LaneE2GRuntimePathTests(unittest.TestCase):
             "reason must mention missing handler",
         )
 
-    def test_runtime_reason_mentions_phase35(self):
+    def test_runtime_reason_mentions_transport_or_handler_state(self):
         _, reason = _check_15m_cycle_runtime_available()
         self.assertTrue(
-            "Phase 35" in reason or "BACKUP_SOURCE_CHECK" in reason,
-            "reason must mention Phase 35 or BACKUP_SOURCE_CHECK",
+            "Phase 23" in reason or "fixture" in reason.lower()
+            or "transport" in reason.lower() or "BACKUP_SOURCE_CHECK" in reason,
+            "reason must mention the blocking cause (transport, fixture, or prior handler state)",
         )
 
 
