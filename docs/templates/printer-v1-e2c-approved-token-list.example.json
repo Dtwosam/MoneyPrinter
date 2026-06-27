@@ -1,0 +1,50 @@
+{
+  "_template_note": "PLACEHOLDER FILE. Replace all token_mint values with real operator-approved Solana token mint addresses before use. Do not pass this file to the preflight command until all placeholder values are replaced and approved_by_operator is true.",
+  "_rules": {
+    "token_count": "1 or 2 tokens only. First bounded E2C cycle cap is 2.",
+    "token_mint_format": "Solana base58 address, 43-44 characters, base58 alphabet only (no 0, O, I, l).",
+    "lifecycle_lane_values": ["TRACK_FAST", "TRACK_NORMAL"],
+    "no_invented_addresses": "Printer does not generate or recommend token addresses. Operator must supply real addresses independently.",
+    "no_financial_advice": "This is a paper-trading tracking input only. No recommendation or investment framing."
+  },
+  "tokens": [
+    {
+      "token_mint": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "_placeholder_note_mint_1": "REPLACE with a real Solana base58 token mint address (43 chars). This placeholder (43 'A' chars) is structurally valid but is not a real token.",
+      "lifecycle_lane": "TRACK_FAST",
+      "operator_note": "Replace this note with your operator annotation for audit visibility. Example: identified via manual review on YYYY-MM-DD.",
+      "approved_by_operator": false,
+      "_placeholder_note_approval": "Set approved_by_operator to true only after replacing the mint and reviewing all fields."
+    },
+    {
+      "token_mint": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+      "_placeholder_note_mint_2": "REPLACE with a real Solana base58 token mint address (44 chars). This placeholder (44 'B' chars) is structurally valid but is not a real token.",
+      "lifecycle_lane": "TRACK_NORMAL",
+      "operator_note": "Replace this note with your operator annotation for audit visibility.",
+      "approved_by_operator": false,
+      "_placeholder_note_approval": "Set approved_by_operator to true only after replacing the mint and reviewing all fields."
+    }
+  ],
+  "cycle_constraints": {
+    "max_tokens": 2,
+    "min_tokens": 1,
+    "max_track_fast": 3,
+    "max_track_normal": 7,
+    "max_active_tokens": 10,
+    "first_cycle_cap": 2,
+    "zero_clean_memories_is_valid_outcome": true
+  },
+  "hard_locks_reminder": {
+    "source_fetching_enabled": false,
+    "scheduler_execution_enabled": false,
+    "snapshot_creation_enabled": false,
+    "memory_creation_enabled": false,
+    "retrieval_activation_enabled": false,
+    "paper_decisions_enabled": false,
+    "buy_enabled": false,
+    "sell_enabled": false,
+    "hold_enabled": false,
+    "positions_enabled": false,
+    "pnl_enabled": false
+  }
+}
