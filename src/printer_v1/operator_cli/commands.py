@@ -9095,6 +9095,49 @@ def main_rehearse_bounded_15m_memory_factory_cycle(argv=None) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Lane E2D -- First Bounded Real Cycle Decision Package
+# ---------------------------------------------------------------------------
+
+def main_decide_first_bounded_15m_cycle(argv=None) -> int:
+    """E2D decision gate: determine readiness for first bounded real cycle."""
+    from printer_v1.operator_cli.e2d_decision import build_e2d_decision_payload
+
+    parser = _base_parser(
+        "E2D decision gate. Wraps the E2C-F operator review and applies a final"
+        " automated decision. Outputs GO_TO_OPERATOR_APPROVAL or BLOCKED."
+        " GO_TO_OPERATOR_APPROVAL means all automated gates passed and the package"
+        " is ready for human operator approval review only -- it does NOT start real"
+        " execution. No source fetching. No scheduler execution. No DB mutation."
+        " No paper decisions.",
+        ("json",),
+    )
+    parser.add_argument(
+        "--token-list-path",
+        dest="token_list_path",
+        metavar="PATH",
+        help="Path to operator-approved token list JSON file.",
+    )
+    parser.add_argument(
+        "--backup-confirmed",
+        action="store_true",
+        dest="backup_confirmed",
+        help="Confirm that a DB backup exists before running this decision.",
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        payload = build_e2d_decision_payload(
+            args.token_list_path,
+            args.db_path,
+            backup_confirmed=args.backup_confirmed,
+        )
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
+# ---------------------------------------------------------------------------
 # Lane E2C-F -- Operator Token List Review and E2C Closeout Package
 # ---------------------------------------------------------------------------
 
