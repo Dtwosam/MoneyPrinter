@@ -8986,3 +8986,56 @@ def main_plan_conservative_15m_memory_factory_once(
         return 0
     except Exception as exc:
         return _print_error(exc)
+
+
+# ---------------------------------------------------------------------------
+# Lane E2C-C -- Active Cycle Readiness Package
+# ---------------------------------------------------------------------------
+
+def main_plan_bounded_15m_memory_factory_cycle(argv=None) -> int:
+    """Dry-run readiness package for a first bounded E2C source-governed cycle."""
+    from printer_v1.operator_cli.e2c_readiness import build_e2c_readiness_payload
+
+    parser = _base_parser(
+        "Dry-run readiness package for a first bounded E2C source-governed 15m Memory"
+        " Factory cycle. Validates operator-approved token list, checks DB preflight,"
+        " plans source budget via Source Governor, and produces a cycle plan."
+        " No source fetching. No scheduler execution. No DB mutation. No paper decisions.",
+        ("json",),
+    )
+    parser.add_argument(
+        "--token",
+        action="append",
+        dest="tokens",
+        metavar="MINT:LIFECYCLE_LANE",
+        help=(
+            "Operator-approved token mint and lifecycle lane in MINT:LIFECYCLE_LANE format"
+            " (TRACK_FAST or TRACK_NORMAL). Repeat for a second token (max 2)."
+        ),
+    )
+    parser.add_argument(
+        "--backup-confirmed",
+        action="store_true",
+        dest="backup_confirmed",
+        help="Confirm that a DB backup exists before running this preflight check.",
+    )
+    args = parser.parse_args(argv)
+
+    token_entries: list[dict] = []
+    for raw in args.tokens or []:
+        if ":" in raw:
+            mint, lane = raw.split(":", 1)
+            token_entries.append({"token_mint": mint.strip(), "lifecycle_lane": lane.strip()})
+        else:
+            token_entries.append({"token_mint": raw.strip(), "lifecycle_lane": ""})
+
+    try:
+        payload = build_e2c_readiness_payload(
+            token_entries,
+            args.db_path,
+            backup_confirmed=args.backup_confirmed,
+        )
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
