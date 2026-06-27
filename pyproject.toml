@@ -42,6 +42,7 @@ printer-review-bounded-15m-token-list-rehearsal = "printer_v1.operator_cli.comma
 printer-decide-first-bounded-15m-cycle = "printer_v1.operator_cli.commands:main_decide_first_bounded_15m_cycle"
 printer-build-first-bounded-15m-approval-packet = "printer_v1.operator_cli.commands:main_build_first_bounded_15m_approval_packet"
 printer-run-first-bounded-15m-cycle = "printer_v1.operator_cli.commands:main_run_first_bounded_15m_cycle"
+printer-run-e2g-first-bounded-15m-operator-run = "printer_v1.operator_cli.commands:main_run_e2g_first_bounded_15m_operator_run"
 
 [tool.unittest]
 start-directory = "tests"

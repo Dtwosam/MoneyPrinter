@@ -9095,6 +9095,69 @@ def main_rehearse_bounded_15m_memory_factory_cycle(argv=None) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Lane E2G -- First Bounded 15m Cycle Operator Run Boundary
+# ---------------------------------------------------------------------------
+
+def main_run_e2g_first_bounded_15m_operator_run(argv=None) -> int:
+    """E2G operator run boundary: pre-run gate for first bounded 15m cycle."""
+    from printer_v1.operator_cli.e2g_operator_run import (
+        build_e2g_operator_run_payload,
+    )
+
+    parser = _base_parser(
+        "E2G operator run boundary. Wraps the E2F execution boundary and applies"
+        " final pre-run gates including backup proof check and runtime handler"
+        " availability. Outputs OPERATOR_RUN_READY or BLOCKED."
+        " OPERATOR_RUN_READY means all gates passed; operator must then run"
+        " this command manually against the real DB after committing and tagging"
+        " Lane E2G. Claude did not run the real cycle. No source fetching."
+        " No scheduler execution. No DB mutation in this planning call."
+        " Currently outputs BLOCKED because TRACK_FAST_FIRST_15M handler is"
+        " not yet implemented.",
+        ("json",),
+    )
+    parser.add_argument(
+        "--token-list-path",
+        dest="token_list_path",
+        metavar="PATH",
+        help="Path to operator-approved token list JSON file.",
+    )
+    parser.add_argument(
+        "--approval-confirmed",
+        action="store_true",
+        dest="approval_confirmed",
+        help="Operator confirms E2E APPROVAL_PACKET_READY has been reviewed.",
+    )
+    parser.add_argument(
+        "--backup-confirmed",
+        action="store_true",
+        dest="backup_confirmed",
+        help="Confirm that a DB backup exists before this boundary check.",
+    )
+    parser.add_argument(
+        "--backup-proof-path",
+        dest="backup_proof_path",
+        metavar="PATH",
+        default=None,
+        help="Path to the existing DB backup file (proof backup was created).",
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        payload = build_e2g_operator_run_payload(
+            args.token_list_path,
+            args.db_path,
+            approval_confirmed=args.approval_confirmed,
+            backup_confirmed=args.backup_confirmed,
+            backup_proof_path=args.backup_proof_path,
+        )
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
+# ---------------------------------------------------------------------------
 # Lane E2F -- First Bounded 15m Cycle Execution Boundary
 # ---------------------------------------------------------------------------
 
