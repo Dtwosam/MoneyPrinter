@@ -9095,6 +9095,58 @@ def main_rehearse_bounded_15m_memory_factory_cycle(argv=None) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Lane E2F -- First Bounded 15m Cycle Execution Boundary
+# ---------------------------------------------------------------------------
+
+def main_run_first_bounded_15m_cycle(argv=None) -> int:
+    """E2F execution boundary: planning gate for first bounded 15m cycle."""
+    from printer_v1.operator_cli.e2f_execution_boundary import (
+        build_e2f_execution_boundary_payload,
+    )
+
+    parser = _base_parser(
+        "E2F execution boundary. Wraps the E2E approval packet and produces a"
+        " final planning boundary payload. Outputs CYCLE_READY_TO_RUN or BLOCKED."
+        " CYCLE_READY_TO_RUN means all gates passed. The operator must then run"
+        " this command manually against the real DB after committing and tagging"
+        " Lane E2F. Claude did not run the real cycle. No source fetching."
+        " No scheduler execution. No DB mutation in this planning call.",
+        ("json",),
+    )
+    parser.add_argument(
+        "--token-list-path",
+        dest="token_list_path",
+        metavar="PATH",
+        help="Path to operator-approved token list JSON file.",
+    )
+    parser.add_argument(
+        "--approval-confirmed",
+        action="store_true",
+        dest="approval_confirmed",
+        help="Operator confirms E2E APPROVAL_PACKET_READY has been reviewed.",
+    )
+    parser.add_argument(
+        "--backup-confirmed",
+        action="store_true",
+        dest="backup_confirmed",
+        help="Confirm that a DB backup exists before running this boundary check.",
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        payload = build_e2f_execution_boundary_payload(
+            args.token_list_path,
+            args.db_path,
+            approval_confirmed=args.approval_confirmed,
+            backup_confirmed=args.backup_confirmed,
+        )
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
+# ---------------------------------------------------------------------------
 # Lane E2E -- First Bounded Cycle Operator Approval Packet
 # ---------------------------------------------------------------------------
 
