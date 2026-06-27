@@ -9095,6 +9095,48 @@ def main_rehearse_bounded_15m_memory_factory_cycle(argv=None) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Lane E2E -- First Bounded Cycle Operator Approval Packet
+# ---------------------------------------------------------------------------
+
+def main_build_first_bounded_15m_approval_packet(argv=None) -> int:
+    """E2E approval packet: build operator approval packet for first bounded cycle."""
+    from printer_v1.operator_cli.e2e_approval_packet import build_e2e_approval_packet
+
+    parser = _base_parser(
+        "E2E approval packet. Wraps the E2D decision and builds a structured"
+        " operator approval packet for the future first bounded real source-governed"
+        " 15m Memory Factory cycle. Outputs APPROVAL_PACKET_READY or BLOCKED."
+        " APPROVAL_PACKET_READY does NOT start real execution. No source fetching."
+        " No scheduler execution. No DB mutation. No paper decisions.",
+        ("json",),
+    )
+    parser.add_argument(
+        "--token-list-path",
+        dest="token_list_path",
+        metavar="PATH",
+        help="Path to operator-approved token list JSON file.",
+    )
+    parser.add_argument(
+        "--backup-confirmed",
+        action="store_true",
+        dest="backup_confirmed",
+        help="Confirm that a DB backup exists before building this packet.",
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        payload = build_e2e_approval_packet(
+            args.token_list_path,
+            args.db_path,
+            backup_confirmed=args.backup_confirmed,
+        )
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
+# ---------------------------------------------------------------------------
 # Lane E2D -- First Bounded Real Cycle Decision Package
 # ---------------------------------------------------------------------------
 

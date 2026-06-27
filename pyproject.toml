@@ -40,6 +40,7 @@ printer-plan-bounded-15m-memory-factory-cycle = "printer_v1.operator_cli.command
 printer-rehearse-bounded-15m-memory-factory-cycle = "printer_v1.operator_cli.commands:main_rehearse_bounded_15m_memory_factory_cycle"
 printer-review-bounded-15m-token-list-rehearsal = "printer_v1.operator_cli.commands:main_review_bounded_15m_token_list_rehearsal"
 printer-decide-first-bounded-15m-cycle = "printer_v1.operator_cli.commands:main_decide_first_bounded_15m_cycle"
+printer-build-first-bounded-15m-approval-packet = "printer_v1.operator_cli.commands:main_build_first_bounded_15m_approval_packet"
 
 [tool.unittest]
 start-directory = "tests"
