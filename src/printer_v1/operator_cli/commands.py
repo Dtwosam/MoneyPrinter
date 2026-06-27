@@ -9092,3 +9092,44 @@ def main_rehearse_bounded_15m_memory_factory_cycle(argv=None) -> int:
         return 0
     except Exception as exc:
         return _print_error(exc)
+
+
+# ---------------------------------------------------------------------------
+# Lane E2C-F -- Operator Token List Review and E2C Closeout Package
+# ---------------------------------------------------------------------------
+
+def main_review_bounded_15m_token_list_rehearsal(argv=None) -> int:
+    """Final E2C operator token list review and closeout package."""
+    from printer_v1.operator_cli.e2c_operator_review import build_e2c_operator_review_payload
+
+    parser = _base_parser(
+        "Final E2C operator token list review. Loads a JSON token list file, validates"
+        " all operator approval fields, runs E2C-C readiness review and E2C-E fixture"
+        " rehearsal, and outputs READY_FOR_OPERATOR_DECISION or BLOCKED."
+        " No source fetching. No scheduler execution. No DB mutation. No paper decisions.",
+        ("json",),
+    )
+    parser.add_argument(
+        "--token-list-path",
+        dest="token_list_path",
+        metavar="PATH",
+        help="Path to operator-approved token list JSON file.",
+    )
+    parser.add_argument(
+        "--backup-confirmed",
+        action="store_true",
+        dest="backup_confirmed",
+        help="Confirm that a DB backup exists before running this review.",
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        payload = build_e2c_operator_review_payload(
+            args.token_list_path,
+            args.db_path,
+            backup_confirmed=args.backup_confirmed,
+        )
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)

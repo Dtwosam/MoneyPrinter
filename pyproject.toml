@@ -38,6 +38,7 @@ printer-review-conservative-paper-decision-once = "printer_v1.operator_cli.comma
 printer-plan-conservative-15m-memory-factory-once = "printer_v1.operator_cli.commands:main_plan_conservative_15m_memory_factory_once"
 printer-plan-bounded-15m-memory-factory-cycle = "printer_v1.operator_cli.commands:main_plan_bounded_15m_memory_factory_cycle"
 printer-rehearse-bounded-15m-memory-factory-cycle = "printer_v1.operator_cli.commands:main_rehearse_bounded_15m_memory_factory_cycle"
+printer-review-bounded-15m-token-list-rehearsal = "printer_v1.operator_cli.commands:main_review_bounded_15m_token_list_rehearsal"
 
 [tool.unittest]
 start-directory = "tests"
