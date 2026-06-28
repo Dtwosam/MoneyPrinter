@@ -455,6 +455,131 @@ class LaneE2QIdempotencyTests(_DbTestBase):
 
 
 # ---------------------------------------------------------------------------
+# E2Q-A: strict no-op idempotency — updated_at must not change on re-audit
+# ---------------------------------------------------------------------------
+
+class LaneE2QANoOpIdempotencyTests(_DbTestBase):
+    """E2Q-A: second identical audit must be a state-preserving no-op."""
+
+    def test_first_audit_row_updated_true(self):
+        _, _, _, win_id = self._make_clean_fixture()
+        r = self._run(win_id)
+        self.assertTrue(r.get("row_updated"))
+
+    def test_second_identical_audit_row_updated_false(self):
+        _, _, _, win_id = self._make_clean_fixture()
+        self._run(win_id)
+        r2 = self._run(win_id)
+        self.assertFalse(r2.get("row_updated"))
+
+    def test_second_identical_audit_does_not_change_updated_at(self):
+        _, _, _, win_id = self._make_clean_fixture()
+        self._run(win_id)
+        row_after_first = self._read_window(win_id)
+        updated_at_first = row_after_first["updated_at"]
+
+        self._run(win_id)
+        row_after_second = self._read_window(win_id)
+        self.assertEqual(row_after_second["updated_at"], updated_at_first)
+
+    def test_second_identical_audit_does_not_change_supporting_context_json(self):
+        _, _, _, win_id = self._make_clean_fixture()
+        self._run(win_id)
+        ctx_after_first = self._read_window(win_id)["supporting_context_json"]
+
+        self._run(win_id)
+        ctx_after_second = self._read_window(win_id)["supporting_context_json"]
+        self.assertEqual(ctx_after_second, ctx_after_first)
+
+    def test_second_identical_audit_does_not_change_rejection_reasons_json(self):
+        _, _, _, win_id = self._make_clean_fixture()
+        self._run(win_id)
+        rr_after_first = self._read_window(win_id)["rejection_reasons_json"]
+
+        self._run(win_id)
+        rr_after_second = self._read_window(win_id)["rejection_reasons_json"]
+        self.assertEqual(rr_after_second, rr_after_first)
+
+    def test_second_identical_audit_creates_no_extra_rows(self):
+        _, _, _, win_id = self._make_clean_fixture()
+        self._run(win_id)
+        self._run(win_id)
+        self.assertEqual(self._count_rows("printer_memory_windows"), 1)
+
+    def test_second_identical_audit_same_status(self):
+        _, _, _, win_id = self._make_clean_fixture()
+        r1 = self._run(win_id)
+        r2 = self._run(win_id)
+        self.assertEqual(r1.get("e2q_status"), r2.get("e2q_status"))
+
+    def test_dirty_second_audit_is_also_no_op(self):
+        """Re-auditing a dirty window with same evidence → row_updated=False."""
+        conn = self._connect()
+        try:
+            token_id = self._insert_token(conn)
+            pair_id = self._insert_pair(conn, token_id)
+            snap_id = self._insert_snapshot(conn, token_id, pair_id,
+                                            source_status="FAILED",
+                                            data_quality_label="DIRTY_DATA")
+            win_id = self._insert_window(conn, token_id, pair_id, snap_id)
+            conn.commit()
+        finally:
+            conn.close()
+        self._run(win_id)
+        r2 = self._run(win_id)
+        self.assertFalse(r2.get("row_updated"))
+
+    def test_dirty_second_audit_does_not_change_updated_at(self):
+        conn = self._connect()
+        try:
+            token_id = self._insert_token(conn)
+            pair_id = self._insert_pair(conn, token_id)
+            snap_id = self._insert_snapshot(conn, token_id, pair_id,
+                                            source_status="STALE",
+                                            data_quality_label="STALE_DATA")
+            win_id = self._insert_window(conn, token_id, pair_id, snap_id)
+            conn.commit()
+        finally:
+            conn.close()
+        self._run(win_id)
+        updated_at_first = self._read_window(win_id)["updated_at"]
+        self._run(win_id)
+        self.assertEqual(self._read_window(win_id)["updated_at"], updated_at_first)
+
+    def test_audit_only_second_audit_is_also_no_op(self):
+        """Re-auditing an audit-only window with same evidence → row_updated=False."""
+        conn = self._connect()
+        try:
+            token_id = self._insert_token(conn)
+            pair_id = self._insert_pair(conn, token_id)
+            snap_id = self._insert_snapshot(conn, token_id, pair_id)
+            win_id = self._insert_window(conn, token_id, pair_id, snap_id,
+                                         data_quality_label="ACCEPTABLE_PARTIAL_DATA")
+            conn.commit()
+        finally:
+            conn.close()
+        self._run(win_id)
+        r2 = self._run(win_id)
+        self.assertFalse(r2.get("row_updated"))
+
+    def test_audit_only_second_audit_does_not_change_updated_at(self):
+        conn = self._connect()
+        try:
+            token_id = self._insert_token(conn)
+            pair_id = self._insert_pair(conn, token_id)
+            snap_id = self._insert_snapshot(conn, token_id, pair_id)
+            win_id = self._insert_window(conn, token_id, pair_id, snap_id,
+                                         data_quality_label="ACCEPTABLE_PARTIAL_DATA")
+            conn.commit()
+        finally:
+            conn.close()
+        self._run(win_id)
+        updated_at_first = self._read_window(win_id)["updated_at"]
+        self._run(win_id)
+        self.assertEqual(self._read_window(win_id)["updated_at"], updated_at_first)
+
+
+# ---------------------------------------------------------------------------
 # Blocked: missing window
 # ---------------------------------------------------------------------------
 

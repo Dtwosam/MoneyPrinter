@@ -106,18 +106,40 @@ def _write_audit_result(
     rejection_reasons: list[str],
     audit_notes: list[str],
     now: str,
-) -> None:
-    existing_ctx_row = connection.execute(
-        "SELECT supporting_context_json FROM printer_memory_windows WHERE id = ?",
+) -> bool:
+    """Write classification fields back to the window row.
+
+    Returns True if the row was updated, False if the computed values were
+    already present (no-op — updated_at is not changed in the no-op case).
+    """
+    existing_row = connection.execute(
+        "SELECT memory_quality_label, memory_status, do_not_train,"
+        "       rejection_reasons_json, supporting_context_json"
+        " FROM printer_memory_windows WHERE id = ?",
         (window_id,),
     ).fetchone()
+
     try:
-        ctx = json.loads(existing_ctx_row["supporting_context_json"] or "{}")
+        ctx = json.loads(existing_row["supporting_context_json"] or "{}")
     except (json.JSONDecodeError, TypeError):
         ctx = {}
     ctx["e2q_audited"] = True
     ctx["e2q_audit_status"] = memory_quality_label
     ctx["e2q_audited_by"] = E2Q_CREATED_BY
+
+    new_rejection_json = json.dumps(rejection_reasons, sort_keys=True)
+    new_ctx_json = json.dumps(ctx, sort_keys=True)
+
+    # No-op check: skip the UPDATE if every field we'd write is already stored.
+    already_stored = (
+        existing_row["memory_quality_label"] == memory_quality_label
+        and existing_row["memory_status"] == memory_status
+        and int(existing_row["do_not_train"] or 0) == do_not_train
+        and (existing_row["rejection_reasons_json"] or "[]") == new_rejection_json
+        and (existing_row["supporting_context_json"] or "{}") == new_ctx_json
+    )
+    if already_stored:
+        return False
 
     connection.execute(
         """
@@ -134,12 +156,13 @@ def _write_audit_result(
             memory_quality_label,
             memory_status,
             do_not_train,
-            json.dumps(rejection_reasons, sort_keys=True),
-            json.dumps(ctx, sort_keys=True),
+            new_rejection_json,
+            new_ctx_json,
             now,
             window_id,
         ),
     )
+    return True
 
 
 def audit_15m_memory_window(
@@ -321,7 +344,7 @@ def audit_15m_memory_window(
     # Determine final classification
     now = _utc_now()
     if rejection_reasons:
-        _write_audit_result(
+        row_updated = _write_audit_result(
             connection, window_id,
             memory_quality_label="DIRTY_MEMORY",
             memory_status="DIRTY_MEMORY",
@@ -333,6 +356,7 @@ def audit_15m_memory_window(
         return {
             "e2q_status": E2Q_STATUS_DIRTY,
             "classified": True,
+            "row_updated": row_updated,
             "window_id": window_id,
             "snapshot_id": snapshot_id,
             "memory_quality_label": "DIRTY_MEMORY",
@@ -346,7 +370,7 @@ def audit_15m_memory_window(
         }
 
     if audit_notes:
-        _write_audit_result(
+        row_updated = _write_audit_result(
             connection, window_id,
             memory_quality_label="AUDIT_ONLY_MEMORY",
             memory_status="AUDIT_ONLY",
@@ -358,6 +382,7 @@ def audit_15m_memory_window(
         return {
             "e2q_status": E2Q_STATUS_AUDIT_ONLY,
             "classified": True,
+            "row_updated": row_updated,
             "window_id": window_id,
             "snapshot_id": snapshot_id,
             "memory_quality_label": "AUDIT_ONLY_MEMORY",
@@ -371,7 +396,7 @@ def audit_15m_memory_window(
         }
 
     # All quality gates passed — clean candidate.
-    _write_audit_result(
+    row_updated = _write_audit_result(
         connection, window_id,
         memory_quality_label="PARTIAL_MEMORY",
         memory_status="PARTIAL_MEMORY",
@@ -383,6 +408,7 @@ def audit_15m_memory_window(
     return {
         "e2q_status": E2Q_STATUS_CLEAN_CANDIDATE,
         "classified": True,
+        "row_updated": row_updated,
         "window_id": window_id,
         "snapshot_id": snapshot_id,
         "memory_quality_label": "PARTIAL_MEMORY",
