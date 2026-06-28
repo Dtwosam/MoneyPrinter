@@ -177,16 +177,41 @@ def check_source_governor(
     return decision.allowed, decision.reason
 
 
-def _check_forbidden_table_mutation(connection: sqlite3.Connection) -> list[str]:
-    """Return list of forbidden tables that contain unexpected rows."""
-    violations: list[str] = []
+def _snapshot_forbidden_counts(connection: sqlite3.Connection) -> dict[str, int]:
+    """Snapshot current row counts for all forbidden tables (before execution)."""
+    counts: dict[str, int] = {}
     for table in _FORBIDDEN_TABLES:
         try:
-            count = int(
+            counts[table] = int(
                 connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             )
-            if count > 0:
-                violations.append(f"{table}: {count} rows (must remain 0)")
+        except sqlite3.OperationalError:
+            counts[table] = 0
+    return counts
+
+
+def _check_forbidden_table_delta(
+    connection: sqlite3.Connection,
+    before_counts: dict[str, int],
+) -> list[str]:
+    """Return violations for forbidden tables that grew during execution.
+
+    Compares current counts against the before_counts snapshot taken before
+    execution. Pre-existing rows are allowed; only net-new rows during this
+    execution are violations.
+    """
+    violations: list[str] = []
+    for table in _FORBIDDEN_TABLES:
+        before = before_counts.get(table, 0)
+        try:
+            after = int(
+                connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            )
+            if after > before:
+                violations.append(
+                    f"{table}: +{after - before} new row(s)"
+                    f" (before={before}, after={after})"
+                )
         except sqlite3.OperationalError:
             pass
     return violations
@@ -207,8 +232,9 @@ def execute_track_fast_first_15m_job(
     2. No OTHER RUNNING jobs (excluding current job)
     3. No OTHER active locks (excluding current job)
     4. Source Governor budget allows the request
-    5. No forbidden table mutations detected
-    6. (Execute source call if adapter provided)
+    5. (Execute source call if adapter provided)
+    6. Forbidden table delta guard (post-execution): blocks if any forbidden
+       table grew during this execution. Pre-existing rows are allowed.
 
     adapter: optional FixtureSourceAdapter instance for testing. In production
     this is None; the transport gate blocks before reaching the execute path.
@@ -229,6 +255,9 @@ def execute_track_fast_first_15m_job(
             "positions_created": 0,
             "pnl_created": 0,
         }
+
+    # Snapshot forbidden table counts before execution (Gate 6 compares against this).
+    forbidden_before = _snapshot_forbidden_counts(connection)
 
     job_id: int = int(job["id"]) if job["id"] is not None else -1
     blocked_gates: list[str] = []
@@ -254,11 +283,6 @@ def execute_track_fast_first_15m_job(
     if not gov_ok:
         blocked_gates.append(f"source_governor_denied: {gov_reason}")
 
-    # Gate 5: forbidden table mutation guard
-    forbidden_violations = _check_forbidden_table_mutation(connection)
-    for v in forbidden_violations:
-        blocked_gates.append(f"forbidden_table_mutation: {v}")
-
     if blocked_gates:
         return {
             "handler": HANDLER_JOB_KIND,
@@ -271,7 +295,7 @@ def execute_track_fast_first_15m_job(
             "pnl_created": 0,
         }
 
-    # All gates passed. Execute source call if adapter provided.
+    # Gates 1-4 passed. Execute source call if adapter provided.
     source_results: list[dict[str, Any]] = []
     if adapter is not None:
         from printer_v1.sources.contracts import build_governed_source_request
@@ -298,6 +322,24 @@ def execute_track_fast_first_15m_job(
                 "failure_recorded": exec_result.failure_record is not None,
             }
         )
+
+    # Gate 6: forbidden table delta guard (post-execution).
+    # Blocks if any forbidden table gained rows during this execution.
+    # Pre-existing rows present before execution do not trigger this gate.
+    forbidden_violations = _check_forbidden_table_delta(connection, forbidden_before)
+    if forbidden_violations:
+        return {
+            "handler": HANDLER_JOB_KIND,
+            "status": E2H_STATUS_BLOCKED,
+            "executed": False,
+            "gate_failed": "forbidden_table_mutation",
+            "blocked_gates": [
+                f"forbidden_table_mutation: {v}" for v in forbidden_violations
+            ],
+            "paper_decisions_created": 0,
+            "positions_created": 0,
+            "pnl_created": 0,
+        }
 
     return {
         "handler": HANDLER_JOB_KIND,

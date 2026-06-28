@@ -105,7 +105,7 @@ _E2G_RUNTIME_PATCH = (
     "printer_v1.operator_cli.e2g_operator_run._check_15m_cycle_runtime_available"
 )
 _FORBIDDEN_CHECK_PATCH = (
-    "printer_v1.operator_cli.e2h_runtime_handler._check_forbidden_table_mutation"
+    "printer_v1.operator_cli.e2h_runtime_handler._check_forbidden_table_delta"
 )
 
 
@@ -139,6 +139,22 @@ class _DbTestBase(unittest.TestCase):
             "job_name": "e2h_test_job",
             "status": "PENDING",
         }
+
+    def _insert_paper_decision(self, n: int = 1) -> None:
+        """Insert n pre-existing paper decision rows (FK off, valid CHECK values)."""
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            for i in range(n):
+                conn.execute(
+                    "INSERT INTO printer_paper_decisions"
+                    " (token_id, decision_action, decision_status,"
+                    "  source_status, data_quality_label)"
+                    " VALUES (?, 'WAIT', 'PAPER_DECISION_BLOCKED', 'COMPLETE', 'CLEAN_DATA')",
+                    (9000 + i,),
+                )
+            conn.commit()
+        finally:
+            conn.close()
 
     def _insert_running_job(self, job_id: int = 999) -> None:
         conn = sqlite3.connect(self.db_path)
@@ -623,6 +639,110 @@ class LaneE2HForbiddenTableTests(_DbTestBase):
             conn.close()
         gates = result.get("blocked_gates", [])
         self.assertTrue(any("printer_paper_decisions" in g for g in gates))
+
+
+# ---------------------------------------------------------------------------
+# Lane E2K: forbidden table delta semantics
+# ---------------------------------------------------------------------------
+
+class LaneE2KForbiddenTableDeltaTests(_DbTestBase):
+    """E2K: Gate uses delta check — pre-existing rows allowed, new rows blocked."""
+
+    def test_preexisting_paper_decisions_allowed_when_delta_zero(self):
+        """Pre-existing paper_decisions rows must NOT block if unchanged during execution."""
+        self._insert_paper_decision(2)
+        self.assertEqual(self._count_rows("printer_paper_decisions"), 2)
+        conn = self._connect()
+        try:
+            with patch(_TRANSPORT_PATCH, return_value=(True, "")):
+                result = execute_track_fast_first_15m_job(conn, self._fake_job())
+        finally:
+            conn.close()
+        self.assertEqual(result["status"], E2H_STATUS_EXECUTED)
+        self.assertTrue(result["executed"])
+        self.assertEqual(self._count_rows("printer_paper_decisions"), 2)
+
+    def test_delta_blocks_if_paper_decisions_grow(self):
+        """Any net-new printer_paper_decisions row during execution must block."""
+        violation = ["printer_paper_decisions: +1 new row(s) (before=0, after=1)"]
+        conn = self._connect()
+        try:
+            with patch(_TRANSPORT_PATCH, return_value=(True, "")):
+                with patch(_FORBIDDEN_CHECK_PATCH, return_value=violation):
+                    result = execute_track_fast_first_15m_job(conn, self._fake_job())
+        finally:
+            conn.close()
+        self.assertEqual(result["status"], E2H_STATUS_BLOCKED)
+        self.assertFalse(result["executed"])
+        gates = result.get("blocked_gates", [])
+        self.assertTrue(any("printer_paper_decisions" in g for g in gates))
+
+    def test_delta_blocks_if_paper_positions_grow(self):
+        violation = ["printer_paper_positions: +1 new row(s) (before=0, after=1)"]
+        conn = self._connect()
+        try:
+            with patch(_TRANSPORT_PATCH, return_value=(True, "")):
+                with patch(_FORBIDDEN_CHECK_PATCH, return_value=violation):
+                    result = execute_track_fast_first_15m_job(conn, self._fake_job())
+        finally:
+            conn.close()
+        self.assertEqual(result["status"], E2H_STATUS_BLOCKED)
+        self.assertFalse(result["executed"])
+        gates = result.get("blocked_gates", [])
+        self.assertTrue(any("printer_paper_positions" in g for g in gates))
+
+    def test_delta_blocks_if_paper_trade_events_grow(self):
+        violation = ["printer_paper_trade_events: +1 new row(s) (before=0, after=1)"]
+        conn = self._connect()
+        try:
+            with patch(_TRANSPORT_PATCH, return_value=(True, "")):
+                with patch(_FORBIDDEN_CHECK_PATCH, return_value=violation):
+                    result = execute_track_fast_first_15m_job(conn, self._fake_job())
+        finally:
+            conn.close()
+        self.assertEqual(result["status"], E2H_STATUS_BLOCKED)
+        self.assertFalse(result["executed"])
+        gates = result.get("blocked_gates", [])
+        self.assertTrue(any("printer_paper_trade_events" in g for g in gates))
+
+    def test_delta_blocks_if_paper_trade_audits_grow(self):
+        violation = ["printer_paper_trade_audits: +1 new row(s) (before=0, after=1)"]
+        conn = self._connect()
+        try:
+            with patch(_TRANSPORT_PATCH, return_value=(True, "")):
+                with patch(_FORBIDDEN_CHECK_PATCH, return_value=violation):
+                    result = execute_track_fast_first_15m_job(conn, self._fake_job())
+        finally:
+            conn.close()
+        self.assertEqual(result["status"], E2H_STATUS_BLOCKED)
+        self.assertFalse(result["executed"])
+        gates = result.get("blocked_gates", [])
+        self.assertTrue(any("printer_paper_trade_audits" in g for g in gates))
+
+    def test_no_positions_pnl_when_delta_blocked(self):
+        violation = ["printer_paper_decisions: +1 new row(s) (before=0, after=1)"]
+        conn = self._connect()
+        try:
+            with patch(_TRANSPORT_PATCH, return_value=(True, "")):
+                with patch(_FORBIDDEN_CHECK_PATCH, return_value=violation):
+                    result = execute_track_fast_first_15m_job(conn, self._fake_job())
+        finally:
+            conn.close()
+        self.assertEqual(result.get("positions_created"), 0)
+        self.assertEqual(result.get("paper_decisions_created"), 0)
+        self.assertEqual(result.get("pnl_created"), 0)
+
+    def test_preexisting_rows_multiple_tables_all_allowed_when_unchanged(self):
+        """Multiple pre-existing rows across tables are fine if none grew."""
+        self._insert_paper_decision(3)
+        conn = self._connect()
+        try:
+            with patch(_TRANSPORT_PATCH, return_value=(True, "")):
+                result = execute_track_fast_first_15m_job(conn, self._fake_job())
+        finally:
+            conn.close()
+        self.assertEqual(result["status"], E2H_STATUS_EXECUTED)
+        self.assertTrue(result["executed"])
 
 
 # ---------------------------------------------------------------------------

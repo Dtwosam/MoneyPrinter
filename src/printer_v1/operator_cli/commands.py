@@ -9232,6 +9232,64 @@ def main_run_e2i_one_shot_governed_source_smoke(argv=None, *, _adapter=None) -> 
 
 
 # ---------------------------------------------------------------------------
+# Lane E2J -- First Bounded 15m Cycle Operator Execution
+# ---------------------------------------------------------------------------
+
+def main_run_e2j_first_15m_cycle(argv=None, *, _adapter=None) -> int:
+    """E2J first bounded 15m cycle: execute TRACK_FAST_FIRST_15M through scheduler."""
+    from printer_v1.operator_cli.e2j_first_15m_cycle import (
+        build_e2j_first_15m_cycle_payload,
+    )
+
+    parser = _base_parser(
+        "E2J first bounded 15m cycle operator execution. Runs the first real"
+        " TRACK_FAST_FIRST_15M scheduler job through the Central Scheduler and"
+        " Source Governor. Creates a TRACK_FAST_FIRST_15M job, claims it, injects"
+        " the token-specific DexScreener adapter (approved mint only), calls the"
+        " E2H runtime handler, records source request/response/failure rows, audits"
+        " all table deltas and forbidden violations, and reports full execution state."
+        " Requires operator approval and backup proof. One token only."
+        " No BUY/SELL/HOLD. No paper decisions. No positions. No PnL."
+        " No generic search. No paid APIs.",
+        ("json",),
+    )
+    parser.add_argument(
+        "--token-list-path",
+        dest="token_list_path",
+        metavar="PATH",
+        required=True,
+        help="Path to operator-approved token list JSON file (exactly 1 TRACK_FAST token).",
+    )
+    parser.add_argument(
+        "--backup-proof-path",
+        dest="backup_proof_path",
+        metavar="PATH",
+        required=True,
+        help="Path to the existing DB backup file (proof backup was created before E2J).",
+    )
+    parser.add_argument(
+        "--operator-approved",
+        action="store_true",
+        dest="operator_approved",
+        help="Operator explicitly approves this first bounded 15m cycle execution.",
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        payload = build_e2j_first_15m_cycle_payload(
+            args.token_list_path,
+            args.db_path,
+            args.backup_proof_path,
+            operator_approved=args.operator_approved,
+            _adapter=_adapter,
+        )
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
+# ---------------------------------------------------------------------------
 # Lane E2F -- First Bounded 15m Cycle Execution Boundary
 # ---------------------------------------------------------------------------
 
