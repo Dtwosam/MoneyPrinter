@@ -316,6 +316,8 @@ def build_e2j_first_15m_cycle_payload(
             "operator_approved": operator_approved,
             "snapshot_persistence_status": "NOT_ATTEMPTED",
             "snapshot_id": None,
+            "memory_window_close_status": "NOT_ATTEMPTED",
+            "memory_window_id": None,
             "hard_locks": dict(_HARD_LOCKS),
             "paper_decisions_created": 0,
             "positions_created": 0,
@@ -334,9 +336,11 @@ def build_e2j_first_15m_cycle_payload(
     job_id: int | None = None
     handler_result: dict[str, Any] = {}
     snapshot_result: dict[str, Any] = {}
+    window_result: dict[str, Any] = {}
     cycle_status = "UNKNOWN"
     exec_error: str | None = None
     snapshot_persistence_status: str = "NOT_ATTEMPTED"
+    memory_window_close_status: str = "NOT_ATTEMPTED"
 
     try:
         job_id = _create_e2j_scheduler_job(connection)
@@ -398,9 +402,39 @@ def build_e2j_first_15m_cycle_payload(
                     cycle_status = "E2M_BLOCKED"
                     exec_error = reason
                 else:
-                    # PERSISTED or DUPLICATE — both safe outcomes.
-                    _complete_e2j_job(connection, job_id)
-                    cycle_status = "SUCCEEDED"
+                    # PERSISTED or DUPLICATE — call E2O to close the 15m window.
+                    snapshot_id_for_window = (
+                        snapshot_result.get("snapshot_id")
+                        or snapshot_result.get("existing_snapshot_id")
+                    )
+                    if snapshot_id_for_window is not None:
+                        from printer_v1.operator_cli.e2o_memory_window_close import (
+                            E2O_STATUS_BLOCKED as _E2O_STATUS_BLOCKED,
+                            close_15m_memory_window_from_snapshot,
+                        )
+                        window_result = close_15m_memory_window_from_snapshot(
+                            connection,
+                            int(snapshot_id_for_window),
+                            approved_mint,
+                        )
+                        memory_window_close_status = str(
+                            window_result.get("e2o_status", "UNKNOWN")
+                        )
+                        if window_result.get("e2o_status") == _E2O_STATUS_BLOCKED:
+                            w_reasons = window_result.get(
+                                "blocked_reasons", ["memory window close blocked"]
+                            )
+                            reason = "E2O_BLOCKED: " + "; ".join(w_reasons)
+                            _fail_e2j_job(connection, job_id, reason)
+                            cycle_status = "E2O_BLOCKED"
+                            exec_error = reason
+                        else:
+                            # CREATED or DUPLICATE — both safe.
+                            _complete_e2j_job(connection, job_id)
+                            cycle_status = "SUCCEEDED"
+                    else:
+                        _complete_e2j_job(connection, job_id)
+                        cycle_status = "SUCCEEDED"
             else:
                 # No COMPLETE/CLEAN_DATA response with recorded ID (adapter=None,
                 # or failure response) — source layer succeeded without snapshot.
@@ -455,6 +489,10 @@ def build_e2j_first_15m_cycle_payload(
         "handler_result": handler_result,
         "snapshot_persistence_status": snapshot_persistence_status,
         "snapshot_id": snapshot_result.get("snapshot_id"),
+        "memory_window_close_status": memory_window_close_status,
+        "memory_window_id": (
+            window_result.get("window_id") or window_result.get("existing_window_id")
+        ),
         "before_counts": before_counts,
         "after_counts": after_counts,
         "deltas": deltas,

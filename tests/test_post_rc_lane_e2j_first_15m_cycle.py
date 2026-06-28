@@ -778,9 +778,10 @@ class LaneE2NSnapshotIntegrationTests(_DbTestBase):
         result = self._run_valid()
         self.assertEqual(result["deltas"].get("printer_token_snapshots"), 1)
 
-    def test_no_memory_windows_created(self):
+    def test_one_memory_window_created(self):
+        # E2P: successful run now creates exactly one WINDOW_15M memory window.
         self._run_valid()
-        self.assertEqual(self._count_rows("printer_memory_windows"), 0)
+        self.assertEqual(self._count_rows("printer_memory_windows"), 1)
 
     def test_no_memories_created(self):
         before = self._count_rows("printer_memories")
@@ -901,6 +902,272 @@ class LaneE2NSnapshotIntegrationTests(_DbTestBase):
             )
         self.assertEqual(result.get("snapshot_persistence_status"), "NOT_ATTEMPTED")
         self.assertEqual(self._count_rows("printer_token_snapshots"), 0)
+
+
+# ---------------------------------------------------------------------------
+# Lane E2P: 15m memory window close integrated into E2J cycle
+# ---------------------------------------------------------------------------
+
+_E2O_CLOSE_PATCH = (
+    "printer_v1.operator_cli.e2o_memory_window_close"
+    ".close_15m_memory_window_from_snapshot"
+)
+
+
+class LaneE2PWindowIntegrationTests(_DbTestBase):
+    """E2P: E2J+E2M+E2O integration — successful cycle creates snapshot AND window."""
+
+    def _run_valid(self) -> dict:
+        token_file = self._write_token_file([self._valid_token_entry()])
+        return build_e2j_first_15m_cycle_payload(
+            token_file,
+            self.db_path,
+            self.backup_proof_path,
+            operator_approved=True,
+            _adapter=_build_fixture_adapter(),
+        )
+
+    def test_successful_run_creates_one_memory_window(self):
+        self._run_valid()
+        self.assertEqual(self._count_rows("printer_memory_windows"), 1)
+
+    def test_memory_window_close_status_created(self):
+        from printer_v1.operator_cli.e2o_memory_window_close import E2O_STATUS_CREATED
+        result = self._run_valid()
+        self.assertEqual(result.get("memory_window_close_status"), E2O_STATUS_CREATED)
+
+    def test_memory_window_id_in_result(self):
+        result = self._run_valid()
+        self.assertIsNotNone(result.get("memory_window_id"))
+        self.assertIsInstance(result["memory_window_id"], int)
+
+    def test_memory_window_delta_is_one(self):
+        result = self._run_valid()
+        self.assertEqual(result["deltas"].get("printer_memory_windows"), 1)
+
+    def test_cycle_status_still_succeeded(self):
+        result = self._run_valid()
+        self.assertEqual(result.get("cycle_status"), "SUCCEEDED")
+
+    def test_e2j_status_still_executed(self):
+        result = self._run_valid()
+        self.assertEqual(result.get("e2j_status"), E2J_STATUS_EXECUTED)
+
+    def test_no_memories_created(self):
+        before = self._count_rows("printer_memories")
+        self._run_valid()
+        self.assertEqual(self._count_rows("printer_memories"), before)
+
+    def test_no_episodes_created(self):
+        self._run_valid()
+        self.assertEqual(self._count_rows("printer_episodes"), 0)
+
+    def test_no_paper_decisions_after_window_close(self):
+        self._run_valid()
+        self.assertEqual(self._count_rows("printer_paper_decisions"), 0)
+
+    def test_no_paper_positions_after_window_close(self):
+        self._run_valid()
+        self.assertEqual(self._count_rows("printer_paper_positions"), 0)
+
+    def test_no_paper_trade_events_after_window_close(self):
+        self._run_valid()
+        self.assertEqual(self._count_rows("printer_paper_trade_events"), 0)
+
+    def test_no_paper_trade_audits_after_window_close(self):
+        self._run_valid()
+        self.assertEqual(self._count_rows("printer_paper_trade_audits"), 0)
+
+    def test_window_row_kind_is_window_15m(self):
+        self._run_valid()
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            row = conn.execute(
+                "SELECT window_kind FROM printer_memory_windows LIMIT 1"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], "WINDOW_15M")
+
+    def test_window_row_status_is_window_closed(self):
+        self._run_valid()
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            row = conn.execute(
+                "SELECT window_status FROM printer_memory_windows LIMIT 1"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(row[0], "WINDOW_CLOSED")
+
+    def test_e2o_duplicate_treated_as_succeeded(self):
+        """E2O returning DUPLICATE is safe/idempotent — E2J still SUCCEEDED."""
+        from unittest.mock import patch
+        from printer_v1.operator_cli.e2o_memory_window_close import E2O_STATUS_DUPLICATE
+        token_file = self._write_token_file([self._valid_token_entry()])
+        with patch(_E2O_CLOSE_PATCH, return_value={
+            "e2o_status": E2O_STATUS_DUPLICATE,
+            "created": False,
+            "duplicate": True,
+            "existing_window_id": 42,
+            "memory_windows_created": 0,
+        }):
+            result = build_e2j_first_15m_cycle_payload(
+                token_file,
+                self.db_path,
+                self.backup_proof_path,
+                operator_approved=True,
+                _adapter=_build_fixture_adapter(),
+            )
+        self.assertEqual(result.get("memory_window_close_status"), E2O_STATUS_DUPLICATE)
+        self.assertEqual(result.get("cycle_status"), "SUCCEEDED")
+        self.assertEqual(result.get("e2j_status"), E2J_STATUS_EXECUTED)
+
+    def test_e2o_duplicate_window_id_in_result(self):
+        """E2O DUPLICATE returns existing_window_id, which E2J exposes as memory_window_id."""
+        from unittest.mock import patch
+        from printer_v1.operator_cli.e2o_memory_window_close import E2O_STATUS_DUPLICATE
+        token_file = self._write_token_file([self._valid_token_entry()])
+        with patch(_E2O_CLOSE_PATCH, return_value={
+            "e2o_status": E2O_STATUS_DUPLICATE,
+            "created": False,
+            "duplicate": True,
+            "existing_window_id": 99,
+            "memory_windows_created": 0,
+        }):
+            result = build_e2j_first_15m_cycle_payload(
+                token_file,
+                self.db_path,
+                self.backup_proof_path,
+                operator_approved=True,
+                _adapter=_build_fixture_adapter(),
+            )
+        self.assertEqual(result.get("memory_window_id"), 99)
+
+    def test_two_runs_create_two_windows(self):
+        """Each E2J run gets a new source response → new snapshot → new window."""
+        self._run_valid()
+        self._run_valid()
+        self.assertEqual(self._count_rows("printer_memory_windows"), 2)
+
+    def test_e2j_blocks_when_e2o_blocks(self):
+        """If E2O blocks, E2J must fail with E2O_BLOCKED."""
+        from unittest.mock import patch
+        from printer_v1.operator_cli.e2o_memory_window_close import E2O_STATUS_BLOCKED
+        token_file = self._write_token_file([self._valid_token_entry()])
+        with patch(_E2O_CLOSE_PATCH, return_value={
+            "e2o_status": E2O_STATUS_BLOCKED,
+            "blocked_reasons": ["mocked block for E2P test"],
+            "created": False,
+            "memory_windows_created": 0,
+        }):
+            result = build_e2j_first_15m_cycle_payload(
+                token_file,
+                self.db_path,
+                self.backup_proof_path,
+                operator_approved=True,
+                _adapter=_build_fixture_adapter(),
+            )
+        self.assertEqual(result.get("e2j_status"), E2J_STATUS_BLOCKED)
+        self.assertFalse(result.get("executed"))
+
+    def test_e2j_cycle_status_e2o_blocked(self):
+        from unittest.mock import patch
+        from printer_v1.operator_cli.e2o_memory_window_close import E2O_STATUS_BLOCKED
+        token_file = self._write_token_file([self._valid_token_entry()])
+        with patch(_E2O_CLOSE_PATCH, return_value={
+            "e2o_status": E2O_STATUS_BLOCKED,
+            "blocked_reasons": ["mocked block for E2P test"],
+            "created": False,
+            "memory_windows_created": 0,
+        }):
+            result = build_e2j_first_15m_cycle_payload(
+                token_file,
+                self.db_path,
+                self.backup_proof_path,
+                operator_approved=True,
+                _adapter=_build_fixture_adapter(),
+            )
+        self.assertEqual(result.get("cycle_status"), "E2O_BLOCKED")
+
+    def test_e2j_job_failed_when_e2o_blocks(self):
+        from unittest.mock import patch
+        from printer_v1.operator_cli.e2o_memory_window_close import E2O_STATUS_BLOCKED
+        token_file = self._write_token_file([self._valid_token_entry()])
+        with patch(_E2O_CLOSE_PATCH, return_value={
+            "e2o_status": E2O_STATUS_BLOCKED,
+            "blocked_reasons": ["mocked block"],
+            "created": False,
+            "memory_windows_created": 0,
+        }):
+            build_e2j_first_15m_cycle_payload(
+                token_file,
+                self.db_path,
+                self.backup_proof_path,
+                operator_approved=True,
+                _adapter=_build_fixture_adapter(),
+            )
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            row = conn.execute(
+                "SELECT status FROM printer_scheduler_jobs"
+                " WHERE job_kind = 'TRACK_FAST_FIRST_15M' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], "FAILED")
+
+    def test_e2o_blocked_exec_error_mentions_e2o(self):
+        from unittest.mock import patch
+        from printer_v1.operator_cli.e2o_memory_window_close import E2O_STATUS_BLOCKED
+        token_file = self._write_token_file([self._valid_token_entry()])
+        with patch(_E2O_CLOSE_PATCH, return_value={
+            "e2o_status": E2O_STATUS_BLOCKED,
+            "blocked_reasons": ["mocked block"],
+            "created": False,
+            "memory_windows_created": 0,
+        }):
+            result = build_e2j_first_15m_cycle_payload(
+                token_file,
+                self.db_path,
+                self.backup_proof_path,
+                operator_approved=True,
+                _adapter=_build_fixture_adapter(),
+            )
+        self.assertIn("E2O_BLOCKED", result.get("exec_error", ""))
+
+    def test_e2o_blocked_creates_no_window(self):
+        from unittest.mock import patch
+        from printer_v1.operator_cli.e2o_memory_window_close import E2O_STATUS_BLOCKED
+        token_file = self._write_token_file([self._valid_token_entry()])
+        with patch(_E2O_CLOSE_PATCH, return_value={
+            "e2o_status": E2O_STATUS_BLOCKED,
+            "blocked_reasons": ["mocked block"],
+            "created": False,
+            "memory_windows_created": 0,
+        }):
+            build_e2j_first_15m_cycle_payload(
+                token_file,
+                self.db_path,
+                self.backup_proof_path,
+                operator_approved=True,
+                _adapter=_build_fixture_adapter(),
+            )
+        self.assertEqual(self._count_rows("printer_memory_windows"), 0)
+
+    def test_memory_window_close_status_in_early_blocked_result(self):
+        """If E2J gates block before execution, memory_window_close_status is NOT_ATTEMPTED."""
+        result = build_e2j_first_15m_cycle_payload(
+            None,
+            self.db_path,
+            self.backup_proof_path,
+            operator_approved=True,
+            _adapter=_build_fixture_adapter(),
+        )
+        self.assertEqual(result.get("memory_window_close_status"), "NOT_ATTEMPTED")
+        self.assertIsNone(result.get("memory_window_id"))
 
 
 if __name__ == "__main__":
