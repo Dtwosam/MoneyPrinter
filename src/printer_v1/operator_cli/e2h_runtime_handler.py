@@ -320,6 +320,16 @@ def execute_track_fast_first_15m_job(
                 "request_recorded": exec_result.request_record is not None,
                 "response_recorded": exec_result.response_record is not None,
                 "failure_recorded": exec_result.failure_record is not None,
+                "source_request_id": (
+                    int(exec_result.request_record.id)
+                    if exec_result.request_record is not None
+                    else None
+                ),
+                "source_response_id": (
+                    int(exec_result.response_record.id)
+                    if exec_result.response_record is not None
+                    else None
+                ),
             }
         )
 

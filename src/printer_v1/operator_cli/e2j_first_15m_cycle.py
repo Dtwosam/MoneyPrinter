@@ -314,6 +314,8 @@ def build_e2j_first_15m_cycle_payload(
             "token_list_reason": token_list_reason,
             "backup_proof_confirmed": backup_proof_ok,
             "operator_approved": operator_approved,
+            "snapshot_persistence_status": "NOT_ATTEMPTED",
+            "snapshot_id": None,
             "hard_locks": dict(_HARD_LOCKS),
             "paper_decisions_created": 0,
             "positions_created": 0,
@@ -331,8 +333,10 @@ def build_e2j_first_15m_cycle_payload(
 
     job_id: int | None = None
     handler_result: dict[str, Any] = {}
+    snapshot_result: dict[str, Any] = {}
     cycle_status = "UNKNOWN"
     exec_error: str | None = None
+    snapshot_persistence_status: str = "NOT_ATTEMPTED"
 
     try:
         job_id = _create_e2j_scheduler_job(connection)
@@ -360,8 +364,48 @@ def build_e2j_first_15m_cycle_payload(
         )
 
         if handler_result.get("executed", False):
-            _complete_e2j_job(connection, job_id)
-            cycle_status = "SUCCEEDED"
+            # Find a COMPLETE/CLEAN_DATA source response to persist as snapshot.
+            source_response_id: int | None = None
+            for sr in handler_result.get("source_results", []):
+                if (
+                    sr.get("source_name") == "dexscreener"
+                    and sr.get("source_status") == "COMPLETE"
+                    and sr.get("data_quality_label") == "CLEAN_DATA"
+                    and sr.get("response_recorded")
+                    and sr.get("source_response_id") is not None
+                ):
+                    source_response_id = int(sr["source_response_id"])
+                    break
+
+            if source_response_id is not None:
+                from printer_v1.operator_cli.e2m_snapshot_persistence import (
+                    E2M_STATUS_BLOCKED as _E2M_STATUS_BLOCKED,
+                    persist_snapshot_from_source_response,
+                )
+                snapshot_result = persist_snapshot_from_source_response(
+                    connection, source_response_id, approved_mint
+                )
+                snapshot_persistence_status = str(
+                    snapshot_result.get("e2m_status", "UNKNOWN")
+                )
+
+                if snapshot_result.get("e2m_status") == _E2M_STATUS_BLOCKED:
+                    blocked_reasons = snapshot_result.get(
+                        "blocked_reasons", ["snapshot persistence blocked"]
+                    )
+                    reason = "E2M_BLOCKED: " + "; ".join(blocked_reasons)
+                    _fail_e2j_job(connection, job_id, reason)
+                    cycle_status = "E2M_BLOCKED"
+                    exec_error = reason
+                else:
+                    # PERSISTED or DUPLICATE — both safe outcomes.
+                    _complete_e2j_job(connection, job_id)
+                    cycle_status = "SUCCEEDED"
+            else:
+                # No COMPLETE/CLEAN_DATA response with recorded ID (adapter=None,
+                # or failure response) — source layer succeeded without snapshot.
+                _complete_e2j_job(connection, job_id)
+                cycle_status = "SUCCEEDED"
         else:
             reason = handler_result.get("blocked_reason") or "; ".join(
                 handler_result.get("blocked_gates", ["handler blocked"])
@@ -409,6 +453,8 @@ def build_e2j_first_15m_cycle_payload(
         "approved_token_mint": approved_mint,
         "job_id": job_id,
         "handler_result": handler_result,
+        "snapshot_persistence_status": snapshot_persistence_status,
+        "snapshot_id": snapshot_result.get("snapshot_id"),
         "before_counts": before_counts,
         "after_counts": after_counts,
         "deltas": deltas,

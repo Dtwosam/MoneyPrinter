@@ -112,13 +112,63 @@ from printer_v1.sources.governed_execution import (
 _MINT_1 = "9cRCn9rGT8V2imeM2BaKs13yhMEais3ruM3rPvTGpump"
 _MINT_2 = "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R"
 _VALID_NOTE = "Operator-approved for E2J test. Reviewed 2026-06-28."
+_PAIR_ADDR = "TestPairAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 
-def _build_fixture_adapter():
+def _build_fixture_adapter(mint: str = _MINT_1):
+    """Fixture adapter with valid normalized payload for E2M snapshot persistence."""
     return build_fixture_source_adapter(
         "dexscreener",
         fixture_kind=FIXTURE_SUCCESS,
-        fixture_payload={"pairs": [{"chainId": "solana", "pairAddress": "test123"}]},
+        fixture_payload={
+            "source_name": "dexscreener",
+            "request_kind": "pair_market_snapshot",
+            "pairs": [
+                {
+                    "chain": "solana",
+                    "pair_address": _PAIR_ADDR,
+                    "token_mint": mint,
+                    "symbol": "TEST",
+                    "name": "Test Token",
+                    "price_usd": 0.00042,
+                    "liquidity_usd": 50000.0,
+                    "volume_5m": 1000.0,
+                    "volume_1h": 12000.0,
+                    "volume_24h": 288000.0,
+                    "txns_5m": 10,
+                    "txns_1h": 120,
+                    "txns_24h": 2880,
+                    "fdv": 420000.0,
+                    "market_cap": 380000.0,
+                    "price_change_5m": 0.5,
+                    "price_change_1h": 2.1,
+                    "price_change_24h": -3.4,
+                }
+            ],
+        },
+    )
+
+
+def _build_bad_mint_fixture_adapter():
+    """Fixture adapter with wrong mint — E2M will block."""
+    return build_fixture_source_adapter(
+        "dexscreener",
+        fixture_kind=FIXTURE_SUCCESS,
+        fixture_payload={
+            "source_name": "dexscreener",
+            "request_kind": "pair_market_snapshot",
+            "pairs": [
+                {
+                    "chain": "solana",
+                    "pair_address": _PAIR_ADDR,
+                    "token_mint": _MINT_2,
+                    "symbol": "OTHER",
+                    "name": "Other Token",
+                    "price_usd": 0.001,
+                    "liquidity_usd": 10000.0,
+                }
+            ],
+        },
     )
 
 
@@ -657,9 +707,10 @@ class LaneE2JSecurityTests(_DbTestBase):
         delta = p["deltas"].get("printer_memories", 0)
         self.assertIn(delta, (0, "unknown"), f"memories delta should be 0 or unknown, got {delta!r}")
 
-    def test_zero_snapshots_is_valid(self):
+    def test_snapshot_delta_is_one_after_clean_execution(self):
         p = self._build_valid_payload()
-        self.assertEqual(p["deltas"].get("printer_token_snapshots", 0), 0)
+        # E2N: successful run with valid DexScreener payload creates exactly one snapshot.
+        self.assertEqual(p["deltas"].get("printer_token_snapshots", 0), 1)
 
     def test_no_paper_decisions_on_execution(self):
         p = self._build_valid_payload()
@@ -670,6 +721,186 @@ class LaneE2JSecurityTests(_DbTestBase):
         for tbl in ("printer_paper_decisions", "printer_paper_positions",
                     "printer_paper_trade_events", "printer_paper_trade_audits"):
             self.assertEqual(self._count_rows(tbl), 0, f"{tbl} should be 0")
+
+
+# ---------------------------------------------------------------------------
+# Lane E2N: snapshot integration into 15m cycle
+# ---------------------------------------------------------------------------
+
+class LaneE2NSnapshotIntegrationTests(_DbTestBase):
+    """E2N: E2J+E2M integration — successful cycle creates one token snapshot."""
+
+    def _run_valid(self) -> dict:
+        token_file = self._write_token_file([self._valid_token_entry()])
+        return build_e2j_first_15m_cycle_payload(
+            token_file,
+            self.db_path,
+            self.backup_proof_path,
+            operator_approved=True,
+            _adapter=_build_fixture_adapter(),
+        )
+
+    def test_successful_run_creates_one_token_snapshot(self):
+        self._run_valid()
+        self.assertEqual(self._count_rows("printer_token_snapshots"), 1)
+
+    def test_snapshot_persistence_status_persisted(self):
+        result = self._run_valid()
+        from printer_v1.operator_cli.e2m_snapshot_persistence import E2M_STATUS_PERSISTED
+        self.assertEqual(result.get("snapshot_persistence_status"), E2M_STATUS_PERSISTED)
+
+    def test_snapshot_id_in_result(self):
+        result = self._run_valid()
+        self.assertIsNotNone(result.get("snapshot_id"))
+        self.assertIsInstance(result["snapshot_id"], int)
+
+    def test_token_row_created(self):
+        self._run_valid()
+        self.assertEqual(self._count_rows("printer_tokens"), 1)
+
+    def test_pair_row_created(self):
+        self._run_valid()
+        self.assertEqual(self._count_rows("printer_pairs"), 1)
+
+    def test_e2j_cycle_status_still_succeeded(self):
+        result = self._run_valid()
+        self.assertEqual(result.get("cycle_status"), "SUCCEEDED")
+
+    def test_e2j_status_still_executed(self):
+        result = self._run_valid()
+        self.assertEqual(result.get("e2j_status"), E2J_STATUS_EXECUTED)
+
+    def test_e2j_executed_flag_true(self):
+        result = self._run_valid()
+        self.assertTrue(result.get("executed"))
+
+    def test_snapshot_token_snapshots_delta_one(self):
+        result = self._run_valid()
+        self.assertEqual(result["deltas"].get("printer_token_snapshots"), 1)
+
+    def test_no_memory_windows_created(self):
+        self._run_valid()
+        self.assertEqual(self._count_rows("printer_memory_windows"), 0)
+
+    def test_no_memories_created(self):
+        before = self._count_rows("printer_memories")
+        self._run_valid()
+        self.assertEqual(self._count_rows("printer_memories"), before)
+
+    def test_no_paper_decisions_created(self):
+        self._run_valid()
+        self.assertEqual(self._count_rows("printer_paper_decisions"), 0)
+
+    def test_no_paper_positions_created(self):
+        self._run_valid()
+        self.assertEqual(self._count_rows("printer_paper_positions"), 0)
+
+    def test_no_paper_trade_events_created(self):
+        self._run_valid()
+        self.assertEqual(self._count_rows("printer_paper_trade_events"), 0)
+
+    def test_no_paper_trade_audits_created(self):
+        self._run_valid()
+        self.assertEqual(self._count_rows("printer_paper_trade_audits"), 0)
+
+    def test_e2j_blocks_when_e2m_blocks_on_wrong_mint(self):
+        """If E2M blocks (wrong mint in response), E2J must fail, not succeed."""
+        token_file = self._write_token_file([self._valid_token_entry(_MINT_1)])
+        result = build_e2j_first_15m_cycle_payload(
+            token_file,
+            self.db_path,
+            self.backup_proof_path,
+            operator_approved=True,
+            _adapter=_build_bad_mint_fixture_adapter(),
+        )
+        self.assertEqual(result.get("e2j_status"), E2J_STATUS_BLOCKED)
+        self.assertFalse(result.get("executed"))
+
+    def test_e2j_job_failed_when_e2m_blocks(self):
+        token_file = self._write_token_file([self._valid_token_entry(_MINT_1)])
+        build_e2j_first_15m_cycle_payload(
+            token_file,
+            self.db_path,
+            self.backup_proof_path,
+            operator_approved=True,
+            _adapter=_build_bad_mint_fixture_adapter(),
+        )
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            row = conn.execute(
+                "SELECT status FROM printer_scheduler_jobs"
+                " WHERE job_kind = 'TRACK_FAST_FIRST_15M' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], "FAILED")
+
+    def test_e2j_cycle_status_e2m_blocked(self):
+        token_file = self._write_token_file([self._valid_token_entry(_MINT_1)])
+        result = build_e2j_first_15m_cycle_payload(
+            token_file,
+            self.db_path,
+            self.backup_proof_path,
+            operator_approved=True,
+            _adapter=_build_bad_mint_fixture_adapter(),
+        )
+        self.assertEqual(result.get("cycle_status"), "E2M_BLOCKED")
+
+    def test_e2m_blocked_creates_no_snapshot(self):
+        token_file = self._write_token_file([self._valid_token_entry(_MINT_1)])
+        build_e2j_first_15m_cycle_payload(
+            token_file,
+            self.db_path,
+            self.backup_proof_path,
+            operator_approved=True,
+            _adapter=_build_bad_mint_fixture_adapter(),
+        )
+        self.assertEqual(self._count_rows("printer_token_snapshots"), 0)
+
+    def test_e2m_blocked_exec_error_mentions_e2m(self):
+        token_file = self._write_token_file([self._valid_token_entry(_MINT_1)])
+        result = build_e2j_first_15m_cycle_payload(
+            token_file,
+            self.db_path,
+            self.backup_proof_path,
+            operator_approved=True,
+            _adapter=_build_bad_mint_fixture_adapter(),
+        )
+        err = result.get("exec_error", "")
+        self.assertIn("E2M_BLOCKED", err)
+
+    def test_e2m_blocked_no_paper_decisions(self):
+        token_file = self._write_token_file([self._valid_token_entry(_MINT_1)])
+        build_e2j_first_15m_cycle_payload(
+            token_file,
+            self.db_path,
+            self.backup_proof_path,
+            operator_approved=True,
+            _adapter=_build_bad_mint_fixture_adapter(),
+        )
+        self.assertEqual(self._count_rows("printer_paper_decisions"), 0)
+
+    def test_snapshot_persistence_status_in_result_on_success(self):
+        result = self._run_valid()
+        self.assertIn("snapshot_persistence_status", result)
+        self.assertNotEqual(result["snapshot_persistence_status"], "NOT_ATTEMPTED")
+
+    def test_snapshot_persistence_status_not_attempted_when_handler_blocked(self):
+        """If E2H blocks (no transport), snapshot persistence should not be attempted."""
+        from unittest.mock import patch
+        _TRANSPORT = "printer_v1.operator_cli.e2h_runtime_handler.check_real_source_transport_available"
+        token_file = self._write_token_file([self._valid_token_entry()])
+        with patch(_TRANSPORT, return_value=(False, "fixture-only transport")):
+            result = build_e2j_first_15m_cycle_payload(
+                token_file,
+                self.db_path,
+                self.backup_proof_path,
+                operator_approved=True,
+                _adapter=_build_fixture_adapter(),
+            )
+        self.assertEqual(result.get("snapshot_persistence_status"), "NOT_ATTEMPTED")
+        self.assertEqual(self._count_rows("printer_token_snapshots"), 0)
 
 
 if __name__ == "__main__":
