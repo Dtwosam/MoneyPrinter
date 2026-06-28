@@ -43,6 +43,7 @@ printer-decide-first-bounded-15m-cycle = "printer_v1.operator_cli.commands:main_
 printer-build-first-bounded-15m-approval-packet = "printer_v1.operator_cli.commands:main_build_first_bounded_15m_approval_packet"
 printer-run-first-bounded-15m-cycle = "printer_v1.operator_cli.commands:main_run_first_bounded_15m_cycle"
 printer-run-e2g-first-bounded-15m-operator-run = "printer_v1.operator_cli.commands:main_run_e2g_first_bounded_15m_operator_run"
+printer-run-e2i-one-shot-governed-source-smoke = "printer_v1.operator_cli.commands:main_run_e2i_one_shot_governed_source_smoke"
 
 [tool.unittest]
 start-directory = "tests"

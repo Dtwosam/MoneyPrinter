@@ -9118,14 +9118,13 @@ def main_run_e2g_first_bounded_15m_operator_run(argv=None) -> int:
 
     parser = _base_parser(
         "E2G operator run boundary. Wraps the E2F execution boundary and applies"
-        " final pre-run gates including backup proof check and runtime handler"
-        " availability. Outputs OPERATOR_RUN_READY or BLOCKED."
+        " final pre-run gates including backup proof check, runtime handler"
+        " availability (Lane E2H), and real source transport (Lane E2I)."
+        " Outputs OPERATOR_RUN_READY or BLOCKED."
         " OPERATOR_RUN_READY means all gates passed; operator must then run"
         " this command manually against the real DB after committing and tagging"
         " Lane E2G. Claude did not run the real cycle. No source fetching."
-        " No scheduler execution. No DB mutation in this planning call."
-        " Currently outputs BLOCKED because TRACK_FAST_FIRST_15M handler is"
-        " not yet implemented.",
+        " No scheduler execution. No DB mutation in this planning call.",
         ("json",),
     )
     parser.add_argument(
@@ -9162,6 +9161,69 @@ def main_run_e2g_first_bounded_15m_operator_run(argv=None) -> int:
             approval_confirmed=args.approval_confirmed,
             backup_confirmed=args.backup_confirmed,
             backup_proof_path=args.backup_proof_path,
+        )
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
+# ---------------------------------------------------------------------------
+# Lane E2I -- Governed Real Source Transport + One-Shot Source Smoke
+# ---------------------------------------------------------------------------
+
+def main_run_e2i_one_shot_governed_source_smoke(argv=None, *, _adapter=None) -> int:
+    """E2I one-shot governed source smoke: validate transport and record one call."""
+    from printer_v1.operator_cli.e2i_source_transport import (
+        build_e2i_one_shot_smoke_payload,
+    )
+
+    parser = _base_parser(
+        "E2I one-shot governed source smoke. Validates the operator-approved token"
+        " list and backup proof, asks the Source Governor, calls one free/public"
+        " DexScreener endpoint through governed transport, records source"
+        " request/response/failure rows, and reports before/after DB counts."
+        " May ONLY record to source rows. Must NOT create snapshots, context,"
+        " memory, paper decisions, positions, PnL, or any forbidden table rows."
+        " Claude did not run the full 15m cycle.",
+        ("json",),
+    )
+    parser.add_argument(
+        "--token-list-path",
+        dest="token_list_path",
+        metavar="PATH",
+        required=True,
+        help="Path to operator-approved token list JSON file.",
+    )
+    parser.add_argument(
+        "--backup-proof-path",
+        dest="backup_proof_path",
+        metavar="PATH",
+        required=True,
+        help="Path to the existing DB backup file (proof backup was created).",
+    )
+    parser.add_argument(
+        "--source-name",
+        dest="source_name",
+        default="dexscreener",
+        help="Source name for the governed smoke call (default: dexscreener).",
+    )
+    parser.add_argument(
+        "--operator-approved",
+        action="store_true",
+        dest="operator_approved",
+        help="Operator explicitly approves this one-shot governed source smoke.",
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        payload = build_e2i_one_shot_smoke_payload(
+            args.token_list_path,
+            args.db_path,
+            args.backup_proof_path,
+            source_name=args.source_name,
+            operator_approved=args.operator_approved,
+            adapter=_adapter,
         )
         _print_payload(payload, args.format)
         return 0

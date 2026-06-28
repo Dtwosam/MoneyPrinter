@@ -57,11 +57,9 @@ E2H_STATUS_EXECUTED: str = "E2H_TRACK_FAST_FIRST_15M_EXECUTED"
 E2H_STATUS_BLOCKED: str = "E2H_TRACK_FAST_FIRST_15M_BLOCKED"
 
 _REAL_SOURCE_TRANSPORT_REASON: str = (
-    "real source transport is fixture-only (Phase 23 boundary);"
-    " governed_execution.py only provides FixtureSourceAdapter -- no real"
-    " network source adapter is implemented;"
-    " a real adapter must replace FixtureSourceAdapter before"
-    " TRACK_FAST_FIRST_15M can execute real memory factory cycles"
+    "real source transport not available (E2I module not importable);"
+    " expected e2i_source_transport.check_real_source_transport_available"
+    " to return (True, reason) after Lane E2I is implemented"
 )
 
 _FORBIDDEN_TABLES: tuple[str, ...] = (
@@ -82,15 +80,19 @@ def check_real_source_transport_available() -> tuple[bool, str]:
 
     Returns (available: bool, reason: str).
 
-    Currently returns (False, reason) because governed_execution.py only
-    provides FixtureSourceAdapter -- no real network calls are possible.
+    Delegates to Lane E2I (e2i_source_transport) via lazy import.
+    Returns (True, reason) after Lane E2I is in place.
 
-    When a real source adapter replaces FixtureSourceAdapter in a future lane,
-    update this function so the gate can pass.
-
-    This function is patchable in tests for happy-path handler execution.
+    Falls back to (False, _REAL_SOURCE_TRANSPORT_REASON) if E2I not importable.
+    This function is patchable in tests for transport-gate isolation.
     """
-    return (False, _REAL_SOURCE_TRANSPORT_REASON)
+    try:
+        from printer_v1.operator_cli.e2i_source_transport import (
+            check_real_source_transport_available as _e2i_check,
+        )
+        return _e2i_check()
+    except ImportError:
+        return (False, _REAL_SOURCE_TRANSPORT_REASON)
 
 
 def validate_token_entry(entry: dict[str, Any]) -> tuple[bool, str]:

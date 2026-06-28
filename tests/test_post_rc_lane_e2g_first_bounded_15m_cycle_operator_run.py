@@ -5,8 +5,9 @@ Tests prove:
 - e2g_operator_run module imports cleanly and exports are present
 - OPERATOR_RUN_READY, OPERATOR_RUN_BLOCKED, E2G_STATUS_READY, E2G_STATUS_BLOCKED correct
 - pyproject.toml entry point registered
-- runtime path missing -> BLOCKED (real state: no TRACK_FAST_FIRST_15M handler)
-- happy fixture run boundary: OPERATOR_RUN_READY when handler is patched present
+- runtime path available after E2I -> OPERATOR_RUN_READY (real state: handler+transport present)
+- gate regression: BLOCKED when runtime patched False (transport unavailable)
+- happy fixture run boundary: OPERATOR_RUN_READY when all gates pass
 - invalid token list -> BLOCKED
 - missing backup proof -> BLOCKED
 - backup_proof_path None -> BLOCKED
@@ -26,7 +27,7 @@ Tests prove:
 - first_run_status is OPERATOR_RUN_READY or BLOCKED
 - first_run_status_reasons nonempty
 - e2g_status correct string
-- runtime_path_exists is False in real build
+- runtime_path_exists is True after E2I (handler+transport available)
 - backup_proof_confirmed reflects file check
 - before_db_counts included when DB exists
 - before_db_counts has expected tables
@@ -46,7 +47,7 @@ Tests prove:
 - rollback_checklist is nonempty list
 - rollback_checklist items are checkbox format
 - next_required_operator_action nonempty
-- next_required_operator_action mentions handler when BLOCKED
+- next_required_operator_action includes gate guidance when BLOCKED
 - planning_only true
 - claude_did_not_run_cycle true
 - dry_run true
@@ -259,9 +260,9 @@ class LaneE2GImportTests(unittest.TestCase):
 class LaneE2GRuntimePathTests(unittest.TestCase):
     """Prove runtime path discovery returns correct result."""
 
-    def test_runtime_not_available_in_real_build(self):
+    def test_runtime_available_after_e2i(self):
         available, reason = _check_15m_cycle_runtime_available()
-        self.assertFalse(available)
+        self.assertTrue(available, "Lane E2I must make runtime check return True")
 
     def test_runtime_reason_mentions_handler(self):
         _, reason = _check_15m_cycle_runtime_available()
@@ -284,7 +285,24 @@ class LaneE2GRuntimePathTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class LaneE2GBlockedRuntimeMissingTests(_DbTestBase):
-    """Prove BLOCKED in real build because runtime handler does not exist."""
+    """Gate regression: BLOCKED when runtime transport is forced unavailable.
+
+    After Lane E2I, real build is OPERATOR_RUN_READY. These tests patch
+    _check_15m_cycle_runtime_available to False to verify the gate logic
+    remains correct for the transport-unavailable scenario.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._runtime_patcher = patch(
+            _RUNTIME_CHECK_PATCH,
+            return_value=(False, "TRACK_FAST_FIRST_15M handler blocked: transport unavailable"),
+        )
+        self._runtime_patcher.start()
+
+    def tearDown(self):
+        self._runtime_patcher.stop()
+        super().tearDown()
 
     def test_real_build_returns_blocked(self):
         tf = self._write_token_file([self._valid_entry(_MINT_1)])
@@ -705,11 +723,13 @@ class LaneE2GPayloadStructureTests(_DbTestBase):
         self.assertIsInstance(action, str)
         self.assertGreater(len(action), 20)
 
-    def test_next_required_operator_action_blocked_mentions_handler(self):
-        action = self._blocked()["next_required_operator_action"]
+    def test_next_required_operator_action_blocked_has_gate_guidance(self):
+        # Force BLOCKED by missing approval; after E2I handler+transport gates pass
+        payload = self._blocked(approval_confirmed=False)
+        action = payload["next_required_operator_action"]
         self.assertTrue(
-            "handler" in action.lower() or "TRACK_FAST" in action,
-            "blocked action must mention building the handler",
+            "commit" in action.lower() or "TRACK_FAST" in action or "gate" in action.lower(),
+            "blocked action must include gate guidance and commit instruction",
         )
 
     def test_next_required_operator_action_ready_mentions_commit(self):
@@ -833,7 +853,8 @@ class LaneE2GCliTests(_DbTestBase):
         ]
         captured = io.StringIO()
         with patch("sys.stdout", captured):
-            rc = main_run_e2g_first_bounded_15m_operator_run(args)
+            with patch(_RUNTIME_CHECK_PATCH, return_value=(False, "E2G CLI blocked test")):
+                rc = main_run_e2g_first_bounded_15m_operator_run(args)
         return rc, json.loads(captured.getvalue())
 
     def _run_ready(self) -> tuple[int, dict]:

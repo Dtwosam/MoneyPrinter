@@ -14,9 +14,10 @@ IMPORTANT: This module does NOT run the real cycle. Claude did not run the real
 cycle. The real cycle must be run manually by the operator after commit+tag.
 
 Discovery finding (E2G): The real bounded 15m Memory Factory cycle runtime
-path does NOT exist in the current build. The Phase 35/36 bounded runner only
-handles BACKUP_SOURCE_CHECK jobs. TRACK_FAST_FIRST_15M is not handled.
-This module outputs BLOCKED until a real handler is implemented.
+path did NOT exist in the initial build (Phase 35/36 only handled
+BACKUP_SOURCE_CHECK). Lane E2H registered TRACK_FAST_FIRST_15M handler.
+Lane E2I added real DexScreener smoke transport. This module reports
+OPERATOR_RUN_READY when all gates pass (approval, backup, token list, transport).
 
 Execution boundaries enforced:
 - All source calls must go through Source Governor (can_request_source).
@@ -66,8 +67,8 @@ _EXACT_OPERATOR_RUN_COMMAND: str = (
     "NOTE: This is an inert text preview only. It does NOT execute the command."
     " The operator must run this command manually against the real DB after"
     " committing and tagging Lane E2G. Claude did not run this command."
-    " This command will remain BLOCKED until a real TRACK_FAST_FIRST_15M"
-    " runtime job handler is implemented in a future lane."
+    " After Lane E2I, all runtime gates (handler + transport) are satisfied;"
+    " ensure approval and backup gates also pass before running."
 )
 
 # Tables that may receive new rows when the real cycle runs manually.
@@ -109,7 +110,7 @@ _FORBIDDEN_TABLE_DELTAS: list[str] = [
 
 _STOP_CONDITIONS: list[str] = [
     "E2F cycle_status is not CYCLE_READY_TO_RUN.",
-    "TRACK_FAST_FIRST_15M runtime job handler is not implemented.",
+    "TRACK_FAST_FIRST_15M runtime handler unavailable or real source transport check fails.",
     "Backup proof file does not exist at the provided path.",
     "approval_confirmed flag is not explicitly set.",
     "backup_confirmed flag is not explicitly set.",
@@ -172,14 +173,11 @@ def _check_15m_cycle_runtime_available() -> tuple[bool, str]:
     Returns (available: bool, reason: str).
 
     Lane E2H registered TRACK_FAST_FIRST_15M in PHASE35_SAFE_JOB_KINDS.
-    However, real source transport is still fixture-only (Phase 23 boundary).
-    Returns (False, reason) until a real source adapter replaces FixtureSourceAdapter.
+    Lane E2I added real DexScreener smoke transport; e2h_runtime_handler
+    check_real_source_transport_available() now delegates to E2I returning True.
+    This function returns (True, reason) when both handler and transport are ready.
 
-    When real source transport is implemented, e2h_runtime_handler
-    check_real_source_transport_available() will return (True, ''), and this
-    function will return (True, ...).
-
-    Patchable by tests for happy-path E2G testing.
+    Patchable by tests for gate-regression isolation.
     """
     try:
         from printer_v1.operator_cli.e2h_runtime_handler import (
@@ -376,9 +374,10 @@ def build_e2g_operator_run_payload(
         "rollback_checklist": _ROLLBACK_CHECKLIST,
         "hard_locks": dict(HARD_LOCKS),
         "next_required_operator_action": (
-            "Commit and tag Lane E2G. Then build the real TRACK_FAST_FIRST_15M"
-            " runtime job handler (next lane). After the handler exists and is"
-            " tested, rerun this command to confirm OPERATOR_RUN_READY."
+            "Ensure all gates pass: approval_confirmed, backup_confirmed,"
+            " backup proof file exists, token list valid with 1 TRACK_FAST token,"
+            " and runtime transport check returns True (Lane E2I)."
+            " Commit and tag Lane E2G after all gates are satisfied."
             " Then run the exact_operator_run_command manually against the real DB."
             if run_status == OPERATOR_RUN_BLOCKED
             else "Commit and tag Lane E2G. Then run the exact_operator_run_command"

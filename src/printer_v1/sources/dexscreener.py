@@ -24,6 +24,7 @@ from printer_v1.sources.contracts import (
 DEXSCREENER_SOURCE_NAME = "dexscreener"
 DEXSCREENER_SMOKE_URL = "https://api.dexscreener.com/latest/dex/search?q=SOL"
 DEXSCREENER_PAIR_URL_TEMPLATE = "https://api.dexscreener.com/latest/dex/pairs/solana/{pair_address}"
+DEXSCREENER_TOKEN_URL_TEMPLATE = "https://api.dexscreener.com/latest/dex/tokens/{token_mint}"
 DEXSCREENER_SMOKE_TIMEOUT_SECONDS = 5.0
 DEXSCREENER_PUBLIC_API_HEADERS = {
     "User-Agent": "PrinterV1/0.1 (+paper-only source check)",
@@ -166,6 +167,24 @@ def build_dexscreener_smoke_transport(
             )
 
     return transport
+
+
+def build_dexscreener_token_transport(
+    token_mint: str,
+    *,
+    timeout_seconds: float = DEXSCREENER_SMOKE_TIMEOUT_SECONDS,
+    endpoint_template: str = DEXSCREENER_TOKEN_URL_TEMPLATE,
+) -> Callable[[SourceAdapterContext], Mapping[str, Any]]:
+    """Build a real transport callable for a specific token mint address.
+
+    Uses the free/public DexScreener tokens endpoint, not the generic SOL search.
+    No authentication. No paid tier. Suitable for E2I one-shot governed smoke.
+    """
+    endpoint = endpoint_template.format(token_mint=token_mint)
+    return build_dexscreener_smoke_transport(
+        timeout_seconds=timeout_seconds,
+        endpoint=endpoint,
+    )
 
 
 def build_dexscreener_pair_snapshot_transport(

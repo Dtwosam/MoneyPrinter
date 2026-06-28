@@ -8,14 +8,13 @@ Tests prove:
 - HANDLER_TARGET_WINDOW is WINDOW_15M
 - HANDLER_MAX_TOKENS_FIRST_RUN is 1
 - is_handler_registered() returns True
-- check_real_source_transport_available() returns (False, reason)
-- reason mentions fixture-only or Phase 23
-- reason mentions FixtureSourceAdapter
+- check_real_source_transport_available() returns (True, reason) after Lane E2I
+- reason mentions E2I or DexScreener or real transport
 - PHASE35_SAFE_JOB_KINDS includes TRACK_FAST_FIRST_15M
-- execute_track_fast_first_15m_job blocked without patching (transport)
-- result.executed False on transport block
-- result.gate_failed == real_source_transport
-- result.blocked_reason mentions fixture-only
+- execute_track_fast_first_15m_job blocked when transport patched False
+- result.executed False on transport block (when transport forced unavailable)
+- result.gate_failed == real_source_transport (when transport forced unavailable)
+- result.blocked_reason mentions fixture or transport (when transport forced unavailable)
 - with transport patched: running jobs blocks
 - with transport patched: active locks blocks
 - with transport patched: source governor denial blocks
@@ -32,15 +31,13 @@ Tests prove:
 - validate_token_list: invalid entry cascades
 - check_source_governor: allowed when budget available
 - check_source_governor: denied when budget exhausted
-- _execute_phase35_scheduler_job raises for TRACK_FAST_FIRST_15M (transport blocked)
-- no DB mutation when handler transport-blocked
+- _execute_phase35_scheduler_job raises for TRACK_FAST_FIRST_15M (transport forced False)
+- no DB mutation when handler transport-blocked (transport forced False)
 - no DB mutation when handler blocked on running jobs
 - forbidden table mutation: paper_decisions rows -> blocked
 - hard_locks all False in executed result
-- E2G integration: blocker reason no longer mentions "handler not implemented"
-- E2G integration: blocker reason mentions "fixture" or "transport unavailable"
-- E2G integration: runtime_path_exists still False (transport unavailable)
-- E2G integration: e2g_status still E2G_OPERATOR_RUN_BLOCKED
+- E2G integration: runtime_path_exists True after E2I
+- E2G integration: e2g_status OPERATOR_RUN_READY after E2I (all gates pass)
 - no source-fetching library modules imported by e2h module
 - doc required statements present
 """
@@ -66,7 +63,9 @@ from printer_v1.operator_cli.commands import (
 from printer_v1.operator_cli.e2c_readiness import HARD_LOCKS
 from printer_v1.operator_cli.e2g_operator_run import (
     OPERATOR_RUN_BLOCKED,
+    OPERATOR_RUN_READY,
     E2G_STATUS_BLOCKED,
+    E2G_STATUS_READY,
     _check_15m_cycle_runtime_available,
     build_e2g_operator_run_payload,
 )
@@ -252,30 +251,35 @@ class LaneE2HRegistrationTests(unittest.TestCase):
     def test_phase35_safe_job_kinds_includes_track_fast_first_15m(self):
         self.assertIn("TRACK_FAST_FIRST_15M", PHASE35_SAFE_JOB_KINDS)
 
-    def test_transport_returns_false(self):
+    def test_transport_returns_true_after_e2i(self):
         ok, _ = check_real_source_transport_available()
-        self.assertFalse(ok)
+        self.assertTrue(ok, "Lane E2I must provide real transport (True)")
 
-    def test_transport_reason_mentions_fixture(self):
+    def test_transport_reason_mentions_e2i_or_dexscreener(self):
         _, reason = check_real_source_transport_available()
         self.assertTrue(
-            "fixture" in reason.lower() or "FixtureSourceAdapter" in reason,
+            "e2i" in reason.lower() or "dexscreener" in reason.lower(),
         )
 
-    def test_transport_reason_mentions_phase_23(self):
+    def test_transport_reason_mentions_real_or_available(self):
         _, reason = check_real_source_transport_available()
         self.assertTrue(
-            "Phase 23" in reason or "phase 23" in reason.lower(),
+            "real" in reason.lower() or "available" in reason.lower(),
         )
 
-    def test_transport_reason_mentions_fixture_source_adapter(self):
-        _, reason = check_real_source_transport_available()
-        self.assertIn("FixtureSourceAdapter", reason)
-
-    def test_transport_reason_mentions_real_adapter_needed(self):
+    def test_transport_reason_mentions_smoke_transport(self):
         _, reason = check_real_source_transport_available()
         self.assertTrue(
-            "real" in reason.lower() and ("adapter" in reason.lower() or "network" in reason.lower()),
+            "smoke" in reason.lower() or "transport" in reason.lower(),
+        )
+
+    def test_transport_reason_mentions_real_adapter_or_http(self):
+        _, reason = check_real_source_transport_available()
+        self.assertTrue(
+            "urllib" in reason.lower()
+            or "http" in reason.lower()
+            or "adapter" in reason.lower()
+            or "smoke" in reason.lower(),
         )
 
 
@@ -345,10 +349,29 @@ class LaneE2HTokenValidationTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Transport-blocked handler tests (no patching)
+# Transport-blocked handler tests (transport patched to False for gate isolation)
 # ---------------------------------------------------------------------------
 
 class LaneE2HHandlerTransportBlockedTests(_DbTestBase):
+    """Gate regression: handler is BLOCKED when transport is forced unavailable.
+
+    After Lane E2I, check_real_source_transport_available() returns True in the
+    real build. These tests patch transport to False to verify the gate logic
+    remains correct regardless of current transport state.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._transport_patcher = patch(
+            _TRANSPORT_PATCH,
+            return_value=(False, "E2H transport gate test: simulating transport unavailable"),
+        )
+        self._transport_patcher.start()
+
+    def tearDown(self):
+        self._transport_patcher.stop()
+        super().tearDown()
+
     def _run_handler(self) -> dict:
         conn = self._connect()
         try:
@@ -356,7 +379,7 @@ class LaneE2HHandlerTransportBlockedTests(_DbTestBase):
         finally:
             conn.close()
 
-    def test_handler_blocked_without_patching(self):
+    def test_handler_blocked_when_transport_unavailable(self):
         result = self._run_handler()
         self.assertEqual(result["status"], E2H_STATUS_BLOCKED)
 
@@ -368,7 +391,7 @@ class LaneE2HHandlerTransportBlockedTests(_DbTestBase):
         result = self._run_handler()
         self.assertEqual(result.get("gate_failed"), "real_source_transport")
 
-    def test_blocked_reason_mentions_fixture(self):
+    def test_blocked_reason_mentions_fixture_or_transport(self):
         result = self._run_handler()
         reason = result.get("blocked_reason", "")
         self.assertTrue(
@@ -631,6 +654,24 @@ class LaneE2HSourceGovernorTests(_DbTestBase):
 # ---------------------------------------------------------------------------
 
 class LaneE2HPhase35DispatchTests(_DbTestBase):
+    """Gate regression: Phase 35 dispatch raises for TRACK_FAST_FIRST_15M when transport blocked.
+
+    After Lane E2I, real transport is available. These tests patch transport to False
+    so the dispatch tests remain valid gate-regression tests.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._transport_patcher = patch(
+            _TRANSPORT_PATCH,
+            return_value=(False, "Phase35 dispatch test: transport unavailable"),
+        )
+        self._transport_patcher.start()
+
+    def tearDown(self):
+        self._transport_patcher.stop()
+        super().tearDown()
+
     def _fake_sqlite_row(self) -> sqlite3.Row:
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row
@@ -678,9 +719,9 @@ class LaneE2HPhase35DispatchTests(_DbTestBase):
 # ---------------------------------------------------------------------------
 
 class LaneE2HE2GIntegrationTests(_DbTestBase):
-    def test_e2g_runtime_check_still_false_after_e2h(self):
+    def test_e2g_runtime_check_true_after_e2i(self):
         ok, _ = _check_15m_cycle_runtime_available()
-        self.assertFalse(ok)
+        self.assertTrue(ok, "Lane E2I must make runtime check return True")
 
     def test_e2g_runtime_reason_no_longer_mentions_not_implemented(self):
         _, reason = _check_15m_cycle_runtime_available()
@@ -702,7 +743,7 @@ class LaneE2HE2GIntegrationTests(_DbTestBase):
             "transport" in reason.lower() or "fixture" in reason.lower(),
         )
 
-    def test_e2g_payload_runtime_path_exists_false(self):
+    def test_e2g_payload_runtime_path_exists_true_after_e2i(self):
         tf = self._write_token_file([{"token_mint": _MINT_1, "lifecycle_lane": "TRACK_FAST", "approved_by_operator": True, "operator_note": _VALID_NOTE}])
         payload = build_e2g_operator_run_payload(
             tf, self.db_path,
@@ -710,7 +751,7 @@ class LaneE2HE2GIntegrationTests(_DbTestBase):
             backup_confirmed=True,
             backup_proof_path=self.backup_proof_path,
         )
-        self.assertFalse(payload["runtime_path_exists"])
+        self.assertTrue(payload["runtime_path_exists"], "Lane E2I must make runtime_path_exists True")
 
     def test_e2g_payload_runtime_path_reason_mentions_e2h_registered(self):
         tf = self._write_token_file([{"token_mint": _MINT_1, "lifecycle_lane": "TRACK_FAST", "approved_by_operator": True, "operator_note": _VALID_NOTE}])
@@ -739,7 +780,7 @@ class LaneE2HE2GIntegrationTests(_DbTestBase):
             "transport" in reason.lower() or "fixture" in reason.lower(),
         )
 
-    def test_e2g_payload_e2g_status_still_blocked(self):
+    def test_e2g_payload_e2g_status_ready_after_e2i(self):
         tf = self._write_token_file([{"token_mint": _MINT_1, "lifecycle_lane": "TRACK_FAST", "approved_by_operator": True, "operator_note": _VALID_NOTE}])
         payload = build_e2g_operator_run_payload(
             tf, self.db_path,
@@ -747,9 +788,10 @@ class LaneE2HE2GIntegrationTests(_DbTestBase):
             backup_confirmed=True,
             backup_proof_path=self.backup_proof_path,
         )
-        self.assertEqual(payload["e2g_status"], E2G_STATUS_BLOCKED)
+        self.assertEqual(payload["e2g_status"], E2G_STATUS_READY,
+                         "Lane E2I must make E2G report OPERATOR_RUN_READY when all gates pass")
 
-    def test_e2g_payload_first_run_status_blocked(self):
+    def test_e2g_payload_first_run_status_ready_after_e2i(self):
         tf = self._write_token_file([{"token_mint": _MINT_1, "lifecycle_lane": "TRACK_FAST", "approved_by_operator": True, "operator_note": _VALID_NOTE}])
         payload = build_e2g_operator_run_payload(
             tf, self.db_path,
@@ -757,7 +799,8 @@ class LaneE2HE2GIntegrationTests(_DbTestBase):
             backup_confirmed=True,
             backup_proof_path=self.backup_proof_path,
         )
-        self.assertEqual(payload["first_run_status"], OPERATOR_RUN_BLOCKED)
+        self.assertEqual(payload["first_run_status"], OPERATOR_RUN_READY,
+                         "Lane E2I must make first_run_status OPERATOR_RUN_READY when all gates pass")
 
 
 # ---------------------------------------------------------------------------
