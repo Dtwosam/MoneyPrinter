@@ -573,6 +573,185 @@ class LaneE2UPopulatedDbTests(_DbTestBase):
 
 
 # ---------------------------------------------------------------------------
+# E2U-A: count scope — all four counts must be closed WINDOW_15M only
+# ---------------------------------------------------------------------------
+
+class LaneE2UACountScopeTests(_DbTestBase):
+    """Verify all four scoped counts exclude non-closed and non-15m windows."""
+
+    def _insert_open_window(self, conn, token_id, pair_id, snap_id,
+                            memory_quality_label=None) -> int:
+        """Insert a WINDOW_15M that is NOT closed (WINDOW_OPEN)."""
+        return self._insert_window(
+            conn, token_id, pair_id, snap_id,
+            memory_quality_label=memory_quality_label,
+            data_quality_label="CLEAN_DATA",
+            window_status="WINDOW_OPEN",
+        )
+
+    def _insert_non_15m_window(self, conn, token_id, pair_id, snap_id) -> int:
+        """Insert a closed non-WINDOW_15M window with E2Q metadata."""
+        ctx = json.dumps({
+            "snapshot_id": snap_id,
+            "e2q_audited": True,
+            "e2q_audit_status": "PARTIAL_MEMORY",
+            "e2q_audited_by": "lane_e2q",
+        }, sort_keys=True)
+        cur = conn.execute(
+            """
+            INSERT INTO printer_memory_windows (
+                token_id, pair_id, window_kind, opened_at, closed_at,
+                memory_status, data_quality_label, do_not_train, window_status,
+                memory_quality_label,
+                supporting_context_json, created_by_phase, created_at, updated_at
+            ) VALUES (?, ?, 'WINDOW_1H', ?, ?, 'PARTIAL_MEMORY', 'CLEAN_DATA',
+                      0, 'WINDOW_CLOSED', 'PARTIAL_MEMORY', ?, 'test', ?, ?)
+            """,
+            (token_id, pair_id, _NOW, _NOW, ctx, _NOW, _NOW),
+        )
+        return int(cur.lastrowid)
+
+    def _setup_mixed(self):
+        """3 closed WINDOW_15M + 1 open WINDOW_15M + 1 closed WINDOW_1H."""
+        conn = self._connect()
+        try:
+            token_id = self._insert_token(conn)
+            pair_id = self._insert_pair(conn, token_id)
+            for _ in range(3):
+                snap_id = self._insert_snapshot(conn, token_id, pair_id)
+                self._insert_window(conn, token_id, pair_id, snap_id)
+            # open WINDOW_15M with E2Q metadata — must NOT be counted
+            snap_id = self._insert_snapshot(conn, token_id, pair_id)
+            self._insert_open_window(conn, token_id, pair_id, snap_id,
+                                     memory_quality_label="PARTIAL_MEMORY")
+            # closed WINDOW_1H with E2Q metadata — must NOT be counted
+            snap_id = self._insert_snapshot(conn, token_id, pair_id)
+            self._insert_non_15m_window(conn, token_id, pair_id, snap_id)
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_closed_window_15m_count_excludes_open(self):
+        self._setup_mixed()
+        r = self._run()
+        self.assertEqual(r["closed_window_15m_count"], 3)
+
+    def test_e2q_audited_count_excludes_open_window(self):
+        """Open WINDOW_15M with E2Q metadata must not be in e2q_audited_window_count."""
+        self._setup_mixed()
+        r = self._run()
+        self.assertEqual(r["e2q_audited_window_count"], 3)
+
+    def test_e2q_audited_count_excludes_non_15m_window(self):
+        """Closed WINDOW_1H with E2Q metadata must not be in e2q_audited_window_count."""
+        self._setup_mixed()
+        r = self._run()
+        self.assertEqual(r["e2q_audited_window_count"], 3)
+
+    def test_clean_data_count_excludes_open_window(self):
+        """Open WINDOW_15M with CLEAN_DATA must not be in clean_data_window_count."""
+        self._setup_mixed()
+        r = self._run()
+        self.assertEqual(r["clean_data_window_count"], 3)
+
+    def test_clean_data_count_excludes_non_15m_window(self):
+        """Closed WINDOW_1H with CLEAN_DATA must not be in clean_data_window_count."""
+        self._setup_mixed()
+        r = self._run()
+        self.assertEqual(r["clean_data_window_count"], 3)
+
+    def test_partial_memory_count_excludes_open_window(self):
+        """Open WINDOW_15M with PARTIAL_MEMORY must not be counted."""
+        self._setup_mixed()
+        r = self._run()
+        self.assertEqual(r["partial_memory_window_count"], 3)
+
+    def test_partial_memory_count_includes_all_closed_not_just_five(self):
+        """partial_memory_window_count must count ALL closed WINDOW_15M, not cap at 5."""
+        conn = self._connect()
+        try:
+            token_id = self._insert_token(conn)
+            pair_id = self._insert_pair(conn, token_id)
+            for _ in range(7):
+                snap_id = self._insert_snapshot(conn, token_id, pair_id)
+                self._insert_window(conn, token_id, pair_id, snap_id)
+            conn.commit()
+        finally:
+            conn.close()
+        r = self._run()
+        self.assertEqual(r["partial_memory_window_count"], 7)
+
+    def test_last_five_15m_excludes_open_windows(self):
+        """last_five_window_15m must contain only closed windows."""
+        self._setup_mixed()
+        r = self._run()
+        for w in r["last_five_window_15m"]:
+            self.assertEqual(w["window_status"], "WINDOW_CLOSED")
+
+    def test_last_five_15m_excludes_non_15m_windows(self):
+        """last_five_window_15m must contain only WINDOW_15M kind."""
+        self._setup_mixed()
+        r = self._run()
+        for w in r["last_five_window_15m"]:
+            self.assertEqual(w["window_kind"], "WINDOW_15M")
+
+    def test_all_four_scoped_counts_match_closed_15m_count(self):
+        """When all windows are clean closed WINDOW_15M, all four counts agree."""
+        self._make_n_windows(4)
+        r = self._run()
+        self.assertEqual(r["closed_window_15m_count"], 4)
+        self.assertEqual(r["e2q_audited_window_count"], 4)
+        self.assertEqual(r["clean_data_window_count"], 4)
+        self.assertEqual(r["partial_memory_window_count"], 4)
+
+    def test_zero_delta_with_mixed_windows(self):
+        self._setup_mixed()
+        r = self._run()
+        self.assertEqual(r.get("read_only_delta_violations"), [])
+
+    def test_locked_state_unchanged(self):
+        self._setup_mixed()
+        r = self._run()
+        ls = r["locked_state"]
+        for key, val in ls.items():
+            self.assertFalse(val, f"locked_state[{key!r}] must be False")
+
+    def test_readiness_flags_unchanged(self):
+        self._setup_mixed()
+        r = self._run()
+        rf = r["readiness_flags"]
+        self.assertFalse(rf["memory_creation_ready"])
+        self.assertFalse(rf["retrieval_ready"])
+        self.assertFalse(rf["paper_decision_ready"])
+        self.assertFalse(rf["buy_ready"])
+
+    def test_partial_memory_still_not_clean_memory(self):
+        self._make_n_windows(5)
+        r = self._run()
+        v = r["clean_memory_count"]
+        self.assertIn(v, (0, "table_absent"))
+
+    def test_repeatable_proof_uses_closed_count(self):
+        """repeatable_15m_window_proof must be based on closed WINDOW_15M count."""
+        conn = self._connect()
+        try:
+            token_id = self._insert_token(conn)
+            pair_id = self._insert_pair(conn, token_id)
+            # 1 closed + 5 open = only 1 closed, so proof must be False
+            snap_id = self._insert_snapshot(conn, token_id, pair_id)
+            self._insert_window(conn, token_id, pair_id, snap_id)
+            for _ in range(5):
+                snap_id = self._insert_snapshot(conn, token_id, pair_id)
+                self._insert_open_window(conn, token_id, pair_id, snap_id)
+            conn.commit()
+        finally:
+            conn.close()
+        r = self._run()
+        self.assertFalse(r["repeatable_15m_window_proof"])
+        self.assertEqual(r["closed_window_15m_count"], 1)
+
+
+# ---------------------------------------------------------------------------
 # Repeatable proof threshold tests
 # ---------------------------------------------------------------------------
 

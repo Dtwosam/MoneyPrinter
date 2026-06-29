@@ -99,6 +99,7 @@ def _last_five_window_15m(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                    supporting_context_json, opened_at, closed_at
             FROM printer_memory_windows
             WHERE window_kind = 'WINDOW_15M'
+              AND window_status = 'WINDOW_CLOSED'
             ORDER BY id DESC
             LIMIT ?
             """,
@@ -219,18 +220,21 @@ def build_e2u_closeout_report(
             e2q_audited_count = int(conn.execute(
                 "SELECT COUNT(*) FROM printer_memory_windows"
                 " WHERE window_kind = 'WINDOW_15M'"
+                "   AND window_status = 'WINDOW_CLOSED'"
                 "   AND memory_quality_label IS NOT NULL"
             ).fetchone()[0])
 
             clean_data_count = int(conn.execute(
                 "SELECT COUNT(*) FROM printer_memory_windows"
                 " WHERE window_kind = 'WINDOW_15M'"
+                "   AND window_status = 'WINDOW_CLOSED'"
                 "   AND data_quality_label = 'CLEAN_DATA'"
             ).fetchone()[0])
 
             partial_memory_count = int(conn.execute(
                 "SELECT COUNT(*) FROM printer_memory_windows"
                 " WHERE window_kind = 'WINDOW_15M'"
+                "   AND window_status = 'WINDOW_CLOSED'"
                 "   AND memory_quality_label = 'PARTIAL_MEMORY'"
             ).fetchone()[0])
         except sqlite3.OperationalError:
