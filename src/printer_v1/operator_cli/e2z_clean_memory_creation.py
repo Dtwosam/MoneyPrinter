@@ -1,0 +1,337 @@
+"""Lane E2Z — Clean Memory Creation Boundary.
+
+The only module in the Lane E sequence that writes to printer_episodes.
+All prior Lane E modules (E2X, E2Y) are read-only. This module closes the
+gap between E2Y-reviewed candidates and actual clean-memory rows.
+
+Eligibility mirrors the E2X classification gate:
+  WINDOW_15M + WINDOW_CLOSED + CLEAN_DATA + PARTIAL_MEMORY
+  + e2q_audited (in supporting_context_json) + snapshot link present
+  + do_not_train=0 + no legacy CLEAN_MEMORY label on the window row.
+
+Idempotency: if printer_episodes already contains a CLEAN_MEMORY row for
+the given memory_window_id, the call is a no-op and returns
+E2Z_ALREADY_EXISTS without a second INSERT.
+
+Permanently locked (no unlock path in this module):
+  retrieval, paper decisions, BUY/SELL/HOLD, positions, PnL,
+  source fetching, scheduler runtime, wallet/live trading, paid APIs,
+  scoring, embeddings, vectors.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+
+E2Z_CREATED_BY: str = "lane_e2z"
+E2Z_EPISODE_KIND: str = "WINDOW_15M_CLEAN_MEMORY"
+E2Z_EPISODE_STATUS: str = "COMPLETE"
+
+E2Z_STATUS_CREATED: str = "E2Z_MEMORY_CREATED"
+E2Z_STATUS_ALREADY_EXISTS: str = "E2Z_ALREADY_EXISTS"
+E2Z_STATUS_BLOCKED: str = "E2Z_BLOCKED"
+
+_REQUIRED_WINDOW_KIND: str = "WINDOW_15M"
+_REQUIRED_WINDOW_STATUS: str = "WINDOW_CLOSED"
+_REQUIRED_DATA_QUALITY: str = "CLEAN_DATA"
+_REQUIRED_MEMORY_STATUS: str = "PARTIAL_MEMORY"
+_REQUIRED_MEMORY_QUALITY: str = "PARTIAL_MEMORY"
+
+_HARD_LOCKS: dict[str, bool] = {
+    "no_retrieval_activation": True,
+    "no_paper_decisions": True,
+    "no_buy_sell_hold": True,
+    "no_positions": True,
+    "no_pnl": True,
+    "no_live_trading": True,
+    "no_wallet_private_key": True,
+    "no_paid_api": True,
+    "no_source_fetching": True,
+    "no_scheduler_runtime_expansion": True,
+    "no_scoring_ranking_confidence": True,
+    "no_embeddings_vectors": True,
+}
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _loads_json(value: Any) -> dict[str, Any]:
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+        return parsed if isinstance(parsed, dict) else {}
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+
+
+def _has_snapshot_link(ctx: dict[str, Any]) -> bool:
+    if ctx.get("snapshot_id") is not None:
+        return True
+    if ctx.get("token_snapshot_id") is not None:
+        return True
+    if ctx.get("supporting_snapshot_id") is not None:
+        return True
+    ids = ctx.get("snapshot_ids")
+    return isinstance(ids, list) and len(ids) > 0
+
+
+def _is_e2q_audited(ctx: dict[str, Any]) -> bool:
+    return ctx.get("e2q_audited") is True or ctx.get("e2q_audited_by") == "lane_e2q"
+
+
+def _gate_window(row: sqlite3.Row) -> list[str]:
+    """Return list of blocking reasons; empty means the window passes."""
+    reasons: list[str] = []
+
+    if row["window_kind"] != _REQUIRED_WINDOW_KIND:
+        reasons.append(
+            f"window_kind must be '{_REQUIRED_WINDOW_KIND}';"
+            f" got {row['window_kind']!r}"
+        )
+
+    if row["window_status"] != _REQUIRED_WINDOW_STATUS:
+        reasons.append(
+            f"window_status must be '{_REQUIRED_WINDOW_STATUS}';"
+            f" got {row['window_status']!r}"
+        )
+
+    if row["data_quality_label"] != _REQUIRED_DATA_QUALITY:
+        reasons.append(
+            f"data_quality_label must be '{_REQUIRED_DATA_QUALITY}';"
+            f" got {row['data_quality_label']!r}"
+        )
+
+    if row["memory_status"] != _REQUIRED_MEMORY_STATUS:
+        reasons.append(
+            f"memory_status must be '{_REQUIRED_MEMORY_STATUS}';"
+            f" got {row['memory_status']!r}"
+        )
+
+    if (row["memory_quality_label"] or "") != _REQUIRED_MEMORY_QUALITY:
+        reasons.append(
+            f"memory_quality_label must be '{_REQUIRED_MEMORY_QUALITY}';"
+            f" got {row['memory_quality_label']!r}"
+        )
+
+    if row["do_not_train"] not in (0, False):
+        reasons.append("do_not_train must be 0 (clean candidate)")
+
+    ctx = _loads_json(row["supporting_context_json"])
+
+    if not _is_e2q_audited(ctx):
+        reasons.append("window must be e2q_audited (e2q_audited=True in supporting_context_json)")
+
+    if not _has_snapshot_link(ctx):
+        reasons.append("window must have a snapshot link in supporting_context_json")
+
+    return reasons
+
+
+def _validate_e2y_report(
+    e2y_report: dict[str, Any] | None,
+    window_id: int | None,
+) -> list[str]:
+    """Return blocking reasons from E2Y set-gate validation; empty = pass."""
+    reasons: list[str] = []
+    if e2y_report is None:
+        reasons.append(
+            "e2y_report is required: supply a completed E2Y candidate set gate report"
+        )
+        return reasons
+    if e2y_report.get("set_gate_passed") is not True:
+        reasons.append(
+            "E2Y set_gate_passed must be True;"
+            f" got {e2y_report.get('set_gate_passed')!r}"
+        )
+    if window_id is not None:
+        candidate_ids = (
+            e2y_report.get("candidate_set_summary", {}).get("candidate_ids", [])
+        )
+        if window_id not in candidate_ids:
+            reasons.append(
+                f"window_id {window_id} is not in the E2Y candidate set"
+                f" (candidate_ids={candidate_ids!r})"
+            )
+    return reasons
+
+
+def create_clean_memory_from_window(
+    db_path: str | Path | None,
+    window_id: int | None,
+    *,
+    operator_approved: bool = False,
+    e2y_report: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Promote one E2Y-eligible WINDOW_15M to a clean printer_episodes row.
+
+    Requires a passed E2Y candidate set gate report. window_id must appear in
+    the report's candidate_set_summary.candidate_ids and set_gate_passed must
+    be True. The DB-level E2X-style gate is also applied.
+
+    Idempotent: a second call for the same window_id returns
+    E2Z_ALREADY_EXISTS without a second INSERT.
+    """
+    blocked_reasons: list[str] = []
+
+    if not operator_approved:
+        blocked_reasons.append("operator_approved must be True")
+
+    if window_id is None:
+        blocked_reasons.append("window_id is required")
+
+    blocked_reasons.extend(_validate_e2y_report(e2y_report, window_id))
+
+    db_path_str: str = ""
+    if db_path is None:
+        blocked_reasons.append("db_path is required")
+    else:
+        p = Path(db_path)
+        db_path_str = str(p)
+        if not p.is_file():
+            blocked_reasons.append(f"db_path not found: {db_path}")
+
+    if blocked_reasons:
+        return _blocked(blocked_reasons, db_path_str, window_id)
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        # Fetch the window row.
+        win_row = conn.execute(
+            """
+            SELECT id, token_id, pair_id, window_kind, window_status,
+                   memory_status, memory_quality_label, data_quality_label,
+                   do_not_train, supporting_context_json, opened_at, closed_at
+            FROM printer_memory_windows WHERE id = ?
+            """,
+            (window_id,),
+        ).fetchone()
+
+        if win_row is None:
+            return _blocked(
+                [f"no printer_memory_windows row found for id={window_id}"],
+                db_path_str, window_id,
+            )
+
+        gate_failures = _gate_window(win_row)
+        if gate_failures:
+            return _blocked(gate_failures, db_path_str, window_id)
+
+        # Idempotency: check for existing CLEAN_MEMORY episode for this window.
+        existing = conn.execute(
+            """
+            SELECT id FROM printer_episodes
+            WHERE memory_window_id = ? AND memory_status = 'CLEAN_MEMORY'
+            LIMIT 1
+            """,
+            (window_id,),
+        ).fetchone()
+
+        if existing is not None:
+            return {
+                "e2z_status": E2Z_STATUS_ALREADY_EXISTS,
+                "episode_id": int(existing["id"]),
+                "window_id": window_id,
+                "db_path": db_path_str,
+                "operator_approved": True,
+                "created": False,
+                "retrieval_activated": False,
+                "paper_decisions_created": 0,
+                "buy_enabled": False,
+                "sell_enabled": False,
+                "hold_enabled": False,
+                "positions_created": 0,
+                "pnl_created": 0,
+                "hard_locks": dict(_HARD_LOCKS),
+            }
+
+        # Create the clean-memory episode row.
+        now = _utc_now()
+        ctx = _loads_json(win_row["supporting_context_json"])
+        episode_ctx = json.dumps({
+            "source_window_id": window_id,
+            "snapshot_id": ctx.get("snapshot_id") or ctx.get("token_snapshot_id"),
+            "e2q_audit_status": ctx.get("e2q_audit_status"),
+            "created_by": E2Z_CREATED_BY,
+        }, sort_keys=True)
+
+        cur = conn.execute(
+            """
+            INSERT INTO printer_episodes (
+                memory_window_id, token_id, pair_id,
+                episode_kind, episode_status,
+                memory_status, data_quality_label, do_not_train,
+                window_kind, memory_quality_label,
+                supporting_context_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                window_id,
+                win_row["token_id"],
+                win_row["pair_id"],
+                E2Z_EPISODE_KIND,
+                E2Z_EPISODE_STATUS,
+                "CLEAN_MEMORY",
+                "CLEAN_DATA",
+                0,
+                "WINDOW_15M",
+                "CLEAN_MEMORY",
+                episode_ctx,
+                now,
+                now,
+            ),
+        )
+        episode_id = int(cur.lastrowid)
+        conn.commit()
+
+    finally:
+        conn.close()
+
+    return {
+        "e2z_status": E2Z_STATUS_CREATED,
+        "episode_id": episode_id,
+        "window_id": window_id,
+        "db_path": db_path_str,
+        "operator_approved": True,
+        "created": True,
+        "retrieval_activated": False,
+        "paper_decisions_created": 0,
+        "buy_enabled": False,
+        "sell_enabled": False,
+        "hold_enabled": False,
+        "positions_created": 0,
+        "pnl_created": 0,
+        "hard_locks": dict(_HARD_LOCKS),
+    }
+
+
+def _blocked(
+    reasons: list[str],
+    db_path_str: str,
+    window_id: int | None,
+) -> dict[str, Any]:
+    return {
+        "e2z_status": E2Z_STATUS_BLOCKED,
+        "episode_id": None,
+        "window_id": window_id,
+        "db_path": db_path_str,
+        "operator_approved": False,
+        "created": False,
+        "blocked_reasons": reasons,
+        "retrieval_activated": False,
+        "paper_decisions_created": 0,
+        "buy_enabled": False,
+        "sell_enabled": False,
+        "hold_enabled": False,
+        "positions_created": 0,
+        "pnl_created": 0,
+        "hard_locks": dict(_HARD_LOCKS),
+    }
