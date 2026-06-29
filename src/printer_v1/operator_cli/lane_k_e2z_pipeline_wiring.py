@@ -5,6 +5,7 @@ Connects existing audited 15m windows into the clean-memory creation path:
   E2Q-audited WINDOW_15M
   → E2X eligibility (build_e2x_15m_clean_memory_eligibility_report)
   → E2Y candidate set gate (build_e2y_15m_candidate_set_gate_report)
+  → Lane Q integrity guard (guard_candidate_windows) — filters by real 15m
   → E2Z clean-memory creation (create_clean_memory_from_window)
 
 Requires operator_approved=True and a valid db_path.
@@ -47,6 +48,10 @@ from printer_v1.operator_cli.e2z_clean_memory_creation import (
     E2Z_STATUS_BLOCKED as _E2Z_STATUS_BLOCKED,
     E2Z_STATUS_CREATED,
     create_clean_memory_from_window,
+)
+from printer_v1.operator_cli.lane_q_15m_window_integrity_guard import (
+    LANE_Q_GUARD_COMPLETED,
+    guard_candidate_windows,
 )
 
 
@@ -259,17 +264,26 @@ def run_e2z_pipeline(
             "paper_trade_audits_created": 0,
         }
 
-    # Step 3: E2Z creation for each candidate in the passed set
+    # Step 3: E2Y candidate IDs
     candidate_ids: list[int] = (
         e2y_report.get("candidate_set_summary", {}).get("candidate_ids", [])
     )
 
+    # Step 4: Lane Q integrity guard — filter to real 15m windows only
+    lane_q_guard = guard_candidate_windows(
+        db_path, candidate_ids, operator_approved=True
+    )
+    valid_candidate_ids: list[int] = lane_q_guard.get("valid_window_ids", [])
+    lane_q_blocked_ids: list[int] = lane_q_guard.get("blocked_window_ids", [])
+    lane_q_blocked_count: int = len(lane_q_blocked_ids)
+
+    # Step 5: E2Z creation for Lane-Q-valid candidates only
     created_count = 0
     already_exists_count = 0
-    blocked_count = 0
+    e2z_blocked_count = 0
     window_results: list[dict[str, Any]] = []
 
-    for wid in candidate_ids:
+    for wid in valid_candidate_ids:
         result = create_clean_memory_from_window(
             db_path,
             wid,
@@ -282,11 +296,26 @@ def run_e2z_pipeline(
         elif status == E2Z_STATUS_ALREADY_EXISTS:
             already_exists_count += 1
         else:
-            blocked_count += 1
+            e2z_blocked_count += 1
         window_results.append({
             "window_id": wid,
             "e2z_status": status,
             "episode_id": result.get("episode_id"),
+            "blocked_by": None,
+        })
+
+    # Report Lane Q blocked windows (did not reach E2Z)
+    for wid in lane_q_blocked_ids:
+        lane_q_verdict = next(
+            (v for v in lane_q_guard.get("window_verdicts", []) if v.get("window_id") == wid),
+            {},
+        )
+        window_results.append({
+            "window_id": wid,
+            "e2z_status": "LANE_Q_BLOCKED",
+            "episode_id": None,
+            "blocked_by": "lane_q_integrity_guard",
+            "lane_q_blocked_reasons": lane_q_verdict.get("blocked_reasons", []),
         })
 
     after = _snapshot_counts(db_path_str)
@@ -300,9 +329,13 @@ def run_e2z_pipeline(
         "e2x_status": e2x_status,
         "e2y_status": e2y_status,
         "e2y_set_gate_passed": True,
+        "lane_q_guard_status": lane_q_guard.get("lane_q_guard_status"),
+        "lane_q_valid_window_ids": valid_candidate_ids,
+        "lane_q_blocked_window_ids": lane_q_blocked_ids,
+        "lane_q_blocked_count": lane_q_blocked_count,
         "e2z_created_count": created_count,
         "e2z_already_exists_count": already_exists_count,
-        "e2z_blocked_count": blocked_count,
+        "e2z_blocked_count": e2z_blocked_count,
         "clean_memory_rows_created": created_count,
         "candidate_window_ids": candidate_ids,
         "zero_clean_memories_valid": True,

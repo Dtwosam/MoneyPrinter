@@ -41,6 +41,10 @@ _MINT = "LaneKTestMintAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 _PAIR = "LaneKTestPairAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 _NOW = "2026-06-29T10:00:00+00:00"
 
+# Default real 15m window boundaries (>= 900 s elapsed) for Lane Q guard
+_WIN_START = "2026-06-29T10:00:00+00:00"
+_WIN_END = "2026-06-29T10:15:01+00:00"  # 901 seconds later
+
 _CLEAN_CTX_TMPL = json.dumps({
     "snapshot_id": 0,
     "e2q_audited": True,
@@ -116,6 +120,10 @@ class _Base(unittest.TestCase):
         do_not_train: int = 0,
         supporting_context_json: str | None = None,
         snapshot_id: int = 99,
+        window_start_at: str | None = _WIN_START,
+        window_end_at: str | None = _WIN_END,
+        snapshot_start_id: int | None = 1,
+        snapshot_end_id: int | None = 2,
     ) -> int:
         if supporting_context_json is None:
             supporting_context_json = _clean_ctx(snapshot_id)
@@ -125,14 +133,18 @@ class _Base(unittest.TestCase):
                 token_id, pair_id, window_kind, opened_at, closed_at,
                 memory_status, data_quality_label, do_not_train,
                 window_status, memory_quality_label,
-                supporting_context_json, created_by_phase, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'lane_e2o', ?, ?)
+                supporting_context_json, created_by_phase, created_at, updated_at,
+                window_start_at, window_end_at,
+                snapshot_start_id, snapshot_end_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'lane_e2o', ?, ?, ?, ?, ?, ?)
             """,
             (
                 token_id, pair_id, window_kind, _NOW, _NOW,
                 memory_status, data_quality_label, do_not_train,
                 window_status, memory_quality_label,
                 supporting_context_json, _NOW, _NOW,
+                window_start_at, window_end_at,
+                snapshot_start_id, snapshot_end_id,
             ),
         )
         return int(cur.lastrowid)
@@ -326,6 +338,8 @@ class LaneKFullFlowTests(_Base):
         r = self._setup_and_run()
         self.assertEqual(r["e2z_created_count"], 5)
         self.assertEqual(self._count("printer_episodes"), before + 5)
+        # Lane Q must pass all 5 (valid timestamps and snapshot IDs present)
+        self.assertEqual(r.get("lane_q_blocked_count", 0), 0)
 
     def test_full_flow_clean_memory_rows_created_equals_created_count(self):
         r = self._setup_and_run()
