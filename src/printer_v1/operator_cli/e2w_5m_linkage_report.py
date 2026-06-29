@@ -328,9 +328,5 @@ def build_e2w_linkage_report(
         "locked_state": dict(_LOCKED_STATE),
         "hard_locks": dict(_HARD_LOCKS),
 
-        "next_recommended_lane": (
-            "E2X — Strict 15m Clean-Memory Eligibility Review / No-Creation Gate"
-            " evidence from repeated WINDOW_15M cycles is sufficient to"
-            "E2X - Strict 15m Clean-Memory Eligibility Review / No-Creation Gate"
-        ),
+        "next_recommended_lane": "E2X - Strict 15m Clean-Memory Eligibility Review / No-Creation Gate",
     }
