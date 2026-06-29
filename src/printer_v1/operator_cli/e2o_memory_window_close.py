@@ -7,6 +7,20 @@ This module only writes one printer_memory_windows row.
 It does NOT create memories, episodes, fingerprints, paper decisions, positions,
 or any other downstream records.
 
+Integrity fields (Lane R):
+  When snapshot_start_id is supplied to close_15m_memory_window_from_snapshot,
+  the writer derives window_start_at / window_end_at from the real captured_at
+  timestamps of the start and close snapshots, and writes snapshot_start_id /
+  snapshot_end_id to the row.  No fake timestamps are ever written.
+
+  If snapshot_start_id is NOT supplied (single-snapshot path), all four
+  integrity fields are written as NULL.  Lane Q will block such rows with
+  missing_window_start_at — that is the correct, honest outcome.
+
+  The writer does NOT block when elapsed < 900 s; it reports
+  lane_q_integrity_eligible=False and not_eligible_reason so the caller can
+  understand why Lane Q will block the window.
+
 Hard locks (permanent):
 - No BUY/SELL/HOLD, paper decisions, positions, or PnL.
 - No memory creation (printer_episodes, printer_memories, printer_fingerprints).
@@ -27,6 +41,8 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from typing import Any
+
+_MIN_ELAPSED_SECONDS: float = 900.0  # 15 minutes
 
 
 E2O_WINDOW_KIND: str = "WINDOW_15M"
@@ -58,6 +74,33 @@ _HARD_LOCKS: dict[str, bool] = {
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _load_snapshot_captured_at(
+    connection: sqlite3.Connection, snapshot_id: int
+) -> str | None:
+    """Return captured_at for the given snapshot id, or None if not found."""
+    row = connection.execute(
+        "SELECT captured_at FROM printer_token_snapshots WHERE id = ?",
+        (snapshot_id,),
+    ).fetchone()
+    return str(row["captured_at"]) if row else None
+
+
+def _compute_elapsed_seconds(start_ts: str, end_ts: str) -> float | None:
+    """Return elapsed seconds between two ISO 8601 strings, or None on error."""
+    try:
+        s = datetime.fromisoformat(start_ts)
+        e = datetime.fromisoformat(end_ts)
+        try:
+            return (e - s).total_seconds()
+        except TypeError:
+            # Mixed aware/naive — strip tz from the aware side
+            s2 = s.replace(tzinfo=None) if s.tzinfo else s
+            e2 = e.replace(tzinfo=None) if e.tzinfo else e
+            return (e2 - s2).total_seconds()
+    except (ValueError, TypeError):
+        return None
 
 
 def _load_snapshot_with_token(
@@ -99,8 +142,15 @@ def _insert_memory_window(
     approved_mint: str,
     snapshot_id: int,
     now: str,
+    *,
+    window_start_at: str | None = None,
+    window_end_at: str | None = None,
+    snapshot_start_id: int | None = None,
+    snapshot_end_id: int | None = None,
 ) -> int:
     captured_at = str(snapshot["captured_at"])
+    # opened_at tracks the real window open time when start evidence is available
+    opened_at = window_start_at if window_start_at is not None else captured_at
     tracking_lane = str(snapshot["tracking_lane"])
     snapshot_mode = str(snapshot["snapshot_mode"])
     supporting_context = json.dumps(
@@ -118,15 +168,16 @@ def _insert_memory_window(
         INSERT INTO printer_memory_windows (
             token_id, pair_id, window_kind, opened_at, closed_at,
             memory_status, data_quality_label, do_not_train, window_status,
-            supporting_context_json, created_by_phase, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
+            supporting_context_json, created_by_phase, created_at, updated_at,
+            window_start_at, window_end_at, snapshot_start_id, snapshot_end_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             token_id,
             pair_id,
             E2O_WINDOW_KIND,
-            captured_at,
-            captured_at,
+            opened_at,
+            captured_at,  # closed_at always = close snapshot's captured_at
             E2O_MEMORY_STATUS,
             E2O_REQUIRED_QUALITY,
             E2O_WINDOW_STATUS,
@@ -134,6 +185,10 @@ def _insert_memory_window(
             E2O_CREATED_BY,
             now,
             now,
+            window_start_at,
+            window_end_at,
+            snapshot_start_id,
+            snapshot_end_id,
         ),
     )
     return int(cursor.lastrowid)
@@ -143,11 +198,24 @@ def close_15m_memory_window_from_snapshot(
     connection: sqlite3.Connection,
     snapshot_id: int,
     approved_mint: str,
+    *,
+    snapshot_start_id: int | None = None,
 ) -> dict[str, Any]:
     """Close exactly one WINDOW_15M evidence window from a clean snapshot.
 
     Validates the snapshot before writing. Idempotent: a second call with the
     same snapshot_id returns E2O_WINDOW_DUPLICATE without creating a new row.
+
+    snapshot_start_id (optional): the snapshot that marks the OPEN boundary of
+    this 15m window.  When provided, window_start_at / window_end_at /
+    snapshot_start_id / snapshot_end_id are derived from real captured_at
+    values and written to the row so Lane Q can validate real elapsed time.
+    When omitted, those four columns are written as NULL (Lane Q will block
+    the window with missing_window_start_at — the correct honest outcome for
+    instant single-snapshot cycles that have no real 15m evidence).
+
+    No fake timestamps are ever written.  The writer does not block when
+    elapsed < 900 s; lane_q_integrity_eligible=False is reported instead.
 
     Returns an audit dict. Does NOT commit — caller is responsible.
     """
@@ -234,12 +302,61 @@ def close_15m_memory_window_from_snapshot(
             "memory_windows_created": 0,
         }
 
+    # Resolve canonical 15m integrity fields from real snapshot timestamps.
+    window_start_at: str | None = None
+    window_end_at: str | None = None
+    resolved_snapshot_start_id: int | None = None
+    resolved_snapshot_end_id: int | None = None
+    elapsed_seconds: float | None = None
+    lane_q_integrity_eligible: bool = False
+    not_eligible_reason: str | None = None
+
+    if snapshot_start_id is not None:
+        start_captured_at = _load_snapshot_captured_at(connection, snapshot_start_id)
+        if start_captured_at is None:
+            not_eligible_reason = (
+                f"snapshot_start_id {snapshot_start_id} not found in DB;"
+                " window_start_at/window_end_at will be NULL"
+            )
+        else:
+            close_captured_at = str(row["captured_at"])
+            window_start_at = start_captured_at
+            window_end_at = close_captured_at
+            resolved_snapshot_start_id = snapshot_start_id
+            resolved_snapshot_end_id = snapshot_id
+            elapsed_seconds = _compute_elapsed_seconds(window_start_at, window_end_at)
+            if elapsed_seconds is not None and elapsed_seconds >= _MIN_ELAPSED_SECONDS:
+                lane_q_integrity_eligible = True
+            else:
+                not_eligible_reason = (
+                    f"elapsed_seconds={elapsed_seconds} < {_MIN_ELAPSED_SECONDS};"
+                    " window is not a real 15m window and will be blocked by Lane Q"
+                )
+    else:
+        not_eligible_reason = (
+            "snapshot_start_id not provided; window_start_at/window_end_at will be"
+            " NULL — Lane Q will block this window with missing_window_start_at"
+        )
+
     now = _utc_now()
     window_id = _insert_memory_window(
-        connection, token_id, pair_id, row, approved_mint, snapshot_id, now
+        connection,
+        token_id,
+        pair_id,
+        row,
+        approved_mint,
+        snapshot_id,
+        now,
+        window_start_at=window_start_at,
+        window_end_at=window_end_at,
+        snapshot_start_id=resolved_snapshot_start_id,
+        snapshot_end_id=resolved_snapshot_end_id,
     )
 
-    return {
+    close_captured_at = str(row["captured_at"])
+    opened_at_result = window_start_at if window_start_at is not None else close_captured_at
+
+    result: dict[str, Any] = {
         "e2o_status": E2O_STATUS_CREATED,
         "created": True,
         "window_id": window_id,
@@ -249,10 +366,16 @@ def close_15m_memory_window_from_snapshot(
         "pair_id": pair_id,
         "approved_mint": approved_mint,
         "snapshot_id": snapshot_id,
+        "snapshot_start_id": resolved_snapshot_start_id,
+        "snapshot_end_id": resolved_snapshot_end_id,
         "tracking_lane": str(row["tracking_lane"]),
         "snapshot_mode": str(row["snapshot_mode"]),
-        "opened_at": str(row["captured_at"]),
-        "closed_at": str(row["captured_at"]),
+        "opened_at": opened_at_result,
+        "closed_at": close_captured_at,
+        "window_start_at": window_start_at,
+        "window_end_at": window_end_at,
+        "elapsed_seconds": elapsed_seconds,
+        "lane_q_integrity_eligible": lane_q_integrity_eligible,
         "hard_locks": dict(_HARD_LOCKS),
         "paper_decisions_created": 0,
         "positions_created": 0,
@@ -260,3 +383,6 @@ def close_15m_memory_window_from_snapshot(
         "memories_created": 0,
         "memory_windows_created": 1,
     }
+    if not_eligible_reason is not None:
+        result["not_eligible_reason"] = not_eligible_reason
+    return result
