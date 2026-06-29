@@ -660,4 +660,61 @@ Every Codex task must end with:
 
 - Next recommended phase
 
+## Current Active Build Order Anchor
 
+For all Printer V1 / Moneygoals work after the Post-Lane10 adoption checkpoint, the active build order is:
+
+`docs/printer-v1-post-lane10-proposed-next-build-order.md`
+
+This file must be used actively alongside the higher-authority source stack:
+
+- `AGENTS.md`
+- `docs/printer-v1-clean-master-spec.md`
+- `docs/printer-v1-post-rc-build-order.md`
+- `docs/printer-v1-memory-factory-guide.md`
+- `docs/printer-v1-post-lane10-architecture-review.md`
+- `docs/printer-v1-post-lane10-proposed-next-build-order.md`
+
+Confirmed completed/anchored from the Post-Lane10 reconciliation:
+
+- Post-Lane10 architecture planning: done
+- Post-Lane10 next build order adoption: done
+- Lane A adoption checkpoint: done
+- Lane B conservative 15m Memory Factory readiness review: done
+- Lane C source budget/governor verification: done
+- Lane D scheduler/tracking/window-close readiness: done
+- Lane E conservative 15m Memory Factory implementation: advanced but still partial
+- Lane F 5m support evidence integration: mostly done/hardened through E2V/E2W/E2W-C
+- E2X and E2Y: extra read-only safety hardening, not replacement roadmap lanes
+- Post-E2Y drift checkpoint: documentation-only note
+- Post-E2Y revised next build order proposal: documentation-only proposal, NOT ACTIVE
+
+Do not restart from Lane B, Lane C, or Lane D.
+
+Do not treat `docs/printer-v1-post-e2y-revised-next-build-order.md` as active unless the operator explicitly asks for a future adoption.
+
+Do not invent new implementation lanes blindly.
+
+The next correct action after the current anchor is a read-only Lane E/F closeout map to confirm what remains in the active Post-Lane10 build order.
+
+Most likely remaining gap:
+
+- clean-memory creation/write-target boundary is not complete yet
+
+The following remain locked unless a later explicit active build-order lane unlocks them:
+
+- clean-memory creation
+- retrieval activation
+- paper decisions
+- BUY, SELL, HOLD
+- paper positions
+- trade events
+- paper audits
+- PnL
+- live execution
+- wallet/private-key/signing logic
+- source fetching outside governed approved commands
+- scheduler runtime expansion
+- paid APIs
+- scoring/ranking/confidence/weighted logic
+- embeddings/vectors
