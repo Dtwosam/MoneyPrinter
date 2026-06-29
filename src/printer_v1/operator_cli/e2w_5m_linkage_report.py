@@ -249,12 +249,16 @@ def build_e2w_linkage_report(
                 invalid_parent.append(entry)
 
         # Derive proof flags
-        # repeated_5m_support_proof: same (token_id, pair_id) has â‰¥2 5m windows
-        token_pair_counts: dict[tuple[int, int], int] = {}
-        for row in five_m_rows:
-            key = (row["token_id"], row["pair_id"])
-            token_pair_counts[key] = token_pair_counts.get(key, 0) + 1
-        repeated_5m_support_proof = any(v >= 2 for v in token_pair_counts.values())
+        # repeated_5m_support_proof:
+        # Same (token_id, pair_id) has at least two valid linked 5m support rows.
+        # Dirty/audit-only 5m rows prove presence only, not support.
+        valid_token_pair_counts: dict[tuple[int, int], int] = {}
+        for entry in valid_linked:
+            key = (entry["token_id"], entry["pair_id"])
+            valid_token_pair_counts[key] = valid_token_pair_counts.get(key, 0) + 1
+        repeated_5m_support_proof = any(
+            v >= 2 for v in valid_token_pair_counts.values()
+        )
 
         # multiple_5m_to_one_15m_parent_proof: same parent_window_id has â‰¥2 5m windows
         parent_ref_counts: dict[int, int] = {}
