@@ -9361,6 +9361,43 @@ def main_run_e2t_bounded_cycle(argv=None, *, _adapter=None) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Lane E2U -- Bounded 15m Cycle Closeout Report
+# ---------------------------------------------------------------------------
+
+def main_report_e2u_15m_cycle_closeout(argv=None) -> int:
+    """E2U read-only closeout report: bounded 15m cycle evidence and readiness."""
+    from printer_v1.operator_cli.e2u_15m_cycle_closeout_report import (
+        build_e2u_closeout_report,
+    )
+
+    parser = _base_parser(
+        "E2U bounded 15m cycle closeout report. Read-only summary of latest"
+        " bounded 15m cycle evidence, WINDOW_15M audit state, and Memory Factory"
+        " readiness after Lane E2T. No DB mutations. No memory creation."
+        " No retrieval activation. No paper decisions. No BUY/SELL/HOLD."
+        " No positions. No PnL. Requires operator approval.",
+        ("json",),
+    )
+    parser.add_argument(
+        "--operator-approved",
+        action="store_true",
+        dest="operator_approved",
+        help="Operator explicitly approves this closeout report.",
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        payload = build_e2u_closeout_report(
+            args.db_path,
+            operator_approved=args.operator_approved,
+        )
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
+# ---------------------------------------------------------------------------
 # Lane E2F -- First Bounded 15m Cycle Execution Boundary
 # ---------------------------------------------------------------------------
 

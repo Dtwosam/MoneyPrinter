@@ -46,6 +46,7 @@ printer-run-e2g-first-bounded-15m-operator-run = "printer_v1.operator_cli.comman
 printer-run-e2i-one-shot-governed-source-smoke = "printer_v1.operator_cli.commands:main_run_e2i_one_shot_governed_source_smoke"
 printer-run-e2j-first-15m-cycle = "printer_v1.operator_cli.commands:main_run_e2j_first_15m_cycle"
 printer-run-e2t-bounded-cycle = "printer_v1.operator_cli.commands:main_run_e2t_bounded_cycle"
+printer-report-e2u-15m-cycle-closeout = "printer_v1.operator_cli.commands:main_report_e2u_15m_cycle_closeout"
 
 [tool.unittest]
 start-directory = "tests"
