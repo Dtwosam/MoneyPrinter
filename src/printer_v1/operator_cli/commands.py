@@ -9397,6 +9397,38 @@ def main_report_e2u_15m_cycle_closeout(argv=None) -> int:
         return _print_error(exc)
 
 
+def main_report_e2w_5m_linkage(argv=None) -> int:
+    """E2W read-only 5m-to-15m linkage verification report."""
+    from printer_v1.operator_cli.e2w_5m_linkage_report import (
+        build_e2w_linkage_report,
+    )
+
+    parser = _base_parser(
+        "E2W 5m-to-15m linkage verification report. Read-only summary of"
+        " WINDOW_5M_MICRO_EVENT evidence linkage to parent WINDOW_15M windows."
+        " No DB mutations. No memory creation. No retrieval. No paper decisions."
+        " No BUY/SELL/HOLD. Requires operator approval.",
+        ("json",),
+    )
+    parser.add_argument(
+        "--operator-approved",
+        action="store_true",
+        dest="operator_approved",
+        help="Operator explicitly approves this linkage report.",
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        payload = build_e2w_linkage_report(
+            args.db_path,
+            operator_approved=args.operator_approved,
+        )
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
 # ---------------------------------------------------------------------------
 # Lane E2F -- First Bounded 15m Cycle Execution Boundary
 # ---------------------------------------------------------------------------
