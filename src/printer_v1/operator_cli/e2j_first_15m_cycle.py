@@ -318,6 +318,9 @@ def build_e2j_first_15m_cycle_payload(
             "snapshot_id": None,
             "memory_window_close_status": "NOT_ATTEMPTED",
             "memory_window_id": None,
+            "memory_window_audit_status": "NOT_ATTEMPTED",
+            "memory_quality_label": None,
+            "memory_window_audit_row_updated": None,
             "hard_locks": dict(_HARD_LOCKS),
             "paper_decisions_created": 0,
             "positions_created": 0,
@@ -337,10 +340,12 @@ def build_e2j_first_15m_cycle_payload(
     handler_result: dict[str, Any] = {}
     snapshot_result: dict[str, Any] = {}
     window_result: dict[str, Any] = {}
+    audit_result: dict[str, Any] = {}
     cycle_status = "UNKNOWN"
     exec_error: str | None = None
     snapshot_persistence_status: str = "NOT_ATTEMPTED"
     memory_window_close_status: str = "NOT_ATTEMPTED"
+    memory_window_audit_status: str = "NOT_ATTEMPTED"
 
     try:
         job_id = _create_e2j_scheduler_job(connection)
@@ -429,9 +434,39 @@ def build_e2j_first_15m_cycle_payload(
                             cycle_status = "E2O_BLOCKED"
                             exec_error = reason
                         else:
-                            # CREATED or DUPLICATE — both safe.
-                            _complete_e2j_job(connection, job_id)
-                            cycle_status = "SUCCEEDED"
+                            # CREATED or DUPLICATE — call E2Q to audit/classify.
+                            memory_window_id_for_audit = (
+                                window_result.get("window_id")
+                                or window_result.get("existing_window_id")
+                            )
+                            if memory_window_id_for_audit is not None:
+                                from printer_v1.operator_cli.e2q_memory_window_audit import (
+                                    E2Q_STATUS_BLOCKED as _E2Q_STATUS_BLOCKED,
+                                    audit_15m_memory_window,
+                                )
+                                audit_result = audit_15m_memory_window(
+                                    connection,
+                                    int(memory_window_id_for_audit),
+                                )
+                                memory_window_audit_status = str(
+                                    audit_result.get("e2q_status", "UNKNOWN")
+                                )
+                                if audit_result.get("e2q_status") == _E2Q_STATUS_BLOCKED:
+                                    a_reasons = audit_result.get(
+                                        "blocked_reasons",
+                                        ["memory window audit blocked"],
+                                    )
+                                    reason = "E2Q_BLOCKED: " + "; ".join(a_reasons)
+                                    _fail_e2j_job(connection, job_id, reason)
+                                    cycle_status = "E2Q_BLOCKED"
+                                    exec_error = reason
+                                else:
+                                    # CLEAN_CANDIDATE, DIRTY, or AUDIT_ONLY — classified.
+                                    _complete_e2j_job(connection, job_id)
+                                    cycle_status = "SUCCEEDED"
+                            else:
+                                _complete_e2j_job(connection, job_id)
+                                cycle_status = "SUCCEEDED"
                     else:
                         _complete_e2j_job(connection, job_id)
                         cycle_status = "SUCCEEDED"
@@ -493,6 +528,9 @@ def build_e2j_first_15m_cycle_payload(
         "memory_window_id": (
             window_result.get("window_id") or window_result.get("existing_window_id")
         ),
+        "memory_window_audit_status": memory_window_audit_status,
+        "memory_quality_label": audit_result.get("memory_quality_label"),
+        "memory_window_audit_row_updated": audit_result.get("row_updated"),
         "before_counts": before_counts,
         "after_counts": after_counts,
         "deltas": deltas,

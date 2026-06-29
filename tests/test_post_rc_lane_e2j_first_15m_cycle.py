@@ -912,6 +912,19 @@ _E2O_CLOSE_PATCH = (
     "printer_v1.operator_cli.e2o_memory_window_close"
     ".close_15m_memory_window_from_snapshot"
 )
+_E2Q_AUDIT_PATCH = (
+    "printer_v1.operator_cli.e2q_memory_window_audit"
+    ".audit_15m_memory_window"
+)
+_E2Q_CLEAN_RESULT = {
+    "e2q_status": "E2Q_AUDIT_CLEAN_CANDIDATE",
+    "classified": True,
+    "row_updated": False,
+    "window_id": 42,
+    "snapshot_id": 1,
+    "memory_quality_label": "PARTIAL_MEMORY",
+    "rejection_reasons": [],
+}
 
 
 class LaneE2PWindowIntegrationTests(_DbTestBase):
@@ -1012,7 +1025,7 @@ class LaneE2PWindowIntegrationTests(_DbTestBase):
             "duplicate": True,
             "existing_window_id": 42,
             "memory_windows_created": 0,
-        }):
+        }), patch(_E2Q_AUDIT_PATCH, return_value=dict(_E2Q_CLEAN_RESULT)):
             result = build_e2j_first_15m_cycle_payload(
                 token_file,
                 self.db_path,
@@ -1035,7 +1048,7 @@ class LaneE2PWindowIntegrationTests(_DbTestBase):
             "duplicate": True,
             "existing_window_id": 99,
             "memory_windows_created": 0,
-        }):
+        }), patch(_E2Q_AUDIT_PATCH, return_value={**_E2Q_CLEAN_RESULT, "window_id": 99}):
             result = build_e2j_first_15m_cycle_payload(
                 token_file,
                 self.db_path,
@@ -1168,6 +1181,273 @@ class LaneE2PWindowIntegrationTests(_DbTestBase):
         )
         self.assertEqual(result.get("memory_window_close_status"), "NOT_ATTEMPTED")
         self.assertIsNone(result.get("memory_window_id"))
+
+
+# ---------------------------------------------------------------------------
+# Lane E2R: E2Q audit integrated into E2J cycle
+# ---------------------------------------------------------------------------
+
+class LaneE2RWindowAuditIntegrationTests(_DbTestBase):
+    """E2R: E2J+E2M+E2O+E2Q integration — successful cycle audits the window."""
+
+    def _run_valid(self) -> dict:
+        token_file = self._write_token_file([self._valid_token_entry()])
+        return build_e2j_first_15m_cycle_payload(
+            token_file,
+            self.db_path,
+            self.backup_proof_path,
+            operator_approved=True,
+            _adapter=_build_fixture_adapter(),
+        )
+
+    def test_audit_status_in_result(self):
+        result = self._run_valid()
+        self.assertIn("memory_window_audit_status", result)
+
+    def test_audit_status_is_clean_candidate(self):
+        from printer_v1.operator_cli.e2q_memory_window_audit import E2Q_STATUS_CLEAN_CANDIDATE
+        result = self._run_valid()
+        self.assertEqual(result.get("memory_window_audit_status"), E2Q_STATUS_CLEAN_CANDIDATE)
+
+    def test_memory_quality_label_in_result(self):
+        result = self._run_valid()
+        self.assertIn("memory_quality_label", result)
+
+    def test_memory_quality_label_is_partial_memory(self):
+        result = self._run_valid()
+        self.assertEqual(result.get("memory_quality_label"), "PARTIAL_MEMORY")
+
+    def test_memory_window_audit_row_updated_in_result(self):
+        result = self._run_valid()
+        self.assertIn("memory_window_audit_row_updated", result)
+
+    def test_memory_window_audit_row_updated_true_first_run(self):
+        result = self._run_valid()
+        self.assertTrue(result.get("memory_window_audit_row_updated"))
+
+    def test_cycle_status_still_succeeded(self):
+        result = self._run_valid()
+        self.assertEqual(result.get("cycle_status"), "SUCCEEDED")
+
+    def test_e2j_status_still_executed(self):
+        result = self._run_valid()
+        self.assertEqual(result.get("e2j_status"), E2J_STATUS_EXECUTED)
+
+    def test_executed_flag_true(self):
+        result = self._run_valid()
+        self.assertTrue(result.get("executed"))
+
+    def test_exec_error_none_on_success(self):
+        result = self._run_valid()
+        self.assertIsNone(result.get("exec_error"))
+
+    def test_window_row_has_memory_quality_label_after_audit(self):
+        self._run_valid()
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            row = conn.execute(
+                "SELECT memory_quality_label FROM printer_memory_windows LIMIT 1"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], "PARTIAL_MEMORY")
+
+    def test_window_row_e2q_audited_flag_in_context(self):
+        self._run_valid()
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            row = conn.execute(
+                "SELECT supporting_context_json FROM printer_memory_windows LIMIT 1"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNotNone(row)
+        ctx = json.loads(row[0])
+        self.assertTrue(ctx.get("e2q_audited"))
+
+    def test_e2q_block_causes_e2j_block(self):
+        """If E2Q blocks, E2J must fail with blocked status."""
+        from unittest.mock import patch
+        from printer_v1.operator_cli.e2q_memory_window_audit import E2Q_STATUS_BLOCKED
+        token_file = self._write_token_file([self._valid_token_entry()])
+        with patch(_E2Q_AUDIT_PATCH, return_value={
+            "e2q_status": E2Q_STATUS_BLOCKED,
+            "classified": False,
+            "blocked_reasons": ["mocked E2Q block for E2R test"],
+        }):
+            result = build_e2j_first_15m_cycle_payload(
+                token_file,
+                self.db_path,
+                self.backup_proof_path,
+                operator_approved=True,
+                _adapter=_build_fixture_adapter(),
+            )
+        self.assertEqual(result.get("e2j_status"), E2J_STATUS_BLOCKED)
+        self.assertFalse(result.get("executed"))
+
+    def test_e2q_block_cycle_status_e2q_blocked(self):
+        from unittest.mock import patch
+        from printer_v1.operator_cli.e2q_memory_window_audit import E2Q_STATUS_BLOCKED
+        token_file = self._write_token_file([self._valid_token_entry()])
+        with patch(_E2Q_AUDIT_PATCH, return_value={
+            "e2q_status": E2Q_STATUS_BLOCKED,
+            "classified": False,
+            "blocked_reasons": ["mocked E2Q block"],
+        }):
+            result = build_e2j_first_15m_cycle_payload(
+                token_file,
+                self.db_path,
+                self.backup_proof_path,
+                operator_approved=True,
+                _adapter=_build_fixture_adapter(),
+            )
+        self.assertEqual(result.get("cycle_status"), "E2Q_BLOCKED")
+
+    def test_e2q_block_exec_error_mentions_e2q(self):
+        from unittest.mock import patch
+        from printer_v1.operator_cli.e2q_memory_window_audit import E2Q_STATUS_BLOCKED
+        token_file = self._write_token_file([self._valid_token_entry()])
+        with patch(_E2Q_AUDIT_PATCH, return_value={
+            "e2q_status": E2Q_STATUS_BLOCKED,
+            "classified": False,
+            "blocked_reasons": ["mocked E2Q block"],
+        }):
+            result = build_e2j_first_15m_cycle_payload(
+                token_file,
+                self.db_path,
+                self.backup_proof_path,
+                operator_approved=True,
+                _adapter=_build_fixture_adapter(),
+            )
+        self.assertIn("E2Q_BLOCKED", result.get("exec_error", ""))
+
+    def test_e2q_block_job_is_failed(self):
+        from unittest.mock import patch
+        from printer_v1.operator_cli.e2q_memory_window_audit import E2Q_STATUS_BLOCKED
+        token_file = self._write_token_file([self._valid_token_entry()])
+        with patch(_E2Q_AUDIT_PATCH, return_value={
+            "e2q_status": E2Q_STATUS_BLOCKED,
+            "classified": False,
+            "blocked_reasons": ["mocked E2Q block"],
+        }):
+            build_e2j_first_15m_cycle_payload(
+                token_file,
+                self.db_path,
+                self.backup_proof_path,
+                operator_approved=True,
+                _adapter=_build_fixture_adapter(),
+            )
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            row = conn.execute(
+                "SELECT status FROM printer_scheduler_jobs"
+                " WHERE job_kind = 'TRACK_FAST_FIRST_15M' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], "FAILED")
+
+    def test_e2q_noop_audit_safe(self):
+        """E2Q returning CLEAN_CANDIDATE with row_updated=False → E2J still SUCCEEDED."""
+        from unittest.mock import patch
+        token_file = self._write_token_file([self._valid_token_entry()])
+        with patch(_E2Q_AUDIT_PATCH, return_value={
+            "e2q_status": "E2Q_AUDIT_CLEAN_CANDIDATE",
+            "classified": True,
+            "row_updated": False,
+            "memory_quality_label": "PARTIAL_MEMORY",
+            "rejection_reasons": [],
+        }):
+            result = build_e2j_first_15m_cycle_payload(
+                token_file,
+                self.db_path,
+                self.backup_proof_path,
+                operator_approved=True,
+                _adapter=_build_fixture_adapter(),
+            )
+        self.assertEqual(result.get("cycle_status"), "SUCCEEDED")
+        self.assertFalse(result.get("memory_window_audit_row_updated"))
+
+    def test_e2q_dirty_result_safe(self):
+        """E2Q returning DIRTY classifies the window but does not fail E2J."""
+        from unittest.mock import patch
+        token_file = self._write_token_file([self._valid_token_entry()])
+        with patch(_E2Q_AUDIT_PATCH, return_value={
+            "e2q_status": "E2Q_AUDIT_DIRTY",
+            "classified": True,
+            "row_updated": True,
+            "memory_quality_label": "DIRTY_MEMORY",
+            "rejection_reasons": ["test dirty reason"],
+        }):
+            result = build_e2j_first_15m_cycle_payload(
+                token_file,
+                self.db_path,
+                self.backup_proof_path,
+                operator_approved=True,
+                _adapter=_build_fixture_adapter(),
+            )
+        self.assertEqual(result.get("cycle_status"), "SUCCEEDED")
+        self.assertEqual(result.get("e2j_status"), E2J_STATUS_EXECUTED)
+        self.assertEqual(result.get("memory_quality_label"), "DIRTY_MEMORY")
+
+    def test_e2q_audit_only_result_safe(self):
+        """E2Q returning AUDIT_ONLY classifies the window but does not fail E2J."""
+        from unittest.mock import patch
+        token_file = self._write_token_file([self._valid_token_entry()])
+        with patch(_E2Q_AUDIT_PATCH, return_value={
+            "e2q_status": "E2Q_AUDIT_ONLY",
+            "classified": True,
+            "row_updated": True,
+            "memory_quality_label": "AUDIT_ONLY_MEMORY",
+            "rejection_reasons": [],
+        }):
+            result = build_e2j_first_15m_cycle_payload(
+                token_file,
+                self.db_path,
+                self.backup_proof_path,
+                operator_approved=True,
+                _adapter=_build_fixture_adapter(),
+            )
+        self.assertEqual(result.get("cycle_status"), "SUCCEEDED")
+        self.assertEqual(result.get("memory_quality_label"), "AUDIT_ONLY_MEMORY")
+
+    def test_audit_status_not_attempted_when_early_blocked(self):
+        result = build_e2j_first_15m_cycle_payload(
+            None,
+            self.db_path,
+            self.backup_proof_path,
+            operator_approved=True,
+        )
+        self.assertEqual(result.get("memory_window_audit_status"), "NOT_ATTEMPTED")
+        self.assertIsNone(result.get("memory_quality_label"))
+        self.assertIsNone(result.get("memory_window_audit_row_updated"))
+
+    def test_no_memories_created(self):
+        before = self._count_rows("printer_memories")
+        self._run_valid()
+        self.assertEqual(self._count_rows("printer_memories"), before)
+
+    def test_no_paper_decisions(self):
+        self._run_valid()
+        self.assertEqual(self._count_rows("printer_paper_decisions"), 0)
+
+    def test_no_paper_positions(self):
+        self._run_valid()
+        self.assertEqual(self._count_rows("printer_paper_positions"), 0)
+
+    def test_no_paper_trade_events(self):
+        self._run_valid()
+        self.assertEqual(self._count_rows("printer_paper_trade_events"), 0)
+
+    def test_no_paper_trade_audits(self):
+        self._run_valid()
+        self.assertEqual(self._count_rows("printer_paper_trade_audits"), 0)
+
+    def test_no_episodes_created(self):
+        self._run_valid()
+        self.assertEqual(self._count_rows("printer_episodes"), 0)
 
 
 if __name__ == "__main__":
