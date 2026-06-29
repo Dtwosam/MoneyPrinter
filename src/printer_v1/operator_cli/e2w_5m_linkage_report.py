@@ -331,6 +331,6 @@ def build_e2w_linkage_report(
         "next_recommended_lane": (
             "E2X — Strict 15m Clean-Memory Eligibility Review / No-Creation Gate"
             " evidence from repeated WINDOW_15M cycles is sufficient to"
-            " attempt a clean memory row."
+            "E2X - Strict 15m Clean-Memory Eligibility Review / No-Creation Gate"
         ),
     }
