@@ -231,6 +231,7 @@ def build_e2j_first_15m_cycle_payload(
     *,
     operator_approved: bool = False,
     _adapter: Any = None,
+    _snapshot_start_id: int | None = None,
 ) -> dict[str, Any]:
     """Build the E2J first bounded 15m cycle execution payload.
 
@@ -318,6 +319,14 @@ def build_e2j_first_15m_cycle_payload(
             "snapshot_id": None,
             "memory_window_close_status": "NOT_ATTEMPTED",
             "memory_window_id": None,
+            "snapshot_id_for_window": None,
+            "snapshot_start_id": None,
+            "snapshot_end_id": None,
+            "window_start_at": None,
+            "window_end_at": None,
+            "elapsed_seconds": None,
+            "lane_q_integrity_eligible": False,
+            "not_eligible_reason": None,
             "memory_window_audit_status": "NOT_ATTEMPTED",
             "memory_quality_label": None,
             "memory_window_audit_row_updated": None,
@@ -346,6 +355,7 @@ def build_e2j_first_15m_cycle_payload(
     snapshot_persistence_status: str = "NOT_ATTEMPTED"
     memory_window_close_status: str = "NOT_ATTEMPTED"
     memory_window_audit_status: str = "NOT_ATTEMPTED"
+    snapshot_id_for_window: int | None = None
 
     try:
         job_id = _create_e2j_scheduler_job(connection)
@@ -421,6 +431,7 @@ def build_e2j_first_15m_cycle_payload(
                             connection,
                             int(snapshot_id_for_window),
                             approved_mint,
+                            snapshot_start_id=_snapshot_start_id,
                         )
                         memory_window_close_status = str(
                             window_result.get("e2o_status", "UNKNOWN")
@@ -528,6 +539,14 @@ def build_e2j_first_15m_cycle_payload(
         "memory_window_id": (
             window_result.get("window_id") or window_result.get("existing_window_id")
         ),
+        "snapshot_id_for_window": snapshot_id_for_window,
+        "snapshot_start_id": window_result.get("snapshot_start_id"),
+        "snapshot_end_id": window_result.get("snapshot_end_id"),
+        "window_start_at": window_result.get("window_start_at"),
+        "window_end_at": window_result.get("window_end_at"),
+        "elapsed_seconds": window_result.get("elapsed_seconds"),
+        "lane_q_integrity_eligible": window_result.get("lane_q_integrity_eligible"),
+        "not_eligible_reason": window_result.get("not_eligible_reason"),
         "memory_window_audit_status": memory_window_audit_status,
         "memory_quality_label": audit_result.get("memory_quality_label"),
         "memory_window_audit_row_updated": audit_result.get("row_updated"),

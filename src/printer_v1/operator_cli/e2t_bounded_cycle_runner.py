@@ -210,6 +210,7 @@ def run_bounded_15m_cycles(
     completed = 0
     stopped_reason: str | None = None
     final_status = E2T_STATUS_COMPLETED
+    cycle_start_snapshot_id: int | None = None
 
     for cycle_num in range(1, max_cycles + 1):
         cycle_result = build_e2j_first_15m_cycle_payload(
@@ -218,7 +219,14 @@ def run_bounded_15m_cycles(
             backup_proof_path,
             operator_approved=True,
             _adapter=_adapter,
+            _snapshot_start_id=cycle_start_snapshot_id,
         )
+
+        # Capture the first window-close snapshot as the start reference for later cycles.
+        if cycle_start_snapshot_id is None:
+            win_snap = cycle_result.get("snapshot_id_for_window")
+            if win_snap is not None:
+                cycle_start_snapshot_id = int(win_snap)
 
         req_id, resp_id = _extract_source_ids(cycle_result)
 
@@ -234,6 +242,13 @@ def run_bounded_15m_cycles(
             "snapshot_id": cycle_result.get("snapshot_id"),
             "memory_window_close_status": cycle_result.get("memory_window_close_status"),
             "memory_window_id": cycle_result.get("memory_window_id"),
+            "snapshot_id_for_window": cycle_result.get("snapshot_id_for_window"),
+            "snapshot_start_id": cycle_result.get("snapshot_start_id"),
+            "snapshot_end_id": cycle_result.get("snapshot_end_id"),
+            "window_start_at": cycle_result.get("window_start_at"),
+            "window_end_at": cycle_result.get("window_end_at"),
+            "elapsed_seconds": cycle_result.get("elapsed_seconds"),
+            "lane_q_integrity_eligible": cycle_result.get("lane_q_integrity_eligible"),
             "memory_window_audit_status": cycle_result.get("memory_window_audit_status"),
             "memory_quality_label": cycle_result.get("memory_quality_label"),
             "memory_window_audit_row_updated": cycle_result.get("memory_window_audit_row_updated"),
@@ -266,6 +281,7 @@ def run_bounded_15m_cycles(
         "requested_cycle_count": max_cycles,
         "completed_cycle_count": completed,
         "stopped_reason": stopped_reason,
+        "cycle_start_snapshot_id": cycle_start_snapshot_id,
         "cycles": cycles,
         "hard_locks": dict(_HARD_LOCKS),
         "paper_decisions_created": 0,
