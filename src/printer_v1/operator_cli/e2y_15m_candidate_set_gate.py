@@ -113,6 +113,40 @@ def _unique_values(candidates: list[dict[str, Any]], key: str) -> list[Any]:
     return sorted({item.get(key) for item in candidates})
 
 
+def _select_best_pair_group(
+    candidates: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int, int] | None:
+    """Return the best single (token_id, pair_id) group with 5+ members.
+
+    The same-pair rule is NOT loosened — we find the qualifying group rather
+    than rejecting because a different pair has even one window.
+
+    Selection order: highest count → highest max window_id → lowest token_id
+    → lowest pair_id (deterministic).  Returns None when no group has 5+.
+    """
+    groups: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    for item in candidates:
+        key = (int(item["token_id"]), int(item["pair_id"]))
+        groups.setdefault(key, []).append(item)
+
+    eligible = [
+        (key, members)
+        for key, members in groups.items()
+        if len(members) >= _REQUIRED_CANDIDATE_COUNT
+    ]
+    if not eligible:
+        return None
+
+    def _sort_key(kv: tuple[tuple[int, int], list[dict[str, Any]]]) -> tuple:
+        key, members = kv
+        max_id = max((item.get("id") or 0) for item in members)
+        return (-len(members), -max_id, key[0], key[1])
+
+    eligible.sort(key=_sort_key)
+    best_key, best_members = eligible[0]
+    return best_members, best_key[0], best_key[1]
+
+
 def _build_set_gate(candidates: list[dict[str, Any]]) -> dict[str, bool]:
     snapshot_ids = _candidate_snapshot_links(candidates)
     token_pairs = _candidate_token_pairs(candidates) if candidates else []
@@ -215,11 +249,24 @@ def build_e2y_15m_candidate_set_gate_report(
                 "after": after,
             })
 
-    set_gate = _build_set_gate(candidates)
+    # Select the best single-pair group with 5+ coverage-eligible windows.
+    # The same-pair rule is not loosened — we find the qualifying group rather
+    # than rejecting because another pair has even one window present.
+    _sel = _select_best_pair_group(candidates)
+    if _sel is not None:
+        eval_candidates, sel_token_id, sel_pair_id = _sel
+        ignored_other_pair_count = len(candidates) - len(eval_candidates)
+    else:
+        eval_candidates = candidates
+        sel_token_id = None
+        sel_pair_id = None
+        ignored_other_pair_count = 0
+
+    set_gate = _build_set_gate(eval_candidates)
     set_gate["read_only_delta_clean"] = read_only_delta_violations == []
 
-    token_pairs = _candidate_token_pairs(candidates) if candidates else []
-    snapshot_ids = _candidate_snapshot_links(candidates)
+    token_pairs = _candidate_token_pairs(eval_candidates) if eval_candidates else []
+    snapshot_ids = _candidate_snapshot_links(eval_candidates)
 
     return {
         "lane": E2Y_LANE_NAME,
@@ -232,16 +279,20 @@ def build_e2y_15m_candidate_set_gate_report(
             "review_candidate_ids": e2x.get("review_candidate_ids"),
         },
         "candidate_set_summary": {
-            "candidate_ids": [item.get("id") for item in candidates],
+            "candidate_ids": [item.get("id") for item in eval_candidates],
+            "selected_candidate_token_id": sel_token_id,
+            "selected_candidate_pair_id": sel_pair_id,
+            "ignored_other_pair_candidate_count": ignored_other_pair_count,
+            "all_eligible_candidate_count": len(candidates),
             "token_pairs": token_pairs,
             "snapshot_ids": snapshot_ids,
-            "window_kinds": _unique_values(candidates, "window_kind"),
-            "window_statuses": _unique_values(candidates, "window_status"),
-            "data_labels": _unique_values(candidates, "data_quality_label"),
-            "memory_statuses": _unique_values(candidates, "memory_status"),
-            "memory_quality_labels": _unique_values(candidates, "memory_quality_label"),
+            "window_kinds": _unique_values(eval_candidates, "window_kind"),
+            "window_statuses": _unique_values(eval_candidates, "window_status"),
+            "data_labels": _unique_values(eval_candidates, "data_quality_label"),
+            "memory_statuses": _unique_values(eval_candidates, "memory_status"),
+            "memory_quality_labels": _unique_values(eval_candidates, "memory_quality_label"),
         },
-        "candidate_rows": candidates,
+        "candidate_rows": eval_candidates,
         "set_gate": set_gate,
         "set_gate_passed": all(set_gate.values()),
         "hard_locks": dict(_HARD_LOCKS),

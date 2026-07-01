@@ -1820,5 +1820,165 @@ class LaneKCandidateCoverageFilterTests(_DBBase):
         self.assertFalse(r.get("buy_enabled", True))
 
 
+# ===========================================================================
+# Proof 25 — Lane K: E2Y selects best qualifying same-pair group (6+1 split)
+# ===========================================================================
+
+_PAIR_GROUP_A = "GroupSelectPairAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+_PAIR_GROUP_B = "GroupSelectPairBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+_BASE_SELECT = _BASE_DT + timedelta(hours=11)
+
+
+class LaneKGroupSelectionPairTests(_DBBase):
+    """Prove that when pair A has 6 coverage-pass windows and pair B has 1,
+    E2Y selects pair A's group, passes the set gate, and creates 6 episodes.
+    The pair B window must not appear in candidate_window_ids."""
+
+    def _insert_pair_addr(self, conn, token_id: int, pair_address: str) -> int:
+        return int(conn.execute(
+            "INSERT INTO printer_pairs"
+            " (token_id, pair_address, base_token_mint, first_seen_at, last_seen_at,"
+            "  created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (token_id, pair_address, pair_address, _NOW, _NOW, _NOW, _NOW),
+        ).lastrowid)
+
+    def _make_6_pair_a_plus_1_pair_b(self) -> tuple[int, int, list[int], int]:
+        """6 windows on pair A + 1 window on pair B, all TRACK_FAST, 10 snaps each.
+
+        Returns (pair_a_id, pair_b_id, pair_a_window_ids, pair_b_window_id).
+        Each window has a unique snapshot_id so E2Y snapshot_count_is_5 passes.
+        """
+        conn = self._connect()
+        try:
+            tid = self._insert_token(conn, token_status="TRACK_FAST")
+            pid_a = self._insert_pair_addr(conn, tid, _PAIR_GROUP_A)
+            pid_b = self._insert_pair_addr(conn, tid, _PAIR_GROUP_B)
+
+            snap_id = 22000
+            a_wids: list[int] = []
+
+            # 6 windows on pair A — 10 TRACK_FAST snaps each
+            for w_idx in range(6):
+                win_start = _BASE_SELECT + timedelta(minutes=w_idx * 16)
+                for ts in _track_fast_snap_times(win_start, n=10):
+                    self._insert_snapshot(conn, snap_id, tid, pid_a, ts,
+                                          tracking_lane="TRACK_FAST")
+                    snap_id += 1
+                wid = self._insert_window(
+                    conn, tid, pid_a,
+                    snapshot_id=snap_id - 1,
+                    window_start_at=win_start.isoformat(),
+                    window_end_at=(win_start + timedelta(seconds=901)).isoformat(),
+                    snapshot_start_id=snap_id - 10,
+                    snapshot_end_id=snap_id - 1,
+                )
+                a_wids.append(wid)
+
+            # 1 window on pair B — 10 TRACK_FAST snaps
+            win_start_b = _BASE_SELECT + timedelta(minutes=6 * 16)
+            for ts in _track_fast_snap_times(win_start_b, n=10):
+                self._insert_snapshot(conn, snap_id, tid, pid_b, ts,
+                                      tracking_lane="TRACK_FAST")
+                snap_id += 1
+            b_wid = self._insert_window(
+                conn, tid, pid_b,
+                snapshot_id=snap_id - 1,
+                window_start_at=win_start_b.isoformat(),
+                window_end_at=(win_start_b + timedelta(seconds=901)).isoformat(),
+                snapshot_start_id=snap_id - 10,
+                snapshot_end_id=snap_id - 1,
+            )
+
+            conn.commit()
+        finally:
+            conn.close()
+        return pid_a, pid_b, a_wids, b_wid
+
+    # --- E2Y gate ---
+
+    def test_6_1_e2y_passes(self):
+        """6 coverage-pass windows on pair A ≥ 5 required → E2Y must pass."""
+        self._make_6_pair_a_plus_1_pair_b()
+        r = run_e2z_pipeline(self.db_path, operator_approved=True)
+        self.assertTrue(r["e2y_set_gate_passed"])
+
+    def test_6_1_candidate_window_ids_count_is_6(self):
+        """candidate_window_ids contains only pair A's 6 windows."""
+        self._make_6_pair_a_plus_1_pair_b()
+        r = run_e2z_pipeline(self.db_path, operator_approved=True)
+        self.assertEqual(len(r["candidate_window_ids"]), 6)
+
+    def test_6_1_pair_b_window_excluded_from_candidates(self):
+        """Pair B's single window must not appear in candidate_window_ids."""
+        _, _, _, b_wid = self._make_6_pair_a_plus_1_pair_b()
+        r = run_e2z_pipeline(self.db_path, operator_approved=True)
+        self.assertNotIn(b_wid, r["candidate_window_ids"])
+
+    def test_6_1_pair_a_windows_all_in_candidates(self):
+        """All 6 pair A windows must appear in candidate_window_ids."""
+        _, _, a_wids, _ = self._make_6_pair_a_plus_1_pair_b()
+        r = run_e2z_pipeline(self.db_path, operator_approved=True)
+        cids = set(r["candidate_window_ids"])
+        for wid in a_wids:
+            self.assertIn(wid, cids)
+
+    # --- Episode creation ---
+
+    def test_6_1_episodes_created_is_6(self):
+        self._make_6_pair_a_plus_1_pair_b()
+        r = run_e2z_pipeline(self.db_path, operator_approved=True)
+        self.assertEqual(r["e2z_created_count"], 6)
+
+    def test_6_1_episodes_in_db_is_6(self):
+        self._make_6_pair_a_plus_1_pair_b()
+        run_e2z_pipeline(self.db_path, operator_approved=True)
+        self.assertEqual(self._count("printer_episodes"), 6)
+
+    # --- Selection metadata ---
+
+    def test_6_1_selected_pair_id_is_pair_a(self):
+        pid_a, _, _, _ = self._make_6_pair_a_plus_1_pair_b()
+        r = run_e2z_pipeline(self.db_path, operator_approved=True)
+        self.assertEqual(r["selected_candidate_pair_id"], pid_a)
+
+    def test_6_1_ignored_other_pair_count_is_1(self):
+        self._make_6_pair_a_plus_1_pair_b()
+        r = run_e2z_pipeline(self.db_path, operator_approved=True)
+        self.assertEqual(r["ignored_other_pair_candidate_count"], 1)
+
+    def test_6_1_e2y_candidate_reason_is_none_on_pass(self):
+        self._make_6_pair_a_plus_1_pair_b()
+        r = run_e2z_pipeline(self.db_path, operator_approved=True)
+        self.assertIsNone(r.get("e2y_candidate_reason"))
+
+    # --- Financial locks ---
+
+    def test_6_1_financial_locks_zero(self):
+        self._make_6_pair_a_plus_1_pair_b()
+        r = run_e2z_pipeline(self.db_path, operator_approved=True)
+        self.assertFalse(r.get("retrieval_activated", True))
+        self.assertEqual(r.get("paper_decisions_created", 1), 0)
+        self.assertFalse(r.get("buy_enabled", True))
+        self.assertFalse(r.get("sell_enabled", True))
+        self.assertEqual(r.get("positions_created", 1), 0)
+        self.assertEqual(r.get("pnl_created", 1), 0)
+
+    def test_6_1_hard_locks_all_set(self):
+        self._make_6_pair_a_plus_1_pair_b()
+        r = run_e2z_pipeline(self.db_path, operator_approved=True)
+        locks = r.get("hard_locks", {})
+        self.assertTrue(locks.get("no_buy_sell_hold"))
+        self.assertTrue(locks.get("no_retrieval_activation"))
+        self.assertTrue(locks.get("no_paper_decisions"))
+        self.assertTrue(locks.get("no_positions"))
+
+    def test_6_1_zero_clean_memories_valid(self):
+        """zero_clean_memories_valid must be True even when episodes are created."""
+        self._make_6_pair_a_plus_1_pair_b()
+        r = run_e2z_pipeline(self.db_path, operator_approved=True)
+        self.assertIs(r["zero_clean_memories_valid"], True)
+
+
 if __name__ == "__main__":
     unittest.main()

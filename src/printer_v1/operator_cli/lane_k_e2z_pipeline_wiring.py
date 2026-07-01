@@ -248,7 +248,7 @@ def _e2y_blocked_reason(
         n = len(token_pairs)
         parts.append(
             f"windows span {n} different (token_id, pair_id) combinations; "
-            "all 5+ candidates must share the same token/pair "
+            "no single pair has 5 or more coverage-eligible windows "
             "(check whether a second source run used a different pair_address)"
         )
     if not set_gate.get("all_partial_memory"):
@@ -352,6 +352,7 @@ def run_e2z_pipeline(
             set_gate, token_pairs, coverage_blocked_count,
             lane_q_excluded_count=len(all_lane_q_blocked_ids),
         )
+        _e2y_css = e2y_report.get("candidate_set_summary", {})
         after = _snapshot_counts(db_path_str)
         return {
             "lane_k_status": LANE_K_STATUS_COMPLETED,
@@ -365,6 +366,9 @@ def run_e2z_pipeline(
             "e2y_status": e2y_status,
             "e2y_set_gate_passed": False,
             "e2y_candidate_reason": e2y_candidate_reason,
+            "selected_candidate_token_id": _e2y_css.get("selected_candidate_token_id"),
+            "selected_candidate_pair_id": _e2y_css.get("selected_candidate_pair_id"),
+            "ignored_other_pair_candidate_count": _e2y_css.get("ignored_other_pair_candidate_count", 0),
             "coverage_persisted_count": coverage_persisted_count,
             "coverage_blocked_count": coverage_blocked_count,
             "lane_u2_status": lane_u2_result.get("lane_u2_status"),
@@ -465,6 +469,7 @@ def run_e2z_pipeline(
 
     after = _snapshot_counts(db_path_str)
 
+    _e2y_css = e2y_report.get("candidate_set_summary", {})
     return {
         "lane_k_status": LANE_K_STATUS_COMPLETED,
         "lane": LANE_K_NAME,
@@ -474,6 +479,10 @@ def run_e2z_pipeline(
         "e2x_status": e2x_status,
         "e2y_status": e2y_status,
         "e2y_set_gate_passed": True,
+        "e2y_candidate_reason": None,
+        "selected_candidate_token_id": _e2y_css.get("selected_candidate_token_id"),
+        "selected_candidate_pair_id": _e2y_css.get("selected_candidate_pair_id"),
+        "ignored_other_pair_candidate_count": _e2y_css.get("ignored_other_pair_candidate_count", 0),
         "coverage_persisted_count": coverage_persisted_count,
         "coverage_blocked_count": coverage_blocked_count,
         "lane_q_guard_status": lane_q_guard.get("lane_q_guard_status"),
