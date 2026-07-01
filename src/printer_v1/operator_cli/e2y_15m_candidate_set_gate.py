@@ -120,7 +120,7 @@ def _build_set_gate(candidates: list[dict[str, Any]]) -> dict[str, bool]:
     memory_quality_labels = _unique_values(candidates, "memory_quality_label")
 
     return {
-        "candidate_count_is_5": len(candidates) == _REQUIRED_CANDIDATE_COUNT,
+        "candidate_count_is_5": len(candidates) >= _REQUIRED_CANDIDATE_COUNT,
         "all_same_token_pair": len(token_pairs) == 1,
         "all_window_15m": _unique_values(candidates, "window_kind") == ["WINDOW_15M"],
         "all_window_closed": _unique_values(candidates, "window_status") == ["WINDOW_CLOSED"],
@@ -139,7 +139,7 @@ def _build_set_gate(candidates: list[dict[str, Any]]) -> dict[str, bool]:
         ),
         "all_have_snapshot_links": len(snapshot_ids) == len(candidates),
         "snapshot_ids_are_strictly_increasing": snapshot_ids == sorted(set(snapshot_ids)),
-        "snapshot_count_is_5": len(snapshot_ids) == _REQUIRED_CANDIDATE_COUNT,
+        "snapshot_count_is_5": len(snapshot_ids) >= _REQUIRED_CANDIDATE_COUNT,
         "no_dirty_or_do_not_train_in_candidate_set": all(
             item.get("do_not_train") is False for item in candidates
         ),

@@ -4,14 +4,20 @@ Connects existing audited 15m windows into the clean-memory creation path:
 
   E2Q-audited WINDOW_15M
   → E2X eligibility (build_e2x_15m_clean_memory_eligibility_report)
-  → E2Y candidate set gate (build_e2y_15m_candidate_set_gate_report)
   → Lane Q integrity guard (guard_candidate_windows) — filters by real 15m
+  → Lane U2 coverage persistence (persist_coverage_for_windows) — runs for
+      ALL Lane Q-valid windows, independent of E2Y same-pair grouping
+  → E2Y candidate set gate (build_e2y_15m_candidate_set_gate_report)
   → E2Z clean-memory creation (create_clean_memory_from_window)
 
-Requires operator_approved=True and a valid db_path.
+Coverage persistence is decoupled from the E2Y set gate so that valid
+WINDOW_15M windows get their coverage written even when E2Y fails because
+windows are split across different pair_ids.  E2Y (and therefore E2Z) still
+requires all 5+ candidates to share the same (token_id, pair_id).
 
-Zero clean memories is a valid outcome (E2Y set gate may not pass if fewer
-than 5 eligible candidates exist — that is not an error).
+Zero clean memories is a valid outcome when E2Y does not pass.
+
+Requires operator_approved=True and a valid db_path.
 
 Idempotent: a second call for the same DB creates zero new rows (E2Z returns
 E2Z_ALREADY_EXISTS for each window it already processed).
@@ -22,9 +28,6 @@ Permanently locked (no unlock path in this module):
   source fetching, scheduler jobs, paid APIs, scoring, embeddings,
   5m as main outcome memory.
 
-New write path introduced: NONE. All writes go through E2Z, which was the
-only approved write path before Lane K was implemented.
-
 Classification outcomes:
   LANE_K_COMPLETED  — pipeline ran; clean_memory_rows_created >= 0 (zero valid)
   LANE_K_BLOCKED    — operator_approved not set or db_path missing/invalid
@@ -33,6 +36,7 @@ Classification outcomes:
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +57,11 @@ from printer_v1.operator_cli.lane_q_15m_window_integrity_guard import (
     LANE_Q_GUARD_COMPLETED,
     guard_candidate_windows,
 )
+from printer_v1.operator_cli.lane_u2_coverage_audit_persistence import (
+    COVERAGE_STATE_BLOCKED,
+    LANE_U2_STATUS_COMPLETED,
+    persist_coverage_for_windows,
+)
 
 
 LANE_K_STATUS_COMPLETED: str = "LANE_K_COMPLETED"
@@ -62,6 +71,8 @@ LANE_K_NAME: str = "Lane K — E2Q-to-E2Z Clean-Memory Pipeline Wiring"
 
 _TRACKED_TABLES: tuple[str, ...] = (
     "printer_episodes",
+    "printer_snapshot_window_coverage",
+    "printer_snapshot_gap_audits",
     "printer_source_requests",
     "printer_source_responses",
     "printer_source_failures",
@@ -187,17 +198,84 @@ def _blocked_result(reasons: list[str], db_path_str: str) -> dict[str, Any]:
     }
 
 
+def _downgrade_blocked_windows(db_path: str, window_ids: list[int]) -> None:
+    """Downgrade quality fields on printer_memory_windows for Lane Q-blocked windows.
+
+    Prevents E2Y's independent DB query from including windows that Lane Q
+    already rejected due to coverage policy violations (gap or count failures).
+    Must be called BEFORE E2Y runs.
+    """
+    if not window_ids:
+        return
+    now = datetime.now(tz=timezone.utc).isoformat()
+    conn = sqlite3.connect(db_path)
+    try:
+        placeholders = ",".join("?" * len(window_ids))
+        conn.execute(
+            f"""
+            UPDATE printer_memory_windows
+            SET data_quality_label = 'MISSING_CRITICAL_DATA',
+                memory_status = 'DIRTY_MEMORY',
+                do_not_train = 1,
+                updated_at = ?
+            WHERE id IN ({placeholders})
+            """,
+            (now, *window_ids),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _e2y_blocked_reason(
+    set_gate: dict[str, Any],
+    token_pairs: list,
+    coverage_blocked_count: int = 0,
+    lane_q_excluded_count: int = 0,
+) -> str:
+    """Derive a human-readable explanation of why the E2Y set gate did not pass."""
+    parts: list[str] = []
+    total_excluded = coverage_blocked_count + lane_q_excluded_count
+    if total_excluded > 0:
+        parts.append(
+            f"{total_excluded} window(s) excluded from candidacy: "
+            "coverage BLOCKED (snapshot count or gap policy violation); "
+            "these windows do not count toward the 5-window gate"
+        )
+    if not set_gate.get("candidate_count_is_5"):
+        parts.append("fewer than 5 coverage-eligible candidate windows")
+    if not set_gate.get("all_same_token_pair") and len(token_pairs) > 1:
+        n = len(token_pairs)
+        parts.append(
+            f"windows span {n} different (token_id, pair_id) combinations; "
+            "all 5+ candidates must share the same token/pair "
+            "(check whether a second source run used a different pair_address)"
+        )
+    if not set_gate.get("all_partial_memory"):
+        parts.append("not all windows have PARTIAL_MEMORY status")
+    if not set_gate.get("all_e2q_audited"):
+        parts.append("not all windows are E2Q-audited")
+    if not set_gate.get("all_clean_data"):
+        parts.append("not all windows have CLEAN_DATA label")
+    if not parts:
+        parts.append("set gate condition(s) not satisfied")
+    return "; ".join(parts)
+
+
 def run_e2z_pipeline(
     db_path: str | Path | None,
     *,
     operator_approved: bool = False,
     production_mode: bool = False,
 ) -> dict[str, Any]:
-    """Wire E2X eligibility → E2Y set gate → E2Z clean-memory creation.
+    """Wire E2X eligibility → Lane Q guard → Lane U2 coverage → E2Y set gate → E2Z.
+
+    Coverage persistence (Lane U2) runs for ALL Lane Q-valid windows regardless of
+    whether the E2Y same-pair set gate passes.  E2Y still gates clean-memory
+    creation (E2Z); zero clean memories is always a valid outcome.
 
     Requires operator_approved=True and a valid db_path.
-    Zero clean memories is always a valid outcome.
-    Idempotent: re-running does not duplicate clean-memory rows.
+    Idempotent: re-running does not duplicate coverage or clean-memory rows.
     """
     blocked_reasons: list[str] = []
 
@@ -218,20 +296,62 @@ def run_e2z_pipeline(
 
     before = _snapshot_counts(db_path_str)
 
-    # Step 1: E2X eligibility
+    # Step 1: E2X eligibility — all WINDOW_15M candidates
     e2x_report = build_e2x_15m_clean_memory_eligibility_report(
         db_path, operator_approved=True
     )
     e2x_status = e2x_report.get("e2x_status", _E2X_STATUS_BLOCKED)
+    all_eligible_ids: list[int] = list(e2x_report.get("review_candidate_ids", []))
 
-    # Step 2: E2Y set gate
+    # Step 2: Lane Q guard for ALL E2X-eligible windows — runs before E2Y so
+    #         coverage can be persisted regardless of same-pair grouping outcome.
+    lane_q_guard = guard_candidate_windows(
+        db_path, all_eligible_ids, operator_approved=True,
+        production_mode=production_mode,
+    )
+    all_valid_ids: list[int] = lane_q_guard.get("valid_window_ids", [])
+    all_lane_q_blocked_ids: list[int] = lane_q_guard.get("blocked_window_ids", [])
+    all_valid_set: set[int] = set(all_valid_ids)
+
+    # Downgrade Lane Q-blocked windows before E2Y runs so E2Y's independent DB
+    # query does not include them in the clean-memory candidate set.
+    _downgrade_blocked_windows(db_path_str, all_lane_q_blocked_ids)
+
+    # Step 3: Lane U2 — persist coverage for ALL Lane Q-valid windows.
+    #         Decoupled from E2Y: writes coverage rows even when E2Y fails.
+    lane_u2_result = persist_coverage_for_windows(
+        db_path,
+        all_valid_ids,
+        operator_approved=True,
+        production_mode=production_mode,
+    )
+    _coverage_blocked: set[int] = set(
+        lane_u2_result.get("coverage_blocked_ids", [])
+    )
+    if production_mode:
+        _coverage_blocked |= set(lane_u2_result.get("coverage_unknown_ids", []))
+    coverage_persisted_count: int = lane_u2_result.get("coverage_rows_written", 0)
+    coverage_blocked_count: int = len(_coverage_blocked)
+
+    # Step 4: E2Y set gate — same-token/pair rule enforced (NOT loosened).
     e2y_report = build_e2y_15m_candidate_set_gate_report(
         db_path, operator_approved=True
     )
     e2y_status = e2y_report.get("e2y_status", "E2Y_SET_GATE_BLOCKED")
     set_gate_passed: bool = bool(e2y_report.get("set_gate_passed", False))
+    e2y_candidate_ids: list[int] = (
+        e2y_report.get("candidate_set_summary", {}).get("candidate_ids", [])
+    )
 
     if not set_gate_passed:
+        set_gate = e2y_report.get("set_gate", {})
+        token_pairs = (
+            e2y_report.get("candidate_set_summary", {}).get("token_pairs", [])
+        )
+        e2y_candidate_reason = _e2y_blocked_reason(
+            set_gate, token_pairs, coverage_blocked_count,
+            lane_q_excluded_count=len(all_lane_q_blocked_ids),
+        )
         after = _snapshot_counts(db_path_str)
         return {
             "lane_k_status": LANE_K_STATUS_COMPLETED,
@@ -244,16 +364,30 @@ def run_e2z_pipeline(
             "e2x_status": e2x_status,
             "e2y_status": e2y_status,
             "e2y_set_gate_passed": False,
+            "e2y_candidate_reason": e2y_candidate_reason,
+            "coverage_persisted_count": coverage_persisted_count,
+            "coverage_blocked_count": coverage_blocked_count,
+            "lane_u2_status": lane_u2_result.get("lane_u2_status"),
+            "lane_u2_coverage_pass_ids": lane_u2_result.get("coverage_pass_ids", []),
+            "lane_u2_coverage_blocked_ids": lane_u2_result.get("coverage_blocked_ids", []),
+            "lane_u2_coverage_unknown_ids": lane_u2_result.get("coverage_unknown_ids", []),
+            "lane_u2_coverage_rows_written": lane_u2_result.get("coverage_rows_written", 0),
+            "lane_u2_gap_audit_rows_written": lane_u2_result.get("gap_audit_rows_written", 0),
+            "lane_q_guard_status": lane_q_guard.get("lane_q_guard_status"),
+            "lane_q_valid_window_ids": all_valid_ids,
+            "lane_q_blocked_window_ids": all_lane_q_blocked_ids,
+            "lane_q_blocked_count": len(all_lane_q_blocked_ids),
             "e2z_created_count": 0,
             "e2z_already_exists_count": 0,
             "e2z_blocked_count": 0,
             "clean_memory_rows_created": 0,
-            "candidate_window_ids": [],
+            "candidate_window_ids": e2y_candidate_ids,
             "zero_clean_memories_valid": True,
             "hard_locks": dict(_HARD_LOCKS),
             "locked_capabilities": dict(_LOCKED_CAPABILITIES),
             "db_delta_summary": _delta_summary(before, after),
             "recommended_next_action": _RECOMMENDED_NEXT_ACTION,
+            "e2z_window_results": [],
             "retrieval_activated": False,
             "paper_decisions_created": 0,
             "buy_enabled": False,
@@ -265,27 +399,18 @@ def run_e2z_pipeline(
             "paper_trade_audits_created": 0,
         }
 
-    # Step 3: E2Y candidate IDs
-    candidate_ids: list[int] = (
-        e2y_report.get("candidate_set_summary", {}).get("candidate_ids", [])
-    )
+    # Step 5: E2Z for windows in (E2Y candidates ∩ Lane Q valid ∩ not coverage blocked)
+    e2z_eligible_ids: list[int] = [
+        wid for wid in e2y_candidate_ids
+        if wid in all_valid_set and wid not in _coverage_blocked
+    ]
 
-    # Step 4: Lane Q integrity guard — filter to real 15m windows only
-    lane_q_guard = guard_candidate_windows(
-        db_path, candidate_ids, operator_approved=True,
-        production_mode=production_mode,
-    )
-    valid_candidate_ids: list[int] = lane_q_guard.get("valid_window_ids", [])
-    lane_q_blocked_ids: list[int] = lane_q_guard.get("blocked_window_ids", [])
-    lane_q_blocked_count: int = len(lane_q_blocked_ids)
-
-    # Step 5: E2Z creation for Lane-Q-valid candidates only
     created_count = 0
     already_exists_count = 0
     e2z_blocked_count = 0
     window_results: list[dict[str, Any]] = []
 
-    for wid in valid_candidate_ids:
+    for wid in e2z_eligible_ids:
         result = create_clean_memory_from_window(
             db_path,
             wid,
@@ -306,8 +431,26 @@ def run_e2z_pipeline(
             "blocked_by": None,
         })
 
-    # Report Lane Q blocked windows (did not reach E2Z)
-    for wid in lane_q_blocked_ids:
+    # Report coverage-blocked windows (Lane Q valid but coverage blocked — did not reach E2Z)
+    for wid in sorted(_coverage_blocked):
+        if wid in all_valid_set:
+            u2_win_result = next(
+                (v for v in lane_u2_result.get("window_coverage_results", [])
+                 if v.get("window_id") == wid),
+                {},
+            )
+            window_results.append({
+                "window_id": wid,
+                "e2z_status": "LANE_U2_COVERAGE_BLOCKED",
+                "episode_id": None,
+                "blocked_by": "lane_u2_coverage_audit",
+                "coverage_state": u2_win_result.get("coverage_state"),
+                "coverage_blocked_reason": u2_win_result.get("blocked_reason"),
+            })
+            e2z_blocked_count += 1
+
+    # Report Lane Q blocked windows (did not reach coverage or E2Z)
+    for wid in all_lane_q_blocked_ids:
         lane_q_verdict = next(
             (v for v in lane_q_guard.get("window_verdicts", []) if v.get("window_id") == wid),
             {},
@@ -331,15 +474,24 @@ def run_e2z_pipeline(
         "e2x_status": e2x_status,
         "e2y_status": e2y_status,
         "e2y_set_gate_passed": True,
+        "coverage_persisted_count": coverage_persisted_count,
+        "coverage_blocked_count": coverage_blocked_count,
         "lane_q_guard_status": lane_q_guard.get("lane_q_guard_status"),
-        "lane_q_valid_window_ids": valid_candidate_ids,
-        "lane_q_blocked_window_ids": lane_q_blocked_ids,
-        "lane_q_blocked_count": lane_q_blocked_count,
+        "lane_q_valid_window_ids": all_valid_ids,
+        "lane_q_blocked_window_ids": all_lane_q_blocked_ids,
+        "lane_q_blocked_count": len(all_lane_q_blocked_ids),
+        "lane_u2_status": lane_u2_result.get("lane_u2_status"),
+        "lane_u2_coverage_pass_ids": lane_u2_result.get("coverage_pass_ids", []),
+        "lane_u2_coverage_blocked_ids": lane_u2_result.get("coverage_blocked_ids", []),
+        "lane_u2_coverage_unknown_ids": lane_u2_result.get("coverage_unknown_ids", []),
+        "lane_u2_coverage_rows_written": lane_u2_result.get("coverage_rows_written", 0),
+        "lane_u2_gap_audit_rows_written": lane_u2_result.get("gap_audit_rows_written", 0),
+        "lane_u2_e2z_eligible_ids": e2z_eligible_ids,
         "e2z_created_count": created_count,
         "e2z_already_exists_count": already_exists_count,
         "e2z_blocked_count": e2z_blocked_count,
         "clean_memory_rows_created": created_count,
-        "candidate_window_ids": candidate_ids,
+        "candidate_window_ids": e2y_candidate_ids,
         "zero_clean_memories_valid": True,
         "hard_locks": dict(_HARD_LOCKS),
         "locked_capabilities": dict(_LOCKED_CAPABILITIES),
