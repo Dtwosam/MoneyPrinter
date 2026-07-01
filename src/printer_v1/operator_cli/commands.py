@@ -9361,6 +9361,170 @@ def main_run_e2t_bounded_cycle(argv=None, *, _adapter=None) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Lane U -- Governed Reusable Memory Factory Operator Runner
+# ---------------------------------------------------------------------------
+
+def main_run_memory_factory_cycle(argv=None, *, _adapter=None) -> int:
+    """Lane U: governed bounded Memory Factory cycle runner.
+
+    Runs repeated E2J→E2O→E2Q cycles (Lane-T snapshot threading) + Lane K
+    (E2X→E2Y→Lane Q→E2Z) within a bounded duration profile.  Only WINDOW_15M
+    is supported as the main collection window.  12h/24h profiles require
+    --allow-long-bounded-run.  Stops safely if no governed E2J/Lane-K path
+    exists.  No BUY/SELL/HOLD.  No paper decisions.  No PnL.  No live trading.
+    """
+    from printer_v1.operator_cli.lane_u_memory_factory_runner import (
+        LANE_U_COMMAND_NAME,
+        _DEFAULT_PROFILE,
+        _DURATION_PROFILES,
+        _MAX_ACTIVE_TOKENS_HARD_CAP,
+        _MAX_NEW_TOKENS_HARD_CAP,
+        run_memory_factory_cycle,
+    )
+
+    parser = _base_parser(
+        f"Lane U — governed reusable Memory Factory operator runner ({LANE_U_COMMAND_NAME})."
+        " Runs repeated E2J+LaneK cycles within a bounded duration profile."
+        " Only WINDOW_15M is supported as the main collection window."
+        " 12h/24h profiles require --allow-long-bounded-run."
+        " Stops safely if the governed E2J/Lane-K dependency path is unavailable."
+        " No BUY/SELL/HOLD. No paper decisions. No positions. No PnL."
+        " No live trading. No paid APIs. No wallet/private keys.",
+        ("json",),
+    )
+    parser.add_argument(
+        "--token-list-path",
+        dest="token_list_path",
+        metavar="PATH",
+        required=True,
+        help="Path to operator-approved token list JSON (exactly 1 TRACK_FAST token).",
+    )
+    parser.add_argument(
+        "--backup-proof-path",
+        dest="backup_proof_path",
+        metavar="PATH",
+        required=True,
+        help="Path to the existing DB backup file (proof backup exists before run).",
+    )
+    parser.add_argument(
+        "--operator-approved",
+        action="store_true",
+        dest="operator_approved",
+        help="Operator explicitly approves this Memory Factory cycle run.",
+    )
+    parser.add_argument(
+        "--duration",
+        dest="duration_profile",
+        metavar="PROFILE",
+        default=_DEFAULT_PROFILE,
+        choices=sorted(_DURATION_PROFILES),
+        help=(
+            f"Bounded duration profile. Choices: {sorted(_DURATION_PROFILES)}."
+            f"  Default: {_DEFAULT_PROFILE}."
+            "  12h/24h require --allow-long-bounded-run."
+        ),
+    )
+    parser.add_argument(
+        "--window-kind",
+        dest="window_kind",
+        metavar="KIND",
+        default="WINDOW_15M",
+        help=(
+            "Main memory window kind. Only WINDOW_15M is enabled in this lane."
+            "  Default: WINDOW_15M."
+        ),
+    )
+    parser.add_argument(
+        "--support-window-kind",
+        dest="support_window_kind",
+        metavar="KIND",
+        default=None,
+        help=(
+            "Optional support window kind (recognised: WINDOW_5M_MICRO_EVENT)."
+            "  Support windows are evidence-only; they are not used as main."
+        ),
+    )
+    parser.add_argument(
+        "--max-active-tokens",
+        dest="max_active_tokens",
+        type=int,
+        default=_MAX_ACTIVE_TOKENS_HARD_CAP,
+        metavar="N",
+        help=(
+            f"Maximum number of simultaneously tracked tokens"
+            f" (hard cap: {_MAX_ACTIVE_TOKENS_HARD_CAP})."
+            f"  Default: {_MAX_ACTIVE_TOKENS_HARD_CAP}."
+        ),
+    )
+    parser.add_argument(
+        "--max-new-tokens",
+        dest="max_new_tokens",
+        type=int,
+        default=_MAX_NEW_TOKENS_HARD_CAP,
+        metavar="N",
+        help=(
+            f"Discovery intake cap per run (hard cap: {_MAX_NEW_TOKENS_HARD_CAP})."
+            f"  Default: {_MAX_NEW_TOKENS_HARD_CAP}."
+        ),
+    )
+    parser.add_argument(
+        "--allow-long-bounded-run",
+        action="store_true",
+        dest="allow_long_bounded_run",
+        help=(
+            "Enable 12h/24h duration profiles.  Must be combined with"
+            " --operator-approved.  Without this flag 12h/24h are refused."
+        ),
+    )
+    parser.add_argument(
+        "--snapshot-interval-seconds",
+        dest="snapshot_interval_seconds",
+        type=float,
+        default=0.0,
+        metavar="S",
+        help=(
+            "Seconds between snapshot-only E2J calls inside a 15m window."
+            "  Use 90 for WINDOW_15M/TRACK_FAST, 180 for TRACK_NORMAL."
+            "  Default: 0 (no sleep — tests/manual runs)."
+        ),
+    )
+    parser.add_argument(
+        "--window-close-interval-seconds",
+        dest="window_close_interval_seconds",
+        type=float,
+        default=0.0,
+        metavar="S",
+        help=(
+            "Seconds of snapshot collection before the 15m window is"
+            " closed and evaluated.  Use 900 for real 15m windows."
+            "  Default: 0 (close immediately — tests/manual runs)."
+        ),
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        payload = run_memory_factory_cycle(
+            args.token_list_path,
+            args.db_path,
+            args.backup_proof_path,
+            operator_approved=args.operator_approved,
+            duration_profile=args.duration_profile,
+            window_kind=args.window_kind,
+            support_window_kind=args.support_window_kind,
+            max_active_tokens=args.max_active_tokens,
+            max_new_tokens=args.max_new_tokens,
+            allow_long_bounded_run=args.allow_long_bounded_run,
+            snapshot_interval_seconds=args.snapshot_interval_seconds,
+            window_close_interval_seconds=args.window_close_interval_seconds,
+            _adapter=_adapter,
+        )
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
+# ---------------------------------------------------------------------------
 # Lane E2U -- Bounded 15m Cycle Closeout Report
 # ---------------------------------------------------------------------------
 

@@ -232,6 +232,7 @@ def build_e2j_first_15m_cycle_payload(
     operator_approved: bool = False,
     _adapter: Any = None,
     _snapshot_start_id: int | None = None,
+    _close_window: bool = True,
 ) -> dict[str, Any]:
     """Build the E2J first bounded 15m cycle execution payload.
 
@@ -416,6 +417,17 @@ def build_e2j_first_15m_cycle_payload(
                     _fail_e2j_job(connection, job_id, reason)
                     cycle_status = "E2M_BLOCKED"
                     exec_error = reason
+                elif not _close_window:
+                    # Snapshot-only mode: snapshot collected; skip E2O and E2Q.
+                    # The caller (Lane U runner) will use the snapshot_id to
+                    # track the window's open boundary, then issue a separate
+                    # window-close E2J call after window_close_interval_seconds.
+                    snapshot_id_for_window = (
+                        snapshot_result.get("snapshot_id")
+                        or snapshot_result.get("existing_snapshot_id")
+                    )
+                    _complete_e2j_job(connection, job_id)
+                    cycle_status = "SUCCEEDED_SNAPSHOT_ONLY"
                 else:
                     # PERSISTED or DUPLICATE — call E2O to close the 15m window.
                     snapshot_id_for_window = (
@@ -522,11 +534,12 @@ def build_e2j_first_15m_cycle_payload(
     forbidden_violations = _check_forbidden_deltas(before_counts, after_counts)
     post_run = _get_post_run_state(db_path)
 
-    executed = cycle_status == "SUCCEEDED"
+    executed = cycle_status in {"SUCCEEDED", "SUCCEEDED_SNAPSHOT_ONLY"}
 
     return {
         "command": "printer-run-e2j-first-15m-cycle",
         "e2j_status": E2J_STATUS_EXECUTED if executed else E2J_STATUS_BLOCKED,
+        "snapshot_only_mode": not _close_window,
         "executed": executed,
         "cycle_status": cycle_status,
         "e2g_first_run_status": e2g_status_val,

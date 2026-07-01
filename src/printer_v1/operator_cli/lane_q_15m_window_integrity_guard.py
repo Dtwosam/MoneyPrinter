@@ -2,7 +2,9 @@
 
 Validates WINDOW_15M candidates before E2Z clean-memory creation.
 
-A candidate window is LANE_Q_VALID only when:
+A candidate window is LANE_Q_VALID only when ALL of the following hold:
+
+  Integrity checks (pure — check_window_integrity):
   - window_kind == "WINDOW_15M"
   - data_quality_label == "CLEAN_DATA"
   - do_not_train == 0 / False
@@ -14,20 +16,29 @@ A candidate window is LANE_Q_VALID only when:
   - snapshot_end_id exists (not NULL)
   - snapshot_end_id >= snapshot_start_id
 
+  Cadence / coverage checks (DB-backed — guard_candidate_windows only):
+  - The snapshot cadence policy for the window's tracking lane is satisfied:
+      no front-loaded snapshots, no dead zones, actual max gap <=
+      policy.max_clean_snapshot_gap_seconds.
+  - If 0 snapshots exist in the range, coverage is UNKNOWN (no block).
+    This preserves synthetic-fixture test windows whose snapshot IDs do not
+    exist in printer_token_snapshots.  Real production windows always have
+    ≥ 2 snapshots and are fully evaluated.
+  - If ≥ 1 snapshot exists but max gap exceeds the policy limit, BLOCKED.
+
 If window_start_at/window_end_at are absent the window is blocked with
 "missing_window_start_at" / "missing_window_end_at" respectively.  This module
 will NOT silently accept opened_at/closed_at as a substitute for the canonical
-15m boundary columns; that substitution would require explicit proof that those
-fields represent a real 15-minute wall-clock boundary.
+15m boundary columns.
 
 Two entry points:
   check_window_integrity(row)           — pure dict-in/dict-out; no DB access
   guard_candidate_windows(db_path, window_ids, *, operator_approved)
-                                        — DB-backed; reads rows, calls check_window_integrity
+                                        — DB-backed; integrity + coverage check
 
 Classification outcomes per window:
-  LANE_Q_VALID    — all integrity checks pass; eligible for E2Z
-  LANE_Q_BLOCKED  — one or more integrity checks failed; must not become clean memory
+  LANE_Q_VALID    — all integrity AND coverage checks pass; eligible for E2Z
+  LANE_Q_BLOCKED  — one or more checks failed; must not become clean memory
 
 Guard-level outcomes:
   LANE_Q_GUARD_COMPLETED — guard ran (even if all windows blocked; zero clean valid)
@@ -40,6 +51,15 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from printer_v1.snapshots.cadence_policy import (
+    CADENCE_POLICY_BLOCKED,
+    CADENCE_POLICY_UNKNOWN,
+    CadencePolicyEvaluation,
+    cadence_policy_evaluation_to_dict,
+    evaluate_cadence_policy,
+    get_policy,
+)
 
 
 LANE_Q_VALID: str = "LANE_Q_VALID"
@@ -204,7 +224,8 @@ def _fetch_windows(
     try:
         rows = conn.execute(
             f"""
-            SELECT id, window_kind, data_quality_label, do_not_train,
+            SELECT id, token_id, pair_id,
+                   window_kind, data_quality_label, do_not_train,
                    memory_status, memory_quality_label,
                    window_start_at, window_end_at,
                    snapshot_start_id, snapshot_end_id,
@@ -219,11 +240,92 @@ def _fetch_windows(
         conn.close()
 
 
+def _get_token_tracking_lane(db_path: str | Path, token_id: int | None) -> str | None:
+    """Look up the token's current lifecycle/tracking lane from printer_tokens."""
+    if token_id is None:
+        return None
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            row = conn.execute(
+                "SELECT token_status FROM printer_tokens WHERE id = ? LIMIT 1",
+                (int(token_id),),
+            ).fetchone()
+            return str(row[0]) if row and row[0] else None
+        finally:
+            conn.close()
+    except Exception:
+        return None
+
+
+def _fetch_window_snapshots(
+    db_path: str | Path,
+    token_id: int | None,
+    pair_id: int | None,
+    snapshot_start_id: int | None,
+    snapshot_end_id: int | None,
+) -> list[dict[str, Any]]:
+    """Return snapshots for token/pair whose IDs fall in [start, end]."""
+    if token_id is None or snapshot_start_id is None or snapshot_end_id is None:
+        return []
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                """
+                SELECT id, captured_at
+                FROM printer_token_snapshots
+                WHERE token_id = ?
+                  AND COALESCE(pair_id, -1) = COALESCE(?, -1)
+                  AND id BETWEEN ? AND ?
+                ORDER BY captured_at ASC, id ASC
+                """,
+                (int(token_id), pair_id, int(snapshot_start_id), int(snapshot_end_id)),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+    except Exception:
+        return []
+
+
+def _evaluate_coverage_for_window(
+    db_path: str | Path,
+    window_row: dict[str, Any],
+    *,
+    production_mode: bool = False,
+) -> CadencePolicyEvaluation:
+    """Evaluate snapshot cadence/gap policy for a window row.
+
+    Loads actual snapshots from the DB and runs the cadence policy evaluator.
+    Returns CADENCE_POLICY_UNKNOWN when 0 snapshots exist in the range, which
+    prevents blocking of synthetic test windows.
+    """
+    token_id = window_row.get("token_id")
+    pair_id = window_row.get("pair_id")
+    snap_start = window_row.get("snapshot_start_id")
+    snap_end = window_row.get("snapshot_end_id")
+    window_kind = window_row.get("window_kind", "WINDOW_15M")
+    window_start_at = window_row.get("window_start_at")
+    window_end_at = window_row.get("window_end_at")
+
+    tracking_lane = _get_token_tracking_lane(db_path, token_id)
+    policy = get_policy(window_kind, tracking_lane)
+    snapshots = _fetch_window_snapshots(db_path, token_id, pair_id, snap_start, snap_end)
+
+    return evaluate_cadence_policy(
+        snapshots, window_start_at, window_end_at, policy,
+        production_mode=production_mode,
+    )
+
+
 def guard_candidate_windows(
     db_path: str | Path | None,
     window_ids: list[int],
     *,
     operator_approved: bool = False,
+    production_mode: bool = False,
 ) -> dict[str, Any]:
     """Read window rows from DB and validate each through check_window_integrity.
 
@@ -287,6 +389,33 @@ def guard_candidate_windows(
 
     for row in rows:
         verdict = check_window_integrity(row)
+
+        # Coverage / cadence-policy check — additive after integrity passes.
+        # Windows that fail integrity are not re-checked for coverage.
+        # Windows with 0 matching snapshots get CADENCE_POLICY_UNKNOWN (no block),
+        # which preserves synthetic test fixtures.
+        coverage_eval: CadencePolicyEvaluation | None = None
+        if verdict["lane_q_status"] == LANE_Q_VALID:
+            coverage_eval = _evaluate_coverage_for_window(
+                db_path_str, row, production_mode=production_mode
+            )
+            if coverage_eval.cadence_policy_status == CADENCE_POLICY_BLOCKED:
+                # Downgrade to BLOCKED; preserve existing blocked_reasons
+                reasons: list[str] = list(verdict.get("blocked_reasons") or [])
+                reasons.append(
+                    f"coverage_policy: {coverage_eval.blocked_reason}"
+                )
+                verdict = dict(verdict)
+                verdict["lane_q_status"] = LANE_Q_BLOCKED
+                verdict["integrity_proven"] = False
+                verdict["blocked_reasons"] = reasons
+
+        if coverage_eval is not None:
+            verdict = dict(verdict)
+            verdict["cadence_policy_evaluation"] = cadence_policy_evaluation_to_dict(
+                coverage_eval
+            )
+
         verdicts.append(verdict)
         if verdict["lane_q_status"] == LANE_Q_VALID:
             valid_ids.append(verdict["window_id"])
@@ -311,6 +440,7 @@ def guard_candidate_windows(
                 "window_end_at": None,
                 "snapshot_start_id": None,
                 "snapshot_end_id": None,
+                "cadence_policy_evaluation": None,
             }
             verdicts.append(missing_verdict)
             blocked_ids.append(wid)

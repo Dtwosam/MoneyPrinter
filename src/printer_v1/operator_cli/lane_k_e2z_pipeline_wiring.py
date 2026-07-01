@@ -191,6 +191,7 @@ def run_e2z_pipeline(
     db_path: str | Path | None,
     *,
     operator_approved: bool = False,
+    production_mode: bool = False,
 ) -> dict[str, Any]:
     """Wire E2X eligibility → E2Y set gate → E2Z clean-memory creation.
 
@@ -271,7 +272,8 @@ def run_e2z_pipeline(
 
     # Step 4: Lane Q integrity guard — filter to real 15m windows only
     lane_q_guard = guard_candidate_windows(
-        db_path, candidate_ids, operator_approved=True
+        db_path, candidate_ids, operator_approved=True,
+        production_mode=production_mode,
     )
     valid_candidate_ids: list[int] = lane_q_guard.get("valid_window_ids", [])
     lane_q_blocked_ids: list[int] = lane_q_guard.get("blocked_window_ids", [])
