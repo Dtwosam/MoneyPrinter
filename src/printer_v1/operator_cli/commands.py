@@ -7746,6 +7746,48 @@ def main_build_clean_memory_retrieval_report_once(argv: Sequence[str] | None = N
 
 
 # ---------------------------------------------------------------------------
+# Lane V — Controlled Clean-Memory Retrieval Reporting (Audit-Only)
+# ---------------------------------------------------------------------------
+# Reads printer_episodes only.  No writes.  No retrieval activation.
+# No paper decisions, positions, PnL, BUY/SELL/HOLD.
+# No scoring, ranking, or confidence percentages.
+# ---------------------------------------------------------------------------
+
+
+def main_run_lane_v_clean_memory_report(argv: Sequence[str] | None = None) -> int:
+    """CLI entry for Lane V clean-memory audit report (read-only)."""
+    from printer_v1.operator_cli.lane_v_clean_memory_retrieval_report import (
+        build_clean_memory_retrieval_report,
+    )
+
+    parser = _base_parser(
+        "Lane V — read-only audit report of clean memories from printer_episodes.",
+        ("json", "text"),
+    )
+    parser.add_argument("--token-id", type=int, default=None)
+    parser.add_argument("--pair-id", type=int, default=None)
+    parser.add_argument("--window-kind", default=None)
+    parser.add_argument("--limit", type=int, default=None)
+    args = parser.parse_args(argv)
+    try:
+        project_root = _project_root(args.project_root)
+        resolved = resolve_operator_db_path(args.db_path, project_root)
+        if not resolved.is_file():
+            raise FileNotFoundError(f"Operator DB does not exist: {resolved}")
+        payload = build_clean_memory_retrieval_report(
+            resolved,
+            token_id=args.token_id,
+            pair_id=args.pair_id,
+            window_kind=args.window_kind,
+            limit=args.limit,
+        )
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
+# ---------------------------------------------------------------------------
 # Post-RC Lane 8A — Paper Decision Unlock Review, WAIT/AVOID/NO_ACTION First
 # ---------------------------------------------------------------------------
 # Report-only.  No paper decisions, positions, trades, PnL, BUY unlock, or

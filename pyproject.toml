@@ -49,6 +49,7 @@ printer-run-e2t-bounded-cycle = "printer_v1.operator_cli.commands:main_run_e2t_b
 printer-run-memory-factory-cycle = "printer_v1.operator_cli.commands:main_run_memory_factory_cycle"
 printer-report-e2u-15m-cycle-closeout = "printer_v1.operator_cli.commands:main_report_e2u_15m_cycle_closeout"
 printer-report-e2w-5m-linkage = "printer_v1.operator_cli.commands:main_report_e2w_5m_linkage"
+printer-run-lane-v-clean-memory-report = "printer_v1.operator_cli.commands:main_run_lane_v_clean_memory_report"
 
 [tool.unittest]
 start-directory = "tests"
