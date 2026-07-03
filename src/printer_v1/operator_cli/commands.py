@@ -9698,6 +9698,110 @@ def main_run_lane_x2_two_token_cycle(argv=None, *, _adapter_map=None) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Lane X3 -- Post-Cycle Cooldown / Archive / Rotation Lifecycle Wiring
+# ---------------------------------------------------------------------------
+
+def main_run_lane_x3_post_cycle_lifecycle(argv=None) -> int:
+    """Lane X3: post-cycle lifecycle wiring — cooldown, archive, reopen, gate check.
+
+    Records ENTER_COOLDOWN or ARCHIVE_AFTER_MEMORY_WINDOW lifecycle events after a
+    completed memory cycle, prevents stale token/pair re-selection, and allows
+    intentional revival via REOPEN_REVIVED_TOKEN.  Does NOT modify snapshots or
+    memory windows.  All financial locks remain.  No BUY/SELL/HOLD.  No paper
+    decisions.  No PnL.  No live trading.
+    """
+    from printer_v1.operator_cli.lane_x3_post_cycle_lifecycle import (
+        LANE_X3_COMMAND_NAME,
+        archive_after_memory_window,
+        check_x3_cooldown_gate,
+        enter_cooldown_after_window,
+        get_token_lifecycle_status,
+        reopen_token,
+    )
+
+    parser = _base_parser(
+        f"Lane X3 — post-cycle lifecycle wiring ({LANE_X3_COMMAND_NAME})."
+        "  Records ENTER_COOLDOWN or ARCHIVE_AFTER_MEMORY_WINDOW after a completed"
+        " memory cycle, prevents stale token/pair re-selection via cooldown gate,"
+        " and allows intentional revival.  Snapshots and memory windows are NOT"
+        " modified.  No BUY/SELL/HOLD.  No paper decisions.  No positions."
+        "  No PnL.  No live trading.  No paid APIs.  No wallet/private keys.",
+        ("json",),
+    )
+    parser.add_argument(
+        "--token-mint",
+        dest="token_mint",
+        metavar="MINT",
+        required=True,
+        help="Solana token mint address.",
+    )
+    parser.add_argument(
+        "--pair-address",
+        dest="pair_address",
+        metavar="PAIR",
+        default="",
+        help="Pair address for this token (used to create/look up pair record).",
+    )
+    parser.add_argument(
+        "--action",
+        dest="action",
+        metavar="ACTION",
+        choices=("cooldown", "archive", "reopen", "check"),
+        default="cooldown",
+        help=(
+            "Lifecycle action to perform."
+            "  cooldown: enter post-cycle cooldown (default)."
+            "  archive: archive after sufficient memory."
+            "  reopen: revive/reopen a token in cooldown or archived state."
+            "  check: report current lifecycle status (no writes)."
+        ),
+    )
+    parser.add_argument(
+        "--operator-approved",
+        action="store_true",
+        dest="operator_approved",
+        help="Operator explicitly approves this lifecycle action.",
+    )
+    args = parser.parse_args(argv)
+
+    if not args.operator_approved:
+        payload = {
+            "lane_x3_status": "LANE_X3_BLOCKED",
+            "blocked_reason": "--operator-approved not set; no lifecycle changes made",
+            "token_mint": args.token_mint,
+            "action": args.action,
+        }
+        _print_payload(payload, args.format)
+        return 0
+
+    try:
+        if args.action == "cooldown":
+            payload = enter_cooldown_after_window(
+                args.db_path, args.token_mint, args.pair_address
+            )
+        elif args.action == "archive":
+            payload = archive_after_memory_window(
+                args.db_path, args.token_mint, args.pair_address
+            )
+        elif args.action == "reopen":
+            payload = reopen_token(args.db_path, args.token_mint, args.pair_address)
+        else:
+            blocked = check_x3_cooldown_gate(args.db_path, [args.token_mint])
+            status_info = get_token_lifecycle_status(args.db_path, args.token_mint)
+            payload = {
+                "lane_x3_status": "LANE_X3_CHECK",
+                "token_mint": args.token_mint,
+                "blocked_by_gate": bool(blocked),
+                "gate_messages": blocked,
+                **status_info,
+            }
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
+# ---------------------------------------------------------------------------
 # Lane E2U -- Bounded 15m Cycle Closeout Report
 # ---------------------------------------------------------------------------
 
