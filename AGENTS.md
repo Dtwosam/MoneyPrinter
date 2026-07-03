@@ -718,3 +718,55 @@ The following remain locked unless a later explicit active build-order lane unlo
 - paid APIs
 - scoring/ranking/confidence/weighted logic
 - embeddings/vectors
+
+<!-- PRINTER_V1_MEMORY_GROWTH_BUILD_ORDER_ANCHOR_START -->
+
+## Memory Growth Build Order Anchor
+
+After Lane U/U2 closeout, Lane V clean-memory retrieval reporting, Lane W memory growth automation audit, and operator adoption of the memory-growth build order, Codex must use the following memory-growth source stack.
+
+Active memory-growth source of truth:
+
+- docs/printer-v1-memory-growth-build-order.md
+
+Required supporting audit/readiness source of truth:
+
+- docs/printer-v1-memory-growth-automation-audit.md
+
+Historical proposal:
+
+- docs/printer-v1-proposed-memory-growth-build-order.md
+
+Current active memory-growth lane after adoption:
+
+- Lane X1 — Multi-Token 15m Readiness Review
+
+The Memory Growth Automation Audit is a required supporting audit/readiness source. It is not the active lane-order document.
+
+Memory-growth work must preserve all V1 restrictions:
+
+- Solana-only
+- Solana memecoin-only
+- paper-trading only
+- no live wallet
+- no private keys
+- no real funds
+- no live execution
+- no paid API dependency
+- no scoring system
+- no ranking system
+- no confidence percentage system
+- no weighted decision logic
+- no engine bypassing Source Governor
+- no engine bypassing Central Scheduler
+- no paper decision without clean memory comparison
+- no paper position without valid clean-memory-backed paper decision
+- no dirty memory used for retrieval or decisions
+- no BUY/SELL/HOLD unlock
+- no positions
+- no PnL
+
+WINDOW_5M_MICRO_EVENT remains support-only. It must never become a main outcome memory window or unlock retrieval, paper decisions, BUY, positions, or PnL by itself.
+
+<!-- PRINTER_V1_MEMORY_GROWTH_BUILD_ORDER_ANCHOR_END -->
+
