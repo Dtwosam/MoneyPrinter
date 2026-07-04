@@ -10181,6 +10181,118 @@ def main_run_lane_x6_discovery_selection_repair(argv=None) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Lane X8 -- 5m Support Evidence Integration
+# ---------------------------------------------------------------------------
+
+def main_run_lane_x8_5m_support_integration(argv=None) -> int:
+    """Lane X8: wire 5m support evidence inside bounded WINDOW_15M runs.
+
+    Captures WINDOW_5M_MICRO_EVENT evidence linked to a parent WINDOW_15M window.
+    5m is always support-only/audit-only -- never CLEAN_MEMORY.
+    No retrieval activation.  No paper decisions.  No BUY/SELL/HOLD.
+    No positions.  No PnL.  No discovery automation.  No X5 weakening.
+    """
+    from printer_v1.operator_cli.lane_x8_5m_support_integration import (
+        LANE_X8_COMMAND_NAME,
+        run_lane_x8_5m_support_integration,
+    )
+
+    parser = _base_parser(
+        f"Lane X8 -- 5m support evidence inside bounded 15m runs ({LANE_X8_COMMAND_NAME})."
+        "  Captures WINDOW_5M_MICRO_EVENT evidence linked to a parent WINDOW_15M window."
+        "  5m is always support-only/audit-only -- never CLEAN_MEMORY."
+        "  No retrieval activation.  No paper decisions.  No BUY/SELL/HOLD."
+        "  No positions.  No PnL.  No discovery automation.  No X5 weakening.",
+        ("json",),
+    )
+    parser.add_argument(
+        "--operator-approved",
+        action="store_true",
+        dest="operator_approved",
+        help="Operator explicitly approves this Lane X8 run.",
+    )
+    parser.add_argument(
+        "--backup-proof-path",
+        dest="backup_proof_path",
+        metavar="PATH",
+        required=True,
+        help="Path to the existing DB backup file (proof backup exists before run).",
+    )
+    parser.add_argument(
+        "--parent-window-id",
+        dest="parent_window_id",
+        type=int,
+        metavar="ID",
+        help="ID of the parent WINDOW_15M row to link 5m support evidence to.",
+    )
+    parser.add_argument(
+        "--token-id",
+        dest="token_id",
+        type=int,
+        metavar="ID",
+        help="token_id matching the parent WINDOW_15M row.",
+    )
+    parser.add_argument(
+        "--pair-id",
+        dest="pair_id",
+        type=int,
+        metavar="ID",
+        help="pair_id matching the parent WINDOW_15M row.",
+    )
+    parser.add_argument(
+        "--data-quality-label",
+        dest="data_quality_label",
+        default="CLEAN_DATA",
+        help="Data quality label for the 5m evidence (default: CLEAN_DATA).",
+    )
+    parser.add_argument(
+        "--source-status",
+        dest="source_status",
+        default="COMPLETE",
+        help="Source status for the 5m evidence (default: COMPLETE).",
+    )
+    parser.add_argument("--is-stale", dest="is_stale", action="store_true")
+    parser.add_argument("--is-incomplete", dest="is_incomplete", action="store_true")
+    parser.add_argument("--is-failed", dest="is_failed", action="store_true")
+    parser.add_argument("--is-mismatched", dest="is_mismatched", action="store_true")
+    parser.add_argument(
+        "--no-capture",
+        dest="capture",
+        action="store_false",
+        help="Skip capture step; only read back enriched context.",
+    )
+    parser.add_argument(
+        "--no-enrich",
+        dest="enrich",
+        action="store_false",
+        help="Skip enrichment read-back; only capture.",
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        payload = run_lane_x8_5m_support_integration(
+            args.db_path,
+            args.backup_proof_path,
+            operator_approved=args.operator_approved,
+            parent_window_id=args.parent_window_id,
+            token_id=args.token_id,
+            pair_id=args.pair_id,
+            data_quality_label=args.data_quality_label,
+            source_status=args.source_status,
+            is_stale=args.is_stale,
+            is_incomplete=args.is_incomplete,
+            is_failed=args.is_failed,
+            is_mismatched=args.is_mismatched,
+            capture=args.capture,
+            enrich=args.enrich,
+        )
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
+# ---------------------------------------------------------------------------
 # Lane E2U -- Bounded 15m Cycle Closeout Report
 # ---------------------------------------------------------------------------
 
