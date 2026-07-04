@@ -9802,6 +9802,138 @@ def main_run_lane_x3_post_cycle_lifecycle(argv=None) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Lane X4 -- Three-Token Controlled 15m Memory Factory Proof
+# ---------------------------------------------------------------------------
+
+def main_run_lane_x4_three_token_cycle(argv=None, *, _adapter_map=None) -> int:
+    """Lane X4: three-token controlled 15m Memory Factory proof runner.
+
+    Runs exactly three operator-approved TRACK_FAST tokens in a bounded WINDOW_15M
+    proof with deterministic A/B/C snapshot rotation, separate evidence identity per
+    token, and per-token coverage/gap/memory outcome reporting.  No token/pair
+    mixing.  Idempotent replay preserved.  All financial locks remain.
+    No BUY/SELL/HOLD.  No paper decisions.  No PnL.  No live trading.
+    """
+    from printer_v1.operator_cli.lane_x4_three_token_runner import (
+        LANE_X4_COMMAND_NAME,
+        LANE_X4_EXACT_TOKEN_COUNT,
+        _DEFAULT_PROFILE,
+        _DURATION_PROFILES,
+        run_three_token_memory_factory_cycle,
+    )
+
+    parser = _base_parser(
+        f"Lane X4 — three-token controlled 15m Memory Factory proof ({LANE_X4_COMMAND_NAME})."
+        f"  Accepts exactly {LANE_X4_EXACT_TOKEN_COUNT} operator-approved TRACK_FAST Solana"
+        " tokens.  Uses deterministic A/B/C snapshot rotation.  WINDOW_15M only."
+        "  12h/24h profiles require --allow-long-bounded-run."
+        "  Stops safely if the governed path is unavailable."
+        "  No BUY/SELL/HOLD.  No paper decisions.  No positions.  No PnL."
+        "  No live trading.  No paid APIs.  No wallet/private keys."
+        "  No X5 expansion.",
+        ("json",),
+    )
+    parser.add_argument(
+        "--token-list-path",
+        dest="token_list_path",
+        metavar="PATH",
+        required=True,
+        help=(
+            f"Path to Lane X4 token list JSON"
+            f" (exactly {LANE_X4_EXACT_TOKEN_COUNT} TRACK_FAST tokens,"
+            " using tracking_lane / operator_approved fields)."
+        ),
+    )
+    parser.add_argument(
+        "--backup-proof-path",
+        dest="backup_proof_path",
+        metavar="PATH",
+        required=True,
+        help="Path to the existing DB backup file (proof backup exists before run).",
+    )
+    parser.add_argument(
+        "--operator-approved",
+        action="store_true",
+        dest="operator_approved",
+        help="Operator explicitly approves this Lane X4 three-token cycle run.",
+    )
+    parser.add_argument(
+        "--duration",
+        dest="duration_profile",
+        metavar="PROFILE",
+        default=_DEFAULT_PROFILE,
+        choices=sorted(_DURATION_PROFILES),
+        help=(
+            f"Bounded duration profile.  Choices: {sorted(_DURATION_PROFILES)}."
+            f"  Default: {_DEFAULT_PROFILE}."
+            "  12h/24h require --allow-long-bounded-run."
+        ),
+    )
+    parser.add_argument(
+        "--window-kind",
+        dest="window_kind",
+        metavar="KIND",
+        default="WINDOW_15M",
+        help=(
+            "Main memory window kind.  Only WINDOW_15M is enabled in Lane X4."
+            "  Default: WINDOW_15M."
+        ),
+    )
+    parser.add_argument(
+        "--allow-long-bounded-run",
+        action="store_true",
+        dest="allow_long_bounded_run",
+        help=(
+            "Enable 12h/24h duration profiles.  Must be combined with"
+            " --operator-approved.  Without this flag 12h/24h are refused."
+        ),
+    )
+    parser.add_argument(
+        "--snapshot-interval-seconds",
+        dest="snapshot_interval_seconds",
+        type=float,
+        default=0.0,
+        metavar="S",
+        help=(
+            "Seconds between snapshot-only calls per token."
+            "  Use 90 for WINDOW_15M/TRACK_FAST in production."
+            "  Default: 0 (no sleep — tests/manual runs)."
+        ),
+    )
+    parser.add_argument(
+        "--window-close-interval-seconds",
+        dest="window_close_interval_seconds",
+        type=float,
+        default=0.0,
+        metavar="S",
+        help=(
+            "Seconds of snapshot collection before a token's 15m window is"
+            " closed and evaluated.  Use 900 for real 15m windows."
+            "  Default: 0 (close immediately — tests/manual runs)."
+        ),
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        payload = run_three_token_memory_factory_cycle(
+            args.token_list_path,
+            args.db_path,
+            args.backup_proof_path,
+            operator_approved=args.operator_approved,
+            duration_profile=args.duration_profile,
+            window_kind=args.window_kind,
+            allow_long_bounded_run=args.allow_long_bounded_run,
+            snapshot_interval_seconds=args.snapshot_interval_seconds,
+            window_close_interval_seconds=args.window_close_interval_seconds,
+            _adapter_map=_adapter_map,
+        )
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
+# ---------------------------------------------------------------------------
 # Lane E2U -- Bounded 15m Cycle Closeout Report
 # ---------------------------------------------------------------------------
 
