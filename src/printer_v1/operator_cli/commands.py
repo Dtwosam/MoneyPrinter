@@ -10293,6 +10293,79 @@ def main_run_lane_x8_5m_support_integration(argv=None) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Lane X9 -- 6h Conservative 15m Memory Growth Run
+# ---------------------------------------------------------------------------
+
+def main_run_lane_x9_6h_conservative(argv=None) -> int:
+    """Lane X9: proof path for a bounded 6h WINDOW_15M memory-growth run.
+
+    Batched structure: each batch tracks 3-5 operator-approved assets across
+    up to 5 WINDOW_15M cycles (~75 minutes). New batches require operator
+    approval or X6-governed selection -- no silent replacement. Zero clean
+    memories per batch is always valid. No retrieval. No paper decisions.
+    No BUY/SELL/HOLD. No positions. No PnL. No 1h/4h/12h/24h collection.
+    """
+    from printer_v1.operator_cli.lane_x9_6h_conservative_run import (
+        LANE_X9_COMMAND_NAME,
+        run_x9_6h_conservative_proof,
+    )
+
+    parser = _base_parser(
+        f"Lane X9 -- 6h conservative 15m memory-growth proof run ({LANE_X9_COMMAND_NAME})."
+        "  Batched structure: 3-5 operator-approved assets per batch,"
+        "  up to 5 WINDOW_15M cycles per batch (~75 min)."
+        "  New batch requires operator approval or X6-governed selection."
+        "  No retrieval. No paper decisions. No BUY/SELL/HOLD."
+        "  No positions. No PnL. No 1h/4h/12h/24h collection.",
+        ("json",),
+    )
+    parser.add_argument(
+        "--operator-approved",
+        action="store_true",
+        dest="operator_approved",
+        help="Operator explicitly approves this Lane X9 run.",
+    )
+    parser.add_argument(
+        "--backup-proof-path",
+        dest="backup_proof_path",
+        metavar="PATH",
+        required=True,
+        help="Path to the existing DB backup file (proof backup exists before run).",
+    )
+    parser.add_argument(
+        "--max-run-seconds",
+        dest="max_run_seconds",
+        type=int,
+        default=21600,
+        metavar="SECONDS",
+        help="Outer run bound in seconds (default: 21600 = 6h). Cannot exceed 21600.",
+    )
+    parser.add_argument(
+        "--max-cycles-per-batch",
+        dest="max_cycles_per_batch",
+        type=int,
+        default=5,
+        metavar="N",
+        help="Max WINDOW_15M cycles per batch (default: 5, max: 5).",
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        payload = run_x9_6h_conservative_proof(
+            args.db_path,
+            args.backup_proof_path,
+            batches=None,
+            operator_approved=args.operator_approved,
+            max_run_seconds=args.max_run_seconds,
+            max_cycles_per_batch=args.max_cycles_per_batch,
+        )
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
+# ---------------------------------------------------------------------------
 # Lane E2U -- Bounded 15m Cycle Closeout Report
 # ---------------------------------------------------------------------------
 
