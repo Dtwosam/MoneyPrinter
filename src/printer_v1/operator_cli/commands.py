@@ -10097,6 +10097,90 @@ def main_run_lane_x5_five_token_cycle(argv=None, *, _adapter_map=None) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Lane X6 -- Discovery / Selection / Dedup Repair
+# ---------------------------------------------------------------------------
+
+def main_run_lane_x6_discovery_selection_repair(argv=None) -> int:
+    """Lane X6: discovery/selection/dedup repair.
+
+    Repairs discovery, selection, and dedup so Printer can produce a fresh,
+    useful, non-duplicate Solana memecoin tracking set for bounded memory growth.
+    Mint-level and pair-level dedup.  Explicit same-token/new-pair detection.
+    Cooldown-aware selection.  Auditable selection reasons.  Memory-diet labels.
+    No BUY/SELL/HOLD.  No paper decisions.  No positions.  No PnL.
+    No live trading.  No paid APIs.  No wallet/private keys.
+    No discovery automation.  No X7 expansion.
+    """
+    from printer_v1.operator_cli.lane_x6_discovery_selection_repair import (
+        LANE_X6_COMMAND_NAME,
+        _DEFAULT_MAX_CANDIDATES,
+        select_candidates_for_memory_growth,
+    )
+
+    parser = _base_parser(
+        f"Lane X6 — discovery/selection/dedup repair ({LANE_X6_COMMAND_NAME})."
+        "  Mint-level and pair-level dedup.  Explicit same-token/new-pair handling."
+        "  Cooldown-aware selection.  Memory-diet labels (PUMP/DUMP/FAKE_PUMP/"
+        "WICK_ONLY/LATE_BUY_TRAP/LIQUIDITY_DECAY/DEAD_TOKEN/REVIVAL/AMBIGUOUS)."
+        "  Auditable selection reasons.  No BUY/SELL/HOLD.  No paper decisions."
+        "  No positions.  No PnL.  No live trading.  No paid APIs."
+        "  No wallet/private keys.  No discovery automation.  No X7 expansion.",
+        ("json",),
+    )
+    parser.add_argument(
+        "--backup-proof-path",
+        dest="backup_proof_path",
+        metavar="PATH",
+        required=True,
+        help="Path to the existing DB backup file (proof backup exists before run).",
+    )
+    parser.add_argument(
+        "--operator-approved",
+        action="store_true",
+        dest="operator_approved",
+        help="Operator explicitly approves this Lane X6 discovery/selection run.",
+    )
+    parser.add_argument(
+        "--max-candidates",
+        dest="max_candidates",
+        type=int,
+        default=_DEFAULT_MAX_CANDIDATES,
+        metavar="N",
+        help=(
+            f"Maximum candidates to include in the selected set."
+            f"  Default: {_DEFAULT_MAX_CANDIDATES}."
+        ),
+    )
+    parser.add_argument(
+        "--no-cooldown-aware",
+        dest="cooldown_aware",
+        action="store_false",
+        help="Disable cooldown-aware filtering (include COOLDOWN/ARCHIVED tokens).",
+    )
+    parser.add_argument(
+        "--no-revivals",
+        dest="include_revivals",
+        action="store_false",
+        help="Exclude revival tokens (tokens already reopened from cooldown).",
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        payload = select_candidates_for_memory_growth(
+            args.db_path,
+            args.backup_proof_path,
+            operator_approved=args.operator_approved,
+            max_candidates=args.max_candidates,
+            cooldown_aware=args.cooldown_aware,
+            include_revivals=args.include_revivals,
+        )
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
+# ---------------------------------------------------------------------------
 # Lane E2U -- Bounded 15m Cycle Closeout Report
 # ---------------------------------------------------------------------------
 

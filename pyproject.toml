@@ -54,6 +54,7 @@ printer-run-lane-x2-two-token-cycle = "printer_v1.operator_cli.commands:main_run
 printer-run-lane-x3-post-cycle-lifecycle = "printer_v1.operator_cli.commands:main_run_lane_x3_post_cycle_lifecycle"
 printer-run-lane-x4-three-token-cycle = "printer_v1.operator_cli.commands:main_run_lane_x4_three_token_cycle"
 printer-run-lane-x5-five-token-cycle = "printer_v1.operator_cli.commands:main_run_lane_x5_five_token_cycle"
+printer-run-lane-x6-discovery-selection-repair = "printer_v1.operator_cli.commands:main_run_lane_x6_discovery_selection_repair"
 
 [tool.unittest]
 start-directory = "tests"
