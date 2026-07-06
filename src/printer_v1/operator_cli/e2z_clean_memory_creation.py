@@ -169,12 +169,23 @@ def create_clean_memory_from_window(
     *,
     operator_approved: bool = False,
     e2y_report: dict[str, Any] | None = None,
+    individual_promotion: bool = False,
 ) -> dict[str, Any]:
-    """Promote one E2Y-eligible WINDOW_15M to a clean printer_episodes row.
+    """Promote one eligible WINDOW_15M to a clean printer_episodes row.
 
-    Requires a passed E2Y candidate set gate report. window_id must appear in
-    the report's candidate_set_summary.candidate_ids and set_gate_passed must
-    be True. The DB-level E2X-style gate is also applied.
+    Two promotion modes:
+
+    Batch mode (individual_promotion=False, default):
+      Requires a passed E2Y candidate set gate report. window_id must appear
+      in the report's candidate_set_summary.candidate_ids and set_gate_passed
+      must be True. The per-window DB gate is also applied.
+
+    Individual promotion mode (individual_promotion=True):
+      Skips the E2Y batch report requirement. The per-window DB gate
+      (_gate_window) is the sole authority. Use this when Lane K is promoting
+      individually eligible windows from a mixed batch (e.g. 3 PARTIAL_MEMORY +
+      10 DIRTY_MEMORY) where the full E2Y batch gate would fail due to mixed
+      statuses even though individual windows are eligible.
 
     Idempotent: a second call for the same window_id returns
     E2Z_ALREADY_EXISTS without a second INSERT.
@@ -187,7 +198,8 @@ def create_clean_memory_from_window(
     if window_id is None:
         blocked_reasons.append("window_id is required")
 
-    blocked_reasons.extend(_validate_e2y_report(e2y_report, window_id))
+    if not individual_promotion:
+        blocked_reasons.extend(_validate_e2y_report(e2y_report, window_id))
 
     db_path_str: str = ""
     if db_path is None:

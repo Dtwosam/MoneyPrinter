@@ -107,11 +107,15 @@ _REQUIRED_REPORTING_FIELDS = frozenset({
     "token_e_report",
     "cycles",
     "forbidden_table_counts",
+    "cadence_cycles_completed",
+    "pair_drift_detected",
+    "total_pair_drift_events",
 })
 
 _TOKEN_REPORT_FIELDS = frozenset({
     "slot",
     "mint",
+    "pair_address_supplied",
     "snapshots_created",
     "memory_windows_created",
     "source_requests_created",
@@ -124,6 +128,8 @@ _TOKEN_REPORT_FIELDS = frozenset({
     "dirty_memory_count",
     "e2z_already_exists_count",
     "lane_k_runs",
+    "pair_address_drift_count",
+    "pair_drift_events",
 })
 
 
@@ -1619,3 +1625,432 @@ class TestLaneX5X4Regression(_DbBase):
         self.assertFalse(result["buy_enabled"])
         self.assertFalse(result["sell_enabled"])
         self.assertFalse(result["hold_enabled"])
+
+
+# ---------------------------------------------------------------------------
+# 14. Cadence fix — all five tokens per cadence cycle
+# ---------------------------------------------------------------------------
+
+class TestLaneX5CadenceFix(_DbBase):
+    """Prove that the cadence repair serves all 5 tokens per cadence cycle.
+
+    Root cause of observed CADENCE_POLICY_BLOCKED on real 6h run:
+    The old implementation collected one snapshot per tick then slept
+    snapshot_interval_seconds. With 5 tokens and interval=90 s, each token
+    was only snapshotted every 450 s (not every 90 s), producing
+    actual_snapshot_count=4 instead of expected=10 for a 15-minute window.
+
+    The repair: all five tokens are snapshotted within one cadence cycle;
+    the sleep occurs once after all five are served. At interval=90 s each
+    token now receives one snapshot every 90 s.
+
+    These tests use cadence_cycles_completed (number of outer cadence-cycle
+    iterations that started) to prove the structural fix without real sleep.
+    """
+
+    def test_cadence_cycles_completed_present_in_result(self):
+        result = self._run(cycle_budget=5)
+        self.assertIn("cadence_cycles_completed", result)
+
+    def test_cadence_cycle_count_is_1_for_budget5(self):
+        """All 5 tokens close in one cadence cycle (not 5 separate ticks)."""
+        result = self._run(cycle_budget=5)
+        self.assertEqual(result["cadence_cycles_completed"], 1)
+
+    def test_cadence_cycle_count_is_2_for_budget10(self):
+        """Two cadence cycles are needed for 10 closes (all 5 close twice)."""
+        result = self._run(cycle_budget=10)
+        self.assertEqual(result["cadence_cycles_completed"], 2)
+
+    def test_cadence_cycle_count_is_1_for_budget1(self):
+        """Single window close (A only) happens in cadence cycle 1."""
+        result = self._run(cycle_budget=1)
+        self.assertEqual(result["cadence_cycles_completed"], 1)
+
+    def test_cadence_cycle_count_is_0_for_budget0(self):
+        """Budget=0 stops before the first cycle starts."""
+        result = run_five_token_memory_factory_cycle(
+            self._write_x5_token_file(),
+            self.db_path,
+            self.backup_proof_path,
+            operator_approved=True,
+            _adapter_map=_make_adapter_map(),
+            _cycle_budget=0,
+        )
+        self.assertEqual(result["cadence_cycles_completed"], 0)
+
+    def test_all_five_tokens_served_in_one_cadence_cycle(self):
+        """budget=5 produces all 5 window closes in a single cadence cycle.
+
+        This proves the structural property: in the repaired code,
+        snapshot_interval_seconds is a per-TOKEN cadence (not global).
+        At snapshot_interval_seconds=90, each token receives one snapshot
+        every 90 s. In a 15-minute window (900 s) that yields 10 snapshots
+        per token, satisfying expected_snapshot_count=10 in cadence policy.
+        """
+        result = self._run(cycle_budget=5)
+        self.assertEqual(result["cadence_cycles_completed"], 1)
+        for key in ("token_a_report", "token_b_report", "token_c_report",
+                    "token_d_report", "token_e_report"):
+            self.assertEqual(result[key]["window_closes"], 1, f"{key}: expected 1 close")
+
+    def test_pair_drift_detected_field_present(self):
+        result = self._run(cycle_budget=1)
+        self.assertIn("pair_drift_detected", result)
+
+    def test_total_pair_drift_events_field_present(self):
+        result = self._run(cycle_budget=1)
+        self.assertIn("total_pair_drift_events", result)
+
+    def test_no_drift_when_pair_matches(self):
+        """No drift reported when source returns the same pair_address."""
+        result = self._run(cycle_budget=5)
+        self.assertFalse(result["pair_drift_detected"])
+        self.assertEqual(result["total_pair_drift_events"], 0)
+
+    def test_token_report_has_pair_address_supplied(self):
+        result = self._run(cycle_budget=1)
+        self.assertIn("pair_address_supplied", result["token_a_report"])
+
+    def test_token_report_pair_address_supplied_matches_token_list(self):
+        result = self._run(cycle_budget=5)
+        self.assertEqual(result["token_a_report"]["pair_address_supplied"], _PAIR_A)
+        self.assertEqual(result["token_b_report"]["pair_address_supplied"], _PAIR_B)
+        self.assertEqual(result["token_c_report"]["pair_address_supplied"], _PAIR_C)
+        self.assertEqual(result["token_d_report"]["pair_address_supplied"], _PAIR_D)
+        self.assertEqual(result["token_e_report"]["pair_address_supplied"], _PAIR_E)
+
+    def test_token_report_has_pair_address_drift_count(self):
+        result = self._run(cycle_budget=1)
+        self.assertIn("pair_address_drift_count", result["token_a_report"])
+
+    def test_token_report_has_pair_drift_events_list(self):
+        result = self._run(cycle_budget=1)
+        self.assertIsInstance(result["token_a_report"]["pair_drift_events"], list)
+
+    def test_dirty_memory_not_weakened_by_cadence_fix(self):
+        """The cadence fix must not make dirty memory become clean by rule."""
+        result = self._run(cycle_budget=5)
+        # Coverage gates still apply — zero clean memories is always valid.
+        self.assertTrue(result["zero_clean_memories_is_valid"])
+        # No retrieval, no paper decisions.
+        self.assertEqual(result["retrieval_rows_created"], 0)
+        self.assertEqual(result["paper_decisions_created"], 0)
+
+    def test_blocked_result_has_cadence_fields(self):
+        """Blocked result must also carry cadence/drift fields."""
+        result = self._run(operator_approved=False, cycle_budget=1)
+        self.assertIn("cadence_cycles_completed", result)
+        self.assertIn("pair_drift_detected", result)
+        self.assertIn("total_pair_drift_events", result)
+        self.assertEqual(result["cadence_cycles_completed"], 0)
+        self.assertFalse(result["pair_drift_detected"])
+
+
+# ---------------------------------------------------------------------------
+# 15. Pair address drift / pair switch reporting
+# ---------------------------------------------------------------------------
+
+# Pair address that the DexScreener API would return for ANSEM-style drift.
+_ANSEM_ACTUAL_PAIR = "6e7V9eegCHw997T72MxgwwJipZ6GJyZF8NvjkzT1rvpN"
+
+
+class TestLaneX5PairDrift(_DbBase):
+    """Prove that pair_address changes between token list and source are surfaced.
+
+    Observed real-run behaviour: token list supplied
+    FnzKY6x7entQ1eR3D225dQyT7ybfka4PskBMQhb8L3CC for ANSEM but the source
+    returned pair 6e7V9eegCHw997T72MxgwwJipZ6GJyZF8NvjkzT1rvpN (pair_id 14).
+    X5 must detect and report this without silently mixing token/pair evidence.
+    """
+
+    def _make_drift_adapter_map(self, *, drifting_mint: str, drifting_pair: str) -> dict:
+        """Return adapter map where one token's source returns a different pair."""
+        am = {
+            _MINT_A: _build_adapter(_MINT_A, _PAIR_A),
+            _MINT_B: _build_adapter(_MINT_B, _PAIR_B),
+            _MINT_C: _build_adapter(_MINT_C, _PAIR_C),
+            _MINT_D: _build_adapter(_MINT_D, _PAIR_D),
+            _MINT_E: _build_adapter(_MINT_E, _PAIR_E),
+        }
+        # Override the drifting mint with a different pair_address in its response.
+        am[drifting_mint] = _build_adapter(drifting_mint, drifting_pair)
+        return am
+
+    def test_pair_drift_detected_when_source_returns_different_pair(self):
+        """Drift is reported when the source returns a pair_address != supplied."""
+        am = self._make_drift_adapter_map(
+            drifting_mint=_MINT_A,
+            drifting_pair=_ANSEM_ACTUAL_PAIR,
+        )
+        token_file = self._write_x5_token_file()
+        result = run_five_token_memory_factory_cycle(
+            token_file,
+            self.db_path,
+            self.backup_proof_path,
+            operator_approved=True,
+            _adapter_map=am,
+            _cycle_budget=1,
+        )
+        self.assertTrue(result["pair_drift_detected"])
+        self.assertGreater(result["total_pair_drift_events"], 0)
+
+    def test_pair_drift_count_on_affected_token(self):
+        """Token A's drift count is >= 1 when its source returns a different pair."""
+        am = self._make_drift_adapter_map(
+            drifting_mint=_MINT_A,
+            drifting_pair=_ANSEM_ACTUAL_PAIR,
+        )
+        result = run_five_token_memory_factory_cycle(
+            self._write_x5_token_file(),
+            self.db_path,
+            self.backup_proof_path,
+            operator_approved=True,
+            _adapter_map=am,
+            _cycle_budget=1,
+        )
+        self.assertGreater(result["token_a_report"]["pair_address_drift_count"], 0)
+
+    def test_unaffected_tokens_show_no_drift(self):
+        """Only token A drifts; B/C/D/E show pair_address_drift_count == 0."""
+        am = self._make_drift_adapter_map(
+            drifting_mint=_MINT_A,
+            drifting_pair=_ANSEM_ACTUAL_PAIR,
+        )
+        result = run_five_token_memory_factory_cycle(
+            self._write_x5_token_file(),
+            self.db_path,
+            self.backup_proof_path,
+            operator_approved=True,
+            _adapter_map=am,
+            _cycle_budget=5,
+        )
+        self.assertEqual(result["token_b_report"]["pair_address_drift_count"], 0)
+        self.assertEqual(result["token_c_report"]["pair_address_drift_count"], 0)
+        self.assertEqual(result["token_d_report"]["pair_address_drift_count"], 0)
+        self.assertEqual(result["token_e_report"]["pair_address_drift_count"], 0)
+
+    def test_pair_drift_event_contains_supplied_and_actual(self):
+        """Drift event records both the supplied and actual pair_address."""
+        am = self._make_drift_adapter_map(
+            drifting_mint=_MINT_A,
+            drifting_pair=_ANSEM_ACTUAL_PAIR,
+        )
+        result = run_five_token_memory_factory_cycle(
+            self._write_x5_token_file(),
+            self.db_path,
+            self.backup_proof_path,
+            operator_approved=True,
+            _adapter_map=am,
+            _cycle_budget=1,
+        )
+        events = result["token_a_report"]["pair_drift_events"]
+        self.assertGreater(len(events), 0)
+        event = events[0]
+        self.assertIn("pair_address_supplied", event)
+        self.assertIn("pair_address_actual", event)
+        self.assertEqual(event["pair_address_supplied"], _PAIR_A)
+        self.assertEqual(event["pair_address_actual"], _ANSEM_ACTUAL_PAIR)
+
+    def test_pair_drift_event_contains_window_id(self):
+        """Drift event must include the window_id for traceability."""
+        am = self._make_drift_adapter_map(
+            drifting_mint=_MINT_A,
+            drifting_pair=_ANSEM_ACTUAL_PAIR,
+        )
+        result = run_five_token_memory_factory_cycle(
+            self._write_x5_token_file(),
+            self.db_path,
+            self.backup_proof_path,
+            operator_approved=True,
+            _adapter_map=am,
+            _cycle_budget=1,
+        )
+        events = result["token_a_report"]["pair_drift_events"]
+        self.assertGreater(len(events), 0)
+        self.assertIn("window_id", events[0])
+
+    def test_no_drift_when_all_pairs_match(self):
+        """No drift reported when all sources return the same pair_address."""
+        result = self._run(cycle_budget=5)
+        self.assertFalse(result["pair_drift_detected"])
+        self.assertEqual(result["total_pair_drift_events"], 0)
+        for key in ("token_a_report", "token_b_report", "token_c_report",
+                    "token_d_report", "token_e_report"):
+            self.assertEqual(result[key]["pair_address_drift_count"], 0)
+
+    def test_drift_does_not_block_snapshot_collection(self):
+        """A pair_address drift must not prevent snapshots or window closes."""
+        am = self._make_drift_adapter_map(
+            drifting_mint=_MINT_A,
+            drifting_pair=_ANSEM_ACTUAL_PAIR,
+        )
+        result = run_five_token_memory_factory_cycle(
+            self._write_x5_token_file(),
+            self.db_path,
+            self.backup_proof_path,
+            operator_approved=True,
+            _adapter_map=am,
+            _cycle_budget=1,
+        )
+        # Token A still completed a window close despite drift.
+        self.assertIn(
+            result["lane_x5_status"],
+            {LANE_X5_STATUS_COMPLETED, LANE_X5_STATUS_STOPPED},
+        )
+        self.assertGreater(result["token_a_report"]["snapshots_created"], 0)
+
+    def test_hard_locks_unchanged_with_drift(self):
+        """All hard locks remain True even when pair drift is detected."""
+        am = self._make_drift_adapter_map(
+            drifting_mint=_MINT_A,
+            drifting_pair=_ANSEM_ACTUAL_PAIR,
+        )
+        result = run_five_token_memory_factory_cycle(
+            self._write_x5_token_file(),
+            self.db_path,
+            self.backup_proof_path,
+            operator_approved=True,
+            _adapter_map=am,
+            _cycle_budget=1,
+        )
+        self.assertTrue(result["hard_locks"]["no_buy_sell_hold"])
+        self.assertTrue(result["hard_locks"]["no_paper_decisions"])
+        self.assertTrue(result["hard_locks"]["no_retrieval_activation"])
+        self.assertTrue(result["hard_locks"]["no_token_pair_mixing"])
+
+    def test_forbidden_tables_zero_with_drift(self):
+        """Pair drift must not write to forbidden tables."""
+        am = self._make_drift_adapter_map(
+            drifting_mint=_MINT_A,
+            drifting_pair=_ANSEM_ACTUAL_PAIR,
+        )
+        result = run_five_token_memory_factory_cycle(
+            self._write_x5_token_file(),
+            self.db_path,
+            self.backup_proof_path,
+            operator_approved=True,
+            _adapter_map=am,
+            _cycle_budget=5,
+        )
+        for table, count in result["forbidden_table_counts"].items():
+            self.assertEqual(count, 0, f"{table} has {count} rows (expected 0)")
+
+
+# ---------------------------------------------------------------------------
+# 16. Source-failure accounting — total_source_failures vs consecutive budget
+# ---------------------------------------------------------------------------
+
+class TestLaneX5SourceFailureAccounting(_DbBase):
+    """Prove total_source_failures reflects both step-level and DB-delta failures.
+
+    Observed real-run bug: a 1h run reported total_source_failures=0 in the
+    result JSON even though the DB gained 33 new printer_source_failures rows
+    and per-token source_failures_created were non-zero.
+
+    Root cause: the in-loop counter only incremented when
+    e2j_status != _X5_STEP_EXECUTED. Sub-request failures inside steps that
+    still returned EXECUTED were captured in per-token DB-delta counts but
+    missed by the top-level counter.
+
+    Fix: total_source_failures = max(step-level count, DB-delta sum).
+    The consecutive_source_failures internal counter (used for safe-stop) is
+    preserved separately and unchanged.
+    """
+
+    def test_total_source_failures_zero_on_clean_success(self):
+        """No source failures in a clean run → total_source_failures == 0."""
+        result = self._run(cycle_budget=5)
+        self.assertEqual(result["total_source_failures"], 0)
+
+    def test_total_source_failures_nonzero_on_step_failure(self):
+        """Adapter crashes (step failure, no DB rows) → total_source_failures > 0."""
+        result = run_five_token_memory_factory_cycle(
+            self._write_x5_token_file(),
+            self.db_path,
+            self.backup_proof_path,
+            operator_approved=True,
+            _adapter_map=_make_failing_adapter_map(),
+            source_budget_max_consecutive_failures=3,
+            _cycle_budget=None,
+        )
+        self.assertGreater(result["total_source_failures"], 0)
+
+    def test_total_source_failures_geq_per_token_sum(self):
+        """total_source_failures >= sum of per-token source_failures_created."""
+        result = self._run(cycle_budget=5)
+        per_token_sum = sum(
+            result[key]["source_failures_created"]
+            for key in ("token_a_report", "token_b_report", "token_c_report",
+                        "token_d_report", "token_e_report")
+        )
+        self.assertGreaterEqual(result["total_source_failures"], per_token_sum)
+
+    def test_total_source_failures_geq_per_token_sum_on_failure(self):
+        """total_source_failures >= per-token sum even when adapter crashes."""
+        result = run_five_token_memory_factory_cycle(
+            self._write_x5_token_file(),
+            self.db_path,
+            self.backup_proof_path,
+            operator_approved=True,
+            _adapter_map=_make_failing_adapter_map(),
+            source_budget_max_consecutive_failures=2,
+            _cycle_budget=None,
+        )
+        per_token_sum = sum(
+            result[key]["source_failures_created"]
+            for key in ("token_a_report", "token_b_report", "token_c_report",
+                        "token_d_report", "token_e_report")
+            if result[key] is not None
+        )
+        self.assertGreaterEqual(result["total_source_failures"], per_token_sum)
+
+    def test_consecutive_budget_still_triggers_safe_stop(self):
+        """Safe-stop fires from consecutive_source_failures, not total count."""
+        result = run_five_token_memory_factory_cycle(
+            self._write_x5_token_file(),
+            self.db_path,
+            self.backup_proof_path,
+            operator_approved=True,
+            _adapter_map=_make_failing_adapter_map(),
+            source_budget_max_consecutive_failures=2,
+            _cycle_budget=None,
+        )
+        self.assertEqual(result["lane_x5_status"], LANE_X5_STATUS_STOPPED)
+        reason = result.get("stopped_safely_reason", "")
+        self.assertIn("source budget", reason.lower())
+
+    def test_total_source_failures_present_in_result(self):
+        result = self._run(cycle_budget=1)
+        self.assertIn("total_source_failures", result)
+
+    def test_total_source_failures_is_nonnegative(self):
+        result = self._run(cycle_budget=5)
+        self.assertGreaterEqual(result["total_source_failures"], 0)
+
+    def test_total_source_failures_nonnegative_on_stop(self):
+        result = run_five_token_memory_factory_cycle(
+            self._write_x5_token_file(),
+            self.db_path,
+            self.backup_proof_path,
+            operator_approved=True,
+            _adapter_map=_make_failing_adapter_map(),
+            source_budget_max_consecutive_failures=1,
+            _cycle_budget=None,
+        )
+        self.assertGreaterEqual(result["total_source_failures"], 0)
+
+    def test_hard_locks_unchanged_on_source_failure(self):
+        """Source failures must not unlock any hard locks."""
+        result = run_five_token_memory_factory_cycle(
+            self._write_x5_token_file(),
+            self.db_path,
+            self.backup_proof_path,
+            operator_approved=True,
+            _adapter_map=_make_failing_adapter_map(),
+            source_budget_max_consecutive_failures=2,
+            _cycle_budget=None,
+        )
+        self.assertTrue(result["hard_locks"]["no_buy_sell_hold"])
+        self.assertTrue(result["hard_locks"]["no_paper_decisions"])
+        self.assertTrue(result["hard_locks"]["no_retrieval_activation"])

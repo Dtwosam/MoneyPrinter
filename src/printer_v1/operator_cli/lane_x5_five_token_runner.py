@@ -1,7 +1,7 @@
 """Lane X5 — Five-Token Source-Budget Proof.
 
 Exactly five operator-approved TRACK_FAST Solana tokens. WINDOW_15M only.
-Deterministic A/B/C/D/E round-robin rotation (tick % 5). No token starvation.
+Deterministic A/B/C/D/E cadence-cycle order. No token starvation.
 Source-budget enforcement: configurable consecutive-failure limit with safe
 throttle/backoff and graceful stop. Separate evidence identity per token.
 No token/pair mixing. Idempotent replay preserved. All financial locks remain.
@@ -25,12 +25,18 @@ Token list shape (Lane X5 format — identical field names to Lane X2/X4):
     ]
   }
 
-A/B/C/D/E rotation: tick % 5 == 0 → slot A, 1 → B, 2 → C, 3 → D, 4 → E.
-Each tick: snapshot for the active slot; if that slot's window is elapsed,
-close it and run Lane K.
+A/B/C/D/E cadence cycle: in each cadence cycle, all five tokens receive one
+snapshot in order (A → B → C → D → E). After all five tokens are served,
+sleep snapshot_interval_seconds once. Each token whose window has elapsed is
+closed after its snapshot within the same cycle.
 
-No starvation guarantee: deterministic round-robin means each of the five
-slots gets exactly one tick in every five ticks.
+This ensures snapshot_interval_seconds is the per-token cadence (not the
+global rotation cadence). With snapshot_interval_seconds=90 and a 15-minute
+window (900 s): each token receives 900/90 = 10 snapshots per window,
+satisfying the cadence-coverage policy.
+
+No starvation guarantee: deterministic order means each of the five tokens
+is served exactly once in every cadence cycle.
 
 Source-budget enforcement:
 - `source_budget_max_consecutive_failures`: max consecutive source failures
@@ -215,6 +221,25 @@ def _get_audit_counts(db_path: str | Path) -> dict[str, int]:
 
 def _check_forbidden_tables(db_path: str | Path) -> dict[str, int]:
     return {t: _count_table(db_path, t) for t in _FORBIDDEN_WRITE_TABLES}
+
+
+def _get_window_pair_address(db_path: str | Path, window_id: int) -> str | None:
+    """Return the pair_address recorded for a memory window, or None on error."""
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            row = conn.execute(
+                "SELECT pp.pair_address"
+                " FROM printer_memory_windows mw"
+                " JOIN printer_pairs pp ON pp.id = mw.pair_id"
+                " WHERE mw.id = ?",
+                (window_id,),
+            ).fetchone()
+            return str(row[0]) if row else None
+        finally:
+            conn.close()
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -706,6 +731,9 @@ def _blocked_result(
         "buy_enabled": False,
         "sell_enabled": False,
         "hold_enabled": False,
+        "cadence_cycles_completed": 0,
+        "pair_drift_detected": False,
+        "total_pair_drift_events": 0,
         "token_a_report": None,
         "token_b_report": None,
         "token_c_report": None,
@@ -902,10 +930,11 @@ def run_five_token_memory_factory_cycle(
     loop_start = time.monotonic()
 
     # Per-token state dicts.
-    def _new_token_state(slot: str, mint: str) -> dict[str, Any]:
+    def _new_token_state(slot: str, mint: str, pair_address_supplied: str) -> dict[str, Any]:
         return {
             "slot": slot,
             "mint": mint,
+            "pair_address_supplied": pair_address_supplied,
             "window_open_mono": None,
             "window_start_snapshot_id": None,
             "snapshots_created": 0,
@@ -920,15 +949,17 @@ def run_five_token_memory_factory_cycle(
             "dirty_memory_count": 0,
             "e2z_already_exists_count": 0,
             "lane_k_runs": 0,
+            "pair_address_drift_count": 0,
+            "pair_drift_events": [],
             "cycles": [],
         }
 
     token_states = [
-        _new_token_state(_SLOT_A, mint_a),
-        _new_token_state(_SLOT_B, mint_b),
-        _new_token_state(_SLOT_C, mint_c),
-        _new_token_state(_SLOT_D, mint_d),
-        _new_token_state(_SLOT_E, mint_e),
+        _new_token_state(_SLOT_A, mint_a, str(token_a_entry.get(_TL_PAIR_ADDRESS, ""))),
+        _new_token_state(_SLOT_B, mint_b, str(token_b_entry.get(_TL_PAIR_ADDRESS, ""))),
+        _new_token_state(_SLOT_C, mint_c, str(token_c_entry.get(_TL_PAIR_ADDRESS, ""))),
+        _new_token_state(_SLOT_D, mint_d, str(token_d_entry.get(_TL_PAIR_ADDRESS, ""))),
+        _new_token_state(_SLOT_E, mint_e, str(token_e_entry.get(_TL_PAIR_ADDRESS, ""))),
     ]
 
     # Global counters.
@@ -936,7 +967,7 @@ def run_five_token_memory_factory_cycle(
     clean_memory_rows_created: int = 0
     e2z_already_exists_count: int = 0
     dirty_or_blocked_memory_count: int = 0
-    tick_count: int = 0
+    cadence_cycle_count: int = 0     # outer cadence-cycle counter
     final_status = LANE_X5_STATUS_COMPLETED
     stopped_safely_reason: str | None = None
 
@@ -944,7 +975,10 @@ def run_five_token_memory_factory_cycle(
     consecutive_source_failures: int = 0
     total_source_failures: int = 0
 
-    # ---------- A/B/C/D/E ROTATION LOOP ----------
+    # ---------- PER-CADENCE-CYCLE LOOP ----------
+    # Each outer iteration covers ALL five tokens before sleeping once.
+    # With snapshot_interval_seconds=90, each token receives one snapshot
+    # every 90 s (not every 450 s as in the old single-token-per-tick design).
     while True:
         elapsed_now = _elapsed(loop_start)
         if elapsed_now >= max_duration_seconds:
@@ -960,127 +994,52 @@ def run_five_token_memory_factory_cycle(
             )
             break
 
-        # A/B/C/D/E round-robin: tick % 5 maps to index 0 (A) through 4 (E).
-        active_idx = tick_count % LANE_X5_EXACT_TOKEN_COUNT
-        tok = token_states[active_idx]
-        slot = tok["slot"]
-        mint = tok["mint"]
-        adapter = (
-            _adapter_map.get(mint) if _adapter_map is not None else None
-        )
+        cadence_cycle_count += 1
 
-        # Phase 1: Snapshot-only for the active token.
-        snap_result = _run_x5_token_step(
-            db_path,
-            mint,
-            slot,
-            adapter=adapter,
-            close_window=False,
-            snapshot_start_id=None,
-        )
+        # Inner loop: serve all five tokens (A → B → C → D → E) in this cycle.
+        cycle_stopped = False
+        for active_idx in range(LANE_X5_EXACT_TOKEN_COUNT):
+            tok = token_states[active_idx]
+            slot = tok["slot"]
+            mint = tok["mint"]
+            adapter = (
+                _adapter_map.get(mint) if _adapter_map is not None else None
+            )
 
-        # Window opens on first snapshot attempt for this token.
-        if tok["window_open_mono"] is None:
-            tok["window_open_mono"] = time.monotonic()
-
-        snap_id = snap_result.get("snapshot_id")
-        if snap_id is not None and tok["window_start_snapshot_id"] is None:
-            tok["window_start_snapshot_id"] = int(snap_id)
-
-        if snap_result.get("snapshot_persistence_status") == "E2M_SNAPSHOT_PERSISTED":
-            tok["snapshots_created"] += 1
-
-        snap_deltas = snap_result.get("deltas", {})
-        tok["source_requests_created"] += max(
-            0, int(snap_deltas.get("printer_source_requests", 0) or 0)
-        )
-        tok["source_responses_created"] += max(
-            0, int(snap_deltas.get("printer_source_responses", 0) or 0)
-        )
-        tok["source_failures_created"] += max(
-            0, int(snap_deltas.get("printer_source_failures", 0) or 0)
-        )
-
-        if snap_result.get("e2j_status") != _X5_STEP_EXECUTED:
-            # Source budget enforcement: count consecutive failures.
-            consecutive_source_failures += 1
-            total_source_failures += 1
-
-            if consecutive_source_failures > source_budget_max_consecutive_failures:
-                stopped_safely_reason = (
-                    f"source budget exhausted: {consecutive_source_failures}"
-                    f" consecutive source failure(s) exceeded limit of"
-                    f" {source_budget_max_consecutive_failures};"
-                    f" last error: {snap_result.get('exec_error', 'unknown')}"
-                )
-                final_status = LANE_X5_STATUS_STOPPED
-                break
-
-            # Throttle before next tick.
-            if throttle_backoff_seconds > 0:
-                time.sleep(throttle_backoff_seconds)
-
-            tick_count += 1
-            continue
-
-        # Snapshot succeeded — reset consecutive failure counter.
-        consecutive_source_failures = 0
-
-        # Phase 2: Check if this token's window should close.
-        window_elapsed = _elapsed(tok["window_open_mono"])  # type: ignore[arg-type]
-        if window_elapsed >= window_close_interval_seconds:
-            close_result = _run_x5_token_step(
+            # Phase 1: Snapshot-only for this token.
+            snap_result = _run_x5_token_step(
                 db_path,
                 mint,
                 slot,
                 adapter=adapter,
-                close_window=True,
-                snapshot_start_id=tok["window_start_snapshot_id"],
+                close_window=False,
+                snapshot_start_id=None,
             )
 
-            close_deltas = close_result.get("deltas", {})
-            tok["source_requests_created"] += max(
-                0, int(close_deltas.get("printer_source_requests", 0) or 0)
-            )
-            tok["source_responses_created"] += max(
-                0, int(close_deltas.get("printer_source_responses", 0) or 0)
-            )
-            tok["source_failures_created"] += max(
-                0, int(close_deltas.get("printer_source_failures", 0) or 0)
-            )
-            tok["memory_windows_created"] += max(
-                0, int(close_deltas.get("printer_memory_windows", 0) or 0)
-            )
+            # Window opens on first snapshot attempt for this token.
+            if tok["window_open_mono"] is None:
+                tok["window_open_mono"] = time.monotonic()
 
-            if close_result.get("snapshot_persistence_status") == "E2M_SNAPSHOT_PERSISTED":
+            snap_id = snap_result.get("snapshot_id")
+            if snap_id is not None and tok["window_start_snapshot_id"] is None:
+                tok["window_start_snapshot_id"] = int(snap_id)
+
+            if snap_result.get("snapshot_persistence_status") == "E2M_SNAPSHOT_PERSISTED":
                 tok["snapshots_created"] += 1
 
-            if close_result.get("lane_q_integrity_eligible"):
-                tok["lane_q_valid_windows"] += 1
-            elif close_result.get("memory_window_close_status") not in (
-                "NOT_ATTEMPTED", None
-            ):
-                tok["lane_q_blocked_windows"] += 1
+            snap_deltas = snap_result.get("deltas", {})
+            tok["source_requests_created"] += max(
+                0, int(snap_deltas.get("printer_source_requests", 0) or 0)
+            )
+            tok["source_responses_created"] += max(
+                0, int(snap_deltas.get("printer_source_responses", 0) or 0)
+            )
+            tok["source_failures_created"] += max(
+                0, int(snap_deltas.get("printer_source_failures", 0) or 0)
+            )
 
-            cycle_summary: dict[str, Any] = {
-                "slot": slot,
-                "mint": mint,
-                "tick": tick_count,
-                "e2j_status": close_result.get("e2j_status"),
-                "snapshot_id": close_result.get("snapshot_id"),
-                "snapshot_id_for_window": close_result.get("snapshot_id_for_window"),
-                "snapshot_start_id": tok["window_start_snapshot_id"],
-                "memory_window_id": close_result.get("memory_window_id"),
-                "window_start_at": close_result.get("window_start_at"),
-                "window_end_at": close_result.get("window_end_at"),
-                "elapsed_seconds": close_result.get("elapsed_seconds"),
-                "lane_q_integrity_eligible": close_result.get("lane_q_integrity_eligible"),
-                "memory_quality_label": close_result.get("memory_quality_label"),
-                "exec_error": close_result.get("exec_error"),
-            }
-
-            if close_result.get("e2j_status") != _X5_STEP_EXECUTED:
-                # Source budget enforcement on window-close failure.
+            if snap_result.get("e2j_status") != _X5_STEP_EXECUTED:
+                # Source budget enforcement: count consecutive failures.
                 consecutive_source_failures += 1
                 total_source_failures += 1
 
@@ -1089,55 +1048,157 @@ def run_five_token_memory_factory_cycle(
                         f"source budget exhausted: {consecutive_source_failures}"
                         f" consecutive source failure(s) exceeded limit of"
                         f" {source_budget_max_consecutive_failures};"
-                        f" last error: {close_result.get('exec_error', 'unknown')}"
+                        f" last error: {snap_result.get('exec_error', 'unknown')}"
                     )
                     final_status = LANE_X5_STATUS_STOPPED
-                    tok["cycles"].append(cycle_summary)
+                    cycle_stopped = True
                     break
 
-                # Throttle before next tick.
+                # Throttle before next token in this cycle.
                 if throttle_backoff_seconds > 0:
                     time.sleep(throttle_backoff_seconds)
 
-                # Reset window state so the next attempt for this token starts fresh.
-                tok["window_open_mono"] = None
-                tok["window_start_snapshot_id"] = None
-                tok["cycles"].append(cycle_summary)
-                tick_count += 1
-                continue
+                continue  # next token in this cadence cycle
 
-            # Window-close succeeded — reset consecutive failure counter.
+            # Snapshot succeeded — reset consecutive failure counter.
             consecutive_source_failures = 0
 
-            total_window_closes += 1
-            tok["window_closes"] += 1
+            # Phase 2: Check if this token's window should close.
+            window_elapsed = _elapsed(tok["window_open_mono"])  # type: ignore[arg-type]
+            if window_elapsed >= window_close_interval_seconds:
+                close_result = _run_x5_token_step(
+                    db_path,
+                    mint,
+                    slot,
+                    adapter=adapter,
+                    close_window=True,
+                    snapshot_start_id=tok["window_start_snapshot_id"],
+                )
 
-            # Lane K: process all eligible windows (all five tokens).
-            lane_k_result = run_e2z_pipeline(
-                db_path, operator_approved=True, production_mode=True
-            )
-            tok["lane_k_runs"] += 1
+                close_deltas = close_result.get("deltas", {})
+                tok["source_requests_created"] += max(
+                    0, int(close_deltas.get("printer_source_requests", 0) or 0)
+                )
+                tok["source_responses_created"] += max(
+                    0, int(close_deltas.get("printer_source_responses", 0) or 0)
+                )
+                tok["source_failures_created"] += max(
+                    0, int(close_deltas.get("printer_source_failures", 0) or 0)
+                )
+                tok["memory_windows_created"] += max(
+                    0, int(close_deltas.get("printer_memory_windows", 0) or 0)
+                )
 
-            k_clean = int(lane_k_result.get("clean_memory_rows_created", 0) or 0)
-            k_already = int(lane_k_result.get("e2z_already_exists_count", 0) or 0)
-            k_blocked = int(lane_k_result.get("e2z_blocked_count", 0) or 0)
+                if close_result.get("snapshot_persistence_status") == "E2M_SNAPSHOT_PERSISTED":
+                    tok["snapshots_created"] += 1
 
-            tok["clean_memory_created"] += k_clean
-            tok["e2z_already_exists_count"] += k_already
-            tok["dirty_memory_count"] += k_blocked
-            clean_memory_rows_created += k_clean
-            e2z_already_exists_count += k_already
-            dirty_or_blocked_memory_count += k_blocked
+                if close_result.get("lane_q_integrity_eligible"):
+                    tok["lane_q_valid_windows"] += 1
+                elif close_result.get("memory_window_close_status") not in (
+                    "NOT_ATTEMPTED", None
+                ):
+                    tok["lane_q_blocked_windows"] += 1
 
-            cycle_summary["lane_k_status"] = lane_k_result.get("lane_k_status")
-            cycle_summary["lane_k_clean_created"] = k_clean
-            tok["cycles"].append(cycle_summary)
+                cycle_summary: dict[str, Any] = {
+                    "slot": slot,
+                    "mint": mint,
+                    "tick": cadence_cycle_count,
+                    "e2j_status": close_result.get("e2j_status"),
+                    "snapshot_id": close_result.get("snapshot_id"),
+                    "snapshot_id_for_window": close_result.get("snapshot_id_for_window"),
+                    "snapshot_start_id": tok["window_start_snapshot_id"],
+                    "memory_window_id": close_result.get("memory_window_id"),
+                    "window_start_at": close_result.get("window_start_at"),
+                    "window_end_at": close_result.get("window_end_at"),
+                    "elapsed_seconds": close_result.get("elapsed_seconds"),
+                    "lane_q_integrity_eligible": close_result.get("lane_q_integrity_eligible"),
+                    "memory_quality_label": close_result.get("memory_quality_label"),
+                    "exec_error": close_result.get("exec_error"),
+                }
 
-            # Reset window state for this token.
-            tok["window_open_mono"] = None
-            tok["window_start_snapshot_id"] = None
+                if close_result.get("e2j_status") != _X5_STEP_EXECUTED:
+                    # Source budget enforcement on window-close failure.
+                    consecutive_source_failures += 1
+                    total_source_failures += 1
 
-        tick_count += 1
+                    if consecutive_source_failures > source_budget_max_consecutive_failures:
+                        stopped_safely_reason = (
+                            f"source budget exhausted: {consecutive_source_failures}"
+                            f" consecutive source failure(s) exceeded limit of"
+                            f" {source_budget_max_consecutive_failures};"
+                            f" last error: {close_result.get('exec_error', 'unknown')}"
+                        )
+                        final_status = LANE_X5_STATUS_STOPPED
+                        tok["cycles"].append(cycle_summary)
+                        cycle_stopped = True
+                        break
+
+                    # Throttle before next token in this cycle.
+                    if throttle_backoff_seconds > 0:
+                        time.sleep(throttle_backoff_seconds)
+
+                    # Reset window state so the next attempt starts fresh.
+                    tok["window_open_mono"] = None
+                    tok["window_start_snapshot_id"] = None
+                    tok["cycles"].append(cycle_summary)
+                    continue  # next token in this cadence cycle
+
+                # Window-close succeeded — reset consecutive failure counter.
+                consecutive_source_failures = 0
+
+                total_window_closes += 1
+                tok["window_closes"] += 1
+
+                # Pair drift detection: check whether the recorded pair_address
+                # matches what was supplied in the token list.
+                mem_window_id = close_result.get("memory_window_id")
+                if mem_window_id is not None:
+                    actual_pair = _get_window_pair_address(db_path, int(mem_window_id))
+                    supplied_pair = tok["pair_address_supplied"]
+                    if actual_pair is not None and actual_pair != supplied_pair:
+                        tok["pair_address_drift_count"] += 1
+                        tok["pair_drift_events"].append({
+                            "window_id": int(mem_window_id),
+                            "pair_address_supplied": supplied_pair,
+                            "pair_address_actual": actual_pair,
+                        })
+
+                # Lane K: process all eligible windows (all five tokens).
+                lane_k_result = run_e2z_pipeline(
+                    db_path, operator_approved=True, production_mode=True
+                )
+                tok["lane_k_runs"] += 1
+
+                k_clean = int(lane_k_result.get("clean_memory_rows_created", 0) or 0)
+                k_already = int(lane_k_result.get("e2z_already_exists_count", 0) or 0)
+                k_blocked = int(lane_k_result.get("e2z_blocked_count", 0) or 0)
+
+                tok["clean_memory_created"] += k_clean
+                tok["e2z_already_exists_count"] += k_already
+                tok["dirty_memory_count"] += k_blocked
+                clean_memory_rows_created += k_clean
+                e2z_already_exists_count += k_already
+                dirty_or_blocked_memory_count += k_blocked
+
+                cycle_summary["lane_k_status"] = lane_k_result.get("lane_k_status")
+                cycle_summary["lane_k_clean_created"] = k_clean
+                tok["cycles"].append(cycle_summary)
+
+                # Reset window state for this token.
+                tok["window_open_mono"] = None
+                tok["window_start_snapshot_id"] = None
+
+                # Budget check inside the inner loop after each window close.
+                if _cycle_budget is not None and total_window_closes >= _cycle_budget:
+                    stopped_safely_reason = (
+                        f"cycle budget exhausted: {_cycle_budget}"
+                        " window close(s) completed"
+                    )
+                    cycle_stopped = True
+                    break
+
+        if cycle_stopped:
+            break
 
         if snapshot_interval_seconds > 0:
             remaining = max_duration_seconds - _elapsed(loop_start)
@@ -1155,10 +1216,23 @@ def run_five_token_memory_factory_cycle(
 
     forbidden_counts = _check_forbidden_tables(db_path)
 
+    # total_source_failures: take the larger of the step-level count and the
+    # DB-delta count.  The step-level counter (incremented when e2j_status !=
+    # EXECUTED) captures adapter crashes that never reach the DB.  The DB-delta
+    # counter captures printer_source_failures rows created by sub-requests
+    # inside steps that still returned EXECUTED (observed in real 1h runs where
+    # total_source_failures reported 0 but the DB gained 33 failure rows).
+    db_delta_source_failures = sum(ts["source_failures_created"] for ts in token_states)
+    total_source_failures = max(total_source_failures, db_delta_source_failures)
+
+    total_pair_drift_events = sum(ts["pair_address_drift_count"] for ts in token_states)
+    pair_drift_detected = total_pair_drift_events > 0
+
     def _token_report(tok: dict[str, Any]) -> dict[str, Any]:
         return {
             "slot": tok["slot"],
             "mint": tok["mint"],
+            "pair_address_supplied": tok["pair_address_supplied"],
             "snapshots_created": tok["snapshots_created"],
             "memory_windows_created": tok["memory_windows_created"],
             "source_requests_created": tok["source_requests_created"],
@@ -1171,6 +1245,8 @@ def run_five_token_memory_factory_cycle(
             "dirty_memory_count": tok["dirty_memory_count"],
             "e2z_already_exists_count": tok["e2z_already_exists_count"],
             "lane_k_runs": tok["lane_k_runs"],
+            "pair_address_drift_count": tok["pair_address_drift_count"],
+            "pair_drift_events": tok["pair_drift_events"],
         }
 
     return {
@@ -1215,6 +1291,9 @@ def run_five_token_memory_factory_cycle(
         "sell_enabled": False,
         "hold_enabled": False,
         "forbidden_table_counts": forbidden_counts,
+        "cadence_cycles_completed": cadence_cycle_count,
+        "pair_drift_detected": pair_drift_detected,
+        "total_pair_drift_events": total_pair_drift_events,
         "token_a_report": _token_report(token_states[0]),
         "token_b_report": _token_report(token_states[1]),
         "token_c_report": _token_report(token_states[2]),

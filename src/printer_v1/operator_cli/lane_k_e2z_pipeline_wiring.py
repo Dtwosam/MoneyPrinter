@@ -333,7 +333,12 @@ def run_e2z_pipeline(
     coverage_persisted_count: int = lane_u2_result.get("coverage_rows_written", 0)
     coverage_blocked_count: int = len(_coverage_blocked)
 
-    # Step 4: E2Y set gate — same-token/pair rule enforced (NOT loosened).
+    # Step 4: E2Y set gate — informational reporting only.
+    # The E2Y batch gate (all_partial_memory, candidate_count_is_5) is NOT used
+    # to gate E2Z in mixed batches. Individual per-window eligibility (E2Z gate)
+    # is the sole authority for clean-memory creation.  This allows a run with
+    # 3 PARTIAL_MEMORY + 10 DIRTY_MEMORY windows to promote the 3 clean ones
+    # without being blocked by the 10 dirty ones.
     e2y_report = build_e2y_15m_candidate_set_gate_report(
         db_path, operator_approved=True
     )
@@ -343,6 +348,7 @@ def run_e2z_pipeline(
         e2y_report.get("candidate_set_summary", {}).get("candidate_ids", [])
     )
 
+    e2y_candidate_reason: str | None = None
     if not set_gate_passed:
         set_gate = e2y_report.get("set_gate", {})
         token_pairs = (
@@ -352,61 +358,17 @@ def run_e2z_pipeline(
             set_gate, token_pairs, coverage_blocked_count,
             lane_q_excluded_count=len(all_lane_q_blocked_ids),
         )
-        _e2y_css = e2y_report.get("candidate_set_summary", {})
-        after = _snapshot_counts(db_path_str)
-        return {
-            "lane_k_status": LANE_K_STATUS_COMPLETED,
-            "lane": LANE_K_NAME,
-            "operator_approved": True,
-            "db_path": db_path_str,
-            "blocked_reasons": [
-                "E2Y set gate not passed — zero clean memories is valid"
-            ],
-            "e2x_status": e2x_status,
-            "e2y_status": e2y_status,
-            "e2y_set_gate_passed": False,
-            "e2y_candidate_reason": e2y_candidate_reason,
-            "selected_candidate_token_id": _e2y_css.get("selected_candidate_token_id"),
-            "selected_candidate_pair_id": _e2y_css.get("selected_candidate_pair_id"),
-            "ignored_other_pair_candidate_count": _e2y_css.get("ignored_other_pair_candidate_count", 0),
-            "coverage_persisted_count": coverage_persisted_count,
-            "coverage_blocked_count": coverage_blocked_count,
-            "lane_u2_status": lane_u2_result.get("lane_u2_status"),
-            "lane_u2_coverage_pass_ids": lane_u2_result.get("coverage_pass_ids", []),
-            "lane_u2_coverage_blocked_ids": lane_u2_result.get("coverage_blocked_ids", []),
-            "lane_u2_coverage_unknown_ids": lane_u2_result.get("coverage_unknown_ids", []),
-            "lane_u2_coverage_rows_written": lane_u2_result.get("coverage_rows_written", 0),
-            "lane_u2_gap_audit_rows_written": lane_u2_result.get("gap_audit_rows_written", 0),
-            "lane_q_guard_status": lane_q_guard.get("lane_q_guard_status"),
-            "lane_q_valid_window_ids": all_valid_ids,
-            "lane_q_blocked_window_ids": all_lane_q_blocked_ids,
-            "lane_q_blocked_count": len(all_lane_q_blocked_ids),
-            "e2z_created_count": 0,
-            "e2z_already_exists_count": 0,
-            "e2z_blocked_count": 0,
-            "clean_memory_rows_created": 0,
-            "candidate_window_ids": e2y_candidate_ids,
-            "zero_clean_memories_valid": True,
-            "hard_locks": dict(_HARD_LOCKS),
-            "locked_capabilities": dict(_LOCKED_CAPABILITIES),
-            "db_delta_summary": _delta_summary(before, after),
-            "recommended_next_action": _RECOMMENDED_NEXT_ACTION,
-            "e2z_window_results": [],
-            "retrieval_activated": False,
-            "paper_decisions_created": 0,
-            "buy_enabled": False,
-            "sell_enabled": False,
-            "hold_enabled": False,
-            "positions_created": 0,
-            "pnl_created": 0,
-            "trade_events_created": 0,
-            "paper_trade_audits_created": 0,
-        }
 
-    # Step 5: E2Z for windows in (E2Y candidates ∩ Lane Q valid ∩ not coverage blocked)
+    _e2y_css = e2y_report.get("candidate_set_summary", {})
+
+    # Step 5: E2Z for individually eligible windows.
+    # Eligible = Lane Q valid ∩ not coverage blocked.
+    # E2Z's per-window gate (_gate_window) is the final individual check:
+    # it blocks dirty/do_not_train windows that shouldn't be promoted.
+    # Dirty windows never reach this set (E2X filters them out before Lane Q).
     e2z_eligible_ids: list[int] = [
-        wid for wid in e2y_candidate_ids
-        if wid in all_valid_set and wid not in _coverage_blocked
+        wid for wid in all_valid_ids
+        if wid not in _coverage_blocked
     ]
 
     created_count = 0
@@ -419,7 +381,7 @@ def run_e2z_pipeline(
             db_path,
             wid,
             operator_approved=True,
-            e2y_report=e2y_report,
+            individual_promotion=True,
         )
         status = result.get("e2z_status")
         if status == E2Z_STATUS_CREATED:
@@ -432,7 +394,9 @@ def run_e2z_pipeline(
             "window_id": wid,
             "e2z_status": status,
             "episode_id": result.get("episode_id"),
-            "blocked_by": None,
+            "blocked_by": (
+                "e2z_per_window_gate" if status == _E2Z_STATUS_BLOCKED else None
+            ),
         })
 
     # Report coverage-blocked windows (Lane Q valid but coverage blocked — did not reach E2Z)
@@ -469,17 +433,22 @@ def run_e2z_pipeline(
 
     after = _snapshot_counts(db_path_str)
 
-    _e2y_css = e2y_report.get("candidate_set_summary", {})
+    blocked_reasons: list[str] = (
+        ["E2Y set gate not passed — individual promotion applied"]
+        if not set_gate_passed
+        else []
+    )
+
     return {
         "lane_k_status": LANE_K_STATUS_COMPLETED,
         "lane": LANE_K_NAME,
         "operator_approved": True,
         "db_path": db_path_str,
-        "blocked_reasons": [],
+        "blocked_reasons": blocked_reasons,
         "e2x_status": e2x_status,
         "e2y_status": e2y_status,
-        "e2y_set_gate_passed": True,
-        "e2y_candidate_reason": None,
+        "e2y_set_gate_passed": set_gate_passed,
+        "e2y_candidate_reason": e2y_candidate_reason,
         "selected_candidate_token_id": _e2y_css.get("selected_candidate_token_id"),
         "selected_candidate_pair_id": _e2y_css.get("selected_candidate_pair_id"),
         "ignored_other_pair_candidate_count": _e2y_css.get("ignored_other_pair_candidate_count", 0),

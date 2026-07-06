@@ -287,8 +287,9 @@ class LaneKZeroCleanTests(_Base):
         r = self._run()
         self.assertNotEqual(r["lane_k_status"], LANE_K_STATUS_BLOCKED)
 
-    def test_zero_clean_valid_with_one_ineligible_window(self):
-        """Single ineligible window — E2Y gate fails — zero clean is valid."""
+    def test_one_individually_eligible_window_is_promoted(self):
+        """Single eligible window — E2Y batch gate fails (count < 5) but
+        individual promotion still creates 1 clean memory row."""
         conn = self._connect()
         try:
             tid = conn.execute(
@@ -305,15 +306,19 @@ class LaneKZeroCleanTests(_Base):
                 " VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (tid, _PAIR, _PAIR, _NOW, _NOW, _NOW, _NOW),
             ).lastrowid
-            # Only 1 eligible window — E2Y needs 5
+            # 1 individually eligible window — E2Y batch gate fails (count < 5)
+            # but per-window gate in E2Z passes, so it is promoted.
             self._insert_window(conn, tid, pid, snapshot_id=50)
             conn.commit()
         finally:
             conn.close()
         r = self._run()
         self.assertEqual(r["lane_k_status"], LANE_K_STATUS_COMPLETED)
-        self.assertEqual(r["clean_memory_rows_created"], 0)
+        # Individual promotion: 1 eligible window → 1 clean memory row.
+        self.assertEqual(r["clean_memory_rows_created"], 1)
         self.assertIs(r["zero_clean_memories_valid"], True)
+        # E2Y batch gate still reports failure (informational, not gating).
+        self.assertIs(r["e2y_set_gate_passed"], False)
 
 
 # ===========================================================================
@@ -868,6 +873,230 @@ class LaneKHardLockTests(_Base):
         self.assertIn("recommended_next_action", r)
         self.assertIsInstance(r["recommended_next_action"], str)
         self.assertGreater(len(r["recommended_next_action"]), 0)
+
+
+# ===========================================================================
+# Proof 13 — Mixed batch: DIRTY_MEMORY + PARTIAL_MEMORY windows
+# Only individually eligible PARTIAL_MEMORY rows must be promoted.
+# ===========================================================================
+
+class LaneKMixedBatchTests(_Base):
+    """Prove that a mixed batch (clean + dirty) promotes only the clean windows.
+
+    This is the key regression for the real 1h X5 run where 3 PARTIAL_MEMORY
+    windows + 10 DIRTY_MEMORY windows caused zero clean memories because the
+    E2Y batch gate required ALL candidates to be PARTIAL_MEMORY.
+    """
+
+    def _insert_dirty_window(self, conn, token_id: int, pair_id: int, snapshot_id: int = 1) -> int:
+        """Insert a DIRTY_MEMORY window that must never become clean."""
+        return self._insert_window(
+            conn, token_id, pair_id,
+            memory_status="DIRTY_MEMORY",
+            memory_quality_label="DIRTY_MEMORY",
+            data_quality_label="MISSING_CRITICAL_DATA",
+            do_not_train=1,
+            snapshot_id=snapshot_id,
+        )
+
+    def _insert_do_not_train_window(self, conn, token_id: int, pair_id: int, snapshot_id: int = 2) -> int:
+        """Insert a window with do_not_train=1 that must never become clean."""
+        return self._insert_window(
+            conn, token_id, pair_id,
+            memory_status="PARTIAL_MEMORY",
+            memory_quality_label="PARTIAL_MEMORY",
+            data_quality_label="CLEAN_DATA",
+            do_not_train=1,
+            snapshot_id=snapshot_id,
+        )
+
+    def _make_mixed_three_clean_ten_dirty(self):
+        """Insert 3 eligible PARTIAL_MEMORY + 10 ineligible DIRTY_MEMORY windows."""
+        conn = self._connect()
+        try:
+            tid = self._insert_token(conn)
+            pid = self._insert_pair(conn, tid)
+            clean_ids = []
+            for snap_id in (101, 102, 103):
+                wid = self._insert_window(conn, tid, pid, snapshot_id=snap_id)
+                clean_ids.append(wid)
+            dirty_ids = []
+            for snap_id in range(200, 210):
+                wid = self._insert_dirty_window(conn, tid, pid, snapshot_id=snap_id)
+                dirty_ids.append(wid)
+            conn.commit()
+        finally:
+            conn.close()
+        return tid, pid, clean_ids, dirty_ids
+
+    def test_mixed_batch_completes(self):
+        self._make_mixed_three_clean_ten_dirty()
+        r = self._run()
+        self.assertEqual(r["lane_k_status"], LANE_K_STATUS_COMPLETED)
+
+    def test_mixed_batch_promotes_only_clean_windows(self):
+        """3 clean + 10 dirty → clean_memory_rows_created == 3."""
+        _, _, clean_ids, _ = self._make_mixed_three_clean_ten_dirty()
+        r = self._run()
+        self.assertEqual(r["clean_memory_rows_created"], 3)
+        self.assertEqual(r["e2z_created_count"], 3)
+
+    def test_mixed_batch_creates_episodes_only_for_clean(self):
+        """Only clean window IDs get a CLEAN_MEMORY episode row."""
+        _, _, clean_ids, dirty_ids = self._make_mixed_three_clean_ten_dirty()
+        self._run()
+        conn = self._connect()
+        try:
+            for wid in clean_ids:
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM printer_episodes"
+                    " WHERE memory_window_id = ? AND memory_status = 'CLEAN_MEMORY'",
+                    (wid,),
+                ).fetchone()[0]
+                self.assertEqual(count, 1, f"clean window {wid} must have 1 episode")
+            for wid in dirty_ids:
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM printer_episodes"
+                    " WHERE memory_window_id = ?",
+                    (wid,),
+                ).fetchone()[0]
+                self.assertEqual(count, 0, f"dirty window {wid} must have 0 episodes")
+        finally:
+            conn.close()
+
+    def test_mixed_batch_dirty_windows_remain_dirty(self):
+        """Dirty windows must not have their memory_status changed to CLEAN_MEMORY."""
+        _, _, _, dirty_ids = self._make_mixed_three_clean_ten_dirty()
+        self._run()
+        conn = self._connect()
+        try:
+            for wid in dirty_ids:
+                row = conn.execute(
+                    "SELECT memory_status FROM printer_memory_windows WHERE id = ?",
+                    (wid,),
+                ).fetchone()
+                self.assertIsNotNone(row)
+                self.assertNotEqual(
+                    row[0], "CLEAN_MEMORY",
+                    f"dirty window {wid} memory_status must not be CLEAN_MEMORY"
+                )
+        finally:
+            conn.close()
+
+    def test_mixed_batch_e2y_gate_reported_as_failed(self):
+        """E2Y batch gate reports False (informational) for mixed batch."""
+        self._make_mixed_three_clean_ten_dirty()
+        r = self._run()
+        self.assertIs(r["e2y_set_gate_passed"], False)
+
+    def test_mixed_batch_zero_clean_still_valid(self):
+        self._make_mixed_three_clean_ten_dirty()
+        r = self._run()
+        self.assertIs(r["zero_clean_memories_valid"], True)
+
+    def test_do_not_train_window_never_promoted(self):
+        """do_not_train=1 window in an otherwise eligible batch is excluded."""
+        conn = self._connect()
+        try:
+            tid = self._insert_token(conn)
+            pid = self._insert_pair(conn, tid)
+            # 3 clean windows
+            for snap_id in (301, 302, 303):
+                self._insert_window(conn, tid, pid, snapshot_id=snap_id)
+            # 1 do_not_train window that must not become clean
+            dnt_id = self._insert_do_not_train_window(conn, tid, pid, snapshot_id=304)
+            conn.commit()
+        finally:
+            conn.close()
+        before_ep = self._count("printer_episodes")
+        self._run()
+        conn = self._connect()
+        try:
+            ep_count = conn.execute(
+                "SELECT COUNT(*) FROM printer_episodes WHERE memory_window_id = ?",
+                (dnt_id,),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(ep_count, 0, "do_not_train window must never get an episode")
+
+    def test_hard_locks_unchanged_with_mixed_batch(self):
+        self._make_mixed_three_clean_ten_dirty()
+        r = self._run()
+        for key, val in r["hard_locks"].items():
+            self.assertIs(val, True, f"hard_lock '{key}' must be True")
+
+    def test_no_retrieval_in_mixed_batch(self):
+        self._make_mixed_three_clean_ten_dirty()
+        r = self._run()
+        self.assertIs(r["retrieval_activated"], False)
+
+    def test_no_paper_decisions_in_mixed_batch(self):
+        self._make_mixed_three_clean_ten_dirty()
+        r = self._run()
+        self.assertEqual(r["paper_decisions_created"], 0)
+
+    def test_no_positions_in_mixed_batch(self):
+        self._make_mixed_three_clean_ten_dirty()
+        r = self._run()
+        self.assertEqual(r["positions_created"], 0)
+
+    def test_idempotent_rerun_on_mixed_batch(self):
+        """Second run creates zero new episodes (all already_exists)."""
+        self._make_mixed_three_clean_ten_dirty()
+        self._run()
+        r2 = self._run()
+        self.assertEqual(r2["e2z_created_count"], 0)
+        self.assertEqual(r2["e2z_already_exists_count"], 3)
+        self.assertEqual(r2["clean_memory_rows_created"], 0)
+
+    def test_e2z_gate_still_blocks_ineligible_windows(self):
+        """E2Z per-window gate blocks windows failing individual eligibility.
+
+        Window with memory_status=DIRTY_MEMORY is not in E2X review_candidate_ids
+        so it never reaches E2Z. This tests that if somehow such a window were
+        in the eligible set, E2Z would reject it.
+        """
+        from printer_v1.operator_cli.e2z_clean_memory_creation import (
+            E2Z_STATUS_BLOCKED as _E2Z_BLOCKED,
+            create_clean_memory_from_window,
+        )
+        conn = self._connect()
+        try:
+            tid = self._insert_token(conn)
+            pid = self._insert_pair(conn, tid)
+            dirty_id = self._insert_dirty_window(conn, tid, pid, snapshot_id=999)
+            conn.commit()
+        finally:
+            conn.close()
+        result = create_clean_memory_from_window(
+            self.db_path, dirty_id,
+            operator_approved=True,
+            individual_promotion=True,  # bypass E2Y batch gate
+        )
+        self.assertEqual(result["e2z_status"], _E2Z_BLOCKED,
+                         "E2Z per-window gate must reject a DIRTY_MEMORY window")
+        self.assertFalse(result.get("created", True))
+
+    def test_missing_critical_data_window_not_promoted(self):
+        """Window with data_quality_label=MISSING_CRITICAL_DATA never becomes clean."""
+        conn = self._connect()
+        try:
+            tid = self._insert_token(conn)
+            pid = self._insert_pair(conn, tid)
+            self._insert_window(
+                conn, tid, pid,
+                memory_status="PARTIAL_MEMORY",
+                memory_quality_label="PARTIAL_MEMORY",
+                data_quality_label="MISSING_CRITICAL_DATA",
+                do_not_train=0,
+                snapshot_id=555,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        r = self._run()
+        self.assertEqual(r["clean_memory_rows_created"], 0)
 
 
 if __name__ == "__main__":
