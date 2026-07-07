@@ -476,6 +476,33 @@ def _blocked_result(
 # Main public function
 # ---------------------------------------------------------------------------
 
+def _compute_candidate_age_seconds(
+    candidate_ts_str: str | None,
+    batch_started_dt: datetime | None,
+) -> int | None:
+    """Compute candidate age in seconds relative to batch start. Read-only."""
+    if not candidate_ts_str or batch_started_dt is None:
+        return None
+    try:
+        dt = datetime.fromisoformat(candidate_ts_str.strip())
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0, int((batch_started_dt - dt).total_seconds()))
+    except (ValueError, TypeError):
+        return None
+
+
+def _freshness_advisory_from_age(age_s: int | None) -> str:
+    """Return a freshness advisory label for traceability (not a gate)."""
+    if age_s is None:
+        return "FRESHNESS_UNKNOWN"
+    if age_s <= 120:
+        return "FRESH_PREFERRED"
+    if age_s <= 180:
+        return "FRESH_WITHIN_HARD_LIMIT"
+    return "STALE_AT_SELECTION_TIME"
+
+
 def build_selection_batch(
     db_path: str | None,
     backup_proof_path: str | None,
@@ -535,6 +562,15 @@ def build_selection_batch(
         Default 5k USD.
     """
     started_at = _utc_now()
+
+    # Parse batch start time for per-candidate age computation (traceability only).
+    try:
+        _batch_started_dt: datetime | None = datetime.fromisoformat(started_at)
+        if _batch_started_dt.tzinfo is None:  # type: ignore[union-attr]
+            _batch_started_dt = _batch_started_dt.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        _batch_started_dt = None
+
     blocked_reasons: list[str] = []
 
     if not operator_approved:
@@ -583,6 +619,11 @@ def build_selection_batch(
             "priority_reason": raw_cand.get("priority_reason"),
         }
 
+        # Freshness traceability fields (advisory only — no blocking in X10.6)
+        _cand_ts = raw_cand.get("created_at") or raw_cand.get("captured_at")
+        _cand_age_s = _compute_candidate_age_seconds(_cand_ts, _batch_started_dt)
+        _freshness_advisory = _freshness_advisory_from_age(_cand_age_s)
+
         # Manual override validation
         override_required, override_missing = validate_manual_override(raw_cand)
         has_override = bool(raw_cand.get("manual_override"))
@@ -622,6 +663,8 @@ def build_selection_batch(
             "pair_drift_acknowledged": drift_acknowledged,
             "operator_approved": operator_approved,
             "source_trace": source_trace,
+            "candidate_age_at_selection_seconds": _cand_age_s,
+            "freshness_advisory": _freshness_advisory,
         }
 
         # Reject: override required but missing
@@ -697,6 +740,7 @@ def build_selection_batch(
         "operator_approved": operator_approved,
         "db_path": str(db_path),
         "proposed_x5_token_list_path": proposed_x5_token_list_path,
+        "batch_produced_at": started_at,
         "run_started_at": started_at,
         "run_finished_at": finished_at,
         "candidate_count_input": len(raw),

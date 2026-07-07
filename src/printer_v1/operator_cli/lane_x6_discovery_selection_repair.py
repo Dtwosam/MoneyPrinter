@@ -688,6 +688,14 @@ def select_candidates_for_memory_growth(
     diet_summary: dict[str, int] = {lbl: 0 for lbl in ALL_DIET_LABELS}
     selected_candidates: list[dict[str, Any]] = []
 
+    # Parse X6 run start for advisory age computation (traceability, no blocking).
+    try:
+        _x6_batch_dt: datetime | None = datetime.fromisoformat(started_at)
+        if _x6_batch_dt.tzinfo is None:  # type: ignore[union-attr]
+            _x6_batch_dt = _x6_batch_dt.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        _x6_batch_dt = None
+
     for cand in selected_pool:
         mint = cand.get("token_mint", "")
         pair = cand.get("pair_address", "")
@@ -709,6 +717,21 @@ def select_candidates_for_memory_growth(
             for c in same_token_new_pair_cases
         )
 
+        # Advisory freshness fields (no blocking — informational for X10.6 + X10.9).
+        _cand_ts = cand.get("captured_at") or cand.get("created_at")
+        _discovery_age_s: int | None = None
+        _freshness_warning = False
+        if _x6_batch_dt and _cand_ts:
+            try:
+                _cand_dt = datetime.fromisoformat(str(_cand_ts).strip())
+                if _cand_dt.tzinfo is None:
+                    _cand_dt = _cand_dt.replace(tzinfo=timezone.utc)
+                _discovery_age_s = max(0, int((_x6_batch_dt - _cand_dt).total_seconds()))
+                if discovery_action == "TRACK_FAST" and _discovery_age_s > 120:
+                    _freshness_warning = True
+            except (ValueError, TypeError):
+                pass
+
         selected_candidates.append({
             "token_mint": mint,
             "pair_address": pair,
@@ -720,6 +743,8 @@ def select_candidates_for_memory_growth(
             "same_token_new_pair": is_same_token_new_pair,
             "discovery_action": discovery_action,
             "source_channel": cand.get("source_channel"),
+            "discovery_age_seconds": _discovery_age_s,
+            "freshness_warning": _freshness_warning,
         })
 
     # ------------------------------------------------------------------

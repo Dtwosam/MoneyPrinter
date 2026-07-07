@@ -734,6 +734,7 @@ def _blocked_result(
         "cadence_cycles_completed": 0,
         "pair_drift_detected": False,
         "total_pair_drift_events": 0,
+        "freshness_gate_results": [],
         "token_a_report": None,
         "token_b_report": None,
         "token_c_report": None,
@@ -813,6 +814,7 @@ def run_five_token_memory_factory_cycle(
     """
     db_path_str = str(db_path) if db_path is not None else ""
     blocked_reasons: list[str] = []
+    x10_9_freshness_results: list[dict[str, Any]] = []
 
     if not operator_approved:
         blocked_reasons.append(
@@ -895,6 +897,36 @@ def run_five_token_memory_factory_cycle(
             mint_d = str(token_d_entry.get(_TL_TOKEN_MINT, ""))
             mint_e = str(token_e_entry.get(_TL_TOKEN_MINT, ""))
 
+            # X10.9 Pre-Snapshot Freshness Revalidation Gate.
+            # Read-only DB check. No network calls. No DB writes.
+            # selected_at is NOT accepted as freshness proof.
+            # Skipped when _adapter_map is provided (test-fixture injection mode).
+            if db_path is not None and Path(db_path_str).is_file() and _adapter_map is None:
+                try:
+                    from printer_v1.operator_cli.lane_x10_9_freshness_gate import (  # noqa: F401
+                        FRESHNESS_STATUS_STALE_BLOCKED,
+                        FRESHNESS_STATUS_UNKNOWN_BLOCKED,
+                        check_token_list_freshness,
+                    )
+                    _fresh_tokens = [
+                        {"mint": mint_a, "pair_address": str(token_a_entry.get(_TL_PAIR_ADDRESS, "")), "slot": "A"},
+                        {"mint": mint_b, "pair_address": str(token_b_entry.get(_TL_PAIR_ADDRESS, "")), "slot": "B"},
+                        {"mint": mint_c, "pair_address": str(token_c_entry.get(_TL_PAIR_ADDRESS, "")), "slot": "C"},
+                        {"mint": mint_d, "pair_address": str(token_d_entry.get(_TL_PAIR_ADDRESS, "")), "slot": "D"},
+                        {"mint": mint_e, "pair_address": str(token_e_entry.get(_TL_PAIR_ADDRESS, "")), "slot": "E"},
+                    ]
+                    _fr = check_token_list_freshness(_fresh_tokens, db_path_str)
+                    x10_9_freshness_results = [r.to_dict() for r in _fr]
+                    for _fr_item in _fr:
+                        if _fr_item.status in (FRESHNESS_STATUS_STALE_BLOCKED, FRESHNESS_STATUS_UNKNOWN_BLOCKED):
+                            blocked_reasons.append(
+                                f"X10.9 freshness gate: slot {_fr_item.slot}"
+                                f" mint {_fr_item.mint}"
+                                f" ({_fr_item.status}): {_fr_item.reason}"
+                            )
+                except ImportError:
+                    pass  # gate module not available; skip (should not occur in production)
+
     if blocked_reasons:
         result = _blocked_result(
             blocked_reasons, db_path_str, duration_profile, window_kind
@@ -906,6 +938,7 @@ def run_five_token_memory_factory_cycle(
         result["token_e_mint"] = mint_e or None
         result["source_budget_max_consecutive_failures"] = source_budget_max_consecutive_failures
         result["throttle_backoff_seconds"] = throttle_backoff_seconds
+        result["freshness_gate_results"] = x10_9_freshness_results
         return result
 
     # Dependency check — Lane K must be importable.
@@ -1294,6 +1327,7 @@ def run_five_token_memory_factory_cycle(
         "cadence_cycles_completed": cadence_cycle_count,
         "pair_drift_detected": pair_drift_detected,
         "total_pair_drift_events": total_pair_drift_events,
+        "freshness_gate_results": x10_9_freshness_results,
         "token_a_report": _token_report(token_states[0]),
         "token_b_report": _token_report(token_states[1]),
         "token_c_report": _token_report(token_states[2]),
