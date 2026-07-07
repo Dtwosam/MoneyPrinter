@@ -10097,6 +10097,173 @@ def main_run_lane_x5_five_token_cycle(argv=None, *, _adapter_map=None) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Lane X10.10B -- Bounded TRACK_NORMAL 15m Memory Growth Runner
+# ---------------------------------------------------------------------------
+
+def main_run_lane_x10_10_normal_15m_cycle(argv=None, *, _adapter_map=None) -> int:
+    """Lane X10.10B: bounded TRACK_NORMAL 15m memory growth runner.
+
+    Runs 1-7 operator-approved TRACK_NORMAL tokens in a bounded WINDOW_15M
+    cycle. Provides memory growth for slow-moving tokens (slow fades, liquidity
+    decay, failed events, boring baselines) that X5/TRACK_FAST cannot cover.
+    Closes the winner-bias gap without modifying X5 or relaxing its validation.
+    TRACK_NORMAL freshness is advisory only -- stale tokens never block the run.
+    All financial locks remain. No BUY/SELL/HOLD. No paper decisions. No PnL.
+    No live trading. No paid APIs. No wallet/private keys. No scoring/ranking.
+    Source budget cannot be bypassed. WINDOW_15M only.
+    """
+    from printer_v1.operator_cli.lane_x10_10_normal_15m_runner import (
+        LANE_X10_10_COMMAND_NAME,
+        LANE_X10_10_MAX_TOKEN_COUNT,
+        LANE_X10_10_MIN_TOKEN_COUNT,
+        _DEFAULT_PROFILE,
+        _DEFAULT_SOURCE_BUDGET_MAX_CONSECUTIVE_FAILURES,
+        _DEFAULT_THROTTLE_BACKOFF_SECONDS,
+        _DURATION_PROFILES,
+        run_normal_15m_memory_factory_cycle,
+    )
+
+    parser = _base_parser(
+        f"Lane X10.10B — bounded TRACK_NORMAL 15m memory growth runner"
+        f" ({LANE_X10_10_COMMAND_NAME})."
+        f"  Accepts {LANE_X10_10_MIN_TOKEN_COUNT}-{LANE_X10_10_MAX_TOKEN_COUNT}"
+        " operator-approved TRACK_NORMAL Solana tokens.  WINDOW_15M only."
+        "  Closes winner-bias gap: provides 15m memory for slow-moving, failed,"
+        " and baseline tokens that X5/TRACK_FAST cannot cover."
+        "  TRACK_NORMAL freshness is advisory only — stale tokens never block."
+        "  12h/24h profiles require --allow-long-bounded-run."
+        "  No BUY/SELL/HOLD.  No paper decisions.  No positions.  No PnL."
+        "  No live trading.  No paid APIs.  No wallet/private keys."
+        "  No source budget bypass.  No TRACK_FAST tokens allowed here.",
+        ("json",),
+    )
+    parser.add_argument(
+        "--token-list-path",
+        dest="token_list_path",
+        metavar="PATH",
+        required=True,
+        help=(
+            f"Path to token list JSON"
+            f" ({LANE_X10_10_MIN_TOKEN_COUNT}-{LANE_X10_10_MAX_TOKEN_COUNT}"
+            " TRACK_NORMAL tokens, using tracking_lane / operator_approved fields)."
+        ),
+    )
+    parser.add_argument(
+        "--backup-proof-path",
+        dest="backup_proof_path",
+        metavar="PATH",
+        required=True,
+        help="Path to the existing DB backup file (proof backup exists before run).",
+    )
+    parser.add_argument(
+        "--operator-approved",
+        action="store_true",
+        dest="operator_approved",
+        help="Operator explicitly approves this Lane X10.10B TRACK_NORMAL cycle run.",
+    )
+    parser.add_argument(
+        "--duration",
+        dest="duration_profile",
+        metavar="PROFILE",
+        default=_DEFAULT_PROFILE,
+        choices=sorted(_DURATION_PROFILES),
+        help=(
+            f"Bounded duration profile.  Choices: {sorted(_DURATION_PROFILES)}."
+            f"  Default: {_DEFAULT_PROFILE}."
+            "  12h/24h require --allow-long-bounded-run."
+        ),
+    )
+    parser.add_argument(
+        "--window-kind",
+        dest="window_kind",
+        metavar="KIND",
+        default="WINDOW_15M",
+        help=(
+            "Main memory window kind.  Only WINDOW_15M is enabled in Lane X10.10B."
+            "  Default: WINDOW_15M."
+        ),
+    )
+    parser.add_argument(
+        "--allow-long-bounded-run",
+        action="store_true",
+        dest="allow_long_bounded_run",
+        help=(
+            "Enable 12h/24h duration profiles.  Must be combined with"
+            " --operator-approved.  Without this flag 12h/24h are refused."
+        ),
+    )
+    parser.add_argument(
+        "--snapshot-interval-seconds",
+        dest="snapshot_interval_seconds",
+        type=float,
+        default=0.0,
+        metavar="S",
+        help=(
+            "Seconds between cadence cycles (all tokens served once per cycle)."
+            "  Use 420 for TRACK_NORMAL first-15m cadence in production."
+            "  Default: 0 (no sleep — tests/manual runs)."
+        ),
+    )
+    parser.add_argument(
+        "--window-close-interval-seconds",
+        dest="window_close_interval_seconds",
+        type=float,
+        default=0.0,
+        metavar="S",
+        help=(
+            "Seconds of snapshot collection before a token's 15m window is"
+            " closed and evaluated.  Use 900 for real 15m windows."
+            "  Default: 0 (close immediately — tests/manual runs)."
+        ),
+    )
+    parser.add_argument(
+        "--source-budget-max-failures",
+        dest="source_budget_max_consecutive_failures",
+        type=int,
+        default=_DEFAULT_SOURCE_BUDGET_MAX_CONSECUTIVE_FAILURES,
+        metavar="N",
+        help=(
+            "Maximum consecutive source failures before a forced safe stop."
+            f"  Default: {_DEFAULT_SOURCE_BUDGET_MAX_CONSECUTIVE_FAILURES}."
+            "  Set to 0 to stop immediately on any failure."
+        ),
+    )
+    parser.add_argument(
+        "--throttle-backoff-seconds",
+        dest="throttle_backoff_seconds",
+        type=float,
+        default=_DEFAULT_THROTTLE_BACKOFF_SECONDS,
+        metavar="S",
+        help=(
+            "Sleep duration after each source failure before the next tick."
+            f"  Default: {_DEFAULT_THROTTLE_BACKOFF_SECONDS} (no sleep)."
+            "  Use 1.0-5.0 in production to reduce rate-limit pressure."
+        ),
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        payload = run_normal_15m_memory_factory_cycle(
+            args.token_list_path,
+            args.db_path,
+            args.backup_proof_path,
+            operator_approved=args.operator_approved,
+            duration_profile=args.duration_profile,
+            window_kind=args.window_kind,
+            allow_long_bounded_run=args.allow_long_bounded_run,
+            snapshot_interval_seconds=args.snapshot_interval_seconds,
+            window_close_interval_seconds=args.window_close_interval_seconds,
+            source_budget_max_consecutive_failures=args.source_budget_max_consecutive_failures,
+            throttle_backoff_seconds=args.throttle_backoff_seconds,
+            _adapter_map=_adapter_map,
+        )
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
+# ---------------------------------------------------------------------------
 # Lane X6 -- Discovery / Selection / Dedup Repair
 # ---------------------------------------------------------------------------
 
