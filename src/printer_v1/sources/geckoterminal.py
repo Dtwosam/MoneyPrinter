@@ -286,6 +286,12 @@ def _normalize_geckoterminal_pool(pool: Mapping[str, Any]) -> dict[str, Any] | N
     txns_h1 = _get_txn_count(attrs, txns_dict, "txns_1h", "h1")
     txns_h24 = _get_txn_count(attrs, txns_dict, "txns_24h", "h24")
 
+    # Price change percentages — GeckoTerminal stores these under price_change_percentage
+    _pc = attrs.get("price_change_percentage") if isinstance(attrs.get("price_change_percentage"), Mapping) else {}
+    price_change_5m = _to_float(_pc.get("m5"))
+    price_change_1h = _to_float(_pc.get("h1"))
+    price_change_24h = _to_float(_pc.get("h24"))
+
     return {
         "chainId": "solana",
         "pairAddress": pool_address,
@@ -310,6 +316,11 @@ def _normalize_geckoterminal_pool(pool: Mapping[str, Any]) -> dict[str, Any] | N
         "fdv": _to_float(fdv),
         "marketCap": _to_float(market_cap),
         "captured_at": captured_at,
+        # V2-2H.3: pair creation timestamp and price-change fields (100% missing in live audit)
+        "pair_created_at": attrs.get("pool_created_at"),
+        "price_change_5m": price_change_5m,
+        "price_change_1h": price_change_1h,
+        "price_change_24h": price_change_24h,
     }
 
 

@@ -63,7 +63,10 @@ from printer_v1.discovery.classifier import (
     classify_discovery_candidate,
     is_dead_or_near_zero_activity_candidate,
 )
-from printer_v1.discovery.selection_batch import build_age_activity_report
+from printer_v1.discovery.selection_batch import (
+    build_age_activity_report,
+    build_field_completeness_report,
+)
 from printer_v1.discovery.contracts import DiscoveryChannelLabel, DiscoveryOutputAction
 from printer_v1.discovery.discovery import process_discovery_payload
 from printer_v1.discovery.parser import normalize_candidates
@@ -1645,6 +1648,7 @@ def build_discover_candidates_once_payload(
         ).fetchall()
     status = get_operator_db_status(resolved, project_root)
     _age_activity_report = build_age_activity_report(normalized_pairs)
+    _field_completeness_report = build_field_completeness_report(normalized_pairs)
     return {
         "command": "printer-discover-candidates-once",
         "db_path": str(resolved),
@@ -1687,6 +1691,8 @@ def build_discover_candidates_once_payload(
         # V2-2H.2 age/activity reporting hook. Separate from candidate_stage_report
         # so the H.1 int/NOT_MEASURED invariant on that dict is preserved.
         "age_activity_report": _age_activity_report,
+        # V2-2H.3 field completeness reporting hook.
+        "field_completeness_report": _field_completeness_report,
         "source_channel": source_channel,
         "source_channel_reason": source_channel_reason,
         "accepted_candidates": [

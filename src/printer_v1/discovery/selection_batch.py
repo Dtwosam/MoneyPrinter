@@ -352,6 +352,14 @@ def assign_bucket(candidate: dict[str, Any]) -> tuple[str, str]:
     source_channel = candidate.get("source_channel")
     discovery_action = candidate.get("discovery_action") or candidate.get("tracking_lane") or ""
 
+    # V2-2H.3: raw-None guards for A2/A3. _f() converts None→0.0, which
+    # accidentally blocks A2 (0.0 <= -20.0 is False) and A3 (0.0 >= 3600 is
+    # False), but that is coincidental and not the explicit design intent.
+    # These flags make the gate explicit: missing field → A1, not A2/A3.
+    _pc5m_known = candidate.get("price_change_5m") is not None
+    _pc1h_known = candidate.get("price_change_1h") is not None
+    _tok_age_known = candidate.get("token_age_seconds") is not None
+
     is_near_dead = (
         volume_5m <= 0
         and txns_5m <= 0
@@ -377,9 +385,18 @@ def assign_bucket(candidate: dict[str, Any]) -> tuple[str, str]:
         and (volume_5m >= _VOLUME_FAST_5M_USD or txns_5m >= _TXNS_FAST_5M)
     )
     if is_fast_tier:
-        if price_change_5m <= _WICK_PRICE_CHANGE_REVERSAL_PCT and volume_5m >= _VOLUME_FAST_5M_USD:
+        if (
+            _pc5m_known
+            and price_change_5m <= _WICK_PRICE_CHANGE_REVERSAL_PCT
+            and volume_5m >= _VOLUME_FAST_5M_USD
+        ):
             return BUCKET_A2, BUCKET_NAMES[BUCKET_A2]
-        if token_age >= _LATE_BUY_TOKEN_AGE_SECONDS and price_change_1h < 0:
+        if (
+            _tok_age_known
+            and _pc1h_known
+            and token_age >= _LATE_BUY_TOKEN_AGE_SECONDS
+            and price_change_1h < 0
+        ):
             return BUCKET_A3, BUCKET_NAMES[BUCKET_A3]
         return BUCKET_A1, BUCKET_NAMES[BUCKET_A1]
 
@@ -586,6 +603,82 @@ def build_age_activity_report(candidates: list[dict[str, Any]]) -> dict[str, Any
         "candidates_by_activity_bucket": by_activity,
         "candidates_by_priority_tier": by_tier,
     }
+
+
+# ---------------------------------------------------------------------------
+# A4 failed-pump helper (V2-2H.3)
+# ---------------------------------------------------------------------------
+
+def derive_failed_pump_bucket(
+    current_candidate: dict[str, Any],
+    prior_candidate: dict[str, Any],
+) -> tuple[str, str] | None:
+    """Return (BUCKET_A4, name) if the current candidate qualifies as a failed pump.
+
+    Returns None if A4 conditions are not met. The caller is responsible for
+    verifying the current candidate does not qualify for A-tier before routing
+    here (or this function will return None if it still qualifies).
+
+    A4 conditions (V2-2G design):
+      - prior candidate had an A-tier primary bucket
+      - current candidate no longer qualifies for fast-tier
+      - liquidity has not been fully removed (>LIQUIDITY_NEAR_ZERO threshold)
+
+    Integration: assign_bucket() does not receive prior candidate context.
+    Wire this helper only where prior candidate data is available in the
+    selection path. Until that wiring exists, A4 derivation is deferred at
+    the assign_bucket() call site but the helper is testable in isolation.
+    """
+    prior_bucket = prior_candidate.get("primary_bucket")
+    if prior_bucket not in GROUP_A_BUCKETS:
+        return None
+
+    liq = _f(current_candidate.get("liquidity_usd"))
+    vol5m = _f(current_candidate.get("volume_5m"))
+    txns5m = _f(current_candidate.get("txns_5m"))
+
+    is_still_fast_tier = (
+        liq >= _LIQUIDITY_FAST_THRESHOLD_USD
+        and (vol5m >= _VOLUME_FAST_5M_USD or txns5m >= _TXNS_FAST_5M)
+    )
+    if is_still_fast_tier:
+        return None
+
+    if liq <= _LIQUIDITY_NEAR_ZERO_USD:
+        return None  # liquidity removed → route as C3, not A4
+
+    return BUCKET_A4, BUCKET_NAMES[BUCKET_A4]
+
+
+# ---------------------------------------------------------------------------
+# Field completeness report (V2-2H.3)
+# ---------------------------------------------------------------------------
+
+_CRITICAL_FAST_EVENT_FIELDS: tuple[str, ...] = (
+    "token_created_at",
+    "pair_created_at",
+    "token_age_seconds",
+    "pair_age_seconds",
+    "price_change_5m",
+    "price_change_15m",
+    "price_change_1h",
+    "price_change_24h",
+    "volume_15m",
+)
+
+
+def build_field_completeness_report(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return per-field missing counts for critical fast-event fields.
+
+    All counts are ints. A field is counted as missing when it is None or absent.
+    """
+    counts: dict[str, int] = {f"missing_{f}_count": 0 for f in _CRITICAL_FAST_EVENT_FIELDS}
+    for c in candidates:
+        for field in _CRITICAL_FAST_EVENT_FIELDS:
+            if c.get(field) is None:
+                counts[f"missing_{field}_count"] += 1
+    counts["total_candidates"] = len(candidates)
+    return counts
 
 
 # ---------------------------------------------------------------------------

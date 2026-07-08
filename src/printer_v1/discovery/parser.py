@@ -33,6 +33,15 @@ NORMALIZED_FIELDS = (
     "fdv",
     "market_cap",
     "captured_at",
+    # V2-2H.3: timestamp, age, and price-change fields (100% missing in live audit)
+    "pair_created_at",
+    "token_created_at",
+    "pair_age_seconds",
+    "token_age_seconds",
+    "price_change_5m",
+    "price_change_15m",
+    "price_change_1h",
+    "price_change_24h",
 )
 
 CRITICAL_FIELDS = ("token_mint", "pair_address", "chain", "source_name", "captured_at")
@@ -87,9 +96,15 @@ def extract_candidate_items(source_name: str, payload: Mapping[str, Any]) -> lis
     return []
 
 
-def normalize_candidate(source_name: str, candidate_payload: Mapping[str, Any]) -> dict[str, Any]:
+def normalize_candidate(
+    source_name: str,
+    candidate_payload: Mapping[str, Any],
+    now: datetime | None = None,
+) -> dict[str, Any]:
     if source_name not in SOURCE_REGISTRY:
         raise ValueError(f"Unknown discovery source: {source_name}")
+
+    _now = now if now is not None else datetime.now(timezone.utc)
 
     base_token = candidate_payload.get("baseToken") or {}
     quote_token = candidate_payload.get("quoteToken") or {}
@@ -101,6 +116,19 @@ def normalize_candidate(source_name: str, candidate_payload: Mapping[str, Any]) 
         attributes,
         keys=("captured_at", "capturedAt", "createdAt", "created_at", "updated_at"),
     )
+
+    # Timestamp fields — extract raw values; age is derived below.
+    _pair_created_at_raw = first_present(
+        candidate_payload,
+        attributes,
+        keys=("pair_created_at", "pairCreatedAt", "pool_created_at", "poolCreatedAt"),
+    )
+    _token_created_at_raw = first_present(
+        candidate_payload,
+        attributes,
+        keys=("token_created_at", "tokenCreatedAt"),
+    )
+
     normalized = {
         "token_mint": first_present(
             candidate_payload,
@@ -166,12 +194,38 @@ def normalize_candidate(source_name: str, candidate_payload: Mapping[str, Any]) 
         "fdv": numeric_value(candidate_payload, attributes, keys=("fdv", "fully_diluted_valuation")),
         "market_cap": numeric_value(candidate_payload, attributes, keys=("market_cap", "marketCap")),
         "captured_at": normalize_timestamp(captured_at),
+        # V2-2H.3: timestamp, age, and price-change fields.
+        # Stored as-is (string or None); age is a derived float, not guessed from zero.
+        "pair_created_at": str(_pair_created_at_raw) if _pair_created_at_raw is not None else None,
+        "token_created_at": str(_token_created_at_raw) if _token_created_at_raw is not None else None,
+        "pair_age_seconds": _safe_age_seconds(_pair_created_at_raw, _now),
+        "token_age_seconds": _safe_age_seconds(_token_created_at_raw, _now),
+        "price_change_5m": nested_numeric(
+            candidate_payload, attributes,
+            key_paths=(("priceChange", "m5"), ("price_change", "m5"), ("price_change_5m",)),
+        ),
+        "price_change_15m": nested_numeric(
+            candidate_payload, attributes,
+            key_paths=(("priceChange", "m15"), ("price_change", "m15"), ("price_change_15m",)),
+        ),
+        "price_change_1h": nested_numeric(
+            candidate_payload, attributes,
+            key_paths=(("priceChange", "h1"), ("price_change", "h1"), ("price_change_1h",)),
+        ),
+        "price_change_24h": nested_numeric(
+            candidate_payload, attributes,
+            key_paths=(("priceChange", "h24"), ("price_change", "h24"), ("price_change_24h",)),
+        ),
     }
     return {field: normalized.get(field) for field in NORMALIZED_FIELDS}
 
 
-def normalize_candidates(source_name: str, payload: Mapping[str, Any]) -> list[dict[str, Any]]:
-    return [normalize_candidate(source_name, item) for item in extract_candidate_items(source_name, payload)]
+def normalize_candidates(
+    source_name: str,
+    payload: Mapping[str, Any],
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    return [normalize_candidate(source_name, item, now) for item in extract_candidate_items(source_name, payload)]
 
 
 def candidate_has_required_fields(candidate: Mapping[str, Any]) -> bool:
@@ -251,3 +305,41 @@ def nested_value(*sources: Mapping[str, Any], key_paths: tuple[tuple[str, ...], 
             if current not in (None, ""):
                 return current
     return None
+
+
+def _parse_created_at(value: Any) -> datetime | None:
+    """Parse a created_at/created timestamp to UTC datetime, or None if unparseable.
+
+    Handles ISO-8601 strings and Unix epoch integers. DexScreener uses epoch
+    milliseconds (values > 1e10); other sources use epoch seconds.
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc)
+    if isinstance(value, (int, float)):
+        try:
+            epoch_s = float(value) / 1000.0 if float(value) > 1e10 else float(value)
+            return datetime.fromtimestamp(epoch_s, tz=timezone.utc)
+        except (ValueError, OverflowError, OSError):
+            return None
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+def _safe_age_seconds(created_at: Any, now: datetime) -> float | None:
+    """Derive age in seconds from a created_at value and reference time.
+
+    Returns None for missing, unparseable, or future timestamps. A future
+    timestamp (negative age) indicates clock skew or bad data — it must not
+    produce a near-zero age that looks like a freshly created token/pair.
+    """
+    dt = _parse_created_at(created_at)
+    if dt is None:
+        return None
+    age = (now - dt).total_seconds()
+    return age if age >= 0.0 else None
