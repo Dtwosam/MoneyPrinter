@@ -795,3 +795,25 @@ WINDOW_5M_MICRO_EVENT remains support-only. It must never become a main outcome 
 
 <!-- PRINTER_V1_MEMORY_GROWTH_BUILD_ORDER_ANCHOR_END -->
 
+## Assistant Active Build Order Anchor
+
+For Claude, ChatGPT, Codex, and future assistant prompts, the assistant alignment anchor is:
+
+- `docs/printer-v1-assistant-active-build-order-anchor.md`
+
+This assistant anchor does not replace `AGENTS.md`.
+
+It does not make the V2 build order the sole source of truth.
+
+It confirms that the active memory-growth build order is:
+
+- `docs/printer-v1-memory-growth-build-order-v2.md`
+
+This build order is active inside the required source stack for Printer V1 memory-growth work.
+
+The next active memory-growth lane remains:
+
+- `V2-2A - Audit current discovery/selection pipeline`
+
+V2-2A remains audit-only until completed. It does not unlock source fetching, DB mutation, memory generation, retrieval, paper decisions, BUY/SELL/HOLD, positions, trades, audits, or PnL.
+
