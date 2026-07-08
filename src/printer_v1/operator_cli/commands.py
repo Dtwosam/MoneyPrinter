@@ -66,6 +66,7 @@ from printer_v1.discovery.classifier import (
 from printer_v1.discovery.selection_batch import (
     build_age_activity_report,
     build_field_completeness_report,
+    filter_within_response_duplicates,
 )
 from printer_v1.discovery.contracts import DiscoveryChannelLabel, DiscoveryOutputAction
 from printer_v1.discovery.discovery import process_discovery_payload
@@ -1603,13 +1604,15 @@ def build_discover_candidates_once_payload(
     for candidate in normalized_pairs:
         candidate["source_channel"] = source_channel
         candidate["source_channel_reason"] = source_channel_reason
+    # V2-2H.4: deduplicate within the single source response before normal gates.
+    _wr_clean, _wr_rejected, _wr_report = filter_within_response_duplicates(normalized_pairs)
     accepted: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
     inspected: list[dict[str, Any]] = []
     discovery_results: list[dict[str, Any]] = []
     if result.response_record and result.normalized_result.source_status.value == "COMPLETE":
         accepted, rejected, inspected = _select_discovery_candidates(
-            normalized_pairs,
+            _wr_clean,
             existing_token_mints=existing_token_mints,
             existing_pair_addresses=existing_pair_addresses,
             existing_symbol_name_keys=existing_symbol_name_keys,
@@ -1649,6 +1652,7 @@ def build_discover_candidates_once_payload(
     status = get_operator_db_status(resolved, project_root)
     _age_activity_report = build_age_activity_report(normalized_pairs)
     _field_completeness_report = build_field_completeness_report(normalized_pairs)
+    _total_pre_persistence_rejections = len(rejected) + len(_wr_rejected)
     return {
         "command": "printer-discover-candidates-once",
         "db_path": str(resolved),
@@ -1683,7 +1687,8 @@ def build_discover_candidates_once_payload(
             "candidates_seen_total": len(normalized_pairs),
             "candidates_normalized_total": len(normalized_pairs),
             "candidates_persisted_total": len(discovery_results),
-            "candidates_rejected_pre_persistence": len(rejected),
+            # Includes both within-response rejections (H.4) and post-filter gate rejections.
+            "candidates_rejected_pre_persistence": _total_pre_persistence_rejections,
             "candidates_considered_for_selection": "NOT_MEASURED",
             "candidates_selected": "NOT_MEASURED",
             "candidates_rejected_by_selection": "NOT_MEASURED",
@@ -1693,6 +1698,8 @@ def build_discover_candidates_once_payload(
         "age_activity_report": _age_activity_report,
         # V2-2H.3 field completeness reporting hook.
         "field_completeness_report": _field_completeness_report,
+        # V2-2H.4 within-response duplicate/STNP reporting hook.
+        "within_response_integrity_report": _wr_report,
         "source_channel": source_channel,
         "source_channel_reason": source_channel_reason,
         "accepted_candidates": [

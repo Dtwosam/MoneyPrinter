@@ -243,6 +243,11 @@ REJECTION_STNP_UNRESOLVED = "STNP_UNRESOLVED"
 REJECTION_SAFETY_RISK_OPERATOR_OVERRIDE = "SAFETY_RISK_OPERATOR_OVERRIDE"
 REJECTION_MANUAL_EXCLUSION = "MANUAL_EXCLUSION"
 REJECTION_GROUP_F_CORPUS_TOO_SMALL = "GROUP_F_CORPUS_TOO_SMALL"
+# Within-response integrity constants (V2-2H.4).
+# Distinct from DB-level STNP_UNRESOLVED/PAIR_DUPLICATE to make reporting
+# unambiguous: these values only appear in within_response_integrity_report.
+REJECTION_PAIR_DUPLICATE_WITHIN_RESPONSE = "PAIR_DUPLICATE_WITHIN_RESPONSE"
+REJECTION_STNP_WITHIN_RESPONSE_UNRESOLVED = "STNP_WITHIN_RESPONSE_UNRESOLVED"
 
 # ---------------------------------------------------------------------------
 # Thresholds for bucket assignment (all categorical gates, no scores)
@@ -679,6 +684,117 @@ def build_field_completeness_report(candidates: list[dict[str, Any]]) -> dict[st
                 counts[f"missing_{field}_count"] += 1
     counts["total_candidates"] = len(candidates)
     return counts
+
+
+# ---------------------------------------------------------------------------
+# Within-response duplicate / STNP filter (V2-2H.4)
+# ---------------------------------------------------------------------------
+
+_MIGRATION_CHANNELS: frozenset[str] = frozenset({
+    "PUMPFUN_MIGRATION",
+    "PUMPSWAP_GRADUATED",
+    "PUMPSWAP_MIGRATION_POOL_REFERENCE",
+})
+
+
+def _classify_within_response_stnp(candidate: dict[str, Any]) -> str | None:
+    """Attempt STNP classification for a within-response duplicate-mint candidate.
+
+    Returns an STNP_* constant when a safe classification can be derived from
+    the candidate's own data, or None (unresolved) when it cannot.
+    Errs heavily toward None — within-response STNP is only safe to allow if
+    the source channel unambiguously signals a known migration event.
+    """
+    source_channel = candidate.get("source_channel") or ""
+    if source_channel in _MIGRATION_CHANNELS:
+        return STNP_MIGRATION
+    return None
+
+
+def filter_within_response_duplicates(
+    candidates: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """Detect and reject within-response duplicate pair addresses and duplicate mints.
+
+    First valid occurrence of each pair_address and token_mint passes through.
+    Subsequent occurrences are rejected with explicit reasons and surfaced in
+    the returned report — never silently dropped.
+
+    Same-token/new-pair (STNP) classification reuses existing V2-2C gate logic
+    via classify_same_token_new_pair(). If classification is unresolved or the
+    gate would block persistence, the candidate is rejected.
+
+    Returns:
+        clean_candidates  — candidates cleared to proceed to normal gates
+        rejected_candidates — candidates rejected at this stage (never persisted)
+        within_response_integrity_report — count dict + rejection detail lists
+    """
+    seen_pair_addresses: set[str] = set()
+    seen_mints: set[str] = set()
+
+    clean: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+
+    dup_pair_count = 0
+    dup_mint_count = 0
+    stnp_event_count = 0
+    stnp_rejection_details: list[dict[str, Any]] = []
+    dup_rejection_details: list[dict[str, Any]] = []
+
+    for candidate in candidates:
+        pair_address = candidate.get("pair_address") or ""
+        token_mint = candidate.get("token_mint") or ""
+
+        reject_reason: str | None = None
+        stnp_classification: str | None = None
+
+        if pair_address and pair_address in seen_pair_addresses:
+            # Same pair_address seen earlier in this response.
+            reject_reason = REJECTION_PAIR_DUPLICATE_WITHIN_RESPONSE
+            dup_pair_count += 1
+        elif token_mint and token_mint in seen_mints:
+            # Same mint seen earlier with a different pair_address — STNP event.
+            stnp_event_count += 1
+            dup_mint_count += 1
+            stnp_classification = _classify_within_response_stnp(candidate)
+            ok, gate_reason = classify_same_token_new_pair(stnp_classification, same_token_new_pair=True)
+            if not ok:
+                # Map gate reasons to within-response variants where applicable.
+                reject_reason = (
+                    REJECTION_STNP_WITHIN_RESPONSE_UNRESOLVED
+                    if gate_reason == REJECTION_STNP_UNRESOLVED
+                    else gate_reason
+                )
+
+        # Track first-seen occurrences only.
+        if pair_address:
+            seen_pair_addresses.add(pair_address)
+        if token_mint:
+            seen_mints.add(token_mint)
+
+        if reject_reason:
+            detail: dict[str, Any] = {
+                "token_mint": token_mint or None,
+                "pair_address": pair_address or None,
+                "reject_reason": reject_reason,
+                "stnp_classification": stnp_classification,
+            }
+            rejected.append({**candidate, **detail})
+            if reject_reason == REJECTION_PAIR_DUPLICATE_WITHIN_RESPONSE:
+                dup_rejection_details.append(detail)
+            else:
+                stnp_rejection_details.append(detail)
+        else:
+            clean.append(candidate)
+
+    report: dict[str, Any] = {
+        "within_response_duplicate_pair_count": dup_pair_count,
+        "within_response_duplicate_mint_count": dup_mint_count,
+        "within_response_stnp_event_count": stnp_event_count,
+        "within_response_stnp_rejections": stnp_rejection_details,
+        "within_response_duplicate_rejections": dup_rejection_details,
+    }
+    return clean, rejected, report
 
 
 # ---------------------------------------------------------------------------
