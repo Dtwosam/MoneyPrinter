@@ -419,11 +419,12 @@ From V2-2A, three tokens currently have multiple pair rows:
 - token_id 13 (ANSEM / `9cRCn9r...`): 2 pairs — UNRESOLVED from X11 R8. Require explicit
   operator classification before this mint enters any batch.
 
-### Same-Token/New-Pair Operator Actions Required Before V2-2C
+### Same-Token/New-Pair Operator Actions Required Before V2-2D
 
-Before V2-2C implements the selection batch table, the operator must document the
-classification for each of the three multi-pair tokens above. No token with an
-UNRESOLVED pair classification may enter a bounded batch.
+V2-2C implements selection-batch logic against fixtures and does not require real-token
+classification. Before V2-2D runs the bounded proof against the live DB, the operator
+must document the classification for each of the three multi-pair tokens above. No token
+with an UNRESOLVED pair classification may enter a bounded proof batch.
 
 ---
 
