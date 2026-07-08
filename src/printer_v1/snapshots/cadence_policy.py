@@ -120,30 +120,35 @@ _POLICIES: tuple[SnapshotCadencePolicy, ...] = (
         support_only=False,
         enabled_for_real_collection=True,
     ),
-    # 1h windows (disabled — future lane)
+    # 1h continuation windows (Lane X12 — enabled for structural collection)
+    # Continuation phase: t=15m to t=60m = 2700s.  Cadences from frequency.py.
+    # TRACK_FAST: 240s interval → ~11 snapshots in 2700s; minimum 8 (≥72%).
+    # max gap 600s = 2.5× the 240s interval.
     SnapshotCadencePolicy(
         window_kind="WINDOW_1H",
         tracking_lane="TRACK_FAST",
         asset_state="any",
         urgency_state="any",
-        target_snapshot_interval_seconds=180,
-        max_clean_snapshot_gap_seconds=300,
-        window_close_interval_seconds=3600,
-        minimum_required_snapshots=2,
+        target_snapshot_interval_seconds=240,
+        max_clean_snapshot_gap_seconds=600,
+        window_close_interval_seconds=2700,
+        minimum_required_snapshots=8,
         support_only=False,
-        enabled_for_real_collection=False,
+        enabled_for_real_collection=True,
     ),
+    # TRACK_NORMAL: 720s interval → ~4 snapshots in 2700s; minimum 3 (≥75%).
+    # max gap 1800s = 2.5× the 720s interval.
     SnapshotCadencePolicy(
         window_kind="WINDOW_1H",
         tracking_lane="TRACK_NORMAL",
         asset_state="any",
         urgency_state="any",
-        target_snapshot_interval_seconds=300,
-        max_clean_snapshot_gap_seconds=450,
-        window_close_interval_seconds=3600,
-        minimum_required_snapshots=2,
+        target_snapshot_interval_seconds=720,
+        max_clean_snapshot_gap_seconds=1800,
+        window_close_interval_seconds=2700,
+        minimum_required_snapshots=3,
         support_only=False,
-        enabled_for_real_collection=False,
+        enabled_for_real_collection=True,
     ),
     # 4h windows (disabled)
     SnapshotCadencePolicy(

@@ -10264,6 +10264,300 @@ def main_run_lane_x10_10_normal_15m_cycle(argv=None, *, _adapter_map=None) -> in
 
 
 # ---------------------------------------------------------------------------
+# Lane X12 -- WINDOW_1H Bounded Memory Growth Runner (TRACK_FAST)
+# ---------------------------------------------------------------------------
+
+def main_run_lane_x12_fast_1h_cycle(argv=None, *, _adapter_map=None) -> int:
+    """Lane X12 TRACK_FAST: bounded WINDOW_1H 1h-continuation memory growth runner.
+
+    Runs 1-5 operator-approved TRACK_FAST tokens in a bounded WINDOW_1H cycle.
+    Provides 1h continuation-phase memory for fast-moving tokens after the 15m
+    window closes. TRACK_FAST freshness is a hard gate -- stale tokens block the
+    run. All financial locks remain. No BUY/SELL/HOLD. No paper decisions.
+    No PnL. No live trading. No paid APIs. No wallet/private keys. No scoring.
+    Source budget cannot be bypassed. WINDOW_1H only.
+    """
+    from printer_v1.operator_cli.lane_x12_1h_runner import (
+        LANE_X12_FAST_COMMAND_NAME,
+        LANE_X12_FAST_MAX_TOKEN_COUNT,
+        LANE_X12_FAST_MIN_TOKEN_COUNT,
+        LANE_X12_MODE_FAST,
+        _DEFAULT_FAST_SNAPSHOT_INTERVAL_SECONDS,
+        _DEFAULT_PROFILE,
+        _DEFAULT_SOURCE_BUDGET_MAX_CONSECUTIVE_FAILURES,
+        _DEFAULT_THROTTLE_BACKOFF_SECONDS,
+        _DEFAULT_WINDOW_CLOSE_INTERVAL_SECONDS,
+        _DURATION_PROFILES,
+        run_1h_memory_factory_cycle,
+    )
+
+    parser = _base_parser(
+        f"Lane X12 TRACK_FAST — bounded WINDOW_1H 1h-continuation memory growth runner"
+        f" ({LANE_X12_FAST_COMMAND_NAME})."
+        f"  1-{LANE_X12_FAST_MAX_TOKEN_COUNT} operator-approved TRACK_FAST solana tokens."
+        "  Provides 1h continuation memory (t=15m to t=60m) after the 15m window closes."
+        "  TRACK_FAST freshness is a hard gate.  WINDOW_1H only."
+        "  No BUY/SELL/HOLD.  No paper decisions.  No positions.  No PnL."
+        "  No live trading.  No paid APIs.  No wallet/private keys.",
+        ("json",),
+    )
+    parser.add_argument(
+        "--token-list-path",
+        dest="token_list_path",
+        metavar="PATH",
+        required=True,
+        help=(
+            f"Path to the Lane X12 TRACK_FAST token list JSON."
+            f"  Must contain {LANE_X12_FAST_MIN_TOKEN_COUNT}-{LANE_X12_FAST_MAX_TOKEN_COUNT}"
+            f"  TRACK_FAST, operator_approved=true, solana tokens."
+        ),
+    )
+    parser.add_argument(
+        "--backup-proof-path",
+        dest="backup_proof_path",
+        metavar="PATH",
+        required=True,
+        help="Path to an existing DB backup file (proof backup exists before run).",
+    )
+    parser.add_argument(
+        "--operator-approved",
+        action="store_true",
+        dest="operator_approved",
+        help="Operator explicitly approves this Lane X12 TRACK_FAST 1h cycle.",
+    )
+    parser.add_argument(
+        "--duration-profile",
+        dest="duration_profile",
+        metavar="PROFILE",
+        default=_DEFAULT_PROFILE,
+        choices=sorted(_DURATION_PROFILES),
+        help=(
+            f"Duration profile. One of: {sorted(_DURATION_PROFILES)}."
+            f"  Default: {_DEFAULT_PROFILE!r}.  12h/24h require"
+            "  --allow-long-bounded-run."
+        ),
+    )
+    parser.add_argument(
+        "--allow-long-bounded-run",
+        action="store_true",
+        dest="allow_long_bounded_run",
+        help="Required for 12h/24h duration profiles.",
+    )
+    parser.add_argument(
+        "--snapshot-interval-seconds",
+        dest="snapshot_interval_seconds",
+        type=float,
+        default=_DEFAULT_FAST_SNAPSHOT_INTERVAL_SECONDS,
+        metavar="SECS",
+        help=(
+            f"Sleep between snapshot cadence cycles (seconds)."
+            f"  Default: {_DEFAULT_FAST_SNAPSHOT_INTERVAL_SECONDS}s (4 min, TRACK_FAST 1h cadence)."
+        ),
+    )
+    parser.add_argument(
+        "--window-close-interval-seconds",
+        dest="window_close_interval_seconds",
+        type=float,
+        default=_DEFAULT_WINDOW_CLOSE_INTERVAL_SECONDS,
+        metavar="SECS",
+        help=(
+            f"Window duration before a WINDOW_1H close attempt (seconds)."
+            f"  Default: {_DEFAULT_WINDOW_CLOSE_INTERVAL_SECONDS}s (45-min continuation phase)."
+        ),
+    )
+    parser.add_argument(
+        "--source-budget-max-consecutive-failures",
+        dest="source_budget_max_consecutive_failures",
+        type=int,
+        default=_DEFAULT_SOURCE_BUDGET_MAX_CONSECUTIVE_FAILURES,
+        metavar="N",
+        help=(
+            f"Max consecutive source failures before safe stop."
+            f"  Default: {_DEFAULT_SOURCE_BUDGET_MAX_CONSECUTIVE_FAILURES}."
+        ),
+    )
+    parser.add_argument(
+        "--throttle-backoff-seconds",
+        dest="throttle_backoff_seconds",
+        type=float,
+        default=_DEFAULT_THROTTLE_BACKOFF_SECONDS,
+        metavar="SECS",
+        help=(
+            f"Sleep after each source failure (seconds).  Default: {_DEFAULT_THROTTLE_BACKOFF_SECONDS}."
+            "  Use 1.0-5.0 in production to reduce rate-limit pressure."
+        ),
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        payload = run_1h_memory_factory_cycle(
+            args.token_list_path,
+            args.db_path,
+            args.backup_proof_path,
+            mode=LANE_X12_MODE_FAST,
+            operator_approved=args.operator_approved,
+            duration_profile=args.duration_profile,
+            allow_long_bounded_run=args.allow_long_bounded_run,
+            snapshot_interval_seconds=args.snapshot_interval_seconds,
+            window_close_interval_seconds=args.window_close_interval_seconds,
+            source_budget_max_consecutive_failures=args.source_budget_max_consecutive_failures,
+            throttle_backoff_seconds=args.throttle_backoff_seconds,
+            _adapter_map=_adapter_map,
+        )
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
+# ---------------------------------------------------------------------------
+# Lane X12 -- WINDOW_1H Bounded Memory Growth Runner (TRACK_NORMAL)
+# ---------------------------------------------------------------------------
+
+def main_run_lane_x12_normal_1h_cycle(argv=None, *, _adapter_map=None) -> int:
+    """Lane X12 TRACK_NORMAL: bounded WINDOW_1H 1h-continuation memory growth runner.
+
+    Runs 1-7 operator-approved TRACK_NORMAL tokens in a bounded WINDOW_1H cycle.
+    Provides 1h continuation-phase memory for slow-moving tokens after the 15m
+    window closes. TRACK_NORMAL freshness is advisory only -- stale tokens never
+    block the run. All financial locks remain. No BUY/SELL/HOLD. No paper
+    decisions. No PnL. No live trading. No paid APIs. No wallet/private keys.
+    No scoring. Source budget cannot be bypassed. WINDOW_1H only.
+    """
+    from printer_v1.operator_cli.lane_x12_1h_runner import (
+        LANE_X12_NORMAL_COMMAND_NAME,
+        LANE_X12_NORMAL_MAX_TOKEN_COUNT,
+        LANE_X12_NORMAL_MIN_TOKEN_COUNT,
+        LANE_X12_MODE_NORMAL,
+        _DEFAULT_NORMAL_SNAPSHOT_INTERVAL_SECONDS,
+        _DEFAULT_PROFILE,
+        _DEFAULT_SOURCE_BUDGET_MAX_CONSECUTIVE_FAILURES,
+        _DEFAULT_THROTTLE_BACKOFF_SECONDS,
+        _DEFAULT_WINDOW_CLOSE_INTERVAL_SECONDS,
+        _DURATION_PROFILES,
+        run_1h_memory_factory_cycle,
+    )
+
+    parser = _base_parser(
+        f"Lane X12 TRACK_NORMAL — bounded WINDOW_1H 1h-continuation memory growth runner"
+        f" ({LANE_X12_NORMAL_COMMAND_NAME})."
+        f"  1-{LANE_X12_NORMAL_MAX_TOKEN_COUNT} operator-approved TRACK_NORMAL solana tokens."
+        "  Provides 1h continuation memory (t=15m to t=60m) after the 15m window closes."
+        "  TRACK_NORMAL freshness is advisory only.  WINDOW_1H only."
+        "  No BUY/SELL/HOLD.  No paper decisions.  No positions.  No PnL."
+        "  No live trading.  No paid APIs.  No wallet/private keys.",
+        ("json",),
+    )
+    parser.add_argument(
+        "--token-list-path",
+        dest="token_list_path",
+        metavar="PATH",
+        required=True,
+        help=(
+            f"Path to the Lane X12 TRACK_NORMAL token list JSON."
+            f"  Must contain {LANE_X12_NORMAL_MIN_TOKEN_COUNT}-{LANE_X12_NORMAL_MAX_TOKEN_COUNT}"
+            f"  TRACK_NORMAL, operator_approved=true, solana tokens."
+        ),
+    )
+    parser.add_argument(
+        "--backup-proof-path",
+        dest="backup_proof_path",
+        metavar="PATH",
+        required=True,
+        help="Path to an existing DB backup file (proof backup exists before run).",
+    )
+    parser.add_argument(
+        "--operator-approved",
+        action="store_true",
+        dest="operator_approved",
+        help="Operator explicitly approves this Lane X12 TRACK_NORMAL 1h cycle.",
+    )
+    parser.add_argument(
+        "--duration-profile",
+        dest="duration_profile",
+        metavar="PROFILE",
+        default=_DEFAULT_PROFILE,
+        choices=sorted(_DURATION_PROFILES),
+        help=(
+            f"Duration profile. One of: {sorted(_DURATION_PROFILES)}."
+            f"  Default: {_DEFAULT_PROFILE!r}.  12h/24h require"
+            "  --allow-long-bounded-run."
+        ),
+    )
+    parser.add_argument(
+        "--allow-long-bounded-run",
+        action="store_true",
+        dest="allow_long_bounded_run",
+        help="Required for 12h/24h duration profiles.",
+    )
+    parser.add_argument(
+        "--snapshot-interval-seconds",
+        dest="snapshot_interval_seconds",
+        type=float,
+        default=_DEFAULT_NORMAL_SNAPSHOT_INTERVAL_SECONDS,
+        metavar="SECS",
+        help=(
+            f"Sleep between snapshot cadence cycles (seconds)."
+            f"  Default: {_DEFAULT_NORMAL_SNAPSHOT_INTERVAL_SECONDS}s (12 min, TRACK_NORMAL 1h cadence)."
+        ),
+    )
+    parser.add_argument(
+        "--window-close-interval-seconds",
+        dest="window_close_interval_seconds",
+        type=float,
+        default=_DEFAULT_WINDOW_CLOSE_INTERVAL_SECONDS,
+        metavar="SECS",
+        help=(
+            f"Window duration before a WINDOW_1H close attempt (seconds)."
+            f"  Default: {_DEFAULT_WINDOW_CLOSE_INTERVAL_SECONDS}s (45-min continuation phase)."
+        ),
+    )
+    parser.add_argument(
+        "--source-budget-max-consecutive-failures",
+        dest="source_budget_max_consecutive_failures",
+        type=int,
+        default=_DEFAULT_SOURCE_BUDGET_MAX_CONSECUTIVE_FAILURES,
+        metavar="N",
+        help=(
+            f"Max consecutive source failures before safe stop."
+            f"  Default: {_DEFAULT_SOURCE_BUDGET_MAX_CONSECUTIVE_FAILURES}."
+        ),
+    )
+    parser.add_argument(
+        "--throttle-backoff-seconds",
+        dest="throttle_backoff_seconds",
+        type=float,
+        default=_DEFAULT_THROTTLE_BACKOFF_SECONDS,
+        metavar="SECS",
+        help=(
+            f"Sleep after each source failure (seconds).  Default: {_DEFAULT_THROTTLE_BACKOFF_SECONDS}."
+            "  Use 1.0-5.0 in production to reduce rate-limit pressure."
+        ),
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        payload = run_1h_memory_factory_cycle(
+            args.token_list_path,
+            args.db_path,
+            args.backup_proof_path,
+            mode=LANE_X12_MODE_NORMAL,
+            operator_approved=args.operator_approved,
+            duration_profile=args.duration_profile,
+            allow_long_bounded_run=args.allow_long_bounded_run,
+            snapshot_interval_seconds=args.snapshot_interval_seconds,
+            window_close_interval_seconds=args.window_close_interval_seconds,
+            source_budget_max_consecutive_failures=args.source_budget_max_consecutive_failures,
+            throttle_backoff_seconds=args.throttle_backoff_seconds,
+            _adapter_map=_adapter_map,
+        )
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
+# ---------------------------------------------------------------------------
 # Lane X6 -- Discovery / Selection / Dedup Repair
 # ---------------------------------------------------------------------------
 
