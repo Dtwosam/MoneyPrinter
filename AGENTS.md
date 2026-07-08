@@ -1,4 +1,4 @@
-﻿# Printer V1 Build Rules
+# Printer V1 Build Rules
 
 
 
@@ -723,25 +723,50 @@ The following remain locked unless a later explicit active build-order lane unlo
 
 ## Memory Growth Build Order Anchor
 
-After Lane U/U2 closeout, Lane V clean-memory retrieval reporting, Lane W memory growth automation audit, and operator adoption of the memory-growth build order, Codex must use the following memory-growth source stack.
+After V2-0 current-state audit and V2-1 adoption/reset, Codex must use the following memory-growth source stack for Printer V1 / Moneygoals memory-growth work.
 
 Active memory-growth source of truth:
 
-- docs/printer-v1-memory-growth-build-order.md
+- docs/printer-v1-memory-growth-build-order-v2.md
 
 Required supporting audit/readiness source of truth:
 
 - docs/printer-v1-memory-growth-automation-audit.md
+- docs/printer-v1-current-state-memory-growth-audit.md
+
+Historical previous active roadmap:
+
+- docs/printer-v1-memory-growth-build-order.md
 
 Historical proposal:
 
 - docs/printer-v1-proposed-memory-growth-build-order.md
 
-Current active memory-growth lane after adoption:
+Current active memory-growth lane after V2-1 adoption:
 
-- Lane X1 — Multi-Token 15m Readiness Review
+- V2-2A - Audit current discovery/selection pipeline
 
-The Memory Growth Automation Audit is a required supporting audit/readiness source. It is not the active lane-order document.
+The Memory Growth Automation Audit and V2-0 current-state audit are required supporting audit/readiness sources. They are not the active lane-order document.
+
+The previous memory-growth build order remains historical for the X1-X14 era. It is not the active roadmap after V2-1 adoption.
+
+X14 Attempt 3C is classified as PARTIAL_READY_WITH_BLOCKER. It proved bounded 1h collection safety, but it did not prove clean 1h memory closeout. E2Q currently blocks WINDOW_1H because the audit path is still limited to WINDOW_15M.
+
+Do not run more 1h proof attempts until V2-6 E2Q/audit repair passes.
+
+Every V2 major capability must follow this pattern:
+
+- audit/readiness review
+- design/specification
+- implementation when applicable
+- bounded proof/test
+- closeout report
+
+Every V2 lane must include Functionality Risks / Setbacks / Efficiency Blockers.
+
+Discovery/Selection Foundation comes before one-command memory-building implementation.
+
+The first automation implementation target is WINDOW_15M only. WINDOW_5M_MICRO_EVENT remains support-only.
 
 Memory-growth work must preserve all V1 restrictions:
 
