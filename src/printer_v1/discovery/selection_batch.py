@@ -742,6 +742,137 @@ def build_batch_item(
 
 
 # ---------------------------------------------------------------------------
+# Schema readiness check (V2-2H.1)
+# ---------------------------------------------------------------------------
+#
+# The V2-2 live capacity audit (commit 01cba36) found that migration
+# 025_selection_batch.sql was absent from a copy of the current live DB even
+# though this module's persistence path depends on it, and the audit had to
+# apply the migration to a proof DB copy as an ad hoc step to proceed. This
+# check makes that dependency explicit and fails fast with a clear, actionable
+# error instead of surfacing a raw "no such table" error from sqlite3, and
+# instead of silently creating the schema. It never mutates the database.
+
+_REQUIRED_SELECTION_BATCH_COLUMNS: dict[str, tuple[str, ...]] = {
+    "printer_selection_batches": (
+        "batch_id",
+        "batch_status",
+        "window_kind",
+        "candidate_pool_total",
+        "selected_count",
+        "rejected_count",
+        "unavailable_or_unclassified_count",
+        "pool_summary_json",
+        "pool_diversity_notes",
+        "pool_quality_notes",
+        "operator_approved",
+    ),
+    "printer_selection_batch_items": (
+        "batch_id",
+        "item_status",
+        "token_id",
+        "pair_id",
+        "token_mint",
+        "pair_address",
+        "chain",
+        "primary_bucket",
+        "bucket_name",
+        "asset_class",
+        "asset_class_reason",
+        "behavior_context_labels",
+        "selection_reason",
+        "rejection_reason",
+        "tracking_lane",
+        "lane_rationale",
+        "source_name",
+        "source_channel",
+        "source_request_id",
+        "source_response_id",
+        "discovery_candidate_id",
+        "same_token_new_pair",
+        "same_token_new_pair_classification",
+        "operator_approved",
+        "manual_override_reason",
+        "selected_at",
+        "cooldown_reopened",
+        "cooldown_reopen_reason",
+        "candidate_metadata_json",
+    ),
+}
+
+
+class SelectionBatchSchemaNotReadyError(RuntimeError):
+    """Raised when the selection-batch schema is missing or incomplete.
+
+    This means migration 025_selection_batch.sql has not been applied (or was
+    only partially applied) to the target database.
+    """
+
+
+def check_selection_batch_schema_ready(
+    db_or_connection: str | Path | sqlite3.Connection,
+) -> None:
+    """Fail-fast readiness check for the selection-batch schema.
+
+    Confirms both `printer_selection_batches` and `printer_selection_batch_items`
+    exist and contain the critical columns this module's persistence path
+    depends on. Raises `SelectionBatchSchemaNotReadyError` with a clear,
+    actionable message if not.
+
+    Read-only: never mutates the database, never creates tables, and never
+    applies a migration. Callers are responsible for applying
+    `migrations/025_selection_batch.sql` through the normal migration path
+    before selection-batch persistence is attempted.
+    """
+    own_connection = not isinstance(db_or_connection, sqlite3.Connection)
+    if own_connection:
+        conn = sqlite3.connect(f"file:{Path(db_or_connection)}?mode=ro", uri=True)
+        conn.execute("PRAGMA query_only = ON")
+    else:
+        conn = db_or_connection
+
+    try:
+        existing_tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        missing_tables = [
+            table
+            for table in _REQUIRED_SELECTION_BATCH_COLUMNS
+            if table not in existing_tables
+        ]
+        if missing_tables:
+            raise SelectionBatchSchemaNotReadyError(
+                "selection-batch schema is not ready: missing table(s) "
+                f"{missing_tables}. migrations/025_selection_batch.sql has not "
+                "been applied to this database. Apply the migration through "
+                "the normal migration path before running selection-batch "
+                "operations; this check does not apply migrations or create "
+                "tables automatically."
+            )
+
+        missing_columns: dict[str, list[str]] = {}
+        for table, required_columns in _REQUIRED_SELECTION_BATCH_COLUMNS.items():
+            existing_columns = {
+                row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            missing = [c for c in required_columns if c not in existing_columns]
+            if missing:
+                missing_columns[table] = missing
+        if missing_columns:
+            raise SelectionBatchSchemaNotReadyError(
+                "selection-batch schema is not ready: missing critical "
+                f"column(s) {missing_columns}. migrations/025_selection_batch.sql "
+                "may be partially applied or out of date on this database."
+            )
+    finally:
+        if own_connection:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
 # DB persistence
 # ---------------------------------------------------------------------------
 
@@ -784,6 +915,7 @@ def persist_selection_batch(
     own_connection = not isinstance(db_or_connection, sqlite3.Connection)
     conn = _connect(db_or_connection)
     try:
+        check_selection_batch_schema_ready(conn)
         conn.execute(
             """
             INSERT INTO printer_selection_batches

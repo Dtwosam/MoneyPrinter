@@ -1348,13 +1348,29 @@ def _source_channel_for_pumpswap(request_kind: str | None = None) -> tuple[str, 
     return DiscoveryChannelLabel.PUMPSWAP_POOL_CONFIRMATION.value, "pumpswap_pool_confirmation"
 
 
+# V2-2H.1 candidate cap repair: the discovery command was previously hard-capped
+# to 1-3 candidates. The V2-2 live capacity audit (commit 01cba36) showed this cap
+# discarded 9 of 20 real, otherwise-trackable candidates for no reason other than
+# the cap itself. The bound is now configurable within a still-conservative range;
+# it remains a hard validated ceiling, not unbounded discovery.
+_DISCOVER_CANDIDATES_CAP_MIN = 1
+_DISCOVER_CANDIDATES_CAP_MAX = 50
+_DISCOVER_CANDIDATES_CAP_DEFAULT = 10
+
+
 def _validate_discover_candidates_args(args: argparse.Namespace) -> None:
     if not args.operator_approved:
         raise ValueError("controlled discovery requires explicit operator approval")
     if str(args.chain or "").strip().lower() != "solana":
         raise ValueError("controlled discovery is Solana-only")
-    if args.max_candidates < 1 or args.max_candidates > 3:
-        raise ValueError("max_candidates must be between 1 and 3")
+    if (
+        args.max_candidates < _DISCOVER_CANDIDATES_CAP_MIN
+        or args.max_candidates > _DISCOVER_CANDIDATES_CAP_MAX
+    ):
+        raise ValueError(
+            "max_candidates must be between "
+            f"{_DISCOVER_CANDIDATES_CAP_MIN} and {_DISCOVER_CANDIDATES_CAP_MAX}"
+        )
     if args.source_name not in {"dexscreener", "geckoterminal", "pumpportal", "pumpswap"}:
         raise ValueError("controlled discovery supports DexScreener, GeckoTerminal, PumpPortal, and PumpSwap")
     if args.timeout_seconds <= 0 or args.timeout_seconds > 10:
@@ -1648,6 +1664,24 @@ def build_discover_candidates_once_payload(
         "candidates_accepted": len(discovery_results),
         "candidates_rejected": len(rejected),
         "rejected_candidates": rejected,
+        # V2-2H.1 candidate-stage reporting separation (V2-2G Repair Area A).
+        # candidates_seen_total and candidates_normalized_total are equal today
+        # because normalize_candidates() normalizes every extracted raw item
+        # 1:1 and does not currently drop rows during normalization; both are
+        # reported explicitly so a future parser change that does drop rows
+        # will be visible as a divergence between the two counts.
+        # This command does not invoke V2-2C selection-batch logic, so the
+        # selection-stage fields are reported as NOT_MEASURED rather than
+        # guessed.
+        "candidate_stage_report": {
+            "candidates_seen_total": len(normalized_pairs),
+            "candidates_normalized_total": len(normalized_pairs),
+            "candidates_persisted_total": len(discovery_results),
+            "candidates_rejected_pre_persistence": len(rejected),
+            "candidates_considered_for_selection": "NOT_MEASURED",
+            "candidates_selected": "NOT_MEASURED",
+            "candidates_rejected_by_selection": "NOT_MEASURED",
+        },
         "source_channel": source_channel,
         "source_channel_reason": source_channel_reason,
         "accepted_candidates": [
@@ -1694,10 +1728,24 @@ def build_discover_candidates_once_payload(
 
 
 def main_discover_candidates_once(argv: Sequence[str] | None = None) -> int:
-    parser = _base_parser("Discover 1 to 3 controlled post-RC Solana candidates through Source Governor.", ("json", "text"))
+    parser = _base_parser(
+        "Discover "
+        f"{_DISCOVER_CANDIDATES_CAP_MIN} to {_DISCOVER_CANDIDATES_CAP_MAX} "
+        "controlled post-RC Solana candidates through Source Governor.",
+        ("json", "text"),
+    )
     parser.add_argument("--operator-approved", action="store_true")
     parser.add_argument("--chain", default="solana")
-    parser.add_argument("--max-candidates", type=int, default=1)
+    parser.add_argument(
+        "--max-candidates",
+        type=int,
+        default=_DISCOVER_CANDIDATES_CAP_DEFAULT,
+        help=(
+            "Maximum candidates to persist this run. Must be between "
+            f"{_DISCOVER_CANDIDATES_CAP_MIN} and {_DISCOVER_CANDIDATES_CAP_MAX}. "
+            f"Default: {_DISCOVER_CANDIDATES_CAP_DEFAULT}."
+        ),
+    )
     parser.add_argument("--query", default="pump")
     parser.add_argument("--timeout-seconds", type=float, default=5.0)
     parser.add_argument("--source-name", default="dexscreener",

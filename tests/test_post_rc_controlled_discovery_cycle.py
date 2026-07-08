@@ -128,8 +128,13 @@ class PostRcControlledDiscoveryCycleTests(unittest.TestCase):
         db_path = self.make_db()
         with self.assertRaisesRegex(ValueError, "Solana-only"):
             build_discover_candidates_once_payload(self.args(db_path, chain="ethereum"), transport=self.success_transport)
-        with self.assertRaisesRegex(ValueError, "between 1 and 3"):
-            build_discover_candidates_once_payload(self.args(db_path, max_candidates=4), transport=self.success_transport)
+        # V2-2H.1 repaired the candidate cap from a hardcoded 1-3 range to a
+        # configurable 1-50 range; values within the old cap (e.g. 4) must now
+        # be accepted, and only values outside the new bound are rejected.
+        with self.assertRaisesRegex(ValueError, "between 1 and 50"):
+            build_discover_candidates_once_payload(self.args(db_path, max_candidates=51), transport=self.success_transport)
+        with self.assertRaisesRegex(ValueError, "between 1 and 50"):
+            build_discover_candidates_once_payload(self.args(db_path, max_candidates=0), transport=self.success_transport)
 
     def test_discovers_one_fresh_candidate_through_source_governor(self):
         db_path = self.make_db()
