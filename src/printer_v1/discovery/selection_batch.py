@@ -259,6 +259,49 @@ _WICK_PRICE_CHANGE_REVERSAL_PCT = -20.0
 _LATE_BUY_TOKEN_AGE_SECONDS = 3600.0
 _TRANSACTION_SPIKE_RATIO = 3.0
 
+# ---------------------------------------------------------------------------
+# Age bucket taxonomy (V2-2H.2) — categorical IDs only
+# ---------------------------------------------------------------------------
+
+AGE_0_24H = "AGE_0_24H"
+AGE_1_7D = "AGE_1_7D"
+AGE_7_14D = "AGE_7_14D"
+AGE_14_28D = "AGE_14_28D"
+AGE_28D_PLUS = "AGE_28D_PLUS"
+AGE_UNKNOWN = "AGE_UNKNOWN"
+
+# Frozenset of buckets considered "recent" for priority-tier derivation.
+AGE_BUCKETS_RECENT: frozenset[str] = frozenset({AGE_0_24H, AGE_1_7D, AGE_7_14D, AGE_14_28D})
+
+_AGE_24H_SECONDS = 86_400.0     # 24 h
+_AGE_7D_SECONDS = 604_800.0    # 7 d
+_AGE_14D_SECONDS = 1_209_600.0  # 14 d
+_AGE_28D_SECONDS = 2_419_200.0  # 28 d
+
+# ---------------------------------------------------------------------------
+# Activity bucket taxonomy (V2-2H.2) — categorical IDs only
+# ---------------------------------------------------------------------------
+
+ACTIVITY_HIGH = "ACTIVITY_HIGH"
+ACTIVITY_MEDIUM = "ACTIVITY_MEDIUM"
+ACTIVITY_LOW = "ACTIVITY_LOW"
+ACTIVITY_DEAD = "ACTIVITY_DEAD"
+ACTIVITY_REVIVING = "ACTIVITY_REVIVING"
+ACTIVITY_UNKNOWN = "ACTIVITY_UNKNOWN"
+
+_ACTIVITY_MEDIUM_VOLUME_24H_USD = 200.0
+_ACTIVITY_REVIVING_LIFECYCLE_STATES: frozenset[str] = frozenset({"ARCHIVED", "COOLDOWN", "DEAD"})
+
+# ---------------------------------------------------------------------------
+# Recent-active priority tier taxonomy (V2-2H.2) — categorical IDs only
+# ---------------------------------------------------------------------------
+
+RECENT_ACTIVE_TIER_1 = "RECENT_ACTIVE_TIER_1"
+RECENT_ACTIVE_TIER_2 = "RECENT_ACTIVE_TIER_2"
+OLDER_ACTIVE_TIER_3 = "OLDER_ACTIVE_TIER_3"
+LOW_ACTIVITY_TIER_4 = "LOW_ACTIVITY_TIER_4"
+UNKNOWN_TIER_5 = "UNKNOWN_TIER_5"
+
 
 def _f(value: Any) -> float:
     return 0.0 if value is None else float(value)
@@ -392,6 +435,157 @@ _BUCKET_TO_ASSET_CLASS: dict[str, str] = {
 def derive_asset_class(bucket_id: str) -> str:
     """Return asset-class label for a bucket. Categorical tag only."""
     return _BUCKET_TO_ASSET_CLASS.get(bucket_id, ASSET_CLASS_UNKNOWN_UNCLASSIFIED)
+
+
+# ---------------------------------------------------------------------------
+# Age bucket derivation (V2-2H.2)
+# ---------------------------------------------------------------------------
+
+def derive_age_bucket(candidate: dict[str, Any]) -> str:
+    """Return categorical age bucket for a candidate.
+
+    Uses explicit None check — never uses _f() — so a missing
+    token_age_seconds returns AGE_UNKNOWN rather than AGE_0_24H (which
+    _f()'s default 0.0 would silently cause).
+    """
+    age = candidate.get("token_age_seconds")
+    if age is None:
+        return AGE_UNKNOWN
+    try:
+        age_f = float(age)
+    except (TypeError, ValueError):
+        return AGE_UNKNOWN
+    if age_f < 0:
+        return AGE_UNKNOWN
+    if age_f < _AGE_24H_SECONDS:
+        return AGE_0_24H
+    if age_f < _AGE_7D_SECONDS:
+        return AGE_1_7D
+    if age_f < _AGE_14D_SECONDS:
+        return AGE_7_14D
+    if age_f < _AGE_28D_SECONDS:
+        return AGE_14_28D
+    return AGE_28D_PLUS
+
+
+# ---------------------------------------------------------------------------
+# Activity bucket derivation (V2-2H.2)
+# ---------------------------------------------------------------------------
+
+def derive_activity_bucket(
+    candidate: dict[str, Any],
+    *,
+    prior_lifecycle_state: str | None = None,
+) -> str:
+    """Return categorical activity bucket for a candidate.
+
+    prior_lifecycle_state enables ACTIVITY_REVIVING classification. When the
+    candidate's prior state was ARCHIVED, COOLDOWN, or DEAD and new short-
+    window activity is now present, the token is classified REVIVING rather
+    than LOW or DEAD.
+
+    Fresh-launch safe: ACTIVITY_HIGH is reachable from 5m + liquidity fields
+    alone without requiring volume_24h history. A token minutes old is not
+    penalized for absent 24h data.
+    """
+    liquidity = candidate.get("liquidity_usd")
+    if liquidity is None:
+        return ACTIVITY_UNKNOWN
+
+    liq = _f(liquidity)
+    vol5m = _f(candidate.get("volume_5m"))
+    txns5m = _f(candidate.get("txns_5m"))
+    vol1h = _f(candidate.get("volume_1h"))
+    txns1h = _f(candidate.get("txns_1h"))
+    vol24h = _f(candidate.get("volume_24h"))
+    txns24h = _f(candidate.get("txns_24h"))
+
+    if liq >= _LIQUIDITY_FAST_THRESHOLD_USD and (
+        vol5m >= _VOLUME_FAST_5M_USD or txns5m >= _TXNS_FAST_5M
+    ):
+        return ACTIVITY_HIGH
+
+    if prior_lifecycle_state in _ACTIVITY_REVIVING_LIFECYCLE_STATES and (
+        vol5m > 0 or txns5m > 0 or vol1h > 0 or txns1h > 0
+    ):
+        return ACTIVITY_REVIVING
+
+    if (
+        vol5m <= 0
+        and txns5m <= 0
+        and vol1h <= 0
+        and txns1h <= 0
+        and vol24h <= _TINY_VOLUME_24H_USD
+        and txns24h <= _TINY_TXNS_24H
+    ):
+        return ACTIVITY_DEAD
+
+    if liq >= _LIQUIDITY_NORMAL_THRESHOLD_USD and vol24h > _ACTIVITY_MEDIUM_VOLUME_24H_USD:
+        return ACTIVITY_MEDIUM
+
+    return ACTIVITY_LOW
+
+
+# ---------------------------------------------------------------------------
+# Recent-active priority tier derivation (V2-2H.2)
+# ---------------------------------------------------------------------------
+
+def derive_recent_active_tier(age_bucket: str, activity_bucket: str) -> str:
+    """Return categorical priority tier from age and activity buckets.
+
+    Tiers are categorical ordering for memory-diet consideration only. They
+    are not token rankings, selection scores, or trading signals.
+
+      RECENT_ACTIVE_TIER_1  recent (0-28d) + HIGH or MEDIUM
+      RECENT_ACTIVE_TIER_2  recent (0-28d) + REVIVING
+      OLDER_ACTIVE_TIER_3   28d+ + HIGH, MEDIUM, or REVIVING
+      LOW_ACTIVITY_TIER_4   any age + LOW or DEAD
+      UNKNOWN_TIER_5        AGE_UNKNOWN or ACTIVITY_UNKNOWN
+    """
+    if age_bucket == AGE_UNKNOWN or activity_bucket == ACTIVITY_UNKNOWN:
+        return UNKNOWN_TIER_5
+
+    is_recent = age_bucket in AGE_BUCKETS_RECENT
+
+    if is_recent and activity_bucket in {ACTIVITY_HIGH, ACTIVITY_MEDIUM}:
+        return RECENT_ACTIVE_TIER_1
+    if is_recent and activity_bucket == ACTIVITY_REVIVING:
+        return RECENT_ACTIVE_TIER_2
+    if not is_recent and activity_bucket in {ACTIVITY_HIGH, ACTIVITY_MEDIUM, ACTIVITY_REVIVING}:
+        return OLDER_ACTIVE_TIER_3
+    if activity_bucket in {ACTIVITY_LOW, ACTIVITY_DEAD}:
+        return LOW_ACTIVITY_TIER_4
+    return UNKNOWN_TIER_5
+
+
+# ---------------------------------------------------------------------------
+# Age/activity report aggregation (V2-2H.2)
+# ---------------------------------------------------------------------------
+
+def build_age_activity_report(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return age/activity/tier bucket counts for a list of candidate dicts.
+
+    All counts are ints. No scores, floats, or weighted logic are produced.
+    """
+    by_age: dict[str, int] = {}
+    by_activity: dict[str, int] = {}
+    by_tier: dict[str, int] = {}
+
+    for c in candidates:
+        age_b = derive_age_bucket(c)
+        act_b = derive_activity_bucket(c)
+        tier = derive_recent_active_tier(age_b, act_b)
+
+        by_age[age_b] = by_age.get(age_b, 0) + 1
+        by_activity[act_b] = by_activity.get(act_b, 0) + 1
+        by_tier[tier] = by_tier.get(tier, 0) + 1
+
+    return {
+        "total_candidates": len(candidates),
+        "candidates_by_age_bucket": by_age,
+        "candidates_by_activity_bucket": by_activity,
+        "candidates_by_priority_tier": by_tier,
+    }
 
 
 # ---------------------------------------------------------------------------
