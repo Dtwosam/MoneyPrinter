@@ -1795,6 +1795,9 @@ def build_discover_candidates_once_payload(
         for candidate in normalized_pairs:
             candidate["source_channel"] = exec_rec["source_channel"]
             candidate["source_channel_reason"] = exec_rec["source_channel_reason"]
+            # H.6: stamp per-candidate response id so the persistence grouping step
+            # can route each candidate to the correct process_discovery_payload call.
+            candidate["source_response_id"] = exec_rec["response_id"]
 
         # V2-2H.4: per-response within-response dedup before aggregation.
         wr_clean, wr_rejected, wr_report = filter_within_response_duplicates(normalized_pairs)
@@ -1833,20 +1836,46 @@ def build_discover_candidates_once_payload(
             max_candidates=args.max_candidates,
         )
         if accepted:
-            discovery_payload = {
-                "source_status": primary["result"].normalized_result.source_status.value,
-                "source_response_id": primary["response_id"],
-                "pairs": accepted,
-            }
-            discovery_results = process_discovery_payload(
-                resolved,
-                args.source_name,
-                discovery_payload,
-                source_channel=primary["source_channel"],
-                source_channel_reason=primary["source_channel_reason"],
-            )
-            if discovery_results:
-                primary["candidates_persisted"] = len(discovery_results)
+            # H.6: group accepted candidates by (source_channel, source_channel_reason,
+            # source_response_id) so each group is persisted with its own correct channel.
+            # process_discovery_payload overwrites candidate["source_channel"] with the
+            # outer source_channel param; grouping ensures that param is the right one
+            # for every candidate in the group instead of always using the primary channel.
+            _persist_groups: dict[tuple, list[dict[str, Any]]] = {}
+            for _c in accepted:
+                _key = (
+                    _c.get("source_channel"),
+                    _c.get("source_channel_reason"),
+                    _c.get("source_response_id"),
+                )
+                _persist_groups.setdefault(_key, []).append(_c)
+
+            for (_ch, _ch_reason, _resp_id), _grp_candidates in _persist_groups.items():
+                _grp_payload = {
+                    "source_status": primary["result"].normalized_result.source_status.value,
+                    "source_response_id": (
+                        _resp_id if _resp_id is not None else primary["response_id"]
+                    ),
+                    "pairs": _grp_candidates,
+                }
+                _grp_results = process_discovery_payload(
+                    resolved,
+                    args.source_name,
+                    _grp_payload,
+                    source_channel=_ch,
+                    source_channel_reason=_ch_reason,
+                )
+                discovery_results.extend(_grp_results)
+                # Update per-request persisted count for accurate source_budget_report.
+                if _grp_results:
+                    for _er in execution_records:
+                        if (
+                            _er.get("executed")
+                            and _er.get("source_channel") == _ch
+                            and _er.get("response_id") == _resp_id
+                        ):
+                            _er["candidates_persisted"] += len(_grp_results)
+                            break
 
     after_counts = get_core_table_counts(resolved, project_root)
     deltas = {
