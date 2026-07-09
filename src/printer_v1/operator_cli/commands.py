@@ -64,12 +64,18 @@ from printer_v1.discovery.classifier import (
     is_dead_or_near_zero_activity_candidate,
 )
 from printer_v1.discovery.selection_batch import (
+    ACTIVITY_REVIVING,
     assign_bucket,
     BUCKET_D1,
     build_age_activity_report,
     build_field_completeness_report,
     build_pair_age_context_report,
+    classify_same_token_new_pair,
+    compute_evidence_identity_fingerprint,
+    derive_activity_bucket,
     filter_within_response_duplicates,
+    fingerprint_change_is_meaningful,
+    STNP_MIGRATION,
     validate_batch_quota,
 )
 from printer_v1.discovery.contracts import DiscoveryChannelLabel, DiscoveryOutputAction
@@ -1692,6 +1698,18 @@ _AUDIT_ONLY_ELIGIBLE_DATA_QUALITY_LABELS: frozenset[str] = frozenset(
     {"CLEAN_DATA", "ACCEPTABLE_PARTIAL_DATA"}
 )
 
+# V2-2V Tier 2 discovery persistence gate constants.
+# These channels confirm a real on-chain graduation/migration event, which
+# justifies allowing a returning mint through the flat existing-mint gate when
+# the pair address is genuinely new.
+_TIER2_MIGRATION_CHANNELS: frozenset[str] = frozenset({
+    "PUMPFUN_MIGRATION",
+    "PUMPSWAP_GRADUATED",
+    "PUMPSWAP_MIGRATION_POOL_REFERENCE",
+})
+# Lifecycle states that qualify a returning mint for the REVIVAL path.
+_TIER2_REVIVING_LIFECYCLE_STATES: frozenset[str] = frozenset({"COOLDOWN", "ARCHIVED"})
+
 
 def _is_audit_only_eligible(candidate: dict[str, Any]) -> bool:
     """Return True iff the candidate passes V2-2L Section 6.1 audit-only admission rules.
@@ -1706,6 +1724,223 @@ def _is_audit_only_eligible(candidate: dict[str, Any]) -> bool:
     return True
 
 
+def _load_returning_mint_lifecycle_statuses(
+    conn: sqlite3.Connection,
+    mints: list[str],
+) -> dict[str, str]:
+    """Return {mint → most_recent_queue_status} for a set of returning (existing) mints.
+
+    Queries printer_tracking_queue ordered by recency so each mint maps to its
+    latest queue status only. Returns empty dict on any DB error.
+    """
+    if not mints:
+        return {}
+    try:
+        rows = conn.execute(
+            """
+            SELECT pt.token_mint, tq.queue_status
+            FROM printer_tracking_queue tq
+            JOIN printer_tokens pt ON pt.id = tq.token_id
+            WHERE pt.token_mint IN ({placeholders})
+            ORDER BY tq.updated_at DESC, tq.id DESC
+            """.format(placeholders=",".join("?" * len(mints))),
+            mints,
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    result: dict[str, str] = {}
+    for row in rows:
+        mint = row["token_mint"]
+        if mint not in result:
+            result[mint] = row["queue_status"]
+    return result
+
+
+def _load_last_discovery_fingerprint(
+    conn: sqlite3.Connection,
+    token_mint: str,
+    pair_address: str,
+) -> dict[str, Any] | None:
+    """Return evidence identity fingerprint from the most recent discovery record.
+
+    Queries printer_discovery_candidates for the latest row matching token_mint
+    and pair_address. Returns None when no record exists, payload is absent, or
+    JSON is unparseable — caller treats None as null-safe block.
+    """
+    try:
+        row = conn.execute(
+            """
+            SELECT dc.normalized_candidate_payload_json
+            FROM printer_discovery_candidates dc
+            JOIN printer_tokens pt ON pt.id = dc.token_id
+            JOIN printer_pairs pp ON pp.id = dc.pair_id
+            WHERE pt.token_mint = ? AND pp.pair_address = ?
+            ORDER BY dc.id DESC
+            LIMIT 1
+            """,
+            (token_mint, pair_address),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if row is None or not row["normalized_candidate_payload_json"]:
+        return None
+    try:
+        historical = json.loads(row["normalized_candidate_payload_json"])
+    except (json.JSONDecodeError, TypeError):
+        return None
+    hist_bucket, _ = assign_bucket(historical)
+    historical = {**historical, "primary_bucket": hist_bucket}
+    return compute_evidence_identity_fingerprint(historical)
+
+
+def _fingerprint_change_type(
+    old_fp: dict[str, Any],
+    new_fp: dict[str, Any],
+) -> str:
+    """Return a label describing which fingerprint field(s) changed meaningfully."""
+    changes = []
+    if old_fp.get("activity_bucket") != new_fp.get("activity_bucket"):
+        changes.append("activity_bucket")
+    if old_fp.get("source_channel") != new_fp.get("source_channel"):
+        changes.append("source_channel")
+    old_bucket = old_fp.get("primary_bucket")
+    new_bucket = new_fp.get("primary_bucket")
+    if old_bucket != new_bucket and old_bucket != new_bucket:
+        changes.append("primary_bucket_group_crossing")
+    return "|".join(changes) if changes else "unknown"
+
+
+def _classify_returning_candidate(
+    candidate: dict[str, Any],
+    token_mint: str,
+    pair_address: str | None,
+    candidate_primary_bucket: str,
+    *,
+    existing_pair_addresses: set[str],
+    lifecycle_statuses: dict[str, str],
+    conn: sqlite3.Connection | None,
+) -> dict[str, Any]:
+    """Evaluate V2-2V Tier 2 resurfacing paths for a returning (existing-mint) candidate.
+
+    Checks MIGRATION, REVIVAL, and DISTINCT_NEW_EVIDENCE in order. Returns a
+    dict with gate outcome and categorical reporting fields. Never scores,
+    ranks, or makes paper decisions.
+
+    Returns:
+        tier2_gate_outcome: "ALLOWED" | "BLOCKED" | "NOT_APPLICABLE"
+        resurfacing_category: str | None
+        resurfacing_reason: str
+        prior_lifecycle_state: str | None
+        fingerprint_change_type: str | None
+    """
+    _base: dict[str, Any] = {
+        "tier2_gate_outcome": "BLOCKED",
+        "resurfacing_category": None,
+        "resurfacing_reason": "",
+        "prior_lifecycle_state": None,
+        "fingerprint_change_type": None,
+    }
+
+    source_channel = candidate.get("source_channel")
+
+    # --- MIGRATION path ---
+    # Allow when: existing mint + migration channel + pair address is genuinely new.
+    if source_channel in _TIER2_MIGRATION_CHANNELS:
+        if pair_address and pair_address not in existing_pair_addresses:
+            ok, _stnp_reason = classify_same_token_new_pair(
+                STNP_MIGRATION, same_token_new_pair=True
+            )
+            if ok:
+                return {
+                    **_base,
+                    "tier2_gate_outcome": "ALLOWED",
+                    "resurfacing_category": "MIGRATION",
+                    "resurfacing_reason": f"migration_channel_{source_channel}_new_pair",
+                }
+            return {
+                **_base,
+                "tier2_gate_outcome": "BLOCKED",
+                "resurfacing_category": "MIGRATION",
+                "resurfacing_reason": f"migration_stnp_blocked:{_stnp_reason}",
+            }
+        # Migration channel but pair already exists — DUPLICATE_RECYCLE, not MIGRATION.
+        return {
+            **_base,
+            "tier2_gate_outcome": "BLOCKED",
+            "resurfacing_category": "MIGRATION",
+            "resurfacing_reason": "migration_channel_but_pair_already_exists",
+        }
+
+    # --- REVIVAL path ---
+    # Allow when: existing mint + COOLDOWN/ARCHIVED lifecycle + ACTIVITY_REVIVING.
+    lifecycle_state = lifecycle_statuses.get(token_mint)
+    if lifecycle_state in _TIER2_REVIVING_LIFECYCLE_STATES:
+        activity = derive_activity_bucket(candidate, prior_lifecycle_state=lifecycle_state)
+        if activity == ACTIVITY_REVIVING:
+            return {
+                **_base,
+                "tier2_gate_outcome": "ALLOWED",
+                "resurfacing_category": "REVIVAL",
+                "resurfacing_reason": (
+                    f"lifecycle_{lifecycle_state}_with_reviving_activity"
+                ),
+                "prior_lifecycle_state": lifecycle_state,
+            }
+        return {
+            **_base,
+            "tier2_gate_outcome": "BLOCKED",
+            "resurfacing_category": "REVIVAL",
+            "resurfacing_reason": (
+                f"lifecycle_{lifecycle_state}_but_activity_{activity}_not_reviving"
+            ),
+            "prior_lifecycle_state": lifecycle_state,
+        }
+
+    # --- DISTINCT_NEW_EVIDENCE path ---
+    # Allow when: same mint AND same pair + meaningful fingerprint change.
+    # Requires conn for historical record lookup; None → NOT_APPLICABLE (flat gate fires).
+    if conn is None:
+        return {**_base, "tier2_gate_outcome": "NOT_APPLICABLE", "resurfacing_reason": "no_conn"}
+
+    if not pair_address or pair_address not in existing_pair_addresses:
+        # New pair but non-migration channel: STNP unresolved — not a safe resurfacing path.
+        return {
+            **_base,
+            "tier2_gate_outcome": "NOT_APPLICABLE",
+            "resurfacing_reason": "new_pair_non_migration_channel",
+        }
+
+    # Both mint and pair exist — check evidence identity fingerprint.
+    old_fp = _load_last_discovery_fingerprint(conn, token_mint, pair_address)
+    if old_fp is None:
+        return {
+            **_base,
+            "tier2_gate_outcome": "BLOCKED",
+            "resurfacing_category": "DISTINCT_NEW_EVIDENCE",
+            "resurfacing_reason": "no_historical_fingerprint_null_safe_block",
+        }
+
+    candidate_with_bucket = {**candidate, "primary_bucket": candidate_primary_bucket}
+    new_fp = compute_evidence_identity_fingerprint(candidate_with_bucket)
+
+    if not fingerprint_change_is_meaningful(old_fp, new_fp):
+        return {
+            **_base,
+            "tier2_gate_outcome": "BLOCKED",
+            "resurfacing_category": "DISTINCT_NEW_EVIDENCE",
+            "resurfacing_reason": "fingerprint_unchanged_duplicate_recycle",
+        }
+
+    change_type = _fingerprint_change_type(old_fp, new_fp)
+    return {
+        **_base,
+        "tier2_gate_outcome": "ALLOWED",
+        "resurfacing_category": "DISTINCT_NEW_EVIDENCE",
+        "resurfacing_reason": f"meaningful_fingerprint_change:{change_type}",
+        "fingerprint_change_type": change_type,
+    }
+
+
 def _select_discovery_candidates(
     normalized_pairs: list[dict[str, Any]],
     *,
@@ -1713,6 +1948,7 @@ def _select_discovery_candidates(
     existing_pair_addresses: set[str],
     existing_symbol_name_keys: set[str] | None = None,
     max_candidates: int,
+    db_path_or_conn: str | Path | sqlite3.Connection | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     accepted_actions = {
         DiscoveryOutputAction.TRACK_FAST,
@@ -1726,83 +1962,145 @@ def _select_discovery_candidates(
     audit_only_pool: list[dict[str, Any]] = []
     _audit_only_mints: set[str] = set()
 
-    for candidate in normalized_pairs:
-        token_mint = candidate.get("token_mint")
-        pair_address = candidate.get("pair_address")
-        classification = classify_discovery_candidate(candidate)
-        item = {
-            "token_mint": token_mint,
-            "pair_address": pair_address,
-            "classification": classification.discovery_action.value,
-            "tracking_label": classification.discovery_action.value,
-        }
-        inspected.append(item)
-        reject_reason = None
-        if candidate.get("chain") != "solana":
-            reject_reason = "non_solana_candidate"
-        elif token_mint in existing_token_mints or pair_address in existing_pair_addresses:
-            if token_mint in existing_token_mints and pair_address in existing_pair_addresses:
-                reject_reason = "duplicate_existing_token_or_pair"
-            elif token_mint in existing_token_mints:
-                reject_reason = "duplicate_existing_token_mint"
-            else:
-                reject_reason = "duplicate_pair_address"
-        elif (
-            existing_symbol_name_keys
-            and is_dead_or_near_zero_activity_candidate(candidate)
-            and (
-                _identity_key(candidate.get("symbol")) in existing_symbol_name_keys
-                or _identity_key(candidate.get("name")) in existing_symbol_name_keys
-            )
-        ):
-            reject_reason = "weak_copycat_candidate"
-        elif classification.reason == "insufficient_activity_for_memory_growth":
-            # D1 dead/near-dead candidates: capture for quota supplement before rejection.
-            reject_reason = "insufficient_activity_for_memory_growth"
-            if (
-                token_mint
-                and token_mint not in _audit_only_mints
-                and _is_audit_only_eligible(candidate)
-            ):
-                _b, _bn = assign_bucket(candidate)
-                audit_only_pool.append({
-                    **candidate,
-                    "audit_only": True,
-                    "candidate_kind": "AUDIT_ONLY",
-                    "pre_persistence_reject_reason": reject_reason,
-                    "tracking_lane": classification.discovery_action.value,
-                    "primary_bucket": _b,
-                    "primary_bucket_name": _bn,
-                })
-                _audit_only_mints.add(token_mint)
-        elif classification.discovery_action == DiscoveryOutputAction.WATCH_ONLY:
-            # Non-D1 WATCH_ONLY candidates: capture for quota supplement before rejection.
-            reject_reason = "watch_only_not_eligible_for_15m_memory_proof_cycle"
-            if (
-                token_mint
-                and token_mint not in _audit_only_mints
-                and _is_audit_only_eligible(candidate)
-            ):
-                _b, _bn = assign_bucket(candidate)
-                audit_only_pool.append({
-                    **candidate,
-                    "audit_only": True,
-                    "candidate_kind": "AUDIT_ONLY",
-                    "pre_persistence_reject_reason": reject_reason,
-                    "tracking_lane": classification.discovery_action.value,
-                    "primary_bucket": _b,
-                    "primary_bucket_name": _bn,
-                })
-                _audit_only_mints.add(token_mint)
-        elif classification.discovery_action not in accepted_actions:
-            reject_reason = f"classified_{classification.discovery_action.value.lower()}"
-        elif len(accepted) >= max_candidates:
-            reject_reason = "max_candidates_reached"
-
-        if reject_reason:
-            rejected.append({**item, "reject_reason": reject_reason})
+    # V2-2V B2: open a read connection and batch-load lifecycle statuses for all
+    # returning (existing) mints before the main loop to avoid per-candidate round-trips.
+    _conn: sqlite3.Connection | None = None
+    _own_conn = False
+    if db_path_or_conn is not None:
+        if isinstance(db_path_or_conn, sqlite3.Connection):
+            _conn = db_path_or_conn
         else:
-            accepted.append(candidate)
+            try:
+                _conn = sqlite3.connect(str(db_path_or_conn))
+                _conn.row_factory = sqlite3.Row
+                _own_conn = True
+            except Exception:
+                _conn = None
+
+    _lifecycle_statuses: dict[str, str] = {}
+    if _conn is not None:
+        _returning_mints = [
+            c.get("token_mint")
+            for c in normalized_pairs
+            if c.get("token_mint") and c.get("token_mint") in existing_token_mints
+        ]
+        _lifecycle_statuses = _load_returning_mint_lifecycle_statuses(_conn, _returning_mints)
+
+    try:
+        for candidate in normalized_pairs:
+            token_mint = candidate.get("token_mint")
+            pair_address = candidate.get("pair_address")
+            classification = classify_discovery_candidate(candidate)
+            item = {
+                "token_mint": token_mint,
+                "pair_address": pair_address,
+                "classification": classification.discovery_action.value,
+                "tracking_label": classification.discovery_action.value,
+            }
+            inspected.append(item)
+
+            # V2-2V B1: pre-compute primary_bucket once per candidate so both the
+            # Tier 2 DISTINCT_NEW_EVIDENCE fingerprint check and the audit-only pool
+            # can use it without a second assign_bucket() call.
+            _cand_bucket, _cand_bucket_name = assign_bucket(candidate)
+
+            reject_reason = None
+            if candidate.get("chain") != "solana":
+                reject_reason = "non_solana_candidate"
+            elif token_mint in existing_token_mints or pair_address in existing_pair_addresses:
+                # V2-2V Tier 2 pre-check: run only when token_mint is returning.
+                # pair_address-only collision (new mint, existing pair) falls straight
+                # to the flat gate — no legitimate resurfacing path exists there.
+                _tier2_outcome = "NOT_APPLICABLE"
+                if token_mint in existing_token_mints:
+                    _t2 = _classify_returning_candidate(
+                        candidate,
+                        token_mint,
+                        pair_address,
+                        _cand_bucket,
+                        existing_pair_addresses=existing_pair_addresses,
+                        lifecycle_statuses=_lifecycle_statuses,
+                        conn=_conn,
+                    )
+                    _tier2_outcome = _t2["tier2_gate_outcome"]
+                    if _tier2_outcome == "ALLOWED":
+                        # Annotate candidate with Tier 2 reporting fields and let it
+                        # proceed to the normal classification/quota gates below.
+                        candidate = {
+                            **candidate,
+                            "resurfacing_category": _t2["resurfacing_category"],
+                            "resurfacing_reason": _t2["resurfacing_reason"],
+                            "tier2_gate_outcome": _tier2_outcome,
+                            "prior_lifecycle_state": _t2["prior_lifecycle_state"],
+                            "fingerprint_change_type": _t2["fingerprint_change_type"],
+                        }
+
+                if _tier2_outcome != "ALLOWED":
+                    # Flat gate — original rejection reasons preserved (Tier 1).
+                    if token_mint in existing_token_mints and pair_address in existing_pair_addresses:
+                        reject_reason = "duplicate_existing_token_or_pair"
+                    elif token_mint in existing_token_mints:
+                        reject_reason = "duplicate_existing_token_mint"
+                    else:
+                        reject_reason = "duplicate_pair_address"
+            elif (
+                existing_symbol_name_keys
+                and is_dead_or_near_zero_activity_candidate(candidate)
+                and (
+                    _identity_key(candidate.get("symbol")) in existing_symbol_name_keys
+                    or _identity_key(candidate.get("name")) in existing_symbol_name_keys
+                )
+            ):
+                reject_reason = "weak_copycat_candidate"
+            elif classification.reason == "insufficient_activity_for_memory_growth":
+                # D1 dead/near-dead candidates: capture for quota supplement before rejection.
+                reject_reason = "insufficient_activity_for_memory_growth"
+                if (
+                    token_mint
+                    and token_mint not in _audit_only_mints
+                    and _is_audit_only_eligible(candidate)
+                ):
+                    audit_only_pool.append({
+                        **candidate,
+                        "audit_only": True,
+                        "candidate_kind": "AUDIT_ONLY",
+                        "pre_persistence_reject_reason": reject_reason,
+                        "tracking_lane": classification.discovery_action.value,
+                        "primary_bucket": _cand_bucket,
+                        "primary_bucket_name": _cand_bucket_name,
+                    })
+                    _audit_only_mints.add(token_mint)
+            elif classification.discovery_action == DiscoveryOutputAction.WATCH_ONLY:
+                # Non-D1 WATCH_ONLY candidates: capture for quota supplement before rejection.
+                reject_reason = "watch_only_not_eligible_for_15m_memory_proof_cycle"
+                if (
+                    token_mint
+                    and token_mint not in _audit_only_mints
+                    and _is_audit_only_eligible(candidate)
+                ):
+                    audit_only_pool.append({
+                        **candidate,
+                        "audit_only": True,
+                        "candidate_kind": "AUDIT_ONLY",
+                        "pre_persistence_reject_reason": reject_reason,
+                        "tracking_lane": classification.discovery_action.value,
+                        "primary_bucket": _cand_bucket,
+                        "primary_bucket_name": _cand_bucket_name,
+                    })
+                    _audit_only_mints.add(token_mint)
+            elif classification.discovery_action not in accepted_actions:
+                reject_reason = f"classified_{classification.discovery_action.value.lower()}"
+            elif len(accepted) >= max_candidates:
+                reject_reason = "max_candidates_reached"
+
+            if reject_reason:
+                rejected.append({**item, "reject_reason": reject_reason})
+            else:
+                accepted.append(candidate)
+    finally:
+        if _own_conn and _conn is not None:
+            _conn.close()
+
     return accepted, rejected, inspected, audit_only_pool
 
 
@@ -1909,6 +2207,7 @@ def build_discover_candidates_once_payload(
             existing_pair_addresses=existing_pair_addresses,
             existing_symbol_name_keys=existing_symbol_name_keys,
             max_candidates=args.max_candidates,
+            db_path_or_conn=resolved,
         )
 
         # V2-2M: quota supplement — check batch diversity; draw from audit_only_pool if needed.
