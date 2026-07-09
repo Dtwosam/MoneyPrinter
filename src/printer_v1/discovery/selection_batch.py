@@ -266,6 +266,9 @@ REJECTION_GROUP_F_CORPUS_TOO_SMALL = "GROUP_F_CORPUS_TOO_SMALL"
 # unambiguous: these values only appear in within_response_integrity_report.
 REJECTION_PAIR_DUPLICATE_WITHIN_RESPONSE = "PAIR_DUPLICATE_WITHIN_RESPONSE"
 REJECTION_STNP_WITHIN_RESPONSE_UNRESOLVED = "STNP_WITHIN_RESPONSE_UNRESOLVED"
+# V2-2S: Cross-batch selection cooldown rejection constants.
+REJECTION_TOKEN_SELECTION_COOLDOWN = "TOKEN_SELECTION_COOLDOWN"
+REJECTION_PAIR_SELECTION_COOLDOWN = "PAIR_SELECTION_COOLDOWN"
 
 # ---------------------------------------------------------------------------
 # Thresholds for bucket assignment (all categorical gates, no scores)
@@ -1408,6 +1411,8 @@ def persist_selection_batch(
                 1 if operator_approved else 0,
             ),
         )
+        _batch_rowid_row = conn.execute("SELECT last_insert_rowid()").fetchone()
+        _batch_rowid = int(_batch_rowid_row[0]) if _batch_rowid_row else 0
 
         for item in items:
             conn.execute(
@@ -1460,6 +1465,13 @@ def persist_selection_batch(
                 ),
             )
 
+        # V2-2S: Record rotation state for selected items when schema is available.
+        _rss_table_exists = bool(conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='printer_selection_rotation_state'"
+        ).fetchone())
+        if _rss_table_exists:
+            record_selection_rotation_state(conn, items, _batch_id, _batch_rowid)
+
         if own_connection:
             conn.commit()
 
@@ -1470,7 +1482,241 @@ def persist_selection_batch(
             "rejected_count": len(rejected),
             "unclassified_count": len(unclassified),
             "total_items": len(items),
+            "rotation_state_recorded": _rss_table_exists,
         }
+    finally:
+        if own_connection:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# V2-2S: Cross-batch selection cooldown helpers
+# ---------------------------------------------------------------------------
+
+
+def _bucket_group(bucket_id: str | None) -> str | None:
+    """Return the group letter for a bucket_id, or None if unrecognized."""
+    if bucket_id in GROUP_A_BUCKETS:
+        return "A"
+    if bucket_id in GROUP_B_BUCKETS:
+        return "B"
+    if bucket_id in GROUP_C_BUCKETS:
+        return "C"
+    if bucket_id in GROUP_D_BUCKETS:
+        return "D"
+    if bucket_id in GROUP_E_BUCKETS:
+        return "E"
+    if bucket_id in GROUP_F_BUCKETS:
+        return "F"
+    return None
+
+
+def compute_evidence_identity_fingerprint(candidate: dict[str, Any]) -> dict[str, Any]:
+    """Return the categorical evidence identity fingerprint for a candidate.
+
+    Four fields (all categorical, no scores or floats):
+      activity_bucket        — derive_activity_bucket(candidate)
+      pair_age_context_label — candidate field (V2-2P)
+      source_channel         — candidate field
+      primary_bucket         — candidate field (assigned by assign_bucket)
+
+    Used by the evidence-freshness gate (V2-2R Rule 5). Not a score. Does
+    not drive paper decisions, BUY/SELL/HOLD, or any financial logic.
+    """
+    return {
+        "activity_bucket": derive_activity_bucket(candidate),
+        "pair_age_context_label": candidate.get("pair_age_context_label"),
+        "source_channel": candidate.get("source_channel"),
+        "primary_bucket": candidate.get("primary_bucket"),
+    }
+
+
+def fingerprint_change_is_meaningful(
+    old_fp: dict[str, Any],
+    new_fp: dict[str, Any],
+) -> bool:
+    """Return True when the evidence identity changed enough to be considered distinct.
+
+    Meaningful changes (V2-2R Section 5.2):
+      - activity_bucket changed (any change)
+      - source_channel changed (different discovery narrative)
+      - primary_bucket crossed a group boundary (e.g. D1 → B1, not A1 → A2)
+
+    Not meaningful:
+      - only pair_age_context_label changed (pair age grows naturally over time)
+      - primary_bucket changed within the same group (e.g. A1 → A2)
+    """
+    if old_fp.get("activity_bucket") != new_fp.get("activity_bucket"):
+        return True
+
+    if old_fp.get("source_channel") != new_fp.get("source_channel"):
+        return True
+
+    old_bucket = old_fp.get("primary_bucket")
+    new_bucket = new_fp.get("primary_bucket")
+    if old_bucket != new_bucket:
+        if _bucket_group(old_bucket) != _bucket_group(new_bucket):
+            return True
+
+    return False
+
+
+def check_token_selection_cooldown(
+    db_or_connection: str | Path | sqlite3.Connection,
+    token_mint: str,
+    current_batch_seq: int,
+    *,
+    cooldown_window: int = 3,
+) -> tuple[bool, str]:
+    """Return (ok, reason) for token-level cross-batch selection cooldown.
+
+    A token_mint is ineligible when fewer than cooldown_window batches have
+    elapsed since its last selection (batches_since < cooldown_window).
+
+    ok=True means the token may proceed to selection.
+    ok=False returns reason REJECTION_TOKEN_SELECTION_COOLDOWN.
+
+    Requires printer_selection_rotation_state. Raises sqlite3.OperationalError
+    if the table does not exist.
+    """
+    own_connection = not isinstance(db_or_connection, sqlite3.Connection)
+    conn = _connect(db_or_connection) if own_connection else db_or_connection
+    try:
+        row = conn.execute(
+            "SELECT last_selected_batch_seq FROM printer_selection_rotation_state WHERE token_mint = ?",
+            (token_mint,),
+        ).fetchone()
+        if row is None or row[0] is None:
+            return True, ""
+        batches_since = current_batch_seq - int(row[0])
+        if batches_since < cooldown_window:
+            return False, REJECTION_TOKEN_SELECTION_COOLDOWN
+        return True, ""
+    finally:
+        if own_connection:
+            conn.close()
+
+
+def check_pair_selection_cooldown(
+    db_or_connection: str | Path | sqlite3.Connection,
+    pair_address: str,
+    current_batch_seq: int,
+    *,
+    cooldown_window: int = 3,
+) -> tuple[bool, str]:
+    """Return (ok, reason) for pair-level cross-batch selection cooldown.
+
+    A pair_address is ineligible when fewer than cooldown_window batches have
+    elapsed since its last selection. Token and pair cooldowns are independent:
+    a token on a new pair is not subject to pair-level cooldown for that pair.
+
+    ok=True means the pair may proceed to selection.
+    ok=False returns reason REJECTION_PAIR_SELECTION_COOLDOWN.
+    """
+    own_connection = not isinstance(db_or_connection, sqlite3.Connection)
+    conn = _connect(db_or_connection) if own_connection else db_or_connection
+    try:
+        row = conn.execute(
+            """
+            SELECT last_selected_batch_seq
+            FROM printer_selection_rotation_state
+            WHERE pair_address = ?
+            ORDER BY last_selected_batch_seq DESC
+            LIMIT 1
+            """,
+            (pair_address,),
+        ).fetchone()
+        if row is None or row[0] is None:
+            return True, ""
+        batches_since = current_batch_seq - int(row[0])
+        if batches_since < cooldown_window:
+            return False, REJECTION_PAIR_SELECTION_COOLDOWN
+        return True, ""
+    finally:
+        if own_connection:
+            conn.close()
+
+
+def record_selection_rotation_state(
+    db_or_connection: str | Path | sqlite3.Connection,
+    items: list[dict[str, Any]],
+    batch_id: str,
+    batch_seq: int,
+) -> int:
+    """Upsert rotation state for each SELECTED item in a batch.
+
+    Called by persist_selection_batch() after batch items are written.
+    Updates or inserts one row per SELECTED item in
+    printer_selection_rotation_state, keyed by (token_mint, pair_address).
+    Increments selection_count on each upsert.
+
+    Returns the number of rows upserted.
+
+    Requires printer_selection_rotation_state. Raises sqlite3.OperationalError
+    if the table does not exist.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    selected_items = [i for i in items if i.get("item_status") == ITEM_STATUS_SELECTED]
+
+    own_connection = not isinstance(db_or_connection, sqlite3.Connection)
+    conn = _connect(db_or_connection) if own_connection else db_or_connection
+
+    upserted = 0
+    try:
+        for item in selected_items:
+            token_mint = item.get("token_mint") or ""
+            pair_address = item.get("pair_address") or ""
+            if not token_mint or not pair_address:
+                continue
+
+            # Reconstruct candidate snapshot for fingerprint computation.
+            candidate_snapshot: dict[str, Any] = {}
+            raw_meta = item.get("candidate_metadata_json")
+            if raw_meta:
+                try:
+                    candidate_snapshot = json.loads(raw_meta)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            # primary_bucket and source_channel are on the item, not metadata JSON.
+            candidate_snapshot["primary_bucket"] = item.get("primary_bucket")
+            candidate_snapshot.setdefault("source_channel", item.get("source_channel"))
+
+            fp = compute_evidence_identity_fingerprint(candidate_snapshot)
+            fp_json = json.dumps(fp, sort_keys=True)
+
+            conn.execute(
+                """
+                INSERT INTO printer_selection_rotation_state
+                  (token_mint, pair_address,
+                   last_selected_batch_id, last_selected_batch_seq, last_selected_at,
+                   last_evidence_fingerprint_json, selection_count,
+                   created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                ON CONFLICT(token_mint, pair_address) DO UPDATE SET
+                  last_selected_batch_id = excluded.last_selected_batch_id,
+                  last_selected_batch_seq = excluded.last_selected_batch_seq,
+                  last_selected_at = excluded.last_selected_at,
+                  last_evidence_fingerprint_json = excluded.last_evidence_fingerprint_json,
+                  selection_count = selection_count + 1,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    token_mint,
+                    pair_address,
+                    batch_id,
+                    batch_seq,
+                    item.get("selected_at") or now,
+                    fp_json,
+                    now,
+                    now,
+                ),
+            )
+            upserted += 1
+
+        if own_connection:
+            conn.commit()
+
+        return upserted
     finally:
         if own_connection:
             conn.close()
