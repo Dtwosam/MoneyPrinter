@@ -1582,8 +1582,11 @@ def check_token_selection_cooldown(
     own_connection = not isinstance(db_or_connection, sqlite3.Connection)
     conn = _connect(db_or_connection) if own_connection else db_or_connection
     try:
+        # MAX() returns the latest batch seq across all pair rows for this mint.
+        # Without MAX the query returns an arbitrary row for multi-pair mints,
+        # which can evaluate cooldown against an older selection and allow too early.
         row = conn.execute(
-            "SELECT last_selected_batch_seq FROM printer_selection_rotation_state WHERE token_mint = ?",
+            "SELECT MAX(last_selected_batch_seq) FROM printer_selection_rotation_state WHERE token_mint = ?",
             (token_mint,),
         ).fetchone()
         if row is None or row[0] is None:
@@ -1720,3 +1723,70 @@ def record_selection_rotation_state(
     finally:
         if own_connection:
             conn.close()
+
+
+def apply_selection_cooldown_gates(
+    db_or_connection: str | Path | sqlite3.Connection,
+    candidates: list[dict[str, Any]],
+    current_batch_seq: int,
+    *,
+    cooldown_window: int = 3,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Apply token and pair cooldown gates to a list of pre-gated candidates.
+
+    Called after STNP, lifecycle cooldown/archive, and WATCH_ONLY promotion
+    gates and before quota validation (V2-2R Section 9.1 wiring order).
+
+    Returns (eligible_candidates, cooldown_rejected_candidates).
+
+    Eligible candidates are returned unmodified. Rejected candidates have
+    'item_status' set to ITEM_STATUS_REJECTED and 'rejection_reason' set to
+    REJECTION_TOKEN_SELECTION_COOLDOWN or REJECTION_PAIR_SELECTION_COOLDOWN.
+
+    Token cooldown is checked first per candidate. If the token is blocked,
+    the pair check is skipped for that candidate. Both checks use
+    MAX(last_selected_batch_seq) across all rotation-state rows for the
+    relevant identity key, so the latest selection controls eligibility.
+
+    This function does not call source fetching, memory generation, retrieval,
+    paper decisions, BUY/SELL/HOLD, positions, trades, audits, PnL, or any
+    financial path. Requires printer_selection_rotation_state.
+    """
+    eligible: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+
+    own_connection = not isinstance(db_or_connection, sqlite3.Connection)
+    conn = _connect(db_or_connection) if own_connection else db_or_connection
+    try:
+        for candidate in candidates:
+            token_mint = candidate.get("token_mint") or ""
+            pair_address = candidate.get("pair_address") or ""
+
+            ok_token, token_reason = check_token_selection_cooldown(
+                conn, token_mint, current_batch_seq, cooldown_window=cooldown_window
+            )
+            if not ok_token:
+                rejected.append({
+                    **candidate,
+                    "item_status": ITEM_STATUS_REJECTED,
+                    "rejection_reason": token_reason,
+                })
+                continue
+
+            ok_pair, pair_reason = check_pair_selection_cooldown(
+                conn, pair_address, current_batch_seq, cooldown_window=cooldown_window
+            )
+            if not ok_pair:
+                rejected.append({
+                    **candidate,
+                    "item_status": ITEM_STATUS_REJECTED,
+                    "rejection_reason": pair_reason,
+                })
+                continue
+
+            eligible.append(candidate)
+    finally:
+        if own_connection:
+            conn.close()
+
+    return eligible, rejected

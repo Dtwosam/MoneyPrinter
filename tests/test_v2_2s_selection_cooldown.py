@@ -41,6 +41,7 @@ from printer_v1.discovery.selection_batch import (
     check_token_selection_cooldown,
     check_pair_selection_cooldown,
     record_selection_rotation_state,
+    apply_selection_cooldown_gates,
 )
 
 
@@ -760,6 +761,276 @@ class TestRotationStateSafety(unittest.TestCase):
         self.assertIn("printer_selection_rotation_state", tables)
         self.assertIn("printer_tokens", tables)
         self.assertIn("printer_pairs", tables)
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# V2-2S.2: Multi-pair token cooldown safety (latest-row fix)
+# ---------------------------------------------------------------------------
+
+class TestMultiPairTokenCooldownLatestRow(unittest.TestCase):
+    """Token cooldown must use the latest selected batch seq across all pair rows.
+
+    A mint with two pair rows (old pair at seq 1, new pair at seq 5) must be
+    blocked based on seq 5, not seq 1. Without MAX() the old query could return
+    the seq-1 row and evaluate batches_since=4 as allowed when window=3, even
+    though the mint was actually re-selected at seq 5.
+    """
+
+    def test_latest_pair_row_controls_token_cooldown(self):
+        conn = _make_db()
+        # MINT_A on PAIR_A selected at seq 1 (old).
+        _seed_rotation_state(conn, "MINT_A", "PAIR_A", batch_seq=1)
+        # MINT_A on PAIR_B selected at seq 5 (newer pair, newer batch).
+        _seed_rotation_state(conn, "MINT_A", "PAIR_B", batch_seq=5)
+        # At seq 6, batches_since from seq 5 = 1, which is < 3 → must be BLOCKED.
+        ok, reason = check_token_selection_cooldown(conn, "MINT_A", current_batch_seq=6)
+        self.assertFalse(ok, "Token cooldown must use the latest batch seq (5), not the old one (1)")
+        self.assertEqual(reason, REJECTION_TOKEN_SELECTION_COOLDOWN)
+        conn.close()
+
+    def test_old_pair_row_does_not_allow_too_early(self):
+        conn = _make_db()
+        # MINT_A on PAIR_A at seq 1 — if only this row existed, seq 4 would be allowed.
+        _seed_rotation_state(conn, "MINT_A", "PAIR_A", batch_seq=1)
+        # MINT_A on PAIR_B at seq 4 — now the latest is 4, seq 6 is batches_since=2 → blocked.
+        _seed_rotation_state(conn, "MINT_A", "PAIR_B", batch_seq=4)
+        ok, reason = check_token_selection_cooldown(conn, "MINT_A", current_batch_seq=6)
+        self.assertFalse(ok, "Latest seq (4) must control; batches_since=2 < 3 → blocked")
+        self.assertEqual(reason, REJECTION_TOKEN_SELECTION_COOLDOWN)
+        conn.close()
+
+    def test_allowed_only_when_latest_seq_clears_window(self):
+        conn = _make_db()
+        # MINT_A on PAIR_A at seq 1.
+        _seed_rotation_state(conn, "MINT_A", "PAIR_A", batch_seq=1)
+        # MINT_A on PAIR_B at seq 5.
+        _seed_rotation_state(conn, "MINT_A", "PAIR_B", batch_seq=5)
+        # seq 8: batches_since from 5 = 3, 3 < 3 is False → allowed.
+        ok, reason = check_token_selection_cooldown(conn, "MINT_A", current_batch_seq=8)
+        self.assertTrue(ok, "batches_since=3 clears window=3; must be allowed")
+        self.assertEqual(reason, "")
+        conn.close()
+
+    def test_single_pair_row_still_works(self):
+        conn = _make_db()
+        _seed_rotation_state(conn, "MINT_A", "PAIR_A", batch_seq=3)
+        ok, reason = check_token_selection_cooldown(conn, "MINT_A", current_batch_seq=5)
+        self.assertFalse(ok)
+        self.assertEqual(reason, REJECTION_TOKEN_SELECTION_COOLDOWN)
+        conn.close()
+
+    def test_pair_cooldown_still_pair_specific_with_multi_rows(self):
+        conn = _make_db()
+        # MINT_A on PAIR_A at seq 1 (old), MINT_A on PAIR_B at seq 5 (new).
+        _seed_rotation_state(conn, "MINT_A", "PAIR_A", batch_seq=1)
+        _seed_rotation_state(conn, "MINT_A", "PAIR_B", batch_seq=5)
+        # PAIR_A: batches_since from seq 1 at current seq 4 = 3, allowed (3 < 3 is False).
+        ok_a, _ = check_pair_selection_cooldown(conn, "PAIR_A", current_batch_seq=4)
+        self.assertTrue(ok_a, "PAIR_A cleared its window; pair cooldown must be pair-specific")
+        # PAIR_B: batches_since from seq 5 at current seq 6 = 1, still blocked.
+        ok_b, reason_b = check_pair_selection_cooldown(conn, "PAIR_B", current_batch_seq=6)
+        self.assertFalse(ok_b, "PAIR_B in cooldown; pair check must be independent per pair")
+        self.assertEqual(reason_b, REJECTION_PAIR_SELECTION_COOLDOWN)
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# V2-2S.2: apply_selection_cooldown_gates wiring helper
+# ---------------------------------------------------------------------------
+
+class TestApplySelectionCooldownGates(unittest.TestCase):
+    """Integration tests for the apply_selection_cooldown_gates wiring helper.
+
+    Verifies that candidates are filtered before batch acceptance, that
+    rejected candidates carry the correct categorical rejection reason, and
+    that eligible candidates pass through unmodified.
+    """
+
+    def test_no_prior_state_all_eligible(self):
+        conn = _make_db()
+        candidates = [
+            _fast_candidate(
+                token_mint="MintAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                pair_address="PairAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            ),
+            _fast_candidate(
+                token_mint="MintBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+                pair_address="PairBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            ),
+        ]
+        eligible, rejected = apply_selection_cooldown_gates(conn, candidates, current_batch_seq=1)
+        self.assertEqual(len(eligible), 2)
+        self.assertEqual(len(rejected), 0)
+        conn.close()
+
+    def test_token_cooldown_rejects_candidate(self):
+        conn = _make_db()
+        mint = "MintAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        pair = "PairAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        _seed_rotation_state(conn, mint, pair, batch_seq=1)
+        candidate = _fast_candidate(token_mint=mint, pair_address=pair)
+        eligible, rejected = apply_selection_cooldown_gates(conn, [candidate], current_batch_seq=2)
+        self.assertEqual(len(eligible), 0)
+        self.assertEqual(len(rejected), 1)
+        self.assertEqual(rejected[0]["rejection_reason"], REJECTION_TOKEN_SELECTION_COOLDOWN)
+        self.assertEqual(rejected[0]["item_status"], "REJECTED")
+        conn.close()
+
+    def test_pair_cooldown_rejects_candidate(self):
+        conn = _make_db()
+        # Seed MINT_A on PAIR_A but check MINT_B on PAIR_A (different mint, same pair).
+        _seed_rotation_state(conn, "MINT_SEED", "PairAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", batch_seq=1)
+        # MINT_B has no token cooldown, but PAIR_A has pair cooldown.
+        candidate = _fast_candidate(
+            token_mint="MintBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            pair_address="PairAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        )
+        eligible, rejected = apply_selection_cooldown_gates(conn, [candidate], current_batch_seq=2)
+        self.assertEqual(len(eligible), 0)
+        self.assertEqual(len(rejected), 1)
+        self.assertEqual(rejected[0]["rejection_reason"], REJECTION_PAIR_SELECTION_COOLDOWN)
+        conn.close()
+
+    def test_token_cooldown_checked_before_pair(self):
+        conn = _make_db()
+        mint = "MintAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        pair = "PairAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        _seed_rotation_state(conn, mint, pair, batch_seq=1)
+        # Both token and pair are in cooldown; token is checked first.
+        candidate = _fast_candidate(token_mint=mint, pair_address=pair)
+        eligible, rejected = apply_selection_cooldown_gates(conn, [candidate], current_batch_seq=2)
+        self.assertEqual(len(rejected), 1)
+        # Token check fires first → TOKEN_SELECTION_COOLDOWN.
+        self.assertEqual(rejected[0]["rejection_reason"], REJECTION_TOKEN_SELECTION_COOLDOWN)
+        conn.close()
+
+    def test_candidate_passes_after_cooldown_window(self):
+        conn = _make_db()
+        mint = "MintAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        pair = "PairAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        _seed_rotation_state(conn, mint, pair, batch_seq=1)
+        candidate = _fast_candidate(token_mint=mint, pair_address=pair)
+        # seq 4: batches_since = 3, 3 < 3 is False → eligible.
+        eligible, rejected = apply_selection_cooldown_gates(conn, [candidate], current_batch_seq=4)
+        self.assertEqual(len(eligible), 1)
+        self.assertEqual(len(rejected), 0)
+        conn.close()
+
+    def test_rejected_candidate_has_correct_item_status(self):
+        conn = _make_db()
+        mint = "MintAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        pair = "PairAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        _seed_rotation_state(conn, mint, pair, batch_seq=1)
+        candidate = _fast_candidate(token_mint=mint, pair_address=pair)
+        _, rejected = apply_selection_cooldown_gates(conn, [candidate], current_batch_seq=2)
+        self.assertEqual(rejected[0]["item_status"], ITEM_STATUS_REJECTED)
+        conn.close()
+
+    def test_eligible_candidate_unmodified(self):
+        conn = _make_db()
+        candidate = _fast_candidate()
+        eligible, _ = apply_selection_cooldown_gates(conn, [candidate], current_batch_seq=1)
+        self.assertEqual(len(eligible), 1)
+        # No extra keys injected.
+        self.assertNotIn("item_status", eligible[0])
+        self.assertNotIn("rejection_reason", eligible[0])
+        conn.close()
+
+    def test_mixed_batch_splits_correctly(self):
+        conn = _make_db()
+        mint_a = "MintAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        pair_a = "PairAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        mint_b = "MintBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+        pair_b = "PairBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+        _seed_rotation_state(conn, mint_a, pair_a, batch_seq=1)
+        candidates = [
+            _fast_candidate(token_mint=mint_a, pair_address=pair_a),  # in cooldown
+            _fast_candidate(token_mint=mint_b, pair_address=pair_b),  # fresh
+        ]
+        eligible, rejected = apply_selection_cooldown_gates(conn, candidates, current_batch_seq=2)
+        self.assertEqual(len(eligible), 1)
+        self.assertEqual(len(rejected), 1)
+        self.assertEqual(eligible[0]["token_mint"], mint_b)
+        self.assertEqual(rejected[0]["token_mint"], mint_a)
+        conn.close()
+
+    def test_empty_candidates_returns_empty_lists(self):
+        conn = _make_db()
+        eligible, rejected = apply_selection_cooldown_gates(conn, [], current_batch_seq=1)
+        self.assertEqual(eligible, [])
+        self.assertEqual(rejected, [])
+        conn.close()
+
+    def test_rejected_cooldown_candidate_does_not_enter_selected_items(self):
+        # Simulate a gated batch: apply gates, then persist only the eligible portion.
+        conn = _make_db()
+        mint = "MintAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        pair = "PairAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        _seed_rotation_state(conn, mint, pair, batch_seq=1)
+        candidates = [_fast_candidate(token_mint=mint, pair_address=pair)]
+        eligible, rejected_candidates = apply_selection_cooldown_gates(
+            conn, candidates, current_batch_seq=2
+        )
+        # Build items only from eligible (none in this case).
+        selected_items = [_make_selected_item(c) for c in eligible]
+        rejected_items = [
+            build_batch_item(c, item_status=ITEM_STATUS_REJECTED,
+                             rejection_reason=c.get("rejection_reason"))
+            for c in rejected_candidates
+        ]
+        all_items = selected_items + rejected_items
+        result = persist_selection_batch(conn, "GATE_TEST_001", all_items)
+        self.assertEqual(result["selected_count"], 0)
+        self.assertEqual(result["rejected_count"], 1)
+        # Rotation state must NOT have been updated for the rejected mint.
+        row = conn.execute(
+            "SELECT last_selected_batch_id FROM printer_selection_rotation_state WHERE token_mint = ?",
+            (mint,),
+        ).fetchone()
+        # Row exists from the seed but batch_id must still be "SEED_BATCH" (not updated).
+        self.assertEqual(row["last_selected_batch_id"], "SEED_BATCH")
+        conn.close()
+
+    def test_no_paper_decisions_created(self):
+        conn = _make_db()
+        candidate = _fast_candidate()
+        apply_selection_cooldown_gates(conn, [candidate], current_batch_seq=1)
+        count = conn.execute("SELECT COUNT(*) FROM printer_paper_decisions").fetchone()[0]
+        self.assertEqual(count, 0)
+        conn.close()
+
+    def test_no_token_tracking_rows_created(self):
+        conn = _make_db()
+        candidate = _fast_candidate()
+        apply_selection_cooldown_gates(conn, [candidate], current_batch_seq=1)
+        count = conn.execute("SELECT COUNT(*) FROM printer_tokens").fetchone()[0]
+        self.assertEqual(count, 0)
+        conn.close()
+
+    def test_returns_tuple_of_two_lists(self):
+        conn = _make_db()
+        result = apply_selection_cooldown_gates(conn, [], current_batch_seq=1)
+        self.assertIsInstance(result, tuple)
+        self.assertEqual(len(result), 2)
+        self.assertIsInstance(result[0], list)
+        self.assertIsInstance(result[1], list)
+        conn.close()
+
+    def test_new_pair_for_same_mint_blocked_by_token_cooldown(self):
+        conn = _make_db()
+        mint = "MintAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        # Seed: mint on PAIR_A selected at seq 1.
+        _seed_rotation_state(conn, mint, "PairAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", batch_seq=1)
+        # Now try the same mint on a NEW pair_b at seq 2.
+        candidate = _fast_candidate(
+            token_mint=mint,
+            pair_address="PairBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        )
+        eligible, rejected = apply_selection_cooldown_gates(conn, [candidate], current_batch_seq=2)
+        self.assertEqual(len(eligible), 0)
+        self.assertEqual(len(rejected), 1)
+        self.assertEqual(rejected[0]["rejection_reason"], REJECTION_TOKEN_SELECTION_COOLDOWN)
         conn.close()
 
 
