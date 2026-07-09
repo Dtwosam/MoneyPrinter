@@ -1362,6 +1362,273 @@ _DISCOVER_CANDIDATES_CAP_MIN = 1
 _DISCOVER_CANDIDATES_CAP_MAX = 50
 _DISCOVER_CANDIDATES_CAP_DEFAULT = 10
 
+# V2-2H.5: bounded multi-request / multi-channel source plumbing.
+_MAX_SOURCE_REQUESTS_MIN = 1
+_MAX_SOURCE_REQUESTS_MAX = 10
+_MAX_SOURCE_REQUESTS_DEFAULT = 1
+
+_PLAN_STATUS_READY = "READY"
+_PLAN_STATUS_NOT_READY = "NOT_READY"
+
+# Ordered catalog of governed request kinds per source.
+# Each entry is (request_kind, plan_status). READY items are executed through
+# Source Governor; NOT_READY items are included in the plan for reporting only
+# (they require external fixture transport, live WebSocket, or additional plumbing
+# that is not wired in this mini-lane).
+_SOURCE_REQUEST_PLAN_CATALOG: dict[str, list[tuple[str, str]]] = {
+    "geckoterminal": [
+        ("geckoterminal_new_pool_discovery", _PLAN_STATUS_READY),
+        ("geckoterminal_trending_pool_reference", _PLAN_STATUS_READY),
+    ],
+    "dexscreener": [
+        # Single HTTP search endpoint today; additional kinds require new query handling.
+        ("token_discovery", _PLAN_STATUS_READY),
+    ],
+    "pumpportal": [
+        # WebSocket streams — require operator-provided fixture; NOT_READY for live.
+        ("pumpfun_launch_stream", _PLAN_STATUS_NOT_READY),
+        ("pumpfun_migration_stream", _PLAN_STATUS_NOT_READY),
+    ],
+    "pumpswap": [
+        # Fixture-only confirmation path; NOT_READY for live.
+        ("pumpswap_pool_confirmation", _PLAN_STATUS_NOT_READY),
+        ("pumpswap_migration_pool_reference", _PLAN_STATUS_NOT_READY),
+    ],
+}
+
+
+def _build_source_request_plan(
+    source_name: str,
+    initial_request_kind: str | None,
+    max_source_requests: int,
+) -> list[dict[str, Any]]:
+    """Build a bounded ordered list of governed request-plan items for one run.
+
+    Items are drawn from _SOURCE_REQUEST_PLAN_CATALOG in order. The caller's
+    initial_request_kind is moved to position 0 if it appears in the catalog.
+    If it is not in the catalog, it is inserted as a READY item at position 0.
+    NOT_READY items are included for reporting but are never executed.
+    """
+    catalog: list[tuple[str, str]] = list(_SOURCE_REQUEST_PLAN_CATALOG.get(source_name, []))
+    if initial_request_kind:
+        catalog_kinds = [rk for rk, _ in catalog]
+        if initial_request_kind not in catalog_kinds:
+            catalog.insert(0, (initial_request_kind, _PLAN_STATUS_READY))
+        elif catalog_kinds[0] != initial_request_kind:
+            idx = catalog_kinds.index(initial_request_kind)
+            catalog.insert(0, catalog.pop(idx))
+    plan = []
+    for i, (rk, status) in enumerate(catalog[:max_source_requests]):
+        plan.append({"plan_index": i, "source_name": source_name, "request_kind": rk, "status": status})
+    return plan
+
+
+def _get_transport_for_index(transport: Any, index: int) -> Any:
+    """Return the transport callable for a specific request plan index.
+
+    A single callable is reused for all requests. A list provides one transport
+    per index, useful in tests simulating multiple distinct fixture responses.
+    """
+    if transport is None:
+        return None
+    if isinstance(transport, list):
+        return transport[index] if index < len(transport) else None
+    return transport
+
+
+def _execute_plan_item(
+    resolved: Path,
+    plan_item: dict[str, Any],
+    args: argparse.Namespace,
+    transport_fn: Any,
+) -> dict[str, Any]:
+    """Execute a single READY plan item through Source Governor.
+
+    Returns an execution record dict. Must not be called for NOT_READY items.
+    """
+    source_name = plan_item["source_name"]
+    request_kind = plan_item["request_kind"]
+    plan_idx = plan_item["plan_index"]
+
+    if source_name == "geckoterminal":
+        channel, channel_reason = _source_channel_for_geckoterminal(request_kind)
+        endpoint = _GECKOTERMINAL_ENDPOINT_BY_REQUEST_KIND.get(request_kind, GECKOTERMINAL_NEW_POOLS_URL)
+        source_request = build_governed_source_request(
+            "geckoterminal",
+            request_kind,
+            request_key=f"{args.request_key or 'post-rc-geckoterminal'}-{request_kind}-r{plan_idx}",
+            tracking_priority=0,
+            payload={
+                "post_rc_cycle": "cycle1",
+                "request_kind": request_kind,
+                "max_candidates": args.max_candidates,
+                "chain": "solana",
+            },
+        )
+        adapter = build_geckoterminal_adapter(
+            enabled=True,
+            fixture_transport=transport_fn or build_geckoterminal_pools_transport(
+                timeout_seconds=args.timeout_seconds, endpoint=endpoint
+            ),
+        )
+        query = request_kind
+        display_request_kind = request_kind
+    elif source_name == "pumpportal":
+        if transport_fn is None:
+            raise ValueError(
+                "PumpPortal discovery requires an operator-provided fixture transport; "
+                "no live WebSocket is started automatically"
+            )
+        channel, channel_reason = _source_channel_for_pumpportal(request_kind)
+        endpoint = "pumpportal_fixture_only"
+        source_request = build_governed_source_request(
+            "pumpportal",
+            request_kind,
+            request_key=f"{args.request_key or 'post-rc-pumpportal'}-{request_kind}-r{plan_idx}",
+            tracking_priority=0,
+            payload={
+                "post_rc_cycle": "cycle1",
+                "request_kind": request_kind,
+                "max_candidates": args.max_candidates,
+                "chain": "solana",
+            },
+        )
+        adapter = build_pumpportal_adapter(enabled=True, fixture_transport=transport_fn)
+        query = request_kind
+        display_request_kind = request_kind
+    elif source_name == "pumpswap":
+        if transport_fn is None:
+            raise ValueError(
+                "PumpSwap confirmation requires an operator-provided fixture transport; "
+                "read-only confirmation only"
+            )
+        channel, channel_reason = _source_channel_for_pumpswap(request_kind)
+        endpoint = "pumpswap_fixture_only"
+        source_request = build_governed_source_request(
+            "pumpswap",
+            request_kind,
+            request_key=f"{args.request_key or 'post-rc-pumpswap'}-{request_kind}-r{plan_idx}",
+            tracking_priority=0,
+            payload={
+                "post_rc_cycle": "cycle1",
+                "request_kind": request_kind,
+                "max_candidates": args.max_candidates,
+                "chain": "solana",
+            },
+        )
+        adapter = build_pumpswap_adapter(enabled=True, fixture_transport=transport_fn)
+        query = request_kind
+        display_request_kind = request_kind
+    else:  # dexscreener
+        channel, channel_reason = _source_channel_for_dexscreener(request_kind)
+        query = str(args.query or "pump").strip() or "pump"
+        endpoint = f"https://api.dexscreener.com/latest/dex/search?q={quote(query)}"
+        source_request = build_governed_source_request(
+            "dexscreener",
+            request_kind or "token_discovery",
+            request_key=f"{args.request_key or f'post-rc-discovery-{query}'}-r{plan_idx}",
+            tracking_priority=0,
+            payload={
+                "post_rc_cycle": "cycle1",
+                "query": query,
+                "max_candidates": args.max_candidates,
+                "chain": "solana",
+            },
+        )
+        adapter = build_dexscreener_adapter(
+            enabled=True,
+            smoke_transport=transport_fn or build_dexscreener_smoke_transport(
+                timeout_seconds=args.timeout_seconds, endpoint=endpoint
+            ),
+        )
+        display_request_kind = "token_discovery"
+
+    result = execute_source_request_with_governor(resolved, source_request, adapter, recent_request_count=0)
+    return {
+        "plan_index": plan_idx,
+        "source_name": source_name,
+        "request_kind": request_kind,
+        "status": _PLAN_STATUS_READY,
+        "executed": True,
+        "result": result,
+        "source_channel": channel,
+        "source_channel_reason": channel_reason,
+        "endpoint": endpoint,
+        "query": query,
+        "display_request_kind": display_request_kind,
+        "request_id": result.request_record.id,
+        "response_id": result.response_record.id if result.response_record else None,
+        "failure_id": result.failure_record.id if result.failure_record else None,
+        "candidates_seen": 0,
+        "candidates_persisted": 0,
+    }
+
+
+def _aggregate_wr_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
+    """Merge per-response within-response integrity reports into a single report."""
+    merged: dict[str, Any] = {
+        "within_response_duplicate_pair_count": 0,
+        "within_response_duplicate_mint_count": 0,
+        "within_response_stnp_event_count": 0,
+        "within_response_stnp_rejections": [],
+        "within_response_duplicate_rejections": [],
+    }
+    for r in reports:
+        merged["within_response_duplicate_pair_count"] += r.get("within_response_duplicate_pair_count", 0)
+        merged["within_response_duplicate_mint_count"] += r.get("within_response_duplicate_mint_count", 0)
+        merged["within_response_stnp_event_count"] += r.get("within_response_stnp_event_count", 0)
+        merged["within_response_stnp_rejections"].extend(r.get("within_response_stnp_rejections", []))
+        merged["within_response_duplicate_rejections"].extend(r.get("within_response_duplicate_rejections", []))
+    return merged
+
+
+def _build_source_budget_report(
+    plan: list[dict[str, Any]],
+    execution_records: list[dict[str, Any]],
+    max_source_requests: int,
+) -> dict[str, Any]:
+    """Build the source-budget report from plan items and per-request execution records."""
+    attempted = sum(1 for r in execution_records if r.get("executed"))
+    responses_received = sum(1 for r in execution_records if r.get("response_id") is not None)
+    failures = sum(1 for r in execution_records if r.get("failure_id") is not None)
+    failure_rate = round(failures / attempted, 4) if attempted > 0 else 0.0
+
+    channels_planned = [p["request_kind"] for p in plan]
+    channels_sampled = [r["request_kind"] for r in execution_records if r.get("executed")]
+    channels_not_ready = [p["request_kind"] for p in plan if p.get("status") == _PLAN_STATUS_NOT_READY]
+    channels_failed = [r["request_kind"] for r in execution_records if r.get("failure_id") is not None]
+
+    seen_by_source: dict[str, int] = {}
+    seen_by_channel: dict[str, int] = {}
+    persisted_by_source: dict[str, int] = {}
+    persisted_by_channel: dict[str, int] = {}
+    for r in execution_records:
+        sn = r.get("source_name") or "unknown"
+        rk = r.get("request_kind") or "unknown"
+        seen = r.get("candidates_seen", 0)
+        persisted = r.get("candidates_persisted", 0)
+        seen_by_source[sn] = seen_by_source.get(sn, 0) + seen
+        seen_by_channel[rk] = seen_by_channel.get(rk, 0) + seen
+        persisted_by_source[sn] = persisted_by_source.get(sn, 0) + persisted
+        persisted_by_channel[rk] = persisted_by_channel.get(rk, 0) + persisted
+
+    return {
+        "max_source_requests": max_source_requests,
+        "source_requests_planned": len(plan),
+        "source_requests_attempted": attempted,
+        "source_responses_received": responses_received,
+        "source_failures": failures,
+        "source_failure_rate": failure_rate,
+        "source_channels_planned": channels_planned,
+        "source_channels_sampled": channels_sampled,
+        "source_channels_not_ready": channels_not_ready,
+        "source_channels_failed": channels_failed,
+        "candidates_seen_by_source": seen_by_source,
+        "candidates_seen_by_source_channel": seen_by_channel,
+        "candidates_persisted_by_source": persisted_by_source,
+        "candidates_persisted_by_source_channel": persisted_by_channel,
+    }
+
 
 def _validate_discover_candidates_args(args: argparse.Namespace) -> None:
     if not args.operator_approved:
@@ -1380,6 +1647,14 @@ def _validate_discover_candidates_args(args: argparse.Namespace) -> None:
         raise ValueError("controlled discovery supports DexScreener, GeckoTerminal, PumpPortal, and PumpSwap")
     if args.timeout_seconds <= 0 or args.timeout_seconds > 10:
         raise ValueError("timeout_seconds must be greater than 0 and no more than 10")
+    # V2-2H.5: bounded multi-request cap.
+    max_source_requests = getattr(args, "max_source_requests", _MAX_SOURCE_REQUESTS_DEFAULT)
+    if not isinstance(max_source_requests, int) or isinstance(max_source_requests, bool):
+        raise ValueError("max_source_requests must be an integer")
+    if max_source_requests < _MAX_SOURCE_REQUESTS_MIN or max_source_requests > _MAX_SOURCE_REQUESTS_MAX:
+        raise ValueError(
+            f"max_source_requests must be between {_MAX_SOURCE_REQUESTS_MIN} and {_MAX_SOURCE_REQUESTS_MAX}"
+        )
 
 
 def _identity_key(value: Any) -> str | None:
@@ -1476,143 +1751,82 @@ def build_discover_candidates_once_payload(
     if not resolved.is_file():
         raise FileNotFoundError(f"Operator DB does not exist: {resolved}")
 
+    max_source_requests = getattr(args, "max_source_requests", _MAX_SOURCE_REQUESTS_DEFAULT)
+    initial_request_kind = str(getattr(args, "request_kind", None) or "").strip() or None
+
     before_counts = get_core_table_counts(resolved, project_root)
     with sqlite3.connect(resolved) as connection:
         connection.row_factory = sqlite3.Row
         existing_token_mints, existing_pair_addresses, existing_symbol_name_keys = _existing_token_pair_sets(connection)
 
-    if args.source_name == "geckoterminal":
-        request_kind = str(
-            getattr(args, "request_kind", None) or "geckoterminal_new_pool_discovery"
-        ).strip()
-        source_channel, source_channel_reason = _source_channel_for_geckoterminal(request_kind)
-        endpoint = _GECKOTERMINAL_ENDPOINT_BY_REQUEST_KIND.get(
-            request_kind, GECKOTERMINAL_NEW_POOLS_URL
-        )
-        source_request = build_governed_source_request(
-            "geckoterminal",
-            request_kind,
-            request_key=args.request_key or f"post-rc-geckoterminal-{request_kind}",
-            tracking_priority=0,
-            payload={
-                "post_rc_cycle": "cycle1",
-                "request_kind": request_kind,
-                "max_candidates": args.max_candidates,
-                "chain": "solana",
-            },
-        )
-        adapter = build_geckoterminal_adapter(
-            enabled=True,
-            fixture_transport=transport or build_geckoterminal_pools_transport(
-                timeout_seconds=args.timeout_seconds, endpoint=endpoint
-            ),
-        )
-        query = request_kind
-        display_request_kind = request_kind
-    elif args.source_name == "pumpportal":
-        request_kind = str(
-            getattr(args, "request_kind", None) or "pumpfun_launch_stream"
-        ).strip()
-        source_channel, source_channel_reason = _source_channel_for_pumpportal(request_kind)
-        endpoint = "pumpportal_fixture_only"
-        source_request = build_governed_source_request(
-            "pumpportal",
-            request_kind,
-            request_key=args.request_key or f"post-rc-pumpportal-{request_kind}",
-            tracking_priority=0,
-            payload={
-                "post_rc_cycle": "cycle1",
-                "request_kind": request_kind,
-                "max_candidates": args.max_candidates,
-                "chain": "solana",
-            },
-        )
-        if transport is None:
-            raise ValueError(
-                "PumpPortal discovery requires an operator-provided fixture transport; "
-                "no live WebSocket is started automatically"
-            )
-        adapter = build_pumpportal_adapter(
-            enabled=True,
-            fixture_transport=transport,
-        )
-        query = request_kind
-        display_request_kind = request_kind
-    elif args.source_name == "pumpswap":
-        request_kind = str(
-            getattr(args, "request_kind", None) or "pumpswap_pool_confirmation"
-        ).strip()
-        source_channel, source_channel_reason = _source_channel_for_pumpswap(request_kind)
-        endpoint = "pumpswap_fixture_only"
-        source_request = build_governed_source_request(
-            "pumpswap",
-            request_kind,
-            request_key=args.request_key or f"post-rc-pumpswap-{request_kind}",
-            tracking_priority=0,
-            payload={
-                "post_rc_cycle": "cycle1",
-                "request_kind": request_kind,
-                "max_candidates": args.max_candidates,
-                "chain": "solana",
-            },
-        )
-        if transport is None:
-            raise ValueError(
-                "PumpSwap confirmation requires an operator-provided fixture transport; "
-                "read-only confirmation only"
-            )
-        adapter = build_pumpswap_adapter(
-            enabled=True,
-            fixture_transport=transport,
-        )
-        query = request_kind
-        display_request_kind = request_kind
-    else:
-        source_channel, source_channel_reason = _source_channel_for_dexscreener(
-            getattr(args, "request_kind", None)
-        )
-        query = str(args.query or "pump").strip() or "pump"
-        endpoint = f"https://api.dexscreener.com/latest/dex/search?q={quote(query)}"
-        source_request = build_governed_source_request(
-            "dexscreener",
-            "token_discovery",
-            request_key=args.request_key or f"post-rc-discovery-{query}",
-            tracking_priority=0,
-            payload={
-                "post_rc_cycle": "cycle1",
-                "query": query,
-                "max_candidates": args.max_candidates,
-                "chain": "solana",
-            },
-        )
-        adapter = build_dexscreener_adapter(
-            enabled=True,
-            smoke_transport=transport or build_dexscreener_smoke_transport(
-                timeout_seconds=args.timeout_seconds, endpoint=endpoint
-            ),
-        )
-        display_request_kind = "token_discovery"
+    # V2-2H.5: build bounded plan and execute each READY item through Source Governor.
+    plan = _build_source_request_plan(args.source_name, initial_request_kind, max_source_requests)
+    execution_records: list[dict[str, Any]] = []
+    all_normalized_pairs: list[dict[str, Any]] = []
+    agg_clean_candidates: list[dict[str, Any]] = []
+    agg_wr_reports: list[dict[str, Any]] = []
+    agg_wr_rejected: list[dict[str, Any]] = []
 
-    result = execute_source_request_with_governor(
-        resolved,
-        source_request,
-        adapter,
-        recent_request_count=0,
+    for plan_item in plan:
+        if plan_item["status"] == _PLAN_STATUS_NOT_READY:
+            execution_records.append({
+                **plan_item,
+                "executed": False,
+                "result": None,
+                "request_id": None,
+                "response_id": None,
+                "failure_id": None,
+                "source_channel": None,
+                "source_channel_reason": None,
+                "endpoint": "not_ready",
+                "query": plan_item["request_kind"],
+                "display_request_kind": plan_item["request_kind"],
+                "candidates_seen": 0,
+                "candidates_persisted": 0,
+            })
+            continue
+
+        transport_fn = _get_transport_for_index(transport, plan_item["plan_index"])
+        exec_rec = _execute_plan_item(resolved, plan_item, args, transport_fn)
+        result = exec_rec["result"]
+
+        normalized_payload = dict(result.normalized_result.normalized_payload or {})
+        normalized_pairs = normalize_candidates(args.source_name, normalized_payload) if normalized_payload else []
+        for candidate in normalized_pairs:
+            candidate["source_channel"] = exec_rec["source_channel"]
+            candidate["source_channel_reason"] = exec_rec["source_channel_reason"]
+
+        # V2-2H.4: per-response within-response dedup before aggregation.
+        wr_clean, wr_rejected, wr_report = filter_within_response_duplicates(normalized_pairs)
+        exec_rec["candidates_seen"] = len(normalized_pairs)
+
+        all_normalized_pairs.extend(normalized_pairs)
+        agg_clean_candidates.extend(wr_clean)
+        agg_wr_reports.append(wr_report)
+        agg_wr_rejected.extend(wr_rejected)
+        execution_records.append(exec_rec)
+
+    # Cross-response dedup: catch pair/mint duplicates that span multiple governed responses
+    # within the same run. H.4 already ran per-response; this extra pass is additive.
+    # Cross-response STNP classification (REVIVAL / DISTINCT_EVIDENCE) is deferred — same
+    # conservative unresolved treatment as H.4 applies here.
+    agg_clean_final, cross_wr_rejected, cross_wr_report = filter_within_response_duplicates(agg_clean_candidates)
+    agg_wr_rejected.extend(cross_wr_rejected)
+    _combined_wr_report = _aggregate_wr_reports(agg_wr_reports + [cross_wr_report])
+
+    # Selection and persistence — only if at least one response COMPLETE.
+    primary = next(
+        (r for r in execution_records if r.get("executed") and r.get("response_id") is not None),
+        None,
     )
-    normalized_payload = dict(result.normalized_result.normalized_payload or {})
-    normalized_pairs = normalize_candidates(args.source_name, normalized_payload) if normalized_payload else []
-    for candidate in normalized_pairs:
-        candidate["source_channel"] = source_channel
-        candidate["source_channel_reason"] = source_channel_reason
-    # V2-2H.4: deduplicate within the single source response before normal gates.
-    _wr_clean, _wr_rejected, _wr_report = filter_within_response_duplicates(normalized_pairs)
     accepted: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
     inspected: list[dict[str, Any]] = []
     discovery_results: list[dict[str, Any]] = []
-    if result.response_record and result.normalized_result.source_status.value == "COMPLETE":
+
+    if primary and primary["result"].normalized_result.source_status.value == "COMPLETE" and agg_clean_final:
         accepted, rejected, inspected = _select_discovery_candidates(
-            _wr_clean,
+            agg_clean_final,
             existing_token_mints=existing_token_mints,
             existing_pair_addresses=existing_pair_addresses,
             existing_symbol_name_keys=existing_symbol_name_keys,
@@ -1620,17 +1834,19 @@ def build_discover_candidates_once_payload(
         )
         if accepted:
             discovery_payload = {
-                "source_status": result.normalized_result.source_status.value,
-                "source_response_id": result.response_record.id,
+                "source_status": primary["result"].normalized_result.source_status.value,
+                "source_response_id": primary["response_id"],
                 "pairs": accepted,
             }
             discovery_results = process_discovery_payload(
                 resolved,
                 args.source_name,
                 discovery_payload,
-                source_channel=source_channel,
-                source_channel_reason=source_channel_reason,
+                source_channel=primary["source_channel"],
+                source_channel_reason=primary["source_channel_reason"],
             )
+            if discovery_results:
+                primary["candidates_persisted"] = len(discovery_results)
 
     after_counts = get_core_table_counts(resolved, project_root)
     deltas = {
@@ -1649,59 +1865,65 @@ def build_discover_candidates_once_payload(
             """,
             (len(discovery_results),),
         ).fetchall()
+
     status = get_operator_db_status(resolved, project_root)
-    _age_activity_report = build_age_activity_report(normalized_pairs)
-    _field_completeness_report = build_field_completeness_report(normalized_pairs)
-    _total_pre_persistence_rejections = len(rejected) + len(_wr_rejected)
+    _age_activity_report = build_age_activity_report(all_normalized_pairs)
+    _field_completeness_report = build_field_completeness_report(all_normalized_pairs)
+    _total_pre_persistence_rejections = len(rejected) + len(agg_wr_rejected)
+    _source_budget_report = _build_source_budget_report(plan, execution_records, max_source_requests)
+
+    # Primary-request fields: use the first READY execution for backward compat.
+    # For max_source_requests == 1 this is identical to the prior single-request shape.
+    _pr = primary
+    _pr_result = _pr["result"] if _pr else None
+
     return {
         "command": "printer-discover-candidates-once",
         "db_path": str(resolved),
         "operator_approved": True,
         "source_name": args.source_name,
-        "request_kind": display_request_kind,
-        "query": query,
-        "endpoint": endpoint,
+        "request_kind": _pr["display_request_kind"] if _pr else "not_executed",
+        "query": _pr["query"] if _pr else "not_executed",
+        "endpoint": _pr["endpoint"] if _pr else "not_executed",
         "max_candidates": args.max_candidates,
-        "source_status": result.normalized_result.source_status.value,
-        "data_quality_label": result.normalized_result.data_quality_label.value,
-        "source_request_id": result.request_record.id,
-        "source_response_id": result.response_record.id if result.response_record else None,
-        "source_failure_id": result.failure_record.id if result.failure_record else None,
-        "failure_type": result.normalized_result.failure_type,
-        "failure_message": result.normalized_result.failure_message,
-        "candidates_found": len(normalized_pairs),
+        "source_status": _pr_result.normalized_result.source_status.value if _pr_result else "NOT_EXECUTED",
+        "data_quality_label": _pr_result.normalized_result.data_quality_label.value if _pr_result else "NOT_EXECUTED",
+        "source_request_id": _pr["request_id"] if _pr else None,
+        "source_response_id": _pr["response_id"] if _pr else None,
+        "source_failure_id": (_pr_result.failure_record.id if _pr_result and _pr_result.failure_record else None) if _pr else None,
+        "failure_type": _pr_result.normalized_result.failure_type if _pr_result else None,
+        "failure_message": _pr_result.normalized_result.failure_message if _pr_result else None,
+        "candidates_found": len(all_normalized_pairs),
         "candidates_inspected": inspected,
         "candidates_accepted": len(discovery_results),
         "candidates_rejected": len(rejected),
         "rejected_candidates": rejected,
-        # V2-2H.1 candidate-stage reporting separation (V2-2G Repair Area A).
+        # V2-2H.1 candidate-stage reporting (V2-2G Repair Area A).
         # candidates_seen_total and candidates_normalized_total are equal today
-        # because normalize_candidates() normalizes every extracted raw item
-        # 1:1 and does not currently drop rows during normalization; both are
-        # reported explicitly so a future parser change that does drop rows
-        # will be visible as a divergence between the two counts.
-        # This command does not invoke V2-2C selection-batch logic, so the
-        # selection-stage fields are reported as NOT_MEASURED rather than
-        # guessed.
+        # (normalize_candidates is 1:1 with extracted items). Both are reported
+        # so a future parser change that drops rows shows a visible divergence.
+        # Selection-stage fields are NOT_MEASURED — this command does not invoke
+        # V2-2C selection-batch logic.
         "candidate_stage_report": {
-            "candidates_seen_total": len(normalized_pairs),
-            "candidates_normalized_total": len(normalized_pairs),
+            "candidates_seen_total": len(all_normalized_pairs),
+            "candidates_normalized_total": len(all_normalized_pairs),
             "candidates_persisted_total": len(discovery_results),
-            # Includes both within-response rejections (H.4) and post-filter gate rejections.
+            # Includes within-response rejections (H.4) and post-filter gate rejections.
             "candidates_rejected_pre_persistence": _total_pre_persistence_rejections,
             "candidates_considered_for_selection": "NOT_MEASURED",
             "candidates_selected": "NOT_MEASURED",
             "candidates_rejected_by_selection": "NOT_MEASURED",
         },
-        # V2-2H.2 age/activity reporting hook. Separate from candidate_stage_report
-        # so the H.1 int/NOT_MEASURED invariant on that dict is preserved.
+        # V2-2H.2 age/activity reporting hook.
         "age_activity_report": _age_activity_report,
         # V2-2H.3 field completeness reporting hook.
         "field_completeness_report": _field_completeness_report,
         # V2-2H.4 within-response duplicate/STNP reporting hook.
-        "within_response_integrity_report": _wr_report,
-        "source_channel": source_channel,
-        "source_channel_reason": source_channel_reason,
+        "within_response_integrity_report": _combined_wr_report,
+        # V2-2H.5 source-budget reporting hook.
+        "source_budget_report": _source_budget_report,
+        "source_channel": _pr["source_channel"] if _pr else None,
+        "source_channel_reason": _pr["source_channel_reason"] if _pr else None,
         "accepted_candidates": [
             {
                 "token_mint": candidate.get("token_mint"),
@@ -1775,6 +1997,17 @@ def main_discover_candidates_once(argv: Sequence[str] | None = None) -> int:
             "geckoterminal_trending_pool_reference. Ignored for DexScreener."
         ))
     parser.add_argument("--request-key")
+    parser.add_argument(
+        "--max-source-requests",
+        type=int,
+        default=_MAX_SOURCE_REQUESTS_DEFAULT,
+        dest="max_source_requests",
+        help=(
+            "Maximum source requests to attempt per run. Must be between "
+            f"{_MAX_SOURCE_REQUESTS_MIN} and {_MAX_SOURCE_REQUESTS_MAX}. "
+            f"Default: {_MAX_SOURCE_REQUESTS_DEFAULT}."
+        ),
+    )
     args = parser.parse_args(argv)
     try:
         payload = build_discover_candidates_once_payload(args)
