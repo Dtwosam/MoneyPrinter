@@ -1131,6 +1131,9 @@ _METADATA_FIELDS = (
     "exit_realism_state",
     "source_status",
     "data_quality_label",
+    # V2-2P: T4-safe pair-age context metadata. Never drives age gates or A3.
+    "pair_age_context_label",
+    "token_age_evidence_tier",
 )
 
 

@@ -783,6 +783,88 @@ class TestCandidateMetadata(unittest.TestCase):
         self.assertAlmostEqual(meta["price_usd"], 0.002)
         self.assertAlmostEqual(meta["liquidity_usd"], 5_000.0)
 
+    # V2-2P.2: pair_age_context_label and token_age_evidence_tier must survive
+    # build_batch_item() and candidate_metadata_json round-trip.
+
+    def test_pair_age_context_label_in_extract_candidate_metadata(self):
+        c = _fast_candidate(pair_age_context_label="RECENT_PAIR_FOR_EXISTING_TOKEN")
+        meta = extract_candidate_metadata(c)
+        self.assertIn("pair_age_context_label", meta)
+        self.assertEqual(meta["pair_age_context_label"], "RECENT_PAIR_FOR_EXISTING_TOKEN")
+
+    def test_token_age_evidence_tier_in_extract_candidate_metadata(self):
+        c = _fast_candidate(token_age_evidence_tier=None)
+        meta = extract_candidate_metadata(c)
+        self.assertIn("token_age_evidence_tier", meta)
+        self.assertIsNone(meta["token_age_evidence_tier"])
+
+    def test_pair_age_context_label_survives_build_batch_item(self):
+        c = _fast_candidate(pair_age_context_label="PAIR_ONLY_AGE_KNOWN")
+        item = build_batch_item(c, item_status=ITEM_STATUS_SELECTED)
+        meta = json.loads(item["candidate_metadata_json"])
+        self.assertIn("pair_age_context_label", meta)
+        self.assertEqual(meta["pair_age_context_label"], "PAIR_ONLY_AGE_KNOWN")
+
+    def test_token_age_evidence_tier_none_survives_build_batch_item(self):
+        c = _fast_candidate(token_age_evidence_tier=None)
+        item = build_batch_item(c, item_status=ITEM_STATUS_SELECTED)
+        meta = json.loads(item["candidate_metadata_json"])
+        self.assertIn("token_age_evidence_tier", meta)
+        self.assertIsNone(meta["token_age_evidence_tier"])
+
+    def test_all_five_pair_age_context_labels_survive_roundtrip(self):
+        labels = [
+            "RECENT_LAUNCH",
+            "OLDER_TOKEN",
+            "RECENT_PAIR_FOR_EXISTING_TOKEN",
+            "PAIR_ONLY_AGE_KNOWN",
+            "UNKNOWN_TOKEN_AGE",
+        ]
+        for label in labels:
+            c = _fast_candidate(pair_age_context_label=label)
+            item = build_batch_item(c, item_status=ITEM_STATUS_SELECTED)
+            meta = json.loads(item["candidate_metadata_json"])
+            self.assertEqual(meta["pair_age_context_label"], label,
+                             f"Label {label!r} did not survive metadata round-trip")
+
+    def test_pair_age_context_label_none_when_absent(self):
+        # Candidate without the field at all → metadata key present but None
+        c = _fast_candidate()
+        c.pop("pair_age_context_label", None)
+        meta = extract_candidate_metadata(c)
+        self.assertIn("pair_age_context_label", meta)
+        self.assertIsNone(meta["pair_age_context_label"])
+
+    def test_token_age_evidence_tier_none_when_absent(self):
+        c = _fast_candidate()
+        c.pop("token_age_evidence_tier", None)
+        meta = extract_candidate_metadata(c)
+        self.assertIn("token_age_evidence_tier", meta)
+        self.assertIsNone(meta["token_age_evidence_tier"])
+
+    def test_pair_age_context_label_persists_in_db(self):
+        conn = _make_db()
+        try:
+            c = _fast_candidate(
+                token_mint="MintPAGE1111111111111111111111111111111111",
+                pair_address="PairPAGE1111111111111111111111111111111111",
+                pair_age_context_label="RECENT_PAIR_FOR_EXISTING_TOKEN",
+                token_age_evidence_tier=None,
+            )
+            item = build_batch_item(c, item_status=ITEM_STATUS_SELECTED,
+                                    primary_bucket=BUCKET_A1, tracking_lane="TRACK_FAST",
+                                    operator_approved=True)
+            persist_selection_batch(conn, "V22P2-META-TEST", [item])
+            row = conn.execute(
+                "SELECT candidate_metadata_json FROM printer_selection_batch_items LIMIT 1"
+            ).fetchone()
+            self.assertIsNotNone(row)
+            meta = json.loads(row[0])
+            self.assertEqual(meta["pair_age_context_label"], "RECENT_PAIR_FOR_EXISTING_TOKEN")
+            self.assertIsNone(meta["token_age_evidence_tier"])
+        finally:
+            conn.close()
+
 
 # ---------------------------------------------------------------------------
 # 10. Candidate-universe summary
