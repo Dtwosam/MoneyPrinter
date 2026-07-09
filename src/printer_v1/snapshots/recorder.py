@@ -18,6 +18,7 @@ from printer_v1.snapshots.quality import (
     normalize_snapshot_payload,
     to_timestamp,
 )
+from printer_v1.snapshots.staged_derivation import apply_staged_derivation
 
 
 SCHEDULER_KIND_BY_LANE = {
@@ -173,7 +174,9 @@ def record_token_snapshot(
             f"INSERT INTO printer_token_snapshots ({columns}) VALUES ({placeholders})",
             tuple(normalized.get(field) for field in SNAPSHOT_INSERT_FIELDS),
         )
-        return True, int(cursor.lastrowid)
+        new_id = int(cursor.lastrowid)
+        apply_staged_derivation(connection, new_id, normalized)
+        return True, new_id
 
 
 def record_snapshot_from_source_response(
