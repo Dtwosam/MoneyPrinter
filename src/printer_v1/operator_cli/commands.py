@@ -64,9 +64,12 @@ from printer_v1.discovery.classifier import (
     is_dead_or_near_zero_activity_candidate,
 )
 from printer_v1.discovery.selection_batch import (
+    assign_bucket,
+    BUCKET_D1,
     build_age_activity_report,
     build_field_completeness_report,
     filter_within_response_duplicates,
+    validate_batch_quota,
 )
 from printer_v1.discovery.contracts import DiscoveryChannelLabel, DiscoveryOutputAction
 from printer_v1.discovery.discovery import process_discovery_payload
@@ -1686,7 +1689,7 @@ def _select_discovery_candidates(
     existing_pair_addresses: set[str],
     existing_symbol_name_keys: set[str] | None = None,
     max_candidates: int,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     accepted_actions = {
         DiscoveryOutputAction.TRACK_FAST,
         DiscoveryOutputAction.TRACK_NORMAL,
@@ -1694,6 +1697,11 @@ def _select_discovery_candidates(
     accepted: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
     inspected: list[dict[str, Any]] = []
+    # V2-2M: audit-only pool — WATCH_ONLY/D1 candidates captured before rejection fires.
+    # These never enter accepted or the persistence path.
+    audit_only_pool: list[dict[str, Any]] = []
+    _audit_only_mints: set[str] = set()
+
     for candidate in normalized_pairs:
         token_mint = candidate.get("token_mint")
         pair_address = candidate.get("pair_address")
@@ -1725,9 +1733,35 @@ def _select_discovery_candidates(
         ):
             reject_reason = "weak_copycat_candidate"
         elif classification.reason == "insufficient_activity_for_memory_growth":
+            # D1 dead/near-dead candidates: capture for quota supplement before rejection.
             reject_reason = "insufficient_activity_for_memory_growth"
+            if token_mint and token_mint not in _audit_only_mints:
+                _b, _bn = assign_bucket(candidate)
+                audit_only_pool.append({
+                    **candidate,
+                    "audit_only": True,
+                    "candidate_kind": "AUDIT_ONLY",
+                    "pre_persistence_reject_reason": reject_reason,
+                    "tracking_lane": classification.discovery_action.value,
+                    "primary_bucket": _b,
+                    "primary_bucket_name": _bn,
+                })
+                _audit_only_mints.add(token_mint)
         elif classification.discovery_action == DiscoveryOutputAction.WATCH_ONLY:
+            # Non-D1 WATCH_ONLY candidates: capture for quota supplement before rejection.
             reject_reason = "watch_only_not_eligible_for_15m_memory_proof_cycle"
+            if token_mint and token_mint not in _audit_only_mints:
+                _b, _bn = assign_bucket(candidate)
+                audit_only_pool.append({
+                    **candidate,
+                    "audit_only": True,
+                    "candidate_kind": "AUDIT_ONLY",
+                    "pre_persistence_reject_reason": reject_reason,
+                    "tracking_lane": classification.discovery_action.value,
+                    "primary_bucket": _b,
+                    "primary_bucket_name": _bn,
+                })
+                _audit_only_mints.add(token_mint)
         elif classification.discovery_action not in accepted_actions:
             reject_reason = f"classified_{classification.discovery_action.value.lower()}"
         elif len(accepted) >= max_candidates:
@@ -1737,7 +1771,7 @@ def _select_discovery_candidates(
             rejected.append({**item, "reject_reason": reject_reason})
         else:
             accepted.append(candidate)
-    return accepted, rejected, inspected
+    return accepted, rejected, inspected, audit_only_pool
 
 
 def build_discover_candidates_once_payload(
@@ -1825,17 +1859,70 @@ def build_discover_candidates_once_payload(
     accepted: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
     inspected: list[dict[str, Any]] = []
+    audit_only_pool: list[dict[str, Any]] = []
     discovery_results: list[dict[str, Any]] = []
+    _quota_supplement: list[dict[str, Any]] = []
+    _quota_ok: bool = True
+    _quota_violations: list[str] = []
 
     if primary and primary["result"].normalized_result.source_status.value == "COMPLETE" and agg_clean_final:
-        accepted, rejected, inspected = _select_discovery_candidates(
+        accepted, rejected, inspected, audit_only_pool = _select_discovery_candidates(
             agg_clean_final,
             existing_token_mints=existing_token_mints,
             existing_pair_addresses=existing_pair_addresses,
             existing_symbol_name_keys=existing_symbol_name_keys,
             max_candidates=args.max_candidates,
         )
+
+        # V2-2M: quota supplement — check batch diversity; draw from audit_only_pool if needed.
+        # Quota check is informational only; audit-only candidates never enter the tracking path.
+        _quota_view: list[dict[str, Any]] = []
+        for _c in accepted:
+            _qb, _ = assign_bucket(_c)
+            _quota_view.append({
+                "token_mint": _c.get("token_mint", ""),
+                "pair_address": _c.get("pair_address", ""),
+                "primary_bucket": _qb,
+                "tracking_lane": classify_discovery_candidate(_c).discovery_action.value,
+                "candidate_kind": "ACTIVE_TRACKING",
+            })
+        _quota_ok, _quota_violations = validate_batch_quota(_quota_view)
+        if not _quota_ok and len(_quota_view) >= 6:
+            _needs_watch = "MISSING_WATCH_ONLY_REQUIRED_FOR_6PLUS_BATCH" in _quota_violations
+            _needs_d1 = "MISSING_D1_DEAD_TOKEN_REQUIRED_FOR_6PLUS_BATCH" in _quota_violations
+            for _ao in audit_only_pool:
+                if not _needs_watch and not _needs_d1:
+                    break
+                _ao_lane = _ao.get("tracking_lane", "")
+                _ao_bucket = _ao.get("primary_bucket", "")
+                if _needs_watch and _ao_lane == "WATCH_ONLY":
+                    _quota_supplement.append(_ao)
+                    _needs_watch = False
+                    if _ao_bucket == BUCKET_D1:  # D1 candidate satisfies both violations at once
+                        _needs_d1 = False
+                elif _needs_d1 and _ao_bucket == BUCKET_D1:
+                    _quota_supplement.append(_ao)
+                    _needs_d1 = False
+            if _quota_supplement:
+                _supp_items = [
+                    {
+                        "token_mint": _ao.get("token_mint", ""),
+                        "pair_address": _ao.get("pair_address", ""),
+                        "primary_bucket": _ao.get("primary_bucket", ""),
+                        "tracking_lane": _ao.get("tracking_lane", ""),
+                        "candidate_kind": "AUDIT_ONLY",
+                    }
+                    for _ao in _quota_supplement
+                ]
+                _quota_ok, _quota_violations = validate_batch_quota(_quota_view + _supp_items)
+
         if accepted:
+            # V2-2M active-tracking guard: audit_only candidates must never reach persistence.
+            for _c in accepted:
+                if _c.get("audit_only"):
+                    raise ValueError(
+                        f"audit_only candidate must not enter process_discovery_payload: {_c.get('token_mint')}"
+                    )
             # H.6: group accepted candidates by (source_channel, source_channel_reason,
             # source_response_id) so each group is persisted with its own correct channel.
             # process_discovery_payload overwrites candidate["source_channel"] with the
@@ -1901,6 +1988,52 @@ def build_discover_candidates_once_payload(
     _total_pre_persistence_rejections = len(rejected) + len(agg_wr_rejected)
     _source_budget_report = _build_source_budget_report(plan, execution_records, max_source_requests)
 
+    # V2-2M audit-only report variables.
+    _ao_watch_only_count = sum(1 for _ao in audit_only_pool if _ao.get("tracking_lane") == "WATCH_ONLY")
+    _ao_d1_count = sum(1 for _ao in audit_only_pool if _ao.get("primary_bucket") == BUCKET_D1)
+    _raw_watch_only_count = sum(
+        1 for c in agg_clean_final
+        if classify_discovery_candidate(c).discovery_action == DiscoveryOutputAction.WATCH_ONLY
+    )
+    _raw_d1_count = sum(1 for c in agg_clean_final if assign_bucket(c)[0] == BUCKET_D1)
+    _ao_selected_count = len(_quota_supplement)
+    _ao_watch_only_selected = sum(
+        1 for _ao in _quota_supplement if _ao.get("tracking_lane") == "WATCH_ONLY"
+    )
+    _ao_d1_selected = sum(
+        1 for _ao in _quota_supplement if _ao.get("primary_bucket") == BUCKET_D1
+    )
+    _audit_only_report: dict[str, Any] = {
+        "raw_watch_only_count": _raw_watch_only_count,
+        "audit_only_watch_only_count": _ao_watch_only_count,
+        "persisted_watch_only_count": 0,
+        "selected_watch_only_count": _ao_watch_only_selected,
+        "raw_d1_count": _raw_d1_count,
+        "audit_only_d1_count": _ao_d1_count,
+        "persisted_d1_count": 0,
+        "selected_d1_count": _ao_d1_selected,
+        "audit_only_candidate_count": len(audit_only_pool),
+        "selected_audit_only_count": _ao_selected_count,
+        "active_tracking_selected_count": len(discovery_results),
+        "quota_satisfied_by_audit_only_count": _ao_selected_count,
+        "quota_satisfied_by_active_tracking_count": len(discovery_results),
+        "candidates_excluded_from_tracking_but_used_for_quota": _ao_selected_count,
+        "reasons_by_audit_only_candidate": {
+            _ao.get("token_mint", ""): _ao.get("pre_persistence_reject_reason", "")
+            for _ao in audit_only_pool
+        },
+        "source_trace_by_audit_only_candidate": {
+            _ao.get("token_mint", ""): {
+                "source_channel": _ao.get("source_channel"),
+                "source_response_id": _ao.get("source_response_id"),
+            }
+            for _ao in audit_only_pool
+        },
+        # Bonus observability fields for testing and debugging.
+        "quota_ok": _quota_ok,
+        "quota_violations": _quota_violations,
+    }
+
     # Primary-request fields: use the first READY execution for backward compat.
     # For max_source_requests == 1 this is identical to the prior single-request shape.
     _pr = primary
@@ -1942,6 +2075,11 @@ def build_discover_candidates_once_payload(
             "candidates_considered_for_selection": "NOT_MEASURED",
             "candidates_selected": "NOT_MEASURED",
             "candidates_rejected_by_selection": "NOT_MEASURED",
+            # V2-2M audit-only pool stage counts (all int, H.1 invariant preserved).
+            "candidates_audit_only_total": len(audit_only_pool),
+            "candidates_audit_only_watch_only": _ao_watch_only_count,
+            "candidates_audit_only_d1": _ao_d1_count,
+            "candidates_audit_only_selected_for_quota": _ao_selected_count,
         },
         # V2-2H.2 age/activity reporting hook.
         "age_activity_report": _age_activity_report,
@@ -1951,6 +2089,8 @@ def build_discover_candidates_once_payload(
         "within_response_integrity_report": _combined_wr_report,
         # V2-2H.5 source-budget reporting hook.
         "source_budget_report": _source_budget_report,
+        # V2-2M audit-only pool and quota supplement reporting hook.
+        "audit_only_report": _audit_only_report,
         "source_channel": _pr["source_channel"] if _pr else None,
         "source_channel_reason": _pr["source_channel_reason"] if _pr else None,
         "accepted_candidates": [
