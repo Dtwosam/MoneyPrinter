@@ -204,6 +204,70 @@ def normalize_pumpportal_payload(
     )
 
 
+_PUMPPORTAL_LAUNCH_STALENESS_THRESHOLD_SECONDS = 3600.0
+
+
+def _parse_event_ts(value: Any) -> datetime | None:
+    """Parse a PumpPortal event timestamp field to UTC datetime, or None if invalid."""
+    if value is None or value == "" or value == 0:
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            f = float(value)
+            if f <= 0:
+                return None
+            epoch_s = f / 1000.0 if f > 1e10 else f
+            return datetime.fromtimestamp(epoch_s, tz=timezone.utc)
+        except (ValueError, OverflowError, OSError):
+            return None
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+def _extract_launch_timestamp(
+    event: Mapping[str, Any],
+    observation_iso: str,
+) -> str | None:
+    """Extract and validate token creation timestamp from a pumpfun_launch_stream event.
+
+    Priority: tokenCreatedAt → createdTimestamp → timestamp (first non-empty wins).
+    Returns ISO-8601 UTC string if valid; None otherwise.
+
+    Rejects: missing, zero, negative, unparseable, future relative to observation,
+    or stale (older than _PUMPPORTAL_LAUNCH_STALENESS_THRESHOLD_SECONDS).
+    Must NOT be called for migration events.
+    """
+    raw = None
+    for key in ("tokenCreatedAt", "createdTimestamp", "timestamp"):
+        v = event.get(key)
+        if v is not None and v != "" and v != 0:
+            raw = v
+            break
+    if raw is None:
+        return None
+
+    obs_dt = _parse_event_ts(observation_iso)
+    if obs_dt is None:
+        obs_dt = datetime.now(timezone.utc)
+
+    event_dt = _parse_event_ts(raw)
+    if event_dt is None:
+        return None
+
+    if event_dt > obs_dt:
+        return None
+
+    staleness = (obs_dt - event_dt).total_seconds()
+    if staleness > _PUMPPORTAL_LAUNCH_STALENESS_THRESHOLD_SECONDS:
+        return None
+
+    return event_dt.isoformat()
+
+
 def _normalize_pumpportal_event(
     event: Mapping[str, Any],
     request_kind: str,
@@ -228,10 +292,19 @@ def _normalize_pumpportal_event(
         or _sol_to_approx_usd(event.get("vSolInBondingCurve") or event.get("solAmount"))
     )
 
+    # T2 token-age evidence: launch events only.
+    # Observation ref for staleness uses explicit captured_at; falls back to current time.
+    # Migration events never provide token_created_at.
+    token_created_at: str | None = None
+    if request_kind == "pumpfun_launch_stream":
+        _observation_ref = event.get("captured_at") or _current_iso()
+        token_created_at = _extract_launch_timestamp(event, _observation_ref)
+
     return {
         "chain": _SOLANA_CHAIN,
         "mint": token_mint,
         "pairAddress": pair_address,
+        "request_kind": request_kind,
         "symbol": event.get("symbol"),
         "name": event.get("name"),
         "dex": "pumpfun" if request_kind == "pumpfun_launch_stream" else "raydium",
@@ -243,6 +316,7 @@ def _normalize_pumpportal_event(
         "captured_at": _current_iso() if not event.get("captured_at") and not event.get("timestamp") else (
             event.get("captured_at") or event.get("timestamp")
         ),
+        "token_created_at": token_created_at,
     }
 
 

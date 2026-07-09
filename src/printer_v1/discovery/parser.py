@@ -115,6 +115,29 @@ def _derive_pair_age_context_label(
     return "RECENT_PAIR_FOR_EXISTING_TOKEN" if pair_age_seconds < 86400.0 else "PAIR_ONLY_AGE_KNOWN"
 
 
+def _derive_token_age_evidence_tier(
+    source_name: str,
+    candidate_payload: Mapping[str, Any],
+    token_created_at_raw: Any,
+    token_age_seconds: float | None,
+) -> str | None:
+    """Return 'T2' if this candidate carries PumpPortal launch-event creation evidence.
+
+    T2 requires: source is pumpportal, request_kind is pumpfun_launch_stream,
+    token_created_at was present, and token_age_seconds was successfully derived.
+    All other cases return None (T5 unknown).
+    """
+    if source_name != "pumpportal":
+        return None
+    if candidate_payload.get("request_kind") != "pumpfun_launch_stream":
+        return None
+    if token_created_at_raw is None:
+        return None
+    if token_age_seconds is None:
+        return None
+    return "T2"
+
+
 def normalize_candidate(
     source_name: str,
     candidate_payload: Mapping[str, Any],
@@ -240,10 +263,12 @@ def normalize_candidate(
             _safe_age_seconds(_token_created_at_raw, _now),
             _safe_age_seconds(_pair_created_at_raw, _now),
         ),
-        # T1/T2/T3 evidence not yet active — always None until a governed
-        # token-creation source is wired. Populated by the plan-loop stamping
-        # pattern when a future T1/T2/T3 source path is activated.
-        "token_age_evidence_tier": None,
+        "token_age_evidence_tier": _derive_token_age_evidence_tier(
+            source_name,
+            candidate_payload,
+            _token_created_at_raw,
+            _safe_age_seconds(_token_created_at_raw, _now),
+        ),
     }
     return {field: normalized.get(field) for field in NORMALIZED_FIELDS}
 
