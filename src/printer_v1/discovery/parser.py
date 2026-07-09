@@ -42,6 +42,9 @@ NORMALIZED_FIELDS = (
     "price_change_15m",
     "price_change_1h",
     "price_change_24h",
+    # V2-2P: T4-safe pair-age context labels; token_age_evidence_tier always None until T1/T2/T3 source active.
+    "pair_age_context_label",
+    "token_age_evidence_tier",
 )
 
 CRITICAL_FIELDS = ("token_mint", "pair_address", "chain", "source_name", "captured_at")
@@ -94,6 +97,22 @@ def extract_candidate_items(source_name: str, payload: Mapping[str, Any]) -> lis
     if any(key in payload for key in ("token_mint", "tokenAddress", "baseToken", "mint")):
         return [payload]
     return []
+
+
+def _derive_pair_age_context_label(
+    token_age_seconds: float | None,
+    pair_age_seconds: float | None,
+) -> str:
+    """Return a T4-safe context label describing what age evidence is available.
+
+    MUST NOT be used to drive derive_age_bucket, derive_recent_active_tier,
+    or A3. It is reporting/context only. Pair age never replaces token age.
+    """
+    if token_age_seconds is not None:
+        return "RECENT_LAUNCH" if token_age_seconds < 86400.0 else "OLDER_TOKEN"
+    if pair_age_seconds is None:
+        return "UNKNOWN_TOKEN_AGE"
+    return "RECENT_PAIR_FOR_EXISTING_TOKEN" if pair_age_seconds < 86400.0 else "PAIR_ONLY_AGE_KNOWN"
 
 
 def normalize_candidate(
@@ -216,6 +235,15 @@ def normalize_candidate(
             candidate_payload, attributes,
             key_paths=(("priceChange", "h24"), ("price_change", "h24"), ("price_change_24h",)),
         ),
+        # V2-2P: T4-safe pair-age context. Never drives age gates or A3.
+        "pair_age_context_label": _derive_pair_age_context_label(
+            _safe_age_seconds(_token_created_at_raw, _now),
+            _safe_age_seconds(_pair_created_at_raw, _now),
+        ),
+        # T1/T2/T3 evidence not yet active — always None until a governed
+        # token-creation source is wired. Populated by the plan-loop stamping
+        # pattern when a future T1/T2/T3 source path is activated.
+        "token_age_evidence_tier": None,
     }
     return {field: normalized.get(field) for field in NORMALIZED_FIELDS}
 

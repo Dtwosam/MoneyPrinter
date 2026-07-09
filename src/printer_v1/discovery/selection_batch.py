@@ -183,6 +183,24 @@ ALLOWED_STNP_CLASSIFICATIONS = frozenset({
 })
 
 # ---------------------------------------------------------------------------
+# Pair age context labels (V2-2P) — T4-safe context only, never gate-driving
+# ---------------------------------------------------------------------------
+
+PAIR_AGE_CONTEXT_RECENT_LAUNCH = "RECENT_LAUNCH"
+PAIR_AGE_CONTEXT_OLDER_TOKEN = "OLDER_TOKEN"
+PAIR_AGE_CONTEXT_RECENT_PAIR_FOR_EXISTING_TOKEN = "RECENT_PAIR_FOR_EXISTING_TOKEN"
+PAIR_AGE_CONTEXT_PAIR_ONLY_AGE_KNOWN = "PAIR_ONLY_AGE_KNOWN"
+PAIR_AGE_CONTEXT_UNKNOWN_TOKEN_AGE = "UNKNOWN_TOKEN_AGE"
+
+ALLOWED_PAIR_AGE_CONTEXT_LABELS: frozenset[str] = frozenset({
+    PAIR_AGE_CONTEXT_RECENT_LAUNCH,
+    PAIR_AGE_CONTEXT_OLDER_TOKEN,
+    PAIR_AGE_CONTEXT_RECENT_PAIR_FOR_EXISTING_TOKEN,
+    PAIR_AGE_CONTEXT_PAIR_ONLY_AGE_KNOWN,
+    PAIR_AGE_CONTEXT_UNKNOWN_TOKEN_AGE,
+})
+
+# ---------------------------------------------------------------------------
 # Item status
 # ---------------------------------------------------------------------------
 
@@ -684,6 +702,50 @@ def build_field_completeness_report(candidates: list[dict[str, Any]]) -> dict[st
                 counts[f"missing_{field}_count"] += 1
     counts["total_candidates"] = len(candidates)
     return counts
+
+
+# ---------------------------------------------------------------------------
+# Pair age context report (V2-2P)
+# ---------------------------------------------------------------------------
+
+def build_pair_age_context_report(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return label counts for pair_age_context_label and token_age_evidence_tier.
+
+    These are T4-safe context fields only. They do not drive age gates, A3,
+    derive_age_bucket, or derive_recent_active_tier. All counts are ints.
+    """
+    label_counts: dict[str, int] = {
+        PAIR_AGE_CONTEXT_RECENT_LAUNCH: 0,
+        PAIR_AGE_CONTEXT_OLDER_TOKEN: 0,
+        PAIR_AGE_CONTEXT_RECENT_PAIR_FOR_EXISTING_TOKEN: 0,
+        PAIR_AGE_CONTEXT_PAIR_ONLY_AGE_KNOWN: 0,
+        PAIR_AGE_CONTEXT_UNKNOWN_TOKEN_AGE: 0,
+    }
+    tier_counts: dict[str, int] = {
+        "T1": 0,
+        "T2": 0,
+        "T3": 0,
+        "T4_PAIR_ONLY": 0,
+        "T5_UNKNOWN": 0,
+    }
+    for c in candidates:
+        label = c.get("pair_age_context_label")
+        if label in label_counts:
+            label_counts[label] += 1
+        tier = c.get("token_age_evidence_tier")
+        if tier in ("T1", "T2", "T3"):
+            tier_counts[tier] += 1
+        elif c.get("pair_age_seconds") is not None:
+            tier_counts["T4_PAIR_ONLY"] += 1
+        else:
+            tier_counts["T5_UNKNOWN"] += 1
+    return {
+        "pair_age_context_label_counts": label_counts,
+        "token_age_evidence_tier_counts": tier_counts,
+        "tok_age_known_count": sum(1 for c in candidates if c.get("token_age_seconds") is not None),
+        "pair_age_known_count": sum(1 for c in candidates if c.get("pair_age_seconds") is not None),
+        "total_candidates": len(candidates),
+    }
 
 
 # ---------------------------------------------------------------------------

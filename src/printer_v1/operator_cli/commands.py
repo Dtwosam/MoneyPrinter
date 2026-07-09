@@ -68,6 +68,7 @@ from printer_v1.discovery.selection_batch import (
     BUCKET_D1,
     build_age_activity_report,
     build_field_completeness_report,
+    build_pair_age_context_report,
     filter_within_response_duplicates,
     validate_batch_quota,
 )
@@ -2021,6 +2022,7 @@ def build_discover_candidates_once_payload(
     status = get_operator_db_status(resolved, project_root)
     _age_activity_report = build_age_activity_report(all_normalized_pairs)
     _field_completeness_report = build_field_completeness_report(all_normalized_pairs)
+    _pair_age_context_report = build_pair_age_context_report(all_normalized_pairs)
     _total_pre_persistence_rejections = len(rejected) + len(agg_wr_rejected)
     _source_budget_report = _build_source_budget_report(plan, execution_records, max_source_requests)
 
@@ -2123,6 +2125,8 @@ def build_discover_candidates_once_payload(
         "age_activity_report": _age_activity_report,
         # V2-2H.3 field completeness reporting hook.
         "field_completeness_report": _field_completeness_report,
+        # V2-2P pair age context reporting hook (T4-safe context; no gate driving).
+        "pair_age_context_report": _pair_age_context_report,
         # V2-2H.4 within-response duplicate/STNP reporting hook.
         "within_response_integrity_report": _combined_wr_report,
         # V2-2H.5 source-budget reporting hook.
@@ -2137,6 +2141,9 @@ def build_discover_candidates_once_payload(
                 "pair_address": candidate.get("pair_address"),
                 "tracking_label": classify_discovery_candidate(candidate).discovery_action.value,
                 "source_channel": candidate.get("source_channel"),
+                # V2-2P: T4-safe pair age context metadata per accepted candidate.
+                "pair_age_context_label": candidate.get("pair_age_context_label"),
+                "token_age_evidence_tier": candidate.get("token_age_evidence_tier"),
             }
             for candidate in accepted[: len(discovery_results)]
         ],
