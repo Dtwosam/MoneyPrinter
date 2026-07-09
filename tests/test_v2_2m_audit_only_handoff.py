@@ -14,6 +14,8 @@ Targeted tests for:
   H. H.1 invariant: new candidate_stage_report fields are all int.
   I. Locked-table regression: no tracking-queue/scheduler rows created for audit-only.
   J. Backward compat: H.1-H.6 invariants preserved for normal (active-tracking) flow.
+  K. V2-2M.2: eligibility gate — FAILED/STALE/DIRTY candidates excluded from audit pool.
+  L. V2-2M.2: source trace includes source_name and source_channel_reason.
 
 Locks preserved: no live discovery, no source fetching, no live DB mutation,
 no memory generation, no retrieval, no paper decisions, no BUY/SELL/HOLD,
@@ -35,6 +37,7 @@ sys.path.insert(0, str(SRC_PATH))
 
 from printer_v1.db import apply_migrations
 from printer_v1.operator_cli.commands import (
+    _is_audit_only_eligible,
     _select_discovery_candidates,
     build_discover_candidates_once_payload,
 )
@@ -152,11 +155,16 @@ def _dead_gt_pool(pool_address: str, token_mint: str, *, symbol: str = "DEAD") -
 
 
 def _make_d1_candidate(mint: str = "D1Mint11111111111111111111111111111111111111") -> dict:
-    """Pre-built normalized D1 (dead/near-zero) candidate for unit tests."""
+    """Pre-built normalized D1 (dead/near-zero) candidate for unit tests.
+
+    Includes V2-2M.2 eligibility fields (source_status, data_quality_label) at their
+    clean defaults so the eligibility gate passes. Override to test ineligible cases.
+    """
     return {
         "chain": "solana",
         "token_mint": mint,
         "pair_address": f"D1Pair{mint[5:]}",
+        "source_name": "geckoterminal",
         "price_usd": 0.000001,
         "liquidity_usd": 0.5,
         "volume_5m": 0.0,
@@ -166,13 +174,22 @@ def _make_d1_candidate(mint: str = "D1Mint11111111111111111111111111111111111111
         "volume_24h": 0.0,
         "txns_24h": 0,
         "source_channel": _GT_NEW_POOL_CHANNEL,
+        "source_channel_reason": "new_pool_discovery",
         "source_response_id": "unit-test-resp",
+        # V2-2M.2: eligibility fields — override in tests for failed/dirty cases.
+        "source_status": "COMPLETE",
+        "data_quality_label": "CLEAN_DATA",
     }
 
 
 def _make_watch_only_candidate(mint: str = "WOMint11111111111111111111111111111111111111") -> dict:
     """Pre-built normalized non-D1 WATCH_ONLY candidate (missing source_name/captured_at
-    → should_watch_only_candidate fires before track paths can qualify)."""
+    → should_watch_only_candidate fires before track paths can qualify).
+
+    Includes V2-2M.2 eligibility fields at their clean defaults. source_name and
+    captured_at are intentionally absent — they control the classifier path. Override
+    source_status/data_quality_label to test ineligible cases.
+    """
     return {
         "chain": "solana",
         "token_mint": mint,
@@ -186,7 +203,11 @@ def _make_watch_only_candidate(mint: str = "WOMint111111111111111111111111111111
         "volume_24h": 5000.0,
         "txns_24h": 100,
         "source_channel": _GT_NEW_POOL_CHANNEL,
+        "source_channel_reason": "new_pool_discovery",
         "source_response_id": "unit-test-resp",
+        # V2-2M.2: eligibility fields — override in tests for failed/dirty cases.
+        "source_status": "COMPLETE",
+        "data_quality_label": "CLEAN_DATA",
         # No source_name/captured_at → candidate_has_required_fields = False
         # → should_watch_only_candidate = True (partial_market_fields_or_low_activity)
     }
@@ -559,8 +580,11 @@ class TestAuditOnlyReportFields(unittest.TestCase):
         if traces:
             for mint, trace in traces.items():
                 self.assertIsInstance(trace, dict)
+                # V2-2M.2: all four source-trace fields required (V2-2L Section 6.1)
+                self.assertIn("source_name", trace)
                 self.assertIn("source_channel", trace)
                 self.assertIn("source_response_id", trace)
+                self.assertIn("source_channel_reason", trace)
 
     def test_dead_pool_shows_in_audit_only_d1_count(self):
         payload = self._payload_with_dead()
@@ -766,6 +790,242 @@ class TestMixedRun(unittest.TestCase):
         payload = self._mixed_payload()
         reasons = payload["audit_only_report"]["reasons_by_audit_only_candidate"]
         self.assertGreater(len(reasons), 0)
+
+
+# ---------------------------------------------------------------------------
+# K. V2-2M.2 eligibility gate: direct helper unit tests
+# ---------------------------------------------------------------------------
+
+class TestIsAuditOnlyEligible(unittest.TestCase):
+    """Direct tests of the _is_audit_only_eligible() helper (V2-2L Section 6.1)."""
+
+    def _eligible(self, source_status: str, data_quality_label: str) -> bool:
+        return _is_audit_only_eligible({
+            "source_status": source_status,
+            "data_quality_label": data_quality_label,
+        })
+
+    def test_complete_clean_data_is_eligible(self):
+        self.assertTrue(self._eligible("COMPLETE", "CLEAN_DATA"))
+
+    def test_complete_acceptable_partial_is_eligible(self):
+        self.assertTrue(self._eligible("COMPLETE", "ACCEPTABLE_PARTIAL_DATA"))
+
+    def test_partial_clean_data_is_eligible(self):
+        self.assertTrue(self._eligible("PARTIAL", "CLEAN_DATA"))
+
+    def test_partial_acceptable_partial_is_eligible(self):
+        self.assertTrue(self._eligible("PARTIAL", "ACCEPTABLE_PARTIAL_DATA"))
+
+    def test_failed_source_status_is_not_eligible(self):
+        self.assertFalse(self._eligible("FAILED", "CLEAN_DATA"))
+
+    def test_stale_source_status_is_not_eligible(self):
+        self.assertFalse(self._eligible("STALE", "CLEAN_DATA"))
+
+    def test_conflicting_source_status_is_not_eligible(self):
+        self.assertFalse(self._eligible("CONFLICTING", "CLEAN_DATA"))
+
+    def test_dirty_data_quality_is_not_eligible(self):
+        self.assertFalse(self._eligible("COMPLETE", "DIRTY_DATA"))
+
+    def test_stale_data_quality_is_not_eligible(self):
+        self.assertFalse(self._eligible("COMPLETE", "STALE_DATA"))
+
+    def test_missing_critical_data_quality_is_not_eligible(self):
+        self.assertFalse(self._eligible("COMPLETE", "MISSING_CRITICAL_DATA"))
+
+    def test_unknown_source_status_is_not_eligible(self):
+        self.assertFalse(self._eligible("UNKNOWN_STATUS", "CLEAN_DATA"))
+
+    def test_unknown_data_quality_label_is_not_eligible(self):
+        self.assertFalse(self._eligible("COMPLETE", "UNKNOWN_QUALITY"))
+
+    def test_missing_source_status_field_is_not_eligible(self):
+        self.assertFalse(_is_audit_only_eligible({"data_quality_label": "CLEAN_DATA"}))
+
+    def test_missing_data_quality_field_is_not_eligible(self):
+        self.assertFalse(_is_audit_only_eligible({"source_status": "COMPLETE"}))
+
+    def test_empty_candidate_is_not_eligible(self):
+        self.assertFalse(_is_audit_only_eligible({}))
+
+
+# ---------------------------------------------------------------------------
+# K2. V2-2M.2 eligibility gate wired into _select_discovery_candidates()
+# ---------------------------------------------------------------------------
+
+class TestAuditOnlyEligibilityGate(unittest.TestCase):
+    """Verify that FAILED/STALE/DIRTY/unknown candidates are excluded from the audit pool."""
+
+    # -- D1 ineligible cases --
+
+    def test_failed_source_status_d1_not_in_audit_pool(self):
+        cand = {**_make_d1_candidate(), "source_status": "FAILED"}
+        _a, _r, _i, pool = _select([cand])
+        self.assertEqual(len(pool), 0, "FAILED D1 must not enter audit_only_pool")
+
+    def test_stale_source_status_d1_not_in_audit_pool(self):
+        cand = {**_make_d1_candidate(), "source_status": "STALE"}
+        _a, _r, _i, pool = _select([cand])
+        self.assertEqual(len(pool), 0)
+
+    def test_conflicting_source_status_d1_not_in_audit_pool(self):
+        cand = {**_make_d1_candidate(), "source_status": "CONFLICTING"}
+        _a, _r, _i, pool = _select([cand])
+        self.assertEqual(len(pool), 0)
+
+    def test_dirty_data_d1_not_in_audit_pool(self):
+        cand = {**_make_d1_candidate(), "data_quality_label": "DIRTY_DATA"}
+        _a, _r, _i, pool = _select([cand])
+        self.assertEqual(len(pool), 0, "DIRTY_DATA D1 must not enter audit_only_pool")
+
+    def test_stale_data_quality_d1_not_in_audit_pool(self):
+        cand = {**_make_d1_candidate(), "data_quality_label": "STALE_DATA"}
+        _a, _r, _i, pool = _select([cand])
+        self.assertEqual(len(pool), 0)
+
+    def test_missing_critical_data_d1_not_in_audit_pool(self):
+        cand = {**_make_d1_candidate(), "data_quality_label": "MISSING_CRITICAL_DATA"}
+        _a, _r, _i, pool = _select([cand])
+        self.assertEqual(len(pool), 0)
+
+    def test_unknown_source_status_d1_not_in_audit_pool(self):
+        cand = {**_make_d1_candidate(), "source_status": "INVENTED_STATUS"}
+        _a, _r, _i, pool = _select([cand])
+        self.assertEqual(len(pool), 0)
+
+    def test_unknown_data_quality_d1_not_in_audit_pool(self):
+        cand = {**_make_d1_candidate(), "data_quality_label": "INVENTED_QUALITY"}
+        _a, _r, _i, pool = _select([cand])
+        self.assertEqual(len(pool), 0)
+
+    # -- WATCH_ONLY ineligible cases --
+
+    def test_failed_source_status_watch_only_not_in_audit_pool(self):
+        cand = {**_make_watch_only_candidate(), "source_status": "FAILED"}
+        _a, _r, _i, pool = _select([cand])
+        self.assertEqual(len(pool), 0, "FAILED WATCH_ONLY must not enter audit_only_pool")
+
+    def test_stale_source_status_watch_only_not_in_audit_pool(self):
+        cand = {**_make_watch_only_candidate(), "source_status": "STALE"}
+        _a, _r, _i, pool = _select([cand])
+        self.assertEqual(len(pool), 0)
+
+    def test_dirty_data_watch_only_not_in_audit_pool(self):
+        cand = {**_make_watch_only_candidate(), "data_quality_label": "DIRTY_DATA"}
+        _a, _r, _i, pool = _select([cand])
+        self.assertEqual(len(pool), 0)
+
+    def test_stale_data_quality_watch_only_not_in_audit_pool(self):
+        cand = {**_make_watch_only_candidate(), "data_quality_label": "STALE_DATA"}
+        _a, _r, _i, pool = _select([cand])
+        self.assertEqual(len(pool), 0)
+
+    # -- Acceptable partial cases (should still enter pool) --
+
+    def test_partial_source_status_d1_enters_audit_pool(self):
+        cand = {**_make_d1_candidate(), "source_status": "PARTIAL"}
+        _a, _r, _i, pool = _select([cand])
+        self.assertGreater(len(pool), 0, "PARTIAL D1 must be eligible for audit_only_pool")
+
+    def test_acceptable_partial_data_d1_enters_audit_pool(self):
+        cand = {**_make_d1_candidate(), "data_quality_label": "ACCEPTABLE_PARTIAL_DATA"}
+        _a, _r, _i, pool = _select([cand])
+        self.assertGreater(len(pool), 0)
+
+    def test_partial_source_status_watch_only_enters_audit_pool(self):
+        cand = {**_make_watch_only_candidate(), "source_status": "PARTIAL"}
+        _a, _r, _i, pool = _select([cand])
+        self.assertGreater(len(pool), 0)
+
+    def test_acceptable_partial_data_watch_only_enters_audit_pool(self):
+        cand = {**_make_watch_only_candidate(), "data_quality_label": "ACCEPTABLE_PARTIAL_DATA"}
+        _a, _r, _i, pool = _select([cand])
+        self.assertGreater(len(pool), 0)
+
+    # -- Ineligible candidate still appears in rejected list --
+
+    def test_failed_d1_still_appears_in_rejected_list(self):
+        """Eligibility gate affects pool admission only; reject_reason is still emitted."""
+        cand = {**_make_d1_candidate(), "source_status": "FAILED"}
+        _a, rejected, _i, pool = _select([cand])
+        reasons = [r["reject_reason"] for r in rejected]
+        self.assertIn("insufficient_activity_for_memory_growth", reasons)
+        self.assertEqual(len(pool), 0)
+
+    def test_dirty_watch_only_still_appears_in_rejected_list(self):
+        cand = {**_make_watch_only_candidate(), "data_quality_label": "DIRTY_DATA"}
+        _a, rejected, _i, pool = _select([cand])
+        reasons = [r["reject_reason"] for r in rejected]
+        self.assertIn("watch_only_not_eligible_for_15m_memory_proof_cycle", reasons)
+        self.assertEqual(len(pool), 0)
+
+
+# ---------------------------------------------------------------------------
+# L. V2-2M.2 source trace: all four fields present in integration payload
+# ---------------------------------------------------------------------------
+
+class TestSourceTraceAllFields(unittest.TestCase):
+    """Integration tests verifying the four-field source trace (V2-2L Section 6.1)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self._db = _db(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _payload_with_dead(self):
+        pool = _dead_gt_pool(
+            "TraceTestPool111111111111111111111111111111",
+            "TraceTestMint111111111111111111111111111111",
+        )
+        args = _run_args(self._db)
+        return build_discover_candidates_once_payload(
+            args, transport=_gt_transport([pool])
+        )
+
+    def test_source_trace_has_source_name(self):
+        payload = self._payload_with_dead()
+        traces = payload["audit_only_report"]["source_trace_by_audit_only_candidate"]
+        self.assertGreater(len(traces), 0, "Expected at least one audit-only candidate")
+        for mint, trace in traces.items():
+            self.assertIn("source_name", trace, f"source_name missing from trace for {mint!r}")
+
+    def test_source_trace_has_source_channel(self):
+        payload = self._payload_with_dead()
+        traces = payload["audit_only_report"]["source_trace_by_audit_only_candidate"]
+        for _mint, trace in traces.items():
+            self.assertIn("source_channel", trace)
+
+    def test_source_trace_has_source_response_id(self):
+        payload = self._payload_with_dead()
+        traces = payload["audit_only_report"]["source_trace_by_audit_only_candidate"]
+        for _mint, trace in traces.items():
+            self.assertIn("source_response_id", trace)
+
+    def test_source_trace_has_source_channel_reason(self):
+        payload = self._payload_with_dead()
+        traces = payload["audit_only_report"]["source_trace_by_audit_only_candidate"]
+        for _mint, trace in traces.items():
+            self.assertIn("source_channel_reason", trace, "source_channel_reason missing from trace")
+
+    def test_source_trace_source_name_matches_run_args(self):
+        """source_name on candidates comes from normalize_candidates(args.source_name, ...)."""
+        payload = self._payload_with_dead()
+        traces = payload["audit_only_report"]["source_trace_by_audit_only_candidate"]
+        for _mint, trace in traces.items():
+            self.assertEqual(trace["source_name"], "geckoterminal")
+
+    def test_source_trace_all_four_keys_present_together(self):
+        """All four trace fields must be present simultaneously (not any three)."""
+        payload = self._payload_with_dead()
+        traces = payload["audit_only_report"]["source_trace_by_audit_only_candidate"]
+        self.assertGreater(len(traces), 0)
+        for mint, trace in traces.items():
+            missing = [k for k in ("source_name", "source_channel", "source_response_id", "source_channel_reason") if k not in trace]
+            self.assertEqual(missing, [], f"Trace for {mint!r} is missing keys: {missing}")
 
 
 if __name__ == "__main__":

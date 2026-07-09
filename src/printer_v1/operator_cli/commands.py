@@ -1682,6 +1682,29 @@ def _existing_token_pair_sets(connection: sqlite3.Connection) -> tuple[set[str],
     )
 
 
+# V2-2M.2: audit-only pool admission criteria (V2-2L Section 6.1).
+# Only COMPLETE/PARTIAL responses with CLEAN_DATA/ACCEPTABLE_PARTIAL_DATA quality
+# may contribute candidates to the audit-only pool. Failed/stale/dirty candidates
+# cannot satisfy quota requirements — admitting them would produce a fake quota pass.
+_AUDIT_ONLY_ELIGIBLE_SOURCE_STATUSES: frozenset[str] = frozenset({"COMPLETE", "PARTIAL"})
+_AUDIT_ONLY_ELIGIBLE_DATA_QUALITY_LABELS: frozenset[str] = frozenset(
+    {"CLEAN_DATA", "ACCEPTABLE_PARTIAL_DATA"}
+)
+
+
+def _is_audit_only_eligible(candidate: dict[str, Any]) -> bool:
+    """Return True iff the candidate passes V2-2L Section 6.1 audit-only admission rules.
+
+    source_status and data_quality_label are stamped per-candidate in the plan loop
+    (V2-2M.2). Missing or unknown values are treated as ineligible.
+    """
+    if candidate.get("source_status") not in _AUDIT_ONLY_ELIGIBLE_SOURCE_STATUSES:
+        return False
+    if candidate.get("data_quality_label") not in _AUDIT_ONLY_ELIGIBLE_DATA_QUALITY_LABELS:
+        return False
+    return True
+
+
 def _select_discovery_candidates(
     normalized_pairs: list[dict[str, Any]],
     *,
@@ -1735,7 +1758,11 @@ def _select_discovery_candidates(
         elif classification.reason == "insufficient_activity_for_memory_growth":
             # D1 dead/near-dead candidates: capture for quota supplement before rejection.
             reject_reason = "insufficient_activity_for_memory_growth"
-            if token_mint and token_mint not in _audit_only_mints:
+            if (
+                token_mint
+                and token_mint not in _audit_only_mints
+                and _is_audit_only_eligible(candidate)
+            ):
                 _b, _bn = assign_bucket(candidate)
                 audit_only_pool.append({
                     **candidate,
@@ -1750,7 +1777,11 @@ def _select_discovery_candidates(
         elif classification.discovery_action == DiscoveryOutputAction.WATCH_ONLY:
             # Non-D1 WATCH_ONLY candidates: capture for quota supplement before rejection.
             reject_reason = "watch_only_not_eligible_for_15m_memory_proof_cycle"
-            if token_mint and token_mint not in _audit_only_mints:
+            if (
+                token_mint
+                and token_mint not in _audit_only_mints
+                and _is_audit_only_eligible(candidate)
+            ):
                 _b, _bn = assign_bucket(candidate)
                 audit_only_pool.append({
                     **candidate,
@@ -1832,6 +1863,11 @@ def build_discover_candidates_once_payload(
             # H.6: stamp per-candidate response id so the persistence grouping step
             # can route each candidate to the correct process_discovery_payload call.
             candidate["source_response_id"] = exec_rec["response_id"]
+            # V2-2M.2: stamp response-level quality signals per-candidate so the
+            # audit-only eligibility gate inside _select_discovery_candidates() can
+            # check them without accessing the exec_rec closure.
+            candidate["source_status"] = result.normalized_result.source_status.value
+            candidate["data_quality_label"] = result.normalized_result.data_quality_label.value
 
         # V2-2H.4: per-response within-response dedup before aggregation.
         wr_clean, wr_rejected, wr_report = filter_within_response_duplicates(normalized_pairs)
@@ -2024,8 +2060,10 @@ def build_discover_candidates_once_payload(
         },
         "source_trace_by_audit_only_candidate": {
             _ao.get("token_mint", ""): {
+                "source_name": _ao.get("source_name"),
                 "source_channel": _ao.get("source_channel"),
                 "source_response_id": _ao.get("source_response_id"),
+                "source_channel_reason": _ao.get("source_channel_reason"),
             }
             for _ao in audit_only_pool
         },
