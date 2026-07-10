@@ -398,9 +398,17 @@ def _normalize_pumpportal_event(
     # Observation ref for staleness uses explicit captured_at; falls back to current time.
     # Migration events never provide token_created_at.
     token_created_at: str | None = None
+    live_observed_launch: bool = False
     if request_kind == "pumpfun_launch_stream":
         _observation_ref = event.get("captured_at") or _current_iso()
         token_created_at = _extract_launch_timestamp(event, _observation_ref)
+        # OBSERVED_LIVE_LAUNCH only when no explicit timestamp field exists at all.
+        # A stale, invalid, or zero timestamp still counts as "field present" —
+        # only complete absence of all three fields triggers this flag.
+        if token_created_at is None and not any(
+            k in event for k in ("tokenCreatedAt", "createdTimestamp", "timestamp")
+        ):
+            live_observed_launch = True
 
     return {
         "chain": _SOLANA_CHAIN,
@@ -419,6 +427,7 @@ def _normalize_pumpportal_event(
             event.get("captured_at") or event.get("timestamp")
         ),
         "token_created_at": token_created_at,
+        "live_observed_launch": live_observed_launch,
     }
 
 

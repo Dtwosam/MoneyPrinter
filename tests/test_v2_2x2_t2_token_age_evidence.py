@@ -380,11 +380,13 @@ class TestT2TimestampMapping(unittest.TestCase):
 
 class TestT2InvalidTimestamps(unittest.TestCase):
     def test_no_timestamp_fields_no_t2(self):
+        # No explicit timestamp fields → no T2 evidence, but OBSERVED_LIVE_LAUNCH tier set.
+        # token_created_at and token_age_seconds remain None (V2-2AG).
         event = _launch_event()  # no tokenCreatedAt, createdTimestamp, or timestamp
         candidate = _run_launch_pipeline(event)
         self.assertIsNone(candidate.get("token_created_at"))
         self.assertIsNone(candidate.get("token_age_seconds"))
-        self.assertIsNone(candidate.get("token_age_evidence_tier"))
+        self.assertEqual(candidate.get("token_age_evidence_tier"), "OBSERVED_LIVE_LAUNCH")
 
     def test_zero_tokenCreatedAt_no_t2(self):
         event = _launch_event(tokenCreatedAt=0)
@@ -688,11 +690,12 @@ class TestMetadataSurvival(unittest.TestCase):
         self.assertIsNotNone(meta.get("pair_age_context_label"))
         self.assertEqual(meta.get("token_age_evidence_tier"), "T2")
 
-    def test_no_t2_candidate_has_none_tier_in_metadata(self):
+    def test_no_t2_candidate_has_observed_live_launch_tier_in_metadata(self):
+        # No timestamp fields → OBSERVED_LIVE_LAUNCH tier (V2-2AG); token_created_at still None.
         event = _launch_event()  # no timestamp fields
         candidate = _run_launch_pipeline(event)
         meta = extract_candidate_metadata(candidate)
-        self.assertIsNone(meta.get("token_age_evidence_tier"))
+        self.assertEqual(meta.get("token_age_evidence_tier"), "OBSERVED_LIVE_LAUNCH")
 
     def test_token_age_evidence_tier_in_metadata_fields(self):
         # Confirm extract_candidate_metadata covers token_age_evidence_tier

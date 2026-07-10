@@ -121,21 +121,30 @@ def _derive_token_age_evidence_tier(
     token_created_at_raw: Any,
     token_age_seconds: float | None,
 ) -> str | None:
-    """Return 'T2' if this candidate carries PumpPortal launch-event creation evidence.
+    """Return the token-age evidence tier for this candidate.
 
-    T2 requires: source is pumpportal, request_kind is pumpfun_launch_stream,
-    token_created_at was present, and token_age_seconds was successfully derived.
+    T2: source is pumpportal, request_kind is pumpfun_launch_stream,
+        explicit source-provided timestamp present and valid age derived.
+
+    OBSERVED_LIVE_LAUNCH: source is pumpportal, request_kind is
+        pumpfun_launch_stream, no explicit timestamp field existed in the
+        event, live_observed_launch flag set by pumpportal normalizer.
+        token_created_at and token_age_seconds remain None.
+
     All other cases return None (T5 unknown).
+    T2 takes precedence over OBSERVED_LIVE_LAUNCH if both conditions could apply.
     """
     if source_name != "pumpportal":
         return None
     if candidate_payload.get("request_kind") != "pumpfun_launch_stream":
         return None
-    if token_created_at_raw is None:
-        return None
-    if token_age_seconds is None:
-        return None
-    return "T2"
+    # T2: explicit source-provided timestamp present and valid.
+    if token_created_at_raw is not None and token_age_seconds is not None:
+        return "T2"
+    # OBSERVED_LIVE_LAUNCH: mint-bearing launch event; no explicit timestamp field.
+    if token_created_at_raw is None and candidate_payload.get("live_observed_launch"):
+        return "OBSERVED_LIVE_LAUNCH"
+    return None
 
 
 def normalize_candidate(
