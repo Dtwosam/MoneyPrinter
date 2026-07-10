@@ -8,8 +8,9 @@ Metered, paid, or trading-related streams such as subscribeTokenTrade
 and subscribeAccountTrade are outside the allowed_request_kinds and
 are rejected at the Source Governor boundary.
 
-This adapter is fixture-transport-only. No persistent streaming loop
-is started here. Controlled collection is bounded and operator-approved.
+No persistent streaming loop is started here. Controlled collection is
+bounded and operator-approved. Live transport requires the 'websockets'
+package which is not included in project dependencies by default.
 """
 
 from __future__ import annotations
@@ -46,8 +47,8 @@ class PumpPortalAdapterMetadata:
     display_name: str = "PumpPortal"
     enabled_by_default: bool = False
     requires_governor_context: bool = True
-    supports_network_execution: bool = False
-    fixture_transport_only: bool = True
+    supports_network_execution: bool = True
+    fixture_transport_only: bool = False
 
 
 class PumpPortalAdapter:
@@ -121,6 +122,91 @@ def fixture_failure_transport(
                 "fixture_status": "failure",
                 "failure_type": "pumpportal_fixture_failure",
                 "failure_message": message,
+            }
+        )
+
+    return transport
+
+
+_PUMPPORTAL_WS_URL = "wss://pumpportal.fun/api/data"
+_PUMPPORTAL_SUBSCRIBE_NEW_TOKEN = {"method": "subscribeNewToken"}
+_PUMPPORTAL_MAX_EVENTS_DEFAULT = 5
+_PUMPPORTAL_DURATION_SECONDS_DEFAULT = 30.0
+_PUMPPORTAL_CONNECT_TIMEOUT_DEFAULT = 10.0
+
+
+def build_pumpportal_live_transport(
+    *,
+    max_events: int = _PUMPPORTAL_MAX_EVENTS_DEFAULT,
+    duration_seconds: float = _PUMPPORTAL_DURATION_SECONDS_DEFAULT,
+    connect_timeout_seconds: float = _PUMPPORTAL_CONNECT_TIMEOUT_DEFAULT,
+) -> Callable[[SourceAdapterContext], Mapping[str, Any]]:
+    """Returns a bounded live transport for pumpfun_launch_stream.
+
+    Requires the 'websockets' package (not included in project dependencies).
+    Raises RuntimeError at build time if websockets is not installed.
+
+    Bounds: max_events events or duration_seconds wall clock (whichever comes
+    first). connect_timeout_seconds caps the initial WebSocket handshake.
+    Zero reconnects. No background threads. No scheduler jobs. No DB writes.
+    """
+    try:
+        import websockets as _ws
+    except ImportError as exc:
+        raise RuntimeError(
+            "build_pumpportal_live_transport requires the 'websockets' package; "
+            "add websockets to project dependencies before using live transport"
+        ) from exc
+
+    import asyncio
+    import json
+
+    _url = _PUMPPORTAL_WS_URL
+    _subscribe_msg = json.dumps(_PUMPPORTAL_SUBSCRIBE_NEW_TOKEN)
+    _max_ev = max_events
+    _duration = duration_seconds
+    _connect_timeout = connect_timeout_seconds
+
+    async def _collect() -> list[dict]:
+        events: list[dict] = []
+        try:
+            async with asyncio.timeout(_connect_timeout):
+                ws = await _ws.connect(_url)
+        except Exception:
+            return events
+        try:
+            await ws.send(_subscribe_msg)
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + _duration
+            while len(events) < _max_ev:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+                try:
+                    async with asyncio.timeout(remaining):
+                        raw = await ws.recv()
+                    try:
+                        data = json.loads(raw)
+                    except (ValueError, TypeError):
+                        continue
+                    if isinstance(data, dict):
+                        events.append(data)
+                except asyncio.TimeoutError:
+                    break
+        finally:
+            try:
+                await ws.close()
+            except Exception:
+                pass
+        return events
+
+    def transport(context: SourceAdapterContext) -> Mapping[str, Any]:
+        del context
+        collected = asyncio.run(_collect())
+        return MappingProxyType(
+            {
+                "events": collected,
+                "subscription_method": "subscribeNewToken",
             }
         )
 

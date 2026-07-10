@@ -5,7 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
+
+if TYPE_CHECKING:
+    from printer_v1.sources.pumpportal import PumpPortalAdapter
 
 from printer_v1.contracts.enums import DataQualityLabel, SourceStatus
 from printer_v1.sources.contracts import (
@@ -131,7 +134,7 @@ def build_fixture_source_adapter(
 def execute_source_request_with_governor(
     db_path_or_conn,
     source_request: SourceRequest,
-    adapter: FixtureSourceAdapter,
+    adapter: FixtureSourceAdapter | PumpPortalAdapter,
     *,
     recent_request_count: int = 0,
     now: datetime | None = None,

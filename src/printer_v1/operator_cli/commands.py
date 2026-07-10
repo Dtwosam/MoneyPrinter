@@ -202,6 +202,7 @@ from printer_v1.sources.geckoterminal import (
 )
 from printer_v1.sources.pumpportal import (
     build_pumpportal_adapter,
+    build_pumpportal_live_transport,
 )
 from printer_v1.sources.pumpswap import (
     build_pumpswap_adapter,
@@ -1395,8 +1396,9 @@ _SOURCE_REQUEST_PLAN_CATALOG: dict[str, list[tuple[str, str]]] = {
         ("token_discovery", _PLAN_STATUS_READY),
     ],
     "pumpportal": [
-        # WebSocket streams — require operator-provided fixture; NOT_READY for live.
-        ("pumpfun_launch_stream", _PLAN_STATUS_NOT_READY),
+        # pumpfun_launch_stream: READY — live transport wired via build_pumpportal_live_transport().
+        # pumpfun_migration_stream: NOT_READY — no live migration transport in this lane.
+        ("pumpfun_launch_stream", _PLAN_STATUS_READY),
         ("pumpfun_migration_stream", _PLAN_STATUS_NOT_READY),
     ],
     "pumpswap": [
@@ -1484,13 +1486,23 @@ def _execute_plan_item(
         query = request_kind
         display_request_kind = request_kind
     elif source_name == "pumpportal":
-        if transport_fn is None:
+        if transport_fn is None and request_kind == "pumpfun_launch_stream":
+            try:
+                transport_fn = build_pumpportal_live_transport()
+            except RuntimeError as exc:
+                raise ValueError(
+                    f"PumpPortal live transport unavailable: {exc}"
+                ) from exc
+        elif transport_fn is None:
             raise ValueError(
-                "PumpPortal discovery requires an operator-provided fixture transport; "
-                "no live WebSocket is started automatically"
+                "PumpPortal discovery requires an operator-provided fixture transport "
+                "for this request kind; no live transport is available"
             )
         channel, channel_reason = _source_channel_for_pumpportal(request_kind)
-        endpoint = "pumpportal_fixture_only"
+        endpoint = (
+            "wss://pumpportal.fun/api/data" if request_kind == "pumpfun_launch_stream"
+            else "pumpportal_fixture_only"
+        )
         source_request = build_governed_source_request(
             "pumpportal",
             request_kind,

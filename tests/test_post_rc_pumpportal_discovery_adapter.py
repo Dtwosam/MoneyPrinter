@@ -207,8 +207,9 @@ class PumpPortalAdapterSafetyTests(unittest.TestCase):
         self.assertEqual(meta.source_name, PUMPPORTAL_SOURCE_NAME)
         self.assertFalse(meta.enabled_by_default)
         self.assertTrue(meta.requires_governor_context)
-        self.assertFalse(meta.supports_network_execution)
-        self.assertTrue(meta.fixture_transport_only)
+        # V2-2AB: live transport now supported — flags updated from V2-2AB design
+        self.assertTrue(meta.supports_network_execution)
+        self.assertFalse(meta.fixture_transport_only)
 
     def test_adapter_module_does_not_contain_forbidden_terms(self):
         source_text = (
@@ -225,10 +226,25 @@ class PumpPortalAdapterSafetyTests(unittest.TestCase):
             self.assertNotIn(fragment, source_text)
 
     def test_adapter_has_no_websocket_import(self):
+        # V2-2AB: websockets reference is present but import is LAZY (deferred inside
+        # build_pumpportal_live_transport, not a top-level import). Verify no top-level import.
+        import ast
         source_text = (
             SRC_PATH / "printer_v1" / "sources" / "pumpportal.py"
         ).read_text(encoding="utf-8")
-        self.assertNotIn("websocket", source_text.lower())
+        tree = ast.parse(source_text)
+        top_level_names: set[str] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Import, ast.ImportFrom)):
+                continue
+            if getattr(node, "col_offset", 1) != 0:
+                continue
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    top_level_names.add(alias.name.split(".")[0])
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                top_level_names.add(node.module.split(".")[0])
+        self.assertNotIn("websockets", top_level_names)
 
     def test_trading_request_kinds_not_in_allowed(self):
         for forbidden in FORBIDDEN_REQUEST_KINDS:
@@ -405,13 +421,18 @@ class PumpPortalCLIDiscoveryTests(unittest.TestCase):
         self.assertEqual(result["source_channel"], DiscoveryChannelLabel.PUMPFUN_NEW_TOKEN.value)
         self.assertEqual(result["source_channel_reason"], "pumpportal_launch_stream")
 
-    def test_migration_stream_records_pumpfun_migration_channel(self):
+    def test_migration_stream_not_ready_in_plan(self):
+        # V2-2AB: pumpfun_migration_stream is NOT_READY — no live migration transport exists.
+        # The plan item is included for reporting only; no execution occurs for migration.
+        # (This test was previously test_migration_stream_records_pumpfun_migration_channel;
+        # updated because migration was NOT_READY before and after V2-2AB.)
         result = build_discover_candidates_once_payload(
             _cli_args(self.db_path, request_kind="pumpfun_migration_stream"),
             transport=lambda ctx: _migration_payload(),
         )
-        self.assertEqual(result["source_channel"], DiscoveryChannelLabel.PUMPFUN_MIGRATION.value)
-        self.assertEqual(result["source_channel_reason"], "pumpportal_migration_stream")
+        # Migration is NOT_READY and max_source_requests=1, so it is the only plan item
+        # and is skipped. source_channel comes from primary (first executed) — None here.
+        self.assertIsNone(result["source_channel"])
 
     def test_migration_candidate_accepted_when_liquidity_above_floor(self):
         result = build_discover_candidates_once_payload(

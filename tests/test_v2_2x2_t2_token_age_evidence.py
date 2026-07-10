@@ -739,8 +739,8 @@ class TestSafety(unittest.TestCase):
 
     def test_adapter_fixture_transport_only_metadata(self):
         adapter = build_pumpportal_adapter()
-        self.assertTrue(adapter.metadata.fixture_transport_only)
-        self.assertFalse(adapter.metadata.supports_network_execution)
+        self.assertFalse(adapter.metadata.fixture_transport_only)
+        self.assertTrue(adapter.metadata.supports_network_execution)
 
     def test_adapter_no_transport_by_default(self):
         adapter = build_pumpportal_adapter()
