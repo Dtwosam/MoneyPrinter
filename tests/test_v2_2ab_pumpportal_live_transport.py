@@ -311,7 +311,7 @@ class TestLiveTransportMockedWebSocket(unittest.TestCase):
         fake_ws.connect = connect  # type: ignore[attr-defined]
 
         with patch.dict(sys.modules, {"websockets": fake_ws}):
-            transport_fn = build_pumpportal_live_transport(max_events=10)
+            transport_fn = build_pumpportal_live_transport(max_events=5)
             ctx = MagicMock()
             result = transport_fn(ctx)
 
@@ -587,6 +587,79 @@ class TestT2SafetyRules(unittest.TestCase):
         result = self._normalize(event, "pumpfun_launch_stream")
         self.assertIsNotNone(result)
         self.assertIsNone(result["token_created_at"])
+
+
+# ---------------------------------------------------------------------------
+# V2-2AC: websockets dependency declaration
+# ---------------------------------------------------------------------------
+
+class TestWebsocketsDependencyDeclaration(unittest.TestCase):
+    """V2-2AC: websockets must be declared in pyproject.toml project dependencies."""
+
+    def test_websockets_declared_in_pyproject_dependencies(self):
+        import re
+        pyproject_path = PROJECT_ROOT / "pyproject.toml"
+        self.assertTrue(pyproject_path.exists(), "pyproject.toml must exist")
+        text = pyproject_path.read_text(encoding="utf-8")
+        match = re.search(r'dependencies\s*=\s*\[([^\]]*)\]', text)
+        self.assertIsNotNone(match, "No dependencies list found in pyproject.toml")
+        deps_str = match.group(1)
+        self.assertIn("websockets", deps_str, "websockets must be in project dependencies")
+
+    def test_websockets_minimum_version_specified(self):
+        """The declared websockets dependency must include a minimum version constraint."""
+        import re
+        text = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        match = re.search(r'dependencies\s*=\s*\[([^\]]*)\]', text)
+        deps_str = match.group(1)
+        self.assertRegex(deps_str, r'websockets\s*>=\s*\d')
+
+
+# ---------------------------------------------------------------------------
+# V2-2AC: transport bound hardening
+# ---------------------------------------------------------------------------
+
+class TestBoundHardening(unittest.TestCase):
+    """V2-2AC: build_pumpportal_live_transport must reject unsafe bound overrides."""
+
+    def test_max_events_above_limit_raises_value_error(self):
+        with self.assertRaises(ValueError) as ctx:
+            build_pumpportal_live_transport(max_events=_PUMPPORTAL_MAX_EVENTS_DEFAULT + 1)
+        self.assertIn("max_events", str(ctx.exception))
+
+    def test_duration_above_limit_raises_value_error(self):
+        with self.assertRaises(ValueError) as ctx:
+            build_pumpportal_live_transport(duration_seconds=_PUMPPORTAL_DURATION_SECONDS_DEFAULT + 1.0)
+        self.assertIn("duration_seconds", str(ctx.exception))
+
+    def test_connect_timeout_above_limit_raises_value_error(self):
+        with self.assertRaises(ValueError) as ctx:
+            build_pumpportal_live_transport(connect_timeout_seconds=_PUMPPORTAL_CONNECT_TIMEOUT_DEFAULT + 1.0)
+        self.assertIn("connect_timeout_seconds", str(ctx.exception))
+
+    def test_bound_error_raised_before_websockets_import(self):
+        """Bound validation must fire even when websockets is absent."""
+        with patch.dict(sys.modules, {"websockets": None}):
+            with self.assertRaises(ValueError):
+                build_pumpportal_live_transport(max_events=_PUMPPORTAL_MAX_EVENTS_DEFAULT + 1)
+
+    def test_exact_defaults_are_accepted(self):
+        """Exact default bound values must be accepted (not off-by-one rejected)."""
+        fake_ws = _make_fake_ws_module([])
+        with patch.dict(sys.modules, {"websockets": fake_ws}):
+            fn = build_pumpportal_live_transport(
+                max_events=_PUMPPORTAL_MAX_EVENTS_DEFAULT,
+                duration_seconds=_PUMPPORTAL_DURATION_SECONDS_DEFAULT,
+                connect_timeout_seconds=_PUMPPORTAL_CONNECT_TIMEOUT_DEFAULT,
+            )
+        self.assertIsNotNone(fn)
+
+    def test_below_default_max_events_accepted(self):
+        """max_events below the limit must be accepted."""
+        fake_ws = _make_fake_ws_module([])
+        with patch.dict(sys.modules, {"websockets": fake_ws}):
+            fn = build_pumpportal_live_transport(max_events=_PUMPPORTAL_MAX_EVENTS_DEFAULT - 1)
+        self.assertIsNotNone(fn)
 
 
 if __name__ == "__main__":

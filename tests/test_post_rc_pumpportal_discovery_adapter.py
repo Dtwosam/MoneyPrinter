@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import contextmanager
+from unittest.mock import patch
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SRC_PATH = PROJECT_ROOT / "src"
@@ -452,10 +453,13 @@ class PumpPortalCLIDiscoveryTests(unittest.TestCase):
         self.assertGreater(result["candidates_rejected"], 0)
 
     def test_no_transport_raises_for_pumpportal(self):
-        with self.assertRaises(ValueError):
-            build_discover_candidates_once_payload(
-                _cli_args(self.db_path), transport=None
-            )
+        # Force websockets import to fail so the CLI raises ValueError deterministically.
+        # Without this, the test result depends on whether websockets is in the global env.
+        with patch.dict(sys.modules, {"websockets": None}):
+            with self.assertRaises(ValueError):
+                build_discover_candidates_once_payload(
+                    _cli_args(self.db_path), transport=None
+                )
 
     def test_source_channel_stored_in_db(self):
         build_discover_candidates_once_payload(

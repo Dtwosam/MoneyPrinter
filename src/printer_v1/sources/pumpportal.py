@@ -143,13 +143,29 @@ def build_pumpportal_live_transport(
 ) -> Callable[[SourceAdapterContext], Mapping[str, Any]]:
     """Returns a bounded live transport for pumpfun_launch_stream.
 
-    Requires the 'websockets' package (not included in project dependencies).
-    Raises RuntimeError at build time if websockets is not installed.
+    Requires the 'websockets' package (declared in project dependencies).
+    Raises RuntimeError at build time if websockets cannot be imported.
 
     Bounds: max_events events or duration_seconds wall clock (whichever comes
     first). connect_timeout_seconds caps the initial WebSocket handshake.
     Zero reconnects. No background threads. No scheduler jobs. No DB writes.
+
+    Raises ValueError if any bound exceeds the approved maximum.
     """
+    if max_events > _PUMPPORTAL_MAX_EVENTS_DEFAULT:
+        raise ValueError(
+            f"max_events {max_events} exceeds approved limit of {_PUMPPORTAL_MAX_EVENTS_DEFAULT}"
+        )
+    if duration_seconds > _PUMPPORTAL_DURATION_SECONDS_DEFAULT:
+        raise ValueError(
+            f"duration_seconds {duration_seconds} exceeds approved limit of "
+            f"{_PUMPPORTAL_DURATION_SECONDS_DEFAULT}"
+        )
+    if connect_timeout_seconds > _PUMPPORTAL_CONNECT_TIMEOUT_DEFAULT:
+        raise ValueError(
+            f"connect_timeout_seconds {connect_timeout_seconds} exceeds approved limit of "
+            f"{_PUMPPORTAL_CONNECT_TIMEOUT_DEFAULT}"
+        )
     try:
         import websockets as _ws
     except ImportError as exc:

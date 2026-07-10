@@ -3,7 +3,7 @@ name = "printer-v1"
 version = "0.0.0"
 description = "Printer V1 Solana-only paper-trading memory machine contracts."
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["websockets>=12.0"]
 
 [project.scripts]
 printer-init-db = "printer_v1.operator_cli.commands:main_init_db"
