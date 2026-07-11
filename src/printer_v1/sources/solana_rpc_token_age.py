@@ -58,10 +58,21 @@ _SPL_TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 _TOKEN_2022_PROGRAM_ID = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 _ALLOWED_TOKEN_PROGRAMS = frozenset({_SPL_TOKEN_PROGRAM_ID, _TOKEN_2022_PROGRAM_ID})
 _INIT_MINT_INSTRUCTION_TYPES = frozenset({"initializeMint", "initializeMint2"})
-_SPL_TOKEN_MINT_SIZE = 82
-_SPL_MINT_IS_INITIALIZED_OFFSET = 45  # offset of is_initialized bool in the 82-byte Mint layout
-_TOKEN_2022_ACCOUNT_TYPE_MINT = 1      # AccountType discriminant for a Token-2022 mint account
-_TOKEN_2022_EXTENSION_TLV_HEADER_SIZE = 4  # 2-byte type + 2-byte length
+_SPL_TOKEN_MINT_SIZE = 82            # Mint::LEN — base SPL Token Mint fixed size
+_SPL_MINT_IS_INITIALIZED_OFFSET = 45  # is_initialized bool offset in the 82-byte Mint layout
+# SPL Token-2022 extended-mint layout (source: solana-program-library,
+# token/program-2022/src/extension/mod.rs, constants BASE_ACCOUNT_LENGTH and
+# BASE_ACCOUNT_AND_TYPE_LENGTH):
+#   [0..82]   Base SPL Token Mint (Mint::LEN = 82 bytes)
+#   [82..165] Padding region (Account::LEN - Mint::LEN = 83 zero bytes)
+#             Aligns AccountType to BASE_ACCOUNT_LENGTH for backward compatibility
+#   [165]     AccountType discriminant (BASE_ACCOUNT_LENGTH; 1 = Mint, 2 = Account)
+#   [166..]   Extension TLV entries: 2-byte LE type + 2-byte LE length + data bytes
+_SPL_TOKEN_ACCOUNT_SIZE = 165           # Account::LEN / BASE_ACCOUNT_LENGTH in Token-2022
+_TOKEN_2022_ACCOUNT_TYPE_OFFSET = _SPL_TOKEN_ACCOUNT_SIZE       # = 165 — AccountType position
+_TOKEN_2022_EXTENSION_DATA_START = _SPL_TOKEN_ACCOUNT_SIZE + 1  # = 166 — TLV region start
+_TOKEN_2022_ACCOUNT_TYPE_MINT = 1       # AccountType::Mint discriminant value
+_TOKEN_2022_EXTENSION_TLV_HEADER_SIZE = 4  # TLV entry header: 2-byte type + 2-byte length
 
 _T3_ALLOWED_REQUEST_KINDS = frozenset({SOLANA_RPC_TOKEN_AGE_REQUEST_KIND})
 
@@ -343,40 +354,58 @@ def _decode_spl_token_base_mint_state(raw_bytes: bytes) -> tuple[bool, str | Non
 
 
 def _decode_token_2022_mint_state(raw_bytes: bytes) -> tuple[bool, str | None]:
-    """Validate a Token-2022 mint account: base Mint + AccountType byte + TLV extensions.
+    """Validate a Token-2022 extended mint account.
 
-    Validation steps:
-    1. 82-byte base SPL Token Mint layout (via _decode_spl_token_base_mint_state)
-    2. AccountType byte at offset 82 == 1 (Mint)
-    3. Extension region (bytes 83+) forms valid TLV entries — each entry is a
-       2-byte little-endian type, 2-byte little-endian length, then `length` bytes
-       of extension data. Trailing zero-padding bytes at the end are allowed.
+    Authoritative layout (solana-program-library token/program-2022/src/extension/mod.rs,
+    constants BASE_ACCOUNT_LENGTH = Account::LEN = 165, BASE_ACCOUNT_AND_TYPE_LENGTH = 166):
+      [0..82]   Base SPL Token Mint (Mint::LEN = 82 bytes, same fields as SPL Token)
+      [82..165] Padding region (83 zero bytes = Account::LEN - Mint::LEN)
+      [165]     AccountType discriminant (must be 1 = Mint; stored at BASE_ACCOUNT_LENGTH)
+      [166..]   Extension TLV entries: 2-byte LE type + 2-byte LE length + data bytes
 
+    Minimum valid Token-2022 extended mint: 166 bytes (= BASE_ACCOUNT_AND_TYPE_LENGTH).
     Returns (valid, error_message_or_None).
-    Owner-plus-length alone is NOT sufficient — the AccountType byte and extension
-    TLV structure must also be valid.
     """
+    # Step 1: validate 82-byte base SPL Token Mint (is_initialized at offset 45)
     ok, err = _decode_spl_token_base_mint_state(raw_bytes)
     if not ok:
         return False, err
 
-    # AccountType discriminant byte immediately after the 82-byte base
-    if len(raw_bytes) < _SPL_TOKEN_MINT_SIZE + 1:
-        return False, "Token-2022 mint missing AccountType byte after base Mint layout"
+    # Step 2: must have at least 166 bytes (base + padding + AccountType)
+    if len(raw_bytes) < _TOKEN_2022_EXTENSION_DATA_START:
+        return False, (
+            f"Token-2022 extended mint too short: {len(raw_bytes)} bytes; "
+            f"need ≥ {_TOKEN_2022_EXTENSION_DATA_START} "
+            f"(base {_SPL_TOKEN_MINT_SIZE} + padding {_TOKEN_2022_ACCOUNT_TYPE_OFFSET - _SPL_TOKEN_MINT_SIZE} + AccountType 1)"
+        )
 
-    account_type = raw_bytes[_SPL_TOKEN_MINT_SIZE]
+    # Step 3: padding region [82..165] must be all zero bytes
+    padding = raw_bytes[_SPL_TOKEN_MINT_SIZE:_TOKEN_2022_ACCOUNT_TYPE_OFFSET]
+    if any(b != 0 for b in padding):
+        first_bad = next(
+            _SPL_TOKEN_MINT_SIZE + i for i, b in enumerate(padding) if b != 0
+        )
+        return False, (
+            f"Token-2022 mint padding region "
+            f"[{_SPL_TOKEN_MINT_SIZE}..{_TOKEN_2022_ACCOUNT_TYPE_OFFSET}] "
+            f"has non-zero byte at offset {first_bad}"
+        )
+
+    # Step 4: AccountType at offset 165 must be 1 (Mint)
+    account_type = raw_bytes[_TOKEN_2022_ACCOUNT_TYPE_OFFSET]
     if account_type != _TOKEN_2022_ACCOUNT_TYPE_MINT:
         return False, (
-            f"Token-2022 AccountType byte {account_type!r} is not Mint "
+            f"Token-2022 AccountType byte {account_type!r} at offset "
+            f"{_TOKEN_2022_ACCOUNT_TYPE_OFFSET} is not Mint "
             f"(expected {_TOKEN_2022_ACCOUNT_TYPE_MINT})"
         )
 
-    # Walk TLV extension region starting at byte 83
-    ext_offset = _SPL_TOKEN_MINT_SIZE + 1
+    # Step 5: walk TLV extension region starting at 166
+    ext_offset = _TOKEN_2022_EXTENSION_DATA_START
     while ext_offset < len(raw_bytes):
         remaining = len(raw_bytes) - ext_offset
         if remaining < _TOKEN_2022_EXTENSION_TLV_HEADER_SIZE:
-            # Only trailing zero-padding is acceptable
+            # Trailing zero-padding is acceptable after the last valid TLV entry
             if all(b == 0 for b in raw_bytes[ext_offset:]):
                 break
             return False, (

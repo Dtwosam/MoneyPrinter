@@ -60,8 +60,11 @@ from printer_v1.sources.solana_rpc_token_age import (
     SolanaRpcTokenAgeAdapterMetadata,
     _T3_MAX_BLOCK_TIME_CALLS,
     _SPL_TOKEN_MINT_SIZE,
+    _SPL_TOKEN_ACCOUNT_SIZE,
     _SPL_MINT_IS_INITIALIZED_OFFSET,
     _TOKEN_2022_ACCOUNT_TYPE_MINT,
+    _TOKEN_2022_ACCOUNT_TYPE_OFFSET,
+    _TOKEN_2022_EXTENSION_DATA_START,
     _decode_spl_token_base_mint_state,
     _decode_token_2022_mint_state,
     build_solana_rpc_token_age_adapter,
@@ -1024,18 +1027,28 @@ class TestSplTokenMintStateDecoding(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# V2-2AK.2 Class 14: Token-2022 mint-state decoding
+# V2-2AK.2 / V2-2AL.1 Class 14: Token-2022 mint-state decoding (corrected layout)
 # ---------------------------------------------------------------------------
 
 def _make_token_2022_mint_bytes(
     *,
     is_initialized: int = 1,
+    padding: bytes | None = None,
     account_type: int = _TOKEN_2022_ACCOUNT_TYPE_MINT,
     extensions: bytes = b"",
 ) -> bytes:
-    """Return a Token-2022 mint buffer: 82-byte base + AccountType byte + extensions."""
-    base = _make_spl_mint_bytes(is_initialized=is_initialized)
-    return base + bytes([account_type]) + extensions
+    """Return a Token-2022 extended mint buffer with the correct V2-2AL layout.
+
+    Authoritative layout (SPL token-2022 extension/mod.rs, BASE_ACCOUNT_LENGTH = 165):
+      [0..82]:    Base SPL Token Mint (Mint::LEN = 82 bytes)
+      [82..165]:  Padding region (Account::LEN - Mint::LEN = 83 zero bytes)
+      [165]:      AccountType byte (BASE_ACCOUNT_LENGTH = Account::LEN = 165)
+      [166..]:    Extension TLV data
+    Minimum valid size: 166 bytes (BASE_ACCOUNT_AND_TYPE_LENGTH = Account::LEN + 1).
+    """
+    base = _make_spl_mint_bytes(is_initialized=is_initialized)  # 82 bytes
+    pad = padding if padding is not None else bytes(_SPL_TOKEN_ACCOUNT_SIZE - _SPL_TOKEN_MINT_SIZE)  # 83 zeros
+    return base + pad + bytes([account_type]) + extensions
 
 
 def _make_tlv_extension(ext_type: int, data: bytes) -> bytes:
@@ -1045,12 +1058,38 @@ def _make_tlv_extension(ext_type: int, data: bytes) -> bytes:
 
 
 class TestToken2022MintStateDecoding(unittest.TestCase):
-    """Unit tests for _decode_token_2022_mint_state() — V2-2AK.2 repair."""
+    """Unit tests for _decode_token_2022_mint_state() — V2-2AL.1 layout repair.
+
+    Correct Token-2022 extended mint layout per SPL token-2022 extension/mod.rs:
+      [0..82]:   Base SPL Token Mint (Mint::LEN = 82 bytes)
+      [82..165]: Padding region (83 zero bytes = Account::LEN - Mint::LEN)
+      [165]:     AccountType = 1 (Mint) at BASE_ACCOUNT_LENGTH
+      [166..]:   Extension TLV entries (2-byte LE type + 2-byte LE length + data)
+    Minimum valid size: 166 bytes (BASE_ACCOUNT_AND_TYPE_LENGTH = Account::LEN + 1).
+
+    V2-2AL finding: byte 82 is PADDING (zero), not AccountType. AccountType is at 165.
+    """
 
     def test_valid_no_extensions_passes(self):
+        """Minimal 166-byte Token-2022 mint (no extensions) must be accepted."""
         raw = _make_token_2022_mint_bytes()
+        self.assertEqual(len(raw), 166)
         ok, err = _decode_token_2022_mint_state(raw)
         self.assertTrue(ok)
+        self.assertIsNone(err)
+
+    def test_v2_2al_byte_82_is_zero_and_is_valid_padding(self):
+        """Byte 82 = 0 is correct padding — must NOT cause rejection.
+
+        V2-2AL live proof failed because the decoder read AccountType from
+        byte 82 (which is padding = 0). With corrected layout, byte 82 = 0
+        is expected padding and AccountType is read from byte 165.
+        """
+        raw = _make_token_2022_mint_bytes()
+        self.assertEqual(raw[_SPL_TOKEN_MINT_SIZE], 0, "byte 82 must be zero (padding)")
+        self.assertEqual(raw[_TOKEN_2022_ACCOUNT_TYPE_OFFSET], _TOKEN_2022_ACCOUNT_TYPE_MINT, "byte 165 must be AccountType=1")
+        ok, err = _decode_token_2022_mint_state(raw)
+        self.assertTrue(ok, f"byte 82 = 0 is valid padding, not invalid AccountType; got: {err}")
         self.assertIsNone(err)
 
     def test_valid_with_one_extension_passes(self):
@@ -1074,54 +1113,73 @@ class TestToken2022MintStateDecoding(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIsNone(err)
 
-    def test_wrong_account_type_byte_rejected(self):
+    def test_invalid_padding_byte_rejected(self):
+        """Non-zero byte in padding region [82..165] must be rejected."""
+        bad_padding = bytearray(83)
+        bad_padding[5] = 0xFF  # corrupts byte at offset 87 in the full buffer
+        raw = _make_token_2022_mint_bytes(padding=bytes(bad_padding))
+        ok, err = _decode_token_2022_mint_state(raw)
+        self.assertFalse(ok)
+        self.assertIn("padding", err.lower())
+
+    def test_wrong_account_type_byte_0_rejected(self):
+        """AccountType = 0 at offset 165 must be rejected (was old V2-2AK.2 byte-82 bug)."""
         raw = _make_token_2022_mint_bytes(account_type=0)
         ok, err = _decode_token_2022_mint_state(raw)
         self.assertFalse(ok)
         self.assertIn("AccountType", err)
+        self.assertIn("165", err)  # error references the correct offset
 
     def test_account_type_2_rejected(self):
+        """AccountType = 2 (Token Account, not Mint) at offset 165 must be rejected."""
         raw = _make_token_2022_mint_bytes(account_type=2)
         ok, err = _decode_token_2022_mint_state(raw)
         self.assertFalse(ok)
         self.assertIn("AccountType", err)
 
+    def test_too_short_missing_account_type_rejected(self):
+        """165 bytes (base + full padding, no AccountType byte) must be rejected."""
+        raw = _make_spl_mint_bytes() + bytes(83)  # 82 + 83 = 165 bytes, missing AccountType
+        self.assertEqual(len(raw), 165)
+        ok, err = _decode_token_2022_mint_state(raw)
+        self.assertFalse(ok)
+        self.assertIn("too short", err.lower())
+
     def test_tlv_overflow_rejected(self):
-        # TLV claims 100 bytes but buffer only has 4 bytes for extension data
-        import struct
-        bad_ext = struct.pack("<HH", 1, 100) + b"\x00" * 4  # only 4 bytes, claims 100
+        """TLV entry claiming more bytes than remain in buffer must be rejected."""
+        import struct as _struct
+        bad_ext = _struct.pack("<HH", 1, 100) + b"\x00" * 4  # claims 100 bytes, only 4 available
         raw = _make_token_2022_mint_bytes(extensions=bad_ext)
         ok, err = _decode_token_2022_mint_state(raw)
         self.assertFalse(ok)
         self.assertIn("overflows", err)
 
     def test_partial_tlv_header_with_non_zero_bytes_rejected(self):
-        # 3 bytes of extension region — too short for a TLV header (needs 4) and non-zero
+        """3 non-zero bytes at extension region end (too short for a 4-byte TLV header) must fail."""
         raw = _make_token_2022_mint_bytes(extensions=b"\x01\x00\x02")
         ok, err = _decode_token_2022_mint_state(raw)
         self.assertFalse(ok)
         self.assertIn("Partial TLV header", err)
 
-    def test_owner_plus_length_only_not_sufficient(self):
-        # Buffer is exactly 83 bytes (82 base + 1 AccountType) with is_initialized = 1
-        # and correct AccountType — this passes because no extensions to validate.
-        # But if we corrupt the AccountType, it must fail — proving AccountType is checked.
-        raw = _make_token_2022_mint_bytes(account_type=99)
-        ok, err = _decode_token_2022_mint_state(raw)
-        self.assertFalse(ok)
-        self.assertIn("AccountType", err)
-
     def test_uninitialized_base_mint_fails_before_account_type_check(self):
+        """is_initialized=0 in base Mint must fail before AccountType or padding is checked."""
         raw = _make_token_2022_mint_bytes(is_initialized=0)
         ok, err = _decode_token_2022_mint_state(raw)
         self.assertFalse(ok)
         self.assertIn("not initialized", err)
 
     def test_base_mint_too_short_fails_before_account_type_check(self):
-        raw = bytes(81)  # too short for base Mint
+        """Buffer shorter than 82 bytes must fail at base Mint check (not padding/AccountType)."""
+        raw = bytes(81)
         ok, err = _decode_token_2022_mint_state(raw)
         self.assertFalse(ok)
         self.assertIn("Too short", err)
+
+    def test_account_type_offset_is_165(self):
+        """AccountType must be read from offset 165 (= Account::LEN = BASE_ACCOUNT_LENGTH)."""
+        self.assertEqual(_TOKEN_2022_ACCOUNT_TYPE_OFFSET, 165)
+        self.assertEqual(_TOKEN_2022_EXTENSION_DATA_START, 166)
+        self.assertEqual(_TOKEN_2022_ACCOUNT_TYPE_OFFSET, _SPL_TOKEN_ACCOUNT_SIZE)
 
 
 # ---------------------------------------------------------------------------
