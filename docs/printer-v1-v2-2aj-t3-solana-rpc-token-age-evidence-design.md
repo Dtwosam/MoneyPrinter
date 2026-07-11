@@ -1,10 +1,17 @@
 # Printer V1 V2-2AJ T3 Solana RPC Token-Age Evidence Design
 
-**Lane:** V2-2AJ
+**Lane:** V2-2AJ / V2-2AJ.1
 **Type:** Design only — no code, no tests, no RPC calls, no DB mutations
-**Verdict:** `DESIGN_COMPLETE_WITH_BLOCKERS`
-**Date:** 2026-07-11
+**Verdict:** `DESIGN_CORRECTION_COMPLETE_WITH_BLOCKERS`
+**Date:** 2026-07-11 (V2-2AJ.1 correction applied same date)
 **Executor:** Claude Sonnet 4.6
+
+**V2-2AJ.1 corrections:** (1) Mint validation: removed erroneous `≥165 bytes`
+Token-2022 length check (165 is the base token-account size, not the mint
+size); replaced with correct 82-byte base mint layout for both SPL Token and
+Token-2022, with length alone insufficient — requires correct owner program and
+successful mint-state decoding. (2) Candidate cap: replaced all `5`-candidate
+references with `3` to match the `getTransaction` call cap of 3.
 
 V2-3, V2-4, runtime/scheduler, memory generation, retrieval, paper decisions,
 BUY/SELL/HOLD, positions, trades, audits, and PnL remain paused.
@@ -165,7 +172,7 @@ premium-only methods.
 | Max `getSignaturesForAddress` pages | 3 | Budget for new tokens (< 48h old); fail closed if history exceeds |
 | Signatures per page | 20 | Narrow window; recent tokens have few sigs |
 | Max total signatures inspected per page walk | 60 | 3 pages × 20 |
-| Max signatures tried as mint-init candidates | 5 | From the oldest available page |
+| Max signatures tried as mint-init candidates | 3 | From the oldest available page; matches `getTransaction` call cap |
 | Max `getTransaction` calls | 3 | Try at most 3 candidate signatures |
 | Max `getBlockTime` calls | 1 | Fallback only |
 | Per-call timeout | 10 seconds | Hard cutoff; no extension |
@@ -213,13 +220,18 @@ holder path (`SOLANA_RPC_TIMEOUT_SECONDS = 10.0`) for consistency.
 1. Response `result.value` is not null
 2. `result.value.owner` equals `TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA`
    (SPL Token) or `TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb` (Token-2022)
-3. `result.value.data` has length consistent with an SPL Mint account layout
-   (82 bytes for SPL Token, ≥165 bytes for Token-2022 base extension)
+3. `result.value.data` decodes successfully as a mint-state layout:
+   - SPL Token mint: exactly 82 bytes (fixed Mint layout)
+   - Token-2022 mint: base 82-byte mint layout plus any valid extension data;
+     total data length is ≥ 82 bytes and varies with extensions
+   - Length alone is insufficient — require correct owner program and
+     successful mint-state decoding; do not gate on `≥165 bytes` (that is the
+     base token-account size, not the mint size)
 
 **Reject condition:**
 - `result.value` is null → `solana_rpc_token_age_account_not_found`
 - owner is neither Token nor Token-2022 program → `solana_rpc_token_age_not_a_mint`
-- data length inconsistent with Mint layout → `solana_rpc_token_age_not_a_mint`
+- data cannot be decoded as a mint state → `solana_rpc_token_age_not_a_mint`
 
 ### 6.2 Step 2: Earliest signature discovery (`getSignaturesForAddress`)
 
@@ -264,7 +276,7 @@ likely mint-initialization transaction.
 
 **Accept conditions:**
 - Response is a non-empty list of signature records
-- If list length < 20: this is the last page; take the last N entries (up to 5)
+- If list length < 20: this is the last page; take the last N entries (up to 3)
   as mint-init candidates (oldest first = likely the init tx)
 - If list length == 20 AND pages used < 3: fetch next page with `before` cursor
 - If list length == 20 AND pages used == 3: page cap reached → fail closed
@@ -275,7 +287,7 @@ likely mint-initialization transaction.
   `solana_rpc_token_age_page_cap_exhausted`
 
 **Mint-init candidate selection:**
-From the oldest available page, try the last 1–5 entries (oldest signatures)
+From the oldest available page, try the last 1–3 entries (oldest signatures)
 as mint-initialization candidates. Attempt `getTransaction` for each, in
 ascending slot order, until one proves to be an init or all candidates are
 exhausted.
@@ -382,7 +394,7 @@ fields remain `None` / absent.
 | Failure code | Trigger |
 |---|---|
 | `solana_rpc_token_age_account_not_found` | `getAccountInfo` result is null |
-| `solana_rpc_token_age_not_a_mint` | Account owner is not Token/Token-2022, or data too short |
+| `solana_rpc_token_age_not_a_mint` | Account owner is not Token/Token-2022, or mint-state decoding fails |
 | `solana_rpc_token_age_rate_limited` | HTTP 429 on any request |
 | `solana_rpc_token_age_transport_error` | Network error, timeout, or connection failure |
 | `solana_rpc_token_age_no_signatures` | First `getSignaturesForAddress` page is empty |
@@ -503,7 +515,7 @@ The new module must include:
 - `_T3_MAX_REQUESTS_PER_TOKEN = 8`
 - `_T3_MAX_SIGNATURE_PAGES = 3`
 - `_T3_SIGNATURES_PER_PAGE = 20`
-- `_T3_MAX_INIT_CANDIDATES = 5`
+- `_T3_MAX_INIT_CANDIDATES = 3`
 - `_T3_MAX_TRANSACTION_CALLS = 3`
 - `_T3_MAX_BLOCK_TIME_CALLS = 1`
 - `_T3_RPC_TIMEOUT_SECONDS = 10.0`
@@ -668,9 +680,9 @@ This blocker is unaffected by the T3 design.
 
 ## 17. Final Verdict
 
-`DESIGN_COMPLETE_WITH_BLOCKERS`
+`DESIGN_CORRECTION_COMPLETE_WITH_BLOCKERS`
 
-V2-2AJ defines the complete T3 architecture:
+V2-2AJ defines the complete T3 architecture (corrected by V2-2AJ.1):
 
 1. **Source contract**: `solana_rpc` / `mint_creation_time_reference`, disabled
    by default, Source Governor required.
