@@ -131,19 +131,30 @@ def _derive_token_age_evidence_tier(
         event, live_observed_launch flag set by pumpportal normalizer.
         token_created_at and token_age_seconds remain None.
 
+    T3: source is solana_rpc, request_kind is mint_creation_time_reference,
+        governed RPC mint-creation evidence confirmed; both token_created_at
+        and token_age_seconds set from on-chain block time.
+
     All other cases return None (T5 unknown).
     T2 takes precedence over OBSERVED_LIVE_LAUNCH if both conditions could apply.
     """
-    if source_name != "pumpportal":
+    if source_name == "pumpportal":
+        if candidate_payload.get("request_kind") != "pumpfun_launch_stream":
+            return None
+        # T2: explicit source-provided timestamp present and valid.
+        if token_created_at_raw is not None and token_age_seconds is not None:
+            return "T2"
+        # OBSERVED_LIVE_LAUNCH: mint-bearing launch event; no explicit timestamp field.
+        if token_created_at_raw is None and candidate_payload.get("live_observed_launch"):
+            return "OBSERVED_LIVE_LAUNCH"
         return None
-    if candidate_payload.get("request_kind") != "pumpfun_launch_stream":
+    if source_name == "solana_rpc":
+        if candidate_payload.get("request_kind") != "mint_creation_time_reference":
+            return None
+        # T3: governed RPC mint-creation evidence; both values required.
+        if token_created_at_raw is not None and token_age_seconds is not None:
+            return "T3"
         return None
-    # T2: explicit source-provided timestamp present and valid.
-    if token_created_at_raw is not None and token_age_seconds is not None:
-        return "T2"
-    # OBSERVED_LIVE_LAUNCH: mint-bearing launch event; no explicit timestamp field.
-    if token_created_at_raw is None and candidate_payload.get("live_observed_launch"):
-        return "OBSERVED_LIVE_LAUNCH"
     return None
 
 

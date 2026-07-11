@@ -1137,6 +1137,22 @@ _METADATA_FIELDS = (
     # V2-2P: T4-safe pair-age context metadata. Never drives age gates or A3.
     "pair_age_context_label",
     "token_age_evidence_tier",
+    # V2-2AK: T3 Solana RPC mint-creation provenance. Read-only audit trail.
+    "t3_requested_mint",
+    "t3_rpc_host_redacted",
+    "t3_rpc_methods_attempted",
+    "t3_request_ids",
+    "t3_pages_fetched",
+    "t3_signatures_inspected",
+    "t3_accepted_signature",
+    "t3_accepted_slot",
+    "t3_block_time_raw",
+    "t3_block_time_source",
+    "t3_instruction_type",
+    "t3_token_program",
+    "t3_derived_token_created_at",
+    "t3_derived_token_age_seconds",
+    "t3_captured_at",
 )
 
 

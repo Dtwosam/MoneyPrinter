@@ -1,0 +1,920 @@
+"""V2-2AK — T3 Solana RPC Token-Age Implementation Fixture Proof.
+
+Fixture-only proof covering:
+  A. Adapter contract validates; disabled by default; governor context enforced
+  B. SPL Token success path: tier T3, all evidence fields set
+  C. Token-2022 success path: tier T3, token_program = token_2022
+  D. All 14 failure types: each leaves token_created_at/age_seconds/tier unset
+  E. All 15 t3_* provenance fields survive to extract_candidate_metadata()
+  F. normalize_candidate("solana_rpc", ...) stamps tier T3 correctly
+  G. Block-time fallback: block_time_source "getBlockTime" vs "getTransaction"
+  H. Prohibited age fallbacks: pair_age/captured_at never become token_created_at
+  I. T2 and OBSERVED_LIVE_LAUNCH tier derivation completely unchanged
+  J. A3 does not fire when T3 fails (token_age_seconds remains None)
+  K. Registry has mint_creation_time_reference; contract passes governor check
+
+Hard rules verified:
+  - token_created_at never set from captured_at, pair age, or migration time
+  - token_age_seconds never computed from pair age or OBSERVED_LIVE_LAUNCH
+  - A3 requires token_age_seconds is not None (unchanged)
+  - T2 is unchanged; OBSERVED_LIVE_LAUNCH is unchanged
+  - No live RPC calls; no DB mutation; no paper decisions
+
+No live source calls, no DB mutation, no memory generation, retrieval, paper
+decisions, BUY/SELL/HOLD, positions, trades, audits, PnL, scheduler, or runtime.
+"""
+
+from __future__ import annotations
+
+import pathlib
+import sys
+import unittest
+from datetime import datetime, timezone
+
+PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
+SRC_PATH = PROJECT_ROOT / "src"
+sys.path.insert(0, str(SRC_PATH))
+
+from printer_v1.contracts.enums import DataQualityLabel, SourceStatus
+from printer_v1.discovery.parser import normalize_candidate
+from printer_v1.discovery.selection_batch import (
+    BUCKET_A3,
+    assign_bucket,
+    extract_candidate_metadata,
+    _METADATA_FIELDS,
+)
+from printer_v1.sources.contracts import (
+    GOVERNOR_ONLY_EXECUTION_PATH,
+    SourceAdapterContext,
+    SourceRequest,
+    SourceRequestRecord,
+    build_source_adapter_contract,
+    validate_source_adapter_contract,
+)
+from printer_v1.sources.governor import SourceRequestDecision
+from printer_v1.sources.registry import SOURCE_REGISTRY
+from printer_v1.sources.solana_rpc_token_age import (
+    SOLANA_RPC_SOURCE_NAME,
+    SOLANA_RPC_TOKEN_AGE_REQUEST_KIND,
+    SolanaRpcTokenAgeAdapter,
+    build_solana_rpc_token_age_adapter,
+    build_solana_rpc_token_age_adapter_contract,
+    fixture_t3_failure_transport,
+    fixture_t3_success_transport,
+    normalize_solana_rpc_token_age_response,
+    redacted_rpc_host,
+)
+
+# ---------------------------------------------------------------------------
+# Shared fixtures
+# ---------------------------------------------------------------------------
+
+_FIXED_NOW = datetime(2026, 7, 11, 12, 0, 0, tzinfo=timezone.utc)
+_FIXED_NOW_ISO = "2026-07-11T12:00:00+00:00"
+
+# One hour before capture → 3600s age
+_T3_CREATED_ISO = "2026-07-11T11:00:00+00:00"
+_T3_AGE_SECONDS = 3600.0
+_T3_BLOCK_TIME_RAW = int(datetime(2026, 7, 11, 11, 0, 0, tzinfo=timezone.utc).timestamp())
+
+_SPL_TOKEN_MINT = "TokenMintSPL111111111111111111111111111111"
+_TOKEN_2022_MINT = "TokenMint2022222222222222222222222222222222"
+
+_T3_SPL_SUCCESS_PAYLOAD = {
+    "t3_status": "success",
+    "token_mint": _SPL_TOKEN_MINT,
+    "captured_at": _FIXED_NOW_ISO,
+    "token_created_at": _T3_CREATED_ISO,
+    "token_age_seconds": _T3_AGE_SECONDS,
+    "token_age_evidence_tier": "T3",
+    "t3_requested_mint": _SPL_TOKEN_MINT,
+    "t3_rpc_host_redacted": "api.mainnet-beta.solana.com",
+    "t3_rpc_methods_attempted": ["getAccountInfo", "getSignaturesForAddress", "getTransaction"],
+    "t3_request_ids": [1, 2, 3],
+    "t3_pages_fetched": 1,
+    "t3_signatures_inspected": 1,
+    "t3_accepted_signature": "5abc1234sig",
+    "t3_accepted_slot": 12345678,
+    "t3_block_time_raw": _T3_BLOCK_TIME_RAW,
+    "t3_block_time_source": "getTransaction",
+    "t3_instruction_type": "initializeMint",
+    "t3_token_program": "spl_token",
+    "t3_derived_token_created_at": _T3_CREATED_ISO,
+    "t3_derived_token_age_seconds": _T3_AGE_SECONDS,
+    "t3_captured_at": _FIXED_NOW_ISO,
+}
+
+_T3_TOKEN_2022_SUCCESS_PAYLOAD = {
+    **_T3_SPL_SUCCESS_PAYLOAD,
+    "token_mint": _TOKEN_2022_MINT,
+    "t3_requested_mint": _TOKEN_2022_MINT,
+    "t3_instruction_type": "initializeMint2",
+    "t3_token_program": "token_2022",
+}
+
+_ALL_T3_PROVENANCE_FIELDS = (
+    "t3_requested_mint",
+    "t3_rpc_host_redacted",
+    "t3_rpc_methods_attempted",
+    "t3_request_ids",
+    "t3_pages_fetched",
+    "t3_signatures_inspected",
+    "t3_accepted_signature",
+    "t3_accepted_slot",
+    "t3_block_time_raw",
+    "t3_block_time_source",
+    "t3_instruction_type",
+    "t3_token_program",
+    "t3_derived_token_created_at",
+    "t3_derived_token_age_seconds",
+    "t3_captured_at",
+)
+
+
+def _make_t3_context(request_kind: str = SOLANA_RPC_TOKEN_AGE_REQUEST_KIND) -> SourceAdapterContext:
+    request = SourceRequest(
+        source_name=SOLANA_RPC_SOURCE_NAME,
+        request_kind=request_kind,
+        requested_at=_FIXED_NOW_ISO,
+    )
+    decision = SourceRequestDecision(
+        allowed=True,
+        source_name=SOLANA_RPC_SOURCE_NAME,
+        request_kind=request_kind,
+        reason="fixture_approved",
+        source_status=SourceStatus.COMPLETE,
+        data_quality_label=DataQualityLabel.CLEAN_DATA,
+    )
+    record = SourceRequestRecord(
+        id=1,
+        source_name=SOLANA_RPC_SOURCE_NAME,
+        request_kind=request_kind,
+        requested_at=_FIXED_NOW_ISO,
+        request_key=None,
+        tracking_priority=None,
+        source_status=SourceStatus.COMPLETE,
+        data_quality_label=DataQualityLabel.CLEAN_DATA,
+    )
+    return SourceAdapterContext(
+        request=request,
+        request_record=record,
+        decision=decision,
+        governor_approved=True,
+    )
+
+
+def _make_ungoverned_context() -> SourceAdapterContext:
+    request = SourceRequest(
+        source_name=SOLANA_RPC_SOURCE_NAME,
+        request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND,
+        requested_at=_FIXED_NOW_ISO,
+    )
+    decision = SourceRequestDecision(
+        allowed=False,
+        source_name=SOLANA_RPC_SOURCE_NAME,
+        request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND,
+        reason="fixture_denied",
+        source_status=SourceStatus.FAILED,
+        data_quality_label=DataQualityLabel.MISSING_CRITICAL_DATA,
+    )
+    record = SourceRequestRecord(
+        id=2,
+        source_name=SOLANA_RPC_SOURCE_NAME,
+        request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND,
+        requested_at=_FIXED_NOW_ISO,
+        request_key=None,
+        tracking_priority=None,
+        source_status=SourceStatus.FAILED,
+        data_quality_label=DataQualityLabel.MISSING_CRITICAL_DATA,
+    )
+    return SourceAdapterContext(
+        request=request,
+        request_record=record,
+        decision=decision,
+        governor_approved=False,
+    )
+
+
+def _make_enabled_adapter_with_payload(payload: dict) -> SolanaRpcTokenAgeAdapter:
+    return build_solana_rpc_token_age_adapter(
+        enabled=True,
+        fixture_transport=fixture_t3_success_transport(payload),
+    )
+
+
+def _make_enabled_failing_adapter(failure_type: str, msg: str = "fixture") -> SolanaRpcTokenAgeAdapter:
+    return build_solana_rpc_token_age_adapter(
+        enabled=True,
+        fixture_transport=fixture_t3_failure_transport(failure_type, msg),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Class 1: Contract and governance
+# ---------------------------------------------------------------------------
+
+class TestT3AdapterContractAndGovernance(unittest.TestCase):
+
+    def test_registry_has_mint_creation_time_reference(self):
+        kinds = SOURCE_REGISTRY["solana_rpc"].allowed_request_kinds
+        self.assertIn("mint_creation_time_reference", kinds)
+
+    def test_contract_validates_against_source_governor(self):
+        contract = build_solana_rpc_token_age_adapter_contract()
+        self.assertTrue(validate_source_adapter_contract(contract))
+        self.assertFalse(contract.enabled_by_default)
+        self.assertTrue(contract.fixture_only)
+        self.assertFalse(contract.supports_network_execution)
+        self.assertTrue(contract.requires_governor_context)
+
+    def test_adapter_disabled_by_default(self):
+        adapter = build_solana_rpc_token_age_adapter()
+        self.assertFalse(adapter.enabled)
+        ctx = _make_t3_context()
+        with self.assertRaises(PermissionError):
+            adapter.execute(ctx)
+
+    def test_adapter_requires_explicit_transport(self):
+        adapter = build_solana_rpc_token_age_adapter(enabled=True)
+        ctx = _make_t3_context()
+        with self.assertRaises(PermissionError):
+            adapter.execute(ctx)
+
+    def test_adapter_rejects_ungoverned_context(self):
+        adapter = _make_enabled_adapter_with_payload(_T3_SPL_SUCCESS_PAYLOAD)
+        ctx = _make_ungoverned_context()
+        with self.assertRaises(PermissionError):
+            adapter.execute(ctx)
+
+    def test_adapter_rejects_wrong_execution_path(self):
+        from dataclasses import replace
+        ctx = _make_t3_context()
+        bad_ctx = SourceAdapterContext(
+            request=ctx.request,
+            request_record=ctx.request_record,
+            decision=ctx.decision,
+            governor_approved=True,
+            execution_path="wrong_path",
+        )
+        adapter = _make_enabled_adapter_with_payload(_T3_SPL_SUCCESS_PAYLOAD)
+        with self.assertRaises(PermissionError):
+            adapter.execute(bad_ctx)
+
+    def test_adapter_rejects_wrong_request_kind(self):
+        adapter = _make_enabled_adapter_with_payload(_T3_SPL_SUCCESS_PAYLOAD)
+        ctx = _make_t3_context(request_kind="holder_concentration_reference")
+        with self.assertRaises(ValueError):
+            adapter.execute(ctx)
+
+    def test_adapter_contract_includes_all_solana_rpc_kinds(self):
+        contract = build_solana_rpc_token_age_adapter_contract()
+        for kind in ("onchain_reference", "mint_account_reference",
+                     "holder_concentration_reference", "mint_creation_time_reference"):
+            self.assertIn(kind, contract.allowed_request_kinds)
+
+
+# ---------------------------------------------------------------------------
+# Class 2: SPL Token success path
+# ---------------------------------------------------------------------------
+
+class TestT3NormalizerSplTokenSuccess(unittest.TestCase):
+
+    def setUp(self):
+        self.result = normalize_solana_rpc_token_age_response(
+            _T3_SPL_SUCCESS_PAYLOAD,
+            request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND,
+        )
+
+    def test_source_status_is_complete(self):
+        self.assertEqual(self.result.source_status, SourceStatus.COMPLETE)
+
+    def test_data_quality_is_clean(self):
+        self.assertEqual(self.result.data_quality_label, DataQualityLabel.CLEAN_DATA)
+
+    def test_token_created_at_is_set(self):
+        self.assertEqual(self.result.normalized_payload["token_created_at"], _T3_CREATED_ISO)
+
+    def test_token_age_seconds_is_set(self):
+        self.assertEqual(self.result.normalized_payload["token_age_seconds"], _T3_AGE_SECONDS)
+
+    def test_tier_is_t3(self):
+        self.assertEqual(self.result.normalized_payload["token_age_evidence_tier"], "T3")
+
+    def test_instruction_type_is_initialize_mint(self):
+        self.assertEqual(self.result.normalized_payload["t3_instruction_type"], "initializeMint")
+
+    def test_token_program_is_spl_token(self):
+        self.assertEqual(self.result.normalized_payload["t3_token_program"], "spl_token")
+
+    def test_rpc_methods_recorded(self):
+        methods = self.result.normalized_payload["t3_rpc_methods_attempted"]
+        self.assertIn("getAccountInfo", methods)
+        self.assertIn("getSignaturesForAddress", methods)
+        self.assertIn("getTransaction", methods)
+
+    def test_adapter_executes_and_returns_complete_result(self):
+        adapter = _make_enabled_adapter_with_payload(_T3_SPL_SUCCESS_PAYLOAD)
+        ctx = _make_t3_context()
+        result = adapter.execute(ctx)
+        self.assertEqual(result.source_status, SourceStatus.COMPLETE)
+        self.assertEqual(result.normalized_payload["token_age_evidence_tier"], "T3")
+        self.assertEqual(adapter.call_count, 1)
+
+
+# ---------------------------------------------------------------------------
+# Class 3: Token-2022 success path
+# ---------------------------------------------------------------------------
+
+class TestT3NormalizerToken2022Success(unittest.TestCase):
+
+    def setUp(self):
+        self.result = normalize_solana_rpc_token_age_response(
+            _T3_TOKEN_2022_SUCCESS_PAYLOAD,
+            request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND,
+        )
+
+    def test_source_status_is_complete(self):
+        self.assertEqual(self.result.source_status, SourceStatus.COMPLETE)
+
+    def test_tier_is_t3(self):
+        self.assertEqual(self.result.normalized_payload["token_age_evidence_tier"], "T3")
+
+    def test_token_created_at_is_set(self):
+        self.assertEqual(self.result.normalized_payload["token_created_at"], _T3_CREATED_ISO)
+
+    def test_instruction_type_is_initialize_mint2(self):
+        self.assertEqual(self.result.normalized_payload["t3_instruction_type"], "initializeMint2")
+
+    def test_token_program_is_token_2022(self):
+        self.assertEqual(self.result.normalized_payload["t3_token_program"], "token_2022")
+
+    def test_requested_mint_matches(self):
+        self.assertEqual(
+            self.result.normalized_payload["t3_requested_mint"], _TOKEN_2022_MINT
+        )
+
+
+# ---------------------------------------------------------------------------
+# Class 4: Failure cases — fail-closed, no evidence set
+# ---------------------------------------------------------------------------
+
+class TestT3FailureCases(unittest.TestCase):
+
+    def _assert_fail_closed(self, failure_type: str, message: str = "fixture failure") -> None:
+        result = normalize_solana_rpc_token_age_response(
+            {"fixture_status": "failure", "failure_type": failure_type, "failure_message": message},
+            request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND,
+        )
+        self.assertEqual(result.source_status, SourceStatus.FAILED)
+        self.assertEqual(result.data_quality_label, DataQualityLabel.MISSING_CRITICAL_DATA)
+        self.assertEqual(result.failure_type, failure_type)
+        self.assertIsNone(result.normalized_payload.get("token_created_at"))
+        self.assertIsNone(result.normalized_payload.get("token_age_seconds"))
+        self.assertIsNone(result.normalized_payload.get("token_age_evidence_tier"))
+
+    def test_account_not_found_fails_closed(self):
+        self._assert_fail_closed("solana_rpc_token_age_account_not_found")
+
+    def test_not_a_mint_fails_closed(self):
+        self._assert_fail_closed("solana_rpc_token_age_not_a_mint")
+
+    def test_rate_limited_fails_closed(self):
+        self._assert_fail_closed("solana_rpc_token_age_rate_limited")
+
+    def test_transport_error_fails_closed(self):
+        self._assert_fail_closed("solana_rpc_token_age_transport_error")
+
+    def test_no_signatures_fails_closed(self):
+        self._assert_fail_closed("solana_rpc_token_age_no_signatures")
+
+    def test_page_cap_exhausted_fails_closed(self):
+        self._assert_fail_closed("solana_rpc_token_age_page_cap_exhausted")
+
+    def test_history_pruned_fails_closed(self):
+        self._assert_fail_closed("solana_rpc_token_age_history_pruned")
+
+    def test_transaction_not_found_fails_closed(self):
+        self._assert_fail_closed("solana_rpc_token_age_transaction_not_found")
+
+    def test_no_init_instruction_fails_closed(self):
+        self._assert_fail_closed("solana_rpc_token_age_no_init_instruction")
+
+    def test_mint_mismatch_fails_closed(self):
+        self._assert_fail_closed("solana_rpc_token_age_mint_mismatch")
+
+    def test_null_block_time_fails_closed(self):
+        self._assert_fail_closed("solana_rpc_token_age_null_block_time")
+
+    def test_future_block_time_fails_closed(self):
+        self._assert_fail_closed("solana_rpc_token_age_future_block_time")
+
+    def test_budget_exhausted_fails_closed(self):
+        self._assert_fail_closed("solana_rpc_token_age_budget_exhausted")
+
+    def test_malformed_response_fails_closed(self):
+        self._assert_fail_closed("solana_rpc_token_age_malformed_response")
+
+    def test_missing_t3_status_field_fails_closed(self):
+        # Payload has neither t3_status=success nor fixture_status=failure
+        result = normalize_solana_rpc_token_age_response(
+            {"some_field": "some_value"},
+            request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND,
+        )
+        self.assertEqual(result.source_status, SourceStatus.FAILED)
+        self.assertIsNone(result.normalized_payload.get("token_created_at"))
+
+    def test_wrong_request_kind_fails_closed(self):
+        result = normalize_solana_rpc_token_age_response(
+            _T3_SPL_SUCCESS_PAYLOAD,
+            request_kind="holder_concentration_reference",
+        )
+        self.assertEqual(result.source_status, SourceStatus.FAILED)
+
+    def test_adapter_with_failure_transport_returns_failed_result(self):
+        adapter = _make_enabled_failing_adapter(
+            "solana_rpc_token_age_rate_limited", "HTTP 429"
+        )
+        ctx = _make_t3_context()
+        result = adapter.execute(ctx)
+        self.assertEqual(result.source_status, SourceStatus.FAILED)
+        self.assertEqual(result.failure_type, "solana_rpc_token_age_rate_limited")
+
+    def test_success_payload_missing_token_created_at_fails_closed(self):
+        bad = {**_T3_SPL_SUCCESS_PAYLOAD}
+        del bad["token_created_at"]
+        result = normalize_solana_rpc_token_age_response(
+            bad, request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND
+        )
+        self.assertEqual(result.source_status, SourceStatus.FAILED)
+
+    def test_success_payload_negative_age_fails_closed(self):
+        bad = {**_T3_SPL_SUCCESS_PAYLOAD, "token_age_seconds": -1.0}
+        result = normalize_solana_rpc_token_age_response(
+            bad, request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND
+        )
+        self.assertEqual(result.source_status, SourceStatus.FAILED)
+
+
+# ---------------------------------------------------------------------------
+# Class 5: Provenance persistence — all 15 t3_* fields survive to metadata
+# ---------------------------------------------------------------------------
+
+class TestT3ProvenancePersistence(unittest.TestCase):
+
+    def _build_enriched_candidate(self) -> dict:
+        result = normalize_solana_rpc_token_age_response(
+            _T3_SPL_SUCCESS_PAYLOAD,
+            request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND,
+        )
+        candidate: dict = {
+            "token_mint": _SPL_TOKEN_MINT,
+            "pair_address": "SomePair111",
+            "chain": "solana",
+            "source_name": SOLANA_RPC_SOURCE_NAME,
+            "captured_at": _FIXED_NOW_ISO,
+            "token_created_at": None,
+            "token_age_seconds": None,
+            "token_age_evidence_tier": None,
+        }
+        # Merge T3 evidence into candidate (post-normalization enrichment step)
+        for key, value in result.normalized_payload.items():
+            candidate[key] = value
+        return candidate
+
+    def test_all_15_t3_provenance_fields_in_metadata_fields_tuple(self):
+        for field in _ALL_T3_PROVENANCE_FIELDS:
+            self.assertIn(field, _METADATA_FIELDS, f"{field!r} missing from _METADATA_FIELDS")
+
+    def test_all_15_t3_provenance_fields_survive_extract_candidate_metadata(self):
+        candidate = self._build_enriched_candidate()
+        meta = extract_candidate_metadata(candidate)
+        for field in _ALL_T3_PROVENANCE_FIELDS:
+            self.assertIn(field, meta, f"{field!r} missing from candidate metadata")
+
+    def test_t3_requested_mint_value_persists(self):
+        candidate = self._build_enriched_candidate()
+        meta = extract_candidate_metadata(candidate)
+        self.assertEqual(meta["t3_requested_mint"], _SPL_TOKEN_MINT)
+
+    def test_t3_accepted_signature_persists(self):
+        candidate = self._build_enriched_candidate()
+        meta = extract_candidate_metadata(candidate)
+        self.assertEqual(meta["t3_accepted_signature"], "5abc1234sig")
+
+    def test_t3_block_time_raw_persists(self):
+        candidate = self._build_enriched_candidate()
+        meta = extract_candidate_metadata(candidate)
+        self.assertEqual(meta["t3_block_time_raw"], _T3_BLOCK_TIME_RAW)
+
+    def test_t3_instruction_type_persists(self):
+        candidate = self._build_enriched_candidate()
+        meta = extract_candidate_metadata(candidate)
+        self.assertEqual(meta["t3_instruction_type"], "initializeMint")
+
+    def test_t3_token_program_persists(self):
+        candidate = self._build_enriched_candidate()
+        meta = extract_candidate_metadata(candidate)
+        self.assertEqual(meta["t3_token_program"], "spl_token")
+
+    def test_t3_rpc_methods_attempted_persists(self):
+        candidate = self._build_enriched_candidate()
+        meta = extract_candidate_metadata(candidate)
+        self.assertIn("getTransaction", meta["t3_rpc_methods_attempted"])
+
+    def test_t3_derived_fields_match_primary_evidence(self):
+        candidate = self._build_enriched_candidate()
+        meta = extract_candidate_metadata(candidate)
+        self.assertEqual(meta["t3_derived_token_created_at"], _T3_CREATED_ISO)
+        self.assertEqual(meta["t3_derived_token_age_seconds"], _T3_AGE_SECONDS)
+
+    def test_t3_fields_absent_for_failed_t3_candidate(self):
+        result = normalize_solana_rpc_token_age_response(
+            {"fixture_status": "failure", "failure_type": "solana_rpc_token_age_no_init_instruction",
+             "failure_message": "no init"},
+            request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND,
+        )
+        # Failure result has no normalized_payload with t3_* fields
+        for field in _ALL_T3_PROVENANCE_FIELDS:
+            self.assertIsNone(result.normalized_payload.get(field))
+
+
+# ---------------------------------------------------------------------------
+# Class 6: Parser tier derivation for T3
+# ---------------------------------------------------------------------------
+
+class TestT3ParserTierDerivation(unittest.TestCase):
+
+    def _t3_payload(self, *, created_at: str | None = _T3_CREATED_ISO) -> dict:
+        return {
+            "token_mint": _SPL_TOKEN_MINT,
+            "pair_address": "TestPair789",
+            "chain": "solana",
+            "source_name": SOLANA_RPC_SOURCE_NAME,
+            "captured_at": _FIXED_NOW_ISO,
+            "token_created_at": created_at,
+            "request_kind": SOLANA_RPC_TOKEN_AGE_REQUEST_KIND,
+        }
+
+    def test_normalize_candidate_sets_t3_tier(self):
+        result = normalize_candidate(
+            SOLANA_RPC_SOURCE_NAME,
+            self._t3_payload(),
+            _FIXED_NOW,
+        )
+        self.assertEqual(result["token_age_evidence_tier"], "T3")
+
+    def test_normalize_candidate_sets_token_age_seconds(self):
+        result = normalize_candidate(
+            SOLANA_RPC_SOURCE_NAME,
+            self._t3_payload(),
+            _FIXED_NOW,
+        )
+        self.assertAlmostEqual(result["token_age_seconds"], _T3_AGE_SECONDS, places=0)
+
+    def test_normalize_candidate_sets_token_created_at(self):
+        result = normalize_candidate(
+            SOLANA_RPC_SOURCE_NAME,
+            self._t3_payload(),
+            _FIXED_NOW,
+        )
+        self.assertIsNotNone(result["token_created_at"])
+
+    def test_normalize_candidate_returns_none_tier_without_created_at(self):
+        result = normalize_candidate(
+            SOLANA_RPC_SOURCE_NAME,
+            self._t3_payload(created_at=None),
+            _FIXED_NOW,
+        )
+        self.assertIsNone(result["token_age_evidence_tier"])
+
+    def test_normalize_candidate_returns_none_tier_without_request_kind(self):
+        payload = {**self._t3_payload()}
+        del payload["request_kind"]
+        result = normalize_candidate(SOLANA_RPC_SOURCE_NAME, payload, _FIXED_NOW)
+        self.assertIsNone(result["token_age_evidence_tier"])
+
+    def test_normalize_candidate_returns_none_tier_for_wrong_request_kind(self):
+        payload = {**self._t3_payload(), "request_kind": "holder_concentration_reference"}
+        result = normalize_candidate(SOLANA_RPC_SOURCE_NAME, payload, _FIXED_NOW)
+        self.assertIsNone(result["token_age_evidence_tier"])
+
+    def test_normalize_candidate_solana_rpc_other_source_no_t3_tier(self):
+        payload = {**self._t3_payload(), "request_kind": SOLANA_RPC_TOKEN_AGE_REQUEST_KIND}
+        result = normalize_candidate("geckoterminal", payload, _FIXED_NOW)
+        self.assertIsNone(result["token_age_evidence_tier"])
+
+
+# ---------------------------------------------------------------------------
+# Class 7: Block-time fallback
+# ---------------------------------------------------------------------------
+
+class TestT3BlockTimeFallback(unittest.TestCase):
+
+    def test_block_time_source_from_get_transaction(self):
+        payload = {**_T3_SPL_SUCCESS_PAYLOAD, "t3_block_time_source": "getTransaction"}
+        result = normalize_solana_rpc_token_age_response(
+            payload, request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND
+        )
+        self.assertEqual(result.normalized_payload["t3_block_time_source"], "getTransaction")
+        self.assertEqual(result.source_status, SourceStatus.COMPLETE)
+
+    def test_block_time_source_from_get_block_time_fallback(self):
+        payload = {
+            **_T3_SPL_SUCCESS_PAYLOAD,
+            "t3_block_time_source": "getBlockTime",
+            "t3_rpc_methods_attempted": [
+                "getAccountInfo", "getSignaturesForAddress", "getTransaction", "getBlockTime"
+            ],
+            "t3_request_ids": [1, 2, 3, 4],
+        }
+        result = normalize_solana_rpc_token_age_response(
+            payload, request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND
+        )
+        self.assertEqual(result.normalized_payload["t3_block_time_source"], "getBlockTime")
+        self.assertEqual(result.source_status, SourceStatus.COMPLETE)
+        self.assertIn("getBlockTime", result.normalized_payload["t3_rpc_methods_attempted"])
+
+    def test_null_block_time_without_fallback_fails_closed(self):
+        result = normalize_solana_rpc_token_age_response(
+            {
+                "fixture_status": "failure",
+                "failure_type": "solana_rpc_token_age_null_block_time",
+                "failure_message": "blockTime is null and getBlockTime fallback failed",
+            },
+            request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND,
+        )
+        self.assertEqual(result.source_status, SourceStatus.FAILED)
+        self.assertIsNone(result.normalized_payload.get("token_created_at"))
+
+    def test_future_block_time_fails_closed(self):
+        result = normalize_solana_rpc_token_age_response(
+            {
+                "fixture_status": "failure",
+                "failure_type": "solana_rpc_token_age_future_block_time",
+                "failure_message": "block time is in the future",
+            },
+            request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND,
+        )
+        self.assertEqual(result.source_status, SourceStatus.FAILED)
+        self.assertIsNone(result.normalized_payload.get("token_age_seconds"))
+
+
+# ---------------------------------------------------------------------------
+# Class 8: Prohibited age fallbacks
+# ---------------------------------------------------------------------------
+
+class TestT3BoundaryViolations(unittest.TestCase):
+
+    def test_pair_age_never_becomes_token_created_at(self):
+        # Even if the payload has pair_created_at, T3 should only use token_created_at
+        payload = {
+            **_T3_SPL_SUCCESS_PAYLOAD,
+            "pair_created_at": "2026-07-01T00:00:00+00:00",  # older pair
+        }
+        result = normalize_solana_rpc_token_age_response(
+            payload, request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND
+        )
+        # token_created_at must be from T3 evidence, NOT pair_created_at
+        self.assertEqual(result.normalized_payload["token_created_at"], _T3_CREATED_ISO)
+        self.assertNotEqual(result.normalized_payload["token_created_at"], "2026-07-01T00:00:00+00:00")
+
+    def test_captured_at_never_becomes_token_created_at(self):
+        # captured_at is collection time only; T3 must NOT use it as token_created_at
+        result = normalize_solana_rpc_token_age_response(
+            _T3_SPL_SUCCESS_PAYLOAD, request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND
+        )
+        self.assertNotEqual(
+            result.normalized_payload.get("token_created_at"),
+            _FIXED_NOW_ISO,  # captured_at
+        )
+
+    def test_observed_live_launch_not_in_t3_payload(self):
+        # T3 evidence must not include live_observed_launch semantics
+        result = normalize_solana_rpc_token_age_response(
+            _T3_SPL_SUCCESS_PAYLOAD, request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND
+        )
+        self.assertIsNone(result.normalized_payload.get("live_observed_launch"))
+
+    def test_t3_failure_never_sets_token_created_at_from_captured_at(self):
+        # When T3 fails, no token_created_at should be set at all
+        result = normalize_solana_rpc_token_age_response(
+            {
+                "fixture_status": "failure",
+                "failure_type": "solana_rpc_token_age_no_init_instruction",
+                "failure_message": "no init",
+                "captured_at": _FIXED_NOW_ISO,  # must NOT become token_created_at
+            },
+            request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND,
+        )
+        self.assertIsNone(result.normalized_payload.get("token_created_at"))
+        self.assertIsNone(result.normalized_payload.get("token_age_seconds"))
+
+    def test_migration_time_not_used_as_token_creation_time(self):
+        # T3 adapter normalizer should ignore migration_time field entirely
+        payload = {
+            **_T3_SPL_SUCCESS_PAYLOAD,
+            "migration_time": "2026-06-01T00:00:00+00:00",
+        }
+        result = normalize_solana_rpc_token_age_response(
+            payload, request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND
+        )
+        self.assertEqual(result.normalized_payload["token_created_at"], _T3_CREATED_ISO)
+
+
+# ---------------------------------------------------------------------------
+# Class 9: T2 and OBSERVED_LIVE_LAUNCH unchanged
+# ---------------------------------------------------------------------------
+
+class TestT2AndObservedLiveLaunchUnchanged(unittest.TestCase):
+
+    def _t2_payload(self) -> dict:
+        return {
+            "token_mint": "PumpTokenMint111",
+            "pair_address": "PumpPair222",
+            "chain": "solana",
+            "source_name": "pumpportal",
+            "captured_at": _FIXED_NOW_ISO,
+            "tokenCreatedAt": _T3_CREATED_ISO,
+            "request_kind": "pumpfun_launch_stream",
+        }
+
+    def _obs_live_payload(self) -> dict:
+        return {
+            "token_mint": "PumpTokenMint333",
+            "pair_address": "PumpPair444",
+            "chain": "solana",
+            "source_name": "pumpportal",
+            "captured_at": _FIXED_NOW_ISO,
+            "live_observed_launch": True,
+            "request_kind": "pumpfun_launch_stream",
+        }
+
+    def test_t2_tier_still_set_for_pumpportal_with_timestamp(self):
+        result = normalize_candidate("pumpportal", self._t2_payload(), _FIXED_NOW)
+        self.assertEqual(result["token_age_evidence_tier"], "T2")
+        self.assertIsNotNone(result["token_created_at"])
+        self.assertIsNotNone(result["token_age_seconds"])
+
+    def test_observed_live_launch_tier_still_set_for_pumpportal_no_timestamp(self):
+        result = normalize_candidate("pumpportal", self._obs_live_payload(), _FIXED_NOW)
+        self.assertEqual(result["token_age_evidence_tier"], "OBSERVED_LIVE_LAUNCH")
+        self.assertIsNone(result["token_created_at"])
+        self.assertIsNone(result["token_age_seconds"])
+
+    def test_t2_takes_precedence_over_obs_live_for_pumpportal(self):
+        # Event with both explicit timestamp AND live_observed_launch → T2 wins
+        payload = {**self._t2_payload(), "live_observed_launch": True}
+        result = normalize_candidate("pumpportal", payload, _FIXED_NOW)
+        self.assertEqual(result["token_age_evidence_tier"], "T2")
+
+    def test_geckoterminal_source_still_returns_none_tier(self):
+        payload = {
+            "token_mint": "GeckoMint555",
+            "pair_address": "GeckoPair666",
+            "chain": "solana",
+            "captured_at": _FIXED_NOW_ISO,
+        }
+        result = normalize_candidate("geckoterminal", payload, _FIXED_NOW)
+        self.assertIsNone(result["token_age_evidence_tier"])
+
+    def test_pumpportal_migration_still_returns_none_tier(self):
+        payload = {
+            "token_mint": "PumpTokenMint777",
+            "pair_address": "PumpPair888",
+            "chain": "solana",
+            "source_name": "pumpportal",
+            "captured_at": _FIXED_NOW_ISO,
+            "request_kind": "pumpfun_migration_stream",
+        }
+        result = normalize_candidate("pumpportal", payload, _FIXED_NOW)
+        self.assertIsNone(result["token_age_evidence_tier"])
+
+
+# ---------------------------------------------------------------------------
+# Class 10: A3 locked on failed T3
+# ---------------------------------------------------------------------------
+
+class TestA3LockedOnFailedT3(unittest.TestCase):
+
+    def _candidate_no_age(self, **overrides) -> dict:
+        base = {
+            "token_mint": _SPL_TOKEN_MINT,
+            "pair_address": "SomePair999",
+            "chain": "solana",
+            "source_name": SOLANA_RPC_SOURCE_NAME,
+            "captured_at": _FIXED_NOW_ISO,
+            "token_created_at": None,
+            "token_age_seconds": None,
+            "price_change_1h": -50.0,
+            "price_change_5m": None,
+            "price_change_15m": None,
+            "price_change_24h": None,
+            "volume_1h": 10000.0,
+            "volume_5m": 1000.0,
+            "volume_15m": 2000.0,
+            "volume_24h": 50000.0,
+            "txns_5m": 10,
+            "txns_1h": 50,
+            "liquidity_usd": 5000.0,
+            "market_cap": 100000.0,
+            "fdv": 200000.0,
+            "price_usd": 0.01,
+            "token_age_evidence_tier": None,
+        }
+        base.update(overrides)
+        return base
+
+    def test_a3_does_not_fire_when_token_age_seconds_is_none(self):
+        candidate = self._candidate_no_age()
+        bucket, reason = assign_bucket(candidate)
+        self.assertNotEqual(bucket, BUCKET_A3)
+
+    def test_a3_does_not_fire_after_t3_failure(self):
+        # Simulate T3 adapter returned failure: token_age_seconds remains None
+        result = normalize_solana_rpc_token_age_response(
+            {"fixture_status": "failure", "failure_type": "solana_rpc_token_age_rate_limited",
+             "failure_message": "429"},
+            request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND,
+        )
+        self.assertIsNone(result.normalized_payload.get("token_age_seconds"))
+
+        # Build candidate without T3 evidence (failed path)
+        candidate = self._candidate_no_age()
+        bucket, reason = assign_bucket(candidate)
+        self.assertNotEqual(bucket, BUCKET_A3)
+
+    def test_a3_fires_when_t3_evidence_present_and_conditions_met(self):
+        # Confirm A3 WOULD fire if T3 success produced valid evidence and conditions pass
+        candidate = self._candidate_no_age(
+            token_age_seconds=7200.0,  # 2 hours old
+            token_created_at=_T3_CREATED_ISO,
+            price_change_1h=-15.0,  # negative → A3 condition
+        )
+        bucket, reason = assign_bucket(candidate)
+        self.assertEqual(bucket, BUCKET_A3)
+
+    def test_t3_evidence_tier_alone_does_not_unlock_a3(self):
+        # OBSERVED_LIVE_LAUNCH tier set, but token_age_seconds still None → A3 locked
+        candidate = self._candidate_no_age(
+            token_age_evidence_tier="OBSERVED_LIVE_LAUNCH",
+            token_age_seconds=None,
+        )
+        bucket, reason = assign_bucket(candidate)
+        self.assertNotEqual(bucket, BUCKET_A3)
+
+
+# ---------------------------------------------------------------------------
+# Class 11: Fixture transport helpers and misc
+# ---------------------------------------------------------------------------
+
+class TestT3FixtureTransportHelpers(unittest.TestCase):
+
+    def test_fixture_success_transport_returns_payload(self):
+        transport = fixture_t3_success_transport(_T3_SPL_SUCCESS_PAYLOAD)
+        ctx = _make_t3_context()
+        result = transport(ctx)
+        self.assertEqual(result["t3_status"], "success")
+        self.assertEqual(result["token_created_at"], _T3_CREATED_ISO)
+
+    def test_fixture_failure_transport_returns_failure_payload(self):
+        transport = fixture_t3_failure_transport(
+            "solana_rpc_token_age_rate_limited", "HTTP 429"
+        )
+        ctx = _make_t3_context()
+        result = transport(ctx)
+        self.assertEqual(result["fixture_status"], "failure")
+        self.assertEqual(result["failure_type"], "solana_rpc_token_age_rate_limited")
+
+    def test_fixture_transport_payload_is_immutable_proxy(self):
+        transport = fixture_t3_success_transport(_T3_SPL_SUCCESS_PAYLOAD)
+        ctx = _make_t3_context()
+        result = transport(ctx)
+        with self.assertRaises((TypeError, AttributeError)):
+            result["injected_field"] = "evil"  # type: ignore[index]
+
+    def test_redacted_rpc_host_strips_path_and_key(self):
+        host = redacted_rpc_host("https://api.mainnet-beta.solana.com/v1?apikey=secret")
+        self.assertEqual(host, "api.mainnet-beta.solana.com")
+
+    def test_redacted_rpc_host_handles_none(self):
+        host = redacted_rpc_host(None)
+        self.assertEqual(host, "api.mainnet-beta.solana.com")
+
+    def test_adapter_call_count_increments(self):
+        adapter = _make_enabled_adapter_with_payload(_T3_SPL_SUCCESS_PAYLOAD)
+        ctx = _make_t3_context()
+        self.assertEqual(adapter.call_count, 0)
+        adapter.execute(ctx)
+        self.assertEqual(adapter.call_count, 1)
+        adapter.execute(ctx)
+        self.assertEqual(adapter.call_count, 2)
+
+    def test_paper_only_context_flag_set_in_success_payload(self):
+        result = normalize_solana_rpc_token_age_response(
+            _T3_SPL_SUCCESS_PAYLOAD, request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND
+        )
+        self.assertTrue(result.normalized_payload.get("paper_only_context"))
+
+
+if __name__ == "__main__":
+    unittest.main()
