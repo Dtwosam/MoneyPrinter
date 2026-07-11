@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import base64
 import json
+import struct
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import MappingProxyType
@@ -58,6 +59,9 @@ _TOKEN_2022_PROGRAM_ID = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 _ALLOWED_TOKEN_PROGRAMS = frozenset({_SPL_TOKEN_PROGRAM_ID, _TOKEN_2022_PROGRAM_ID})
 _INIT_MINT_INSTRUCTION_TYPES = frozenset({"initializeMint", "initializeMint2"})
 _SPL_TOKEN_MINT_SIZE = 82
+_SPL_MINT_IS_INITIALIZED_OFFSET = 45  # offset of is_initialized bool in the 82-byte Mint layout
+_TOKEN_2022_ACCOUNT_TYPE_MINT = 1      # AccountType discriminant for a Token-2022 mint account
+_TOKEN_2022_EXTENSION_TLV_HEADER_SIZE = 4  # 2-byte type + 2-byte length
 
 _T3_ALLOWED_REQUEST_KINDS = frozenset({SOLANA_RPC_TOKEN_AGE_REQUEST_KIND})
 
@@ -74,8 +78,8 @@ class SolanaRpcTokenAgeAdapterMetadata:
     display_name: str = "Solana RPC Token Age"
     enabled_by_default: bool = False
     requires_governor_context: bool = True
-    supports_network_execution: bool = False
-    fixture_transport_only: bool = True
+    supports_network_execution: bool = True   # live-capable; bounded transport injected for proof
+    fixture_transport_only: bool = False       # live transport defined; fixture used until proof lane
     read_only: bool = True
 
 
@@ -324,6 +328,73 @@ def _rpc_post(
         }
 
 
+def _decode_spl_token_base_mint_state(raw_bytes: bytes) -> tuple[bool, str | None]:
+    """Validate the 82-byte SPL Token base Mint layout.
+
+    Checks minimum length and the is_initialized flag (byte 45).
+    Returns (valid, error_message_or_None).
+    """
+    if len(raw_bytes) < _SPL_TOKEN_MINT_SIZE:
+        return False, f"Too short for base Mint layout: {len(raw_bytes)} < {_SPL_TOKEN_MINT_SIZE}"
+    is_initialized = raw_bytes[_SPL_MINT_IS_INITIALIZED_OFFSET]
+    if is_initialized != 1:
+        return False, f"Mint not initialized: is_initialized byte = {is_initialized!r}"
+    return True, None
+
+
+def _decode_token_2022_mint_state(raw_bytes: bytes) -> tuple[bool, str | None]:
+    """Validate a Token-2022 mint account: base Mint + AccountType byte + TLV extensions.
+
+    Validation steps:
+    1. 82-byte base SPL Token Mint layout (via _decode_spl_token_base_mint_state)
+    2. AccountType byte at offset 82 == 1 (Mint)
+    3. Extension region (bytes 83+) forms valid TLV entries — each entry is a
+       2-byte little-endian type, 2-byte little-endian length, then `length` bytes
+       of extension data. Trailing zero-padding bytes at the end are allowed.
+
+    Returns (valid, error_message_or_None).
+    Owner-plus-length alone is NOT sufficient — the AccountType byte and extension
+    TLV structure must also be valid.
+    """
+    ok, err = _decode_spl_token_base_mint_state(raw_bytes)
+    if not ok:
+        return False, err
+
+    # AccountType discriminant byte immediately after the 82-byte base
+    if len(raw_bytes) < _SPL_TOKEN_MINT_SIZE + 1:
+        return False, "Token-2022 mint missing AccountType byte after base Mint layout"
+
+    account_type = raw_bytes[_SPL_TOKEN_MINT_SIZE]
+    if account_type != _TOKEN_2022_ACCOUNT_TYPE_MINT:
+        return False, (
+            f"Token-2022 AccountType byte {account_type!r} is not Mint "
+            f"(expected {_TOKEN_2022_ACCOUNT_TYPE_MINT})"
+        )
+
+    # Walk TLV extension region starting at byte 83
+    ext_offset = _SPL_TOKEN_MINT_SIZE + 1
+    while ext_offset < len(raw_bytes):
+        remaining = len(raw_bytes) - ext_offset
+        if remaining < _TOKEN_2022_EXTENSION_TLV_HEADER_SIZE:
+            # Only trailing zero-padding is acceptable
+            if all(b == 0 for b in raw_bytes[ext_offset:]):
+                break
+            return False, (
+                f"Partial TLV header at offset {ext_offset}: "
+                f"{remaining} bytes remaining (need ≥ {_TOKEN_2022_EXTENSION_TLV_HEADER_SIZE})"
+            )
+        ext_type, ext_len = struct.unpack_from("<HH", raw_bytes, ext_offset)
+        ext_data_start = ext_offset + _TOKEN_2022_EXTENSION_TLV_HEADER_SIZE
+        if ext_data_start + ext_len > len(raw_bytes):
+            return False, (
+                f"TLV extension type={ext_type} at offset {ext_offset}: "
+                f"claimed length {ext_len} overflows buffer end ({len(raw_bytes)})"
+            )
+        ext_offset = ext_data_start + ext_len
+
+    return True, None
+
+
 def _is_init_mint_instruction(
     instruction: Mapping[str, Any],
     token_mint: str,
@@ -424,18 +495,29 @@ def _fetch_token_age_data(
             "failure_type": "solana_rpc_token_age_not_a_mint",
             "failure_message": f"Mint data base64 decode failed: {exc}",
         })
-    if len(raw_bytes) < _SPL_TOKEN_MINT_SIZE:
-        return MappingProxyType({
-            "fixture_status": "failure",
-            "failure_type": "solana_rpc_token_age_not_a_mint",
-            "failure_message": "Account data too short to be a Mint state",
-        })
-    if owner == _SPL_TOKEN_PROGRAM_ID and len(raw_bytes) != _SPL_TOKEN_MINT_SIZE:
-        return MappingProxyType({
-            "fixture_status": "failure",
-            "failure_type": "solana_rpc_token_age_not_a_mint",
-            "failure_message": f"SPL Token Mint must be exactly {_SPL_TOKEN_MINT_SIZE} bytes",
-        })
+    if owner == _SPL_TOKEN_PROGRAM_ID:
+        if len(raw_bytes) != _SPL_TOKEN_MINT_SIZE:
+            return MappingProxyType({
+                "fixture_status": "failure",
+                "failure_type": "solana_rpc_token_age_not_a_mint",
+                "failure_message": f"SPL Token Mint must be exactly {_SPL_TOKEN_MINT_SIZE} bytes",
+            })
+        spl_valid, spl_err = _decode_spl_token_base_mint_state(raw_bytes)
+        if not spl_valid:
+            return MappingProxyType({
+                "fixture_status": "failure",
+                "failure_type": "solana_rpc_token_age_not_a_mint",
+                "failure_message": f"SPL Token mint-state decode failed: {spl_err}",
+            })
+    else:
+        # Token-2022: validate AccountType byte and TLV extension structure
+        t22_valid, t22_err = _decode_token_2022_mint_state(raw_bytes)
+        if not t22_valid:
+            return MappingProxyType({
+                "fixture_status": "failure",
+                "failure_type": "solana_rpc_token_age_not_a_mint",
+                "failure_message": f"Token-2022 mint-state decode failed: {t22_err}",
+            })
 
     # Step 2: Walk signature history to oldest available page
     pages_fetched = 0
@@ -506,6 +588,7 @@ def _fetch_token_age_data(
 
     # Step 3: Inspect candidate transactions
     tx_calls = 0
+    block_time_calls = 0  # enforce _T3_MAX_BLOCK_TIME_CALLS directly
     found_sig: str | None = None
     found_slot: int | None = None
     found_block_time: int | None = None
@@ -566,9 +649,10 @@ def _fetch_token_age_data(
             block_time_source = "getTransaction"
             break
 
-        # blockTime null — getBlockTime fallback (one call max)
-        if slot is not None:
+        # blockTime null — getBlockTime fallback, capped at _T3_MAX_BLOCK_TIME_CALLS
+        if slot is not None and block_time_calls < _T3_MAX_BLOCK_TIME_CALLS:
             bt_resp = _call("getBlockTime", [int(slot)])
+            block_time_calls += 1
             if bt_resp.get("fixture_status") == "failure":
                 return MappingProxyType(dict(bt_resp))
             bt = bt_resp.get("result")

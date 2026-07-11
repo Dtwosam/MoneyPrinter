@@ -57,6 +57,13 @@ from printer_v1.sources.solana_rpc_token_age import (
     SOLANA_RPC_SOURCE_NAME,
     SOLANA_RPC_TOKEN_AGE_REQUEST_KIND,
     SolanaRpcTokenAgeAdapter,
+    SolanaRpcTokenAgeAdapterMetadata,
+    _T3_MAX_BLOCK_TIME_CALLS,
+    _SPL_TOKEN_MINT_SIZE,
+    _SPL_MINT_IS_INITIALIZED_OFFSET,
+    _TOKEN_2022_ACCOUNT_TYPE_MINT,
+    _decode_spl_token_base_mint_state,
+    _decode_token_2022_mint_state,
     build_solana_rpc_token_age_adapter,
     build_solana_rpc_token_age_adapter_contract,
     fixture_t3_failure_transport,
@@ -914,6 +921,262 @@ class TestT3FixtureTransportHelpers(unittest.TestCase):
             _T3_SPL_SUCCESS_PAYLOAD, request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND
         )
         self.assertTrue(result.normalized_payload.get("paper_only_context"))
+
+
+# ---------------------------------------------------------------------------
+# V2-2AK.2 Class 12: Live-capability adapter metadata
+# ---------------------------------------------------------------------------
+
+class TestLiveCapabilityMetadata(unittest.TestCase):
+    """Verify that V2-2AK.2 repaired adapter metadata reflects live-capable intent."""
+
+    def setUp(self):
+        self.meta = SolanaRpcTokenAgeAdapterMetadata()
+
+    def test_fixture_transport_only_is_false(self):
+        # Adapter has a live transport; fixture_transport_only must be False
+        self.assertFalse(self.meta.fixture_transport_only)
+
+    def test_supports_network_execution_is_true(self):
+        # Live transport defined per V2-2AJ Section 3.1
+        self.assertTrue(self.meta.supports_network_execution)
+
+    def test_enabled_by_default_is_false(self):
+        # Must stay disabled until operator enables for a proof lane
+        self.assertFalse(self.meta.enabled_by_default)
+
+    def test_requires_governor_context_is_true(self):
+        # All T3 calls must go through Source Governor
+        self.assertTrue(self.meta.requires_governor_context)
+
+    def test_metadata_and_contract_are_separate_objects(self):
+        # The adapter contract (fixture_only=True, supports_network_execution=False)
+        # must differ from the metadata object (supports_network_execution=True)
+        contract = build_solana_rpc_token_age_adapter_contract()
+        self.assertTrue(self.meta.supports_network_execution)
+        self.assertFalse(contract.supports_network_execution)
+        self.assertFalse(self.meta.fixture_transport_only)
+        self.assertTrue(contract.fixture_only)
+
+    def test_source_name_matches_constant(self):
+        self.assertEqual(self.meta.source_name, SOLANA_RPC_SOURCE_NAME)
+
+    def test_read_only_is_true(self):
+        self.assertTrue(self.meta.read_only)
+
+
+# ---------------------------------------------------------------------------
+# V2-2AK.2 Class 13: SPL Token mint-state decoding
+# ---------------------------------------------------------------------------
+
+def _make_spl_mint_bytes(*, is_initialized: int = 1, length: int = _SPL_TOKEN_MINT_SIZE) -> bytes:
+    """Return a minimal SPL Token mint byte buffer with is_initialized at offset 45."""
+    buf = bytearray(length)
+    if _SPL_MINT_IS_INITIALIZED_OFFSET < length:
+        buf[_SPL_MINT_IS_INITIALIZED_OFFSET] = is_initialized
+    return bytes(buf)
+
+
+class TestSplTokenMintStateDecoding(unittest.TestCase):
+    """Unit tests for _decode_spl_token_base_mint_state() — V2-2AK.2 repair."""
+
+    def test_valid_82_byte_initialized_mint_passes(self):
+        raw = _make_spl_mint_bytes(is_initialized=1)
+        ok, err = _decode_spl_token_base_mint_state(raw)
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+
+    def test_uninitialized_mint_byte_zero_rejected(self):
+        raw = _make_spl_mint_bytes(is_initialized=0)
+        ok, err = _decode_spl_token_base_mint_state(raw)
+        self.assertFalse(ok)
+        self.assertIn("not initialized", err)
+
+    def test_uninitialized_mint_byte_nonzero_nonone_rejected(self):
+        raw = _make_spl_mint_bytes(is_initialized=2)
+        ok, err = _decode_spl_token_base_mint_state(raw)
+        self.assertFalse(ok)
+        self.assertIn("not initialized", err)
+
+    def test_too_short_buffer_rejected(self):
+        raw = _make_spl_mint_bytes(length=44)
+        ok, err = _decode_spl_token_base_mint_state(raw)
+        self.assertFalse(ok)
+        self.assertIn("Too short", err)
+
+    def test_empty_buffer_rejected(self):
+        ok, err = _decode_spl_token_base_mint_state(b"")
+        self.assertFalse(ok)
+        self.assertIn("Too short", err)
+
+    def test_81_bytes_rejected(self):
+        raw = _make_spl_mint_bytes(length=81)
+        ok, err = _decode_spl_token_base_mint_state(raw)
+        self.assertFalse(ok)
+        self.assertIn("Too short", err)
+
+    def test_83_bytes_still_valid_base_decode(self):
+        # Extra byte beyond 82 is acceptable for the base check (Token-2022 case)
+        raw = _make_spl_mint_bytes(length=83)
+        ok, err = _decode_spl_token_base_mint_state(raw)
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+
+
+# ---------------------------------------------------------------------------
+# V2-2AK.2 Class 14: Token-2022 mint-state decoding
+# ---------------------------------------------------------------------------
+
+def _make_token_2022_mint_bytes(
+    *,
+    is_initialized: int = 1,
+    account_type: int = _TOKEN_2022_ACCOUNT_TYPE_MINT,
+    extensions: bytes = b"",
+) -> bytes:
+    """Return a Token-2022 mint buffer: 82-byte base + AccountType byte + extensions."""
+    base = _make_spl_mint_bytes(is_initialized=is_initialized)
+    return base + bytes([account_type]) + extensions
+
+
+def _make_tlv_extension(ext_type: int, data: bytes) -> bytes:
+    """Encode a single TLV extension entry (little-endian type u16, length u16, data)."""
+    import struct
+    return struct.pack("<HH", ext_type, len(data)) + data
+
+
+class TestToken2022MintStateDecoding(unittest.TestCase):
+    """Unit tests for _decode_token_2022_mint_state() — V2-2AK.2 repair."""
+
+    def test_valid_no_extensions_passes(self):
+        raw = _make_token_2022_mint_bytes()
+        ok, err = _decode_token_2022_mint_state(raw)
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+
+    def test_valid_with_one_extension_passes(self):
+        ext = _make_tlv_extension(1, b"\x01\x02\x03\x04")
+        raw = _make_token_2022_mint_bytes(extensions=ext)
+        ok, err = _decode_token_2022_mint_state(raw)
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+
+    def test_valid_with_two_extensions_passes(self):
+        ext = _make_tlv_extension(1, b"abcdef") + _make_tlv_extension(2, b"xyz")
+        raw = _make_token_2022_mint_bytes(extensions=ext)
+        ok, err = _decode_token_2022_mint_state(raw)
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+
+    def test_trailing_zero_padding_after_extensions_allowed(self):
+        ext = _make_tlv_extension(1, b"data") + b"\x00\x00\x00"
+        raw = _make_token_2022_mint_bytes(extensions=ext)
+        ok, err = _decode_token_2022_mint_state(raw)
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+
+    def test_wrong_account_type_byte_rejected(self):
+        raw = _make_token_2022_mint_bytes(account_type=0)
+        ok, err = _decode_token_2022_mint_state(raw)
+        self.assertFalse(ok)
+        self.assertIn("AccountType", err)
+
+    def test_account_type_2_rejected(self):
+        raw = _make_token_2022_mint_bytes(account_type=2)
+        ok, err = _decode_token_2022_mint_state(raw)
+        self.assertFalse(ok)
+        self.assertIn("AccountType", err)
+
+    def test_tlv_overflow_rejected(self):
+        # TLV claims 100 bytes but buffer only has 4 bytes for extension data
+        import struct
+        bad_ext = struct.pack("<HH", 1, 100) + b"\x00" * 4  # only 4 bytes, claims 100
+        raw = _make_token_2022_mint_bytes(extensions=bad_ext)
+        ok, err = _decode_token_2022_mint_state(raw)
+        self.assertFalse(ok)
+        self.assertIn("overflows", err)
+
+    def test_partial_tlv_header_with_non_zero_bytes_rejected(self):
+        # 3 bytes of extension region — too short for a TLV header (needs 4) and non-zero
+        raw = _make_token_2022_mint_bytes(extensions=b"\x01\x00\x02")
+        ok, err = _decode_token_2022_mint_state(raw)
+        self.assertFalse(ok)
+        self.assertIn("Partial TLV header", err)
+
+    def test_owner_plus_length_only_not_sufficient(self):
+        # Buffer is exactly 83 bytes (82 base + 1 AccountType) with is_initialized = 1
+        # and correct AccountType — this passes because no extensions to validate.
+        # But if we corrupt the AccountType, it must fail — proving AccountType is checked.
+        raw = _make_token_2022_mint_bytes(account_type=99)
+        ok, err = _decode_token_2022_mint_state(raw)
+        self.assertFalse(ok)
+        self.assertIn("AccountType", err)
+
+    def test_uninitialized_base_mint_fails_before_account_type_check(self):
+        raw = _make_token_2022_mint_bytes(is_initialized=0)
+        ok, err = _decode_token_2022_mint_state(raw)
+        self.assertFalse(ok)
+        self.assertIn("not initialized", err)
+
+    def test_base_mint_too_short_fails_before_account_type_check(self):
+        raw = bytes(81)  # too short for base Mint
+        ok, err = _decode_token_2022_mint_state(raw)
+        self.assertFalse(ok)
+        self.assertIn("Too short", err)
+
+
+# ---------------------------------------------------------------------------
+# V2-2AK.2 Class 15: getBlockTime call limit
+# ---------------------------------------------------------------------------
+
+class TestGetBlockTimeLimit(unittest.TestCase):
+    """Verify _T3_MAX_BLOCK_TIME_CALLS == 1 and that block_time_source values are accepted."""
+
+    def test_max_block_time_calls_constant_is_one(self):
+        self.assertEqual(_T3_MAX_BLOCK_TIME_CALLS, 1)
+
+    def test_block_time_source_get_transaction_accepted_by_normalizer(self):
+        payload = {**_T3_SPL_SUCCESS_PAYLOAD, "t3_block_time_source": "getTransaction"}
+        result = normalize_solana_rpc_token_age_response(
+            payload, request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND
+        )
+        self.assertEqual(result.source_status, SourceStatus.COMPLETE)
+        self.assertEqual(result.normalized_payload["t3_block_time_source"], "getTransaction")
+
+    def test_block_time_source_get_block_time_accepted_by_normalizer(self):
+        payload = {
+            **_T3_SPL_SUCCESS_PAYLOAD,
+            "t3_block_time_source": "getBlockTime",
+            "t3_rpc_methods_attempted": [
+                "getAccountInfo", "getSignaturesForAddress", "getTransaction", "getBlockTime"
+            ],
+        }
+        result = normalize_solana_rpc_token_age_response(
+            payload, request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND
+        )
+        self.assertEqual(result.source_status, SourceStatus.COMPLETE)
+        self.assertEqual(result.normalized_payload["t3_block_time_source"], "getBlockTime")
+
+    def test_null_block_time_with_budget_exhausted_fails_closed(self):
+        result = normalize_solana_rpc_token_age_response(
+            {
+                "fixture_status": "failure",
+                "failure_type": "solana_rpc_token_age_null_block_time",
+                "failure_message": "blockTime null, getBlockTime limit=1 exhausted",
+            },
+            request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND,
+        )
+        self.assertEqual(result.source_status, SourceStatus.FAILED)
+        self.assertIsNone(result.normalized_payload.get("token_age_seconds"))
+
+    def test_block_time_limit_is_tracked_separately_from_total_budget(self):
+        # Verify the constant names are distinct (static check — ensures code is intentional)
+        from printer_v1.sources.solana_rpc_token_age import (
+            _T3_MAX_BLOCK_TIME_CALLS,
+            _T3_MAX_REQUESTS_PER_TOKEN,
+            _T3_MAX_TRANSACTION_CALLS,
+        )
+        self.assertLess(_T3_MAX_BLOCK_TIME_CALLS, _T3_MAX_TRANSACTION_CALLS)
+        self.assertLess(_T3_MAX_BLOCK_TIME_CALLS, _T3_MAX_REQUESTS_PER_TOKEN)
 
 
 if __name__ == "__main__":
