@@ -16,6 +16,11 @@ Evidence is accepted ONLY when:
 
 All failures leave token_created_at, token_age_seconds, and tier unset (fail-closed).
 No fallback to pair age, captured_at, migration time, or OBSERVED_LIVE_LAUNCH.
+
+Failure provenance: partial trace fields (t3_requested_mint, t3_rpc_host_redacted,
+t3_rpc_methods_attempted, t3_request_ids, t3_pages_fetched, t3_tx_calls_attempted,
+t3_block_time_calls_attempted, t3_failure_stage) are preserved in the failure result
+normalized_payload for audit. They never produce token-age evidence or unlock A3.
 """
 
 from __future__ import annotations
@@ -75,6 +80,20 @@ _TOKEN_2022_ACCOUNT_TYPE_MINT = 1       # AccountType::Mint discriminant value
 _TOKEN_2022_EXTENSION_TLV_HEADER_SIZE = 4  # TLV entry header: 2-byte type + 2-byte length
 
 _T3_ALLOWED_REQUEST_KINDS = frozenset({SOLANA_RPC_TOKEN_AGE_REQUEST_KIND})
+
+# Partial failure provenance fields carried in NormalizedSourceResult.normalized_payload
+# on every T3 failure. These are audit/trace fields only — they never produce token-age
+# evidence, never populate token_created_at/token_age_seconds/tier, and never unlock A3.
+_T3_FAIL_PROVENANCE_FIELDS = (
+    "t3_requested_mint",
+    "t3_rpc_host_redacted",
+    "t3_rpc_methods_attempted",
+    "t3_request_ids",
+    "t3_pages_fetched",
+    "t3_tx_calls_attempted",
+    "t3_block_time_calls_attempted",
+    "t3_failure_stage",
+)
 
 _RPC_HEADERS = {
     "User-Agent": "PrinterV1/0.1 (+paper-only T3 mint-age reference)",
@@ -160,13 +179,22 @@ def fixture_t3_success_transport(
 def fixture_t3_failure_transport(
     failure_type: str,
     failure_message: str = "T3 fixture failure",
+    *,
+    failure_provenance: Mapping[str, Any] | None = None,
 ) -> Callable[[SourceAdapterContext], Mapping[str, Any]]:
-    """Return a transport that always returns a pre-built T3 failure payload."""
-    frozen = MappingProxyType({
+    """Return a transport that always returns a pre-built T3 failure payload.
+
+    Pass failure_provenance to include partial trace fields (t3_requested_mint,
+    t3_rpc_methods_attempted, etc.) in the fixture failure for testing provenance paths.
+    """
+    payload: dict[str, Any] = {
         "fixture_status": "failure",
         "failure_type": failure_type,
         "failure_message": failure_message,
-    })
+    }
+    if failure_provenance:
+        payload.update(failure_provenance)
+    frozen = MappingProxyType(payload)
 
     def transport(context: SourceAdapterContext) -> Mapping[str, Any]:
         del context
@@ -221,6 +249,7 @@ def normalize_solana_rpc_token_age_response(
             request_kind,
             str(payload.get("failure_type") or "solana_rpc_token_age_unknown_failure"),
             str(payload.get("failure_message") or "T3 failure with no message"),
+            failure_provenance=_extract_failure_provenance(payload),
         )
 
     # Success path requires t3_status="success"
@@ -458,10 +487,15 @@ def _fetch_token_age_data(
     """Execute the full T3 multi-step RPC pipeline.
 
     Not called in V2-2AK fixture tests. Defined for V2-2AL bounded live proof.
+    On failure, carries partial provenance in the returned dict so callers can
+    pass it through to NormalizedSourceResult.normalized_payload for audit.
     """
     request_count = 0
     request_ids: list[int] = []
     methods_attempted: list[str] = []
+    pages_fetched = 0
+    tx_calls = 0
+    block_time_calls = 0
 
     def _call(method: str, params: list[Any]) -> Mapping[str, Any]:
         nonlocal request_count
@@ -479,77 +513,94 @@ def _fetch_token_age_data(
 
     host_redacted = redacted_rpc_host(rpc_url)
 
+    def _pfail(failure_type: str, failure_message: str, *, stage: str) -> Mapping[str, Any]:
+        """Build a failure payload carrying current partial provenance for audit."""
+        return MappingProxyType({
+            "fixture_status": "failure",
+            "failure_type": failure_type,
+            "failure_message": failure_message,
+            "t3_requested_mint": token_mint,
+            "t3_rpc_host_redacted": host_redacted,
+            "t3_rpc_methods_attempted": list(methods_attempted),
+            "t3_request_ids": list(request_ids),
+            "t3_pages_fetched": pages_fetched,
+            "t3_tx_calls_attempted": tx_calls,
+            "t3_block_time_calls_attempted": block_time_calls,
+            "t3_failure_stage": stage,
+        })
+
     # Step 1: Validate mint account
     account_resp = _call(
         "getAccountInfo",
         [token_mint, {"encoding": "base64", "commitment": "confirmed"}],
     )
     if account_resp.get("fixture_status") == "failure":
-        return MappingProxyType(dict(account_resp))
+        ft = str(account_resp.get("failure_type") or "solana_rpc_token_age_transport_error")
+        fm = str(account_resp.get("failure_message") or "")
+        return _pfail(ft, fm, stage="account_validation")
     if account_resp.get("error"):
-        return MappingProxyType({
-            "fixture_status": "failure",
-            "failure_type": "solana_rpc_token_age_transport_error",
-            "failure_message": str(account_resp.get("error")),
-        })
+        return _pfail(
+            "solana_rpc_token_age_transport_error",
+            str(account_resp.get("error")),
+            stage="account_validation",
+        )
 
     result_value = (account_resp.get("result") or {}).get("value")
     if not result_value:
-        return MappingProxyType({
-            "fixture_status": "failure",
-            "failure_type": "solana_rpc_token_age_account_not_found",
-            "failure_message": f"Mint account not found on-chain: {token_mint}",
-        })
+        return _pfail(
+            "solana_rpc_token_age_account_not_found",
+            f"Mint account not found on-chain: {token_mint}",
+            stage="account_validation",
+        )
 
     owner = result_value.get("owner")
     if owner not in _ALLOWED_TOKEN_PROGRAMS:
-        return MappingProxyType({
-            "fixture_status": "failure",
-            "failure_type": "solana_rpc_token_age_not_a_mint",
-            "failure_message": f"Account owner {owner!r} is not SPL Token or Token-2022 program",
-        })
+        return _pfail(
+            "solana_rpc_token_age_not_a_mint",
+            f"Account owner {owner!r} is not SPL Token or Token-2022 program",
+            stage="account_validation",
+        )
 
     data_field = result_value.get("data")
     if not isinstance(data_field, list) or not data_field:
-        return MappingProxyType({
-            "fixture_status": "failure",
-            "failure_type": "solana_rpc_token_age_not_a_mint",
-            "failure_message": "Account data missing or not in expected base64 list format",
-        })
+        return _pfail(
+            "solana_rpc_token_age_not_a_mint",
+            "Account data missing or not in expected base64 list format",
+            stage="account_validation",
+        )
     try:
         raw_bytes = base64.b64decode(data_field[0])
     except Exception as exc:
-        return MappingProxyType({
-            "fixture_status": "failure",
-            "failure_type": "solana_rpc_token_age_not_a_mint",
-            "failure_message": f"Mint data base64 decode failed: {exc}",
-        })
+        return _pfail(
+            "solana_rpc_token_age_not_a_mint",
+            f"Mint data base64 decode failed: {exc}",
+            stage="account_validation",
+        )
     if owner == _SPL_TOKEN_PROGRAM_ID:
         if len(raw_bytes) != _SPL_TOKEN_MINT_SIZE:
-            return MappingProxyType({
-                "fixture_status": "failure",
-                "failure_type": "solana_rpc_token_age_not_a_mint",
-                "failure_message": f"SPL Token Mint must be exactly {_SPL_TOKEN_MINT_SIZE} bytes",
-            })
+            return _pfail(
+                "solana_rpc_token_age_not_a_mint",
+                f"SPL Token Mint must be exactly {_SPL_TOKEN_MINT_SIZE} bytes",
+                stage="account_validation",
+            )
         spl_valid, spl_err = _decode_spl_token_base_mint_state(raw_bytes)
         if not spl_valid:
-            return MappingProxyType({
-                "fixture_status": "failure",
-                "failure_type": "solana_rpc_token_age_not_a_mint",
-                "failure_message": f"SPL Token mint-state decode failed: {spl_err}",
-            })
+            return _pfail(
+                "solana_rpc_token_age_not_a_mint",
+                f"SPL Token mint-state decode failed: {spl_err}",
+                stage="account_validation",
+            )
     else:
         # Token-2022: validate AccountType byte and TLV extension structure
         t22_valid, t22_err = _decode_token_2022_mint_state(raw_bytes)
         if not t22_valid:
-            return MappingProxyType({
-                "fixture_status": "failure",
-                "failure_type": "solana_rpc_token_age_not_a_mint",
-                "failure_message": f"Token-2022 mint-state decode failed: {t22_err}",
-            })
+            return _pfail(
+                "solana_rpc_token_age_not_a_mint",
+                f"Token-2022 mint-state decode failed: {t22_err}",
+                stage="account_validation",
+            )
 
     # Step 2: Walk signature history to oldest available page
-    pages_fetched = 0
     before_cursor: str | None = None
     oldest_page: list[Any] = []
     reached_end = False
@@ -564,24 +615,26 @@ def _fetch_token_age_data(
 
         sig_resp = _call("getSignaturesForAddress", sig_params)
         if sig_resp.get("fixture_status") == "failure":
-            return MappingProxyType(dict(sig_resp))
+            ft = str(sig_resp.get("failure_type") or "solana_rpc_token_age_transport_error")
+            fm = str(sig_resp.get("failure_message") or "")
+            return _pfail(ft, fm, stage="signature_history")
         if sig_resp.get("error"):
-            return MappingProxyType({
-                "fixture_status": "failure",
-                "failure_type": "solana_rpc_token_age_transport_error",
-                "failure_message": str(sig_resp.get("error")),
-            })
+            return _pfail(
+                "solana_rpc_token_age_transport_error",
+                str(sig_resp.get("error")),
+                stage="signature_history",
+            )
 
         sig_list = sig_resp.get("result") or []
         pages_fetched += 1
 
         if not sig_list:
             if pages_fetched == 1:
-                return MappingProxyType({
-                    "fixture_status": "failure",
-                    "failure_type": "solana_rpc_token_age_no_signatures",
-                    "failure_message": f"No signature history for mint: {token_mint}",
-                })
+                return _pfail(
+                    "solana_rpc_token_age_no_signatures",
+                    f"No signature history for mint: {token_mint}",
+                    stage="signature_history",
+                )
             reached_end = True
             break
 
@@ -594,14 +647,14 @@ def _fetch_token_age_data(
             break
 
     if not reached_end:
-        return MappingProxyType({
-            "fixture_status": "failure",
-            "failure_type": "solana_rpc_token_age_page_cap_exhausted",
-            "failure_message": (
+        return _pfail(
+            "solana_rpc_token_age_page_cap_exhausted",
+            (
                 f"Signature page cap ({_T3_MAX_SIGNATURE_PAGES}) exhausted before "
                 "reaching mint history start"
             ),
-        })
+            stage="signature_history",
+        )
 
     # Take up to _T3_MAX_INIT_CANDIDATES from the oldest end of the page
     raw_candidates = [
@@ -609,15 +662,13 @@ def _fetch_token_age_data(
         if (row or {}).get("signature") and not (row or {}).get("err")
     ]
     if not raw_candidates:
-        return MappingProxyType({
-            "fixture_status": "failure",
-            "failure_type": "solana_rpc_token_age_no_signatures",
-            "failure_message": "No successful candidate signatures in oldest page",
-        })
+        return _pfail(
+            "solana_rpc_token_age_no_signatures",
+            "No successful candidate signatures in oldest page",
+            stage="signature_history",
+        )
 
     # Step 3: Inspect candidate transactions
-    tx_calls = 0
-    block_time_calls = 0  # enforce _T3_MAX_BLOCK_TIME_CALLS directly
     found_sig: str | None = None
     found_slot: int | None = None
     found_block_time: int | None = None
@@ -646,7 +697,9 @@ def _fetch_token_age_data(
         tx_calls += 1
 
         if tx_resp.get("fixture_status") == "failure":
-            return MappingProxyType(dict(tx_resp))
+            ft = str(tx_resp.get("failure_type") or "solana_rpc_token_age_transport_error")
+            fm = str(tx_resp.get("failure_message") or "")
+            return _pfail(ft, fm, stage="transaction_inspection")
 
         tx_result = tx_resp.get("result")
         if tx_result is None:
@@ -683,7 +736,9 @@ def _fetch_token_age_data(
             bt_resp = _call("getBlockTime", [int(slot)])
             block_time_calls += 1
             if bt_resp.get("fixture_status") == "failure":
-                return MappingProxyType(dict(bt_resp))
+                ft = str(bt_resp.get("failure_type") or "solana_rpc_token_age_transport_error")
+                fm = str(bt_resp.get("failure_message") or "")
+                return _pfail(ft, fm, stage="block_time_fallback")
             bt = bt_resp.get("result")
             if bt is not None and int(bt) > 0:
                 found_sig = sig
@@ -693,13 +748,11 @@ def _fetch_token_age_data(
                 break
 
     if found_block_time is None or found_sig is None:
-        return MappingProxyType({
-            "fixture_status": "failure",
-            "failure_type": "solana_rpc_token_age_no_init_instruction",
-            "failure_message": (
-                "No successful initializeMint/initializeMint2 with valid block time found"
-            ),
-        })
+        return _pfail(
+            "solana_rpc_token_age_no_init_instruction",
+            "No successful initializeMint/initializeMint2 with valid block time found",
+            stage="transaction_inspection",
+        )
 
     # Derive timestamps and validate non-future
     try:
@@ -708,20 +761,18 @@ def _fetch_token_age_data(
         ).astimezone(timezone.utc)
         token_created_dt = datetime.fromtimestamp(found_block_time, tz=timezone.utc)
     except Exception as exc:
-        return MappingProxyType({
-            "fixture_status": "failure",
-            "failure_type": "solana_rpc_token_age_malformed_response",
-            "failure_message": f"Timestamp derivation failed: {exc}",
-        })
+        return _pfail(
+            "solana_rpc_token_age_malformed_response",
+            f"Timestamp derivation failed: {exc}",
+            stage="timestamp_derivation",
+        )
 
     if token_created_dt > captured_dt:
-        return MappingProxyType({
-            "fixture_status": "failure",
-            "failure_type": "solana_rpc_token_age_future_block_time",
-            "failure_message": (
-                f"Block time {found_block_time} is in the future relative to captured_at"
-            ),
-        })
+        return _pfail(
+            "solana_rpc_token_age_future_block_time",
+            f"Block time {found_block_time} is in the future relative to captured_at",
+            stage="timestamp_derivation",
+        )
 
     age_seconds = (captured_dt - token_created_dt).total_seconds()
     token_created_at_iso = token_created_dt.isoformat()
@@ -755,6 +806,23 @@ def _fetch_token_age_data(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+def _extract_failure_provenance(
+    payload: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    """Extract safe partial trace fields from a failure payload for audit persistence.
+
+    Only copies fields listed in _T3_FAIL_PROVENANCE_FIELDS. Never copies
+    token_created_at, token_age_seconds, token_age_evidence_tier, or any
+    success-path field that could be misread as T3 evidence.
+    """
+    result: dict[str, Any] = {}
+    for field in _T3_FAIL_PROVENANCE_FIELDS:
+        val = payload.get(field)
+        if val is not None:
+            result[field] = val
+    return MappingProxyType(result) if result else None
+
+
 def _validate_t3_context(
     context: SourceAdapterContext,
     contract: SourceAdapterContract,
@@ -778,7 +846,16 @@ def _t3_failure_result(
     request_kind: str,
     failure_type: str,
     failure_message: str,
+    *,
+    failure_provenance: Mapping[str, Any] | None = None,
 ) -> NormalizedSourceResult:
+    """Build a fail-closed NormalizedSourceResult.
+
+    If failure_provenance is provided, its fields are stored in normalized_payload
+    for audit. They are audit-only: no token_created_at, token_age_seconds,
+    token_age_evidence_tier, or A3-unlocking field is ever included.
+    """
+    payload: dict[str, Any] = dict(failure_provenance) if failure_provenance else {}
     return NormalizedSourceResult(
         source_name=SOLANA_RPC_SOURCE_NAME,
         request_kind=request_kind,
@@ -786,4 +863,5 @@ def _t3_failure_result(
         data_quality_label=DataQualityLabel.MISSING_CRITICAL_DATA,
         failure_type=failure_type,
         failure_message=failure_message,
+        normalized_payload=MappingProxyType(payload),
     )

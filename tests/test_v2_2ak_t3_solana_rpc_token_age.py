@@ -59,6 +59,7 @@ from printer_v1.sources.solana_rpc_token_age import (
     SolanaRpcTokenAgeAdapter,
     SolanaRpcTokenAgeAdapterMetadata,
     _T3_MAX_BLOCK_TIME_CALLS,
+    _T3_FAIL_PROVENANCE_FIELDS,
     _SPL_TOKEN_MINT_SIZE,
     _SPL_TOKEN_ACCOUNT_SIZE,
     _SPL_MINT_IS_INITIALIZED_OFFSET,
@@ -1235,6 +1236,314 @@ class TestGetBlockTimeLimit(unittest.TestCase):
         )
         self.assertLess(_T3_MAX_BLOCK_TIME_CALLS, _T3_MAX_TRANSACTION_CALLS)
         self.assertLess(_T3_MAX_BLOCK_TIME_CALLS, _T3_MAX_REQUESTS_PER_TOKEN)
+
+
+# ---------------------------------------------------------------------------
+# V2-2AL.4A Class 16: T3 failure provenance repair
+# ---------------------------------------------------------------------------
+
+# Partial failure provenance fixture — simulates what _fetch_token_age_data() now returns
+_FAIL_PROV_ACCOUNT_VALIDATION = {
+    "t3_requested_mint": _SPL_TOKEN_MINT,
+    "t3_rpc_host_redacted": "api.mainnet-beta.solana.com",
+    "t3_rpc_methods_attempted": ["getAccountInfo"],
+    "t3_request_ids": [1],
+    "t3_pages_fetched": 0,
+    "t3_tx_calls_attempted": 0,
+    "t3_block_time_calls_attempted": 0,
+    "t3_failure_stage": "account_validation",
+}
+
+_FAIL_PROV_PAGE_CAP = {
+    "t3_requested_mint": _SPL_TOKEN_MINT,
+    "t3_rpc_host_redacted": "api.mainnet-beta.solana.com",
+    "t3_rpc_methods_attempted": [
+        "getAccountInfo",
+        "getSignaturesForAddress",
+        "getSignaturesForAddress",
+        "getSignaturesForAddress",
+    ],
+    "t3_request_ids": [1, 2, 3, 4],
+    "t3_pages_fetched": 3,
+    "t3_tx_calls_attempted": 0,
+    "t3_block_time_calls_attempted": 0,
+    "t3_failure_stage": "signature_history",
+}
+
+_FAIL_PROV_TX_NO_INIT = {
+    "t3_requested_mint": _SPL_TOKEN_MINT,
+    "t3_rpc_host_redacted": "api.mainnet-beta.solana.com",
+    "t3_rpc_methods_attempted": [
+        "getAccountInfo", "getSignaturesForAddress", "getTransaction", "getTransaction",
+    ],
+    "t3_request_ids": [1, 2, 3, 4],
+    "t3_pages_fetched": 1,
+    "t3_tx_calls_attempted": 2,
+    "t3_block_time_calls_attempted": 0,
+    "t3_failure_stage": "transaction_inspection",
+}
+
+_FAIL_PROV_NULL_BLOCK_TIME = {
+    "t3_requested_mint": _SPL_TOKEN_MINT,
+    "t3_rpc_host_redacted": "api.mainnet-beta.solana.com",
+    "t3_rpc_methods_attempted": [
+        "getAccountInfo", "getSignaturesForAddress", "getTransaction", "getBlockTime",
+    ],
+    "t3_request_ids": [1, 2, 3, 4],
+    "t3_pages_fetched": 1,
+    "t3_tx_calls_attempted": 1,
+    "t3_block_time_calls_attempted": 1,
+    "t3_failure_stage": "block_time_fallback",
+}
+
+
+def _fail_payload(failure_type: str, provenance: dict) -> dict:
+    return {
+        "fixture_status": "failure",
+        "failure_type": failure_type,
+        "failure_message": "fixture",
+        **provenance,
+    }
+
+
+class TestT3FailureProvenance(unittest.TestCase):
+    """V2-2AL.4A — T3 failure-provenance repair.
+
+    Verifies that bounded RPC failures carry safe partial trace fields in
+    NormalizedSourceResult.normalized_payload for audit, without populating
+    token_created_at, token_age_seconds, token_age_evidence_tier, or unlocking A3.
+    """
+
+    # 1 — Mint-account validation failure carries partial provenance
+    def test_mint_validation_failure_carries_partial_provenance(self):
+        payload = _fail_payload("solana_rpc_token_age_not_a_mint", _FAIL_PROV_ACCOUNT_VALIDATION)
+        result = normalize_solana_rpc_token_age_response(
+            payload, request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND
+        )
+        self.assertEqual(result.source_status, SourceStatus.FAILED)
+        p = result.normalized_payload
+        self.assertEqual(p.get("t3_requested_mint"), _SPL_TOKEN_MINT)
+        self.assertEqual(p.get("t3_rpc_host_redacted"), "api.mainnet-beta.solana.com")
+        self.assertEqual(p.get("t3_rpc_methods_attempted"), ["getAccountInfo"])
+        self.assertEqual(p.get("t3_request_ids"), [1])
+        self.assertEqual(p.get("t3_pages_fetched"), 0)
+        self.assertEqual(p.get("t3_tx_calls_attempted"), 0)
+        self.assertEqual(p.get("t3_block_time_calls_attempted"), 0)
+        self.assertEqual(p.get("t3_failure_stage"), "account_validation")
+
+    # 2 — Rate limit / transport failure carries partial provenance
+    def test_rate_limit_failure_carries_partial_provenance(self):
+        prov = {**_FAIL_PROV_ACCOUNT_VALIDATION, "t3_failure_stage": "account_validation"}
+        payload = _fail_payload("solana_rpc_token_age_rate_limited", prov)
+        result = normalize_solana_rpc_token_age_response(
+            payload, request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND
+        )
+        self.assertEqual(result.source_status, SourceStatus.FAILED)
+        self.assertEqual(result.failure_type, "solana_rpc_token_age_rate_limited")
+        self.assertIsNotNone(result.normalized_payload.get("t3_requested_mint"))
+        self.assertIsNotNone(result.normalized_payload.get("t3_failure_stage"))
+
+    # 3 — Page-cap exhaustion carries pages_fetched = 3 and correct stage
+    def test_page_cap_exhaustion_carries_pages_fetched(self):
+        payload = _fail_payload("solana_rpc_token_age_page_cap_exhausted", _FAIL_PROV_PAGE_CAP)
+        result = normalize_solana_rpc_token_age_response(
+            payload, request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND
+        )
+        self.assertEqual(result.source_status, SourceStatus.FAILED)
+        p = result.normalized_payload
+        self.assertEqual(p.get("t3_pages_fetched"), 3)
+        self.assertEqual(p.get("t3_failure_stage"), "signature_history")
+        self.assertIn("getSignaturesForAddress", p.get("t3_rpc_methods_attempted", []))
+        self.assertEqual(p.get("t3_tx_calls_attempted"), 0)
+
+    # 4 — Transaction no-init failure carries tx_calls_attempted
+    def test_transaction_no_init_failure_carries_tx_calls_attempted(self):
+        payload = _fail_payload("solana_rpc_token_age_no_init_instruction", _FAIL_PROV_TX_NO_INIT)
+        result = normalize_solana_rpc_token_age_response(
+            payload, request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND
+        )
+        self.assertEqual(result.source_status, SourceStatus.FAILED)
+        p = result.normalized_payload
+        self.assertEqual(p.get("t3_tx_calls_attempted"), 2)
+        self.assertEqual(p.get("t3_failure_stage"), "transaction_inspection")
+        self.assertIn("getTransaction", p.get("t3_rpc_methods_attempted", []))
+
+    # 5 — Null block-time failure carries block_time_calls_attempted = 1
+    def test_null_block_time_failure_carries_block_time_calls_attempted(self):
+        payload = _fail_payload("solana_rpc_token_age_null_block_time", _FAIL_PROV_NULL_BLOCK_TIME)
+        result = normalize_solana_rpc_token_age_response(
+            payload, request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND
+        )
+        self.assertEqual(result.source_status, SourceStatus.FAILED)
+        p = result.normalized_payload
+        self.assertEqual(p.get("t3_block_time_calls_attempted"), 1)
+        self.assertEqual(p.get("t3_failure_stage"), "block_time_fallback")
+        self.assertIn("getBlockTime", p.get("t3_rpc_methods_attempted", []))
+
+    # 6 — Budget exhaustion carries exact method/request counts
+    def test_budget_exhausted_failure_carries_exact_method_count(self):
+        budget_prov = {
+            "t3_requested_mint": _SPL_TOKEN_MINT,
+            "t3_rpc_host_redacted": "api.mainnet-beta.solana.com",
+            "t3_rpc_methods_attempted": [
+                "getAccountInfo",
+                "getSignaturesForAddress",
+                "getSignaturesForAddress",
+                "getSignaturesForAddress",
+                "getTransaction",
+                "getTransaction",
+                "getTransaction",
+                "getBlockTime",
+            ],
+            "t3_request_ids": [1, 2, 3, 4, 5, 6, 7, 8],
+            "t3_pages_fetched": 3,
+            "t3_tx_calls_attempted": 3,
+            "t3_block_time_calls_attempted": 1,
+            "t3_failure_stage": "transaction_inspection",
+        }
+        payload = _fail_payload("solana_rpc_token_age_budget_exhausted", budget_prov)
+        result = normalize_solana_rpc_token_age_response(
+            payload, request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND
+        )
+        self.assertEqual(result.source_status, SourceStatus.FAILED)
+        p = result.normalized_payload
+        self.assertEqual(len(p.get("t3_rpc_methods_attempted", [])), 8)
+        self.assertEqual(len(p.get("t3_request_ids", [])), 8)
+        self.assertEqual(p.get("t3_tx_calls_attempted"), 3)
+        self.assertEqual(p.get("t3_block_time_calls_attempted"), 1)
+
+    # 7 — Failure provenance carries redacted RPC host (no path, no key)
+    def test_failure_provenance_carries_redacted_rpc_host(self):
+        prov = {**_FAIL_PROV_ACCOUNT_VALIDATION}
+        payload = _fail_payload("solana_rpc_token_age_not_a_mint", prov)
+        result = normalize_solana_rpc_token_age_response(
+            payload, request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND
+        )
+        host = result.normalized_payload.get("t3_rpc_host_redacted")
+        self.assertIsNotNone(host)
+        self.assertNotIn("http", str(host))
+        self.assertNotIn("?", str(host))
+        self.assertNotIn("apikey", str(host))
+
+    # 8 — t3_failure_stage is present and non-empty string
+    def test_failure_stage_field_present_and_non_empty(self):
+        for stage_prov in (_FAIL_PROV_ACCOUNT_VALIDATION, _FAIL_PROV_PAGE_CAP,
+                           _FAIL_PROV_TX_NO_INIT, _FAIL_PROV_NULL_BLOCK_TIME):
+            payload = _fail_payload("solana_rpc_token_age_no_init_instruction", stage_prov)
+            result = normalize_solana_rpc_token_age_response(
+                payload, request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND
+            )
+            stage = result.normalized_payload.get("t3_failure_stage")
+            self.assertIsInstance(stage, str, f"expected str stage for prov={stage_prov}")
+            self.assertGreater(len(stage), 0)
+
+    # 9 — Failure provenance never sets token-age evidence fields
+    def test_failure_provenance_never_sets_token_age_fields(self):
+        for prov in (_FAIL_PROV_ACCOUNT_VALIDATION, _FAIL_PROV_PAGE_CAP,
+                     _FAIL_PROV_TX_NO_INIT, _FAIL_PROV_NULL_BLOCK_TIME):
+            payload = _fail_payload("solana_rpc_token_age_no_init_instruction", prov)
+            result = normalize_solana_rpc_token_age_response(
+                payload, request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND
+            )
+            p = result.normalized_payload
+            self.assertIsNone(p.get("token_created_at"),
+                              f"token_created_at must be absent in failure result")
+            self.assertIsNone(p.get("token_age_seconds"),
+                              f"token_age_seconds must be absent in failure result")
+            self.assertIsNone(p.get("token_age_evidence_tier"),
+                              f"token_age_evidence_tier must be absent in failure result")
+
+    # 10 — Failure provenance never unlocks A3
+    def test_failure_provenance_never_unlocks_a3(self):
+        from printer_v1.discovery.selection_batch import BUCKET_A3, assign_bucket
+        for prov in (_FAIL_PROV_ACCOUNT_VALIDATION, _FAIL_PROV_PAGE_CAP,
+                     _FAIL_PROV_TX_NO_INIT, _FAIL_PROV_NULL_BLOCK_TIME):
+            candidate = {
+                "token_mint": _SPL_TOKEN_MINT,
+                "pair_address": "SomePairXXX",
+                "chain": "solana",
+                "source_name": SOLANA_RPC_SOURCE_NAME,
+                "captured_at": _FIXED_NOW_ISO,
+                "token_created_at": None,
+                "token_age_seconds": None,
+                "price_change_1h": -50.0,
+                "token_age_evidence_tier": None,
+            }
+            candidate.update(prov)
+            bucket, _ = assign_bucket(candidate)
+            self.assertNotEqual(bucket, BUCKET_A3,
+                                f"A3 must not fire from failure provenance: {prov}")
+
+    # 11 — Success path completely unchanged (regression)
+    def test_success_path_unchanged_after_provenance_repair(self):
+        result = normalize_solana_rpc_token_age_response(
+            _T3_SPL_SUCCESS_PAYLOAD, request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND
+        )
+        self.assertEqual(result.source_status, SourceStatus.COMPLETE)
+        p = result.normalized_payload
+        self.assertEqual(p["token_created_at"], _T3_CREATED_ISO)
+        self.assertEqual(p["token_age_seconds"], _T3_AGE_SECONDS)
+        self.assertEqual(p["token_age_evidence_tier"], "T3")
+        self.assertEqual(p["t3_requested_mint"], _SPL_TOKEN_MINT)
+        self.assertIn("getTransaction", p["t3_rpc_methods_attempted"])
+
+    # 12 — Bare failure (no provenance) → empty normalized_payload (backward compat)
+    def test_bare_failure_no_provenance_fields_has_empty_payload(self):
+        result = normalize_solana_rpc_token_age_response(
+            {"fixture_status": "failure",
+             "failure_type": "solana_rpc_token_age_not_a_mint",
+             "failure_message": "no mint"},
+            request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND,
+        )
+        self.assertEqual(result.source_status, SourceStatus.FAILED)
+        # No t3_fail provenance fields because none were in the input
+        for field in _T3_FAIL_PROVENANCE_FIELDS:
+            self.assertIsNone(result.normalized_payload.get(field),
+                              f"unexpected field {field!r} in bare failure result")
+
+    # 13 — fixture_t3_failure_transport with failure_provenance kwarg
+    def test_fixture_failure_transport_with_provenance_kwarg(self):
+        adapter = build_solana_rpc_token_age_adapter(
+            enabled=True,
+            fixture_transport=fixture_t3_failure_transport(
+                "solana_rpc_token_age_page_cap_exhausted",
+                "page cap hit",
+                failure_provenance=_FAIL_PROV_PAGE_CAP,
+            ),
+        )
+        ctx = _make_t3_context()
+        result = adapter.execute(ctx)
+        self.assertEqual(result.source_status, SourceStatus.FAILED)
+        self.assertEqual(result.failure_type, "solana_rpc_token_age_page_cap_exhausted")
+        self.assertEqual(result.normalized_payload.get("t3_pages_fetched"), 3)
+        self.assertEqual(result.normalized_payload.get("t3_failure_stage"), "signature_history")
+
+    # 14 — _T3_FAIL_PROVENANCE_FIELDS constant has all expected fields
+    def test_fail_provenance_constant_has_all_required_fields(self):
+        required = {
+            "t3_requested_mint",
+            "t3_rpc_host_redacted",
+            "t3_rpc_methods_attempted",
+            "t3_request_ids",
+            "t3_pages_fetched",
+            "t3_tx_calls_attempted",
+            "t3_block_time_calls_attempted",
+            "t3_failure_stage",
+        }
+        self.assertEqual(set(_T3_FAIL_PROVENANCE_FIELDS), required)
+
+    # 15 — Methods list in provenance reflects only actually attempted methods
+    def test_failure_provenance_methods_list_reflects_actual_calls(self):
+        # Account validation failure: only getAccountInfo was called
+        payload = _fail_payload("solana_rpc_token_age_not_a_mint", _FAIL_PROV_ACCOUNT_VALIDATION)
+        result = normalize_solana_rpc_token_age_response(
+            payload, request_kind=SOLANA_RPC_TOKEN_AGE_REQUEST_KIND
+        )
+        methods = result.normalized_payload.get("t3_rpc_methods_attempted", [])
+        self.assertEqual(methods, ["getAccountInfo"])
+        self.assertNotIn("getSignaturesForAddress", methods)
+        self.assertNotIn("getTransaction", methods)
+        self.assertNotIn("getBlockTime", methods)
 
 
 if __name__ == "__main__":
