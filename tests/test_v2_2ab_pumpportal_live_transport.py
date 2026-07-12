@@ -49,6 +49,7 @@ from printer_v1.sources.pumpportal import (
     PumpPortalAdapter,
     PumpPortalAdapterMetadata,
     _PUMPPORTAL_CONNECT_TIMEOUT_DEFAULT,
+    _PUMPPORTAL_DURATION_SECONDS_CEILING,
     _PUMPPORTAL_DURATION_SECONDS_DEFAULT,
     _PUMPPORTAL_MAX_EVENTS_DEFAULT,
     _PUMPPORTAL_WS_URL,
@@ -628,8 +629,11 @@ class TestBoundHardening(unittest.TestCase):
         self.assertIn("max_events", str(ctx.exception))
 
     def test_duration_above_limit_raises_value_error(self):
+        # The enforced bound is the ceiling (raised to 120s in V2-2Y for the
+        # bounded T2 launch proof); the default (30s) is below it. Reject only
+        # values above the ceiling.
         with self.assertRaises(ValueError) as ctx:
-            build_pumpportal_live_transport(duration_seconds=_PUMPPORTAL_DURATION_SECONDS_DEFAULT + 1.0)
+            build_pumpportal_live_transport(duration_seconds=_PUMPPORTAL_DURATION_SECONDS_CEILING + 1.0)
         self.assertIn("duration_seconds", str(ctx.exception))
 
     def test_connect_timeout_above_limit_raises_value_error(self):

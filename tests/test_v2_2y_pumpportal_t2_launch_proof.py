@@ -453,3 +453,111 @@ class TestProvenance:
         t = tokens[0]
         assert t["token_created_at"] is not None
         assert t["live_observed_launch"] is False
+
+
+# ---------------------------------------------------------------------------
+# TR-24: Acknowledgment message dropped by _normalize_pumpportal_event
+# ---------------------------------------------------------------------------
+
+class TestAcknowledgmentDrop:
+    def test_tr24_acknowledgment_message_returns_none(self):
+        """Server acknowledgment has no mint — must be dropped (returns None)."""
+        ack = {"message": "Successfully subscribed to token creation events."}
+        result = _normalize_pumpportal_event(ack, "pumpfun_launch_stream")
+        assert result is None
+
+    def test_tr24b_dict_with_only_message_field_returns_none(self):
+        """Any dict lacking mint/tokenMint/token_mint is dropped, not just the known ack."""
+        result = _normalize_pumpportal_event({"message": "some other message", "status": "ok"}, "pumpfun_launch_stream")
+        assert result is None
+
+    def test_tr24c_empty_dict_returns_none(self):
+        result = _normalize_pumpportal_event({}, "pumpfun_launch_stream")
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# TR-25: Real-event-shaped dict (no tokenCreatedAt) → OBSERVED_LIVE_LAUNCH
+# ---------------------------------------------------------------------------
+
+_REAL_LIVE_EVENT: dict[str, Any] = {
+    "mint": "RealMint11111111111111111111111111111111111",
+    "signature": "5xRealSig111111111111111111111111111111111111111111111111111",
+    "txType": "create",
+    "traderPublicKey": "TraderPK111111111111111111111111111111111111",
+    "initialBuy": 0.0,
+    "solAmount": 0.0,
+    "marketCapSol": 30.0,
+    "vSolInBondingCurve": 30.0,
+    "vTokensInBondingCurve": 1073000000.0,
+    "bondingCurveKey": "BondingKey11111111111111111111111111111111",
+    "pool": "pump",
+    "name": "RealToken",
+    "symbol": "REAL",
+    "uri": "https://arweave.net/fake",
+    "is_mayhem_mode": False,
+}
+
+
+class TestRealEventObservedLiveLaunch:
+    def test_tr25_real_event_no_created_at_produces_observed_live_launch(self):
+        """Real PumpPortal event (no tokenCreatedAt) → live_observed_launch=True, token_created_at=None."""
+        result = _normalize_pumpportal_event(_REAL_LIVE_EVENT, "pumpfun_launch_stream")
+        assert result is not None
+        assert result["live_observed_launch"] is True
+        assert result["token_created_at"] is None
+
+    def test_tr25b_real_event_no_created_at_normalize_candidate_gives_observed_live_launch(self):
+        """After full normalize_candidate the tier is OBSERVED_LIVE_LAUNCH, not T2."""
+        raw = _normalize_pumpportal_event(_REAL_LIVE_EVENT, "pumpfun_launch_stream")
+        assert raw is not None
+        # Inject required fields for normalize_candidate
+        raw["source_name"] = PUMPPORTAL_SOURCE_NAME
+        raw["pairAddress"] = raw.get("pairAddress") or "BondingKey11111111111111111111111111111111"
+        result = normalize_candidate(PUMPPORTAL_SOURCE_NAME, raw, now=_FIXED_NOW)
+        assert result.get("token_age_evidence_tier") == "OBSERVED_LIVE_LAUNCH"
+        assert result.get("token_created_at") is None
+        assert result.get("token_age_seconds") is None
+
+    def test_tr25c_real_event_not_t2(self):
+        """Confirm no path from real PumpPortal event to T2 tier."""
+        raw = _normalize_pumpportal_event(_REAL_LIVE_EVENT, "pumpfun_launch_stream")
+        assert raw is not None
+        raw["source_name"] = PUMPPORTAL_SOURCE_NAME
+        result = normalize_candidate(PUMPPORTAL_SOURCE_NAME, raw, now=_FIXED_NOW)
+        assert result.get("token_age_evidence_tier") != "T2"
+
+
+# ---------------------------------------------------------------------------
+# TR-26: normalize_pumpportal_payload with mixed [acknowledgment, real_event]
+# ---------------------------------------------------------------------------
+
+class TestAcknowledgmentFilteredFromPayload:
+    def test_tr26_acknowledgment_in_events_list_is_filtered_out(self):
+        """Payload with [ack, real_event] → ack dropped, only real event in result."""
+        ack = {"message": "Successfully subscribed to token creation events."}
+        real = dict(_REAL_LIVE_EVENT)
+        real["captured_at"] = _FIXED_NOW_ISO
+        payload = {
+            "events": [ack, real],
+            "subscription_method": "subscribeNewToken",
+        }
+        result = normalize_pumpportal_payload(payload, request_kind="pumpfun_launch_stream")
+        assert result.source_status == SourceStatus.COMPLETE
+        tokens = result.normalized_payload["tokens"]
+        assert len(tokens) == 1
+        assert tokens[0]["mint"] == _REAL_LIVE_EVENT["mint"]
+        assert tokens[0]["live_observed_launch"] is True
+        assert tokens[0]["token_created_at"] is None
+
+    def test_tr26b_only_acknowledgment_in_events_list_yields_no_tokens(self):
+        """Payload with only ack → no valid tokens → source_status FAILED or PARTIAL."""
+        ack = {"message": "Successfully subscribed to token creation events."}
+        payload = {
+            "events": [ack],
+            "subscription_method": "subscribeNewToken",
+        }
+        result = normalize_pumpportal_payload(payload, request_kind="pumpfun_launch_stream")
+        tokens = result.normalized_payload.get("tokens", [])
+        assert len(tokens) == 0
+        assert result.source_status in (SourceStatus.FAILED, SourceStatus.PARTIAL)

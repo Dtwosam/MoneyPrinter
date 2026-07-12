@@ -211,7 +211,12 @@ def build_pumpportal_live_transport(
                         data = json.loads(raw)
                     except (ValueError, TypeError):
                         continue
-                    if isinstance(data, dict):
+                    # Subscription acknowledgment messages (e.g. {"message": "..."})
+                    # must not count toward max_events — only mint-bearing token
+                    # events are valid. Skip all non-mint dicts silently.
+                    if isinstance(data, dict) and (
+                        data.get("mint") or data.get("tokenMint") or data.get("token_mint")
+                    ):
                         events.append(data)
                 except asyncio.TimeoutError:
                     break
