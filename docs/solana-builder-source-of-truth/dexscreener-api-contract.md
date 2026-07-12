@@ -129,6 +129,12 @@ dexscreener_missing_critical_fixture_fields`.
 | Discovery pair/mint identity, price, liquidity, volume, txns, priceChange | YES |
 | `pair_created_at` | YES (from `pairCreatedAt`) |
 | `token_age_seconds` | T4_PAIR_ONLY only (pair age, never token age) |
+| `price_change_1h` | Market-side A3 context when present; never supplies token age |
+
+DexScreener market evidence may be joined to separately governed T1/T2/T3
+token-age evidence only by exact Solana mint. The join must retain both source
+response IDs and must not reinterpret pair, pool, discovery, or receipt time as
+token creation time.
 | `token_created_at` | NO — DexScreener does not provide mint creation time |
 | T2 / T3 token age | NO |
 

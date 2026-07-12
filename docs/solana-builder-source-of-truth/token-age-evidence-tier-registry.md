@@ -87,6 +87,11 @@ For any candidate that enters `normalize_candidate("pumpportal", ...)`:
 1. A tier must never be stamped without the evidence that defines it.
 2. T2 requires explicit provider-supplied `tokenCreatedAt` (or fallback) in the raw event. Absence means no T2.
 3. `pair_created_at` / `pair_age_seconds` must never promote to token_age_seconds or to T2/T3.
+4. A cross-source market candidate may retain T3 only when the requested mint
+   matches exactly, finalized T3 provenance is complete, the governed T3
+   response ID is present, and no T3 failure ID exists.
+5. T3 may satisfy the age input of A3, but it does not alter the categorical A3
+   activity or negative one-hour price-change requirements.
 4. T3 requires a separate governed Solana RPC call; it cannot be inferred from discovery events.
 5. `live_observed_launch` and T2 are mutually exclusive for the same event.
 6. Future timestamps (event time > observation time) are rejected for all tiers.

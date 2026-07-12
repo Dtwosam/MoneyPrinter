@@ -102,6 +102,11 @@ enforce at the request boundary.
 | `token_age_seconds` | YES — derived from T3 token_created_at |
 | `token_age_evidence_tier` | `"T3"` |
 
+For A3 enrichment, the market-source request/response and the Solana RPC T3
+request/response remain separate governed traces. Printer may overlay them only
+on an exact mint match. A failed, missing, non-finalized, or mismatched T3 trace
+must leave token age unknown and cannot produce A3.
+
 ## Governor Enforcement Responsibilities
 
 The Source Governor must:

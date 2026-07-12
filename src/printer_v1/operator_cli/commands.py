@@ -66,6 +66,7 @@ from printer_v1.discovery.classifier import (
 from printer_v1.discovery.selection_batch import (
     ACTIVITY_REVIVING,
     assign_bucket,
+    BUCKET_A1,
     BUCKET_D1,
     build_age_activity_report,
     build_field_completeness_report,
@@ -216,6 +217,11 @@ from printer_v1.sources.pumpportal import (
 )
 from printer_v1.sources.pumpswap import (
     build_pumpswap_adapter,
+)
+from printer_v1.sources.solana_rpc_token_age import (
+    SOLANA_PUBLIC_RPC_URL as TOKEN_AGE_SOLANA_RPC_URL,
+    build_solana_rpc_token_age_adapter,
+    build_solana_rpc_token_age_transport,
 )
 from printer_v1.sources.governed_execution import execute_source_request_with_governor
 from printer_v1.snapshots.recorder import record_token_snapshot
@@ -1758,6 +1764,96 @@ def enrich_eligible_geckoterminal_candidate_15m(
     }
 
 
+def enrich_candidate_with_governed_t3(
+    db_path_or_conn,
+    candidate: dict[str, Any],
+    *,
+    request_key: str,
+    timeout_seconds: float = 10.0,
+    rpc_url: str = TOKEN_AGE_SOLANA_RPC_URL,
+    transport=None,
+) -> dict[str, Any]:
+    """Overlay one exact-mint candidate with governed finalized T3 evidence."""
+    token_mint = str(candidate.get("token_mint") or "").strip()
+    if str(candidate.get("chain") or "").lower() != "solana" or not token_mint:
+        return {"status": "INELIGIBLE", "evidence_applied": False}
+
+    captured_at = datetime.now(timezone.utc).isoformat()
+    selected_transport = transport or build_solana_rpc_token_age_transport(
+        token_mint,
+        captured_at,
+        rpc_url=rpc_url,
+        timeout_seconds=min(float(timeout_seconds), 10.0),
+    )
+    source_request = build_governed_source_request(
+        "solana_rpc",
+        "mint_creation_time_reference",
+        request_key=request_key,
+        tracking_priority=0,
+        payload={
+            "chain": "solana",
+            "token_mint": token_mint,
+            "pair_address": candidate.get("pair_address"),
+            "evidence_role": "candidate_t3_token_age_enrichment",
+            "discovery_source_name": candidate.get("source_name"),
+            "discovery_source_response_id": candidate.get("source_response_id"),
+        },
+    )
+    adapter = build_solana_rpc_token_age_adapter(
+        enabled=True,
+        fixture_transport=selected_transport,
+    )
+    result = execute_source_request_with_governor(
+        db_path_or_conn,
+        source_request,
+        adapter,
+        recent_request_count=0,
+    )
+    normalized = dict(result.normalized_result.normalized_payload or {})
+    response_id = result.response_record.id if result.response_record else None
+    failure_id = result.failure_record.id if result.failure_record else None
+    valid = (
+        response_id is not None
+        and result.normalized_result.source_status.value == "COMPLETE"
+        and result.normalized_result.data_quality_label.value == "CLEAN_DATA"
+        and normalized.get("token_mint") == token_mint
+        and normalized.get("t3_requested_mint") == token_mint
+        and normalized.get("token_age_evidence_tier") == "T3"
+        and normalized.get("token_created_at") is not None
+        and normalized.get("token_age_seconds") is not None
+        and normalized.get("t3_commitment") == "finalized"
+        and normalized.get("t3_finality_status") == "finalized"
+    )
+    if valid:
+        for key, value in normalized.items():
+            if key.startswith("t3_") or key in {
+                "token_created_at", "token_age_seconds", "token_age_evidence_tier"
+            }:
+                candidate[key] = value
+        candidate["t3_source_request_id"] = result.request_record.id
+        candidate["t3_source_response_id"] = response_id
+        candidate["t3_source_failure_id"] = None
+        candidate["t3_discovery_source_response_id"] = candidate.get("source_response_id")
+
+    bucket_id, bucket_name = assign_bucket(candidate)
+    return {
+        "status": "EVIDENCE_APPLIED" if valid else "NO_VALID_EVIDENCE",
+        "evidence_applied": valid,
+        "token_mint": token_mint,
+        "source_request_id": result.request_record.id,
+        "source_response_id": response_id,
+        "source_failure_id": failure_id,
+        "source_status": result.normalized_result.source_status.value,
+        "data_quality_label": result.normalized_result.data_quality_label.value,
+        "failure_type": result.normalized_result.failure_type,
+        "t3_rpc_host_redacted": normalized.get("t3_rpc_host_redacted"),
+        "token_age_evidence_tier": candidate.get("token_age_evidence_tier"),
+        "token_age_seconds": candidate.get("token_age_seconds"),
+        "bucket_after_enrichment": bucket_id,
+        "bucket_name_after_enrichment": bucket_name,
+    }
+
+
 def _build_source_budget_report(
     plan: list[dict[str, Any]],
     execution_records: list[dict[str, Any]],
@@ -2372,8 +2468,40 @@ def build_discover_candidates_once_payload(
         "evidence": {},
         "records": [],
     }
+    _t3_token_age_enrichment_report: dict[str, Any] = {
+        "status": "NOT_REQUESTED",
+        "evidence_applied": False,
+    }
 
     if primary and primary["result"].normalized_result.source_status.value == "COMPLETE" and agg_clean_final:
+        if getattr(args, "enrich_t3_token_age", False):
+            t3_candidate = next(
+                (
+                    candidate for candidate in agg_clean_final
+                    if assign_bucket(candidate)[0] == BUCKET_A1
+                    and candidate.get("price_change_1h") is not None
+                ),
+                None,
+            )
+            if t3_candidate is None:
+                _t3_token_age_enrichment_report = {
+                    "status": "NO_ELIGIBLE_FAST_CANDIDATE",
+                    "evidence_applied": False,
+                }
+            else:
+                _t3_token_age_enrichment_report = enrich_candidate_with_governed_t3(
+                    resolved,
+                    t3_candidate,
+                    request_key=f"{args.request_key or 'post-rc-discovery'}-t3-token-age",
+                    timeout_seconds=min(float(args.timeout_seconds), 10.0),
+                    rpc_url=str(
+                        getattr(args, "t3_solana_rpc_url", None)
+                        or os.environ.get("PRINTER_SOLANA_RPC_URL")
+                        or TOKEN_AGE_SOLANA_RPC_URL
+                    ),
+                    transport=(enrichment_transports or {}).get("t3_token_age"),
+                )
+
         accepted, rejected, inspected, audit_only_pool = _select_discovery_candidates(
             agg_clean_final,
             existing_token_mints=existing_token_mints,
@@ -2615,6 +2743,7 @@ def build_discover_candidates_once_payload(
         # V2-2H.5 source-budget reporting hook.
         "source_budget_report": _source_budget_report,
         "market_15m_enrichment_report": _market_15m_enrichment_report,
+        "t3_token_age_enrichment_report": _t3_token_age_enrichment_report,
         # V2-2M audit-only pool and quota supplement reporting hook.
         "audit_only_report": _audit_only_report,
         "source_channel": _pr["source_channel"] if _pr else None,
@@ -2628,6 +2757,10 @@ def build_discover_candidates_once_payload(
                 # V2-2P: T4-safe pair age context metadata per accepted candidate.
                 "pair_age_context_label": candidate.get("pair_age_context_label"),
                 "token_age_evidence_tier": candidate.get("token_age_evidence_tier"),
+                "token_age_seconds": candidate.get("token_age_seconds"),
+                "primary_bucket": assign_bucket(candidate)[0],
+                "t3_source_request_id": candidate.get("t3_source_request_id"),
+                "t3_source_response_id": candidate.get("t3_source_response_id"),
                 "price_change_15m": candidate.get("price_change_15m"),
                 "volume_15m": candidate.get("volume_15m"),
                 "txns_15m": candidate.get("txns_15m"),
@@ -2695,6 +2828,23 @@ def main_discover_candidates_once(argv: Sequence[str] | None = None) -> int:
         help=(
             "After eligibility gating, enrich at most one accepted GeckoTerminal pool "
             "with one OHLCV and one trades request through Source Governor."
+        ),
+    )
+    parser.add_argument(
+        "--enrich-t3-token-age",
+        action="store_true",
+        dest="enrich_t3_token_age",
+        help=(
+            "Enrich at most one eligible fast Solana candidate with finalized "
+            "T3 token-age evidence through Source Governor before classification."
+        ),
+    )
+    parser.add_argument(
+        "--t3-solana-rpc-url",
+        dest="t3_solana_rpc_url",
+        help=(
+            "Operator-approved free/read-only Solana RPC endpoint for optional "
+            "T3 enrichment. Output stores the redacted host only."
         ),
     )
     parser.add_argument("--query", default="pump")

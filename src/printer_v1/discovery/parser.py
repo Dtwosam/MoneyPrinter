@@ -71,6 +71,10 @@ NORMALIZED_FIELDS = (
     "t3_captured_at",
     "t3_commitment",
     "t3_finality_status",
+    "t3_source_request_id",
+    "t3_source_response_id",
+    "t3_source_failure_id",
+    "t3_discovery_source_response_id",
 )
 
 CRITICAL_FIELDS = ("token_mint", "pair_address", "chain", "source_name", "captured_at")
@@ -164,6 +168,20 @@ def _derive_token_age_evidence_tier(
     All other cases return None (T5 unknown).
     T2 takes precedence over OBSERVED_LIVE_LAUNCH if both conditions could apply.
     """
+    if candidate_payload.get("token_age_evidence_tier") == "T3" and source_name != "solana_rpc":
+        token_mint = candidate_payload.get("token_mint") or candidate_payload.get("mint")
+        if (
+            token_created_at_raw is not None
+            and token_age_seconds is not None
+            and token_mint
+            and candidate_payload.get("t3_requested_mint") == token_mint
+            and candidate_payload.get("t3_commitment") == "finalized"
+            and candidate_payload.get("t3_finality_status") == "finalized"
+            and candidate_payload.get("t3_source_response_id") is not None
+            and candidate_payload.get("t3_source_failure_id") is None
+        ):
+            return "T3"
+        return None
     if source_name == "pumpportal":
         if candidate_payload.get("request_kind") != "pumpfun_launch_stream":
             return None
@@ -343,6 +361,10 @@ def normalize_candidate(
         "t3_captured_at": candidate_payload.get("t3_captured_at"),
         "t3_commitment": candidate_payload.get("t3_commitment"),
         "t3_finality_status": candidate_payload.get("t3_finality_status"),
+        "t3_source_request_id": candidate_payload.get("t3_source_request_id"),
+        "t3_source_response_id": candidate_payload.get("t3_source_response_id"),
+        "t3_source_failure_id": candidate_payload.get("t3_source_failure_id"),
+        "t3_discovery_source_response_id": candidate_payload.get("t3_discovery_source_response_id"),
     }
     return {field: normalized.get(field) for field in NORMALIZED_FIELDS}
 

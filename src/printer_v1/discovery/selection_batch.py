@@ -1165,6 +1165,10 @@ _METADATA_FIELDS = (
     "t3_captured_at",
     "t3_commitment",
     "t3_finality_status",
+    "t3_source_request_id",
+    "t3_source_response_id",
+    "t3_source_failure_id",
+    "t3_discovery_source_response_id",
 )
 
 
