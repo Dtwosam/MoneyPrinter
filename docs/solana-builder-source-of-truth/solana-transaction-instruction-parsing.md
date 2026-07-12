@@ -1,135 +1,338 @@
 # Solana Transaction Instruction Parsing
 
-Status: SB-2 CORE MODULE, DOCUMENTATION ONLY
+**Status:** SB-2 CORE MODULE, DOCUMENTATION ONLY. SB-2.1 VERIFIED AND CORRECTED.
 
-## 1. Module Identity
+---
 
-- Module: Solana Transaction Instruction Parsing
-- Scope: How Printer should reason about Solana transaction, instruction, and inner-instruction evidence.
-- Source-stack lane: SB-2.
+## 1. Purpose
 
-## 2. Five-Dimension Status
+This module documents how Printer must reason about Solana transaction, instruction,
+and inner-instruction evidence when parsing `getTransaction` responses. It defines
+the precise shapes, failure conditions, and attribution requirements for token-age
+evidence. Direct-signature T3 is the primary planned use; the current T3 path
+uses `getSignaturesForAddress` history walking.
 
-- `upstream_lifecycle`: CURRENT_UPSTREAM, versioned transaction behavior may evolve.
-- `printer_readiness`: PARTIAL_IMPLEMENTED_NOT_ADOPTED.
-- `printer_role`: EVIDENCE_PARSING_REFERENCE.
-- `access_policy`: READ_ONLY_TRANSACTION_DECODING_ONLY.
-- `v1_permission`: ALLOWED_FOR_GOVERNED_EVIDENCE_PARSING, NOT_ALLOWED_FOR_EXECUTION.
+---
 
-## 3. Authority Boundary
+## 2. Official Upstream Authorities
 
-Solana transaction JSON structures define external response shapes. Printer parsing code defines what is currently recognized. A missing parser branch is an implementation gap, not permission to infer evidence.
+| Tier | Resource | Canonical URL | Verified date |
+|---|---|---|---|
+| A3 | Solana transaction JSON structures | `https://solana.com/docs/rpc/json-structures` | 2026-07-12 |
+| A3 | `getTransaction` reference | `https://solana.com/docs/rpc/http/gettransaction` | 2026-07-12 |
+| A3 | Solana transaction concepts | `https://solana.com/docs/core/transactions` | 2026-07-12 |
+| A3 | Versioned transactions | `https://solana.com/docs/advanced/versions` | 2026-07-12 |
+| A1 | SPL Token program (initializeMint instruction) | `https://github.com/solana-program/token` | 2026-07-12 |
+| A1 | Pump.fun bonding-curve program (create instruction with CPI) | `https://github.com/pump-fun/pump-public-docs` | 2026-07-12 |
 
-## 4. Upstream Sources
+**Address lookup table (ALT) reference:** exact upstream ALT documentation path
+pending pin. Solana docs cover ALTs under `https://solana.com/docs/advanced/lookup-tables`.
+Treat this as `UNKNOWN_REQUIRES_RESEARCH` for the specific file-level pin.
 
-- Solana transaction JSON structures: `https://solana.com/docs/rpc/json-structures`
-- Solana `getTransaction`: `https://solana.com/docs/rpc/http/gettransaction`
-- Solana transaction and versioned transaction concepts: `https://solana.com/docs/core/transactions`
-- Address lookup table context: Solana official docs and runtime references, exact pinned file pending verification.
+Pinned upstream commit: not pinned for hosted Solana RPC documentation. For
+SPL Token program instruction definitions, see `solana-spl-token-program.md §2`.
 
-Pinned upstream commit: not pinned in SB-2. Later verification should pin official Solana docs or runtime files if direct parser expansion is implemented.
+---
 
-## 5. Current Printer Implementation
+## 3. Last Verified Date and Version
 
-Relevant current implementation:
+- Verified: 2026-07-12
+- Solana runtime generation: Agave / current mainnet
+- Transaction encoding: `jsonParsed` (as used by Printer T3)
+- Versioned transaction format: v0 with ALTs is current on-chain format
 
-- `src/printer_v1/sources/solana_rpc_token_age.py`
-- `tests/test_v2_2ak_t3_solana_rpc_token_age.py`
+---
 
-Current T3 parsing is intentionally narrow and fixture-proven. It focuses on successful transaction evidence containing parsed `initializeMint` or `initializeMint2` instructions for the exact requested mint.
+## 4. Authority/Status Dimensions
 
-## 6. Transaction Response Shapes
+| Dimension | Value |
+|---|---|
+| `upstream_lifecycle` | `ACTIVE` (versioned transaction behavior may evolve with future Agave releases) |
+| `printer_readiness` | `PARTIAL_WITH_BLOCKER` (history-walk T3 path fixture-proven; direct-signature path undesigned; live proof pending) |
+| `printer_role` | `TOKEN_AGE` (parsing `initializeMint`/`initializeMint2` evidence for T3) |
+| `access_policy` | `KEYLESS_PUBLIC` (decoding of `getTransaction` JSON responses requires no separate auth) |
+| `v1_permission` | `ALLOWED_GOVERNED` (read-only decoding only; no execution) |
 
-Evidence parsing must account for:
+---
 
-- Parsed instructions.
-- Compiled instructions.
-- Inner instructions.
-- Versioned transactions.
-- Address lookup table references.
-- Failed transaction status.
-- Missing or pruned transaction history.
+## 5. Allowed Capabilities
 
-Unsupported shapes must fail closed.
+- Decode `getTransaction` JSON responses in `jsonParsed` encoding.
+- Parse top-level `instructions` and `meta.innerInstructions` for the exact
+  requested mint's `initializeMint` or `initializeMint2` instruction.
+- Validate transaction success (`meta.err == null`).
+- Read `blockTime` from the transaction response.
+- Read `slot` from the transaction response.
+- Resolve program IDs and instruction types from `jsonParsed` structured data.
+- Fail closed on any unsupported shape, missing field, or ambiguous attribution.
 
-## 7. Top-Level Instructions
+---
 
-Top-level instructions can provide mint-initialization evidence only when the instruction type, target mint, program, transaction status, and block time all pass the approved contract.
+## 6. Prohibited Capabilities
 
-## 8. Inner Instructions
+- No transaction building, construction, or modification.
+- No signing, simulation, or submission.
+- No wallet access, private keys, or real fund movement.
+- No BUY, SELL, or HOLD decisions.
+- No retrieval activation. No paper positions or PnL.
+- No treating inner instructions as covered unless Printer tests prove exact
+  requested-mint attribution.
+- No treating compiled instructions as T3 evidence unless explicit future
+  implementation and verification lanes approve it.
+- No inferring creation time from anything other than an on-chain initialization
+  instruction with a valid block time.
 
-Inner instructions may contain relevant program calls. Printer must not treat inner instructions as covered unless tests prove exact requested-mint attribution and program identity.
+---
 
-## 9. Parsed Instructions
+## 7. Authentication and Cost Model
 
-Parsed instructions are easier to inspect, but still require:
+- Authentication: none. Parsing is local decoding of RPC response JSON.
+- Cost model: inherits from `solana-core-rpc-reference.md`. The `getTransaction`
+  call is governed under the T3 budget. Decoding is pure computation.
 
-- Exact instruction type.
-- Exact requested mint target.
-- Successful transaction.
-- Valid non-future block time.
-- Correct program attribution.
+---
 
-## 10. Compiled Instructions
+## 8. Programs, Endpoints, Methods, and Request Contracts
 
-Compiled instructions require account-index resolution, program-id resolution, and instruction-data decoding. They are not adopted as live T3 evidence by SB-2.
+### 8.1 Transaction Request
 
-## 11. Versioned Transactions
+See `solana-core-rpc-reference.md §8.4` for the full `getTransaction` contract.
+Key points for instruction parsing:
 
-Versioned transactions and address lookup tables can change how account keys are represented. Printer must not assume legacy key layout for versioned transactions until explicit parser tests cover it.
+- Use `encoding: "jsonParsed"` to receive structured instruction data.
+- Set `maxSupportedTransactionVersion: 0` to support v0 (versioned) transactions.
+  Without this, versioned transactions return an error instead of data.
+- A `null` response means not found or pruned. Fail closed.
 
-## 12. Direct-Signature T3 Requirement
+### 8.2 Legacy vs Versioned Transactions
 
-Future direct-signature T3 work must cover current and historical Pump creation instructions found in pinned official IDL/docs. It must not hardcode only one Pump `create` spelling.
+**Legacy transactions:**
+- No `version` field in the response.
+- `transaction.message.accountKeys`: array of static account pubkey strings.
+- Account index 0 to N-1 map directly to `accountKeys[index]`.
+- No ALTs.
 
-The requirement is exact requested-mint attribution, including top-level/inner, parsed/compiled, versioned-transaction, and ALT cases where applicable.
+**Versioned (v0) transactions:**
+- `version: 0` in the response.
+- `transaction.message.accountKeys`: static account keys only.
+- `transaction.meta.loadedAddresses.writable`: loaded writable ALT accounts.
+- `transaction.meta.loadedAddresses.readonly`: loaded readonly ALT accounts.
+- Full account list for index resolution: `accountKeys + writable + readonly`
+  (in that order). ALT-loaded accounts have higher indices than static keys.
 
-## 13. PumpPortal Locator Boundary
+### 8.3 Instruction Shapes
 
-PumpPortal signature data may be used only as a locator for a later governed Solana RPC verification path. PumpPortal signature presence alone is not token creation time.
+| Shape | Source field | Parse method |
+|---|---|---|
+| Parsed (known programs) | `instruction.parsed.type`, `instruction.parsed.info` | Read `.type` and `.info` fields directly |
+| Compiled (unknown programs) | `instruction.programIdIndex`, `instruction.accounts`, `instruction.data` | Resolve program via index; decode data from base58 |
+| Inner instructions | `meta.innerInstructions[].instructions[]` | Same shapes; indexed by parent instruction index |
+| CPI (inner) from Pump `create` | `meta.innerInstructions[<pump_ix_idx>].instructions[]` | Contains SPL Token `initializeMint` as an inner instruction |
 
-## 14. Failure Conditions
+### 8.4 Program-ID Resolution
 
-Parsing must fail closed on:
+- For parsed instructions: `instruction.programId` is present as a string.
+- For compiled instructions: resolve via `accountKeys[instruction.programIdIndex]`.
+  For v0 transactions, the full account list (§8.2) must be used.
 
-- Failed transaction.
-- Missing block time.
-- Future block time.
-- Mint mismatch.
-- Missing exact target mint.
-- Unsupported compiled instruction.
-- Unresolved account lookup.
-- Pruned history.
-- Page-cap exhaustion.
+### 8.5 Account-Index Resolution
 
-## 15. Evidence Output Rules
+- Compiled instruction `accounts` is an array of indices into the full account list.
+- For legacy transactions: index into `accountKeys` directly.
+- For v0 transactions: index into `accountKeys + writable + readonly`.
+- Exact requested-mint attribution requires resolving the mint account from the
+  instruction's account list, not assuming a fixed position.
 
-Successful token-age evidence may populate T3 provenance only after all approved checks pass. Failure provenance may record bounded attempts but must not populate success fields.
+### 8.6 Slot and BlockTime
 
-## 16. A3 Safety Boundary
+- `slot` is always present in a non-null `getTransaction` response.
+- `blockTime` may be null even when slot is present. Null block time fails
+  closed. If null, try `getBlockTime(slot)` as a fallback (budget: 1 call).
+- Reject any block time that is in the future relative to call time.
 
-A3 remains locked unless `token_age_seconds` is populated by approved T1, T2, or T3 evidence. Pair age, observed-live launch status, captured time, migration time, and first trade time cannot unlock A3.
+---
 
-## 17. Forbidden Uses
+## 9. Response and Field Semantics
 
-This module does not allow transaction building, signing, swaps, live execution, BUY/SELL/HOLD decisions, retrieval activation, paper positions, or PnL.
+- `transaction.message.instructions[]`: top-level instructions, one per entry in
+  the transaction's instruction list.
+- `meta.innerInstructions[]`: list of `{index, instructions[]}` pairs; `index`
+  is the top-level instruction that triggered the CPIs.
+- Parsed instruction: `{program, programId, parsed: {type, info: {...}}}`.
+- Compiled instruction: `{programIdIndex, accounts: [int,...], data: "<base58>"}`.
+- `meta.err`: null on success; JSON object on failure. Never use a failed
+  transaction as token-age evidence.
+- `meta.logMessages`: optional array of program log strings. Not used for
+  evidence attribution; log parsing is error-prone.
+- `version`: absent for legacy; `0` for v0.
 
-## 18. Tests and Verification Expectations
+---
 
-Future parser expansion needs tests for:
+## 10. Nullable/Missing-Field Behavior
 
-- Parsed top-level instructions.
-- Parsed inner instructions.
-- Compiled instruction decode.
-- Versioned transactions.
-- ALT account resolution.
-- Mint mismatch rejection.
-- Failure provenance.
+| Field | Null/missing behavior |
+|---|---|
+| `getTransaction` return | null → fail closed; token age unknown |
+| `meta` | null → fail closed |
+| `meta.err` non-null | failed transaction → fail closed |
+| `meta.innerInstructions` | null or missing → treat as empty; check top-level only |
+| `blockTime` | null → try getBlockTime fallback; fallback null → fail closed |
+| `slot` | always present in a non-null response |
+| `version` | absent → legacy transaction; `0` → v0 |
+| `meta.loadedAddresses` | absent on legacy transactions → no ALT accounts |
 
-## 19. Adoption Requirements
+---
 
-This module is authored only. Direct parser expansion requires explicit future implementation and verification lanes.
+## 11. Rate Limits and Bounded-Use Rules
 
-## 20. SB-2 Conclusion
+Inherits from `solana-core-rpc-reference.md §11`. Current Printer budget:
+- `_T3_MAX_TRANSACTION_CALLS = 3` per token
+- `_T3_MAX_BLOCK_TIME_CALLS = 1` per token
+- 10-second timeout per request
 
-Transaction instruction parsing is a core source-stack dependency for honest T3 evidence, but SB-2 does not broaden the current parser or unlock A3.
+Parsing is local computation; it adds no network cost beyond the `getTransaction`
+call.
+
+---
+
+## 12. Evidence Strength
+
+- A successfully parsed `initializeMint` or `initializeMint2` for the exact
+  requested mint in a successful transaction with a valid non-future block time
+  constitutes **T3 evidence** (evidence tier 3).
+- T3 is below T1 and T2 in the evidence hierarchy.
+- T3 does not satisfy A3 until the SB-6 finality contract passes and a live
+  proof succeeds (V2-2AL.5).
+- Pair age, capture time, migration time, first trade time, and
+  `OBSERVED_LIVE_LAUNCH` cannot be substituted for T3 evidence.
+- PumpPortal-provided signatures are **locator evidence only** (SB-1 Rule 5).
+  The PumpPortal signature is not proof until `getTransaction` independently
+  confirms the exact initialization instruction.
+
+---
+
+## 13. Normalization and Failure Rules
+
+- **Success path:** parsed instruction confirms exact mint, valid block time,
+  successful transaction → outputs `token_created_at`, `token_age_seconds`,
+  `token_age_evidence_tier = "T3"`, and 15 T3 success provenance fields.
+- **Failure conditions (all fail closed):**
+  - `getTransaction` returns null.
+  - `meta` is null or `meta.err` is non-null.
+  - No `initializeMint`/`initializeMint2` found for the exact requested mint.
+  - Mint in instruction does not match requested mint.
+  - Unsupported compiled instruction (no adopted decoder).
+  - Unresolved account lookup table index.
+  - `blockTime` is null or in the future.
+  - Page-cap or request-budget exhaustion.
+  - Pruned history (empty signature list).
+- **Failure provenance:** 8 audit fields captured via `_pfail()` closure; see
+  `solana-core-rpc-reference.md §13`.
+- **A3 gate:** failure provenance must never populate success fields. A3 remains
+  locked until approved T3 or T1/T2 evidence provides real `token_age_seconds`.
+
+---
+
+## 14. Security/Redaction Rules
+
+- Parsing is local; no additional secrets are involved beyond RPC host.
+- See `solana-core-rpc-reference.md §14` for RPC host redaction rules.
+- Transaction signatures may appear in audit logs as locator evidence only.
+  They must not be treated as authorization tokens.
+- Never store raw instruction data containing private key material. Solana
+  transactions cannot contain private keys in instruction data; if ever observed,
+  it is a compromise signal, not a legitimate field.
+
+---
+
+## 15. Known Upstream Quirks
+
+- **ALT account-index ordering:** the full account list for index resolution in
+  v0 transactions is `accountKeys + writable ALT accounts + readonly ALT accounts`.
+  This ordering is critical for correct program-ID and target-mint resolution.
+- **Inner instruction index vs position:** `meta.innerInstructions[i].index` is
+  the index of the top-level instruction that triggered the CPI, not the array
+  position in `meta.innerInstructions`.
+- **Pump `create` as CPI:** Pump.fun's `create` instruction is a CPI that calls
+  SPL Token's `initializeMint` as an inner instruction. The top-level Pump program
+  call appears in `instructions[]`; the `initializeMint` appears in
+  `meta.innerInstructions[]`.
+- **jsonParsed coverage:** `jsonParsed` only returns structured `parsed` objects
+  for well-known programs (SPL Token, System Program, etc.). For unknown programs
+  (e.g., a custom or obscure CPI caller), the instruction falls back to compiled
+  format even in `jsonParsed` encoding.
+- **Pruned history depth:** the public RPC prunes transaction history. The depth
+  available varies by validator and load. Older mints may be unreachable.
+
+---
+
+## 16. Known Printer Mistakes
+
+| Mistake | Lane documented | Status |
+|---|---|---|
+| Current T3 history walk relies on `getSignaturesForAddress` pagination rather than direct-signature lookup | SB-1 §13 | Unresolved; direct-signature T3 path is undesigned. Historical walk is slower and prone to page-cap exhaustion. |
+| T3 path does not handle v0/versioned transaction ALT account resolution in current tests | SB-2, SB-2.1 | Implementation gap. Current fixture tests use legacy-style transactions. ALT resolution coverage is not adopted. |
+| Page-cap exhaustion for older mints (V2-2AL.3) | V2-2AL.3 (`f0935f0`) | Known live failure mode; documented in V2-2AL.4 readiness review |
+
+---
+
+## 17. Required Fixtures/Proofs
+
+Before any parser expansion is adopted:
+
+1. Existing 132 T3 fixture tests must remain passing.
+2. New parser branches (compiled instruction decode, ALT resolution, versioned tx)
+   require dedicated test classes proving exact requested-mint attribution,
+   failure on mint mismatch, and fail-closed on malformed shapes.
+3. Direct-signature T3 design must be explicitly approved in a future SB lane.
+4. V2-2AL.5 live proof (after V2-2AL.4C persistence repair) must succeed before
+   any expanded parser path is adopted for A3 evidence.
+5. SB-6 must define and approve the finality contract (commitment level and
+   minimum-finality rule) before T3 satisfies A3.
+
+---
+
+## 18. Code and DB Integration Points
+
+**Adapter file:** `src/printer_v1/sources/solana_rpc_token_age.py`
+
+**Key functions:**
+- `_fetch_token_age_data()`: orchestrates the T3 pipeline including history walk
+  and instruction parsing.
+- `_pfail()`: closure that captures T3 failure provenance.
+- `_extract_failure_provenance()`: copies only `_T3_FAIL_PROVENANCE_FIELDS` into
+  normalizer output.
+- `normalize_solana_rpc_token_age_response()`: normalizer entry point.
+
+**Test file:** `tests/test_v2_2ak_t3_solana_rpc_token_age.py` (132 tests)
+
+**DB tables:**
+- `printer_source_failures` — failure audit rows (missing `normalized_payload_json`;
+  V2-2AL.4C blocker)
+- Source Governor tables
+
+**No additional parser file exists.** All parsing is inline in
+`solana_rpc_token_age.py`. Any future instruction parser should be extracted
+into a dedicated module to improve testability.
+
+---
+
+## 19. Unresolved Questions
+
+| Item | Status |
+|---|---|
+| Direct-signature T3 design | `DEFERRED` — undesigned; reserved for a future SB lane after V2-2AL.5 passes |
+| v0/versioned transaction ALT account resolution | `UNKNOWN_REQUIRES_RESEARCH` — not covered by current tests; exact upstream pinned contract for account ordering needs reverification |
+| Compiled instruction `initializeMint` decode | `DEFERRED` — not adopted; requires explicit future implementation lane |
+| History walk depth for mints older than public RPC retention | `UNKNOWN_REQUIRES_RESEARCH` — pruning behavior not formally documented |
+| Inner instruction coverage for non-Pump CPI callers | `UNKNOWN_REQUIRES_RESEARCH` — Pump `create` is the known case; other callers require explicit research |
+| SB-6 finality contract | `UNKNOWN_REQUIRES_RESEARCH` — commitment level and finality policy not yet decided |
+
+---
+
+## 20. Change History
+
+| Date | Change | Author |
+|---|---|---|
+| 2026-07-12 | SB-2: module authored; 20 sections, original structure | Claude Opus 4.8 / SB-2 |
+| 2026-07-12 | SB-2.1: restructured to exact 20-section template; legacy vs versioned transaction paths documented; ALT account-index resolution rules added; inner instruction structure (CPI from Pump create) documented; known Printer mistakes (ALT gap, direct-signature undesigned) added; status dimensions updated to SB-1 §6 vocabulary | Claude Sonnet 4.6 / SB-2.1 |
