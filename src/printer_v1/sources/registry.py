@@ -183,6 +183,7 @@ SOURCE_REGISTRY: dict[str, SourceDefinition] = {
             "pumpswap_migration_pool_reference",
             "pumpswap_liquidity_reference",
             "pumpswap_onchain_pool_confirmation",
+            "pumpswap_signature_pool_resolution",
         ),
         default_rate_limit_per_minute=20,
         stale_after_seconds=120,

@@ -51,6 +51,10 @@ ALLOWED_REQUEST_KINDS = frozenset({
     # confirms a pool account is owned by the PumpSwap AMM program and that the
     # expected mint is the pool's base_mint. Read-only. Never executes.
     "pumpswap_onchain_pool_confirmation",
+    # Governed on-chain pool resolution from a migration signature alone:
+    # getTransaction -> account keys -> the unique PumpSwap-owned account whose
+    # base_mint@43 == expected mint. Read-only. Never executes.
+    "pumpswap_signature_pool_resolution",
 })
 
 _SOLANA_CHAIN = "solana"
@@ -190,9 +194,12 @@ def normalize_pumpswap_payload(
             "PumpSwap request kind is not allowed",
         )
 
-    # Governed on-chain confirmation payloads route to the confirmation
-    # normalizer, which enforces program-owner and exact-mint identity.
-    if request_kind == "pumpswap_onchain_pool_confirmation" or "pumpswap_confirmation" in payload:
+    # Governed on-chain confirmation / signature-resolution payloads route to the
+    # confirmation normalizer, which enforces program-owner and exact-mint identity.
+    if (
+        request_kind in ("pumpswap_onchain_pool_confirmation", "pumpswap_signature_pool_resolution")
+        or "pumpswap_confirmation" in payload
+    ):
         return normalize_pumpswap_confirmation_payload(payload, request_kind=request_kind)
 
     fixture_status = payload.get("fixture_status")
@@ -443,19 +450,211 @@ def normalize_pumpswap_confirmation_payload(
         "pumpswap_migration_block_time": payload.get("migration_block_time"),
         "pumpswap_migration_slot": payload.get("migration_slot"),
     }
+    resolution = payload.get("pumpswap_resolution")
+    if isinstance(resolution, Mapping):
+        # Signature-based pool resolution provenance (audit only).
+        token_entry["pumpswap_pool_resolved_from_signature"] = True
+        token_entry["pumpswap_resolution_account_keys_total"] = resolution.get("account_keys_total")
+        token_entry["pumpswap_resolution_program_owned_count"] = resolution.get("program_owned_count")
+        token_entry["pumpswap_resolution_mint_matched_count"] = resolution.get("mint_matched_count")
+    normalized: dict[str, Any] = {
+        "source_name": PUMPSWAP_SOURCE_NAME,
+        "request_kind": request_kind,
+        "tokens": [token_entry],
+        "pumpswap_confirmation": dict(confirmation),
+    }
+    if isinstance(resolution, Mapping):
+        normalized["pumpswap_resolution"] = dict(resolution)
     return NormalizedSourceResult(
         source_name=PUMPSWAP_SOURCE_NAME,
         request_kind=request_kind,
         source_status=SourceStatus.COMPLETE,
         data_quality_label=DataQualityLabel.CLEAN_DATA,
-        normalized_payload=MappingProxyType({
-            "source_name": PUMPSWAP_SOURCE_NAME,
-            "request_kind": request_kind,
-            "tokens": [token_entry],
-            "pumpswap_confirmation": dict(confirmation),
-        }),
+        normalized_payload=MappingProxyType(normalized),
         status_code=200,
     )
+
+
+# ---------------------------------------------------------------------------
+# Governed pool resolution from a migration signature (read-only)
+# ---------------------------------------------------------------------------
+
+def collect_transaction_account_keys(tx_result: Mapping[str, Any]) -> list[str]:
+    """Return all account keys referenced by a getTransaction result.
+
+    Includes the static `message.accountKeys` plus versioned-transaction
+    address-lookup-table entries from `meta.loadedAddresses.{writable,readonly}`.
+    Order preserved; duplicates removed. Accepts jsonParsed keys (dicts with a
+    `pubkey`) or plain string keys.
+    """
+    message = (tx_result.get("transaction") or {}).get("message") or {}
+    meta = tx_result.get("meta") or {}
+    keys: list[str] = []
+    for entry in message.get("accountKeys") or []:
+        if isinstance(entry, Mapping):
+            pk = entry.get("pubkey")
+        else:
+            pk = entry
+        if isinstance(pk, str) and pk:
+            keys.append(pk)
+    loaded = meta.get("loadedAddresses") or {}
+    for group in ("writable", "readonly"):
+        for pk in loaded.get(group) or []:
+            if isinstance(pk, str) and pk:
+                keys.append(pk)
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for k in keys:
+        if k not in seen:
+            seen.add(k)
+            ordered.append(k)
+    return ordered
+
+
+def resolve_pumpswap_pool_from_transaction(
+    tx_result: Mapping[str, Any] | None,
+    account_infos: Mapping[str, Mapping[str, Any] | None],
+    *,
+    expected_mint: str,
+) -> dict[str, Any]:
+    """Resolve the unique PumpSwap pool account referenced by a migration tx.
+
+    Pure/deterministic. Among the transaction's account keys, selects those
+    owned by the PumpSwap program whose `base_mint@43 == expected_mint`. Exactly
+    one such account is the pool. Fails closed on zero (not found) or more than
+    one (ambiguous). Every check is a hard categorical equality; nothing numeric
+    is compared for magnitude.
+
+    `account_infos` maps each account key to its getAccountInfo/getMultipleAccounts
+    `value` object (owner + base64 data), or None when the account does not exist.
+    """
+    result: dict[str, Any] = {
+        "resolved": False,
+        "reason": None,
+        "pool_address": None,
+        "expected_mint": expected_mint,
+        "program_id": PUMPSWAP_AMM_PROGRAM_ID,
+        "account_keys_total": 0,
+        "program_owned_count": 0,
+        "mint_matched_count": 0,
+        "program_owned_accounts": [],
+        "migration_block_time": None,
+        "migration_slot": None,
+    }
+    if not tx_result:
+        result["reason"] = "transaction_not_found"
+        return result
+
+    bt = tx_result.get("blockTime")
+    result["migration_block_time"] = int(bt) if isinstance(bt, (int, float)) else None
+    sl = tx_result.get("slot")
+    result["migration_slot"] = int(sl) if isinstance(sl, (int, float)) else None
+
+    keys = collect_transaction_account_keys(tx_result)
+    result["account_keys_total"] = len(keys)
+
+    program_owned: list[str] = []
+    matched: list[str] = []
+    for key in keys:
+        value = account_infos.get(key)
+        conf = confirm_pumpswap_pool_from_account(
+            value, expected_mint=expected_mint, pool_address=key
+        )
+        if conf.get("owner") == PUMPSWAP_AMM_PROGRAM_ID:
+            program_owned.append(key)
+        if conf.get("confirmed"):
+            matched.append(key)
+
+    result["program_owned_accounts"] = program_owned
+    result["program_owned_count"] = len(program_owned)
+    result["mint_matched_count"] = len(matched)
+
+    if len(matched) == 0:
+        result["reason"] = "no_confirmed_pumpswap_pool_in_transaction"
+        return result
+    if len(matched) > 1:
+        result["reason"] = "ambiguous_multiple_pumpswap_pools"
+        return result
+
+    result["resolved"] = True
+    result["reason"] = "resolved_unique_pumpswap_pool"
+    result["pool_address"] = matched[0]
+    return result
+
+
+def build_pumpswap_signature_pool_resolver_transport(
+    *,
+    migration_signature: str,
+    expected_mint: str,
+    rpc_url: str = _DEFAULT_RPC_URL,
+    timeout_seconds: float = 20.0,
+) -> Callable[[SourceAdapterContext], Mapping[str, Any]]:
+    """Bounded governed transport: resolve a PumpSwap pool from a migration sig.
+
+    Read-only sequence:
+      1. getTransaction(signature)      -> account keys + migration block time,
+      2. getMultipleAccounts(keys)      -> owners + data (batched, <=100/call),
+      3. resolve the unique PumpSwap-owned account with base_mint@43 == mint.
+
+    Returns a confirmation payload (same shape consumed by
+    normalize_pumpswap_confirmation_payload) plus resolution provenance. No
+    DexScreener dependency. No writes, no execution, no signing. Migration block
+    time is migration evidence only and never becomes token_created_at.
+    """
+
+    def transport(context: SourceAdapterContext) -> Mapping[str, Any]:
+        del context
+        tx = _rpc_post(
+            rpc_url,
+            "getTransaction",
+            [migration_signature, {"maxSupportedTransactionVersion": 0, "encoding": "json"}],
+            timeout_seconds=timeout_seconds,
+        )
+        if tx.get("fixture_status") == "failure":
+            return MappingProxyType(dict(tx))
+        tx_result = tx.get("result")
+        if not isinstance(tx_result, Mapping):
+            return MappingProxyType({
+                "fixture_status": "failure",
+                "failure_type": "pumpswap_migration_transaction_not_found",
+                "failure_message": "getTransaction returned no result for migration signature",
+            })
+
+        keys = collect_transaction_account_keys(tx_result)
+        account_infos: dict[str, Any] = {}
+        for i in range(0, len(keys), 100):
+            chunk = keys[i:i + 100]
+            res = _rpc_post(rpc_url, "getMultipleAccounts", [chunk, {"encoding": "base64"}], timeout_seconds=timeout_seconds)
+            if res.get("fixture_status") == "failure":
+                return MappingProxyType(dict(res))
+            values = (res.get("result") or {}).get("value") or []
+            for k, v in zip(chunk, values):
+                account_infos[k] = v
+
+        resolution = resolve_pumpswap_pool_from_transaction(
+            tx_result, account_infos, expected_mint=expected_mint
+        )
+        if not resolution.get("resolved"):
+            return MappingProxyType({
+                "fixture_status": "failure",
+                "failure_type": f"pumpswap_pool_resolution_failed_{resolution.get('reason') or 'unknown'}",
+                "failure_message": f"PumpSwap pool not resolved from signature: {resolution.get('reason')}",
+                "pumpswap_resolution": resolution,
+            })
+
+        pool = resolution["pool_address"]
+        confirmation = confirm_pumpswap_pool_from_account(
+            account_infos.get(pool), expected_mint=expected_mint, pool_address=pool
+        )
+        return MappingProxyType({
+            "pumpswap_confirmation": confirmation,
+            "pumpswap_resolution": resolution,
+            "migration_signature": migration_signature,
+            "migration_block_time": resolution.get("migration_block_time"),
+            "migration_slot": resolution.get("migration_slot"),
+        })
+
+    return transport
 
 
 def _rpc_post(

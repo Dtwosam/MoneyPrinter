@@ -37,12 +37,38 @@ executes, signs, builds instructions, routes, or moves funds.
 | `pumpswap_migration_pool_reference` | Reference the migration/graduation pool (fixture) |
 | `pumpswap_liquidity_reference` | Read-only liquidity reference (fixture) |
 | `pumpswap_onchain_pool_confirmation` | **Governed on-chain confirmation via Solana RPC** |
+| `pumpswap_signature_pool_resolution` | **Governed pool resolution from a migration signature alone** |
+
+## Signature Pool Resolution Contract (`pumpswap_signature_pool_resolution`)
+
+Resolves the pool address from the migration **signature alone** — no
+DexScreener or external index. Read-only Solana RPC sequence:
+
+1. `getTransaction(signature, maxSupportedTransactionVersion=0)` — the migration
+   transaction; also yields the migration block time (evidence only) and slot.
+2. Collect account keys: static `message.accountKeys` **plus** versioned-tx
+   `meta.loadedAddresses.{writable,readonly}` (ALT-loaded), de-duplicated.
+3. `getMultipleAccounts(keys, base64)` (batched ≤100) — owners + data.
+4. Select accounts where `owner == pAMMBay…` **and** `base_mint@43 == expected
+   mint`. **Exactly one** is the pool.
+
+Fail-closed reasons: `transaction_not_found`,
+`no_confirmed_pumpswap_pool_in_transaction` (zero), or
+`ambiguous_multiple_pumpswap_pools` (>1). Audit of a real migration tx (27 keys,
+16 static + 1 loaded-writable + 10 loaded-readonly) found **2** PumpSwap-owned
+accounts — a 301-byte pool (base_mint@43 == mint) and a 907-byte config account
+(no mint@43) — so the `base_mint@43` filter yields a unique pool. The resolved
+pool is then run through the same confirmation
+(`confirm_pumpswap_pool_from_account`). Provenance recorded:
+`pumpswap_pool_resolved_from_signature`, `account_keys_total`,
+`program_owned_count`, `mint_matched_count`.
 
 ## On-Chain Confirmation Contract (`pumpswap_onchain_pool_confirmation`)
 
 Locator evidence: a real PumpPortal migration event supplies `mint`, migration
 `signature`, and venue `pool: "pump-amm"` (a venue label, not a pool address).
-The pool address is resolved separately (e.g. DexScreener `dexId == pumpswap`).
+The pool address may be resolved from the signature alone (see the resolution
+contract above — no DexScreener) or supplied by an operator locator.
 
 Confirmation (all categorical hard equalities — no scores/ranks/weights):
 
@@ -141,8 +167,9 @@ of the confirmation event. Per this sprint's lock:
 |---|---|
 | Official PumpSwap AMM program ID / IDL and pinned authority | RESOLVED — program ID `pAMMBay…` verified on-chain (executable) + A7 SDK/Bitquery corroboration. Full IDL/account layout beyond base_mint@43 still UNKNOWN_REQUIRES_RESEARCH |
 | PumpSwap Pool account full layout (quote_mint, lp_mint, reserves offsets) | UNKNOWN_REQUIRES_RESEARCH — only base_mint@43 verified live; quote_mint@75 inferred, not independently confirmed |
-| PumpSwap pool PDA seed derivation (to resolve pool address without DexScreener) | UNKNOWN_REQUIRES_RESEARCH |
-| Whether migration events ever carry the pool ADDRESS (not just `pool: "pump-amm"` venue label) | UNKNOWN_REQUIRES_RESEARCH |
+| Resolve the pool address without DexScreener | RESOLVED — resolved from the migration signature via `getTransaction` + `getMultipleAccounts` (owner==program AND base_mint@43==mint, unique-or-fail). PDA seed derivation itself is still UNKNOWN_REQUIRES_RESEARCH but no longer required for resolution |
+| Whether migration events ever carry the pool ADDRESS (not just `pool: "pump-amm"` venue label) | ANSWERED — no; the migration event carries only `mint`, `signature`, and venue label. The pool is resolved from the transaction, not the event |
+| PumpSwap pool PDA seed derivation | UNKNOWN_REQUIRES_RESEARCH (not required now that the pool resolves from the migration transaction) |
 
 ## Change History
 
@@ -150,3 +177,4 @@ of the confirmation event. Per this sprint's lock:
 |---|---|---|
 | 2026-07-12 | Authored from A6 implementation; confirmation, timestamp, dedup, and governed-signature rules documented; live endpoint gaps marked UNKNOWN_REQUIRES_RESEARCH | Claude Opus 4.8 / PumpPortal-PumpSwap readiness |
 | 2026-07-12 | Governed on-chain confirmation implemented and proven live: program ID verified on-chain, base_mint@43 layout verified, migration block-time as evidence-only. Program-ID UNKNOWN resolved; full IDL/PDA/quote_mint remain open | Claude Opus 4.8 / PumpSwap live confirmation |
+| 2026-07-12 | Signature pool resolution added: pool resolved from the migration transaction alone (getTransaction + getMultipleAccounts, owner+base_mint@43 unique filter), removing the DexScreener pool-resolution dependency. Audit of a real migration tx confirmed a unique pool among PumpSwap-owned accounts | Claude Opus 4.8 / PumpSwap signature pool resolution |
