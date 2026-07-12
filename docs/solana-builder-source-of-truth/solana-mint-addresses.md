@@ -30,11 +30,11 @@ in the SPL Token program. SB-2.3 independently verified repository commit
 `interface/src/native_mint.rs`, and the presence of
 `So11111111111111111111111111111111111111112` in that pinned source.
 
-**USDC pinning note:** Circle's official contract-address page now lists Solana
-mainnet USDC as `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`. Printer's
-current implementation still uses `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEt67tw2CH8Ej`.
-SB-2.2 classifies this as an implementation gap requiring a later production
-repair/proof lane. No code is changed here.
+**USDC pinning note:** Circle's official contract-address page lists Solana
+mainnet USDC as `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`. SB-2.2
+identified a gap where Printer used the incorrect constant
+`EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEt67tw2CH8Ej`. SB-2.4 repaired the gap:
+production code and leak-prevention tests now use the official Circle address.
 
 **USDT/USDt pinning note:** Tether's official supported-protocols page contains
 the Solana USDt address `Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB`.
@@ -49,8 +49,8 @@ repaired or explicitly resolved before source-stack adoption.
 
 - Verified: 2026-07-12
 - WSOL: stable canonical constant; unchanged since SPL Token inception.
-- USDC on Solana: official Circle source now differs from Printer's current
-  constant; classify Printer constant as implementation gap until repaired.
+- USDC on Solana: official Circle source address `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`;
+  implementation gap repaired by SB-2.4; production code now uses the official address.
 - USDT on Solana (USDt): stable; Tether has not migrated the Solana USDt address.
 - Risk-based freshness: re-verify within 30 days before any live quote or routing
   use that depends on exact address matching.
@@ -216,10 +216,10 @@ Not an evidence source for token age, safety classification, or memory quality.
   `2` to make it a valid base58-encoded public key (the first 31 bytes are
   all zeros; `2` encodes the last byte as 1 in base58). This is expected and
   correct.
-- **Circle's Solana USDC mismatch:** Circle's current official page lists
-  `EPjF...TDt1v`; Printer currently uses `EPjF...CH8Ej`. Treat Printer's
-  constant as an implementation gap until a later production repair/proof lane
-  updates or otherwise resolves it.
+- **Circle's Solana USDC:** Circle's official page lists
+  `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`. Printer's prior incorrect
+  constant (`EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEt67tw2CH8Ej`) was identified in
+  SB-2.2 and repaired by SB-2.4. Production code now uses the official address.
 - **Tether USDt vs third-party USDT clones:** `Es9v...YB` is the official
   Tether USDt. Impersonator tokens with similar names exist; exact address
   matching is the only safe identification method.
@@ -230,7 +230,7 @@ Not an evidence source for token age, safety classification, or memory quality.
 
 | Mistake | Status |
 |---|---|
-| Printer's current USDC infrastructure mint constant differs from Circle's current official Solana USDC mint | Implementation gap found by SB-2.2; requires later production repair/proof before hard-policy adoption |
+| Printer's USDC infrastructure mint constant was incorrect | REPAIRED by SB-2.4: `geckoterminal.py` and leak-prevention tests now use Circle's official Solana USDC address `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` |
 | USDT symbol listed as "USDT" in some source files where Tether uses "USDt" for Solana | Cosmetic; address is correct; no functional impact; noted for documentation accuracy |
 | Official URL for USDC and USDT not pinned in current source-stack modules | Resolved by SB-2.2 for Circle and Tether pages; exact static file path for WSOL remains to be confirmed |
 
@@ -240,9 +240,10 @@ Not an evidence source for token age, safety classification, or memory quality.
 
 Before these addresses are used as hard policy in any adoption lane:
 
-1. Repair or explicitly justify the USDC implementation gap in a later
-   production lane with targeted tests for discovery exclusion and route
-   interpretation.
+1. USDC implementation gap: REPAIRED by SB-2.4. Production code and targeted
+   leak-prevention tests now use Circle's official Solana USDC address
+   `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`. Discovery exclusion proved
+   by `test_usdc_as_base_token_is_skipped` in the targeted test run.
 2. WSOL authority pin completed by SB-2.3:
    - commit `405c9172df3aeb508712142aae1caf0d31ada671`;
    - path `interface/src/native_mint.rs`;
@@ -259,8 +260,8 @@ Before these addresses are used as hard policy in any adoption lane:
 **Files where these constants appear (A6):**
 - `src/printer_v1/sources/geckoterminal.py`: `_SOLANA_NATIVE_QUOTE_MINTS` set
   containing WSOL, USDC, and USDT - used to filter infrastructure tokens out
-  of memecoin candidate selection. The USDC value is currently mismatched
-  against Circle's official source and requires later repair.
+  of memecoin candidate selection. USDC value corrected to Circle's official
+  address by SB-2.4.
 - `src/printer_v1/sources/jupiter_quote.py`: WSOL and USDC used as quote
   currency references for paper-simulation quote routing.
 
@@ -289,3 +290,4 @@ tables as token addresses.
 | 2026-07-12 | SB-2.2: pinned Circle and Tether authority pages, corrected official USDC address to Circle's current Solana mainnet address, recorded Printer's current USDC constant as an implementation gap, and pinned the official `solana-program/token` repository HEAD for WSOL follow-up | Codex standard/balanced / SB-2.2 |
 
 | 2026-07-12 | SB-2.3: independently verified the WSOL repository commit, exact `interface/src/native_mint.rs` path, and canonical address; reconfirmed the USDC occurrence map and USDt authority | Manual independent verification / SB-2.3 |
+| 2026-07-12 | SB-2.4 cleanup: stale "current implementation still uses incorrect address" note corrected throughout; §2, §3, §15, §16, §17, §18 updated to reflect SB-2.4 repair closure | Claude Sonnet 4.6 / staged-native-15m-slice |
