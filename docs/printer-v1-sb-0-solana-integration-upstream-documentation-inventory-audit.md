@@ -475,23 +475,29 @@ These mints are filtered from base_token to avoid including infrastructure asset
 
 | Tier | Label | Mechanism | Source | Status |
 |---|---|---|---|---|
-| T1 | `"T1"` | Not yet defined | Unknown | UNKNOWN_REQUIRES_RESEARCH |
-| T2 | `"T2"` | `tokenCreatedAt` / `createdTimestamp` / `timestamp` from PumpPortal launch event | `pumpportal` | IMPLEMENTED AND LIVE-PROVEN (V2-2AH) |
-| T3 | `"T3"` | On-chain `initializeMint`/`initializeMint2` via Solana JSON-RPC getTransaction | `solana_rpc` (`mint_creation_time_reference`) | IMPLEMENTED; live proof blocked (V2-2AL.4B required) |
-| T4 | `"T4"` | Not found in production code | Unknown | UNKNOWN_REQUIRES_RESEARCH |
-| T5 | `"T5"` | Not found in production code; referenced as "unknown" in prior docs | Unknown | UNKNOWN_REQUIRES_RESEARCH |
-| OBSERVED_LIVE_LAUNCH | `"OBSERVED_LIVE_LAUNCH"` | PumpPortal launch event observed but no timestamp field | `pumpportal` | IMPLEMENTED AND LIVE-PROVEN (V2-2AH) |
+| T1 | `"T1"` | Historically defined (V2-2O): direct token creation timestamp from a source — Solana RPC getAccountInfo blockTime of init tx, Helius enrichment, or future PumpPortal/PumpSwap feed | Depends on future source | DEFINED in historical docs (V2-2O); NOT YET IMPLEMENTED |
+| T2 | `"T2"` | `tokenCreatedAt` / `createdTimestamp` / `timestamp` from PumpPortal launch event | `pumpportal` | IMPLEMENTED AND FIXTURE-PROVEN (V2-2AG, 82 tests); NOT positively live-proven — V2-2AH returned `LIVE_PROOF_INCONCLUSIVE_NO_EVENTS` (zero raw messages received in 30s) |
+| T3 | `"T3"` | On-chain `initializeMint`/`initializeMint2` via Solana JSON-RPC history-walk path (getSignaturesForAddress → getTransaction → optional getBlockTime) | `solana_rpc` (`mint_creation_time_reference`) | IMPLEMENTED AND FIXTURE-PROVEN (V2-2AK, 132 tests); two live proofs failed safely (V2-2AL: Token-2022 layout error; V2-2AL.3: page-cap exhaustion on high-history mint); AL.4A+AL.4B complete; next proof V2-2AL.5 pending; direct-signature path (skip history walk) not yet designed |
+| T4 | `"T4_PAIR_ONLY"` | Historically defined (V2-2O, V2-2AF): pair-age diagnostic context only — `pool_created_at` (GeckoTerminal), `pairCreatedAt` (DexScreener). Never maps to `token_created_at`. | `dexscreener`, `geckoterminal` | DEFINED (V2-2O/V2-2AF) and IMPLEMENTED as `pair_age_context_label`; counted as `T4_PAIR_ONLY` in evidence tier count dicts; does NOT produce `token_age_seconds` or satisfy A3 |
+| T5 | `"T5_UNKNOWN"` | Historically defined (V2-2O): the null/unknown sentinel — no T1/T2/T3 evidence. `token_age_evidence_tier = null`. Current universal state for non-PumpPortal, non-T3-enriched tokens. | N/A | DEFINED (V2-2O) as null/unknown state; counted as `T5_UNKNOWN` in evidence tier count dicts |
+| OBSERVED_LIVE_LAUNCH | `"OBSERVED_LIVE_LAUNCH"` | PumpPortal launch event observed but no timestamp field (`tokenCreatedAt`/`createdTimestamp`/`timestamp`) present | `pumpportal` | IMPLEMENTED AND FIXTURE-PROVEN (V2-2AG, 30 tests); V2-2AE diagnostics observed 4 qualifying live events (`DIAGNOSTICS_COMPLETE_PAYLOAD_SHAPE_BLOCKER`); V2-2AH live proof returned zero events — NOT positively live-proven |
 
 **A3 gate:** `_tok_age_known = candidate.get("token_age_seconds") is not None`
 - Only T2 and T3 (success path) can satisfy A3.
 - OBSERVED_LIVE_LAUNCH does NOT satisfy A3.
 - T3 failure provenance does NOT satisfy A3.
+- T4 (`pair_age_context_label`) does NOT satisfy A3.
+- T5 (null) does NOT satisfy A3.
 
-**Tier hierarchy (ascending trust):** None < OBSERVED_LIVE_LAUNCH < T3 < T2 < T1
+**Tier hierarchy (descending trust):** T1 > T2 > T3 > OBSERVED_LIVE_LAUNCH > None/T5
 
-**UNKNOWN_REQUIRES_RESEARCH (SB-1):** T1 is referenced in the hierarchy but never defined in code. What authority T1 would represent (Metaplex on-chain anchor? A signed attestation? Helius DAS API?) is undefined. SB-1 must define T1 or explicitly mark it as deferred.
+**T1 (SB-1 note):** T1 is defined in V2-2O as the highest-trust tier: a direct token creation timestamp from a source, without needing to derive it from signature history walk. Candidate paths listed in V2-2O: Solana RPC getAccountInfo returning blockTime of the initialization tx, Helius free-tier enrichment, or a future PumpPortal/PumpSwap feed that carries a canonical on-chain token creation event. T1 has never been implemented. SB-1 should confirm whether T1 remains a target or is deferred. Note: a direct-signature T3 variant (bypass getSignaturesForAddress by using a known mint tx signature, then call getTransaction once) would be architecturally distinct from the current T3 history-walk path and potentially close the gap toward T1 in reliability; whether this constitutes T1 or an upgraded T3 is a design question for SB-1.
 
-**UNKNOWN_REQUIRES_RESEARCH (SB-1):** T4 and T5 labels do not appear in production source code. Whether these tiers are planned and what they would represent is unspecified.
+**T4 (SB-1 note):** T4 is defined and implemented. V2-2AF explicitly reserved the label `T4` for "pair-age diagnostic context only (V2-2X.1 Invariant 7)" and rejected using it for OBSERVED_LIVE_LAUNCH. T4 is counted as `T4_PAIR_ONLY` in evidence tier count dicts alongside T1/T2/T3/T5.
+
+**T5 (SB-1 note):** T5 (`T5_UNKNOWN`) is defined as the null/unknown state: `token_age_evidence_tier = null`. V2-2O states: "The tier labels will all resolve to null (T5) unless a T1/T2/T3 source is activated." This is the current universal state for tokens discovered via DexScreener/GeckoTerminal without T3 enrichment.
+
+**Historical contradiction (V2-2AA, superseded):** V2-2AA (early design, pre-V2-2O) stated "Migration events produce T1 evidence at best." This was written before the T1/T2/T3/T4/T5 hierarchy was formalized in V2-2O and V2-2AF. It is superseded. Under the current hierarchy, PumpPortal migration events do not produce T1/T2/T3 evidence; they produce no `token_created_at` and do not satisfy A3.
 
 ---
 
@@ -550,22 +556,34 @@ For SB-1 adoption (not a decision, just a structural proposal):
 ```text
 docs/solana-builder-source-of-truth/
 ├── README.md                              # Index and authority order
-├── solana-core-rpc-reference.md           # JSON-RPC methods, commitment, clusters
-├── solana-spl-token-program.md            # SPL Token layout, program ID, instructions
-├── solana-token-2022-program.md           # Token-2022 layout, extensions, program ID
-├── solana-mint-addresses.md               # WSOL, USDC, USDT, and native address registry
-├── pump-fun-pumpswap-protocol.md          # Pump.fun bonding curve, PumpSwap AMM, program IDs
-├── pumpportal-api-contract.md             # WebSocket URL, subscription methods, event schema
-├── jupiter-quote-api-contract.md          # Endpoint, params, API key policy, Swap V2 status
-├── dexscreener-api-contract.md            # Endpoints, rate limits, legacy URL status
-├── geckoterminal-api-contract.md          # Endpoints, rate limits, version header
-├── goplus-api-contract.md                 # Endpoint, response shape, beta status
-├── coingecko-api-contract.md              # Endpoint, API key policy, legacy URL status
-├── defillama-api-contract.md              # Endpoint, free vs pro endpoints
-├── alternative-me-api-contract.md         # Endpoint, rate limits
-├── helius-rpc-contract.md                 # Free tier URL, API key requirement, status
-└── token-age-evidence-tier-registry.md   # T1–T5 definitions, OBSERVED_LIVE_LAUNCH, A3 gate
+│
+│ # Solana core (chain-level programs and accounts)
+├── solana-core-rpc-reference.md           # JSON-RPC methods, commitment levels, cluster URLs
+├── solana-spl-token-program.md            # SPL Token program, Mint layout, program ID
+├── solana-token-2022-program.md           # Token-2022 layout, extensions, AccountType offset
+├── solana-mint-addresses.md               # 3 infrastructure mints: WSOL, USDC, USDT
+│
+│ # Protocol authorities (on-chain programs Printer tracks or references)
+├── pump-fun-bonding-curve-protocol.md     # Pump.fun bonding curve, graduation threshold, program ID
+├── pumpswap-amm-protocol.md              # PumpSwap AMM, post-graduation pools, program ID
+├── raydium-amm-label-context.md          # Raydium: appears as dex label in migration stream; no Printer adapter; stale-label risk
+├── jupiter-routing-protocol.md           # Jupiter DEX aggregation routing; used via Quote API only
+│
+│ # Provider API contracts (upstream data APIs Printer calls)
+├── pumpportal-api-contract.md            # WebSocket URL, subscribeNewToken/subscribeMigration, event schema
+├── jupiter-quote-api-contract.md         # Quote endpoint, params, API key policy, Swap V2/Metis status
+├── dexscreener-api-contract.md           # Pair/token endpoints, rate limits, legacy URL status
+├── geckoterminal-api-contract.md         # new_pools/trending_pools endpoints, version header
+├── goplus-api-contract.md                # Token security endpoint, response shape, beta status
+├── coingecko-api-contract.md             # simple/price endpoint, API key policy, legacy URL status
+├── defillama-api-contract.md             # chains endpoint, free vs pro separation
+├── alternative-me-api-contract.md        # fng endpoint, rate limits, update frequency
+├── helius-rpc-contract.md                # Free tier URL, API key requirement, implementation status
+│
+└── token-age-evidence-tier-registry.md   # T1–T5, OBSERVED_LIVE_LAUNCH, A3 gate, T4_PAIR_ONLY, T5_UNKNOWN
 ```
+
+**Note on protocol/provider separation:** Protocol authority docs describe on-chain programs and their canonical program IDs (sourced from official chain explorers and program repositories). Provider API contracts describe off-chain APIs that may aggregate or interpret on-chain data. Pump.fun and PumpSwap are separate protocols — they should not share a doc. Raydium appears in Printer only as a `dex` label string in migration normalization; it has no Printer adapter and is included for label-accuracy audit purposes only.
 
 ---
 
@@ -574,18 +592,18 @@ docs/solana-builder-source-of-truth/
 | Item | Type | Risk Level |
 |---|---|---|
 | Jupiter `lite-api.jup.ag/swap/v1/quote` vs `api.jup.ag/swap/v1/quote` + API key requirement | UNKNOWN_REQUIRES_RESEARCH | HIGH — adapter may be using a deprecated endpoint without a key |
+| `dex: "raydium"` label in migration normalization | ACCURACY_GAP | HIGH — Pump.fun graduated to PumpSwap (not Raydium) since March 2025; the dex label in Printer's migration normalization is likely wrong for all tokens graduated after March 2025; affects over a year of migration events |
 | CoinGecko `api.coingecko.com` (no key) vs `pro-api.coingecko.com` (demo key) | UNKNOWN_REQUIRES_RESEARCH | MEDIUM — legacy endpoint may be rate-limited or deprecated |
 | DexScreener `/latest/dex/tokens/{token_mint}` vs `/tokens/v1/{chainId}/{tokenAddresses}` | UNKNOWN_REQUIRES_RESEARCH | MEDIUM — legacy endpoint not listed in current docs |
 | PumpPortal `newRaydiumPool` field accuracy for PumpSwap-destination migrations | UNKNOWN_REQUIRES_RESEARCH | MEDIUM — name suggests Raydium but destination changed to PumpSwap in March 2025 |
 | PumpPortal event field schema (`tokenCreatedAt`, etc.) not officially documented | UNKNOWN_REQUIRES_RESEARCH | MEDIUM — schema may change without notice |
+| T3 failure provenance not persisted to DB | IMPLEMENTATION_GAP | MEDIUM — `printer_source_failures` table has no `normalized_payload_json` column; V2-2AL.4B verdict was `VERIFICATION_PARTIAL_WITH_BLOCKER`; provenance survives normalizer but is lost at persistence boundary |
 | PumpSwap program ID (`pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA`) not in Printer source | ARCHITECTURE_GAP | LOW (current adapter is fixture-only) |
 | Pump.fun bonding curve program ID (`6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P`) not in Printer source | ARCHITECTURE_GAP | LOW (not needed currently) |
 | Helius registered but no adapter | INCOMPLETE_REGISTRATION | LOW (marked as optional) |
-| T1 evidence tier — undefined | ARCHITECTURE_GAP | MEDIUM — referenced in hierarchy but never defined |
-| T4/T5 evidence tiers — undefined | ARCHITECTURE_GAP | LOW — may never be needed |
+| T1 evidence tier — defined (V2-2O) but not yet implemented | NOT_IMPLEMENTED | LOW — T3 covers the most viable on-chain path; T1 requires a direct-source timestamp; SB-1 should decide whether to pursue or defer |
 | Metaplex token metadata for name/symbol verification | NOT_EVALUATED | LOW — currently trust DEX sources for this |
 | `confirmed` vs `finalized` commitment for T3 mint-age evidence | ARCHITECTURE_QUESTION | LOW — for SB-1 to evaluate |
-| `dex: "raydium"` label for PumpSwap-destination migration events | ARCHITECTURE_GAP | MEDIUM — label may be stale for post-March-2025 graduations |
 
 ---
 
@@ -614,12 +632,13 @@ docs/solana-builder-source-of-truth/
 
 SB-1 should:
 - Use Opus 4.8 (per lane instruction)
-- Resolve the 9 `UNKNOWN_REQUIRES_RESEARCH` items using live endpoint testing or verified upstream docs
-- Design the authority structure for the `docs/solana-builder-source-of-truth/` directory
-- Define T1 (and optionally T4/T5) evidence tiers or explicitly retire them
-- Resolve the `newRaydiumPool` / PumpSwap destination question
-- Establish the Jupiter API key / Swap V2 policy
+- Resolve `UNKNOWN_REQUIRES_RESEARCH` items through primary-source documentation research, official changelogs, and upstream authority docs (NOT live endpoint testing — SB-1 is architecture/design and primary-source research only)
+- Design the authority structure for the `docs/solana-builder-source-of-truth/` directory using the proposed protocol/provider separation
+- Confirm T1 evidence tier status (defined in V2-2O as highest-trust tier but never implemented; decide whether to target or defer; T4 and T5 are already defined and T4 is implemented)
+- Resolve the `newRaydiumPool` / PumpSwap destination question and the `dex: "raydium"` label accuracy issue (HIGH severity, post-March 2025)
+- Establish the Jupiter API key / Swap V2 policy (HIGH severity endpoint mismatch)
 - Establish the CoinGecko and DexScreener legacy endpoint policies
+- Evaluate the T3 failure provenance DB persistence gap (blocker for AL.4C)
 - NOT change production code, NOT unlock A3 or V2-3, NOT resume T3 live proof
 
 ---
@@ -636,7 +655,7 @@ SOURCES_INVENTORIED:
   - 11 registered sources, all confirmed with adapter files (except helius_free)
   - 6 Solana JSON-RPC methods confirmed against official docs
   - 2 SPL Token programs confirmed (TokenkegQ..., Tokenz...)
-  - 4 WSOL/stablecoin mint addresses confirmed
+  - 3 infrastructure mint addresses confirmed (WSOL, USDC, USDT — in _SOLANA_NATIVE_QUOTE_MINTS)
   - Token-2022 extension layout confirmed from V2-2AL.1 repair record
   - PumpPortal WebSocket confirmed (subscribeNewToken, subscribeMigration free)
   - PumpSwap program ID found in web research but not in Printer source
@@ -648,7 +667,14 @@ SOURCES_INVENTORIED:
   - Alternative.me: confirmed
   - DefiLlama: confirmed
 
-EVIDENCE_TIERS: T2 confirmed and live-proven; T3 confirmed and implemented; T1/T4/T5 undefined
+EVIDENCE_TIERS:
+  T2: FIXTURE-PROVEN (V2-2AG, 82 tests); NOT positively live-proven (V2-2AH: LIVE_PROOF_INCONCLUSIVE_NO_EVENTS — zero raw messages)
+  OBSERVED_LIVE_LAUNCH: FIXTURE-PROVEN (V2-2AG, 30 tests); V2-2AE diagnostics showed 4 qualifying live events; V2-2AH inconclusive; NOT positively live-proven
+  T3: FIXTURE-PROVEN (V2-2AK, 132 tests); two live proofs failed safely (V2-2AL: Token-2022 layout; V2-2AL.3: page-cap exhaustion); AL.4A+AL.4B complete; V2-2AL.5 next proof pending; direct-signature path not yet designed
+  T1: DEFINED in historical docs (V2-2O) as highest-trust tier; NOT YET IMPLEMENTED
+  T4: DEFINED (V2-2O/V2-2AF) and IMPLEMENTED as pair_age_context_label (T4_PAIR_ONLY); does NOT produce token_age_seconds
+  T5: DEFINED (V2-2O) as T5_UNKNOWN null/unknown sentinel; default universal state
+
 DB_TABLES: 2 Solana-specific tables confirmed (022, 023)
 PYTHON_SDK: none — all Solana RPC via raw urllib/JSON-RPC
 LIVE_RPC_CALLS: NONE
@@ -656,14 +682,85 @@ DB_MUTATION: NONE
 CODE_CHANGES: NONE
 
 BLOCKERS:
-  - 5 UNKNOWN_REQUIRES_RESEARCH items affecting adapter correctness
-  - 4 architecture gaps (program IDs, T1 tier, dex label)
-  - Helius has no adapter implementation
+  - 2 HIGH items: Jupiter endpoint mismatch, dex:raydium label accuracy (post-March 2025)
+  - 5 MEDIUM items: CoinGecko key, DexScreener URL, PumpPortal field schema, newRaydiumPool accuracy, T3 DB persistence gap
+  - 5 LOW items: PumpSwap/PumpFun program IDs not in source, Helius no adapter, T1 not implemented, Metaplex not evaluated, commitment level question
 
-SB_1_PROPOSED_STRUCTURE: docs/solana-builder-source-of-truth/ (14 files)
+SB_1_PROPOSED_STRUCTURE: docs/solana-builder-source-of-truth/ (17 files, with protocol/provider separation)
 NEXT_LANE: SB-1 — Solana Builder Source-Stack Architecture and Authority Design (Opus 4.8)
 A3_STATUS: LOCKED
 V2_3_STATUS: PAUSED
-T3_LIVE_PROOF: PAUSED (V2-2AL.4B independent verification required first)
+T3_LIVE_PROOF: PAUSED (V2-2AL.4B complete; V2-2AL.5 pending — approved mint: 6LsqJCJ1p98UG3HYx1UuPgqNjTzAcYFdw4nSzfPzpump)
+STAGED_NATIVE_15M_BLOCKER: PARTIAL - DEFERRED, NOT RESOLVED
+```
+
+---
+
+## 30. SB-0.1 Correction Record
+
+**Lane:** SB-0.1 — Independent Inventory Correction and Scope Verification
+**Executor:** Claude Sonnet 4.6
+**Date:** 2026-07-12
+**Verdict:** `AUDIT_CORRECTION_PASS`
+
+This section records corrections applied in SB-0.1 to the original SB-0 audit (committed `0907561`). All corrections were derived from static inspection of historical Printer V1 design/proof/verification documents. No production code changes. No live RPC calls. No DB mutation.
+
+### Documents Inspected for Corrections
+
+- `docs/printer-v1-v2-2o-token-age-evidence-repair-design.md` — T1/T2/T3/T4/T5 tier definitions
+- `docs/printer-v1-v2-2af-pumpportal-launch-timestamp-evidence-design-update.md` — T4 "pair-age diagnostic context only" confirmation
+- `docs/printer-v1-v2-2ah-observed-live-launch-live-proof.md` — `LIVE_PROOF_INCONCLUSIVE_NO_EVENTS` — T2/OBSERVED_LIVE_LAUNCH NOT live-proven
+- `docs/printer-v1-v2-2al-4b-t3-failure-provenance-verification.md` — `VERIFICATION_PARTIAL_WITH_BLOCKER` — AL.4B complete; DB persistence gap confirmed
+- `docs/printer-v1-v2-2ae-pumpportal-live-event-diagnostics.md` — 4 qualifying OBSERVED_LIVE_LAUNCH events observed in diagnostics; NOT a formal proof
+- `src/printer_v1/sources/geckoterminal.py` — `_SOLANA_NATIVE_QUOTE_MINTS`: exactly 3 mints (WSOL, USDC, USDT)
+
+### Corrections Applied
+
+| # | Section | Original Error | Correction |
+|---|---|---|---|
+| 1 | §21 T2 status | "IMPLEMENTED AND LIVE-PROVEN (V2-2AH)" | "IMPLEMENTED AND FIXTURE-PROVEN (82 tests); NOT positively live-proven — V2-2AH: LIVE_PROOF_INCONCLUSIVE_NO_EVENTS (zero raw messages)" |
+| 2 | §21 OBSERVED_LIVE_LAUNCH status | "IMPLEMENTED AND LIVE-PROVEN (V2-2AH)" | "IMPLEMENTED AND FIXTURE-PROVEN (30 tests); V2-2AE diagnostics observed 4 events; V2-2AH inconclusive; NOT positively live-proven" |
+| 3 | §21 T3 status | "IMPLEMENTED; live proof blocked (V2-2AL.4B required)" | "FIXTURE-PROVEN (132 tests); two live proofs failed safely; AL.4A+AL.4B complete; V2-2AL.5 next proof pending; direct-signature path not yet designed" |
+| 4 | §21 T1 status | "Not yet defined / Unknown / UNKNOWN_REQUIRES_RESEARCH" | "DEFINED in V2-2O (direct source timestamp, highest-trust tier); NOT YET IMPLEMENTED" |
+| 5 | §21 T4 status | "Not found in production code / UNKNOWN_REQUIRES_RESEARCH" | "DEFINED (V2-2O/V2-2AF) and IMPLEMENTED as pair_age_context_label (T4_PAIR_ONLY); does NOT produce token_age_seconds" |
+| 6 | §21 T5 status | "Not found in production code; referenced as unknown / UNKNOWN_REQUIRES_RESEARCH" | "DEFINED (V2-2O) as T5_UNKNOWN null/unknown sentinel; counted in evidence tier count dicts" |
+| 7 | §21 post-table notes | "T1 undefined"; "T4/T5 undefined" | Replaced with accurate T1/T4/T5 descriptions and historical-contradiction note (V2-2AA superseded) |
+| 8 | §25 module structure | `pump-fun-pumpswap-protocol.md` (combined); Raydium absent; no protocol/provider separation | Split into `pump-fun-bonding-curve-protocol.md` + `pumpswap-amm-protocol.md`; added `raydium-amm-label-context.md` and `jupiter-routing-protocol.md`; added protocol/provider separation note |
+| 9 | §26 T1/T4/T5 in blockers | T1 listed as MEDIUM ARCHITECTURE_GAP (undefined); T4/T5 listed as LOW ARCHITECTURE_GAP (undefined) | T4/T5 removed (defined and T4 implemented); T1 reclassified as LOW NOT_IMPLEMENTED (defined but not implemented) |
+| 10 | §26 T3 persistence gap | Not listed in blockers | Added as MEDIUM IMPLEMENTATION_GAP (`printer_source_failures` has no `normalized_payload_json` column; AL.4B blocker confirmed) |
+| 11 | §26 `dex: "raydium"` severity | MEDIUM ARCHITECTURE_GAP | Upgraded to HIGH ACCURACY_GAP — Pump.fun moved to PumpSwap over a year ago (March 2025); label is wrong for all post-March-2025 graduations |
+| 12 | §28 SB-1 scope | "live endpoint testing" listed as SB-1 activity | Removed; SB-1 is architecture/design and primary-source research only |
+| 13 | §29 infrastructure mint count | "4 WSOL/stablecoin mint addresses confirmed" | Corrected to "3 infrastructure mint addresses confirmed (WSOL, USDC, USDT)" — `_SOLANA_NATIVE_QUOTE_MINTS` has exactly 3 |
+| 14 | §29 evidence tier summary | "T2 confirmed and live-proven; T3 confirmed; T1/T4/T5 undefined" | Corrected to accurate per-tier status (fixture-proven vs live-proven; defined vs implemented; T4/T5 defined) |
+
+### Corrections NOT Applied
+
+- SB-0 original verdict (`AUDIT_COMPLETE_WITH_BLOCKERS`) — unchanged; the blockers were real even if misdescribed
+- Section numbering — unchanged to preserve cross-references
+- No production code, tests, migrations, or other docs modified
+
+### Safety Confirmations (SB-0.1)
+
+- No live RPC calls
+- No DB mutation
+- No code or test changes
+- No memory generation or retrieval
+- No paper decisions, BUY/SELL/HOLD, positions, trades, audits, or PnL
+- No AGENTS.md modifications
+- A3 remains locked
+- V2-3 remains paused
+- T3 live proof remains paused
+- Staged/native 15m blocker: PARTIAL - DEFERRED, NOT RESOLVED
+
+```text
+SB_0_1_VERDICT: AUDIT_CORRECTION_PASS
+CORRECTIONS_APPLIED: 14
+PRODUCTION_CODE_CHANGES: NONE
+LIVE_RPC_CALLS: NONE
+DB_MUTATION: NONE
+SOURCE_STACK_ADOPTION: NONE
+A3_STATUS: LOCKED
+V2_3_STATUS: PAUSED
+T3_LIVE_PROOF: PAUSED
 STAGED_NATIVE_15M_BLOCKER: PARTIAL - DEFERRED, NOT RESOLVED
 ```
