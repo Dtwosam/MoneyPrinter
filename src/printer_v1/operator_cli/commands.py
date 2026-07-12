@@ -11,7 +11,7 @@ import tempfile
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 from urllib.parse import quote
 
 from printer_v1.db.migrate import MIGRATIONS_DIR
@@ -198,7 +198,14 @@ from printer_v1.sources.geckoterminal import (
     GECKOTERMINAL_NEW_POOLS_URL,
     GECKOTERMINAL_TRENDING_POOLS_URL,
     build_geckoterminal_adapter,
+    build_geckoterminal_15m_transport,
     build_geckoterminal_pools_transport,
+)
+from printer_v1.sources.geckoterminal_15m import (
+    GECKOTERMINAL_OHLCV_REQUEST_KIND,
+    GECKOTERMINAL_POOL_TRADES_REQUEST_KIND,
+    enrich_candidate_15m_ohlcv,
+    enrich_candidate_15m_trades,
 )
 from printer_v1.sources.pumpportal import (
     build_pumpportal_adapter,
@@ -1604,6 +1611,122 @@ def _aggregate_wr_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
     return merged
 
 
+def enrich_eligible_geckoterminal_candidate_15m(
+    db_path_or_conn,
+    candidate: dict[str, Any],
+    *,
+    timeout_seconds: float,
+    request_key_prefix: str,
+    transports: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run at most two governed, pool-bound 15m requests for one candidate."""
+    pool_address = str(candidate.get("pair_address") or "").strip()
+    if str(candidate.get("chain") or "").lower() != "solana" or not pool_address:
+        return {"status": "INELIGIBLE", "requests_attempted": 0, "evidence": {}}
+
+    evidence: dict[str, Any] = {}
+    records: list[dict[str, Any]] = []
+    for request_kind in (
+        GECKOTERMINAL_OHLCV_REQUEST_KIND,
+        GECKOTERMINAL_POOL_TRADES_REQUEST_KIND,
+    ):
+        endpoint, live_transport = build_geckoterminal_15m_transport(
+            request_kind=request_kind,
+            pool_address=pool_address,
+            timeout_seconds=timeout_seconds,
+        )
+        selected_transport = (transports or {}).get(request_kind)
+        if selected_transport is not None:
+            fixture_transport = selected_transport
+
+            def selected_transport(context, *, _fixture=fixture_transport, _endpoint=endpoint):
+                payload = dict(_fixture(context))
+                payload["_requested_pool_address"] = pool_address
+                payload["_requested_network"] = "solana"
+                payload["_requested_endpoint"] = _endpoint
+                return payload
+        else:
+            selected_transport = live_transport
+
+        source_request = build_governed_source_request(
+            "geckoterminal",
+            request_kind,
+            request_key=f"{request_key_prefix}-{request_kind}",
+            tracking_priority=0,
+            payload={
+                "chain": "solana",
+                "network": "solana",
+                "pool_address": pool_address,
+                "evidence_role": "candidate_15m_market_enrichment",
+            },
+        )
+        adapter = build_geckoterminal_adapter(
+            enabled=True,
+            fixture_transport=selected_transport,
+        )
+        result = execute_source_request_with_governor(
+            db_path_or_conn,
+            source_request,
+            adapter,
+            recent_request_count=0,
+        )
+        response_id = result.response_record.id if result.response_record else None
+        record = {
+            "request_kind": request_kind,
+            "endpoint": endpoint,
+            "source_request_id": result.request_record.id,
+            "source_response_id": response_id,
+            "source_failure_id": result.failure_record.id if result.failure_record else None,
+            "source_status": result.normalized_result.source_status.value,
+            "data_quality_label": result.normalized_result.data_quality_label.value,
+        }
+        records.append(record)
+        normalized = dict(result.normalized_result.normalized_payload or {})
+        if (
+            response_id is None
+            or record["source_status"] != "COMPLETE"
+            or record["data_quality_label"] != "CLEAN_DATA"
+            or normalized.get("pool_address") != pool_address
+            or normalized.get("network") != "solana"
+        ):
+            continue
+        provider_payload = normalized.get("provider_payload")
+        if not isinstance(provider_payload, Mapping):
+            continue
+        if request_kind == GECKOTERMINAL_OHLCV_REQUEST_KIND:
+            derived = enrich_candidate_15m_ohlcv(
+                provider_payload,
+                pool_address=pool_address,
+                network="solana",
+                endpoint_url=endpoint,
+            )
+        else:
+            derived = enrich_candidate_15m_trades(
+                provider_payload,
+                pool_address=pool_address,
+                network="solana",
+                endpoint_url=endpoint,
+            )
+        for key, value in list(derived.items()):
+            if key.endswith("_provenance") and isinstance(value, dict):
+                derived[key] = {
+                    **value,
+                    "source_request_id": result.request_record.id,
+                    "source_response_id": response_id,
+                }
+        evidence.update(derived)
+
+    candidate.update(evidence)
+    candidate["market_15m_evidence_requests"] = records
+    candidate["market_15m_evidence_pool_address"] = pool_address
+    return {
+        "status": "EVIDENCE_APPLIED" if evidence else "NO_VALID_EVIDENCE",
+        "requests_attempted": len(records),
+        "evidence": evidence,
+        "records": records,
+    }
+
+
 def _build_source_budget_report(
     plan: list[dict[str, Any]],
     execution_records: list[dict[str, Any]],
@@ -2120,6 +2243,7 @@ def build_discover_candidates_once_payload(
     args: argparse.Namespace,
     *,
     transport=None,
+    enrichment_transports: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     _validate_discover_candidates_args(args)
     project_root = _project_root(args.project_root)
@@ -2211,6 +2335,12 @@ def build_discover_candidates_once_payload(
     _quota_supplement: list[dict[str, Any]] = []
     _quota_ok: bool = True
     _quota_violations: list[str] = []
+    _market_15m_enrichment_report: dict[str, Any] = {
+        "status": "NOT_REQUESTED",
+        "requests_attempted": 0,
+        "evidence": {},
+        "records": [],
+    }
 
     if primary and primary["result"].normalized_result.source_status.value == "COMPLETE" and agg_clean_final:
         accepted, rejected, inspected, audit_only_pool = _select_discovery_candidates(
@@ -2221,6 +2351,17 @@ def build_discover_candidates_once_payload(
             max_candidates=args.max_candidates,
             db_path_or_conn=resolved,
         )
+
+        if getattr(args, "enrich_15m_market_evidence", False) and accepted:
+            if args.source_name != "geckoterminal":
+                raise ValueError("15m market enrichment currently requires GeckoTerminal discovery")
+            _market_15m_enrichment_report = enrich_eligible_geckoterminal_candidate_15m(
+                resolved,
+                accepted[0],
+                timeout_seconds=args.timeout_seconds,
+                request_key_prefix=args.request_key or "post-rc-geckoterminal-15m",
+                transports=enrichment_transports,
+            )
 
         # V2-2M: quota supplement — check batch diversity; draw from audit_only_pool if needed.
         # Quota check is informational only; audit-only candidates never enter the tracking path.
@@ -2442,6 +2583,7 @@ def build_discover_candidates_once_payload(
         "within_response_integrity_report": _combined_wr_report,
         # V2-2H.5 source-budget reporting hook.
         "source_budget_report": _source_budget_report,
+        "market_15m_enrichment_report": _market_15m_enrichment_report,
         # V2-2M audit-only pool and quota supplement reporting hook.
         "audit_only_report": _audit_only_report,
         "source_channel": _pr["source_channel"] if _pr else None,
@@ -2455,6 +2597,10 @@ def build_discover_candidates_once_payload(
                 # V2-2P: T4-safe pair age context metadata per accepted candidate.
                 "pair_age_context_label": candidate.get("pair_age_context_label"),
                 "token_age_evidence_tier": candidate.get("token_age_evidence_tier"),
+                "price_change_15m": candidate.get("price_change_15m"),
+                "volume_15m": candidate.get("volume_15m"),
+                "txns_15m": candidate.get("txns_15m"),
+                "txns_15m_completeness": candidate.get("txns_15m_completeness"),
             }
             for candidate in accepted[: len(discovery_results)]
         ],
@@ -2509,6 +2655,15 @@ def main_discover_candidates_once(argv: Sequence[str] | None = None) -> int:
             "Maximum candidates to persist this run. Must be between "
             f"{_DISCOVER_CANDIDATES_CAP_MIN} and {_DISCOVER_CANDIDATES_CAP_MAX}. "
             f"Default: {_DISCOVER_CANDIDATES_CAP_DEFAULT}."
+        ),
+    )
+    parser.add_argument(
+        "--enrich-15m-market-evidence",
+        action="store_true",
+        dest="enrich_15m_market_evidence",
+        help=(
+            "After eligibility gating, enrich at most one accepted GeckoTerminal pool "
+            "with one OHLCV and one trades request through Source Governor."
         ),
     )
     parser.add_argument("--query", default="pump")

@@ -1,201 +1,281 @@
-# Printer V1 - Staged/Native 15m Evidence Source-Stack Slice
+# Printer V1 - Governed Staged/Native 15m Evidence Runtime Handoff
 
-**Status:** PARTIAL IMPLEMENTATION VERIFIED; PRODUCTION LIVE HANDOFF BLOCKED.
+**Status:** IMPLEMENTED AND BOUNDED LIVE PROOF COMPLETE.
 
-**Verdict:** `STAGED_NATIVE_15M_EVIDENCE_PARTIAL_WITH_LIVE_OR_WIRING_BLOCKER`
+**Verdict:** `STAGED_NATIVE_15M_EVIDENCE_PASS`
 
-This document records the state verified after commit `54509d7` (`Integrate
-governed 15m market evidence`). It supersedes the earlier design-only wording
-in this file. The commit adds bounded evidence helpers and Source Governor
-request-kind registration, but normal governed discovery and snapshot runtime
-do not yet execute the 15m enrichment path.
+This report closes the runtime-wiring blocker identified after commit
+`54509d7` and documented by commit `28cb223`. The repair connects the existing
+GeckoTerminal 15m evidence calculations to the bounded, governed production
+discovery handoff without changing those calculations.
 
-## 1. Scope And Locks
+## Scope And Locks
 
-This slice covers only:
+This lane implements only pool-bound GeckoTerminal evidence for:
 
-- GeckoTerminal completed 15m OHLCV evidence for `price_change_15m` and
-  `volume_15m`;
-- GeckoTerminal bounded pool-trade evidence for safely complete `txns_15m`;
-- candidate normalization and snapshot persistence compatibility;
-- protection against staged derivation overwriting provider candle evidence.
+- `price_change_15m` from completed 15m candle arithmetic;
+- `volume_15m` from the same provider candle;
+- `txns_15m` from bounded pool trades when completeness is proven.
 
-It does not enable memory creation, retrieval, paper decisions, BUY, SELL,
-HOLD, positions, trade events, paper audits, or PnL. No paid API, scoring,
-ranking, confidence, weighted logic, A3, A4, PumpPortal, or broad
-GeckoTerminal expansion is part of this slice.
+It does not implement broad GeckoTerminal expansion, PumpPortal, PumpSwap,
+A3, A4, GROUP_A repair, scoring, ranking, confidence logic, paid APIs, memory
+generation, retrieval, paper decisions, BUY, SELL, HOLD, positions, trade
+events, paper audits, PnL, or a 1h proof.
 
-## 2. Commit Record
+## Production Call Path
 
-Commit `54509d7` changed only:
+The normal opt-in governed path is:
 
-- `src/printer_v1/sources/geckoterminal_15m.py` (new);
-- `src/printer_v1/sources/geckoterminal.py`;
-- `src/printer_v1/sources/registry.py`;
-- `src/printer_v1/snapshots/staged_derivation.py`;
-- `tests/test_v2_2h_geckoterminal_15m_evidence.py` (new);
-- `tests/test_v2_2h_geckoterminal_15m_bounded_proof.py` (new);
-- this document.
+1. `main_discover_candidates_once()` receives explicit operator approval and
+   `--enrich-15m-market-evidence`.
+2. `build_discover_candidates_once_payload()` executes bounded discovery
+   through Source Governor.
+3. `_select_discovery_candidates()` applies existing Solana, identity,
+   activity, dedupe, STNP, and tracking gates.
+4. Only the first accepted eligible Solana pool is passed to
+   `enrich_eligible_geckoterminal_candidate_15m()`.
+5. The helper issues exactly two pool-bound governed requests:
+   `geckoterminal_ohlcv_15m` and
+   `geckoterminal_pool_trades_15m`.
+6. `GeckoTerminalAdapter.execute()` validates governor context and exact
+   requested pool identity.
+7. Request-kind-specific normalization preserves the provider payload only
+   when network and pool match.
+8. `enrich_candidate_15m_ohlcv()` and
+   `enrich_candidate_15m_trades()` apply the existing fail-closed evidence
+   calculations.
+9. Valid evidence is merged into that exact candidate before
+   `process_discovery_payload()` persists discovery/tracking handoff metadata.
+10. Existing selection metadata extraction and `record_token_snapshot()` carry
+    values, source kinds, provenance, and governed source IDs forward.
 
-The commit did not change a discovery runner, scheduler runner, snapshot runner,
-memory path, retrieval path, or paper-trading path.
+No source call bypasses Source Governor. The enrichment path does not enqueue
+its own scheduler job or create an independent snapshot engine.
 
-## 3. Implemented Evidence Logic
+## Endpoint And Normalizer Repair
 
-The helper module implements:
+The implementation now constructs request-kind-specific endpoints containing
+the intended Solana pool address:
 
-- `enrich_candidate_15m_ohlcv()` using a completed, fresh 15m candle;
-- `price_change_15m = ((close - open) / open) * 100`;
-- `volume_15m` from that candle's native USD volume;
-- `enrich_candidate_15m_trades()` over an exact 15m interval;
-- `txns_15m` only when trade-history completeness is proven;
-- `txns_15m = NULL` with `TRADE_HISTORY_TRUNCATED` when completeness is not
-  proven;
-- provenance labels `PROVIDER_CANDLE_DERIVED` and
-  `PROVIDER_TRADES_WINDOW`.
+```text
+https://api.geckoterminal.com/api/v2/networks/solana/pools/{pool}/ohlcv/minute?aggregate=15&limit=2&currency=usd&token=base
+https://api.geckoterminal.com/api/v2/networks/solana/pools/{pool}/trades?trade_volume_in_usd_greater_than=0
+```
 
-`apply_staged_derivation()` protects both `NATIVE_SOURCE` and
-`PROVIDER_CANDLE_DERIVED` price evidence from overwrite.
+Neither request can fall back to `new_pools` or `trending_pools`.
 
-The Source Governor registry and GeckoTerminal adapter contract allow:
+OHLCV normalization requires `data.attributes.ohlcv_list`. Trades
+normalization requires a `data` list. Both require exact agreement among:
 
-- `geckoterminal_ohlcv_15m`;
-- `geckoterminal_pool_trades_15m`.
+- candidate `pair_address`;
+- governed request `pool_address`;
+- transport-bound response pool address;
+- Solana network identity.
 
-These facts prove helper and contract readiness. They do not prove production
-runtime invocation.
+Malformed, stale, failed, mismatched, or non-Solana evidence fails closed and
+is not merged.
 
-## 4. Production Call-Path Trace
+## Evidence And Provenance Handoff
 
-The normal governed discovery path is:
+The following metadata now survives candidate normalization, discovery
+persistence, selection-batch metadata, and authorized snapshot persistence:
 
-1. `main_discover_candidates_once()` parses the operator command.
-2. `build_discover_candidates_once_payload()` creates a bounded source plan.
-3. `_execute_plan_item()` builds a governed request and executes the
-   GeckoTerminal adapter through governed source recording.
-4. `normalize_geckoterminal_payload()` normalizes a pool-list response.
-5. `normalize_candidates()` creates candidate dictionaries.
-6. `process_discovery_payload()` persists accepted discovery and tracking
-   handoff rows.
+- `price_change_15m`;
+- `price_change_15m_source_kind`;
+- `price_change_15m_provenance`;
+- `volume_15m`;
+- `volume_15m_source_kind`;
+- `volume_15m_provenance`;
+- `txns_15m`;
+- `txns_15m_source_kind`;
+- `txns_15m_completeness`;
+- `txns_15m_provenance`;
+- `market_15m_evidence_requests`;
+- `market_15m_evidence_pool_address`.
 
-The production path does not import or invoke either 15m enrichment helper.
-Repository references to `enrich_candidate_15m_ohlcv()` and
-`enrich_candidate_15m_trades()` are confined to the helper module and tests.
+Each provenance object carries the exact pool, request kind, endpoint,
+timestamps, source request ID, and source response ID. Staged derivation still
+protects `PROVIDER_CANDLE_DERIVED` evidence from overwrite.
 
-The production request plan contains only GeckoTerminal new-pool and trending
-channels. The endpoint map contains only those two endpoints. Supplying a 15m
-request kind inserts it into the plan, but endpoint resolution falls back to
-the new-pools endpoint. The adapter then uses pool-list normalization rather
-than OHLCV/trades normalization.
+`txns_15m` remains NULL with `TRADE_HISTORY_TRUNCATED` whenever complete
+coverage cannot be proven.
 
-Therefore normal governed discovery/selection does not actually call either
-15m provider endpoint.
+## Bounded Live Proof
 
-## 5. Candidate And Snapshot Handoff
+Persistent DB:
 
-The generic candidate parser has fields for `price_change_15m`, `volume_15m`,
-and `txns_15m`. The generic snapshot recorder also has DB columns for all three
-fields and stores normalized payload metadata. Fixture tests prove that a
-caller-supplied enriched payload can pass through these generic layers.
+`data/printer_v1.sqlite3` (read-only for this proof)
 
-Production handoff is not proven because the governed runtime never merges the
-OHLCV/trades enrichment into the candidate payload. No normal runtime source
-response containing the enrichment reaches candidate metadata, and no normal
-snapshot runner consumes such a response.
+Fresh isolated retry DB:
 
-The existing E2M snapshot persistence path is DexScreener-specific and inserts
-NULL for all three 15m fields. It is not a GeckoTerminal 15m persistence path.
+`data/printer_v1_v2_2h_15m_runtime_handoff_live_retry.sqlite3`
 
-## 6. Bounded Live Proof
+Eligible existing Solana pool:
 
-One operator-approved live call was run against isolated DB:
+`6oFWm7KPLfxnwMb3z5xwBoXNSPP3JJyirAPqPSiVcnsp`
 
-`data/printer_v1_54509d7_15m_handoff_proof.sqlite3`
+Token mint:
+
+`DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263`
 
 Bounds:
 
-- source: `geckoterminal`;
-- requested kind: `geckoterminal_ohlcv_15m`;
-- max source requests: 1;
-- max candidates: 1;
-- timeout: 5 seconds;
-- chain: Solana;
-- persistent DB not used for writes.
+- one eligible pool;
+- one OHLCV request;
+- one trades request;
+- five-second timeout per request;
+- no broad discovery;
+- no retries or endpoint rotation inside the attempt;
+- isolated DB writes only.
 
-Observed result:
+The first eligible pool returned only stale completed candles and therefore
+produced no price/volume evidence. The lane-authorized retry used the pool
+above in a fresh isolated DB and passed.
 
-- source requests: +1;
-- source responses: +1;
-- source failures: +0;
-- actual endpoint: GeckoTerminal Solana `new_pools?page=1`;
-- actual source channel: `GECKOTERMINAL_NEW_POOL`;
-- candidates seen: 20;
-- discovery candidates persisted: 1;
-- tracking queue rows: +1;
-- scheduler jobs: +1;
-- token snapshots: +0;
-- `price_change_15m`: NULL;
-- `volume_15m`: NULL;
-- `txns_15m`: NULL.
+### Live Values
 
-This was a governed call, but it was not a valid 15m evidence call. It proves
-the endpoint/normalizer/runtime wiring blocker rather than 15m evidence
-success.
+- `price_change_15m`: `-0.029883`
+- `volume_15m`: `138.904036455148`
+- `txns_15m`: `15`
+- `txns_15m_completeness`: `TRADE_HISTORY_COMPLETE`
+- price/volume source kind: `PROVIDER_CANDLE_DERIVED`
+- transaction source kind: `PROVIDER_TRADES_WINDOW`
+- completed candle: `2026-07-12T15:15:00+00:00` through
+  `2026-07-12T15:30:00+00:00`
+- candle age after completion: `130` seconds
+- candle open: `0.000004032143867780203`
+- candle close: `0.000004030938956966733`
 
-## 7. Downstream Lock Proof
+Trades completeness was proven by `oldest_reaches_window`; 300 records were
+returned and 15 fell inside the exact bounded window.
 
-On the isolated proof DB, the live call produced zero deltas for:
+### Governed Trace
 
-- token snapshots;
+OHLCV:
+
+- source request ID: `1119`
+- source response ID: `1072`
+- source failure ID: NULL
+- source status: `COMPLETE`
+- data quality: `CLEAN_DATA`
+
+Trades:
+
+- source request ID: `1120`
+- source response ID: `1073`
+- source failure ID: NULL
+- source status: `COMPLETE`
+- data quality: `CLEAN_DATA`
+
+Both actual endpoints contained the exact intended pool. No fallback discovery
+channel was used.
+
+### Snapshot Proof
+
+The existing authorized snapshot recorder created isolated proof snapshot
+`1013` with:
+
+- `price_change_15m = -0.029883`;
+- `volume_15m = 138.904036455148`;
+- `txns_15m = 15`;
+- all three source-kind annotations;
+- completeness label;
+- both governed request/response traces in normalized snapshot metadata.
+
+Fixture integration tests additionally prove the same metadata survives normal
+discovery candidate persistence and selection-batch metadata extraction.
+
+## Row-Delta And Persistent-DB Proof
+
+Allowed isolated proof deltas:
+
+- source requests: `+2`;
+- source responses: `+2`;
+- source failures: `0`;
+- token snapshots: `+1`.
+
+Zero isolated proof deltas:
+
+- scheduler jobs;
+- tracking queue;
 - memory windows;
-- memory retrieval queries and matches;
+- memory retrieval queries;
+- memory retrieval matches;
 - paper decisions;
 - paper positions;
 - paper trade events;
 - paper trade audits;
-- PnL (no active PnL table was found in the core count surface).
+- PnL tables (none present in the core count surface).
 
-The persistent DB SHA-256 remained:
+Persistent DB SHA-256 before and after:
 
 `97DB9A15CC464D86137CBBB0DD0A4EF1880E9F4E231FB41E8B22CA09FB177FBB`
 
-Its inspected core row counts were unchanged by the proof.
+Persistent inspected row counts were unchanged.
 
-## 8. Blocker And Required Repair
+## Tests And Checks
 
-Blocker 2 is not closed. A future narrow repair must:
+Scoped suites:
 
-1. add pool-address-aware governed endpoint construction for both 15m request
-   kinds;
-2. add request-kind-specific OHLCV and trades normalization rather than
-   pool-list normalization;
-3. invoke both enrichments for an already eligible Solana pool under explicit
-   request limits;
-4. merge only valid evidence into candidate metadata;
-5. carry source response IDs and provenance through snapshot persistence;
-6. keep `txns_15m` null unless completeness is proven;
-7. prove all downstream lock deltas remain zero.
+- existing GeckoTerminal 15m evidence tests;
+- existing bounded 15m proof tests;
+- existing staged 15m derivation regression tests;
+- new governed runtime-handoff tests.
 
-This repair should remain a narrow GeckoTerminal 15m runtime-handoff lane. It
-must not become broad GeckoTerminal discovery work.
+Result: `130 passed` (original 124 plus 6 repair tests).
 
-## 9. Acceptance State
+The repair tests cover endpoint construction, no fallback, request-specific
+normalization, exact pool matching, provenance merge, malformed/stale/failed
+fail-closed behavior, the two-request cap, truncated trades, staged overwrite
+protection, ineligible candidates, discovery metadata, selection metadata,
+snapshot persistence, and governor/scheduler boundaries.
 
-- Helper arithmetic and completeness guards: PASS.
-- Request-kind registry/contract allowance: PASS.
-- Candidate parser field compatibility: PASS by fixture.
-- Generic snapshot field compatibility: PASS by fixture.
-- Normal governed endpoint invocation: FAIL / NOT WIRED.
-- Production candidate enrichment: FAIL / NOT WIRED.
-- Production snapshot persistence from live 15m evidence: FAIL / NOT WIRED.
-- Persistent DB isolation and downstream locks: PASS.
+## Money-Usefulness Contribution
 
-## 10. Next Lane
+Printer can now attach a real completed 15m price movement, native candle
+volume, and safely bounded transaction activity to the same eligible pool.
+This improves future memory evidence realism without treating the fields as a
+trade signal or forcing clean memory.
 
-Next lane:
+## Remaining Limitations
 
-`Narrow GeckoTerminal 15m governed runtime-handoff repair and bounded proof`
+- Enrichment is explicit opt-in and limited to one accepted pool per command.
+- Provider candles may be absent or stale for quiet pools; evidence then stays
+  unset.
+- The trades endpoint can hit its record cap; `txns_15m` stays NULL unless the
+  returned history reaches the window start.
+- This lane proves the handoff but does not activate memory or decisions.
+- Broader pool rotation and source budgeting remain later governed work.
 
-`Minimal PumpPortal launch-stream bounded transport` is allowed only after this
-slice receives a clean governed live handoff pass. A3, A4, staged/native 15m
-activation, V2-3, retrieval, and paper features remain paused.
+## Functionality Risks / Setbacks / Efficiency Blockers
+
+| Risk | Current control | Remaining action |
+|---|---|---|
+| Evidence attaches to the wrong pool | Exact request/candidate/response pool match | Preserve regression tests |
+| Discovery endpoint fallback recurs | Dedicated endpoint builder by request kind | Keep fallback forbidden |
+| In-progress or stale candle is used | Completed/fresh candle gate | Leave evidence unset |
+| Trade history is truncated | Completeness label and NULL count | Do not infer missing trades |
+| Provider requests expand with candidate count | One accepted pool, exactly two requests | Future expansion needs a separate budget lane |
+| Provider evidence is overwritten | Staged-derivation source-kind guard | Preserve guard tests |
+| Evidence becomes a trade signal | Fields remain metadata only | Retrieval/paper/BUY locks remain |
+
+## Acceptance And Next Lane
+
+- Correct pool-address endpoints: PASS.
+- Request-specific normalization: PASS.
+- Source Governor recording: PASS.
+- Production candidate enrichment: PASS.
+- Discovery and selection metadata handoff: PASS.
+- Authorized snapshot persistence: PASS.
+- Real governed provider proof: PASS.
+- Persistent DB isolation: PASS.
+- Financial and downstream locks: PASS.
+
+Blocker 2 is genuinely closed for the bounded one-pool 15m runtime handoff.
+
+Next lane only:
+
+`Minimal PumpPortal launch-stream bounded transport`
+
+Do not begin it from this report. A3, A4, V2-3, memory, retrieval, and all
+paper/financial capabilities remain paused.

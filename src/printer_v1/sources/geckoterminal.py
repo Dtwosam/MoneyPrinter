@@ -19,6 +19,12 @@ from printer_v1.sources.contracts import (
     build_source_adapter_contract,
     validate_source_adapter_contract,
 )
+from printer_v1.sources.geckoterminal_15m import (
+    GECKOTERMINAL_OHLCV_REQUEST_KIND,
+    GECKOTERMINAL_POOL_TRADES_REQUEST_KIND,
+    build_gt15m_ohlcv_url,
+    build_gt15m_trades_url,
+)
 
 
 GECKOTERMINAL_SOURCE_NAME = "geckoterminal"
@@ -94,7 +100,11 @@ class GeckoTerminalAdapter:
             return _failure_result(
                 context.request.request_kind, "geckoterminal_transport_error", str(exc)
             )
-        return normalize_geckoterminal_payload(payload, request_kind=context.request.request_kind)
+        return normalize_geckoterminal_payload(
+            payload,
+            request_kind=context.request.request_kind,
+            expected_pool_address=context.request.payload.get("pool_address"),
+        )
 
 
 def build_geckoterminal_adapter_contract() -> SourceAdapterContract:
@@ -150,10 +160,41 @@ def build_geckoterminal_pools_transport(
     return transport
 
 
+def build_geckoterminal_15m_transport(
+    *,
+    request_kind: str,
+    pool_address: str,
+    timeout_seconds: float = GECKOTERMINAL_TIMEOUT_SECONDS,
+) -> tuple[str, Callable[[SourceAdapterContext], Mapping[str, Any]]]:
+    """Build one pool-bound live transport for a governed 15m request."""
+    pool_address = str(pool_address or "").strip()
+    if not pool_address:
+        raise ValueError("GeckoTerminal 15m request requires pool_address")
+    if request_kind == GECKOTERMINAL_OHLCV_REQUEST_KIND:
+        endpoint = build_gt15m_ohlcv_url(pool_address)
+    elif request_kind == GECKOTERMINAL_POOL_TRADES_REQUEST_KIND:
+        endpoint = build_gt15m_trades_url(pool_address)
+    else:
+        raise ValueError("Unsupported GeckoTerminal 15m request kind")
+
+    def transport(context: SourceAdapterContext) -> Mapping[str, Any]:
+        requested_pool = str(context.request.payload.get("pool_address") or "").strip()
+        if requested_pool != pool_address:
+            raise ValueError("GeckoTerminal 15m transport pool mismatch")
+        payload = dict(_load_public_json(endpoint, timeout_seconds=timeout_seconds))
+        payload["_requested_pool_address"] = pool_address
+        payload["_requested_network"] = "solana"
+        payload["_requested_endpoint"] = endpoint
+        return MappingProxyType(payload)
+
+    return endpoint, transport
+
+
 def normalize_geckoterminal_payload(
     payload: Mapping[str, Any],
     *,
     request_kind: str,
+    expected_pool_address: Any = None,
 ) -> NormalizedSourceResult:
     if request_kind not in ALLOWED_REQUEST_KINDS:
         return _failure_result(
@@ -182,6 +223,16 @@ def normalize_geckoterminal_payload(
             failure_type="geckoterminal_rate_limited",
             failure_message="GeckoTerminal rate limit",
             retry_after_at=retry_at,
+        )
+
+    if request_kind in {
+        GECKOTERMINAL_OHLCV_REQUEST_KIND,
+        GECKOTERMINAL_POOL_TRADES_REQUEST_KIND,
+    }:
+        return _normalize_geckoterminal_15m_payload(
+            payload,
+            request_kind=request_kind,
+            expected_pool_address=expected_pool_address,
         )
 
     raw_pools = payload.get("data")
@@ -218,6 +269,70 @@ def normalize_geckoterminal_payload(
                 "source_name": GECKOTERMINAL_SOURCE_NAME,
                 "request_kind": request_kind,
                 "pairs": solana_pools,
+            }
+        ),
+        status_code=int(payload.get("_source_status_code") or 200),
+    )
+
+
+def _normalize_geckoterminal_15m_payload(
+    payload: Mapping[str, Any],
+    *,
+    request_kind: str,
+    expected_pool_address: Any,
+) -> NormalizedSourceResult:
+    expected = str(expected_pool_address or "").strip()
+    observed = str(payload.get("_requested_pool_address") or "").strip()
+    network = str(payload.get("_requested_network") or "solana").lower()
+    endpoint = str(payload.get("_requested_endpoint") or "")
+    if not expected or observed != expected or network != "solana":
+        return _failure_result(
+            request_kind,
+            "geckoterminal_15m_pool_mismatch",
+            "GeckoTerminal 15m response did not match the requested Solana pool",
+        )
+    if payload.get("fixture_stale"):
+        return NormalizedSourceResult(
+            source_name=GECKOTERMINAL_SOURCE_NAME,
+            request_kind=request_kind,
+            source_status=SourceStatus.STALE,
+            data_quality_label=DataQualityLabel.STALE_DATA,
+            normalized_payload=MappingProxyType({}),
+            status_code=int(payload.get("_source_status_code") or 200),
+        )
+
+    raw_data = payload.get("data")
+    if request_kind == GECKOTERMINAL_OHLCV_REQUEST_KIND:
+        attrs = raw_data.get("attributes") if isinstance(raw_data, Mapping) else None
+        if not isinstance(attrs, Mapping) or not isinstance(attrs.get("ohlcv_list"), list):
+            return _failure_result(
+                request_kind,
+                "geckoterminal_15m_missing_ohlcv",
+                "GeckoTerminal 15m response missing OHLCV list",
+            )
+    elif not isinstance(raw_data, list):
+        return _failure_result(
+            request_kind,
+            "geckoterminal_15m_missing_trades",
+            "GeckoTerminal 15m response missing trades list",
+        )
+
+    provider_payload = {
+        key: value for key, value in payload.items() if not str(key).startswith("_requested_")
+    }
+    return NormalizedSourceResult(
+        source_name=GECKOTERMINAL_SOURCE_NAME,
+        request_kind=request_kind,
+        source_status=SourceStatus.COMPLETE,
+        data_quality_label=DataQualityLabel.CLEAN_DATA,
+        normalized_payload=MappingProxyType(
+            {
+                "source_name": GECKOTERMINAL_SOURCE_NAME,
+                "request_kind": request_kind,
+                "network": network,
+                "pool_address": observed,
+                "endpoint": endpoint,
+                "provider_payload": provider_payload,
             }
         ),
         status_code=int(payload.get("_source_status_code") or 200),
