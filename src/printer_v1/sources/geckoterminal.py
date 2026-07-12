@@ -48,7 +48,7 @@ _SOLANA_NETWORK_IDS = frozenset({"solana", "sol"})
 # token_mint would be a quote/infrastructure asset, not a memecoin candidate.
 _SOLANA_NATIVE_QUOTE_MINTS = frozenset({
     "So11111111111111111111111111111111111111112",   # WSOL (Wrapped SOL / native SOL)
-    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEt67tw2CH8Ej",  # USDC
+    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",  # USDC (Circle official Solana mainnet)
     "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",  # USDT
 })
 

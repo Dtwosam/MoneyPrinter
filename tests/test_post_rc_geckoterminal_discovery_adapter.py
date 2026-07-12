@@ -432,7 +432,7 @@ class GeckoTerminalPayloadNormalizationTests(unittest.TestCase):
     # ------------------------------------------------------------------
 
     WSOL = "So11111111111111111111111111111111111111112"
-    USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEt67tw2CH8Ej"
+    USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
     USDT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
 
     def _pool_with_base(self, base_mint, pool_address="wsol-test-pool", reserve="28000",
