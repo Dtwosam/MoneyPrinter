@@ -50,10 +50,10 @@ Printer's Solana integration is **small, raw, and mostly fixture-gated** — whi
 
 The Solana Builder Source Stack fixes that by giving every protocol and provider a **single canonical module** with a cited upstream authority, a Printer readiness status, and explicit allowed/prohibited capabilities. This lane delivers the architecture (authority order, module tree, template, status vocabulary, conflict rules, freshness policy, task routing, adoption gates) and dispositions every SB-0 blocker against a **primary source**.
 
-The verdict is `ARCHITECTURE_COMPLETE_WITH_BLOCKERS` because two HIGH-severity upstream facts are now confirmed against primary sources and require future (not this-lane) remediation:
+The verdict is `ARCHITECTURE_COMPLETE_WITH_BLOCKERS`. SB-1.1 independently verifies this architecture as `ARCHITECTURE_VERIFICATION_PASS_WITH_BLOCKERS` and corrects several over-specific SB-1 claims. The corrected high-severity facts are:
 
-1. The Jupiter Swap API's authoritative endpoint (`api.jup.ag/swap/v1/quote`) now requires an `x-api-key`; Printer's `lite-api.jup.ag` free path's keyless status is not formally guaranteed by current docs. (Confined by fixture-only posture.)
-2. The `dex: "raydium"` migration label is confirmed stale: since 2025-03-20, Pump.fun graduates ~95%+ of tokens to PumpSwap, not Raydium.
+1. Jupiter has a documented `lite-api.jup.ag/swap/v1/quote` quote path in current developer docs, but official guidance around API-key requirements across Lite/API/Ultra/portal docs is not fully reconciled here. Printer's Jupiter adapter remains fixture-only and paper-realism-only. Live Jupiter wiring remains `UNKNOWN_REQUIRES_RESEARCH`.
+2. The `dex: "raydium"` migration label is not reliable venue proof. PumpPortal's `newRaydiumPool` must be treated as a pool-address locator only; the actual venue remains unknown until on-chain owner/program verification proves it. SB-1.1 removes the unsupported PumpSwap graduation-percentage claim.
 
 Neither blocker is resolved by writing code here; both are recorded with dispositions for SB-2+.
 
@@ -63,11 +63,11 @@ Neither blocker is resolved by writing code here; both are recorded with disposi
 
 ## 2. Authority Hierarchy
 
-Every major technical/architectural conclusion cites (a) the relevant Printer code/test/design/proof/audit, and (b) the exact upstream authority. When sources conflict, the higher tier wins; when the higher tier is silent, the conclusion is `UNKNOWN_REQUIRES_RESEARCH` and the lower-tier reading is recorded but not adopted.
+Every major technical/architectural conclusion cites (a) the relevant Printer code/test/design/proof/audit, and (b) the exact upstream authority. Upstream authority defines external protocol/API contracts. Printer code, tests, migrations, and adopted docs define current Printer implementation. When the two disagree, the result is a documented implementation gap; neither side silently rewrites the other. When the higher tier is silent, the conclusion is `UNKNOWN_REQUIRES_RESEARCH` and the lower-tier reading is recorded but not adopted.
 
 | Tier | Authority class | Examples used in this lane |
 |---|---|---|
-| A1 | Official deployed-program source / official protocol repository | `github.com/pump-fun/pump-public-docs` (Pump program README); `github.com/solana-program/token` (SPL Token); `solana-program-library/token/program-2022` (Token-2022) |
+| A1 | Official deployed-program source / official protocol repository | `github.com/pump-fun/pump-public-docs` (Pump program README); `github.com/solana-program/token` (SPL Token); `github.com/solana-program/token-2022` (Token-2022) |
 | A2 | Official IDL or protocol-owned SDK | Anchor IDLs where published (Pump, PumpSwap) — not yet inventoried in Printer |
 | A3 | Official protocol developer documentation | `solana.com/docs`, `dev.jup.ag` / `developers.jup.ag` docs |
 | A4 | Official provider API documentation | `docs.dexscreener.com`, `docs.coingecko.com`, `apiguide.geckoterminal.com`, `docs.gopluslabs.io`, `api-docs.defillama.com`, `alternative.me/crypto/api`, `helius.dev/docs`, `pumpportal.fun/data-api` |
@@ -91,9 +91,9 @@ All URLs verified 2026-07-12 against the listed host. "Printer rule" is the exac
 |---|---|---|---|---|---|
 | JSON-RPC HTTP | Solana RPC HTTP Methods | `https://solana.com/docs/rpc/http` | Agave/current | ACTIVE | 6 methods only (§SB-0 §4); JSON-RPC 2.0 over HTTPS POST |
 | Commitment levels | Solana RPC Overview — commitment | `https://solana.com/docs/rpc` | current | ACTIVE | `confirmed` for T3 reads; `finalized` optional hardening for very recent mints (§12.8) |
-| Clusters | Solana Clusters & Endpoints | `https://solana.com/docs/references/clusters` | current | ACTIVE | mainnet-beta public: `https://api.mainnet-beta.solana.com`; operator override allowed |
+| Clusters | Solana Clusters & Endpoints | `https://solana.com/docs/references/clusters` | current | ACTIVE | Upstream currently documents public mainnet as `https://api.mainnet.solana.com`; Printer currently uses `https://api.mainnet-beta.solana.com`. Treat this as an implementation gap/reverify item before live proof; operator override remains allowed. |
 | SPL Token | solana-program/token | `https://github.com/solana-program/token` | program `Tokenkeg…` | ACTIVE | `Mint::LEN = 82`; `initializeMint` / `initializeMint2` are creation instructions |
-| Token-2022 | solana-program-library/token/program-2022 | `https://github.com/solana-labs/solana-program-library/tree/master/token/program-2022` | program `Tokenz…` | ACTIVE | AccountType at byte 165; extensions from 166; min 166 bytes (V2-2AL.1) |
+| Token-2022 | solana-program/token-2022 | `https://github.com/solana-program/token-2022` | program `Tokenz...` | ACTIVE | AccountType at byte 165; extensions from 166; min 166 bytes (V2-2AL.1). Avoid the archived `solana-labs/solana-program-library` path as the canonical module authority. |
 | getTransaction | getTransaction | `https://solana.com/docs/rpc/http/gettransaction` | current | ACTIVE | `jsonParsed` encoding; parse inner + compiled instructions; handle versioned tx + ALT |
 
 ### 3.2 Protocol authorities
@@ -101,17 +101,17 @@ All URLs verified 2026-07-12 against the listed host. "Printer rule" is the exac
 | Component | Document / repo | Canonical URL | Version / tag | Status | Printer rule |
 |---|---|---|---|---|---|
 | Pump.fun bonding curve | pump-public-docs PUMP_PROGRAM_README | `https://github.com/pump-fun/pump-public-docs/blob/main/docs/PUMP_PROGRAM_README.md` | program `6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P` (mainnet + devnet) | ACTIVE (A1) | Bonding-curve PDA seeds `["bonding-curve", mint]`; `create` instruction mints a coin but **carries no timestamp**; `migrate` is permissionless |
-| PumpSwap AMM | PumpSwap program / PumpPortal PumpSwap docs | `https://pumpportal.fun/data-api/pump-swap/` | program `pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA` | ACTIVE upstream / REFERENCE_ONLY in Printer | Post-graduation AMM since 2025-03-20; program ID not in Printer source; adapter fixture-only |
-| Raydium (label context) | — (no Printer adapter) | n/a | n/a | LEGACY_OR_DEPRECATED label | `dex:"raydium"` migration label is stale post-2025-03-20; ~95%+ graduations go to PumpSwap |
-| Jupiter routing | Jupiter Swap API (Metis v1 routing engine) | `https://dev.jup.ag/docs/api/swap-api` | Metis v1 | ACTIVE upstream / PAPER_REALISM_ONLY in Printer | Aggregation routing used only via Quote API for paper realism |
+| PumpSwap AMM | PumpSwap program / PumpPortal PumpSwap docs | `https://pumpportal.fun/data-api/pump-swap/` | program `pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA` | ACTIVE upstream / REFERENCE_ONLY in Printer | Post-graduation AMM support exists upstream; program ID not in Printer source; adapter fixture-only; exact migration venue must be verified on-chain before use. |
+| Raydium (label context) | no Printer adapter | n/a | n/a | LEGACY_OR_DEPRECATED label | Printer's `dex:"raydium"` migration label is a stale/unsafe venue assertion. Treat it as label context only, not venue proof. |
+| Jupiter routing | Jupiter Swap / Ultra API docs | `https://dev.jup.ag/docs/swap-api/get-quote` | Metis/Lite/Ultra lifecycle has active-doc ambiguity | ACTIVE upstream / PAPER_REALISM_ONLY in Printer | Aggregation routing used only via Quote API for paper realism; current live auth/endpoint lifecycle remains `UNKNOWN_REQUIRES_RESEARCH`. |
 
 ### 3.3 Provider API contracts
 
 | Provider | Document | Canonical URL | Auth / cost | Status | Printer rule |
 |---|---|---|---|---|---|
-| PumpPortal | Real-time Data API | `https://pumpportal.fun/data-api/real-time/` | free; no key for `subscribeNewToken`/`subscribeMigration` | ACTIVE (A4) | WebSocket `wss://pumpportal.fun/api/data`; event schema undocumented → treat fields as best-effort; signature = locator only |
-| Jupiter Quote | Swap API / Get Quote | `https://dev.jup.ag/api-reference/swap/quote` | `api.jup.ag` requires `x-api-key`; free tier keyed (60s window) | PAPER_REALISM_ONLY / LEGACY_OR_DEPRECATED (lite endpoint) | Fixture-only; `lite-api.jup.ag` keyless status not guaranteed by current docs (§12.1) |
-| DexScreener | API Reference | `https://docs.dexscreener.com/api/reference` | no key; 60 req/min (pairs up to 300) | ACTIVE / token endpoint LEGACY | Current token endpoint is `/tokens/v1/{chainId}/{tokenAddresses}`; Printer's `/latest/dex/tokens/` is legacy (§12.4) |
+| PumpPortal | Real-time Data API | `https://pumpportal.fun/data-api/real-time/` | auth/keyless status UNKNOWN for production use | ACTIVE (A4) | WebSocket `wss://pumpportal.fun/api/data`; event schema undocumented; do not equate a subscription method with a guaranteed no-key policy; signature = locator only. |
+| Jupiter Quote | Swap API / Get Quote | `https://dev.jup.ag/docs/swap-api/get-quote` | `lite-api.jup.ag` appears in current docs, but Lite/API/Ultra auth guidance needs recheck | PAPER_REALISM_ONLY / UNKNOWN_REQUIRES_RESEARCH for live wiring | Fixture-only; live endpoint/auth lifecycle not adopted (§12.1-§12.2). |
+| DexScreener | API Reference | `https://docs.dexscreener.com/api/reference` | no key; per-endpoint rate limits, commonly 300 rpm for pair/token/search style endpoints and 60 rpm for profile/boost/order endpoints | ACTIVE / token endpoint LEGACY | Current token endpoint is `/tokens/v1/{chainId}/{tokenAddresses}`; Printer's `/latest/dex/tokens/` is legacy (§12.4). |
 | GeckoTerminal | API Guide | `https://apiguide.geckoterminal.com/` | no key; version header `application/json;version=20230302` | ACTIVE | `new_pools` / `trending_pools` confirmed; low-frequency backup |
 | GoPlus | Solana token security | `https://docs.gopluslabs.io/reference/solanatokensecurityusingget` | no key (basic); beta | ACTIVE (beta) | 429 → STALE; response `{code,message,result{<mint>}}` |
 | CoinGecko | Keyless Public API | `https://docs.coingecko.com/docs/keyless-public-api` | keyless supported (low rate); demo key = 100/min | OPTIONAL_FREE_FALLBACK | Keyless `api.coingecko.com/api/v3` officially supported for low-frequency context (§12.5) |
@@ -197,7 +197,15 @@ Rationale for the template: every field maps to a decision a future agent must m
 
 ## 6. Status Vocabulary
 
-Exactly one primary status per module (§4 field 4). Secondary status may qualify (e.g., `PAPER_REALISM_ONLY` + `LEGACY_OR_DEPRECATED`).
+SB-1.1 supersedes the earlier single-primary-status model. A module now carries separate dimensions so a provider can be, for example, upstream-active but Printer-fixture-only:
+
+- `upstream_lifecycle`: `ACTIVE`, `SUPERSEDED`, `DEPRECATED`, `UNKNOWN_REQUIRES_RESEARCH`.
+- `printer_readiness`: `ACTIVE_READY`, `PARTIAL_WITH_BLOCKER`, `REGISTERED_NOT_READY`, `REFERENCE_ONLY`, `DEFERRED`.
+- `printer_role`: `DISCOVERY`, `TOKEN_AGE`, `SAFETY`, `PAPER_REALISM_ONLY`, `CONTEXT_ONLY`, `LABEL_CONTEXT`, `EVIDENCE_RULES`.
+- `access_policy`: `KEYLESS_PUBLIC`, `FREE_KEY_REQUIRED`, `UNKNOWN_REQUIRES_RESEARCH`, `PROHIBITED_PAID`.
+- `v1_permission`: `ALLOWED_GOVERNED`, `ALLOWED_FIXTURE_ONLY`, `OPERATOR_APPROVAL_REQUIRED`, `PROHIBITED_V1`.
+
+The historical status labels below remain useful shorthand, but they must not collapse these dimensions.
 
 | Status | Meaning | Current holders |
 |---|---|---|
@@ -252,7 +260,7 @@ When an agent picks up a Solana task, it MUST read the routed modules before wri
 
 ## 9. Conflict-Resolution Rules
 
-1. **Tier wins.** Higher A-tier overrides lower (§2). Upstream (A1–A5) overrides Printer code (A6).
+1. **Authority roles stay separate.** Upstream A1-A5 defines the external protocol/API contract. Printer A6 defines current local implementation. A disagreement becomes a documented implementation gap; neither side silently rewrites the other.
 2. **Silence is not permission.** If the highest available tier does not formally define a field (e.g., PumpPortal event schema), the conclusion is `UNKNOWN_REQUIRES_RESEARCH`; record each source's role; do not silently pick one interpretation.
 3. **Preserve roles on conflict.** When two primary sources disagree (e.g., a program ID asserted by A1 vs an explorer A7), keep both, mark the A7 as corroboration-only, and adopt the A1 value.
 4. **Deprecation flags, never silent swaps.** If upstream supersedes a Printer endpoint, mark Printer `LEGACY_OR_DEPRECATED` and record the replacement; do not assume the legacy path still works and do not "fix" it in this reference lane.
@@ -263,9 +271,13 @@ When an agent picks up a Solana task, it MUST read the routed modules before wri
 
 ## 10. Freshness and Stale-Document Policy
 
-- Each module carries a **last-verified date** (§5 field 3). A module older than **90 days** is `STALE_REVERIFY_REQUIRED` and must be re-checked against its A-tier authority before an agent relies on it for live work.
-- **Trigger re-verification immediately** (regardless of age) when: an adapter starts failing with auth/HTTP errors; an upstream changelog announces an endpoint/version change; a Printer live proof contradicts the module; or a program migration/relabel is observed (e.g., the Raydium→PumpSwap event).
-- Fixture-only status does **not** exempt a module from freshness — SB-0 showed fixture-only masks drift. Reference correctness is still required.
+- Each module carries a **last-verified date** (§5 field 3), but SB-1.1 replaces the universal 90-day rule with risk-based freshness.
+- Provider endpoints, auth policy, quotas, and response schema are `STALE_REVERIFY_REQUIRED` after **30 days** and before any live proof.
+- Program layouts, IDLs, instruction semantics, and account layouts are `STALE_REVERIFY_REQUIRED` after **90 days**, and sooner if a protocol migration, program release, or failing proof suggests drift.
+- Unresolved high-risk contracts (`UNKNOWN_REQUIRES_RESEARCH`) must be rechecked before every live proof that depends on them.
+- Program IDs must be pinned to official repo/tag/commit or official docs where possible, and rechecked on any migration notice.
+- **Trigger re-verification immediately** (regardless of age) when: an adapter starts failing with auth/HTTP errors; an upstream changelog announces an endpoint/version change; a Printer live proof contradicts the module; or a program migration/relabel is observed.
+- Fixture-only status does **not** exempt a module from freshness. SB-0 showed fixture-only masks drift. Reference correctness is still required.
 - Re-verification updates §3 (last-verified) and §20 (change history); it never silently rewrites a rule without a dated entry.
 
 ---
@@ -291,18 +303,18 @@ When an agent picks up a Solana task, it MUST read the routed modules before wri
 Each disposition cites the primary authority consulted 2026-07-12 and states the Printer rule + status. No production repair is made in this lane.
 
 ### 12.1 Jupiter `lite-api.jup.ag` vs `api.jup.ag` + API key — HIGH
-**Authority (A3):** `dev.jup.ag/api-reference/swap/quote`, `developers.jup.ag/docs/portal/rate-limits`. The authoritative Swap API endpoint is `https://api.jup.ag/swap/v1/quote` and **requires an `x-api-key`**; the free tier is keyed with a 60-second rate window; the routing engine is **Metis v1**.
-**Finding:** Printer uses `lite-api.jup.ag/swap/v1/quote` (primary) and `quote-api.jup.ag/v6/quote` (legacy), with **no key header**. Current docs do not formally guarantee a keyless `lite-api` path.
-**Disposition:** `PAPER_REALISM_ONLY` + `LEGACY_OR_DEPRECATED` (lite endpoint), `UNKNOWN_REQUIRES_RESEARCH` on keyless guarantee. **Contained:** the adapter is `fixture_transport_only=True`, so Printer makes no live Jupiter call today — no live breakage, no key dependency. Rule: keep fixture-only; do not wire live Jupiter without first confirming a genuinely keyless path or accepting a free key (a free key is not a *paid* dependency, but it is a sign-up dependency and must be an explicit operator decision). Do not adopt `api.jup.ag` + key silently.
+**Authority (A3):** Current Jupiter developer docs show a Lite Swap quote path at `https://lite-api.jup.ag/swap/v1/quote`, while broader Jupiter API/portal documentation has separate API-key and Ultra/Swap lifecycle guidance.
+**Finding:** Printer uses `lite-api.jup.ag/swap/v1/quote` (primary) and `quote-api.jup.ag/v6/quote` (legacy), with no key header, and the adapter is fixture-only. SB-1.1 does not prove a stable keyless live contract across Jupiter Lite/API/Ultra docs.
+**Disposition:** `PAPER_REALISM_ONLY` + `UNKNOWN_REQUIRES_RESEARCH` for live wiring. **Contained:** Printer makes no live Jupiter call today. Rule: keep fixture-only; do not wire live Jupiter without first reconciling current Jupiter Lite/API/Ultra auth and endpoint guidance. Do not adopt an API-key path silently.
 
 ### 12.2 Jupiter Metis / Swap V1 vs V2 — MEDIUM
-**Authority (A3):** Swap API docs describe the **Metis v1 routing engine** as current. Printer consumes `outAmount`, `priceImpactPct`, `routePlan` — all present in the current Quote response.
-**Disposition:** No schema break for the fields Printer reads. Keep `PAPER_REALISM_ONLY`, fixture-only. Record Metis v1 as the pinned engine; re-verify if Jupiter announces a routing-engine change.
+**Authority (A3):** Jupiter docs distinguish Lite/API/Ultra paths and still expose Swap quote fields Printer fixtures consume (`outAmount`, `priceImpactPct`, `routePlan`).
+**Disposition:** No schema break is proven for the fixture fields Printer reads. Keep `PAPER_REALISM_ONLY`, fixture-only. Treat Metis/Lite/API/Ultra lifecycle as `UNKNOWN_REQUIRES_RESEARCH` before any live paper-realism quote lane.
 
 ### 12.3 Stale `dex:"raydium"` migration label — HIGH
-**Authority (A1/A3):** Pump `pump-public-docs` confirms a permissionless `migrate` instruction to an AMM; corroborated (A5/A7) that PumpSwap launched **2025-03-20** and now takes ~95%+ of graduations. Raydium is a rare legacy path.
-**Finding:** Printer sets `"dex":"raydium"` for `pumpfun_migration_stream` and extracts `newRaydiumPool`. This label is **wrong for the large majority of post-2025-03-20 graduations**.
-**Disposition:** `LEGACY_OR_DEPRECATED` label. Rule for SB-2+: the migration destination must be treated as **PumpSwap by default** and the literal `raydium` label must not be trusted as the venue; the actual pool venue must be confirmed on-chain (pool owner = PumpSwap program `pAMMBay…`) before it drives any memory label. No code change in this lane; recorded as the top provider-accuracy remediation.
+**Authority (A1/A3):** Pump public docs confirm a permissionless `migrate` instruction to an AMM. PumpSwap/PumpPortal references indicate PumpSwap support, but SB-1.1 did not verify an official percentage share for graduations.
+**Finding:** Printer sets `"dex":"raydium"` for `pumpfun_migration_stream` and extracts `newRaydiumPool`. The field name and label are not safe venue proof.
+**Disposition:** `LEGACY_OR_DEPRECATED` label. Rule for SB-2+: the migration destination must be treated as `UNKNOWN_UNTIL_ONCHAIN_VERIFIED`; the literal `raydium` label must not be trusted as the venue. Confirm the actual pool owner/program on-chain before it drives any memory label. No code change in this lane.
 
 ### 12.4 DexScreener legacy token endpoint — MEDIUM
 **Authority (A4):** `docs.dexscreener.com/api/reference` lists `/tokens/v1/{chainId}/{tokenAddresses}`, `/token-pairs/v1/{chainId}/{tokenAddress}`, `/token-profiles/latest/v1`. There is **no** `/latest/dex/tokens/{tokenAddresses}` endpoint. No API key; 60 req/min (pairs up to ~300).
@@ -315,7 +327,7 @@ Each disposition cites the primary authority consulted 2026-07-12 and states the
 **Disposition:** `OPTIONAL_FREE_FALLBACK`. Rule: keyless is acceptable for **low-frequency** SOL/BTC/ETH context only (Printer uses it as context, ~15–20 min cadence per clean-master-spec §3.8). Not a blocker. If cadence ever rises, a free demo key is the sanctioned upgrade — an operator decision, not automatic.
 
 ### 12.6 PumpPortal `newRaydiumPool` field accuracy — MEDIUM
-**Authority (A4):** PumpPortal real-time docs confirm the free subscribe methods but **do not publish a stable event schema**. Combined with §12.3, `newRaydiumPool` is legacy nomenclature that may carry a PumpSwap pool address.
+**Authority (A4):** PumpPortal real-time docs do not publish a stable event schema with authoritative venue semantics. SB-1.1 also did not verify keyless/auth policy as a stable official production contract.
 **Disposition:** `UNKNOWN_REQUIRES_RESEARCH`. Rule: treat `newRaydiumPool` as a **pool-address locator**, not a venue assertion; confirm venue on-chain (pool owner program). Do not rely on the field name.
 
 ### 12.7 PumpPortal event field schema (`tokenCreatedAt`, etc.) — MEDIUM
@@ -337,10 +349,10 @@ Each disposition cites the primary authority consulted 2026-07-12 and states the
 
 ### 12.11 T3 failure-provenance DB persistence gap — MEDIUM
 **Authority (A6):** V2-2AL.4B (`VERIFICATION_PARTIAL_WITH_BLOCKER`) — the 8 provenance fields survive the normalizer and governed execution result but are **not persisted**; `printer_source_failures` has no `normalized_payload_json` column.
-**Disposition:** This is **evidence-infrastructure observability**, not required evidence-generation infrastructure. Justification: the missing fields are *failure audit trace*, not age evidence; T3 success and A3 gating do not depend on them; fail-closed behavior is intact. Classify as `PARTIAL_WITH_BLOCKER` → **deferred observability hardening** (lane V2-2AL.4C), not a prerequisite for direct-signature T3 design. It *is* a prerequisite the operator may reasonably require before the next **live** T3 proof (AL.5), because live failures are where the trace matters most.
+**Disposition:** This is **observability hardening**, not required evidence-generation infrastructure. Justification: the missing fields are failure audit trace, not age evidence; T3 success and A3 gating do not depend on them; fail-closed behavior is intact. Classify as `PARTIAL_WITH_BLOCKER` -> **deferred observability hardening**, not a prerequisite for direct-signature T3 design or fixture proof. Before a bounded live T3 proof, the eight failure fields should be preserved either in durable DB storage or explicitly in the proof artifact. No migration is authorized by SB-1.1.
 
 ### 12.12 T1/T2/T3/T4/T5 definitions and current status — resolved (from SB-0.1)
-- **T1** (`DEFERRED`): highest-trust direct creation timestamp; defined in V2-2O; never implemented. Candidate future paths: RPC `getAccountInfo` blockTime of the init tx, Helius enrichment, or a canonical PumpPortal/PumpSwap creation event. A direct-signature T3 (§13) may reach T1-grade reliability; whether that is relabeled T1 or "upgraded T3" is an SB-2 naming decision.
+- **T1** (`DEFINED_HISTORICALLY_BUT_TECHNICAL_CONTRACT_UNRESOLVED`): highest-trust direct creation timestamp; defined in V2-2O; never implemented. `getAccountInfo` does not return the mint creation transaction block time, so it must not be listed as a T1 source by itself. Candidate future paths require an independently verified creation signature/transaction, an upstream canonical creation event with a timestamp, or another explicitly designed source contract. A direct-signature T3 (§13) may reach T1-grade reliability; whether that is relabeled T1 or "upgraded T3" is an SB-2 naming decision.
 - **T2** (`ACTIVE_READY` impl / not positively live-proven): PumpPortal timestamp fields; fixture-proven (82 tests); V2-2AH inconclusive.
 - **T3** (`PARTIAL_WITH_BLOCKER`): on-chain history-walk; fixture-proven (132 tests); two live proofs failed safely; AL.4A/AL.4B done; AL.5 pending.
 - **OBSERVED_LIVE_LAUNCH** (impl / not positively live-proven): PumpPortal event without timestamp; does not satisfy A3.
@@ -357,7 +369,7 @@ Each disposition cites the primary authority consulted 2026-07-12 and states the
 
 **Design premise (Rule 5, §9):** the PumpPortal `signature` is **locator evidence only**. Confirmed by A1: `pump-public-docs` describes a `create` instruction but carries **no timestamp**; therefore the authoritative creation time can only come from Solana RPC independently proving the exact mint-initialization transaction and reading its `blockTime`.
 
-**Direct-signature T3 (concept, not implemented here):** instead of walking `getSignaturesForAddress` history (which exhausted the page cap on high-history mints in V2-2AL.3), start from a **known creation signature** (from a PumpPortal launch/create event, or the oldest signature page for the mint), call `getTransaction` once (`jsonParsed`, `confirmed`), and require that the transaction **independently contains** either an SPL `initializeMint`/`initializeMint2` on the target mint or the Pump `create` instruction (program `6EF8…`) on the target mint. Only then is its `blockTime` accepted as creation time. If RPC does not confirm the exact instruction on the exact mint, the signature is rejected and the result is fail-closed (no age).
+**Direct-signature T3 (concept, not implemented here):** instead of walking `getSignaturesForAddress` history (which exhausted the page cap on high-history mints in V2-2AL.3), start from a **known creation signature** (from a PumpPortal launch/create event, or the oldest signature page for the mint), call `getTransaction` once (`jsonParsed`, `confirmed` or `finalized` per the module policy), and require that the transaction **independently contains** either an SPL `initializeMint`/`initializeMint2` on the target mint or the Pump `create` instruction (program `6EF8...`) on the target mint. The design must handle top-level and inner instructions, parsed and compiled forms, versioned transactions, and address lookup tables where relevant. Only then is its `blockTime` accepted as creation time. If RPC does not confirm the exact instruction on the exact mint, the signature is rejected and the result is fail-closed (no age).
 
 **Minimum module set that must exist and be authored before direct-signature T3 can be safely designed:**
 
@@ -442,18 +454,99 @@ Commit contains **only** this architecture report:
 
 ---
 
+## 18A. SB-1.1 Independent Verification and Correction Record
+
+**Lane:** SB-1.1 - Independent Solana Source-Stack Architecture Verification and Correction
+**Type:** Verification/correction only. No production code, tests, migrations, DB mutation, live RPC/API calls, discovery, scheduler/runtime, source-stack adoption, or AGENTS.md modification.
+**Executor:** Codex standard/balanced
+**Date:** 2026-07-12
+**Target SB-1 commit verified:** `606287e Add SB-1 Solana builder source-stack architecture`
+**Verdict:** `ARCHITECTURE_VERIFICATION_PASS_WITH_BLOCKERS`
+
+### 18A.1 Scope and boundaries
+
+SB-1.1 verifies and corrects the SB-1 report only. It does not create files under `docs/solana-builder-source-of-truth/`, does not adopt the source stack, does not resume T3, does not unlock A3, does not resolve staged/native 15m, and does not allow V2-3.
+
+### 18A.2 Official authorities verified
+
+- Solana clusters and RPC documentation: `https://solana.com/docs/references/clusters`, `https://solana.com/docs/rpc`, `https://solana.com/docs/rpc/http/gettransaction`
+- SPL Token official repository: `https://github.com/solana-program/token`
+- Token-2022 official repository: `https://github.com/solana-program/token-2022`
+- Pump.fun public docs: `https://github.com/pump-fun/pump-public-docs`
+- PumpPortal real-time and PumpSwap docs: `https://pumpportal.fun/data-api/real-time/`, `https://pumpportal.fun/data-api/pump-swap/`
+- Jupiter developer docs: `https://dev.jup.ag/docs/swap-api/get-quote`
+- DexScreener API docs: `https://docs.dexscreener.com/api/reference`
+
+### 18A.3 Corrections made
+
+1. **Authority model corrected.** Upstream authorities define external protocol/API contracts. Printer code, tests, migrations, and adopted docs define current Printer implementation. A disagreement is now a documented implementation gap; neither source silently rewrites the other.
+2. **Status model corrected.** The single status vocabulary is superseded by dimensions: `upstream_lifecycle`, `printer_readiness`, `printer_role`, `access_policy`, and `v1_permission`.
+3. **Freshness policy corrected.** Provider endpoint/auth/schema facts require 30-day freshness before live proof; program layouts/IDL/instruction facts use 90-day freshness plus change triggers; unresolved high-risk contracts require recheck before each dependent live proof.
+4. **Solana cluster endpoint corrected.** Official docs now list `https://api.mainnet.solana.com`; Printer currently uses `https://api.mainnet-beta.solana.com`. This is an implementation gap/reverify item, not an automatic code change.
+5. **Token-2022 authority corrected.** The canonical module should cite `https://github.com/solana-program/token-2022`, not the archived `solana-labs/solana-program-library` path.
+6. **Jupiter lifecycle/auth corrected.** SB-1.1 no longer states a solved `api.jup.ag` key rule for Printer. Current docs show `lite-api.jup.ag`, but Lite/API/Ultra auth guidance remains `UNKNOWN_REQUIRES_RESEARCH` before live wiring. Printer remains fixture-only and paper-realism-only.
+7. **PumpPortal auth corrected.** SB-1.1 no longer equates subscription methods with a guaranteed no-key production policy. PumpPortal auth/keyless status remains `UNKNOWN_REQUIRES_RESEARCH`.
+8. **Pump migration venue corrected.** The unsupported PumpSwap graduation-percentage statement is removed. `newRaydiumPool` is a pool-address locator only. `dex:"raydium"` is label context only. Actual venue is unknown until on-chain owner/program verification.
+9. **T1 definition corrected.** `getAccountInfo` does not return creation-transaction block time and must not be described as a T1 source by itself. T1 is `DEFINED_HISTORICALLY_BUT_TECHNICAL_CONTRACT_UNRESOLVED`.
+10. **T3 provenance status corrected.** Failure-provenance persistence is observability hardening. It does not block direct-signature design or fixture proof, but the eight failure fields should be preserved in durable storage or an explicit proof artifact before bounded live proof.
+11. **Direct-signature T3 requirements corrected.** The design must handle top-level and inner instructions, parsed and compiled forms, versioned transactions, and address lookup tables where relevant.
+
+### 18A.4 Remaining unknowns and blockers
+
+- Jupiter Lite/API/Ultra live quote auth and lifecycle contract remains `UNKNOWN_REQUIRES_RESEARCH`.
+- PumpPortal event schema stability remains `UNKNOWN_REQUIRES_RESEARCH`.
+- PumpPortal auth/keyless production policy remains `UNKNOWN_REQUIRES_RESEARCH`.
+- `newRaydiumPool` venue accuracy remains `UNKNOWN_REQUIRES_RESEARCH` until on-chain owner/program verification.
+- Direct-signature T3 remains undesigned and unimplemented.
+- T3 failure-provenance durable persistence remains a live-proof auditability concern.
+- Staged/native 15m remains `PARTIAL - DEFERRED, NOT RESOLVED`.
+
+### 18A.5 Final module count and T3-critical module set
+
+The final proposed module count remains **21**:
+
+- 5 Solana core modules
+- 4 protocol authority modules
+- 10 provider API contract modules
+- 2 cross-cutting governance/evidence modules
+
+The T3-critical module set remains **8**:
+
+1. `solana-core-rpc-reference.md`
+2. `solana-transaction-instruction-parsing.md`
+3. `solana-spl-token-program.md`
+4. `solana-token-2022-program.md`
+5. `pump-fun-bonding-curve-protocol.md`
+6. `pumpportal-api-contract.md`
+7. `token-age-evidence-tier-registry.md`
+8. `source-governor-evidence-rules.md`
+
+### 18A.6 Locked-state confirmation
+
+SB-1.1 does not adopt the source stack and does not unlock any downstream capability. T3 remains paused. A3 remains locked. Staged/native 15m remains deferred. V2-3 remains paused. Retrieval, paper decisions, BUY/SELL/HOLD, paper positions, trade events, paper audits, PnL, runtime expansion, scheduler expansion, wallet/private-key/signing/live execution, paid APIs, scoring/ranking/confidence/weighted logic, embeddings, and vectors remain locked.
+
+### 18A.7 Exact next lane
+
+If the operator accepts this corrected architecture, the exact next lane is:
+
+`SB-2 - Author Solana Core Source-Stack Modules`
+
+SB-2 must still be documentation/module authoring only unless the operator explicitly approves a narrower implementation lane.
+
+---
+
 ## 19. Functionality Risks / Setbacks / Efficiency Blockers
 
 | Problem | Why it matters | How it could reduce memory quality / money-usefulness | Failure mode | Required mitigation | Proof/test needed | Stop condition |
 |---|---|---|---|---|---|---|
-| Stale `dex:"raydium"` label persists | Mislabels migration venue for ~95%+ post-2025-03-20 graduations | Wrong venue evidence → dirty migration memory | False continuity between token and pool | §12.3 venue-confirmation rule; treat label as PumpSwap-default; confirm pool owner on-chain | On-chain pool-owner check design (SB-3) | Label trusted as venue without on-chain confirmation |
-| Jupiter live wiring with wrong endpoint/key | `lite-api` keyless not guaranteed; `api.jup.ag` needs key | Failed quotes → missing exit-realism evidence, or accidental key/paid dependency | Broken paper-realism path or lock violation | Keep fixture-only; operator-explicit before any live/keyed wiring | §12.1 disposition honored in jupiter module | Live Jupiter call added without operator sign-off |
+| Stale `dex:"raydium"` label persists | Mislabels migration venue because the field/label is not venue proof | Wrong venue evidence -> dirty migration memory | False continuity between token and pool | §12.3 venue-confirmation rule; treat venue as unknown until on-chain owner/program verification | On-chain pool-owner check design (SB-3) | Label trusted as venue without on-chain confirmation |
+| Jupiter live wiring with unresolved endpoint/key contract | Lite/API/Ultra auth and lifecycle guidance needs recheck | Failed quotes -> missing exit-realism evidence, or accidental key/paid dependency | Broken paper-realism path or lock violation | Keep fixture-only; operator-explicit before any live/keyed wiring | §12.1 disposition honored in jupiter module | Live Jupiter call added without operator sign-off |
 | DexScreener legacy token endpoint used live | `/latest/dex/tokens/` not in current docs | Silent 404 → missing token evidence, dirty intake | Discovery/intake gaps | Migrate to `/tokens/v1/` before live token calls | §12.4 rule in dexscreener module | Legacy endpoint called live |
 | PumpPortal schema drift | No official event schema | T2 age evidence silently breaks | Fake/absent token age | Treat T2 as best-effort; prefer T3; locator-vs-proof rule | §12.7 in pumpportal module | T2 trusted without schema contract |
 | PumpPortal signature treated as proof | Pump docs carry no timestamp | Fake creation time → fake known-age setup | A3 gated on bad age | §9 Rule 5: RPC must confirm exact init tx | §13 direct-signature design | Signature accepted without RPC confirmation |
-| T3 DB-persistence gap unaddressed before live proof | Failure trace lost at persistence | Live T3 failures hard to diagnose | Repeated blind live-proof failures | Close AL.4C before AL.5 live proof | V2-2AL.4C verification | Live AL.5 run before AL.4C |
+| T3 failure-provenance gap unaddressed before live proof | Failure trace may be lost outside direct proof artifacts | Live T3 failures hard to diagnose | Repeated blind live-proof failures | Preserve eight failure fields either in durable storage or explicit live-proof artifact | V2-2AL.4C verification or proof-artifact acceptance | Live proof proceeds without enough failure trace |
 | Stack treated as a competing build order | Could reorder/skip V2 lanes | Roadmap drift, premature unlocks | False readiness | Subordination statement + adoption gate (§11) | SB-1.1 verification | Any module introduces a lane or unlock |
-| Fixture-only masks further drift | Endpoints change unnoticed | Reference rot → future live breakage | Silent staleness | 90-day freshness + event triggers (§10) | Freshness re-verify log | Module older than 90 days used for live work |
+| Fixture-only masks further drift | Endpoints change unnoticed | Reference rot -> future live breakage | Silent staleness | Risk-based freshness: 30 days for provider endpoint/auth/schema, 90 days for program layouts, event triggers anytime (§10) | Freshness re-verify log | Stale module used for live work |
 | Helius/CoinGecko key creep | Free-but-keyed tiers | Sign-up/paid dependency creep vs V1 law | Lock violation | Keep public RPC primary; keyless CoinGecko; key = operator decision | §12.5/§12.9 dispositions | Key added as default dependency |
 | Over-inclusion of popular protocols | Meteora/Orca/Serum not used | Wasted modules, false coverage | Scope creep | Inclusion/exclusion filter (§7) | Module-count check | Unused protocol module added |
 | Metaplex metadata gap | Name/symbol from DEX only | Impersonation/copycat risk in safety memory | Weak safety labels | Deferred note in solana-core (§12.13) | SB-3 safety review | Name/symbol trusted as verified on-chain |
@@ -464,9 +557,11 @@ Commit contains **only** this architecture report:
 
 ```text
 VERDICT: ARCHITECTURE_COMPLETE_WITH_BLOCKERS
+SB_1_1_VERDICT: ARCHITECTURE_VERIFICATION_PASS_WITH_BLOCKERS
 LANE: SB-1
 EXECUTOR: Claude Opus 4.8
 DATE: 2026-07-12
+SB_1_1_EXECUTOR: Codex standard/balanced
 
 AUTHORITY_HIERARCHY: A1 deployed-program/official repo > A2 IDL/official SDK >
   A3 protocol dev docs > A4 provider API docs > A5 changelog/release notes >
@@ -475,10 +570,10 @@ AUTHORITY_HIERARCHY: A1 deployed-program/official repo > A2 IDL/official SDK >
 UPSTREAM_AUTHORITIES_REVIEWED (primary sources, 2026-07-12):
   - Solana RPC/commitment/clusters (solana.com/docs)
   - SPL Token (github.com/solana-program/token)
-  - Token-2022 (solana-program-library/token/program-2022)
+  - Token-2022 (github.com/solana-program/token-2022)
   - Pump.fun program (github.com/pump-fun/pump-public-docs) — program 6EF8…
   - PumpSwap (pumpportal.fun/data-api/pump-swap) — program pAMMBay…; launched 2025-03-20
-  - Jupiter Swap API (dev.jup.ag / developers.jup.ag) — api.jup.ag needs x-api-key; Metis v1
+  - Jupiter Swap API (dev.jup.ag) — lite/api/ultra auth and lifecycle need recheck
   - DexScreener (docs.dexscreener.com) — /tokens/v1 current; /latest/dex/tokens legacy
   - CoinGecko (docs.coingecko.com) — keyless public API officially supported
   - Helius (helius.dev/docs) — free tier requires free key; 10 RPC req/s
@@ -488,19 +583,20 @@ MODULE_TREE: docs/solana-builder-source-of-truth/ (21 modules: 5 core, 4 protoco
   10 provider, 2 cross-cutting) with protocol/provider separation
 
 MAJOR_DECISIONS:
-  - Authority order A1–A7; upstream overrides Printer code; silence => UNKNOWN_REQUIRES_RESEARCH
+  - Authority order A1-A7; upstream defines external contracts; Printer code defines current implementation; disagreement => documented implementation gap
   - Locator-vs-proof rule binds all evidence tiers (PumpPortal signature = locator only)
-  - dex:"raydium" label = LEGACY_OR_DEPRECATED; venue is PumpSwap-default, confirm on-chain
-  - Jupiter lite-api = PAPER_REALISM_ONLY + LEGACY; keyless status UNKNOWN; fixture-only contains it
+  - dex:"raydium" label = LEGACY_OR_DEPRECATED; venue is UNKNOWN until on-chain verified
+  - Jupiter lite-api = PAPER_REALISM_ONLY; live auth/lifecycle UNKNOWN_REQUIRES_RESEARCH; fixture-only contains it
   - CoinGecko keyless = OPTIONAL_FREE_FALLBACK (blocker downgraded to LOW)
   - Helius = REGISTERED_NOT_READY/DEFERRED (needs free key; public RPC stays primary)
   - confirmed commitment kept for T3; finalized optional hardening
-  - T3 DB-persistence gap = deferred observability hardening (AL.4C before AL.5 live)
-  - 20-section module template; 90-day freshness + event triggers; subordinate to active stack
+  - T3 failure-provenance gap = observability hardening; live proof needs durable trace or explicit proof artifact
+  - 20-section module template; risk-based freshness; subordinate to active stack
 
 UNRESOLVED (UNKNOWN_REQUIRES_RESEARCH):
   - Jupiter lite-api.jup.ag keyless guarantee
   - PumpPortal event schema stability
+  - PumpPortal auth/keyless production policy
   - newRaydiumPool field venue accuracy (confirm on-chain)
 
 FIRST_MODULES_FOR_T3 (8): solana-core-rpc-reference, solana-transaction-instruction-parsing,
@@ -517,7 +613,7 @@ A3_STATUS: LOCKED
 V2_3_STATUS: PAUSED
 T3_STATUS: PAUSED (direct-signature path undesigned; AL.5 pending)
 STAGED_NATIVE_15M_BLOCKER: PARTIAL - DEFERRED, NOT RESOLVED
-NEXT_LANE: SB-1.1 — Independent Solana Source-Stack Architecture Verification
+NEXT_LANE: SB-2 - Author Solana Core Source-Stack Modules
 ```
 
 ---
@@ -526,7 +622,7 @@ NEXT_LANE: SB-1.1 — Independent Solana Source-Stack Architecture Verification
 
 - Solana RPC / commitment / clusters — https://solana.com/docs/rpc , https://solana.com/docs/references/clusters , https://solana.com/docs/rpc/http/gettransaction
 - SPL Token — https://github.com/solana-program/token
-- Token-2022 — https://github.com/solana-labs/solana-program-library/tree/master/token/program-2022
+- Token-2022 — https://github.com/solana-program/token-2022
 - Pump.fun program — https://github.com/pump-fun/pump-public-docs/blob/main/docs/PUMP_PROGRAM_README.md
 - PumpSwap — https://pumpportal.fun/data-api/pump-swap/
 - Jupiter Swap API — https://dev.jup.ag/api-reference/swap/quote , https://developers.jup.ag/docs/portal/rate-limits
