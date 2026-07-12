@@ -70,6 +70,7 @@ from printer_v1.discovery.selection_batch import (
     BUCKET_A1,
     BUCKET_D1,
     build_age_activity_report,
+    build_classifier_quota_view,
     build_field_completeness_report,
     build_pair_age_context_report,
     classify_same_token_new_pair,
@@ -79,7 +80,6 @@ from printer_v1.discovery.selection_batch import (
     filter_within_response_duplicates,
     fingerprint_change_is_meaningful,
     STNP_MIGRATION,
-    validate_batch_quota,
 )
 from printer_v1.discovery.contracts import DiscoveryChannelLabel, DiscoveryOutputAction
 from printer_v1.discovery.discovery import process_discovery_payload
@@ -2574,6 +2574,12 @@ def build_discover_candidates_once_payload(
     _quota_supplement: list[dict[str, Any]] = []
     _quota_ok: bool = True
     _quota_violations: list[str] = []
+    _group_a_quota_report: dict[str, Any] = {
+        "quota_ok": True,
+        "quota_violations": [],
+        "selected_candidates": [],
+        "rejected_candidates": [],
+    }
     _market_15m_enrichment_report: dict[str, Any] = {
         "status": "NOT_REQUESTED",
         "requests_attempted": 0,
@@ -2636,45 +2642,23 @@ def build_discover_candidates_once_payload(
 
         # V2-2M: quota supplement — check batch diversity; draw from audit_only_pool if needed.
         # Quota check is informational only; audit-only candidates never enter the tracking path.
-        _quota_view: list[dict[str, Any]] = []
-        for _c in accepted:
-            _qb, _ = assign_bucket(_c)
-            _quota_view.append({
-                "token_mint": _c.get("token_mint", ""),
-                "pair_address": _c.get("pair_address", ""),
-                "primary_bucket": _qb,
-                "tracking_lane": classify_discovery_candidate(_c).discovery_action.value,
-                "candidate_kind": "ACTIVE_TRACKING",
-            })
-        _quota_ok, _quota_violations = validate_batch_quota(_quota_view)
-        if not _quota_ok and len(_quota_view) >= 6:
-            _needs_watch = "MISSING_WATCH_ONLY_REQUIRED_FOR_6PLUS_BATCH" in _quota_violations
-            _needs_d1 = "MISSING_D1_DEAD_TOKEN_REQUIRED_FOR_6PLUS_BATCH" in _quota_violations
-            for _ao in audit_only_pool:
-                if not _needs_watch and not _needs_d1:
-                    break
-                _ao_lane = _ao.get("tracking_lane", "")
-                _ao_bucket = _ao.get("primary_bucket", "")
-                if _needs_watch and _ao_lane == "WATCH_ONLY":
-                    _quota_supplement.append(_ao)
-                    _needs_watch = False
-                    if _ao_bucket == BUCKET_D1:  # D1 candidate satisfies both violations at once
-                        _needs_d1 = False
-                elif _needs_d1 and _ao_bucket == BUCKET_D1:
-                    _quota_supplement.append(_ao)
-                    _needs_d1 = False
-            if _quota_supplement:
-                _supp_items = [
-                    {
-                        "token_mint": _ao.get("token_mint", ""),
-                        "pair_address": _ao.get("pair_address", ""),
-                        "primary_bucket": _ao.get("primary_bucket", ""),
-                        "tracking_lane": _ao.get("tracking_lane", ""),
-                        "candidate_kind": "AUDIT_ONLY",
-                    }
-                    for _ao in _quota_supplement
-                ]
-                _quota_ok, _quota_violations = validate_batch_quota(_quota_view + _supp_items)
+        _group_a_quota_report = build_classifier_quota_view(
+            accepted,
+            audit_only_pool,
+            max_items=min(10, max(1, args.max_candidates)),
+        )
+        _quota_ok = bool(_group_a_quota_report["quota_ok"])
+        _quota_violations = list(_group_a_quota_report["quota_violations"])
+        _selected_audit_identities = {
+            (item.get("token_mint"), item.get("pair_address"))
+            for item in _group_a_quota_report["selected_candidates"]
+            if item.get("candidate_kind") == "AUDIT_ONLY"
+        }
+        _quota_supplement = [
+            candidate for candidate in audit_only_pool
+            if (candidate.get("token_mint"), candidate.get("pair_address"))
+            in _selected_audit_identities
+        ]
 
         if accepted:
             # V2-2M active-tracking guard: audit_only candidates must never reach persistence.
@@ -2858,6 +2842,7 @@ def build_discover_candidates_once_payload(
         "t3_token_age_enrichment_report": _t3_token_age_enrichment_report,
         # V2-2M audit-only pool and quota supplement reporting hook.
         "audit_only_report": _audit_only_report,
+        "group_a_quota_report": _group_a_quota_report,
         "source_channel": _pr["source_channel"] if _pr else None,
         "source_channel_reason": _pr["source_channel_reason"] if _pr else None,
         "accepted_candidates": [

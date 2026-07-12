@@ -1046,6 +1046,9 @@ def validate_batch_quota(
       - No duplicate token mints.
       - No duplicate pair addresses.
       - If 6+ items: at least 1 D1 (DEAD_TOKEN).
+      - If 5+ items: at least 1 Group A item.
+      - Group A: no more than 4 items or 40 percent of the batch.
+      - If 6+ items: Group B is at least 30 percent of the batch.
       - If Group A present: at least 1 trap/failure/wick bucket (A2/A3/A4).
       - A1 (FAST_PUMP_FOLLOW) cap: max 2.
       - If 6+ items: at least 1 WATCH_ONLY token.
@@ -1069,6 +1072,14 @@ def validate_batch_quota(
     if a1_count > 2:
         violations.append("WINNER_CAP_EXCEEDED_A1_MAX_2")
 
+    group_a_count = sum(1 for bucket in buckets if bucket in GROUP_A_BUCKETS)
+    if n >= 5 and group_a_count == 0:
+        violations.append("MISSING_GROUP_A_REQUIRED_FOR_5PLUS_BATCH")
+    if group_a_count > 4:
+        violations.append("GROUP_A_TOTAL_CAP_EXCEEDED_MAX_4")
+    if n and group_a_count * 100 > n * 40:
+        violations.append("GROUP_A_SHARE_EXCEEDED_MAX_40_PERCENT")
+
     group_a_present = any(b in GROUP_A_BUCKETS for b in buckets)
     has_trap_failure = any(b in TRAP_FAILURE_BUCKETS for b in buckets)
     if group_a_present and not has_trap_failure:
@@ -1082,6 +1093,13 @@ def validate_batch_quota(
         has_group_b_or_d = any(b in GROUP_B_BUCKETS or b in GROUP_D_BUCKETS for b in buckets)
         if not has_group_b_or_d:
             violations.append("NO_GROUP_B_OR_D_TOKEN_IN_BATCH")
+        if not any(b in GROUP_B_BUCKETS for b in buckets):
+            violations.append("MISSING_GROUP_B_REQUIRED_FOR_6PLUS_BATCH")
+        group_b_count = sum(1 for bucket in buckets if bucket in GROUP_B_BUCKETS)
+        if group_b_count * 100 < n * 30:
+            violations.append("GROUP_B_SHARE_BELOW_MIN_30_PERCENT")
+        if not any(b in {BUCKET_B2, BUCKET_B4} for b in buckets):
+            violations.append("MISSING_GROUP_B_DECAY_REQUIRED_FOR_6PLUS_BATCH")
 
     if any(b in GROUP_F_BUCKETS for b in buckets):
         if min_corpus_episodes < GROUP_F_MINIMUM_CORPUS_EPISODES:
@@ -1090,6 +1108,148 @@ def validate_batch_quota(
             )
 
     return len(violations) == 0, violations
+
+
+def build_classifier_quota_view(
+    active_candidates: list[dict[str, Any]],
+    audit_only_candidates: list[dict[str, Any]],
+    *,
+    max_items: int = 10,
+) -> dict[str, Any]:
+    """Compose a bounded quota view from classifier-derived buckets only.
+
+    The function is pure. Active candidates are expected to have passed the
+    existing discovery, dedup, lifecycle, and cooldown gates. Audit-only
+    candidates may satisfy only the D1/WATCH_ONLY quota dimensions. Any
+    caller-supplied ``primary_bucket`` is ignored.
+    """
+    if max_items < 1 or max_items > 10:
+        raise ValueError("max_items must be between 1 and 10")
+
+    eligible: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    seen_mints: set[str] = set()
+    seen_pairs: set[str] = set()
+
+    def prepare(candidate: dict[str, Any], candidate_kind: str) -> None:
+        clean = {key: value for key, value in candidate.items() if key != "primary_bucket"}
+        mint = str(clean.get("token_mint") or "").strip()
+        pair = str(clean.get("pair_address") or "").strip()
+        if not mint or not pair or clean.get("source_response_id") is None:
+            rejected.append({**clean, "candidate_kind": candidate_kind, "rejection_reason": REJECTION_NO_SOURCE_TRACE})
+            return
+        if mint in seen_mints:
+            rejected.append({**clean, "candidate_kind": candidate_kind, "rejection_reason": REJECTION_MINT_DUPLICATE})
+            return
+        if pair in seen_pairs:
+            rejected.append({**clean, "candidate_kind": candidate_kind, "rejection_reason": REJECTION_PAIR_DUPLICATE})
+            return
+        if clean.get("source_status") not in {"COMPLETE", "PARTIAL"} or clean.get("data_quality_label") not in {
+            "CLEAN_DATA", "ACCEPTABLE_PARTIAL_DATA"
+        }:
+            rejected.append({**clean, "candidate_kind": candidate_kind, "rejection_reason": REJECTION_STALE_SOURCE_DATA})
+            return
+
+        bucket, bucket_name = assign_bucket(clean)
+        if candidate_kind == "AUDIT_ONLY":
+            if not clean.get("audit_only") or clean.get("tracking_lane") != "WATCH_ONLY":
+                rejected.append({**clean, "candidate_kind": candidate_kind, "rejection_reason": "AUDIT_ONLY_CONTRACT_INVALID"})
+                return
+        seen_mints.add(mint)
+        seen_pairs.add(pair)
+        eligible.append({
+            **clean,
+            "candidate_kind": candidate_kind,
+            "primary_bucket": bucket,
+            "bucket_name": bucket_name,
+        })
+
+    for candidate in active_candidates:
+        if candidate.get("audit_only"):
+            rejected.append({**candidate, "rejection_reason": "AUDIT_ONLY_ACTIVE_TRACKING_BLOCKED"})
+            continue
+        prepare(candidate, "ACTIVE_TRACKING")
+    for candidate in audit_only_candidates:
+        prepare(candidate, "AUDIT_ONLY")
+
+    target_size = min(max_items, len(eligible))
+    group_a_limit = min(4, (target_size * 40) // 100)
+    group_b_minimum = (target_size * 30 + 99) // 100 if target_size >= 6 else 0
+    selected: list[dict[str, Any]] = []
+
+    def take(candidate: dict[str, Any]) -> None:
+        if candidate not in selected and len(selected) < target_size:
+            selected.append(candidate)
+
+    audit_watch = [c for c in eligible if c["candidate_kind"] == "AUDIT_ONLY"]
+    audit_d1 = [c for c in audit_watch if c["primary_bucket"] == BUCKET_D1]
+    active = [c for c in eligible if c["candidate_kind"] == "ACTIVE_TRACKING"]
+    traps = [c for c in active if c["primary_bucket"] in TRAP_FAILURE_BUCKETS]
+    winners = [c for c in active if c["primary_bucket"] == BUCKET_A1]
+    non_a = [c for c in active if c["primary_bucket"] not in GROUP_A_BUCKETS]
+    group_b_or_d = [c for c in non_a if c["primary_bucket"] in GROUP_B_BUCKETS or c["primary_bucket"] in GROUP_D_BUCKETS]
+    group_b_decay = [c for c in non_a if c["primary_bucket"] in {BUCKET_B2, BUCKET_B4}]
+
+    if target_size >= 6 and audit_d1:
+        take(audit_d1[0])
+    elif target_size >= 6 and audit_watch:
+        take(audit_watch[0])
+    if group_b_decay:
+        take(group_b_decay[0])
+    elif group_b_or_d:
+        take(group_b_or_d[0])
+    for candidate in (c for c in non_a if c["primary_bucket"] in GROUP_B_BUCKETS):
+        if sum(1 for item in selected if item["primary_bucket"] in GROUP_B_BUCKETS) >= group_b_minimum:
+            break
+        take(candidate)
+    if group_a_limit and traps:
+        take(traps[0])
+    if group_a_limit > 1 and winners:
+        take(winners[0])
+    for candidate in non_a:
+        take(candidate)
+    for candidate in traps[1:]:
+        if sum(1 for item in selected if item["primary_bucket"] in GROUP_A_BUCKETS) >= group_a_limit:
+            break
+        take(candidate)
+    for candidate in winners[1:2]:
+        if sum(1 for item in selected if item["primary_bucket"] in GROUP_A_BUCKETS) >= group_a_limit:
+            break
+        take(candidate)
+    selected_ids = {(item["token_mint"], item["pair_address"]) for item in selected}
+    for candidate in eligible:
+        if (candidate["token_mint"], candidate["pair_address"]) in selected_ids:
+            continue
+        reason = REJECTION_WINNER_CAP_EXCEEDED if candidate["primary_bucket"] == BUCKET_A1 else REJECTION_BATCH_QUOTA_EXCEEDED
+        rejected.append({**candidate, "rejection_reason": reason})
+
+    quota_items = [
+        {
+            "token_mint": item["token_mint"],
+            "pair_address": item["pair_address"],
+            "primary_bucket": item["primary_bucket"],
+            "tracking_lane": item.get("tracking_lane"),
+            "candidate_kind": item["candidate_kind"],
+        }
+        for item in selected
+    ]
+    quota_ok, violations = validate_batch_quota(quota_items)
+    return {
+        "quota_ok": quota_ok,
+        "quota_violations": violations,
+        "candidate_pool_count": len(active_candidates) + len(audit_only_candidates),
+        "eligible_count": len(eligible),
+        "selected_count": len(selected),
+        "rejected_count": len(rejected),
+        "selected_active_tracking_count": sum(1 for item in selected if item["candidate_kind"] == "ACTIVE_TRACKING"),
+        "selected_audit_only_count": sum(1 for item in selected if item["candidate_kind"] == "AUDIT_ONLY"),
+        "selected_by_bucket": {
+            bucket: sum(1 for item in selected if item["primary_bucket"] == bucket)
+            for bucket in sorted({item["primary_bucket"] for item in selected})
+        },
+        "selected_candidates": selected,
+        "rejected_candidates": rejected,
+    }
 
 
 # ---------------------------------------------------------------------------

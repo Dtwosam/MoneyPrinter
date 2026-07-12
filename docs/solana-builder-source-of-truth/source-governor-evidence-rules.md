@@ -121,6 +121,21 @@ evidence fails closed. Source payloads cannot self-assert internal `a4_*`
 evidence fields. A4 remains discovery/selection metadata only and cannot create
 memory, retrieval, paper decisions, positions, trades, audits, or PnL.
 
+## Classifier-Derived Group A Quota Handoff
+
+Group A quota membership is derived by Printer's categorical classifier after
+governed evidence enrichment. A source payload or caller-supplied bucket marker
+cannot assert A2, A3, or A4. A3 requires accepted token-age provenance and the
+existing market conditions. A4 requires the exact prior/current governed
+evidence contract above.
+
+For batches of five or more, Group A must be present, may not exceed four items
+or 40 percent of the batch, and must include at least one A2, A3, or A4 when
+Group A is present. Existing Group B, Group D, D1, WATCH_ONLY, deduplication,
+cooldown, rotation, and provenance rules remain additive. Audit-only D1 or
+WATCH_ONLY evidence may satisfy its quota dimension but must not enter active
+tracking or create scheduler work.
+
 ## Governor Enforcement Responsibilities
 
 The Source Governor must:
