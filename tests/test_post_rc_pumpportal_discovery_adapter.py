@@ -422,18 +422,17 @@ class PumpPortalCLIDiscoveryTests(unittest.TestCase):
         self.assertEqual(result["source_channel"], DiscoveryChannelLabel.PUMPFUN_NEW_TOKEN.value)
         self.assertEqual(result["source_channel_reason"], "pumpportal_launch_stream")
 
-    def test_migration_stream_not_ready_in_plan(self):
-        # V2-2AB: pumpfun_migration_stream is NOT_READY — no live migration transport exists.
-        # The plan item is included for reporting only; no execution occurs for migration.
-        # (This test was previously test_migration_stream_records_pumpfun_migration_channel;
-        # updated because migration was NOT_READY before and after V2-2AB.)
+    def test_migration_stream_records_pumpfun_migration_channel(self):
+        # Stage 3: pumpfun_migration_stream is now READY — a bounded live
+        # subscribeMigration transport is wired (build_pumpportal_migration_transport),
+        # and an operator-provided fixture transport executes through the pipeline,
+        # recording the PUMPFUN_MIGRATION channel.
         result = build_discover_candidates_once_payload(
             _cli_args(self.db_path, request_kind="pumpfun_migration_stream"),
             transport=lambda ctx: _migration_payload(),
         )
-        # Migration is NOT_READY and max_source_requests=1, so it is the only plan item
-        # and is skipped. source_channel comes from primary (first executed) — None here.
-        self.assertIsNone(result["source_channel"])
+        self.assertEqual(result["source_channel"], DiscoveryChannelLabel.PUMPFUN_MIGRATION.value)
+        self.assertEqual(result["source_channel_reason"], "pumpportal_migration_stream")
 
     def test_migration_candidate_accepted_when_liquidity_above_floor(self):
         result = build_discover_candidates_once_payload(

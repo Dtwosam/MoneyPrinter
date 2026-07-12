@@ -22,6 +22,20 @@ from printer_v1.sources.contracts import (
 
 
 DEXSCREENER_SOURCE_NAME = "dexscreener"
+
+# Solana infrastructure / native-quote mints. A DexScreener pair whose
+# baseToken.address resolves to one of these is an infrastructure/quote asset
+# (WSOL / USDC / USDT), never a memecoin discovery target. These must be
+# excluded before a candidate is emitted so an infrastructure mint can never
+# occupy a memecoin tracking slot. This mirrors
+# geckoterminal._SOLANA_NATIVE_QUOTE_MINTS exactly. Source of truth:
+# docs/solana-builder-source-of-truth/solana-mint-addresses.md
+_SOLANA_INFRASTRUCTURE_MINTS = frozenset({
+    "So11111111111111111111111111111111111111112",   # WSOL (Wrapped SOL / native SOL)
+    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",  # USDC (Circle official Solana mainnet)
+    "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",  # USDT / USDt (Tether Solana)
+})
+
 DEXSCREENER_SMOKE_URL = "https://api.dexscreener.com/latest/dex/search?q=SOL"
 DEXSCREENER_PAIR_URL_TEMPLATE = "https://api.dexscreener.com/latest/dex/pairs/solana/{pair_address}"
 DEXSCREENER_TOKEN_URL_TEMPLATE = "https://api.dexscreener.com/latest/dex/tokens/{token_mint}"
@@ -274,14 +288,40 @@ def normalize_dexscreener_fixture_result(
             }
         )
 
-    if not any(item.get("chain") == "solana" and item.get("pair_address") and item.get("token_mint") for item in normalized_pairs):
+    # Categorical productivity/safety filter (Stage 2 repair): drop non-Solana
+    # pairs and infrastructure quote-mints at the source boundary so the
+    # downstream candidate stream carries only Solana memecoin candidates.
+    # Every excluded pair is recorded with an explicit categorical reason —
+    # never silently dropped. No scores, ranks, or weighted logic are applied.
+    kept_pairs: list[dict[str, Any]] = []
+    excluded_pairs: list[dict[str, Any]] = []
+    for item in normalized_pairs:
+        exclusion_reason: str | None = None
+        if item.get("chain") != "solana":
+            exclusion_reason = "non_solana_pair"
+        elif not item.get("pair_address") or not item.get("token_mint"):
+            exclusion_reason = "missing_pair_or_mint_identity"
+        elif item.get("token_mint") in _SOLANA_INFRASTRUCTURE_MINTS:
+            exclusion_reason = "infrastructure_quote_mint"
+        if exclusion_reason:
+            excluded_pairs.append({
+                "chain": item.get("chain"),
+                "pair_address": item.get("pair_address"),
+                "token_mint": item.get("token_mint"),
+                "symbol": item.get("symbol"),
+                "exclusion_reason": exclusion_reason,
+            })
+        else:
+            kept_pairs.append(item)
+
+    if not kept_pairs:
         return NormalizedSourceResult(
             source_name=DEXSCREENER_SOURCE_NAME,
             request_kind=request_kind,
             source_status=SourceStatus.FAILED,
             data_quality_label=DataQualityLabel.MISSING_CRITICAL_DATA,
             failure_type="dexscreener_missing_critical_fixture_fields",
-            failure_message="DexScreener fixture missing Solana pair identity",
+            failure_message="DexScreener fixture missing Solana memecoin pair identity",
         )
 
     stale = bool(payload.get("fixture_stale"))
@@ -294,7 +334,9 @@ def normalize_dexscreener_fixture_result(
             {
                 "source_name": DEXSCREENER_SOURCE_NAME,
                 "request_kind": request_kind,
-                "pairs": normalized_pairs,
+                "pairs": kept_pairs,
+                "excluded_pairs": excluded_pairs,
+                "excluded_pair_count": len(excluded_pairs),
             }
         ),
         status_code=int(payload.get("_source_status_code") or 200),

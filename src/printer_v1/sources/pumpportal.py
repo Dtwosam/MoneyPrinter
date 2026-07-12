@@ -130,6 +130,15 @@ def fixture_failure_transport(
 
 _PUMPPORTAL_WS_URL = "wss://pumpportal.fun/api/data"
 _PUMPPORTAL_SUBSCRIBE_NEW_TOKEN = {"method": "subscribeNewToken"}
+_PUMPPORTAL_SUBSCRIBE_MIGRATION = {"method": "subscribeMigration"}
+
+# Maps a governed request_kind to its (subscription_method_name, subscribe_message).
+# Only these two free public streams are addressable; metered trade/account
+# streams are intentionally absent so they can never be selected.
+_PUMPPORTAL_SUBSCRIPTION_BY_REQUEST_KIND: dict[str, tuple[str, dict[str, str]]] = {
+    "pumpfun_launch_stream": ("subscribeNewToken", _PUMPPORTAL_SUBSCRIBE_NEW_TOKEN),
+    "pumpfun_migration_stream": ("subscribeMigration", _PUMPPORTAL_SUBSCRIBE_MIGRATION),
+}
 
 # Hard ceilings — callers may not exceed these values.
 _PUMPPORTAL_MAX_EVENTS_CEILING = 5
@@ -146,8 +155,13 @@ def build_pumpportal_live_transport(
     max_events: int = _PUMPPORTAL_MAX_EVENTS_DEFAULT,
     duration_seconds: float = _PUMPPORTAL_DURATION_SECONDS_DEFAULT,
     connect_timeout_seconds: float = _PUMPPORTAL_CONNECT_TIMEOUT_DEFAULT,
+    request_kind: str = "pumpfun_launch_stream",
 ) -> Callable[[SourceAdapterContext], Mapping[str, Any]]:
-    """Returns a bounded live transport for pumpfun_launch_stream.
+    """Returns a bounded live transport for one PumpPortal free stream.
+
+    request_kind selects the subscription:
+      pumpfun_launch_stream    -> subscribeNewToken   (launch events)
+      pumpfun_migration_stream -> subscribeMigration  (graduation events)
 
     Requires the 'websockets' package (declared in project dependencies).
     Raises RuntimeError at build time if websockets cannot be imported.
@@ -155,8 +169,11 @@ def build_pumpportal_live_transport(
     Bounds: max_events events or duration_seconds wall clock (whichever comes
     first). connect_timeout_seconds caps the initial WebSocket handshake.
     Zero reconnects. No background threads. No scheduler jobs. No DB writes.
+    Only mint-bearing events are collected; subscription acknowledgments and
+    non-mint frames are skipped and never counted toward max_events.
 
-    Raises ValueError if any bound exceeds the approved ceiling.
+    Raises ValueError if any bound exceeds the approved ceiling or if
+    request_kind is not an addressable free stream.
     """
     if max_events > _PUMPPORTAL_MAX_EVENTS_CEILING:
         raise ValueError(
@@ -172,6 +189,12 @@ def build_pumpportal_live_transport(
             f"connect_timeout_seconds {connect_timeout_seconds} exceeds approved limit of "
             f"{_PUMPPORTAL_CONNECT_TIMEOUT_DEFAULT}"
         )
+    subscription = _PUMPPORTAL_SUBSCRIPTION_BY_REQUEST_KIND.get(request_kind)
+    if subscription is None:
+        raise ValueError(
+            f"request_kind {request_kind!r} is not an addressable PumpPortal free stream"
+        )
+    _subscription_method_name, _subscribe_message = subscription
     try:
         import websockets as _ws
     except ImportError as exc:
@@ -184,7 +207,7 @@ def build_pumpportal_live_transport(
     import json
 
     _url = _PUMPPORTAL_WS_URL
-    _subscribe_msg = json.dumps(_PUMPPORTAL_SUBSCRIBE_NEW_TOKEN)
+    _subscribe_msg = json.dumps(_subscribe_message)
     _max_ev = max_events
     _duration = duration_seconds
     _connect_timeout = connect_timeout_seconds
@@ -233,11 +256,34 @@ def build_pumpportal_live_transport(
         return MappingProxyType(
             {
                 "events": collected,
-                "subscription_method": "subscribeNewToken",
+                "subscription_method": _subscription_method_name,
             }
         )
 
     return transport
+
+
+def build_pumpportal_migration_transport(
+    *,
+    max_events: int = _PUMPPORTAL_MAX_EVENTS_DEFAULT,
+    duration_seconds: float = _PUMPPORTAL_DURATION_SECONDS_DEFAULT,
+    connect_timeout_seconds: float = _PUMPPORTAL_CONNECT_TIMEOUT_DEFAULT,
+) -> Callable[[SourceAdapterContext], Mapping[str, Any]]:
+    """Bounded live transport for the pumpfun_migration_stream (subscribeMigration).
+
+    Same hard bounds and zero-reconnect guarantees as the launch transport.
+    Migration events graduate a token to a post-bonding-curve pool; they carry
+    the mint and the new pool address but NEVER a token creation timestamp.
+    Migration/pair time must never become token_created_at (enforced by
+    _normalize_pumpportal_event, which does not extract a timestamp for
+    migration request kinds).
+    """
+    return build_pumpportal_live_transport(
+        max_events=max_events,
+        duration_seconds=duration_seconds,
+        connect_timeout_seconds=connect_timeout_seconds,
+        request_kind="pumpfun_migration_stream",
+    )
 
 
 def build_pumpportal_t2_proof_transport(

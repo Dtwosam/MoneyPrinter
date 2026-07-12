@@ -215,11 +215,22 @@ protocol/provider modules and explicit adoption lane.
 | [solana-token-2022-program.md](solana-token-2022-program.md) | Token-2022 mint account, AccountType@165, TLV@166, min 166 bytes | ✓ | ✓ (corrected to 20-section template; V2-2AL.1 repair verified) |
 | [solana-mint-addresses.md](solana-mint-addresses.md) | Infrastructure mint addresses: WSOL, USDC, USDT | ✓ | ✓ (corrected to 20-section template; addresses pinned with authority) |
 
-Protocol modules (pump-fun-bonding-curve-protocol, pumpswap-amm-protocol,
-raydium-amm-label-context, jupiter-routing-protocol) and provider modules
-(pumpportal-api-contract, dexscreener-api-contract, etc.) are planned for
-SB-3+ lanes. Cross-cutting modules (token-age-evidence-tier-registry,
-source-governor-evidence-rules) are planned for SB-5+.
+The following provider/protocol and cross-cutting modules were authored
+pragmatically during the source-productivity / readiness mini-sprint (A6
+implementation + A4 provider docs; uncertain items marked
+`UNKNOWN_REQUIRES_RESEARCH`). They are practical adapter contracts, not yet
+put through the formal SB independent-verification gate:
+
+- [dexscreener-api-contract.md](dexscreener-api-contract.md)
+- [pumpportal-api-contract.md](pumpportal-api-contract.md)
+- [pump-fun-bonding-curve-protocol.md](pump-fun-bonding-curve-protocol.md)
+- [pumpswap-pool-confirmation-contract.md](pumpswap-pool-confirmation-contract.md)
+- [token-age-evidence-tier-registry.md](token-age-evidence-tier-registry.md)
+- [source-governor-evidence-rules.md](source-governor-evidence-rules.md)
+
+Remaining protocol/provider modules (pumpswap-amm-protocol,
+raydium-amm-label-context, jupiter-routing-protocol, geckoterminal-api-contract,
+etc.) are still planned for SB-3+ lanes.
 
 ---
 

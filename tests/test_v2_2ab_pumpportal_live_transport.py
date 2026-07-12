@@ -8,7 +8,7 @@ Verifies:
   E. Zero reconnects — single attempt only
   F. Fixture transports still work unchanged
   G. pumpfun_launch_stream is READY in plan catalog
-  H. pumpfun_migration_stream remains NOT_READY
+  H. pumpfun_migration_stream is READY (live subscribeMigration transport wired)
   I. Governor can execute PumpPortalAdapter with mocked transport + record rows
   J. No memory/retrieval/paper/trading rows created
   K. Metadata flags correct (supports_network_execution=True, fixture_transport_only=False)
@@ -386,10 +386,13 @@ class TestPlanCatalogStatus(unittest.TestCase):
         launch_status = next((s for k, s in catalog if k == "pumpfun_launch_stream"), None)
         self.assertEqual(launch_status, _PLAN_STATUS_READY)
 
-    def test_pumpfun_migration_stream_is_not_ready(self):
+    def test_pumpfun_migration_stream_is_ready(self):
+        # Stage 3: a bounded live subscribeMigration transport is now wired
+        # (build_pumpportal_migration_transport), so the migration stream is
+        # READY in the plan catalog.
         catalog = _SOURCE_REQUEST_PLAN_CATALOG.get("pumpportal", [])
         migration_status = next((s for k, s in catalog if k == "pumpfun_migration_stream"), None)
-        self.assertEqual(migration_status, _PLAN_STATUS_NOT_READY)
+        self.assertEqual(migration_status, _PLAN_STATUS_READY)
 
     def test_pumpfun_launch_stream_in_allowed_request_kinds(self):
         self.assertIn("pumpfun_launch_stream", ALLOWED_REQUEST_KINDS)

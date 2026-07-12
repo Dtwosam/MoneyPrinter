@@ -210,6 +210,7 @@ from printer_v1.sources.geckoterminal_15m import (
 from printer_v1.sources.pumpportal import (
     build_pumpportal_adapter,
     build_pumpportal_live_transport,
+    build_pumpportal_migration_transport,
     build_pumpportal_t2_proof_transport,
 )
 from printer_v1.sources.pumpswap import (
@@ -1404,15 +1405,19 @@ _SOURCE_REQUEST_PLAN_CATALOG: dict[str, list[tuple[str, str]]] = {
         ("token_discovery", _PLAN_STATUS_READY),
     ],
     "pumpportal": [
-        # pumpfun_launch_stream: READY — live transport wired via build_pumpportal_live_transport().
-        # pumpfun_migration_stream: NOT_READY — no live migration transport in this lane.
+        # pumpfun_launch_stream: READY — live transport via build_pumpportal_live_transport().
+        # pumpfun_migration_stream: READY — live transport via build_pumpportal_migration_transport().
         ("pumpfun_launch_stream", _PLAN_STATUS_READY),
-        ("pumpfun_migration_stream", _PLAN_STATUS_NOT_READY),
+        ("pumpfun_migration_stream", _PLAN_STATUS_READY),
     ],
     "pumpswap": [
-        # Fixture-only confirmation path; NOT_READY for live.
-        ("pumpswap_pool_confirmation", _PLAN_STATUS_NOT_READY),
-        ("pumpswap_migration_pool_reference", _PLAN_STATUS_NOT_READY),
+        # READY for governed read-only confirmation: the discovery pipeline routes
+        # these request kinds through the PumpSwap adapter, which REQUIRES an
+        # operator-provided fixture/confirmation transport (no live keyless
+        # endpoint exists — see pumpswap-pool-confirmation-contract.md). With no
+        # transport, _execute_plan_item raises — read-only confirmation only.
+        ("pumpswap_pool_confirmation", _PLAN_STATUS_READY),
+        ("pumpswap_migration_pool_reference", _PLAN_STATUS_READY),
     ],
 }
 
@@ -1501,6 +1506,13 @@ def _execute_plan_item(
                 raise ValueError(
                     f"PumpPortal live transport unavailable: {exc}"
                 ) from exc
+        elif transport_fn is None and request_kind == "pumpfun_migration_stream":
+            try:
+                transport_fn = build_pumpportal_migration_transport()
+            except RuntimeError as exc:
+                raise ValueError(
+                    f"PumpPortal migration transport unavailable: {exc}"
+                ) from exc
         elif transport_fn is None:
             raise ValueError(
                 "PumpPortal discovery requires an operator-provided fixture transport "
@@ -1508,7 +1520,8 @@ def _execute_plan_item(
             )
         channel, channel_reason = _source_channel_for_pumpportal(request_kind)
         endpoint = (
-            "wss://pumpportal.fun/api/data" if request_kind == "pumpfun_launch_stream"
+            "wss://pumpportal.fun/api/data"
+            if request_kind in ("pumpfun_launch_stream", "pumpfun_migration_stream")
             else "pumpportal_fixture_only"
         )
         source_request = build_governed_source_request(

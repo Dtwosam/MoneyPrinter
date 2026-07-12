@@ -185,15 +185,18 @@ class TestBuildSourceRequestPlan(unittest.TestCase):
         catalog_size = len(_SOURCE_REQUEST_PLAN_CATALOG["geckoterminal"])
         self.assertEqual(len(plan), catalog_size)
 
-    def test_pumpportal_max1_gives_one_not_ready_item(self):
+    def test_pumpportal_max1_gives_one_ready_item(self):
+        # Launch stream is READY (live subscribeNewToken transport, V2-2AB).
         plan = _build_source_request_plan("pumpportal", None, 1)
         self.assertEqual(len(plan), 1)
-        self.assertEqual(plan[0]["status"], _PLAN_STATUS_NOT_READY)
+        self.assertEqual(plan[0]["status"], _PLAN_STATUS_READY)
 
-    def test_pumpswap_max1_gives_one_not_ready_item(self):
+    def test_pumpswap_max1_gives_one_ready_item(self):
+        # Stage 3: PumpSwap confirmation is READY (governed read-only path;
+        # requires an operator-provided confirmation transport at execution).
         plan = _build_source_request_plan("pumpswap", None, 1)
         self.assertEqual(len(plan), 1)
-        self.assertEqual(plan[0]["status"], _PLAN_STATUS_NOT_READY)
+        self.assertEqual(plan[0]["status"], _PLAN_STATUS_READY)
 
     def test_plan_index_is_sequential(self):
         plan = _build_source_request_plan("geckoterminal", None, 2)
@@ -731,13 +734,15 @@ class TestSingleRequestBackwardCompat(unittest.TestCase):
 
 class TestNotReadyItemsNotExecuted(unittest.TestCase):
 
-    def test_pumpportal_plan_item_is_not_ready(self):
+    def test_pumpportal_launch_plan_item_is_ready(self):
+        # Launch stream is READY (live subscribeNewToken transport).
         plan = _build_source_request_plan("pumpportal", "pumpfun_launch_stream", 1)
-        self.assertEqual(plan[0]["status"], _PLAN_STATUS_NOT_READY)
+        self.assertEqual(plan[0]["status"], _PLAN_STATUS_READY)
 
-    def test_pumpswap_plan_item_is_not_ready(self):
+    def test_pumpswap_plan_item_is_ready(self):
+        # Stage 3: PumpSwap confirmation is READY (governed read-only confirmation).
         plan = _build_source_request_plan("pumpswap", "pumpswap_pool_confirmation", 1)
-        self.assertEqual(plan[0]["status"], _PLAN_STATUS_NOT_READY)
+        self.assertEqual(plan[0]["status"], _PLAN_STATUS_READY)
 
     def test_not_ready_item_in_budget_report_channels_not_ready(self):
         plan = [
