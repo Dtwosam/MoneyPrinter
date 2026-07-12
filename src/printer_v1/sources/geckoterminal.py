@@ -37,6 +37,8 @@ GECKOTERMINAL_PUBLIC_API_HEADERS = {
 ALLOWED_REQUEST_KINDS = frozenset({
     "geckoterminal_new_pool_discovery",
     "geckoterminal_trending_pool_reference",
+    "geckoterminal_ohlcv_15m",
+    "geckoterminal_pool_trades_15m",
 })
 
 _SOLANA_NETWORK_IDS = frozenset({"solana", "sol"})

@@ -49,6 +49,8 @@ SOURCE_REGISTRY: dict[str, SourceDefinition] = {
         allowed_request_kinds=(
             "geckoterminal_new_pool_discovery",
             "geckoterminal_trending_pool_reference",
+            "geckoterminal_ohlcv_15m",
+            "geckoterminal_pool_trades_15m",
         ),
         default_rate_limit_per_minute=30,
         stale_after_seconds=180,

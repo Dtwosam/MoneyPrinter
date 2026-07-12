@@ -405,6 +405,88 @@ NEXT_LANE: Staged/native 15m evidence implementation and bounded proof
 
 ---
 
+## V2-2H Implementation Record
+
+**Date:** 2026-07-12
+**Anchor commit:** f8288c3
+**Task:** Close blocker 2 — integrate trustworthy 15-minute market evidence into discovery and selection.
+
+### What was implemented
+
+**New module: `src/printer_v1/sources/geckoterminal_15m.py`**
+
+GeckoTerminal 15m enrichment functions using the free public API:
+- `select_completed_15m_candle(ohlcv_list, now)` — picks the most recent completed, non-stale candle from a descending OHLCV list
+- `derive_price_change_15m_from_candle(candle, ...)` — computes `(close-open)/open*100` rounded to 6dp; returns `PROVIDER_CANDLE_DERIVED` source_kind
+- `derive_volume_15m_from_candle(candle, ...)` — extracts `volume_usd` from the completed candle; same source_kind
+- `count_txns_15m_from_trades(raw_trades_data, window_start_unix, window_end_unix)` — counts trade records inside the 15m window; applies completeness rules (a) fewer_than_max, (b) oldest_reaches_window; returns `None` and `TRADE_HISTORY_TRUNCATED` when capped
+- `enrich_candidate_15m_ohlcv(ohlcv_payload, ...)` — high-level OHLCV enrichment; fails closed to `{}`
+- `enrich_candidate_15m_trades(trades_payload, ...)` — high-level trades enrichment; fails closed to `{}`
+- Fixture transports for bounded proof
+
+**Source Governor registration:**
+- `geckoterminal_ohlcv_15m` and `geckoterminal_pool_trades_15m` added to `registry.py` and `geckoterminal.py` `ALLOWED_REQUEST_KINDS`
+
+**Staged derivation guard update (`staged_derivation.py` line 247):**
+- Guard extended from `== "NATIVE_SOURCE"` to `frozenset({"NATIVE_SOURCE", "PROVIDER_CANDLE_DERIVED"})`
+- `PROVIDER_CANDLE_DERIVED` fields from GeckoTerminal enrichment are now protected against staged-derivation overwrite
+
+**New source_kind vocabulary:**
+| Annotation | Meaning |
+|---|---|
+| `PROVIDER_CANDLE_DERIVED` | Field derived from GeckoTerminal completed 15m OHLCV candle |
+| `PROVIDER_TRADES_WINDOW` | txns_15m counted from pool-trades endpoint within the 15m window |
+| `TRADE_HISTORY_COMPLETE` | Trade count is proven complete (rule a or b) |
+| `TRADE_HISTORY_TRUNCATED` | Trade count could not be proven; txns_15m set to NULL |
+
+### Provenance passthrough
+
+`normalize_snapshot_payload` in `quality.py` starts with `normalized = dict(payload)`, so all enrichment annotations (`*_source_kind`, `*_provenance`, `txns_15m_completeness`) survive into `normalized_snapshot_payload_json`. Verified by BP-04 and BP-05.
+
+### Test evidence
+
+| Suite | Tests | Result |
+|---|---|---|
+| `tests/test_v2_2h_geckoterminal_15m_evidence.py` | 45 | All pass |
+| `tests/test_v2_2h_geckoterminal_15m_bounded_proof.py` | 13 | All pass |
+| `tests/test_v2_2z1_staged_15m_price_derivation.py` | 66 | All pass (guard regression) |
+
+### Constraints preserved
+
+- No live HTTP calls in any test (fixture transports only)
+- Isolated DB per test (tmp_path + apply_migrations)
+- Source Governor checked for all new request kinds
+- Zero rows in financial/paper/memory tables from enrichment or snapshot record
+- No scoring, ranking, confidence, weighted logic
+- No memory generation, retrieval, paper decisions, positions, trades, PnL
+- No A3, V2-3, T3, scheduler bypass, or broad GeckoTerminal expansion
+
+```
+LANE: V2-2H Governed 15m Market Evidence Integration
+EXECUTOR: Claude Sonnet 4.6
+DATE: 2026-07-12
+ANCHOR_COMMIT: f8288c3
+VERDICT: STAGED_NATIVE_15M_EVIDENCE_PASS
+FILES_CHANGED: 6
+  src/printer_v1/sources/geckoterminal_15m.py (NEW)
+  src/printer_v1/sources/geckoterminal.py (ALLOWED_REQUEST_KINDS extended)
+  src/printer_v1/sources/registry.py (allowed_request_kinds extended)
+  src/printer_v1/snapshots/staged_derivation.py (guard extended to PROVIDER_CANDLE_DERIVED)
+  tests/test_v2_2h_geckoterminal_15m_evidence.py (NEW — 45 tests)
+  tests/test_v2_2h_geckoterminal_15m_bounded_proof.py (NEW — 13 tests)
+TESTS_PASS: 124 / 124
+LIVE_RPC_CALLS: NONE
+DB_MUTATION: ISOLATED_TEST_DB_ONLY
+MEMORY_GENERATION: NONE
+RETRIEVAL: LOCKED
+PAPER_DECISIONS: LOCKED
+A3_STATUS: LOCKED
+V2_3_STATUS: PAUSED
+NEXT_LANE: Minimal PumpPortal launch-stream bounded transport lane
+```
+
+---
+
 ## Git Checks
 
 To be recorded after `git diff --check`, `git status --short`,

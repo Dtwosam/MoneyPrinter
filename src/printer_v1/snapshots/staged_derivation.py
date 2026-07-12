@@ -243,8 +243,9 @@ def apply_staged_derivation(
         except (json.JSONDecodeError, TypeError):
             merged = {}
 
-        # Never overwrite a pre-existing native-source annotation
-        if merged.get("price_change_15m_source_kind") == "NATIVE_SOURCE":
+        # Never overwrite native-source or provider-candle-derived annotations
+        _protected_source_kinds = frozenset({"NATIVE_SOURCE", "PROVIDER_CANDLE_DERIVED"})
+        if merged.get("price_change_15m_source_kind") in _protected_source_kinds:
             return False
 
         merged["price_change_15m_source_kind"] = "DERIVED_STAGED_SNAPSHOT"
