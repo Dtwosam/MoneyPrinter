@@ -425,3 +425,74 @@ BUY/SELL/HOLD, positions, trades, audits, or PnL.
 Recommended next lane:
 
 `SB-2.3 - Independent Core Authority Correction Verification`
+
+
+---
+
+# SB-2.3 Manual Independent Core Authority Verification
+
+**Lane:** SB-2.3 - Independent Core Authority Correction Verification
+**Executor:** Manual operator verification with read-only PowerShell checks
+**Date:** 2026-07-12
+**Anchor:** `248eae9 Audit and correct SB-2 core Solana authorities`
+**Verdict:** `CORE_AUTHORITY_VERIFICATION_PASS_WITH_IMPLEMENTATION_GAP`
+
+## Verified Results
+
+- SB-2.2 commit scope independently confirmed as exactly five documentation files.
+- Old Printer USDC address: 8 tracked occurrences:
+  - 1 production-code occurrence;
+  - 1 test occurrence;
+  - 4 current SB documentation occurrences;
+  - 2 historical SB-0 documentation occurrences.
+- Official Circle USDC address: 6 tracked occurrences, all documentation.
+- No production code or test currently uses Circle's official USDC address.
+- Circle USDC implementation-gap conclusion independently confirmed.
+- Tether USDt authority and address independently confirmed.
+- WSOL pin independently verified:
+  - repository `solana-program/token`;
+  - commit `405c9172df3aeb508712142aae1caf0d31ada671`;
+  - path `interface/src/native_mint.rs`;
+  - canonical address present.
+- Token-2022 pin independently verified:
+  - repository `solana-program/token-2022`;
+  - commit `27c359d1c7d38afdec293720dba4b768aa61aeb7`;
+  - path `interface/src/extension/mod.rs`;
+  - required base-layout constants present.
+- Public RPC numeric limits are documented and subject to change.
+- Endpoint naming remains an official-documentation conflict.
+- No live endpoint compatibility claim was made.
+- `getSignaturesForAddress` `until` inclusivity/exclusivity remains
+  `UNKNOWN_REQUIRES_RESEARCH`.
+- Failure-provenance durability is proof-readiness hardening and does not block
+  SB-3, SB-4, SB-5, SB-6 design, or fixture proof.
+
+## Implementation Impact
+
+Current repository evidence limits the implementation impact to the
+GeckoTerminal infrastructure-mint exclusion constant and its targeted test.
+
+No repository evidence demonstrates downstream memory, retrieval,
+paper-decision, position, trade, audit, or PnL creation from the incorrect
+address.
+
+## What Remains Locked
+
+- Source-stack adoption.
+- USDC production repair.
+- T3 implementation and bounded live proof.
+- A3.
+- Staged/native 15m.
+- V2-3.
+- Retrieval.
+- Paper decisions.
+- BUY/SELL/HOLD.
+- Positions, trades, audits, and PnL.
+
+## Next-Lane Recommendation
+
+`SB-2.4 - USDC Infrastructure-Mint Repair Design`
+
+Production code must not change until the repair contract, legacy-address
+handling, targeted tests, bounded proof, and lock-preservation checks are
+explicitly designed.

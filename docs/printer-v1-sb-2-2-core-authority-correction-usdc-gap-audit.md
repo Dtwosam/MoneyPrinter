@@ -169,3 +169,131 @@ The USDC correction prevents infrastructure assets from leaking into Solana meme
 ## Final Conclusion
 
 SB-2.2 passes as a documentation correction and authority audit with a confirmed implementation gap. The next safe step is independent verification of this correction or a separate narrow USDC production repair lane if the operator chooses to prioritize the implementation gap.
+
+
+---
+
+# SB-2.3 Independent Verification Record
+
+## Lane Result
+
+- Lane: `SB-2.3 ? Independent Core Authority Correction Verification`
+- Executor: manual operator verification
+- Date: 2026-07-12
+- Anchor commit: `248eae9`
+- Verdict: `CORE_AUTHORITY_VERIFICATION_PASS_WITH_IMPLEMENTATION_GAP`
+
+## USDC Verification
+
+Circle official Solana USDC:
+
+`EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`
+
+Current Printer production constant:
+
+`EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEt67tw2CH8Ej`
+
+The SB-2.2 implementation-gap conclusion is independently confirmed.
+
+## Verified Tracked Occurrences
+
+Old Printer address:
+
+- production code: 1;
+- test: 1;
+- current SB documentation: 4;
+- historical SB-0 documentation: 2;
+- total: 8.
+
+Official Circle address:
+
+- documentation: 6;
+- production code: 0;
+- tests: 0.
+
+The demonstrated impact is limited to GeckoTerminal infrastructure-token
+exclusion and its targeted test.
+
+## Authority Pins
+
+- WSOL:
+  - repository `solana-program/token`;
+  - commit `405c9172df3aeb508712142aae1caf0d31ada671`;
+  - path `interface/src/native_mint.rs`;
+  - canonical address present.
+- Token-2022:
+  - repository `solana-program/token-2022`;
+  - commit `27c359d1c7d38afdec293720dba4b768aa61aeb7`;
+  - path `interface/src/extension/mod.rs`;
+  - required base-layout constants present.
+- USDt:
+  - official Tether authority and Solana address confirmed.
+
+## RPC Conclusions
+
+The official cluster reference publishes:
+
+- 100 requests per 10 seconds per IP;
+- 40 requests per 10 seconds per IP for one RPC method;
+- 40 concurrent connections per IP;
+- 40 connection attempts per 10 seconds per IP;
+- 100 MB transferred per 30 seconds per IP.
+
+These values are subject to change. Printer's stricter Source Governor budgets
+remain separate.
+
+Endpoint classification remains:
+
+`OFFICIAL_DOCUMENTATION_NAMING_CONFLICT`
+
+No live endpoint compatibility test was run.
+
+## Signature-Boundary Conclusion
+
+- newest-first order: confirmed;
+- `before`: confirmed for backward pagination;
+- `until` inclusivity/exclusivity: `UNKNOWN_REQUIRES_RESEARCH`.
+
+## T3 Sequencing Conclusion
+
+1. Complete source-stack modules.
+2. SB-6 direct-signature T3 design.
+3. Approved implementation.
+4. Fixture proof.
+5. Bounded live proof.
+6. A3 readiness review.
+
+Failure-provenance persistence is observability and proof-readiness hardening.
+It does not block documentation lanes, SB-6 design, implementation design, or
+fixture proof. Before bounded live proof, the fields must be DB-durable or
+explicitly preserved in its proof artifact.
+
+## Money-Usefulness Contribution
+
+The verification helps prevent an infrastructure asset from entering the
+Solana memecoin candidate path and protects future discovery, memory, and
+paper-realism data from avoidable contamination.
+
+## What Remains Locked
+
+All existing V1 and V2 locks remain unchanged. No production code, tests,
+migrations, fixtures, DBs, live sources, T3 runtime, A3, retrieval, paper
+decisions, positions, trades, audits, or PnL were changed or activated.
+
+## Functionality Risks / Setbacks / Efficiency Blockers
+
+| Item | Severity | Status |
+|---|---|---|
+| Official USDC absent from active infrastructure filter | High | Confirmed implementation gap |
+| Current test protects the incorrect constant | Medium | Requires later targeted repair |
+| Endpoint naming differs across official Solana documents | Medium | No live compatibility claim |
+| Public RPC limits can change | Low | Values documented; Printer budgets remain stricter |
+| `until` boundary is not explicitly established | Low | Preserved as unknown |
+| Failure provenance is not DB-durable | Proof readiness | DB durability or explicit proof-artifact capture required before bounded live proof |
+
+## Next Lane
+
+`SB-2.4 ? USDC Infrastructure-Mint Repair Design`
+
+SB-2.4 must define legacy-address treatment, targeted tests, non-leak proof,
+and lock-preservation requirements before implementation.

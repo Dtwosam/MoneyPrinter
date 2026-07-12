@@ -25,9 +25,10 @@ Scope: exactly three addresses (WSOL, USDC, USDT). No other assets.
 | USDT / USDt (`Es9v...YB`) | A4 | Tether Ltd. official documentation | `https://tether.to/en/supported-protocols` | 2026-07-12 |
 
 **WSOL pinning note:** Wrapped SOL's native mint address is a canonical constant
-in the SPL Token program. SB-2.2 pinned repository HEAD
-`405c9172df3aeb508712142aae1caf0d31ada671`; the module should verify the exact
-file path `interface/src/native_mint.rs` in SB-2.3 before adoption.
+in the SPL Token program. SB-2.3 independently verified repository commit
+`405c9172df3aeb508712142aae1caf0d31ada671`, exact path
+`interface/src/native_mint.rs`, and the presence of
+`So11111111111111111111111111111111111111112` in that pinned source.
 
 **USDC pinning note:** Circle's official contract-address page now lists Solana
 mainnet USDC as `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`. Printer's
@@ -242,8 +243,10 @@ Before these addresses are used as hard policy in any adoption lane:
 1. Repair or explicitly justify the USDC implementation gap in a later
    production lane with targeted tests for discovery exclusion and route
    interpretation.
-2. Pin the A1-tier WSOL path in `github.com/solana-program/token` with commit
-   hash and file path.
+2. WSOL authority pin completed by SB-2.3:
+   - commit `405c9172df3aeb508712142aae1caf0d31ada671`;
+   - path `interface/src/native_mint.rs`;
+   - exact canonical address confirmed.
 3. Verify that Printer's existing constants in `geckoterminal.py` and
    `jupiter_quote.py` match the pinned A1/A4 sources after the USDC repair.
 4. Confirm that discovery logic correctly excludes these mints from memecoin
@@ -272,7 +275,7 @@ tables as token addresses.
 |---|---|
 | Official Circle USDC documentation URL for Solana USDC address | Resolved in SB-2.2: `https://developers.circle.com/stablecoins/usdc-contract-addresses.md` |
 | Official Tether USDt documentation URL for Solana USDt address | Resolved in SB-2.2: `https://tether.to/en/supported-protocols` |
-| WSOL exact file path in `github.com/solana-program/token` | Repository HEAD pinned in SB-2.2 as `405c9172df3aeb508712142aae1caf0d31ada671`; exact file path `interface/src/native_mint.rs` still needs final static verification |
+| WSOL exact file path in `github.com/solana-program/token` | Resolved in SB-2.3: commit `405c9172df3aeb508712142aae1caf0d31ada671`, path `interface/src/native_mint.rs`, exact canonical address present |
 | Whether Circle or Tether has changed / plans to change the Solana mint address | `UNKNOWN_REQUIRES_RESEARCH` — both are stable historically; monitor official changelogs |
 
 ---
@@ -284,3 +287,5 @@ tables as token addresses.
 | 2026-07-12 | SB-2: module authored; 20 sections, original structure | Claude Opus 4.8 / SB-2 |
 | 2026-07-12 | SB-2.1: restructured to exact 20-section template; each address documented with per-address authority table; USDT/USDt symbol distinction from Tether documented; WSOL trailing-2 explanation added; Circle/Tether impersonator-token warning added; `UNKNOWN_REQUIRES_RESEARCH` for exact official URLs preserved; status dimensions updated to SB-1 section 6 vocabulary | Claude Sonnet 4.6 / SB-2.1 |
 | 2026-07-12 | SB-2.2: pinned Circle and Tether authority pages, corrected official USDC address to Circle's current Solana mainnet address, recorded Printer's current USDC constant as an implementation gap, and pinned the official `solana-program/token` repository HEAD for WSOL follow-up | Codex standard/balanced / SB-2.2 |
+
+| 2026-07-12 | SB-2.3: independently verified the WSOL repository commit, exact `interface/src/native_mint.rs` path, and canonical address; reconfirmed the USDC occurrence map and USDt authority | Manual independent verification / SB-2.3 |

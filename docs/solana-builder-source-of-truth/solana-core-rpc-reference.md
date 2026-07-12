@@ -89,11 +89,15 @@ behavior.
 ## 7. Authentication and Cost Model
 
 - Authentication: none required for the Solana public mainnet RPC endpoint.
-- Cost: free public endpoint; subject to undocumented rate limiting.
-- Public endpoint policy: official Solana cluster docs describe public endpoints
-  as shared public infrastructure with rate limits and warn against
-  production-scale use. Exact current numeric limits remain
-  `UNKNOWN_REQUIRES_RESEARCH`.
+- Cost: free public endpoint; subject to documented shared-endpoint limits.
+- Public endpoint policy: official Solana cluster documentation describes these
+  endpoints as shared public infrastructure and warns that limits may change.
+  The limits independently verified in SB-2.3 are:
+  - 100 requests per 10 seconds per IP.
+  - 40 requests per 10 seconds per IP for one RPC method.
+  - 40 concurrent connections per IP.
+  - 40 connection attempts per 10 seconds per IP.
+  - 100 MB transferred per 30 seconds per IP.
 - Printer's Source Governor limits are stricter implementation budgets and do
   not replace upstream public RPC limits.
 - Helius free tier (deferred): requires a free dashboard API key (sign-up at
@@ -241,9 +245,15 @@ and no T3 tier. Failure provenance may be preserved separately (see §13).
 
 ## 11. Rate Limits and Bounded-Use Rules
 
-**Upstream rate limits for public endpoint:** not formally documented by Solana.
-The public endpoint is shared infrastructure and can be throttled. Status:
-`UNKNOWN_REQUIRES_RESEARCH`.
+**Current documented public-endpoint limits:**
+- Maximum 100 requests per 10 seconds per IP.
+- Maximum 40 requests per 10 seconds per IP for one RPC method.
+- Maximum 40 concurrent connections per IP.
+- Maximum 40 connection attempts per 10 seconds per IP.
+- Maximum 100 MB transferred per 30 seconds per IP.
+
+Solana states that these shared public-endpoint limits are subject to change.
+They are upstream limits, not Printer operating budgets.
 
 **Current Printer T3 Source Governor budgets (A6, from `solana_rpc_token_age.py`):**
 - `_T3_MAX_REQUESTS_PER_TOKEN = 8` (total RPC operations per mint)
@@ -397,7 +407,7 @@ No live RPC call should be made without meeting all of the above.
 | Item | Status |
 |---|---|
 | Official current public mainnet endpoint (`mainnet` vs `mainnet-beta`) | `UNKNOWN_REQUIRES_RESEARCH` - no live compatibility claim in SB-2.2 |
-| Solana public RPC rate limits for the public endpoint | `UNKNOWN_REQUIRES_RESEARCH` — not formally documented |
+| Solana public RPC rate limits for the public endpoint | Resolved in SB-2.3: numeric shared-endpoint limits are published but explicitly subject to change |
 | T3 commitment level and minimum-finality rule | `UNKNOWN_REQUIRES_RESEARCH` — reserved for SB-6 design decision |
 | Failure-provenance preservation path | Must be DB-durable or explicit proof artifact before bounded live proof |
 | Bounded live proof on approved mint | Pending after proof-readiness conditions |
@@ -412,3 +422,5 @@ No live RPC call should be made without meeting all of the above.
 | 2026-07-12 | SB-2: module authored; 19 sections, original structure | Claude Opus 4.8 / SB-2 |
 | 2026-07-12 | SB-2.1: restructured to exact 20-section template; method-level request/response contracts added for all 6 methods; mainnet endpoint gap documented; failure provenance and DB persistence blocker clarified; status dimensions updated to SB-1 section 6 vocabulary | Claude Sonnet 4.6 / SB-2.1 |
 | 2026-07-12 | SB-2.2: corrected public RPC endpoint wording, removed unsupported endpoint-resolution claim, changed `until` inclusivity to `UNKNOWN_REQUIRES_RESEARCH`, separated upstream public-RPC warnings from Printer Source Governor budgets, and corrected T3 failure-provenance sequencing | Codex standard/balanced / SB-2.2 |
+
+| 2026-07-12 | SB-2.3: independently verified public RPC numeric limits and preserved endpoint naming as an official-documentation conflict | Manual independent verification / SB-2.3 |

@@ -34,8 +34,11 @@ archived `solana-labs/solana-program-library` path; the canonical authority is
 `github.com/solana-labs/solana-program-library` path must not be used as the
 canonical module authority per SB-1 §3.1.
 
-**Pinned upstream commit:** not pinned in SB-2.1; requires fetching the current
-repository at `solana-program/token-2022`. Status: `UNKNOWN_REQUIRES_RESEARCH`.
+**Pinned upstream commit:** SB-2.3 independently verified commit
+`27c359d1c7d38afdec293720dba4b768aa61aeb7` in
+`github.com/solana-program/token-2022`. The maintained layout source is
+`interface/src/extension/mod.rs`; the pinned file contains
+`BASE_ACCOUNT_LENGTH` and `BASE_ACCOUNT_AND_TYPE_LENGTH`.
 
 The V2-2AL.1 repair (`7aad246`) derived the layout from the SPL library source
 in the historical `solana-labs` path. The layout constants are consistent across
@@ -340,7 +343,7 @@ class `TestToken2022MintStateDecoding` covers the repaired layout).
 
 | Item | Status |
 |---|---|
-| Exact upstream commit and file path for `extension/mod.rs` in `solana-program/token-2022` | `UNKNOWN_REQUIRES_RESEARCH` — pin in later verification lane; historical path was `solana-labs/solana-program-library/token/program-2022/src/extension/mod.rs` |
+| Exact upstream commit and file path for the Token-2022 extension layout | Resolved in SB-2.3: commit `27c359d1c7d38afdec293720dba4b768aa61aeb7`, path `interface/src/extension/mod.rs`; required layout constants present |
 | Extension type registry (valid `u16` type codes and their semantics) | `DEFERRED` — not needed for T3 structural walk; relevant only if future lanes interpret extension content |
 | Very early Token-2022 mints with non-standard padding behavior | `UNKNOWN_REQUIRES_RESEARCH` — fail-closed is the conservative behavior; extent of affected mints unknown |
 | SB-6 finality contract | `UNKNOWN_REQUIRES_RESEARCH` — reserved for SB-6 |
@@ -354,3 +357,5 @@ class `TestToken2022MintStateDecoding` covers the repaired layout).
 |---|---|---|
 | 2026-07-12 | SB-2: module authored; 20 sections, original structure | Claude Opus 4.8 / SB-2 |
 | 2026-07-12 | SB-2.1: restructured to exact 20-section template; layout byte ranges made explicit with table; minimum 166-byte requirement stated explicitly; TLV header format (2-byte type + 2-byte length) documented; 5-step validation sequence documented; V2-2AL.1/V2-2AL.2 repair verified and cross-referenced; `BASE_ACCOUNT_LENGTH = 165` and `BASE_ACCOUNT_AND_TYPE_LENGTH = 166` cited from `extension/mod.rs`; `AccountType` = 1 (Mint) requirement explicit; status dimensions updated to SB-1 §6 vocabulary; `UNKNOWN_REQUIRES_RESEARCH` for upstream commit pin preserved | Claude Sonnet 4.6 / SB-2.1 |
+
+| 2026-07-12 | SB-2.3: independently verified official repository commit `27c359d1c7d38afdec293720dba4b768aa61aeb7`, maintained path `interface/src/extension/mod.rs`, and required base-layout constants | Manual independent verification / SB-2.3 |
