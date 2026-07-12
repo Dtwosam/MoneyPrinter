@@ -172,8 +172,8 @@ All authorities verified against primary sources per SB-1 §2 and SB-2.1 lane:
 | SPL Token repo (`github.com/solana-program/token`) | A1 | ✓ path cited; exact commit: `UNKNOWN_REQUIRES_RESEARCH` |
 | Token-2022 repo (`github.com/solana-program/token-2022`) | A1 | ✓ path cited; exact commit: `UNKNOWN_REQUIRES_RESEARCH`; `extension/mod.rs` confirmed as layout source in V2-2AL.1 (`7aad246`) |
 | Pump.fun `pump-public-docs` | A1 | ✓ per SB-1 §3.2 (Pump `create` carries no timestamp) |
-| Circle USDC Solana documentation | A4 | `UNKNOWN_REQUIRES_RESEARCH` — exact URL not pinned |
-| Tether USDt Solana documentation | A4 | `UNKNOWN_REQUIRES_RESEARCH` — exact URL not pinned |
+| Circle USDC Solana documentation | A4 | Resolved by SB-2.2; current Circle URL pinned and USDC implementation gap found |
+| Tether USDt Solana documentation | A4 | Resolved by SB-2.2; current Tether URL pinned |
 
 ## SB-2.1 Claims Confirmed
 
@@ -184,9 +184,11 @@ All authorities verified against primary sources per SB-1 §2 and SB-2.1 lane:
 - Token-2022 layout: base [0,82), padding [82,165), AccountType@165, TLV@166,
   minimum 166 bytes: confirmed from V2-2AL.1 repair (`7aad246`) + V2-2AL.2
   independent verification (`5a4309e`).
-- Infrastructure mint addresses (WSOL, USDC, USDT): consistent with Printer
-  implementation (A6); exact A4-tier URL pins for USDC/USDT remain
-  `UNKNOWN_REQUIRES_RESEARCH`.
+- Infrastructure mint addresses (WSOL, USDC, USDT): SB-2.2 corrected this
+  conclusion. The current Circle URL pins official Solana USDC to
+  `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`; Printer implementation still
+  references `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEt67tw2CH8Ej`, so this is now an
+  implementation gap rather than an authority unknown.
 - `getSignaturesForAddress` returns newest-first: confirmed (A3).
 - `getAccountInfo.value` can be null: confirmed (A3).
 - `getTransaction` can return null: confirmed (A3).
@@ -243,16 +245,16 @@ All authorities verified against primary sources per SB-1 §2 and SB-2.1 lane:
 |---|---|---|
 | SPL Token repo exact commit and file paths | `UNKNOWN_REQUIRES_RESEARCH` | Medium — required before adoption |
 | Token-2022 repo exact commit and file paths (`solana-program/token-2022`) | `UNKNOWN_REQUIRES_RESEARCH` | Medium — required before adoption |
-| Circle USDC official Solana URL | `UNKNOWN_REQUIRES_RESEARCH` | Medium — required before address hard-policy adoption |
-| Tether USDt official Solana URL | `UNKNOWN_REQUIRES_RESEARCH` | Medium — required before address hard-policy adoption |
+| Circle USDC official Solana URL | Resolved by SB-2.2 | Medium — implementation gap remains because Printer code uses the old value |
+| Tether USDt official Solana URL | Resolved by SB-2.2 | Medium — URL pinned; no code repair identified in this lane |
 | WSOL native_mint.rs exact path in `solana-program/token` | `UNKNOWN_REQUIRES_RESEARCH` | Medium |
 | Solana public RPC rate limits | `UNKNOWN_REQUIRES_RESEARCH` | Low (informational; T3 budgets already bounded) |
 | Official current mainnet endpoint (`mainnet` vs `mainnet-beta`) | `UNKNOWN_REQUIRES_RESEARCH` | High — must verify before next live proof |
 | ALT account-index resolution in v0 transactions | `UNKNOWN_REQUIRES_RESEARCH` | High for direct-signature T3; deferred |
 | Compiled `initializeMint` decode | `DEFERRED` | High for direct-signature T3; deferred |
 | SB-6 finality contract | `UNKNOWN_REQUIRES_RESEARCH` | Blocking A3 |
-| V2-2AL.4C DB persistence repair | Pending implementation | Blocking V2-2AL.5 |
-| V2-2AL.5 live proof | Pending after V2-2AL.4C | Blocking A3 |
+| T3 failure-provenance durability before bounded live proof | Pending proof-readiness decision | Blocking bounded live proof until DB-durable or explicit proof-artifact path is accepted |
+| Bounded live proof | Pending after proof-readiness conditions | Blocking A3 |
 
 ## SB-2.1 Template Compliance Result
 
@@ -263,7 +265,7 @@ All authorities verified against primary sources per SB-1 §2 and SB-2.1 lane:
 | solana-transaction-instruction-parsing.md | ✓ | ✓ | ✓ | ✓ |
 | solana-spl-token-program.md | ✓ | ✓ | ✓ | ✓ |
 | solana-token-2022-program.md | ✓ | ✓ | ✓ | ✓ |
-| solana-mint-addresses.md | ✓ | ✓ | ✓ (with `UNKNOWN_REQUIRES_RESEARCH` for USDC/USDT URLs) | ✓ |
+| solana-mint-addresses.md | ✓ | ✓ | ✓ (USDC gap recorded by SB-2.2; Tether URL pinned) | ✓ |
 
 ## SB-2.1 Module-by-Module Verdict
 
@@ -274,7 +276,7 @@ All authorities verified against primary sources per SB-1 §2 and SB-2.1 lane:
 | solana-transaction-instruction-parsing.md | PASS_WITH_BLOCKER — ALT coverage gap and direct-signature path undesigned recorded |
 | solana-spl-token-program.md | PASS_WITH_BLOCKER — `Mint` layout pinned; exact repo commit `UNKNOWN_REQUIRES_RESEARCH` |
 | solana-token-2022-program.md | PASS_WITH_BLOCKER — layout fully documented; exact repo commit `UNKNOWN_REQUIRES_RESEARCH`; V2-2AL.1/AL.2 repair confirmed |
-| solana-mint-addresses.md | PASS_WITH_BLOCKER — addresses confirmed; Circle/Tether official URLs `UNKNOWN_REQUIRES_RESEARCH` |
+| solana-mint-addresses.md | PASS_WITH_IMPLEMENTATION_GAP — Circle/Tether URLs pinned; USDC implementation gap remains |
 
 ## SB-2.1 T3 Usefulness Contribution
 
@@ -289,7 +291,8 @@ All authorities verified against primary sources per SB-1 §2 and SB-2.1 lane:
 
 ## SB-2.1 What Remains Locked
 
-- A3: locked until V2-2AL.4C + V2-2AL.5 + SB-6 finality contract.
+- A3: locked until approved T3 proof-readiness conditions, bounded live proof,
+  and the SB-6 finality contract pass.
 - T3: T3 is fixture-proven (132 tests) but not positively live-proven.
 - Staged/native 15m blocker: PARTIAL - DEFERRED, NOT RESOLVED.
 - V2-3: PAUSED.
@@ -300,12 +303,13 @@ All authorities verified against primary sources per SB-1 §2 and SB-2.1 lane:
 
 The stack cannot be adopted until:
 1. Upstream commit/file paths pinned for SPL Token and Token-2022.
-2. Official URLs pinned for Circle USDC and Tether USDt.
+2. USDC implementation gap repaired and fixture/regression proof completed.
 3. Official current mainnet endpoint (`mainnet` vs `mainnet-beta`) verified.
 4. Protocol modules (SB-3+) authored and verified.
 5. SB-6 finality contract decided.
-6. V2-2AL.4C DB persistence repair completed.
-7. V2-2AL.5 live proof passes.
+6. T3 failure provenance made DB-durable or accepted as explicit proof artifact
+   before bounded live proof.
+7. Bounded live proof passes under the approved finality contract.
 8. Explicit operator-approved adoption lane executed.
 
 ## SB-2.1 Functionality Risks / Setbacks / Efficiency Blockers
@@ -313,12 +317,12 @@ The stack cannot be adopted until:
 | Risk | Severity | Status |
 |---|---|---|
 | Solana public RPC history pruning makes T3 impossible for older mints | HIGH | Known; T3 has always had this risk; direct-signature path mitigates but not yet designed |
-| Official mainnet endpoint name discrepancy (`mainnet` vs `mainnet-beta`) | HIGH | Must verify before V2-2AL.5 live proof |
-| V2-2AL.4B DB persistence gap for failure provenance | HIGH | V2-2AL.4C repair pending |
+| Official mainnet endpoint name discrepancy (`mainnet` vs `mainnet-beta`) | HIGH | Classified by SB-2.2 as official documentation naming conflict / unresolved compatibility question; no live endpoint claim |
+| T3 failure-provenance preservation path | HIGH | Must be DB-durable or explicit proof artifact before bounded live proof |
 | ALT account-index resolution not tested in Printer | HIGH | Deferred; blocks direct-signature T3 for v0 transactions |
 | Compiled `initializeMint` decode not adopted | MEDIUM | Deferred; direct-signature T3 may need it |
 | SPL Token / Token-2022 upstream repo commit not pinned | MEDIUM | Required before adoption but does not block current fixture-only posture |
-| Circle/Tether official URL not pinned for USDC/USDT | MEDIUM | Required before hard-policy adoption |
+| USDC implementation gap | MEDIUM | Circle URL now pinned by SB-2.2; later code/test repair required |
 | Solana public RPC undocumented rate limits | LOW | Budgets already bounded by T3 limits |
 
 ## SB-2.1 Checks Run
@@ -349,8 +353,7 @@ SB_2_REPORT_UPDATED: this file
 
 TEMPLATE_COMPLIANCE: PASS (all 5 modules + README restructured to exact template)
 STATUS_DIMENSIONS: PASS (all updated to SB-1 §6 vocabulary)
-AUTHORITY_CITATIONS: PASS_WITH_UNKNOWN (SPL Token, Token-2022 commit hashes
-  and Circle/Tether URLs remain UNKNOWN_REQUIRES_RESEARCH)
+AUTHORITY_CITATIONS: PASS_WITH_IMPLEMENTATION_GAP (Circle/Tether URLs pinned in SB-2.2; USDC implementation gap remains; SPL/Token-2022 exact file pins remain follow-up)
 RISKY_UNLOCK_LANGUAGE: NONE_FOUND
 PROHIBITED_CAPABILITIES: NONE_FOUND
 
@@ -369,6 +372,56 @@ NEXT_LANE: SB-3 — Author Solana Protocol Source-Stack Modules
   (pump-fun-bonding-curve-protocol.md, pumpswap-amm-protocol.md,
    raydium-amm-label-context.md, jupiter-routing-protocol.md)
   After SB-3, SB-4 would author provider API contract modules.
-  Before adoption: pin upstream commits + USDC/USDT URLs, resolve mainnet
-  endpoint, complete V2-2AL.4C, and pass V2-2AL.5 live proof.
+  Before adoption: pin exact upstream files, repair or resolve USDC implementation gap, resolve mainnet endpoint, preserve T3 failure provenance for bounded proof, and pass bounded live proof.
 ```
+
+---
+
+## SB-2.2 Core Authority Correction Record
+
+**Lane:** SB-2.2 - Core Authority Correction and USDC Implementation-Gap Audit
+**Executor/model:** Codex standard/balanced
+**Date:** 2026-07-12
+**Anchors:** SB-2 `0507ddd`; SB-2.1 `82dfd2f`
+**Verdict:** `CORE_AUTHORITY_CORRECTION_PASS_WITH_IMPLEMENTATION_GAP`
+
+SB-2.2 pinned Circle's current official USDC contract-address page and Tether's
+official supported-protocols page. It found that Printer's current USDC
+infrastructure constant differs from Circle's official Solana mainnet USDC mint.
+
+Corrected source-stack docs:
+
+- `docs/solana-builder-source-of-truth/solana-core-rpc-reference.md`
+- `docs/solana-builder-source-of-truth/solana-transaction-instruction-parsing.md`
+- `docs/solana-builder-source-of-truth/solana-mint-addresses.md`
+
+New audit report:
+
+- `docs/printer-v1-sb-2-2-core-authority-correction-usdc-gap-audit.md`
+
+SB-2.2 did not change production code, tests, migrations, fixtures, DBs, or
+`AGENTS.md`. It did not adopt the source stack, run live RPC/API calls, resume
+or redesign T3, unlock A3, staged/native 15m, V2-3, retrieval, paper decisions,
+BUY/SELL/HOLD, positions, trades, audits, or PnL.
+
+### SB-2.2 Result
+
+- Circle official Solana USDC: `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`.
+- Printer current USDC constant: `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEt67tw2CH8Ej`.
+- Outcome: implementation gap requiring later production repair/proof.
+- Tether official Solana USDt: `Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB`.
+- WSOL repository pin: `https://github.com/solana-program/token`, HEAD
+  `405c9172df3aeb508712142aae1caf0d31ada671`; exact file path still needs
+  final static verification.
+- Public RPC endpoint: `official documentation naming conflict / unresolved
+  compatibility question`.
+- `getSignaturesForAddress` `until` boundary: `UNKNOWN_REQUIRES_RESEARCH`.
+- T3 failure provenance: observability hardening; before bounded live proof it
+  must be preserved either durably in DB rows or explicitly in the proof
+  artifact, but this does not block direct-signature T3 design or fixture proof.
+
+### SB-2.2 Next Lane
+
+Recommended next lane:
+
+`SB-2.3 - Independent Core Authority Correction Verification`

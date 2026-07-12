@@ -48,7 +48,7 @@ behavior.
 | Dimension | Value |
 |---|---|
 | `upstream_lifecycle` | `ACTIVE` |
-| `printer_readiness` | `PARTIAL_WITH_BLOCKER` (T3 has DB persistence gap; live proof pending as V2-2AL.5) |
+| `printer_readiness` | `PARTIAL_WITH_BLOCKER` (T3 failure provenance must be preserved durably or in an explicit proof artifact before bounded live proof; live proof pending) |
 | `printer_role` | `TOKEN_AGE` (T3 mint-age evidence); `SAFETY` (holder concentration context) |
 | `access_policy` | `KEYLESS_PUBLIC` (public RPC endpoint; no API key required) |
 | `v1_permission` | `ALLOWED_GOVERNED` (governed read-only evidence only; execution prohibited) |
@@ -90,9 +90,12 @@ behavior.
 
 - Authentication: none required for the Solana public mainnet RPC endpoint.
 - Cost: free public endpoint; subject to undocumented rate limiting.
-- Rate limits: not formally documented by Solana for the public endpoint. The
-  public endpoint can be throttled or congested under high load.
-  `UNKNOWN_REQUIRES_RESEARCH` for exact current limits.
+- Public endpoint policy: official Solana cluster docs describe public endpoints
+  as shared public infrastructure with rate limits and warn against
+  production-scale use. Exact current numeric limits remain
+  `UNKNOWN_REQUIRES_RESEARCH`.
+- Printer's Source Governor limits are stricter implementation budgets and do
+  not replace upstream public RPC limits.
 - Helius free tier (deferred): requires a free dashboard API key (sign-up at
   helius.dev); 1M credits/month; 10 RPC req/s. Not a paid dependency, but
   requires operator sign-up decision. Not a required dependency in V1.
@@ -104,14 +107,16 @@ behavior.
 
 ### 8.1 Endpoint
 
-**Official upstream (A3, 2026-07-12):** `https://api.mainnet.solana.com`
+**Official upstream (A3, SB-1/SB-2.1 verification date 2026-07-12):** Solana cluster docs listed `https://api.mainnet.solana.com`
 
 **Current Printer implementation (A6):** `https://api.mainnet-beta.solana.com`
 
-**Implementation gap:** SB-1 §3.1 confirmed upstream docs list
-`api.mainnet.solana.com`; Printer uses `api.mainnet-beta.solana.com`. Both
-currently resolve but this gap must be verified before any future live proof.
-Operator override of endpoint is allowed.
+**Endpoint-policy conclusion:** official documentation and current Printer code
+name different public mainnet endpoints. SB-2.2 classifies this as
+`official documentation naming conflict / unresolved compatibility question`.
+No SB-2.2 live endpoint test was run, so this module must not claim both
+endpoints resolve. Future live proof must use an explicitly operator-approved,
+free, read-only endpoint through Source Governor boundaries.
 
 ### 8.2 getAccountInfo
 
@@ -134,8 +139,8 @@ Operator override of endpoint is allowed.
 - **Method:** POST `{"jsonrpc":"2.0","id":<int>,"method":"getSignaturesForAddress","params":["<pubkey>",{"limit":<n>,"before":"<sig>","until":"<sig>","commitment":"<level>"}]}`
 - **Required parameters:** address pubkey
 - **Optional parameters Printer uses:** `limit` (max 1000 per page, default 1000),
-  `before` (exclusive — returns signatures older than this signature),
-  `until` (inclusive — stops at this signature), `commitment`
+  `before` (exclusive - returns signatures older than this signature),
+  `until` (boundary semantics `UNKNOWN_REQUIRES_RESEARCH` in SB-2.2), `commitment`
 - **Pagination direction: NEWEST-FIRST.** The most recent signatures are
   returned first. To page backwards through history, pass the last seen
   signature as `before` in the next call.
@@ -284,10 +289,10 @@ contract.
   `t3_rpc_host_redacted`, `t3_rpc_methods_attempted`, `t3_request_ids`,
   `t3_pages_fetched`, `t3_tx_calls_attempted`, `t3_block_time_calls_attempted`,
   `t3_failure_stage`. Failure provenance must never populate success fields.
-- **DB persistence gap (open blocker):** the 8 failure provenance fields survive
-  the normalizer but do not persist into the `printer_source_failures` table
-  (no `normalized_payload_json` column). This is the V2-2AL.4B blocker.
-  V2-2AL.4C must repair this before V2-2AL.5 live proof.
+- **Failure-provenance preservation requirement:** the 8 failure provenance
+  fields are observability hardening. They do not block direct-signature T3
+  design or fixture proof. Before bounded live proof, these fields must be
+  preserved either durably in the DB or explicitly in the proof artifact.
 - **Source status:** FAILED, STALE, MISSING_CRITICAL_DATA.
 - **A3 gate:** `assign_bucket()` requires `token_age_seconds is not None`.
   Failure provenance never satisfies this gate. A3 remains locked.
@@ -309,9 +314,10 @@ contract.
 
 ## 15. Known Upstream Quirks
 
-- **Mainnet endpoint name discrepancy:** current Solana docs (A3, 2026-07-12)
-  list `api.mainnet.solana.com`; Printer uses `api.mainnet-beta.solana.com`.
-  Both currently resolve; the gap must be verified before the next live proof.
+- **Mainnet endpoint name discrepancy:** prior Solana docs verification listed
+  `api.mainnet.solana.com`; Printer uses `api.mainnet-beta.solana.com`. SB-2.2
+  did not run a live endpoint compatibility test, so endpoint compatibility
+  remains `UNKNOWN_REQUIRES_RESEARCH`.
 - **`blockTime` null on recent transactions:** `getTransaction` can return a
   valid transaction with `blockTime = null` for very recent slots. This is
   expected upstream behavior, not an error.
@@ -330,9 +336,9 @@ contract.
 
 | Mistake | Lane fixed | Fix |
 |---|---|---|
-| Mainnet endpoint mismatch: Printer uses `api.mainnet-beta.solana.com`; upstream docs show `api.mainnet.solana.com` | No fix yet; documented as implementation gap in SB-1 §3.1 and here §15 | Verify and update endpoint before next live proof; operator may approve current endpoint as-is |
+| Mainnet endpoint mismatch: Printer uses `api.mainnet-beta.solana.com`; prior upstream docs verification showed `api.mainnet.solana.com` | No production fix in SB-2.2; documented as implementation gap | Treat as official documentation naming conflict / unresolved compatibility question until a later approved live-test or official source resolves it |
 | T3 failure paths returned bare `{failure_type, failure_message}` with no partial trace | V2-2AL.4A (`11c6cf1`) | `_pfail()` closure now threads 8 audit fields into every failure return |
-| T3 failure provenance survives normalizer but not DB persistence | V2-2AL.4B (`538ce82`) verified gap | V2-2AL.4C must add `normalized_payload_json` column to `printer_source_failures` |
+| T3 failure provenance survives normalizer but not DB persistence | V2-2AL.4B (`538ce82`) verified gap | Before bounded live proof, preserve the eight fields durably in the DB or explicitly in the proof artifact; this does not block SB-3 or direct-signature T3 design |
 
 ---
 
@@ -342,8 +348,9 @@ Before live T3 evidence is accepted by A3:
 
 1. All 132 T3 fixture tests pass (`tests/test_v2_2ak_t3_solana_rpc_token_age.py`).
 2. 112 T2 + OBSERVED_LIVE_LAUNCH cross-check tests pass.
-3. V2-2AL.4C DB persistence repair implemented and independently verified.
-4. V2-2AL.5 bounded live proof passes on approved mint
+3. Failure provenance preserved either durably in DB rows or explicitly in the
+   bounded proof artifact.
+4. Bounded live proof passes on an approved mint
    (`6LsqJCJ1p98UG3HYx1UuPgqNjTzAcYFdw4nSzfPzpump`).
 5. SB-6 finality contract (commitment level and minimum-finality rule) explicitly
    approved by operator before any T3 evidence satisfies A3.
@@ -374,8 +381,9 @@ No live RPC call should be made without meeting all of the above.
   `getTokenLargestAccounts` and `getTokenSupply`
 
 **DB tables:**
-- `printer_source_failures` — failure audit rows (missing `normalized_payload_json`
-  column; V2-2AL.4C blocker)
+- `printer_source_failures` — failure audit rows (failure provenance must be
+  DB-durable or explicitly preserved in the bounded proof artifact before live
+  proof)
 - Source Governor tables (governed execution records)
 
 **Test files:**
@@ -388,11 +396,11 @@ No live RPC call should be made without meeting all of the above.
 
 | Item | Status |
 |---|---|
-| Official current public mainnet endpoint (`mainnet` vs `mainnet-beta`) | `UNKNOWN_REQUIRES_RESEARCH` — verify against current A3 docs before next live proof |
+| Official current public mainnet endpoint (`mainnet` vs `mainnet-beta`) | `UNKNOWN_REQUIRES_RESEARCH` - no live compatibility claim in SB-2.2 |
 | Solana public RPC rate limits for the public endpoint | `UNKNOWN_REQUIRES_RESEARCH` — not formally documented |
 | T3 commitment level and minimum-finality rule | `UNKNOWN_REQUIRES_RESEARCH` — reserved for SB-6 design decision |
-| V2-2AL.4C DB persistence repair | Pending implementation lane |
-| V2-2AL.5 live proof on approved mint | Pending after V2-2AL.4C |
+| Failure-provenance preservation path | Must be DB-durable or explicit proof artifact before bounded live proof |
+| Bounded live proof on approved mint | Pending after proof-readiness conditions |
 | History pruning behavior under heavy load | `UNKNOWN_REQUIRES_RESEARCH` — behavior not formally documented for public endpoint |
 
 ---
@@ -402,4 +410,5 @@ No live RPC call should be made without meeting all of the above.
 | Date | Change | Author |
 |---|---|---|
 | 2026-07-12 | SB-2: module authored; 19 sections, original structure | Claude Opus 4.8 / SB-2 |
-| 2026-07-12 | SB-2.1: restructured to exact 20-section template; method-level request/response contracts added for all 6 methods; mainnet endpoint gap documented; failure provenance and DB persistence blocker clarified; status dimensions updated to SB-1 §6 vocabulary | Claude Sonnet 4.6 / SB-2.1 |
+| 2026-07-12 | SB-2.1: restructured to exact 20-section template; method-level request/response contracts added for all 6 methods; mainnet endpoint gap documented; failure provenance and DB persistence blocker clarified; status dimensions updated to SB-1 section 6 vocabulary | Claude Sonnet 4.6 / SB-2.1 |
+| 2026-07-12 | SB-2.2: corrected public RPC endpoint wording, removed unsupported endpoint-resolution claim, changed `until` inclusivity to `UNKNOWN_REQUIRES_RESEARCH`, separated upstream public-RPC warnings from Printer Source Governor budgets, and corrected T3 failure-provenance sequencing | Codex standard/balanced / SB-2.2 |

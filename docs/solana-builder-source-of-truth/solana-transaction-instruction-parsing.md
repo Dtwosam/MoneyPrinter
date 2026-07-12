@@ -48,7 +48,7 @@ SPL Token program instruction definitions, see `solana-spl-token-program.md §2`
 | Dimension | Value |
 |---|---|
 | `upstream_lifecycle` | `ACTIVE` (versioned transaction behavior may evolve with future Agave releases) |
-| `printer_readiness` | `PARTIAL_WITH_BLOCKER` (history-walk T3 path fixture-proven; direct-signature path undesigned; live proof pending) |
+| `printer_readiness` | `PARTIAL_WITH_BLOCKER` (history-walk T3 path fixture-proven; direct-signature T3 design still required; bounded live proof pending) |
 | `printer_role` | `TOKEN_AGE` (parsing `initializeMint`/`initializeMint2` evidence for T3) |
 | `access_policy` | `KEYLESS_PUBLIC` (decoding of `getTransaction` JSON responses requires no separate auth) |
 | `v1_permission` | `ALLOWED_GOVERNED` (read-only decoding only; no execution) |
@@ -201,8 +201,8 @@ call.
   requested mint in a successful transaction with a valid non-future block time
   constitutes **T3 evidence** (evidence tier 3).
 - T3 is below T1 and T2 in the evidence hierarchy.
-- T3 does not satisfy A3 until the SB-6 finality contract passes and a live
-  proof succeeds (V2-2AL.5).
+- T3 does not satisfy A3 until the SB-6 finality contract passes and a bounded
+  live proof succeeds under the approved proof-readiness conditions.
 - Pair age, capture time, migration time, first trade time, and
   `OBSERVED_LIVE_LAUNCH` cannot be substituted for T3 evidence.
 - PumpPortal-provided signatures are **locator evidence only** (SB-1 Rule 5).
@@ -270,7 +270,7 @@ call.
 
 | Mistake | Lane documented | Status |
 |---|---|---|
-| Current T3 history walk relies on `getSignaturesForAddress` pagination rather than direct-signature lookup | SB-1 §13 | Unresolved; direct-signature T3 path is undesigned. Historical walk is slower and prone to page-cap exhaustion. |
+| Current T3 history walk relies on `getSignaturesForAddress` pagination rather than direct-signature lookup | SB-1 §13 | Unresolved; direct-signature T3 path is still a future design lane. Historical walk is slower and prone to page-cap exhaustion. Do not defer direct-signature design until after rerunning the failed history-walk route. |
 | T3 path does not handle v0/versioned transaction ALT account resolution in current tests | SB-2, SB-2.1 | Implementation gap. Current fixture tests use legacy-style transactions. ALT resolution coverage is not adopted. |
 | Page-cap exhaustion for older mints (V2-2AL.3) | V2-2AL.3 (`f0935f0`) | Known live failure mode; documented in V2-2AL.4 readiness review |
 
@@ -285,8 +285,9 @@ Before any parser expansion is adopted:
    require dedicated test classes proving exact requested-mint attribution,
    failure on mint mismatch, and fail-closed on malformed shapes.
 3. Direct-signature T3 design must be explicitly approved in a future SB lane.
-4. V2-2AL.5 live proof (after V2-2AL.4C persistence repair) must succeed before
-   any expanded parser path is adopted for A3 evidence.
+4. Bounded live proof must succeed before any expanded parser path is adopted
+   for A3 evidence. Before that proof, the eight failure-provenance fields must
+   be preserved either durably in the DB or explicitly in the proof artifact.
 5. SB-6 must define and approve the finality contract (commitment level and
    minimum-finality rule) before T3 satisfies A3.
 
@@ -307,8 +308,9 @@ Before any parser expansion is adopted:
 **Test file:** `tests/test_v2_2ak_t3_solana_rpc_token_age.py` (132 tests)
 
 **DB tables:**
-- `printer_source_failures` — failure audit rows (missing `normalized_payload_json`;
-  V2-2AL.4C blocker)
+- `printer_source_failures` — failure audit rows (failure provenance must be
+  DB-durable or explicitly preserved in the bounded proof artifact before live
+  proof)
 - Source Governor tables
 
 **No additional parser file exists.** All parsing is inline in
@@ -321,7 +323,7 @@ into a dedicated module to improve testability.
 
 | Item | Status |
 |---|---|
-| Direct-signature T3 design | `DEFERRED` — undesigned; reserved for a future SB lane after V2-2AL.5 passes |
+| Direct-signature T3 design | `DEFERRED` - undesigned; intended sequence is source-stack modules, SB-6 direct-signature design, approved implementation and fixture proof, bounded live proof, then A3 readiness review |
 | v0/versioned transaction ALT account resolution | `UNKNOWN_REQUIRES_RESEARCH` — not covered by current tests; exact upstream pinned contract for account ordering needs reverification |
 | Compiled instruction `initializeMint` decode | `DEFERRED` — not adopted; requires explicit future implementation lane |
 | History walk depth for mints older than public RPC retention | `UNKNOWN_REQUIRES_RESEARCH` — pruning behavior not formally documented |
@@ -335,4 +337,5 @@ into a dedicated module to improve testability.
 | Date | Change | Author |
 |---|---|---|
 | 2026-07-12 | SB-2: module authored; 20 sections, original structure | Claude Opus 4.8 / SB-2 |
-| 2026-07-12 | SB-2.1: restructured to exact 20-section template; legacy vs versioned transaction paths documented; ALT account-index resolution rules added; inner instruction structure (CPI from Pump create) documented; known Printer mistakes (ALT gap, direct-signature undesigned) added; status dimensions updated to SB-1 §6 vocabulary | Claude Sonnet 4.6 / SB-2.1 |
+| 2026-07-12 | SB-2.1: restructured to exact 20-section template; legacy vs versioned transaction paths documented; ALT account-index resolution rules added; inner instruction structure (CPI from Pump create) documented; known Printer mistakes (ALT gap, direct-signature undesigned) added; status dimensions updated to SB-1 section 6 vocabulary | Claude Sonnet 4.6 / SB-2.1 |
+| 2026-07-12 | SB-2.2: corrected T3 sequencing so failure-provenance persistence is observability hardening, not a blocker for direct-signature T3 design or fixture proof; preserved proof-time provenance requirement | Codex standard/balanced / SB-2.2 |
