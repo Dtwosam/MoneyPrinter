@@ -285,6 +285,11 @@ _WICK_PRICE_CHANGE_REVERSAL_PCT = -20.0
 _LATE_BUY_TOKEN_AGE_SECONDS = 3600.0
 _TRANSACTION_SPIKE_RATIO = 3.0
 
+A4_EVIDENCE_VALID = "VALID_PRIOR_A_TIER_COLLAPSE"
+A4_PRIOR_BUCKETS = frozenset({BUCKET_A1, BUCKET_A2, BUCKET_A3})
+A4_REQUIRED_SOURCE_STATUS = "COMPLETE"
+A4_REQUIRED_DATA_QUALITY = "CLEAN_DATA"
+
 # ---------------------------------------------------------------------------
 # Age bucket taxonomy (V2-2H.2) — categorical IDs only
 # ---------------------------------------------------------------------------
@@ -353,6 +358,7 @@ def assign_bucket(candidate: dict[str, Any]) -> tuple[str, str]:
     of the fixed bucket IDs in BUCKET_NAMES.
 
     Precedence order (first match wins):
+      A4 validated prior/current failed-pump evidence
       D1 dead token
       C3 liquidity removed
       D4 suspicious safety
@@ -364,6 +370,25 @@ def assign_bucket(candidate: dict[str, Any]) -> tuple[str, str]:
       B-tier normal-activity
       B5 consolidation / fallback
     """
+    if (
+        candidate.get("a4_evidence_status") == A4_EVIDENCE_VALID
+        and candidate.get("a4_prior_discovery_candidate_id") is not None
+        and candidate.get("a4_prior_source_request_id") is not None
+        and candidate.get("a4_prior_source_response_id") is not None
+        and candidate.get("a4_current_source_request_id") is not None
+        and candidate.get("a4_current_source_response_id") is not None
+        and candidate.get("a4_prior_source_status") == A4_REQUIRED_SOURCE_STATUS
+        and candidate.get("a4_prior_data_quality_label") == A4_REQUIRED_DATA_QUALITY
+        and candidate.get("a4_current_source_status") == A4_REQUIRED_SOURCE_STATUS
+        and candidate.get("a4_current_data_quality_label") == A4_REQUIRED_DATA_QUALITY
+        and candidate.get("a4_prior_bucket") in A4_PRIOR_BUCKETS
+        and candidate.get("a4_prior_source_response_id")
+        != candidate.get("a4_current_source_response_id")
+        and candidate.get("a4_prior_observed_at")
+        and candidate.get("a4_current_observed_at")
+    ):
+        return BUCKET_A4, BUCKET_NAMES[BUCKET_A4]
+
     liquidity = _f(candidate.get("liquidity_usd"))
     volume_5m = _f(candidate.get("volume_5m"))
     volume_1h = _f(candidate.get("volume_1h"))
@@ -650,13 +675,12 @@ def derive_failed_pump_bucket(
       - current candidate no longer qualifies for fast-tier
       - liquidity has not been fully removed (>LIQUIDITY_NEAR_ZERO threshold)
 
-    Integration: assign_bucket() does not receive prior candidate context.
-    Wire this helper only where prior candidate data is available in the
-    selection path. Until that wiring exists, A4 derivation is deferred at
-    the assign_bucket() call site but the helper is testable in isolation.
+    Integration: the production selector loads prior governed evidence and
+    validates it with evaluate_failed_pump_evidence(). assign_bucket() accepts
+    only the resulting complete internal evidence marker.
     """
     prior_bucket = prior_candidate.get("primary_bucket")
-    if prior_bucket not in GROUP_A_BUCKETS:
+    if prior_bucket not in A4_PRIOR_BUCKETS:
         return None
 
     liq = _f(current_candidate.get("liquidity_usd"))
@@ -674,6 +698,67 @@ def derive_failed_pump_bucket(
         return None  # liquidity removed → route as C3, not A4
 
     return BUCKET_A4, BUCKET_NAMES[BUCKET_A4]
+
+
+def evaluate_failed_pump_evidence(
+    current_candidate: dict[str, Any],
+    prior_candidate: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Validate exact governed prior/current evidence before allowing A4.
+
+    This wrapper adds identity, ordering, and provenance checks around the
+    existing categorical A4 threshold helper. It does not infer missing
+    evidence and does not introduce a freshness duration or numeric score.
+    """
+    if not prior_candidate:
+        return {"qualifies": False, "reason": "prior_evidence_missing"}
+
+    current_mint = str(current_candidate.get("token_mint") or "").strip()
+    prior_mint = str(prior_candidate.get("token_mint") or "").strip()
+    current_pair = str(current_candidate.get("pair_address") or "").strip()
+    prior_pair = str(prior_candidate.get("pair_address") or "").strip()
+    if not current_mint or current_mint != prior_mint:
+        return {"qualifies": False, "reason": "token_mint_mismatch"}
+    if not current_pair or current_pair != prior_pair:
+        return {"qualifies": False, "reason": "pair_address_mismatch"}
+
+    for label, candidate in (("prior", prior_candidate), ("current", current_candidate)):
+        if candidate.get("source_status") != A4_REQUIRED_SOURCE_STATUS:
+            return {"qualifies": False, "reason": f"{label}_source_not_complete"}
+        if candidate.get("data_quality_label") != A4_REQUIRED_DATA_QUALITY:
+            return {"qualifies": False, "reason": f"{label}_data_not_clean"}
+        if candidate.get("source_request_id") is None or candidate.get("source_response_id") is None:
+            return {"qualifies": False, "reason": f"{label}_source_provenance_incomplete"}
+        if not candidate.get("observed_at"):
+            return {"qualifies": False, "reason": f"{label}_observation_time_missing"}
+
+    if prior_candidate.get("discovery_candidate_id") is None:
+        return {"qualifies": False, "reason": "prior_discovery_identity_missing"}
+    if prior_candidate.get("source_response_id") == current_candidate.get("source_response_id"):
+        return {"qualifies": False, "reason": "same_source_response_not_prior_evidence"}
+
+    try:
+        prior_at = datetime.fromisoformat(str(prior_candidate["observed_at"]).replace("Z", "+00:00"))
+        current_at = datetime.fromisoformat(str(current_candidate["observed_at"]).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return {"qualifies": False, "reason": "observation_time_invalid"}
+    if prior_at.tzinfo is None:
+        prior_at = prior_at.replace(tzinfo=timezone.utc)
+    if current_at.tzinfo is None:
+        current_at = current_at.replace(tzinfo=timezone.utc)
+    if current_at <= prior_at:
+        return {"qualifies": False, "reason": "current_evidence_not_newer"}
+
+    derived = derive_failed_pump_bucket(current_candidate, prior_candidate)
+    if derived is None:
+        return {"qualifies": False, "reason": "failed_pump_conditions_not_met"}
+
+    return {
+        "qualifies": True,
+        "reason": "prior_a_tier_current_not_fast_liquidity_retained",
+        "bucket_id": derived[0],
+        "bucket_name": derived[1],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1169,6 +1254,23 @@ _METADATA_FIELDS = (
     "t3_source_response_id",
     "t3_source_failure_id",
     "t3_discovery_source_response_id",
+    # A4: exact prior/current governed discovery evidence handoff.
+    "a4_evidence_status",
+    "a4_evidence_reason",
+    "a4_prior_bucket",
+    "a4_prior_discovery_candidate_id",
+    "a4_prior_source_name",
+    "a4_prior_source_channel",
+    "a4_prior_source_request_id",
+    "a4_prior_source_response_id",
+    "a4_prior_source_status",
+    "a4_prior_data_quality_label",
+    "a4_prior_observed_at",
+    "a4_current_source_request_id",
+    "a4_current_source_response_id",
+    "a4_current_source_status",
+    "a4_current_data_quality_label",
+    "a4_current_observed_at",
 )
 
 

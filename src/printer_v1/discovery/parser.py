@@ -75,6 +75,22 @@ NORMALIZED_FIELDS = (
     "t3_source_response_id",
     "t3_source_failure_id",
     "t3_discovery_source_response_id",
+    "a4_evidence_status",
+    "a4_evidence_reason",
+    "a4_prior_bucket",
+    "a4_prior_discovery_candidate_id",
+    "a4_prior_source_name",
+    "a4_prior_source_channel",
+    "a4_prior_source_request_id",
+    "a4_prior_source_response_id",
+    "a4_prior_source_status",
+    "a4_prior_data_quality_label",
+    "a4_prior_observed_at",
+    "a4_current_source_request_id",
+    "a4_current_source_response_id",
+    "a4_current_source_status",
+    "a4_current_data_quality_label",
+    "a4_current_observed_at",
 )
 
 CRITICAL_FIELDS = ("token_mint", "pair_address", "chain", "source_name", "captured_at")
@@ -365,6 +381,23 @@ def normalize_candidate(
         "t3_source_response_id": candidate_payload.get("t3_source_response_id"),
         "t3_source_failure_id": candidate_payload.get("t3_source_failure_id"),
         "t3_discovery_source_response_id": candidate_payload.get("t3_discovery_source_response_id"),
+        # A4 evidence is produced only by the guarded prior/current DB handoff.
+        "a4_evidence_status": candidate_payload.get("a4_evidence_status"),
+        "a4_evidence_reason": candidate_payload.get("a4_evidence_reason"),
+        "a4_prior_bucket": candidate_payload.get("a4_prior_bucket"),
+        "a4_prior_discovery_candidate_id": candidate_payload.get("a4_prior_discovery_candidate_id"),
+        "a4_prior_source_name": candidate_payload.get("a4_prior_source_name"),
+        "a4_prior_source_channel": candidate_payload.get("a4_prior_source_channel"),
+        "a4_prior_source_request_id": candidate_payload.get("a4_prior_source_request_id"),
+        "a4_prior_source_response_id": candidate_payload.get("a4_prior_source_response_id"),
+        "a4_prior_source_status": candidate_payload.get("a4_prior_source_status"),
+        "a4_prior_data_quality_label": candidate_payload.get("a4_prior_data_quality_label"),
+        "a4_prior_observed_at": candidate_payload.get("a4_prior_observed_at"),
+        "a4_current_source_request_id": candidate_payload.get("a4_current_source_request_id"),
+        "a4_current_source_response_id": candidate_payload.get("a4_current_source_response_id"),
+        "a4_current_source_status": candidate_payload.get("a4_current_source_status"),
+        "a4_current_data_quality_label": candidate_payload.get("a4_current_data_quality_label"),
+        "a4_current_observed_at": candidate_payload.get("a4_current_observed_at"),
     }
     return {field: normalized.get(field) for field in NORMALIZED_FIELDS}
 

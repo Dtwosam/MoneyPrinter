@@ -65,6 +65,7 @@ from printer_v1.discovery.classifier import (
 )
 from printer_v1.discovery.selection_batch import (
     ACTIVITY_REVIVING,
+    A4_EVIDENCE_VALID,
     assign_bucket,
     BUCKET_A1,
     BUCKET_D1,
@@ -74,6 +75,7 @@ from printer_v1.discovery.selection_batch import (
     classify_same_token_new_pair,
     compute_evidence_identity_fingerprint,
     derive_activity_bucket,
+    evaluate_failed_pump_evidence,
     filter_within_response_duplicates,
     fingerprint_change_is_meaningful,
     STNP_MIGRATION,
@@ -2055,6 +2057,108 @@ def _load_last_discovery_fingerprint(
     return compute_evidence_identity_fingerprint(historical)
 
 
+def _load_a4_evidence_pair(
+    conn: sqlite3.Connection,
+    current_candidate: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Return current governed provenance and latest exact prior candidate."""
+    current = dict(current_candidate)
+    response_id = current.get("source_response_id")
+    if response_id is None:
+        return current, None
+    current_response = conn.execute(
+        """
+        SELECT source_request_id, source_status, data_quality_label, received_at
+        FROM printer_source_responses
+        WHERE id = ?
+        """,
+        (response_id,),
+    ).fetchone()
+    if current_response is None:
+        return current, None
+    current.update({
+        "source_request_id": current_response["source_request_id"],
+        "source_status": current_response["source_status"],
+        "data_quality_label": current_response["data_quality_label"],
+        "observed_at": current_response["received_at"],
+    })
+
+    row = conn.execute(
+        """
+        SELECT dc.id AS discovery_candidate_id,
+               dc.source_name, dc.source_channel,
+               dc.source_status, dc.data_quality_label,
+               dc.source_response_id, dc.normalized_candidate_payload_json,
+               sr.source_request_id, sr.received_at,
+               sr.source_status AS response_source_status,
+               sr.data_quality_label AS response_data_quality_label
+        FROM printer_discovery_candidates dc
+        JOIN printer_tokens pt ON pt.id = dc.token_id
+        JOIN printer_pairs pp ON pp.id = dc.pair_id
+        JOIN printer_source_responses sr ON sr.id = dc.source_response_id
+        WHERE pt.token_mint = ?
+          AND pp.pair_address = ?
+          AND dc.source_response_id <> ?
+        ORDER BY dc.id DESC
+        LIMIT 1
+        """,
+        (current.get("token_mint"), current.get("pair_address"), response_id),
+    ).fetchone()
+    if row is None or not row["normalized_candidate_payload_json"]:
+        return current, None
+    try:
+        prior = json.loads(row["normalized_candidate_payload_json"])
+    except (json.JSONDecodeError, TypeError):
+        return current, None
+    if (
+        row["source_status"] != row["response_source_status"]
+        or row["data_quality_label"] != row["response_data_quality_label"]
+    ):
+        return current, None
+    prior.update({
+        "primary_bucket": assign_bucket(prior)[0],
+        "discovery_candidate_id": row["discovery_candidate_id"],
+        "source_name": row["source_name"],
+        "source_channel": row["source_channel"],
+        "source_request_id": row["source_request_id"],
+        "source_response_id": row["source_response_id"],
+        "source_status": row["source_status"],
+        "data_quality_label": row["data_quality_label"],
+        "observed_at": row["received_at"],
+    })
+    return current, prior
+
+
+def _apply_a4_prior_evidence(
+    conn: sqlite3.Connection,
+    candidate: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    current, prior = _load_a4_evidence_pair(conn, candidate)
+    evaluation = evaluate_failed_pump_evidence(current, prior)
+    if not evaluation["qualifies"] or prior is None:
+        return candidate, evaluation
+    annotated = {
+        **candidate,
+        "a4_evidence_status": A4_EVIDENCE_VALID,
+        "a4_evidence_reason": evaluation["reason"],
+        "a4_prior_bucket": prior["primary_bucket"],
+        "a4_prior_discovery_candidate_id": prior["discovery_candidate_id"],
+        "a4_prior_source_name": prior["source_name"],
+        "a4_prior_source_channel": prior.get("source_channel"),
+        "a4_prior_source_request_id": prior["source_request_id"],
+        "a4_prior_source_response_id": prior["source_response_id"],
+        "a4_prior_source_status": prior["source_status"],
+        "a4_prior_data_quality_label": prior["data_quality_label"],
+        "a4_prior_observed_at": prior["observed_at"],
+        "a4_current_source_request_id": current["source_request_id"],
+        "a4_current_source_response_id": current["source_response_id"],
+        "a4_current_source_status": current["source_status"],
+        "a4_current_data_quality_label": current["data_quality_label"],
+        "a4_current_observed_at": current["observed_at"],
+    }
+    return annotated, evaluation
+
+
 def _fingerprint_change_type(
     old_fp: dict[str, Any],
     new_fp: dict[str, Any],
@@ -2250,8 +2354,16 @@ def _select_discovery_candidates(
 
     try:
         for candidate in normalized_pairs:
+            # A4 is internal DB-backed evidence. Never trust source-supplied
+            # fields that imitate the internal evidence marker.
+            candidate = {
+                key: value for key, value in candidate.items()
+                if not key.startswith("a4_")
+            }
             token_mint = candidate.get("token_mint")
             pair_address = candidate.get("pair_address")
+            if _conn is not None:
+                candidate, _a4_evaluation = _apply_a4_prior_evidence(_conn, candidate)
             classification = classify_discovery_candidate(candidate)
             item = {
                 "token_mint": token_mint,
@@ -2759,6 +2871,10 @@ def build_discover_candidates_once_payload(
                 "token_age_evidence_tier": candidate.get("token_age_evidence_tier"),
                 "token_age_seconds": candidate.get("token_age_seconds"),
                 "primary_bucket": assign_bucket(candidate)[0],
+                "a4_evidence_status": candidate.get("a4_evidence_status"),
+                "a4_prior_discovery_candidate_id": candidate.get("a4_prior_discovery_candidate_id"),
+                "a4_prior_source_response_id": candidate.get("a4_prior_source_response_id"),
+                "a4_current_source_response_id": candidate.get("a4_current_source_response_id"),
                 "t3_source_request_id": candidate.get("t3_source_request_id"),
                 "t3_source_response_id": candidate.get("t3_source_response_id"),
                 "price_change_15m": candidate.get("price_change_15m"),

@@ -107,6 +107,20 @@ request/response remain separate governed traces. Printer may overlay them only
 on an exact mint match. A failed, missing, non-finalized, or mismatched T3 trace
 must leave token age unknown and cannot produce A3.
 
+## Cross-Cycle A4 Evidence
+
+`A4 / FAILED_PUMP` is derived only from two distinct governed discovery
+responses for the exact same non-null Solana mint and pair. Both the prior and
+current response must be `COMPLETE / CLEAN_DATA`, retain request and response
+IDs, and have valid observation times proving that the current evidence is
+newer. The prior persisted discovery row must classify as A1, A2, or A3. The
+current row must satisfy the existing categorical failed-pump collapse rule.
+
+Missing, stale, dirty, failed, same-response, identity-mismatched, or malformed
+evidence fails closed. Source payloads cannot self-assert internal `a4_*`
+evidence fields. A4 remains discovery/selection metadata only and cannot create
+memory, retrieval, paper decisions, positions, trades, audits, or PnL.
+
 ## Governor Enforcement Responsibilities
 
 The Source Governor must:
