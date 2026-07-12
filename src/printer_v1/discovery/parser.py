@@ -54,6 +54,23 @@ NORMALIZED_FIELDS = (
     # V2-2P: T4-safe pair-age context labels; token_age_evidence_tier always None until T1/T2/T3 source active.
     "pair_age_context_label",
     "token_age_evidence_tier",
+    "t3_requested_mint",
+    "t3_rpc_host_redacted",
+    "t3_rpc_methods_attempted",
+    "t3_request_ids",
+    "t3_pages_fetched",
+    "t3_signatures_inspected",
+    "t3_accepted_signature",
+    "t3_accepted_slot",
+    "t3_block_time_raw",
+    "t3_block_time_source",
+    "t3_instruction_type",
+    "t3_token_program",
+    "t3_derived_token_created_at",
+    "t3_derived_token_age_seconds",
+    "t3_captured_at",
+    "t3_commitment",
+    "t3_finality_status",
 )
 
 CRITICAL_FIELDS = ("token_mint", "pair_address", "chain", "source_name", "captured_at")
@@ -307,6 +324,25 @@ def normalize_candidate(
             _token_created_at_raw,
             _safe_age_seconds(_token_created_at_raw, _now),
         ),
+        # Real T3 audit fields are copied verbatim after the T3 source normalizer
+        # has validated the exact mint, finalized transaction, and block time.
+        "t3_requested_mint": candidate_payload.get("t3_requested_mint"),
+        "t3_rpc_host_redacted": candidate_payload.get("t3_rpc_host_redacted"),
+        "t3_rpc_methods_attempted": candidate_payload.get("t3_rpc_methods_attempted"),
+        "t3_request_ids": candidate_payload.get("t3_request_ids"),
+        "t3_pages_fetched": candidate_payload.get("t3_pages_fetched"),
+        "t3_signatures_inspected": candidate_payload.get("t3_signatures_inspected"),
+        "t3_accepted_signature": candidate_payload.get("t3_accepted_signature"),
+        "t3_accepted_slot": candidate_payload.get("t3_accepted_slot"),
+        "t3_block_time_raw": candidate_payload.get("t3_block_time_raw"),
+        "t3_block_time_source": candidate_payload.get("t3_block_time_source"),
+        "t3_instruction_type": candidate_payload.get("t3_instruction_type"),
+        "t3_token_program": candidate_payload.get("t3_token_program"),
+        "t3_derived_token_created_at": candidate_payload.get("t3_derived_token_created_at"),
+        "t3_derived_token_age_seconds": candidate_payload.get("t3_derived_token_age_seconds"),
+        "t3_captured_at": candidate_payload.get("t3_captured_at"),
+        "t3_commitment": candidate_payload.get("t3_commitment"),
+        "t3_finality_status": candidate_payload.get("t3_finality_status"),
     }
     return {field: normalized.get(field) for field in NORMALIZED_FIELDS}
 

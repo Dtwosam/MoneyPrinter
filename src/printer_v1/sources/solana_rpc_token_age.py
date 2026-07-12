@@ -9,9 +9,10 @@ Request kind: mint_creation_time_reference
 Source: solana_rpc
 
 Evidence is accepted ONLY when:
-  - Mint account confirmed (SPL Token or Token-2022 program owner)
+  - Mint account finalized (SPL Token or Token-2022 program owner)
   - Signature history end reachable within page cap (full history available)
-  - initializeMint or initializeMint2 instruction found targeting the exact mint
+  - exactly one initializeMint or initializeMint2 targets the exact mint
+  - parsed/compiled, top-level/inner, and legacy/v0 account keys resolve safely
   - Valid, non-future block time derived
 
 All failures leave token_created_at, token_age_seconds, and tier unset (fail-closed).
@@ -63,6 +64,10 @@ _SPL_TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 _TOKEN_2022_PROGRAM_ID = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 _ALLOWED_TOKEN_PROGRAMS = frozenset({_SPL_TOKEN_PROGRAM_ID, _TOKEN_2022_PROGRAM_ID})
 _INIT_MINT_INSTRUCTION_TYPES = frozenset({"initializeMint", "initializeMint2"})
+_INIT_MINT_OPCODE_TYPES = {0: "initializeMint", 20: "initializeMint2"}
+_T3_COMMITMENT = "finalized"
+_BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+_BASE58_INDEX = {char: index for index, char in enumerate(_BASE58_ALPHABET)}
 _SPL_TOKEN_MINT_SIZE = 82            # Mint::LEN — base SPL Token Mint fixed size
 _SPL_MINT_IS_INITIALIZED_OFFSET = 45  # is_initialized bool offset in the 82-byte Mint layout
 # SPL Token-2022 extended-mint layout (source: solana-program-library,
@@ -293,7 +298,7 @@ def normalize_solana_rpc_token_age_response(
         "request_kind": SOLANA_RPC_TOKEN_AGE_REQUEST_KIND,
         "captured_at": captured_at_val,
         "paper_only_context": True,
-        # Provenance fields (15 t3_* fields from design Section 9.1)
+        # Provenance fields, including explicit finalized-evidence state.
         "t3_requested_mint": str(payload.get("t3_requested_mint") or ""),
         "t3_rpc_host_redacted": str(payload.get("t3_rpc_host_redacted") or ""),
         "t3_rpc_methods_attempted": list(payload.get("t3_rpc_methods_attempted") or []),
@@ -309,7 +314,16 @@ def normalize_solana_rpc_token_age_response(
         "t3_derived_token_created_at": str(token_created_at),
         "t3_derived_token_age_seconds": float(token_age_seconds),
         "t3_captured_at": captured_at_val,
+        "t3_commitment": str(payload.get("t3_commitment") or ""),
+        "t3_finality_status": str(payload.get("t3_finality_status") or ""),
     }
+
+    if normalized["t3_commitment"] != _T3_COMMITMENT or normalized["t3_finality_status"] != _T3_COMMITMENT:
+        return _t3_failure_result(
+            request_kind,
+            "solana_rpc_token_age_non_finalized_evidence",
+            "T3 success payload must carry finalized commitment and finality status",
+        )
 
     return NormalizedSourceResult(
         source_name=SOLANA_RPC_SOURCE_NAME,
@@ -453,28 +467,104 @@ def _decode_token_2022_mint_state(raw_bytes: bytes) -> tuple[bool, str | None]:
     return True, None
 
 
+def _account_key_string(value: Any) -> str | None:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, Mapping):
+        pubkey = value.get("pubkey")
+        return str(pubkey) if pubkey else None
+    return None
+
+
+def _transaction_account_keys(tx_result: Mapping[str, Any]) -> list[str] | None:
+    message = ((tx_result.get("transaction") or {}).get("message") or {})
+    meta = tx_result.get("meta") or {}
+    raw_keys = list(message.get("accountKeys") or [])
+    loaded = meta.get("loadedAddresses") or {}
+    raw_keys.extend(loaded.get("writable") or [])
+    raw_keys.extend(loaded.get("readonly") or [])
+    keys = [_account_key_string(value) for value in raw_keys]
+    return None if any(key is None for key in keys) else [str(key) for key in keys]
+
+
+def _decode_base58(value: str) -> bytes | None:
+    if not isinstance(value, str) or not value:
+        return None
+    number = 0
+    try:
+        for char in value:
+            number = number * 58 + _BASE58_INDEX[char]
+    except KeyError:
+        return None
+    decoded = number.to_bytes((number.bit_length() + 7) // 8, "big") if number else b""
+    return (b"\x00" * (len(value) - len(value.lstrip("1")))) + decoded
+
+
 def _is_init_mint_instruction(
     instruction: Mapping[str, Any],
     token_mint: str,
+    account_keys: list[str] | None = None,
 ) -> tuple[bool, str | None, str | None]:
-    """Check if a jsonParsed instruction is initializeMint/initializeMint2 for the exact mint.
+    """Match one parsed or compiled token-program mint initialization exactly."""
+    program = instruction.get("program") or ""
+    program_id = instruction.get("programId") or ""
+    parsed = instruction.get("parsed")
+    if isinstance(parsed, Mapping):
+        if program_id not in _ALLOWED_TOKEN_PROGRAMS:
+            if program == "spl-token":
+                program_id = _SPL_TOKEN_PROGRAM_ID
+            elif program == "spl-token-2022":
+                program_id = _TOKEN_2022_PROGRAM_ID
+            else:
+                return False, None, None
+        inst_type = parsed.get("type") or ""
+        info = parsed.get("info") or {}
+        mint_in_inst = info.get("mint") or info.get("account") or ""
+        if inst_type not in _INIT_MINT_INSTRUCTION_TYPES or mint_in_inst != token_mint:
+            return False, None, None
+        label = "token_2022" if program_id == _TOKEN_2022_PROGRAM_ID else "spl_token"
+        return True, str(inst_type), label
 
-    Returns (matched, instruction_type, token_program_label) or (False, None, None).
-    """
-    program = instruction.get("program") or instruction.get("programId") or ""
-    parsed = instruction.get("parsed") or {}
-    if not isinstance(parsed, dict):
+    if account_keys is None:
         return False, None, None
-    inst_type = parsed.get("type") or ""
-    if inst_type not in _INIT_MINT_INSTRUCTION_TYPES:
+    try:
+        program_id = account_keys[int(instruction["programIdIndex"])]
+        account_indexes = list(instruction["accounts"])
+        mint_in_inst = account_keys[int(account_indexes[0])]
+    except (KeyError, TypeError, ValueError, IndexError):
         return False, None, None
-    info = parsed.get("info") or {}
-    mint_in_inst = info.get("mint") or info.get("account") or ""
-    if mint_in_inst != token_mint:
+    if program_id not in _ALLOWED_TOKEN_PROGRAMS or mint_in_inst != token_mint:
         return False, None, None
-    is_token_2022 = program in (_TOKEN_2022_PROGRAM_ID, "spl-token-2022")
-    prog_label = "token_2022" if is_token_2022 else "spl_token"
-    return True, inst_type, prog_label
+    data = _decode_base58(instruction.get("data"))
+    if not data or data[0] not in _INIT_MINT_OPCODE_TYPES:
+        return False, None, None
+    label = "token_2022" if program_id == _TOKEN_2022_PROGRAM_ID else "spl_token"
+    return True, _INIT_MINT_OPCODE_TYPES[data[0]], label
+
+
+def _transaction_init_matches(
+    tx_result: Mapping[str, Any], token_mint: str
+) -> list[tuple[str, str]] | None:
+    account_keys = _transaction_account_keys(tx_result)
+    if account_keys is None:
+        return None
+    message = ((tx_result.get("transaction") or {}).get("message") or {})
+    meta = tx_result.get("meta") or {}
+    instructions = list(message.get("instructions") or [])
+    for inner_group in meta.get("innerInstructions") or []:
+        if not isinstance(inner_group, Mapping):
+            return None
+        instructions.extend(inner_group.get("instructions") or [])
+    matches: list[tuple[str, str]] = []
+    for instruction in instructions:
+        if not isinstance(instruction, Mapping):
+            return None
+        matched, instruction_type, program_label = _is_init_mint_instruction(
+            instruction, token_mint, account_keys
+        )
+        if matched and instruction_type and program_label:
+            matches.append((instruction_type, program_label))
+    return matches
 
 
 def _fetch_token_age_data(
@@ -532,7 +622,7 @@ def _fetch_token_age_data(
     # Step 1: Validate mint account
     account_resp = _call(
         "getAccountInfo",
-        [token_mint, {"encoding": "base64", "commitment": "confirmed"}],
+        [token_mint, {"encoding": "base64", "commitment": _T3_COMMITMENT}],
     )
     if account_resp.get("fixture_status") == "failure":
         ft = str(account_resp.get("failure_type") or "solana_rpc_token_age_transport_error")
@@ -608,7 +698,7 @@ def _fetch_token_age_data(
     while pages_fetched < _T3_MAX_SIGNATURE_PAGES:
         sig_params: list[Any] = [
             token_mint,
-            {"limit": _T3_SIGNATURES_PER_PAGE, "commitment": "confirmed"},
+            {"limit": _T3_SIGNATURES_PER_PAGE, "commitment": _T3_COMMITMENT},
         ]
         if before_cursor:
             sig_params[1]["before"] = before_cursor
@@ -659,7 +749,11 @@ def _fetch_token_age_data(
     # Take up to _T3_MAX_INIT_CANDIDATES from the oldest end of the page
     raw_candidates = [
         row for row in reversed(oldest_page[-_T3_MAX_INIT_CANDIDATES:])
-        if (row or {}).get("signature") and not (row or {}).get("err")
+        if (
+            (row or {}).get("signature")
+            and not (row or {}).get("err")
+            and (row or {}).get("confirmationStatus") == _T3_COMMITMENT
+        )
     ]
     if not raw_candidates:
         return _pfail(
@@ -669,12 +763,7 @@ def _fetch_token_age_data(
         )
 
     # Step 3: Inspect candidate transactions
-    found_sig: str | None = None
-    found_slot: int | None = None
-    found_block_time: int | None = None
-    found_inst_type: str | None = None
-    found_prog_label: str | None = None
-    block_time_source: str | None = None
+    accepted_matches: list[dict[str, Any]] = []
 
     for sig_row in raw_candidates:
         if tx_calls >= _T3_MAX_TRANSACTION_CALLS:
@@ -689,7 +778,7 @@ def _fetch_token_age_data(
                 sig,
                 {
                     "encoding": "jsonParsed",
-                    "commitment": "confirmed",
+                    "commitment": _T3_COMMITMENT,
                     "maxSupportedTransactionVersion": 0,
                 },
             ],
@@ -709,30 +798,32 @@ def _fetch_token_age_data(
         if meta_err is not None:
             continue
 
-        msg = (tx_result.get("transaction") or {}).get("message") or {}
-        instructions = msg.get("instructions") or []
-        matched = False
-        for inst in instructions:
-            ok, inst_type, prog_label = _is_init_mint_instruction(inst, token_mint)
-            if ok:
-                found_inst_type = inst_type
-                found_prog_label = prog_label
-                matched = True
-                break
-        if not matched:
+        matches = _transaction_init_matches(tx_result, token_mint)
+        if matches is None:
+            return _pfail(
+                "solana_rpc_token_age_malformed_transaction",
+                "Transaction account keys or instructions could not be resolved safely",
+                stage="transaction_inspection",
+            )
+        if len(matches) > 1:
+            return _pfail(
+                "solana_rpc_token_age_ambiguous_init_instruction",
+                "Multiple matching mint-initialization instructions found in one transaction",
+                stage="transaction_inspection",
+            )
+        if not matches:
             continue
 
         block_time = tx_result.get("blockTime")
         slot = tx_result.get("slot")
+        resolved_block_time: int | None = None
+        resolved_source: str | None = None
         if block_time is not None and int(block_time) > 0:
-            found_sig = sig
-            found_slot = slot
-            found_block_time = int(block_time)
-            block_time_source = "getTransaction"
-            break
+            resolved_block_time = int(block_time)
+            resolved_source = "getTransaction"
 
         # blockTime null — getBlockTime fallback, capped at _T3_MAX_BLOCK_TIME_CALLS
-        if slot is not None and block_time_calls < _T3_MAX_BLOCK_TIME_CALLS:
+        if resolved_block_time is None and slot is not None and block_time_calls < _T3_MAX_BLOCK_TIME_CALLS:
             bt_resp = _call("getBlockTime", [int(slot)])
             block_time_calls += 1
             if bt_resp.get("fixture_status") == "failure":
@@ -741,18 +832,38 @@ def _fetch_token_age_data(
                 return _pfail(ft, fm, stage="block_time_fallback")
             bt = bt_resp.get("result")
             if bt is not None and int(bt) > 0:
-                found_sig = sig
-                found_slot = slot
-                found_block_time = int(bt)
-                block_time_source = "getBlockTime"
-                break
+                resolved_block_time = int(bt)
+                resolved_source = "getBlockTime"
 
-    if found_block_time is None or found_sig is None:
+        if resolved_block_time is not None:
+            accepted_matches.append({
+                "signature": sig,
+                "slot": slot,
+                "block_time": resolved_block_time,
+                "block_time_source": resolved_source,
+                "instruction_type": matches[0][0],
+                "program_label": matches[0][1],
+            })
+
+    if len(accepted_matches) > 1:
+        return _pfail(
+            "solana_rpc_token_age_ambiguous_init_instruction",
+            "Multiple finalized mint-initialization transactions matched the requested mint",
+            stage="transaction_inspection",
+        )
+    if not accepted_matches:
         return _pfail(
             "solana_rpc_token_age_no_init_instruction",
             "No successful initializeMint/initializeMint2 with valid block time found",
             stage="transaction_inspection",
         )
+    accepted = accepted_matches[0]
+    found_sig = str(accepted["signature"])
+    found_slot = accepted["slot"]
+    found_block_time = int(accepted["block_time"])
+    block_time_source = str(accepted["block_time_source"])
+    found_inst_type = str(accepted["instruction_type"])
+    found_prog_label = str(accepted["program_label"])
 
     # Derive timestamps and validate non-future
     try:
@@ -799,6 +910,8 @@ def _fetch_token_age_data(
         "t3_derived_token_created_at": token_created_at_iso,
         "t3_derived_token_age_seconds": age_seconds,
         "t3_captured_at": captured_at,
+        "t3_commitment": _T3_COMMITMENT,
+        "t3_finality_status": _T3_COMMITMENT,
     })
 
 

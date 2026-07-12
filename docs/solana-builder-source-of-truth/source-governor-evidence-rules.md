@@ -98,7 +98,7 @@ enforce at the request boundary.
 
 | Evidence field | Condition |
 |---|---|
-| `token_created_at` | YES — from `getAccountInfo` on mint → slot → block time |
+| `token_created_at` | YES - only from a finalized successful `initializeMint`/`initializeMint2` transaction attributed to the exact requested mint; `getAccountInfo` validates mint state but supplies no age |
 | `token_age_seconds` | YES — derived from T3 token_created_at |
 | `token_age_evidence_tier` | `"T3"` |
 

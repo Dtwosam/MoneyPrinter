@@ -113,6 +113,8 @@ _T3_SPL_SUCCESS_PAYLOAD = {
     "t3_derived_token_created_at": _T3_CREATED_ISO,
     "t3_derived_token_age_seconds": _T3_AGE_SECONDS,
     "t3_captured_at": _FIXED_NOW_ISO,
+    "t3_commitment": "finalized",
+    "t3_finality_status": "finalized",
 }
 
 _T3_TOKEN_2022_SUCCESS_PAYLOAD = {
@@ -139,6 +141,8 @@ _ALL_T3_PROVENANCE_FIELDS = (
     "t3_derived_token_created_at",
     "t3_derived_token_age_seconds",
     "t3_captured_at",
+    "t3_commitment",
+    "t3_finality_status",
 )
 
 

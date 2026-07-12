@@ -35,7 +35,7 @@ without meeting all listed requirements.
 | Property | Value |
 |---|---|
 | Stamp condition | `source_name == "solana_rpc"` AND `request_kind == "mint_creation_time_reference"` AND `token_created_at` is not None AND `token_age_seconds` is derivable |
-| Required field | `token_created_at` from on-chain mint account block time |
+| Required field | `token_created_at` from the finalized block time of the exact successful `initializeMint`/`initializeMint2` transaction for the requested mint |
 | Sources | Solana public RPC `getAccountInfo` on mint address → block time lookup |
 | Status | IMPLEMENTED — see V2-2AK |
 | Notes | Governed request per token; adds latency but provides verified on-chain time |

@@ -142,8 +142,11 @@ def record_source_failure(
     data_quality_label: DataQualityLabel = DataQualityLabel.MISSING_CRITICAL_DATA,
     failed_at: str | None = None,
     retry_after_at: str | None = None,
+    normalized_payload: Mapping[str, Any] | None = None,
 ) -> SourceFailureRecord:
     failure_time = failed_at or utc_now_iso()
+    payload = dict(normalized_payload or {})
+    payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":")) if payload else None
     with writable_connection(db_path_or_conn) as connection:
         cursor = connection.execute(
             """
@@ -155,8 +158,9 @@ def record_source_failure(
                 failure_message,
                 source_status,
                 data_quality_label,
-                retry_after_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                retry_after_at,
+                normalized_payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 source_request.source_name,
@@ -167,6 +171,7 @@ def record_source_failure(
                 source_status.value,
                 data_quality_label.value,
                 retry_after_at,
+                payload_json,
             ),
         )
         row_id = int(cursor.lastrowid)
@@ -180,4 +185,5 @@ def record_source_failure(
         source_status=source_status,
         data_quality_label=data_quality_label,
         retry_after_at=retry_after_at,
+        normalized_payload=payload,
     )

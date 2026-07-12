@@ -193,6 +193,7 @@ def execute_source_request_with_governor(
         data_quality_label=result.data_quality_label,
         failed_at=result.received_at,
         retry_after_at=result.retry_after_at,
+        normalized_payload=result.normalized_payload,
     )
     return GovernedSourceExecutionResult(
         request_record=request_record,

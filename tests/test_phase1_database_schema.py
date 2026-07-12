@@ -254,6 +254,9 @@ class Phase1DatabaseSchemaTest(unittest.TestCase):
                 ("022_solana_safety_evidence.sql",),
                 ("023_paper_quote_evidence.sql",),
                 ("024_discovery_source_channel.sql",),
+                ("025_selection_batch.sql",),
+                ("026_selection_rotation_state.sql",),
+                ("027_source_failure_normalized_payload.sql",),
             ],
         )
 

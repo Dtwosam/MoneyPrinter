@@ -284,16 +284,18 @@ Expanding any budget requires an explicit future implementation and proof lane.
 `getTransaction` independently confirms the exact requested mint appears as
 a successful `initializeMint`/`initializeMint2` with a valid block time.
 
-T3 is evidence tier 3. It is below T1 and T2 in the evidence hierarchy. It does
-not satisfy A3 until a successful live proof passes under the SB-6 finality
-contract.
+T3 is evidence tier 3. It is below T1 and T2 in the evidence hierarchy. Printer's
+adopted T3 evidence contract uses `finalized` commitment for mint validation,
+signature history, and transaction inspection. A successful T3 proof does not
+itself activate A3; A3 remains a separate paused lane.
 
 ---
 
 ## 13. Normalization and Failure Rules
 
 - **Success path:** normalized result includes `token_created_at`, `token_age_seconds`,
-  `token_age_evidence_tier = "T3"`, and 15 T3 success provenance fields.
+  `token_age_evidence_tier = "T3"`, the original 15 T3 provenance fields, and
+  explicit `t3_commitment = finalized` plus `t3_finality_status = finalized`.
 - **Failure path:** normalized result includes 8 T3 failure provenance fields
   (via `_pfail()` closure in `_fetch_token_age_data()`): `t3_requested_mint`,
   `t3_rpc_host_redacted`, `t3_rpc_methods_attempted`, `t3_request_ids`,
@@ -348,7 +350,7 @@ contract.
 |---|---|---|
 | Mainnet endpoint mismatch: Printer uses `api.mainnet-beta.solana.com`; prior upstream docs verification showed `api.mainnet.solana.com` | No production fix in SB-2.2; documented as implementation gap | Treat as official documentation naming conflict / unresolved compatibility question until a later approved live-test or official source resolves it |
 | T3 failure paths returned bare `{failure_type, failure_message}` with no partial trace | V2-2AL.4A (`11c6cf1`) | `_pfail()` closure now threads 8 audit fields into every failure return |
-| T3 failure provenance survives normalizer but not DB persistence | V2-2AL.4B (`538ce82`) verified gap | Before bounded live proof, preserve the eight fields durably in the DB or explicitly in the proof artifact; this does not block SB-3 or direct-signature T3 design |
+| T3 failure provenance survived normalizer but not DB persistence | V2-2AL.4B (`538ce82`) verified gap | Fixed by migration 027 and governed failure recording in the real T3 lane |
 
 ---
 
@@ -362,8 +364,8 @@ Before live T3 evidence is accepted by A3:
    bounded proof artifact.
 4. Bounded live proof passes on an approved mint
    (`6LsqJCJ1p98UG3HYx1UuPgqNjTzAcYFdw4nSzfPzpump`).
-5. SB-6 finality contract (commitment level and minimum-finality rule) explicitly
-   approved by operator before any T3 evidence satisfies A3.
+5. Finalized commitment and exact transaction attribution pass. A3 activation
+   remains separately operator-approved and is not implied by T3 evidence.
 
 No live RPC call should be made without meeting all of the above.
 
@@ -408,9 +410,9 @@ No live RPC call should be made without meeting all of the above.
 |---|---|
 | Official current public mainnet endpoint (`mainnet` vs `mainnet-beta`) | `UNKNOWN_REQUIRES_RESEARCH` - no live compatibility claim in SB-2.2 |
 | Solana public RPC rate limits for the public endpoint | Resolved in SB-2.3: numeric shared-endpoint limits are published but explicitly subject to change |
-| T3 commitment level and minimum-finality rule | `UNKNOWN_REQUIRES_RESEARCH` — reserved for SB-6 design decision |
-| Failure-provenance preservation path | Must be DB-durable or explicit proof artifact before bounded live proof |
-| Bounded live proof on approved mint | Pending after proof-readiness conditions |
+| T3 commitment level and minimum-finality rule | Resolved for T3: `finalized`; A3 remains separately paused |
+| Failure-provenance preservation path | DB-durable in governed failure rows through migration 027 |
+| Bounded live proof on approved mint | Passed on 2026-07-12; see real T3 closeout |
 | History pruning behavior under heavy load | `UNKNOWN_REQUIRES_RESEARCH` — behavior not formally documented for public endpoint |
 
 ---

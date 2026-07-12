@@ -1163,6 +1163,8 @@ _METADATA_FIELDS = (
     "t3_derived_token_created_at",
     "t3_derived_token_age_seconds",
     "t3_captured_at",
+    "t3_commitment",
+    "t3_finality_status",
 )
 
 
