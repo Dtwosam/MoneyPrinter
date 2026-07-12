@@ -23,15 +23,40 @@ Printer stack (see `README.md`).
 
 ## Endpoints Used By Printer
 
-| Request kind | Endpoint | Printer builder |
+| Request kind | Endpoint(s) | Printer builder |
 |---|---|---|
 | `token_discovery` | `GET /latest/dex/search?q={query}` | `build_dexscreener_smoke_transport` |
+| `dexscreener_fresh_profiles` | `GET /token-profiles/latest/v1` then `GET /tokens/v1/solana/{addrs}` | `build_dexscreener_fresh_profiles_transport` |
 | pair snapshot | `GET /latest/dex/pairs/solana/{pairAddress}` | `build_dexscreener_pair_snapshot_transport` |
 | token lookup | `GET /latest/dex/tokens/{tokenMint}` | `build_dexscreener_token_transport` |
 
-Only `token_discovery` is in the discovery request-plan catalog today
-(`_SOURCE_REQUEST_PLAN_CATALOG["dexscreener"]`). The pair/token endpoints are
-used for governed one-shot smoke checks and targeted snapshots.
+`token_discovery` and `dexscreener_fresh_profiles` are both READY in the
+discovery request-plan catalog. The pair/token endpoints are used for governed
+one-shot smoke checks and targeted snapshots.
+
+## Fresh-listing discovery vector (`dexscreener_fresh_profiles`)
+
+The keyless text-match search endpoint is a weak fresh-memecoin vector (returns
+the popular PumpFun protocol token and major tokens; see findings below). The
+fresh-profiles vector fixes this with two keyless GETs inside one governed
+request:
+
+1. `GET /token-profiles/latest/v1` — recently profiled tokens (`chainId`,
+   `tokenAddress`, `updatedAt`); documented 60 req/min; recency-ordered.
+   Filter to `chainId == "solana"`, de-duplicate, cap at 30 mints.
+2. `GET /tokens/v1/solana/{comma-joined-mints}` — batch pair data (same pair
+   shape as search: `baseToken.address`, `pairAddress`, `liquidity`, `volume`,
+   `txns`, `priceChange`, `pairCreatedAt`, `dexId`).
+
+Return shape: `{"pairs": [...]}`, consumed by
+`normalize_dexscreener_fixture_result` (Solana-only + infrastructure-mint
+exclusions still apply). Recency-of-listing is a categorical intake fact, not a
+score; no `token-boosts` amount, ordering position, or any numeric is used as a
+ranking. **Live proof (2026-07-12, isolated DB):** `COMPLETE`,
+`DEXSCREENER_LATEST_PROFILES` channel, 14 fresh Solana candidates found, 5
+distinct fresh memecoins accepted + persisted (TRACK_FAST/TRACK_NORMAL mix),
+1 request / 1 response / 0 failures — vs the search vector's single
+popular-token accept.
 
 ## Response Schema — `/latest/dex/search`
 
@@ -124,7 +149,7 @@ See `token-age-evidence-tier-registry.md` and `source-governor-evidence-rules.md
 
 | Item | Status |
 |---|---|
-| Whether a keyless recency/newness Solana discovery endpoint exists (e.g. token-boosts / token-profiles as a fresh-memecoin vector) | UNKNOWN_REQUIRES_RESEARCH |
+| Whether a keyless recency/newness Solana discovery endpoint exists | RESOLVED — `/token-profiles/latest/v1` (recency-ordered, keyless) enriched via `/tokens/v1/solana/{addrs}`; implemented as `dexscreener_fresh_profiles` and proven live |
 | DexScreener documented rate limits for `/latest/dex/search` (docs cite ~300 req/min for some endpoints; not re-verified here) | UNKNOWN_REQUIRES_RESEARCH |
 | Whether `search` ordering (by liquidity) is a documented guarantee vs observed behavior | UNKNOWN_REQUIRES_RESEARCH |
 

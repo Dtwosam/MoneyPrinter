@@ -147,6 +147,8 @@ class DiscoveryChannelLabelContractTests(unittest.TestCase):
             "DEXSCREENER_SEARCH",
             "DEXSCREENER_LATEST_BOOSTED",
             "DEXSCREENER_TOP_BOOSTED",
+            # Fresh-listing discovery vector added in the fresh-discovery lane
+            "DEXSCREENER_LATEST_PROFILES",
             "GECKOTERMINAL_NEW_POOL",
             "GECKOTERMINAL_TRENDING_POOL",
             "PUMPFUN_NEW_TOKEN",

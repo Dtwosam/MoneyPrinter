@@ -44,6 +44,10 @@ class DiscoveryChannelLabel(StrEnum):
     DEXSCREENER_SEARCH = "DEXSCREENER_SEARCH"
     DEXSCREENER_LATEST_BOOSTED = "DEXSCREENER_LATEST_BOOSTED"
     DEXSCREENER_TOP_BOOSTED = "DEXSCREENER_TOP_BOOSTED"
+    # Fresh-listing discovery vector: recently profiled Solana tokens enriched
+    # with pair data. Recency-of-listing is a categorical intake fact only, not
+    # a numeric measure or ordering key; hard eligibility gates apply regardless.
+    DEXSCREENER_LATEST_PROFILES = "DEXSCREENER_LATEST_PROFILES"
     GECKOTERMINAL_NEW_POOL = "GECKOTERMINAL_NEW_POOL"
     GECKOTERMINAL_TRENDING_POOL = "GECKOTERMINAL_TRENDING_POOL"
     PUMPFUN_NEW_TOKEN = "PUMPFUN_NEW_TOKEN"

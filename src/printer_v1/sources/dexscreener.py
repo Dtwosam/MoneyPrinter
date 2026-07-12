@@ -39,6 +39,14 @@ _SOLANA_INFRASTRUCTURE_MINTS = frozenset({
 DEXSCREENER_SMOKE_URL = "https://api.dexscreener.com/latest/dex/search?q=SOL"
 DEXSCREENER_PAIR_URL_TEMPLATE = "https://api.dexscreener.com/latest/dex/pairs/solana/{pair_address}"
 DEXSCREENER_TOKEN_URL_TEMPLATE = "https://api.dexscreener.com/latest/dex/tokens/{token_mint}"
+# Fresh-listing discovery vector (keyless, free — verified 2026-07-12):
+#   1. /token-profiles/latest/v1  -> recently profiled tokens (chainId, tokenAddress)
+#   2. /tokens/v1/solana/{addrs}  -> pair data for up to 30 comma-joined mints
+# token-profiles is documented at 60 req/min. This surfaces freshly listed
+# Solana memecoins rather than the popular-token repeats returned by search.
+DEXSCREENER_TOKEN_PROFILES_URL = "https://api.dexscreener.com/token-profiles/latest/v1"
+DEXSCREENER_TOKENS_BATCH_URL_TEMPLATE = "https://api.dexscreener.com/tokens/v1/solana/{addresses}"
+_DEXSCREENER_FRESH_PROFILES_MAX_TOKENS = 30
 DEXSCREENER_SMOKE_TIMEOUT_SECONDS = 5.0
 DEXSCREENER_PUBLIC_API_HEADERS = {
     "User-Agent": "PrinterV1/0.1 (+paper-only source check)",
@@ -212,6 +220,119 @@ def build_dexscreener_pair_snapshot_transport(
         timeout_seconds=timeout_seconds,
         endpoint=endpoint,
     )
+
+
+def _dexscreener_http_get_json(endpoint: str, timeout_seconds: float) -> Any:
+    """GET one DexScreener endpoint and return parsed JSON.
+
+    Raises url_error.HTTPError / OSError / json.JSONDecodeError on failure so the
+    caller can map to the correct fixture_status. No auth, no API key.
+    """
+    request = url_request.Request(endpoint, headers=DEXSCREENER_PUBLIC_API_HEADERS, method="GET")
+    with url_request.urlopen(request, timeout=timeout_seconds) as response:
+        raw_body = response.read(2_000_000)
+        return json.loads(raw_body.decode("utf-8"))
+
+
+def build_dexscreener_fresh_profiles_transport(
+    *,
+    timeout_seconds: float = DEXSCREENER_SMOKE_TIMEOUT_SECONDS,
+    max_tokens: int = _DEXSCREENER_FRESH_PROFILES_MAX_TOKENS,
+    profiles_endpoint: str = DEXSCREENER_TOKEN_PROFILES_URL,
+    tokens_endpoint_template: str = DEXSCREENER_TOKENS_BATCH_URL_TEMPLATE,
+) -> Callable[[SourceAdapterContext], Mapping[str, Any]]:
+    """Governed fresh-listing discovery transport for Solana memecoins.
+
+    Two keyless GETs inside one governed request/response:
+      1. latest token profiles -> distinct Solana token mints (recency-ordered),
+      2. one batch token-pairs lookup -> pair data for those mints.
+
+    Returns a `{"pairs": [...]}` payload consumed by
+    normalize_dexscreener_fixture_result, which applies the Solana-only and
+    infrastructure-mint exclusion filters. Recency is a categorical intake fact;
+    no boost amount, ordering position, or any numeric is used as a score.
+    """
+    cap = max(1, min(int(max_tokens), _DEXSCREENER_FRESH_PROFILES_MAX_TOKENS))
+
+    def transport(context: SourceAdapterContext) -> Mapping[str, Any]:
+        del context
+        # Step 1 — latest profiles.
+        try:
+            profiles = _dexscreener_http_get_json(profiles_endpoint, timeout_seconds)
+        except url_error.HTTPError as exc:
+            if exc.code == 429:
+                return MappingProxyType({"fixture_status": "rate_limited", "retry_after_seconds": 60})
+            return MappingProxyType({
+                "fixture_status": "failure",
+                "failure_type": "dexscreener_profiles_http_error",
+                "failure_message": f"DexScreener profiles HTTP error {exc.code}",
+            })
+        except (OSError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            return MappingProxyType({
+                "fixture_status": "failure",
+                "failure_type": "dexscreener_profiles_transport_failure",
+                "failure_message": str(exc),
+            })
+
+        if not isinstance(profiles, list):
+            return MappingProxyType({
+                "fixture_status": "failure",
+                "failure_type": "dexscreener_profiles_malformed",
+                "failure_message": "DexScreener token-profiles did not return a list",
+            })
+
+        seen: set[str] = set()
+        solana_addrs: list[str] = []
+        for entry in profiles:
+            if not isinstance(entry, Mapping) or entry.get("chainId") != "solana":
+                continue
+            addr = entry.get("tokenAddress")
+            if isinstance(addr, str) and addr and addr not in seen:
+                seen.add(addr)
+                solana_addrs.append(addr)
+            if len(solana_addrs) >= cap:
+                break
+
+        if not solana_addrs:
+            return MappingProxyType({
+                "fixture_status": "failure",
+                "failure_type": "dexscreener_no_solana_profiles",
+                "failure_message": "DexScreener latest profiles contained no Solana tokens",
+            })
+
+        # Step 2 — batch pair lookup for the fresh Solana mints.
+        endpoint = tokens_endpoint_template.format(addresses=",".join(solana_addrs))
+        try:
+            pairs = _dexscreener_http_get_json(endpoint, timeout_seconds)
+        except url_error.HTTPError as exc:
+            if exc.code == 429:
+                return MappingProxyType({"fixture_status": "rate_limited", "retry_after_seconds": 60})
+            return MappingProxyType({
+                "fixture_status": "failure",
+                "failure_type": "dexscreener_tokens_http_error",
+                "failure_message": f"DexScreener tokens HTTP error {exc.code}",
+            })
+        except (OSError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            return MappingProxyType({
+                "fixture_status": "failure",
+                "failure_type": "dexscreener_tokens_transport_failure",
+                "failure_message": str(exc),
+            })
+
+        if not isinstance(pairs, list):
+            return MappingProxyType({
+                "fixture_status": "failure",
+                "failure_type": "dexscreener_tokens_malformed",
+                "failure_message": "DexScreener tokens batch did not return a list",
+            })
+
+        return MappingProxyType({
+            "pairs": pairs,
+            "_source_status_code": 200,
+            "_fresh_profiles_solana_count": len(solana_addrs),
+        })
+
+    return transport
 
 
 def normalize_dexscreener_fixture_result(

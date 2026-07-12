@@ -179,6 +179,7 @@ from printer_v1.operator_review.reports import build_operator_report_payload
 from printer_v1.sources.contracts import build_governed_source_request
 from printer_v1.sources.dexscreener import (
     build_dexscreener_adapter,
+    build_dexscreener_fresh_profiles_transport,
     build_dexscreener_pair_snapshot_transport,
     build_dexscreener_smoke_transport,
 )
@@ -1339,6 +1340,8 @@ def main_collect_real_evidence_once(argv: Sequence[str] | None = None) -> int:
 
 def _source_channel_for_dexscreener(request_kind: str | None = None) -> tuple[str, str]:
     """Return (source_channel, source_channel_reason) for a DexScreener request."""
+    if request_kind == "dexscreener_fresh_profiles":
+        return DiscoveryChannelLabel.DEXSCREENER_LATEST_PROFILES.value, "dexscreener_latest_profiles_fresh_vector"
     if request_kind == "boosted_token_reference":
         return DiscoveryChannelLabel.DEXSCREENER_LATEST_BOOSTED.value, "dexscreener_boosted_token_reference"
     return DiscoveryChannelLabel.DEXSCREENER_SEARCH.value, "dexscreener_default_search_query"
@@ -1401,8 +1404,11 @@ _SOURCE_REQUEST_PLAN_CATALOG: dict[str, list[tuple[str, str]]] = {
         ("geckoterminal_trending_pool_reference", _PLAN_STATUS_READY),
     ],
     "dexscreener": [
-        # Single HTTP search endpoint today; additional kinds require new query handling.
+        # token_discovery: keyless /latest/dex/search (text-match, popular repeats).
+        # dexscreener_fresh_profiles: keyless /token-profiles/latest -> /tokens/v1
+        #   batch — freshly listed Solana memecoins (fresh discovery vector).
         ("token_discovery", _PLAN_STATUS_READY),
+        ("dexscreener_fresh_profiles", _PLAN_STATUS_READY),
     ],
     "pumpportal": [
         # pumpfun_launch_stream: READY — live transport via build_pumpportal_live_transport().
@@ -1564,8 +1570,22 @@ def _execute_plan_item(
         display_request_kind = request_kind
     else:  # dexscreener
         channel, channel_reason = _source_channel_for_dexscreener(request_kind)
-        query = str(args.query or "pump").strip() or "pump"
-        endpoint = f"https://api.dexscreener.com/latest/dex/search?q={quote(query)}"
+        is_fresh_profiles = request_kind == "dexscreener_fresh_profiles"
+        if is_fresh_profiles:
+            # Fresh-listing vector: latest Solana token profiles -> batch pair data.
+            query = "dexscreener_fresh_profiles"
+            endpoint = "https://api.dexscreener.com/token-profiles/latest/v1 + /tokens/v1/solana/{addrs}"
+            default_transport = build_dexscreener_fresh_profiles_transport(
+                timeout_seconds=args.timeout_seconds
+            )
+            display_request_kind = "dexscreener_fresh_profiles"
+        else:
+            query = str(args.query or "pump").strip() or "pump"
+            endpoint = f"https://api.dexscreener.com/latest/dex/search?q={quote(query)}"
+            default_transport = build_dexscreener_smoke_transport(
+                timeout_seconds=args.timeout_seconds, endpoint=endpoint
+            )
+            display_request_kind = "token_discovery"
         source_request = build_governed_source_request(
             "dexscreener",
             request_kind or "token_discovery",
@@ -1580,11 +1600,8 @@ def _execute_plan_item(
         )
         adapter = build_dexscreener_adapter(
             enabled=True,
-            smoke_transport=transport_fn or build_dexscreener_smoke_transport(
-                timeout_seconds=args.timeout_seconds, endpoint=endpoint
-            ),
+            smoke_transport=transport_fn or default_transport,
         )
-        display_request_kind = "token_discovery"
 
     result = execute_source_request_with_governor(resolved, source_request, adapter, recent_request_count=0)
     return {

@@ -29,6 +29,7 @@ SOURCE_REGISTRY: dict[str, SourceDefinition] = {
         supports_solana=True,
         allowed_request_kinds=(
             "token_discovery",
+            "dexscreener_fresh_profiles",
             "pair_market_snapshot",
             "token_market_snapshot",
             "boosted_token_reference",
@@ -181,6 +182,7 @@ SOURCE_REGISTRY: dict[str, SourceDefinition] = {
             "pumpswap_pool_confirmation",
             "pumpswap_migration_pool_reference",
             "pumpswap_liquidity_reference",
+            "pumpswap_onchain_pool_confirmation",
         ),
         default_rate_limit_per_minute=20,
         stale_after_seconds=120,
