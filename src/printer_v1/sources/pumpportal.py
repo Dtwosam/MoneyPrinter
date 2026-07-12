@@ -130,9 +130,15 @@ def fixture_failure_transport(
 
 _PUMPPORTAL_WS_URL = "wss://pumpportal.fun/api/data"
 _PUMPPORTAL_SUBSCRIBE_NEW_TOKEN = {"method": "subscribeNewToken"}
-_PUMPPORTAL_MAX_EVENTS_DEFAULT = 5
-_PUMPPORTAL_DURATION_SECONDS_DEFAULT = 30.0
+
+# Hard ceilings — callers may not exceed these values.
+_PUMPPORTAL_MAX_EVENTS_CEILING = 5
+_PUMPPORTAL_DURATION_SECONDS_CEILING = 120.0
 _PUMPPORTAL_CONNECT_TIMEOUT_DEFAULT = 10.0
+
+# Defaults for normal discovery runs (conservative 30s window).
+_PUMPPORTAL_MAX_EVENTS_DEFAULT = _PUMPPORTAL_MAX_EVENTS_CEILING
+_PUMPPORTAL_DURATION_SECONDS_DEFAULT = 30.0
 
 
 def build_pumpportal_live_transport(
@@ -150,16 +156,16 @@ def build_pumpportal_live_transport(
     first). connect_timeout_seconds caps the initial WebSocket handshake.
     Zero reconnects. No background threads. No scheduler jobs. No DB writes.
 
-    Raises ValueError if any bound exceeds the approved maximum.
+    Raises ValueError if any bound exceeds the approved ceiling.
     """
-    if max_events > _PUMPPORTAL_MAX_EVENTS_DEFAULT:
+    if max_events > _PUMPPORTAL_MAX_EVENTS_CEILING:
         raise ValueError(
-            f"max_events {max_events} exceeds approved limit of {_PUMPPORTAL_MAX_EVENTS_DEFAULT}"
+            f"max_events {max_events} exceeds approved ceiling of {_PUMPPORTAL_MAX_EVENTS_CEILING}"
         )
-    if duration_seconds > _PUMPPORTAL_DURATION_SECONDS_DEFAULT:
+    if duration_seconds > _PUMPPORTAL_DURATION_SECONDS_CEILING:
         raise ValueError(
-            f"duration_seconds {duration_seconds} exceeds approved limit of "
-            f"{_PUMPPORTAL_DURATION_SECONDS_DEFAULT}"
+            f"duration_seconds {duration_seconds} exceeds approved ceiling of "
+            f"{_PUMPPORTAL_DURATION_SECONDS_CEILING}"
         )
     if connect_timeout_seconds > _PUMPPORTAL_CONNECT_TIMEOUT_DEFAULT:
         raise ValueError(
@@ -227,6 +233,22 @@ def build_pumpportal_live_transport(
         )
 
     return transport
+
+
+def build_pumpportal_t2_proof_transport(
+    *,
+    max_events: int = 1,
+    duration_seconds: float = _PUMPPORTAL_DURATION_SECONDS_CEILING,
+) -> Callable[[SourceAdapterContext], Mapping[str, Any]]:
+    """Returns a bounded T2-proof transport: one event, up to 120 seconds.
+
+    Wraps build_pumpportal_live_transport with T2-proof-specific defaults.
+    Stops immediately on receiving the first event. Duration ceiling is 120s.
+    """
+    return build_pumpportal_live_transport(
+        max_events=max_events,
+        duration_seconds=duration_seconds,
+    )
 
 
 def normalize_pumpportal_payload(

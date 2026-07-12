@@ -210,6 +210,7 @@ from printer_v1.sources.geckoterminal_15m import (
 from printer_v1.sources.pumpportal import (
     build_pumpportal_adapter,
     build_pumpportal_live_transport,
+    build_pumpportal_t2_proof_transport,
 )
 from printer_v1.sources.pumpswap import (
     build_pumpswap_adapter,
@@ -2691,6 +2692,65 @@ def main_discover_candidates_once(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         payload = build_discover_candidates_once_payload(args)
+        _print_payload(payload, args.format)
+        return 0
+    except Exception as exc:
+        return _print_error(exc)
+
+
+def main_run_pumpportal_t2_launch_proof(argv: Sequence[str] | None = None) -> int:
+    """Bounded live T2 token-age launch proof via PumpPortal WebSocket.
+
+    One governed connection, one event, up to 120 seconds, fresh isolated DB.
+    Proves: real token_created_at, token_age_seconds, token_age_evidence_tier=T2.
+    Migration events, malformed events and duplicates are rejected automatically.
+    No memory generation, retrieval, paper decisions, positions, trades, or PnL.
+    """
+    parser = _base_parser(
+        "Bounded live T2 token-age proof (one PumpPortal launch event, max 120s).",
+        ("json", "text"),
+    )
+    parser.add_argument("--operator-approved", action="store_true")
+    parser.add_argument(
+        "--duration-seconds",
+        type=float,
+        default=120.0,
+        dest="duration_seconds",
+        help="Max seconds to wait for one launch event (1.0-120.0). Default: 120.",
+    )
+    parser.add_argument("--request-key", default="t2-launch-proof")
+    args = parser.parse_args(argv)
+
+    if not args.operator_approved:
+        return _print_error(PermissionError(
+            "--operator-approved is required for live PumpPortal T2 proof"
+        ))
+
+    duration = min(max(float(args.duration_seconds), 1.0), 120.0)
+
+    try:
+        transport = build_pumpportal_t2_proof_transport(duration_seconds=duration)
+    except (RuntimeError, ValueError) as exc:
+        return _print_error(exc)
+
+    discover_args = argparse.Namespace(
+        operator_approved=True,
+        chain="solana",
+        max_candidates=1,
+        enrich_15m_market_evidence=False,
+        query="pumpfun",
+        timeout_seconds=10.0,
+        source_name="pumpportal",
+        request_kind="pumpfun_launch_stream",
+        request_key=str(args.request_key or "t2-launch-proof"),
+        max_source_requests=1,
+        format=args.format,
+        db_path=args.db_path,
+        project_root=args.project_root,
+    )
+
+    try:
+        payload = build_discover_candidates_once_payload(discover_args, transport=transport)
         _print_payload(payload, args.format)
         return 0
     except Exception as exc:
