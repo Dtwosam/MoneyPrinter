@@ -119,8 +119,12 @@ dropped.
 | `missing_pair_or_mint_identity` | `pair_address` or `token_mint` absent |
 | `infrastructure_quote_mint` | `token_mint in {WSOL, USDC, USDT}` |
 
-If no pair survives, the result is `FAILED /
-dexscreener_missing_critical_fixture_fields`.
+If the source returns a valid empty `pairs: []` list, Printer records a
+`PARTIAL / ACCEPTABLE_PARTIAL_DATA` no-match result with no source failure.
+Only a missing or non-list `pairs` field is malformed and fails as
+`dexscreener_malformed_fixture`. If pairs are present but none survive the
+categorical filters, the existing missing-critical-data outcome remains
+applicable.
 
 ## Evidence Contribution
 

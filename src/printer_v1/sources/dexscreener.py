@@ -364,7 +364,7 @@ def normalize_dexscreener_fixture_result(
         )
 
     pairs = payload.get("pairs")
-    if not isinstance(pairs, list) or not pairs:
+    if not isinstance(pairs, list):
         return NormalizedSourceResult(
             source_name=DEXSCREENER_SOURCE_NAME,
             request_kind=request_kind,
@@ -372,6 +372,18 @@ def normalize_dexscreener_fixture_result(
             data_quality_label=DataQualityLabel.MISSING_CRITICAL_DATA,
             failure_type="dexscreener_malformed_fixture",
             failure_message="DexScreener fixture missing pairs",
+        )
+    if not pairs:
+        return NormalizedSourceResult(
+            source_name=DEXSCREENER_SOURCE_NAME,
+            request_kind=request_kind,
+            source_status=SourceStatus.PARTIAL,
+            data_quality_label=DataQualityLabel.ACCEPTABLE_PARTIAL_DATA,
+            normalized_payload=MappingProxyType({
+                "pairs": [],
+                "no_matching_pairs": True,
+                "no_matching_pairs_reason": "source_returned_empty_pairs",
+            }),
         )
 
     normalized_pairs = []

@@ -164,11 +164,32 @@ class Phase24DexScreenerAdapterDisabledTests(unittest.TestCase):
         self.assertEqual(result.source_status, SourceStatus.STALE)
         self.assertEqual(result.data_quality_label, DataQualityLabel.STALE_DATA)
 
-    def test_fixture_malformed_response_is_invalid_result(self):
+    def test_fixture_empty_pairs_is_valid_no_match_result(self):
         result = normalize_dexscreener_fixture_result({"pairs": []}, request_kind="token_discovery")
-        self.assertEqual(result.source_status, SourceStatus.FAILED)
-        self.assertEqual(result.data_quality_label, DataQualityLabel.MISSING_CRITICAL_DATA)
-        self.assertEqual(result.failure_type, "dexscreener_malformed_fixture")
+        self.assertEqual(result.source_status, SourceStatus.PARTIAL)
+        self.assertEqual(result.data_quality_label, DataQualityLabel.ACCEPTABLE_PARTIAL_DATA)
+        self.assertIsNone(result.failure_type)
+        self.assertTrue(result.normalized_payload["no_matching_pairs"])
+
+    def test_fixture_empty_pairs_records_governed_response_not_failure(self):
+        connection = self.make_db()
+        request = build_governed_source_request("dexscreener", "token_discovery")
+        adapter = build_dexscreener_adapter(
+            enabled=True,
+            fixture_transport=fixture_success_transport({"pairs": []}),
+        )
+
+        result = execute_source_request_with_governor(connection, request, adapter)
+
+        self.assertEqual(result.normalized_result.source_status, SourceStatus.PARTIAL)
+        self.assertEqual(result.normalized_result.data_quality_label, DataQualityLabel.ACCEPTABLE_PARTIAL_DATA)
+        self.assertIsNotNone(result.response_record)
+        self.assertIsNone(result.failure_record)
+        self.assertEqual(table_count(connection, "printer_source_requests"), 1)
+        self.assertEqual(table_count(connection, "printer_source_responses"), 1)
+        self.assertEqual(table_count(connection, "printer_source_failures"), 0)
+        for table_name in DOWNSTREAM_TABLES:
+            self.assertEqual(table_count(connection, table_name), 0, table_name)
 
     def test_fixture_rate_limit_behavior_is_recorded_honestly_by_governor(self):
         connection = self.make_db()
