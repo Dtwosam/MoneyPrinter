@@ -56,6 +56,7 @@ def process_discovery_payload(
     now: datetime | None = None,
     source_channel: str | None = None,
     source_channel_reason: str | None = None,
+    create_tracking_handoff: bool = True,
 ) -> list[dict[str, Any]]:
     current_time = now or utc_now()
     validate_discovery_payload(source_name, payload, current_time)
@@ -107,7 +108,12 @@ def process_discovery_payload(
             )
         queue_id = None
         scheduler_job_id = None
-        if token_id is not None and pair_id is not None and tracking_lane is not None:
+        if (
+            create_tracking_handoff
+            and token_id is not None
+            and pair_id is not None
+            and tracking_lane is not None
+        ):
             queue_id = route_candidate_to_tracking_queue(
                 db_path_or_conn,
                 token_id=token_id,

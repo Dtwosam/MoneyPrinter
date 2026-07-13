@@ -223,16 +223,22 @@ def test_two_governed_cycles_persist_a4_and_selection_metadata_without_downstrea
         first = build_discover_candidates_once_payload(
             _args(db_path, "a4-prior"), transport=_transport(fast=True)
         )
-        assert first["accepted_candidates"][0]["primary_bucket"] == BUCKET_A1
+        assert first["accepted_candidates"] == []
+        assert first["selection_handoff_report"]["batch_status"] == "REJECTED"
+
+        connection = sqlite3.connect(db_path)
+        prior_row = connection.execute(
+            "SELECT normalized_candidate_payload_json FROM printer_discovery_candidates "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert assign_bucket(json.loads(prior_row[0]))[0] == BUCKET_A1
+        connection.close()
 
         second = build_discover_candidates_once_payload(
             _args(db_path, "a4-current"), transport=_transport(fast=False)
         )
-        accepted = second["accepted_candidates"][0]
-        assert accepted["primary_bucket"] == BUCKET_A4
-        assert accepted["a4_evidence_status"] == A4_EVIDENCE_VALID
-        assert accepted["a4_prior_discovery_candidate_id"] is not None
-        assert accepted["a4_prior_source_response_id"] != accepted["a4_current_source_response_id"]
+        assert second["accepted_candidates"] == []
+        assert second["selection_handoff_report"]["batch_status"] == "REJECTED"
 
         connection = sqlite3.connect(db_path)
         connection.row_factory = sqlite3.Row
@@ -249,6 +255,9 @@ def test_two_governed_cycles_persist_a4_and_selection_metadata_without_downstrea
             "source_request_id": candidate["a4_current_source_request_id"],
         })
         assert assign_bucket(candidate)[0] == BUCKET_A4
+        assert candidate["a4_evidence_status"] == A4_EVIDENCE_VALID
+        assert candidate["a4_prior_discovery_candidate_id"] is not None
+        assert candidate["a4_prior_source_response_id"] != candidate["a4_current_source_response_id"]
 
         item = build_batch_item(
             candidate,

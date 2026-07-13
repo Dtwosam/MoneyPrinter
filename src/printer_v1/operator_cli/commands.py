@@ -66,10 +66,16 @@ from printer_v1.discovery.classifier import (
 from printer_v1.discovery.selection_batch import (
     ACTIVITY_REVIVING,
     A4_EVIDENCE_VALID,
+    BATCH_STATUS_ASSEMBLED,
+    BATCH_STATUS_REJECTED,
+    ITEM_STATUS_REJECTED,
+    ITEM_STATUS_SELECTED,
     assign_bucket,
+    apply_selection_cooldown_gates,
     BUCKET_A1,
     BUCKET_D1,
     build_age_activity_report,
+    build_batch_item,
     build_classifier_quota_view,
     build_field_completeness_report,
     build_pair_age_context_report,
@@ -79,6 +85,7 @@ from printer_v1.discovery.selection_batch import (
     evaluate_failed_pump_evidence,
     filter_within_response_duplicates,
     fingerprint_change_is_meaningful,
+    persist_selection_batch,
     STNP_MIGRATION,
 )
 from printer_v1.discovery.contracts import DiscoveryChannelLabel, DiscoveryOutputAction
@@ -2537,6 +2544,7 @@ def build_discover_candidates_once_payload(
             # H.6: stamp per-candidate response id so the persistence grouping step
             # can route each candidate to the correct process_discovery_payload call.
             candidate["source_response_id"] = exec_rec["response_id"]
+            candidate["source_request_id"] = exec_rec["request_id"]
             # V2-2M.2: stamp response-level quality signals per-candidate so the
             # audit-only eligibility gate inside _select_discovery_candidates() can
             # check them without accessing the exec_rec closure.
@@ -2571,9 +2579,14 @@ def build_discover_candidates_once_payload(
     inspected: list[dict[str, Any]] = []
     audit_only_pool: list[dict[str, Any]] = []
     discovery_results: list[dict[str, Any]] = []
+    audited_discovery_results: list[dict[str, Any]] = []
     _quota_supplement: list[dict[str, Any]] = []
     _quota_ok: bool = True
     _quota_violations: list[str] = []
+    _cooldown_eligible: list[dict[str, Any]] = []
+    _cooldown_rejected: list[dict[str, Any]] = []
+    _active_handoff_candidates: list[dict[str, Any]] = []
+    _selection_batch_result: dict[str, Any] | None = None
     _group_a_quota_report: dict[str, Any] = {
         "quota_ok": True,
         "quota_violations": [],
@@ -2641,9 +2654,19 @@ def build_discover_candidates_once_payload(
             )
 
         # V2-2M: quota supplement — check batch diversity; draw from audit_only_pool if needed.
-        # Quota check is informational only; audit-only candidates never enter the tracking path.
-        _group_a_quota_report = build_classifier_quota_view(
+        # Quota is a hard handoff gate; audit-only candidates never enter active tracking.
+        with sqlite3.connect(resolved) as _selection_connection:
+            _next_batch_seq = int(_selection_connection.execute(
+                "SELECT COALESCE(MAX(id), 0) + 1 FROM printer_selection_batches"
+            ).fetchone()[0])
+        _cooldown_eligible, _cooldown_rejected = apply_selection_cooldown_gates(
+            resolved,
             accepted,
+            _next_batch_seq,
+        )
+
+        _group_a_quota_report = build_classifier_quota_view(
+            _cooldown_eligible,
             audit_only_pool,
             max_items=min(10, max(1, args.max_candidates)),
         )
@@ -2659,21 +2682,107 @@ def build_discover_candidates_once_payload(
             if (candidate.get("token_mint"), candidate.get("pair_address"))
             in _selected_audit_identities
         ]
+        if not _quota_ok:
+            _quota_supplement = []
 
-        if accepted:
-            # V2-2M active-tracking guard: audit_only candidates must never reach persistence.
-            for _c in accepted:
+        _quota_failure_reason = (
+            "BATCH_QUOTA_FAILED:" + ",".join(_quota_violations)
+            if _quota_violations else None
+        )
+        _batch_items: list[dict[str, Any]] = []
+        for _candidate in _group_a_quota_report["selected_candidates"]:
+            _is_active = _candidate.get("candidate_kind") == "ACTIVE_TRACKING"
+            _batch_items.append(build_batch_item(
+                _candidate,
+                item_status=ITEM_STATUS_SELECTED if _quota_ok else ITEM_STATUS_REJECTED,
+                primary_bucket=_candidate.get("primary_bucket"),
+                bucket_name=_candidate.get("bucket_name"),
+                selection_reason=(
+                    "CLASSIFIER_QUOTA_SELECTED"
+                    if _is_active else "AUDIT_ONLY_QUOTA_SUPPORT"
+                ) if _quota_ok else None,
+                rejection_reason=None if _quota_ok else _quota_failure_reason,
+                tracking_lane=_candidate.get("tracking_lane"),
+                operator_approved=True,
+            ))
+        for _candidate in _group_a_quota_report["rejected_candidates"]:
+            _batch_items.append(build_batch_item(
+                _candidate,
+                item_status=ITEM_STATUS_REJECTED,
+                primary_bucket=_candidate.get("primary_bucket"),
+                bucket_name=_candidate.get("bucket_name"),
+                rejection_reason=_candidate.get("rejection_reason"),
+                tracking_lane=_candidate.get("tracking_lane"),
+                operator_approved=True,
+            ))
+        for _candidate in _cooldown_rejected:
+            _bucket, _bucket_name = assign_bucket(_candidate)
+            _batch_items.append(build_batch_item(
+                _candidate,
+                item_status=ITEM_STATUS_REJECTED,
+                primary_bucket=_bucket,
+                bucket_name=_bucket_name,
+                rejection_reason=_candidate.get("rejection_reason"),
+                tracking_lane=_candidate.get("tracking_lane"),
+                operator_approved=True,
+            ))
+
+        _selection_batch_result = persist_selection_batch(
+            resolved,
+            None,
+            _batch_items,
+            {
+                "candidate_pool_total": len(accepted) + len(audit_only_pool),
+                "quota_ok": _quota_ok,
+                "quota_violations": _quota_violations,
+                "cooldown_eligible_count": len(_cooldown_eligible),
+                "cooldown_rejected_count": len(_cooldown_rejected),
+                "selected_active_tracking_count": (
+                    _group_a_quota_report["selected_active_tracking_count"]
+                    if _quota_ok else 0
+                ),
+                "selected_audit_only_count": (
+                    _group_a_quota_report["selected_audit_only_count"]
+                    if _quota_ok else 0
+                ),
+            },
+            operator_approved=True,
+            batch_status=BATCH_STATUS_ASSEMBLED if _quota_ok else BATCH_STATUS_REJECTED,
+            pool_quality_notes=(
+                "quota_valid_production_handoff"
+                if _quota_ok else _quota_failure_reason
+            ),
+        )
+
+        if _quota_ok:
+            _active_handoff_candidates = [
+                candidate
+                for candidate in _group_a_quota_report["selected_candidates"]
+                if candidate.get("candidate_kind") == "ACTIVE_TRACKING"
+            ]
+
+        _active_handoff_identities = {
+            (candidate.get("token_mint"), candidate.get("pair_address"))
+            for candidate in _active_handoff_candidates
+        }
+        _evidence_only_candidates = [
+            candidate for candidate in accepted
+            if (candidate.get("token_mint"), candidate.get("pair_address"))
+            not in _active_handoff_identities
+        ]
+
+        def _persist_candidate_group(
+            candidates: list[dict[str, Any]],
+            *,
+            create_tracking_handoff: bool,
+        ) -> list[dict[str, Any]]:
+            _persist_groups: dict[tuple, list[dict[str, Any]]] = {}
+            for _c in candidates:
                 if _c.get("audit_only"):
                     raise ValueError(
-                        f"audit_only candidate must not enter process_discovery_payload: {_c.get('token_mint')}"
+                        "audit_only candidate must not enter discovery persistence: "
+                        f"{_c.get('token_mint')}"
                     )
-            # H.6: group accepted candidates by (source_channel, source_channel_reason,
-            # source_response_id) so each group is persisted with its own correct channel.
-            # process_discovery_payload overwrites candidate["source_channel"] with the
-            # outer source_channel param; grouping ensures that param is the right one
-            # for every candidate in the group instead of always using the primary channel.
-            _persist_groups: dict[tuple, list[dict[str, Any]]] = {}
-            for _c in accepted:
                 _key = (
                     _c.get("source_channel"),
                     _c.get("source_channel_reason"),
@@ -2681,6 +2790,7 @@ def build_discover_candidates_once_payload(
                 )
                 _persist_groups.setdefault(_key, []).append(_c)
 
+            persisted_results: list[dict[str, Any]] = []
             for (_ch, _ch_reason, _resp_id), _grp_candidates in _persist_groups.items():
                 _grp_payload = {
                     "source_status": primary["result"].normalized_result.source_status.value,
@@ -2695,8 +2805,9 @@ def build_discover_candidates_once_payload(
                     _grp_payload,
                     source_channel=_ch,
                     source_channel_reason=_ch_reason,
+                    create_tracking_handoff=create_tracking_handoff,
                 )
-                discovery_results.extend(_grp_results)
+                persisted_results.extend(_grp_results)
                 # Update per-request persisted count for accurate source_budget_report.
                 if _grp_results:
                     for _er in execution_records:
@@ -2707,6 +2818,16 @@ def build_discover_candidates_once_payload(
                         ):
                             _er["candidates_persisted"] += len(_grp_results)
                             break
+            return persisted_results
+
+        discovery_results.extend(_persist_candidate_group(
+            _active_handoff_candidates,
+            create_tracking_handoff=True,
+        ))
+        audited_discovery_results.extend(_persist_candidate_group(
+            _evidence_only_candidates,
+            create_tracking_handoff=False,
+        ))
 
     after_counts = get_core_table_counts(resolved, project_root)
     deltas = {
@@ -2723,7 +2844,7 @@ def build_discover_candidates_once_payload(
             ORDER BY id DESC
             LIMIT ?
             """,
-            (len(discovery_results),),
+            (len(discovery_results) + len(audited_discovery_results),),
         ).fetchall()
 
     status = get_operator_db_status(resolved, project_root)
@@ -2811,17 +2932,25 @@ def build_discover_candidates_once_payload(
         # candidates_seen_total and candidates_normalized_total are equal today
         # (normalize_candidates is 1:1 with extracted items). Both are reported
         # so a future parser change that drops rows shows a visible divergence.
-        # Selection-stage fields are NOT_MEASURED — this command does not invoke
-        # V2-2C selection-batch logic.
+        # Selection-stage fields reflect the hard-gated production handoff.
         "candidate_stage_report": {
             "candidates_seen_total": len(all_normalized_pairs),
             "candidates_normalized_total": len(all_normalized_pairs),
-            "candidates_persisted_total": len(discovery_results),
+            "candidates_persisted_total": (
+                len(discovery_results) + len(audited_discovery_results)
+            ),
             # Includes within-response rejections (H.4) and post-filter gate rejections.
             "candidates_rejected_pre_persistence": _total_pre_persistence_rejections,
-            "candidates_considered_for_selection": "NOT_MEASURED",
-            "candidates_selected": "NOT_MEASURED",
-            "candidates_rejected_by_selection": "NOT_MEASURED",
+            "candidates_considered_for_selection": len(_cooldown_eligible) + len(audit_only_pool),
+            "candidates_selected": len(discovery_results),
+            "candidates_rejected_by_selection": (
+                len(_cooldown_rejected)
+                + len(_group_a_quota_report.get("rejected_candidates", []))
+                + (
+                    len(_group_a_quota_report.get("selected_candidates", []))
+                    if not _quota_ok else 0
+                )
+            ),
             # V2-2M audit-only pool stage counts (all int, H.1 invariant preserved).
             "candidates_audit_only_total": len(audit_only_pool),
             "candidates_audit_only_watch_only": _ao_watch_only_count,
@@ -2843,6 +2972,37 @@ def build_discover_candidates_once_payload(
         # V2-2M audit-only pool and quota supplement reporting hook.
         "audit_only_report": _audit_only_report,
         "group_a_quota_report": _group_a_quota_report,
+        "selection_handoff_report": {
+            "batch_id": (
+                _selection_batch_result.get("batch_id")
+                if _selection_batch_result else None
+            ),
+            "batch_status": (
+                _selection_batch_result.get("batch_status")
+                if _selection_batch_result else None
+            ),
+            "quota_hard_gate_passed": _quota_ok,
+            "quota_violations": _quota_violations,
+            "cooldown_candidates_checked": len(accepted),
+            "cooldown_eligible_count": len(_cooldown_eligible),
+            "cooldown_rejected_count": len(_cooldown_rejected),
+            "cooldown_rejections": [
+                {
+                    "token_mint": candidate.get("token_mint"),
+                    "pair_address": candidate.get("pair_address"),
+                    "rejection_reason": candidate.get("rejection_reason"),
+                }
+                for candidate in _cooldown_rejected
+            ],
+            "active_handoff_count": len(discovery_results),
+            "discovery_evidence_only_count": len(audited_discovery_results),
+            "audit_only_handoff_count": len(_quota_supplement),
+            "rotation_state_recorded": bool(
+                _selection_batch_result
+                and _selection_batch_result.get("rotation_state_recorded")
+                and _quota_ok
+            ),
+        },
         "source_channel": _pr["source_channel"] if _pr else None,
         "source_channel_reason": _pr["source_channel_reason"] if _pr else None,
         "accepted_candidates": [
@@ -2867,7 +3027,7 @@ def build_discover_candidates_once_payload(
                 "txns_15m": candidate.get("txns_15m"),
                 "txns_15m_completeness": candidate.get("txns_15m_completeness"),
             }
-            for candidate in accepted[: len(discovery_results)]
+            for candidate in _active_handoff_candidates
         ],
         "discovery_results": [
             {
@@ -2880,6 +3040,20 @@ def build_discover_candidates_once_payload(
                 "classification": item["classification"].discovery_action.value,
             }
             for item in discovery_results
+        ],
+        "audited_discovery_results": [
+            {
+                "discovery_candidate_id": item["discovery_candidate_id"],
+                "token_id": item["token_id"],
+                "pair_id": item["pair_id"],
+                "tracking_queue_id": item["tracking_queue_id"],
+                "scheduler_job_id": item["scheduler_job_id"],
+                "tracking_lane": (
+                    item["tracking_lane"].value if item["tracking_lane"] else None
+                ),
+                "classification": item["classification"].discovery_action.value,
+            }
+            for item in audited_discovery_results
         ],
         "latest_discovery_rows": [dict(row) for row in accepted_rows],
         "source_request_delta": deltas.get("printer_source_requests", 0),

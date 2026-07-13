@@ -84,6 +84,16 @@ def _discovery_transport(_context):
     }
 
 
+def _quota_failure_transport(_context):
+    return {"pairs": [_pair(index, kind="a1") for index in range(11, 17)]}
+
+
+def _discovery_transport_with_extra(_context):
+    payload = _discovery_transport(_context)
+    payload["pairs"].append(_pair(7, kind="b1"))
+    return payload
+
+
 def _t3_payload() -> dict:
     captured = datetime.now(timezone.utc)
     created = captured - timedelta(hours=2)
@@ -235,7 +245,17 @@ def test_six_candidate_production_path_builds_quota_valid_classifier_batch():
         assert connection.execute(
             "SELECT COUNT(*) FROM printer_tokens WHERE token_mint = ?", (dead_mint,)
         ).fetchone()[0] == 0
-        assert connection.execute("SELECT COUNT(*) FROM printer_selection_rotation_state").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM printer_tokens").fetchone()[0] == 5
+        assert connection.execute("SELECT COUNT(*) FROM printer_tracking_queue").fetchone()[0] == 5
+        assert connection.execute("SELECT COUNT(*) FROM printer_scheduler_jobs").fetchone()[0] == 5
+        assert connection.execute("SELECT COUNT(*) FROM printer_selection_rotation_state").fetchone()[0] == 5
+        batch = connection.execute(
+            "SELECT batch_status, selected_count, rejected_count FROM printer_selection_batches"
+        ).fetchone()
+        assert batch == ("ASSEMBLED", 6, 0)
+        assert payload["selection_handoff_report"]["quota_hard_gate_passed"] is True
+        assert payload["selection_handoff_report"]["active_handoff_count"] == 5
+        assert payload["selection_handoff_report"]["audit_only_handoff_count"] == 1
         for table in (
             "printer_memory_windows",
             "printer_memory_retrieval_queries",
@@ -246,4 +266,105 @@ def test_six_candidate_production_path_builds_quota_valid_classifier_batch():
             "printer_paper_trade_audits",
         ):
             assert connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+        connection.close()
+
+
+def test_quota_failed_production_batch_is_audited_without_active_handoffs():
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        db_path = pathlib.Path(tmp) / "group-a-failed-proof.sqlite3"
+        apply_migrations(db_path)
+        args = _args(db_path)
+        args.enrich_t3_token_age = False
+        payload = build_discover_candidates_once_payload(
+            args,
+            transport=_quota_failure_transport,
+        )
+
+        assert payload["group_a_quota_report"]["quota_ok"] is False
+        assert "GROUP_A_PRESENT_BUT_NO_TRAP_FAILURE_BUCKET" in payload[
+            "group_a_quota_report"
+        ]["quota_violations"]
+        handoff = payload["selection_handoff_report"]
+        assert handoff["batch_status"] == "REJECTED"
+        assert handoff["quota_hard_gate_passed"] is False
+        assert handoff["active_handoff_count"] == 0
+
+        connection = sqlite3.connect(db_path)
+        for table in (
+            "printer_tracking_queue",
+            "printer_scheduler_jobs",
+            "printer_selection_rotation_state",
+        ):
+            assert connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM printer_tokens").fetchone()[0] == 6
+        assert connection.execute("SELECT COUNT(*) FROM printer_pairs").fetchone()[0] == 6
+        assert connection.execute(
+            "SELECT COUNT(*) FROM printer_discovery_candidates"
+        ).fetchone()[0] == 6
+        batch = connection.execute(
+            "SELECT batch_status, selected_count FROM printer_selection_batches"
+        ).fetchone()
+        assert batch == ("REJECTED", 0)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM printer_selection_batch_items WHERE item_status = 'REJECTED'"
+        ).fetchone()[0] > 0
+        connection.close()
+
+
+def test_production_handoff_applies_cooldown_before_quota_and_rotation():
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        db_path = pathlib.Path(tmp) / "group-a-cooldown-proof.sqlite3"
+        apply_migrations(db_path)
+        blocked = _pair(7, kind="b1")
+        now = datetime.now(timezone.utc).isoformat()
+        connection = sqlite3.connect(db_path)
+        connection.execute(
+            """
+            INSERT INTO printer_selection_rotation_state
+              (token_mint, pair_address, last_selected_batch_id,
+               last_selected_batch_seq, last_selected_at,
+               last_evidence_fingerprint_json, selection_count,
+               created_at, updated_at)
+            VALUES (?, ?, 'PRIOR', 0, ?, '{}', 1, ?, ?)
+            """,
+            (
+                blocked["baseToken"]["address"],
+                blocked["pairAddress"],
+                now,
+                now,
+                now,
+            ),
+        )
+        connection.commit()
+        connection.close()
+
+        payload = build_discover_candidates_once_payload(
+            _args(db_path),
+            transport=_discovery_transport_with_extra,
+            enrichment_transports={"t3_token_age": fixture_t3_success_transport(_t3_payload())},
+        )
+
+        handoff = payload["selection_handoff_report"]
+        assert handoff["cooldown_candidates_checked"] == 6
+        assert handoff["cooldown_rejected_count"] == 1
+        assert handoff["cooldown_rejections"][0]["token_mint"] == blocked["baseToken"]["address"]
+        assert handoff["quota_hard_gate_passed"] is True
+        connection = sqlite3.connect(db_path)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM printer_tokens WHERE token_mint = ?",
+            (blocked["baseToken"]["address"],),
+        ).fetchone()[0] == 1
+        assert connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM printer_tracking_queue q
+            JOIN printer_tokens t ON t.id = q.token_id
+            WHERE t.token_mint = ?
+            """,
+            (blocked["baseToken"]["address"],),
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT selection_count FROM printer_selection_rotation_state WHERE token_mint = ?",
+            (blocked["baseToken"]["address"],),
+        ).fetchone()[0] == 1
         connection.close()

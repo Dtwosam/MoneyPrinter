@@ -142,13 +142,14 @@ class PostRcControlledDiscoveryCycleTests(unittest.TestCase):
         self.assertEqual(payload["source_request_delta"], 1)
         self.assertEqual(payload["source_response_delta"], 1)
         self.assertEqual(payload["source_failure_delta"], 0)
-        self.assertEqual(payload["candidates_accepted"], 1)
+        self.assertEqual(payload["candidates_accepted"], 0)
         self.assertEqual(payload["token_delta"], 1)
         self.assertEqual(payload["pair_delta"], 1)
-        self.assertEqual(payload["tracking_queue_delta"], 1)
+        self.assertEqual(payload["tracking_queue_delta"], 0)
         self.assertEqual(payload["paper_decision_delta"], 0)
         self.assertEqual(payload["paper_position_delta"], 0)
-        self.assertEqual(payload["accepted_candidates"][0]["tracking_label"], "TRACK_FAST")
+        self.assertEqual(payload["audited_discovery_results"][0]["classification"], "TRACK_FAST")
+        self.assertEqual(payload["selection_handoff_report"]["batch_status"], "REJECTED")
         connection = sqlite3.connect(db_path)
         try:
             self.assertEqual(table_count(connection, "printer_discovery_candidates"), 1)
@@ -222,8 +223,9 @@ class PostRcControlledDiscoveryCycleTests(unittest.TestCase):
 
         payload = build_discover_candidates_once_payload(self.args(db_path), transport=self.active_same_symbol_transport)
 
-        self.assertEqual(payload["candidates_accepted"], 1)
-        self.assertIn(payload["accepted_candidates"][0]["tracking_label"], {"TRACK_FAST", "TRACK_NORMAL"})
+        self.assertEqual(payload["candidates_accepted"], 0)
+        self.assertEqual(payload["selection_handoff_report"]["batch_status"], "REJECTED")
+        self.assertEqual(payload["selection_handoff_report"]["discovery_evidence_only_count"], 1)
 
     def test_same_token_mint_different_pair_is_explicit_duplicate(self):
         db_path = self.make_db()

@@ -191,8 +191,9 @@ class A3GovernedT3HandoffTests(unittest.TestCase):
             )
             self.assertEqual(payload["t3_token_age_enrichment_report"]["status"], "EVIDENCE_APPLIED")
             self.assertEqual(payload["t3_token_age_enrichment_report"]["bucket_after_enrichment"], BUCKET_A3)
-            self.assertEqual(payload["accepted_candidates"][0]["primary_bucket"], BUCKET_A3)
-            self.assertEqual(payload["accepted_candidates"][0]["token_age_evidence_tier"], "T3")
+            self.assertEqual(payload["accepted_candidates"], [])
+            self.assertEqual(payload["selection_handoff_report"]["batch_status"], "REJECTED")
+            self.assertEqual(payload["selection_handoff_report"]["active_handoff_count"], 0)
 
             connection = sqlite3.connect(db_path)
             try:

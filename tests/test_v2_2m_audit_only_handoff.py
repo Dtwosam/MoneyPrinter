@@ -701,25 +701,27 @@ class TestBackwardCompatRegressions(unittest.TestCase):
         payload = self._single_active_payload()
         self.assertIn("source_budget_report", payload)
 
-    def test_active_candidate_still_accepted_and_persisted(self):
+    def test_single_a1_candidate_is_audited_but_not_handed_off(self):
         payload = self._single_active_payload()
-        self.assertGreater(payload["candidates_accepted"], 0)
+        self.assertEqual(payload["candidates_accepted"], 0)
+        self.assertEqual(payload["selection_handoff_report"]["batch_status"], "REJECTED")
+        self.assertEqual(payload["selection_handoff_report"]["discovery_evidence_only_count"], 1)
 
-    def test_active_candidate_creates_tracking_queue_row(self):
+    def test_single_a1_candidate_creates_no_tracking_queue_row(self):
         self._single_active_payload()
         with sqlite3.connect(self._db) as conn:
             rows = conn.execute(
                 "SELECT COUNT(*) FROM printer_tracking_queue"
             ).fetchone()[0]
-        self.assertGreater(rows, 0, "Active candidate must create a tracking_queue row")
+        self.assertEqual(rows, 0, "Quota-failed candidate must not create a tracking_queue row")
 
-    def test_active_candidate_creates_scheduler_job(self):
+    def test_single_a1_candidate_creates_no_scheduler_job(self):
         self._single_active_payload()
         with sqlite3.connect(self._db) as conn:
             rows = conn.execute(
                 "SELECT COUNT(*) FROM printer_scheduler_jobs"
             ).fetchone()[0]
-        self.assertGreater(rows, 0, "Active candidate must create a scheduler_jobs row")
+        self.assertEqual(rows, 0, "Quota-failed candidate must not create a scheduler_jobs row")
 
     def test_audit_only_report_zero_counts_for_pure_active_run(self):
         payload = self._single_active_payload()
@@ -768,7 +770,8 @@ class TestMixedRun(unittest.TestCase):
     def test_active_candidate_accepted_dead_candidate_in_audit_pool(self):
         payload = self._mixed_payload()
         report = payload["audit_only_report"]
-        self.assertGreater(payload["candidates_accepted"], 0)
+        self.assertEqual(payload["candidates_accepted"], 0)
+        self.assertFalse(payload["selection_handoff_report"]["quota_hard_gate_passed"])
         self.assertGreater(report["audit_only_candidate_count"], 0)
 
     def test_dead_candidate_not_in_tracking_queue_when_mixed(self):

@@ -1234,6 +1234,9 @@ def build_classifier_quota_view(
         for item in selected
     ]
     quota_ok, violations = validate_batch_quota(quota_items)
+    if len(selected) != target_size:
+        violations.append("SELECTION_TARGET_NOT_FILLED")
+        quota_ok = False
     return {
         "quota_ok": quota_ok,
         "quota_violations": violations,
@@ -1660,6 +1663,7 @@ def persist_selection_batch(
     window_kind: str = "WINDOW_15M",
     pool_diversity_notes: str | None = None,
     pool_quality_notes: str | None = None,
+    batch_status: str = BATCH_STATUS_ASSEMBLED,
 ) -> dict[str, Any]:
     """Persist a selection batch and its items to the DB.
 
@@ -1669,6 +1673,13 @@ def persist_selection_batch(
     activate retrieval, create paper decisions, or unlock any financial
     capability.
     """
+    if batch_status not in {
+        BATCH_STATUS_ASSEMBLED,
+        BATCH_STATUS_REJECTED,
+        BATCH_STATUS_PENDING_PROOF,
+    }:
+        raise ValueError(f"unsupported selection batch status: {batch_status}")
+
     _batch_id = batch_id or str(uuid.uuid4())
     selected = [i for i in items if i.get("item_status") == ITEM_STATUS_SELECTED]
     rejected = [i for i in items if i.get("item_status") == ITEM_STATUS_REJECTED]
@@ -1693,7 +1704,7 @@ def persist_selection_batch(
             """,
             (
                 _batch_id,
-                BATCH_STATUS_ASSEMBLED,
+                batch_status,
                 window_kind,
                 summary.get("candidate_pool_total", len(items)),
                 len(selected),
@@ -1763,7 +1774,7 @@ def persist_selection_batch(
         _rss_table_exists = bool(conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='printer_selection_rotation_state'"
         ).fetchone())
-        if _rss_table_exists:
+        if _rss_table_exists and batch_status == BATCH_STATUS_ASSEMBLED:
             record_selection_rotation_state(conn, items, _batch_id, _batch_rowid)
 
         if own_connection:
@@ -1771,12 +1782,14 @@ def persist_selection_batch(
 
         return {
             "batch_id": _batch_id,
-            "batch_status": BATCH_STATUS_ASSEMBLED,
+            "batch_status": batch_status,
             "selected_count": len(selected),
             "rejected_count": len(rejected),
             "unclassified_count": len(unclassified),
             "total_items": len(items),
-            "rotation_state_recorded": _rss_table_exists,
+            "rotation_state_recorded": (
+                _rss_table_exists and batch_status == BATCH_STATUS_ASSEMBLED
+            ),
         }
     finally:
         if own_connection:
@@ -1953,7 +1966,12 @@ def record_selection_rotation_state(
     if the table does not exist.
     """
     now = datetime.now(timezone.utc).isoformat()
-    selected_items = [i for i in items if i.get("item_status") == ITEM_STATUS_SELECTED]
+    selected_items = [
+        i for i in items
+        if i.get("item_status") == ITEM_STATUS_SELECTED
+        and i.get("tracking_lane") != "WATCH_ONLY"
+        and i.get("selection_reason") != "AUDIT_ONLY_QUOTA_SUPPORT"
+    ]
 
     own_connection = not isinstance(db_or_connection, sqlite3.Connection)
     conn = _connect(db_or_connection) if own_connection else db_or_connection
