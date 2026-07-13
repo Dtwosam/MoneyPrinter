@@ -7,11 +7,13 @@ Verdict: `V2_4_1_SAFE_BLOCK_WITH_CONTEXT_GAP`
 V2-4.1 repaired the first-snapshot timing anchor, connected the existing
 context-quality audit path, reconciled the stale Phase 28 readiness scanner,
 integrated the shared six-area context resolver, corrected TRACK_NORMAL to six
-snapshots without lowering coverage, and completed the approved bounded live
-proofs. The latest proof met the real 900-second timing and six-snapshot
-requirements for both selected tokens and stopped safely, but it produced zero
-clean memories because required governed context and evidence were absent. No
-second integration proof was run.
+snapshots without lowering coverage, and integrated bounded governed close-time
+collection for market regime, Solana chain heat, exact-target safety, exact-
+target ENTRY/EXIT realism, and side-aware trading flow. The final approved live
+proof resolved those five requested areas from real governed responses for two
+autonomously selected tokens. It still produced zero clean memories because the
+legacy Lane Q safety-label gate disagrees with the shared 15m safety policy, and
+one token also failed the existing chart gate. No second final proof was run.
 
 This closeout does not approve V2-5.
 
@@ -27,6 +29,12 @@ lane added no source adapter, source loop, provider, or external-data claim.
 The implementation remained limited to `WINDOW_15M`, proof mode, at most two
 autonomously selected tokens, Source Governor requests, Central Scheduler jobs,
 memory-quality gating, and report-only replay.
+
+The Solana Builder provider modules for CoinGecko, GoPlus, and Jupiter are not
+yet authored in the repository. External endpoint/schema claims beyond the
+current A6 implementation and this bounded proof remain
+`UNKNOWN_REQUIRES_RESEARCH`. The existing DexScreener and Source Governor
+modules were used only within their documented Printer roles.
 
 ## Audit Findings
 
@@ -312,6 +320,162 @@ reports, and PnL-related activity. Running jobs after stop: `0`.
 
 The report-only replay created zero source calls and zero evidence rows.
 
+## Final Governed Context Collection Integration And Proof
+
+### Collection design and implementation
+
+The Central Scheduler-owned close job now performs one fixed pre-close context
+bundle per selected token before taking the exact close snapshot:
+
+1. one governed CoinGecko `broad_market_context` request, consumed by both the
+   market-regime and Solana-chain-heat recorders;
+2. one governed GoPlus `safety_reference` request;
+3. one governed Jupiter `paper_quote_realism` ENTRY request;
+4. one governed Jupiter `paper_quote_realism` EXIT request.
+
+The context budget is therefore four close-time requests per token and eight
+for the two-token maximum. Each transport is an existing free/public,
+explicitly injected, disabled-by-default adapter. Every request is recorded by
+Source Governor. No retry, endpoint rotation, new provider, source loop, or
+scheduler loop was added.
+
+Collection precedes the close snapshot so the source response timestamps do
+not look ahead of the evidence window. After the governed close snapshot is
+persisted, the existing guarded insert helpers bind the stored responses to
+that exact token, pair, and snapshot. GoPlus and Jupiter payloads now retain
+their returned/requested mint identities, and the binder rejects a mismatch
+without inserting evidence. E2M snapshot metadata now retains DexScreener
+buy/sell counts for 5m, 1h, and 24h so the existing trading-flow parser can
+derive direction and pressure.
+
+The report now counts market, chain, safety, and quote evidence table deltas.
+Report-only replay remains read-only and creates no calls, evidence, snapshots,
+windows, episodes, or fingerprints.
+
+### Focused verification
+
+The one-command test module contains 14 methods. The aggregate Windows/Python
+3.14 process remained unstable after several completed tests, so every method
+was run individually with a normal `OK` summary and exit code `0`. The focused
+coverage proves:
+
+* four governed close-time requests and their response/failure trace;
+* exact market and chain recorder handoff;
+* exact-target safety and ENTRY/EXIT evidence insertion;
+* fail-closed safety and quote mint mismatch behavior;
+* side-aware flow direction and pressure from persisted E2M metadata;
+* failure remaining dirty;
+* six-snapshot TRACK_NORMAL coverage and 900-second timing;
+* replay, exact identity, zero running jobs, and zero downstream deltas.
+
+All eight shared-context tests also passed individually with normal summaries.
+Additional stable pytest slices passed:
+
+* GoPlus/Jupiter exact-mint normalization: `2 passed`;
+* nearby GoPlus/Jupiter normalization and real-evidence orchestration:
+  `4 passed`;
+* flow normalization, direction/pressure, missing-side handling, and locks:
+  `4 passed` with `5` subtests;
+* broad-context recording/consumption and chain-heat classification:
+  `4 passed`;
+* E2M provenance/idempotency: `2 passed`;
+* Lane Q context and retrieval/financial locks: `4 passed`.
+
+`py_compile` and `git diff --check` passed. The only emitted warnings were the
+known pytest-cache permission warning and Git line-ending notices.
+
+### Final bounded live proof
+
+Proof DB:
+
+`data/printer_v1_v2_4_1_final_context_proof_20260713.sqlite3`
+
+Backup:
+
+`data/printer_v1_v2_4_1_final_context_proof_20260713.backup.sqlite3`
+
+Run ID:
+
+`42684711-e30e-493b-b1e0-d15028d0f176`
+
+The copied operator DB was behind the V2-4 run-ledger migrations. The first
+CLI invocation stopped in schema preflight before creating a run or making a
+source request. Existing migrations were applied to the proof copy only. The
+one actual live proof then completed with:
+
+* two autonomous `TRACK_FAST` selections;
+* two discovery requests;
+* twenty exact-pair snapshots, ten per token;
+* eight bounded close-time context requests;
+* thirty total governed requests and thirty responses;
+* zero source failures and zero automatic retries;
+* two closed 15m windows;
+* zero clean memories and two honest dirty windows;
+* zero running jobs after stop.
+
+| Mint | Pair | First snapshot | Close due | Final snapshot | Span | Snapshots |
+| --- | --- | --- | --- | --- | ---: | ---: |
+| `6baGyq4HLbUn93MQUGFqBktpXP8BRjpoxSsAap4ppump` | `EqMxjt3vQvFuWamr5DUYajMALRKHogF4N3Yxaa7RGZak` | `2026-07-13T14:43:24.613928+00:00` | `2026-07-13T14:58:24.613928+00:00` | `2026-07-13T14:58:29.025711+00:00` | `904s` | 10 |
+| `7mki412wXATW1T3m9YVw6Msxu1JcJtDuT72Ft4Qfpump` | `FHT4RPAw3Ktas2sb3jZQDph37T3fFY4F5P7cLTMBe2nf` | `2026-07-13T14:43:25.260729+00:00` | `2026-07-13T14:58:25.260729+00:00` | `2026-07-13T14:58:33.517380+00:00` | `908s` | 10 |
+
+Interior spacing was approximately 100 seconds for both TRACK_FAST targets.
+The close jobs began approximately `0.069s` and `5.083s` after their due times;
+both persisted spans exceeded 900 seconds.
+
+### Real context results
+
+For both tokens, all four close-time requests returned
+`COMPLETE / CLEAN_DATA` with separate request and response IDs. The shared
+resolver reported:
+
+| Area | Token 1 | Token 2 |
+| --- | --- | --- |
+| Market Regime | `READY`, `NEUTRAL`, clean | `READY`, `NEUTRAL`, clean |
+| Solana Chain Heat | `READY`, `SOLANA_WARM`, clean | `READY`, `SOLANA_WARM`, clean |
+| Safety / Rug | `READY` under 15m policy | `READY` under 15m policy |
+| ENTRY/EXIT realism | both exact-target routes ready | both exact-target routes ready |
+| Trading Flow | `FLOW_CHOPPY / PRESSURE_BALANCED` | `FLOW_CHOPPY / PRESSURE_MODERATE_INFLOW` |
+| Chart / Volatility | `READY` | `CHART_VOLATILITY_UNKNOWN` |
+
+The two GoPlus rows proved mint authority renounced, freeze authority disabled,
+metadata immutable, positive supply, and a supported token program. The free
+response did not resolve holder concentration, liquidity lock/burn, or known
+risk flags. Storage therefore honestly retained `SAFETY_UNKNOWN` and inserted
+the rows as audit-only. The shared 15m policy considered these source-coverage
+gaps acceptable because all hard safety fields passed, but the legacy first-
+memory/Lane Q classifier still treated `safety_status_label=SAFETY_UNKNOWN` as
+a blocker. This policy handoff mismatch kept both windows dirty.
+
+The second token also produced `CHART_CONTEXT_DO_NOT_TRAIN` from its natural
+round-trip path. That chart blocker is expected evidence behavior and must not
+be weakened.
+
+All four Jupiter rows were exact-target, clean-eligible evidence with an
+available route and acceptable slippage/price impact. All market, chain,
+safety, quote, and flow provenance remained linked to governed request and
+response rows.
+
+### Final proof DB deltas
+
+| Table | Delta |
+| --- | ---: |
+| source requests / responses / failures | `+30 / +30 / 0` |
+| discovery candidates | `+2` |
+| selection batches / items | `+1 / +29` |
+| tracking queue | `+2` |
+| scheduler jobs | `+22` |
+| token snapshots | `+20` |
+| market / chain rows | `+4 / +4` |
+| safety / quote evidence | `+2 / +4` |
+| memory windows | `+2` |
+| memories / fingerprints | `0 / 0` |
+| retrieval queries / matches | `0 / 0` |
+| paper decisions / positions | `0 / 0` |
+| trade events / trade audits / paper audit reports | `0 / 0 / 0` |
+
+The report-only replay produced zero new source calls and zero evidence rows;
+all inspected proof counts remained unchanged.
+
 ## Persistent DB Safety
 
 Persistent DB: `data/printer_v1.sqlite3`.
@@ -337,18 +501,27 @@ hide or force.
 
 1. The TRACK_NORMAL five-versus-six mismatch is resolved and live-proven. The
    integration proof produced six snapshots for each selected token.
-2. The one-command proof source plan did not collect governed market-regime or
-   chain-heat evidence. These remain clean-memory blockers.
-3. The selected tokens had no target-matched valid safety, entry quote, or exit
-   quote evidence in the copied operator DB. Evidence must never be fabricated.
-4. End-snapshot-derived trading-flow rows were clean and target-matched, but
-   direction and pressure remained unknown for this source payload.
-5. Lane K's report includes historical copied windows; correctness is
+2. Governed market, chain, exact-target safety, exact-target ENTRY/EXIT, and
+   side-aware flow collection are integrated and live-proven. They no longer
+   constitute a missing collection-path blocker.
+3. The shared 15m resolver accepts `SAFETY_UNKNOWN` when every hard safety
+   field passes and only optional free-source coverage remains unknown. The
+   legacy first-memory/Lane Q classifier still blocks the same label. This
+   policy handoff mismatch is the primary clean-promotion blocker.
+4. One live token naturally produced `CHART_CONTEXT_DO_NOT_TRAIN`. This is an
+   honest evidence outcome, not a collection defect, and must remain blocking.
+5. The Solana Builder source stack does not yet contain provider-specific
+   CoinGecko, GoPlus, or Jupiter modules. External endpoint and schema claims
+   beyond the verified Printer adapters remain `UNKNOWN_REQUIRES_RESEARCH`.
+6. Lane K's report includes historical copied windows; correctness is
    preserved, but run-local reporting remains noisy.
-6. Clean promotion is structurally supported by the resolver and downstream
-   gates, but autonomous clean promotion is not yet demonstrated because the
-   one-command source plan does not assemble a complete governed bundle.
-7. The AST scanner is intentionally conservative: new executable capability
+7. Clean promotion is structurally supported, but the final live proof did not
+   produce a clean memory because the safety-policy handoff blocked both
+   windows and chart quality independently blocked one.
+8. The aggregate Windows/Python 3.14 test process remains unstable. Focused
+   methods and stable nearby slices passed with normal summaries and exit code
+   `0`; the instability was not hidden by skipping a failing assertion.
+9. The AST scanner is intentionally conservative: new executable capability
    names, direct network clients outside source adapters, runtime frameworks,
    or unbounded loops fail readiness and require explicit architecture review.
 
@@ -378,13 +551,15 @@ only, Solana memecoin-only, paper-only V1 restrictions remain unchanged.
 Verdict: `V2_4_1_SAFE_BLOCK_WITH_CONTEXT_GAP`.
 
 The timing, six-snapshot cadence, shared resolver handoff, fail-closed E2Q
-result, replay, and lock gates passed. Autonomous clean promotion remains
-blocked because the one-command source plan does not collect the complete
-governed market, chain, safety, quote, and side-aware flow bundle. V2-5 is not
-recommended.
+result, governed context collection, exact-target persistence, replay, and lock
+gates passed. Autonomous clean promotion remains blocked because the shared
+15m safety policy and legacy first-memory/Lane Q safety-label gate disagree on
+otherwise hard-field-complete `SAFETY_UNKNOWN` evidence. One token also had an
+independent chart-quality blocker. V2-5 is not recommended.
 
-The next operator-approved task must remain inside V2-4.1 and design the
-smallest Source-Governor/Central-Scheduler-owned context collection plan for
-the existing one-command run. It must not add providers or weaken any clean
-gate. A later proof must remain single-run, isolated, bounded, and honest; zero
-clean memory remains valid when real evidence fails.
+The next operator-approved task must remain inside V2-4.1 and reconcile the
+15m safety-policy handoff with the legacy first-memory/Lane Q classifier using
+one explicit fail-closed contract. It must not make optional unknown fields
+look known, weaken hard safety requirements, add providers, or force clean
+memory. Any later proof must remain single-run, isolated, bounded, and honest;
+zero clean memory remains valid when real evidence fails.

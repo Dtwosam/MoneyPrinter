@@ -232,6 +232,12 @@ def normalize_jupiter_quote_response(
         normalized = dict(payload)
         normalized.setdefault("source_name", JUPITER_QUOTE_SOURCE_NAME)
         normalized.setdefault("request_kind", request_kind)
+        normalized.setdefault(
+            "input_mint", payload.get("inputMint") or payload.get("input_mint")
+        )
+        normalized.setdefault(
+            "output_mint", payload.get("outputMint") or payload.get("output_mint")
+        )
         stale = bool(payload.get("fixture_stale"))
         return NormalizedSourceResult(
             source_name=JUPITER_QUOTE_SOURCE_NAME,
@@ -257,6 +263,8 @@ def normalize_jupiter_quote_response(
         ),
         "source_name": JUPITER_QUOTE_SOURCE_NAME,
         "request_kind": request_kind,
+        "input_mint": payload.get("inputMint") or payload.get("input_mint"),
+        "output_mint": payload.get("outputMint") or payload.get("output_mint"),
     }
 
     stale = bool(payload.get("fixture_stale"))

@@ -19,7 +19,10 @@ from printer_v1.operator_cli.one_command_15m_factory import (
     load_report_only,
     run_one_command_15m_factory,
 )
-from printer_v1.sources.governed_execution import build_fixture_source_adapter
+from printer_v1.sources.governed_execution import (
+    FIXTURE_FAILURE,
+    build_fixture_source_adapter,
+)
 
 
 MINT_A = "A" * 32
@@ -98,12 +101,70 @@ class OneCommand15mFactoryTests(unittest.TestCase):
                         "liquidity_usd": 10000.0, "volume_5m": 500.0,
                         "volume_1h": 2000.0, "volume_24h": 10000.0,
                         "txns_5m": 10, "txns_1h": 50, "txns_24h": 500,
+                        "buys_5m": 7, "sells_5m": 3,
+                        "buys_1h": 30, "sells_1h": 20,
+                        "buys_24h": 280, "sells_24h": 220,
                         "price_change_5m": 1.0, "price_change_1h": 2.0,
                         "price_change_24h": 3.0,
                     }]
                 },
             )
         return build, calls
+
+    def _failing_context_factories(self):
+        return {
+            source: (lambda _source=source, **_kwargs: build_fixture_source_adapter(
+                _source, fixture_kind=FIXTURE_FAILURE
+            ))
+            for source in ("coingecko", "goplus", "jupiter_quote")
+        }
+
+    def _clean_context_factories(self):
+        market_payload = {
+            "captured_at": datetime.now(timezone.utc).isoformat(),
+            "assets": {
+                "bitcoin": {"price_usd": 65_000, "change_24h": 2.5},
+                "ethereum": {"price_usd": 3_500, "change_24h": 1.5},
+                "solana": {
+                    "price_usd": 150,
+                    "change_24h": 4.0,
+                    "volume_24h": 2_000_000_000,
+                },
+            },
+        }
+        safety_payload = {
+            "token_mint": MINT_A,
+            "mint_authority": None,
+            "freeze_authority": None,
+            "metadata_mutable": False,
+            "total_supply": "1000000000",
+            "top_10_holders": [{"percent": "3"} for _ in range(10)],
+            "lp_info": [{"locked": True}],
+            "risk_flags": [],
+        }
+        return {
+            "coingecko": lambda **_kwargs: build_fixture_source_adapter(
+                "coingecko", fixture_payload=market_payload
+            ),
+            "goplus": lambda **_kwargs: build_fixture_source_adapter(
+                "goplus", fixture_payload=safety_payload
+            ),
+            "jupiter_quote": lambda **kwargs: build_fixture_source_adapter(
+                "jupiter_quote",
+                fixture_payload={
+                    "route_available": True,
+                    "route_plan_present": True,
+                    "slippage_bps": 50,
+                    "price_impact_bps": 5,
+                    "freshness_label": "QUOTE_FRESH",
+                    "target_status": "TARGET_MATCH",
+                    "paper_only_context": True,
+                    "liquidity_context_label": "LIQUIDITY_CONTEXT_ACCEPTABLE",
+                    "input_mint": kwargs["input_mint"],
+                    "output_mint": kwargs["output_mint"],
+                },
+            ),
+        }
 
     def _run(self, **overrides):
         factory, calls = self._adapter_factory(
@@ -113,6 +174,9 @@ class OneCommand15mFactoryTests(unittest.TestCase):
             operator_approved=True, proof_mode=True,
             discovery_runner=self._discovery(lane=overrides.pop("lane", "TRACK_FAST")),
             snapshot_adapter_factory=factory,
+            context_adapter_factories=overrides.pop(
+                "context_adapter_factories", self._failing_context_factories()
+            ),
             _window_seconds=0.08, total_duration_seconds=1.0,
             max_selected_tokens=1, max_source_requests=1,
         )
@@ -142,7 +206,7 @@ class OneCommand15mFactoryTests(unittest.TestCase):
         self.assertEqual(result["run_status"], "COMPLETED")
         self.assertEqual(result["running_jobs_after_stop"], 0)
         self.assertEqual(len(calls), 10)
-        self.assertEqual(result["table_deltas"]["printer_source_requests"], 10)
+        self.assertEqual(result["table_deltas"]["printer_source_requests"], 14)
         self.assertEqual(result["table_deltas"]["printer_token_snapshots"], 10)
         self.assertEqual(len(result["selected_tokens"]), 1)
         self.assertTrue(all(step["step_status"] == "SUCCEEDED" for step in result["steps"]))
@@ -317,6 +381,95 @@ class OneCommand15mFactoryTests(unittest.TestCase):
         self.assertTrue(set(blockers).issubset(quality["remaining_blockers"]))
         self.assertEqual(close_result["window_audit"]["e2q_status"], "E2Q_AUDIT_DIRTY")
         self.assertFalse(quality["clean_promotion_candidate"])
+
+    def test_governed_close_context_reaches_exact_target_and_side_aware_flow(self):
+        with patch("printer_v1.context_evidence.window_15m.WINDOW_SECONDS", 0):
+            result, _calls = self._run(
+                context_adapter_factories=self._clean_context_factories()
+            )
+        close = next(
+            step for step in result["steps"] if step["step_kind"] == "WINDOW_CLOSE"
+        )
+        close_result = json.loads(close["result_json"])
+        collection = close_result["governed_context_collection"]
+        self.assertEqual(collection["source_request_budget"], 4)
+        self.assertEqual(collection["source_requests_attempted"], 4)
+        self.assertTrue(all(
+            item["source_response_id"] is not None
+            for item in collection["items"].values()
+        ))
+        persisted = close_result["governed_context_persistence"]
+        self.assertIsNotNone(persisted["market_regime_row_id"])
+        self.assertIsNotNone(persisted["chain_heat_row_id"])
+        self.assertTrue(persisted["safety"]["inserted"])
+        self.assertTrue(persisted["entry_quote"]["inserted"])
+        self.assertTrue(persisted["exit_quote"]["inserted"])
+
+        shared = close_result["context_quality"]["shared_context_evidence"]
+        self.assertEqual(shared["snapshot_end_id"], close["snapshot_id"])
+        self.assertEqual(shared["sections"]["market_regime"]["status"], "READY")
+        self.assertEqual(shared["sections"]["solana_chain_heat"]["status"], "READY")
+        self.assertEqual(shared["sections"]["safety_rug"]["status"], "READY")
+        self.assertEqual(
+            shared["sections"]["liquidity_exit_realism"]["status"], "READY"
+        )
+        flow = shared["sections"]["trading_flow"]
+        self.assertEqual(flow["status"], "READY")
+        self.assertNotEqual(flow["labels"]["flow_direction_label"], "FLOW_UNKNOWN")
+        self.assertNotEqual(flow["labels"]["flow_pressure_label"], "PRESSURE_UNKNOWN")
+        self.assertEqual(result["running_jobs_after_stop"], 0)
+        self.assertTrue(all(value == 0 for value in result["forbidden_deltas"].values()))
+
+    def test_mismatched_safety_and_quotes_fail_closed_without_exact_evidence(self):
+        factories = self._clean_context_factories()
+        factories["goplus"] = lambda **_kwargs: build_fixture_source_adapter(
+            "goplus",
+            fixture_payload={
+                "token_mint": "Z" * 32,
+                "mint_authority": None,
+                "freeze_authority": None,
+                "metadata_mutable": False,
+                "total_supply": "1000000000",
+                "risk_flags": [],
+            },
+        )
+        factories["jupiter_quote"] = lambda **_kwargs: build_fixture_source_adapter(
+            "jupiter_quote",
+            fixture_payload={
+                "route_available": True,
+                "route_plan_present": True,
+                "freshness_label": "QUOTE_FRESH",
+                "target_status": "TARGET_MATCH",
+                "paper_only_context": True,
+                "input_mint": "Z" * 32,
+                "output_mint": "Y" * 32,
+            },
+        )
+        with patch("printer_v1.context_evidence.window_15m.WINDOW_SECONDS", 0):
+            result, _calls = self._run(context_adapter_factories=factories)
+        close = next(
+            step for step in result["steps"] if step["step_kind"] == "WINDOW_CLOSE"
+        )
+        close_result = json.loads(close["result_json"])
+        persisted = close_result["governed_context_persistence"]
+        self.assertEqual(
+            persisted["safety"]["audit_status"], "REJECTED_TARGET_MINT_MISMATCH"
+        )
+        self.assertEqual(
+            persisted["entry_quote"]["audit_status"],
+            "REJECTED_TARGET_MINT_MISMATCH",
+        )
+        self.assertEqual(
+            persisted["exit_quote"]["audit_status"],
+            "REJECTED_TARGET_MINT_MISMATCH",
+        )
+        self.assertEqual(result["table_deltas"]["printer_solana_safety_evidence"], 0)
+        self.assertEqual(result["table_deltas"]["printer_paper_quote_evidence"], 0)
+        shared = close_result["context_quality"]["shared_context_evidence"]
+        self.assertFalse(shared["clean_memory_context_ready"])
+        self.assertIn(
+            "NO_VALID_EXACT_TARGET_SAFETY_EVIDENCE", shared["blockers"]
+        )
 
 
 if __name__ == "__main__":

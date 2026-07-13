@@ -142,7 +142,9 @@ def build_goplus_token_safety_transport(
 
     def transport(context: SourceAdapterContext) -> Mapping[str, Any]:
         del context
-        return _load_public_json(endpoint, timeout_seconds=timeout_seconds)
+        payload = dict(_load_public_json(endpoint, timeout_seconds=timeout_seconds))
+        payload["_requested_token_mint"] = token_mint
+        return MappingProxyType(payload)
 
     return transport
 
@@ -191,10 +193,29 @@ def normalize_goplus_payload(
             f"GoPlus API returned code {code}: {payload.get('message', '')}",
         )
 
+    requested_mint = str(payload.get("_requested_token_mint") or "").strip()
     result_data = payload.get("result") or payload
     # Extract token data — GoPlus wraps by mint address: {"<mint>": {...data...}}
     token_data: dict[str, Any] = {}
-    if isinstance(result_data, dict):
+    if isinstance(result_data, dict) and requested_mint:
+        matched_key = next(
+            (
+                key
+                for key in result_data
+                if str(key).lower() == requested_mint.lower()
+                and isinstance(result_data.get(key), dict)
+            ),
+            None,
+        )
+        if matched_key is None and payload.get("result") is not None:
+            return _failure_result(
+                request_kind,
+                "goplus_target_mint_mismatch",
+                "GoPlus response did not contain the requested token mint",
+            )
+        if matched_key is not None:
+            token_data = dict(result_data[matched_key])
+    if isinstance(result_data, dict) and not token_data:
         values = list(result_data.values())
         if values and isinstance(values[0], dict):
             token_data = dict(values[0])
@@ -210,6 +231,8 @@ def normalize_goplus_payload(
 
     stale = bool(payload.get("fixture_stale"))
     normalized = dict(token_data)
+    if requested_mint:
+        normalized["token_mint"] = requested_mint
     normalized["source_name"] = GOPLUS_SOURCE_NAME
     normalized["request_kind"] = request_kind
     normalized["captured_at"] = datetime.now(timezone.utc).isoformat()

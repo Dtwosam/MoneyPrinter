@@ -177,6 +177,12 @@ def _insert_snapshot(
             "chain": E2M_REQUIRED_CHAIN,
             "pair_address": pair_data.get("pair_address"),
             "token_mint": pair_data.get("token_mint"),
+            "buys_5m": pair_data.get("buys_5m"),
+            "sells_5m": pair_data.get("sells_5m"),
+            "buys_1h": pair_data.get("buys_1h"),
+            "sells_1h": pair_data.get("sells_1h"),
+            "buys_24h": pair_data.get("buys_24h"),
+            "sells_24h": pair_data.get("sells_24h"),
         },
         sort_keys=True,
     )

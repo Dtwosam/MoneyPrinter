@@ -409,6 +409,22 @@ class GoPlusNormalizationTests(unittest.TestCase):
         self.assertEqual(result.source_status.value, "COMPLETE")
         self.assertEqual(result.data_quality_label.value, "CLEAN_DATA")
 
+    def test_goplus_requested_mint_is_preserved_and_mismatch_fails_closed(self):
+        matching = _goplus_clean_payload("mint-exact")
+        matching["_requested_token_mint"] = "mint-exact"
+        result = normalize_goplus_payload(
+            matching, request_kind="safety_reference"
+        )
+        self.assertEqual(result.normalized_payload["token_mint"], "mint-exact")
+
+        mismatched = _goplus_clean_payload("different-mint")
+        mismatched["_requested_token_mint"] = "mint-exact"
+        result = normalize_goplus_payload(
+            mismatched, request_kind="safety_reference"
+        )
+        self.assertEqual(result.source_status.value, "FAILED")
+        self.assertEqual(result.failure_type, "goplus_target_mint_mismatch")
+
     def test_invalid_request_kind_returns_failed(self):
         result = normalize_goplus_payload(
             _goplus_clean_payload(), request_kind="unsupported_kind"
@@ -568,6 +584,18 @@ class JupiterQuoteNormalizationTests(unittest.TestCase):
         pairs = result.normalized_payload
         self.assertTrue(pairs.get("route_available"))
         self.assertTrue(pairs.get("paper_only_context"))
+
+    def test_raw_jupiter_route_preserves_exact_input_and_output_mints(self):
+        payload = {
+            **_jupiter_clean_payload(route=True),
+            "inputMint": "input-exact",
+            "outputMint": "output-exact",
+        }
+        result = normalize_jupiter_quote_response(
+            payload, request_kind="paper_quote_realism"
+        )
+        self.assertEqual(result.normalized_payload["input_mint"], "input-exact")
+        self.assertEqual(result.normalized_payload["output_mint"], "output-exact")
 
     def test_no_route_fixture_status_normalizes_route_unavailable(self):
         result = normalize_jupiter_quote_response(

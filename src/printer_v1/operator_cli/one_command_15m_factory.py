@@ -43,6 +43,8 @@ _COUNT_TABLES = (
     "printer_selection_batch_items", "printer_tracking_queue",
     "printer_scheduler_jobs", "printer_token_snapshots", "printer_memory_windows",
     "printer_memories", "printer_memory_fingerprints",
+    "printer_market_regime_snapshots", "printer_solana_chain_heat_snapshots",
+    "printer_solana_safety_evidence", "printer_paper_quote_evidence",
     "printer_memory_retrieval_queries", "printer_memory_retrieval_matches",
     "printer_paper_decisions", "printer_paper_positions",
     "printer_paper_trade_events", "printer_paper_trade_audits",
@@ -296,6 +298,291 @@ def _execute_snapshot(
     return result
 
 
+def _context_execution_summary(execution: Any) -> dict[str, Any]:
+    return {
+        "source_name": execution.request_record.source_name,
+        "request_kind": execution.request_record.request_kind,
+        "source_request_id": int(execution.request_record.id),
+        "source_response_id": (
+            int(execution.response_record.id) if execution.response_record else None
+        ),
+        "source_failure_id": (
+            int(execution.failure_record.id) if execution.failure_record else None
+        ),
+        "source_status": execution.normalized_result.source_status.value,
+        "data_quality_label": execution.normalized_result.data_quality_label.value,
+        "failure_type": execution.normalized_result.failure_type,
+    }
+
+
+def _collect_preclose_context(
+    conn: sqlite3.Connection,
+    step: sqlite3.Row,
+    *,
+    timeout_seconds: float,
+    adapter_factories: dict[str, Callable[..., Any]] | None = None,
+) -> dict[str, Any]:
+    """Collect a fixed, governed context bundle before the close snapshot."""
+    from printer_v1.paper_quote.jupiter_fixture import SOURCE_NAME as JUPITER_SOURCE
+    from printer_v1.sources.budget_accounting import count_recent_source_requests
+    from printer_v1.sources.coingecko import (
+        build_coingecko_adapter,
+        build_coingecko_market_transport,
+    )
+    from printer_v1.sources.contracts import build_governed_source_request
+    from printer_v1.sources.goplus import (
+        build_goplus_adapter,
+        build_goplus_token_safety_transport,
+    )
+    from printer_v1.sources.governed_execution import execute_source_request_with_governor
+    from printer_v1.sources.jupiter_quote import (
+        DEFAULT_PAPER_AMOUNT_LAMPORTS,
+        DEFAULT_SLIPPAGE_BPS,
+        WSOL_MINT,
+        build_jupiter_paper_quote_transport,
+        build_jupiter_quote_adapter,
+    )
+
+    factories = adapter_factories or {}
+    mint = str(step["token_mint"])
+    pair = str(step["pair_address"])
+    request_prefix = f"{step['run_id']}:{step['step_key']}:context"
+
+    def execute(source_name: str, request_kind: str, suffix: str, payload: dict[str, Any], adapter: Any) -> Any:
+        request = build_governed_source_request(
+            source_name,
+            request_kind,
+            request_key=f"{request_prefix}:{suffix}",
+            payload={"token_mint": mint, "pair_address": pair, **payload},
+        )
+        return execute_source_request_with_governor(
+            conn,
+            request,
+            adapter,
+            recent_request_count=count_recent_source_requests(conn, source_name),
+        )
+
+    market_factory = factories.get("coingecko")
+    market_adapter = (
+        market_factory(timeout_seconds=timeout_seconds)
+        if market_factory
+        else build_coingecko_adapter(
+            enabled=True,
+            fixture_transport=build_coingecko_market_transport(
+                timeout_seconds=timeout_seconds
+            ),
+        )
+    )
+    safety_factory = factories.get("goplus")
+    safety_adapter = (
+        safety_factory(token_mint=mint, timeout_seconds=timeout_seconds)
+        if safety_factory
+        else build_goplus_adapter(
+            enabled=True,
+            fixture_transport=build_goplus_token_safety_transport(
+                mint, timeout_seconds=timeout_seconds
+            ),
+        )
+    )
+    quote_factory = factories.get("jupiter_quote")
+
+    def quote_adapter(input_mint: str, output_mint: str) -> Any:
+        if quote_factory:
+            return quote_factory(
+                input_mint=input_mint,
+                output_mint=output_mint,
+                amount_lamports=DEFAULT_PAPER_AMOUNT_LAMPORTS,
+                slippage_bps=DEFAULT_SLIPPAGE_BPS,
+                timeout_seconds=timeout_seconds,
+            )
+        return build_jupiter_quote_adapter(
+            enabled=True,
+            fixture_transport=build_jupiter_paper_quote_transport(
+                input_mint=input_mint,
+                output_mint=output_mint,
+                amount_lamports=DEFAULT_PAPER_AMOUNT_LAMPORTS,
+                slippage_bps=DEFAULT_SLIPPAGE_BPS,
+                timeout_seconds=timeout_seconds,
+            ),
+        )
+
+    executions = {
+        "market_chain": execute(
+            "coingecko", "broad_market_context", "market-chain", {}, market_adapter
+        ),
+        "safety": execute(
+            "goplus", "safety_reference", "safety", {}, safety_adapter
+        ),
+        "entry_quote": execute(
+            JUPITER_SOURCE,
+            "paper_quote_realism",
+            "entry",
+            {
+                "quote_direction": "ENTRY",
+                "input_mint": WSOL_MINT,
+                "output_mint": mint,
+                "amount_lamports": DEFAULT_PAPER_AMOUNT_LAMPORTS,
+            },
+            quote_adapter(WSOL_MINT, mint),
+        ),
+        "exit_quote": execute(
+            JUPITER_SOURCE,
+            "paper_quote_realism",
+            "exit",
+            {
+                "quote_direction": "EXIT",
+                "input_mint": mint,
+                "output_mint": WSOL_MINT,
+                "amount_lamports": DEFAULT_PAPER_AMOUNT_LAMPORTS,
+            },
+            quote_adapter(mint, WSOL_MINT),
+        ),
+    }
+    return {
+        "executions": executions,
+        "report": {
+            "source_request_budget": 4,
+            "source_requests_attempted": 4,
+            "items": {
+                key: _context_execution_summary(value)
+                for key, value in executions.items()
+            },
+        },
+    }
+
+
+def _persist_preclose_context(
+    conn: sqlite3.Connection,
+    *,
+    step: sqlite3.Row,
+    snapshot_id: int,
+    context_bundle: dict[str, Any],
+) -> dict[str, Any]:
+    """Bind pre-close governed responses to the exact close snapshot."""
+    from printer_v1.operator_cli.commands import (
+        _insert_chain_heat_context_from_source_response,
+        _insert_market_context_from_source_response,
+    )
+    from printer_v1.paper_quote.jupiter_fixture import (
+        insert_jupiter_quote_fixture_evidence,
+    )
+    from printer_v1.safety.goplus_normalizer import (
+        insert_goplus_safety_evidence_from_source_response,
+    )
+
+    executions = context_bundle["executions"]
+    snapshot = dict(conn.execute(
+        "SELECT * FROM printer_token_snapshots WHERE id=?", (snapshot_id,)
+    ).fetchone())
+    target = {
+        "token_id": int(step["token_id"]),
+        "pair_id": int(step["pair_id"]),
+        "token_mint": str(step["token_mint"]),
+        "pair_address": str(step["pair_address"]),
+    }
+    inserted: dict[str, Any] = {}
+
+    broad = executions["market_chain"]
+    if broad.response_record is not None:
+        captured_at = str(broad.response_record.received_at)
+        inserted["market_regime_row_id"] = _insert_market_context_from_source_response(
+            conn,
+            source_response_id=int(broad.response_record.id),
+            target=target,
+            snapshot=snapshot,
+            captured_at=captured_at,
+        )
+        inserted["chain_heat_row_id"] = _insert_chain_heat_context_from_source_response(
+            conn,
+            source_response_id=int(broad.response_record.id),
+            target=target,
+            snapshot=snapshot,
+            captured_at=captured_at,
+        )
+
+    safety = executions["safety"]
+    if safety.response_record is not None:
+        returned_mint = str(
+            safety.normalized_result.normalized_payload.get("token_mint") or ""
+        )
+        if returned_mint.lower() != target["token_mint"].lower():
+            inserted["safety"] = {
+                "inserted": False,
+                "evidence_id": None,
+                "clean_eligible": False,
+                "audit_status": "REJECTED_TARGET_MINT_MISMATCH",
+                "rejection_reasons": ["GOPLUS_TARGET_MINT_MISMATCH"],
+            }
+        else:
+            safety_result = insert_goplus_safety_evidence_from_source_response(
+                conn,
+                source_response_id=int(safety.response_record.id),
+                token_id=target["token_id"],
+                pair_id=target["pair_id"],
+                snapshot_id=snapshot_id,
+                scheduler_boundary_label="SCHEDULER_BOUNDARY_PRESENT",
+                operator_approval_label="OPERATOR_APPROVED_MANUAL_PROOF",
+                caller="source_governor_scheduler_operator_flow",
+            )
+            inserted["safety"] = {
+                "inserted": safety_result.inserted,
+                "evidence_id": safety_result.evidence_id,
+                "clean_eligible": safety_result.clean_eligible,
+                "audit_status": safety_result.audit_status,
+                "rejection_reasons": list(safety_result.rejection_reasons),
+            }
+
+    for key, direction in (("entry_quote", "ENTRY"), ("exit_quote", "EXIT")):
+        execution = executions[key]
+        quote_payload = execution.normalized_result.normalized_payload
+        expected_input = (
+            str(step["token_mint"])
+            if direction == "EXIT"
+            else "So11111111111111111111111111111111111111112"
+        )
+        expected_output = (
+            "So11111111111111111111111111111111111111112"
+            if direction == "EXIT"
+            else str(step["token_mint"])
+        )
+        if (
+            str(quote_payload.get("input_mint") or "").lower()
+            != expected_input.lower()
+            or str(quote_payload.get("output_mint") or "").lower()
+            != expected_output.lower()
+        ):
+            inserted[key] = {
+                "inserted": False,
+                "evidence_id": None,
+                "clean_eligible": False,
+                "audit_status": "REJECTED_TARGET_MINT_MISMATCH",
+                "rejection_reasons": ["JUPITER_QUOTE_TARGET_MINT_MISMATCH"],
+            }
+            continue
+        quote_result = insert_jupiter_quote_fixture_evidence(
+            conn,
+            execution.normalized_result,
+            request_record=execution.request_record,
+            response_record=execution.response_record,
+            failure_record=execution.failure_record,
+            quote_direction=direction,
+            token_id=target["token_id"],
+            pair_id=target["pair_id"],
+            snapshot_id=snapshot_id,
+            scheduler_boundary_label="SCHEDULER_BOUNDARY_PRESENT",
+            operator_approval_label="OPERATOR_APPROVED_MANUAL_PROOF",
+            caller="source_governor_scheduler_operator_flow",
+        )
+        inserted[key] = {
+            "inserted": quote_result.inserted,
+            "evidence_id": quote_result.evidence_id,
+            "clean_eligible": quote_result.clean_eligible,
+            "audit_status": quote_result.audit_status,
+            "rejection_reasons": list(quote_result.rejection_reasons),
+        }
+    return inserted
+
+
 def _attach_context_and_gate_window(
     conn: sqlite3.Connection, *, step: sqlite3.Row, window_id: int,
     snapshot_start_id: int, snapshot_end_id: int,
@@ -452,16 +739,30 @@ def _attach_context_and_gate_window(
 def _execute_close(
     conn: sqlite3.Connection, step: sqlite3.Row, *, adapter_factory: Callable[..., Any],
     timeout_seconds: float, minimum_evidence_seconds: float,
+    context_adapter_factories: dict[str, Callable[..., Any]] | None = None,
 ) -> dict[str, Any]:
     from printer_v1.operator_cli.e2o_memory_window_close import close_15m_memory_window_from_snapshot
     from printer_v1.operator_cli.e2q_memory_window_audit import audit_15m_memory_window
     from printer_v1.operator_cli.lane_k_e2z_pipeline_wiring import run_e2z_pipeline
 
+    context_bundle = _collect_preclose_context(
+        conn,
+        step,
+        timeout_seconds=timeout_seconds,
+        adapter_factories=context_adapter_factories,
+    )
     result = _execute_snapshot(
         conn, step, adapter_factory=adapter_factory, timeout_seconds=timeout_seconds
     )
+    result["governed_context_collection"] = context_bundle["report"]
     if not result.get("ok"):
         return result
+    result["governed_context_persistence"] = _persist_preclose_context(
+        conn,
+        step=step,
+        snapshot_id=int(result["snapshot_id"]),
+        context_bundle=context_bundle,
+    )
     first = conn.execute(
         """
         SELECT s.snapshot_id, ts.captured_at
@@ -624,6 +925,7 @@ def run_one_command_15m_factory(
     total_duration_seconds: float = 1200.0, selection_seed: str | None = None,
     discovery_transport: Any = None, discovery_runner: Callable[..., dict[str, Any]] | None = None,
     snapshot_adapter_factory: Callable[..., Any] | None = None,
+    context_adapter_factories: dict[str, Callable[..., Any]] | None = None,
     _window_seconds: float = 900.0, _sleep: Callable[[float], None] = time.sleep,
     _monotonic: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
@@ -653,6 +955,8 @@ def run_one_command_15m_factory(
         "max_source_requests": max_source_requests, "timeout_seconds": timeout_seconds,
         "total_duration_seconds": total_duration_seconds, "window_seconds": _window_seconds,
         "automatic_retries": 0, "discovery_source": "geckoterminal",
+        "context_source_requests_per_selected_token": 4,
+        "context_source_request_budget": 4 * max_selected_tokens,
     }
     run_id = str(uuid.uuid4())
     started_dt = _now()
@@ -726,6 +1030,7 @@ def run_one_command_15m_factory(
                         conn, pending, adapter_factory=adapter_factory,
                         timeout_seconds=timeout_seconds,
                         minimum_evidence_seconds=_window_seconds,
+                        context_adapter_factories=context_adapter_factories,
                     )
                     if pending["step_kind"] == "WINDOW_CLOSE"
                     else _execute_snapshot(conn, pending, adapter_factory=adapter_factory, timeout_seconds=timeout_seconds)
