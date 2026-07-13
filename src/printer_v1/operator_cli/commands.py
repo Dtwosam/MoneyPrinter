@@ -77,6 +77,8 @@ from printer_v1.discovery.selection_batch import (
     build_age_activity_report,
     build_batch_item,
     build_classifier_quota_view,
+    build_qualified_random_active_selection,
+    build_trajectory_coverage_report,
     build_field_completeness_report,
     build_pair_age_context_report,
     classify_same_token_new_pair,
@@ -2477,7 +2479,10 @@ def _select_discovery_candidates(
             if reject_reason:
                 rejected.append({**item, "reject_reason": reject_reason})
             else:
-                accepted.append(candidate)
+                accepted.append({
+                    **candidate,
+                    "tracking_lane": classification.discovery_action.value,
+                })
     finally:
         if _own_conn and _conn is not None:
             _conn.close()
@@ -2587,6 +2592,17 @@ def build_discover_candidates_once_payload(
     _cooldown_rejected: list[dict[str, Any]] = []
     _active_handoff_candidates: list[dict[str, Any]] = []
     _selection_batch_result: dict[str, Any] | None = None
+    _random_selection_report: dict[str, Any] = {
+        "policy_version": "QUALIFIED_RANDOM_ACTIVE_V1",
+        "selection_seed": getattr(args, "selection_seed", None),
+        "eligible_pool_size": 0,
+        "requested_target_size": args.max_candidates,
+        "effective_target_size": 0,
+        "selection_ready": False,
+        "selected_candidates": [],
+        "rejected_candidates": [],
+        "old_quota_diagnostic": {"quota_ok": True, "quota_violations": [], "hard_gate": False},
+    }
     _group_a_quota_report: dict[str, Any] = {
         "quota_ok": True,
         "quota_violations": [],
@@ -2638,7 +2654,7 @@ def build_discover_candidates_once_payload(
             existing_token_mints=existing_token_mints,
             existing_pair_addresses=existing_pair_addresses,
             existing_symbol_name_keys=existing_symbol_name_keys,
-            max_candidates=args.max_candidates,
+            max_candidates=max(args.max_candidates, len(agg_clean_final)),
             db_path_or_conn=resolved,
         )
 
@@ -2665,47 +2681,35 @@ def build_discover_candidates_once_payload(
             _next_batch_seq,
         )
 
-        _group_a_quota_report = build_classifier_quota_view(
+        _random_selection_report = build_qualified_random_active_selection(
             _cooldown_eligible,
-            audit_only_pool,
-            max_items=min(10, max(1, args.max_candidates)),
+            target_size=args.max_candidates,
+            seed=getattr(args, "selection_seed", None),
         )
-        _quota_ok = bool(_group_a_quota_report["quota_ok"])
-        _quota_violations = list(_group_a_quota_report["quota_violations"])
-        _selected_audit_identities = {
-            (item.get("token_mint"), item.get("pair_address"))
-            for item in _group_a_quota_report["selected_candidates"]
-            if item.get("candidate_kind") == "AUDIT_ONLY"
+        _quota_ok = bool(_random_selection_report["selection_ready"])
+        _group_a_quota_report = {
+            **_random_selection_report["old_quota_diagnostic"],
+            "selected_count": len(_random_selection_report["selected_candidates"]),
+            "selected_candidates": _random_selection_report["selected_candidates"],
+            "rejected_candidates": _random_selection_report["rejected_candidates"],
+            "selected_active_tracking_count": len(_random_selection_report["selected_candidates"]),
+            "selected_audit_only_count": 0,
         }
-        _quota_supplement = [
-            candidate for candidate in audit_only_pool
-            if (candidate.get("token_mint"), candidate.get("pair_address"))
-            in _selected_audit_identities
-        ]
-        if not _quota_ok:
-            _quota_supplement = []
-
-        _quota_failure_reason = (
-            "BATCH_QUOTA_FAILED:" + ",".join(_quota_violations)
-            if _quota_violations else None
-        )
+        _quota_violations = list(_group_a_quota_report["quota_violations"])
+        _quota_failure_reason = None if _quota_ok else "INSUFFICIENT_QUALIFIED_ACTIVE_POOL"
         _batch_items: list[dict[str, Any]] = []
-        for _candidate in _group_a_quota_report["selected_candidates"]:
-            _is_active = _candidate.get("candidate_kind") == "ACTIVE_TRACKING"
+        for _candidate in _random_selection_report["selected_candidates"]:
             _batch_items.append(build_batch_item(
                 _candidate,
-                item_status=ITEM_STATUS_SELECTED if _quota_ok else ITEM_STATUS_REJECTED,
+                item_status=ITEM_STATUS_SELECTED,
                 primary_bucket=_candidate.get("primary_bucket"),
                 bucket_name=_candidate.get("bucket_name"),
-                selection_reason=(
-                    "CLASSIFIER_QUOTA_SELECTED"
-                    if _is_active else "AUDIT_ONLY_QUOTA_SUPPORT"
-                ) if _quota_ok else None,
-                rejection_reason=None if _quota_ok else _quota_failure_reason,
+                selection_reason="QUALIFIED_RANDOM_ACTIVE_SELECTED",
+                rejection_reason=None,
                 tracking_lane=_candidate.get("tracking_lane"),
                 operator_approved=True,
             ))
-        for _candidate in _group_a_quota_report["rejected_candidates"]:
+        for _candidate in _random_selection_report["rejected_candidates"]:
             _batch_items.append(build_batch_item(
                 _candidate,
                 item_status=ITEM_STATUS_REJECTED,
@@ -2733,23 +2737,21 @@ def build_discover_candidates_once_payload(
             _batch_items,
             {
                 "candidate_pool_total": len(accepted) + len(audit_only_pool),
-                "quota_ok": _quota_ok,
-                "quota_violations": _quota_violations,
+                "selection_policy_version": _random_selection_report["policy_version"],
+                "selection_seed": _random_selection_report["selection_seed"],
+                "eligible_pool_size": _random_selection_report["eligible_pool_size"],
+                "requested_target_size": _random_selection_report["requested_target_size"],
+                "effective_target_size": _random_selection_report["effective_target_size"],
+                "old_quota_diagnostic": _group_a_quota_report,
                 "cooldown_eligible_count": len(_cooldown_eligible),
                 "cooldown_rejected_count": len(_cooldown_rejected),
-                "selected_active_tracking_count": (
-                    _group_a_quota_report["selected_active_tracking_count"]
-                    if _quota_ok else 0
-                ),
-                "selected_audit_only_count": (
-                    _group_a_quota_report["selected_audit_only_count"]
-                    if _quota_ok else 0
-                ),
+                "selected_active_tracking_count": len(_random_selection_report["selected_candidates"]),
+                "selected_audit_only_count": 0,
             },
             operator_approved=True,
             batch_status=BATCH_STATUS_ASSEMBLED if _quota_ok else BATCH_STATUS_REJECTED,
             pool_quality_notes=(
-                "quota_valid_production_handoff"
+                "qualified_random_active_handoff"
                 if _quota_ok else _quota_failure_reason
             ),
         )
@@ -2757,19 +2759,14 @@ def build_discover_candidates_once_payload(
         if _quota_ok:
             _active_handoff_candidates = [
                 candidate
-                for candidate in _group_a_quota_report["selected_candidates"]
-                if candidate.get("candidate_kind") == "ACTIVE_TRACKING"
+                for candidate in _random_selection_report["selected_candidates"]
             ]
 
         _active_handoff_identities = {
             (candidate.get("token_mint"), candidate.get("pair_address"))
             for candidate in _active_handoff_candidates
         }
-        _evidence_only_candidates = [
-            candidate for candidate in accepted
-            if (candidate.get("token_mint"), candidate.get("pair_address"))
-            not in _active_handoff_identities
-        ]
+        _evidence_only_candidates: list[dict[str, Any]] = []
 
         def _persist_candidate_group(
             candidates: list[dict[str, Any]],
@@ -2853,6 +2850,24 @@ def build_discover_candidates_once_payload(
     _pair_age_context_report = build_pair_age_context_report(all_normalized_pairs)
     _total_pre_persistence_rejections = len(rejected) + len(agg_wr_rejected)
     _source_budget_report = _build_source_budget_report(plan, execution_records, max_source_requests)
+    with sqlite3.connect(resolved) as _trajectory_connection:
+        _trajectory_rows = _trajectory_connection.execute(
+            """
+            SELECT t.token_mint, p.pair_address, d.normalized_candidate_payload_json
+            FROM printer_discovery_candidates d
+            JOIN printer_tokens t ON t.id = d.token_id
+            JOIN printer_pairs p ON p.id = d.pair_id
+            ORDER BY d.id
+            """
+        ).fetchall()
+    _trajectory_observations = []
+    for _mint, _pair, _payload_json in _trajectory_rows:
+        try:
+            _payload = json.loads(_payload_json or "{}")
+        except (TypeError, ValueError):
+            _payload = {}
+        _trajectory_observations.append({**_payload, "token_mint": _mint, "pair_address": _pair})
+    _trajectory_coverage_report = build_trajectory_coverage_report(_trajectory_observations)
 
     # V2-2M audit-only report variables.
     _ao_watch_only_count = sum(1 for _ao in audit_only_pool if _ao.get("tracking_lane") == "WATCH_ONLY")
@@ -2941,15 +2956,11 @@ def build_discover_candidates_once_payload(
             ),
             # Includes within-response rejections (H.4) and post-filter gate rejections.
             "candidates_rejected_pre_persistence": _total_pre_persistence_rejections,
-            "candidates_considered_for_selection": len(_cooldown_eligible) + len(audit_only_pool),
+            "candidates_considered_for_selection": len(_cooldown_eligible),
             "candidates_selected": len(discovery_results),
             "candidates_rejected_by_selection": (
                 len(_cooldown_rejected)
-                + len(_group_a_quota_report.get("rejected_candidates", []))
-                + (
-                    len(_group_a_quota_report.get("selected_candidates", []))
-                    if not _quota_ok else 0
-                )
+                + len(_random_selection_report.get("rejected_candidates", []))
             ),
             # V2-2M audit-only pool stage counts (all int, H.1 invariant preserved).
             "candidates_audit_only_total": len(audit_only_pool),
@@ -2972,6 +2983,8 @@ def build_discover_candidates_once_payload(
         # V2-2M audit-only pool and quota supplement reporting hook.
         "audit_only_report": _audit_only_report,
         "group_a_quota_report": _group_a_quota_report,
+        "qualified_random_selection_report": _random_selection_report,
+        "trajectory_coverage_report": _trajectory_coverage_report,
         "selection_handoff_report": {
             "batch_id": (
                 _selection_batch_result.get("batch_id")
@@ -2981,7 +2994,11 @@ def build_discover_candidates_once_payload(
                 _selection_batch_result.get("batch_status")
                 if _selection_batch_result else None
             ),
-            "quota_hard_gate_passed": _quota_ok,
+            "quota_hard_gate_passed": False,
+            "qualified_random_gate_passed": _quota_ok,
+            "selection_policy_version": _random_selection_report["policy_version"],
+            "selection_seed": _random_selection_report["selection_seed"],
+            "eligible_pool_size": _random_selection_report["eligible_pool_size"],
             "quota_violations": _quota_violations,
             "cooldown_candidates_checked": len(accepted),
             "cooldown_eligible_count": len(_cooldown_eligible),
@@ -3104,6 +3121,10 @@ def main_discover_candidates_once(argv: Sequence[str] | None = None) -> int:
             "After eligibility gating, enrich at most one accepted GeckoTerminal pool "
             "with one OHLCV and one trades request through Source Governor."
         ),
+    )
+    parser.add_argument(
+        "--selection-seed",
+        help="Optional reproducible seed for qualified random active-token selection.",
     )
     parser.add_argument(
         "--enrich-t3-token-age",

@@ -207,7 +207,7 @@ def test_six_plus_group_a_group_b_and_decay_minimums_remain_enforced():
     assert "GROUP_B_SHARE_BELOW_MIN_30_PERCENT" in violations
 
 
-def test_six_candidate_production_path_builds_quota_valid_classifier_batch():
+def test_six_candidate_production_path_uses_active_random_pool_and_reports_old_quota():
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         db_path = pathlib.Path(tmp) / "group-a-proof.sqlite3"
         apply_migrations(db_path)
@@ -219,27 +219,16 @@ def test_six_candidate_production_path_builds_quota_valid_classifier_batch():
 
         report = payload["group_a_quota_report"]
         assert payload["t3_token_age_enrichment_report"]["bucket_after_enrichment"] == BUCKET_A3
-        assert report["quota_ok"] is True
-        assert report["quota_violations"] == []
-        assert report["selected_count"] == 6
+        assert report["hard_gate"] is False
+        assert report["quota_ok"] is False
+        assert "MISSING_D1_DEAD_TOKEN_REQUIRED_FOR_6PLUS_BATCH" not in report["quota_violations"]
+        assert report["selected_count"] == 5
         assert report["selected_active_tracking_count"] == 5
-        assert report["selected_audit_only_count"] == 1
-        assert report["selected_by_bucket"] == {
-            "A1": 1,
-            "A3": 1,
-            "B1": 1,
-            "B2": 1,
-            "B3": 1,
-            "D1": 1,
-        }
+        assert report["selected_audit_only_count"] == 0
 
         selected_a3 = next(item for item in report["selected_candidates"] if item["primary_bucket"] == BUCKET_A3)
         assert selected_a3["token_age_evidence_tier"] == "T3"
         assert selected_a3["t3_source_response_id"] is not None
-        selected_d1 = next(item for item in report["selected_candidates"] if item["primary_bucket"] == BUCKET_D1)
-        assert selected_d1["candidate_kind"] == "AUDIT_ONLY"
-        assert selected_d1["tracking_lane"] == "WATCH_ONLY"
-
         connection = sqlite3.connect(db_path)
         dead_mint = _pair(6, kind="dead")["baseToken"]["address"]
         assert connection.execute(
@@ -252,10 +241,11 @@ def test_six_candidate_production_path_builds_quota_valid_classifier_batch():
         batch = connection.execute(
             "SELECT batch_status, selected_count, rejected_count FROM printer_selection_batches"
         ).fetchone()
-        assert batch == ("ASSEMBLED", 6, 0)
-        assert payload["selection_handoff_report"]["quota_hard_gate_passed"] is True
+        assert batch == ("ASSEMBLED", 5, 0)
+        assert payload["selection_handoff_report"]["quota_hard_gate_passed"] is False
+        assert payload["selection_handoff_report"]["qualified_random_gate_passed"] is True
         assert payload["selection_handoff_report"]["active_handoff_count"] == 5
-        assert payload["selection_handoff_report"]["audit_only_handoff_count"] == 1
+        assert payload["selection_handoff_report"]["audit_only_handoff_count"] == 0
         for table in (
             "printer_memory_windows",
             "printer_memory_retrieval_queries",
@@ -269,7 +259,7 @@ def test_six_candidate_production_path_builds_quota_valid_classifier_batch():
         connection.close()
 
 
-def test_quota_failed_production_batch_is_audited_without_active_handoffs():
+def test_old_quota_failure_is_diagnostic_and_does_not_block_active_handoffs():
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         db_path = pathlib.Path(tmp) / "group-a-failed-proof.sqlite3"
         apply_migrations(db_path)
@@ -285,9 +275,10 @@ def test_quota_failed_production_batch_is_audited_without_active_handoffs():
             "group_a_quota_report"
         ]["quota_violations"]
         handoff = payload["selection_handoff_report"]
-        assert handoff["batch_status"] == "REJECTED"
+        assert handoff["batch_status"] == "ASSEMBLED"
         assert handoff["quota_hard_gate_passed"] is False
-        assert handoff["active_handoff_count"] == 0
+        assert handoff["qualified_random_gate_passed"] is True
+        assert handoff["active_handoff_count"] == 6
 
         connection = sqlite3.connect(db_path)
         for table in (
@@ -295,7 +286,7 @@ def test_quota_failed_production_batch_is_audited_without_active_handoffs():
             "printer_scheduler_jobs",
             "printer_selection_rotation_state",
         ):
-            assert connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+            assert connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 6
         assert connection.execute("SELECT COUNT(*) FROM printer_tokens").fetchone()[0] == 6
         assert connection.execute("SELECT COUNT(*) FROM printer_pairs").fetchone()[0] == 6
         assert connection.execute(
@@ -304,10 +295,10 @@ def test_quota_failed_production_batch_is_audited_without_active_handoffs():
         batch = connection.execute(
             "SELECT batch_status, selected_count FROM printer_selection_batches"
         ).fetchone()
-        assert batch == ("REJECTED", 0)
+        assert batch == ("ASSEMBLED", 6)
         assert connection.execute(
-            "SELECT COUNT(*) FROM printer_selection_batch_items WHERE item_status = 'REJECTED'"
-        ).fetchone()[0] > 0
+            "SELECT COUNT(*) FROM printer_selection_batch_items WHERE item_status = 'SELECTED'"
+        ).fetchone()[0] == 6
         connection.close()
 
 
@@ -348,12 +339,13 @@ def test_production_handoff_applies_cooldown_before_quota_and_rotation():
         assert handoff["cooldown_candidates_checked"] == 6
         assert handoff["cooldown_rejected_count"] == 1
         assert handoff["cooldown_rejections"][0]["token_mint"] == blocked["baseToken"]["address"]
-        assert handoff["quota_hard_gate_passed"] is True
+        assert handoff["quota_hard_gate_passed"] is False
+        assert handoff["qualified_random_gate_passed"] is True
         connection = sqlite3.connect(db_path)
         assert connection.execute(
             "SELECT COUNT(*) FROM printer_tokens WHERE token_mint = ?",
             (blocked["baseToken"]["address"],),
-        ).fetchone()[0] == 1
+        ).fetchone()[0] == 0
         assert connection.execute(
             """
             SELECT COUNT(*)

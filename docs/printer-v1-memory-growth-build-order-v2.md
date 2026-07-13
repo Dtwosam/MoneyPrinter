@@ -197,6 +197,16 @@ tokens feed automated memory growth.
 Allowed: audit, design, and later repair of discovery/selection buckets, gates,
 labels, quotas, and selection reasons.
 
+Active handoff policy adopted after the V2-2 Group A and unassisted-handoff
+proofs: Printer uniformly selects from a bounded pool of clean, actively
+traded Solana memecoins, then learns from their natural state transitions over
+time. The pool is sorted by exact mint/pair identity and uniformly sampled by
+a persisted reproducible seed. Existing category quotas remain diagnostic
+coverage reports only; they are not active-handoff gates. WATCH_ONLY, D1, and
+inactive candidates remain audit evidence and cannot enter active selection.
+Deduplication, STNP, cooldown, rotation, provenance, source-quality, liquidity,
+and activity gates remain mandatory.
+
 Not allowed: score/rank/confidence/weighted decisions, alpha prediction, direct
 BUY logic, retrieval activation, paper decisions, positions, PnL.
 
@@ -271,11 +281,11 @@ Sub-lanes:
 
 | Problem | Why it matters | How it could reduce memory quality or money-usefulness | Failure mode | Required mitigation | Proof/test needed | Stop condition |
 |---|---|---|---|---|---|---|
-| Winner-only bias | Active sources over-represent pumps | Corpus cannot teach avoids/traps/dead tokens | False confidence from winners | Bucket quotas for losers/traps/dead/revivals | Selection report by bucket | All selected tokens are winners |
+| Winner-only bias | Active sources over-represent pumps | Corpus cannot teach avoids/traps/dead tokens | False confidence from winners | Seeded uniform active-pool sampling plus trajectory coverage reporting | Selection and trajectory reports | Repeated observations remain concentrated without visibility |
 | Trending-token bias | Boosted/trending feeds are not the whole market | Memory misses quiet decay and failed pumps | Biased paper decisions later | Include WATCH_ONLY/revisit lanes | Proof includes non-trending reasons | Trending source dominates without label |
 | Dead-token under-sampling | Dead tokens teach capital protection | WAIT/AVOID lessons remain weak | Corpus overstates opportunity | Dead/stale buckets and archive revisit | Dead-token fixtures | Dead bucket always empty |
 | Revival under-sampling | Revivals are distinct from new pumps | Misses delayed continuation/failure lessons | Poor lifecycle memory | Revival label/reason | Revival fixture/proof row | Revival indistinguishable from new |
-| Failed-pump under-sampling | Failed pumps teach traps | BUY review later overfits to success | Fake optimism | Failed pump quota | Failure bucket report | Failed pumps omitted |
+| Failed-pump under-sampling | Failed pumps teach traps | BUY review later overfits to success | Fake optimism | Observe natural exact-pair trajectories and report failed-pump coverage | Trajectory coverage report | Failed-pump transitions remain unobserved |
 | Late-buy trap under-sampling | Core memecoin risk | Entry realism lessons stay weak | Fake chart profit | Late-buy trap reason | Fixture/proof | No trap category |
 | Same-token/new-pair drift | Pair drift can pollute memory | Token/pair mixing | Dirty memory or false continuity | Pair identity guard | Pair drift tests | Pair drift unhandled |
 | Duplicate token/pair selection | Wastes source budget | Repeated same token dominates corpus | Low diversity | Duplicate guard/cooldown | Duplicate tests | Duplicate accepted as new |

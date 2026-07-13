@@ -23,6 +23,8 @@ Locks preserved:
 from __future__ import annotations
 
 import json
+import random
+import secrets
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -88,6 +90,7 @@ GROUP_D_BUCKETS = frozenset({BUCKET_D1, BUCKET_D2, BUCKET_D3, BUCKET_D4})
 GROUP_E_BUCKETS = frozenset({BUCKET_E1, BUCKET_E2})
 GROUP_F_BUCKETS = frozenset({BUCKET_F1, BUCKET_F2, BUCKET_F3, BUCKET_F4})
 TRAP_FAILURE_BUCKETS = frozenset({BUCKET_A2, BUCKET_A3, BUCKET_A4})
+QUALIFIED_RANDOM_ACTIVE_POLICY_VERSION = "QUALIFIED_RANDOM_ACTIVE_V1"
 
 # Group F requires at minimum 10 clean episodes in the corpus before use.
 GROUP_F_MINIMUM_CORPUS_EPISODES = 10
@@ -1252,6 +1255,113 @@ def build_classifier_quota_view(
         },
         "selected_candidates": selected,
         "rejected_candidates": rejected,
+    }
+
+
+def build_qualified_random_active_selection(
+    active_candidates: list[dict[str, Any]],
+    *,
+    target_size: int,
+    seed: str | int | None = None,
+) -> dict[str, Any]:
+    """Uniformly select a reproducible sample from qualified active candidates."""
+    if target_size < 1 or target_size > 50:
+        raise ValueError("target_size must be between 1 and 50")
+    eligible: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    seen_mints: set[str] = set()
+    seen_pairs: set[str] = set()
+    for candidate in active_candidates:
+        clean = {key: value for key, value in candidate.items() if key != "primary_bucket"}
+        mint = str(clean.get("token_mint") or "").strip()
+        pair = str(clean.get("pair_address") or "").strip()
+        reason = None
+        if clean.get("audit_only"):
+            reason = "AUDIT_ONLY_ACTIVE_SELECTION_BLOCKED"
+        elif clean.get("tracking_lane") not in {"TRACK_FAST", "TRACK_NORMAL"}:
+            reason = "INACTIVE_TRACKING_LANE_BLOCKED"
+        elif not mint or not pair or clean.get("source_response_id") is None:
+            reason = REJECTION_NO_SOURCE_TRACE
+        elif clean.get("source_status") not in {"COMPLETE", "PARTIAL"}:
+            reason = REJECTION_STALE_SOURCE_DATA
+        elif clean.get("data_quality_label") not in {"CLEAN_DATA", "ACCEPTABLE_PARTIAL_DATA"}:
+            reason = REJECTION_STALE_SOURCE_DATA
+        elif mint in seen_mints:
+            reason = REJECTION_MINT_DUPLICATE
+        elif pair in seen_pairs:
+            reason = REJECTION_PAIR_DUPLICATE
+        if reason:
+            rejected.append({**clean, "rejection_reason": reason})
+            continue
+        bucket, bucket_name = assign_bucket(clean)
+        seen_mints.add(mint)
+        seen_pairs.add(pair)
+        eligible.append({**clean, "primary_bucket": bucket, "bucket_name": bucket_name})
+
+    eligible.sort(key=lambda item: (str(item["token_mint"]), str(item["pair_address"])))
+    resolved_seed = str(seed) if seed is not None else secrets.token_hex(16)
+    shuffled = list(eligible)
+    random.Random(resolved_seed).shuffle(shuffled)
+    effective_target = min(target_size, len(shuffled))
+    ready = effective_target > 0
+    selected = shuffled[:effective_target] if ready else []
+    selected_keys = {(item["token_mint"], item["pair_address"]) for item in selected}
+    remainder_reason = "QUALIFIED_RANDOM_NOT_SELECTED" if ready else "INSUFFICIENT_QUALIFIED_ACTIVE_POOL"
+    rejected.extend(
+        {**item, "rejection_reason": remainder_reason}
+        for item in eligible
+        if (item["token_mint"], item["pair_address"]) not in selected_keys
+    )
+    old_quota_ok, old_violations = validate_batch_quota([
+        {"primary_bucket": item["primary_bucket"], "tracking_lane": item.get("tracking_lane")}
+        for item in selected
+    ])
+    return {
+        "policy_version": QUALIFIED_RANDOM_ACTIVE_POLICY_VERSION,
+        "selection_seed": resolved_seed,
+        "eligible_pool_size": len(eligible),
+        "requested_target_size": target_size,
+        "effective_target_size": effective_target,
+        "selection_ready": ready,
+        "selected_candidates": selected,
+        "rejected_candidates": rejected,
+        "old_quota_diagnostic": {
+            "quota_ok": old_quota_ok,
+            "quota_violations": old_violations,
+            "hard_gate": False,
+        },
+    }
+
+
+def build_trajectory_coverage_report(observations: list[dict[str, Any]]) -> dict[str, Any]:
+    """Report categorical outcomes from repeated exact mint/pair observations."""
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in observations:
+        key = (str(row.get("token_mint") or "").strip(), str(row.get("pair_address") or "").strip())
+        if all(key):
+            groups.setdefault(key, []).append(row)
+    mapping = {
+        BUCKET_A1: "continuation", BUCKET_B1: "continuation", BUCKET_B3: "continuation",
+        BUCKET_A4: "failed_pump", BUCKET_B2: "dumping_decay", BUCKET_B4: "dumping_decay",
+        BUCKET_D1: "death_inactivity", BUCKET_D2: "revival", BUCKET_B5: "consolidation",
+        BUCKET_C3: "liquidity_removal",
+    }
+    counts = {label: 0 for label in sorted(set(mapping.values()))}
+    evidence = []
+    for (mint, pair), rows in sorted(groups.items()):
+        if len(rows) < 2:
+            continue
+        label = mapping.get(assign_bucket(rows[-1])[0])
+        if label:
+            counts[label] += 1
+            evidence.append({"token_mint": mint, "pair_address": pair, "trajectory_label": label})
+    return {
+        "policy": "EXACT_MINT_PAIR_REPEATED_OBSERVATIONS_V1",
+        "read_only": True,
+        "exact_pairs_observed": len(groups),
+        "exact_pairs_with_repeated_observations": sum(len(rows) >= 2 for rows in groups.values()),
+        "trajectory_counts": counts,
+        "trajectory_evidence": evidence,
     }
 
 
