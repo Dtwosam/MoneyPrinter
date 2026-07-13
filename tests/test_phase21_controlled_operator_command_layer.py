@@ -13,6 +13,10 @@ SRC_PATH = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_PATH))
 
 from printer_v1.operator_cli import commands, formatting
+from printer_v1.hardening.schema_checks import (
+    check_no_live_capability_terms_in_source,
+    check_no_runtime_loop_terms_in_source,
+)
 from printer_v1.operator_db.bootstrap import initialize_operator_db
 from printer_v1.operator_db.paths import get_default_db_path
 
@@ -100,7 +104,7 @@ class Phase21ControlledOperatorCommandLayerTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         db_path = get_default_db_path(self.temp_root)
         self.assertTrue(db_path.is_file())
-        self.assertEqual(payload["latest_migration"], "024_discovery_source_channel.sql")
+        self.assertEqual(payload["latest_migration"], "028_memory_factory_run_ledger.sql")
         self.assertEqual(payload["state_classification"], "PERSISTENT_DB_EMPTY_SCHEMA_ONLY")
         for table in (
             "printer_tokens",
@@ -130,7 +134,7 @@ class Phase21ControlledOperatorCommandLayerTest(unittest.TestCase):
         self.assertEqual(counts_exit, 0)
         self.assertEqual(migration_exit, 0)
         self.assertEqual(counts_payload["counts"]["printer_tokens"], 0)
-        self.assertEqual(migration_payload["latest_migration"], "024_discovery_source_channel.sql")
+        self.assertEqual(migration_payload["latest_migration"], "028_memory_factory_run_ledger.sql")
         self.assertEqual(migration_payload["missing_migrations"], [])
         self.assertEqual(self.table_count(db_path, "printer_operator_review_reports"), before)
 
@@ -220,37 +224,14 @@ class Phase21ControlledOperatorCommandLayerTest(unittest.TestCase):
         self.run_command(commands.main_db_counts, ["--project-root", str(self.temp_root), "--format", "json"])
         self.run_command(commands.main_migration_status, ["--project-root", str(self.temp_root), "--format", "json"])
         self.assertEqual(project_db.exists(), existed_before)
-        source_text = (PROJECT_ROOT / "src" / "printer_v1" / "operator_cli" / "commands.py").read_text(encoding="utf-8")
-        forbidden_fragments = [
-            "requests.get",
-            "requests.post",
-            "httpx",
-            "aiohttp",
-            "urllib.request",
-            "while True",
-            "APScheduler",
-            "FastAPI",
-            "Flask",
-            "Django",
-            "React",
-            "Vue",
-            "Svelte",
-            "private_key",
-            "wallet_address",
-            "signed_tx",
-            "execute_trade",
-            "live_trade",
-            "transaction_signature",
-            "tx_signature",
-            "confidence_score",
-            "buy_score",
-            "ranking_score",
-            "rank_score",
-            "embedding",
-            "vector",
-        ]
-        for fragment in forbidden_fragments:
-            self.assertNotIn(fragment, source_text)
+        self.assertEqual(
+            check_no_live_capability_terms_in_source(PROJECT_ROOT)["validation_result_label"],
+            "VALIDATION_PASS",
+        )
+        self.assertEqual(
+            check_no_runtime_loop_terms_in_source(PROJECT_ROOT)["validation_result_label"],
+            "VALIDATION_PASS",
+        )
 
     def test_main_entrypoints_return_zero_and_print_once(self):
         initialize_operator_db(project_root=self.temp_root)

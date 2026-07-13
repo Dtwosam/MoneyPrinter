@@ -154,6 +154,65 @@ class Phase20HardeningSyntheticValidationTest(unittest.TestCase):
         after_files = sorted(path.relative_to(PROJECT_ROOT) for path in (PROJECT_ROOT / "src" / "printer_v1").rglob("*.py"))
         self.assertEqual(before_files, after_files)
 
+    def test_source_hardening_ignores_lock_vocabulary_but_blocks_capabilities(self):
+        package = self.temp_root / "src" / "printer_v1"
+        package.mkdir(parents=True)
+        source = package / "audit_report.py"
+        source.write_text(
+            'LOCKS = {"private_key": False, "embedding": False, "vector": False}\n',
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            schema_checks.check_no_live_capability_terms_in_source(self.temp_root)["validation_result_label"],
+            "VALIDATION_PASS",
+        )
+        source.write_text("private_key = load_secret()\n", encoding="utf-8")
+        blocked = schema_checks.check_no_live_capability_terms_in_source(self.temp_root)
+        self.assertEqual(blocked["validation_result_label"], "VALIDATION_FAIL")
+        self.assertEqual(blocked["item_payload"]["findings"][0]["term"], "private_key")
+
+    def test_source_hardening_allows_adapter_transport_but_blocks_direct_bypass(self):
+        package = self.temp_root / "src" / "printer_v1"
+        sources = package / "sources"
+        sources.mkdir(parents=True)
+        (sources / "approved.py").write_text(
+            "from urllib import request as url_request\n", encoding="utf-8"
+        )
+        self.assertEqual(
+            schema_checks.check_no_live_capability_terms_in_source(self.temp_root)["validation_result_label"],
+            "VALIDATION_PASS",
+        )
+        (package / "bypass.py").write_text("import httpx\n", encoding="utf-8")
+        blocked = schema_checks.check_no_live_capability_terms_in_source(self.temp_root)
+        self.assertEqual(blocked["validation_result_label"], "VALIDATION_FAIL")
+        self.assertIn("direct_network_import:httpx", blocked["item_payload"]["findings"][0]["term"])
+        (package / "bypass.py").write_text(
+            "from urllib import request as url_request\n", encoding="utf-8"
+        )
+        blocked = schema_checks.check_no_live_capability_terms_in_source(self.temp_root)
+        self.assertEqual(blocked["validation_result_label"], "VALIDATION_FAIL")
+        self.assertIn("direct_network_import:urllib", blocked["item_payload"]["findings"][0]["term"])
+
+    def test_runtime_hardening_distinguishes_bounded_and_unbounded_loops(self):
+        package = self.temp_root / "src" / "printer_v1"
+        package.mkdir(parents=True)
+        source = package / "runner.py"
+        source.write_text(
+            "def run(max_duration_seconds, elapsed):\n"
+            "    while True:\n"
+            "        if elapsed() >= max_duration_seconds:\n"
+            "            break\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            schema_checks.check_no_runtime_loop_terms_in_source(self.temp_root)["validation_result_label"],
+            "VALIDATION_PASS",
+        )
+        source.write_text("while True:\n    run_once()\n", encoding="utf-8")
+        blocked = schema_checks.check_no_runtime_loop_terms_in_source(self.temp_root)
+        self.assertEqual(blocked["validation_result_label"], "VALIDATION_FAIL")
+        self.assertEqual(blocked["item_payload"]["findings"][0]["term"], "unbounded_while_true")
+
     def test_synthetic_flow_seeds_discovery_snapshots_and_context(self):
         seeded = flow_validation.seed_synthetic_discovery_and_snapshots(self.connection)
         self.assertEqual(seeded["stage"], "FLOW_STAGE_SNAPSHOTS")

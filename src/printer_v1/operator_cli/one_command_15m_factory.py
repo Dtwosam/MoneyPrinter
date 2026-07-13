@@ -148,10 +148,10 @@ def _cancel_discovery_handoffs(conn: sqlite3.Connection, discovery: dict[str, An
 
 def _schedule_offsets(lane: str, window_seconds: float) -> list[float]:
     attempts = 10 if lane == "TRACK_FAST" else 5
-    # The window-close job performs the final governed snapshot attempt.
+    # The opening and window-close jobs perform the boundary snapshot attempts.
     return [
         round(window_seconds * index / (attempts - 1), 6)
-        for index in range(attempts - 1)
+        for index in range(1, attempts - 1)
     ]
 
 
@@ -192,23 +192,58 @@ def _insert_step_and_job(
     return int(job_id)
 
 
-def _plan_jobs(
+def _plan_opening_jobs(
     conn: sqlite3.Connection, run_id: str, targets: list[dict[str, Any]],
-    started: datetime, window_seconds: float,
+    scheduled_for: datetime,
 ) -> None:
     for target_index, target in enumerate(targets):
         prefix = f"t{target_index + 1}"
-        for slot_index, offset in enumerate(_schedule_offsets(target["tracking_lane"], window_seconds)):
-            _insert_step_and_job(
-                conn, run_id=run_id, target=target,
-                step_key=f"{prefix}_snapshot_{slot_index:02d}", step_kind="SNAPSHOT",
-                scheduled_for=started + timedelta(seconds=offset),
-            )
         _insert_step_and_job(
             conn, run_id=run_id, target=target,
-            step_key=f"{prefix}_window_close", step_kind="WINDOW_CLOSE",
-            scheduled_for=started + timedelta(seconds=window_seconds),
+            step_key=f"{prefix}_snapshot_00", step_kind="SNAPSHOT",
+            scheduled_for=scheduled_for,
         )
+
+
+def _plan_anchored_jobs(
+    conn: sqlite3.Connection, *, run_id: str, opening_step: sqlite3.Row,
+    first_snapshot_captured_at: str, window_seconds: float,
+) -> None:
+    """Plan one token's remaining work from its persisted opening evidence."""
+    anchor = datetime.fromisoformat(first_snapshot_captured_at)
+    prefix = str(opening_step["step_key"]).rsplit("_snapshot_", 1)[0]
+    target = {
+        "token_id": int(opening_step["token_id"]),
+        "pair_id": int(opening_step["pair_id"]),
+        "token_mint": str(opening_step["token_mint"]),
+        "pair_address": str(opening_step["pair_address"]),
+        "tracking_lane": str(opening_step["tracking_lane"]),
+    }
+    for slot_index, offset in enumerate(
+        _schedule_offsets(target["tracking_lane"], window_seconds), start=1
+    ):
+        _insert_step_and_job(
+            conn, run_id=run_id, target=target,
+            step_key=f"{prefix}_snapshot_{slot_index:02d}", step_kind="SNAPSHOT",
+            scheduled_for=anchor + timedelta(seconds=offset),
+        )
+    _insert_step_and_job(
+        conn, run_id=run_id, target=target,
+        step_key=f"{prefix}_window_close", step_kind="WINDOW_CLOSE",
+        scheduled_for=anchor + timedelta(seconds=window_seconds),
+    )
+
+
+def _evidence_duration_seconds(start_at: str, end_at: str) -> float:
+    start = datetime.fromisoformat(start_at)
+    end = datetime.fromisoformat(end_at)
+    return (end - start).total_seconds()
+
+
+def _evidence_duration_is_eligible(
+    start_at: str, end_at: str, *, minimum_seconds: float = 900.0,
+) -> bool:
+    return _evidence_duration_seconds(start_at, end_at) >= minimum_seconds
 
 
 def _execute_snapshot(
@@ -261,9 +296,133 @@ def _execute_snapshot(
     return result
 
 
+def _attach_context_and_gate_window(
+    conn: sqlite3.Connection, *, step: sqlite3.Row, window_id: int,
+    snapshot_start_id: int, snapshot_end_id: int,
+) -> dict[str, Any]:
+    """Attach existing-engine context and fail closed before clean promotion."""
+    from printer_v1.operator_cli.commands import (
+        _apply_clean_audit_evidence_labels,
+        _classify_first_memory_review,
+        _context_freshness_report,
+        _context_memory_labels,
+        _context_row_ids_for_memory,
+        _derive_15m_window_context_from_snapshots,
+        _insert_controlled_context_rows,
+        _resolve_memory_context_rows,
+    )
+
+    snapshots = [dict(row) for row in conn.execute(
+        """
+        SELECT * FROM printer_token_snapshots
+        WHERE token_id=? AND pair_id=? AND id BETWEEN ? AND ?
+        ORDER BY captured_at, id
+        """,
+        (step["token_id"], step["pair_id"], snapshot_start_id, snapshot_end_id),
+    ).fetchall()]
+    if not snapshots:
+        raise ValueError("exact snapshot range is empty")
+    target = {
+        "token_id": int(step["token_id"]),
+        "pair_id": int(step["pair_id"]),
+        "token_mint": str(step["token_mint"]),
+        "pair_address": str(step["pair_address"]),
+    }
+    end_snapshot = snapshots[-1]
+    _insert_controlled_context_rows(
+        conn, target, end_snapshot, str(end_snapshot["captured_at"])
+    )
+    context_rows = _resolve_memory_context_rows(
+        conn, target, int(end_snapshot["id"])
+    )
+    start_at = str(snapshots[0]["captured_at"])
+    end_at = str(end_snapshot["captured_at"])
+    freshness = _context_freshness_report(
+        context_rows, end_snapshot, start_at, end_at
+    )
+    labels = _context_memory_labels(context_rows)
+    derived = _derive_15m_window_context_from_snapshots(snapshots, WINDOW_KIND)
+    labels.update(derived.get("labels") or {})
+    evidence = _apply_clean_audit_evidence_labels(
+        conn,
+        window={
+            "id": window_id,
+            "token_id": target["token_id"],
+            "pair_id": target["pair_id"],
+            "snapshot_end_id": snapshot_end_id,
+            "window_kind": WINDOW_KIND,
+        },
+        labels=labels,
+    )
+    classification = _classify_first_memory_review(
+        snapshots,
+        context_rows,
+        WINDOW_KIND,
+        freshness,
+        effective_labels=evidence["labels"],
+        evidence_blockers=evidence["overlays"].get("evidence_blockers", []),
+        outcome_label=derived.get("outcome_label"),
+    )
+    remaining = list(dict.fromkeys(
+        freshness.get("context_blocking_reasons", [])
+        + classification.get("unknown_context_blockers", [])
+        + classification.get("evidence_blockers", [])
+    ))
+    row = conn.execute(
+        "SELECT supporting_context_json FROM printer_memory_windows WHERE id=?",
+        (window_id,),
+    ).fetchone()
+    supporting = json.loads(str(row[0]) or "{}") if row else {}
+    supporting.update({
+        "context_quality_reviewed": True,
+        "context_row_ids": _context_row_ids_for_memory(context_rows),
+        "context_labels": evidence["labels"],
+        "context_freshness_report": freshness,
+        "memory_build_evidence_overlays": evidence["overlays"],
+        "derived_window_context": derived.get("payload"),
+        "outcome_label": classification["outcome_label"],
+        "remaining_blockers": remaining,
+        "window_5m_support_role": "SUPPORT_ONLY_NOT_MAIN_EVIDENCE",
+    })
+    if classification["memory_quality_label"] == "CLEAN_MEMORY":
+        # Lane K owns clean promotion; this row stays a PARTIAL_MEMORY candidate.
+        quality = "PARTIAL_MEMORY"
+        memory_status = "PARTIAL_MEMORY"
+        data_quality = "CLEAN_DATA"
+        do_not_train = 0
+    else:
+        quality = classification["memory_quality_label"]
+        memory_status = classification["memory_status"]
+        data_quality = classification["data_quality_label"]
+        do_not_train = 1
+    conn.execute(
+        """
+        UPDATE printer_memory_windows
+        SET memory_quality_label=?, memory_status=?, data_quality_label=?,
+            do_not_train=?, outcome_label=?, rejection_reasons_json=?,
+            supporting_context_json=?, updated_at=?
+        WHERE id=?
+        """,
+        (
+            quality, memory_status, data_quality, do_not_train,
+            classification["outcome_label"],
+            _json(classification["rejection_reasons"]), _json(supporting),
+            _iso(), window_id,
+        ),
+    )
+    return {
+        "classification": classification,
+        "remaining_blockers": remaining,
+        "context_row_ids": supporting["context_row_ids"],
+        "context_labels": evidence["labels"],
+        "derived_window_context": derived.get("payload"),
+        "clean_promotion_candidate": do_not_train == 0,
+    }
+
+
 def _execute_close(
     conn: sqlite3.Connection, step: sqlite3.Row, *, adapter_factory: Callable[..., Any],
-    timeout_seconds: float,
+    timeout_seconds: float, minimum_evidence_seconds: float,
 ) -> dict[str, Any]:
     from printer_v1.operator_cli.e2o_memory_window_close import close_15m_memory_window_from_snapshot
     from printer_v1.operator_cli.e2q_memory_window_audit import audit_15m_memory_window
@@ -276,19 +435,39 @@ def _execute_close(
         return result
     first = conn.execute(
         """
-        SELECT snapshot_id FROM printer_memory_factory_run_steps
-        WHERE run_id=? AND token_id=? AND pair_id=? AND step_kind='SNAPSHOT'
+        SELECT s.snapshot_id, ts.captured_at
+        FROM printer_memory_factory_run_steps s
+        JOIN printer_token_snapshots ts ON ts.id=s.snapshot_id
+        WHERE s.run_id=? AND s.token_id=? AND s.pair_id=? AND s.step_kind='SNAPSHOT'
           AND step_status='SUCCEEDED' AND snapshot_id IS NOT NULL
-        ORDER BY scheduled_for, id LIMIT 1
+        ORDER BY s.scheduled_for, s.id LIMIT 1
         """,
         (step["run_id"], step["token_id"], step["pair_id"]),
     ).fetchone()
     if first is None:
         result.update(ok=False, blocked_reason="no successful opening snapshot")
         return result
+    end_row = conn.execute(
+        "SELECT captured_at FROM printer_token_snapshots WHERE id=?",
+        (int(result["snapshot_id"]),),
+    ).fetchone()
+    if end_row is None or not _evidence_duration_is_eligible(
+        str(first["captured_at"]), str(end_row["captured_at"]),
+        minimum_seconds=minimum_evidence_seconds,
+    ):
+        result.update(
+            ok=False,
+            blocked_reason="persisted snapshot evidence duration below required window",
+            evidence_duration_seconds=(
+                _evidence_duration_seconds(
+                    str(first["captured_at"]), str(end_row["captured_at"])
+                ) if end_row is not None else None
+            ),
+        )
+        return result
     close = close_15m_memory_window_from_snapshot(
         conn, int(result["snapshot_id"]), str(step["token_mint"]),
-        snapshot_start_id=int(first[0]),
+        snapshot_start_id=int(first["snapshot_id"]),
     )
     window_id = close.get("window_id") or close.get("existing_window_id")
     result["window_close"] = close
@@ -297,6 +476,13 @@ def _execute_close(
         result.update(ok=False, blocked_reason="; ".join(close.get("blocked_reasons", [])) or "window close blocked")
         return result
     result["window_audit"] = audit_15m_memory_window(conn, int(window_id))
+    result["context_quality"] = _attach_context_and_gate_window(
+        conn,
+        step=step,
+        window_id=int(window_id),
+        snapshot_start_id=int(first["snapshot_id"]),
+        snapshot_end_id=int(result["snapshot_id"]),
+    )
     conn.commit()
     result["memory_pipeline"] = run_e2z_pipeline(
         str(conn.execute("PRAGMA database_list").fetchone()[2]),
@@ -476,7 +662,7 @@ def run_one_command_15m_factory(
         if not targets:
             stop_reason = STOP_EMPTY
         else:
-            _plan_jobs(conn, run_id, targets, started_dt, _window_seconds)
+            _plan_opening_jobs(conn, run_id, targets, _now())
         conn.commit()
 
         while stop_reason == STOP_COMPLETED:
@@ -507,11 +693,29 @@ def run_one_command_15m_factory(
             conn.commit()
             try:
                 result = (
-                    _execute_close(conn, pending, adapter_factory=adapter_factory, timeout_seconds=timeout_seconds)
+                    _execute_close(
+                        conn, pending, adapter_factory=adapter_factory,
+                        timeout_seconds=timeout_seconds,
+                        minimum_evidence_seconds=_window_seconds,
+                    )
                     if pending["step_kind"] == "WINDOW_CLOSE"
                     else _execute_snapshot(conn, pending, adapter_factory=adapter_factory, timeout_seconds=timeout_seconds)
                 )
                 if result.get("ok"):
+                    if str(pending["step_key"]).endswith("_snapshot_00"):
+                        captured = conn.execute(
+                            "SELECT captured_at FROM printer_token_snapshots WHERE id=?",
+                            (int(result["snapshot_id"]),),
+                        ).fetchone()
+                        if captured is None:
+                            raise ValueError("opening snapshot was not persisted")
+                        _plan_anchored_jobs(
+                            conn,
+                            run_id=run_id,
+                            opening_step=pending,
+                            first_snapshot_captured_at=str(captured[0]),
+                            window_seconds=_window_seconds,
+                        )
                     _update_step(conn, int(pending["id"]), "SUCCEEDED", result)
                     complete_job(conn, job_id=job_id)
                 else:

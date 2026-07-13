@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 from collections.abc import Iterable
 from contextlib import contextmanager
 from pathlib import Path
@@ -201,44 +202,33 @@ def check_contract_label_consistency() -> dict[str, Any]:
     )
 
 
-def _source_terms_live() -> list[str]:
-    return [
-        "requests" + ".get",
-        "requests" + ".post",
-        "http" + "x",
-        "aio" + "http",
-        "urllib" + ".request",
-        "wallet" + "_address",
-        "private" + "_key",
-        "signed" + "_tx",
-        "live" + "_trade",
-        "transaction" + "_signature",
-        "tx" + "_signature",
-        "execute" + "_trade",
-        "confidence" + "_score",
-        "buy" + "_score",
-        "ranking" + "_score",
-        "rank" + "_score",
-        "score" + " =",
-        "confidence" + " =",
-        "embed" + "ding",
-        "vec" + "tor",
-    ]
+_FORBIDDEN_EXECUTABLE_NAMES = {
+    "wallet_address",
+    "private_key",
+    "signed_tx",
+    "live_trade",
+    "transaction_signature",
+    "tx_signature",
+    "execute_trade",
+    "confidence_score",
+    "buy_score",
+    "ranking_score",
+    "rank_score",
+    "score",
+    "confidence",
+    "embedding",
+    "vector",
+}
 
-
-def _source_terms_runtime() -> list[str]:
-    return [
-        "cel" + "ery",
-        "cr" + "on",
-        "while " + "True",
-        "AP" + "Scheduler",
-        "Fast" + "API",
-        "Fla" + "sk",
-        "Djan" + "go",
-        "Re" + "act",
-        "Vu" + "e",
-        "Svel" + "te",
-    ]
+_NETWORK_MODULES = {"requests", "httpx", "aiohttp"}
+_RUNTIME_FRAMEWORKS = {
+    "celery", "cron", "apscheduler", "fastapi", "flask", "django",
+    "react", "vue", "svelte",
+}
+_BOUNDED_LOOP_NAMES = {
+    "max_duration_seconds", "deadline", "_cycle_budget", "max_cycles",
+    "max_ticks", "remaining_ticks",
+}
 
 
 def _iter_source_files(project_root: str | Path | None = None) -> Iterable[Path]:
@@ -251,20 +241,94 @@ def _allowed_scan_file(path: Path) -> bool:
     return normalized.endswith("src/printer_v1/contracts/rules.py")
 
 
-def _scan_source_terms(project_root: str | Path | None, terms: list[str]) -> list[dict[str, Any]]:
-    findings: list[dict[str, Any]] = []
+def _parsed_source_files(
+    project_root: str | Path | None,
+) -> Iterable[tuple[Path, ast.AST | None, str | None]]:
     for path in _iter_source_files(project_root):
         if _allowed_scan_file(path):
             continue
-        text = path.read_text(encoding="utf-8")
-        for term in terms:
-            if term in text:
-                findings.append({"path": str(path), "term": term})
+        try:
+            yield path, ast.parse(path.read_text(encoding="utf-8")), None
+        except (OSError, SyntaxError, UnicodeError) as exc:
+            yield path, None, f"source_parse_failed:{type(exc).__name__}"
+
+
+def _is_source_adapter(path: Path) -> bool:
+    normalized = str(path).replace("\\", "/")
+    return "/src/printer_v1/sources/" in f"/{normalized}"
+
+
+def _imported_module(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Import):
+        return node.names[0].name.lower() if node.names else None
+    if isinstance(node, ast.ImportFrom):
+        return (node.module or "").lower()
+    return None
+
+
+def _scan_live_capabilities(project_root: str | Path | None) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    for path, tree, parse_error in _parsed_source_files(project_root):
+        if parse_error:
+            findings.append({"path": str(path), "term": parse_error})
+            continue
+        assert tree is not None
+        found: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and node.id.lower() in _FORBIDDEN_EXECUTABLE_NAMES:
+                found.add(node.id.lower())
+            elif isinstance(node, ast.Attribute) and node.attr.lower() in _FORBIDDEN_EXECUTABLE_NAMES:
+                found.add(node.attr.lower())
+            elif isinstance(node, (ast.Import, ast.ImportFrom)) and not _is_source_adapter(path):
+                module = _imported_module(node) or ""
+                imports_urllib_request = (
+                    isinstance(node, ast.ImportFrom)
+                    and module == "urllib"
+                    and any(alias.name == "request" for alias in node.names)
+                )
+                if (
+                    module.split(".", 1)[0] in _NETWORK_MODULES
+                    or module == "urllib.request"
+                    or imports_urllib_request
+                ):
+                    found.add(f"direct_network_import:{module}")
+        findings.extend({"path": str(path), "term": term} for term in sorted(found))
+    return findings
+
+
+def _scan_runtime_capabilities(project_root: str | Path | None) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    for path, tree, parse_error in _parsed_source_files(project_root):
+        if parse_error:
+            findings.append({"path": str(path), "term": parse_error})
+            continue
+        assert tree is not None
+        found: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                module = (_imported_module(node) or "").split(".", 1)[0]
+                if module in _RUNTIME_FRAMEWORKS:
+                    found.add(f"runtime_framework:{module}")
+            elif (
+                isinstance(node, ast.While)
+                and isinstance(node.test, ast.Constant)
+                and node.test.value is True
+            ):
+                loop_names = {
+                    child.id for child in ast.walk(node) if isinstance(child, ast.Name)
+                }
+                has_termination = any(
+                    isinstance(child, (ast.Break, ast.Return, ast.Raise))
+                    for child in ast.walk(node)
+                )
+                if not has_termination or not (loop_names & _BOUNDED_LOOP_NAMES):
+                    found.add("unbounded_while_true")
+        findings.extend({"path": str(path), "term": term} for term in sorted(found))
     return findings
 
 
 def check_no_live_capability_terms_in_source(project_root: str | Path | None = None) -> dict[str, Any]:
-    findings = _scan_source_terms(project_root, _source_terms_live())
+    findings = _scan_live_capabilities(project_root)
     if findings:
         return _fail_item(
             ValidationScopeLabel.VALIDATION_CONTRACTS.value,
@@ -280,7 +344,7 @@ def check_no_live_capability_terms_in_source(project_root: str | Path | None = N
 
 
 def check_no_runtime_loop_terms_in_source(project_root: str | Path | None = None) -> dict[str, Any]:
-    findings = _scan_source_terms(project_root, _source_terms_runtime())
+    findings = _scan_runtime_capabilities(project_root)
     if findings:
         return _fail_item(
             ValidationScopeLabel.VALIDATION_CONTRACTS.value,
