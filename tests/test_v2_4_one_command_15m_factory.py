@@ -6,6 +6,7 @@ import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from printer_v1.db import apply_migrations
 from printer_v1.operator_cli.one_command_15m_factory import (
@@ -14,6 +15,7 @@ from printer_v1.operator_cli.one_command_15m_factory import (
     _evidence_duration_is_eligible,
     _plan_anchored_jobs,
     _plan_opening_jobs,
+    _schedule_offsets,
     load_report_only,
     run_one_command_15m_factory,
 )
@@ -36,7 +38,7 @@ class OneCommand15mFactoryTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def _discovery(self, *, with_target=True):
+    def _discovery(self, *, with_target=True, lane="TRACK_FAST"):
         def run(_args):
             if not with_target:
                 return {
@@ -50,8 +52,8 @@ class OneCommand15mFactoryTests(unittest.TestCase):
             conn = sqlite3.connect(self.db)
             try:
                 conn.execute(
-                    "INSERT INTO printer_tokens(token_mint,chain,token_status) VALUES (?,'solana','TRACK_FAST')",
-                    (MINT_A,),
+                    "INSERT INTO printer_tokens(token_mint,chain,token_status) VALUES (?,'solana',?)",
+                    (MINT_A, lane),
                 )
                 token_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
                 conn.execute(
@@ -65,8 +67,8 @@ class OneCommand15mFactoryTests(unittest.TestCase):
                 conn.execute(
                     """INSERT INTO printer_selection_batch_items
                        (batch_id,item_status,token_id,pair_id,token_mint,pair_address,tracking_lane,operator_approved)
-                       VALUES ('batch-fixture','SELECTED',?,?,?,?, 'TRACK_FAST',1)""",
-                    (token_id, pair_id, MINT_A, PAIR_A),
+                       VALUES ('batch-fixture','SELECTED',?,?,?,?, ?,1)""",
+                    (token_id, pair_id, MINT_A, PAIR_A, lane),
                 )
                 conn.commit()
             finally:
@@ -109,7 +111,8 @@ class OneCommand15mFactoryTests(unittest.TestCase):
         )
         options = dict(
             operator_approved=True, proof_mode=True,
-            discovery_runner=self._discovery(), snapshot_adapter_factory=factory,
+            discovery_runner=self._discovery(lane=overrides.pop("lane", "TRACK_FAST")),
+            snapshot_adapter_factory=factory,
             _window_seconds=0.08, total_duration_seconds=1.0,
             max_selected_tokens=1, max_source_requests=1,
         )
@@ -152,6 +155,14 @@ class OneCommand15mFactoryTests(unittest.TestCase):
             conn.close()
         self.assertEqual(replay["replay"]["new_source_calls"], 0)
         self.assertEqual(replay["replay"]["new_evidence_rows"], 0)
+
+    def test_track_normal_plans_six_boundary_and_spaced_snapshots(self):
+        self.assertEqual(_schedule_offsets("TRACK_NORMAL", 900), [180.0, 360.0, 540.0, 720.0])
+        result, calls = self._run(lane="TRACK_NORMAL")
+        self.assertEqual(result["run_status"], "COMPLETED")
+        self.assertEqual(len(calls), 6)
+        self.assertEqual(result["table_deltas"]["printer_token_snapshots"], 6)
+        self.assertEqual(result["running_jobs_after_stop"], 0)
 
     def test_exact_pair_mismatch_fails_closed(self):
         result, _calls = self._run(pair="C" * 32)
@@ -278,6 +289,34 @@ class OneCommand15mFactoryTests(unittest.TestCase):
         self.assertEqual(window["do_not_train"], 1)
         self.assertEqual(context["window_5m_support_role"], "SUPPORT_ONLY_NOT_MAIN_EVIDENCE")
         self.assertEqual(result["memory_results"]["clean"], 0)
+
+    def test_shared_resolver_receives_exact_window_and_all_blockers_reach_audit(self):
+        blockers = [
+            "MARKET_CONTEXT_BLOCKED", "CHAIN_CONTEXT_BLOCKED", "SAFETY_CONTEXT_BLOCKED",
+            "QUOTE_CONTEXT_BLOCKED", "FLOW_CONTEXT_BLOCKED", "CHART_CONTEXT_BLOCKED",
+        ]
+        shared = {
+            "clean_memory_context_ready": False,
+            "blockers": blockers,
+            "sections": {},
+            "writes_performed": False,
+        }
+        with patch(
+            "printer_v1.context_evidence.build_window_15m_context_evidence",
+            return_value=shared,
+        ) as resolver:
+            result, _calls = self._run()
+        close = next(step for step in result["steps"] if step["step_kind"] == "WINDOW_CLOSE")
+        close_result = json.loads(close["result_json"])
+        quality = close_result["context_quality"]
+        call = resolver.call_args.kwargs
+        self.assertEqual(call["token_id"], close["token_id"])
+        self.assertEqual(call["pair_id"], close["pair_id"])
+        self.assertEqual(call["snapshot_end_id"], close["snapshot_id"])
+        self.assertEqual(call["snapshot_start_id"], result["steps"][0]["snapshot_id"])
+        self.assertTrue(set(blockers).issubset(quality["remaining_blockers"]))
+        self.assertEqual(close_result["window_audit"]["e2q_status"], "E2Q_AUDIT_DIRTY")
+        self.assertFalse(quality["clean_promotion_candidate"])
 
 
 if __name__ == "__main__":

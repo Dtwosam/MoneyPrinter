@@ -6,10 +6,12 @@ Verdict: `V2_4_1_SAFE_BLOCK_WITH_CONTEXT_GAP`
 
 V2-4.1 repaired the first-snapshot timing anchor, connected the existing
 context-quality audit path, reconciled the stale Phase 28 readiness scanner,
-and completed one bounded live proof. The proof met the real 900-second timing
-requirement for both selected tokens and stopped safely, but it produced zero
+integrated the shared six-area context resolver, corrected TRACK_NORMAL to six
+snapshots without lowering coverage, and completed the approved bounded live
+proofs. The latest proof met the real 900-second timing and six-snapshot
+requirements for both selected tokens and stopped safely, but it produced zero
 clean memories because required governed context and evidence were absent. No
-second proof was run.
+second integration proof was run.
 
 This closeout does not approve V2-5.
 
@@ -252,6 +254,64 @@ The completed run received one report-only replay. Proof DB SHA-256 remained:
 All inspected counts were unchanged; replay reported zero new source calls and
 zero new evidence rows.
 
+## Shared Resolver Integration And Bounded Proof
+
+The one-command close handler now invokes
+`build_window_15m_context_evidence()` with the exact token, pair, opening
+snapshot, close snapshot, first valid snapshot time, and close snapshot time.
+The resolver runs before E2Q. Its blockers are merged into the memory review,
+persisted in `supporting_context_json`, and cause `MISSING_CRITICAL_DATA`,
+`do_not_train=1`, and an E2Q dirty result before Lane Q/E2Z eligibility.
+
+The TRACK_NORMAL schedule was corrected from five total attempts to six:
+opening, four interior observations at nominal 180-second spacing, and the
+close observation at first valid snapshot plus 900 seconds. TRACK_FAST remains
+unchanged. The existing six-snapshot coverage rule was not lowered.
+
+Proof DB:
+
+`data/printer_v1_v2_4_1_context_integration_proof_20260713.sqlite3`
+
+Run ID:
+
+`62c363c3-08ed-473b-aa4c-4f5635c2e338`
+
+The copied operator DB was behind migrations 027/028. The first CLI preflight
+stopped before creating a run or making a live call. Existing migrations were
+then applied to the proof copy only, after which the one actual bounded live
+run completed. No source retry or second live proof occurred.
+
+Autonomous selections:
+
+| Mint | Pair | Lane | Snapshots | Evidence span | Spacing seconds |
+| --- | --- | --- | ---: | ---: | --- |
+| `5y8yv5z7L7tAYUWzznxq1RPRNmk6w9jNVUcYh4ewpump` | `72SHPB95Hqf6GJisp28oaLumaYsrxMsBwrwLCDQnMAyi` | TRACK_NORMAL | 6 | 900 | 180.723, 180.288, 179.708, 180.348, 179.681 |
+| `Ch1vdFT6dVmkVLbJkBXGBv8iyhWv9ik1C45cYNsFpump` | `323MZ6ovqVfNhZUgFTPjzxXRovGZ6fdy4bCd5ZuUmjJS` | TRACK_NORMAL | 6 | 901 | 180.887, 180.432, 179.526, 180.508, 180.017 |
+
+Both close jobs were anchored independently to their first valid persisted
+snapshot. Each close observation occurred after its due time and met the
+minimum duration. Exact mint/pair identity and all snapshot source traces were
+preserved.
+
+Both windows honestly resolved dirty with E2Q status `E2Q_AUDIT_DIRTY`.
+Shared blockers were:
+
+* no clean governed market context at or before close;
+* no clean governed Solana chain context at or before close;
+* no exact-target valid safety evidence;
+* no exact-target valid ENTRY or EXIT quote evidence;
+* flow direction/pressure unavailable from the stored source shape;
+* chart/volatility not clean under the existing gate;
+* one token also had a missing critical snapshot field.
+
+Proof DB deltas included 12 snapshots, 12 run steps, 14 governed source
+requests, 14 responses, zero failures, two memory windows, and 14 scheduler
+jobs. There were zero deltas for memories/fingerprints, retrieval queries or
+matches, paper decisions, positions, trade events, trade audits, paper audit
+reports, and PnL-related activity. Running jobs after stop: `0`.
+
+The report-only replay created zero source calls and zero evidence rows.
+
 ## Persistent DB Safety
 
 Persistent DB: `data/printer_v1.sqlite3`.
@@ -275,10 +335,8 @@ hide or force.
 
 ## Functionality Risks / Setbacks / Efficiency Blockers
 
-1. The `TRACK_NORMAL` schedule currently produces five total snapshots while
-   the established 15m coverage policy expects six. This blocks snapshot-
-   derived context for that lane and requires a separately approved cadence
-   alignment review.
+1. The TRACK_NORMAL five-versus-six mismatch is resolved and live-proven. The
+   integration proof produced six snapshots for each selected token.
 2. The one-command proof source plan did not collect governed market-regime or
    chain-heat evidence. These remain clean-memory blockers.
 3. The selected tokens had no target-matched valid safety, entry quote, or exit
@@ -287,7 +345,10 @@ hide or force.
    direction and pressure remained unknown for this source payload.
 5. Lane K's report includes historical copied windows; correctness is
    preserved, but run-local reporting remains noisy.
-6. The AST scanner is intentionally conservative: new executable capability
+6. Clean promotion is structurally supported by the resolver and downstream
+   gates, but autonomous clean promotion is not yet demonstrated because the
+   one-command source plan does not assemble a complete governed bundle.
+7. The AST scanner is intentionally conservative: new executable capability
    names, direct network clients outside source adapters, runtime frameworks,
    or unbounded loops fail readiness and require explicit architecture review.
 
@@ -316,10 +377,14 @@ only, Solana memecoin-only, paper-only V1 restrictions remain unchanged.
 
 Verdict: `V2_4_1_SAFE_BLOCK_WITH_CONTEXT_GAP`.
 
-The timing and quality-gate repairs passed, but V2-5 is not recommended. The
-next operator-approved task should remain inside V2-4.1 and design the smallest
-governed context/evidence completion path for market regime, Solana chain heat,
-safety, entry/exit quote realism, and flow, while also reconciling the
-`TRACK_NORMAL` five-versus-six snapshot coverage mismatch. A later proof must
-remain single-run, isolated, bounded, and honest; zero clean memory remains a
-valid result.
+The timing, six-snapshot cadence, shared resolver handoff, fail-closed E2Q
+result, replay, and lock gates passed. Autonomous clean promotion remains
+blocked because the one-command source plan does not collect the complete
+governed market, chain, safety, quote, and side-aware flow bundle. V2-5 is not
+recommended.
+
+The next operator-approved task must remain inside V2-4.1 and design the
+smallest Source-Governor/Central-Scheduler-owned context collection plan for
+the existing one-command run. It must not add providers or weaken any clean
+gate. A later proof must remain single-run, isolated, bounded, and honest; zero
+clean memory remains valid when real evidence fails.

@@ -1,4 +1,5 @@
 import pathlib
+import json
 import sqlite3
 import sys
 import tempfile
@@ -315,6 +316,29 @@ class SharedWindow15mContextEvidenceTest(unittest.TestCase):
         self.assertNotEqual(first["sections"]["trading_flow"]["labels"]["flow_direction_label"], "FLOW_UNKNOWN")
         self.assertNotEqual(first["sections"]["chart_volatility"]["labels"]["volatility_label"], "VOLATILITY_UNKNOWN")
         self.assertFalse(any(first["downstream_unlocks"].values()))
+
+    def test_normalized_snapshot_trace_shape_used_by_e2m_is_accepted(self):
+        snapshot_ids = self.add_snapshots()
+        with self.connect() as connection:
+            trace = json.loads(connection.execute(
+                "SELECT raw_snapshot_payload_json FROM printer_token_snapshots WHERE id=?",
+                (snapshot_ids[0],),
+            ).fetchone()[0])
+            normalized_trace = json.dumps({
+                "source_name": trace["source_name"],
+                "source_request_id": trace["source_request_id"],
+                "source_response_id": trace["source_response_id"],
+            }, sort_keys=True)
+            connection.execute(
+                "UPDATE printer_token_snapshots SET raw_snapshot_payload_json='{}', normalized_snapshot_payload_json=?",
+                (normalized_trace,),
+            )
+            connection.commit()
+        self.add_broad_context()
+        self.add_safety_and_quotes(snapshot_ids[-1])
+        result = self.report(snapshot_ids)
+        self.assertTrue(all(trace["source_trace_clean"] for trace in result["snapshot_source_traces"]))
+        self.assertNotIn("SNAPSHOT_SOURCE_TRACE_MISSING_OR_INVALID", result["blockers"])
 
     def test_future_context_and_evidence_never_attach(self):
         snapshot_ids = self.add_snapshots()

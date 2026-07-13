@@ -147,7 +147,7 @@ def _cancel_discovery_handoffs(conn: sqlite3.Connection, discovery: dict[str, An
 
 
 def _schedule_offsets(lane: str, window_seconds: float) -> list[float]:
-    attempts = 10 if lane == "TRACK_FAST" else 5
+    attempts = 10 if lane == "TRACK_FAST" else 6
     # The opening and window-close jobs perform the boundary snapshot attempts.
     return [
         round(window_seconds * index / (attempts - 1), 6)
@@ -301,6 +301,7 @@ def _attach_context_and_gate_window(
     snapshot_start_id: int, snapshot_end_id: int,
 ) -> dict[str, Any]:
     """Attach existing-engine context and fail closed before clean promotion."""
+    from printer_v1.context_evidence import build_window_15m_context_evidence
     from printer_v1.operator_cli.commands import (
         _apply_clean_audit_evidence_labels,
         _classify_first_memory_review,
@@ -354,13 +355,39 @@ def _attach_context_and_gate_window(
         },
         labels=labels,
     )
+    try:
+        shared_context = build_window_15m_context_evidence(
+            conn,
+            token_id=target["token_id"],
+            pair_id=target["pair_id"],
+            snapshot_start_id=snapshot_start_id,
+            snapshot_end_id=snapshot_end_id,
+            window_start_at=start_at,
+            window_end_at=end_at,
+        )
+    except ValueError as exc:
+        shared_context = {
+            "clean_memory_context_ready": False,
+            "blockers": [f"SHARED_CONTEXT_WINDOW_INVALID:{exc}"],
+            "sections": {},
+            "writes_performed": False,
+        }
+    shared_labels: dict[str, Any] = {}
+    for section in shared_context.get("sections", {}).values():
+        shared_labels.update(section.get("labels") or {})
+    effective_labels = {**evidence["labels"], **shared_labels}
+    shared_blockers = list(shared_context.get("blockers") or [])
+    combined_evidence_blockers = list(dict.fromkeys(
+        list(evidence["overlays"].get("evidence_blockers", []))
+        + shared_blockers
+    ))
     classification = _classify_first_memory_review(
         snapshots,
         context_rows,
         WINDOW_KIND,
         freshness,
-        effective_labels=evidence["labels"],
-        evidence_blockers=evidence["overlays"].get("evidence_blockers", []),
+        effective_labels=effective_labels,
+        evidence_blockers=combined_evidence_blockers,
         outcome_label=derived.get("outcome_label"),
     )
     remaining = list(dict.fromkeys(
@@ -376,9 +403,10 @@ def _attach_context_and_gate_window(
     supporting.update({
         "context_quality_reviewed": True,
         "context_row_ids": _context_row_ids_for_memory(context_rows),
-        "context_labels": evidence["labels"],
+        "context_labels": effective_labels,
         "context_freshness_report": freshness,
         "memory_build_evidence_overlays": evidence["overlays"],
+        "shared_window_15m_context_evidence": shared_context,
         "derived_window_context": derived.get("payload"),
         "outcome_label": classification["outcome_label"],
         "remaining_blockers": remaining,
@@ -414,8 +442,9 @@ def _attach_context_and_gate_window(
         "classification": classification,
         "remaining_blockers": remaining,
         "context_row_ids": supporting["context_row_ids"],
-        "context_labels": evidence["labels"],
+        "context_labels": effective_labels,
         "derived_window_context": derived.get("payload"),
+        "shared_context_evidence": shared_context,
         "clean_promotion_candidate": do_not_train == 0,
     }
 
@@ -475,7 +504,6 @@ def _execute_close(
     if window_id is None:
         result.update(ok=False, blocked_reason="; ".join(close.get("blocked_reasons", [])) or "window close blocked")
         return result
-    result["window_audit"] = audit_15m_memory_window(conn, int(window_id))
     result["context_quality"] = _attach_context_and_gate_window(
         conn,
         step=step,
@@ -483,6 +511,7 @@ def _execute_close(
         snapshot_start_id=int(first["snapshot_id"]),
         snapshot_end_id=int(result["snapshot_id"]),
     )
+    result["window_audit"] = audit_15m_memory_window(conn, int(window_id))
     conn.commit()
     result["memory_pipeline"] = run_e2z_pipeline(
         str(conn.execute("PRAGMA database_list").fetchone()[2]),

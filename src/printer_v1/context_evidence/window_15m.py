@@ -113,9 +113,10 @@ def _source_trace_is_clean(
 
 def _snapshot_trace(connection: sqlite3.Connection, snapshot: Mapping[str, Any]) -> dict[str, Any]:
     raw = _json_object(snapshot.get("raw_snapshot_payload_json"))
-    request_id = raw.get("source_request_id")
-    response_id = raw.get("source_response_id")
-    source_name = raw.get("source_name")
+    normalized = _json_object(snapshot.get("normalized_snapshot_payload_json"))
+    request_id = raw.get("source_request_id") or normalized.get("source_request_id")
+    response_id = raw.get("source_response_id") or normalized.get("source_response_id")
+    source_name = raw.get("source_name") or normalized.get("source_name")
     if request_id is None and _table_exists(connection, "printer_memory_factory_run_steps"):
         step = connection.execute(
             """
