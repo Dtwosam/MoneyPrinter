@@ -61,6 +61,7 @@ printer-run-lane-x10-10-normal-15m-cycle = "printer_v1.operator_cli.commands:mai
 printer-run-lane-x12-fast-1h-cycle = "printer_v1.operator_cli.commands:main_run_lane_x12_fast_1h_cycle"
 printer-run-lane-x12-normal-1h-cycle = "printer_v1.operator_cli.commands:main_run_lane_x12_normal_1h_cycle"
 printer-run-pumpportal-t2-launch-proof = "printer_v1.operator_cli.commands:main_run_pumpportal_t2_launch_proof"
+printer-run-one-command-15m-memory-factory = "printer_v1.operator_cli.commands:main_run_one_command_15m_memory_factory"
 
 [tool.unittest]
 start-directory = "tests"

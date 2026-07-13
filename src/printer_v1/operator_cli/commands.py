@@ -3233,6 +3233,51 @@ def main_run_pumpportal_t2_launch_proof(argv: Sequence[str] | None = None) -> in
         return _print_error(exc)
 
 
+def main_run_one_command_15m_memory_factory(
+    argv: Sequence[str] | None = None,
+) -> int:
+    """Run or report one proof-only governed WINDOW_15M factory run."""
+    parser = _base_parser(
+        "Run the proof-only one-command governed WINDOW_15M Memory Factory.",
+        ("json", "text"),
+    )
+    parser.add_argument("--operator-approved", action="store_true")
+    parser.add_argument("--proof-mode", action="store_true")
+    parser.add_argument("--backup-proof-path")
+    parser.add_argument("--window-kind", default="WINDOW_15M")
+    parser.add_argument("--max-selected-tokens", type=int, default=2)
+    parser.add_argument("--max-source-requests", type=int, default=2)
+    parser.add_argument("--timeout-seconds", type=float, default=5.0)
+    parser.add_argument("--total-duration-seconds", type=float, default=1200.0)
+    parser.add_argument("--selection-seed")
+    parser.add_argument("--report-only-run-id")
+    args = parser.parse_args(argv)
+    try:
+        from printer_v1.operator_cli.one_command_15m_factory import (
+            load_report_only,
+            run_one_command_15m_factory,
+        )
+        if args.report_only_run_id:
+            payload = load_report_only(args.db_path, args.report_only_run_id)
+        else:
+            payload = run_one_command_15m_factory(
+                args.db_path,
+                args.backup_proof_path,
+                operator_approved=args.operator_approved,
+                proof_mode=args.proof_mode,
+                window_kind=args.window_kind,
+                max_selected_tokens=args.max_selected_tokens,
+                max_source_requests=args.max_source_requests,
+                timeout_seconds=args.timeout_seconds,
+                total_duration_seconds=args.total_duration_seconds,
+                selection_seed=args.selection_seed,
+            )
+        _print_payload(payload, args.format)
+        return 0 if payload.get("run_status") != "FAILED" else 1
+    except Exception as exc:
+        return _print_error(exc)
+
+
 def _utc_now_text() -> str:
     return datetime.now(timezone.utc).isoformat()
 

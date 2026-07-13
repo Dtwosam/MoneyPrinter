@@ -54,7 +54,9 @@ def _utc_now() -> str:
 
 
 def _select_primary_pair(
-    pairs: list[dict[str, Any]], approved_mint: str
+    pairs: list[dict[str, Any]],
+    approved_mint: str,
+    expected_pair_address: str | None = None,
 ) -> dict[str, Any] | None:
     """Pick the primary pair deterministically.
 
@@ -68,6 +70,11 @@ def _select_primary_pair(
             p.get("chain") == E2M_REQUIRED_CHAIN
             and p.get("token_mint", "").lower() == approved_mint.lower()
             and p.get("pair_address")
+            and (
+                expected_pair_address is None
+                or str(p.get("pair_address", "")).lower()
+                == expected_pair_address.lower()
+            )
         )
     ]
     if not candidates:
@@ -158,6 +165,7 @@ def _insert_snapshot(
     source_response_id: int,
     captured_at: str,
     now: str,
+    tracking_lane: str,
 ) -> int:
     """Insert one printer_token_snapshots row. Returns snapshot_id."""
     normalized_json = json.dumps(
@@ -200,7 +208,7 @@ def _insert_snapshot(
             token_id,
             pair_id,
             captured_at,
-            E2M_TRACKING_LANE,
+            tracking_lane,
             E2M_SNAPSHOT_MODE,
             pair_data.get("price_usd"),
             pair_data.get("liquidity_usd"),
@@ -246,6 +254,9 @@ def persist_snapshot_from_source_response(
     connection: sqlite3.Connection,
     source_response_id: int,
     approved_mint: str,
+    *,
+    expected_pair_address: str | None = None,
+    tracking_lane: str = E2M_TRACKING_LANE,
 ) -> dict[str, Any]:
     """Persist exactly one token snapshot from a clean governed DexScreener response.
 
@@ -347,13 +358,29 @@ def persist_snapshot_from_source_response(
             "memory_windows_created": 0,
         }
 
-    primary_pair = _select_primary_pair(pairs, approved_mint)
+    if tracking_lane not in {"TRACK_FAST", "TRACK_NORMAL"}:
+        return {
+            "e2m_status": E2M_STATUS_BLOCKED,
+            "persisted": False,
+            "blocked_reasons": [f"unsupported tracking_lane: {tracking_lane!r}"],
+            "approved_mint": approved_mint,
+            "source_response_id": source_response_id,
+            "hard_locks": dict(_HARD_LOCKS),
+        }
+
+    primary_pair = _select_primary_pair(
+        pairs, approved_mint, expected_pair_address
+    )
     if primary_pair is None:
         return {
             "e2m_status": E2M_STATUS_BLOCKED,
             "persisted": False,
             "blocked_reasons": [
                 f"no Solana pair found for approved_mint={approved_mint!r}"
+                + (
+                    f" and expected_pair_address={expected_pair_address!r}"
+                    if expected_pair_address is not None else ""
+                )
             ],
             "approved_mint": approved_mint,
             "source_response_id": source_response_id,
@@ -408,6 +435,7 @@ def persist_snapshot_from_source_response(
         source_response_id,
         captured_at,
         now,
+        tracking_lane,
     )
 
     return {
