@@ -36,6 +36,29 @@ STOP_INTERRUPTED = "SAFE_STOP_OPERATOR_INTERRUPTED"
 STOP_AMBIGUOUS = "SAFE_STOP_AMBIGUOUS_PARTIAL_STEP"
 STOP_RUNNING = "SAFE_STOP_RUNNING_JOB_REMAINS"
 STOP_DB_DELTA = "SAFE_STOP_UNEXPECTED_DB_DELTA"
+# V2-5: global budget/integrity safe stop (run-wide or per-token ceiling breach).
+STOP_BUDGET = "SAFE_STOP_BUDGET_CEILING_EXCEEDED"
+
+# V2-5: token-local terminal markers (never a run-wide stop).
+TOKEN_LOCAL_FAILED = "TOKEN_LOCAL_TERMINAL_FAILURE"
+TOKEN_LOCAL_CANCELLED = "TOKEN_LOCAL_CANCELLED_AFTER_FAILURE"
+
+# V2-5 conservative three-token hard ceilings. These are hard limits, not
+# targets; a breach is a global integrity safe-stop, never silently exceeded.
+_V2_5_MAX_SELECTED_TOKENS = 3
+_MAX_DISCOVERY_REQUESTS = 2
+_MAX_GOVERNED_REQUESTS_RUN = 47
+_MAX_GOVERNED_REQUESTS_PER_TOKEN = 15
+_MAX_HOLDER_FALLBACKS_PER_TOKEN = 1
+_MAX_SCHEDULER_ROWS = 33
+
+
+class _GlobalStop(Exception):
+    """Raised to signal a global (run-wide) safe stop with an explicit reason."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 _COUNT_TABLES = (
     "printer_source_requests", "printer_source_responses", "printer_source_failures",
@@ -162,6 +185,11 @@ def _insert_step_and_job(
     conn: sqlite3.Connection, *, run_id: str, target: dict[str, Any],
     step_key: str, step_kind: str, scheduled_for: datetime,
 ) -> int:
+    # Scheduler-row ceiling (V2-5): run-step jobs must stay within the hard cap.
+    # Three TRACK_FAST tokens create exactly 30 run-step jobs; with up to three
+    # cancelled discovery handoffs that is the 33-row design ceiling.
+    if _run_step_job_count(conn, run_id) >= _MAX_SCHEDULER_ROWS - _V2_5_MAX_SELECTED_TOKENS:
+        raise _GlobalStop(STOP_BUDGET)
     job_kind = (
         JobKind.MEMORY_WINDOW_CLOSE
         if step_kind == "WINDOW_CLOSE"
@@ -896,6 +924,162 @@ def _cancel_pending(conn: sqlite3.Connection, run_id: str, reason: str) -> None:
         )
 
 
+def _cancel_pending_for_token(
+    conn: sqlite3.Connection, run_id: str, token_id: int, reason: str,
+) -> int:
+    """Cancel only the given token's pending steps (V2-5 failure isolation).
+
+    Other tokens' pending steps are untouched. Returns the number cancelled.
+    """
+    rows = conn.execute(
+        "SELECT id, scheduler_job_id FROM printer_memory_factory_run_steps "
+        "WHERE run_id=? AND token_id=? AND step_status='PENDING'",
+        (run_id, token_id),
+    ).fetchall()
+    for row in rows:
+        if row["scheduler_job_id"] is not None:
+            cancel_job(conn, job_id=int(row["scheduler_job_id"]))
+        conn.execute(
+            "UPDATE printer_memory_factory_run_steps SET step_status='CANCELLED', error_or_skip_reason=?, finished_at=?, updated_at=? WHERE id=?",
+            (reason, _iso(), _iso(), int(row["id"])),
+        )
+    return len(rows)
+
+
+def _token_prefix(step_key: str) -> str:
+    """Return the per-token step-key prefix (e.g. 't1') for budget accounting."""
+    return str(step_key).split("_", 1)[0]
+
+
+def _run_request_count(conn: sqlite3.Connection, run_id: str) -> int:
+    return int(conn.execute(
+        "SELECT COUNT(*) FROM printer_source_requests WHERE request_key LIKE ?",
+        (f"{run_id}:%",),
+    ).fetchone()[0])
+
+
+def _token_request_count(conn: sqlite3.Connection, run_id: str, token_prefix: str) -> int:
+    return int(conn.execute(
+        "SELECT COUNT(*) FROM printer_source_requests WHERE request_key LIKE ?",
+        (f"{run_id}:{token_prefix}_%",),
+    ).fetchone()[0])
+
+
+def _run_step_job_count(conn: sqlite3.Connection, run_id: str) -> int:
+    return int(conn.execute(
+        "SELECT COUNT(*) FROM printer_scheduler_jobs WHERE job_name LIKE ?",
+        (f"v2_4_{run_id}_%",),
+    ).fetchone()[0])
+
+
+def _projected_requests_for_step(step: sqlite3.Row) -> int:
+    # A snapshot step issues one governed request; a close step issues one
+    # snapshot request plus up to five close-time context requests.
+    return 6 if step["step_kind"] == "WINDOW_CLOSE" else 1
+
+
+def _enforce_budgets_before_step(conn: sqlite3.Connection, run_id: str, step: sqlite3.Row) -> None:
+    """Raise _GlobalStop if executing this step would breach a hard ceiling.
+
+    Hard ceilings are integrity limits, not targets: a projected breach is a
+    global safe stop, never a silently exceeded call.
+    """
+    projected = _projected_requests_for_step(step)
+    if _run_request_count(conn, run_id) + projected > _MAX_GOVERNED_REQUESTS_RUN:
+        raise _GlobalStop(STOP_BUDGET)
+    prefix = _token_prefix(step["step_key"])
+    if _token_request_count(conn, run_id, prefix) + projected > _MAX_GOVERNED_REQUESTS_PER_TOKEN:
+        raise _GlobalStop(STOP_BUDGET)
+
+
+def _per_token_outcomes(
+    steps: list[dict[str, Any]], windows_by_id: dict[int, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Build authoritative per-token outcomes from this run's steps only."""
+    _CLEAN = {"CLEAN_MEMORY"}
+    _DIRTY = {"DIRTY_MEMORY", "AUDIT_ONLY_MEMORY", "DO_NOT_TRAIN"}
+    tokens: dict[int, dict[str, Any]] = {}
+    order: list[int] = []
+    for s in steps:
+        tid = int(s["token_id"])
+        if tid not in tokens:
+            order.append(tid)
+            lane = str(s["tracking_lane"])
+            tokens[tid] = {
+                "token_id": tid, "token_mint": s["token_mint"],
+                "pair_id": s["pair_id"], "pair_address": s["pair_address"],
+                "tracking_lane": lane,
+                "expected_snapshots": 10 if lane == "TRACK_FAST" else 6,
+                "actual_snapshots": 0, "failed_steps": 0, "cancelled_steps": 0,
+                "close_status": None, "memory_window_id": None,
+                "memory_quality_label": None, "blockers": [],
+                "reached_terminal_window": False, "terminal_status": "INCOMPLETE",
+            }
+        t = tokens[tid]
+        if s.get("snapshot_id") is not None:
+            t["actual_snapshots"] += 1
+        if s["step_status"] == "FAILED":
+            t["failed_steps"] += 1
+        if s["step_status"] == "CANCELLED":
+            t["cancelled_steps"] += 1
+        if s["step_kind"] == "WINDOW_CLOSE":
+            t["close_status"] = s["step_status"]
+            t["memory_window_id"] = s.get("memory_window_id")
+    for tid in order:
+        t = tokens[tid]
+        wid = t["memory_window_id"]
+        window = windows_by_id.get(int(wid)) if wid is not None else None
+        if window is not None:
+            t["memory_quality_label"] = window.get("memory_quality_label")
+        if t["close_status"] == "SUCCEEDED":
+            t["reached_terminal_window"] = True
+            q = t["memory_quality_label"]
+            t["terminal_status"] = (
+                "CLEAN" if q in _CLEAN else "DIRTY" if q in _DIRTY else "BLOCKED_QUALITY"
+            )
+        elif t["close_status"] == "FAILED":
+            t["reached_terminal_window"] = True
+            t["terminal_status"] = "TERMINAL_BLOCKED"
+        elif t["failed_steps"]:
+            t["terminal_status"] = "TOKEN_LOCAL_FAILED"
+        elif t["cancelled_steps"]:
+            t["terminal_status"] = "CANCELLED"
+    return [tokens[tid] for tid in order]
+
+
+def _run_budgets(
+    conn: sqlite3.Connection, run_id: str, discovery: dict[str, Any], steps: list[dict[str, Any]],
+) -> dict[str, Any]:
+    prefixes = sorted({_token_prefix(s["step_key"]) for s in steps})
+    per_token = {p: _token_request_count(conn, run_id, p) for p in prefixes}
+    run_step_jobs = _run_step_job_count(conn, run_id)
+    handoffs = sum(1 for item in discovery.get("discovery_results", []) if item.get("scheduler_job_id") is not None)
+    holder_fallbacks = int(conn.execute(
+        "SELECT COUNT(*) FROM printer_source_requests WHERE source_name='solana_rpc' AND request_key LIKE ?",
+        (f"{run_id}:%",),
+    ).fetchone()[0])
+    run_requests = _run_request_count(conn, run_id)
+    return {
+        "governed_requests_run": run_requests,
+        "governed_requests_run_ceiling": _MAX_GOVERNED_REQUESTS_RUN,
+        "governed_requests_run_within_ceiling": run_requests <= _MAX_GOVERNED_REQUESTS_RUN,
+        "governed_requests_per_token": per_token,
+        "governed_requests_per_token_ceiling": _MAX_GOVERNED_REQUESTS_PER_TOKEN,
+        "governed_requests_per_token_within_ceiling": all(
+            v <= _MAX_GOVERNED_REQUESTS_PER_TOKEN for v in per_token.values()
+        ),
+        "holder_rpc_fallbacks": holder_fallbacks,
+        "holder_rpc_fallbacks_ceiling": _MAX_HOLDER_FALLBACKS_PER_TOKEN * max(1, len(prefixes)),
+        "scheduler_run_step_jobs": run_step_jobs,
+        "scheduler_cancelled_discovery_handoffs": handoffs,
+        "scheduler_rows_total": run_step_jobs + handoffs,
+        "scheduler_rows_ceiling": _MAX_SCHEDULER_ROWS,
+        "scheduler_rows_within_ceiling": (run_step_jobs + handoffs) <= _MAX_SCHEDULER_ROWS,
+        "discovery_requests_ceiling": _MAX_DISCOVERY_REQUESTS,
+        "automatic_retries": 0,
+    }
+
+
 def _final_report(
     conn: sqlite3.Connection, *, run_id: str, config: dict[str, Any],
     discovery: dict[str, Any], before: dict[str, int], stop_reason: str,
@@ -917,6 +1101,11 @@ def _final_report(
         (run_id,),
     ).fetchall()]
     selected = _selected_targets(conn, discovery.get("selection_handoff_report", {}).get("batch_id") or "")
+    windows_by_id = {int(w["id"]): w for w in windows}
+    per_token = _per_token_outcomes(steps, windows_by_id)
+    terminal_window_outcomes = sum(1 for t in per_token if t["reached_terminal_window"])
+    budgets = _run_budgets(conn, run_id, discovery, steps)
+    pending_run_steps = sum(1 for s in steps if s["step_status"] in {"PENDING", "RUNNING"})
     return {
         "command": COMMAND_NAME, "policy_version": POLICY_VERSION,
         "run_id": run_id, "run_status": "COMPLETED" if stop_reason == STOP_COMPLETED else "SAFE_STOPPED",
@@ -925,6 +1114,27 @@ def _final_report(
         "eligible_pool_size": discovery.get("selection_handoff_report", {}).get("eligible_pool_size", 0),
         "selected_tokens": selected, "discovery_report": discovery,
         "scheduler_jobs": jobs, "steps": steps, "memory_windows": windows,
+        # V2-5: authoritative per-token outcomes and run-local yield, keyed by
+        # run_id/step/target/attached memory-window id. These, not embedded Lane
+        # K/E2Z pipeline summaries, are authoritative for yield and verdict.
+        "per_token_outcomes": per_token,
+        "terminal_window_outcomes": terminal_window_outcomes,
+        "run_local_yield": {
+            "clean": sum(1 for t in per_token if t["terminal_status"] == "CLEAN"),
+            "dirty": sum(1 for t in per_token if t["terminal_status"] == "DIRTY"),
+            "blocked": sum(1 for t in per_token if t["terminal_status"] in {"BLOCKED_QUALITY", "TERMINAL_BLOCKED"}),
+            "token_local_failed": sum(1 for t in per_token if t["terminal_status"] == "TOKEN_LOCAL_FAILED"),
+            "authoritative_source": "run_step_attached_memory_window_ids",
+            "zero_clean_is_valid": True,
+        },
+        "historical_report_note": (
+            "Lane K/E2Z pipeline summaries embedded in step result_json may include "
+            "historical windows copied into the proof DB. They are NOT authoritative for "
+            "per-token yield or verdict; only per_token_outcomes and run_local_yield "
+            "(run-step-attached memory_window_ids) are authoritative."
+        ),
+        "run_budgets": budgets,
+        "pending_or_running_run_steps": pending_run_steps,
         "memory_results": {
             "clean": sum(1 for row in windows if row.get("memory_quality_label") == "CLEAN_MEMORY"),
             "dirty_or_audit_only": sum(1 for row in windows if row.get("memory_quality_label") in {"DIRTY_MEMORY", "AUDIT_ONLY_MEMORY", "DO_NOT_TRAIN"}),
@@ -963,6 +1173,7 @@ def run_one_command_15m_factory(
     proof_mode: bool, window_kind: str = WINDOW_KIND, max_selected_tokens: int = 2,
     max_source_requests: int = 2, timeout_seconds: float = 5.0,
     total_duration_seconds: float = 1200.0, selection_seed: str | None = None,
+    v2_5_proof_mode: bool = False,
     discovery_transport: Any = None, discovery_runner: Callable[..., dict[str, Any]] | None = None,
     snapshot_adapter_factory: Callable[..., Any] | None = None,
     context_adapter_factories: dict[str, Callable[..., Any]] | None = None,
@@ -978,8 +1189,15 @@ def run_one_command_15m_factory(
     if not path.is_file(): reasons.append(f"proof DB missing: {path}")
     if not backup.is_file(): reasons.append(f"backup missing: {backup}")
     if _is_persistent_db(path): reasons.append("persistent DB is forbidden in first proof")
-    if not 1 <= max_selected_tokens <= 2: reasons.append("max_selected_tokens must be 1 or 2")
-    if not 1 <= max_source_requests <= 2: reasons.append("max_source_requests must be 1 or 2")
+    # V2-5: the explicit three-token proof mode permits exactly three autonomous
+    # tokens. Normal mode stays capped at two. Four or more is always rejected.
+    if v2_5_proof_mode:
+        if max_selected_tokens != _V2_5_MAX_SELECTED_TOKENS:
+            reasons.append("V2-5 proof mode requires exactly three selected tokens")
+    else:
+        if not 1 <= max_selected_tokens <= 2:
+            reasons.append("max_selected_tokens must be 1 or 2 outside V2-5 proof mode")
+    if not 1 <= max_source_requests <= _MAX_DISCOVERY_REQUESTS: reasons.append("max_source_requests must be 1 or 2")
     if total_duration_seconds <= _window_seconds: reasons.append("total duration must exceed window duration")
     if reasons:
         return {"command": COMMAND_NAME, "run_status": "SAFE_STOPPED", "stop_reason": STOP_PREFLIGHT, "blocked_reasons": reasons}
@@ -997,6 +1215,16 @@ def run_one_command_15m_factory(
         "automatic_retries": 0, "discovery_source": "geckoterminal",
         "context_source_requests_per_selected_token": 5,
         "context_source_request_budget": 5 * max_selected_tokens,
+        "v2_5_proof_mode": bool(v2_5_proof_mode),
+        "hard_ceilings": {
+            "discovery_requests": _MAX_DISCOVERY_REQUESTS,
+            "governed_requests_run": _MAX_GOVERNED_REQUESTS_RUN,
+            "governed_requests_per_token": _MAX_GOVERNED_REQUESTS_PER_TOKEN,
+            "holder_fallbacks_per_token": _MAX_HOLDER_FALLBACKS_PER_TOKEN,
+            "scheduler_rows": _MAX_SCHEDULER_ROWS,
+            "total_duration_seconds": total_duration_seconds,
+            "automatic_retries": 0,
+        },
     }
     run_id = str(uuid.uuid4())
     started_dt = _now()
@@ -1064,7 +1292,11 @@ def run_one_command_15m_factory(
                 (_iso(), _iso(), int(pending["id"])),
             )
             conn.commit()
+            token_id = int(pending["token_id"])
             try:
+                # Hard ceilings are integrity limits; a projected breach is a
+                # global safe stop (raises _GlobalStop), never an exceeded call.
+                _enforce_budgets_before_step(conn, run_id, pending)
                 result = (
                     _execute_close(
                         conn, pending, adapter_factory=adapter_factory,
@@ -1092,18 +1324,28 @@ def run_one_command_15m_factory(
                         )
                     _update_step(conn, int(pending["id"]), "SUCCEEDED", result)
                     complete_job(conn, job_id=job_id)
+                    conn.commit()
                 else:
+                    # V2-5 token-local terminal failure: isolate this token,
+                    # cancel only its remaining pending jobs, continue others.
                     error = str(result.get("blocked_reason") or "governed step blocked")
                     _update_step(conn, int(pending["id"]), "FAILED", result, error=error)
                     fail_job(conn, job_id=job_id, error=error, max_retries=0)
-                    stop_reason = STOP_SOURCE
+                    _cancel_pending_for_token(conn, run_id, token_id, TOKEN_LOCAL_CANCELLED)
+                    conn.commit()
+            except _GlobalStop as gstop:
+                # Global integrity/budget breach cancels the entire run.
+                stop_reason = gstop.reason
+                _update_step(conn, int(pending["id"]), "FAILED", {"ok": False, "global_stop": gstop.reason}, error=gstop.reason)
+                fail_job(conn, job_id=job_id, error=gstop.reason, max_retries=0)
                 conn.commit()
             except Exception as exc:
+                # Unexpected token-local failure: isolate this token, continue.
                 result = {"ok": False, "exception": f"{type(exc).__name__}: {exc}"}
                 _update_step(conn, int(pending["id"]), "FAILED", result, error=result["exception"])
                 fail_job(conn, job_id=job_id, error=result["exception"], max_retries=0)
+                _cancel_pending_for_token(conn, run_id, token_id, TOKEN_LOCAL_CANCELLED)
                 conn.commit()
-                stop_reason = STOP_SOURCE
     except KeyboardInterrupt:
         stop_reason = STOP_INTERRUPTED
     except Exception as exc:

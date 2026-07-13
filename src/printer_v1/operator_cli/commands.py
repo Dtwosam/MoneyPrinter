@@ -3243,6 +3243,7 @@ def main_run_one_command_15m_memory_factory(
     )
     parser.add_argument("--operator-approved", action="store_true")
     parser.add_argument("--proof-mode", action="store_true")
+    parser.add_argument("--v2-5-proof-mode", action="store_true", dest="v2_5_proof_mode")
     parser.add_argument("--backup-proof-path")
     parser.add_argument("--window-kind", default="WINDOW_15M")
     parser.add_argument("--max-selected-tokens", type=int, default=2)
@@ -3271,6 +3272,7 @@ def main_run_one_command_15m_memory_factory(
                 timeout_seconds=args.timeout_seconds,
                 total_duration_seconds=args.total_duration_seconds,
                 selection_seed=args.selection_seed,
+                v2_5_proof_mode=args.v2_5_proof_mode,
             )
         _print_payload(payload, args.format)
         return 0 if payload.get("run_status") != "FAILED" else 1

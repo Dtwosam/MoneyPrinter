@@ -233,11 +233,17 @@ class OneCommand15mFactoryTests(unittest.TestCase):
         self.assertEqual(result["running_jobs_after_stop"], 0)
 
     def test_exact_pair_mismatch_fails_closed(self):
+        # V2-5: an exact-pair mismatch on the opening snapshot is a token-local
+        # terminal failure. With a single selected token it isolates that token
+        # (no other tokens to continue), leaving no snapshot, no clean memory,
+        # and no running jobs. The run completes with the token terminal-failed.
         result, _calls = self._run(pair="C" * 32)
-        self.assertEqual(result["run_status"], "SAFE_STOPPED")
         self.assertEqual(result["table_deltas"]["printer_token_snapshots"], 0)
         self.assertEqual(result["running_jobs_after_stop"], 0)
         self.assertEqual(result["memory_results"]["clean"], 0)
+        self.assertEqual(len(result["per_token_outcomes"]), 1)
+        self.assertEqual(result["per_token_outcomes"][0]["terminal_status"], "TOKEN_LOCAL_FAILED")
+        self.assertEqual(result["terminal_window_outcomes"], 0)
 
     def test_duration_budget_cancels_pending_jobs(self):
         result, _calls = self._run(delay=0.12, total_duration_seconds=0.1, _window_seconds=0.08)
