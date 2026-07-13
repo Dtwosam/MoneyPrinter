@@ -563,3 +563,92 @@ one explicit fail-closed contract. It must not make optional unknown fields
 look known, weaken hard safety requirements, add providers, or force clean
 memory. Any later proof must remain single-run, isolated, bounded, and honest;
 zero clean memory remains valid when real evidence fails.
+
+## Consolidated Context Mini-Sprint Gate 1 Closeout
+
+The final consolidated V2-4.1 audit stopped at Gate 1. Static inspection
+confirmed two unresolved evidence-contract boundaries that cannot be repaired
+honestly by parser or handoff changes alone.
+
+### Explicit fail-closed safety contract
+
+The shared `WINDOW_15M` contract remains:
+
+- mandatory evidence must be fresh, complete, traceable, and exact-target;
+- mint authority, freeze authority, metadata mutability, supply validation,
+  and token-program validation must pass;
+- missing, stale, failed, mismatched, or untraceable mandatory evidence blocks;
+- explicit unlocked-liquidity evidence and explicit provider risk flags block;
+- holder concentration, LP state, and provider-risk coverage may remain
+  honestly unknown only when all mandatory evidence passes and no known danger
+  is present;
+- optional unknown values must never be relabeled as known-safe values;
+- unsupported or unmatched pool evidence remains `LP_STATE_UNKNOWN`;
+- genuine `CHART_CONTEXT_DO_NOT_TRAIN` remains an independent blocker.
+
+The shared resolver currently implements the optional-coverage policy through
+`SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY`, while its emitted
+`safety_status_label` still carries stored `SAFETY_UNKNOWN`. The first-memory
+review consequently blocks the label before E2Q and Lane K can promote the
+window. E2Q and Lane K consume the upstream window quality; neither provides a
+separate safety-policy repair. This is a real shared-contract mismatch, not a
+Lane Q quota or Lane K promotion defect.
+
+### Holder concentration boundary
+
+The existing governed sources can produce genuine concentration evidence:
+GoPlus responses may include `holders` plus `total_supply`, and the governed
+Solana RPC fallback uses `getTokenLargestAccounts` plus `getTokenSupply` with
+exact-mint validation. The GoPlus normalizer still recognizes only its older
+`top_10_holders` shape, and the one-command path does not invoke the RPC
+fallback.
+
+Those parser and invocation gaps are mechanically repairable. They were not
+changed in this mini-sprint because the current safety evidence row has one
+primary source-request/response trace. Copying GoPlus authority and token
+fields into a row whose primary trace points only to Solana RPC would not
+preserve complete cross-source provenance. A bounded composite-provenance
+contract is required before that merge can satisfy the task's traceability
+rule.
+
+### Exact-pool LP boundary
+
+No adopted local source contract currently proves `LOCKED`, `BURNED`, or
+`UNLOCKED` for the exact selected pool types. The PumpSwap contract verifies
+program ownership and the base mint at the known offset, but explicitly marks
+the full pool layout, including LP-mint and reserve offsets, as
+`UNKNOWN_REQUIRES_RESEARCH`. The inspected GoPlus live shape exposes
+token-level pool and burn fields without an adopted exact-pair lock/burn
+semantic contract. Raydium and Orca exact-pool lock/burn semantics are likewise
+not established by the approved source stack.
+
+Interpreting those fields would invent unsupported pool-specific behavior.
+Accordingly unmatched and unsupported evidence remains `LP_STATE_UNKNOWN`.
+Focused locked, burned, and unlocked regression cases cannot be implemented
+truthfully until at least one supported pool layout and proof rule is adopted.
+
+### Chart contract result
+
+No shared Chart/Volatility policy defect was found. The resolver derives chart
+context from exact-window snapshots and independently blocks unknown trend,
+unknown volatility, audit-only chart context, and
+`CHART_CONTEXT_DO_NOT_TRAIN`. The prior live chart block was a genuine data-
+quality result and remains correctly blocking.
+
+### Gate result
+
+Because Gate 1 remained unresolved, this mini-sprint made no production-code,
+test, migration, scheduler, source, or database changes. Gates 2 and 3 were
+not entered. The single final isolated proof was not run, so there was no
+second proof and no persistent database mutation.
+
+The smallest safe next task remains inside V2-4.1: adopt one bounded composite
+safety-provenance representation and one authoritative exact-pool LP
+lock/burn contract for a specifically supported pool type. Only then should
+the GoPlus holder parser, governed RPC fallback, unified safety label, and
+exact-pool LP normalization be implemented and verified together. Provider
+and pool semantics not covered by that contract remain
+`UNKNOWN_REQUIRES_RESEARCH`.
+
+The consolidated verdict remains
+`V2_4_1_SAFE_BLOCK_WITH_CONTEXT_GAP`. V2-5 remains blocked.
