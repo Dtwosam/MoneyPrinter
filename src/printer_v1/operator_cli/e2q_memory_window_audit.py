@@ -1,7 +1,11 @@
-"""E2Q 15m Memory Window Audit / Classification Boundary.
+"""E2Q Memory Window Audit / Classification Boundary.
 
-Audits and classifies a closed WINDOW_15M printer_memory_windows row against
-its referenced snapshot evidence. Writes classification back to the window row
+Audits and classifies a closed main-outcome printer_memory_windows row against
+its referenced snapshot evidence. Two window kinds are auditable: WINDOW_15M
+(unchanged) and a genuine WINDOW_1H (real 1h identity, duration, governed
+snapshot anchors, coverage, and exact token/pair targeting). WINDOW_5M_MICRO_EVENT
+is support-only and WINDOW_4H/12H/24H are not enabled; all are blocked with a
+window-kind-specific reason. Writes classification back to the window row
 idempotently. Does NOT create memory rows, episodes, fingerprints, or any
 paper-trading records.
 
@@ -40,6 +44,31 @@ E2Q_REQUIRED_SOURCE_STATUS: str = "COMPLETE"
 E2Q_REQUIRED_QUALITY: str = "CLEAN_DATA"
 E2Q_ACCEPTABLE_QUALITY: str = "ACCEPTABLE_PARTIAL_DATA"
 E2Q_CREATED_BY: str = "lane_e2q"
+
+# V2-6 window-kind-specific audit gate.
+#   WINDOW_15M            — the original valid main outcome window (unchanged).
+#   WINDOW_1H            — a genuine 1h continuation window is admissible ONLY when
+#                          it has real 1h identity (kind), real duration, governed
+#                          snapshot anchors, coverage, and exact token/pair
+#                          targeting; a relabelled or insufficient window is blocked.
+#   WINDOW_5M_MICRO_EVENT — support-only; never a valid main outcome window.
+#   WINDOW_4H/12H/24H     — not enabled as main outcome windows.
+E2Q_1H_WINDOW_KIND: str = "WINDOW_1H"
+E2Q_SUPPORT_ONLY_WINDOW_KIND: str = "WINDOW_5M_MICRO_EVENT"
+E2Q_VALID_MAIN_WINDOW_KINDS: frozenset[str] = frozenset({
+    E2Q_REQUIRED_WINDOW_KIND,
+    E2Q_1H_WINDOW_KIND,
+})
+E2Q_UNSUPPORTED_MAIN_WINDOW_KINDS: frozenset[str] = frozenset({
+    "WINDOW_4H",
+    "WINDOW_12H",
+    "WINDOW_24H",
+})
+# Genuine WINDOW_1H continuation-phase minimum span. Matches the established 1h
+# contract in lane_e2o_1h_window_close (_MIN_ELAPSED_SECONDS = 2700.0, the
+# 45-minute continuation minimum also enforced by Lane Q). A ~900s window (a
+# relabelled 15m window) fails this floor and stays blocked from 1h audit.
+E2Q_1H_MIN_ELAPSED_SECONDS: float = 2700.0
 
 E2Q_STATUS_CLEAN_CANDIDATE: str = "E2Q_AUDIT_CLEAN_CANDIDATE"
 E2Q_STATUS_DIRTY: str = "E2Q_AUDIT_DIRTY"
@@ -95,6 +124,93 @@ def _load_snapshot(
         "SELECT * FROM printer_token_snapshots WHERE id = ?",
         (snapshot_id,),
     ).fetchone()
+
+
+def _elapsed_seconds(start_ts: str, end_ts: str) -> float | None:
+    """Return end-start in seconds from two ISO timestamps, or None if unparseable."""
+    try:
+        start = datetime.fromisoformat(start_ts)
+        end = datetime.fromisoformat(end_ts)
+        try:
+            return (end - start).total_seconds()
+        except TypeError:
+            s = start.replace(tzinfo=None) if start.tzinfo else start
+            e = end.replace(tzinfo=None) if end.tzinfo else end
+            return (e - s).total_seconds()
+    except (ValueError, TypeError):
+        return None
+
+
+def _validate_genuine_1h_window(
+    connection: sqlite3.Connection, win: sqlite3.Row,
+) -> list[str]:
+    """Return structural block reasons for a WINDOW_1H window (empty = genuine).
+
+    A genuine 1h window must have real 1h identity, real duration, governed
+    snapshot anchors, coverage, and exact token/pair targeting on both anchors.
+    This rejects a WINDOW_1H produced by relabelling or combining insufficient
+    15m evidence. Evidence *quality* (dirty/stale) is handled by the shared
+    quality gates, exactly like WINDOW_15M — a genuine but dirty 1h window
+    classifies DIRTY (do_not_train), not clean.
+    """
+    reasons: list[str] = []
+
+    start_at = win["window_start_at"]
+    end_at = win["window_end_at"]
+    start_snap_id = win["snapshot_start_id"]
+    end_snap_id = win["snapshot_end_id"]
+
+    # Real 1h duration identity: both boundary timestamps must be present.
+    if not start_at or not end_at:
+        reasons.append(
+            "WINDOW_1H missing real window_start_at/window_end_at;"
+            " a relabelled or insufficient 1h window is not auditable"
+        )
+
+    # Governed snapshot anchors (coverage): both start and end anchors required.
+    if start_snap_id is None or end_snap_id is None:
+        reasons.append(
+            "WINDOW_1H missing governed snapshot anchors"
+            " (snapshot_start_id and snapshot_end_id required)"
+        )
+
+    # Real duration floor: a genuine 1h continuation window spans >= the
+    # established 1h minimum; a ~900s window is relabelled 15m evidence.
+    if start_at and end_at:
+        elapsed = _elapsed_seconds(str(start_at), str(end_at))
+        if elapsed is None:
+            reasons.append("WINDOW_1H window_start_at/window_end_at are not parseable")
+        elif elapsed < E2Q_1H_MIN_ELAPSED_SECONDS:
+            reasons.append(
+                f"WINDOW_1H elapsed {elapsed:.0f}s is below the genuine 1h minimum"
+                f" {E2Q_1H_MIN_ELAPSED_SECONDS:.0f}s; insufficient 15m evidence cannot"
+                " be relabelled as 1h"
+            )
+
+    # Exact token/pair targeting on the START anchor (the END anchor is the
+    # audited snapshot, already token/pair-validated by the shared gates).
+    if start_snap_id is not None:
+        start_snap = _load_snapshot(connection, int(start_snap_id))
+        if start_snap is None:
+            reasons.append(
+                f"WINDOW_1H snapshot_start_id {start_snap_id} not found"
+            )
+        else:
+            if int(start_snap["token_id"]) != int(win["token_id"]):
+                reasons.append(
+                    "WINDOW_1H snapshot_start token_id mismatch:"
+                    f" window.token_id={win['token_id']!r}"
+                    f" vs start_snapshot.token_id={start_snap['token_id']!r}"
+                )
+            win_pair = int(win["pair_id"]) if win["pair_id"] is not None else None
+            start_pair = int(start_snap["pair_id"]) if start_snap["pair_id"] is not None else None
+            if win_pair is not None and start_pair is not None and win_pair != start_pair:
+                reasons.append(
+                    "WINDOW_1H snapshot_start pair_id mismatch:"
+                    f" window.pair_id={win_pair!r} vs start_snapshot.pair_id={start_pair!r}"
+                )
+
+    return reasons
 
 
 def _write_audit_result(
@@ -191,15 +307,32 @@ def audit_15m_memory_window(
             "memories_created": 0,
         }
 
-    # --- Gate 2: must be WINDOW_15M ---
-    if win["window_kind"] != E2Q_REQUIRED_WINDOW_KIND:
+    # --- Gate 2: window_kind must be a valid main outcome window ---
+    # WINDOW_15M and genuine WINDOW_1H are auditable. WINDOW_5M_MICRO_EVENT is
+    # support-only. WINDOW_4H/12H/24H are not enabled. All others are blocked
+    # with a window-kind-specific reason. The genuine-1h identity/duration/
+    # anchor/targeting checks run below, after the shared structural gates.
+    window_kind = win["window_kind"]
+    if window_kind not in E2Q_VALID_MAIN_WINDOW_KINDS:
+        if window_kind == E2Q_SUPPORT_ONLY_WINDOW_KIND:
+            blocked_reason = (
+                f"window_kind {window_kind!r} is support-only;"
+                " 5m micro-event is not a valid main outcome window"
+            )
+        elif window_kind in E2Q_UNSUPPORTED_MAIN_WINDOW_KINDS:
+            blocked_reason = (
+                f"window_kind {window_kind!r} is not enabled as a main outcome"
+                " window; only WINDOW_15M and genuine WINDOW_1H are audited"
+            )
+        else:
+            blocked_reason = (
+                f"window_kind must be one of {sorted(E2Q_VALID_MAIN_WINDOW_KINDS)!r};"
+                f" got {window_kind!r}"
+            )
         return {
             "e2q_status": E2Q_STATUS_BLOCKED,
             "classified": False,
-            "blocked_reasons": [
-                f"window_kind must be {E2Q_REQUIRED_WINDOW_KIND!r};"
-                f" got {win['window_kind']!r}; 5m is not a valid main outcome window"
-            ],
+            "blocked_reasons": [blocked_reason],
             "window_id": window_id,
             "hard_locks": dict(_HARD_LOCKS),
             "paper_decisions_created": 0,
@@ -302,6 +435,26 @@ def audit_15m_memory_window(
             "pnl_created": 0,
             "memories_created": 0,
         }
+
+    # --- Gate 8 (WINDOW_1H only): genuine 1h identity / duration / anchors /
+    # coverage / exact targeting. A relabelled or insufficient 1h window is
+    # blocked here. WINDOW_15M skips this gate (behavior unchanged). ---
+    if window_kind == E2Q_1H_WINDOW_KIND:
+        onehour_reasons = _validate_genuine_1h_window(connection, win)
+        if onehour_reasons:
+            return {
+                "e2q_status": E2Q_STATUS_BLOCKED,
+                "classified": False,
+                "blocked_reasons": onehour_reasons,
+                "window_id": window_id,
+                "snapshot_id": snapshot_id,
+                "window_kind": window_kind,
+                "hard_locks": dict(_HARD_LOCKS),
+                "paper_decisions_created": 0,
+                "positions_created": 0,
+                "pnl_created": 0,
+                "memories_created": 0,
+            }
 
     # All structural gates passed. Now classify quality.
     rejection_reasons: list[str] = []
