@@ -6089,7 +6089,17 @@ def _apply_clean_audit_evidence_labels(
         "evidence_blockers": [],
     }
 
-    safety_row = _latest_audit_evidence_row(
+    safety_composite: dict[str, Any] = {}
+    if _table_exists(connection, "printer_safety_evidence_composites"):
+        safety_composite = _latest_audit_evidence_row(
+            connection,
+            "printer_safety_evidence_composites",
+            token_id=token_id,
+            pair_id=pair_id,
+            snapshot_id=snapshot_id,
+            memory_window_id=memory_window_id,
+        )
+    safety_row = safety_composite or _latest_audit_evidence_row(
         connection,
         "printer_solana_safety_evidence",
         token_id=token_id,
@@ -6098,13 +6108,29 @@ def _apply_clean_audit_evidence_labels(
         memory_window_id=memory_window_id,
     )
     overlays["safety_evidence_row_id"] = safety_row.get("id")
+    overlays["safety_composite_id"] = safety_composite.get("id")
     safety_policy = safety_memory_policy_summary(safety_row) if safety_row else {}
     overlays["safety_15m_memory_policy_label"] = safety_policy.get("safety_15m_memory_policy_label")
     overlays["source_coverage_pending_fields"] = safety_policy.get("source_coverage_pending_fields", [])
     overlays["observed_risk_fields"] = safety_policy.get("observed_risk_fields", [])
     overlays["hard_blocking_safety_fields"] = safety_policy.get("hard_blocking_safety_fields", [])
-    if _clean_safety_evidence_row(safety_row, window_kind=window_kind):
-        if safety_row["safety_context_label"] == "SAFETY_CLEAN":
+    if safety_composite:
+        from printer_v1.safety.composite import composite_row_is_acceptable
+
+        safety_accepted = composite_row_is_acceptable(safety_composite)
+    else:
+        safety_accepted = _clean_safety_evidence_row(safety_row, window_kind=window_kind)
+    if safety_accepted:
+        if safety_composite:
+            effective["safety_status_label"] = safety_composite["safety_contract_label"]
+            effective["rug_risk_label"] = "RUG_RISK_ACCEPTABLE_FOR_15M"
+            overlays["safety_15m_memory_policy_label"] = safety_composite["safety_contract_label"]
+            overlays["hard_blocking_safety_fields"] = []
+            overlays["source_coverage_pending_fields"] = json.loads(
+                str(safety_composite.get("optional_unknowns_json") or "[]")
+            )
+            overlays["safety_evidence_applied"] = True
+        elif safety_row["safety_context_label"] == "SAFETY_CLEAN":
             effective["safety_status_label"] = safety_row["safety_context_label"]
             effective["rug_risk_label"] = "RUG_RISK_LOW"
         else:
@@ -6116,7 +6142,14 @@ def _apply_clean_audit_evidence_labels(
             )
         overlays["safety_evidence_applied"] = True
     else:
-        overlays["evidence_blockers"].append(_safety_evidence_blocker(safety_row))
+        if safety_composite:
+            blockers = json.loads(str(safety_composite.get("blockers_json") or "[]"))
+            overlays["evidence_blockers"].extend(
+                [f"SAFETY_COMPOSITE_{str(item).upper()}" for item in blockers]
+                or ["SAFETY_COMPOSITE_BLOCKED"]
+            )
+        else:
+            overlays["evidence_blockers"].append(_safety_evidence_blocker(safety_row))
 
     for direction, overlay_key, label_key in (
         ("ENTRY", "entry_quote_evidence_applied", "entry_realism_label"),

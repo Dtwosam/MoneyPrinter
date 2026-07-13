@@ -45,6 +45,7 @@ _COUNT_TABLES = (
     "printer_memories", "printer_memory_fingerprints",
     "printer_market_regime_snapshots", "printer_solana_chain_heat_snapshots",
     "printer_solana_safety_evidence", "printer_paper_quote_evidence",
+    "printer_safety_evidence_composites", "printer_safety_evidence_contributions",
     "printer_memory_retrieval_queries", "printer_memory_retrieval_matches",
     "printer_paper_decisions", "printer_paper_positions",
     "printer_paper_trade_events", "printer_paper_trade_audits",
@@ -342,6 +343,11 @@ def _collect_preclose_context(
         build_jupiter_paper_quote_transport,
         build_jupiter_quote_adapter,
     )
+    from printer_v1.safety.goplus_normalizer import holder_concentration_label_from_goplus
+    from printer_v1.sources.solana_rpc_holder import (
+        build_solana_rpc_holder_adapter,
+        build_solana_rpc_holder_transport,
+    )
 
     factories = adapter_factories or {}
     mint = str(step["token_mint"])
@@ -438,11 +444,33 @@ def _collect_preclose_context(
             quote_adapter(mint, WSOL_MINT),
         ),
     }
+    goplus_holder = holder_concentration_label_from_goplus(
+        executions["safety"].normalized_result.normalized_payload
+    )
+    if goplus_holder == "HOLDER_CONCENTRATION_UNKNOWN":
+        holder_factory = factories.get("solana_rpc_holder")
+        holder_adapter = (
+            holder_factory(token_mint=mint, timeout_seconds=timeout_seconds)
+            if holder_factory
+            else build_solana_rpc_holder_adapter(
+                enabled=True,
+                fixture_transport=build_solana_rpc_holder_transport(
+                    mint, timeout_seconds=timeout_seconds
+                ),
+            )
+        )
+        executions["holder"] = execute(
+            "solana_rpc",
+            "holder_concentration_reference",
+            "holder",
+            {},
+            holder_adapter,
+        )
     return {
         "executions": executions,
         "report": {
-            "source_request_budget": 4,
-            "source_requests_attempted": 4,
+            "source_request_budget": 5,
+            "source_requests_attempted": len(executions),
             "items": {
                 key: _context_execution_summary(value)
                 for key, value in executions.items()
@@ -469,6 +497,7 @@ def _persist_preclose_context(
     from printer_v1.safety.goplus_normalizer import (
         insert_goplus_safety_evidence_from_source_response,
     )
+    from printer_v1.safety.composite import persist_safety_composite
 
     executions = context_bundle["executions"]
     snapshot = dict(conn.execute(
@@ -531,6 +560,17 @@ def _persist_preclose_context(
                 "audit_status": safety_result.audit_status,
                 "rejection_reasons": list(safety_result.rejection_reasons),
             }
+    inserted["safety_composite"] = persist_safety_composite(
+        conn,
+        token_id=target["token_id"],
+        pair_id=target["pair_id"],
+        snapshot_id=snapshot_id,
+        token_mint=target["token_mint"],
+        pair_address=target["pair_address"],
+        evaluated_at=str(snapshot["captured_at"]),
+        goplus_execution=safety,
+        holder_execution=executions.get("holder"),
+    )
 
     for key, direction in (("entry_quote", "ENTRY"), ("exit_quote", "EXIT")):
         execution = executions[key]
@@ -955,8 +995,8 @@ def run_one_command_15m_factory(
         "max_source_requests": max_source_requests, "timeout_seconds": timeout_seconds,
         "total_duration_seconds": total_duration_seconds, "window_seconds": _window_seconds,
         "automatic_retries": 0, "discovery_source": "geckoterminal",
-        "context_source_requests_per_selected_token": 4,
-        "context_source_request_budget": 4 * max_selected_tokens,
+        "context_source_requests_per_selected_token": 5,
+        "context_source_request_budget": 5 * max_selected_tokens,
     }
     run_id = str(uuid.uuid4())
     started_dt = _now()

@@ -2,7 +2,7 @@
 
 ## Status
 
-Verdict: `V2_4_1_SAFE_BLOCK_WITH_CONTEXT_GAP`
+Verdict: `V2_4_1_MEMORY_QUALITY_REPAIR_PASS`
 
 V2-4.1 repaired the first-snapshot timing anchor, connected the existing
 context-quality audit path, reconciled the stale Phase 28 readiness scanner,
@@ -11,11 +11,13 @@ snapshots without lowering coverage, and integrated bounded governed close-time
 collection for market regime, Solana chain heat, exact-target safety, exact-
 target ENTRY/EXIT realism, and side-aware trading flow. The final approved live
 proof resolved those five requested areas from real governed responses for two
-autonomously selected tokens. It still produced zero clean memories because the
-legacy Lane Q safety-label gate disagrees with the shared 15m safety policy, and
-one token also failed the existing chart gate. No second final proof was run.
+autonomously selected tokens. The final composite-safety proof also removed the
+legacy safety-policy disagreement. It produced zero clean memories honestly:
+both public holder-RPC fallbacks were rate-limited, and one token had additional
+flow/chart gaps. No second final proof was run.
 
-This closeout does not approve V2-5.
+This closeout makes V2-5 readiness review permissible; it does not start or
+approve V2-5 implementation.
 
 ## Source Stack And Scope
 
@@ -652,3 +654,166 @@ and pool semantics not covered by that contract remain
 
 The consolidated verdict remains
 `V2_4_1_SAFE_BLOCK_WITH_CONTEXT_GAP`. V2-5 remains blocked.
+
+## Final Composite Safety Completion
+
+This section supersedes the earlier V2-4.1 safety-policy and composite-design
+blockers above. Those sections remain as the chronological audit record.
+
+### Adopted Contract
+
+The final fail-closed `WINDOW_15M` contract treats the following as mandatory:
+
+- fresh, traceable, exact-target source evidence;
+- mint authority, freeze authority, metadata, supply, and token-program checks;
+- known-safe holder concentration;
+- no explicit provider risk;
+- no exact-pair unlocked or removed liquidity evidence;
+- valid ENTRY and EXIT realism;
+- acceptable chart/volatility quality.
+
+Unknown holder concentration is mandatory-blocking. Concentrated or extreme
+holder evidence is known danger and also blocks. Unsupported exact-pool LP
+lock/burn state, absent optional provider-risk fields, and unavailable
+pool-specific metadata remain explicit optional unknowns. They are never
+relabeled safe, but they do not independently dirty an otherwise eligible
+15-minute window. Explicit exact-pair unlocked or removed liquidity still
+blocks. Pool/provider semantics not covered by this contract remain
+`UNKNOWN_REQUIRES_RESEARCH`.
+
+### Implementation
+
+Migration `029_composite_safety_evidence.sql` adds a bounded composite header
+and independent contribution rows. Each contribution retains source name,
+evidence category, request/response/failure IDs, captured time, freshness,
+mint/pair target, supplied fields, status, quality, and rejection reason. The
+contract permits at most two contributors: governed GoPlus and the existing
+governed Solana RPC holder fallback.
+
+The GoPlus normalizer now handles the live `holders` plus `total_supply` shape.
+The holder calculation uses the ten largest non-negative balances divided by a
+validated positive supply and emits only categorical labels. Missing holder
+evidence invokes the existing read-only Solana RPC fallback. Source disagreement
+is persisted and blocks; a partial failure remains visible instead of being
+overwritten by the other source.
+
+Provider risk retains its exact provider field and value. Token-level GoPlus LP
+flags no longer claim lock, burn, or unlock for an unidentified selected pair.
+Only exact-pair explicit unlocked or removed evidence is retained as dangerous;
+unsupported LP state remains unknown.
+
+The shared resolver and first-memory overlay now consume the same composite
+contract. E2Q/Lane Q and Lane K consume the resulting window quality instead of
+reinterpreting safety. Source Governor still owns every request and Central
+Scheduler still owns every timed step. The bounded context budget is five
+requests per selected token, including the conditional holder fallback.
+
+### Focused Verification
+
+Focused tests ran in stable slices because the aggregate Windows/Python 3.14
+runner is unreliable. A total of 187 distinct focused and nearby regression
+cases passed with normal summaries and exit code `0`, covering:
+
+- composite provenance, conflicts, partial failures, and exact-pair danger;
+- GoPlus holder and provider-risk normalization;
+- Solana RPC fallback, rate limiting, redaction, target matching, and freshness;
+- unsupported LP claims remaining unknown;
+- one-command timing, cadence, replay, context handoff, and fallback behavior;
+- shared context, controlled safety/quote overlays, and memory-build safety;
+- E2Q clean/dirty handling, Lane Q integrity, and Lane K clean/dirty paths;
+- zero retrieval and paper-decision activation.
+
+`python -m py_compile` passed for every modified production module, and
+`git diff --check` passed before the proof.
+
+### Final Bounded Proof
+
+Run ID: `7ae5d55a-df5a-418d-844e-da4947855526`.
+
+Proof DB:
+`data/printer_v1_v2_4_1_final_composite_safety_proof_20260713.sqlite3`.
+
+The command autonomously selected two exact token/pair targets from two
+governed GeckoTerminal discovery requests. It used `WINDOW_15M`, zero retries,
+a 1,200-second cap, and five bounded close-time context requests per token.
+
+Token `5fgTADYD7HcbhLDJKfBhNo34gB74v31mFPKviZFrpump`, pair
+`CWTYeTH1eGUcvPEP1GsbKWaYPzyddvSSbdvZmdHB9FGQ`, was TRACK_NORMAL. It persisted
+six snapshots with 174.895-184.861 second spacing. Its exact window ran from
+`2026-07-13T17:14:07.807484+00:00` to
+`2026-07-13T17:29:12.697466+00:00`, or 904.889982 seconds.
+
+Token `GwZvGvVzjWTL1mvpw55KQWztTQvWo3B6ew16N2aspump`, pair
+`6TJuebvz9hqJaybCWpKm7ygmFqcxHxJ3Azi5BJhmHak`, was TRACK_FAST. It persisted ten
+snapshots with 99.582-108.420 second spacing. Its exact window ran from
+`2026-07-13T17:14:08.519191+00:00` to
+`2026-07-13T17:29:17.657949+00:00`, or 909.138758 seconds.
+
+For both tokens, Market Regime, Solana Chain Heat, and ENTRY/EXIT realism were
+READY. Each GoPlus request was COMPLETE, CLEAN_DATA, fresh, and target-matched,
+proving renounced mint authority, disabled freeze authority, immutable metadata,
+positive supply, and a verified SPL Token or Token-2022 program. GoPlus did not
+return holder or optional provider-risk data. Both governed public Solana RPC
+fallbacks failed with `solana_rpc_rate_limited` and preserved independent
+failure traces. Composite holder concentration therefore remained UNKNOWN and
+mandatory-blocking. LP state and provider risk remained optional unknowns and
+did not appear in the safety blocker list.
+
+The TRACK_FAST token had READY flow and chart context. The TRACK_NORMAL token
+also had independent flow and chart-quality blockers. Both first-memory reviews
+used `SAFETY_BLOCKED_FOR_15M_MEMORY`; both E2Q audits remained dirty; Lane K
+completed without creating clean memory. This was an honest mandatory-evidence
+block, not rejection caused by unsupported optional LP state.
+
+Proof DB deltas were:
+
+- source requests/responses/failures: `+28 / +26 / +2`;
+- scheduler jobs: `+18`, with zero running after stop;
+- token snapshots: `+16`;
+- safety composites/contributions: `+2 / +4`;
+- safety/quote evidence: `+2 / +4`;
+- memory windows: `+2`;
+- clean memories/fingerprints: `0 / 0`.
+
+The report-only replay produced zero source calls, evidence rows, snapshots,
+windows, composites, or contributions, and left the proof DB hash unchanged.
+
+### Persistent DB And Locks
+
+Persistent DB SHA-256 before and after was unchanged:
+
+`97DB9A15CC464D86137CBBB0DD0A4EF1880E9F4E231FB41E8B22CA09FB177FBB`.
+
+All inspected persistent source, snapshot, memory, retrieval, paper, position,
+trade, and audit counts were unchanged. No PnL table exists. Proof deltas for
+retrieval queries/matches, paper decisions, positions, trade events, trade
+audits, and paper audit reports were all zero. BUY, SELL, HOLD, wallets, keys,
+funds, live execution, paid APIs, scoring, ranking, confidence, weighted logic,
+embeddings, vectors, and non-15m main windows remain locked.
+
+### Money Usefulness And Remaining Risks
+
+The composite contract prevents source laundering: holder data can no longer be
+copied into a GoPlus row while retaining only an RPC trace, or vice versa. It
+also prevents unsupported pool metadata from becoming fake LP safety while
+allowing an otherwise valid window to proceed when LP semantics are honestly
+unknown. This improves memory quality by separating missing optional coverage
+from missing mandatory safety evidence.
+
+The public Solana RPC endpoint rate-limited both holder calls. This is an
+operational availability risk, not an implementation bypass; clean promotion
+correctly remained blocked. Exact locked/burned LP proof remains unsupported and
+`UNKNOWN_REQUIRES_RESEARCH`. Lane K reporting still includes historical copied
+windows, and a support-only micro-event unknown label remains visible in legacy
+first-memory diagnostics. Neither changed the mandatory holder block observed
+in this proof.
+
+### Final Verdict And Next Step
+
+Final verdict: `V2_4_1_MEMORY_QUALITY_REPAIR_PASS`.
+
+The implementation, deterministic verification, bounded live behavior, replay,
+and lock preservation pass. Zero clean memories is valid because mandatory
+holder evidence failed honestly, while optional unsupported LP evidence did not
+become a blocker or a false safe value. V2-5 may proceed only through its next
+explicit operator-approved readiness lane; this closeout does not begin it.

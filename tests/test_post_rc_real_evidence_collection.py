@@ -120,6 +120,7 @@ def _goplus_clean_payload(token_mint="fixture-mint"):
                 "freeze_authority": None,
                 "metadata_mutable": False,
                 "is_open_minting": False,
+                "total_supply": "1000000000",
                 "top_10_holders": [
                     {"percent": "3.5", "address": "holder1"},
                     {"percent": "2.1", "address": "holder2"},
@@ -439,7 +440,7 @@ class GoPlusNormalizationTests(unittest.TestCase):
         self.assertEqual(result.source_status.value, "FAILED")
         self.assertEqual(result.failure_type, "test_fail")
 
-    def test_clean_safety_response_produces_safety_clean(self):
+    def test_token_level_lp_claim_does_not_produce_safety_clean(self):
         token_data = _goplus_clean_payload("mint-x")["result"]["mint-x"]
         evidence = normalize_goplus_safety_response(
             token_data,
@@ -449,7 +450,11 @@ class GoPlusNormalizationTests(unittest.TestCase):
             source_response_id=1,
             captured_at="2026-06-25T12:00:00+00:00",
         )
-        self.assertEqual(evidence["safety_context_label"], "SAFETY_CLEAN")
+        self.assertEqual(evidence["safety_context_label"], "SAFETY_UNKNOWN")
+        self.assertEqual(
+            evidence["liquidity_lock_or_burn_label"],
+            "LIQUIDITY_LOCK_OR_BURN_UNKNOWN",
+        )
         self.assertEqual(evidence["mint_authority_status"], "MINT_AUTHORITY_RENOUNCED")
         self.assertEqual(evidence["freeze_authority_status"], "FREEZE_AUTHORITY_DISABLED")
         self.assertEqual(evidence["metadata_mutability_status"], "METADATA_IMMUTABLE")
@@ -1487,8 +1492,7 @@ class MemoryOverlayAfterRealEvidenceTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class LiquidityLockBurnConservativeTests(unittest.TestCase):
-    """Prove that pool existence, liquidity amount, and partial data never
-    produce LIQUIDITY_LOCK_OR_BURN_CONFIRMED; only explicit locked=True does."""
+    """Token-level provider fields cannot prove the selected pair's LP state."""
 
     def _norm(self, token_data, mint="test-mint"):
         return normalize_goplus_safety_response(
@@ -1530,38 +1534,38 @@ class LiquidityLockBurnConservativeTests(unittest.TestCase):
         ev = self._norm({"lp_info": ["some_string", 42]})
         self.assertEqual(ev["liquidity_lock_or_burn_label"], "LIQUIDITY_LOCK_OR_BURN_UNKNOWN")
 
-    def test_explicit_locked_true_produces_confirmed(self):
-        """lp_info with locked=True → LIQUIDITY_LOCK_OR_BURN_CONFIRMED."""
+    def test_explicit_locked_true_without_exact_pair_stays_unknown(self):
+        """Token-level locked=True is not exact-pair proof."""
         ev = self._norm({"lp_info": [{"locked": True, "locked_percent": "100"}]})
-        self.assertEqual(ev["liquidity_lock_or_burn_label"], "LIQUIDITY_LOCK_OR_BURN_CONFIRMED")
+        self.assertEqual(ev["liquidity_lock_or_burn_label"], "LIQUIDITY_LOCK_OR_BURN_UNKNOWN")
 
-    def test_explicit_locked_false_produces_unlocked(self):
-        """All lp_info entries with locked=False → LIQUIDITY_UNLOCKED_OR_DANGEROUS."""
+    def test_explicit_locked_false_without_exact_pair_stays_unknown(self):
+        """Token-level locked=False is not exact-pair proof."""
         ev = self._norm({"lp_info": [{"locked": False, "locked_percent": "0"}]})
-        self.assertEqual(ev["liquidity_lock_or_burn_label"], "LIQUIDITY_UNLOCKED_OR_DANGEROUS")
+        self.assertEqual(ev["liquidity_lock_or_burn_label"], "LIQUIDITY_LOCK_OR_BURN_UNKNOWN")
 
-    def test_mixed_locked_true_and_false_produces_confirmed(self):
-        """At least one locked=True among entries → CONFIRMED (source proved something locked)."""
+    def test_mixed_locked_true_and_false_stays_unknown(self):
+        """Mixed token-level pool entries cannot identify the selected pair."""
         ev = self._norm({"lp_info": [
             {"locked": True, "locked_percent": "80"},
             {"locked": False, "locked_percent": "0"},
         ]})
-        self.assertEqual(ev["liquidity_lock_or_burn_label"], "LIQUIDITY_LOCK_OR_BURN_CONFIRMED")
+        self.assertEqual(ev["liquidity_lock_or_burn_label"], "LIQUIDITY_LOCK_OR_BURN_UNKNOWN")
 
     def test_lp_info_with_no_locked_key_stays_unknown(self):
         """Non-empty lp_info entry with no 'locked' key → UNKNOWN (not UNLOCKED)."""
         ev = self._norm({"lp_info": [{"pool": "SomePool", "amount": "9999"}]})
         self.assertEqual(ev["liquidity_lock_or_burn_label"], "LIQUIDITY_LOCK_OR_BURN_UNKNOWN")
 
-    def test_lp_lock_true_alone_produces_confirmed(self):
-        """Top-level lp_lock=True (no lp_info) → CONFIRMED."""
+    def test_lp_lock_true_without_exact_pair_stays_unknown(self):
+        """Top-level token lp_lock=True is not exact-pair proof."""
         ev = self._norm({"lp_lock": True})
-        self.assertEqual(ev["liquidity_lock_or_burn_label"], "LIQUIDITY_LOCK_OR_BURN_CONFIRMED")
+        self.assertEqual(ev["liquidity_lock_or_burn_label"], "LIQUIDITY_LOCK_OR_BURN_UNKNOWN")
 
-    def test_lp_lock_false_alone_produces_unlocked(self):
-        """Top-level lp_lock=False (no lp_info) → UNLOCKED."""
+    def test_lp_lock_false_without_exact_pair_stays_unknown(self):
+        """Top-level token lp_lock=False is not exact-pair proof."""
         ev = self._norm({"lp_lock": False})
-        self.assertEqual(ev["liquidity_lock_or_burn_label"], "LIQUIDITY_UNLOCKED_OR_DANGEROUS")
+        self.assertEqual(ev["liquidity_lock_or_burn_label"], "LIQUIDITY_LOCK_OR_BURN_UNKNOWN")
 
     def test_migration_alone_is_not_proof(self):
         """Migration field present without lock data → UNKNOWN."""
@@ -1582,18 +1586,18 @@ class LiquidityLockBurnConservativeTests(unittest.TestCase):
         self.assertEqual(ev["liquidity_lock_or_burn_label"], "LIQUIDITY_LOCK_OR_BURN_UNKNOWN")
         self.assertNotEqual(ev["safety_context_label"], "SAFETY_CLEAN")
 
-    def test_unlocked_liquidity_prevents_safety_clean(self):
-        """LIQUIDITY_UNLOCKED_OR_DANGEROUS must prevent SAFETY_CLEAN."""
+    def test_unmatched_unlocked_liquidity_stays_unknown(self):
+        """Token-level unlocked evidence cannot identify the selected pair."""
         ev = self._norm({
             "mintable": {"status": "0", "authority": []},
             "freezable": {"status": "0", "authority": []},
             "metadata_mutable": {"status": "0", "metadata_upgrade_authority": []},
             "total_supply": "1000000000",
             "top_10_holders": [{"percent": "3"} for _ in range(10)],
-            "lp_info": [{"locked": False}],  # UNLOCKED
+            "lp_info": [{"locked": False}],
             "risky_flags": [],
         })
-        self.assertEqual(ev["liquidity_lock_or_burn_label"], "LIQUIDITY_UNLOCKED_OR_DANGEROUS")
+        self.assertEqual(ev["liquidity_lock_or_burn_label"], "LIQUIDITY_LOCK_OR_BURN_UNKNOWN")
         self.assertNotEqual(ev["safety_context_label"], "SAFETY_CLEAN")
 
 
@@ -1725,8 +1729,8 @@ class EffectiveSafetyMergeTests(unittest.TestCase):
         ev = {**self._all_clean(), "holder_concentration_label": "HOLDER_CONCENTRATION_UNKNOWN"}
         self.assertEqual(compute_safety_context_label(ev), "SAFETY_UNKNOWN")
         policy = safety_memory_policy_summary(ev)
-        self.assertEqual(policy["safety_15m_memory_policy_label"], SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY)
-        self.assertIn("holder_concentration_label", policy["source_coverage_pending_fields"])
+        self.assertEqual(policy["safety_15m_memory_policy_label"], "SAFETY_BLOCKED_FOR_15M_MEMORY")
+        self.assertIn("holder_concentration_label", policy["hard_blocking_safety_fields"])
 
     def test_missing_mint_authority_produces_safety_unknown(self):
         ev = {**self._all_clean(), "mint_authority_status": "MINT_AUTHORITY_UNKNOWN"}
@@ -1768,21 +1772,22 @@ class EffectiveSafetyMergeTests(unittest.TestCase):
         ev = {**self._all_clean(), "holder_concentration_label": "HOLDER_CONCENTRATION_CONCENTRATED"}
         self.assertNotEqual(compute_safety_context_label(ev), "SAFETY_CLEAN")
         policy = safety_memory_policy_summary(ev)
-        self.assertEqual(policy["safety_15m_memory_policy_label"], SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY)
+        self.assertEqual(policy["safety_15m_memory_policy_label"], "SAFETY_BLOCKED_FOR_15M_MEMORY")
         self.assertIn("holder_concentration_label", policy["observed_risk_fields"])
+        self.assertIn("holder_concentration_label", policy["hard_blocking_safety_fields"])
 
-    def test_extreme_holders_are_observed_risk_not_15m_hard_blocker(self):
+    def test_extreme_holders_are_observed_risk_and_15m_hard_blocker(self):
         ev = {**self._all_clean(), "holder_concentration_label": "HOLDER_CONCENTRATION_EXTREME"}
         self.assertNotEqual(compute_safety_context_label(ev), "SAFETY_CLEAN")
         policy = safety_memory_policy_summary(ev)
-        self.assertEqual(policy["safety_15m_memory_policy_label"], SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY)
+        self.assertEqual(policy["safety_15m_memory_policy_label"], "SAFETY_BLOCKED_FOR_15M_MEMORY")
         self.assertIn("holder_concentration_label", policy["observed_risk_fields"])
-        self.assertNotIn("holder_concentration_label", policy["hard_blocking_safety_fields"])
+        self.assertIn("holder_concentration_label", policy["hard_blocking_safety_fields"])
 
     def test_optional_source_pending_is_15m_only_memory_acceptable(self):
         ev = {
             **self._all_clean(),
-            "holder_concentration_label": "HOLDER_CONCENTRATION_UNKNOWN",
+            "holder_concentration_label": "HOLDER_CONCENTRATION_HEALTHY",
             "liquidity_lock_or_burn_label": "LIQUIDITY_LOCK_OR_BURN_UNKNOWN",
             "known_risk_flag_label": "KNOWN_RISK_FLAGS_UNKNOWN",
             "safety_context_label": "SAFETY_UNKNOWN",

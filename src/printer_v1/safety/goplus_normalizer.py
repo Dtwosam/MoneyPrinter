@@ -115,28 +115,42 @@ def _supply_sanity_label(token_data: Mapping[str, Any]) -> str:
                 return "SUPPLY_SANITY_OK"
         except (TypeError, ValueError):
             pass
+        return "SUPPLY_SANITY_CAUTION"
     # GoPlus signals open minting via is_open_minting
     is_open = token_data.get("is_open_minting")
     if is_open is True:
         return "SUPPLY_SANITY_CAUTION"
-    # If we received any token data at all and no explicit unsafe signal, supply exists
-    if token_data:
-        return "SUPPLY_SANITY_OK"
     return "SUPPLY_SANITY_UNKNOWN"
 
 
 def _holder_concentration_label(token_data: Mapping[str, Any]) -> str:
     top_10 = token_data.get("top_10_holders")
-    if not isinstance(top_10, list) or not top_10:
-        # Try holder_count + creator_balance as a proxy
-        if token_data.get("holder_count") is not None:
+    total_pct: float | None = None
+    if isinstance(top_10, list) and top_10:
+        values: list[float] = []
+        for holder in top_10[:10]:
+            if not isinstance(holder, Mapping):
+                return "HOLDER_CONCENTRATION_UNKNOWN"
+            value = _to_float(holder.get("percent") or holder.get("balance_percent"))
+            if value is None or value < 0:
+                return "HOLDER_CONCENTRATION_UNKNOWN"
+            values.append(value)
+        total_pct = sum(values)
+    else:
+        # Live GoPlus Solana shape: holder balances plus validated total supply.
+        holders = token_data.get("holders")
+        supply = _to_float(token_data.get("total_supply"))
+        if not isinstance(holders, list) or not holders or supply is None or supply <= 0:
             return "HOLDER_CONCENTRATION_UNKNOWN"
-        return "HOLDER_CONCENTRATION_UNKNOWN"
-    total_pct = sum(
-        _to_float(h.get("percent") or h.get("balance_percent") or 0) or 0.0
-        for h in top_10
-        if isinstance(h, Mapping)
-    )
+        balances: list[float] = []
+        for holder in holders:
+            if not isinstance(holder, Mapping):
+                return "HOLDER_CONCENTRATION_UNKNOWN"
+            balance = _to_float(holder.get("balance") or holder.get("amount"))
+            if balance is None or balance < 0:
+                return "HOLDER_CONCENTRATION_UNKNOWN"
+            balances.append(balance)
+        total_pct = (sum(sorted(balances, reverse=True)[:10]) / supply) * 100.0
     if total_pct >= 80:
         return "HOLDER_CONCENTRATION_EXTREME"
     if total_pct >= 55:
@@ -144,28 +158,14 @@ def _holder_concentration_label(token_data: Mapping[str, Any]) -> str:
     return "HOLDER_CONCENTRATION_HEALTHY"
 
 
+def holder_concentration_label_from_goplus(token_data: Mapping[str, Any]) -> str:
+    """Expose the fail-closed GoPlus holder calculation to governed collectors."""
+    return _holder_concentration_label(token_data)
+
+
 def _liquidity_lock_or_burn_label(token_data: Mapping[str, Any]) -> str:
-    lp_info = token_data.get("lp_info") or token_data.get("liquidity_info")
-    if isinstance(lp_info, list) and lp_info:
-        valid_entries = [e for e in lp_info if isinstance(e, Mapping)]
-        if not valid_entries:
-            # Non-Mapping entries cannot prove lock or unlock state.
-            return "LIQUIDITY_LOCK_OR_BURN_UNKNOWN"
-        # Require explicit locked=True from source — pool existence, liquidity amount,
-        # migration, locked_percent alone, or UI labels are not accepted as proof.
-        any_explicitly_locked = any(entry.get("locked") is True for entry in valid_entries)
-        all_explicitly_unlocked = all(entry.get("locked") is False for entry in valid_entries)
-        if any_explicitly_locked:
-            return "LIQUIDITY_LOCK_OR_BURN_CONFIRMED"
-        if all_explicitly_unlocked:
-            return "LIQUIDITY_UNLOCKED_OR_DANGEROUS"
-        # Some entries have locked=None or the key is absent — cannot prove either state.
-        return "LIQUIDITY_LOCK_OR_BURN_UNKNOWN"
-    lp_lock = token_data.get("lp_lock")
-    if lp_lock is True:
-        return "LIQUIDITY_LOCK_OR_BURN_CONFIRMED"
-    if lp_lock is False:
-        return "LIQUIDITY_UNLOCKED_OR_DANGEROUS"
+    # GoPlus token-level LP fields do not identify the selected exact pair.
+    # Pair-specific dangerous evidence is evaluated by the composite contract.
     return "LIQUIDITY_LOCK_OR_BURN_UNKNOWN"
 
 
@@ -254,8 +254,10 @@ def safety_memory_policy_summary(evidence: Mapping[str, Any]) -> dict[str, Any]:
         resolved.append("holder_concentration_label")
         if holder_value != "HOLDER_CONCENTRATION_HEALTHY":
             observed_risk.append("holder_concentration_label")
+            hard_blocking.append("holder_concentration_label")
     elif holder_value == SOURCE_COVERAGE_PENDING_VALUES["holder_concentration_label"]:
-        source_coverage_pending.append("holder_concentration_label")
+        unresolved.append("holder_concentration_label")
+        hard_blocking.append("holder_concentration_label")
     else:
         hard_blocking.append("holder_concentration_label")
 

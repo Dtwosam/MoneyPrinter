@@ -30,6 +30,7 @@ from printer_v1.market_regime.lookup import market_snapshot_is_valid_for_memory
 from printer_v1.paper_quote.evidence import row_level_clean_eligible as quote_row_is_clean
 from printer_v1.safety.evidence import row_level_clean_eligible as safety_row_is_clean
 from printer_v1.safety.goplus_normalizer import safety_memory_policy_summary
+from printer_v1.safety.composite import composite_row_is_acceptable
 from printer_v1.trading_flow.classifier import (
     classify_flow_direction,
     classify_flow_memory_gate,
@@ -211,6 +212,41 @@ def _latest_exact_evidence(
     return _dict(row)
 
 
+def _latest_safety_composite(
+    connection: sqlite3.Connection,
+    *,
+    token_id: int,
+    pair_id: int,
+    snapshot_id: int,
+    target_time: datetime,
+) -> dict[str, Any]:
+    if not _table_exists(connection, "printer_safety_evidence_composites"):
+        return {}
+    row = connection.execute(
+        """
+        SELECT * FROM printer_safety_evidence_composites
+        WHERE token_id=? AND pair_id=? AND snapshot_id=?
+          AND datetime(evidence_captured_at) <= datetime(?)
+        ORDER BY datetime(evidence_captured_at) DESC, id DESC
+        LIMIT 1
+        """,
+        (token_id, pair_id, snapshot_id, target_time.isoformat()),
+    ).fetchone()
+    if row is None:
+        return {}
+    result = dict(row)
+    result["contributions"] = [
+        dict(item) for item in connection.execute(
+            """
+            SELECT * FROM printer_safety_evidence_contributions
+            WHERE composite_id=? ORDER BY id
+            """,
+            (result["id"],),
+        ).fetchall()
+    ]
+    return result
+
+
 def _label(value: Any) -> str:
     return value.value if hasattr(value, "value") else str(value)
 
@@ -320,7 +356,14 @@ def build_window_15m_context_evidence(
         },
     )
 
-    safety = _latest_exact_evidence(
+    safety_composite = _latest_safety_composite(
+        connection,
+        token_id=token_id,
+        pair_id=pair_id,
+        snapshot_id=snapshot_end_id,
+        target_time=window_end,
+    )
+    safety = safety_composite or _latest_exact_evidence(
         connection,
         table="printer_solana_safety_evidence",
         token_id=token_id,
@@ -329,11 +372,15 @@ def build_window_15m_context_evidence(
         target_time=window_end,
     )
     safety_policy = safety_memory_policy_summary(safety) if safety else {}
-    safety_trace_clean = bool(safety) and _source_trace_is_clean(
-        connection,
-        source_request_id=safety.get("source_request_id"),
-        source_response_id=safety.get("source_response_id"),
-        expected_source=safety.get("source_name"),
+    safety_trace_clean = (
+        bool(safety_composite and safety_composite.get("provenance_complete"))
+        if safety_composite
+        else bool(safety) and _source_trace_is_clean(
+            connection,
+            source_request_id=safety.get("source_request_id"),
+            source_response_id=safety.get("source_response_id"),
+            expected_source=safety.get("source_name"),
+        )
     )
     safety_base_clean = bool(
         safety
@@ -343,12 +390,14 @@ def build_window_15m_context_evidence(
         and safety.get("target_status") == "TARGET_MATCH"
         and safety.get("freshness_label") in {"SAFETY_EVIDENCE_FRESH", "SAFETY_EVIDENCE_ACCEPTABLE"}
         and bool(safety.get("paper_only_context"))
-        and safety.get("source_failure_id") is None
+        and (safety_composite or safety.get("source_failure_id") is None)
     )
     safety_clean = bool(
         safety_base_clean
         and (
-            safety_row_is_clean(safety)
+            composite_row_is_acceptable(safety_composite)
+            if safety_composite
+            else safety_row_is_clean(safety)
             or safety_policy.get("safety_acceptable_for_15m_memory")
         )
     )
@@ -360,7 +409,10 @@ def build_window_15m_context_evidence(
         row=safety,
         policy=safety_policy,
         labels={
-            "safety_status_label": safety.get("safety_context_label", "UNKNOWN_SAFETY"),
+            "safety_status_label": safety.get(
+                "safety_contract_label",
+                safety.get("safety_context_label", "UNKNOWN_SAFETY"),
+            ),
             "safety_action_label": safety.get("safety_action_label", "BLOCK_CLEAN_MEMORY"),
         },
     )

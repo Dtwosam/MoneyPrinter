@@ -112,12 +112,16 @@ class OneCommand15mFactoryTests(unittest.TestCase):
         return build, calls
 
     def _failing_context_factories(self):
-        return {
+        factories = {
             source: (lambda _source=source, **_kwargs: build_fixture_source_adapter(
                 _source, fixture_kind=FIXTURE_FAILURE
             ))
             for source in ("coingecko", "goplus", "jupiter_quote")
         }
+        factories["solana_rpc_holder"] = lambda **_kwargs: build_fixture_source_adapter(
+            "solana_rpc", fixture_kind=FIXTURE_FAILURE
+        )
+        return factories
 
     def _clean_context_factories(self):
         market_payload = {
@@ -206,7 +210,7 @@ class OneCommand15mFactoryTests(unittest.TestCase):
         self.assertEqual(result["run_status"], "COMPLETED")
         self.assertEqual(result["running_jobs_after_stop"], 0)
         self.assertEqual(len(calls), 10)
-        self.assertEqual(result["table_deltas"]["printer_source_requests"], 14)
+        self.assertEqual(result["table_deltas"]["printer_source_requests"], 15)
         self.assertEqual(result["table_deltas"]["printer_token_snapshots"], 10)
         self.assertEqual(len(result["selected_tokens"]), 1)
         self.assertTrue(all(step["step_status"] == "SUCCEEDED" for step in result["steps"]))
@@ -392,8 +396,9 @@ class OneCommand15mFactoryTests(unittest.TestCase):
         )
         close_result = json.loads(close["result_json"])
         collection = close_result["governed_context_collection"]
-        self.assertEqual(collection["source_request_budget"], 4)
+        self.assertEqual(collection["source_request_budget"], 5)
         self.assertEqual(collection["source_requests_attempted"], 4)
+        self.assertEqual(result["config"]["context_source_request_budget"], 5)
         self.assertTrue(all(
             item["source_response_id"] is not None
             for item in collection["items"].values()
@@ -402,6 +407,11 @@ class OneCommand15mFactoryTests(unittest.TestCase):
         self.assertIsNotNone(persisted["market_regime_row_id"])
         self.assertIsNotNone(persisted["chain_heat_row_id"])
         self.assertTrue(persisted["safety"]["inserted"])
+        self.assertIsNotNone(persisted["safety_composite"]["composite_id"])
+        self.assertEqual(
+            persisted["safety_composite"]["safety_contract_label"],
+            "SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY",
+        )
         self.assertTrue(persisted["entry_quote"]["inserted"])
         self.assertTrue(persisted["exit_quote"]["inserted"])
 
@@ -411,12 +421,62 @@ class OneCommand15mFactoryTests(unittest.TestCase):
         self.assertEqual(shared["sections"]["solana_chain_heat"]["status"], "READY")
         self.assertEqual(shared["sections"]["safety_rug"]["status"], "READY")
         self.assertEqual(
+            shared["sections"]["safety_rug"]["labels"]["safety_status_label"],
+            "SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY",
+        )
+        self.assertEqual(
+            close_result["context_quality"]["context_labels"]["safety_status_label"],
+            "SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY",
+        )
+        self.assertEqual(
             shared["sections"]["liquidity_exit_realism"]["status"], "READY"
         )
         flow = shared["sections"]["trading_flow"]
         self.assertEqual(flow["status"], "READY")
         self.assertNotEqual(flow["labels"]["flow_direction_label"], "FLOW_UNKNOWN")
         self.assertNotEqual(flow["labels"]["flow_pressure_label"], "PRESSURE_UNKNOWN")
+        self.assertEqual(result["running_jobs_after_stop"], 0)
+        self.assertTrue(all(value == 0 for value in result["forbidden_deltas"].values()))
+
+    def test_missing_goplus_holders_use_governed_rpc_fallback(self):
+        factories = self._clean_context_factories()
+        factories["goplus"] = lambda **_kwargs: build_fixture_source_adapter(
+            "goplus",
+            fixture_payload={
+                "token_mint": MINT_A,
+                "mint_authority": None,
+                "freeze_authority": None,
+                "metadata_mutable": False,
+                "total_supply": "1000000000",
+                "risk_flags": [],
+            },
+        )
+        factories["solana_rpc_holder"] = lambda **_kwargs: build_fixture_source_adapter(
+            "solana_rpc",
+            fixture_payload={
+                "token_mint": MINT_A,
+                "holder_concentration_label": "HOLDER_CONCENTRATION_HEALTHY",
+            },
+        )
+        with patch("printer_v1.context_evidence.window_15m.WINDOW_SECONDS", 0):
+            result, _calls = self._run(context_adapter_factories=factories)
+        close = next(
+            step for step in result["steps"] if step["step_kind"] == "WINDOW_CLOSE"
+        )
+        close_result = json.loads(close["result_json"])
+        collection = close_result["governed_context_collection"]
+        self.assertEqual(collection["source_requests_attempted"], 5)
+        self.assertIsNotNone(collection["items"]["holder"]["source_response_id"])
+        composite = close_result["governed_context_persistence"]["safety_composite"]
+        self.assertEqual(composite["contribution_count"], 2)
+        self.assertEqual(
+            composite["holder_concentration_label"],
+            "HOLDER_CONCENTRATION_HEALTHY",
+        )
+        self.assertEqual(
+            close_result["context_quality"]["shared_context_evidence"]["sections"]["safety_rug"]["status"],
+            "READY",
+        )
         self.assertEqual(result["running_jobs_after_stop"], 0)
         self.assertTrue(all(value == 0 for value in result["forbidden_deltas"].values()))
 
