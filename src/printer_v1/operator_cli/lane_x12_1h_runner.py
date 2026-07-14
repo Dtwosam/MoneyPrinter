@@ -128,9 +128,17 @@ _ALL_SLOTS: tuple[str, ...] = ("A", "B", "C", "D", "E", "F", "G")
 _X12_STEP_EXECUTED: str = "X12_1H_CYCLE_EXECUTED"
 _X12_STEP_BLOCKED: str = "X12_1H_CYCLE_BLOCKED"
 
-# Default cadence parameters
-_DEFAULT_FAST_SNAPSHOT_INTERVAL_SECONDS: float = 240.0   # 4 min (1h-phase, TRACK_FAST)
-_DEFAULT_NORMAL_SNAPSHOT_INTERVAL_SECONDS: float = 720.0  # 12 min (1h-phase, TRACK_NORMAL)
+# Default cadence parameters — derived from the single authoritative cadence
+# policy (V2-6.1a) so the 1h-phase collection rate can never drift from the
+# contract. WINDOW_1H: TRACK_FAST 120s (min 24), TRACK_NORMAL 240s (min 13).
+def _policy_1h_interval(lane: str, fallback: float) -> float:
+    from printer_v1.snapshots.cadence_policy import get_policy as _get_policy
+    p = _get_policy("WINDOW_1H", lane)
+    return float(p.target_snapshot_interval_seconds) if p is not None else fallback
+
+
+_DEFAULT_FAST_SNAPSHOT_INTERVAL_SECONDS: float = _policy_1h_interval("TRACK_FAST", 120.0)
+_DEFAULT_NORMAL_SNAPSHOT_INTERVAL_SECONDS: float = _policy_1h_interval("TRACK_NORMAL", 240.0)
 _DEFAULT_WINDOW_CLOSE_INTERVAL_SECONDS: float = 2700.0    # 45-min continuation window
 
 _DEFAULT_SOURCE_BUDGET_MAX_CONSECUTIVE_FAILURES: int = 5

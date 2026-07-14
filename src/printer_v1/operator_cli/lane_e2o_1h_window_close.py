@@ -48,9 +48,19 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping, Sequence
+
+from printer_v1.snapshots.lifecycle_continuity import (
+    CONTINUITY_BLOCKED,
+    CONTINUITY_DIRTY,
+    compute_1h_continuation_deadline,
+    evaluate_15m_to_1h_continuity,
+)
 
 _MIN_ELAPSED_SECONDS: float = 2700.0  # 45-minute continuation phase minimum
+
+E2O_1H_STATUS_CONTINUITY_BLOCKED: str = "E2O_1H_CONTINUITY_BLOCKED"
+_DIRTY_DATA_QUALITY: str = "DIRTY_DATA"
 
 E2O_1H_WINDOW_KIND: str = "WINDOW_1H"
 E2O_1H_REQUIRED_SOURCE_STATUS: str = "COMPLETE"
@@ -160,21 +170,24 @@ def _insert_1h_memory_window(
     window_end_at: str | None = None,
     snapshot_start_id: int | None = None,
     snapshot_end_id: int | None = None,
+    do_not_train: int = 0,
+    data_quality_label: str = E2O_1H_REQUIRED_QUALITY,
+    extra_context: dict[str, Any] | None = None,
 ) -> int:
     captured_at = str(snapshot["captured_at"])
     opened_at = window_start_at if window_start_at is not None else captured_at
     tracking_lane = str(snapshot["tracking_lane"])
     snapshot_mode = str(snapshot["snapshot_mode"])
-    supporting_context = json.dumps(
-        {
-            "snapshot_id": snapshot_id,
-            "tracking_lane": tracking_lane,
-            "snapshot_mode": snapshot_mode,
-            "approved_mint": approved_mint,
-            "created_by": E2O_1H_CREATED_BY,
-        },
-        sort_keys=True,
-    )
+    context: dict[str, Any] = {
+        "snapshot_id": snapshot_id,
+        "tracking_lane": tracking_lane,
+        "snapshot_mode": snapshot_mode,
+        "approved_mint": approved_mint,
+        "created_by": E2O_1H_CREATED_BY,
+    }
+    if extra_context:
+        context.update(extra_context)
+    supporting_context = json.dumps(context, sort_keys=True)
     cursor = connection.execute(
         """
         INSERT INTO printer_memory_windows (
@@ -182,7 +195,7 @@ def _insert_1h_memory_window(
             memory_status, data_quality_label, do_not_train, window_status,
             supporting_context_json, created_by_phase, created_at, updated_at,
             window_start_at, window_end_at, snapshot_start_id, snapshot_end_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             token_id,
@@ -191,7 +204,8 @@ def _insert_1h_memory_window(
             opened_at,
             captured_at,
             E2O_1H_MEMORY_STATUS,
-            E2O_1H_REQUIRED_QUALITY,
+            data_quality_label,
+            int(do_not_train),
             E2O_1H_WINDOW_STATUS,
             supporting_context,
             E2O_1H_CREATED_BY,
@@ -213,6 +227,8 @@ def close_1h_memory_window_from_snapshot(
     *,
     snapshot_start_id: int | None = None,
     expected_pair_id: int | None = None,
+    continuation_of_15m: Mapping[str, Any] | None = None,
+    consumed_15m_window_ids: Sequence[int] | None = None,
 ) -> dict[str, Any]:
     """Close exactly one WINDOW_1H evidence window from a clean snapshot.
 
@@ -367,6 +383,62 @@ def close_1h_memory_window_from_snapshot(
             " NULL — Lane Q will block this window with missing_window_start_at"
         )
 
+    # ----- V2-6.2 continuity: anchor deadline + classify 15m->1h transition -----
+    do_not_train = 0
+    data_quality_label = E2O_1H_REQUIRED_QUALITY
+    continuity_dict: dict[str, Any] | None = None
+    if continuation_of_15m is not None:
+        fifteen_close_at = (
+            continuation_of_15m.get("closed_at")
+            or continuation_of_15m.get("window_end_at")
+        )
+        deadline = compute_1h_continuation_deadline(fifteen_close_at)
+        one_h_link = {
+            "run_id": continuation_of_15m.get("run_id"),
+            "token_id": token_id,
+            "pair_id": pair_id,
+            "tracking_lane": str(row["tracking_lane"]),
+            "continuation_of_window_id": continuation_of_15m.get("id"),
+            "linked_closing_snapshot_id": continuation_of_15m.get("snapshot_end_id"),
+            "linked_first_snapshot_id": resolved_snapshot_start_id,
+            "first_snapshot_at": window_start_at,
+            # deadline anchored to 15m close + 2700s (never first-snapshot + 2700s)
+            "deadline_at": deadline.isoformat() if deadline is not None else None,
+        }
+        continuity = evaluate_15m_to_1h_continuity(
+            continuation_of_15m, one_h_link,
+            tracking_lane=str(row["tracking_lane"]),
+            consumed_15m_window_ids=consumed_15m_window_ids,
+        )
+        continuity_dict = continuity.to_dict()
+        if continuity.status == CONTINUITY_BLOCKED:
+            return {
+                "e2o_1h_status": E2O_1H_STATUS_CONTINUITY_BLOCKED,
+                "created": False,
+                "blocked_reasons": continuity.reasons,
+                "continuity": continuity_dict,
+                "approved_mint": approved_mint,
+                "snapshot_id": snapshot_id,
+                "hard_locks": dict(_HARD_LOCKS),
+                "paper_decisions_created": 0,
+                "positions_created": 0,
+                "pnl_created": 0,
+                "memories_created": 0,
+                "memory_windows_created": 0,
+            }
+        # Anchor the window boundaries to the continuation phase:
+        # start = 15m close, end = 15m close + 2700s (the deadline).
+        if fifteen_close_at is not None and deadline is not None:
+            window_start_at = str(fifteen_close_at)
+            window_end_at = deadline.isoformat()
+            elapsed_seconds = _compute_elapsed_seconds(window_start_at, window_end_at)
+            lane_q_integrity_eligible = (
+                elapsed_seconds is not None and elapsed_seconds >= _MIN_ELAPSED_SECONDS
+            )
+        if continuity.status == CONTINUITY_DIRTY or continuity.do_not_train:
+            do_not_train = 1
+            data_quality_label = _DIRTY_DATA_QUALITY
+
     now = _utc_now()
     window_id = _insert_1h_memory_window(
         connection,
@@ -380,6 +452,11 @@ def close_1h_memory_window_from_snapshot(
         window_end_at=window_end_at,
         snapshot_start_id=resolved_snapshot_start_id,
         snapshot_end_id=resolved_snapshot_end_id,
+        do_not_train=do_not_train,
+        data_quality_label=data_quality_label,
+        extra_context=(
+            {"continuity": continuity_dict} if continuity_dict is not None else None
+        ),
     )
 
     close_captured_at = str(row["captured_at"])
@@ -406,6 +483,7 @@ def close_1h_memory_window_from_snapshot(
         "elapsed_seconds": elapsed_seconds,
         "lane_q_integrity_eligible": lane_q_integrity_eligible,
         "pair_drift_detected": pair_drift_detected,
+        "do_not_train": do_not_train,
         "hard_locks": dict(_HARD_LOCKS),
         "paper_decisions_created": 0,
         "positions_created": 0,
@@ -413,6 +491,8 @@ def close_1h_memory_window_from_snapshot(
         "memories_created": 0,
         "memory_windows_created": 1,
     }
+    if continuity_dict is not None:
+        result["continuity"] = continuity_dict
     if not_eligible_reason is not None:
         result["not_eligible_reason"] = not_eligible_reason
     return result
