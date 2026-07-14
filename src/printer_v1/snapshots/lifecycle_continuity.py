@@ -7,7 +7,9 @@ One continuous lifecycle for the same run, token, pair, and lane:
 This module is the single authoritative evaluator for lifecycle continuity. It
 turns the previously-orphaned ``evaluate_transition_gap`` (cadence_policy) into a
 wired, enforced contract and adds the 5m->15m linkage rules that were previously
-only *reported* (read-only) by ``e2w_5m_linkage_report``.
+only *reported* (read-only) by ``e2w_5m_linkage_report``. V2-7.2 extends the same
+contract to disabled, fixture-only 1h->4h->12h->24h chained planning without
+activating long-window collection.
 
 Continuity invariants enforced
 ------------------------------
@@ -37,6 +39,12 @@ Outcome discipline (consumed by E2Q / Lane Q / Lane K):
   * BLOCKED    -> ``can_be_quality_memory`` is False; the transition cannot become
     quality memory at all.
 
+Long-window foundation:
+  * each successor resolves its exact terminal predecessor from the current run;
+  * linkage, deadline, and gap boundaries derive from the successor cadence;
+  * blocked transitions are token-local and replay-terminal;
+  * 4h, 12h, and 24h remain disabled for real collection.
+
 The pure evaluators take plain dicts (as read from ``printer_memory_windows`` /
 ``printer_token_snapshots``) so they are trivially fixture-testable. A DB-backed
 resolver reads the real rows for a run/token/pair/lane and runs both evaluators.
@@ -47,6 +55,7 @@ retrieval, paper, position, or PnL row is ever written or unlocked here.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -74,6 +83,9 @@ CONTINUITY_UNKNOWN: str = "CONTINUITY_UNKNOWN"
 
 STAGE_5M_TO_15M: str = "5M_TO_15M"
 STAGE_15M_TO_1H: str = "15M_TO_1H"
+STAGE_1H_TO_4H: str = "1H_TO_4H"
+STAGE_4H_TO_12H: str = "4H_TO_12H"
+STAGE_12H_TO_24H: str = "12H_TO_24H"
 
 # The 15m main window spans 900s; the 1h continuation phase spans the remaining
 # 2700s (t=15m..60m). The continuation deadline is anchored to the 15m close.
@@ -81,6 +93,20 @@ WINDOW_15M_SECONDS: float = 900.0
 CONTINUATION_1H_SECONDS: float = 2700.0
 
 _ALLOWED_LANES: frozenset[str] = frozenset({"TRACK_FAST", "TRACK_NORMAL"})
+
+
+@dataclass(frozen=True)
+class LongWindowTransitionSpec:
+    predecessor_kind: str
+    successor_kind: str
+    stage: str
+
+
+_LONG_WINDOW_TRANSITIONS: tuple[LongWindowTransitionSpec, ...] = (
+    LongWindowTransitionSpec("WINDOW_1H", "WINDOW_4H", STAGE_1H_TO_4H),
+    LongWindowTransitionSpec("WINDOW_4H", "WINDOW_12H", STAGE_4H_TO_12H),
+    LongWindowTransitionSpec("WINDOW_12H", "WINDOW_24H", STAGE_12H_TO_24H),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +209,253 @@ def build_1h_continuation_plan(fifteen_m: Mapping[str, Any]) -> dict[str, Any]:
 def _iso(value: Any) -> str | None:
     ts = _parse_ts(value)
     return ts.isoformat() if ts is not None else None
+
+
+# ---------------------------------------------------------------------------
+# Disabled long-window chained-continuity foundation
+# ---------------------------------------------------------------------------
+
+def get_long_window_transition_spec(
+    predecessor_kind: str,
+    successor_kind: str,
+) -> LongWindowTransitionSpec | None:
+    """Return an approved long-window transition, never an inferred chain."""
+    return next(
+        (
+            spec
+            for spec in _LONG_WINDOW_TRANSITIONS
+            if spec.predecessor_kind == predecessor_kind
+            and spec.successor_kind == successor_kind
+        ),
+        None,
+    )
+
+
+def _spec_for_successor(successor_kind: str) -> LongWindowTransitionSpec | None:
+    matches = [s for s in _LONG_WINDOW_TRANSITIONS if s.successor_kind == successor_kind]
+    return matches[0] if len(matches) == 1 else None
+
+
+def compute_long_window_deadline(
+    predecessor_close_at: Any,
+    successor_kind: str,
+    tracking_lane: str,
+) -> Any:
+    """Return predecessor close plus the unchanged V2-7.1 continuation duration."""
+    spec = _spec_for_successor(successor_kind)
+    policy = get_policy(successor_kind, tracking_lane)
+    close = _parse_ts(predecessor_close_at)
+    if spec is None or policy is None or close is None:
+        return None
+    return close + timedelta(seconds=policy.window_close_interval_seconds)
+
+
+def build_long_window_continuation_plan(
+    predecessor: Mapping[str, Any],
+    successor_kind: str,
+) -> dict[str, Any]:
+    """Build an automatic, disabled long-window handoff from a resolved predecessor.
+
+    The caller supplies no predecessor id or deadline. Both are taken from the
+    current-run predecessor row and the authoritative successor cadence policy.
+    This function plans only; it does not enqueue or activate long-window work.
+    """
+    predecessor_kind = str(predecessor.get("window_kind") or "")
+    lane = str(predecessor.get("tracking_lane") or "")
+    spec = get_long_window_transition_spec(predecessor_kind, successor_kind)
+    policy = get_policy(successor_kind, lane)
+    reasons: list[str] = []
+    close_at = predecessor.get("closed_at") or predecessor.get("window_end_at")
+    if spec is None:
+        reasons.append("unsupported_predecessor_successor_chain")
+    if lane not in _ALLOWED_LANES or policy is None:
+        reasons.append("unsupported_tracking_lane_or_missing_successor_policy")
+    if predecessor.get("run_id") is None:
+        reasons.append("missing_current_run_identity")
+    if predecessor.get("id") is None:
+        reasons.append("missing_predecessor_window_id")
+    if predecessor.get("snapshot_end_id") is None:
+        reasons.append("missing_predecessor_closing_snapshot")
+    if predecessor.get("window_status") != "WINDOW_CLOSED":
+        reasons.append("predecessor_not_terminally_closed")
+    if _parse_ts(close_at) is None:
+        reasons.append("missing_predecessor_close_timestamp")
+    if policy is not None and policy.enabled_for_real_collection:
+        reasons.append("successor_not_disabled_for_real_collection")
+    deadline = compute_long_window_deadline(close_at, successor_kind, lane)
+    return {
+        "plan_ok": not reasons,
+        "reasons": reasons,
+        "activation_allowed": False,
+        "predecessor_kind": predecessor_kind,
+        "successor_kind": successor_kind,
+        "stage": spec.stage if spec else None,
+        "run_id": predecessor.get("run_id"),
+        "token_id": predecessor.get("token_id"),
+        "pair_id": predecessor.get("pair_id"),
+        "tracking_lane": lane,
+        "continuation_of_window_id": predecessor.get("id"),
+        "linked_closing_snapshot_id": predecessor.get("snapshot_end_id"),
+        "enqueue_at": _iso(close_at),
+        "deadline_at": _iso(deadline),
+        "deadline_anchored_to": "exact_predecessor_close_plus_successor_continuation",
+        "continuation_seconds": (
+            policy.window_close_interval_seconds if policy is not None else None
+        ),
+        "expected_snapshots": (
+            policy.minimum_required_snapshots if policy is not None else None
+        ),
+        "enabled_for_real_collection": (
+            policy.enabled_for_real_collection if policy is not None else None
+        ),
+    }
+
+
+def _evaluate_long_transition_gap(
+    predecessor_close_at: Any,
+    first_successor_snapshot_at: Any,
+    successor_kind: str,
+    tracking_lane: str,
+) -> dict[str, Any]:
+    """Classify a long transition using the successor's V2-7.1 boundaries."""
+    policy = get_policy(successor_kind, tracking_lane)
+    start = _parse_ts(predecessor_close_at)
+    end = _parse_ts(first_successor_snapshot_at)
+    if policy is None or start is None or end is None:
+        return {
+            "transition_status": TRANSITION_UNKNOWN,
+            "transition_gap_seconds": None,
+            "reason": "missing_successor_policy_lane_or_timestamps",
+        }
+    gap = (end - start).total_seconds()
+    details = {
+        "transition_gap_seconds": round(gap, 3),
+        "clean_max_seconds": policy.clean_max_gap_seconds,
+        "blocked_at_seconds": policy.blocked_at_gap_seconds,
+    }
+    if gap < 0:
+        return {
+            **details,
+            "transition_status": TRANSITION_BLOCKED,
+            "reason": "negative_transition_gap_delayed_restart_forbidden",
+        }
+    if gap >= policy.blocked_at_gap_seconds:
+        return {
+            **details,
+            "transition_status": TRANSITION_BLOCKED,
+            "reason": "transition_gap_at_or_above_blocked_threshold",
+        }
+    if gap > policy.clean_max_gap_seconds:
+        return {
+            **details,
+            "transition_status": TRANSITION_DIRTY,
+            "reason": "transition_gap_above_clean_maximum",
+        }
+    return {**details, "transition_status": TRANSITION_CLEAN, "reason": None}
+
+
+def evaluate_long_window_continuity(
+    predecessor: Mapping[str, Any],
+    successor: Mapping[str, Any],
+    *,
+    consumed_predecessor_window_ids: Sequence[int] | None = None,
+) -> ContinuityResult:
+    """Evaluate one exact 1h->4h, 4h->12h, or 12h->24h handoff."""
+    predecessor_kind = str(predecessor.get("window_kind") or "")
+    successor_kind = str(successor.get("window_kind") or "")
+    spec = get_long_window_transition_spec(predecessor_kind, successor_kind)
+    lane = str(predecessor.get("tracking_lane") or successor.get("tracking_lane") or "")
+    stage = spec.stage if spec else f"{predecessor_kind}_TO_{successor_kind}"
+    details: dict[str, Any] = {
+        "predecessor_kind": predecessor_kind,
+        "successor_kind": successor_kind,
+        "tracking_lane": lane,
+    }
+    reasons: list[str] = []
+    if spec is None:
+        reasons.append("unsupported_or_wrong_predecessor_chain")
+    if lane not in _ALLOWED_LANES:
+        reasons.append("unknown_or_unsupported_lane")
+    reasons.extend(_identity_reasons("long_chain", predecessor, successor, lane))
+    if predecessor.get("window_status") != "WINDOW_CLOSED":
+        reasons.append("predecessor_not_terminally_closed")
+    if successor.get("manual_linkage") or successor.get("reuses_historical_window"):
+        reasons.append("manual_or_historical_linkage_forbidden")
+    if successor.get("interpolated_first_snapshot") or successor.get("aggregated_predecessor"):
+        reasons.append("interpolation_or_fake_aggregation_forbidden")
+    if successor.get("clock_reset") or successor.get("delayed_restart"):
+        reasons.append("restart_or_clock_reset_forbidden")
+
+    predecessor_id = predecessor.get("id")
+    linked_window_id = successor.get("continuation_of_window_id")
+    if (
+        predecessor_id is None
+        or linked_window_id is None
+        or int(predecessor_id) != int(linked_window_id)
+    ):
+        reasons.append("successor_not_linked_to_exact_predecessor_window")
+    predecessor_close_snapshot = predecessor.get("snapshot_end_id")
+    linked_close_snapshot = successor.get("linked_closing_snapshot_id")
+    if (
+        predecessor_close_snapshot is None
+        or linked_close_snapshot is None
+        or int(predecessor_close_snapshot) != int(linked_close_snapshot)
+    ):
+        reasons.append("successor_not_linked_to_exact_predecessor_closing_snapshot")
+    consumed = {int(v) for v in (consumed_predecessor_window_ids or [])}
+    if predecessor_id is not None and int(predecessor_id) in consumed:
+        reasons.append("predecessor_window_already_consumed")
+    if successor.get("linked_first_snapshot_id") is None:
+        reasons.append("missing_real_first_successor_snapshot")
+    if _parse_ts(successor.get("first_snapshot_at")) is None:
+        reasons.append("missing_real_first_successor_snapshot_timestamp")
+
+    predecessor_close_at = predecessor.get("closed_at") or predecessor.get("window_end_at")
+    expected_deadline = compute_long_window_deadline(
+        predecessor_close_at, successor_kind, lane
+    )
+    actual_deadline = _parse_ts(successor.get("window_end_at") or successor.get("deadline_at"))
+    details["expected_deadline"] = _iso(expected_deadline)
+    details["actual_deadline"] = _iso(actual_deadline)
+    if expected_deadline is None or actual_deadline is None:
+        reasons.append("missing_fixed_deadline")
+    else:
+        drift = abs((actual_deadline - expected_deadline).total_seconds())
+        details["deadline_drift_seconds"] = round(drift, 3)
+        if drift > 1e-6:
+            reasons.append("deadline_target_drift")
+
+    transition = _evaluate_long_transition_gap(
+        predecessor_close_at,
+        successor.get("first_snapshot_at"),
+        successor_kind,
+        lane,
+    )
+    details["transition"] = transition
+    if reasons:
+        return _mk(stage, CONTINUITY_BLOCKED, reasons, details)
+    if transition["transition_status"] == TRANSITION_BLOCKED:
+        return _mk(
+            stage,
+            CONTINUITY_BLOCKED,
+            [f"transition_gap_blocked: {transition.get('reason')}"],
+            details,
+        )
+    if transition["transition_status"] == TRANSITION_DIRTY:
+        return _mk(
+            stage,
+            CONTINUITY_DIRTY,
+            [f"transition_gap_dirty: {transition.get('reason')}"],
+            details,
+        )
+    if transition["transition_status"] != TRANSITION_CLEAN:
+        return _mk(
+            stage,
+            CONTINUITY_UNKNOWN,
+            [f"transition_gap_unknown: {transition.get('reason')}"],
+            details,
+        )
+    return _mk(stage, CONTINUITY_CONTINUOUS, [], details)
 
 
 # ---------------------------------------------------------------------------
@@ -405,6 +678,232 @@ def _window_record(row: sqlite3.Row, run_id: Any, tracking_lane: str) -> dict[st
     d["run_id"] = run_id
     d["tracking_lane"] = tracking_lane
     return d
+
+
+def _consumed_long_predecessor_ids(
+    connection: sqlite3.Connection,
+    *,
+    token_id: int,
+    pair_id: int,
+    successor_kind: str,
+) -> list[int]:
+    rows = connection.execute(
+        "SELECT supporting_context_json FROM printer_memory_windows "
+        "WHERE token_id=? AND pair_id=? AND window_kind=?",
+        (token_id, pair_id, successor_kind),
+    ).fetchall()
+    consumed: list[int] = []
+    for row in rows:
+        try:
+            context = json.loads(row["supporting_context_json"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            context = {}
+        linked_id = context.get("continuation_of_window_id")
+        if linked_id is None:
+            linked_id = (context.get("continuity") or {}).get(
+                "continuation_of_window_id"
+            )
+        if linked_id is not None:
+            consumed.append(int(linked_id))
+    return consumed
+
+
+def resolve_current_run_long_predecessor(
+    connection: sqlite3.Connection,
+    *,
+    run_id: str,
+    token_id: int,
+    pair_id: int,
+    tracking_lane: str,
+    successor_kind: str,
+) -> dict[str, Any]:
+    """Resolve one exact, terminal, unused predecessor from the current run.
+
+    This is the only supported long-window planning entry point. It accepts no
+    manual predecessor/window/snapshot identifiers and never looks outside the
+    requested run for the source row.
+    """
+    spec = _spec_for_successor(successor_kind)
+    if spec is None:
+        return {"resolved": False, "reasons": ["unsupported_successor_kind"]}
+    rows = connection.execute(
+        """
+        SELECT w.*, s.id AS close_step_id, s.snapshot_id AS step_snapshot_id,
+               s.step_status AS close_step_status,
+               s.tracking_lane AS step_lane
+        FROM printer_memory_factory_run_steps s
+        JOIN printer_memory_windows w ON w.id = s.memory_window_id
+        WHERE s.run_id=? AND s.token_id=? AND s.pair_id=?
+          AND s.tracking_lane=? AND s.step_status='SUCCEEDED'
+          AND s.step_kind IN ('CONTINUATION_CLOSE','LONG_CONTINUATION_CLOSE')
+          AND w.window_kind=?
+        GROUP BY w.id
+        """,
+        (
+            run_id,
+            token_id,
+            pair_id,
+            tracking_lane,
+            spec.predecessor_kind,
+        ),
+    ).fetchall()
+    reasons: list[str] = []
+    if len(rows) != 1:
+        return {
+            "resolved": False,
+            "reasons": [
+                f"current_run_terminal_{spec.predecessor_kind}_count={len(rows)} expected=1"
+            ],
+        }
+    row = dict(rows[0])
+    if row.get("window_status") != "WINDOW_CLOSED":
+        reasons.append("current_run_predecessor_not_terminally_closed")
+    if row.get("snapshot_end_id") is None or row.get("step_snapshot_id") is None:
+        reasons.append("missing_current_run_predecessor_closing_snapshot")
+    elif int(row["snapshot_end_id"]) != int(row["step_snapshot_id"]):
+        reasons.append("current_run_predecessor_closing_snapshot_mismatch")
+    if int(row["token_id"]) != int(token_id) or int(row["pair_id"]) != int(pair_id):
+        reasons.append("current_run_predecessor_target_mismatch")
+    if str(row.get("step_lane")) != tracking_lane:
+        reasons.append("current_run_predecessor_lane_mismatch")
+    consumed = _consumed_long_predecessor_ids(
+        connection,
+        token_id=token_id,
+        pair_id=pair_id,
+        successor_kind=successor_kind,
+    )
+    if int(row["id"]) in consumed:
+        reasons.append("current_run_predecessor_already_consumed")
+    terminal_marker = connection.execute(
+        """
+        SELECT id FROM printer_memory_factory_run_steps
+        WHERE run_id=? AND token_id=? AND pair_id=?
+          AND step_kind='LONG_CONTINUITY_BLOCK'
+          AND step_key=?
+        """,
+        (
+            run_id,
+            token_id,
+            pair_id,
+            _long_block_step_key(token_id, pair_id, successor_kind),
+        ),
+    ).fetchone()
+    if terminal_marker is not None:
+        reasons.append("token_successor_transition_already_terminally_blocked")
+    if reasons:
+        return {
+            "resolved": False,
+            "reasons": reasons,
+            "window_id": row.get("id"),
+            "consumed_ids": consumed,
+        }
+    row["run_id"] = run_id
+    row["tracking_lane"] = tracking_lane
+    plan = build_long_window_continuation_plan(row, successor_kind)
+    if not plan["plan_ok"]:
+        return {
+            "resolved": False,
+            "reasons": list(plan["reasons"]),
+            "window_id": row.get("id"),
+        }
+    return {
+        "resolved": True,
+        "reasons": [],
+        "window": row,
+        "plan": plan,
+        "consumed_ids": consumed,
+    }
+
+
+def _long_block_step_key(token_id: int, pair_id: int, successor_kind: str) -> str:
+    suffix = successor_kind.removeprefix("WINDOW_").lower()
+    return f"t{token_id}_p{pair_id}_{suffix}_long_continuity_block"
+
+
+def terminally_block_long_continuation(
+    connection: sqlite3.Connection,
+    *,
+    run_id: str,
+    token_id: int,
+    pair_id: int,
+    tracking_lane: str,
+    successor_kind: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Record one replay-safe token-local block and cancel only its long jobs."""
+    from printer_v1.scheduler import cancel_job
+
+    key = _long_block_step_key(token_id, pair_id, successor_kind)
+    existing = connection.execute(
+        "SELECT id FROM printer_memory_factory_run_steps WHERE run_id=? AND step_key=?",
+        (run_id, key),
+    ).fetchone()
+    if existing is not None:
+        return {
+            "terminally_blocked": True,
+            "already_terminal": True,
+            "cancelled_jobs": 0,
+            "block_step_id": int(existing["id"]),
+        }
+
+    pending = connection.execute(
+        """
+        SELECT id, scheduler_job_id, result_json
+        FROM printer_memory_factory_run_steps
+        WHERE run_id=? AND token_id=? AND pair_id=?
+          AND step_status='PENDING' AND step_kind LIKE 'LONG_CONTINUATION_%'
+        """,
+        (run_id, token_id, pair_id),
+    ).fetchall()
+    cancelled = 0
+    for row in pending:
+        try:
+            payload = json.loads(row["result_json"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        if payload.get("successor_window_kind") != successor_kind:
+            continue
+        if row["scheduler_job_id"] is not None:
+            cancel_job(connection, job_id=int(row["scheduler_job_id"]))
+        connection.execute(
+            """
+            UPDATE printer_memory_factory_run_steps
+            SET step_status='CANCELLED', error_or_skip_reason=?,
+                finished_at=datetime('now'), updated_at=datetime('now')
+            WHERE id=?
+            """,
+            (reason, int(row["id"])),
+        )
+        cancelled += 1
+    cursor = connection.execute(
+        """
+        INSERT INTO printer_memory_factory_run_steps
+          (run_id,step_key,step_kind,step_status,token_id,pair_id,tracking_lane,
+           result_json,error_or_skip_reason,finished_at)
+        VALUES (?,?,'LONG_CONTINUITY_BLOCK','FAILED',?,?,?,?,?,datetime('now'))
+        """,
+        (
+            run_id,
+            key,
+            token_id,
+            pair_id,
+            tracking_lane,
+            json.dumps(
+                {
+                    "successor_window_kind": successor_kind,
+                    "continuity_status": CONTINUITY_BLOCKED,
+                },
+                sort_keys=True,
+            ),
+            reason,
+        ),
+    )
+    return {
+        "terminally_blocked": True,
+        "already_terminal": False,
+        "cancelled_jobs": cancelled,
+        "block_step_id": int(cursor.lastrowid),
+    }
 
 
 def resolve_lifecycle_continuity(
