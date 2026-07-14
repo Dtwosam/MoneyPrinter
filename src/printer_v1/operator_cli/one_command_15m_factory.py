@@ -54,6 +54,8 @@ _V2_5_MAX_SELECTED_TOKENS = 3
 _MAX_DISCOVERY_REQUESTS = 2
 _CONTEXT_REQUESTS_PER_TOKEN = 5
 _MAX_HOLDER_FALLBACKS_PER_TOKEN = 1
+_CONTINUATION_SECONDS = 2700.0
+_CONTINUOUS_MAX_SELECTED_TOKENS = 1
 
 
 def _cadence_expected_snapshots(lane: str) -> int:
@@ -73,6 +75,25 @@ _MAX_GOVERNED_REQUESTS_RUN = (
 # Run-step jobs (one per snapshot) plus one cancelled discovery handoff per token.
 _MAX_SCHEDULER_ROWS = (
     _V2_5_MAX_SELECTED_TOKENS * _MAX_SNAPSHOTS_PER_TOKEN + _V2_5_MAX_SELECTED_TOKENS
+)
+
+
+def _continuation_expected_snapshots(lane: str) -> int:
+    policy = _cadence_get_policy("WINDOW_1H", lane)
+    if policy is None:
+        return 24 if lane == "TRACK_FAST" else 13
+    return int(policy.minimum_required_snapshots)
+
+
+_CONTINUOUS_MAX_REQUESTS_PER_TOKEN = (
+    _MAX_GOVERNED_REQUESTS_PER_TOKEN
+    + _continuation_expected_snapshots("TRACK_FAST")
+)
+_CONTINUOUS_MAX_REQUESTS_RUN = _MAX_DISCOVERY_REQUESTS + _CONTINUOUS_MAX_REQUESTS_PER_TOKEN
+_CONTINUOUS_MAX_SCHEDULER_ROWS = (
+    _MAX_SNAPSHOTS_PER_TOKEN
+    + _continuation_expected_snapshots("TRACK_FAST")
+    + _CONTINUOUS_MAX_SELECTED_TOKENS
 )
 
 
@@ -215,17 +236,30 @@ def _insert_step_and_job(
     # cap. Three TRACK_FAST tokens create _V2_5_MAX_SELECTED_TOKENS *
     # _MAX_SNAPSHOTS_PER_TOKEN run-step jobs; with up to one cancelled discovery
     # handoff per token that is the _MAX_SCHEDULER_ROWS design ceiling.
-    if _run_step_job_count(conn, run_id) >= _MAX_SCHEDULER_ROWS - _V2_5_MAX_SELECTED_TOKENS:
+    run_config = _load_run_config(conn, run_id)
+    continuous = bool(run_config.get("continuous_first_hour"))
+    scheduler_ceiling = (
+        _CONTINUOUS_MAX_SCHEDULER_ROWS if continuous else _MAX_SCHEDULER_ROWS
+    )
+    discovery_handoff_allowance = (
+        _CONTINUOUS_MAX_SELECTED_TOKENS if continuous else _V2_5_MAX_SELECTED_TOKENS
+    )
+    if _run_step_job_count(conn, run_id) >= scheduler_ceiling - discovery_handoff_allowance:
         raise _GlobalStop(STOP_BUDGET)
-    job_kind = (
-        JobKind.MEMORY_WINDOW_CLOSE
-        if step_kind == "WINDOW_CLOSE"
-        else (
+    if step_kind in {"WINDOW_CLOSE", "CONTINUATION_CLOSE"}:
+        job_kind = JobKind.MEMORY_WINDOW_CLOSE
+    elif step_kind == "CONTINUATION_SNAPSHOT":
+        job_kind = (
+            JobKind.TRACK_FAST_1H
+            if target["tracking_lane"] == "TRACK_FAST"
+            else JobKind.TRACK_NORMAL_1H
+        )
+    else:
+        job_kind = (
             JobKind.TRACK_FAST_FIRST_15M
             if target["tracking_lane"] == "TRACK_FAST"
             else JobKind.TRACK_NORMAL_FIRST_15M
         )
-    )
     result, job_id = enqueue_job(
         conn, job_name=f"v2_4_{run_id}_{step_key}", job_kind=job_kind,
         target_table="printer_tracking_queue", target_id=None,
@@ -290,6 +324,64 @@ def _plan_anchored_jobs(
         step_key=f"{prefix}_window_close", step_kind="WINDOW_CLOSE",
         scheduled_for=anchor + timedelta(seconds=window_seconds),
     )
+
+
+def _load_run_config(conn: sqlite3.Connection, run_id: str) -> dict[str, Any]:
+    row = conn.execute(
+        "SELECT config_json FROM printer_memory_factory_runs WHERE run_id=?",
+        (run_id,),
+    ).fetchone()
+    if row is None:
+        return {}
+    try:
+        return json.loads(str(row[0]) or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return {}
+
+
+def _plan_continuation_jobs(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    close_step: sqlite3.Row,
+    fifteen_m: dict[str, Any],
+    continuation_seconds: float,
+) -> dict[str, Any]:
+    """Enqueue one exact-target 45m continuation from a current-run 15m close."""
+    from printer_v1.snapshots.lifecycle_continuity import build_1h_continuation_plan
+
+    plan = build_1h_continuation_plan(fifteen_m)
+    if not plan.get("enqueue_ok"):
+        return {**plan, "planned_jobs": 0}
+    close_at = datetime.fromisoformat(str(plan["enqueue_at"]))
+    target = {
+        "token_id": int(close_step["token_id"]),
+        "pair_id": int(close_step["pair_id"]),
+        "token_mint": str(close_step["token_mint"]),
+        "pair_address": str(close_step["pair_address"]),
+        "tracking_lane": str(close_step["tracking_lane"]),
+    }
+    prefix = _token_prefix(str(close_step["step_key"]))
+    expected = _continuation_expected_snapshots(target["tracking_lane"])
+    for index in range(expected - 1):
+        offset = continuation_seconds * index / (expected - 1)
+        _insert_step_and_job(
+            conn,
+            run_id=run_id,
+            target=target,
+            step_key=f"{prefix}_continuation_snapshot_{index:02d}",
+            step_kind="CONTINUATION_SNAPSHOT",
+            scheduled_for=close_at + timedelta(seconds=offset),
+        )
+    _insert_step_and_job(
+        conn,
+        run_id=run_id,
+        target=target,
+        step_key=f"{prefix}_continuation_close",
+        step_kind="CONTINUATION_CLOSE",
+        scheduled_for=close_at + timedelta(seconds=continuation_seconds),
+    )
+    return {**plan, "planned_jobs": expected, "expected_snapshots": expected}
 
 
 def _evidence_duration_seconds(start_at: str, end_at: str) -> float:
@@ -917,6 +1009,230 @@ def _execute_close(
     return result
 
 
+def _resolve_current_run_15m_source(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    token_id: int,
+    pair_id: int,
+    tracking_lane: str,
+    current_close_step_id: int | None = None,
+) -> dict[str, Any]:
+    """Resolve exactly one unconsumed 15m close from this run and target."""
+    rows = conn.execute(
+        """
+        SELECT w.*, s.id AS close_step_id, s.snapshot_id AS step_snapshot_id,
+               s.token_mint, s.pair_address, s.tracking_lane AS step_lane
+        FROM printer_memory_factory_run_steps s
+        JOIN printer_memory_windows w ON w.id=s.memory_window_id
+        WHERE s.run_id=? AND s.token_id=? AND s.pair_id=?
+          AND s.tracking_lane=? AND s.step_kind='WINDOW_CLOSE'
+          AND (
+            s.step_status='SUCCEEDED'
+            OR (s.id=? AND s.step_status='RUNNING')
+          )
+          AND w.window_kind='WINDOW_15M'
+        """,
+        (run_id, token_id, pair_id, tracking_lane, current_close_step_id or -1),
+    ).fetchall()
+    reasons: list[str] = []
+    if len(rows) != 1:
+        reasons.append(f"current_run_15m_close_count={len(rows)} expected=1")
+        return {"resolved": False, "reasons": reasons}
+    row = dict(rows[0])
+    if row.get("snapshot_end_id") is None or row.get("step_snapshot_id") is None:
+        reasons.append("missing_current_run_15m_closing_snapshot")
+    elif int(row["snapshot_end_id"]) != int(row["step_snapshot_id"]):
+        reasons.append("current_run_15m_closing_snapshot_mismatch")
+    if int(row["token_id"]) != int(token_id) or int(row["pair_id"]) != int(pair_id):
+        reasons.append("current_run_15m_target_mismatch")
+    if str(row.get("step_lane")) != tracking_lane:
+        reasons.append("current_run_15m_lane_mismatch")
+
+    consumed: list[int] = []
+    one_h_rows = conn.execute(
+        "SELECT id, supporting_context_json FROM printer_memory_windows "
+        "WHERE token_id=? AND pair_id=? AND window_kind='WINDOW_1H'",
+        (token_id, pair_id),
+    ).fetchall()
+    for one_h in one_h_rows:
+        try:
+            context = json.loads(str(one_h["supporting_context_json"] or "{}"))
+        except (TypeError, json.JSONDecodeError):
+            context = {}
+        linked_id = context.get("continuation_of_window_id")
+        if linked_id is None:
+            linked_id = (context.get("continuity") or {}).get("continuation_of_window_id")
+        if linked_id is not None:
+            consumed.append(int(linked_id))
+    if int(row["id"]) in consumed:
+        reasons.append("current_run_15m_window_already_consumed")
+    if reasons:
+        return {"resolved": False, "reasons": reasons, "window_id": row.get("id")}
+    row["run_id"] = run_id
+    row["tracking_lane"] = tracking_lane
+    return {"resolved": True, "reasons": [], "window": row, "consumed_ids": consumed}
+
+
+def _capture_same_stream_5m_support(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    close_step: sqlite3.Row,
+    parent_window_id: int,
+) -> dict[str, Any]:
+    """Persist a support-only 5m prefix from this run's 15m snapshot stream."""
+    rows = conn.execute(
+        """
+        SELECT ts.id, ts.captured_at
+        FROM printer_memory_factory_run_steps s
+        JOIN printer_token_snapshots ts ON ts.id=s.snapshot_id
+        WHERE s.run_id=? AND s.token_id=? AND s.pair_id=?
+          AND s.step_kind='SNAPSHOT' AND s.step_status='SUCCEEDED'
+        ORDER BY ts.captured_at, ts.id
+        """,
+        (run_id, close_step["token_id"], close_step["pair_id"]),
+    ).fetchall()
+    if len(rows) < 2:
+        return {"captured": False, "blocked_reasons": ["insufficient same-stream 5m snapshots"]}
+    opening_at = datetime.fromisoformat(str(rows[0]["captured_at"]))
+    eligible = [
+        row for row in rows
+        if 0.0 <= (datetime.fromisoformat(str(row["captured_at"])) - opening_at).total_seconds() <= 300.0
+    ]
+    if len(eligible) < 2:
+        return {"captured": False, "blocked_reasons": ["no same-stream 5m prefix"]}
+    start_row = eligible[0]
+    end_row = eligible[-1]
+    conn.commit()
+    from printer_v1.operator_cli.lane_x8_5m_support_integration import (
+        capture_5m_support_evidence,
+    )
+    db_path = str(conn.execute("PRAGMA database_list").fetchone()[2])
+    result = capture_5m_support_evidence(
+        db_path,
+        parent_window_id,
+        int(close_step["token_id"]),
+        int(close_step["pair_id"]),
+        operator_approved=True,
+        snapshot_start_id=int(start_row["id"]),
+        snapshot_end_id=int(end_row["id"]),
+        run_id=run_id,
+        tracking_lane=str(close_step["tracking_lane"]),
+    )
+    window_id = result.get("window_5m_id")
+    if window_id is not None:
+        existing_step = conn.execute(
+            "SELECT id FROM printer_memory_factory_run_steps WHERE run_id=? AND step_key=?",
+            (run_id, f"{_token_prefix(str(close_step['step_key']))}_support_5m"),
+        ).fetchone()
+        if existing_step is None:
+            now = _iso()
+            conn.execute(
+                """
+                INSERT INTO printer_memory_factory_run_steps
+                  (run_id,step_key,step_kind,step_status,token_id,pair_id,
+                   token_mint,pair_address,tracking_lane,memory_window_id,
+                   result_json,finished_at,created_at,updated_at)
+                VALUES (?, ?, 'SUPPORT_5M', 'SUCCEEDED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    f"{_token_prefix(str(close_step['step_key']))}_support_5m",
+                    close_step["token_id"], close_step["pair_id"],
+                    close_step["token_mint"], close_step["pair_address"],
+                    close_step["tracking_lane"], int(window_id), _json(result),
+                    now, now, now,
+                ),
+            )
+    return result
+
+
+def _execute_continuation_close(
+    conn: sqlite3.Connection,
+    step: sqlite3.Row,
+    *,
+    adapter_factory: Callable[..., Any],
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    """Persist the final 1h snapshot and close against the exact current-run 15m row."""
+    from printer_v1.operator_cli.e2q_memory_window_audit import audit_15m_memory_window
+    from printer_v1.operator_cli.lane_e2o_1h_window_close import (
+        E2O_1H_STATUS_BLOCKED,
+        E2O_1H_STATUS_CONTINUITY_BLOCKED,
+        close_1h_memory_window_from_snapshot,
+    )
+    from printer_v1.operator_cli.lane_k_e2z_pipeline_wiring import run_e2z_pipeline
+
+    result = _execute_snapshot(
+        conn, step, adapter_factory=adapter_factory, timeout_seconds=timeout_seconds
+    )
+    if not result.get("ok"):
+        return result
+    first = conn.execute(
+        """
+        SELECT s.snapshot_id, ts.captured_at
+        FROM printer_memory_factory_run_steps s
+        JOIN printer_token_snapshots ts ON ts.id=s.snapshot_id
+        WHERE s.run_id=? AND s.token_id=? AND s.pair_id=?
+          AND s.step_kind='CONTINUATION_SNAPSHOT'
+          AND s.step_status='SUCCEEDED' AND s.snapshot_id IS NOT NULL
+        ORDER BY s.scheduled_for, s.id LIMIT 1
+        """,
+        (step["run_id"], step["token_id"], step["pair_id"]),
+    ).fetchone()
+    if first is None:
+        result.update(ok=False, blocked_reason="no real first continuation snapshot")
+        return result
+    source = _resolve_current_run_15m_source(
+        conn,
+        run_id=str(step["run_id"]),
+        token_id=int(step["token_id"]),
+        pair_id=int(step["pair_id"]),
+        tracking_lane=str(step["tracking_lane"]),
+    )
+    if not source.get("resolved"):
+        result.update(
+            ok=False,
+            continuity_blocked=True,
+            blocked_reason="; ".join(source.get("reasons", [])),
+            continuity_source=source,
+        )
+        return result
+    close = close_1h_memory_window_from_snapshot(
+        conn,
+        int(result["snapshot_id"]),
+        str(step["token_mint"]),
+        snapshot_start_id=int(first["snapshot_id"]),
+        expected_pair_id=int(step["pair_id"]),
+        continuation_of_15m=source["window"],
+        consumed_15m_window_ids=source.get("consumed_ids", []),
+    )
+    result["window_close"] = close
+    if close.get("e2o_1h_status") in {E2O_1H_STATUS_BLOCKED, E2O_1H_STATUS_CONTINUITY_BLOCKED}:
+        result.update(
+            ok=False,
+            continuity_blocked=close.get("e2o_1h_status") == E2O_1H_STATUS_CONTINUITY_BLOCKED,
+            blocked_reason="; ".join(close.get("blocked_reasons", [])) or str(close.get("e2o_1h_status")),
+        )
+        return result
+    window_id = close.get("window_id") or close.get("existing_window_id")
+    result["memory_window_id"] = window_id
+    if window_id is None:
+        result.update(ok=False, blocked_reason="1h close produced no window")
+        return result
+    result["window_audit"] = audit_15m_memory_window(conn, int(window_id))
+    conn.commit()
+    result["memory_pipeline"] = run_e2z_pipeline(
+        str(conn.execute("PRAGMA database_list").fetchone()[2]),
+        operator_approved=True,
+        production_mode=True,
+    )
+    result["ok"] = True
+    result["continuity_source"] = source
+    return result
+
+
 def _update_step(
     conn: sqlite3.Connection, step_id: int, status: str, result: dict[str, Any],
     *, error: str | None = None,
@@ -1012,10 +1328,17 @@ def _enforce_budgets_before_step(conn: sqlite3.Connection, run_id: str, step: sq
     global safe stop, never a silently exceeded call.
     """
     projected = _projected_requests_for_step(step)
-    if _run_request_count(conn, run_id) + projected > _MAX_GOVERNED_REQUESTS_RUN:
+    config = _load_run_config(conn, run_id)
+    continuous = bool(config.get("continuous_first_hour"))
+    run_ceiling = _CONTINUOUS_MAX_REQUESTS_RUN if continuous else _MAX_GOVERNED_REQUESTS_RUN
+    token_ceiling = (
+        _CONTINUOUS_MAX_REQUESTS_PER_TOKEN
+        if continuous else _MAX_GOVERNED_REQUESTS_PER_TOKEN
+    )
+    if _run_request_count(conn, run_id) + projected > run_ceiling:
         raise _GlobalStop(STOP_BUDGET)
     prefix = _token_prefix(step["step_key"])
-    if _token_request_count(conn, run_id, prefix) + projected > _MAX_GOVERNED_REQUESTS_PER_TOKEN:
+    if _token_request_count(conn, run_id, prefix) + projected > token_ceiling:
         raise _GlobalStop(STOP_BUDGET)
 
 
@@ -1095,25 +1418,114 @@ def _run_budgets(
         (f"{run_id}:%",),
     ).fetchone()[0])
     run_requests = _run_request_count(conn, run_id)
+    config = _load_run_config(conn, run_id)
+    continuous = bool(config.get("continuous_first_hour"))
+    run_ceiling = _CONTINUOUS_MAX_REQUESTS_RUN if continuous else _MAX_GOVERNED_REQUESTS_RUN
+    token_ceiling = (
+        _CONTINUOUS_MAX_REQUESTS_PER_TOKEN
+        if continuous else _MAX_GOVERNED_REQUESTS_PER_TOKEN
+    )
+    scheduler_ceiling = _CONTINUOUS_MAX_SCHEDULER_ROWS if continuous else _MAX_SCHEDULER_ROWS
     return {
         "governed_requests_run": run_requests,
-        "governed_requests_run_ceiling": _MAX_GOVERNED_REQUESTS_RUN,
-        "governed_requests_run_within_ceiling": run_requests <= _MAX_GOVERNED_REQUESTS_RUN,
+        "governed_requests_run_ceiling": run_ceiling,
+        "governed_requests_run_within_ceiling": run_requests <= run_ceiling,
         "governed_requests_per_token": per_token,
-        "governed_requests_per_token_ceiling": _MAX_GOVERNED_REQUESTS_PER_TOKEN,
+        "governed_requests_per_token_ceiling": token_ceiling,
         "governed_requests_per_token_within_ceiling": all(
-            v <= _MAX_GOVERNED_REQUESTS_PER_TOKEN for v in per_token.values()
+            v <= token_ceiling for v in per_token.values()
         ),
         "holder_rpc_fallbacks": holder_fallbacks,
         "holder_rpc_fallbacks_ceiling": _MAX_HOLDER_FALLBACKS_PER_TOKEN * max(1, len(prefixes)),
         "scheduler_run_step_jobs": run_step_jobs,
         "scheduler_cancelled_discovery_handoffs": handoffs,
         "scheduler_rows_total": run_step_jobs + handoffs,
-        "scheduler_rows_ceiling": _MAX_SCHEDULER_ROWS,
-        "scheduler_rows_within_ceiling": (run_step_jobs + handoffs) <= _MAX_SCHEDULER_ROWS,
+        "scheduler_rows_ceiling": scheduler_ceiling,
+        "scheduler_rows_within_ceiling": (run_step_jobs + handoffs) <= scheduler_ceiling,
         "discovery_requests_ceiling": _MAX_DISCOVERY_REQUESTS,
         "automatic_retries": 0,
+        "continuous_first_hour": continuous,
     }
+
+
+def _continuous_lifecycle_report(
+    conn: sqlite3.Connection,
+    run_id: str,
+    steps: list[dict[str, Any]],
+) -> dict[str, Any]:
+    from printer_v1.snapshots.lifecycle_continuity import resolve_lifecycle_continuity
+
+    config = _load_run_config(conn, run_id)
+    if not config.get("continuous_first_hour"):
+        return {"enabled": False}
+    targets = {
+        (int(step["token_id"]), int(step["pair_id"]), str(step["tracking_lane"]))
+        for step in steps if step.get("token_id") is not None and step.get("pair_id") is not None
+    }
+    reports: list[dict[str, Any]] = []
+    for token_id, pair_id, lane in sorted(targets):
+        token_steps = [
+            step for step in steps
+            if int(step.get("token_id") or -1) == token_id
+            and int(step.get("pair_id") or -1) == pair_id
+        ]
+        phases: dict[str, list[dict[str, Any]]] = {"window_15m": [], "continuation_1h": []}
+        for step in token_steps:
+            if step.get("snapshot_id") is None:
+                continue
+            row = conn.execute(
+                "SELECT id,captured_at FROM printer_token_snapshots WHERE id=?",
+                (int(step["snapshot_id"]),),
+            ).fetchone()
+            if row is None:
+                continue
+            item = {"snapshot_id": int(row["id"]), "captured_at": str(row["captured_at"])}
+            phase = "continuation_1h" if str(step["step_kind"]).startswith("CONTINUATION") else "window_15m"
+            phases[phase].append(item)
+        for items in phases.values():
+            items.sort(key=lambda item: item["captured_at"])
+
+        def gaps(items: list[dict[str, Any]]) -> list[float]:
+            return [
+                round((datetime.fromisoformat(items[index]["captured_at"]) -
+                       datetime.fromisoformat(items[index - 1]["captured_at"])).total_seconds(), 6)
+                for index in range(1, len(items))
+            ]
+
+        continuity = resolve_lifecycle_continuity(
+            conn,
+            run_id=run_id,
+            token_id=token_id,
+            pair_id=pair_id,
+            tracking_lane=lane,
+        )
+        fifteen = next((s for s in token_steps if s["step_kind"] == "WINDOW_CLOSE"), None)
+        continuation = next((s for s in token_steps if s["step_kind"] == "CONTINUATION_CLOSE"), None)
+        transition_gap = None
+        if phases["window_15m"] and phases["continuation_1h"]:
+            transition_gap = round((
+                datetime.fromisoformat(phases["continuation_1h"][0]["captured_at"])
+                - datetime.fromisoformat(phases["window_15m"][-1]["captured_at"])
+            ).total_seconds(), 6)
+        reports.append({
+            "token_id": token_id,
+            "pair_id": pair_id,
+            "tracking_lane": lane,
+            "window_15m": {
+                "snapshots": phases["window_15m"],
+                "snapshot_gaps_seconds": gaps(phases["window_15m"]),
+                "memory_window_id": fifteen.get("memory_window_id") if fifteen else None,
+            },
+            "continuation_1h": {
+                "snapshots": phases["continuation_1h"],
+                "snapshot_gaps_seconds": gaps(phases["continuation_1h"]),
+                "memory_window_id": continuation.get("memory_window_id") if continuation else None,
+                "step_status": continuation.get("step_status") if continuation else None,
+            },
+            "transition_15m_to_1h_gap_seconds": transition_gap,
+            "continuity": continuity,
+        })
+    return {"enabled": True, "tokens": reports}
 
 
 def _final_report(
@@ -1141,6 +1553,7 @@ def _final_report(
     per_token = _per_token_outcomes(steps, windows_by_id)
     terminal_window_outcomes = sum(1 for t in per_token if t["reached_terminal_window"])
     budgets = _run_budgets(conn, run_id, discovery, steps)
+    lifecycle = _continuous_lifecycle_report(conn, run_id, steps)
     pending_run_steps = sum(1 for s in steps if s["step_status"] in {"PENDING", "RUNNING"})
     return {
         "command": COMMAND_NAME, "policy_version": POLICY_VERSION,
@@ -1170,6 +1583,7 @@ def _final_report(
             "(run-step-attached memory_window_ids) are authoritative."
         ),
         "run_budgets": budgets,
+        "continuous_lifecycle": lifecycle,
         "pending_or_running_run_steps": pending_run_steps,
         "memory_results": {
             "clean": sum(1 for row in windows if row.get("memory_quality_label") == "CLEAN_MEMORY"),
@@ -1182,7 +1596,12 @@ def _final_report(
         "locks_preserved": {
             "retrieval": all(value == 0 for table, value in forbidden.items() if "retrieval" in table),
             "financial": all(value == 0 for table, value in forbidden.items() if "retrieval" not in table),
-            "window_15m_only": True, "paper_decisions_off": True,
+            "window_15m_only": not bool(config.get("continuous_first_hour")),
+            "approved_window_scope_only": all(
+                str(row.get("window_kind")) in {"WINDOW_5M_MICRO_EVENT", "WINDOW_15M", "WINDOW_1H"}
+                for row in windows
+            ),
+            "paper_decisions_off": True,
         },
     }
 
@@ -1210,11 +1629,13 @@ def run_one_command_15m_factory(
     max_source_requests: int = 2, timeout_seconds: float = 5.0,
     total_duration_seconds: float = 1200.0, selection_seed: str | None = None,
     v2_5_proof_mode: bool = False,
+    continuous_first_hour: bool = False,
     discovery_transport: Any = None, discovery_runner: Callable[..., dict[str, Any]] | None = None,
     snapshot_adapter_factory: Callable[..., Any] | None = None,
     context_adapter_factories: dict[str, Callable[..., Any]] | None = None,
     _window_seconds: float = 900.0, _sleep: Callable[[float], None] = time.sleep,
     _monotonic: Callable[[], float] = time.monotonic,
+    _continuation_seconds: float = _CONTINUATION_SECONDS,
 ) -> dict[str, Any]:
     path = Path(db_path).resolve()
     backup = Path(backup_path).resolve()
@@ -1227,14 +1648,21 @@ def run_one_command_15m_factory(
     if _is_persistent_db(path): reasons.append("persistent DB is forbidden in first proof")
     # V2-5: the explicit three-token proof mode permits exactly three autonomous
     # tokens. Normal mode stays capped at two. Four or more is always rejected.
-    if v2_5_proof_mode:
+    if continuous_first_hour:
+        if max_selected_tokens != _CONTINUOUS_MAX_SELECTED_TOKENS:
+            reasons.append("continuous first-hour proof requires exactly one autonomous token")
+        if v2_5_proof_mode:
+            reasons.append("continuous first-hour proof cannot use V2-5 three-token mode")
+    elif v2_5_proof_mode:
         if max_selected_tokens != _V2_5_MAX_SELECTED_TOKENS:
             reasons.append("V2-5 proof mode requires exactly three selected tokens")
     else:
         if not 1 <= max_selected_tokens <= 2:
             reasons.append("max_selected_tokens must be 1 or 2 outside V2-5 proof mode")
     if not 1 <= max_source_requests <= _MAX_DISCOVERY_REQUESTS: reasons.append("max_source_requests must be 1 or 2")
-    if total_duration_seconds <= _window_seconds: reasons.append("total duration must exceed window duration")
+    required_duration = _window_seconds + (_continuation_seconds if continuous_first_hour else 0.0)
+    if total_duration_seconds <= required_duration:
+        reasons.append("total duration must exceed the complete approved lifecycle duration")
     if reasons:
         return {"command": COMMAND_NAME, "run_status": "SAFE_STOPPED", "stop_reason": STOP_PREFLIGHT, "blocked_reasons": reasons}
 
@@ -1252,6 +1680,8 @@ def run_one_command_15m_factory(
         "context_source_requests_per_selected_token": 5,
         "context_source_request_budget": 5 * max_selected_tokens,
         "v2_5_proof_mode": bool(v2_5_proof_mode),
+        "continuous_first_hour": bool(continuous_first_hour),
+        "continuation_seconds": _continuation_seconds if continuous_first_hour else 0.0,
         "hard_ceilings": {
             "discovery_requests": _MAX_DISCOVERY_REQUESTS,
             "governed_requests_run": _MAX_GOVERNED_REQUESTS_RUN,
@@ -1260,6 +1690,9 @@ def run_one_command_15m_factory(
             "scheduler_rows": _MAX_SCHEDULER_ROWS,
             "total_duration_seconds": total_duration_seconds,
             "automatic_retries": 0,
+            "continuous_governed_requests_run": _CONTINUOUS_MAX_REQUESTS_RUN,
+            "continuous_governed_requests_per_token": _CONTINUOUS_MAX_REQUESTS_PER_TOKEN,
+            "continuous_scheduler_rows": _CONTINUOUS_MAX_SCHEDULER_ROWS,
         },
     }
     run_id = str(uuid.uuid4())
@@ -1333,18 +1766,27 @@ def run_one_command_15m_factory(
                 # Hard ceilings are integrity limits; a projected breach is a
                 # global safe stop (raises _GlobalStop), never an exceeded call.
                 _enforce_budgets_before_step(conn, run_id, pending)
-                result = (
-                    _execute_close(
+                if pending["step_kind"] == "WINDOW_CLOSE":
+                    result = _execute_close(
                         conn, pending, adapter_factory=adapter_factory,
                         timeout_seconds=timeout_seconds,
                         minimum_evidence_seconds=_window_seconds,
                         context_adapter_factories=context_adapter_factories,
                     )
-                    if pending["step_kind"] == "WINDOW_CLOSE"
-                    else _execute_snapshot(conn, pending, adapter_factory=adapter_factory, timeout_seconds=timeout_seconds)
-                )
+                elif pending["step_kind"] == "CONTINUATION_CLOSE":
+                    result = _execute_continuation_close(
+                        conn,
+                        pending,
+                        adapter_factory=adapter_factory,
+                        timeout_seconds=timeout_seconds,
+                    )
+                else:
+                    result = _execute_snapshot(
+                        conn, pending, adapter_factory=adapter_factory,
+                        timeout_seconds=timeout_seconds,
+                    )
                 if result.get("ok"):
-                    if str(pending["step_key"]).endswith("_snapshot_00"):
+                    if pending["step_kind"] == "SNAPSHOT" and str(pending["step_key"]).endswith("_snapshot_00"):
                         captured = conn.execute(
                             "SELECT captured_at FROM printer_token_snapshots WHERE id=?",
                             (int(result["snapshot_id"]),),
@@ -1358,6 +1800,61 @@ def run_one_command_15m_factory(
                             first_snapshot_captured_at=str(captured[0]),
                             window_seconds=_window_seconds,
                         )
+                    elif pending["step_kind"] == "WINDOW_CLOSE" and continuous_first_hour:
+                        window_id = result.get("memory_window_id")
+                        if window_id is None:
+                            raise ValueError("current-run 15m close did not attach a memory window")
+                        # Make the exact current close discoverable while it is still
+                        # RUNNING. It is promoted to SUCCEEDED only after support and
+                        # continuation planning complete.
+                        conn.execute(
+                            """UPDATE printer_memory_factory_run_steps
+                               SET snapshot_id=?, memory_window_id=?, result_json=?, updated_at=?
+                               WHERE id=? AND step_status='RUNNING'""",
+                            (
+                                result.get("snapshot_id"), int(window_id), _json(result),
+                                _iso(), int(pending["id"]),
+                            ),
+                        )
+                        conn.commit()
+                        support = _capture_same_stream_5m_support(
+                            conn,
+                            run_id=run_id,
+                            close_step=pending,
+                            parent_window_id=int(window_id),
+                        )
+                        if support.get("window_5m_id") is None:
+                            raise ValueError(
+                                "same-stream 5m support capture blocked: "
+                                + "; ".join(support.get("blocked_reasons", []))
+                            )
+                        source = _resolve_current_run_15m_source(
+                            conn,
+                            run_id=run_id,
+                            token_id=int(pending["token_id"]),
+                            pair_id=int(pending["pair_id"]),
+                            tracking_lane=str(pending["tracking_lane"]),
+                            current_close_step_id=int(pending["id"]),
+                        )
+                        if not source.get("resolved"):
+                            raise ValueError(
+                                "current-run 15m continuation source blocked: "
+                                + "; ".join(source.get("reasons", []))
+                            )
+                        continuation_plan = _plan_continuation_jobs(
+                            conn,
+                            run_id=run_id,
+                            close_step=pending,
+                            fifteen_m=source["window"],
+                            continuation_seconds=_continuation_seconds,
+                        )
+                        if not continuation_plan.get("enqueue_ok"):
+                            raise ValueError(
+                                "continuation planning blocked: "
+                                + "; ".join(continuation_plan.get("reasons", []))
+                            )
+                        result["support_5m"] = support
+                        result["continuation_plan"] = continuation_plan
                     _update_step(conn, int(pending["id"]), "SUCCEEDED", result)
                     complete_job(conn, job_id=job_id)
                     conn.commit()

@@ -239,6 +239,28 @@ class OneCommand15mFactoryTests(unittest.TestCase):
         self.assertEqual(result["table_deltas"]["printer_token_snapshots"], 9)
         self.assertEqual(result["running_jobs_after_stop"], 0)
 
+    def test_continuous_first_hour_path_terminally_safe_blocks_compressed_time(self):
+        result, calls = self._run(
+            continuous_first_hour=True,
+            _continuation_seconds=0.12,
+            total_duration_seconds=10.0,
+        )
+        self.assertEqual(result["run_status"], "COMPLETED")
+        self.assertEqual(len(calls), 16 + 24)
+        self.assertEqual(result["running_jobs_after_stop"], 0)
+        self.assertEqual(result["pending_or_running_run_steps"], 0)
+        lifecycle = result["continuous_lifecycle"]
+        self.assertTrue(lifecycle["enabled"])
+        self.assertEqual(len(lifecycle["tokens"]), 1)
+        token = lifecycle["tokens"][0]
+        self.assertEqual(len(token["window_15m"]["snapshots"]), 16)
+        self.assertEqual(len(token["continuation_1h"]["snapshots"]), 24)
+        self.assertEqual(token["continuation_1h"]["step_status"], "SUCCEEDED")
+        self.assertEqual(token["continuity"]["continuity_status"], "CONTINUITY_BLOCKED")
+        self.assertFalse(token["continuity"]["can_be_quality_memory"])
+        self.assertEqual(result["table_deltas"]["printer_paper_decisions"], 0)
+        self.assertEqual(result["table_deltas"]["printer_paper_positions"], 0)
+
     def test_exact_pair_mismatch_fails_closed(self):
         # V2-5: an exact-pair mismatch on the opening snapshot is a token-local
         # terminal failure. With a single selected token it isolates that token

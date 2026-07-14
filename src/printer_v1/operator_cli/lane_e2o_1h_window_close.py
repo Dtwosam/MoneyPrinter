@@ -455,7 +455,17 @@ def close_1h_memory_window_from_snapshot(
         do_not_train=do_not_train,
         data_quality_label=data_quality_label,
         extra_context=(
-            {"continuity": continuity_dict} if continuity_dict is not None else None
+            {
+                "continuity": continuity_dict,
+                "continuation_run_id": continuation_of_15m.get("run_id"),
+                "continuation_of_window_id": continuation_of_15m.get("id"),
+                "linked_closing_snapshot_id": continuation_of_15m.get("snapshot_end_id"),
+                "linked_first_snapshot_id": resolved_snapshot_start_id,
+                "reuses_historical_window": False,
+                "interpolated_first_snapshot": False,
+            }
+            if continuity_dict is not None and continuation_of_15m is not None
+            else None
         ),
     )
 

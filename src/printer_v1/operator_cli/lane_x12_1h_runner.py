@@ -1058,6 +1058,7 @@ def run_1h_memory_factory_cycle(
             "pair_address_supplied": str(tok.get(_TL_PAIR_ADDRESS, "")),
             "continuation_of_15m": continuation,
             "continuation_plan": plan,
+            "continuity_terminal_blocked": False,
             "window_open_mono": None,
             "window_start_snapshot_id": None,
             "snapshots_created": 0,
@@ -1115,6 +1116,8 @@ def run_1h_memory_factory_cycle(
         for tok in token_states:
             if cycle_stopped:
                 break
+            if tok["continuity_terminal_blocked"]:
+                continue
 
             slot = tok["slot"]
             mint = tok["mint"]
@@ -1238,6 +1241,10 @@ def run_1h_memory_factory_cycle(
                 except Exception:
                     pass
             else:
+                if close_result.get("cycle_status") == "E2O_1H_CONTINUITY_BLOCKED":
+                    tok["continuity_terminal_blocked"] = True
+                    tok["continuation_of_15m"] = None
+                    tok["continuation_plan"] = None
                 consecutive_source_failures += 1
                 total_source_failures += 1
                 tok["source_failures_created"] += 1
@@ -1254,6 +1261,11 @@ def run_1h_memory_factory_cycle(
                     break
                 if throttle_backoff_seconds > 0:
                     time.sleep(throttle_backoff_seconds)
+
+        if token_states and all(tok["continuity_terminal_blocked"] for tok in token_states):
+            stopped_safely_reason = "all continuation tokens terminally blocked"
+            final_status = LANE_X12_STATUS_STOPPED
+            break
 
         if cycle_stopped or final_status == LANE_X12_STATUS_STOPPED:
             break
@@ -1329,6 +1341,7 @@ def run_1h_memory_factory_cycle(
                 "source_requests_created": tok["source_requests_created"],
                 "source_responses_created": tok["source_responses_created"],
                 "source_failures_created": tok["source_failures_created"],
+                "continuity_terminal_blocked": tok["continuity_terminal_blocked"],
             }
             for tok in token_states
         ],

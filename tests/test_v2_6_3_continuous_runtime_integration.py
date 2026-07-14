@@ -213,7 +213,7 @@ class TestRunnerContinuationWiring(unittest.TestCase):
         self.assertEqual(ctx["continuity"]["continuity_status"], "CONTINUITY_DIRTY")
 
     def test_blocked_continuation_prevents_1h_window(self):
-        self._run(self._cont(gap_seconds=-600))  # future close -> negative gap
+        result = self._run(self._cont(gap_seconds=-600))  # future close -> negative gap
         # No 1h window is created for a BLOCKED (delayed-restart) transition.
         self.assertEqual(self._count("printer_memory_windows",
                                      "WHERE window_kind='WINDOW_1H'"), 0)
@@ -224,6 +224,13 @@ class TestRunnerContinuationWiring(unittest.TestCase):
             " WHERE last_error LIKE '%CONTINUITY_BLOCKED%'").fetchone()[0]
         conn.close()
         self.assertGreater(int(n), 0)
+        self.assertTrue(result["token_reports"][0]["continuity_terminal_blocked"])
+        close_attempts = [entry for entry in result["cycles"] if entry["phase"] == 2]
+        self.assertEqual(len(close_attempts), 1)
+        self.assertEqual(
+            result["stopped_safely_reason"],
+            "all continuation tokens terminally blocked",
+        )
 
     def test_downstream_locks_unchanged(self):
         self._run(self._cont(gap_seconds=60))

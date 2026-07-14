@@ -281,6 +281,10 @@ def capture_5m_support_evidence(
     is_mismatched: bool = False,
     opened_at: str | None = None,
     closed_at: str | None = None,
+    snapshot_start_id: int | None = None,
+    snapshot_end_id: int | None = None,
+    run_id: str | None = None,
+    tracking_lane: str | None = None,
 ) -> dict[str, Any]:
     """Write a WINDOW_5M_MICRO_EVENT row linked to a parent WINDOW_15M window.
 
@@ -341,6 +345,100 @@ def capture_5m_support_evidence(
                 "linkage_validation": linkage,
             }
 
+        resolved_start_at = opened_at_val
+        resolved_end_at = closed_at_val
+        if snapshot_start_id is not None or snapshot_end_id is not None:
+            if snapshot_start_id is None or snapshot_end_id is None:
+                return {
+                    "lane_x8_capture_status": LANE_X8_STATUS_BLOCKED,
+                    "captured": False,
+                    "blocked_reasons": ["both 5m snapshot boundaries are required"],
+                    "window_5m_id": None,
+                    "parent_window_id": parent_window_id,
+                    "token_id": token_id,
+                    "pair_id": pair_id,
+                    "do_not_train": True,
+                    "hard_locks": dict(_HARD_LOCKS),
+                }
+            boundary_rows = conn.execute(
+                """
+                SELECT id, token_id, pair_id, captured_at
+                FROM printer_token_snapshots
+                WHERE id IN (?, ?)
+                ORDER BY id
+                """,
+                (snapshot_start_id, snapshot_end_id),
+            ).fetchall()
+            by_id = {int(row["id"]): row for row in boundary_rows}
+            start_row = by_id.get(int(snapshot_start_id))
+            end_row = by_id.get(int(snapshot_end_id))
+            if start_row is None or end_row is None:
+                return {
+                    "lane_x8_capture_status": LANE_X8_STATUS_BLOCKED,
+                    "captured": False,
+                    "blocked_reasons": ["5m snapshot boundary not found"],
+                    "window_5m_id": None,
+                    "parent_window_id": parent_window_id,
+                    "token_id": token_id,
+                    "pair_id": pair_id,
+                    "do_not_train": True,
+                    "hard_locks": dict(_HARD_LOCKS),
+                }
+            for row in (start_row, end_row):
+                if int(row["token_id"]) != int(token_id) or int(row["pair_id"]) != int(pair_id):
+                    return {
+                        "lane_x8_capture_status": LANE_X8_STATUS_BLOCKED,
+                        "captured": False,
+                        "blocked_reasons": ["5m snapshot boundary target mismatch"],
+                        "window_5m_id": None,
+                        "parent_window_id": parent_window_id,
+                        "token_id": token_id,
+                        "pair_id": pair_id,
+                        "do_not_train": True,
+                        "hard_locks": dict(_HARD_LOCKS),
+                    }
+            resolved_start_at = str(start_row["captured_at"])
+            resolved_end_at = str(end_row["captured_at"])
+            try:
+                if datetime.fromisoformat(resolved_end_at) < datetime.fromisoformat(resolved_start_at):
+                    raise ValueError("reversed")
+            except (TypeError, ValueError):
+                return {
+                    "lane_x8_capture_status": LANE_X8_STATUS_BLOCKED,
+                    "captured": False,
+                    "blocked_reasons": ["invalid or reversed 5m snapshot timestamps"],
+                    "window_5m_id": None,
+                    "parent_window_id": parent_window_id,
+                    "token_id": token_id,
+                    "pair_id": pair_id,
+                    "do_not_train": True,
+                    "hard_locks": dict(_HARD_LOCKS),
+                }
+
+            existing = conn.execute(
+                """
+                SELECT id FROM printer_memory_windows
+                WHERE token_id=? AND pair_id=? AND window_kind=?
+                  AND snapshot_start_id=? AND snapshot_end_id=?
+                """,
+                (token_id, pair_id, _WINDOW_5M, snapshot_start_id, snapshot_end_id),
+            ).fetchone()
+            if existing is not None:
+                return {
+                    "lane_x8_capture_status": LANE_X8_STATUS_COMPLETED,
+                    "captured": False,
+                    "duplicate": True,
+                    "existing_window_id": int(existing["id"]),
+                    "window_5m_id": int(existing["id"]),
+                    "parent_window_id": parent_window_id,
+                    "token_id": token_id,
+                    "pair_id": pair_id,
+                    "snapshot_start_id": snapshot_start_id,
+                    "snapshot_end_id": snapshot_end_id,
+                    "do_not_train": True,
+                    "hard_locks": dict(_HARD_LOCKS),
+                }
+
         quality_label, memory_status, do_not_train = _classify_evidence_quality(
             data_quality_label=data_quality_label,
             source_status=source_status,
@@ -354,6 +452,9 @@ def capture_5m_support_evidence(
             "created_by": _CREATED_BY,
             "parent_window_id": parent_window_id,
             "parent_window_kind": _WINDOW_15M,
+            "run_id": run_id,
+            "tracking_lane": tracking_lane,
+            "same_opening_stream": snapshot_start_id is not None,
         }
 
         cur = conn.execute(
@@ -363,14 +464,16 @@ def capture_5m_support_evidence(
                 memory_status, data_quality_label, do_not_train,
                 window_status, memory_quality_label,
                 supporting_context_json, created_by_phase, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                , window_start_at, window_end_at, snapshot_start_id, snapshot_end_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 token_id, pair_id, _WINDOW_5M,
-                opened_at_val, closed_at_val,
+                resolved_start_at, resolved_end_at,
                 memory_status, data_quality_label, 1 if do_not_train else 0,
                 "WINDOW_CLOSED", quality_label,
                 json.dumps(ctx, sort_keys=True), _CREATED_BY, now, now,
+                resolved_start_at, resolved_end_at, snapshot_start_id, snapshot_end_id,
             ),
         )
         window_5m_id = int(cur.lastrowid)
@@ -391,8 +494,12 @@ def capture_5m_support_evidence(
         "do_not_train": do_not_train,
         "data_quality_label": data_quality_label,
         "source_status": source_status,
-        "opened_at": opened_at_val,
-        "closed_at": closed_at_val,
+        "opened_at": resolved_start_at,
+        "closed_at": resolved_end_at,
+        "snapshot_start_id": snapshot_start_id,
+        "snapshot_end_id": snapshot_end_id,
+        "run_id": run_id,
+        "tracking_lane": tracking_lane,
         "5m_main_window_blocked": True,
         "5m_clean_memory_blocked": True,
         "retrieval_from_5m_blocked": True,
