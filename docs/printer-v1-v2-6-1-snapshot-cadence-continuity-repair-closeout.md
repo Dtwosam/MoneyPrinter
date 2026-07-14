@@ -2,20 +2,110 @@
 
 ## Status
 
-Verdict: `V2_6_1_SNAPSHOT_CADENCE_REPAIR_BLOCKED`
+Verdict: `V2_6_1_SNAPSHOT_CADENCE_REPAIR_PASS`
 
-Gate 1 (audit and design) is complete and is captured in full below. Gate 2
-(implement and verify) was implemented and verified against its directly owned
-suites, but verification then revealed that the operator-selected **count + gap
-(strict)** coverage rule makes the entire committed clean-15m-window test-fixture
-corpus fail (they were built at the previous cadence). Migrating that corpus is a
-large, cross-suite change beyond this lane's safe scope, so the lane stops at the
-first failed gate. No runtime proof was run. The working tree was restored to the
-committed V2-6 HEAD (`8f42e2f`); the persistent DB is untouched
-(`97DB9A15…FB177FBB`). No commit changes production code; only this closeout is
-committed.
+This closeout supersedes the interim `..._BLOCKED` status recorded when this lane
+first stopped at Gate 2 (fixture migration was out of scope for the design lane).
+The work then completed across three commits:
 
-## Gate 1 — Audit and Design (complete)
+- **V2-6.1 (design, `d215f83`)** — Gate 1 audit and the authoritative contract
+  (preserved in full below).
+- **V2-6.1a (adoption + migration, `80f9ba2`)** — the contract is adopted in
+  runtime code (`cadence_policy`, Lane Q, Lane U2, `one_command_15m_factory`), the
+  clean-15m-window fixture corpus is migrated to 16/9, and the stale WINDOW_1H
+  assertions are corrected. See
+  `printer-v1-v2-6-1a-cadence-fixture-migration-closeout.md`.
+- **V2-6.1b (this closeout)** — Gate-1 readiness re-confirmed, one bounded live
+  `WINDOW_15M` proof run and inspected read-only, and V2-6.1 closed.
+
+The persistent DB is byte-identical before and after the proof
+(`97db9a15cc464d86137cbbb0dd0a4ef1880e9f4e231fb41e8b22ca09fb177fbb`, 13,017,088
+bytes; 17 tokens / 1,012 snapshots / 156 windows / 53 episodes / 2 paper
+decisions). The proof ran on an isolated PROOF_ONLY DB; no `WINDOW_1H` run was
+started and V2-7 was not begun.
+
+## Gate 2b — Bounded 15m cadence regression proof (V2-6.1b)
+
+### Readiness (Gate 1 re-confirm)
+
+156 focused cadence / V2-4 / V2-5 tests pass at `80f9ba2`. Confirmed from runtime:
+FAST/NORMAL expected snapshots = 16 / 9; budgets derive as 21 per token, 65
+run-wide, 51 scheduler rows; classification is honest (even-16 → PASS, a single
+100s gap → DIRTY, 2 snaps @ 900s → BLOCKED); Lane Q and Lane U2 both block DIRTY
+from clean promotion; the persistent-path guard rejects `data/printer_v1.sqlite3`
+and the financial / paper / retrieval / window-15m-only locks stay engaged. The
+18 baseline E2Y/Lane-K "set-gate gates episodes" failures are out of scope and are
+not cadence regressions.
+
+### The one bounded proof
+
+`printer-run-one-command-15m-memory-factory --proof-mode --window-kind WINDOW_15M
+--max-selected-tokens 2 --total-duration-seconds 1200` on an isolated PROOF_ONLY
+DB. Run id `4859e93c-1bba-40ea-9180-6d8a96a0e738`; `run_status=COMPLETED`,
+`stop_reason=COMPLETED_CLEAN_OR_DIRTY_RESULTS_REPORTED`. Discovery: geckoterminal,
+eligible pool 31, selection seed `9654728248c84253f9aa1350d7549d2a`. Zero retries,
+zero endpoint rotation, no code/threshold/token/budget change after start, exactly
+one proof.
+
+Both autonomously-selected tokens resolved to **TRACK_NORMAL** (expected 9), so
+the live run exercised the NORMAL 9-cadence; the FAST 16-cadence is proven by the
+Gate-1 tests and budget derivation (identical policy-derived mechanism) but was
+not itself selected in this single autonomous run — disclosed as a scope limit,
+not a defect.
+
+| Token | Lane | Mint | Pair | Exp/Act snaps | Gaps (s) | Max gap | Missed | Cadence verdict | Evidence span | E2Q / outcome |
+|-------|------|------|------|--------------:|----------|--------:|-------:|-----------------|--------------:|---------------|
+| t2 | NORMAL | `25wNVfgrZSSSUATkAo7f3ABC428Rqj4EhmqtAgzFpump` | `6VQkgikXVdAMMm9PidwNHAKaMwo8Y1vAz2r1WdmftYzo` | 9 / 9 | 113.2, 113.1, 112.0, 112.4, 112.4, 112.5, 112.5, 116.3 | 116.3 | 0 | `CADENCE_POLICY_PASS` | 904.6s | audited → `DIRTY_MEMORY` (`MISSING_CRITICAL_DATA`) |
+| t1 | NORMAL | `BZAmvoGH8P23mBtNpAx1sn8rxpvDyhxt6GWosLLLpump` | `4GrxC7S8PXSxfXunJgLTZNecjJfp7k1zKjz3hBGpFhJf` | 9 / 9 | 113.3, 113.4, 111.8, 112.4, 112.4, 112.5, 112.6, 118.9 | 118.9 | 0 | `CADENCE_POLICY_PASS` | 907.3s | audited → `DIRTY_MEMORY` (`MISSING_CRITICAL_DATA`) |
+
+**Cadence is clean and honest.** Every gap (~112–119s) sits at the NORMAL nominal
+112.5s spacing (900/8) with real-world jitter, all well below the 180s dirty
+threshold; count is exactly 9/9 with 0 missed. Running the authoritative
+`evaluate_cadence_policy` on the collected snapshots returns
+`CADENCE_POLICY_PASS` for both windows. The **DIRTY** outcome is a separate,
+honest data-completeness classification — E2Q flags `MISSING_CRITICAL_DATA`
+(window-level `liquidity_usd`/`token_age_seconds` are `None` for these fresh
+tokens even though each snapshot row is `CLEAN_DATA`/`COMPLETE`), so both windows
+are `do_not_train=1` and withheld. A pass does not require clean memory.
+
+### Context, safety, and pipeline stages
+
+All 7 context roles captured and fresh (`chain_heat`, `chart_volatility`,
+`liquidity_exit`, `market`, `micro_event`, `safety`, `trading_flow`;
+`all_context_fresh_enough=true`, no blockers). Run steps: 16 SNAPSHOT + 2
+WINDOW_CLOSE, all SUCCEEDED; E2Q audited both windows. The full safety /
+entry-quote clean-promotion gate is an E2Z step that DIRTY windows never reach, so
+no clean memory, episode, or Lane-K promotion occurred.
+
+### Budgets, cleanup, replay, deltas
+
+- **Governed budgets within ceilings:** per-token 14 (9 snapshot + 5 context) ≤ 21;
+  run-wide 28 ≤ 65; scheduler rows 20 ≤ 51; discovery 2 ≤ 2; holder RPC fallbacks
+  2 ≤ 2; automatic retries 0.
+- **Terminal cleanup:** 0 pending/running run steps, 0 running jobs after stop,
+  2 discovery handoffs cancelled.
+- **Report-only replay** (`--report-only-run-id 4859e93c…`) reproduced
+  `COMPLETED` with locks preserved and produced no writes.
+- **Retrieval / financial deltas all zero:** retrieval queries 0, retrieval
+  matches 0, paper decisions 0, paper positions 0, paper trade events 0, paper
+  trade audits 0, paper audit reports 0. `locks_preserved` =
+  {financial, paper_decisions_off, retrieval, window_15m_only} all true.
+- **Yield:** clean 0 / dirty 2 / blocked 0 (`zero_clean_is_valid`).
+- **Proof DB final:** sha256 `d458a97a41f57a639e2eff840262a64d0cd844346d509181ccf077c73a1dfda0`,
+  18 snapshots / 2 windows / 0 episodes.
+
+### Pass rationale
+
+Correct 16/9 runtime cadence (NORMAL 9/9 live; FAST 16 unit-proven) ✓; honest
+coverage classification (cadence PASS; DIRTY from a real data-completeness gate) ✓;
+bounded execution (all budgets within ceilings, 0 retries/rotation, exactly one
+proof) ✓; replay safety ✓; unchanged persistent DB (identical hash) ✓; zero
+downstream activation (all forbidden deltas 0, locks preserved, 0 episodes) ✓.
+Clean memory is explicitly not required. → `V2_6_1_SNAPSHOT_CADENCE_REPAIR_PASS`.
+
+---
+
+## Gate 1 — Audit and Design (V2-6.1, preserved)
 
 ### Conflicting cadence definitions found
 
@@ -80,7 +170,11 @@ Three cadence tests already fail on the committed V2-6 baseline
 policy already enables it (X12/V2-6). A follow-up lane must correct these to the
 enabled-1h contract.
 
-## Gate 2 — Implement and Verify (implemented, then blocked)
+## Gate 2 — Implement and Verify (V2-6.1 interim; superseded by V2-6.1a)
+
+> Historical record of the design lane's first implementation attempt. The
+> blocker below was resolved by the V2-6.1a migration (`80f9ba2`); the
+> "now reverted" note applied only to the design lane and no longer holds.
 
 The implementation was built exactly to the authoritative contract and verified
 against its directly owned suites before the blocker was found. Implemented (and
