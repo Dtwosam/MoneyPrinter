@@ -1058,6 +1058,15 @@ def _per_token_outcomes(
         window = windows_by_id.get(int(wid)) if wid is not None else None
         if window is not None:
             t["memory_quality_label"] = window.get("memory_quality_label")
+            # V2-6.3: report the 1h continuation plan for the closed 15m window —
+            # enqueue at the exact 15m close, deadline anchored to close + 2700s.
+            if window.get("window_kind") == "WINDOW_15M":
+                from printer_v1.snapshots.lifecycle_continuity import (
+                    build_1h_continuation_plan,
+                )
+                fifteen = dict(window)
+                fifteen["tracking_lane"] = t["tracking_lane"]
+                t["continuation_plan"] = build_1h_continuation_plan(fifteen)
         if t["close_status"] == "SUCCEEDED":
             t["reached_terminal_window"] = True
             q = t["memory_quality_label"]

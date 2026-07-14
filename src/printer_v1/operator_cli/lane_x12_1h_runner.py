@@ -58,7 +58,7 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, Sequence
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +91,9 @@ _TL_OPERATOR_APPROVED: str = "operator_approved"
 _TL_CHAIN: str = "chain"
 _TL_TOKEN_MINT: str = "token_mint"
 _TL_PAIR_ADDRESS: str = "pair_address"
+# V2-6.3: optional per-token linkage to the preceding closed 15m window that
+# this 1h phase continues (id, snapshot_end_id, closed_at, run_id, tracking_lane).
+_TL_CONTINUATION_OF_15M: str = "continuation_of_15m"
 
 _REQUIRED_CHAIN: str = "solana"
 _PLACEHOLDER_PREFIX: str = "PLACEHOLDER"
@@ -236,6 +239,39 @@ def _get_audit_counts(db_path: str | Path) -> dict[str, int]:
 
 def _check_forbidden_tables(db_path: str | Path) -> dict[str, int]:
     return {t: _count_table(db_path, t) for t in _FORBIDDEN_WRITE_TABLES}
+
+
+# ---------------------------------------------------------------------------
+# Continuation planning seam (V2-6.3)
+# ---------------------------------------------------------------------------
+
+def plan_1h_continuation(token_entry: Mapping[str, Any]) -> dict[str, Any]:
+    """Live planning path for a token's 1h continuation.
+
+    Delegates to the V2-6.2 contract's ``build_1h_continuation_plan`` so the
+    continuation is enqueued at the *exact 15m close* and the deadline is fixed at
+    ``15m close + 2700s``. The deadline is derived solely from the preceding 15m
+    window's close, so a delayed first snapshot (or delayed planning) can never
+    extend it. Returns ``{"is_continuation": False}`` when the token carries no
+    continuation linkage (a first-cycle / non-continuation 1h phase).
+    """
+    from printer_v1.snapshots.lifecycle_continuity import build_1h_continuation_plan
+
+    fifteen_m = token_entry.get(_TL_CONTINUATION_OF_15M)
+    if not fifteen_m:
+        return {"is_continuation": False, "plan": None}
+    plan = build_1h_continuation_plan(fifteen_m)
+    return {
+        "is_continuation": True,
+        "plan": plan,
+        "enqueue_at": plan.get("enqueue_at"),
+        "deadline_at": plan.get("deadline_at"),
+        "deadline_anchored_to": plan.get("deadline_anchored_to"),
+        "continuation_of_window_id": plan.get("continuation_of_window_id"),
+        "linked_closing_snapshot_id": plan.get("linked_closing_snapshot_id"),
+        "enqueue_ok": plan.get("enqueue_ok"),
+        "reasons": plan.get("reasons", []),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -465,6 +501,8 @@ def _run_x12_token_step(
     close_window: bool = False,
     snapshot_start_id: int | None = None,
     pair_id_expected: int | None = None,
+    continuation_of_15m: Mapping[str, Any] | None = None,
+    consumed_15m_window_ids: Sequence[int] | None = None,
 ) -> dict[str, Any]:
     """Run one snapshot or window-close step for one token (X12 variant).
 
@@ -472,6 +510,10 @@ def _run_x12_token_step(
     close_window: True triggers E2O_1H close after snapshot persistence.
     snapshot_start_id: first snapshot of the current 1h window (for E2O_1H).
     pair_id_expected: if set, enforces pair drift check in E2O_1H close.
+    continuation_of_15m: when set, the E2O_1H close consumes the V2-6.2 continuity
+        contract — anchoring the deadline to 15m close + 2700s, forcing
+        do_not_train on a DIRTY transition, and blocking window creation on a
+        BLOCKED transition (delayed restart / reused window / target drift).
     adapter: fixture adapter for tests; None = build real DexScreener adapter.
     """
     if mode == LANE_X12_MODE_FAST:
@@ -587,6 +629,7 @@ def _run_x12_token_step(
                     if snapshot_id_for_window is not None:
                         from printer_v1.operator_cli.lane_e2o_1h_window_close import (
                             E2O_1H_STATUS_BLOCKED as _E2O_1H_BLOCKED,
+                            E2O_1H_STATUS_CONTINUITY_BLOCKED as _E2O_1H_CONTINUITY_BLOCKED,
                             close_1h_memory_window_from_snapshot,
                         )
                         window_result = close_1h_memory_window_from_snapshot(
@@ -595,6 +638,8 @@ def _run_x12_token_step(
                             mint,
                             snapshot_start_id=snapshot_start_id,
                             expected_pair_id=pair_id_expected,
+                            continuation_of_15m=continuation_of_15m,
+                            consumed_15m_window_ids=consumed_15m_window_ids,
                         )
                         memory_window_close_status = str(
                             window_result.get("e2o_1h_status", "UNKNOWN")
@@ -609,14 +654,21 @@ def _run_x12_token_step(
                             window_result.get("pair_drift_detected", False)
                         )
 
-                        if window_result.get("e2o_1h_status") == _E2O_1H_BLOCKED:
-                            reason = "E2O_1H_BLOCKED: " + "; ".join(
+                        # V2-6.3: both a hard E2O block and a BLOCKED continuity
+                        # transition (delayed restart, reused historical window,
+                        # target drift) prevent 1h window creation — fail the job,
+                        # never fabricate a continuation.
+                        if window_result.get("e2o_1h_status") in (
+                            _E2O_1H_BLOCKED, _E2O_1H_CONTINUITY_BLOCKED
+                        ):
+                            _blk = str(window_result.get("e2o_1h_status"))
+                            reason = _blk + ": " + "; ".join(
                                 window_result.get(
                                     "blocked_reasons", ["memory window close blocked"]
                                 )
                             )
                             _fail_x12_job(connection, job_id, reason)
-                            cycle_status = "E2O_1H_BLOCKED"
+                            cycle_status = _blk
                             exec_error = reason
                         else:
                             mem_window_id = (
@@ -994,10 +1046,18 @@ def run_1h_memory_factory_cycle(
     loop_start = time.monotonic()
 
     def _new_token_state(slot: str, tok: dict[str, Any]) -> dict[str, Any]:
+        # V2-6.3: an optional continuation linkage to the token's preceding closed
+        # 15m window. When present, the runner plans the continuation via
+        # build_1h_continuation_plan (deadline anchored to 15m close + 2700s) and
+        # the E2O close consumes the transition verdict.
+        continuation = tok.get(_TL_CONTINUATION_OF_15M)
+        plan = plan_1h_continuation(tok) if continuation else None
         return {
             "slot": slot,
             "mint": str(tok.get(_TL_TOKEN_MINT, "")),
             "pair_address_supplied": str(tok.get(_TL_PAIR_ADDRESS, "")),
+            "continuation_of_15m": continuation,
+            "continuation_plan": plan,
             "window_open_mono": None,
             "window_start_snapshot_id": None,
             "snapshots_created": 0,
@@ -1129,6 +1189,7 @@ def run_1h_memory_factory_cycle(
                 close_window=True,
                 snapshot_start_id=tok["window_start_snapshot_id"],
                 pair_id_expected=None,
+                continuation_of_15m=tok.get("continuation_of_15m"),
             )
 
             tok["cycles"].append(
