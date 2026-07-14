@@ -937,17 +937,17 @@ class TestCadencePolicyWindow1H(unittest.TestCase):
     def test_window_1h_track_fast_minimum_snapshots(self):
         policy = self._get_1h_policy("TRACK_FAST")
         self.assertIsNotNone(policy, "Expected WINDOW_1H TRACK_FAST policy")
-        self.assertEqual(policy.minimum_required_snapshots, 8)
+        self.assertEqual(policy.minimum_required_snapshots, 24)
 
     def test_window_1h_track_fast_max_gap(self):
         policy = self._get_1h_policy("TRACK_FAST")
         self.assertIsNotNone(policy)
-        self.assertEqual(policy.max_clean_snapshot_gap_seconds, 600)
+        self.assertEqual(policy.max_clean_snapshot_gap_seconds, 240)
 
     def test_window_1h_track_fast_snapshot_interval(self):
         policy = self._get_1h_policy("TRACK_FAST")
         self.assertIsNotNone(policy)
-        self.assertEqual(policy.target_snapshot_interval_seconds, 240)
+        self.assertEqual(policy.target_snapshot_interval_seconds, 120)
 
     def test_window_1h_track_fast_window_close_interval(self):
         policy = self._get_1h_policy("TRACK_FAST")
@@ -962,17 +962,17 @@ class TestCadencePolicyWindow1H(unittest.TestCase):
     def test_window_1h_track_normal_minimum_snapshots(self):
         policy = self._get_1h_policy("TRACK_NORMAL")
         self.assertIsNotNone(policy, "Expected WINDOW_1H TRACK_NORMAL policy")
-        self.assertEqual(policy.minimum_required_snapshots, 3)
+        self.assertEqual(policy.minimum_required_snapshots, 13)
 
     def test_window_1h_track_normal_max_gap(self):
         policy = self._get_1h_policy("TRACK_NORMAL")
         self.assertIsNotNone(policy)
-        self.assertEqual(policy.max_clean_snapshot_gap_seconds, 1800)
+        self.assertEqual(policy.max_clean_snapshot_gap_seconds, 480)
 
     def test_window_1h_track_normal_snapshot_interval(self):
         policy = self._get_1h_policy("TRACK_NORMAL")
         self.assertIsNotNone(policy)
-        self.assertEqual(policy.target_snapshot_interval_seconds, 720)
+        self.assertEqual(policy.target_snapshot_interval_seconds, 240)
 
     def test_window_1h_track_normal_window_close_interval(self):
         policy = self._get_1h_policy("TRACK_NORMAL")

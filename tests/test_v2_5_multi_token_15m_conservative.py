@@ -213,27 +213,34 @@ class V2_5MultiTokenTests(unittest.TestCase):
     def test_budgets_and_scheduler_within_ceilings(self):
         result, _calls = self._run3(lanes=("TRACK_FAST",) * 3)
         b = result["run_budgets"]
+        # V2-6.1a: budgets derive from the cadence policy (16 snapshots/token FAST):
+        # per-token 21, run 65, scheduler 51.
         self.assertTrue(b["governed_requests_run_within_ceiling"])
-        self.assertLessEqual(b["governed_requests_run"], 47)
+        self.assertLessEqual(b["governed_requests_run"], 65)
         self.assertTrue(b["governed_requests_per_token_within_ceiling"])
         for v in b["governed_requests_per_token"].values():
-            self.assertLessEqual(v, 15)
+            self.assertLessEqual(v, 21)
         self.assertTrue(b["scheduler_rows_within_ceiling"])
-        self.assertLessEqual(b["scheduler_rows_total"], 33)
+        self.assertLessEqual(b["scheduler_rows_total"], 51)
         self.assertEqual(b["automatic_retries"], 0)
 
     def test_enforce_budgets_raises_global_stop(self):
         # Direct unit check: a projected per-token breach raises _GlobalStop.
+        # The per-token ceiling derives from the cadence policy (V2-6.1a: 21).
+        from printer_v1.operator_cli.one_command_15m_factory import (
+            _MAX_GOVERNED_REQUESTS_PER_TOKEN,
+        )
         conn = sqlite3.connect(self.db)
         conn.row_factory = sqlite3.Row
         try:
-            for i in range(15):
+            for i in range(_MAX_GOVERNED_REQUESTS_PER_TOKEN):
                 conn.execute(
                     "INSERT INTO printer_source_requests(source_name,request_kind,requested_at,request_key,source_status,data_quality_label) VALUES ('dexscreener','pair_market_snapshot',?,?,'COMPLETE','CLEAN_DATA')",
                     (datetime.now(timezone.utc).isoformat(), f"run9:t1_snapshot_{i:02d}"),
                 )
             conn.commit()
-            fake_step = {"step_kind": "SNAPSHOT", "step_key": "t1_snapshot_15"}
+            # One more snapshot would exceed the per-token ceiling.
+            fake_step = {"step_kind": "SNAPSHOT", "step_key": "t1_snapshot_99"}
             with self.assertRaises(_GlobalStop):
                 _enforce_budgets_before_step(conn, "run9", fake_step)
         finally:
@@ -271,11 +278,12 @@ class V2_5MultiTokenTests(unittest.TestCase):
     def test_track_normal_six_and_fast_ten_per_token(self):
         result, _calls = self._run3(lanes=("TRACK_FAST", "TRACK_NORMAL", "TRACK_NORMAL"))
         outcomes = {o["token_mint"]: o for o in result["per_token_outcomes"]}
-        self.assertEqual(outcomes[M1]["expected_snapshots"], 10)
-        self.assertEqual(outcomes[M1]["actual_snapshots"], 10)
-        self.assertEqual(outcomes[M2]["expected_snapshots"], 6)
-        self.assertEqual(outcomes[M2]["actual_snapshots"], 6)
-        self.assertEqual(outcomes[M3]["actual_snapshots"], 6)
+        # V2-6.1a cadence: 15m FAST = 16 snapshots, NORMAL = 9.
+        self.assertEqual(outcomes[M1]["expected_snapshots"], 16)
+        self.assertEqual(outcomes[M1]["actual_snapshots"], 16)
+        self.assertEqual(outcomes[M2]["expected_snapshots"], 9)
+        self.assertEqual(outcomes[M2]["actual_snapshots"], 9)
+        self.assertEqual(outcomes[M3]["actual_snapshots"], 9)
 
     def test_three_independent_first_snapshot_anchors(self):
         conn = sqlite3.connect(self.db)

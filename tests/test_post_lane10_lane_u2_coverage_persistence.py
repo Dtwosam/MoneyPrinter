@@ -79,14 +79,14 @@ def _clean_ctx(snapshot_id: int) -> str:
     }, sort_keys=True)
 
 
-def _track_fast_snap_times(base: datetime = _BASE_DT, n: int = 10) -> list[str]:
-    """Return n snapshot timestamps at 45s + i*90s into window — all gaps ≤ 120s."""
-    return [(base + timedelta(seconds=45 + i * 90)).isoformat() for i in range(n)]
+def _track_fast_snap_times(base: datetime = _BASE_DT, n: int = 16) -> list[str]:
+    """V2-6.1a clean FAST cadence: 16 snapshots evenly across 900s (gaps 60s)."""
+    return [(base + timedelta(seconds=round(i * 900 / (n - 1)))).isoformat() for i in range(n)]
 
 
-def _track_normal_snap_times(base: datetime = _BASE_DT, n: int = 5) -> list[str]:
-    """Return n snapshot timestamps at 90s + i*180s — all gaps ≤ 300s."""
-    return [(base + timedelta(seconds=90 + i * 180)).isoformat() for i in range(n)]
+def _track_normal_snap_times(base: datetime = _BASE_DT, n: int = 9) -> list[str]:
+    """V2-6.1a clean NORMAL cadence: 9 snapshots evenly across 900s (gaps 112.5s)."""
+    return [(base + timedelta(seconds=round(i * 900 / (n - 1)))).isoformat() for i in range(n)]
 
 
 class _DBBase(unittest.TestCase):
@@ -284,20 +284,20 @@ class LaneU2ApprovalGateTests(_DBBase):
 
 class LaneU2TrackFastPassTests(_DBBase):
     def _setup(self) -> tuple[int, int, int]:
-        """Return (token_id, pair_id, window_id) with 10 valid TRACK_FAST snaps."""
+        """Return (token_id, pair_id, window_id) with 16 valid TRACK_FAST snaps."""
         conn = self._connect()
         try:
             tid = self._insert_token(conn, token_status="TRACK_FAST")
             pid = self._insert_pair(conn, tid)
-            # Snapshot IDs 1000..1009, captured_at at 90s intervals
-            snap_times = _track_fast_snap_times(_BASE_DT, n=10)
+            # V2-6.1a: 16 clean FAST snapshots (IDs 1000..1015) at 60s spacing.
+            snap_times = _track_fast_snap_times(_BASE_DT)
             for i, ts in enumerate(snap_times):
                 self._insert_snapshot(conn, 1000 + i, tid, pid, ts,
                                       tracking_lane="TRACK_FAST")
             wid = self._insert_window(
                 conn, tid, pid,
                 snapshot_start_id=1000,
-                snapshot_end_id=1009,
+                snapshot_end_id=1000 + len(snap_times) - 1,
             )
             conn.commit()
         finally:
@@ -333,13 +333,13 @@ class LaneU2TrackFastPassTests(_DBBase):
     def test_printer_snapshot_gap_audits_has_rows(self):
         _, _, wid = self._setup()
         self._run([wid])
-        # 10 snapshots → 9 inter-snapshot gaps
-        self.assertEqual(self._count("printer_snapshot_gap_audits"), 9)
+        # 16 snapshots → 15 inter-snapshot gaps
+        self.assertEqual(self._count("printer_snapshot_gap_audits"), 15)
 
     def test_gap_audit_rows_written_in_result(self):
         _, _, wid = self._setup()
         r = self._run([wid])
-        self.assertEqual(r["gap_audit_rows_written"], 9)
+        self.assertEqual(r["gap_audit_rows_written"], 15)
 
     def test_coverage_state_persisted_to_window(self):
         _, _, wid = self._setup()
@@ -351,14 +351,14 @@ class LaneU2TrackFastPassTests(_DBBase):
         _, _, wid = self._setup()
         self._run([wid])
         row = self._window_row(wid)
-        self.assertEqual(row["actual_snapshot_count"], 10)
+        self.assertEqual(row["actual_snapshot_count"], 16)
 
     def test_expected_snapshot_count_persisted(self):
         _, _, wid = self._setup()
         self._run([wid])
         row = self._window_row(wid)
-        # TRACK_FAST minimum_required_snapshots = 10
-        self.assertEqual(row["expected_snapshot_count"], 10)
+        # TRACK_FAST minimum_required_snapshots = 16
+        self.assertEqual(row["expected_snapshot_count"], 16)
 
     def test_missing_snapshot_count_is_zero(self):
         _, _, wid = self._setup()
@@ -403,14 +403,14 @@ class LaneU2TrackNormalPassTests(_DBBase):
         try:
             tid = self._insert_token(conn, token_status="TRACK_NORMAL")
             pid = self._insert_pair(conn, tid)
-            snap_times = _track_normal_snap_times(_BASE_DT, n=5)
+            snap_times = _track_normal_snap_times(_BASE_DT)
             for i, ts in enumerate(snap_times):
                 self._insert_snapshot(conn, 2000 + i, tid, pid, ts,
                                       tracking_lane="TRACK_NORMAL")
             wid = self._insert_window(
                 conn, tid, pid,
                 snapshot_start_id=2000,
-                snapshot_end_id=2004,
+                snapshot_end_id=2000 + len(snap_times) - 1,
             )
             conn.commit()
         finally:
@@ -430,21 +430,21 @@ class LaneU2TrackNormalPassTests(_DBBase):
     def test_gap_audit_rows_for_5_snaps(self):
         _, _, wid = self._setup()
         self._run([wid])
-        # 5 snapshots → 4 inter-snapshot gaps
-        self.assertEqual(self._count("printer_snapshot_gap_audits"), 4)
+        # 9 snapshots → 8 inter-snapshot gaps
+        self.assertEqual(self._count("printer_snapshot_gap_audits"), 8)
 
     def test_actual_count_is_5(self):
         _, _, wid = self._setup()
         self._run([wid])
         row = self._window_row(wid)
-        self.assertEqual(row["actual_snapshot_count"], 5)
+        self.assertEqual(row["actual_snapshot_count"], 9)
 
     def test_expected_count_is_5(self):
         _, _, wid = self._setup()
         self._run([wid])
         row = self._window_row(wid)
-        # TRACK_NORMAL minimum_required_snapshots = 5
-        self.assertEqual(row["expected_snapshot_count"], 5)
+        # TRACK_NORMAL minimum_required_snapshots = 9
+        self.assertEqual(row["expected_snapshot_count"], 9)
 
 
 # ===========================================================================
@@ -687,11 +687,13 @@ class LaneU2IdempotencyTests(_DBBase):
         try:
             tid = self._insert_token(conn)
             pid = self._insert_pair(conn, tid)
-            for i, ts in enumerate(_track_fast_snap_times()):
+            snap_times = _track_fast_snap_times()
+            for i, ts in enumerate(snap_times):
                 self._insert_snapshot(conn, 7000 + i, tid, pid, ts)
             wid = self._insert_window(
                 conn, tid, pid,
-                snapshot_start_id=7000, snapshot_end_id=7009,
+                snapshot_start_id=7000,
+                snapshot_end_id=7000 + len(snap_times) - 1,
             )
             conn.commit()
         finally:
@@ -708,8 +710,8 @@ class LaneU2IdempotencyTests(_DBBase):
         wid = self._setup()
         self._run([wid])
         self._run([wid])
-        # 10 snaps → 9 gaps, no duplicates
-        self.assertEqual(self._count("printer_snapshot_gap_audits"), 9)
+        # 16 snaps → 15 gaps, no duplicates
+        self.assertEqual(self._count("printer_snapshot_gap_audits"), 15)
 
     def test_rerun_still_pass(self):
         wid = self._setup()
@@ -804,7 +806,7 @@ class LaneU2LaneKIntegrationTests(_DBBase):
 
 class LaneU2LaneKTrackNormalCoverageTests(_DBBase):
     def _make_five_track_normal_with_snaps(self) -> list[int]:
-        """5 TRACK_NORMAL windows each with 5 real snapshots → COVERAGE_PASS."""
+        """5 TRACK_NORMAL windows each with 9 clean snapshots → COVERAGE_PASS."""
         conn = self._connect()
         try:
             tid = self._insert_token(conn, token_status="TRACK_NORMAL")
@@ -816,9 +818,9 @@ class LaneU2LaneKTrackNormalCoverageTests(_DBBase):
                 win_start = base.isoformat()
                 win_end = (base + timedelta(seconds=901)).isoformat()
                 snap_start = 8000 + w * 10
-                # Insert 5 snapshots at 180s intervals
-                for i in range(5):
-                    ts = (base + timedelta(seconds=90 + i * 180)).isoformat()
+                # V2-6.1a: 9 clean NORMAL snapshots evenly across 900s.
+                snap_times = _track_normal_snap_times(base)
+                for i, ts in enumerate(snap_times):
                     self._insert_snapshot(
                         conn, snap_start + i, tid, pid, ts,
                         tracking_lane="TRACK_NORMAL",
@@ -829,7 +831,7 @@ class LaneU2LaneKTrackNormalCoverageTests(_DBBase):
                     window_start_at=win_start,
                     window_end_at=win_end,
                     snapshot_start_id=snap_start,
-                    snapshot_end_id=snap_start + 4,
+                    snapshot_end_id=snap_start + len(snap_times) - 1,
                     created_at=(base + timedelta(seconds=905)).isoformat(),
                 )
                 wids.append(wid)
@@ -1169,14 +1171,14 @@ class LaneU2TrackingLaneDerivationTests(_DBBase):
         try:
             tid = self._insert_token(conn, token_status="TRACKING")
             pid = self._insert_pair(conn, tid)
-            snap_times = _track_fast_snap_times(_TF_DERIVE_BASE, n=10)
+            snap_times = _track_fast_snap_times(_TF_DERIVE_BASE)
             for i, ts in enumerate(snap_times):
                 self._insert_snapshot(conn, 8000 + i, tid, pid, ts,
                                       tracking_lane="TRACK_FAST")
             wid = self._insert_window(
                 conn, tid, pid,
                 snapshot_start_id=8000,
-                snapshot_end_id=8009,
+                snapshot_end_id=8000 + len(snap_times) - 1,
                 window_start_at=_TF_DERIVE_BASE.isoformat(),
                 window_end_at=(_TF_DERIVE_BASE + timedelta(seconds=901)).isoformat(),
             )
@@ -1192,14 +1194,14 @@ class LaneU2TrackingLaneDerivationTests(_DBBase):
             tid = self._insert_token(conn, token_status="TRACKING")
             pid = self._insert_pair(conn, tid)
             base2 = _TF_DERIVE_BASE + timedelta(hours=1)
-            snap_times = _track_fast_snap_times(base2, n=10)
+            snap_times = _track_fast_snap_times(base2)
             for i, ts in enumerate(snap_times):
                 self._insert_snapshot(conn, 8100 + i, tid, pid, ts,
                                       tracking_lane="TRACK_FAST")
             wid = self._insert_window(
                 conn, tid, pid,
                 snapshot_start_id=8100,
-                snapshot_end_id=8109,
+                snapshot_end_id=8100 + len(snap_times) - 1,
                 window_start_at=base2.isoformat(),
                 window_end_at=(base2 + timedelta(seconds=901)).isoformat(),
             )
@@ -1249,7 +1251,7 @@ class LaneU2TrackingLaneDerivationTests(_DBBase):
     def test_derive_fast_from_snaps_writes_9_gap_audits(self):
         wid = self._make_tracking_status_with_fast_snaps()
         r = self._run([wid])
-        self.assertEqual(r["gap_audit_rows_written"], 9)
+        self.assertEqual(r["gap_audit_rows_written"], 15)
 
     def test_derive_fast_from_snaps_result_tracking_lane_is_track_fast(self):
         wid = self._make_tracking_status_with_fast_snaps()
@@ -1274,7 +1276,7 @@ class LaneU2TrackingLaneDerivationTests(_DBBase):
         wid = self._make_tracking_status_with_fast_snaps()
         r = self._run([wid])
         win_r = next(v for v in r["window_coverage_results"] if v["window_id"] == wid)
-        self.assertEqual(win_r["expected_snapshot_count"], 10)
+        self.assertEqual(win_r["expected_snapshot_count"], 16)
 
     # --- Derive from supporting_context_json.tracking_lane ---
 
@@ -1286,7 +1288,7 @@ class LaneU2TrackingLaneDerivationTests(_DBBase):
     def test_ctx_lane_writes_9_gap_audits(self):
         wid = self._make_ctx_lane_window()
         r = self._run([wid])
-        self.assertEqual(r["gap_audit_rows_written"], 9)
+        self.assertEqual(r["gap_audit_rows_written"], 15)
 
     # --- No evidence → COVERAGE_UNKNOWN ---
 
@@ -1368,7 +1370,7 @@ class LaneU2SplitPair4Plus2TrackFastTests(_DBBase):
             for w_idx in range(4):
                 win_start = _BASE_4_2 + timedelta(minutes=w_idx * 16)
                 snap_start = snap_id
-                for ts in _track_fast_snap_times(win_start, n=10):
+                for ts in _track_fast_snap_times(win_start):
                     self._insert_snapshot(conn, snap_id, tid, px, ts,
                                           tracking_lane="TRACK_FAST")
                     snap_id += 1
@@ -1383,7 +1385,7 @@ class LaneU2SplitPair4Plus2TrackFastTests(_DBBase):
             for w_idx in range(2):
                 win_start = _BASE_4_2 + timedelta(minutes=(w_idx + 4) * 16)
                 snap_start = snap_id
-                for ts in _track_fast_snap_times(win_start, n=10):
+                for ts in _track_fast_snap_times(win_start):
                     self._insert_snapshot(conn, snap_id, tid, py, ts,
                                           tracking_lane="TRACK_FAST")
                     snap_id += 1
@@ -1415,15 +1417,15 @@ class LaneU2SplitPair4Plus2TrackFastTests(_DBBase):
         self.assertEqual(r["coverage_rows_written"], 6)
 
     def test_4_2_gap_audit_rows_written_54(self):
-        """9 gaps × 6 windows = 54."""
+        """15 gaps × 6 windows = 90."""
         px, py = self._make_4_2_split()
         r = self._run(px + py)
-        self.assertEqual(r["gap_audit_rows_written"], 54)
+        self.assertEqual(r["gap_audit_rows_written"], 90)
 
     def test_4_2_gap_audits_in_db_54(self):
         px, py = self._make_4_2_split()
         self._run(px + py)
-        self.assertEqual(self._count("printer_snapshot_gap_audits"), 54)
+        self.assertEqual(self._count("printer_snapshot_gap_audits"), 90)
 
     def test_4_2_tracking_lane_in_db_is_track_fast(self):
         px, py = self._make_4_2_split()
@@ -1547,9 +1549,10 @@ class LaneU2CoverageBlockedDowngradeTests(_DBBase):
                 snapshot_start_id=20000,
                 snapshot_end_id=20008,
             )
-            # 10-snap window → COVERAGE_PASS
+            # 16-snap clean window → COVERAGE_PASS
             base2 = base + timedelta(minutes=16)
-            for i, ts in enumerate(_track_fast_snap_times(base2, n=10)):
+            pass_times = _track_fast_snap_times(base2)
+            for i, ts in enumerate(pass_times):
                 self._insert_snapshot(conn, 20010 + i, tid, pid, ts,
                                       tracking_lane="TRACK_FAST")
             pass_wid = self._insert_window(
@@ -1557,7 +1560,7 @@ class LaneU2CoverageBlockedDowngradeTests(_DBBase):
                 window_start_at=base2.isoformat(),
                 window_end_at=(base2 + timedelta(seconds=901)).isoformat(),
                 snapshot_start_id=20010,
-                snapshot_end_id=20019,
+                snapshot_end_id=20010 + len(pass_times) - 1,
             )
             conn.commit()
         finally:
@@ -1654,7 +1657,7 @@ class LaneKCandidateCoverageFilterTests(_DBBase):
             snap_id = 20100
             for w_idx in range(4):  # 4 PASS windows — 10 snaps each
                 win_start = _BASE_FILTER + timedelta(minutes=w_idx * 16)
-                for ts in _track_fast_snap_times(win_start, n=10):
+                for ts in _track_fast_snap_times(win_start):
                     self._insert_snapshot(conn, snap_id, tid, pid, ts,
                                           tracking_lane="TRACK_FAST")
                     snap_id += 1
@@ -1663,7 +1666,7 @@ class LaneKCandidateCoverageFilterTests(_DBBase):
                     snapshot_id=snap_id - 1,  # unique per window
                     window_start_at=win_start.isoformat(),
                     window_end_at=(win_start + timedelta(seconds=901)).isoformat(),
-                    snapshot_start_id=snap_id - 10,
+                    snapshot_start_id=snap_id - 16,
                     snapshot_end_id=snap_id - 1,
                 )
                 pass_wids.append(wid)
@@ -1701,7 +1704,7 @@ class LaneKCandidateCoverageFilterTests(_DBBase):
             snap_id = 21000
             for w_idx in range(5):
                 win_start = _BASE_FILTER + timedelta(minutes=w_idx * 16)
-                for ts in _track_fast_snap_times(win_start, n=10):
+                for ts in _track_fast_snap_times(win_start):
                     self._insert_snapshot(conn, snap_id, tid, pid, ts,
                                           tracking_lane="TRACK_FAST")
                     snap_id += 1
@@ -1710,7 +1713,7 @@ class LaneKCandidateCoverageFilterTests(_DBBase):
                     snapshot_id=snap_id - 1,  # unique per window
                     window_start_at=win_start.isoformat(),
                     window_end_at=(win_start + timedelta(seconds=901)).isoformat(),
-                    snapshot_start_id=snap_id - 10,
+                    snapshot_start_id=snap_id - 16,
                     snapshot_end_id=snap_id - 1,
                 )
                 wids.append(wid)
@@ -1861,7 +1864,7 @@ class LaneKGroupSelectionPairTests(_DBBase):
             # 6 windows on pair A — 10 TRACK_FAST snaps each
             for w_idx in range(6):
                 win_start = _BASE_SELECT + timedelta(minutes=w_idx * 16)
-                for ts in _track_fast_snap_times(win_start, n=10):
+                for ts in _track_fast_snap_times(win_start):
                     self._insert_snapshot(conn, snap_id, tid, pid_a, ts,
                                           tracking_lane="TRACK_FAST")
                     snap_id += 1
@@ -1870,14 +1873,14 @@ class LaneKGroupSelectionPairTests(_DBBase):
                     snapshot_id=snap_id - 1,
                     window_start_at=win_start.isoformat(),
                     window_end_at=(win_start + timedelta(seconds=901)).isoformat(),
-                    snapshot_start_id=snap_id - 10,
+                    snapshot_start_id=snap_id - 16,
                     snapshot_end_id=snap_id - 1,
                 )
                 a_wids.append(wid)
 
             # 1 window on pair B — 10 TRACK_FAST snaps
             win_start_b = _BASE_SELECT + timedelta(minutes=6 * 16)
-            for ts in _track_fast_snap_times(win_start_b, n=10):
+            for ts in _track_fast_snap_times(win_start_b):
                 self._insert_snapshot(conn, snap_id, tid, pid_b, ts,
                                       tracking_lane="TRACK_FAST")
                 snap_id += 1
@@ -1886,7 +1889,7 @@ class LaneKGroupSelectionPairTests(_DBBase):
                 snapshot_id=snap_id - 1,
                 window_start_at=win_start_b.isoformat(),
                 window_end_at=(win_start_b + timedelta(seconds=901)).isoformat(),
-                snapshot_start_id=snap_id - 10,
+                snapshot_start_id=snap_id - 16,
                 snapshot_end_id=snap_id - 1,
             )
 

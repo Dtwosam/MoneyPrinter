@@ -45,12 +45,35 @@ TOKEN_LOCAL_CANCELLED = "TOKEN_LOCAL_CANCELLED_AFTER_FAILURE"
 
 # V2-5 conservative three-token hard ceilings. These are hard limits, not
 # targets; a breach is a global integrity safe-stop, never silently exceeded.
+# V2-6.1a: the per-token snapshot count derives from the single authoritative
+# cadence policy (WINDOW_15M TRACK_FAST = 16 snapshots) so budgets recalculate
+# automatically when the cadence contract changes.
+from printer_v1.snapshots.cadence_policy import get_policy as _cadence_get_policy
+
 _V2_5_MAX_SELECTED_TOKENS = 3
 _MAX_DISCOVERY_REQUESTS = 2
-_MAX_GOVERNED_REQUESTS_RUN = 47
-_MAX_GOVERNED_REQUESTS_PER_TOKEN = 15
+_CONTEXT_REQUESTS_PER_TOKEN = 5
 _MAX_HOLDER_FALLBACKS_PER_TOKEN = 1
-_MAX_SCHEDULER_ROWS = 33
+
+
+def _cadence_expected_snapshots(lane: str) -> int:
+    """Expected WINDOW_15M snapshot count for a lane, from the cadence policy."""
+    policy = _cadence_get_policy(WINDOW_KIND, lane)
+    if policy is not None:
+        return int(policy.minimum_required_snapshots)
+    return 16 if lane == "TRACK_FAST" else 9
+
+
+# Worst-case (TRACK_FAST) per-token snapshot count drives the budgets.
+_MAX_SNAPSHOTS_PER_TOKEN = _cadence_expected_snapshots("TRACK_FAST")
+_MAX_GOVERNED_REQUESTS_PER_TOKEN = _MAX_SNAPSHOTS_PER_TOKEN + _CONTEXT_REQUESTS_PER_TOKEN
+_MAX_GOVERNED_REQUESTS_RUN = (
+    _MAX_DISCOVERY_REQUESTS + _V2_5_MAX_SELECTED_TOKENS * _MAX_GOVERNED_REQUESTS_PER_TOKEN
+)
+# Run-step jobs (one per snapshot) plus one cancelled discovery handoff per token.
+_MAX_SCHEDULER_ROWS = (
+    _V2_5_MAX_SELECTED_TOKENS * _MAX_SNAPSHOTS_PER_TOKEN + _V2_5_MAX_SELECTED_TOKENS
+)
 
 
 class _GlobalStop(Exception):
@@ -173,8 +196,11 @@ def _cancel_discovery_handoffs(conn: sqlite3.Connection, discovery: dict[str, An
 
 
 def _schedule_offsets(lane: str, window_seconds: float) -> list[float]:
-    attempts = 10 if lane == "TRACK_FAST" else 6
-    # The opening and window-close jobs perform the boundary snapshot attempts.
+    # V2-6.1a: the snapshot count derives from the single authoritative cadence
+    # policy (WINDOW_15M FAST=16, NORMAL=9) at the contract's nominal gap.
+    attempts = _cadence_expected_snapshots(lane)
+    # The opening and window-close jobs perform the boundary snapshot attempts;
+    # the interior offsets are evenly spaced at the nominal cadence gap.
     return [
         round(window_seconds * index / (attempts - 1), 6)
         for index in range(1, attempts - 1)
@@ -185,9 +211,10 @@ def _insert_step_and_job(
     conn: sqlite3.Connection, *, run_id: str, target: dict[str, Any],
     step_key: str, step_kind: str, scheduled_for: datetime,
 ) -> int:
-    # Scheduler-row ceiling (V2-5): run-step jobs must stay within the hard cap.
-    # Three TRACK_FAST tokens create exactly 30 run-step jobs; with up to three
-    # cancelled discovery handoffs that is the 33-row design ceiling.
+    # Scheduler-row ceiling: run-step jobs must stay within the cadence-derived
+    # cap. Three TRACK_FAST tokens create _V2_5_MAX_SELECTED_TOKENS *
+    # _MAX_SNAPSHOTS_PER_TOKEN run-step jobs; with up to one cancelled discovery
+    # handoff per token that is the _MAX_SCHEDULER_ROWS design ceiling.
     if _run_step_job_count(conn, run_id) >= _MAX_SCHEDULER_ROWS - _V2_5_MAX_SELECTED_TOKENS:
         raise _GlobalStop(STOP_BUDGET)
     job_kind = (
@@ -1009,7 +1036,7 @@ def _per_token_outcomes(
                 "token_id": tid, "token_mint": s["token_mint"],
                 "pair_id": s["pair_id"], "pair_address": s["pair_address"],
                 "tracking_lane": lane,
-                "expected_snapshots": 10 if lane == "TRACK_FAST" else 6,
+                "expected_snapshots": _cadence_expected_snapshots(lane),
                 "actual_snapshots": 0, "failed_steps": 0, "cancelled_steps": 0,
                 "close_status": None, "memory_window_id": None,
                 "memory_quality_label": None, "blockers": [],

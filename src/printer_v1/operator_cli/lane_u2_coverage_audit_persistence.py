@@ -37,6 +37,7 @@ from typing import Any
 
 from printer_v1.snapshots.cadence_policy import (
     CADENCE_POLICY_BLOCKED,
+    CADENCE_POLICY_DIRTY,
     CADENCE_POLICY_PASS,
     CADENCE_POLICY_UNKNOWN,
     CadencePolicyEvaluation,
@@ -94,7 +95,10 @@ def _utc_now() -> str:
 def _coverage_state_from_eval(ev: CadencePolicyEvaluation) -> str:
     if ev.cadence_policy_status == CADENCE_POLICY_PASS:
         return COVERAGE_STATE_PASS
-    if ev.cadence_policy_status == CADENCE_POLICY_BLOCKED:
+    # DIRTY coverage (a gap in the dirty band or missed snapshots) is real but
+    # below clean quality; it is persisted as blocked-from-clean (do_not_train),
+    # consistent with Lane Q, never as clean.
+    if ev.cadence_policy_status in (CADENCE_POLICY_BLOCKED, CADENCE_POLICY_DIRTY):
         return COVERAGE_STATE_BLOCKED
     return COVERAGE_STATE_UNKNOWN
 

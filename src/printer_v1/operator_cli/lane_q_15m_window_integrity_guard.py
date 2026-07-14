@@ -54,6 +54,7 @@ from typing import Any
 
 from printer_v1.snapshots.cadence_policy import (
     CADENCE_POLICY_BLOCKED,
+    CADENCE_POLICY_DIRTY,
     CADENCE_POLICY_UNKNOWN,
     CadencePolicyEvaluation,
     cadence_policy_evaluation_to_dict,
@@ -399,8 +400,13 @@ def guard_candidate_windows(
             coverage_eval = _evaluate_coverage_for_window(
                 db_path_str, row, production_mode=production_mode
             )
-            if coverage_eval.cadence_policy_status == CADENCE_POLICY_BLOCKED:
-                # Downgrade to BLOCKED; preserve existing blocked_reasons
+            # Both BLOCKED and DIRTY coverage stop clean promotion. DIRTY means
+            # the cadence is real but below clean quality (a gap in the dirty
+            # band or missed snapshots); such a window may still be dirty memory
+            # but must never be promoted clean, so Lane Q blocks it here.
+            if coverage_eval.cadence_policy_status in (
+                CADENCE_POLICY_BLOCKED, CADENCE_POLICY_DIRTY
+            ):
                 reasons: list[str] = list(verdict.get("blocked_reasons") or [])
                 reasons.append(
                     f"coverage_policy: {coverage_eval.blocked_reason}"

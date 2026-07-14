@@ -181,7 +181,9 @@ class OneCommand15mFactoryTests(unittest.TestCase):
             context_adapter_factories=overrides.pop(
                 "context_adapter_factories", self._failing_context_factories()
             ),
-            _window_seconds=0.08, total_duration_seconds=1.0,
+            # V2-6.1a: 16 FAST snapshots per token; give the loop headroom so
+            # the window-close step is reached before the duration cap.
+            _window_seconds=0.08, total_duration_seconds=3.0,
             max_selected_tokens=1, max_source_requests=1,
         )
         options.update(overrides)
@@ -209,9 +211,10 @@ class OneCommand15mFactoryTests(unittest.TestCase):
         result, calls = self._run()
         self.assertEqual(result["run_status"], "COMPLETED")
         self.assertEqual(result["running_jobs_after_stop"], 0)
-        self.assertEqual(len(calls), 10)
-        self.assertEqual(result["table_deltas"]["printer_source_requests"], 15)
-        self.assertEqual(result["table_deltas"]["printer_token_snapshots"], 10)
+        # V2-6.1a authoritative cadence: 15m FAST = 16 snapshots + 5 context = 21.
+        self.assertEqual(len(calls), 16)
+        self.assertEqual(result["table_deltas"]["printer_source_requests"], 21)
+        self.assertEqual(result["table_deltas"]["printer_token_snapshots"], 16)
         self.assertEqual(len(result["selected_tokens"]), 1)
         self.assertTrue(all(step["step_status"] == "SUCCEEDED" for step in result["steps"]))
         before = dict(result["counts_after"])
@@ -224,12 +227,16 @@ class OneCommand15mFactoryTests(unittest.TestCase):
         self.assertEqual(replay["replay"]["new_source_calls"], 0)
         self.assertEqual(replay["replay"]["new_evidence_rows"], 0)
 
-    def test_track_normal_plans_six_boundary_and_spaced_snapshots(self):
-        self.assertEqual(_schedule_offsets("TRACK_NORMAL", 900), [180.0, 360.0, 540.0, 720.0])
+    def test_track_normal_plans_nine_boundary_and_spaced_snapshots(self):
+        # V2-6.1a: 15m NORMAL = 9 snapshots (7 interior offsets at 900*i/8).
+        self.assertEqual(
+            _schedule_offsets("TRACK_NORMAL", 900),
+            [round(900 * i / 8, 6) for i in range(1, 8)],
+        )
         result, calls = self._run(lane="TRACK_NORMAL")
         self.assertEqual(result["run_status"], "COMPLETED")
-        self.assertEqual(len(calls), 6)
-        self.assertEqual(result["table_deltas"]["printer_token_snapshots"], 6)
+        self.assertEqual(len(calls), 9)
+        self.assertEqual(result["table_deltas"]["printer_token_snapshots"], 9)
         self.assertEqual(result["running_jobs_after_stop"], 0)
 
     def test_exact_pair_mismatch_fails_closed(self):

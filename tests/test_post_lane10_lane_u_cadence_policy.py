@@ -137,8 +137,13 @@ class CadencePolicyImportTests(unittest.TestCase):
 
 class CadencePolicyLookupTests(unittest.TestCase):
     def test_track_fast_target_interval(self):
+        # V2-6.1a authoritative contract: 15m FAST nominal gap = 60s.
         p = get_policy("WINDOW_15M", "TRACK_FAST")
-        self.assertEqual(p.target_snapshot_interval_seconds, 90)
+        self.assertEqual(p.target_snapshot_interval_seconds, 60)
+
+    def test_track_fast_dirty_above(self):
+        p = get_policy("WINDOW_15M", "TRACK_FAST")
+        self.assertEqual(p.dirty_above_gap_seconds, 90)
 
     def test_track_fast_max_gap(self):
         p = get_policy("WINDOW_15M", "TRACK_FAST")
@@ -153,12 +158,18 @@ class CadencePolicyLookupTests(unittest.TestCase):
         self.assertFalse(p.support_only)
 
     def test_track_normal_target_interval(self):
+        # V2-6.1a: 15m NORMAL nominal gap = 120s.
         p = get_policy("WINDOW_15M", "TRACK_NORMAL")
-        self.assertEqual(p.target_snapshot_interval_seconds, 180)
+        self.assertEqual(p.target_snapshot_interval_seconds, 120)
+
+    def test_track_normal_dirty_above(self):
+        p = get_policy("WINDOW_15M", "TRACK_NORMAL")
+        self.assertEqual(p.dirty_above_gap_seconds, 180)
 
     def test_track_normal_max_gap(self):
+        # V2-6.1a: 15m NORMAL block-above = 240s.
         p = get_policy("WINDOW_15M", "TRACK_NORMAL")
-        self.assertEqual(p.max_clean_snapshot_gap_seconds, 300)
+        self.assertEqual(p.max_clean_snapshot_gap_seconds, 240)
 
     def test_window_5m_support_only(self):
         p = get_policy("WINDOW_5M_MICRO_EVENT", None)
@@ -169,14 +180,19 @@ class CadencePolicyLookupTests(unittest.TestCase):
         p = get_policy("WINDOW_5M_MICRO_EVENT", "TRACK_FAST")
         self.assertFalse(p.enabled_for_real_collection)
 
-    def test_window_1h_track_fast_disabled(self):
+    def test_window_1h_track_fast_enabled(self):
+        # V2-6/V2-6.1a: genuine 1h continuation is an enabled main window.
         p = get_policy("WINDOW_1H", "TRACK_FAST")
         self.assertIsNotNone(p)
-        self.assertFalse(p.enabled_for_real_collection)
+        self.assertTrue(p.enabled_for_real_collection)
+        self.assertEqual(p.target_snapshot_interval_seconds, 120)
+        self.assertEqual(p.minimum_required_snapshots, 24)
 
-    def test_window_1h_track_normal_disabled(self):
+    def test_window_1h_track_normal_enabled(self):
         p = get_policy("WINDOW_1H", "TRACK_NORMAL")
-        self.assertFalse(p.enabled_for_real_collection)
+        self.assertTrue(p.enabled_for_real_collection)
+        self.assertEqual(p.target_snapshot_interval_seconds, 240)
+        self.assertEqual(p.minimum_required_snapshots, 13)
 
     def test_window_4h_track_fast_disabled(self):
         p = get_policy("WINDOW_4H", "TRACK_FAST")
@@ -226,8 +242,9 @@ class CadencePolicyEvaluateZeroSnapshotsTests(unittest.TestCase):
 class CadencePolicyEvaluateEvenCoverageTests(unittest.TestCase):
     """Evenly-spaced snapshots every 90s in a 900s TRACK_FAST window → PASS."""
 
-    def _even_snaps(self, count: int = 11) -> list[dict]:
-        return [_snap(_ts(_WIN_START, i * 90)) for i in range(count)]
+    def _even_snaps(self, count: int = 16) -> list[dict]:
+        # V2-6.1a: FAST nominal 60s over 900s → 16 snapshots at gaps of 60s.
+        return [_snap(_ts(_WIN_START, i * 60)) for i in range(count)]
 
     def test_even_track_fast_passes(self):
         p = get_policy("WINDOW_15M", "TRACK_FAST")
@@ -239,28 +256,23 @@ class CadencePolicyEvaluateEvenCoverageTests(unittest.TestCase):
         ev = evaluate_cadence_policy(self._even_snaps(), _WIN_START, _WIN_END, p)
         self.assertIsNone(ev.blocked_reason)
 
-    def test_even_track_fast_max_gap_at_or_below_limit(self):
+    def test_even_track_fast_max_gap_at_or_below_dirty(self):
         p = get_policy("WINDOW_15M", "TRACK_FAST")
         ev = evaluate_cadence_policy(self._even_snaps(), _WIN_START, _WIN_END, p)
         self.assertIsNotNone(ev.actual_max_gap_seconds)
-        self.assertLessEqual(ev.actual_max_gap_seconds, 120)
+        self.assertLessEqual(ev.actual_max_gap_seconds, 90)
 
     def test_even_track_normal_passes(self):
-        # Every 180s for 900s = 6 snapshots
-        snaps = [_snap(_ts(_WIN_START, i * 180)) for i in range(6)]
+        # 9 snapshots evenly across 900s (gaps 112.5s ≤ dirty 180s).
+        snaps = [_snap(_ts(_WIN_START, round(i * 900 / 8))) for i in range(9)]
         p = get_policy("WINDOW_15M", "TRACK_NORMAL")
         ev = evaluate_cadence_policy(snaps, _WIN_START, _WIN_END, p)
         self.assertEqual(ev.cadence_policy_status, CADENCE_POLICY_PASS)
 
-    def test_exact_boundary_max_gap_120s_passes(self):
-        # 9 snaps at 10s intervals (0–80s), then 1 snap at 200s.
-        # min_required=10 for TRACK_FAST → count satisfied.
-        # Gap: snap[8]=80s → snap[9]=200s = 120s = exact policy limit → PASS.
-        snaps = [_snap(_ts(_WIN_START, i * 10)) for i in range(9)]
-        snaps.append(_snap(_ts(_WIN_START, 200)))
+    def test_full_expected_even_is_clean_with_no_missed(self):
+        # 16 evenly spaced FAST snaps → max gap 60 ≤ dirty 90, count == expected.
         p = get_policy("WINDOW_15M", "TRACK_FAST")
-        win_end = _ts(_WIN_START, 200)
-        ev = evaluate_cadence_policy(snaps, _WIN_START, win_end, p)
+        ev = evaluate_cadence_policy(self._even_snaps(16), _WIN_START, _WIN_END, p)
         self.assertEqual(ev.cadence_policy_status, CADENCE_POLICY_PASS)
 
 
@@ -328,8 +340,9 @@ class CadencePolicyEvaluateWidGapTests(unittest.TestCase):
         self.assertIn("insufficient_snapshots", ev.blocked_reason)
 
     def test_disabled_window_blocked(self):
+        # WINDOW_4H remains disabled for real collection.
         snaps = [_snap(_WIN_START), _snap(_WIN_END)]
-        p = get_policy("WINDOW_1H", "TRACK_FAST")
+        p = get_policy("WINDOW_4H", "TRACK_FAST")
         ev = evaluate_cadence_policy(snaps, _WIN_START, _WIN_END, p)
         self.assertEqual(ev.cadence_policy_status, CADENCE_POLICY_BLOCKED)
         self.assertIn("disabled", ev.blocked_reason)
@@ -437,8 +450,8 @@ class _LaneQCoverageBase(unittest.TestCase):
         token_id: int,
         pair_id: int,
         *,
-        interval_seconds: int = 90,
-        count: int = 11,
+        interval_seconds: int = 60,
+        count: int = 16,
         base: str = _WIN_START,
     ) -> tuple[int, int]:
         """Insert evenly-spaced snapshots; return (first_id, last_id)."""
@@ -459,8 +472,10 @@ class LaneQCoverageEvenCoverageTests(_LaneQCoverageBase):
         try:
             tid = self._insert_token(conn, token_status=tracking_lane)
             pid = self._insert_pair(conn, tid)
-            interval = 90 if tracking_lane == "TRACK_FAST" else 180
-            count = (900 // interval) + 1
+            # V2-6.1a: spacing/count derive from the authoritative cadence policy.
+            policy = get_policy("WINDOW_15M", tracking_lane)
+            interval = policy.target_snapshot_interval_seconds
+            count = policy.minimum_required_snapshots
             first_id, last_id = self._insert_even_snapshots(
                 conn, tid, pid, interval_seconds=interval, count=count
             )
@@ -829,7 +844,7 @@ class LaneUCoverageWarningTests(unittest.TestCase):
     def test_target_snapshot_interval_in_result(self):
         r = self._run()
         self.assertIsNotNone(r.get("target_snapshot_interval_seconds"))
-        self.assertEqual(r["target_snapshot_interval_seconds"], 90)
+        self.assertEqual(r["target_snapshot_interval_seconds"], 60)
 
     def test_max_clean_snapshot_gap_in_result(self):
         r = self._run()
@@ -897,14 +912,14 @@ class TimingModelPolicyFieldTests(unittest.TestCase):
         self.assertEqual(p.window_close_interval_seconds, 900)
 
     def test_track_fast_minimum_required_snapshots(self):
-        # 900 / 90 = 10
+        # V2-6.1a: expected minimum schedule = ceil(900/60)+1 = 16
         p = get_policy("WINDOW_15M", "TRACK_FAST")
-        self.assertEqual(p.minimum_required_snapshots, 10)
+        self.assertEqual(p.minimum_required_snapshots, 16)
 
     def test_track_normal_minimum_required_snapshots(self):
-        # 900 / 180 = 5
+        # V2-6.1a: expected minimum schedule = ceil(900/120)+1 = 9
         p = get_policy("WINDOW_15M", "TRACK_NORMAL")
-        self.assertEqual(p.minimum_required_snapshots, 5)
+        self.assertEqual(p.minimum_required_snapshots, 9)
 
     def test_5m_window_close_interval(self):
         p = get_policy("WINDOW_5M_MICRO_EVENT", None)
@@ -916,19 +931,19 @@ class FullWindowSpanTests(unittest.TestCase):
 
     def test_track_fast_full_900s_span_passes(self):
         # 90s intervals across 900s: snaps at 0, 90, 180, ..., 900 = 11 snaps
-        snaps = [_snap(_ts(_WIN_START, i * 90)) for i in range(11)]
+        snaps = [_snap(_ts(_WIN_START, i * 60)) for i in range(16)]
         p = get_policy("WINDOW_15M", "TRACK_FAST")
         ev = evaluate_cadence_policy(snaps, _WIN_START, _WIN_END, p)
         self.assertEqual(ev.cadence_policy_status, CADENCE_POLICY_PASS)
 
     def test_track_fast_full_900s_no_blocked_reason(self):
-        snaps = [_snap(_ts(_WIN_START, i * 90)) for i in range(11)]
+        snaps = [_snap(_ts(_WIN_START, i * 60)) for i in range(16)]
         p = get_policy("WINDOW_15M", "TRACK_FAST")
         ev = evaluate_cadence_policy(snaps, _WIN_START, _WIN_END, p)
         self.assertIsNone(ev.blocked_reason)
 
     def test_track_fast_full_900s_max_gap_at_limit(self):
-        snaps = [_snap(_ts(_WIN_START, i * 90)) for i in range(11)]
+        snaps = [_snap(_ts(_WIN_START, i * 60)) for i in range(16)]
         p = get_policy("WINDOW_15M", "TRACK_FAST")
         ev = evaluate_cadence_policy(snaps, _WIN_START, _WIN_END, p)
         self.assertIsNotNone(ev.actual_max_gap_seconds)
@@ -936,13 +951,13 @@ class FullWindowSpanTests(unittest.TestCase):
 
     def test_track_normal_full_900s_span_passes(self):
         # 180s intervals across 900s: snaps at 0, 180, 360, 540, 720, 900 = 6 snaps
-        snaps = [_snap(_ts(_WIN_START, i * 180)) for i in range(6)]
+        snaps = [_snap(_ts(_WIN_START, round(i * 900 / 8))) for i in range(9)]
         p = get_policy("WINDOW_15M", "TRACK_NORMAL")
         ev = evaluate_cadence_policy(snaps, _WIN_START, _WIN_END, p)
         self.assertEqual(ev.cadence_policy_status, CADENCE_POLICY_PASS)
 
     def test_track_normal_full_900s_no_blocked_reason(self):
-        snaps = [_snap(_ts(_WIN_START, i * 180)) for i in range(6)]
+        snaps = [_snap(_ts(_WIN_START, round(i * 900 / 8))) for i in range(9)]
         p = get_policy("WINDOW_15M", "TRACK_NORMAL")
         ev = evaluate_cadence_policy(snaps, _WIN_START, _WIN_END, p)
         self.assertIsNone(ev.blocked_reason)
@@ -1090,7 +1105,7 @@ class ProductionModeTests(unittest.TestCase):
 
     def test_production_mode_with_enough_snaps_still_evaluates_gap(self):
         # Even in production_mode, a valid window with even coverage → PASS.
-        snaps = [_snap(_ts(_WIN_START, i * 90)) for i in range(11)]
+        snaps = [_snap(_ts(_WIN_START, i * 60)) for i in range(16)]
         ev = evaluate_cadence_policy(
             snaps, _WIN_START, _WIN_END, self._policy(),
             production_mode=True,
@@ -1153,7 +1168,7 @@ class LaneQProductionModeTests(_LaneQCoverageBase):
             tid = self._insert_token(conn)
             pid = self._insert_pair(conn, tid)
             first_id, last_id = self._insert_even_snapshots(
-                conn, tid, pid, interval_seconds=90, count=11
+                conn, tid, pid, interval_seconds=60, count=16
             )
             wid = self._insert_window(
                 conn, tid, pid,
