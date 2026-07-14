@@ -470,7 +470,7 @@ class LaneQ5mWindowTests(unittest.TestCase):
 
     def test_window_4h_blocked(self):
         r = check_window_integrity(_valid_row(window_kind="WINDOW_4H"))
-        self.assertIn("not_window_15m", r["blocked_reasons"])
+        self.assertIn("elapsed_seconds_below_10800", r["blocked_reasons"])
 
     def test_window_1h_blocked(self):
         r = check_window_integrity(_valid_row(window_kind="WINDOW_1H"))

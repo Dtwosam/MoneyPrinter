@@ -716,6 +716,7 @@ def resolve_current_run_long_predecessor(
     pair_id: int,
     tracking_lane: str,
     successor_kind: str,
+    current_close_step_id: int | None = None,
 ) -> dict[str, Any]:
     """Resolve one exact, terminal, unused predecessor from the current run.
 
@@ -734,7 +735,11 @@ def resolve_current_run_long_predecessor(
         FROM printer_memory_factory_run_steps s
         JOIN printer_memory_windows w ON w.id = s.memory_window_id
         WHERE s.run_id=? AND s.token_id=? AND s.pair_id=?
-          AND s.tracking_lane=? AND s.step_status='SUCCEEDED'
+          AND s.tracking_lane=?
+          AND (
+            s.step_status='SUCCEEDED'
+            OR (s.id=? AND s.step_status='RUNNING')
+          )
           AND s.step_kind IN ('CONTINUATION_CLOSE','LONG_CONTINUATION_CLOSE')
           AND w.window_kind=?
         GROUP BY w.id
@@ -744,6 +749,7 @@ def resolve_current_run_long_predecessor(
             token_id,
             pair_id,
             tracking_lane,
+            current_close_step_id or -1,
             spec.predecessor_kind,
         ),
     ).fetchall()

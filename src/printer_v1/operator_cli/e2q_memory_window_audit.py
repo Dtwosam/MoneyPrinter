@@ -60,13 +60,14 @@ E2Q_CREATED_BY: str = "lane_e2q"
 #   WINDOW_5M_MICRO_EVENT — support-only; never a valid main outcome window.
 #   WINDOW_4H/12H/24H     — not enabled as main outcome windows.
 E2Q_1H_WINDOW_KIND: str = "WINDOW_1H"
+E2Q_4H_WINDOW_KIND: str = "WINDOW_4H"
 E2Q_SUPPORT_ONLY_WINDOW_KIND: str = "WINDOW_5M_MICRO_EVENT"
 E2Q_VALID_MAIN_WINDOW_KINDS: frozenset[str] = frozenset({
     E2Q_REQUIRED_WINDOW_KIND,
     E2Q_1H_WINDOW_KIND,
+    E2Q_4H_WINDOW_KIND,
 })
 E2Q_UNSUPPORTED_MAIN_WINDOW_KINDS: frozenset[str] = frozenset({
-    "WINDOW_4H",
     "WINDOW_12H",
     "WINDOW_24H",
 })
@@ -75,6 +76,7 @@ E2Q_UNSUPPORTED_MAIN_WINDOW_KINDS: frozenset[str] = frozenset({
 # 45-minute continuation minimum also enforced by Lane Q). A ~900s window (a
 # relabelled 15m window) fails this floor and stays blocked from 1h audit.
 E2Q_1H_MIN_ELAPSED_SECONDS: float = 2700.0
+E2Q_4H_MIN_ELAPSED_SECONDS: float = 10_800.0
 
 E2Q_STATUS_CLEAN_CANDIDATE: str = "E2Q_AUDIT_CLEAN_CANDIDATE"
 E2Q_STATUS_DIRTY: str = "E2Q_AUDIT_DIRTY"
@@ -229,6 +231,45 @@ def _validate_genuine_1h_window(
                     f" window.pair_id={win_pair!r} vs start_snapshot.pair_id={start_pair!r}"
                 )
 
+    return reasons
+
+
+def _validate_genuine_4h_window(
+    connection: sqlite3.Connection, win: sqlite3.Row,
+) -> list[str]:
+    """Require an exact, anchored 1h-to-4h continuation."""
+    reasons: list[str] = []
+    start_at = win["window_start_at"]
+    end_at = win["window_end_at"]
+    start_id = win["snapshot_start_id"]
+    end_id = win["snapshot_end_id"]
+    if not start_at or not end_at or start_id is None or end_id is None:
+        return ["WINDOW_4H missing anchored boundaries or governed snapshot anchors"]
+    elapsed = _elapsed_seconds(str(start_at), str(end_at))
+    if elapsed is None or elapsed < E2Q_4H_MIN_ELAPSED_SECONDS:
+        reasons.append("WINDOW_4H does not span the fixed 10800-second continuation")
+    try:
+        context = json.loads(win["supporting_context_json"] or "{}")
+    except (json.JSONDecodeError, TypeError):
+        context = {}
+    required = (
+        "run_id", "continuation_of_window_id", "linked_closing_snapshot_id",
+        "linked_first_snapshot_id", "fixed_deadline_at", "continuity_status",
+    )
+    missing = [name for name in required if context.get(name) is None]
+    if missing:
+        reasons.append(f"WINDOW_4H missing continuity metadata: {missing}")
+    if context.get("continuity_status") == "CONTINUITY_BLOCKED":
+        reasons.append("WINDOW_4H continuity is blocked")
+    for label, snapshot_id in (("start", start_id), ("end", end_id)):
+        snapshot = _load_snapshot(connection, int(snapshot_id))
+        if snapshot is None:
+            reasons.append(f"WINDOW_4H {label} snapshot not found")
+            continue
+        if int(snapshot["token_id"]) != int(win["token_id"]):
+            reasons.append(f"WINDOW_4H {label} snapshot token mismatch")
+        if win["pair_id"] is not None and snapshot["pair_id"] is not None and int(snapshot["pair_id"]) != int(win["pair_id"]):
+            reasons.append(f"WINDOW_4H {label} snapshot pair mismatch")
     return reasons
 
 
@@ -395,7 +436,7 @@ def audit_15m_memory_window(
         snapshot_id = None
         ctx = {}
     if snapshot_id is None:
-        return {
+        result = {
             "e2q_status": E2Q_STATUS_BLOCKED,
             "classified": False,
             "blocked_reasons": [
@@ -408,6 +449,16 @@ def audit_15m_memory_window(
             "pnl_created": 0,
             "memories_created": 0,
         }
+        if window_kind == E2Q_4H_WINDOW_KIND:
+            policy = get_policy(
+                window_kind, _load_tracking_lane(connection, int(win["token_id"]))
+            )
+            if policy is not None:
+                result["cadence_policy"] = cadence_policy_to_dict(policy)
+                result["cadence_resource_budget"] = cadence_resource_budget(
+                    window_kind, policy.tracking_lane
+                )
+        return result
 
     # --- Gate 5: snapshot must exist ---
     snap = _load_snapshot(connection, int(snapshot_id))
@@ -475,6 +526,22 @@ def audit_15m_memory_window(
                 "e2q_status": E2Q_STATUS_BLOCKED,
                 "classified": False,
                 "blocked_reasons": onehour_reasons,
+                "window_id": window_id,
+                "snapshot_id": snapshot_id,
+                "window_kind": window_kind,
+                "hard_locks": dict(_HARD_LOCKS),
+                "paper_decisions_created": 0,
+                "positions_created": 0,
+                "pnl_created": 0,
+                "memories_created": 0,
+            }
+    elif window_kind == E2Q_4H_WINDOW_KIND:
+        fourhour_reasons = _validate_genuine_4h_window(connection, win)
+        if fourhour_reasons:
+            return {
+                "e2q_status": E2Q_STATUS_BLOCKED,
+                "classified": False,
+                "blocked_reasons": fourhour_reasons,
                 "window_id": window_id,
                 "snapshot_id": snapshot_id,
                 "window_kind": window_kind,

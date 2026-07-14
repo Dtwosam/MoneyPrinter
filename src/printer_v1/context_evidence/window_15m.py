@@ -260,7 +260,7 @@ def _section(*, status: str, clean: bool, blockers: list[str], **payload: Any) -
     }
 
 
-def build_window_15m_context_evidence(
+def _build_window_context_evidence(
     connection: sqlite3.Connection,
     *,
     token_id: int,
@@ -269,16 +269,21 @@ def build_window_15m_context_evidence(
     snapshot_end_id: int,
     window_start_at: str | datetime,
     window_end_at: str | datetime,
+    window_kind: str,
+    minimum_seconds: int,
+    entry_snapshot_id: int,
 ) -> dict[str, Any]:
-    """Build a read-only, exact-target shared context report for WINDOW_15M."""
+    """Build read-only exact-target context for an approved main window."""
 
     connection.row_factory = sqlite3.Row
     window_start = _parse_time(window_start_at)
     window_end = _parse_time(window_end_at)
     if window_end <= window_start:
-        raise ValueError("WINDOW_15M end must be after start")
-    if (window_end - window_start).total_seconds() < WINDOW_SECONDS:
-        raise ValueError("WINDOW_15M evidence must span at least 900 seconds")
+        raise ValueError(f"{window_kind} end must be after start")
+    if (window_end - window_start).total_seconds() < minimum_seconds:
+        raise ValueError(
+            f"{window_kind} evidence must span at least {minimum_seconds} seconds"
+        )
 
     snapshots = [
         dict(row)
@@ -420,12 +425,13 @@ def build_window_15m_context_evidence(
     quotes: dict[str, dict[str, Any]] = {}
     quote_blockers: list[str] = []
     for direction in ("ENTRY", "EXIT"):
+        quote_snapshot_id = entry_snapshot_id if direction == "ENTRY" else snapshot_end_id
         quote = _latest_exact_evidence(
             connection,
             table="printer_paper_quote_evidence",
             token_id=token_id,
             pair_id=pair_id,
-            snapshot_id=snapshot_end_id,
+            snapshot_id=quote_snapshot_id,
             target_time=window_end,
             direction=direction,
         )
@@ -518,7 +524,7 @@ def build_window_15m_context_evidence(
     }
     blockers = [blocker for section in sections.values() for blocker in section["blockers"]]
     return {
-        "window_kind": WINDOW_KIND,
+        "window_kind": window_kind,
         "token_id": token_id,
         "pair_id": pair_id,
         "snapshot_start_id": snapshot_start_id,
@@ -542,3 +548,51 @@ def build_window_15m_context_evidence(
             "pnl": False,
         },
     }
+
+
+def build_window_15m_context_evidence(
+    connection: sqlite3.Connection,
+    *,
+    token_id: int,
+    pair_id: int,
+    snapshot_start_id: int,
+    snapshot_end_id: int,
+    window_start_at: str | datetime,
+    window_end_at: str | datetime,
+) -> dict[str, Any]:
+    return _build_window_context_evidence(
+        connection,
+        token_id=token_id,
+        pair_id=pair_id,
+        snapshot_start_id=snapshot_start_id,
+        snapshot_end_id=snapshot_end_id,
+        window_start_at=window_start_at,
+        window_end_at=window_end_at,
+        window_kind=WINDOW_KIND,
+        minimum_seconds=WINDOW_SECONDS,
+        entry_snapshot_id=snapshot_end_id,
+    )
+
+
+def build_window_4h_context_evidence(
+    connection: sqlite3.Connection,
+    *,
+    token_id: int,
+    pair_id: int,
+    snapshot_start_id: int,
+    snapshot_end_id: int,
+    window_start_at: str | datetime,
+    window_end_at: str | datetime,
+) -> dict[str, Any]:
+    return _build_window_context_evidence(
+        connection,
+        token_id=token_id,
+        pair_id=pair_id,
+        snapshot_start_id=snapshot_start_id,
+        snapshot_end_id=snapshot_end_id,
+        window_start_at=window_start_at,
+        window_end_at=window_end_at,
+        window_kind="WINDOW_4H",
+        minimum_seconds=10_800,
+        entry_snapshot_id=snapshot_start_id,
+    )

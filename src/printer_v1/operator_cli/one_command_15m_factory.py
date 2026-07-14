@@ -469,6 +469,7 @@ def _collect_preclose_context(
     *,
     timeout_seconds: float,
     adapter_factories: dict[str, Callable[..., Any]] | None = None,
+    include: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """Collect a fixed, governed context bundle before the close snapshot."""
     from printer_v1.paper_quote.jupiter_fixture import SOURCE_NAME as JUPITER_SOURCE
@@ -559,14 +560,18 @@ def _collect_preclose_context(
             ),
         )
 
-    executions = {
-        "market_chain": execute(
+    requested = include or frozenset({"market_chain", "safety", "entry_quote", "exit_quote"})
+    executions: dict[str, Any] = {}
+    if "market_chain" in requested:
+        executions["market_chain"] = execute(
             "coingecko", "broad_market_context", "market-chain", {}, market_adapter
-        ),
-        "safety": execute(
+        )
+    if "safety" in requested:
+        executions["safety"] = execute(
             "goplus", "safety_reference", "safety", {}, safety_adapter
-        ),
-        "entry_quote": execute(
+        )
+    if "entry_quote" in requested:
+        executions["entry_quote"] = execute(
             JUPITER_SOURCE,
             "paper_quote_realism",
             "entry",
@@ -577,8 +582,9 @@ def _collect_preclose_context(
                 "amount_lamports": DEFAULT_PAPER_AMOUNT_LAMPORTS,
             },
             quote_adapter(WSOL_MINT, mint),
-        ),
-        "exit_quote": execute(
+        )
+    if "exit_quote" in requested:
+        executions["exit_quote"] = execute(
             JUPITER_SOURCE,
             "paper_quote_realism",
             "exit",
@@ -589,10 +595,12 @@ def _collect_preclose_context(
                 "amount_lamports": DEFAULT_PAPER_AMOUNT_LAMPORTS,
             },
             quote_adapter(mint, WSOL_MINT),
-        ),
-    }
-    goplus_holder = holder_concentration_label_from_goplus(
-        executions["safety"].normalized_result.normalized_payload
+        )
+    goplus_holder = (
+        holder_concentration_label_from_goplus(
+            executions["safety"].normalized_result.normalized_payload
+        )
+        if "safety" in executions else None
     )
     if goplus_holder == "HOLDER_CONCENTRATION_UNKNOWN":
         holder_factory = factories.get("solana_rpc_holder")
@@ -616,7 +624,7 @@ def _collect_preclose_context(
     return {
         "executions": executions,
         "report": {
-            "source_request_budget": 5,
+            "source_request_budget": len(requested) + (1 if "safety" in requested else 0),
             "source_requests_attempted": len(executions),
             "items": {
                 key: _context_execution_summary(value)
@@ -658,8 +666,8 @@ def _persist_preclose_context(
     }
     inserted: dict[str, Any] = {}
 
-    broad = executions["market_chain"]
-    if broad.response_record is not None:
+    broad = executions.get("market_chain")
+    if broad is not None and broad.response_record is not None:
         captured_at = str(broad.response_record.received_at)
         inserted["market_regime_row_id"] = _insert_market_context_from_source_response(
             conn,
@@ -676,8 +684,8 @@ def _persist_preclose_context(
             captured_at=captured_at,
         )
 
-    safety = executions["safety"]
-    if safety.response_record is not None:
+    safety = executions.get("safety")
+    if safety is not None and safety.response_record is not None:
         returned_mint = str(
             safety.normalized_result.normalized_payload.get("token_mint") or ""
         )
@@ -707,20 +715,23 @@ def _persist_preclose_context(
                 "audit_status": safety_result.audit_status,
                 "rejection_reasons": list(safety_result.rejection_reasons),
             }
-    inserted["safety_composite"] = persist_safety_composite(
-        conn,
-        token_id=target["token_id"],
-        pair_id=target["pair_id"],
-        snapshot_id=snapshot_id,
-        token_mint=target["token_mint"],
-        pair_address=target["pair_address"],
-        evaluated_at=str(snapshot["captured_at"]),
-        goplus_execution=safety,
-        holder_execution=executions.get("holder"),
-    )
+    if safety is not None:
+        inserted["safety_composite"] = persist_safety_composite(
+            conn,
+            token_id=target["token_id"],
+            pair_id=target["pair_id"],
+            snapshot_id=snapshot_id,
+            token_mint=target["token_mint"],
+            pair_address=target["pair_address"],
+            evaluated_at=str(snapshot["captured_at"]),
+            goplus_execution=safety,
+            holder_execution=executions.get("holder"),
+        )
 
     for key, direction in (("entry_quote", "ENTRY"), ("exit_quote", "EXIT")):
-        execution = executions[key]
+        execution = executions.get(key)
+        if execution is None:
+            continue
         quote_payload = execution.normalized_result.normalized_payload
         expected_input = (
             str(step["token_mint"])
@@ -1233,6 +1244,120 @@ def _execute_continuation_close(
     return result
 
 
+def _execute_long_4h_step(
+    conn: sqlite3.Connection,
+    step: sqlite3.Row,
+    *,
+    adapter_factory: Callable[..., Any],
+    timeout_seconds: float,
+    context_adapter_factories: dict[str, Callable[..., Any]] | None = None,
+) -> dict[str, Any]:
+    """Execute one policy-planned 4h snapshot or close through shared boundaries."""
+    from printer_v1.context_evidence import build_window_4h_context_evidence
+    from printer_v1.operator_cli.one_token_4h_runtime import (
+        close_current_run_4h,
+        run_4h_quality_gates,
+    )
+
+    is_close = step["step_kind"] == "LONG_CONTINUATION_CLOSE"
+    is_opening = str(step["step_key"]).endswith("_snapshot_000")
+    context_bundle = None
+    if is_opening:
+        context_bundle = _collect_preclose_context(
+            conn, step, timeout_seconds=timeout_seconds,
+            adapter_factories=context_adapter_factories,
+            include=frozenset({"market_chain", "entry_quote"}),
+        )
+    elif is_close:
+        context_bundle = _collect_preclose_context(
+            conn, step, timeout_seconds=timeout_seconds,
+            adapter_factories=context_adapter_factories,
+            include=frozenset({"market_chain", "safety", "exit_quote"}),
+        )
+    result = _execute_snapshot(
+        conn, step, adapter_factory=adapter_factory, timeout_seconds=timeout_seconds
+    )
+    if not result.get("ok"):
+        return result
+    if context_bundle is not None:
+        result["governed_context_collection"] = context_bundle["report"]
+        result["governed_context_persistence"] = _persist_preclose_context(
+            conn, step=step, snapshot_id=int(result["snapshot_id"]),
+            context_bundle=context_bundle,
+        )
+    if not is_close:
+        return result
+
+    # Cadence and continuity may consume only snapshots attached to this run's
+    # ledger. The normal finalizer preserves these values after close returns.
+    conn.execute(
+        """UPDATE printer_memory_factory_run_steps
+           SET snapshot_id=?, source_request_id=?, source_response_id=?,
+               source_failure_id=?, updated_at=?
+           WHERE id=? AND run_id=? AND step_status='RUNNING'""",
+        (
+            int(result["snapshot_id"]), result.get("source_request_id"),
+            result.get("source_response_id"), result.get("source_failure_id"),
+            _iso(), int(step["id"]), str(step["run_id"]),
+        ),
+    )
+    conn.commit()
+
+    close = close_current_run_4h(
+        conn,
+        run_id=str(step["run_id"]),
+        close_step=step,
+        closing_snapshot_id=int(result["snapshot_id"]),
+    )
+    result["window_close"] = close
+    if not close.get("closed"):
+        result.update(
+            ok=False,
+            continuity_blocked=True,
+            blocked_reason="; ".join(close.get("blocked_reasons", [])),
+        )
+        return result
+    window_id = int(close["window_id"])
+    window = conn.execute(
+        "SELECT * FROM printer_memory_windows WHERE id=?", (window_id,)
+    ).fetchone()
+    assert window is not None
+    shared = build_window_4h_context_evidence(
+        conn,
+        token_id=int(window["token_id"]),
+        pair_id=int(window["pair_id"]),
+        snapshot_start_id=int(window["snapshot_start_id"]),
+        snapshot_end_id=int(window["snapshot_end_id"]),
+        window_start_at=str(window["window_start_at"]),
+        window_end_at=str(window["window_end_at"]),
+    )
+    context = json.loads(str(window["supporting_context_json"] or "{}"))
+    context["shared_window_4h_context_evidence"] = shared
+    if not shared["clean_memory_context_ready"]:
+        conn.execute(
+            "UPDATE printer_memory_windows SET memory_status='DIRTY_MEMORY',memory_quality_label='DIRTY_MEMORY',data_quality_label='DIRTY_DATA',do_not_train=1,supporting_context_json=? WHERE id=?",
+            (_json(context), window_id),
+        )
+    else:
+        conn.execute(
+            "UPDATE printer_memory_windows SET supporting_context_json=? WHERE id=?",
+            (_json(context), window_id),
+        )
+    conn.commit()
+    quality = run_4h_quality_gates(
+        str(conn.execute("PRAGMA database_list").fetchone()[2]), window_id
+    )
+    result.update(
+        ok=True,
+        memory_window_id=window_id,
+        shared_context_evidence=shared,
+        window_audit=quality.get("e2q"),
+        lane_q=quality.get("lane_q"),
+        memory_pipeline=quality,
+    )
+    return result
+
+
 def _update_step(
     conn: sqlite3.Connection, step_id: int, status: str, result: dict[str, Any],
     *, error: str | None = None,
@@ -1318,7 +1443,13 @@ def _run_step_job_count(conn: sqlite3.Connection, run_id: str) -> int:
 def _projected_requests_for_step(step: sqlite3.Row) -> int:
     # A snapshot step issues one governed request; a close step issues one
     # snapshot request plus up to five close-time context requests.
-    return 6 if step["step_kind"] == "WINDOW_CLOSE" else 1
+    if step["step_kind"] == "WINDOW_CLOSE":
+        return 6
+    if step["step_kind"] == "LONG_CONTINUATION_CLOSE":
+        return 5
+    if step["step_kind"] == "LONG_CONTINUATION_SNAPSHOT" and str(step["step_key"]).endswith("_snapshot_000"):
+        return 3
+    return 1
 
 
 def _enforce_budgets_before_step(conn: sqlite3.Connection, run_id: str, step: sqlite3.Row) -> None:
@@ -1329,6 +1460,16 @@ def _enforce_budgets_before_step(conn: sqlite3.Connection, run_id: str, step: sq
     """
     projected = _projected_requests_for_step(step)
     config = _load_run_config(conn, run_id)
+    if str(step["step_kind"]).startswith("LONG_CONTINUATION_"):
+        from printer_v1.operator_cli.one_token_4h_runtime import runtime_budget
+        budget = runtime_budget(str(step["tracking_lane"]))
+        used = int(conn.execute(
+            "SELECT COUNT(*) FROM printer_source_requests WHERE request_key LIKE ?",
+            (f"{run_id}:%4h%",),
+        ).fetchone()[0])
+        if used + projected > int(budget["full_run_request_ceiling"]):
+            raise _GlobalStop(STOP_BUDGET)
+        return
     continuous = bool(config.get("continuous_first_hour"))
     run_ceiling = _CONTINUOUS_MAX_REQUESTS_RUN if continuous else _MAX_GOVERNED_REQUESTS_RUN
     token_ceiling = (
@@ -1361,6 +1502,8 @@ def _per_token_outcomes(
                 "tracking_lane": lane,
                 "expected_snapshots": _cadence_expected_snapshots(lane),
                 "actual_snapshots": 0, "failed_steps": 0, "cancelled_steps": 0,
+                "four_hour_expected_snapshots": None,
+                "four_hour_actual_snapshots": 0,
                 "close_status": None, "memory_window_id": None,
                 "memory_quality_label": None, "blockers": [],
                 "reached_terminal_window": False, "terminal_status": "INCOMPLETE",
@@ -1368,13 +1511,19 @@ def _per_token_outcomes(
         t = tokens[tid]
         if s.get("snapshot_id") is not None:
             t["actual_snapshots"] += 1
+            if str(s["step_kind"]).startswith("LONG_CONTINUATION_"):
+                t["four_hour_actual_snapshots"] += 1
         if s["step_status"] == "FAILED":
             t["failed_steps"] += 1
         if s["step_status"] == "CANCELLED":
             t["cancelled_steps"] += 1
-        if s["step_kind"] == "WINDOW_CLOSE":
+        if s["step_kind"] in {"WINDOW_CLOSE", "CONTINUATION_CLOSE", "LONG_CONTINUATION_CLOSE"}:
             t["close_status"] = s["step_status"]
             t["memory_window_id"] = s.get("memory_window_id")
+            if s["step_kind"] == "LONG_CONTINUATION_CLOSE":
+                t["four_hour_expected_snapshots"] = int(
+                    _cadence_get_policy("WINDOW_4H", t["tracking_lane"]).minimum_required_snapshots
+                )
     for tid in order:
         t = tokens[tid]
         wid = t["memory_window_id"]
@@ -1426,7 +1575,7 @@ def _run_budgets(
         if continuous else _MAX_GOVERNED_REQUESTS_PER_TOKEN
     )
     scheduler_ceiling = _CONTINUOUS_MAX_SCHEDULER_ROWS if continuous else _MAX_SCHEDULER_ROWS
-    return {
+    result = {
         "governed_requests_run": run_requests,
         "governed_requests_run_ceiling": run_ceiling,
         "governed_requests_run_within_ceiling": run_requests <= run_ceiling,
@@ -1446,6 +1595,30 @@ def _run_budgets(
         "automatic_retries": 0,
         "continuous_first_hour": continuous,
     }
+    if config.get("continuous_four_hour") and prefixes:
+        from printer_v1.operator_cli.one_token_4h_runtime import runtime_budget
+        lane_row = conn.execute(
+            "SELECT tracking_lane FROM printer_memory_factory_run_steps WHERE run_id=? "
+            "AND step_kind LIKE 'LONG_CONTINUATION_%' LIMIT 1", (run_id,)
+        ).fetchone()
+        if lane_row is not None:
+            phase_budget = runtime_budget(str(lane_row[0]))
+            phase_requests = int(conn.execute(
+                "SELECT COUNT(*) FROM printer_source_requests WHERE request_key LIKE ?",
+                (f"{run_id}:%4h%",),
+            ).fetchone()[0])
+            phase_jobs = int(conn.execute(
+                "SELECT COUNT(*) FROM printer_memory_factory_run_steps WHERE run_id=? "
+                "AND step_kind LIKE 'LONG_CONTINUATION_%'", (run_id,)
+            ).fetchone()[0])
+            result["four_hour_phase"] = {
+                **phase_budget,
+                "actual_source_requests": phase_requests,
+                "actual_scheduler_rows": phase_jobs,
+                "requests_within_ceiling": phase_requests <= phase_budget["full_run_request_ceiling"],
+                "scheduler_within_ceiling": phase_jobs <= phase_budget["phase_scheduler_ceiling"],
+            }
+    return result
 
 
 def _continuous_lifecycle_report(
@@ -1469,7 +1642,9 @@ def _continuous_lifecycle_report(
             if int(step.get("token_id") or -1) == token_id
             and int(step.get("pair_id") or -1) == pair_id
         ]
-        phases: dict[str, list[dict[str, Any]]] = {"window_15m": [], "continuation_1h": []}
+        phases: dict[str, list[dict[str, Any]]] = {
+            "window_15m": [], "continuation_1h": [], "continuation_4h": [],
+        }
         for step in token_steps:
             if step.get("snapshot_id") is None:
                 continue
@@ -1480,7 +1655,12 @@ def _continuous_lifecycle_report(
             if row is None:
                 continue
             item = {"snapshot_id": int(row["id"]), "captured_at": str(row["captured_at"])}
-            phase = "continuation_1h" if str(step["step_kind"]).startswith("CONTINUATION") else "window_15m"
+            kind = str(step["step_kind"])
+            phase = (
+                "continuation_4h" if kind.startswith("LONG_CONTINUATION")
+                else "continuation_1h" if kind.startswith("CONTINUATION")
+                else "window_15m"
+            )
             phases[phase].append(item)
         for items in phases.values():
             items.sort(key=lambda item: item["captured_at"])
@@ -1501,6 +1681,7 @@ def _continuous_lifecycle_report(
         )
         fifteen = next((s for s in token_steps if s["step_kind"] == "WINDOW_CLOSE"), None)
         continuation = next((s for s in token_steps if s["step_kind"] == "CONTINUATION_CLOSE"), None)
+        four_hour = next((s for s in token_steps if s["step_kind"] == "LONG_CONTINUATION_CLOSE"), None)
         transition_gap = None
         if phases["window_15m"] and phases["continuation_1h"]:
             transition_gap = round((
@@ -1523,6 +1704,17 @@ def _continuous_lifecycle_report(
                 "step_status": continuation.get("step_status") if continuation else None,
             },
             "transition_15m_to_1h_gap_seconds": transition_gap,
+            "continuation_4h": {
+                "snapshots": phases["continuation_4h"],
+                "snapshot_gaps_seconds": gaps(phases["continuation_4h"]),
+                "memory_window_id": four_hour.get("memory_window_id") if four_hour else None,
+                "step_status": four_hour.get("step_status") if four_hour else None,
+            },
+            "transition_1h_to_4h_gap_seconds": (
+                round((datetime.fromisoformat(phases["continuation_4h"][0]["captured_at"])
+                       - datetime.fromisoformat(phases["continuation_1h"][-1]["captured_at"])).total_seconds(), 6)
+                if phases["continuation_1h"] and phases["continuation_4h"] else None
+            ),
             "continuity": continuity,
         })
     return {"enabled": True, "tokens": reports}
@@ -1598,7 +1790,7 @@ def _final_report(
             "financial": all(value == 0 for table, value in forbidden.items() if "retrieval" not in table),
             "window_15m_only": not bool(config.get("continuous_first_hour")),
             "approved_window_scope_only": all(
-                str(row.get("window_kind")) in {"WINDOW_5M_MICRO_EVENT", "WINDOW_15M", "WINDOW_1H"}
+                str(row.get("window_kind")) in {"WINDOW_5M_MICRO_EVENT", "WINDOW_15M", "WINDOW_1H", "WINDOW_4H"}
                 for row in windows
             ),
             "paper_decisions_off": True,
@@ -1630,6 +1822,8 @@ def run_one_command_15m_factory(
     total_duration_seconds: float = 1200.0, selection_seed: str | None = None,
     v2_5_proof_mode: bool = False,
     continuous_first_hour: bool = False,
+    continuous_four_hour: bool = False,
+    four_hour_proof_mode: bool = False,
     discovery_transport: Any = None, discovery_runner: Callable[..., dict[str, Any]] | None = None,
     snapshot_adapter_factory: Callable[..., Any] | None = None,
     context_adapter_factories: dict[str, Callable[..., Any]] | None = None,
@@ -1660,7 +1854,11 @@ def run_one_command_15m_factory(
         if not 1 <= max_selected_tokens <= 2:
             reasons.append("max_selected_tokens must be 1 or 2 outside V2-5 proof mode")
     if not 1 <= max_source_requests <= _MAX_DISCOVERY_REQUESTS: reasons.append("max_source_requests must be 1 or 2")
-    required_duration = _window_seconds + (_continuation_seconds if continuous_first_hour else 0.0)
+    if continuous_four_hour and not continuous_first_hour:
+        reasons.append("4h continuation requires the same-run continuous first-hour path")
+    if continuous_four_hour and not four_hour_proof_mode:
+        reasons.append("WINDOW_4H real collection remains disabled without explicit proof mode")
+    required_duration = _window_seconds + (_continuation_seconds if continuous_first_hour else 0.0) + (10_800.0 if continuous_four_hour else 0.0)
     if total_duration_seconds <= required_duration:
         reasons.append("total duration must exceed the complete approved lifecycle duration")
     if reasons:
@@ -1681,6 +1879,8 @@ def run_one_command_15m_factory(
         "context_source_request_budget": 5 * max_selected_tokens,
         "v2_5_proof_mode": bool(v2_5_proof_mode),
         "continuous_first_hour": bool(continuous_first_hour),
+        "continuous_four_hour": bool(continuous_four_hour),
+        "four_hour_proof_mode": bool(four_hour_proof_mode),
         "continuation_seconds": _continuation_seconds if continuous_first_hour else 0.0,
         "hard_ceilings": {
             "discovery_requests": _MAX_DISCOVERY_REQUESTS,
@@ -1780,6 +1980,14 @@ def run_one_command_15m_factory(
                         adapter_factory=adapter_factory,
                         timeout_seconds=timeout_seconds,
                     )
+                elif str(pending["step_kind"]).startswith("LONG_CONTINUATION_"):
+                    result = _execute_long_4h_step(
+                        conn,
+                        pending,
+                        adapter_factory=adapter_factory,
+                        timeout_seconds=timeout_seconds,
+                        context_adapter_factories=context_adapter_factories,
+                    )
                 else:
                     result = _execute_snapshot(
                         conn, pending, adapter_factory=adapter_factory,
@@ -1855,6 +2063,30 @@ def run_one_command_15m_factory(
                             )
                         result["support_5m"] = support
                         result["continuation_plan"] = continuation_plan
+                    elif pending["step_kind"] == "CONTINUATION_CLOSE" and continuous_four_hour:
+                        from printer_v1.operator_cli.one_token_4h_runtime import plan_current_run_4h
+                        window_id = result.get("memory_window_id")
+                        if window_id is None:
+                            raise ValueError("current-run 1h close did not attach a memory window")
+                        conn.execute(
+                            "UPDATE printer_memory_factory_run_steps SET snapshot_id=?,memory_window_id=?,result_json=?,updated_at=? WHERE id=? AND step_status='RUNNING'",
+                            (result.get("snapshot_id"), int(window_id), _json(result), _iso(), int(pending["id"])),
+                        )
+                        conn.commit()
+                        plan = plan_current_run_4h(
+                            conn,
+                            run_id=run_id,
+                            token_id=int(pending["token_id"]),
+                            pair_id=int(pending["pair_id"]),
+                            token_mint=str(pending["token_mint"]),
+                            pair_address=str(pending["pair_address"]),
+                            tracking_lane=str(pending["tracking_lane"]),
+                            current_close_step_id=int(pending["id"]),
+                            explicit_proof_mode=four_hour_proof_mode,
+                        )
+                        if not plan.get("planned"):
+                            raise ValueError("4h planning blocked: " + "; ".join(plan.get("blocked_reasons", [])))
+                        result["four_hour_plan"] = plan
                     _update_step(conn, int(pending["id"]), "SUCCEEDED", result)
                     complete_job(conn, job_id=job_id)
                     conn.commit()

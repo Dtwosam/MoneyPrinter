@@ -87,6 +87,11 @@ class Phase3SchedulerResourceGovernorTest(unittest.TestCase):
         self.assertTrue(inspect.ismodule(resource_governor))
 
     def test_required_job_priority_order_is_correct(self):
+        # Long-window additions extend the established token-snapshot bands:
+        # shorter FAST work precedes longer FAST work, then shorter NORMAL work
+        # precedes longer NORMAL work. The shared close remains after all
+        # snapshot evidence and before safety/discovery/context work. Cleanup
+        # and reporting are synchronous terminal actions, not scheduler kinds.
         self.assertEqual(
             JOB_PRIORITY_ORDER,
             (
@@ -94,7 +99,11 @@ class Phase3SchedulerResourceGovernorTest(unittest.TestCase):
                 JobKind.ACTIVE_EXIT_RISK_TOKEN,
                 JobKind.TRACK_FAST_MICRO_EVENT,
                 JobKind.TRACK_FAST_FIRST_15M,
+                JobKind.TRACK_FAST_1H,
+                JobKind.TRACK_FAST_4H,
                 JobKind.TRACK_NORMAL_FIRST_15M,
+                JobKind.TRACK_NORMAL_1H,
+                JobKind.TRACK_NORMAL_4H,
                 JobKind.MEMORY_WINDOW_CLOSE,
                 JobKind.TRACKED_TOKEN_SAFETY_LIQUIDITY_REFRESH,
                 JobKind.DISCOVERY_REFRESH,

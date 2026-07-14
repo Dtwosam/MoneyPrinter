@@ -36,7 +36,7 @@ E2Z_STATUS_CREATED: str = "E2Z_MEMORY_CREATED"
 E2Z_STATUS_ALREADY_EXISTS: str = "E2Z_ALREADY_EXISTS"
 E2Z_STATUS_BLOCKED: str = "E2Z_BLOCKED"
 
-_REQUIRED_WINDOW_KIND: str = "WINDOW_15M"
+_ALLOWED_WINDOW_KINDS: frozenset[str] = frozenset({"WINDOW_15M", "WINDOW_4H"})
 _REQUIRED_WINDOW_STATUS: str = "WINDOW_CLOSED"
 _REQUIRED_DATA_QUALITY: str = "CLEAN_DATA"
 _REQUIRED_MEMORY_STATUS: str = "PARTIAL_MEMORY"
@@ -91,9 +91,9 @@ def _gate_window(row: sqlite3.Row) -> list[str]:
     """Return list of blocking reasons; empty means the window passes."""
     reasons: list[str] = []
 
-    if row["window_kind"] != _REQUIRED_WINDOW_KIND:
+    if row["window_kind"] not in _ALLOWED_WINDOW_KINDS:
         reasons.append(
-            f"window_kind must be '{_REQUIRED_WINDOW_KIND}';"
+            f"window_kind must be one of {sorted(_ALLOWED_WINDOW_KINDS)!r};"
             f" got {row['window_kind']!r}"
         )
 
@@ -125,6 +125,15 @@ def _gate_window(row: sqlite3.Row) -> list[str]:
         reasons.append("do_not_train must be 0 (clean candidate)")
 
     ctx = _loads_json(row["supporting_context_json"])
+
+    if row["window_kind"] == "WINDOW_4H" and (
+        ctx.get("shared_window_4h_context_evidence", {}).get(
+            "clean_memory_context_ready"
+        ) is not True
+    ):
+        reasons.append(
+            "WINDOW_4H shared context evidence must be clean-ready before promotion"
+        )
 
     if not _is_e2q_audited(ctx):
         reasons.append("window must be e2q_audited (e2q_audited=True in supporting_context_json)")
@@ -170,6 +179,7 @@ def create_clean_memory_from_window(
     operator_approved: bool = False,
     e2y_report: dict[str, Any] | None = None,
     individual_promotion: bool = False,
+    lane_q_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Promote one eligible WINDOW_15M to a clean printer_episodes row.
 
@@ -234,6 +244,12 @@ def create_clean_memory_from_window(
             )
 
         gate_failures = _gate_window(win_row)
+        if win_row["window_kind"] == "WINDOW_4H":
+            valid_ids = (lane_q_report or {}).get("valid_window_ids", [])
+            if window_id not in valid_ids:
+                gate_failures.append(
+                    "WINDOW_4H requires an explicit passed Lane Q report"
+                )
         if gate_failures:
             return _blocked(gate_failures, db_path_str, window_id)
 
@@ -289,12 +305,12 @@ def create_clean_memory_from_window(
                 window_id,
                 win_row["token_id"],
                 win_row["pair_id"],
-                E2Z_EPISODE_KIND,
+                f"{win_row['window_kind']}_CLEAN_MEMORY",
                 E2Z_EPISODE_STATUS,
                 "CLEAN_MEMORY",
                 "CLEAN_DATA",
                 0,
-                "WINDOW_15M",
+                win_row["window_kind"],
                 "CLEAN_MEMORY",
                 episode_ctx,
                 now,

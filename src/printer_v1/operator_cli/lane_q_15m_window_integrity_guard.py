@@ -70,9 +70,12 @@ LANE_Q_GUARD_BLOCKED: str = "LANE_Q_GUARD_BLOCKED"
 
 LANE_Q_NAME: str = "Lane Q — Real-Time 15m Window Integrity Guard"
 
-MIN_ELAPSED_SECONDS: float = 900.0  # 15 minutes
-
-_REQUIRED_WINDOW_KIND: str = "WINDOW_15M"
+_MIN_ELAPSED_BY_WINDOW: dict[str, float] = {
+    "WINDOW_15M": 900.0,
+    "WINDOW_4H": 10_800.0,
+}
+# Backward-compatible public 15m contract used by existing callers/tests.
+MIN_ELAPSED_SECONDS: float = _MIN_ELAPSED_BY_WINDOW["WINDOW_15M"]
 _REQUIRED_DATA_QUALITY: str = "CLEAN_DATA"
 _SUPPORTED_MEMORY_STATUSES: frozenset[str] = frozenset({"PARTIAL_MEMORY"})
 
@@ -136,8 +139,10 @@ def check_window_integrity(row: dict[str, Any]) -> dict[str, Any]:
     snapshot_end_id = row.get("snapshot_end_id")
 
     # window_kind
-    if window_kind != _REQUIRED_WINDOW_KIND:
-        reasons.append("not_window_15m")
+    if window_kind not in _MIN_ELAPSED_BY_WINDOW:
+        # Retain the historical reason consumed by 5m-support callers while
+        # making the broader unsupported-kind meaning explicit.
+        reasons.extend(("not_window_15m", "unsupported_window_kind"))
 
     # data quality / do_not_train
     if do_not_train not in (0, False):
@@ -174,8 +179,9 @@ def check_window_integrity(row: dict[str, Any]) -> dict[str, Any]:
     elapsed: float | None = None
     if start_ts is not None and end_ts is not None:
         elapsed = _elapsed_seconds(start_ts, end_ts)
-        if elapsed < MIN_ELAPSED_SECONDS:
-            reasons.append("elapsed_seconds_below_900")
+        minimum_elapsed = _MIN_ELAPSED_BY_WINDOW.get(str(window_kind))
+        if minimum_elapsed is not None and elapsed < minimum_elapsed:
+            reasons.append(f"elapsed_seconds_below_{int(minimum_elapsed)}")
 
     # snapshot_start_id
     if snapshot_start_id is None:
@@ -296,6 +302,7 @@ def _evaluate_coverage_for_window(
     window_row: dict[str, Any],
     *,
     production_mode: bool = False,
+    allow_disabled_policy_evaluation: bool = False,
 ) -> CadencePolicyEvaluation:
     """Evaluate snapshot cadence/gap policy for a window row.
 
@@ -318,6 +325,7 @@ def _evaluate_coverage_for_window(
     return evaluate_cadence_policy(
         snapshots, window_start_at, window_end_at, policy,
         production_mode=production_mode,
+        allow_disabled_policy_evaluation=allow_disabled_policy_evaluation,
     )
 
 
@@ -327,6 +335,7 @@ def guard_candidate_windows(
     *,
     operator_approved: bool = False,
     production_mode: bool = False,
+    allow_disabled_policy_evaluation: bool = False,
 ) -> dict[str, Any]:
     """Read window rows from DB and validate each through check_window_integrity.
 
@@ -398,7 +407,8 @@ def guard_candidate_windows(
         coverage_eval: CadencePolicyEvaluation | None = None
         if verdict["lane_q_status"] == LANE_Q_VALID:
             coverage_eval = _evaluate_coverage_for_window(
-                db_path_str, row, production_mode=production_mode
+                db_path_str, row, production_mode=production_mode,
+                allow_disabled_policy_evaluation=allow_disabled_policy_evaluation,
             )
             # Both BLOCKED and DIRTY coverage stop clean promotion. DIRTY means
             # the cadence is real but below clean quality (a gap in the dirty
