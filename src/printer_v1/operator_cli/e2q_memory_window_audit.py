@@ -37,6 +37,12 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
+from printer_v1.snapshots.cadence_policy import (
+    cadence_policy_to_dict,
+    cadence_resource_budget,
+    get_policy,
+)
+
 
 E2Q_REQUIRED_WINDOW_KIND: str = "WINDOW_15M"
 E2Q_REQUIRED_WINDOW_STATUS: str = "WINDOW_CLOSED"
@@ -124,6 +130,19 @@ def _load_snapshot(
         "SELECT * FROM printer_token_snapshots WHERE id = ?",
         (snapshot_id,),
     ).fetchone()
+
+
+def _load_tracking_lane(
+    connection: sqlite3.Connection, token_id: int
+) -> str | None:
+    row = connection.execute(
+        "SELECT token_status FROM printer_tokens WHERE id = ?",
+        (token_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    lane = str(row["token_status"] or "")
+    return lane if lane in {"TRACK_FAST", "TRACK_NORMAL"} else None
 
 
 def _elapsed_seconds(start_ts: str, end_ts: str) -> float | None:
@@ -320,6 +339,10 @@ def audit_15m_memory_window(
                 " 5m micro-event is not a valid main outcome window"
             )
         elif window_kind in E2Q_UNSUPPORTED_MAIN_WINDOW_KINDS:
+            cadence_policy = get_policy(
+                window_kind,
+                _load_tracking_lane(connection, int(win["token_id"])),
+            )
             blocked_reason = (
                 f"window_kind {window_kind!r} is not enabled as a main outcome"
                 " window; only WINDOW_15M and genuine WINDOW_1H are audited"
@@ -329,7 +352,7 @@ def audit_15m_memory_window(
                 f"window_kind must be one of {sorted(E2Q_VALID_MAIN_WINDOW_KINDS)!r};"
                 f" got {window_kind!r}"
             )
-        return {
+        result = {
             "e2q_status": E2Q_STATUS_BLOCKED,
             "classified": False,
             "blocked_reasons": [blocked_reason],
@@ -340,6 +363,12 @@ def audit_15m_memory_window(
             "pnl_created": 0,
             "memories_created": 0,
         }
+        if window_kind in E2Q_UNSUPPORTED_MAIN_WINDOW_KINDS and cadence_policy is not None:
+            result["cadence_policy"] = cadence_policy_to_dict(cadence_policy)
+            result["cadence_resource_budget"] = cadence_resource_budget(
+                window_kind, cadence_policy.tracking_lane
+            )
+        return result
 
     # --- Gate 3: window must be closed ---
     if win["window_status"] != E2Q_REQUIRED_WINDOW_STATUS:

@@ -12,6 +12,12 @@ has three gap tiers plus an expected minimum schedule:
   | 15m             | NORMAL |    120s |        180s |        240s |        9 |
   | 1h continuation | FAST   |    120s |        180s |        240s |       24 |
   | 1h continuation | NORMAL |    240s |        360s |        480s |       13 |
+  | 4h continuation | FAST   |    180s |        225s |        360s |       61 |
+  | 4h continuation | NORMAL |    360s |        450s |        720s |       31 |
+  | 12h continuation| FAST   |    300s |        375s |        600s |       97 |
+  | 12h continuation| NORMAL |    600s |        750s |       1200s |       49 |
+  | 24h continuation| FAST   |    300s |        375s |        600s |      145 |
+  | 24h continuation| NORMAL |    600s |        750s |       1200s |       73 |
 
 Coverage classification (count + gap, strict):
   CLEAN   (PASS)   — count >= expected AND every gap <= dirty_above.
@@ -28,7 +34,8 @@ continuation snapshot):
 Rules enforced:
   - WINDOW_15M and genuine WINDOW_1H continuation are enabled main windows.
   - WINDOW_5M_MICRO_EVENT is support-only; never a main clean-memory window.
-  - WINDOW_4H / WINDOW_12H / WINDOW_24H are recognized but disabled.
+  - WINDOW_4H / WINDOW_12H / WINDOW_24H have fixture-testable cadence
+    contracts but remain disabled for real collection.
   - Missing snapshots are reported, never interpolated.
   - Source/scheduler budget pressure must produce dirty/blocked coverage — it
     must never silently widen a clean-memory gap.
@@ -87,6 +94,24 @@ class SnapshotCadencePolicy:
 
     support_only: bool
     enabled_for_real_collection: bool
+
+    # Long-window foundation controls. Defaults preserve the established
+    # 5m/15m/1h behavior.
+    max_missing_snapshots_for_dirty: int | None = None
+    block_gap_at_threshold: bool = False
+    require_full_anchored_duration: bool = False
+    require_forced_closing_snapshot: bool = False
+    closing_clean_late_seconds: int = 60
+
+    @property
+    def clean_max_gap_seconds(self) -> int:
+        """Canonical clean-gap boundary (legacy field retained for callers)."""
+        return self.dirty_above_gap_seconds
+
+    @property
+    def blocked_at_gap_seconds(self) -> int:
+        """Canonical block boundary (legacy field retained for callers)."""
+        return self.max_clean_snapshot_gap_seconds
 
 
 # ---------------------------------------------------------------------------
@@ -147,28 +172,64 @@ _POLICIES: tuple[SnapshotCadencePolicy, ...] = (
     ),
     # 4h / 12h / 24h — recognized but disabled for real collection.
     SnapshotCadencePolicy(
-        window_kind="WINDOW_4H", tracking_lane=_ANY_LANE,
+        window_kind="WINDOW_4H", tracking_lane="TRACK_FAST",
         asset_state="any", urgency_state="any",
-        target_snapshot_interval_seconds=300, dirty_above_gap_seconds=450,
-        max_clean_snapshot_gap_seconds=600, window_close_interval_seconds=14400,
-        minimum_required_snapshots=2, support_only=False,
-        enabled_for_real_collection=False,
+        target_snapshot_interval_seconds=180, dirty_above_gap_seconds=225,
+        max_clean_snapshot_gap_seconds=360, window_close_interval_seconds=10800,
+        minimum_required_snapshots=61, support_only=False,
+        enabled_for_real_collection=False, max_missing_snapshots_for_dirty=1,
+        block_gap_at_threshold=True, require_full_anchored_duration=True,
+        require_forced_closing_snapshot=True,
     ),
     SnapshotCadencePolicy(
-        window_kind="WINDOW_12H", tracking_lane=_ANY_LANE,
+        window_kind="WINDOW_4H", tracking_lane="TRACK_NORMAL",
         asset_state="any", urgency_state="any",
-        target_snapshot_interval_seconds=900, dirty_above_gap_seconds=1350,
-        max_clean_snapshot_gap_seconds=1800, window_close_interval_seconds=43200,
-        minimum_required_snapshots=2, support_only=False,
-        enabled_for_real_collection=False,
+        target_snapshot_interval_seconds=360, dirty_above_gap_seconds=450,
+        max_clean_snapshot_gap_seconds=720, window_close_interval_seconds=10800,
+        minimum_required_snapshots=31, support_only=False,
+        enabled_for_real_collection=False, max_missing_snapshots_for_dirty=1,
+        block_gap_at_threshold=True, require_full_anchored_duration=True,
+        require_forced_closing_snapshot=True,
     ),
     SnapshotCadencePolicy(
-        window_kind="WINDOW_24H", tracking_lane=_ANY_LANE,
+        window_kind="WINDOW_12H", tracking_lane="TRACK_FAST",
         asset_state="any", urgency_state="any",
-        target_snapshot_interval_seconds=1800, dirty_above_gap_seconds=2700,
-        max_clean_snapshot_gap_seconds=3600, window_close_interval_seconds=86400,
-        minimum_required_snapshots=2, support_only=False,
-        enabled_for_real_collection=False,
+        target_snapshot_interval_seconds=300, dirty_above_gap_seconds=375,
+        max_clean_snapshot_gap_seconds=600, window_close_interval_seconds=28800,
+        minimum_required_snapshots=97, support_only=False,
+        enabled_for_real_collection=False, max_missing_snapshots_for_dirty=1,
+        block_gap_at_threshold=True, require_full_anchored_duration=True,
+        require_forced_closing_snapshot=True,
+    ),
+    SnapshotCadencePolicy(
+        window_kind="WINDOW_12H", tracking_lane="TRACK_NORMAL",
+        asset_state="any", urgency_state="any",
+        target_snapshot_interval_seconds=600, dirty_above_gap_seconds=750,
+        max_clean_snapshot_gap_seconds=1200, window_close_interval_seconds=28800,
+        minimum_required_snapshots=49, support_only=False,
+        enabled_for_real_collection=False, max_missing_snapshots_for_dirty=1,
+        block_gap_at_threshold=True, require_full_anchored_duration=True,
+        require_forced_closing_snapshot=True,
+    ),
+    SnapshotCadencePolicy(
+        window_kind="WINDOW_24H", tracking_lane="TRACK_FAST",
+        asset_state="any", urgency_state="any",
+        target_snapshot_interval_seconds=300, dirty_above_gap_seconds=375,
+        max_clean_snapshot_gap_seconds=600, window_close_interval_seconds=43200,
+        minimum_required_snapshots=145, support_only=False,
+        enabled_for_real_collection=False, max_missing_snapshots_for_dirty=1,
+        block_gap_at_threshold=True, require_full_anchored_duration=True,
+        require_forced_closing_snapshot=True,
+    ),
+    SnapshotCadencePolicy(
+        window_kind="WINDOW_24H", tracking_lane="TRACK_NORMAL",
+        asset_state="any", urgency_state="any",
+        target_snapshot_interval_seconds=600, dirty_above_gap_seconds=750,
+        max_clean_snapshot_gap_seconds=1200, window_close_interval_seconds=43200,
+        minimum_required_snapshots=73, support_only=False,
+        enabled_for_real_collection=False, max_missing_snapshots_for_dirty=1,
+        block_gap_at_threshold=True, require_full_anchored_duration=True,
+        require_forced_closing_snapshot=True,
     ),
 )
 
@@ -207,6 +268,12 @@ class CadencePolicyEvaluation:
     actual_snapshot_count: int
     missed_snapshots: int | None
     actual_max_gap_seconds: float | None
+    clean_max_gap_seconds: int | None = None
+    blocked_at_gap_seconds: int | None = None
+    anchored_duration_seconds: float | None = None
+    observed_snapshot_span_seconds: float | None = None
+    closing_snapshot_lateness_seconds: float | None = None
+    closing_freshness_status: str | None = None
     actual_gaps_seconds: list[float] = field(default_factory=list)
     cadence_policy_status: str = CADENCE_POLICY_UNKNOWN
     blocked_reason: str | None = None
@@ -249,6 +316,44 @@ def expected_snapshot_count(window_seconds: float, nominal_gap_seconds: float) -
     return int(math.ceil(window_seconds / nominal_gap_seconds)) + 1
 
 
+def cadence_resource_budget(
+    window_kind: str,
+    tracking_lane: str,
+    *,
+    token_count: int = 1,
+) -> dict[str, Any]:
+    """Return policy-derived snapshot, scheduler, and source ceilings.
+
+    Counts include the first continuation snapshot and the close job's forced
+    closing snapshot. This is a planning contract only; disabled long windows
+    remain unavailable to real runners.
+    """
+    policy = get_policy(window_kind, tracking_lane)
+    if policy is None or token_count < 1:
+        raise ValueError("known cadence policy and token_count >= 1 required")
+    per_token = policy.minimum_required_snapshots
+    return {
+        "window_kind": policy.window_kind,
+        "tracking_lane": policy.tracking_lane,
+        "enabled_for_real_collection": policy.enabled_for_real_collection,
+        "token_count": token_count,
+        "expected_snapshots_per_token": per_token,
+        "source_request_ceiling": per_token * token_count,
+        "scheduler_row_ceiling": per_token * token_count,
+        "automatic_retries": 0,
+    }
+
+
+def cadence_policy_to_dict(policy: SnapshotCadencePolicy) -> dict[str, Any]:
+    """Canonical report payload, including explicit clean/block boundaries."""
+    payload = asdict(policy)
+    payload["clean_max_gap_seconds"] = policy.clean_max_gap_seconds
+    payload["blocked_at_gap_seconds"] = policy.blocked_at_gap_seconds
+    payload["expected_snapshot_count"] = policy.minimum_required_snapshots
+    payload["continuation_seconds"] = policy.window_close_interval_seconds
+    return payload
+
+
 def _parse_ts(value: Any) -> datetime | None:
     if value is None:
         return None
@@ -275,7 +380,15 @@ def _gap_series(
     times.sort()
     if not times:
         return [(window_end - window_start).total_seconds()]
-    boundaries = [window_start] + times + [window_end]
+    # Cadence is measured against the anchored window. A closing snapshot may
+    # arrive shortly after the deadline and is evaluated separately by the
+    # closing-freshness contract; clamp it to the deadline here so lateness is
+    # not double-counted as an interior cadence gap.
+    anchored_times = [min(max(ts, window_start), window_end) for ts in times]
+    # Preserve the established report shape: start + every snapshot + end.
+    # When the final snapshot is at/after the deadline this intentionally adds
+    # a terminal zero gap rather than dropping a boundary record.
+    boundaries = [window_start] + anchored_times + [window_end]
     return [
         (boundaries[i] - boundaries[i - 1]).total_seconds()
         for i in range(1, len(boundaries))
@@ -289,6 +402,7 @@ def evaluate_cadence_policy(
     policy: SnapshotCadencePolicy | None,
     *,
     production_mode: bool = False,
+    allow_disabled_policy_evaluation: bool = False,
 ) -> CadencePolicyEvaluation:
     """Evaluate snapshot coverage against a cadence policy (count + gap, strict)."""
     if policy is None:
@@ -299,10 +413,15 @@ def evaluate_cadence_policy(
             max_clean_snapshot_gap_seconds=None, minimum_required_snapshots=None,
             expected_minimum_snapshots=None, actual_snapshot_count=len(snapshots),
             missed_snapshots=None, actual_max_gap_seconds=None, actual_gaps_seconds=[],
+            clean_max_gap_seconds=None, blocked_at_gap_seconds=None,
             cadence_policy_status=CADENCE_POLICY_UNKNOWN, blocked_reason=None,
         )
 
     actual_count = len(snapshots)
+    anchored_duration: float | None = None
+    observed_span: float | None = None
+    closing_lateness: float | None = None
+    closing_freshness: str | None = None
 
     def _mk(status: str, *, reason: str | None, max_gap: float | None,
             gaps: list[float] | None, missed: int | None) -> CadencePolicyEvaluation:
@@ -318,6 +437,18 @@ def evaluate_cadence_policy(
             expected_minimum_snapshots=policy.minimum_required_snapshots,
             actual_snapshot_count=actual_count, missed_snapshots=missed,
             actual_max_gap_seconds=round(max_gap, 3) if max_gap is not None else None,
+            clean_max_gap_seconds=policy.clean_max_gap_seconds,
+            blocked_at_gap_seconds=policy.blocked_at_gap_seconds,
+            anchored_duration_seconds=(
+                round(anchored_duration, 3) if anchored_duration is not None else None
+            ),
+            observed_snapshot_span_seconds=(
+                round(observed_span, 3) if observed_span is not None else None
+            ),
+            closing_snapshot_lateness_seconds=(
+                round(closing_lateness, 3) if closing_lateness is not None else None
+            ),
+            closing_freshness_status=closing_freshness,
             actual_gaps_seconds=[round(g, 3) for g in (gaps or [])],
             cadence_policy_status=status, blocked_reason=reason,
         )
@@ -330,7 +461,7 @@ def evaluate_cadence_policy(
                        max_gap=None, gaps=None, missed=policy.minimum_required_snapshots)
         return _mk(CADENCE_POLICY_UNKNOWN, reason=None, max_gap=None, gaps=None, missed=None)
 
-    if not policy.enabled_for_real_collection:
+    if not policy.enabled_for_real_collection and not allow_disabled_policy_evaluation:
         return _mk(CADENCE_POLICY_BLOCKED,
                    reason="window_kind_disabled_for_real_collection",
                    max_gap=None, gaps=None, missed=None)
@@ -347,6 +478,66 @@ def evaluate_cadence_policy(
                    reason="unparseable_window_boundary_timestamps",
                    max_gap=None, gaps=None, missed=None)
 
+    anchored_duration = (end_ts - start_ts).total_seconds()
+    parsed_snapshot_times = sorted(
+        ts for ts in (_parse_ts(s.get("captured_at")) for s in snapshots)
+        if ts is not None
+    )
+    if len(parsed_snapshot_times) >= 2:
+        observed_span = (
+            parsed_snapshot_times[-1] - parsed_snapshot_times[0]
+        ).total_seconds()
+
+    if policy.require_full_anchored_duration and (
+        anchored_duration < policy.window_close_interval_seconds
+    ):
+        return _mk(
+            CADENCE_POLICY_BLOCKED,
+            reason=(
+                f"anchored_duration_inadequate: anchored={anchored_duration:.1f}s"
+                f" < required={policy.window_close_interval_seconds}s"
+            ),
+            max_gap=None, gaps=None,
+            missed=max(0, policy.minimum_required_snapshots - actual_count),
+        )
+
+    if policy.require_forced_closing_snapshot:
+        if not parsed_snapshot_times:
+            return _mk(
+                CADENCE_POLICY_BLOCKED,
+                reason="forced_closing_snapshot_missing",
+                max_gap=None, gaps=None,
+                missed=policy.minimum_required_snapshots,
+            )
+        closing_lateness = (parsed_snapshot_times[-1] - end_ts).total_seconds()
+        if closing_lateness < 0:
+            closing_freshness = "CLOSING_SNAPSHOT_MISSING_AT_DEADLINE"
+            return _mk(
+                CADENCE_POLICY_BLOCKED,
+                reason=(
+                    "forced_closing_snapshot_precedes_anchored_deadline:"
+                    f" offset={closing_lateness:.1f}s"
+                ),
+                max_gap=None, gaps=None,
+                missed=max(0, policy.minimum_required_snapshots - actual_count),
+            )
+        if closing_lateness >= policy.target_snapshot_interval_seconds:
+            closing_freshness = "CLOSING_SNAPSHOT_BLOCKED"
+            return _mk(
+                CADENCE_POLICY_BLOCKED,
+                reason=(
+                    f"forced_closing_snapshot_too_late: late={closing_lateness:.1f}s"
+                    f" >= nominal={policy.target_snapshot_interval_seconds}s"
+                ),
+                max_gap=None, gaps=None,
+                missed=max(0, policy.minimum_required_snapshots - actual_count),
+            )
+        closing_freshness = (
+            "CLOSING_SNAPSHOT_CLEAN"
+            if closing_lateness <= policy.closing_clean_late_seconds
+            else "CLOSING_SNAPSHOT_DIRTY"
+        )
+
     if actual_count < _MIN_EVALUABLE_SNAPSHOTS:
         return _mk(CADENCE_POLICY_BLOCKED,
                    reason=(f"insufficient_snapshots: need >= {_MIN_EVALUABLE_SNAPSHOTS}"
@@ -358,23 +549,51 @@ def evaluate_cadence_policy(
     max_gap = max(gaps) if gaps else 0.0
     missed = max(0, policy.minimum_required_snapshots - actual_count)
 
-    if max_gap > policy.max_clean_snapshot_gap_seconds:
+    gap_blocks = (
+        max_gap >= policy.blocked_at_gap_seconds
+        if policy.block_gap_at_threshold
+        else max_gap > policy.blocked_at_gap_seconds
+    )
+    if gap_blocks:
         return _mk(CADENCE_POLICY_BLOCKED,
                    reason=(f"coverage_gap_exceeds_policy: max_gap={max_gap:.1f}s"
-                           f" > block_above={policy.max_clean_snapshot_gap_seconds}s"),
+                           f" block_at={policy.blocked_at_gap_seconds}s"),
                    max_gap=max_gap, gaps=gaps, missed=missed)
 
-    if max_gap > policy.dirty_above_gap_seconds:
+    if max_gap > policy.clean_max_gap_seconds:
         return _mk(CADENCE_POLICY_DIRTY,
                    reason=(f"coverage_gap_dirty: max_gap={max_gap:.1f}s"
-                           f" > dirty_above={policy.dirty_above_gap_seconds}s"),
+                           f" > clean_max={policy.clean_max_gap_seconds}s"),
                    max_gap=max_gap, gaps=gaps, missed=missed)
+
+    if (
+        policy.max_missing_snapshots_for_dirty is not None
+        and missed > policy.max_missing_snapshots_for_dirty
+    ):
+        return _mk(
+            CADENCE_POLICY_BLOCKED,
+            reason=(
+                f"too_many_missing_snapshots: missed={missed}"
+                f" > dirty_allowance={policy.max_missing_snapshots_for_dirty}"
+            ),
+            max_gap=max_gap, gaps=gaps, missed=missed,
+        )
 
     if actual_count < policy.minimum_required_snapshots:
         return _mk(CADENCE_POLICY_DIRTY,
                    reason=(f"missed_snapshots: expected >= {policy.minimum_required_snapshots},"
                            f" got {actual_count} (missed {missed})"),
                    max_gap=max_gap, gaps=gaps, missed=missed)
+
+    if closing_freshness == "CLOSING_SNAPSHOT_DIRTY":
+        return _mk(
+            CADENCE_POLICY_DIRTY,
+            reason=(
+                f"forced_closing_snapshot_dirty: late={closing_lateness:.1f}s"
+                f" > clean_late={policy.closing_clean_late_seconds}s"
+            ),
+            max_gap=max_gap, gaps=gaps, missed=missed,
+        )
 
     return _mk(CADENCE_POLICY_PASS, reason=None, max_gap=max_gap, gaps=gaps, missed=0)
 
