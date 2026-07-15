@@ -63,6 +63,8 @@ printer-run-lane-x12-normal-1h-cycle = "printer_v1.operator_cli.commands:main_ru
 printer-run-pumpportal-t2-launch-proof = "printer_v1.operator_cli.commands:main_run_pumpportal_t2_launch_proof"
 printer-run-one-command-15m-memory-factory = "printer_v1.operator_cli.commands:main_run_one_command_15m_memory_factory"
 printer-prepare-v2-9-proof-db = "printer_v1.operator_cli.proof_db_schema_readiness:main_prepare_proof_db"
+printer-supervise-v2-9-proof = "printer_v1.operator_cli.proof_supervision:main_supervision"
+printer-run-v2-9-supervised-proof = "printer_v1.operator_cli.proof_supervision:main_run_supervised_proof"
 
 [tool.unittest]
 start-directory = "tests"

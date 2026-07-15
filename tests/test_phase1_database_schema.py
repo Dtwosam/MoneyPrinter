@@ -259,6 +259,7 @@ class Phase1DatabaseSchemaTest(unittest.TestCase):
                 ("027_source_failure_normalized_payload.sql",),
                 ("028_memory_factory_run_ledger.sql",),
                 ("029_composite_safety_evidence.sql",),
+                ("030_v2_9_proof_run_supervision.sql",),
             ],
         )
 

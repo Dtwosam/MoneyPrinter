@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sqlite3
 import time
 import uuid
@@ -2264,6 +2265,7 @@ def run_one_command_15m_factory(
     continuous_first_hour: bool = False,
     continuous_four_hour: bool = False,
     four_hour_proof_mode: bool = False,
+    supervision_execution_id: str | None = None,
     discovery_transport: Any = None, discovery_runner: Callable[..., dict[str, Any]] | None = None,
     snapshot_adapter_factory: Callable[..., Any] | None = None,
     context_adapter_factories: dict[str, Callable[..., Any]] | None = None,
@@ -2298,6 +2300,16 @@ def run_one_command_15m_factory(
         reasons.append("4h continuation requires the same-run continuous first-hour path")
     if continuous_four_hour and not four_hour_proof_mode:
         reasons.append("WINDOW_4H real collection remains disabled without explicit proof mode")
+    if supervision_execution_id:
+        try:
+            from printer_v1.operator_cli.proof_supervision import inspect_execution
+            supervision = inspect_execution(path, supervision_execution_id)
+            if Path(str(supervision["proof_db_path"])).resolve() != path:
+                reasons.append("supervision execution targets a different proof DB")
+            if supervision["execution_status"] not in {"STARTING", "RUNNING"}:
+                reasons.append("supervision execution is not active")
+        except Exception as exc:
+            reasons.append(f"supervision preflight failed: {type(exc).__name__}: {exc}")
     required_duration = _window_seconds + (_continuation_seconds if continuous_first_hour else 0.0) + (10_800.0 if continuous_four_hour else 0.0)
     if total_duration_seconds <= required_duration:
         reasons.append("total duration must exceed the complete approved lifecycle duration")
@@ -2321,6 +2333,7 @@ def run_one_command_15m_factory(
         "continuous_first_hour": bool(continuous_first_hour),
         "continuous_four_hour": bool(continuous_four_hour),
         "four_hour_proof_mode": bool(four_hour_proof_mode),
+        "supervision_execution_id": supervision_execution_id,
         "continuation_seconds": _continuation_seconds if continuous_first_hour else 0.0,
         "hard_ceilings": {
             "discovery_requests": _MAX_DISCOVERY_REQUESTS,
@@ -2348,6 +2361,11 @@ def run_one_command_15m_factory(
         (run_id, window_kind, _config_hash(config), _json(config), started_at, started_at, started_at),
     )
     conn.commit()
+    if supervision_execution_id:
+        from printer_v1.operator_cli.proof_supervision import attach_run
+        attach_run(
+            path, supervision_execution_id, run_id, process_id=os.getpid(),
+        )
     discovery: dict[str, Any] = {}
     stop_reason = STOP_COMPLETED
     start_mono = _monotonic()
@@ -2580,4 +2598,9 @@ def run_one_command_15m_factory(
         )
         conn.commit()
         conn.close()
+        if supervision_execution_id:
+            from printer_v1.operator_cli.proof_supervision import (
+                finalize_execution_from_report,
+            )
+            finalize_execution_from_report(path, supervision_execution_id, report)
     return report

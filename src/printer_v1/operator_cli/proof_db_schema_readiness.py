@@ -21,6 +21,7 @@ from printer_v1.db import migrate as migration_runner
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 CANONICAL_PERSISTENT_DB = (PROJECT_ROOT / "data" / "printer_v1.sqlite3").resolve()
 RUN_LEDGER_MIGRATION = "028_memory_factory_run_ledger.sql"
+SUPERVISION_MIGRATION = "030_v2_9_proof_run_supervision.sql"
 
 REQUIRED_TABLE_COLUMNS = {
     "printer_memory_factory_runs": {
@@ -37,6 +38,14 @@ REQUIRED_TABLE_COLUMNS = {
         "error_or_skip_reason", "started_at", "finished_at", "created_at",
         "updated_at",
     },
+    "printer_proof_run_supervision": {
+        "id", "execution_id", "proof_scope", "owner_launcher_type", "process_id",
+        "run_id", "execution_status", "terminal_status", "first_stop_reason",
+        "heartbeat_at", "lease_expires_at", "proof_db_path", "backup_db_path",
+        "one_proof_lock_path", "stdout_log_path", "stderr_log_path",
+        "recovery_report_json", "started_at", "finished_at", "created_at",
+        "updated_at",
+    },
 }
 
 REQUIRED_NOT_NULL_COLUMNS = {
@@ -48,6 +57,12 @@ REQUIRED_NOT_NULL_COLUMNS = {
     "printer_memory_factory_run_steps": {
         "run_id", "step_key", "step_kind", "step_status", "created_at",
         "updated_at",
+    },
+    "printer_proof_run_supervision": {
+        "execution_id", "proof_scope", "owner_launcher_type", "execution_status",
+        "heartbeat_at", "lease_expires_at", "proof_db_path", "backup_db_path",
+        "one_proof_lock_path", "stdout_log_path", "stderr_log_path", "started_at",
+        "created_at", "updated_at",
     },
 }
 
@@ -62,11 +77,21 @@ REQUIRED_INDEXES = {
     "idx_memory_factory_steps_job": (
         "printer_memory_factory_run_steps", ("scheduler_job_id",),
     ),
+    "idx_proof_supervision_one_active_scope": (
+        "printer_proof_run_supervision", ("proof_scope",),
+    ),
+    "idx_proof_supervision_lease": (
+        "printer_proof_run_supervision", ("execution_status", "lease_expires_at"),
+    ),
+    "idx_proof_supervision_run": (
+        "printer_proof_run_supervision", ("run_id",),
+    ),
 }
 
 REQUIRED_UNIQUE_KEYS = {
     "printer_memory_factory_runs": {("run_id",)},
     "printer_memory_factory_run_steps": {("run_id", "step_key")},
+    "printer_proof_run_supervision": {("execution_id",), ("run_id",)},
 }
 
 REQUIRED_STEP_FOREIGN_KEYS = {
@@ -90,6 +115,7 @@ CRITICAL_DATA_TABLES = (
     "printer_paper_positions", "printer_paper_trade_events",
     "printer_paper_trade_audits", "printer_paper_audit_reports",
     "printer_memory_factory_runs", "printer_memory_factory_run_steps",
+    "printer_proof_run_supervision",
 )
 
 
@@ -156,6 +182,8 @@ def validate_runtime_schema_connection(
     expected_migrations = _canonical_migration_names()
     if RUN_LEDGER_MIGRATION not in expected_migrations:
         issues.append(f"required canonical migration missing: {RUN_LEDGER_MIGRATION}")
+    if SUPERVISION_MIGRATION not in expected_migrations:
+        issues.append(f"required canonical migration missing: {SUPERVISION_MIGRATION}")
 
     integrity = str(connection.execute("PRAGMA integrity_check").fetchone()[0])
     if integrity.lower() != "ok":
@@ -231,6 +259,37 @@ def validate_runtime_schema_connection(
                 f"run steps missing foreign keys: {sorted(missing_foreign_keys)}"
             )
 
+    if _table_exists(connection, "printer_proof_run_supervision"):
+        row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' "
+            "AND name='printer_proof_run_supervision'"
+        ).fetchone()
+        normalized_sql = " ".join(str(row[0] or "").lower().split())
+        for required in (
+            "check (proof_scope = 'v2_9')",
+            "'host_process_disappeared'",
+            "'operator_cancelled'",
+            "'budget_stop'",
+            "'source_failure'",
+        ):
+            if required not in normalized_sql:
+                issues.append(f"supervision table missing constraint: {required}")
+        actual_foreign_keys = {
+            (str(item[3]), str(item[2]), str(item[4]))
+            for item in connection.execute(
+                "PRAGMA foreign_key_list('printer_proof_run_supervision')"
+            ).fetchall()
+        }
+        if ("run_id", "printer_memory_factory_runs", "run_id") not in actual_foreign_keys:
+            issues.append("supervision table missing run ledger foreign key")
+        index_row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' "
+            "AND name='idx_proof_supervision_one_active_scope'"
+        ).fetchone()
+        index_sql = " ".join(str(index_row[0] or "").lower().split()) if index_row else ""
+        if "where execution_status in ('starting', 'running')" not in index_sql:
+            issues.append("supervision active-scope index missing partial lock predicate")
+
     report = {
         "runtime_ready": not issues,
         "issues": issues,
@@ -293,6 +352,10 @@ def prepare_proof_db(
     if RUN_LEDGER_MIGRATION not in migration_names:
         raise ProofDbReadinessError(
             f"required canonical migration missing: {RUN_LEDGER_MIGRATION}"
+        )
+    if SUPERVISION_MIGRATION not in migration_names:
+        raise ProofDbReadinessError(
+            f"required canonical migration missing: {SUPERVISION_MIGRATION}"
         )
 
     persistent_hash_before = _sha256(persistent)
@@ -371,3 +434,7 @@ def main_prepare_proof_db(argv: Iterable[str] | None = None) -> int:
             "scheduler_runtime_run": False,
         }, indent=2, sort_keys=True))
         return 1
+
+
+if __name__ == "__main__":  # pragma: no cover - module CLI
+    raise SystemExit(main_prepare_proof_db())
