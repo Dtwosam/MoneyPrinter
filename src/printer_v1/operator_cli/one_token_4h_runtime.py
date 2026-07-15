@@ -34,7 +34,6 @@ WINDOW_KIND = "WINDOW_4H"
 PREDECESSOR_KIND = "WINDOW_1H"
 REQUEST_CEILINGS = {"TRACK_FAST": 69, "TRACK_NORMAL": 39}
 SCHEDULER_CEILINGS = {"TRACK_FAST": 64, "TRACK_NORMAL": 34}
-PHASE_SCHEDULER_CEILINGS = {"TRACK_FAST": 63, "TRACK_NORMAL": 33}
 CONTEXT_PLAN = {
     "opening": ("market_chain", "entry_quote"),
     "closing": ("market_chain", "safety", "exit_quote"),
@@ -54,15 +53,58 @@ def runtime_budget(tracking_lane: str) -> dict[str, Any]:
         "continuation_seconds": policy.window_close_interval_seconds,
         "phase_source_requests": policy.minimum_required_snapshots + 5,
         "phase_source_requests_with_holder_fallback": policy.minimum_required_snapshots + 6,
+        "phase_request_ceiling": REQUEST_CEILINGS[tracking_lane],
+        # Compatibility aliases. These values are phase-local, never cumulative.
         "full_run_request_ceiling": REQUEST_CEILINGS[tracking_lane],
         "planned_scheduler_rows": policy.minimum_required_snapshots,
-        "phase_scheduler_ceiling": PHASE_SCHEDULER_CEILINGS[tracking_lane],
+        "phase_scheduler_ceiling": SCHEDULER_CEILINGS[tracking_lane],
         "full_run_scheduler_ceiling": SCHEDULER_CEILINGS[tracking_lane],
         "automatic_retries": 0,
         "endpoint_rotation": False,
         "holder_fallback_max": 1,
         "enabled_for_real_collection": policy.enabled_for_real_collection,
     }
+
+
+def cumulative_lifecycle_budget(tracking_lane: str) -> dict[str, Any]:
+    """Derive one-token 5m/15m/1h/4h ceilings from approved policies."""
+    fifteen = get_policy("WINDOW_15M", tracking_lane)
+    one_hour = get_policy("WINDOW_1H", tracking_lane)
+    if fifteen is None or one_hour is None:
+        raise ValueError("15m and 1h cadence policies required")
+    phase = runtime_budget(tracking_lane)
+    request_components = {
+        "discovery": 2,
+        "window_15m_snapshots": int(fifteen.minimum_required_snapshots),
+        "window_15m_context": 5,
+        "window_1h_snapshots": int(one_hour.minimum_required_snapshots),
+        "window_4h_phase": int(phase["phase_request_ceiling"]),
+    }
+    scheduler_components = {
+        "discovery_handoff": 1,
+        "window_15m": int(fifteen.minimum_required_snapshots),
+        "window_1h": int(one_hour.minimum_required_snapshots),
+        "window_4h_phase": int(phase["phase_scheduler_ceiling"]),
+    }
+    return {
+        "tracking_lane": tracking_lane,
+        "request_components": request_components,
+        "request_ceiling": sum(request_components.values()),
+        "scheduler_components": scheduler_components,
+        "scheduler_ceiling": sum(scheduler_components.values()),
+        "automatic_retries": 0,
+        "endpoint_rotation": False,
+    }
+
+
+def require_projected_capacity(
+    *, current: int, projected: int, ceiling: int, label: str,
+) -> None:
+    """Fail before creating a request or job that would exceed its ceiling."""
+    if current < 0 or projected < 0 or ceiling < 0:
+        raise ValueError(f"invalid {label} budget values")
+    if current + projected > ceiling:
+        raise ValueError(f"{label} budget ceiling would be exceeded")
 
 
 def _iso(value: datetime) -> str:
@@ -140,8 +182,21 @@ def plan_current_run_4h(
     opening = datetime.fromisoformat(str(predecessor["closed_at"] or predecessor["window_end_at"]))
     deadline = opening + timedelta(seconds=policy.window_close_interval_seconds)
     expected = policy.minimum_required_snapshots
-    if expected > budget["phase_scheduler_ceiling"]:
-        raise ValueError("policy-derived 4h jobs exceed phase scheduler ceiling")
+    require_projected_capacity(
+        current=0, projected=expected,
+        ceiling=int(budget["phase_scheduler_ceiling"]),
+        label="4h phase scheduler",
+    )
+    cumulative = cumulative_lifecycle_budget(tracking_lane)
+    existing_jobs = int(connection.execute(
+        "SELECT COUNT(DISTINCT scheduler_job_id) FROM printer_memory_factory_run_steps "
+        "WHERE run_id=? AND scheduler_job_id IS NOT NULL", (run_id,),
+    ).fetchone()[0])
+    require_projected_capacity(
+        current=existing_jobs + 1, projected=expected,
+        ceiling=int(cumulative["scheduler_ceiling"]),
+        label="cumulative lifecycle scheduler",
+    )
     target = {
         "successor_window_kind": WINDOW_KIND,
         "continuation_of_window_id": int(predecessor["id"]),
