@@ -99,11 +99,15 @@ _CONTINUOUS_MAX_SCHEDULER_ROWS = (
 
 
 class _GlobalStop(Exception):
-    """Raised to signal a global (run-wide) safe stop with an explicit reason."""
+    """Raised to signal a global safe stop with one authoritative reason."""
 
-    def __init__(self, reason: str) -> None:
+    def __init__(
+        self, reason: str, *, scope: str | None = None, detail: str | None = None,
+    ) -> None:
         super().__init__(reason)
         self.reason = reason
+        self.scope = scope
+        self.detail = detail
 
 _COUNT_TABLES = (
     "printer_source_requests", "printer_source_responses", "printer_source_failures",
@@ -242,7 +246,7 @@ def _insert_step_and_job(
         _CONTINUOUS_MAX_SELECTED_TOKENS if continuous else _V2_5_MAX_SELECTED_TOKENS
     )
     if _run_step_job_count(conn, run_id) >= scheduler_ceiling - discovery_handoff_allowance:
-        raise _GlobalStop(STOP_BUDGET)
+        raise _GlobalStop(STOP_BUDGET, scope="CUMULATIVE_LIFECYCLE")
     if step_kind in {"WINDOW_CLOSE", "CONTINUATION_CLOSE"}:
         job_kind = JobKind.MEMORY_WINDOW_CLOSE
     elif step_kind == "CONTINUATION_SNAPSHOT":
@@ -1479,13 +1483,20 @@ def _enforce_budgets_before_step(conn: sqlite3.Connection, run_id: str, step: sq
                 ceiling=int(phase["phase_request_ceiling"]),
                 label="4h phase request",
             )
+        except ValueError as exc:
+            raise _GlobalStop(
+                STOP_BUDGET, scope="FOUR_HOUR_PHASE", detail=str(exc),
+            ) from exc
+        try:
             require_projected_capacity(
                 current=cumulative_used, projected=projected,
                 ceiling=int(cumulative["request_ceiling"]),
                 label="cumulative lifecycle request",
             )
         except ValueError as exc:
-            raise _GlobalStop(STOP_BUDGET) from exc
+            raise _GlobalStop(
+                STOP_BUDGET, scope="CUMULATIVE_LIFECYCLE", detail=str(exc),
+            ) from exc
         return
     continuous = bool(config.get("continuous_first_hour"))
     run_ceiling = _CONTINUOUS_MAX_REQUESTS_RUN if continuous else _MAX_GOVERNED_REQUESTS_RUN
@@ -1494,10 +1505,10 @@ def _enforce_budgets_before_step(conn: sqlite3.Connection, run_id: str, step: sq
         if continuous else _MAX_GOVERNED_REQUESTS_PER_TOKEN
     )
     if _run_request_count(conn, run_id) + projected > run_ceiling:
-        raise _GlobalStop(STOP_BUDGET)
+        raise _GlobalStop(STOP_BUDGET, scope="CUMULATIVE_LIFECYCLE")
     prefix = _token_prefix(step["step_key"])
     if _token_request_count(conn, run_id, prefix) + projected > token_ceiling:
-        raise _GlobalStop(STOP_BUDGET)
+        raise _GlobalStop(STOP_BUDGET, scope="CUMULATIVE_LIFECYCLE")
 
 
 def _per_token_outcomes(
@@ -1607,112 +1618,133 @@ def _run_budgets(
             cumulative_lifecycle_budget,
             runtime_budget,
         )
-        lane_row = conn.execute(
+        long_lane_row = conn.execute(
             "SELECT tracking_lane FROM printer_memory_factory_run_steps "
             "WHERE run_id=? AND step_kind LIKE 'LONG_CONTINUATION_%' LIMIT 1",
             (run_id,),
         ).fetchone()
-        if lane_row is None:
+        phase_started = long_lane_row is not None
+        lane_row = long_lane_row or conn.execute(
+            "SELECT tracking_lane FROM printer_memory_factory_run_steps "
+            "WHERE run_id=? AND tracking_lane IS NOT NULL ORDER BY id LIMIT 1",
+            (run_id,),
+        ).fetchone()
+        lane = str(lane_row[0]) if lane_row is not None else None
+        if lane is None:
             return {
                 "automatic_retries": 0,
                 "continuous_first_hour": continuous,
                 "four_hour_phase_usage": {
-                    "available": False,
-                    "within_ceiling": False,
+                    "state": "NOT_STARTED",
+                    "available": True,
+                    "tracking_lane": None,
+                    "source_requests": 0,
+                    "source_request_ceiling": None,
+                    "source_requests_within_ceiling": None,
+                    "scheduler_rows": 0,
+                    "scheduler_row_ceiling": None,
+                    "scheduler_rows_within_ceiling": None,
+                    "budget_verdict": None,
+                    "within_ceiling": None,
                 },
                 "cumulative_lifecycle_usage": {
+                    "state": "UNAVAILABLE",
                     "available": False,
-                    "within_ceiling": False,
+                    "tracking_lane": None,
+                    "budget_verdict": None,
+                    "within_ceiling": None,
                 },
             }
-        lane = str(lane_row[0])
+
         phase = runtime_budget(lane)
         cumulative = cumulative_lifecycle_budget(lane)
         phase_requests = int(conn.execute(
             "SELECT COUNT(*) FROM printer_source_requests WHERE request_key LIKE ?",
             (f"{run_id}:%4h%",),
-        ).fetchone()[0])
+        ).fetchone()[0]) if phase_started else 0
         phase_jobs = int(conn.execute(
             "SELECT COUNT(*) FROM printer_memory_factory_run_steps "
             "WHERE run_id=? AND step_kind LIKE 'LONG_CONTINUATION_%'",
             (run_id,),
-        ).fetchone()[0])
+        ).fetchone()[0]) if phase_started else 0
+        phase_holder_fallbacks = int(conn.execute(
+            "SELECT COUNT(*) FROM printer_source_requests "
+            "WHERE source_name='solana_rpc' AND request_key LIKE ?",
+            (f"{run_id}:%4h%",),
+        ).fetchone()[0]) if phase_started else 0
         cumulative_requests = discovery_requests + runtime_requests
+
+        if phase_started:
+            phase_requests_ok = phase_requests <= int(phase["phase_request_ceiling"])
+            phase_jobs_ok = phase_jobs <= int(phase["phase_scheduler_ceiling"])
+            phase_holder_ok = phase_holder_fallbacks <= int(phase["holder_fallback_max"])
+            phase_within = phase_requests_ok and phase_jobs_ok and phase_holder_ok
+            phase_verdict: str | None = "WITHIN_CEILING" if phase_within else "EXCEEDED"
+        else:
+            phase_requests_ok = None
+            phase_jobs_ok = None
+            phase_within = None
+            phase_verdict = None
         phase_usage = {
+            "state": "STARTED" if phase_started else "NOT_STARTED",
             "available": True,
             "tracking_lane": lane,
             "source_requests": phase_requests,
             "source_request_ceiling": int(phase["phase_request_ceiling"]),
-            "source_requests_within_ceiling": (
-                phase_requests <= int(phase["phase_request_ceiling"])
-            ),
+            "source_requests_within_ceiling": phase_requests_ok,
             "scheduler_rows": phase_jobs,
             "scheduler_row_ceiling": int(phase["phase_scheduler_ceiling"]),
-            "scheduler_rows_within_ceiling": (
-                phase_jobs <= int(phase["phase_scheduler_ceiling"])
-            ),
-            "holder_fallbacks": holder_fallbacks,
+            "scheduler_rows_within_ceiling": phase_jobs_ok,
+            "holder_fallbacks": phase_holder_fallbacks,
             "holder_fallback_ceiling": int(phase["holder_fallback_max"]),
             "automatic_retries": 0,
             "endpoint_rotation": False,
+            "budget_verdict": phase_verdict,
+            "within_ceiling": phase_within,
         }
-        phase_usage["within_ceiling"] = (
-            phase_usage["source_requests_within_ceiling"]
-            and phase_usage["scheduler_rows_within_ceiling"]
-            and holder_fallbacks <= phase_usage["holder_fallback_ceiling"]
-        )
+
+        cumulative_requests_ok = cumulative_requests <= int(cumulative["request_ceiling"])
+        cumulative_jobs_ok = cumulative_scheduler_rows <= int(cumulative["scheduler_ceiling"])
+        cumulative_within = cumulative_requests_ok and cumulative_jobs_ok
         cumulative_usage = {
+            "state": "REPORTED",
             "available": True,
             "tracking_lane": lane,
             "source_requests": cumulative_requests,
             "source_request_ceiling": int(cumulative["request_ceiling"]),
-            "source_requests_within_ceiling": (
-                cumulative_requests <= int(cumulative["request_ceiling"])
-            ),
+            "source_requests_within_ceiling": cumulative_requests_ok,
             "scheduler_rows": cumulative_scheduler_rows,
             "scheduler_row_ceiling": int(cumulative["scheduler_ceiling"]),
-            "scheduler_rows_within_ceiling": (
-                cumulative_scheduler_rows <= int(cumulative["scheduler_ceiling"])
-            ),
+            "scheduler_rows_within_ceiling": cumulative_jobs_ok,
             "discovery_source_requests": discovery_requests,
             "runtime_source_requests": runtime_requests,
             "request_components": cumulative["request_components"],
             "scheduler_components": cumulative["scheduler_components"],
             "policy_derived": True,
+            "budget_verdict": "WITHIN_CEILING" if cumulative_within else "EXCEEDED",
+            "within_ceiling": cumulative_within,
         }
-        cumulative_usage["within_ceiling"] = (
-            cumulative_usage["source_requests_within_ceiling"]
-            and cumulative_usage["scheduler_rows_within_ceiling"]
-        )
         token_ceiling = int(cumulative["request_ceiling"]) - int(
             cumulative["request_components"]["discovery"]
         )
         return {
             "four_hour_phase_usage": phase_usage,
             "cumulative_lifecycle_usage": cumulative_usage,
-            # Compatibility fields now use the applicable cumulative policy.
+            # Compatibility fields use the applicable cumulative policy.
             "governed_requests_run": cumulative_requests,
             "governed_requests_run_ceiling": int(cumulative["request_ceiling"]),
-            "governed_requests_run_within_ceiling": cumulative_usage[
-                "source_requests_within_ceiling"
-            ],
+            "governed_requests_run_within_ceiling": cumulative_requests_ok,
             "governed_requests_per_token": {"selected_token": runtime_requests},
             "governed_requests_per_token_ceiling": token_ceiling,
-            "governed_requests_per_token_within_ceiling": (
-                runtime_requests <= token_ceiling
-            ),
+            "governed_requests_per_token_within_ceiling": runtime_requests <= token_ceiling,
             "holder_rpc_fallbacks": holder_fallbacks,
             "holder_rpc_fallbacks_ceiling": int(phase["holder_fallback_max"]),
             "scheduler_run_step_jobs": all_step_jobs,
             "scheduler_cancelled_discovery_handoffs": handoffs,
             "scheduler_rows_total": cumulative_scheduler_rows,
             "scheduler_rows_ceiling": int(cumulative["scheduler_ceiling"]),
-            "scheduler_rows_within_ceiling": cumulative_usage[
-                "scheduler_rows_within_ceiling"
-            ],
-            "discovery_requests_ceiling": int(
-                cumulative["request_components"]["discovery"]
-            ),
+            "scheduler_rows_within_ceiling": cumulative_jobs_ok,
+            "discovery_requests_ceiling": int(cumulative["request_components"]["discovery"]),
             "automatic_retries": 0,
             "continuous_first_hour": continuous,
         }
@@ -1754,7 +1786,6 @@ def _run_budgets(
         "automatic_retries": 0,
         "continuous_first_hour": continuous,
     }
-
 
 def _continuous_lifecycle_report(
     conn: sqlite3.Connection,
@@ -1855,10 +1886,90 @@ def _continuous_lifecycle_report(
     return {"enabled": True, "tokens": reports}
 
 
+def _runtime_stage_for_step(step_kind: str) -> str:
+    if step_kind.startswith("LONG_CONTINUATION_"):
+        return "FOUR_HOUR"
+    if step_kind.startswith("CONTINUATION_"):
+        return "PRE_4H_1H"
+    return "PRE_4H_15M"
+
+
+def _primary_terminal_cause(
+    conn: sqlite3.Connection, steps: list[dict[str, Any]], loop_stop_reason: str,
+) -> dict[str, Any]:
+    """Resolve the first genuine runtime cause; later reporting cannot replace it."""
+    for step in steps:
+        if step.get("step_status") != "FAILED":
+            continue
+        stage = _runtime_stage_for_step(str(step.get("step_kind") or ""))
+        if step.get("source_failure_id") is not None:
+            failure = conn.execute(
+                "SELECT failure_type,failure_message,source_name,request_kind,failed_at "
+                "FROM printer_source_failures WHERE id=?",
+                (int(step["source_failure_id"]),),
+            ).fetchone()
+            failure_type = (
+                str(failure["failure_type"]) if failure is not None
+                else str(step.get("error_or_skip_reason") or "source_failure")
+            )
+            failure_message = (
+                str(failure["failure_message"] or "") if failure is not None else ""
+            )
+            return {
+                "present": True,
+                "category": "SOURCE_FAILURE",
+                "run_status": "FAILED",
+                "stop_reason": STOP_SOURCE,
+                "stage": stage,
+                "pre_four_hour": stage in {"PRE_4H_15M", "PRE_4H_1H"},
+                "step_id": int(step["id"]),
+                "step_key": str(step.get("step_key") or ""),
+                "step_kind": str(step.get("step_kind") or ""),
+                "source_failure_id": int(step["source_failure_id"]),
+                "failure_type": failure_type,
+                "failure_message": failure_message,
+                "source_name": str(failure["source_name"]) if failure is not None else None,
+                "request_kind": str(failure["request_kind"]) if failure is not None else None,
+                "failed_at": str(failure["failed_at"]) if failure is not None else None,
+            }
+        try:
+            result = json.loads(str(step.get("result_json") or "{}"))
+        except json.JSONDecodeError:
+            result = {}
+        if (
+            step.get("error_or_skip_reason") == STOP_BUDGET
+            or result.get("global_stop") == STOP_BUDGET
+        ):
+            return {
+                "present": True,
+                "category": "BUDGET",
+                "run_status": "SAFE_STOPPED",
+                "stop_reason": STOP_BUDGET,
+                "stage": stage,
+                "pre_four_hour": stage in {"PRE_4H_15M", "PRE_4H_1H"},
+                "step_id": int(step["id"]),
+                "step_key": str(step.get("step_key") or ""),
+                "step_kind": str(step.get("step_kind") or ""),
+                "budget_scope": result.get("budget_scope"),
+                "budget_detail": result.get("budget_detail"),
+            }
+    if loop_stop_reason != STOP_COMPLETED:
+        return {
+            "present": True,
+            "category": "RUN_STOP",
+            "run_status": "SAFE_STOPPED",
+            "stop_reason": loop_stop_reason,
+            "stage": None,
+            "pre_four_hour": None,
+        }
+    return {"present": False}
+
+
 def _four_hour_terminal_validation(
     *, config: dict[str, Any], steps: list[dict[str, Any]],
     windows_by_id: dict[int, dict[str, Any]], budgets: dict[str, Any],
     pending_steps: int, running_jobs: int,
+    primary_cause: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Independently prove a complete, audited terminal WINDOW_4H outcome."""
     if not config.get("continuous_four_hour"):
@@ -1867,16 +1978,25 @@ def _four_hour_terminal_validation(
             "complete": True,
             "reasons": [],
             "failure_reasons": [],
+            "primary_cause": primary_cause or {"present": False},
         }
+    phase = budgets.get("four_hour_phase_usage", {})
+    cumulative = budgets.get("cumulative_lifecycle_usage", {})
     long_steps = [
         step for step in steps
         if str(step.get("step_kind", "")).startswith("LONG_CONTINUATION_")
     ]
+    phase_state = str(
+        phase.get("state") or ("STARTED" if long_steps else "UNAVAILABLE")
+    )
     close_steps = [
         step for step in long_steps
         if step.get("step_kind") == "LONG_CONTINUATION_CLOSE"
     ]
-    lane = str(long_steps[0].get("tracking_lane")) if long_steps else ""
+    lane = str(
+        long_steps[0].get("tracking_lane")
+        if long_steps else phase.get("tracking_lane") or ""
+    )
     policy = _cadence_get_policy("WINDOW_4H", lane) if lane else None
     expected = int(policy.minimum_required_snapshots) if policy is not None else 0
     actual = sum(1 for step in long_steps if step.get("snapshot_id") is not None)
@@ -1897,60 +2017,82 @@ def _four_hour_terminal_validation(
             or "transport" in str(step.get("error_or_skip_reason")).lower()
         )
     ]
-    if expected == 0:
+    if policy is None:
         reasons.append("missing_4h_cadence_policy")
-    if actual != expected:
+    if phase_state == "NOT_STARTED":
+        reasons.append("four_hour_phase_not_started")
+    elif phase_state == "STARTED" and actual != expected:
         reasons.append(f"incomplete_4h_collection:{actual}/{expected}")
-    if len(close_steps) != 1:
-        reasons.append("missing_or_ambiguous_forced_close")
-        close = None
-    else:
-        close = close_steps[0]
-        if close.get("step_status") != "SUCCEEDED":
-            reasons.append(
-                f"forced_close_not_succeeded:{close.get('step_status')}"
-            )
+
+    close = None
     successor = None
     audit_path_complete = False
-    if close is not None:
-        window_id = close.get("memory_window_id")
-        successor = (
-            windows_by_id.get(int(window_id)) if window_id is not None else None
-        )
-        if successor is None or successor.get("window_kind") != "WINDOW_4H":
-            reasons.append("missing_window_4h_successor")
-        try:
-            result = json.loads(str(close.get("result_json") or "{}"))
-        except json.JSONDecodeError:
-            result = {}
-        audit_path_complete = (
-            isinstance(result.get("window_audit"), dict)
-            and isinstance(result.get("lane_q"), dict)
-            and isinstance(result.get("memory_pipeline"), dict)
-            and result["memory_pipeline"].get("lane_k_status") is not None
-        )
-        if not audit_path_complete:
-            reasons.append("incomplete_4h_audit_report_path")
-    phase = budgets.get("four_hour_phase_usage", {})
-    cumulative = budgets.get("cumulative_lifecycle_usage", {})
-    if not phase.get("within_ceiling", False):
+    if phase_state == "STARTED":
+        if len(close_steps) != 1:
+            reasons.append("missing_or_ambiguous_forced_close")
+        else:
+            close = close_steps[0]
+            if close.get("step_status") != "SUCCEEDED":
+                reasons.append(f"forced_close_not_succeeded:{close.get('step_status')}")
+            window_id = close.get("memory_window_id")
+            successor = (
+                windows_by_id.get(int(window_id)) if window_id is not None else None
+            )
+            if successor is None or successor.get("window_kind") != "WINDOW_4H":
+                reasons.append("missing_window_4h_successor")
+            try:
+                result = json.loads(str(close.get("result_json") or "{}"))
+            except json.JSONDecodeError:
+                result = {}
+            audit_path_complete = (
+                isinstance(result.get("window_audit"), dict)
+                and isinstance(result.get("lane_q"), dict)
+                and isinstance(result.get("memory_pipeline"), dict)
+                and result["memory_pipeline"].get("lane_k_status") is not None
+            )
+            if not audit_path_complete:
+                reasons.append("incomplete_4h_audit_report_path")
+
+    phase_budget_verdict = phase.get("budget_verdict")
+    cumulative_budget_verdict = cumulative.get("budget_verdict")
+    # Compatibility for pre-V2-9.3 fixtures applies only to a started phase.
+    if phase_state == "STARTED" and phase_budget_verdict is None:
+        if phase.get("within_ceiling") is False:
+            phase_budget_verdict = "EXCEEDED"
+        elif phase.get("within_ceiling") is True:
+            phase_budget_verdict = "WITHIN_CEILING"
+    if phase_state == "STARTED" and cumulative_budget_verdict is None:
+        if cumulative.get("within_ceiling") is False:
+            cumulative_budget_verdict = "EXCEEDED"
+        elif cumulative.get("within_ceiling") is True:
+            cumulative_budget_verdict = "WITHIN_CEILING"
+
+    budget_failure_scopes: list[str] = []
+    if phase_state == "STARTED" and phase_budget_verdict == "EXCEEDED":
         reasons.append("four_hour_phase_budget_exceeded")
-    if not cumulative.get("within_ceiling", False):
+        budget_failure_scopes.append("FOUR_HOUR_PHASE")
+    if cumulative_budget_verdict == "EXCEEDED":
         reasons.append("cumulative_lifecycle_budget_exceeded")
+        budget_failure_scopes.append("CUMULATIVE_LIFECYCLE")
     if pending_steps:
         reasons.append(f"pending_or_running_steps:{pending_steps}")
     if running_jobs:
         reasons.append(f"running_jobs:{running_jobs}")
     if failure_reasons:
         reasons.append("terminal_4h_step_failure")
-    complete = not reasons
-    if complete:
+
+    complete = phase_state == "STARTED" and not reasons
+    authoritative = primary_cause or {"present": False}
+    if authoritative.get("present"):
+        run_status = str(authoritative["run_status"])
+        stop_reason = str(authoritative["stop_reason"])
+    elif complete:
         run_status = "COMPLETED"
         stop_reason = STOP_COMPLETED
     elif source_failure_reasons:
         run_status = "FAILED"
         stop_reason = STOP_SOURCE
-    elif any("budget_exceeded" in reason for reason in reasons):
+    elif budget_failure_scopes:
         run_status = "SAFE_STOPPED"
         stop_reason = STOP_BUDGET
     else:
@@ -1961,9 +2103,12 @@ def _four_hour_terminal_validation(
         "complete": complete,
         "run_status": run_status,
         "stop_reason": stop_reason,
+        "primary_cause": authoritative,
         "reasons": reasons,
         "failure_reasons": failure_reasons,
         "source_failure_reasons": source_failure_reasons,
+        "budget_failure_scopes": budget_failure_scopes,
+        "phase_state": phase_state,
         "tracking_lane": lane or None,
         "expected_snapshots": expected,
         "actual_snapshots": actual,
@@ -1975,7 +2120,6 @@ def _four_hour_terminal_validation(
         "audit_path_complete": audit_path_complete,
         "cleanup_complete": pending_steps == 0 and running_jobs == 0,
     }
-
 
 def _final_report(
     conn: sqlite3.Connection, *, run_id: str, config: dict[str, Any],
@@ -2004,13 +2148,18 @@ def _final_report(
     budgets = _run_budgets(conn, run_id, discovery, steps)
     lifecycle = _continuous_lifecycle_report(conn, run_id, steps)
     pending_run_steps = sum(1 for s in steps if s["step_status"] in {"PENDING", "RUNNING"})
+    primary_cause = _primary_terminal_cause(conn, steps, stop_reason)
     terminal_validation = _four_hour_terminal_validation(
         config=config, steps=steps, windows_by_id=windows_by_id,
         budgets=budgets, pending_steps=pending_run_steps, running_jobs=running,
+        primary_cause=primary_cause,
     )
     effective_status = "COMPLETED" if stop_reason == STOP_COMPLETED else "SAFE_STOPPED"
     effective_reason = stop_reason
-    if terminal_validation.get("enabled"):
+    if primary_cause.get("present"):
+        effective_status = str(primary_cause["run_status"])
+        effective_reason = str(primary_cause["stop_reason"])
+    elif terminal_validation.get("enabled"):
         effective_status = str(terminal_validation["run_status"])
         effective_reason = str(terminal_validation["stop_reason"])
     return {
@@ -2044,6 +2193,8 @@ def _final_report(
         "four_hour_phase_usage": budgets.get("four_hour_phase_usage"),
         "cumulative_lifecycle_usage": budgets.get("cumulative_lifecycle_usage"),
         "four_hour_terminal_validation": terminal_validation,
+        "primary_terminal_cause": primary_cause,
+        "secondary_terminal_details": [],
         "continuous_lifecycle": lifecycle,
         "pending_or_running_run_steps": pending_run_steps,
         "memory_results": {
@@ -2066,6 +2217,26 @@ def _final_report(
         },
     }
 
+
+def _apply_post_report_integrity(report: dict[str, Any]) -> None:
+    """Attach cleanup/integrity details without replacing an earlier cause."""
+    details = report.setdefault("secondary_terminal_details", [])
+    if report["running_jobs_after_stop"]:
+        details.append({
+            "reason": STOP_RUNNING,
+            "running_jobs": report["running_jobs_after_stop"],
+        })
+        if report["run_status"] == "COMPLETED":
+            report["stop_reason"] = STOP_RUNNING
+            report["run_status"] = "SAFE_STOPPED"
+    if any(report["forbidden_deltas"].values()):
+        details.append({
+            "reason": STOP_DB_DELTA,
+            "forbidden_deltas": report["forbidden_deltas"],
+        })
+        if report["run_status"] == "COMPLETED":
+            report["stop_reason"] = STOP_DB_DELTA
+            report["run_status"] = "SAFE_STOPPED"
 
 def load_report_only(db_path: str | Path, run_id: str) -> dict[str, Any]:
     conn = sqlite3.connect(str(db_path))
@@ -2370,7 +2541,16 @@ def run_one_command_15m_factory(
             except _GlobalStop as gstop:
                 # Global integrity/budget breach cancels the entire run.
                 stop_reason = gstop.reason
-                _update_step(conn, int(pending["id"]), "FAILED", {"ok": False, "global_stop": gstop.reason}, error=gstop.reason)
+                _update_step(
+                    conn, int(pending["id"]), "FAILED",
+                    {
+                        "ok": False,
+                        "global_stop": gstop.reason,
+                        "budget_scope": gstop.scope,
+                        "budget_detail": gstop.detail,
+                    },
+                    error=gstop.reason,
+                )
                 fail_job(conn, job_id=job_id, error=gstop.reason, max_retries=0)
                 conn.commit()
             except Exception as exc:
@@ -2392,12 +2572,8 @@ def run_one_command_15m_factory(
             conn, run_id=run_id, config=config, discovery=discovery, before=before,
             stop_reason=stop_reason, started_at=started_at,
         )
-        if report["running_jobs_after_stop"]:
-            report["stop_reason"] = STOP_RUNNING
-            report["run_status"] = "SAFE_STOPPED"
-        if any(report["forbidden_deltas"].values()):
-            report["stop_reason"] = STOP_DB_DELTA
-            report["run_status"] = "SAFE_STOPPED"
+        _apply_post_report_integrity(report)
+
         conn.execute(
             "UPDATE printer_memory_factory_runs SET run_status=?,stop_reason=?,finished_at=?,final_report_json=?,updated_at=? WHERE run_id=?",
             (report["run_status"], report["stop_reason"], report["finished_at"], _json(report), _iso(), run_id),
