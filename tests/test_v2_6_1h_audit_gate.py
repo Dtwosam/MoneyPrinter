@@ -169,7 +169,14 @@ class Valid15mUnchanged(_Base):
         self.assertEqual(r["e2q_status"], "E2Q_AUDIT_ONLY")
 
     def test_valid_main_kinds_are_15m_and_1h(self):
-        self.assertEqual(E2Q_VALID_MAIN_WINDOW_KINDS, frozenset({"WINDOW_15M", "WINDOW_1H"}))
+        # WINDOW_4H was intentionally added to E2Q_VALID_MAIN_WINDOW_KINDS in
+        # V2-8.1 (commit 3776716), which introduced genuine 4h structural/
+        # continuity auditing alongside 1h. This assertion predates that and
+        # is updated to match the approved V2-8.1 contract, not weakened.
+        self.assertEqual(
+            E2Q_VALID_MAIN_WINDOW_KINDS,
+            frozenset({"WINDOW_15M", "WINDOW_1H", "WINDOW_4H"}),
+        )
 
 
 class FiveMinuteInvalid(_Base):
@@ -291,9 +298,18 @@ class LongerKindsNotEnabled(_Base):
         return self._run(win)
 
     def test_4h_not_enabled(self):
+        # V2-8.1 (commit 3776716) intentionally enabled WINDOW_4H as a valid
+        # main window kind with its own genuine-continuation structural
+        # check (_validate_genuine_4h_window), rather than rejecting it
+        # outright. A minimal fixture window with no anchored boundaries or
+        # governed snapshot anchors is therefore still BLOCKED, but for that
+        # specific structural reason instead of a blanket "not enabled".
         r = self._kind_blocked("WINDOW_4H")
         self.assertEqual(r["e2q_status"], E2Q_STATUS_BLOCKED)
-        self.assertIn("not enabled", " ".join(r["blocked_reasons"]))
+        self.assertIn(
+            "missing anchored boundaries or governed snapshot anchors",
+            " ".join(r["blocked_reasons"]),
+        )
 
     def test_12h_not_enabled(self):
         self.assertEqual(self._kind_blocked("WINDOW_12H")["e2q_status"], E2Q_STATUS_BLOCKED)
