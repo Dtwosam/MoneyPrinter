@@ -165,15 +165,11 @@ def _is_persistent_db(path: Path) -> bool:
 
 
 def _require_schema(conn: sqlite3.Connection) -> None:
-    required = {"printer_memory_factory_runs", "printer_memory_factory_run_steps"}
-    present = {
-        str(row[0]) for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
-    }
-    missing = sorted(required - present)
-    if missing:
-        raise ValueError(f"V2-4 migration missing: {missing}")
+    from printer_v1.operator_cli.proof_db_schema_readiness import (
+        validate_runtime_schema_connection,
+    )
+
+    validate_runtime_schema_connection(conn)
 
 
 def _build_discovery_args(

@@ -257,6 +257,8 @@ class Phase1DatabaseSchemaTest(unittest.TestCase):
                 ("025_selection_batch.sql",),
                 ("026_selection_rotation_state.sql",),
                 ("027_source_failure_normalized_payload.sql",),
+                ("028_memory_factory_run_ledger.sql",),
+                ("029_composite_safety_evidence.sql",),
             ],
         )
 
