@@ -94,8 +94,13 @@ public static class PrinterPowerState {
     public static extern uint SetThreadExecutionState(uint esFlags);
 }
 '@
-$ES_CONTINUOUS = [uint32]0x80000000
-$ES_SYSTEM_REQUIRED = [uint32]0x00000001
+# PowerShell parses the hex literal 0x80000000 as a negative Int32
+# (two's complement), and [uint32] performs a checked/range conversion
+# that then throws "Cannot convert value "-2147483648" to type
+# "System.UInt32"". The equivalent decimal literal is parsed as a
+# positive Int64 and converts to UInt32 cleanly.
+$ES_CONTINUOUS = [uint32]2147483648
+$ES_SYSTEM_REQUIRED = [uint32]1
 $proofProcess = $null
 $operatorCancelled = $false
 $launcherError = $null
