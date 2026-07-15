@@ -764,7 +764,7 @@ Sub-lanes:
 |---|---|---|---|---|---|---|---|---|---|---|
 | V2-10A | Audit 12h/24h structure | Static review | Runtime | Long-window modules/tests | None | Read-only scans | Audit notes | Gaps known | Runtime needed | Avoids premature proof |
 | V2-10B | Define lifecycle goals | Design | Code | Readiness doc | None | Review | Goals | Dead/revival goals clear | No distinct goals | Improves corpus value |
-| V2-10C | Define budgets/stops, incl. checkpoint/watchdog for host-level process kill (V2-9 Attempt 3 gap) | Design | Source calls | Readiness doc | None | Budget review | Stop plan | Safe limits | No stop path | Controls long run |
+| V2-10C | Define budgets/stops | Design | Source calls | Readiness doc | None | Budget review | Stop plan | Safe limits | No stop path | Controls long run |
 | V2-10D | Define proof plan | Design | Proof run | Readiness doc | None | Checklist | Proof plan | Operator can approve | Unsafe plan | Prepares proof |
 | V2-10E | Closeout | Docs | Implementation | Closeout | None | Diff checks | Report | V2-11 ready/block | Gaps unresolved | Clean handoff |
 
@@ -779,7 +779,6 @@ Sub-lanes:
 | Poor dead/revival coverage | Misses key lessons | Weak money-usefulness | Bias | Selection buckets | Proof plan | No dead/revival plan |
 | No operator-safe stop | Long run risk | Artifact/DB confusion | Unsafe runtime | Stop gates | Stop condition review | Stop unclear |
 | Proof too long to review cleanly | Operator fatigue | Hidden failures | Bad closeout | Report template | Closeout plan | Report too vague |
-| No checkpoint/watchdog for host-level process termination (observed in V2-9 Attempt 3: runtime killed externally mid-1h-continuation with zero internal failure) | 12h/24h runs are far longer than 4h, so the exposure window is much larger | Indistinguishable governed-safe-stop vs. process-disappeared leaves `RUNNING`/`PENDING` rows needing manual DB forensics to interpret | Silent stuck run, no honest terminal report | Periodic run checkpoint, external heartbeat/watchdog, and an on-restart cancellation sweep for orphaned `RUNNING`/`PENDING` rows | Kill-mid-run fixture/rehearsal before any bounded 12h/24h proof is approved | No checkpoint/watchdog design in the V2-10C stop plan |
 
 ### V2-11 - Bounded 12h/24h Lifecycle Proof
 
