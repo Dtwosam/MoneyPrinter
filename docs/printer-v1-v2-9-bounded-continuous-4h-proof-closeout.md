@@ -1,162 +1,323 @@
 # Printer V1 V2-9 Bounded Continuous 4h Proof Closeout
 
-## Status
-
-Lane: `V2-9 - Bounded Continuous 4h Proof`
-
-Final verdict: `V2_9_BOUNDED_4H_PROOF_FAIL`
-
-Exactly one new proof ran after V2-9.1. The same autonomous Solana memecoin
-reached 5m support, WINDOW_15M, and WINDOW_1H, then collected 24/31 required
-NORMAL 4h snapshots. DexScreener transport failed on snapshot 25. Zero automatic
-retries ran; remaining work was cancelled and running jobs cleared. The proof
-did not reach the fixed deadline, forced close, WINDOW_4H, or quality gates.
-The top-level COMPLETED label and lifecycle budget accounting also failed
-closedness expectations. This does not activate 4h production or begin V2-10,
-12h, 24h, retrieval, decisions, positions, trades, audits, or PnL.
-
-## Preserved History
-
-The first V2-9 attempt at `3776716` stopped before runtime because its raw
-persistent-DB copy lacked canonical migration-028 run-ledger tables. It made no
-source call and created no run. V2-9.1 proved migrations had been skipped,
-added canonical isolated preparation, and passed at `06fed48`. The unusable
-first proof/backup were discarded. No runtime was retried.
-
-## Preflight
-
-All gates passed: exact HEAD `06fed4840155f6e6ed3b736f63f552c003ec5aa4`,
-clean tracked tree, `316,946,014,208` free bytes, canonical isolated
-preparation, all 29 migrations, complete V2-8.1 schema/integrity/foreign-key
-validation, and backup only after validation. Prepared proof/backup were
-byte-identical at
-`7D3632A1541EAFDF74EF513B839DA61DDC3370D392DEC5BD0D208CBC167C11AC`.
-Persistent SHA-256 stayed
-`97DB9A15CC464D86137CBBB0DD0A4EF1880E9F4E231FB41E8B22CA09FB177FBB`.
-Focused schema, cadence, continuity, runtime, E2Q, Lane Q, Lane K/E2Z,
-scheduler/resource, replay/isolation, retrieval-lock, and financial-lock tests
-exited green. WINDOW_12H/WINDOW_24H remained disabled. No code, budget,
-endpoint, cadence, or configuration changed during runtime.
-
-## Identity And Anchors
-
-| Field | Observed |
-| --- | --- |
-| Run | `34777faa-b2e8-4f27-943c-85c0129cce65` |
-| Token | `18`; `E6TwnwYzhFt8pvREAzy7tnZb2QYXN543byVSW5m7pump` |
-| Pair | `22`; `78Wc7TzBUXd4pPhYuY9e8tAktNXWccVq4BoFM1D67xrq` |
-| Lane | `TRACK_NORMAL` |
-| 5m / 15m / 1h IDs | `158 / 157 / 159` |
-| 4h successor | None |
-| 1h close | `2026-07-15T10:55:24.013464+00:00` |
-| Fixed deadline | `2026-07-15T13:55:24.013464+00:00` |
-| 1h-to-4h gap | `2.212684s`; clean range |
-| Deadline drift | `0s`; never extended |
-
-Identity/linkage was automatic and current-run-only. Nothing was manually
-linked.
-
-## Cadence And Outcome
-
-NORMAL required 31 snapshots at 360s. Twenty-four snapshots, IDs `1035-1058`,
-were current-run-ledger-only. Every gap was:
-
-`358.624397, 360.127869, 359.869216, 360.134458, 360.046636,
-359.546946, 360.322822, 359.842878, 359.936638, 360.659897,
-359.271337, 360.189808, 360.255420, 359.941686, 359.732430,
-360.133075, 359.843685, 360.043887, 360.047288, 360.040695,
-360.143288, 359.636377, 360.242621`.
-
-Maximum gap: `360.659897s`; observed span: `8,278.633354s`; missing: 7.
-Closing lateness is unmeasurable because close never ran. Stop was about
-`2,159.38s` before deadline, so no final duration, freshness, cadence, or
-continuity verdict exists.
-
-Step `t18_p22_4h_snapshot_024` scheduled
-`2026-07-15T13:19:24.013464+00:00` failed with
-`dexscreener_transport_failure` (request `1174`, failure `49`). Long steps:
-24 succeeded, one failed, six cancelled including forced close. Terminal token
-status: `TOKEN_LOCAL_FAILED`; terminal 4h outcomes: zero.
-
-## Context, Quality, Realism
-
-15m `157` was `DIRTY_MEMORY`, `MISSING_CRITICAL_DATA`,
-`do_not_train=1`; 5m stayed support-only. Exact 1h predecessor `159` was
-`PARTIAL_MEMORY`, `CLEAN_DATA`, with no clean promotion. Opening evidence
-had fresh market/chain context, paper ENTRY route, acceptable
-liquidity/impact/slippage, chart and flow evidence, but safety was
-blocked/unknown and EXIT realism unknown. 4h opening context ran; closing
-market/chain, safety, EXIT, chart, and flow could not complete. With no
-WINDOW_4H, 4h E2Q, Lane Q, and Lane K/E2Z were not reached; ordering was not
-bypassed. No memory/fingerprint was created.
-
-## Sources, Budgets, Scheduler, Cleanup
-
-Proof delta: 56 requests, 54 responses, two failures. Run-step-linked usage:
-47 (8 initial snapshots plus close, 12 1h snapshots plus close, 25 executed 4h
-snapshots). The report counted 27 4h-phase requests including opening context,
-within phase ceiling 39. Holder fallback: one. Endpoint rotation: zero.
-Automatic retry: zero; scheduler `retry_count=1` records the one failed
-execution, not a second execution.
-
-The 4h plan created 31 scheduler rows, within phase ceiling 34. Lifecycle total
-was 54 scheduler rows. The runner reported 54 governed lifecycle requests
-against its own ceiling 47 and 54 per-token against ceiling 45, both
-`within_ceiling=false`, while returning `COMPLETED`. Under this prompt's
-NORMAL full-run ceilings 39 requests/34 scheduler rows, lifecycle totals also
-exceed limits. This budget/status inconsistency is a FAIL condition.
-
-Cleanup: 46 succeeded, one failed, six cancelled run-named jobs; zero
-pending/running steps and zero running jobs. No second proof/retry ran.
-
-## Replay, DB Deltas, Locks
-
-Report-only replay made zero DB delta. Proof hash before/after replay:
-`B53B819ED7479DDA352C81191C7E5DEA80CFEBE3891009206968D15F71445A3E`.
-
-Proof deltas: 54 scheduler jobs/steps, one run, 46 snapshots, three windows
-(5m/15m/1h), 56 requests, 54 responses, two failures. No WINDOW_4H, clean
-memory, or fingerprint.
-
-Persistent DB stayed byte-identical at counts: sources `1118/1071/47`,
-scheduler `989`, snapshots `1012`, windows `156`, fingerprints `23`,
-retrieval `10/0`, decisions `2`, positions/events/trade-audits `0/0/0`,
-run-ledger `0/0`. Proof deltas were zero for retrieval, decisions, positions,
-trade events/audits, audit reports, memories, and fingerprints. BUY/SELL/HOLD,
-PnL, wallet/key/signing/live execution, paid-source, scoring/ranking/confidence,
-weighted logic, embeddings, and vectors stayed locked.
-
-## Files Changed
-
-- `docs/printer-v1-v2-9-bounded-continuous-4h-proof-closeout.md`
-- Local evidence: `operator-runs/v2-9-bounded-continuous-4h-proof.json` and
-  `operator-runs/v2-9-bounded-continuous-4h-replay.json`
-
-## What Was Not Touched
-
-Production code, migrations, adapters, budgets, endpoints, scheduler policy,
-persistent DB, 12h/24h, retrieval activation, decisions, positions, trades,
-audits, PnL, or live-trading capability.
-
-## Functionality Risks / Setbacks / Efficiency Blockers
-
-1. One transport failure cancels the remaining long proof.
-2. Incomplete 4h token-local work is labeled `COMPLETED`.
-3. Lifecycle accounting conflicts with V2-9 and report ceilings.
-4. Closing context, final cadence/continuity, E2Q, Lane Q, Lane K/E2Z, and 4h
-   memory quality remain unproved live.
-5. This sole authorized proof cannot be retried in this lane.
-
-## Pass/Fail Status
+## Final verdict
 
 `V2_9_BOUNDED_4H_PROOF_FAIL`
 
-Cleanup, replay, isolation, and locks were safe, but there was no audited 4h
-result or full-runtime evidence-quality block. The run stopped early, exceeded
-lifecycle ceilings, and reported completion without WINDOW_4H.
+Lane: `V2-9 - Bounded Continuous 4h Proof`
 
-## Next Recommended Phase
+The lane used all authorized attempts and remains failed. The first preparation
+attempt was blocked before runtime by an unmigrated proof schema. Runtime
+Attempt 1 reached the 4h phase but failed after 24 of 31 NORMAL snapshots and
+incorrectly reported `COMPLETED`. V2-9.1 repaired canonical proof preparation,
+and V2-9.2 repaired the known 4h terminal and budget paths. Separately approved
+Attempt 2 then failed during the initial FAST 15m collection after four
+snapshots. Cleanup was safe, but the final report mislabeled a DexScreener
+transport stop as a budget stop even though both applicable budgets were within
+limits.
 
-Stop in V2-9. Do not begin V2-10, 12h, or 24h. A separately approved repair
-lane should reconcile lifecycle budgets and make incomplete token-local 4h
-termination fail closed before any new proof.
+No second Attempt 2 run occurred. This closeout does not activate generalized
+4h production or begin V2-10, 12h, 24h, retrieval, decisions, positions,
+trades, audits, or PnL.
+
+## Attempt history
+
+### Blocked preparation attempt
+
+The original V2-9 preflight copied an older persistent DB without applying all
+canonical migrations. The proof copy lacked migration-028 run-ledger tables
+`printer_memory_factory_runs` and `printer_memory_factory_run_steps`. Runtime
+did not begin. V2-9.1 established the sole canonical preparation path: copy the
+persistent DB to a fresh isolated target, apply all canonical migrations to the
+copy only, validate the complete runtime schema, then create and byte-compare
+the backup.
+
+### Runtime Attempt 1
+
+Attempt 1 autonomously selected a NORMAL token and continuously reached its
+current-run WINDOW_1H predecessor. It then collected 24 of 31 4h snapshots
+before DexScreener transport failed. Six remaining token-local jobs, including
+the forced close, were cancelled. No WINDOW_4H successor was created and 4h
+E2Q, Lane Q, and Lane K/E2Z did not run. Cleanup and report-only replay were
+safe, but the runner incorrectly returned `COMPLETED` and conflated 4h-phase
+ceilings with cumulative lifecycle usage. The lane closed FAIL at commit
+`4bbb0d1`.
+
+V2-9.2 subsequently made valid terminal 4h evidence and a completed audit path
+mandatory for `COMPLETED`, separated phase and cumulative accounting, and added
+projected pre-call and pre-job checks. That repair passed at commit `20763c0`.
+
+### Runtime Attempt 2
+
+Attempt 2 is the one separately approved proof after V2-9.1 and V2-9.2. It
+started once and terminated once. It was not restarted or retried.
+
+## Attempt 2 preflight
+
+All pre-runtime gates passed:
+
+- HEAD: `20763c0b874ca0fc96eef7bced8e1a7f4fee3158`;
+- tracked tree: clean;
+- free disk: `313,430,331,392` bytes;
+- fresh proof and backup paths did not exist before preparation;
+- the failed Attempt 1 proof and backup were not reused;
+- V2-9.1 canonical preparation status: `PROOF_DB_SCHEMA_READY`;
+- applied/canonical migrations: `29 / 29`, latest
+  `029_composite_safety_evidence.sql`;
+- integrity: `ok`; foreign-key errors: `0`; runtime schema issues: `[]`;
+- required run-ledger tables, columns, indexes, checks, unique keys, and foreign
+  keys: valid;
+- prepared proof and backup SHA-256:
+  `97893AFB6B3D649C9E3105F407D5C0C2A8D689F0A377D84FBFF70ED443FA92F6`;
+- proof/backup byte-identical before runtime: true;
+- persistent SHA-256 before runtime:
+  `97DB9A15CC464D86137CBBB0DD0A4EF1880E9F4E231FB41E8B22CA09FB177FBB`;
+- V2-9.1 schema-readiness tests: `10 passed`;
+- V2-9.2 terminal/budget tests: `10 passed`;
+- WINDOW_12H and WINDOW_24H real collection: disabled for FAST and NORMAL.
+
+The canonical preparation report recorded `sources_run=false` and
+`scheduler_runtime_run=false`. No gate failed before runtime.
+
+## Attempt 2 identity and lifecycle anchors
+
+| Field | Observed |
+| --- | --- |
+| Run | `e119034c-17a2-42c0-91b5-3b3c400d270b` |
+| Token | ID `18`; `2vvw3cSwibzGD6SgW9QzRaBdmjkYrvs218DUy6VWpump` |
+| Pair | ID `22`; `5smCoCy9FVw3g1APyzyhxD2ozyAseWkozjmtgSpHjSjg` |
+| Stored lane | `TRACK_FAST` |
+| Selection seed | `137735914fce99b2db4a87be002a6fc1` |
+| Eligible pool | `25` |
+| Run start | `2026-07-15T15:50:32.732509+00:00` |
+| First snapshot | `2026-07-15T15:50:34.795586+00:00` |
+| Failure finish | `2026-07-15T15:54:41.127213+00:00` |
+| Run finish | `2026-07-15T15:54:41.146511+00:00` |
+| 5m / 15m / 1h / 4h window IDs | None / None / None / None |
+| Exact current-run 1h predecessor | Not reached |
+| 4h successor | None |
+
+Identity and lane selection were autonomous. No mint, pair, predecessor,
+snapshot, or window identity was manually supplied or linked. Same-run,
+token, pair, and lane continuity remained internally consistent for the four
+collected rows, but no lifecycle transition became eligible for evaluation.
+
+## Cadence, duration, and continuity
+
+FAST 15m collection expected 16 snapshots. Four current-run-ledger snapshots
+were created: IDs `1013-1016`. Their gaps were:
+
+`60.480669, 59.987700, 60.046476` seconds.
+
+Maximum gap was `60.480669s`; observed snapshot span was `180.514845s`.
+Snapshot 5 was attempted at its scheduled point and failed, leaving 12 expected
+15m snapshots absent: one failed execution and 11 cancelled run steps.
+
+The failed step was scheduled for `2026-07-15T15:54:34.795586+00:00` and began
+`0.007688s` late. The 15m forced close remained fixed at
+`2026-07-15T16:05:34.795586+00:00`; it was never extended, so deadline drift
+was `0s`. Runtime stopped about `653.649075s` before that deadline. Closing
+lateness and a valid 15m duration are unavailable because the forced close did
+not run.
+
+The expected 4h cadence for FAST was 61 snapshots at 180 seconds. Actual 4h
+snapshots, gaps, missed count, duration, closing lateness, transition gap, and
+deadline drift were respectively `0`, none, `61`, unavailable, unavailable,
+unavailable, and unavailable because 1h and the 4h plan were never reached.
+No WINDOW_1H predecessor or fixed `1h close + 10,800s` deadline existed.
+
+Continuity therefore remained `CONTINUITY_UNKNOWN`; it did not pass, become
+dirty, or bypass a gate.
+
+## Source failure and terminal behavior
+
+Discovery used two governed GeckoTerminal requests and received two successful
+responses. Five governed DexScreener snapshot requests followed. The first four
+received successful responses and created four snapshots. Request `1125` for
+`t1_snapshot_04` produced no response and created source failure `48`:
+
+- source: `dexscreener`;
+- failure type: `dexscreener_transport_failure`;
+- exact failure message:
+  `<urlopen error _ssl.c:993: The handshake operation timed out>`;
+- retry-after: none.
+
+The failed run step preserved `dexscreener_transport_failure`, source request
+`1125`, and failure `48`. The affected token's 11 remaining run jobs were
+cancelled, including its 15m forced close. No other token existed. There was no
+endpoint rotation and no second source execution. Scheduler `retry_count=1` on
+the failed row records the failed execution transition; all other new rows have
+`retry_count=0`, and no retry job or second request was created.
+
+The run returned:
+
+- DB status: `SAFE_STOPPED`;
+- reported stop reason: `SAFE_STOP_BUDGET_CEILING_EXCEEDED`;
+- per-token terminal status: `TOKEN_LOCAL_FAILED`;
+- terminal window outcomes: `0`.
+
+The safe stop and cleanup are valid, but the stop reason is not. The V2-9.2
+4h terminal validator saw no long-window step, marked both 4h and cumulative
+usage `available=false / within_ceiling=false`, and converted that absence into
+a budget stop. It did not promote the earlier 15m source failure into the final
+run reason. The exact transport reason survives in the step and source-failure
+ledger, but not in the final stop reason. This is a reporting-classification
+defect, not a real budget breach.
+
+## Phase and cumulative budgets
+
+Actual usage reconstructed from canonical DB deltas:
+
+| Scope | Requests | Request ceiling | Scheduler rows | Scheduler ceiling | Verdict |
+| --- | ---: | ---: | ---: | ---: | --- |
+| FAST 4h phase | 0 | 69 | 0 | 64 | Not reached; numerically within |
+| FAST cumulative lifecycle | 7 | 116 | 17 | 105 | Within |
+
+Cumulative requests were two discovery calls plus five snapshot calls.
+Cumulative scheduler rows were one discovery handoff plus 16 planned 15m run
+rows. The 4h projected guards were never reached. Holder fallback usage was
+zero. Automatic retry executions were zero. Endpoint rotation was zero.
+
+The final report's `four_hour_phase_usage` and `cumulative_lifecycle_usage`
+objects both said `available=false` and `within_ceiling=false`. Those fields are
+not honest accounting for this early stop: unavailable 4h evidence must not be
+reported as an exceeded budget, and known cumulative usage must still be
+reported against its policy-derived ceiling.
+
+## Context, safety, realism, chart, and flow
+
+The 15m forced close was cancelled, so WINDOW_5M support derivation and the
+15m governed close context never ran. No opening/closing market-chain bundle,
+safety close evidence, paper ENTRY/EXIT quote evidence, completed chart/flow
+window evidence, or exit-realism conclusion was created for this run.
+
+The four token snapshots were COMPLETE/CLEAN_DATA source rows, but they are not
+a completed window and cannot establish clean memory, entry realism, exit
+realism, chart outcome, or flow outcome. Nothing was promoted from partial
+snapshot evidence.
+
+## Scheduler and cleanup
+
+Attempt 2 added 17 scheduler rows:
+
+- one discovery handoff, cancelled after selection;
+- four succeeded run snapshot jobs;
+- one failed run snapshot job;
+- 11 cancelled remaining run jobs.
+
+The 16 run steps have the same `4 succeeded / 1 failed / 11 cancelled` shape.
+After cleanup:
+
+- pending/running run steps: `0`;
+- running jobs: `0`;
+- locks/owners left behind: `0`;
+- forced close: cancelled;
+- invalid successor windows: `0`.
+
+Cleanup therefore behaved safely despite the failed terminal classification.
+
+## E2Q, Lane Q, Lane K/E2Z, memory quality, and locks
+
+No memory window was created. E2Q, Lane Q, and Lane K/E2Z were not reached and
+were not bypassed. The run created no clean, partial, dirty, or do-not-train
+memory outcome, no memory row, and no fingerprint. Run-local yield was
+`clean=0, dirty=0, blocked=0, token_local_failed=1`.
+
+Proof deltas remained zero for:
+
+- memory windows, memories, and fingerprints;
+- retrieval queries and matches;
+- paper decisions;
+- paper positions;
+- paper trade events and trade audits;
+- paper audit reports;
+- paper quote evidence;
+- safety composite/contribution evidence.
+
+BUY/SELL/HOLD, retrieval activation, positions, PnL, wallet/private-key/signing,
+live execution, paid sources, scoring, ranking, confidence, weighted logic,
+embeddings, and vectors remained locked.
+
+## Replay and database isolation
+
+Report-only replay for run
+`e119034c-17a2-42c0-91b5-3b3c400d270b` recorded:
+
+- mode: `REPORT_ONLY`;
+- new source calls: `0`;
+- new evidence rows: `0`.
+
+Proof SHA-256 before and after replay was byte-identical:
+
+`3DA17416D4E479FFA146CADC8E2B5EE3648A0379BBB8299C7ABDE8ABF17427F9`.
+
+The prepared backup remained at its pre-runtime hash
+`97893AFB6B3D649C9E3105F407D5C0C2A8D689F0A377D84FBFF70ED443FA92F6`.
+The proof changed only through the authorized runtime.
+
+Persistent SHA-256 after runtime and replay remained:
+
+`97DB9A15CC464D86137CBBB0DD0A4EF1880E9F4E231FB41E8B22CA09FB177FBB`.
+
+Persistent critical counts stayed unchanged:
+
+- source requests / responses / failures: `1118 / 1071 / 47`;
+- scheduler jobs: `989`;
+- token snapshots: `1012`;
+- memory windows / fingerprints: `156 / 23`;
+- retrieval queries / matches: `10 / 0`;
+- paper decisions: `2`;
+- positions / trade events / trade audits: `0 / 0 / 0`.
+
+Attempt 2 proof deltas were seven requests, six responses, one failure, 17
+scheduler jobs, four snapshots, one run, and 16 run steps. Persistent deltas
+were zero.
+
+## Verdict rationale
+
+FAIL.
+
+Attempt 2 did not produce a continuous 5m -> 15m -> 1h -> 4h lifecycle or an
+audited WINDOW_4H result. A public-source TLS handshake timeout is an acceptable
+external failure only when the runtime preserves and reports it honestly. The
+runtime safely cancelled jobs and avoided invalid evidence, but the final
+report replaced the source failure with a nonexistent budget breach. That
+violates the required terminal reporting contract and prevents PASS or an
+honest evidence-quality block.
+
+No additional proof is authorized in this lane.
+
+## Files changed
+
+- `docs/printer-v1-v2-9-bounded-continuous-4h-proof-closeout.md`
+
+Local untracked evidence retained for operator inspection:
+
+- `operator-runs/v2-9-attempt2-proof-preparation.json`;
+- `operator-runs/v2-9-attempt2-bounded-continuous-4h-proof.json`;
+- `operator-runs/v2-9-attempt2-bounded-continuous-4h-replay.json`;
+- the isolated Attempt 2 proof DB and its pre-runtime backup.
+
+## What was not touched
+
+No implementation, migration, cadence, budget, configuration, source adapter,
+or endpoint changed after runtime began. The persistent DB was read only. No
+second proof, V2-10, 12h, 24h, retrieval activation, paper decision, position,
+trade, audit, PnL, live wallet, key, signing, or execution work began.
+
+## Functionality risks / setbacks / efficiency blockers
+
+1. Early pre-4h source failure is not propagated into the final terminal reason
+   when `continuous_four_hour=true` and no long-window rows exist.
+2. Unreached phase usage is treated as an exceeded budget, and known cumulative
+   usage is discarded as unavailable.
+3. Scheduler `retry_count=1` represents a failed no-retry execution, which is
+   easy to misread operationally even though no second request/job ran.
+4. No real Attempt 2 evidence exists for 5m support, 15m close, 1h continuity,
+   4h cadence, closing context, or quality-gate ordering beyond fail-closed
+   non-entry.
+
+## Next recommended phase
+
+Stop in V2-9. Do not rerun the proof and do not begin V2-10, 12h, or 24h. Any
+future repair or proof requires a new explicit operator-approved lane.
