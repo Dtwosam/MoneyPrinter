@@ -85,6 +85,9 @@ Known factual anchors from V2-0:
 
 ## 4. Required V2 Completion Pattern
 
+Verification for each step below follows the Risk-Based Verification Policy in
+`AGENTS.md` (minimum sufficient verification for the change's risk level).
+
 Every major V2 capability must pass:
 
 1. Audit/readiness review.

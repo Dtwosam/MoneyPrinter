@@ -638,6 +638,28 @@ Each phase must have a clear pass/fail result before moving to the next phase.
 
 
 
+## Risk-Based Verification Policy
+
+
+
+Use minimum sufficient verification based on change risk.
+
+
+
+- Documentation, audit, and design work: static checks only.
+
+- Narrow code changes: changed tests, nearest affected contract tests, compilation, and diff checks.
+
+- Cross-cutting changes involving migrations, Source Governor, Central Scheduler, cadence, continuity, supervision, DB isolation, budgets, or memory quality: focused tests plus directly affected regressions.
+
+- Run broad/full suites only at major lane closeout, before a live proof, before a release/checkpoint, or after a broad architectural change.
+
+- Do not expand test scope merely because unrelated pre-existing failures appear. Confirm them against the baseline, document them, and defer them unless they affect the current lane.
+
+- Never weaken tests, safety gates, evidence rules, or required bounded proof to save time or credits.
+
+
+
 ## Required Response Format
 
 
