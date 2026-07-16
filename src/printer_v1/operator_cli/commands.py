@@ -2575,8 +2575,17 @@ def build_discover_candidates_once_payload(
     _combined_wr_report = _aggregate_wr_reports(agg_wr_reports + [cross_wr_report])
 
     # Selection and persistence — only if at least one response COMPLETE.
+    # Prefer the first executed request that produced a response, but fall back
+    # to the first executed request even when it only produced a failure. A
+    # request that executed and failed (e.g. a non-Solana pool rejected as
+    # geckoterminal_no_valid_solana_pools) must report its real FAILED status,
+    # not NOT_EXECUTED — matching the documented "prior single-request shape".
+    # NOT_EXECUTED is reserved for the case where nothing executed at all.
     primary = next(
         (r for r in execution_records if r.get("executed") and r.get("response_id") is not None),
+        None,
+    ) or next(
+        (r for r in execution_records if r.get("executed")),
         None,
     )
     accepted: list[dict[str, Any]] = []

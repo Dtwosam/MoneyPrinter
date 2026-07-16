@@ -130,7 +130,12 @@ class Phase25OneShotRealSourceSmokeCheckTests(unittest.TestCase):
 
         def malformed_transport(context):
             del context
-            return {"pairs": []}
+            # A missing/non-list `pairs` field is the malformed case. Note: as
+            # of the A3 repair (commit 90819c7) a *valid* empty list
+            # (`{"pairs": []}`) is deliberately PARTIAL / ACCEPTABLE_PARTIAL_DATA
+            # with no failure row, so this test uses a genuinely malformed
+            # payload to keep verifying the malformed -> FAILED contract.
+            return {}
 
         payload = build_source_smoke_dexscreener_payload(self.args(db_path), transport=malformed_transport)
         self.assertEqual(payload["source_status"], SourceStatus.FAILED.value)
