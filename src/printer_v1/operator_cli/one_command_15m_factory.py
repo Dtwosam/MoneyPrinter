@@ -398,12 +398,46 @@ def _evidence_duration_is_eligible(
     return _evidence_duration_seconds(start_at, end_at) >= minimum_seconds
 
 
+def _persist_exact_pair_snapshot(
+    conn: sqlite3.Connection, step: sqlite3.Row, execution: Any,
+) -> dict[str, Any]:
+    """Persist one snapshot from a governed exact-pair source response."""
+    from printer_v1.operator_cli.e2m_snapshot_persistence import (
+        E2M_STATUS_PERSISTED, persist_snapshot_from_source_response,
+    )
+
+    persisted = persist_snapshot_from_source_response(
+        conn, int(execution.response_record.id), str(step["token_mint"]),
+        expected_pair_address=str(step["pair_address"]),
+        tracking_lane=str(step["tracking_lane"]),
+    )
+    out: dict[str, Any] = {
+        "snapshot": persisted,
+        "snapshot_id": persisted.get("snapshot_id") or persisted.get("existing_snapshot_id"),
+        "ok": persisted.get("e2m_status") == E2M_STATUS_PERSISTED,
+    }
+    if not out["ok"]:
+        out["blocked_reason"] = (
+            "; ".join(persisted.get("blocked_reasons", [])) or persisted.get("e2m_status")
+        )
+    return out
+
+
 def _execute_snapshot(
     conn: sqlite3.Connection, step: sqlite3.Row, *, adapter_factory: Callable[..., Any],
     timeout_seconds: float,
+    fallback_adapter_factory: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
-    from printer_v1.operator_cli.e2m_snapshot_persistence import (
-        E2M_STATUS_PERSISTED, persist_snapshot_from_source_response,
+    """Execute one governed exact-pair snapshot.
+
+    DexScreener is primary. On an eligible transient primary transport failure
+    (V2-9.5), one governed GeckoTerminal fallback is attempted. At most one
+    snapshot is created per scheduled observation; the original primary failure
+    is always preserved; both attempts are separately persisted and budgeted.
+    """
+    from printer_v1.operator_cli.exact_pair_source_redundancy import (
+        execute_geckoterminal_fallback,
+        is_eligible_transient_primary_failure,
     )
     from printer_v1.sources.budget_accounting import count_recent_source_requests
     from printer_v1.sources.contracts import build_governed_source_request
@@ -420,7 +454,8 @@ def _execute_snapshot(
         conn, request, adapter,
         recent_request_count=count_recent_source_requests(conn, "dexscreener"),
     )
-    result: dict[str, Any] = {
+    primary = {
+        "source_name": "dexscreener",
         "source_request_id": int(execution.request_record.id),
         "source_response_id": (
             int(execution.response_record.id) if execution.response_record else None
@@ -430,21 +465,81 @@ def _execute_snapshot(
         ),
         "source_status": execution.normalized_result.source_status.value,
         "data_quality_label": execution.normalized_result.data_quality_label.value,
+        "failure_type": execution.normalized_result.failure_type,
     }
-    if execution.response_record is None:
-        result["ok"] = False
-        result["blocked_reason"] = execution.normalized_result.failure_type or "source_response_missing"
+    result: dict[str, Any] = {
+        "primary": primary,
+        "fallback_attempted": False,
+        # Top-level source fields mirror the attempt that produced the snapshot;
+        # until a snapshot exists they mirror the primary attempt.
+        "source_request_id": primary["source_request_id"],
+        "source_response_id": primary["source_response_id"],
+        "source_failure_id": primary["source_failure_id"],
+        "source_status": primary["source_status"],
+        "data_quality_label": primary["data_quality_label"],
+        "snapshot_source_name": "dexscreener",
+    }
+
+    if execution.response_record is not None:
+        # DexScreener-only success path is unchanged.
+        result.update(_persist_exact_pair_snapshot(conn, step, execution))
         return result
-    persisted = persist_snapshot_from_source_response(
-        conn, int(execution.response_record.id), mint,
-        expected_pair_address=str(step["pair_address"]),
-        tracking_lane=str(step["tracking_lane"]),
+
+    # Primary produced no snapshot. Preserve the exact primary failure.
+    result["ok"] = False
+    result["blocked_reason"] = execution.normalized_result.failure_type or "source_response_missing"
+
+    if fallback_adapter_factory is None or not is_eligible_transient_primary_failure(execution):
+        # Non-transient / ineligible primary failure: fail closed, no fallback.
+        return result
+
+    # Eligible transient primary failure: one governed GeckoTerminal fallback.
+    fb = execute_geckoterminal_fallback(
+        conn, step,
+        fallback_adapter_factory=fallback_adapter_factory,
+        timeout_seconds=timeout_seconds,
     )
-    result["snapshot"] = persisted
-    result["snapshot_id"] = persisted.get("snapshot_id") or persisted.get("existing_snapshot_id")
-    result["ok"] = persisted.get("e2m_status") == E2M_STATUS_PERSISTED
-    if not result["ok"]:
-        result["blocked_reason"] = "; ".join(persisted.get("blocked_reasons", [])) or persisted.get("e2m_status")
+    fallback = {
+        "source_name": "geckoterminal",
+        "source_request_id": int(fb.request_record.id),
+        "source_response_id": (
+            int(fb.response_record.id) if fb.response_record else None
+        ),
+        "source_failure_id": (
+            int(fb.failure_record.id) if fb.failure_record else None
+        ),
+        "source_status": fb.normalized_result.source_status.value,
+        "data_quality_label": fb.normalized_result.data_quality_label.value,
+        "failure_type": fb.normalized_result.failure_type,
+    }
+    result["fallback_attempted"] = True
+    result["fallback"] = fallback
+    result["primary_failure_preserved"] = primary["source_failure_id"]
+
+    if fb.response_record is None:
+        # Fallback also failed: fail closed on the preserved primary failure.
+        result["fallback_ok"] = False
+        return result
+
+    persisted = _persist_exact_pair_snapshot(conn, step, fb)
+    if not persisted.get("ok"):
+        # Invalid fallback response (mismatch / stale / missing fields): fail closed.
+        result["fallback_ok"] = False
+        result["fallback_blocked_reason"] = persisted.get("blocked_reason")
+        return result
+
+    # Fallback produced exactly one valid snapshot. Surface it as the result.
+    result["fallback_ok"] = True
+    result["snapshot_source_name"] = "geckoterminal"
+    result["source_request_id"] = fallback["source_request_id"]
+    result["source_response_id"] = fallback["source_response_id"]
+    result["source_failure_id"] = None
+    result["source_status"] = fallback["source_status"]
+    result["data_quality_label"] = fallback["data_quality_label"]
+    result["snapshot"] = persisted["snapshot"]
+    result["snapshot_id"] = persisted["snapshot_id"]
+    result["ok"] = True
+    result.pop("blocked_reason", None)
     return result
 
 
@@ -940,6 +1035,7 @@ def _execute_close(
     conn: sqlite3.Connection, step: sqlite3.Row, *, adapter_factory: Callable[..., Any],
     timeout_seconds: float, minimum_evidence_seconds: float,
     context_adapter_factories: dict[str, Callable[..., Any]] | None = None,
+    fallback_adapter_factory: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     from printer_v1.operator_cli.e2o_memory_window_close import close_15m_memory_window_from_snapshot
     from printer_v1.operator_cli.e2q_memory_window_audit import audit_15m_memory_window
@@ -952,7 +1048,8 @@ def _execute_close(
         adapter_factories=context_adapter_factories,
     )
     result = _execute_snapshot(
-        conn, step, adapter_factory=adapter_factory, timeout_seconds=timeout_seconds
+        conn, step, adapter_factory=adapter_factory, timeout_seconds=timeout_seconds,
+        fallback_adapter_factory=fallback_adapter_factory,
     )
     result["governed_context_collection"] = context_bundle["report"]
     if not result.get("ok"):
@@ -1167,6 +1264,7 @@ def _execute_continuation_close(
     *,
     adapter_factory: Callable[..., Any],
     timeout_seconds: float,
+    fallback_adapter_factory: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     """Persist the final 1h snapshot and close against the exact current-run 15m row."""
     from printer_v1.operator_cli.e2q_memory_window_audit import audit_15m_memory_window
@@ -1178,7 +1276,8 @@ def _execute_continuation_close(
     from printer_v1.operator_cli.lane_k_e2z_pipeline_wiring import run_e2z_pipeline
 
     result = _execute_snapshot(
-        conn, step, adapter_factory=adapter_factory, timeout_seconds=timeout_seconds
+        conn, step, adapter_factory=adapter_factory, timeout_seconds=timeout_seconds,
+        fallback_adapter_factory=fallback_adapter_factory,
     )
     if not result.get("ok"):
         return result
@@ -1253,6 +1352,7 @@ def _execute_long_4h_step(
     adapter_factory: Callable[..., Any],
     timeout_seconds: float,
     context_adapter_factories: dict[str, Callable[..., Any]] | None = None,
+    fallback_adapter_factory: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     """Execute one policy-planned 4h snapshot or close through shared boundaries."""
     from printer_v1.context_evidence import build_window_4h_context_evidence
@@ -1277,7 +1377,8 @@ def _execute_long_4h_step(
             include=frozenset({"market_chain", "safety", "exit_quote"}),
         )
     result = _execute_snapshot(
-        conn, step, adapter_factory=adapter_factory, timeout_seconds=timeout_seconds
+        conn, step, adapter_factory=adapter_factory, timeout_seconds=timeout_seconds,
+        fallback_adapter_factory=fallback_adapter_factory,
     )
     if not result.get("ok"):
         return result
@@ -2268,6 +2369,7 @@ def run_one_command_15m_factory(
     supervision_execution_id: str | None = None,
     discovery_transport: Any = None, discovery_runner: Callable[..., dict[str, Any]] | None = None,
     snapshot_adapter_factory: Callable[..., Any] | None = None,
+    fallback_snapshot_adapter_factory: Callable[..., Any] | None = None,
     context_adapter_factories: dict[str, Callable[..., Any]] | None = None,
     _window_seconds: float = 900.0, _sleep: Callable[[float], None] = time.sleep,
     _monotonic: Callable[[], float] = time.monotonic,
@@ -2321,6 +2423,15 @@ def run_one_command_15m_factory(
 
     discovery_callable = discovery_runner or build_discover_candidates_once_payload
     adapter_factory = snapshot_adapter_factory or build_e2i_dexscreener_adapter
+    # V2-9.5: one governed GeckoTerminal exact-pair fallback, attempted at most
+    # once after an eligible transient DexScreener transport failure. The real
+    # builder is the default so live runs get redundancy; tests inject a fixture.
+    from printer_v1.operator_cli.exact_pair_source_redundancy import (
+        build_default_geckoterminal_fallback_adapter,
+    )
+    fallback_factory = (
+        fallback_snapshot_adapter_factory or build_default_geckoterminal_fallback_adapter
+    )
     config = {
         "db_mode": "PROOF_ONLY", "db_path": str(path), "backup_path": str(backup),
         "window_kind": window_kind, "max_selected_tokens": max_selected_tokens,
@@ -2430,6 +2541,7 @@ def run_one_command_15m_factory(
                         timeout_seconds=timeout_seconds,
                         minimum_evidence_seconds=_window_seconds,
                         context_adapter_factories=context_adapter_factories,
+                        fallback_adapter_factory=fallback_factory,
                     )
                 elif pending["step_kind"] == "CONTINUATION_CLOSE":
                     result = _execute_continuation_close(
@@ -2437,6 +2549,7 @@ def run_one_command_15m_factory(
                         pending,
                         adapter_factory=adapter_factory,
                         timeout_seconds=timeout_seconds,
+                        fallback_adapter_factory=fallback_factory,
                     )
                 elif str(pending["step_kind"]).startswith("LONG_CONTINUATION_"):
                     result = _execute_long_4h_step(
@@ -2445,11 +2558,13 @@ def run_one_command_15m_factory(
                         adapter_factory=adapter_factory,
                         timeout_seconds=timeout_seconds,
                         context_adapter_factories=context_adapter_factories,
+                        fallback_adapter_factory=fallback_factory,
                     )
                 else:
                     result = _execute_snapshot(
                         conn, pending, adapter_factory=adapter_factory,
                         timeout_seconds=timeout_seconds,
+                        fallback_adapter_factory=fallback_factory,
                     )
                 if result.get("ok"):
                     if pending["step_kind"] == "SNAPSHOT" and str(pending["step_key"]).endswith("_snapshot_00"):

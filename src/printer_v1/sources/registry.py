@@ -52,13 +52,18 @@ SOURCE_REGISTRY: dict[str, SourceDefinition] = {
             "geckoterminal_trending_pool_reference",
             "geckoterminal_ohlcv_15m",
             "geckoterminal_pool_trades_15m",
+            # V2-9.5: exact-pair snapshot fallback for a single Solana pool.
+            # Same request kind as DexScreener's primary snapshot; the
+            # source_name distinguishes the provider. Attempted at most once
+            # after an eligible transient DexScreener transport failure.
+            "pair_market_snapshot",
         ),
         default_rate_limit_per_minute=30,
         stale_after_seconds=180,
         retry_after_seconds=60,
         max_retries=2,
         priority_class="discovery",
-        notes="Free/public Solana pool discovery; conservative rate limits; no paid tier.",
+        notes="Free/public Solana pool discovery and exact-pair snapshot fallback; conservative rate limits; no paid tier.",
     ),
     "pumpportal": SourceDefinition(
         source_name="pumpportal",

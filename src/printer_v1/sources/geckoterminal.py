@@ -40,11 +40,19 @@ GECKOTERMINAL_PUBLIC_API_HEADERS = {
     "Accept": "application/json;version=20230302",
 }
 
+# V2-9.5 exact-pair snapshot fallback: a single Solana pool lookup. Same request
+# kind as DexScreener's primary snapshot; source_name distinguishes the provider.
+GECKOTERMINAL_PAIR_SNAPSHOT_REQUEST_KIND = "pair_market_snapshot"
+GECKOTERMINAL_POOL_URL_TEMPLATE = (
+    "https://api.geckoterminal.com/api/v2/networks/solana/pools/{pool_address}"
+)
+
 ALLOWED_REQUEST_KINDS = frozenset({
     "geckoterminal_new_pool_discovery",
     "geckoterminal_trending_pool_reference",
     "geckoterminal_ohlcv_15m",
     "geckoterminal_pool_trades_15m",
+    GECKOTERMINAL_PAIR_SNAPSHOT_REQUEST_KIND,
 })
 
 _SOLANA_NETWORK_IDS = frozenset({"solana", "sol"})
@@ -104,6 +112,7 @@ class GeckoTerminalAdapter:
             payload,
             request_kind=context.request.request_kind,
             expected_pool_address=context.request.payload.get("pool_address"),
+            expected_token_mint=context.request.payload.get("token_mint"),
         )
 
 
@@ -190,11 +199,44 @@ def build_geckoterminal_15m_transport(
     return endpoint, transport
 
 
+def build_geckoterminal_pair_snapshot_transport(
+    pool_address: str,
+    token_mint: str,
+    *,
+    timeout_seconds: float = GECKOTERMINAL_TIMEOUT_SECONDS,
+) -> Callable[[SourceAdapterContext], Mapping[str, Any]]:
+    """Build one live transport for a single Solana pool exact-pair snapshot.
+
+    Uses the free/public GeckoTerminal single-pool endpoint. Embeds the
+    requested pool/mint/network so normalization can enforce exact-pair
+    identity. No paid tier, no authentication.
+    """
+    pool_address = str(pool_address or "").strip()
+    token_mint = str(token_mint or "").strip()
+    if not pool_address or not token_mint:
+        raise ValueError("GeckoTerminal pair snapshot requires pool_address and token_mint")
+    endpoint = GECKOTERMINAL_POOL_URL_TEMPLATE.format(pool_address=pool_address)
+
+    def transport(context: SourceAdapterContext) -> Mapping[str, Any]:
+        requested_pool = str(context.request.payload.get("pool_address") or "").strip()
+        if requested_pool != pool_address:
+            raise ValueError("GeckoTerminal pair snapshot transport pool mismatch")
+        payload = dict(_load_public_json(endpoint, timeout_seconds=timeout_seconds))
+        payload["_requested_pool_address"] = pool_address
+        payload["_requested_token_mint"] = token_mint
+        payload["_requested_network"] = "solana"
+        payload["_requested_endpoint"] = endpoint
+        return MappingProxyType(payload)
+
+    return transport
+
+
 def normalize_geckoterminal_payload(
     payload: Mapping[str, Any],
     *,
     request_kind: str,
     expected_pool_address: Any = None,
+    expected_token_mint: Any = None,
 ) -> NormalizedSourceResult:
     if request_kind not in ALLOWED_REQUEST_KINDS:
         return _failure_result(
@@ -223,6 +265,13 @@ def normalize_geckoterminal_payload(
             failure_type="geckoterminal_rate_limited",
             failure_message="GeckoTerminal rate limit",
             retry_after_at=retry_at,
+        )
+
+    if request_kind == GECKOTERMINAL_PAIR_SNAPSHOT_REQUEST_KIND:
+        return _normalize_geckoterminal_pair_snapshot(
+            payload,
+            expected_pool_address=expected_pool_address,
+            expected_token_mint=expected_token_mint,
         )
 
     if request_kind in {
@@ -333,6 +382,174 @@ def _normalize_geckoterminal_15m_payload(
                 "pool_address": observed,
                 "endpoint": endpoint,
                 "provider_payload": provider_payload,
+            }
+        ),
+        status_code=int(payload.get("_source_status_code") or 200),
+    )
+
+
+def _txn_bucket_total(bucket: Any) -> int | None:
+    if isinstance(bucket, (int, float)):
+        return int(bucket)
+    if isinstance(bucket, Mapping):
+        buys = bucket.get("buys")
+        sells = bucket.get("sells")
+        if buys is None and sells is None:
+            return None
+        return int((buys or 0) + (sells or 0))
+    return None
+
+
+def _txn_bucket_side(bucket: Any, side: str) -> int | None:
+    if isinstance(bucket, Mapping):
+        value = bucket.get(side)
+        return int(value) if value is not None else None
+    return None
+
+
+def _normalize_geckoterminal_pair_snapshot(
+    payload: Mapping[str, Any],
+    *,
+    expected_pool_address: Any,
+    expected_token_mint: Any,
+) -> NormalizedSourceResult:
+    """Normalize one Solana single-pool response into an exact-pair snapshot.
+
+    Enforces exact-pair identity (network=solana, pool address, base token mint)
+    and requires every mandatory market field. Any mismatch, missing mandatory
+    field, staleness, or malformed body fails closed with MISSING_CRITICAL_DATA
+    so the V2-9.5 fallback never persists partial or wrong-pair evidence.
+    """
+    kind = GECKOTERMINAL_PAIR_SNAPSHOT_REQUEST_KIND
+    expected_pool = str(expected_pool_address or "").strip()
+    expected_mint = str(expected_token_mint or "").strip()
+    if not expected_pool or not expected_mint:
+        return _failure_result(
+            kind,
+            "geckoterminal_pair_snapshot_missing_expected_identity",
+            "GeckoTerminal pair snapshot requires expected pool_address and token_mint",
+        )
+
+    network = str(payload.get("_requested_network") or "solana").lower()
+    observed_pool = str(payload.get("_requested_pool_address") or "").strip()
+    if network != "solana" or observed_pool != expected_pool:
+        return _failure_result(
+            kind,
+            "geckoterminal_pair_snapshot_pool_mismatch",
+            "GeckoTerminal pair snapshot did not match the requested Solana pool",
+        )
+    if payload.get("fixture_stale"):
+        return _failure_result(
+            kind,
+            "geckoterminal_pair_snapshot_stale",
+            "GeckoTerminal pair snapshot response is stale",
+        )
+
+    data = payload.get("data")
+    if not isinstance(data, Mapping):
+        return _failure_result(
+            kind,
+            "geckoterminal_pair_snapshot_missing_data",
+            "GeckoTerminal pair snapshot response missing pool object",
+        )
+    flat = _normalize_geckoterminal_pool(data)
+    if not flat:
+        return _failure_result(
+            kind,
+            "geckoterminal_pair_snapshot_unparseable_pool",
+            "GeckoTerminal pair snapshot pool object could not be parsed",
+        )
+
+    observed_pair_address = str(flat.get("pairAddress") or "").strip()
+    base = flat.get("baseToken") if isinstance(flat.get("baseToken"), Mapping) else {}
+    observed_mint = str(base.get("address") or "").strip()
+    if flat.get("chainId") != "solana":
+        return _failure_result(
+            kind,
+            "geckoterminal_pair_snapshot_non_solana",
+            "GeckoTerminal pair snapshot pool is not a Solana pool",
+        )
+    if observed_pair_address != expected_pool or observed_mint != expected_mint:
+        return _failure_result(
+            kind,
+            "geckoterminal_pair_snapshot_identity_mismatch",
+            "GeckoTerminal pair snapshot pool/token identity did not match the request",
+        )
+
+    attrs = data.get("attributes") if isinstance(data.get("attributes"), Mapping) else data
+    txns = attrs.get("transactions") if isinstance(attrs.get("transactions"), Mapping) else {}
+    volume_usd = attrs.get("volume_usd") if isinstance(attrs.get("volume_usd"), Mapping) else {}
+
+    price_usd = _to_float(flat.get("priceUsd"))
+    liquidity = flat.get("liquidity") if isinstance(flat.get("liquidity"), Mapping) else {}
+    liquidity_usd = _to_float(liquidity.get("usd"))
+    fdv = _to_float(flat.get("fdv"))
+    market_cap = _to_float(flat.get("marketCap"))
+    volume_24h = _to_float(_get_volume(attrs, volume_usd, "volume_24h", "h24"))
+    txns_24h = _txn_bucket_total(txns.get("h24"))
+    pair_created_at = flat.get("pair_created_at") or attrs.get("pool_created_at")
+
+    # Mandatory exact-pair contract fields. Missing any one fails closed —
+    # required fields are never weakened and never combined across providers.
+    missing: list[str] = []
+    if price_usd is None:
+        missing.append("price_usd")
+    if liquidity_usd is None:
+        missing.append("liquidity_usd")
+    if fdv is None and market_cap is None:
+        missing.append("fdv_or_market_cap")
+    if volume_24h is None:
+        missing.append("volume_24h")
+    if txns_24h is None:
+        missing.append("txns_24h")
+    if not pair_created_at:
+        missing.append("pair_created_at")
+    if missing:
+        return _failure_result(
+            kind,
+            "geckoterminal_pair_snapshot_missing_mandatory_fields",
+            f"GeckoTerminal pair snapshot missing mandatory fields: {sorted(missing)}",
+        )
+
+    volume_dict = flat.get("volume") if isinstance(flat.get("volume"), Mapping) else {}
+    snapshot_pair = {
+        "chain": "solana",
+        "pair_address": observed_pair_address,
+        "token_mint": observed_mint,
+        "symbol": flat.get("symbol"),
+        "name": flat.get("name"),
+        "price_usd": price_usd,
+        "liquidity_usd": liquidity_usd,
+        "volume_5m": _to_float(volume_dict.get("m5")),
+        "volume_1h": _to_float(volume_dict.get("h1")),
+        "volume_24h": volume_24h,
+        "txns_5m": _txn_bucket_total(txns.get("m5")),
+        "txns_1h": _txn_bucket_total(txns.get("h1")),
+        "txns_24h": txns_24h,
+        "buys_5m": _txn_bucket_side(txns.get("m5"), "buys"),
+        "sells_5m": _txn_bucket_side(txns.get("m5"), "sells"),
+        "buys_1h": _txn_bucket_side(txns.get("h1"), "buys"),
+        "sells_1h": _txn_bucket_side(txns.get("h1"), "sells"),
+        "buys_24h": _txn_bucket_side(txns.get("h24"), "buys"),
+        "sells_24h": _txn_bucket_side(txns.get("h24"), "sells"),
+        "fdv": fdv,
+        "market_cap": market_cap,
+        "price_change_5m": flat.get("price_change_5m"),
+        "price_change_1h": flat.get("price_change_1h"),
+        "price_change_24h": flat.get("price_change_24h"),
+        "pair_created_at": pair_created_at,
+    }
+    return NormalizedSourceResult(
+        source_name=GECKOTERMINAL_SOURCE_NAME,
+        request_kind=kind,
+        source_status=SourceStatus.COMPLETE,
+        data_quality_label=DataQualityLabel.CLEAN_DATA,
+        normalized_payload=MappingProxyType(
+            {
+                "source_name": GECKOTERMINAL_SOURCE_NAME,
+                "request_kind": kind,
+                "pairs": [snapshot_pair],
+                "exact_pair_fallback": True,
             }
         ),
         status_code=int(payload.get("_source_status_code") or 200),

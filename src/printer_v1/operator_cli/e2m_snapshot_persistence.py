@@ -25,6 +25,11 @@ from typing import Any
 
 
 E2M_SOURCE_NAME: str = "dexscreener"
+# V2-9.5: the exact-pair snapshot may be served by the DexScreener primary or
+# the governed GeckoTerminal fallback. Both are free/public Solana sources and
+# both produce the identical normalized exact-pair contract. Any other source
+# name (e.g. coingecko) remains blocked. The request kind is identical for both.
+E2M_ALLOWED_SOURCE_NAMES: frozenset[str] = frozenset({"dexscreener", "geckoterminal"})
 E2M_REQUEST_KIND: str = "pair_market_snapshot"
 E2M_REQUIRED_SOURCE_STATUS: str = "COMPLETE"
 E2M_REQUIRED_QUALITY: str = "CLEAN_DATA"
@@ -166,11 +171,12 @@ def _insert_snapshot(
     captured_at: str,
     now: str,
     tracking_lane: str,
+    source_name: str = E2M_SOURCE_NAME,
 ) -> int:
     """Insert one printer_token_snapshots row. Returns snapshot_id."""
     normalized_json = json.dumps(
         {
-            "source_name": E2M_SOURCE_NAME,
+            "source_name": source_name,
             "request_kind": E2M_REQUEST_KIND,
             "source_request_id": source_request_id,
             "source_response_id": source_response_id,
@@ -289,9 +295,10 @@ def persist_snapshot_from_source_response(
             "memory_windows_created": 0,
         }
 
-    if resp_row["source_name"] != E2M_SOURCE_NAME:
+    if resp_row["source_name"] not in E2M_ALLOWED_SOURCE_NAMES:
         blocked_reasons.append(
-            f"source_name must be {E2M_SOURCE_NAME!r}; got {resp_row['source_name']!r}"
+            f"source_name must be one of {sorted(E2M_ALLOWED_SOURCE_NAMES)!r};"
+            f" got {resp_row['source_name']!r}"
         )
     if resp_row["source_status"] != E2M_REQUIRED_SOURCE_STATUS:
         blocked_reasons.append(
@@ -442,6 +449,7 @@ def persist_snapshot_from_source_response(
         captured_at,
         now,
         tracking_lane,
+        source_name=str(resp_row["source_name"]),
     )
 
     return {
@@ -453,6 +461,7 @@ def persist_snapshot_from_source_response(
         "approved_mint": approved_mint,
         "token_mint_persisted": token_mint,
         "pair_address_persisted": pair_address,
+        "source_name_persisted": str(resp_row["source_name"]),
         "source_request_id": source_request_id,
         "source_response_id": source_response_id,
         "captured_at": captured_at,

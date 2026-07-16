@@ -168,18 +168,48 @@ def build_dexscreener_smoke_transport(
                 if isinstance(payload, dict):
                     payload["_source_status_code"] = getattr(response, "status", None)
                     return MappingProxyType(payload)
-                return MappingProxyType({"fixture_status": "failure", "failure_message": "DexScreener returned non-object payload"})
+                # A non-object body is a payload/schema defect, not a transport
+                # failure: it must never trigger the V2-9.5 fallback.
+                return MappingProxyType(
+                    {
+                        "fixture_status": "failure",
+                        "failure_type": "dexscreener_malformed_payload",
+                        "failure_message": "DexScreener returned non-object payload",
+                    }
+                )
         except url_error.HTTPError as exc:
+            # V2-9.5 eligibility split: 429 and temporary 5xx are transient and
+            # fallback-eligible; 4xx is a deterministic client error and is not.
             if exc.code == 429:
                 return MappingProxyType({"fixture_status": "rate_limited", "retry_after_seconds": 60})
+            if 500 <= int(exc.code) <= 599:
+                return MappingProxyType(
+                    {
+                        "fixture_status": "failure",
+                        "failure_type": "dexscreener_http_server_error",
+                        "failure_message": f"DexScreener HTTP error {exc.code}",
+                    }
+                )
             return MappingProxyType(
                 {
                     "fixture_status": "failure",
-                    "failure_type": "dexscreener_http_error",
+                    "failure_type": "dexscreener_http_client_error",
                     "failure_message": f"DexScreener HTTP error {exc.code}",
                 }
             )
-        except (OSError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            # Parser/decode defect — a payload problem, never fallback-eligible.
+            return MappingProxyType(
+                {
+                    "fixture_status": "failure",
+                    "failure_type": "dexscreener_malformed_payload",
+                    "failure_message": str(exc),
+                }
+            )
+        except (OSError, TimeoutError) as exc:
+            # TLS/connection interruption or connect/read timeout. ssl.SSLError
+            # (e.g. SSLV3_ALERT_BAD_RECORD_MAC) is an OSError subclass and is
+            # caught here. Transient and fallback-eligible.
             return MappingProxyType(
                 {
                     "fixture_status": "failure",
