@@ -241,9 +241,17 @@ def trading_flow_context_can_support_clean_memory(
     normalized_payload: Mapping[str, Any],
     now: datetime | None = None,
 ) -> bool:
-    return (
-        classify_trading_flow_payload_quality(normalized_payload, now)
-        == TradingFlowPayloadQualityLabel.TRADING_FLOW_CONTEXT_CLEAN
-        and classify_flow_memory_gate(normalized_payload, now)
-        == FlowMemoryGateLabel.FLOW_CONTEXT_ACCEPTABLE
-    )
+    """Whether this flow evidence is trustworthy enough to support clean memory.
+
+    V2-9.4.7: split buy/sell volume and wallet participation are optional
+    context that no current adapter supplies, so requiring
+    TRADING_FLOW_CONTEXT_CLEAN here made this predicate unsatisfiable from live
+    data and contradicted the shared-context resolver, which correctly treats
+    partial flow as able to support clean memory. Absent optional context is
+    reported as PARTIAL/CAUTION and stays visible; it is not an evidence fault.
+    Every authenticity and provenance fault still blocks below.
+    """
+    return classify_flow_memory_gate(normalized_payload, now) in {
+        FlowMemoryGateLabel.FLOW_CONTEXT_ACCEPTABLE,
+        FlowMemoryGateLabel.FLOW_CONTEXT_CAUTION,
+    }

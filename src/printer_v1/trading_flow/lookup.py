@@ -63,10 +63,15 @@ def trading_flow_snapshot_is_valid_for_memory(
         return False
     if DataQualityLabel(snapshot["data_quality_label"]) != DataQualityLabel.CLEAN_DATA:
         return False
-    if (
-        TradingFlowPayloadQualityLabel(snapshot["trading_flow_payload_quality_label"])
-        != TradingFlowPayloadQualityLabel.TRADING_FLOW_CONTEXT_CLEAN
-    ):
+    # V2-9.4.7: PARTIAL means optional context (split volume, wallet
+    # participation) is unavailable, which no current adapter supplies. Treating
+    # it as invalid made this lookup unable to return any real snapshot. Every
+    # genuine fault -- stale, conflicting, do-not-train, wash-like -- is still
+    # rejected above and below.
+    if TradingFlowPayloadQualityLabel(snapshot["trading_flow_payload_quality_label"]) not in {
+        TradingFlowPayloadQualityLabel.TRADING_FLOW_CONTEXT_CLEAN,
+        TradingFlowPayloadQualityLabel.TRADING_FLOW_CONTEXT_PARTIAL,
+    }:
         return False
     captured_at = parse_timestamp(snapshot["captured_at"])
     max_age = max_age_seconds or DEFAULT_MAX_AGE_SECONDS
