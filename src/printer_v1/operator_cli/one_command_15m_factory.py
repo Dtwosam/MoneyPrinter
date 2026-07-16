@@ -117,6 +117,43 @@ class _GlobalStop(Exception):
         self.scope = scope
         self.detail = detail
 
+
+class _ExternalStop(Exception):
+    """A cooperative launcher-requested stop with an immutable reason."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _check_cancellation(probe: Callable[[], str | None] | None) -> None:
+    if probe is None:
+        return
+    reason = probe()
+    if reason:
+        raise _ExternalStop(str(reason))
+
+
+def _sleep_with_cancellation(
+    seconds: float,
+    *,
+    sleep: Callable[[float], None],
+    probe: Callable[[], str | None] | None,
+) -> None:
+    remaining = max(0.0, seconds)
+    while remaining:
+        _check_cancellation(probe)
+        slice_seconds = min(1.0, remaining)
+        sleep(slice_seconds)
+        remaining -= slice_seconds
+    _check_cancellation(probe)
+
+
+def _emit_supervision_event(enabled: bool, event: str, **payload: Any) -> None:
+    if not enabled:
+        return
+    print(json.dumps({"event": event, "at": _iso(), **payload}, sort_keys=True), flush=True)
+
 _COUNT_TABLES = (
     "printer_source_requests", "printer_source_responses", "printer_source_failures",
     "printer_discovery_candidates", "printer_selection_batches",
@@ -574,6 +611,7 @@ def _collect_preclose_context(
     timeout_seconds: float,
     adapter_factories: dict[str, Callable[..., Any]] | None = None,
     include: frozenset[str] | None = None,
+    cancellation_probe: Callable[[], str | None] | None = None,
 ) -> dict[str, Any]:
     """Collect a fixed, governed context bundle before the close snapshot."""
     from printer_v1.paper_quote.jupiter_fixture import SOURCE_NAME as JUPITER_SOURCE
@@ -618,18 +656,21 @@ def _collect_preclose_context(
     )
 
     def execute(source_name: str, request_kind: str, suffix: str, payload: dict[str, Any], adapter: Any) -> Any:
+        _check_cancellation(cancellation_probe)
         request = build_governed_source_request(
             source_name,
             request_kind,
             request_key=f"{request_prefix}:{suffix}",
             payload={"token_mint": mint, "pair_address": pair, **payload},
         )
-        return execute_source_request_with_governor(
+        result = execute_source_request_with_governor(
             conn,
             request,
             adapter,
             recent_request_count=count_recent_source_requests(conn, source_name),
         )
+        _check_cancellation(cancellation_probe)
+        return result
 
     market_factory = factories.get("coingecko")
     market_adapter = (
@@ -1080,6 +1121,7 @@ def _execute_close(
     timeout_seconds: float, minimum_evidence_seconds: float,
     context_adapter_factories: dict[str, Callable[..., Any]] | None = None,
     fallback_adapter_factory: Callable[..., Any] | None = None,
+    cancellation_probe: Callable[[], str | None] | None = None,
 ) -> dict[str, Any]:
     from printer_v1.operator_cli.e2o_memory_window_close import close_15m_memory_window_from_snapshot
     from printer_v1.operator_cli.e2q_memory_window_audit import audit_15m_memory_window
@@ -1090,7 +1132,9 @@ def _execute_close(
         step,
         timeout_seconds=timeout_seconds,
         adapter_factories=context_adapter_factories,
+        cancellation_probe=cancellation_probe,
     )
+    _check_cancellation(cancellation_probe)
     result = _execute_snapshot(
         conn, step, adapter_factory=adapter_factory, timeout_seconds=timeout_seconds,
         fallback_adapter_factory=fallback_adapter_factory,
@@ -1136,6 +1180,7 @@ def _execute_close(
             ),
         )
         return result
+    _check_cancellation(cancellation_probe)
     close = close_15m_memory_window_from_snapshot(
         conn, int(result["snapshot_id"]), str(step["token_mint"]),
         snapshot_start_id=int(first["snapshot_id"]),
@@ -1309,8 +1354,10 @@ def _execute_continuation_close(
     adapter_factory: Callable[..., Any],
     timeout_seconds: float,
     fallback_adapter_factory: Callable[..., Any] | None = None,
+    cancellation_probe: Callable[[], str | None] | None = None,
 ) -> dict[str, Any]:
     """Persist the final 1h snapshot and close against the exact current-run 15m row."""
+    _check_cancellation(cancellation_probe)
     from printer_v1.operator_cli.e2q_memory_window_audit import audit_15m_memory_window
     from printer_v1.operator_cli.lane_e2o_1h_window_close import (
         E2O_1H_STATUS_BLOCKED,
@@ -1319,10 +1366,12 @@ def _execute_continuation_close(
     )
     from printer_v1.operator_cli.lane_k_e2z_pipeline_wiring import run_e2z_pipeline
 
+    _check_cancellation(cancellation_probe)
     result = _execute_snapshot(
         conn, step, adapter_factory=adapter_factory, timeout_seconds=timeout_seconds,
         fallback_adapter_factory=fallback_adapter_factory,
     )
+    _check_cancellation(cancellation_probe)
     if not result.get("ok"):
         return result
     first = conn.execute(
@@ -1355,6 +1404,7 @@ def _execute_continuation_close(
             continuity_source=source,
         )
         return result
+    _check_cancellation(cancellation_probe)
     close = close_1h_memory_window_from_snapshot(
         conn,
         int(result["snapshot_id"]),
@@ -1397,6 +1447,7 @@ def _execute_long_4h_step(
     timeout_seconds: float,
     context_adapter_factories: dict[str, Callable[..., Any]] | None = None,
     fallback_adapter_factory: Callable[..., Any] | None = None,
+    cancellation_probe: Callable[[], str | None] | None = None,
 ) -> dict[str, Any]:
     """Execute one policy-planned 4h snapshot or close through shared boundaries."""
     from printer_v1.context_evidence import build_window_4h_context_evidence
@@ -1413,17 +1464,21 @@ def _execute_long_4h_step(
             conn, step, timeout_seconds=timeout_seconds,
             adapter_factories=context_adapter_factories,
             include=frozenset({"market_chain", "entry_quote"}),
+            cancellation_probe=cancellation_probe,
         )
     elif is_close:
         context_bundle = _collect_preclose_context(
             conn, step, timeout_seconds=timeout_seconds,
             adapter_factories=context_adapter_factories,
             include=frozenset({"market_chain", "safety", "exit_quote"}),
+            cancellation_probe=cancellation_probe,
         )
+    _check_cancellation(cancellation_probe)
     result = _execute_snapshot(
         conn, step, adapter_factory=adapter_factory, timeout_seconds=timeout_seconds,
         fallback_adapter_factory=fallback_adapter_factory,
     )
+    _check_cancellation(cancellation_probe)
     if not result.get("ok"):
         return result
     if context_bundle is not None:
@@ -1450,6 +1505,7 @@ def _execute_long_4h_step(
     )
     conn.commit()
 
+    _check_cancellation(cancellation_probe)
     close = close_current_run_4h(
         conn,
         run_id=str(step["run_id"]),
@@ -2411,6 +2467,7 @@ def run_one_command_15m_factory(
     continuous_four_hour: bool = False,
     four_hour_proof_mode: bool = False,
     supervision_execution_id: str | None = None,
+    cancellation_probe: Callable[[], str | None] | None = None,
     discovery_transport: Any = None, discovery_runner: Callable[..., dict[str, Any]] | None = None,
     snapshot_adapter_factory: Callable[..., Any] | None = None,
     fallback_snapshot_adapter_factory: Callable[..., Any] | None = None,
@@ -2524,6 +2581,8 @@ def run_one_command_15m_factory(
     discovery: dict[str, Any] = {}
     stop_reason = STOP_COMPLETED
     start_mono = _monotonic()
+    _emit_supervision_event(bool(supervision_execution_id), "RUN_START", run_id=run_id)
+    _check_cancellation(cancellation_probe)
     try:
         args = _build_discovery_args(
             path, max_selected_tokens=max_selected_tokens,
@@ -2562,7 +2621,11 @@ def run_one_command_15m_factory(
             due = datetime.fromisoformat(str(pending["scheduled_for"]))
             wait = max(0.0, (due - _now()).total_seconds())
             if wait:
-                _sleep(min(wait, max(0.0, total_duration_seconds - elapsed)))
+                _sleep_with_cancellation(
+                    min(wait, max(0.0, total_duration_seconds - elapsed)),
+                    sleep=_sleep,
+                    probe=cancellation_probe,
+                )
                 continue
             job_id = int(pending["scheduler_job_id"])
             claimed = claim_due_job(conn, job_id=job_id, lock_owner=f"v2_4:{run_id}")
@@ -2576,6 +2639,14 @@ def run_one_command_15m_factory(
             conn.commit()
             token_id = int(pending["token_id"])
             try:
+                _emit_supervision_event(
+                    bool(supervision_execution_id),
+                    "CLOSE_START" if "CLOSE" in str(pending["step_kind"]) else "STEP_START",
+                    run_id=run_id,
+                    step_key=str(pending["step_key"]),
+                    step_kind=str(pending["step_kind"]),
+                )
+                _check_cancellation(cancellation_probe)
                 # Hard ceilings are integrity limits; a projected breach is a
                 # global safe stop (raises _GlobalStop), never an exceeded call.
                 _enforce_budgets_before_step(conn, run_id, pending)
@@ -2586,6 +2657,7 @@ def run_one_command_15m_factory(
                         minimum_evidence_seconds=_window_seconds,
                         context_adapter_factories=context_adapter_factories,
                         fallback_adapter_factory=fallback_factory,
+                        cancellation_probe=cancellation_probe,
                     )
                 elif pending["step_kind"] == "CONTINUATION_CLOSE":
                     result = _execute_continuation_close(
@@ -2594,6 +2666,7 @@ def run_one_command_15m_factory(
                         adapter_factory=adapter_factory,
                         timeout_seconds=timeout_seconds,
                         fallback_adapter_factory=fallback_factory,
+                        cancellation_probe=cancellation_probe,
                     )
                 elif str(pending["step_kind"]).startswith("LONG_CONTINUATION_"):
                     result = _execute_long_4h_step(
@@ -2603,13 +2676,16 @@ def run_one_command_15m_factory(
                         timeout_seconds=timeout_seconds,
                         context_adapter_factories=context_adapter_factories,
                         fallback_adapter_factory=fallback_factory,
+                        cancellation_probe=cancellation_probe,
                     )
                 else:
+                    _check_cancellation(cancellation_probe)
                     result = _execute_snapshot(
                         conn, pending, adapter_factory=adapter_factory,
                         timeout_seconds=timeout_seconds,
                         fallback_adapter_factory=fallback_factory,
                     )
+                _check_cancellation(cancellation_probe)
                 if result.get("ok"):
                     if pending["step_kind"] == "SNAPSHOT" and str(pending["step_key"]).endswith("_snapshot_00"):
                         captured = conn.execute(
@@ -2715,6 +2791,8 @@ def run_one_command_15m_factory(
                     fail_job(conn, job_id=job_id, error=error, max_retries=0)
                     _cancel_pending_for_token(conn, run_id, token_id, TOKEN_LOCAL_CANCELLED)
                     conn.commit()
+            except _ExternalStop:
+                raise
             except _GlobalStop as gstop:
                 # Global integrity/budget breach cancels the entire run.
                 stop_reason = gstop.reason
@@ -2737,12 +2815,17 @@ def run_one_command_15m_factory(
                 fail_job(conn, job_id=job_id, error=result["exception"], max_retries=0)
                 _cancel_pending_for_token(conn, run_id, token_id, TOKEN_LOCAL_CANCELLED)
                 conn.commit()
+    except _ExternalStop as external_stop:
+        stop_reason = external_stop.reason
     except KeyboardInterrupt:
         stop_reason = STOP_INTERRUPTED
     except Exception as exc:
         stop_reason = STOP_PREFLIGHT
         discovery = {**discovery, "orchestration_error": f"{type(exc).__name__}: {exc}"}
     finally:
+        _emit_supervision_event(
+            bool(supervision_execution_id), "TERMINAL_CAUSE", reason=stop_reason,
+        )
         _cancel_pending(conn, run_id, stop_reason)
         conn.commit()
         report = _final_report(
@@ -2750,12 +2833,23 @@ def run_one_command_15m_factory(
             stop_reason=stop_reason, started_at=started_at,
         )
         _apply_post_report_integrity(report)
+        report["full_run_evidence_deltas"] = dict(report["table_deltas"])
+        report["recovery_evidence_deltas"] = {
+            table: 0 for table in report["table_deltas"]
+        }
 
         conn.execute(
             "UPDATE printer_memory_factory_runs SET run_status=?,stop_reason=?,finished_at=?,final_report_json=?,updated_at=? WHERE run_id=?",
             (report["run_status"], report["stop_reason"], report["finished_at"], _json(report), _iso(), run_id),
         )
         conn.commit()
+        _emit_supervision_event(
+            bool(supervision_execution_id),
+            "CLEANUP_COMPLETE",
+            run_id=run_id,
+            stop_reason=report["stop_reason"],
+            running_jobs=report["running_jobs_after_stop"],
+        )
         conn.close()
         if supervision_execution_id:
             from printer_v1.operator_cli.proof_supervision import (

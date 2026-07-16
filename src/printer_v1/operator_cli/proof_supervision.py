@@ -34,6 +34,9 @@ TERMINAL_HOST_DISAPPEARED = "HOST_PROCESS_DISAPPEARED"
 
 HOST_PROCESS_DISAPPEARED = "HOST_PROCESS_DISAPPEARED"
 OPERATOR_CANCELLED = "OPERATOR_CANCELLED"
+SUPERVISION_HEARTBEAT_PERSISTENCE_FAILED = (
+    "SUPERVISION_HEARTBEAT_PERSISTENCE_FAILED"
+)
 DEFAULT_LEASE_SECONDS = 90
 ACTIVE_STATUSES = (STATUS_STARTING, STATUS_RUNNING)
 TERMINAL_STATUSES = {
@@ -128,6 +131,15 @@ def _counts(connection: sqlite3.Connection) -> dict[str, int]:
         for table in EVIDENCE_TABLES
     }
 
+def full_run_evidence_deltas(
+    db_path: str | Path, backup_db_path: str | Path,
+) -> dict[str, int]:
+    """Measure the complete isolated proof against its prepared baseline."""
+    with _connect(backup_db_path, readonly=True) as baseline:
+        before = _counts(baseline)
+    with _connect(db_path, readonly=True) as proof:
+        after = _counts(proof)
+    return {table: after[table] - before[table] for table in EVIDENCE_TABLES}
 
 def inspect_one_proof_lock(lock_path: str | Path) -> dict[str, Any]:
     path = Path(lock_path).resolve()
@@ -137,19 +149,89 @@ def inspect_one_proof_lock(lock_path: str | Path) -> dict[str, Any]:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ProofSupervisionError(f"ambiguous one-proof lock: {exc}") from exc
-    return {
-        "lock_path": str(path),
-        "exists": True,
-        "available": False,
-        "execution_id": payload.get("execution_id"),
-        "proof_db_path": payload.get("proof_db_path"),
-        "created_at": payload.get("created_at"),
+    return {"lock_path": str(path), "exists": True, "available": False, **payload}
+
+
+
+def _write_lock_payload_atomic(path: Path, payload: dict[str, Any]) -> None:
+    """Replace the active lease without exposing a partially written lock."""
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def heartbeat_active_lease(
+    lock_path: str | Path,
+    execution_id: str,
+    *,
+    process_id: int | None = None,
+    lease_seconds: int = DEFAULT_LEASE_SECONDS,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Renew the authoritative active lease without opening the proof DB."""
+    if lease_seconds < 15:
+        raise ProofSupervisionError("lease must be at least 15 seconds")
+    path = Path(lock_path).resolve()
+    current = inspect_one_proof_lock(path)
+    if not current.get("exists") or current.get("execution_id") != execution_id:
+        raise ProofSupervisionError("active lease belongs to a different execution")
+    instant = now or _utc_now()
+    payload = {
+        key: value for key, value in current.items()
+        if key not in {"lock_path", "exists", "available"}
     }
+    payload.update({
+        "process_id": process_id if process_id is not None else payload.get("process_id"),
+        "heartbeat_at": _iso(instant),
+        "lease_expires_at": _iso(instant + timedelta(seconds=lease_seconds)),
+        "updated_at": _iso(instant),
+    })
+    _write_lock_payload_atomic(path, payload)
+    return {"lock_path": str(path), "exists": True, "available": False, **payload}
 
 
+def request_cooperative_stop(
+    lock_path: str | Path,
+    execution_id: str,
+    *,
+    stop_reason: str,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    if not stop_reason:
+        raise ProofSupervisionError("cooperative stop reason is required")
+    path = Path(lock_path).resolve()
+    current = inspect_one_proof_lock(path)
+    if not current.get("exists") or current.get("execution_id") != execution_id:
+        raise ProofSupervisionError("active lease belongs to a different execution")
+    instant = now or _utc_now()
+    payload = {
+        key: value for key, value in current.items()
+        if key not in {"lock_path", "exists", "available"}
+    }
+    payload.setdefault("cancellation_requested_at", _iso(instant))
+    payload.setdefault("cancellation_reason", stop_reason)
+    payload["updated_at"] = _iso(instant)
+    _write_lock_payload_atomic(path, payload)
+    return {"lock_path": str(path), "exists": True, "available": False, **payload}
+
+
+def cooperative_stop_reason(lock_path: str | Path, execution_id: str) -> str | None:
+    current = inspect_one_proof_lock(lock_path)
+    if not current.get("exists") or current.get("execution_id") != execution_id:
+        return None
+    reason = current.get("cancellation_reason")
+    return str(reason) if reason else None
 def _acquire_one_proof_lock(
     lock_path: str | Path, *, execution_id: str, proof_db_path: str | Path,
-    created_at: str,
+    created_at: str, process_id: int | None, lease_expires_at: str,
 ) -> Path:
     path = Path(lock_path).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -157,7 +239,11 @@ def _acquire_one_proof_lock(
         "proof_scope": PROOF_SCOPE,
         "execution_id": execution_id,
         "proof_db_path": str(Path(proof_db_path).resolve()),
+        "process_id": process_id,
+        "heartbeat_at": created_at,
+        "lease_expires_at": lease_expires_at,
         "created_at": created_at,
+        "updated_at": created_at,
     }, indent=2, sort_keys=True)
     try:
         with path.open("x", encoding="utf-8", newline="\n") as handle:
@@ -226,6 +312,8 @@ def create_execution(
         execution_id=identifier,
         proof_db_path=path,
         created_at=instant_text,
+        process_id=process_id,
+        lease_expires_at=lease_text,
     )
     try:
         with _connect(path) as connection:
@@ -286,6 +374,15 @@ def attach_run(
         )
         if cursor.rowcount != 1:
             raise ProofSupervisionError("execution cannot attach this run")
+    supervision = inspect_execution(db_path, execution_id)
+    heartbeat_active_lease(
+        str(supervision["one_proof_lock_path"]),
+        execution_id,
+        process_id=process_id,
+        lease_seconds=lease_seconds,
+        now=instant,
+    )
+
     return inspect_execution(db_path, execution_id)
 
 
@@ -297,25 +394,15 @@ def heartbeat_execution(
     lease_seconds: int = DEFAULT_LEASE_SECONDS,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    if lease_seconds < 15:
-        raise ProofSupervisionError("lease must be at least 15 seconds")
-    instant = now or _utc_now()
-    with _connect(db_path) as connection:
-        cursor = connection.execute(
-            """UPDATE printer_proof_run_supervision
-               SET process_id=COALESCE(?,process_id), heartbeat_at=?,
-                   lease_expires_at=?, updated_at=?
-               WHERE execution_id=? AND execution_status IN ('STARTING','RUNNING')""",
-            (
-                process_id, _iso(instant),
-                _iso(instant + timedelta(seconds=lease_seconds)), _iso(instant),
-                execution_id,
-            ),
-        )
-        if cursor.rowcount != 1:
-            raise ProofSupervisionError("heartbeat rejected for non-active execution")
-    return inspect_execution(db_path, execution_id, now=instant)
-
+    """Compatibility wrapper; active renewal itself is proof-DB independent."""
+    supervision = inspect_execution(db_path, execution_id, now=now)
+    return heartbeat_active_lease(
+        str(supervision["one_proof_lock_path"]),
+        execution_id,
+        process_id=process_id,
+        lease_seconds=lease_seconds,
+        now=now,
+    )
 
 def inspect_execution(
     db_path: str | Path,
@@ -333,7 +420,23 @@ def inspect_execution(
         if row is None:
             raise ProofSupervisionError(f"unknown execution_id={execution_id}")
         payload = _row_dict(row)
-        payload["lease_expired"] = _parse(str(row["lease_expires_at"])) <= instant
+        if payload["execution_status"] in ACTIVE_STATUSES:
+            active_lease = inspect_one_proof_lock(str(payload["one_proof_lock_path"]))
+            if (
+                not active_lease.get("exists")
+                or active_lease.get("execution_id") != execution_id
+            ):
+                raise ProofSupervisionError("active execution lease is missing or ambiguous")
+            payload["ledger_heartbeat_at"] = payload["heartbeat_at"]
+            payload["ledger_lease_expires_at"] = payload["lease_expires_at"]
+            payload["heartbeat_at"] = active_lease["heartbeat_at"]
+            payload["lease_expires_at"] = active_lease["lease_expires_at"]
+            payload["process_id"] = active_lease.get("process_id")
+            payload["cancellation_requested_at"] = active_lease.get(
+                "cancellation_requested_at"
+            )
+            payload["cancellation_reason"] = active_lease.get("cancellation_reason")
+        payload["lease_expired"] = _parse(str(payload["lease_expires_at"])) <= instant
         payload["inspection_mode"] = "READ_ONLY"
         payload["source_calls"] = 0
         return payload
@@ -506,6 +609,10 @@ def _zero_source_cleanup(
         if pending_steps or active_jobs:
             raise ProofSupervisionError("abandoned proof cleanup is incomplete")
 
+        full_deltas = full_run_evidence_deltas(
+            db_path, str(inspection["backup_db_path"])
+        )
+
         report = {
             "command": "printer-supervise-v2-9-proof",
             "mode": "ZERO_SOURCE_ABANDONED_RECOVERY",
@@ -524,6 +631,8 @@ def _zero_source_cleanup(
             "automatic_retries": 0,
             "successor_created": False,
             "evidence_deltas": evidence_deltas,
+            "recovery_evidence_deltas": evidence_deltas,
+            "full_run_evidence_deltas": full_deltas,
             "finished_at": _iso(instant),
             "idempotent_replay": False,
         }
@@ -541,7 +650,7 @@ def _zero_source_cleanup(
         connection.execute(
             """UPDATE printer_memory_factory_runs
                SET run_status=?,stop_reason=COALESCE(stop_reason,?),finished_at=?,
-                   final_report_json=?,updated_at=?
+                   final_report_json=COALESCE(final_report_json,?),updated_at=?
                WHERE run_id=? AND run_status='RUNNING'""",
             (
                 factory_report["run_status"], stop_reason, _iso(instant),
@@ -596,6 +705,26 @@ def cancel_execution(
     )
 
 
+def stop_execution(
+    db_path: str | Path,
+    execution_id: str,
+    *,
+    stop_reason: str,
+    process_probe: Callable[[int | None], bool] = process_is_alive,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Clean a cooperatively stopped supervision fault without misattribution."""
+    if not stop_reason or stop_reason == OPERATOR_CANCELLED:
+        raise ProofSupervisionError("explicit non-operator stop reason is required")
+    return _zero_source_cleanup(
+        db_path,
+        execution_id,
+        terminal_status=TERMINAL_GOVERNED_SAFE_STOP,
+        stop_reason=stop_reason,
+        require_expired=False,
+        process_probe=process_probe,
+        now=now,
+    )
 def finalize_execution_from_report(
     db_path: str | Path,
     execution_id: str,
@@ -637,10 +766,18 @@ def run_supervised_v2_9_proof(
     backup_path: str | Path,
     execution_id: str,
 ) -> dict[str, Any]:
-    """Future operator-approved proof entry point; never called by V2-9.4 tests."""
+    """Run the single approved proof with a lock-file cancellation probe."""
     from printer_v1.operator_cli.one_command_15m_factory import (
         run_one_command_15m_factory,
     )
+    supervision = inspect_execution(db_path, execution_id)
+    lock_path = str(supervision["one_proof_lock_path"])
+    print(json.dumps({
+        "event": "PROCESS_START",
+        "execution_id": execution_id,
+        "process_id": os.getpid(),
+        "at": _iso(),
+    }, sort_keys=True), flush=True)
     return run_one_command_15m_factory(
         db_path,
         backup_path,
@@ -655,6 +792,7 @@ def run_supervised_v2_9_proof(
         continuous_four_hour=True,
         four_hour_proof_mode=True,
         supervision_execution_id=execution_id,
+        cancellation_probe=lambda: cooperative_stop_reason(lock_path, execution_id),
     )
 
 
@@ -691,7 +829,8 @@ def main_supervision(argv: Iterable[str] | None = None) -> int:
     create.add_argument("--stderr-log-path", required=True)
     create.add_argument("--lease-seconds", type=int, default=DEFAULT_LEASE_SECONDS)
     heartbeat = sub.add_parser("heartbeat")
-    heartbeat.add_argument("--db-path", required=True)
+    heartbeat.add_argument("--db-path")
+    heartbeat.add_argument("--lock-path")
     heartbeat.add_argument("--execution-id", required=True)
     heartbeat.add_argument("--pid", type=int)
     heartbeat.add_argument("--lease-seconds", type=int, default=DEFAULT_LEASE_SECONDS)
@@ -706,6 +845,17 @@ def main_supervision(argv: Iterable[str] | None = None) -> int:
     cancel.add_argument("--operator-approved", action="store_true")
     cancel.add_argument("--db-path", required=True)
     cancel.add_argument("--execution-id", required=True)
+    request_stop = sub.add_parser("request-stop")
+    request_stop.add_argument("--operator-approved", action="store_true")
+    request_stop.add_argument("--lock-path", required=True)
+    request_stop.add_argument("--execution-id", required=True)
+    request_stop.add_argument("--reason", required=True)
+    stop = sub.add_parser("stop")
+    stop.add_argument("--operator-approved", action="store_true")
+    stop.add_argument("--db-path", required=True)
+    stop.add_argument("--execution-id", required=True)
+    stop.add_argument("--reason", required=True)
+
     run = sub.add_parser("run")
     run.add_argument("--operator-approved", action="store_true")
     run.add_argument("--db-path", required=True)
@@ -730,16 +880,36 @@ def main_supervision(argv: Iterable[str] | None = None) -> int:
                 lease_seconds=args.lease_seconds,
             )
         elif args.action == "heartbeat":
-            report = heartbeat_execution(
-                args.db_path, args.execution_id, process_id=args.pid,
-                lease_seconds=args.lease_seconds,
-            )
+            if args.lock_path:
+                report = heartbeat_active_lease(
+                    args.lock_path, args.execution_id, process_id=args.pid,
+                    lease_seconds=args.lease_seconds,
+                )
+            elif args.db_path:
+                report = heartbeat_execution(
+                    args.db_path, args.execution_id, process_id=args.pid,
+                    lease_seconds=args.lease_seconds,
+                )
+            else:
+                raise ProofSupervisionError("heartbeat requires --lock-path or --db-path")
         elif args.action == "inspect":
             report = inspect_execution(args.db_path, args.execution_id)
         elif args.action == "recover":
             if not args.operator_approved:
                 raise ProofSupervisionError("operator approval required")
             report = recover_abandoned_execution(args.db_path, args.execution_id)
+        elif args.action == "request-stop":
+            if not args.operator_approved:
+                raise ProofSupervisionError("operator approval required")
+            report = request_cooperative_stop(
+                args.lock_path, args.execution_id, stop_reason=args.reason,
+            )
+        elif args.action == "stop":
+            if not args.operator_approved:
+                raise ProofSupervisionError("operator approval required")
+            report = stop_execution(
+                args.db_path, args.execution_id, stop_reason=args.reason,
+            )
         elif args.action == "run":
             if not args.operator_approved:
                 raise ProofSupervisionError("operator approval required")
