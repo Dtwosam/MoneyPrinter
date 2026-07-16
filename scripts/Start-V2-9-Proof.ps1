@@ -54,41 +54,34 @@ $prepareLog = Join-Path $runs "$artifactPrefix-preparation.json"
 $stdoutLog = Join-Path $runs "$artifactPrefix-stdout.log"
 $stderrLog = Join-Path $runs "$artifactPrefix-stderr.log"
 $launcherLog = Join-Path $runs "$artifactPrefix-launcher.jsonl"
+$launcherFallbackLog = Join-Path $runs "$artifactPrefix-launcher-fallback.log"
 $lockPath = Join-Path $runs 'v2-9-one-proof.lock.json'
 
 New-Item -ItemType Directory -Force -Path $runs | Out-Null
 Set-Location -LiteralPath $root
 
-function Write-LauncherEvent {
-    param(
-        [Parameter(Mandatory = $true)][string]$Event,
-        [hashtable]$Details = @{}
-    )
-    $record = [ordered]@{
-        at = [DateTime]::UtcNow.ToString('o')
-        event = $Event
-        execution_id = $executionId
-        attempt_number = $AttemptNumber
-        details = $Details
-    }
-    $record | ConvertTo-Json -Compress -Depth 8 |
-        Add-Content -LiteralPath $launcherLog -Encoding utf8
+# V2-9.4.3: launcher-event logging and native-output capture live behind a
+# reliability boundary. A logging fault can never discard a successful
+# supervision result, stop heartbeat renewal, kill a healthy child, become
+# OPERATOR_CANCELLED, or replace the original fault cause.
+$loggingModule = if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
+    Join-Path $PSScriptRoot 'V2-9-LauncherLogging.ps1'
+} else {
+    Join-Path (Join-Path $root 'scripts') 'V2-9-LauncherLogging.ps1'
 }
+if (-not (Test-Path -LiteralPath $loggingModule -PathType Leaf)) {
+    throw "V2-9 launcher logging boundary is unavailable: $loggingModule"
+}
+. $loggingModule
+Initialize-LauncherLogging `
+    -LauncherLogPath $launcherLog `
+    -FallbackLogPath $launcherFallbackLog `
+    -ExecutionId $executionId `
+    -AttemptNumber $AttemptNumber
 
 function Invoke-Supervision {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
-    $output = @(& $python -m printer_v1.operator_cli.proof_supervision @Arguments 2>&1)
-    $exitCode = $LASTEXITCODE
-    foreach ($line in $output) {
-        Write-LauncherEvent -Event 'SUPERVISION_OUTPUT' -Details @{
-            command = $Arguments[0]
-            text = [string]$line
-        }
-    }
-    return [pscustomobject]@{
-        ExitCode = $exitCode
-        Output = ($output -join [Environment]::NewLine)
-    }
+    return Invoke-SupervisionCommand -PythonPath $python -Arguments $Arguments
 }
 
 function Request-CooperativeStop {
@@ -104,12 +97,12 @@ function Request-CooperativeStop {
         Write-LauncherEvent -Event 'COOPERATIVE_STOP_REQUEST_FAILED' -Details @{
             reason = $Reason
             output = $result.Output
-        }
+        } | Out-Null
         return $false
     }
     Write-LauncherEvent -Event 'COOPERATIVE_STOP_REQUESTED' -Details @{
         reason = $Reason
-    }
+    } | Out-Null
     return $true
 }
 
@@ -117,7 +110,7 @@ Write-LauncherEvent -Event 'LAUNCHER_START' -Details @{
     artifact_prefix = $artifactPrefix
     heartbeat_seconds = $HeartbeatSeconds
     lease_seconds = $LeaseSeconds
-}
+} | Out-Null
 
 $lockResult = Invoke-Supervision -Arguments @(
     'inspect-lock', '--lock-path', $lockPath
@@ -218,7 +211,7 @@ try {
         -RedirectStandardError $stderrLog `
         -NoNewWindow `
         -PassThru
-    Write-LauncherEvent -Event 'CHILD_STARTED' -Details @{ pid = $proofProcess.Id }
+    Write-LauncherEvent -Event 'CHILD_STARTED' -Details @{ pid = $proofProcess.Id } | Out-Null
 
     [PrinterPowerState]::SetThreadExecutionState(
         $ES_CONTINUOUS -bor $ES_SYSTEM_REQUIRED
@@ -237,14 +230,14 @@ try {
             $lastHeartbeatSuccessUtc = [DateTime]::UtcNow
             Write-LauncherEvent -Event 'HEARTBEAT_RENEWED' -Details @{
                 pid = $proofProcess.Id
-            }
+            } | Out-Null
         }
         else {
             $heartbeatFailures += 1
             Write-LauncherEvent -Event 'HEARTBEAT_RENEWAL_FAILED' -Details @{
                 consecutive_failures = $heartbeatFailures
                 output = $heartbeat.Output
-            }
+            } | Out-Null
             # One failed renewal never kills or stops a process with a valid lease.
             if ($heartbeatFailures -ge 2 -and -not $cooperativeStopRequested) {
                 $launcherFaultReason = 'SUPERVISION_HEARTBEAT_PERSISTENCE_FAILED'
@@ -268,7 +261,7 @@ try {
                 Write-LauncherEvent -Event 'FORCED_TERMINATION_AFTER_EXPIRED_LEASE' -Details @{
                     reason = $launcherFaultReason
                     pid = $proofProcess.Id
-                }
+                } | Out-Null
                 Stop-Process -Id $proofProcess.Id -Force
                 $proofProcess.WaitForExit()
                 $forcedTermination = $true
@@ -277,17 +270,47 @@ try {
     }
 }
 catch [System.Management.Automation.PipelineStoppedException] {
-    # This branch alone represents a genuine operator Ctrl+C.
-    $operatorCancelled = $true
     $launcherError = $_
-    $cooperativeStopRequested = Request-CooperativeStop -Reason 'SAFE_STOP_OPERATOR_INTERRUPTED'
+    $logFault = Get-LauncherLogFirstFault
+    if ($null -ne $logFault) {
+        # A logging/capture fault was already recorded, so this pipeline stop is
+        # that fault cascading — never a genuine operator interrupt. The exact
+        # original cause is preserved rather than relabelled.
+        $launcherFaultReason = "SUPERVISION_LAUNCHER_FAULT:$($logFault.message)"
+        Write-LauncherEvent -Event 'LAUNCHER_FAULT' -Details @{
+            reason = $launcherFaultReason
+            first_fault_boundary = $logFault.boundary
+        } | Out-Null
+        Write-LauncherFallback -Text (
+            "LAUNCHER_FAULT pipeline-stopped after log fault: $($logFault.message)"
+        ) | Out-Null
+        if ($null -ne $proofProcess -and -not $proofProcess.HasExited) {
+            $cooperativeStopRequested = Request-CooperativeStop -Reason $launcherFaultReason
+        }
+    }
+    else {
+        # This branch alone represents a genuine operator Ctrl+C.
+        $operatorCancelled = $true
+        $cooperativeStopRequested = Request-CooperativeStop -Reason 'SAFE_STOP_OPERATOR_INTERRUPTED'
+    }
 }
 catch {
     $launcherError = $_
-    $launcherFaultReason = "SUPERVISION_LAUNCHER_FAULT:$($_.Exception.Message)"
+    $logFault = Get-LauncherLogFirstFault
+    if ($null -ne $logFault) {
+        # Preserve the exact first cause; a later symptom never replaces it.
+        $launcherFaultReason = "SUPERVISION_LAUNCHER_FAULT:$($logFault.message)"
+    }
+    else {
+        $launcherFaultReason = "SUPERVISION_LAUNCHER_FAULT:$($_.Exception.Message)"
+    }
     Write-LauncherEvent -Event 'LAUNCHER_FAULT' -Details @{
         reason = $launcherFaultReason
-    }
+    } | Out-Null
+    # Durable fault record that does not depend on the primary launcher logger.
+    Write-LauncherFallback -Text (
+        "LAUNCHER_FAULT $launcherFaultReason | stack: $($_.ScriptStackTrace)"
+    ) | Out-Null
     if ($null -ne $proofProcess -and -not $proofProcess.HasExited) {
         $cooperativeStopRequested = Request-CooperativeStop -Reason $launcherFaultReason
     }
@@ -309,7 +332,7 @@ finally {
                 operator_cancelled = $operatorCancelled
                 reason = $launcherFaultReason
                 pid = $proofProcess.Id
-            }
+            } | Out-Null
             Stop-Process -Id $proofProcess.Id -Force
             $proofProcess.WaitForExit()
             $forcedTermination = $true
@@ -375,15 +398,28 @@ if ($final.execution_status -ne 'TERMINAL') {
     $final = $finalResult.Output | ConvertFrom-Json
 }
 
+$childExitCode = if ($null -ne $proofProcess -and $proofProcess.HasExited) {
+    $proofProcess.ExitCode
+} else {
+    $null
+}
+
 Write-LauncherEvent -Event 'LAUNCHER_FINISH' -Details @{
     terminal_status = $final.terminal_status
     first_stop_reason = $final.first_stop_reason
-    child_exit_code = if ($null -ne $proofProcess -and $proofProcess.HasExited) {
-        $proofProcess.ExitCode
-    } else {
-        $null
-    }
+    child_exit_code = $childExitCode
     forced_termination = $forcedTermination
+} | Out-Null
+
+# The terminal path stays observable even when the primary launcher log is
+# unavailable: the same finish record is mirrored to the durable fallback.
+$launcherLogFault = Get-LauncherLogFirstFault
+if (-not (Test-LauncherLogHealthy)) {
+    Write-LauncherFallback -Text (
+        "LAUNCHER_FINISH terminal_status=$($final.terminal_status)" +
+        " first_stop_reason=$($final.first_stop_reason)" +
+        " child_exit_code=$childExitCode forced_termination=$forcedTermination"
+    ) | Out-Null
 }
 
 [ordered]@{
@@ -395,9 +431,16 @@ Write-LauncherEvent -Event 'LAUNCHER_FINISH' -Details @{
     stdout_log = $stdoutLog
     stderr_log = $stderrLog
     launcher_log = $launcherLog
+    launcher_fallback_log = $launcherFallbackLog
     preparation_log = $prepareLog
     automatic_retries = 0
     forced_termination = $forcedTermination
+    launcher_log_healthy = (Test-LauncherLogHealthy)
+    launcher_log_fault = if ($null -ne $launcherLogFault) {
+        $launcherLogFault.message
+    } else {
+        $null
+    }
     launcher_error = if ($null -ne $launcherError) {
         $launcherError.Exception.Message
     } else {
