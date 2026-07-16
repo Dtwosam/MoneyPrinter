@@ -9,7 +9,7 @@ evidence observed after the target window.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import sqlite3
 from typing import Any
@@ -31,6 +31,7 @@ from printer_v1.paper_quote.evidence import row_level_clean_eligible as quote_ro
 from printer_v1.safety.evidence import row_level_clean_eligible as safety_row_is_clean
 from printer_v1.safety.goplus_normalizer import safety_memory_policy_summary
 from printer_v1.safety.composite import composite_row_is_acceptable
+from printer_v1.snapshots.cadence_policy import get_policy
 from printer_v1.trading_flow.classifier import (
     classify_flow_direction,
     classify_flow_memory_gate,
@@ -187,16 +188,24 @@ def _latest_exact_evidence(
     token_id: int,
     pair_id: int,
     snapshot_id: int,
-    target_time: datetime,
+    target_time: datetime | None,
     direction: str | None = None,
 ) -> dict[str, Any]:
+    """Latest evidence bound to the exact target snapshot.
+
+    target_time is the approved closing-evidence cutoff. Passing None removes
+    the upper bound and is used only to probe whether evidence exists beyond
+    the cutoff, so an absent row can be reported differently from a late one.
+    """
     clauses = [
         "token_id = ?",
         "pair_id = ?",
         "snapshot_id = ?",
-        "datetime(evidence_captured_at) <= datetime(?)",
     ]
-    params: list[Any] = [token_id, pair_id, snapshot_id, target_time.isoformat()]
+    params: list[Any] = [token_id, pair_id, snapshot_id]
+    if target_time is not None:
+        clauses.append("datetime(evidence_captured_at) <= datetime(?)")
+        params.append(target_time.isoformat())
     if direction is not None:
         clauses.append("quote_direction = ?")
         params.append(direction)
@@ -218,19 +227,23 @@ def _latest_safety_composite(
     token_id: int,
     pair_id: int,
     snapshot_id: int,
-    target_time: datetime,
+    target_time: datetime | None,
 ) -> dict[str, Any]:
     if not _table_exists(connection, "printer_safety_evidence_composites"):
         return {}
+    clauses = ["token_id=?", "pair_id=?", "snapshot_id=?"]
+    params: list[Any] = [token_id, pair_id, snapshot_id]
+    if target_time is not None:
+        clauses.append("datetime(evidence_captured_at) <= datetime(?)")
+        params.append(target_time.isoformat())
     row = connection.execute(
-        """
+        f"""
         SELECT * FROM printer_safety_evidence_composites
-        WHERE token_id=? AND pair_id=? AND snapshot_id=?
-          AND datetime(evidence_captured_at) <= datetime(?)
+        WHERE {' AND '.join(clauses)}
         ORDER BY datetime(evidence_captured_at) DESC, id DESC
         LIMIT 1
         """,
-        (token_id, pair_id, snapshot_id, target_time.isoformat()),
+        params,
     ).fetchone()
     if row is None:
         return {}
@@ -272,6 +285,8 @@ def _build_window_context_evidence(
     window_kind: str,
     minimum_seconds: int,
     entry_snapshot_id: int,
+    tracking_lane: str | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """Build read-only exact-target context for an approved main window."""
 
@@ -285,19 +300,47 @@ def _build_window_context_evidence(
             f"{window_kind} evidence must span at least {minimum_seconds} seconds"
         )
 
+    # V2-9.4.6: window_end_at stays the immutable logical deadline used for
+    # identity, duration, cadence and deadline drift. The approved closing
+    # allowance is a separate, evidence-only cutoff: governed closing work
+    # legitimately completes a few seconds after the deadline, and rejecting it
+    # produced Attempt 6's false "no exact-target evidence" blockers. When no
+    # lane is supplied the allowance is zero, which is the stricter behaviour.
+    policy = get_policy(window_kind, tracking_lane) if tracking_lane else None
+    closing_allowance_seconds = int(policy.closing_clean_late_seconds) if policy else 0
+    closing_evidence_cutoff = window_end + timedelta(seconds=closing_allowance_seconds)
+
+    # V2-9.4.6: select the exact current-run ledger set by snapshot id, never by
+    # a token/pair wall-clock scan. The old scan admitted the predecessor
+    # captured exactly at window_start_at and excluded a slightly-late closing
+    # snapshot while coincidentally preserving the expected count.
     snapshots = [
         dict(row)
         for row in connection.execute(
             """
             SELECT * FROM printer_token_snapshots
             WHERE token_id = ? AND pair_id = ?
-              AND datetime(captured_at) >= datetime(?)
-              AND datetime(captured_at) <= datetime(?)
-            ORDER BY datetime(captured_at), id
+              AND id >= ? AND id <= ?
+            ORDER BY id
             """,
-            (token_id, pair_id, window_start.isoformat(), window_end.isoformat()),
+            (token_id, pair_id, snapshot_start_id, snapshot_end_id),
         ).fetchall()
     ]
+    # The current run ledger is the authoritative identity source: any row in
+    # the id range that this run did not record is not this window's evidence.
+    non_ledger_ids: list[int] = []
+    if run_id and _table_exists(connection, "printer_memory_factory_run_steps"):
+        ledger_ids = {
+            int(row[0])
+            for row in connection.execute(
+                "SELECT snapshot_id FROM printer_memory_factory_run_steps"
+                " WHERE run_id = ? AND snapshot_id IS NOT NULL",
+                (run_id,),
+            ).fetchall()
+        }
+        non_ledger_ids = [int(r["id"]) for r in snapshots if int(r["id"]) not in ledger_ids]
+        snapshots = [r for r in snapshots if int(r["id"]) in ledger_ids]
+
     ids = [int(row["id"]) for row in snapshots]
     exact_bounds = bool(ids) and ids[0] == snapshot_start_id and ids[-1] == snapshot_end_id
     snapshot_traces = [_snapshot_trace(connection, row) for row in snapshots]
@@ -310,6 +353,8 @@ def _build_window_context_evidence(
         and all(trace["source_trace_clean"] for trace in snapshot_traces)
     )
     snapshot_blockers: list[str] = []
+    if non_ledger_ids:
+        snapshot_blockers.append("SNAPSHOT_SET_NOT_CURRENT_RUN_LEDGER")
     if not exact_bounds:
         snapshot_blockers.append("SNAPSHOT_BOUNDARY_MISMATCH")
     if len(snapshots) < 2:
@@ -361,12 +406,14 @@ def _build_window_context_evidence(
         },
     )
 
+    # Closing safety is bound to the exact closing snapshot and accepted only
+    # inside the approved allowance after the logical deadline.
     safety_composite = _latest_safety_composite(
         connection,
         token_id=token_id,
         pair_id=pair_id,
         snapshot_id=snapshot_end_id,
-        target_time=window_end,
+        target_time=closing_evidence_cutoff,
     )
     safety = safety_composite or _latest_exact_evidence(
         connection,
@@ -374,7 +421,17 @@ def _build_window_context_evidence(
         token_id=token_id,
         pair_id=pair_id,
         snapshot_id=snapshot_end_id,
-        target_time=window_end,
+        target_time=closing_evidence_cutoff,
+    )
+    safety_late = not safety and bool(
+        _latest_safety_composite(
+            connection, token_id=token_id, pair_id=pair_id,
+            snapshot_id=snapshot_end_id, target_time=None,
+        )
+        or _latest_exact_evidence(
+            connection, table="printer_solana_safety_evidence", token_id=token_id,
+            pair_id=pair_id, snapshot_id=snapshot_end_id, target_time=None,
+        )
     )
     safety_policy = safety_memory_policy_summary(safety) if safety else {}
     safety_trace_clean = (
@@ -406,7 +463,17 @@ def _build_window_context_evidence(
             or safety_policy.get("safety_acceptable_for_15m_memory")
         )
     )
-    safety_blockers = [] if safety_clean else ["NO_VALID_EXACT_TARGET_SAFETY_EVIDENCE"]
+    # V2-9.4.6: name the real cause instead of a generic "no valid evidence".
+    safety_blockers: list[str] = []
+    if not safety_clean:
+        if safety_late:
+            safety_blockers.append("CLOSING_EVIDENCE_AFTER_APPROVED_CUTOFF")
+        elif not safety:
+            safety_blockers.append("CLOSING_SAFETY_EVIDENCE_ABSENT_FOR_EXACT_SNAPSHOT")
+        elif safety.get("target_status") not in (None, "TARGET_MATCH"):
+            safety_blockers.append("CLOSING_EVIDENCE_TARGET_MISMATCH")
+        else:
+            safety_blockers.append("NO_VALID_EXACT_TARGET_SAFETY_EVIDENCE")
     safety_section = _section(
         status="READY" if safety_clean else "UNKNOWN_SAFETY",
         clean=safety_clean,
@@ -432,8 +499,19 @@ def _build_window_context_evidence(
             token_id=token_id,
             pair_id=pair_id,
             snapshot_id=quote_snapshot_id,
-            target_time=window_end,
+            target_time=closing_evidence_cutoff,
             direction=direction,
+        )
+        quote_late = not quote and bool(
+            _latest_exact_evidence(
+                connection,
+                table="printer_paper_quote_evidence",
+                token_id=token_id,
+                pair_id=pair_id,
+                snapshot_id=quote_snapshot_id,
+                target_time=None,
+                direction=direction,
+            )
         )
         trace_clean = bool(quote) and _source_trace_is_clean(
             connection,
@@ -442,7 +520,14 @@ def _build_window_context_evidence(
             expected_source=quote.get("source_name"),
         )
         if not quote or not trace_clean or quote.get("source_failure_id") is not None or not quote_row_is_clean(quote):
-            quote_blockers.append(f"NO_VALID_EXACT_TARGET_{direction}_QUOTE_EVIDENCE")
+            if quote_late:
+                quote_blockers.append("CLOSING_EVIDENCE_AFTER_APPROVED_CUTOFF")
+            elif not quote and direction == "EXIT":
+                quote_blockers.append("CLOSING_EXIT_QUOTE_ABSENT_FOR_EXACT_SNAPSHOT")
+            elif quote and quote.get("target_status") not in (None, "TARGET_MATCH"):
+                quote_blockers.append("CLOSING_EVIDENCE_TARGET_MISMATCH")
+            else:
+                quote_blockers.append(f"NO_VALID_EXACT_TARGET_{direction}_QUOTE_EVIDENCE")
         quotes[direction.lower()] = quote
     quote_clean = not quote_blockers
     liquidity_section = _section(
@@ -477,10 +562,16 @@ def _build_window_context_evidence(
         and flow_labels["flow_pressure_label"] != "PRESSURE_UNKNOWN"
         and flow_labels["flow_memory_gate_label"] not in {"FLOW_CONTEXT_AUDIT_ONLY", "FLOW_CONTEXT_DO_NOT_TRAIN"}
     )
+    # V2-9.4.6: when the snapshot set itself is the problem, its precise blocker
+    # already says so. Appending the generic flow reason masked that cause in
+    # Attempt 6, where direction and pressure were in fact known.
+    flow_blockers = list(snapshot_blockers)
+    if not flow_clean and snapshots_clean:
+        flow_blockers.append("FLOW_DIRECTION_OR_PRESSURE_NOT_CLEAN")
     flow_section = _section(
         status="READY" if flow_clean else "FLOW_UNKNOWN",
         clean=flow_clean,
-        blockers=[] if flow_clean else snapshot_blockers + ["FLOW_DIRECTION_OR_PRESSURE_NOT_CLEAN"],
+        blockers=[] if flow_clean else flow_blockers,
         source_snapshot_id=snapshot_end_id if snapshots else None,
         source_trace=snapshot_traces[-1] if snapshot_traces else {},
         payload=flow_payload,
@@ -504,10 +595,13 @@ def _build_window_context_evidence(
         and chart_labels["volatility_label"] != "VOLATILITY_UNKNOWN"
         and chart_labels["chart_memory_gate_label"] not in {"CHART_CONTEXT_AUDIT_ONLY", "CHART_CONTEXT_DO_NOT_TRAIN"}
     )
+    chart_blockers = list(snapshot_blockers)
+    if not chart_clean and snapshots_clean:
+        chart_blockers.append("CHART_OR_VOLATILITY_NOT_CLEAN")
     chart_section = _section(
         status="READY" if chart_clean else "CHART_VOLATILITY_UNKNOWN",
         clean=chart_clean,
-        blockers=[] if chart_clean else snapshot_blockers + ["CHART_OR_VOLATILITY_NOT_CLEAN"],
+        blockers=[] if chart_clean else chart_blockers,
         source_snapshot_ids=ids,
         source_traces=snapshot_traces,
         payload=chart_payload,
@@ -531,8 +625,13 @@ def _build_window_context_evidence(
         "snapshot_end_id": snapshot_end_id,
         "window_start_at": window_start.isoformat(),
         "window_end_at": window_end.isoformat(),
+        # The logical deadline is unchanged; the cutoff bounds closing evidence
+        # only and never extends the window, its duration, or deadline drift.
+        "closing_evidence_cutoff_at": closing_evidence_cutoff.isoformat(),
+        "closing_evidence_allowance_seconds": closing_allowance_seconds,
         "evidence_duration_seconds": int((window_end - window_start).total_seconds()),
         "snapshot_ids": ids,
+        "non_ledger_snapshot_ids": non_ledger_ids,
         "snapshot_source_traces": snapshot_traces,
         "sections": sections,
         "clean_memory_context_ready": all(section["can_support_clean_memory"] for section in sections.values()),
@@ -559,6 +658,8 @@ def build_window_15m_context_evidence(
     snapshot_end_id: int,
     window_start_at: str | datetime,
     window_end_at: str | datetime,
+    tracking_lane: str | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     return _build_window_context_evidence(
         connection,
@@ -571,6 +672,8 @@ def build_window_15m_context_evidence(
         window_kind=WINDOW_KIND,
         minimum_seconds=WINDOW_SECONDS,
         entry_snapshot_id=snapshot_end_id,
+        tracking_lane=tracking_lane,
+        run_id=run_id,
     )
 
 
@@ -583,6 +686,8 @@ def build_window_4h_context_evidence(
     snapshot_end_id: int,
     window_start_at: str | datetime,
     window_end_at: str | datetime,
+    tracking_lane: str | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     return _build_window_context_evidence(
         connection,
@@ -595,4 +700,6 @@ def build_window_4h_context_evidence(
         window_kind="WINDOW_4H",
         minimum_seconds=10_800,
         entry_snapshot_id=snapshot_start_id,
+        tracking_lane=tracking_lane,
+        run_id=run_id,
     )

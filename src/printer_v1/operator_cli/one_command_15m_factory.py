@@ -1031,6 +1031,11 @@ def _attach_context_and_gate_window(
             snapshot_end_id=snapshot_end_id,
             window_start_at=start_at,
             window_end_at=end_at,
+            # V2-9.4.6 deliberately does not pass run_id/tracking_lane here.
+            # This 15m close runs before the close step's own snapshot_id is
+            # written to the run ledger (see _run_pending_steps), so a ledger
+            # intersection would wrongly exclude the closing snapshot. The 4h
+            # path writes its ledger row first and is wired instead.
         )
     except ValueError as exc:
         shared_context = {
@@ -1533,6 +1538,10 @@ def _execute_long_4h_step(
         snapshot_end_id=int(window["snapshot_end_id"]),
         window_start_at=str(window["window_start_at"]),
         window_end_at=str(window["window_end_at"]),
+        # V2-9.4.6: exact current-run ledger identity and the approved
+        # closing-evidence allowance for this lane.
+        tracking_lane=str(step["tracking_lane"]),
+        run_id=str(step["run_id"]),
     )
     context = json.loads(str(window["supporting_context_json"] or "{}"))
     context["shared_window_4h_context_evidence"] = shared

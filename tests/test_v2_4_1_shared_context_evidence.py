@@ -350,7 +350,14 @@ class SharedWindow15mContextEvidenceTest(unittest.TestCase):
         self.assertEqual(result["sections"]["market_regime"]["status"], "UNKNOWN_MARKET_REGIME")
         self.assertEqual(result["sections"]["solana_chain_heat"]["status"], "SOLANA_UNKNOWN")
         self.assertEqual(result["sections"]["safety_rug"]["status"], "UNKNOWN_SAFETY")
-        self.assertIn("NO_VALID_EXACT_TARGET_ENTRY_QUOTE_EVIDENCE", result["blockers"])
+        # V2-9.4.6: evidence past the approved closing cutoff now reports the
+        # specific late blocker instead of the generic "no evidence" name, which
+        # was misleading -- the evidence exists, it is just too late to attach.
+        self.assertIn("CLOSING_EVIDENCE_AFTER_APPROVED_CUTOFF", result["blockers"])
+        self.assertIn(
+            "CLOSING_EVIDENCE_AFTER_APPROVED_CUTOFF",
+            result["sections"]["liquidity_exit_realism"]["blockers"],
+        )
 
     def test_mismatched_target_and_dirty_snapshot_fail_closed(self):
         snapshot_ids = self.add_snapshots(dirty_index=2)
@@ -371,7 +378,10 @@ class SharedWindow15mContextEvidenceTest(unittest.TestCase):
         self.assertFalse(result["clean_memory_context_ready"])
         self.assertIn("SNAPSHOT_DATA_NOT_CLEAN", result["sections"]["trading_flow"]["blockers"])
         self.assertEqual(result["sections"]["safety_rug"]["status"], "UNKNOWN_SAFETY")
-        self.assertIn("NO_VALID_EXACT_TARGET_EXIT_QUOTE_EVIDENCE", result["blockers"])
+        # V2-9.4.6: the quote is bound to another pair, so no row exists for the
+        # exact closing snapshot. The specific absent-for-exact-snapshot blocker
+        # replaces the generic name; the window still fails closed.
+        self.assertIn("CLOSING_EXIT_QUOTE_ABSENT_FOR_EXACT_SNAPSHOT", result["blockers"])
 
     def test_missing_governed_snapshot_trace_blocks_flow_and_chart(self):
         snapshot_ids = self.add_snapshots(source_trace=False)
