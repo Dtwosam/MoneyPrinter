@@ -187,20 +187,21 @@ def classify_chart_payload_quality(
     return ChartPayloadQualityLabel.CHART_CONTEXT_CLEAN
 
 
-def chart_context_blocks_clean_memory(
-    normalized_payload: Mapping[str, Any],
-    now: datetime | None = None,
-) -> bool:
-    del now
-    return classify_volatility(normalized_payload) == VolatilityLabel.VOLATILITY_EXTREME or classify_candle_path(
-        normalized_payload
-    ) == CandlePathLabel.PATH_ROUND_TRIP
-
-
 def classify_chart_memory_gate(
     normalized_payload: Mapping[str, Any],
     now: datetime | None = None,
 ) -> ChartMemoryGateLabel:
+    """Gate chart evidence on evidence quality only.
+
+    V2-9.4.5: this gate answers "can this chart evidence be trusted?", never
+    "did the price do something bad?". VOLATILITY_EXTREME and PATH_ROUND_TRIP
+    are market-outcome facts and previously routed here to
+    CHART_CONTEXT_DO_NOT_TRAIN — the same label used for a failed or dirty
+    source — which made a fully evidenced round trip indistinguishable from
+    broken data. Those clauses are removed; the labels themselves remain
+    truthful outcome evidence produced by classify_volatility and
+    classify_candle_path.
+    """
     quality = classify_chart_payload_quality(normalized_payload, now)
     if quality == ChartPayloadQualityLabel.CHART_CONTEXT_DO_NOT_USE_FOR_MEMORY:
         return ChartMemoryGateLabel.CHART_CONTEXT_DO_NOT_TRAIN
@@ -210,8 +211,6 @@ def classify_chart_memory_gate(
         ChartPayloadQualityLabel.CHART_CONTEXT_UNKNOWN,
     }:
         return ChartMemoryGateLabel.CHART_CONTEXT_AUDIT_ONLY
-    if chart_context_blocks_clean_memory(normalized_payload, now):
-        return ChartMemoryGateLabel.CHART_CONTEXT_DO_NOT_TRAIN
     if quality == ChartPayloadQualityLabel.CHART_CONTEXT_PARTIAL:
         return ChartMemoryGateLabel.CHART_CONTEXT_CAUTION
     return ChartMemoryGateLabel.CHART_CONTEXT_ACCEPTABLE

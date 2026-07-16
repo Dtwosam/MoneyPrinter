@@ -1,7 +1,6 @@
 """Chart / Volatility Engine foundation for Printer V1."""
 
 from printer_v1.chart_volatility.classifier import (
-    chart_context_blocks_clean_memory,
     chart_context_can_support_clean_memory,
     classify_candle_path,
     classify_chart_memory_gate,
@@ -35,7 +34,6 @@ __all__ = [
     "RangeBehaviorLabel",
     "TrendStructureLabel",
     "VolatilityLabel",
-    "chart_context_blocks_clean_memory",
     "chart_context_can_support_clean_memory",
     "classify_candle_path",
     "classify_chart_memory_gate",

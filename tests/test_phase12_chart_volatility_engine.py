@@ -13,9 +13,9 @@ sys.path.insert(0, str(SRC_PATH))
 
 from printer_v1.chart_volatility import classifier, lookup, parser, recorder
 from printer_v1.chart_volatility.classifier import (
-    chart_context_blocks_clean_memory,
     chart_context_can_support_clean_memory,
     classify_candle_path,
+    classify_chart_memory_gate,
     classify_chart_payload_quality,
     classify_drawdown_recovery,
     classify_momentum,
@@ -305,11 +305,33 @@ class Phase12ChartVolatilityEngineTest(unittest.TestCase):
                 ChartPayloadQualityLabel.CHART_CONTEXT_CLEAN,
             )
 
-    def test_extreme_or_round_trip_blocks_memory_without_paper_decisions(self):
+    def test_extreme_or_round_trip_is_outcome_not_evidence_fault(self):
+        """V2-9.4.5: market outcome never degrades evidence quality.
+
+        This previously asserted the inverse (that extreme volatility and a
+        round trip block clean memory). That conflated a price-path fact with a
+        data fault and is what marked Attempt 6's fully evidenced round trip
+        DIRTY. The labels stay truthful; only the blocking is removed.
+        """
         extreme = self.normalize(ohlc={"high": 2.0, "low": 0.5, "close": 1.0})
-        round_trip = self.normalize(ohlc={"high": 1.8, "close": 1.02})
-        self.assertTrue(chart_context_blocks_clean_memory(extreme, self.now))
-        self.assertTrue(chart_context_blocks_clean_memory(round_trip, self.now))
+        # Pumped 10% then retraced fully: the Attempt 6 shape.
+        round_trip = self.normalize(
+            ohlc={"open": 1.0, "high": 1.1, "low": 0.15, "close": 0.15}
+        )
+        # Outcome facts are still classified truthfully.
+        self.assertEqual(classify_volatility(extreme), VolatilityLabel.VOLATILITY_EXTREME)
+        self.assertEqual(classify_candle_path(round_trip), CandlePathLabel.PATH_ROUND_TRIP)
+        # But trustworthy evidence is no longer gated on them.
+        for payload in (extreme, round_trip):
+            self.assertEqual(
+                classify_chart_payload_quality(payload, self.now),
+                ChartPayloadQualityLabel.CHART_CONTEXT_CLEAN,
+            )
+            self.assertNotEqual(
+                classify_chart_memory_gate(payload, self.now),
+                ChartMemoryGateLabel.CHART_CONTEXT_DO_NOT_TRAIN,
+            )
+            self.assertTrue(chart_context_can_support_clean_memory(payload, self.now))
         record_chart_volatility_snapshot(self.db_path, self.payload(ohlc={"high": 1.8, "close": 1.02}), self.now)
         self.assertEqual(self.count_rows("printer_paper_decisions"), 0)
 

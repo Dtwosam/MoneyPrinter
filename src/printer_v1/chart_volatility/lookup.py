@@ -7,10 +7,8 @@ from pathlib import Path
 import sqlite3
 
 from printer_v1.chart_volatility.contracts import (
-    CandlePathLabel,
     ChartMemoryGateLabel,
     ChartPayloadQualityLabel,
-    VolatilityLabel,
 )
 from printer_v1.contracts.enums import DataQualityLabel, SourceStatus
 
@@ -44,13 +42,17 @@ def connect(db_or_connection: str | Path | sqlite3.Connection) -> Iterator[sqlit
 
 
 def chart_volatility_snapshot_blocks_clean_memory(snapshot: sqlite3.Row | dict | None) -> bool:
+    """Block only on untrustworthy chart evidence.
+
+    V2-9.4.5: VOLATILITY_EXTREME and PATH_ROUND_TRIP are market-outcome facts,
+    not evidence faults, and no longer block clean memory. The gate label alone
+    decides, and it is now derived from payload quality only.
+    """
     if snapshot is None:
         return False
     return (
         ChartMemoryGateLabel(snapshot["chart_memory_gate_label"])
         == ChartMemoryGateLabel.CHART_CONTEXT_DO_NOT_TRAIN
-        or VolatilityLabel(snapshot["volatility_label"]) == VolatilityLabel.VOLATILITY_EXTREME
-        or CandlePathLabel(snapshot["candle_path_label"]) == CandlePathLabel.PATH_ROUND_TRIP
     )
 
 
