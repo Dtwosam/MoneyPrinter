@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidateRange(1, 999)]
     [int]$AttemptNumber,
-    [string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot),
+    [string]$ProjectRoot,
     [int]$HeartbeatSeconds = 30,
     [int]$LeaseSeconds = 90,
     [int]$CooperativeStopGraceSeconds = 30
@@ -12,6 +12,25 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
+    if ([string]::IsNullOrWhiteSpace($PSScriptRoot)) {
+        throw 'V2-9 launcher script root is unavailable; specify -ProjectRoot.'
+    }
+    $ProjectRoot = Split-Path -Parent $PSScriptRoot
+}
+if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
+    throw 'V2-9 project root resolved to an empty value.'
+}
+try {
+    $root = (Resolve-Path -LiteralPath $ProjectRoot -ErrorAction Stop).Path
+}
+catch {
+    throw "V2-9 project root is unavailable: $ProjectRoot"
+}
+if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+    throw "V2-9 project root is not a directory: $root"
+}
 
 if (-not $OperatorApproved) {
     throw 'V2-9 proof launch requires -OperatorApproved.'
@@ -23,7 +42,6 @@ if ($CooperativeStopGraceSeconds -lt 10) {
     throw 'CooperativeStopGraceSeconds must be at least 10.'
 }
 
-$root = (Resolve-Path -LiteralPath $ProjectRoot).Path
 $python = (Get-Command python).Source
 $runs = Join-Path $root 'operator-runs'
 $persistent = Join-Path $root 'data\printer_v1.sqlite3'
