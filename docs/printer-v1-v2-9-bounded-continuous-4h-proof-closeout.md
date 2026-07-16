@@ -2,41 +2,57 @@
 
 ## Final verdict
 
-`V2_9_BOUNDED_4H_PROOF_FAIL`
+`V2_9_BOUNDED_4H_PROOF_BLOCKED`
 
 Lane: `V2-9 - Bounded Continuous 4h Proof`
 
-The lane has now used three authorized attempts and remains failed. The first
-preparation attempt was blocked before runtime by an unmigrated proof schema.
-Runtime Attempt 1 reached the 4h phase but failed after 24 of 31 NORMAL
-snapshots and incorrectly reported `COMPLETED`. V2-9.1 repaired canonical proof
-preparation, and V2-9.2 repaired the known 4h terminal and budget paths.
-Separately approved Attempt 2 then failed during the initial FAST 15m
-collection after four snapshots; cleanup was safe, but the final report
-mislabeled a DexScreener transport stop as a budget stop even though both
-applicable budgets were within limits. V2-9.3 repaired that early-failure and
-unreached-phase accounting defect.
+The lane has now used four authorized attempts. No attempt has produced a real,
+audited WINDOW_4H memory result, so the 4h memory objective remains unproven.
+After Attempt 4, the accurate lane status is BLOCKED — not by any Printer defect
+(every defect the earlier attempts exposed has been repaired and re-proven), but
+by the transport fragility of the free/public Solana data sources over a
+multi-hour, strict zero-retry run. See the Attempt 4 verdict below for the
+three-way distinction between launcher/supervision success, safe-stop success,
+and 4h evidence-proof success.
 
-A third separately approved attempt (Attempt 3) then progressed further than
-either prior attempt: it completed a full, clean FAST 15m window with governed
-opening/closing context and a partial (9 of 24) FAST 1h continuation, all on
-clean cadence with zero source failures. It never reached the 4h phase. Attempt
-3 did not fail from a source error or a budget breach; its host execution
-environment terminated the runtime process outright (external kill) while it
-was asleep between two scheduled 1h-continuation snapshots, before any
-internal exception handler, stop path, or final-report logic in the governed
-runtime could run. No further diagnostic detail on the exact trigger is
-available beyond the background-task infrastructure reporting the process as
-`killed`. This is a new failure mode for this lane, distinct from a source
-failure or a budget breach, and it left 15 run steps and their linked scheduler
-rows abandoned in `PENDING` (never executed, never cancelled) on the isolated
-Attempt 3 proof DB. No lock was left held, and the persistent DB and the
-Attempt 3 pre-runtime backup remained byte-identical to their pre-runtime
-state.
+Attempt history in brief: the first preparation attempt was blocked before
+runtime by an unmigrated proof schema. Runtime Attempt 1 reached the 4h phase
+but failed after 24 of 31 NORMAL snapshots and incorrectly reported
+`COMPLETED`. V2-9.1 repaired canonical proof preparation, and V2-9.2 repaired
+the known 4h terminal and budget paths. Separately approved Attempt 2 then
+failed during the initial FAST 15m collection after four snapshots; cleanup was
+safe, but the final report mislabeled a DexScreener transport stop as a budget
+stop even though both applicable budgets were within limits. V2-9.3 repaired
+that early-failure and unreached-phase accounting defect.
 
-No fourth attempt occurred and none is authorized. This closeout does not
-activate generalized 4h production or begin V2-10, 12h, 24h, retrieval,
-decisions, positions, trades, audits, or PnL.
+Attempt 3 progressed further than either prior attempt: a full, clean FAST 15m
+window plus a partial (9 of 24) FAST 1h continuation, all on clean cadence with
+zero source failures. It never reached the 4h phase because its host execution
+environment terminated the runtime process outright (external kill) mid-run,
+leaving 15 abandoned `PENDING` rows on the isolated proof DB. V2-9.4 then added
+a durable supervision ledger, lease/heartbeat, a one-proof lock, zero-source
+recovery for a disappeared host process, and a manual PowerShell launcher
+(`scripts/Start-V2-9-Proof.ps1`) that owns exactly one proof process; a
+follow-up fix (`eb1f8d1`) repaired a UInt32 conversion crash in that launcher's
+sleep-prevention flags.
+
+Attempt 4 is the first attempt launched through the V2-9.4 durable launcher.
+The launcher and supervision worked end-to-end for the first time under a real
+run: it prepared a fresh isolated proof DB, launched exactly one proof process,
+heartbeated on schedule, and on child exit finalized the supervision execution
+to `TERMINAL` / `SOURCE_FAILURE` and released the one-proof lock with zero
+orphaned rows. The run itself completed a full FAST 15m window (which closed
+`DIRTY` because two safety-context sources failed at window close) and 3 of 24
+FAST 1h continuation snapshots, then safe-stopped on a DexScreener transport
+failure (`SSLV3_ALERT_BAD_RECORD_MAC`) at the 4th 1h snapshot, well before the
+4h phase could start. Accounting was honest (the V2-9.2/9.3 repairs held: 4h
+reported `NOT_STARTED`, no fabricated budget breach), cleanup was complete,
+isolation held, and every downstream lock was preserved.
+
+This closeout records the read-only inspection verdict for operator review. It
+does not activate generalized 4h production, does not authorize Attempt 5, and
+does not begin V2-10, 12h, 24h, retrieval, decisions, positions, trades,
+audits, or PnL.
 
 ## Attempt history
 
@@ -83,6 +99,20 @@ not-started rather than as an exceeded budget. That repair passed at commit
 Attempt 3 is the one separately approved proof after V2-9.3. It started once
 and its host process was terminated once by the execution environment. It was
 not restarted or retried.
+
+V2-9.4 subsequently added durable host-process supervision: migration 030
+(`printer_proof_run_supervision`), a lease/heartbeat, a one-proof lock, a
+zero-source recovery path for a disappeared host process, and the manual
+PowerShell launcher `scripts/Start-V2-9-Proof.ps1` that owns exactly one proof
+process. That lane passed at commit `a74a6da`, and a follow-up commit `eb1f8d1`
+fixed a UInt32 conversion crash in the launcher's sleep-prevention flags that
+had blocked an earlier Attempt 4 launch before runtime.
+
+### Runtime Attempt 4
+
+Attempt 4 is the one separately approved proof after V2-9.4. It is the first
+attempt launched through the durable PowerShell launcher. It started once,
+safe-stopped once on a source failure, and was not restarted or retried.
 
 ## Attempt 2 preflight
 
@@ -565,61 +595,401 @@ governed clean stop and cannot be reported as `COMPLETED` or a valid
 
 No additional proof is authorized in this lane.
 
-## Files changed (cumulative across Attempts 2 and 3)
+## Attempt 4 artifacts inspected (read-only)
 
-- `docs/printer-v1-v2-9-bounded-continuous-4h-proof-closeout.md`
+All inspection was read-only (`mode=ro` DB connections, hashing, log reads, and
+one `REPORT_ONLY` replay). No proof artifact was mutated, deleted, or rewritten,
+and the persistent DB was not touched.
+
+- proof DB: `operator-runs/v2-9-attempt4-20260715-231458.sqlite3`
+  (present; last modified `2026-07-16 00:36:07`, i.e. at safe-stop);
+- backup: `operator-runs/v2-9-attempt4-20260715-231458.backup.sqlite3`
+  (present; byte-identical to the prepared baseline);
+- preparation report:
+  `operator-runs/v2-9-attempt4-20260715-231458-preparation.json`
+  (`PROOF_DB_SCHEMA_READY`, 30/30 migrations, proof/backup byte-identical,
+  persistent unchanged);
+- stdout log: `operator-runs/v2-9-attempt4-20260715-231458-stdout.log`
+  (409,034 bytes; the complete final report JSON);
+- stderr log: `operator-runs/v2-9-attempt4-20260715-231458-stderr.log`
+  (0 bytes — no Python traceback or launcher error was written to stderr);
+- one-proof lock: absent (released normally at terminal finalize);
+- supervision row (migration 030) and the full run-step / scheduler / source /
+  snapshot / window ledgers inside the proof DB.
+
+## Attempt 4 preflight
+
+All pre-runtime gates passed:
+
+- HEAD: `a74a6da2de1fff9bb1085fdcfd26e9c9cc00bd2c` (V2-9.4 complete) plus the
+  launcher fix `eb1f8d1`; tracked tree clean;
+- V2-9.1/9.2/9.3/9.4 focused suites plus cadence, continuity, scheduler, E2Q,
+  Lane Q, Lane K/E2Z, and lock regressions: `683 passed, 74 subtests passed,
+  0 failed`;
+- fresh Attempt 4 proof/backup prepared by the launcher via the canonical
+  V2-9.1 path; SHA-256 (byte-identical before runtime):
+  `CFBBCD5DE650B86FC162951FD978FDADB405CF92791D99D47C6C0ACE4D11D6ED`;
+- 30/30 migrations, integrity `ok`, foreign-key errors `0`, runtime schema
+  issues `[]`;
+- persistent SHA-256 before and after runtime:
+  `97DB9A15CC464D86137CBBB0DD0A4EF1880E9F4E231FB41E8B22CA09FB177FBB`
+  (unchanged; the persistent DB is still at 29 migrations — migration 030
+  applies only to isolated proof copies, confirming isolation);
+- WINDOW_12H / WINDOW_24H real collection: structurally disabled (no proof-mode
+  override parameter exists for either window).
+
+## Attempt 4 identity and lifecycle anchors
+
+| Field | Observed |
+| --- | --- |
+| execution_id (supervision) | `f1ac89d6-6d7c-4002-8ee0-781ebef92bb6` |
+| Run | `c29d5616-2ed5-4e23-bd8e-4bffc95050b3` |
+| Child PID (proof process) | `13012` (exited by inspection time) |
+| Launcher PID (parent) | `7932` (PowerShell, owned the heartbeat loop) |
+| Token | ID `18`; `G9j8WWDeJXZdvwQgP82ooDuHmpc3Gy8NCSins71Lpump` |
+| Pair | ID `22`; `HuqmPUBBdq8w56Y6WGd8LiMbf4zgYXS2ACzLZs8MYLna` |
+| Stored lane | `TRACK_FAST` |
+| Selection seed | `e189c73ba96109e736fc1ee7e69d16c5` |
+| Eligible pool | `28` |
+| Run start | `2026-07-15T23:15:05.141923+00:00` |
+| Safe-stop finish | `2026-07-15T23:36:07.278149+00:00` (~21m elapsed) |
+| 15m window ID | `157` (closed DIRTY) |
+| 5m support window | present, `SUPPORT_EVIDENCE` (support-only) |
+| 1h / 4h window IDs | none / none |
+| 4h successor | None (4h phase never started) |
+
+Identity and lane selection were autonomous. No mint, pair, predecessor,
+snapshot, or window identity was manually supplied or linked. The mint and pair
+address differ from Attempt 3 (`FeMbDo...pump` / `5ByL7M...`); the reused
+numeric IDs `18` / `22` are an artifact of the fresh isolated proof copy's
+sequence, not identity linkage. The selection seed differs from Attempt 3
+(`971d96ef...`).
+
+## Cadence, duration, and continuity (Attempt 4)
+
+FAST 15m collected 16 snapshots (`t1_snapshot_00`..`t1_snapshot_14` plus the
+`t1_window_close` snapshot) at ~60s spacing, on the FAST 15m clean-gap policy
+(target 60s). The 15m window closed at `23:30:13`. The FAST 1h continuation then
+ran 3 of 24 continuation snapshots (`t1_continuation_snapshot_00`..`_02`, IDs
+1029-1031) at gaps of `118.97s` and `116.07s` - inside the FAST 1h clean-gap
+policy (target 120s, dirty above 180s). `t1_continuation_snapshot_03` was
+attempted at `23:36:05` and failed at `23:36:07` on a DexScreener transport
+error. The remaining 19 continuation snapshots and the continuation close were
+never attempted (cancelled). The 4h phase and its fixed `1h close + 10,800s`
+deadline never existed. Continuity was internally consistent up to the stop; it
+did not pass, become dirty, or bypass a gate.
+
+## Source failure and terminal behavior (Attempt 4)
+
+Three source failures were recorded during the run, all honestly persisted with
+their exact first cause. Two were non-fatal context failures that the run
+correctly survived, and one was the fatal price-snapshot failure that triggered
+the safe stop:
+
+| # | Source | request_kind | Time | failure_type | Effect |
+| --- | --- | --- | --- | --- | --- |
+| 48 | `goplus` | `safety_reference` | `23:30:10` | `goplus_transport_failure` (`SSL: DECRYPTION_FAILED_OR_BAD_RECORD_MAC`) | non-fatal; downgraded 15m safety context to `MISSING_CRITICAL_DATA` |
+| 49 | `solana_rpc` | `holder_concentration_reference` | `23:30:12` | `solana_rpc_rate_limited` (HTTP 429) | non-fatal; holder fallback (1/1 ceiling) missing |
+| 50 | `dexscreener` | `pair_market_snapshot` | `23:36:07` | `dexscreener_transport_failure` (`SSLV3_ALERT_BAD_RECORD_MAC`) | **fatal** - primary price source for `t1_continuation_snapshot_03` |
+
+The runtime's own `primary_terminal_cause` correctly resolved failure `50` as
+the authoritative first cause: `category=SOURCE_FAILURE`,
+`source_name=dexscreener`, `stage=PRE_4H_1H`, `pre_four_hour=true`, `step_id=21`
+(`t1_continuation_snapshot_03`), `stop_reason=SAFE_STOP_SOURCE_FAILURE`. The two
+earlier context failures were on different sources and were correctly treated as
+optional/fallback context, not run-terminating - the run continued past them for
+another ~6 minutes and three more successful price snapshots.
+
+The failure was governed and correctly persisted: source-failure row `50` was
+written, linked to run step `21` (`source_failure_id=50`), and the failed
+scheduler job `1010` carries `retry_count=1` (recording the single failed
+execution transition, not an automatic re-request) and `last_error=
+dexscreener_transport_failure`. `automatic_retries=0` and there was no endpoint
+rotation. The exact SSL error message is preserved verbatim in both the failure
+ledger and the primary terminal cause.
+
+Failure category: **external / transient transport instability**, not
+deterministic, not configuration-related, and not caused by Printer code. All
+three failures are TLS-layer corruption or rate-limiting (`bad record mac`,
+`decryption failed`, HTTP 429) across three distinct free/public providers
+(GoPlus, Solana public RPC, DexScreener) inside a ~21-minute window, while
+GeckoTerminal discovery and 22 minutes of prior DexScreener snapshots succeeded.
+This points to transient network/upstream fragility rather than any single dead
+endpoint.
+
+Terminal state returned: DB `run_status=FAILED`, `stop_reason=
+SAFE_STOP_SOURCE_FAILURE`; per-token `terminal_status=TOKEN_LOCAL_FAILED`;
+`terminal_window_outcomes=0`; `running_jobs_after_stop=0`;
+`pending_or_running_run_steps=0`. The stderr log is empty and there was no
+launcher error, consistent with a clean governed stop rather than a crash.
+
+## Phase and cumulative budgets (Attempt 4)
+
+Reconstructed from the runtime's own budget report (V2-9.2/9.3 accounting):
+
+| Scope | Requests | Request ceiling | Scheduler rows | Scheduler ceiling | Verdict |
+| --- | ---: | ---: | ---: | ---: | --- |
+| FAST 4h phase | 0 | 69 | 0 | 64 | `NOT_STARTED` (correctly not a breach) |
+| FAST cumulative lifecycle | 27 | 116 | 41 | 105 | `WITHIN_CEILING` |
+
+Governed requests run `27/116` within; per-token `25/114` within; holder RPC
+fallbacks `1/1` (at ceiling, within); discovery requests `2/2`; automatic
+retries `0`; endpoint rotation `false`. Critically, the 4h phase is reported as
+`state=NOT_STARTED` with `within_ceiling=null` - the V2-9.2/9.3 repair held and
+the unreached 4h phase was **not** fabricated into a budget breach, and the
+known cumulative usage was still honestly reported against its ceiling.
+
+## Context, safety, realism, chart, and flow (Attempt 4)
+
+The 15m window (`157`) closed `WINDOW_CLOSED` but `DIRTY_MEMORY` /
+`MISSING_CRITICAL_DATA` / `do_not_train=1`. This is the correct, honest
+downgrade: the GoPlus safety refresh and the Solana-RPC holder-concentration
+fallback both failed at window close (`23:30:10-12`), so the window's safety
+context was incomplete. Per AGENTS.md and the Memory Factory guide, dirty,
+stale, or incomplete data must not become clean memory - so the window was
+stored dirty (retained for audit, unusable for decisions) rather than promoted.
+A safety-evidence composite (`1`) with two contributions and paper entry/exit
+quote evidence (`2`, paper-realism only) were still created as evidence rows,
+but they did not lift the window to clean.
+
+The same-stream WINDOW_5M_MICRO_EVENT support window closed `SUPPORT_EVIDENCE`
+and remained support-only - it was not promoted to a main outcome window. No 1h
+closing context, no 4h opening/closing context, and no exit-realism conclusion
+exist, because the 1h close never ran and the 4h phase never started.
+
+## Scheduler and cleanup (Attempt 4)
+
+Attempt 4 added 41 scheduler rows and 41 run steps:
+
+- 1 discovery handoff, cancelled after selection;
+- 16 succeeded FAST 15m jobs (15 snapshots + window close);
+- 3 succeeded FAST 1h continuation jobs;
+- 1 failed FAST 1h continuation job (`t1_continuation_snapshot_03`,
+  `retry_count=1`, no re-request);
+- 20 cancelled FAST 1h jobs (continuation snapshots 04-22 + continuation close).
+
+After the governed safe stop and supervision finalize:
+
+- pending/running run steps: `0`;
+- running jobs: `0`;
+- locked jobs (id > baseline): `0`;
+- forced 1h close: cancelled (never ran);
+- invalid successor windows: `0`.
+
+Unlike Attempt 3 (external kill → 15 abandoned `PENDING` rows), Attempt 4 was a
+governed safe stop: the runtime's own cancellation-on-stop logic ran, so cleanup
+is complete with zero orphaned or locked rows. The supervision execution
+finalized to `TERMINAL` / `SOURCE_FAILURE`, cleared `process_id`, and released
+the one-proof lock.
+
+## E2Q, Lane Q, Lane K/E2Z, memory quality, and locks (Attempt 4)
+
+The 15m window `157` was audited and classified `DIRTY_MEMORY` (do_not_train),
+so E2Q correctly did not promote it. No WINDOW_1H window exists (1h close never
+ran), so Lane Q's 1h integrity guard and Lane K/E2Z clean-memory creation were
+not reached - not bypassed. `run_local_yield` was `clean=0, dirty=0, blocked=0,
+token_local_failed=1` with `zero_clean_is_valid=true` (the dirty 15m window is
+tracked as a closed window, not counted as a promoted clean/dirty memory
+outcome).
+
+`forbidden_deltas` were all zero: retrieval queries `0`, retrieval matches `0`,
+paper decisions `0`, paper positions `0`, paper trade events `0`, paper trade
+audits `0`, paper audit reports `0`. `printer_memories` and
+`printer_memory_fingerprints` deltas were `0`. `locks_preserved` reported
+`financial=true`, `paper_decisions_off=true`, `retrieval=true`.
+
+BUY/SELL/HOLD, retrieval activation, positions, PnL, wallet/private-key/signing,
+live execution, paid sources, scoring, ranking, confidence, weighted logic,
+embeddings, and vectors remained locked. No WINDOW_12H or WINDOW_24H window was
+created. WINDOW_5M_MICRO_EVENT remained support-only.
+
+## Replay and database isolation (Attempt 4)
+
+Report-only replay for run `c29d5616-2ed5-4e23-bd8e-4bffc95050b3` recorded:
+
+- mode: `REPORT_ONLY`;
+- new source calls: `0`;
+- new evidence rows: `0`.
+
+Proof SHA-256 before and after replay was byte-identical:
+`9064BD9ECCDF8A2FE9FCC321963B454C985500C56AD8D8987556F70161CB4C74`.
+
+- backup SHA-256 (unchanged from prepared):
+  `CFBBCD5DE650B86FC162951FD978FDADB405CF92791D99D47C6C0ACE4D11D6ED`;
+- prepared proof/backup SHA-256 was `CFBBCD5D...`; the live proof differs from it
+  only because the authorized runtime wrote to the proof, as intended;
+- persistent SHA-256 before and after:
+  `97DB9A15CC464D86137CBBB0DD0A4EF1880E9F4E231FB41E8B22CA09FB177FBB`
+  (unchanged); persistent critical counts unchanged from the Attempt 3 baseline.
+
+## Attempt 4 verdict
+
+`V2_9_ATTEMPT_4_BLOCKED_SOURCE_FAILURE`
+
+Attempt 4 was a correctly governed source stop that did not, and could not,
+prove the 4h memory objective. PASS is not available: it requires a completed
+real 4h proof and the required clean/dirty audit closeout, and Attempt 4
+produced neither a WINDOW_4H result nor even a clean 15m/1h memory. FAIL is not
+accurate either: nothing in Printer misbehaved - the launcher, supervision,
+cadence, safe-stop, first-cause accounting, cleanup, isolation, and every lock
+all worked as designed. The single blocking factor was an external transient
+transport failure on a free/public source under the approved strict zero-retry
+policy.
+
+Three distinct successes must not be conflated:
+
+1. **Launcher / supervision success - YES.** For the first time under a real
+   run, `Start-V2-9-Proof.ps1` (post-`eb1f8d1`) prepared a fresh isolated proof
+   DB, launched exactly one proof process, heartbeated on schedule while the
+   child ran, and on child exit finalized the supervision execution to
+   `TERMINAL` / `SOURCE_FAILURE` and released the one-proof lock with zero
+   orphaned rows. This directly validates the V2-9.4 durable-supervision work
+   that Attempt 3 motivated.
+2. **Safe-stop success - YES.** The DexScreener transport failure was caught,
+   the exact first cause preserved, token-local jobs cancelled with no automatic
+   retry and no endpoint rotation, budgets honestly accounted, the 4h phase
+   correctly reported `NOT_STARTED` (no fabricated breach), cleanup complete,
+   isolation intact, and all downstream locks preserved.
+3. **4h evidence-proof success - NO.** The run stopped ~6 minutes into the 1h
+   continuation (3 of 24 snapshots), never reached the 4h phase, and produced no
+   WINDOW_4H evidence. The 15m window itself closed DIRTY, so no clean memory of
+   any window length was produced this run. The 4h memory objective is unproven.
+
+**Overall V2-9 status: `BLOCKED`.** After four attempts and all repairs, the
+machinery is sound and the objective is obstructed by external free-source
+transport fragility over a multi-hour run, not by any Printer defect.
+
+## Money-usefulness contribution and what Attempt 4 improved
+
+Attempt 4 did not add clean memory to the corpus (its only closed main window
+was dirty), so its direct money-usefulness contribution is zero clean memories.
+Its indirect contribution is meaningful: it is the first end-to-end validation,
+under a real multi-hour run, that the V2-9.4 durable launcher and supervision
+ledger built after Attempt 3 actually work - a killed-vs-safe-stopped run is now
+distinguishable and self-finalizing, which is a prerequisite for ever trusting a
+long unattended 4h/12h/24h run. It also demonstrated, on live data, that the
+quality gates correctly refuse to promote a window whose safety context is
+incomplete (the dirty 15m downgrade), which protects the corpus from exactly the
+kind of fake-clean memory the V1 rules forbid.
+
+What Attempt 4 still does not unlock: a real WINDOW_4H memory result, a clean
+15m or 1h memory, retrieval, paper decisions, BUY/SELL/HOLD, positions, trades,
+audits, PnL, 12h/24h, or any live/wallet/paid-source path. All remain locked.
+
+## Proof still needed
+
+A real, audited WINDOW_4H memory result via a continuous
+5m -> 15m -> 1h -> 4h lifecycle, with the required clean/dirty audit closeout,
+on a run whose free/public sources stay healthy long enough to reach and close
+the 4h phase. No attempt has produced this.
+
+## Files changed (this closeout only; no code, no commit yet)
+
+- `docs/printer-v1-v2-9-bounded-continuous-4h-proof-closeout.md` (this update)
+
+No implementation, migration, launcher, test, or configuration file was changed
+by this inspection, and nothing has been committed - this is the read-only
+inspection verdict for operator review.
 
 Local untracked evidence retained for operator inspection:
 
-- `operator-runs/v2-9-attempt2-proof-preparation.json`;
-- `operator-runs/v2-9-attempt2-bounded-continuous-4h-proof.json`;
-- `operator-runs/v2-9-attempt2-bounded-continuous-4h-replay.json`;
-- the isolated Attempt 2 proof DB and its pre-runtime backup;
-- `operator-runs/v2-9-attempt3-proof-preparation.json`;
-- `operator-runs/v2-9-attempt3-frozen-state.json` (no final report exists for
-  Attempt 3, so this file records the run/step/scheduler ledger, hashes, and
-  deltas exactly as found after the external kill);
-- `operator-runs/run_v2_9_attempt3.py` (the ad hoc operator invocation script,
-  not part of the governed runtime itself);
-- `operator-runs/v2-9-attempt3-stdout.log` (empty - the process was killed
-  before it could print or write anything);
-- the isolated Attempt 3 proof DB and its pre-runtime backup.
+- `operator-runs/v2-9-attempt2-*` (Attempt 2 preparation, proof, replay, DB,
+  backup);
+- `operator-runs/v2-9-attempt3-proof-preparation.json`,
+  `operator-runs/v2-9-attempt3-frozen-state.json`,
+  `operator-runs/run_v2_9_attempt3.py`,
+  `operator-runs/v2-9-attempt3-stdout.log` (empty), and the Attempt 3 proof DB
+  and backup;
+- `operator-runs/v2-9-attempt4-20260715-231458.sqlite3` (proof DB, safe-stopped
+  state), its `.backup.sqlite3` (byte-identical to prepared),
+  `-preparation.json`, `-stdout.log` (409 KB final report), and `-stderr.log`
+  (empty). The one-proof lock was released normally and is absent.
+
+These artifacts are preserved as-is per operator instruction; no cleanup was
+performed.
+
+## Persistent DB isolation and locked-state checks (Attempt 4)
+
+- persistent SHA-256 unchanged before and after:
+  `97DB9A15CC464D86137CBBB0DD0A4EF1880E9F4E231FB41E8B22CA09FB177FBB`;
+  persistent DB still at 29 migrations (migration 030 lives only in isolated
+  proof copies);
+- persistent critical counts unchanged from the Attempt 3 baseline;
+- report-only replay: `REPORT_ONLY`, 0 new source calls, 0 new evidence rows,
+  proof SHA byte-identical before/after;
+- Attempt 4 backup byte-identical to its prepared baseline;
+- `forbidden_deltas` all zero (retrieval queries/matches, paper decisions,
+  positions, trade events, trade audits, audit reports);
+- `printer_memories` and `printer_memory_fingerprints` deltas zero; no clean
+  memory promoted;
+- WINDOW_12H / WINDOW_24H: none created, still structurally disabled;
+- WINDOW_5M_MICRO_EVENT: closed `SUPPORT_EVIDENCE`, support-only, not promoted;
+- BUY/SELL/HOLD, positions, PnL, wallet/key/signing, live execution, paid
+  sources, scoring/ranking/confidence/weighted logic, embeddings, and vectors:
+  all locked, zero delta.
 
 ## What was not touched
 
 No implementation, migration, cadence, budget, configuration, source adapter,
-or endpoint changed after either runtime began. The persistent DB was read
-only across both attempts (hash-verified unchanged before Attempt 2, before
-Attempt 3, and at Attempt 3's freeze). No fourth attempt, V2-10, 12h, 24h,
-retrieval activation, paper decision, position, trade, audit, PnL, live
-wallet, key, signing, or execution work began.
+or endpoint changed after any runtime began. The persistent DB was read-only
+across all attempts (hash-verified unchanged before Attempt 2, before Attempt 3,
+at Attempt 3's freeze, and before/after Attempt 4). No Attempt 5, V2-10, 12h,
+24h, retrieval activation, paper decision, position, trade, audit, PnL, live
+wallet, key, signing, or execution work began. No proof artifact was mutated,
+deleted, or rewritten, and no cleanup was performed.
 
 ## Functionality risks / setbacks / efficiency blockers
 
 1. (Attempt 2, repaired by V2-9.3) Early pre-4h source failure was not
    propagated into the final terminal reason when `continuous_four_hour=true`
    and no long-window rows existed; unreached phase usage was treated as an
-   exceeded budget.
-2. (Attempt 3, open) The governed runtime has no resilience to its own host
-   process being terminated mid-run: there is no periodic checkpoint, no
-   external heartbeat/watchdog, and no on-restart cancellation sweep. A killed
-   process leaves run steps and scheduler rows stuck `PENDING` indefinitely on
-   whatever DB it was using, with `run_status` frozen at `RUNNING` and no
-   `stop_reason`. For a proof-only isolated DB this is inert, but the same gap
-   would apply to any longer-lived run.
-3. (Attempt 3, open) There is no operator-facing signal distinguishing "the
-   governed runtime safe-stopped" from "the process running it disappeared."
-   Both currently surface only as an unfinished proof DB; telling them apart
-   required manual DB inspection (this closeout's Attempt 3 sections).
-4. No real Attempt 3 evidence exists for a closed 1h window, 4h cadence, 4h
+   exceeded budget. Confirmed repaired: Attempt 4's accounting reported the 4h
+   phase honestly as `NOT_STARTED`.
+2. (Attempt 3, repaired by V2-9.4) The governed runtime had no resilience to its
+   own host process being terminated mid-run. Confirmed repaired: Attempt 4's
+   durable supervision finalized cleanly on child exit with zero orphaned rows,
+   and the launcher/supervision path was validated end-to-end under a real run.
+3. (Attempt 4, open - the core remaining blocker) A single transport failure on
+   one mandatory free/public source, under the approved strict zero-retry / no
+   rotation policy, ends the entire 4h attempt regardless of how healthy every
+   other source is. Attempt 4 saw three distinct free providers (GoPlus, Solana
+   RPC, DexScreener) throw transient TLS/rate-limit errors inside ~21 minutes; a
+   4h run must keep a mandatory price source continuously healthy for far longer.
+   This is the dominant efficiency blocker for ever completing a 4h proof on
+   free sources, and no repair for it exists yet.
+4. (Attempt 4, open) Even the 15m window closed DIRTY because two safety-context
+   sources failed at window close. Completing a clean 4h lifecycle therefore
+   depends not only on the mandatory price source but also on the safety/holder
+   context sources staying healthy across every window close in the chain -
+   compounding the transport-fragility exposure over a multi-hour run.
+5. No real evidence yet exists for a closed 1h window, any 4h cadence, 4h
    closing context, or the E2Q/Lane Q/Lane K 1h-and-4h quality-gate ordering,
-   because termination happened before the 1h continuation could close.
+   across any of the four attempts.
+
+## Recommendation on whether another attempt is justified
+
+A bare re-run (Attempt 5) with no change is **not** justified: nothing in
+Printer is broken, and repeating the same strict zero-retry policy against the
+same fragile free/public endpoints is likely to hit the same class of transient
+transport failure somewhere in the ~4.25-hour window. The launcher, supervision,
+safe-stop, accounting, and isolation are all now proven; re-running only to
+gamble on 4h of uninterrupted free-source uptime would mostly re-prove what
+Attempt 4 already showed.
+
+Before any Attempt 5 is separately approved, the operator should decide on a
+policy question that is currently out of scope for V2-9 as written: whether a
+bounded, governed, single retry (or a short bounded backoff) on a **transient
+transport** failure of a mandatory source is acceptable, without violating the
+"no automatic retries / no endpoint rotation" contract - or whether a partial-4h
+result should be an acceptable proof outcome. That is a design decision, not a
+defect fix, and it needs an explicit operator-approved lane. Do not implement any
+such change here.
 
 ## Next recommended phase
 
-Stop in V2-9. Do not rerun the proof and do not begin V2-10, 12h, or 24h. Any
-future repair or proof requires a new explicit operator-approved lane. If a
-fourth attempt is ever separately approved, first address risk 2/3 above (a
-long-running-process supervision or checkpoint gap) so that a host-level
-interruption produces an honest, immediate terminal report instead of an
-indefinitely `RUNNING` row that requires manual forensics to interpret.
+Stop in V2-9. Do not rerun the proof (no Attempt 5), do not implement a repair,
+and do not begin V2-10, 12h, or 24h. This closeout is the read-only inspection
+verdict; it is uncommitted pending operator review. Any next step - whether a
+policy change to source-failure handling, an accepted partial-4h proof
+definition, or a further attempt - requires a new explicit operator-approved
+lane.
