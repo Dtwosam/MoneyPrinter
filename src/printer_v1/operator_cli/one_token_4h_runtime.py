@@ -37,7 +37,7 @@ SCHEDULER_CEILINGS = {"TRACK_FAST": 64, "TRACK_NORMAL": 34}
 CONTEXT_PLAN = {
     "opening": ("market_chain", "entry_quote"),
     "closing": ("market_chain", "safety", "exit_quote"),
-    "holder_fallback_max": 1,
+    "holder_fallback_max": 2,  # V2-9.6: 1 primary holder fallback + 1 backup RPC endpoint
 }
 
 
@@ -61,7 +61,7 @@ def runtime_budget(tracking_lane: str) -> dict[str, Any]:
         "full_run_scheduler_ceiling": SCHEDULER_CEILINGS[tracking_lane],
         "automatic_retries": 0,
         "endpoint_rotation": False,
-        "holder_fallback_max": 1,
+        "holder_fallback_max": 2,  # V2-9.6: 1 primary holder fallback + 1 backup RPC endpoint
         "enabled_for_real_collection": policy.enabled_for_real_collection,
     }
 

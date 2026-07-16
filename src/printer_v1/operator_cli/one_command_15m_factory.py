@@ -56,6 +56,13 @@ _V2_5_MAX_SELECTED_TOKENS = 3
 _MAX_DISCOVERY_REQUESTS = 2
 _CONTEXT_REQUESTS_PER_TOKEN = 5
 _MAX_HOLDER_FALLBACKS_PER_TOKEN = 1
+# V2-9.6: at most one backup Solana-RPC holder endpoint per token, on top of the
+# single primary holder fallback. So the holder RPC request budget per token is
+# primary + backup = 2.
+_MAX_HOLDER_RPC_BACKUP_ENDPOINTS_PER_TOKEN = 1
+_MAX_HOLDER_RPC_REQUESTS_PER_TOKEN = (
+    _MAX_HOLDER_FALLBACKS_PER_TOKEN + _MAX_HOLDER_RPC_BACKUP_ENDPOINTS_PER_TOKEN
+)
 _CONTINUATION_SECONDS = 2700.0
 _CONTINUOUS_MAX_SELECTED_TOKENS = 1
 
@@ -598,6 +605,17 @@ def _collect_preclose_context(
     mint = str(step["token_mint"])
     pair = str(step["pair_address"])
     request_prefix = f"{step['run_id']}:{step['step_key']}:context"
+    # V2-9.6: resolve the single backup Solana-RPC holder endpoint. Tests inject
+    # a fixture via the "solana_rpc_holder_backup" factory; live runs use the
+    # real free/public keyless backup builder. Used only after an eligible
+    # transient primary-RPC failure.
+    from printer_v1.operator_cli.safety_context_source_redundancy import (
+        build_default_solana_rpc_holder_backup_adapter,
+    )
+    holder_backup_adapter_factory = (
+        factories.get("solana_rpc_holder_backup")
+        or build_default_solana_rpc_holder_backup_adapter
+    )
 
     def execute(source_name: str, request_kind: str, suffix: str, payload: dict[str, Any], adapter: Any) -> Any:
         request = build_governed_source_request(
@@ -711,13 +729,39 @@ def _collect_preclose_context(
                 ),
             )
         )
-        executions["holder"] = execute(
+        primary_holder = execute(
             "solana_rpc",
             "holder_concentration_reference",
             "holder",
             {},
             holder_adapter,
         )
+        chosen_holder = primary_holder
+        # V2-9.6: on an eligible transient primary-RPC failure, attempt exactly
+        # one governed backup RPC endpoint. The composite still receives a single
+        # holder contribution (the successful attempt, or the preserved primary
+        # failure if both fail); both source attempts are persisted and budgeted.
+        from printer_v1.operator_cli.safety_context_source_redundancy import (
+            execute_solana_rpc_holder_backup,
+            is_eligible_transient_solana_rpc_failure,
+        )
+        if (
+            holder_backup_adapter_factory is not None
+            and is_eligible_transient_solana_rpc_failure(primary_holder)
+        ):
+            backup_holder = execute_solana_rpc_holder_backup(
+                conn,
+                run_id=str(step["run_id"]),
+                step_key=str(step["step_key"]),
+                token_mint=mint,
+                pair_address=pair,
+                backup_adapter_factory=holder_backup_adapter_factory,
+                timeout_seconds=timeout_seconds,
+            )
+            executions["holder_backup"] = backup_holder
+            if backup_holder.response_record is not None:
+                chosen_holder = backup_holder
+        executions["holder"] = chosen_holder
     return {
         "executions": executions,
         "report": {
@@ -1875,7 +1919,7 @@ def _run_budgets(
         ),
         "holder_rpc_fallbacks": holder_fallbacks,
         "holder_rpc_fallbacks_ceiling": (
-            _MAX_HOLDER_FALLBACKS_PER_TOKEN * max(1, len(prefixes))
+            _MAX_HOLDER_RPC_REQUESTS_PER_TOKEN * max(1, len(prefixes))
         ),
         "scheduler_run_step_jobs": _run_step_job_count(conn, run_id),
         "scheduler_cancelled_discovery_handoffs": handoffs,
@@ -2450,7 +2494,7 @@ def run_one_command_15m_factory(
             "discovery_requests": _MAX_DISCOVERY_REQUESTS,
             "governed_requests_run": _MAX_GOVERNED_REQUESTS_RUN,
             "governed_requests_per_token": _MAX_GOVERNED_REQUESTS_PER_TOKEN,
-            "holder_fallbacks_per_token": _MAX_HOLDER_FALLBACKS_PER_TOKEN,
+            "holder_fallbacks_per_token": _MAX_HOLDER_RPC_REQUESTS_PER_TOKEN,
             "scheduler_rows": _MAX_SCHEDULER_ROWS,
             "total_duration_seconds": total_duration_seconds,
             "automatic_retries": 0,

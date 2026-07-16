@@ -39,6 +39,11 @@ from printer_v1.sources.contracts import (
 
 SOLANA_RPC_SOURCE_NAME = "solana_rpc"
 SOLANA_PUBLIC_RPC_URL = "https://api.mainnet-beta.solana.com"
+# V2-9.6: exactly one configured free/public, keyless backup RPC endpoint used
+# only after an eligible transient failure of the primary holder RPC. Operator
+# overridable; free/public and read-only, consistent with the allowed-source
+# list ("Solana public RPC"). No paid tier, no key.
+SOLANA_PUBLIC_RPC_BACKUP_URL = "https://solana-rpc.publicnode.com"
 SOLANA_RPC_TIMEOUT_SECONDS = 10.0
 SOLANA_RPC_PUBLIC_HEADERS = {
     "User-Agent": "PrinterV1/0.1 (+paper-only holder check)",
@@ -190,20 +195,40 @@ def _rpc_post(
                 }
             return data
     except url_error.HTTPError as exc:
+        code = int(exc.code)
         exc.close()
-        if exc.code == 429:
+        # V2-9.6 eligibility split: 429 and temporary 5xx are transient and
+        # backup-eligible; 4xx is a deterministic client error and is not.
+        if code == 429:
             return {
                 "fixture_status": "failure",
                 "failure_type": SOLANA_RPC_RATE_LIMIT_FAILURE_TYPE,
                 "failure_message": "Solana RPC HTTP 429 rate limit",
                 "status_code": 429,
             }
+        if 500 <= code <= 599:
+            return {
+                "fixture_status": "failure",
+                "failure_type": "solana_rpc_http_server_error",
+                "failure_message": f"Solana RPC HTTP error {code}",
+                "status_code": code,
+            }
         return {
             "fixture_status": "failure",
-            "failure_type": "solana_rpc_http_error",
-            "failure_message": f"Solana RPC HTTP error {exc.code}",
+            "failure_type": "solana_rpc_http_client_error",
+            "failure_message": f"Solana RPC HTTP error {code}",
+            "status_code": code,
         }
-    except (OSError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        # Parser/decode defect — a payload problem, never backup-eligible.
+        return {
+            "fixture_status": "failure",
+            "failure_type": "solana_rpc_malformed_response",
+            "failure_message": str(exc),
+        }
+    except (OSError, TimeoutError) as exc:
+        # TLS/connection interruption or connect/read timeout. Transient and
+        # backup-eligible.
         return {
             "fixture_status": "failure",
             "failure_type": "solana_rpc_transport_failure",
