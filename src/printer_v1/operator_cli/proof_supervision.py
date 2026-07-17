@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import time
 from typing import Any, Callable, Iterable, Iterator
 import uuid
 
@@ -38,6 +39,9 @@ SUPERVISION_HEARTBEAT_PERSISTENCE_FAILED = (
     "SUPERVISION_HEARTBEAT_PERSISTENCE_FAILED"
 )
 DEFAULT_LEASE_SECONDS = 90
+LEASE_REPLACE_MAX_ATTEMPTS = 3
+LEASE_REPLACE_RETRY_SECONDS = 0.05
+_TRANSIENT_WINDOWS_REPLACE_ERRORS = {5, 32, 33}
 ACTIVE_STATUSES = (STATUS_STARTING, STATUS_RUNNING)
 TERMINAL_STATUSES = {
     TERMINAL_COMPLETED,
@@ -153,7 +157,16 @@ def inspect_one_proof_lock(lock_path: str | Path) -> dict[str, Any]:
 
 
 
-def _write_lock_payload_atomic(path: Path, payload: dict[str, Any]) -> None:
+def _is_transient_windows_replace_error(exc: OSError) -> bool:
+    return getattr(exc, "winerror", None) in _TRANSIENT_WINDOWS_REPLACE_ERRORS
+
+
+def _write_lock_payload_atomic(
+    path: Path,
+    payload: dict[str, Any],
+    *,
+    expected_execution_id: str,
+) -> int:
     """Replace the active lease without exposing a partially written lock."""
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
@@ -162,7 +175,29 @@ def _write_lock_payload_atomic(path: Path, payload: dict[str, Any]) -> None:
             encoding="utf-8",
             newline="\n",
         )
-        os.replace(temporary, path)
+        for attempt in range(1, LEASE_REPLACE_MAX_ATTEMPTS + 1):
+            current = inspect_one_proof_lock(path)
+            if (
+                not current.get("exists")
+                or current.get("execution_id") != expected_execution_id
+            ):
+                raise ProofSupervisionError(
+                    "active lease disappeared or changed ownership before replacement"
+                )
+            try:
+                os.replace(temporary, path)
+                return attempt
+            except OSError as exc:
+                if (
+                    not _is_transient_windows_replace_error(exc)
+                    or attempt >= LEASE_REPLACE_MAX_ATTEMPTS
+                ):
+                    raise ProofSupervisionError(
+                        "atomic lease replacement failed "
+                        f"after {attempt} attempt(s): {exc}"
+                    ) from exc
+                time.sleep(LEASE_REPLACE_RETRY_SECONDS)
+        raise ProofSupervisionError("atomic lease replacement attempt ceiling exhausted")
     finally:
         if temporary.exists():
             temporary.unlink()
@@ -184,6 +219,20 @@ def heartbeat_active_lease(
     if not current.get("exists") or current.get("execution_id") != execution_id:
         raise ProofSupervisionError("active lease belongs to a different execution")
     instant = now or _utc_now()
+    if current.get("proof_scope") != PROOF_SCOPE:
+        raise ProofSupervisionError("active lease has an invalid proof scope")
+    try:
+        previous_heartbeat = _parse(str(current["heartbeat_at"]))
+        previous_expiry = _parse(str(current["lease_expires_at"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ProofSupervisionError("active lease timestamps are malformed") from exc
+    if previous_expiry <= instant:
+        raise ProofSupervisionError("active lease is expired")
+    next_expiry = instant + timedelta(seconds=lease_seconds)
+    if instant <= previous_heartbeat or next_expiry <= previous_expiry:
+        raise ProofSupervisionError(
+            "heartbeat and lease expiry must advance monotonically"
+        )
     payload = {
         key: value for key, value in current.items()
         if key not in {"lock_path", "exists", "available"}
@@ -191,11 +240,22 @@ def heartbeat_active_lease(
     payload.update({
         "process_id": process_id if process_id is not None else payload.get("process_id"),
         "heartbeat_at": _iso(instant),
-        "lease_expires_at": _iso(instant + timedelta(seconds=lease_seconds)),
+        "lease_expires_at": _iso(next_expiry),
         "updated_at": _iso(instant),
     })
-    _write_lock_payload_atomic(path, payload)
-    return {"lock_path": str(path), "exists": True, "available": False, **payload}
+    attempts = _write_lock_payload_atomic(
+        path,
+        payload,
+        expected_execution_id=execution_id,
+    )
+    return {
+        "lock_path": str(path),
+        "exists": True,
+        "available": False,
+        **payload,
+        "lease_replace_attempts": attempts,
+        "lease_replace_retries": attempts - 1,
+    }
 
 
 def request_cooperative_stop(
@@ -219,7 +279,11 @@ def request_cooperative_stop(
     payload.setdefault("cancellation_requested_at", _iso(instant))
     payload.setdefault("cancellation_reason", stop_reason)
     payload["updated_at"] = _iso(instant)
-    _write_lock_payload_atomic(path, payload)
+    _write_lock_payload_atomic(
+        path,
+        payload,
+        expected_execution_id=execution_id,
+    )
     return {"lock_path": str(path), "exists": True, "available": False, **payload}
 
 
@@ -380,7 +444,7 @@ def attach_run(
         execution_id,
         process_id=process_id,
         lease_seconds=lease_seconds,
-        now=instant,
+        now=instant + timedelta(microseconds=1),
     )
 
     return inspect_execution(db_path, execution_id)

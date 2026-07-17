@@ -218,30 +218,33 @@ try {
     ) | Out-Null
 
     while (-not $proofProcess.HasExited) {
-        $heartbeat = Invoke-Supervision -Arguments @(
-            'heartbeat',
-            '--lock-path', $lockPath,
-            '--execution-id', $executionId,
-            '--pid', [string]$proofProcess.Id,
-            '--lease-seconds', [string]$LeaseSeconds
-        )
-        if ($heartbeat.ExitCode -eq 0) {
-            $heartbeatFailures = 0
-            $lastHeartbeatSuccessUtc = [DateTime]::UtcNow
-            Write-LauncherEvent -Event 'HEARTBEAT_RENEWED' -Details @{
-                pid = $proofProcess.Id
-            } | Out-Null
-        }
-        else {
-            $heartbeatFailures += 1
-            Write-LauncherEvent -Event 'HEARTBEAT_RENEWAL_FAILED' -Details @{
-                consecutive_failures = $heartbeatFailures
-                output = $heartbeat.Output
-            } | Out-Null
-            # One failed renewal never kills or stops a process with a valid lease.
-            if ($heartbeatFailures -ge 2 -and -not $cooperativeStopRequested) {
-                $launcherFaultReason = 'SUPERVISION_HEARTBEAT_PERSISTENCE_FAILED'
-                $cooperativeStopRequested = Request-CooperativeStop -Reason $launcherFaultReason
+        if ($null -eq $launcherFaultReason) {
+            $heartbeat = Invoke-Supervision -Arguments @(
+                'heartbeat',
+                '--lock-path', $lockPath,
+                '--execution-id', $executionId,
+                '--pid', [string]$proofProcess.Id,
+                '--lease-seconds', [string]$LeaseSeconds
+            )
+            if ($heartbeat.ExitCode -eq 0) {
+                $heartbeatFailures = 0
+                $lastHeartbeatSuccessUtc = [DateTime]::UtcNow
+                Write-LauncherEvent -Event 'HEARTBEAT_RENEWED' -Details @{
+                    pid = $proofProcess.Id
+                } | Out-Null
+            }
+            else {
+                $heartbeatFailures += 1
+                Write-LauncherEvent -Event 'HEARTBEAT_RENEWAL_FAILED' -Details @{
+                    consecutive_failures = $heartbeatFailures
+                    output = $heartbeat.Output
+                } | Out-Null
+                # Python already exhausted the bounded transient replacement retry.
+                # One unconfirmed renewal therefore starts fail-closed shutdown.
+                if (-not $cooperativeStopRequested) {
+                    $launcherFaultReason = 'SUPERVISION_HEARTBEAT_PERSISTENCE_FAILED'
+                    $cooperativeStopRequested = Request-CooperativeStop -Reason $launcherFaultReason
+                }
             }
         }
 

@@ -176,7 +176,11 @@ function Invoke-SupervisionCommand {
     # successful heartbeat/lease renewal.
     param(
         [Parameter(Mandatory = $true)][string]$PythonPath,
-        [Parameter(Mandatory = $true)][string[]]$Arguments
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [scriptblock]$OutputRenderer = {
+            param($Value)
+            return [string]$Value
+        }
     )
     $global:LASTEXITCODE = $null
     $output = @()
@@ -194,16 +198,27 @@ function Invoke-SupervisionCommand {
             -Boundary "Invoke-Supervision:capture:$($Arguments[0])" | Out-Null
     }
 
+    $renderedOutput = New-Object System.Collections.Generic.List[string]
     foreach ($line in $output) {
-        Write-LauncherEvent -Event 'SUPERVISION_OUTPUT' -Details @{
-            command = $Arguments[0]
-            text = [string]$line
-        } | Out-Null
+        try {
+            $text = & $OutputRenderer $line
+            $renderedOutput.Add([string]$text)
+            Write-LauncherEvent -Event 'SUPERVISION_OUTPUT' -Details @{
+                command = $Arguments[0]
+                text = [string]$text
+            } | Out-Null
+        }
+        catch {
+            Register-LauncherLogFault -ErrorRecord $_ `
+                -Boundary "Invoke-Supervision:output:$($Arguments[0])" | Out-Null
+        }
     }
 
     return [pscustomobject]@{
         ExitCode = $exitCode
-        Output = ($output -join [Environment]::NewLine)
+        CommandCompleted = ($null -ne $exitCode)
+        CommandSucceeded = ($exitCode -eq 0)
+        Output = [string]::Join([Environment]::NewLine, $renderedOutput)
         CaptureFault = ($null -ne $captureFault)
     }
 }
