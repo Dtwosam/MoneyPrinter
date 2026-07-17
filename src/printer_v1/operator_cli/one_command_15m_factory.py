@@ -3047,6 +3047,24 @@ def run_one_command_15m_factory(
             conn, run_id=run_id, config=config, discovery=discovery, before=before,
             stop_reason=stop_reason, started_at=started_at,
         )
+        from printer_v1.operator_cli.tracking_lifecycle_reconciliation import (
+            reconcile_factory_post_cycle_lifecycle,
+        )
+        lifecycle_reconciliation = reconcile_factory_post_cycle_lifecycle(
+            conn,
+            run_id=run_id,
+            selected_tokens=report["selected_tokens"],
+            discovery_results=discovery.get("discovery_results", []),
+            per_token_outcomes=report["per_token_outcomes"],
+            stop_reason=report["stop_reason"],
+            archive_policy="cooldown",
+        )
+        conn.commit()
+        report = _final_report(
+            conn, run_id=run_id, config=config, discovery=discovery, before=before,
+            stop_reason=stop_reason, started_at=started_at,
+        )
+        report["post_cycle_lifecycle_reconciliation"] = lifecycle_reconciliation
         _apply_post_report_integrity(report)
         report["full_run_evidence_deltas"] = dict(report["table_deltas"])
         report["recovery_evidence_deltas"] = {

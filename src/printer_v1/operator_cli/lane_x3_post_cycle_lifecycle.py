@@ -63,6 +63,12 @@ _STATE_WATCH_ONLY: str = "WATCH_ONLY"
 _ARCHIVE_POLICY_COOLDOWN: str = "cooldown"
 _ARCHIVE_POLICY_ARCHIVE: str = "archive"
 
+_TERMINAL_MAIN_STATUSES: frozenset[str] = frozenset(
+    {"CLEAN", "DIRTY", "NO_PROMOTION"}
+)
+_ACTIVE_QUEUE_STATUSES: tuple[str, ...] = ("QUEUED", "ACTIVE", "PAUSED", "COOLDOWN")
+_ACTIVE_JOB_STATUSES: tuple[str, ...] = ("PENDING", "RUNNING", "COOLDOWN")
+
 _HARD_LOCKS: dict[str, bool] = {
     "no_buy_sell_hold": True,
     "no_paper_decisions": True,
