@@ -1031,11 +1031,15 @@ def _attach_context_and_gate_window(
             snapshot_end_id=snapshot_end_id,
             window_start_at=start_at,
             window_end_at=end_at,
-            # V2-9.4.6 deliberately does not pass run_id/tracking_lane here.
-            # This 15m close runs before the close step's own snapshot_id is
-            # written to the run ledger (see _run_pending_steps), so a ledger
-            # intersection would wrongly exclude the closing snapshot. The 4h
-            # path writes its ledger row first and is wired instead.
+            # V2-9.4.8: the closing snapshot is attached to the ledger before
+            # this runs (see _attach_closing_snapshot_to_ledger), so the exact
+            # current-run ledger identity is now safe to use here.
+            #
+            # tracking_lane is deliberately still not passed: it would resolve a
+            # closing-evidence allowance and silently widen 15m closing lateness
+            # from 0s to the 4h 60s allowance. The 15m lateness contract is
+            # unchanged by this lane.
+            run_id=str(step["run_id"]),
         )
     except ValueError as exc:
         shared_context = {
@@ -1121,6 +1125,69 @@ def _attach_context_and_gate_window(
     }
 
 
+def _attach_closing_snapshot_to_ledger(
+    conn: sqlite3.Connection, *, step: sqlite3.Row, result: dict[str, Any],
+) -> dict[str, Any]:
+    """Attach the exact closing snapshot to this run's ledger before context resolves.
+
+    V2-9.4.8: the exact-ledger resolver may consume only snapshots this run
+    recorded. The 15m close previously resolved shared context before the close
+    step's snapshot_id reached the ledger, which would report a false
+    SNAPSHOT_SET_NOT_CURRENT_RUN_LEDGER. The 4h path already attaches first.
+
+    Re-running an already-attached close is a no-op: the confirmation below reads
+    the ledger rather than the UPDATE's rowcount, so replay after a later failure
+    re-attaches the same snapshot_id instead of failing.
+    """
+    snapshot_id = int(result["snapshot_id"])
+    run_id = str(step["run_id"])
+    token_id = int(step["token_id"])
+    pair_id = int(step["pair_id"])
+    report: dict[str, Any] = {
+        "attached": False,
+        "run_id": run_id,
+        "snapshot_id": snapshot_id,
+        "token_id": token_id,
+        "pair_id": pair_id,
+    }
+    owner = conn.execute(
+        "SELECT token_id, pair_id FROM printer_token_snapshots WHERE id=?",
+        (snapshot_id,),
+    ).fetchone()
+    if owner is None:
+        report["reason"] = "CLOSING_SNAPSHOT_NOT_PERSISTED"
+        return report
+    # The closing snapshot must belong to this exact run's token and pair.
+    if int(owner["token_id"]) != token_id or int(owner["pair_id"]) != pair_id:
+        report["reason"] = "CLOSING_SNAPSHOT_TARGET_MISMATCH"
+        report["snapshot_token_id"] = int(owner["token_id"])
+        report["snapshot_pair_id"] = int(owner["pair_id"])
+        return report
+    conn.execute(
+        """UPDATE printer_memory_factory_run_steps
+           SET snapshot_id=?, source_request_id=?, source_response_id=?,
+               source_failure_id=?, updated_at=?
+           WHERE id=? AND run_id=? AND token_id=? AND pair_id=?
+             AND step_status='RUNNING'""",
+        (
+            snapshot_id, result.get("source_request_id"),
+            result.get("source_response_id"), result.get("source_failure_id"),
+            _iso(), int(step["id"]), run_id, token_id, pair_id,
+        ),
+    )
+    conn.commit()
+    confirmed = conn.execute(
+        """SELECT 1 FROM printer_memory_factory_run_steps
+           WHERE id=? AND run_id=? AND token_id=? AND pair_id=? AND snapshot_id=?""",
+        (int(step["id"]), run_id, token_id, pair_id, snapshot_id),
+    ).fetchone()
+    if confirmed is None:
+        report["reason"] = "CLOSING_SNAPSHOT_LEDGER_ATTACHMENT_FAILED"
+        return report
+    report["attached"] = True
+    return report
+
+
 def _execute_close(
     conn: sqlite3.Connection, step: sqlite3.Row, *, adapter_factory: Callable[..., Any],
     timeout_seconds: float, minimum_evidence_seconds: float,
@@ -1146,6 +1213,15 @@ def _execute_close(
     )
     result["governed_context_collection"] = context_bundle["report"]
     if not result.get("ok"):
+        return result
+    # V2-9.4.8 ordering: the closing snapshot is persisted, so attach it to this
+    # run's ledger and verify its identity BEFORE any context resolution reads
+    # the ledger. Everything below may now rely on the exact ledger range.
+    result["ledger_attachment"] = _attach_closing_snapshot_to_ledger(
+        conn, step=step, result=result
+    )
+    if not result["ledger_attachment"]["attached"]:
+        result.update(ok=False, blocked_reason=result["ledger_attachment"]["reason"])
         return result
     result["governed_context_persistence"] = _persist_preclose_context(
         conn,
