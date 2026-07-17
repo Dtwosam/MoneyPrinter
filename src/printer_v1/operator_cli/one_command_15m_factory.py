@@ -45,6 +45,11 @@ STOP_TERMINAL_4H = "SAFE_STOP_4H_TERMINAL_INCOMPLETE"
 TOKEN_LOCAL_FAILED = "TOKEN_LOCAL_TERMINAL_FAILURE"
 TOKEN_LOCAL_CANCELLED = "TOKEN_LOCAL_CANCELLED_AFTER_FAILURE"
 
+CLEAN_PROMOTED = "CLEAN_PROMOTED"
+DIRTY_OR_BLOCKED = "DIRTY_OR_BLOCKED"
+ALREADY_EXISTS_IDEMPOTENT = "ALREADY_EXISTS_IDEMPOTENT"
+NO_PROMOTION = "NO_PROMOTION"
+
 # V2-5 conservative three-token hard ceilings. These are hard limits, not
 # targets; a breach is a global integrity safe-stop, never silently exceeded.
 # V2-6.1a: the per-token snapshot count derives from the single authoritative
@@ -1798,12 +1803,61 @@ def _enforce_budgets_before_step(conn: sqlite3.Connection, run_id: str, step: sq
         raise _GlobalStop(STOP_BUDGET, scope="CUMULATIVE_LIFECYCLE")
 
 
+def _step_e2z_status(step: dict[str, Any], window_id: int) -> str | None:
+    """Read the exact attached window's E2Z event from its close-step report."""
+    try:
+        result = json.loads(str(step.get("result_json") or "{}"))
+    except json.JSONDecodeError:
+        return None
+    pipeline = result.get("memory_pipeline")
+    if not isinstance(pipeline, dict):
+        return None
+    matches = [
+        item for item in pipeline.get("e2z_window_results", [])
+        if isinstance(item, dict) and item.get("window_id") == window_id
+    ]
+    statuses = {str(item.get("e2z_status")) for item in matches}
+    if "E2Z_MEMORY_CREATED" in statuses:
+        return "E2Z_MEMORY_CREATED"
+    if "E2Z_ALREADY_EXISTS" in statuses:
+        return "E2Z_ALREADY_EXISTS"
+    return None
+
+
+def _authoritative_promotions_for_run(
+    conn: sqlite3.Connection, run_id: str,
+) -> dict[int, dict[str, Any]]:
+    """Load eligible E2Z episodes for this run's attached windows, read-only."""
+    rows = conn.execute(
+        """
+        SELECT e.*
+        FROM printer_episodes e
+        JOIN printer_memory_factory_run_steps s
+          ON s.memory_window_id=e.memory_window_id
+        WHERE s.run_id=?
+          AND e.episode_status='COMPLETE'
+          AND e.memory_status='CLEAN_MEMORY'
+          AND e.data_quality_label='CLEAN_DATA'
+          AND e.do_not_train=0
+          AND e.memory_quality_label='CLEAN_MEMORY'
+        ORDER BY e.id
+        """,
+        (run_id,),
+    ).fetchall()
+    promotions: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        episode = dict(row)
+        promotions.setdefault(int(episode["memory_window_id"]), episode)
+    return promotions
+
+
 def _per_token_outcomes(
     steps: list[dict[str, Any]], windows_by_id: dict[int, dict[str, Any]],
+    promotions_by_window_id: dict[int, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Build authoritative per-token outcomes from this run's steps only."""
-    _CLEAN = {"CLEAN_MEMORY"}
     _DIRTY = {"DIRTY_MEMORY", "AUDIT_ONLY_MEMORY", "DO_NOT_TRAIN"}
+    promotions_by_window_id = promotions_by_window_id or {}
     tokens: dict[int, dict[str, Any]] = {}
     order: list[int] = []
     for s in steps:
@@ -1821,7 +1875,11 @@ def _per_token_outcomes(
                 "four_hour_actual_snapshots": 0,
                 "close_status": None, "close_step_kind": None,
                 "memory_window_id": None,
-                "memory_quality_label": None, "blockers": [],
+                "memory_quality_label": None,
+                "source_memory_window_status": None,
+                "promotion_status": NO_PROMOTION,
+                "authoritative_episode_id": None,
+                "blockers": [],
                 "reached_terminal_window": False, "terminal_status": "INCOMPLETE",
             }
         t = tokens[tid]
@@ -1837,6 +1895,10 @@ def _per_token_outcomes(
             t["close_status"] = s["step_status"]
             t["close_step_kind"] = s["step_kind"]
             t["memory_window_id"] = s.get("memory_window_id")
+            t["close_step_e2z_status"] = (
+                _step_e2z_status(s, int(s["memory_window_id"]))
+                if s.get("memory_window_id") is not None else None
+            )
             if s["step_kind"] == "LONG_CONTINUATION_CLOSE":
                 t["four_hour_expected_snapshots"] = int(
                     _cadence_get_policy("WINDOW_4H", t["tracking_lane"]).minimum_required_snapshots
@@ -1847,7 +1909,8 @@ def _per_token_outcomes(
         window = windows_by_id.get(int(wid)) if wid is not None else None
         if window is not None:
             t["memory_quality_label"] = window.get("memory_quality_label")
-            # V2-6.3: report the 1h continuation plan for the closed 15m window —
+            t["source_memory_window_status"] = window.get("memory_status")
+            # V2-6.3: report the 1h continuation plan for the closed 15m window -
             # enqueue at the exact 15m close, deadline anchored to close + 2700s.
             if window.get("window_kind") == "WINDOW_15M":
                 from printer_v1.snapshots.lifecycle_continuity import (
@@ -1859,11 +1922,31 @@ def _per_token_outcomes(
         if t["close_status"] == "SUCCEEDED":
             t["reached_terminal_window"] = True
             q = t["memory_quality_label"]
-            t["terminal_status"] = (
-                "CLEAN" if q in _CLEAN else "DIRTY" if q in _DIRTY else "BLOCKED_QUALITY"
+            promotion = promotions_by_window_id.get(int(wid)) if wid is not None else None
+            promotion_matches_target = (
+                promotion is not None
+                and int(promotion["token_id"]) == int(t["token_id"])
+                and int(promotion["pair_id"]) == int(t["pair_id"])
+                and str(promotion.get("window_kind"))
+                == str(window.get("window_kind") if window else None)
             )
+            if promotion_matches_target:
+                t["authoritative_episode_id"] = int(promotion["id"])
+                t["promotion_status"] = (
+                    ALREADY_EXISTS_IDEMPOTENT
+                    if t.get("close_step_e2z_status") == "E2Z_ALREADY_EXISTS"
+                    else CLEAN_PROMOTED
+                )
+                t["terminal_status"] = "CLEAN"
+            elif q in _DIRTY:
+                t["promotion_status"] = DIRTY_OR_BLOCKED
+                t["terminal_status"] = "DIRTY"
+            else:
+                t["promotion_status"] = NO_PROMOTION
+                t["terminal_status"] = "NO_PROMOTION"
         elif t["close_status"] == "FAILED":
             t["reached_terminal_window"] = False
+            t["promotion_status"] = DIRTY_OR_BLOCKED
             t["terminal_status"] = "TERMINAL_BLOCKED"
         elif t["failed_steps"]:
             t["terminal_status"] = "TOKEN_LOCAL_FAILED"
@@ -1871,6 +1954,62 @@ def _per_token_outcomes(
             t["terminal_status"] = "CANCELLED"
     return [tokens[tid] for tid in order]
 
+
+def _memory_yield_report(
+    per_token: list[dict[str, Any]], windows: list[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Reconcile run-local yield while preserving source-window candidates."""
+    promoted = sum(t["promotion_status"] == CLEAN_PROMOTED for t in per_token)
+    existing = sum(
+        t["promotion_status"] == ALREADY_EXISTS_IDEMPOTENT for t in per_token
+    )
+    dirty_or_blocked = sum(
+        t["promotion_status"] == DIRTY_OR_BLOCKED for t in per_token
+    )
+    no_promotion = sum(t["promotion_status"] == NO_PROMOTION for t in per_token)
+    source_clean = sum(
+        row.get("memory_quality_label") == "CLEAN_MEMORY" for row in windows
+    )
+    source_dirty = sum(
+        row.get("memory_quality_label")
+        in {"DIRTY_MEMORY", "AUDIT_ONLY_MEMORY", "DO_NOT_TRAIN"}
+        for row in windows
+    )
+    source_partial = len(windows) - source_clean - source_dirty
+    run_local = {
+        "clean": promoted + existing,
+        "clean_promoted": promoted,
+        "already_exists_idempotent": existing,
+        "dirty": sum(t["terminal_status"] == "DIRTY" for t in per_token),
+        "blocked": sum(
+            t["terminal_status"] == "TERMINAL_BLOCKED" for t in per_token
+        ),
+        "dirty_or_blocked": dirty_or_blocked,
+        "no_promotion": no_promotion,
+        "token_local_failed": sum(
+            t["terminal_status"] == "TOKEN_LOCAL_FAILED" for t in per_token
+        ),
+        "authoritative_source": (
+            "eligible_printer_episodes_joined_to_run_step_attached_memory_window_ids"
+        ),
+        "zero_clean_is_valid": True,
+    }
+    memory_results = {
+        "clean": promoted + existing,
+        "clean_promoted": promoted,
+        "already_exists_idempotent": existing,
+        "dirty_or_blocked": dirty_or_blocked,
+        "no_promotion": no_promotion,
+        "dirty_or_audit_only": source_dirty,
+        "blocked_or_partial": source_partial,
+        "source_window_candidates": {
+            "clean": source_clean,
+            "dirty_or_audit_only": source_dirty,
+            "blocked_or_partial": source_partial,
+        },
+        "zero_clean_is_valid": True,
+    }
+    return run_local, memory_results
 
 def _run_budgets(
     conn: sqlite3.Connection, run_id: str, discovery: dict[str, Any], steps: list[dict[str, Any]],
@@ -2430,7 +2569,9 @@ def _final_report(
     ).fetchall()]
     selected = _selected_targets(conn, discovery.get("selection_handoff_report", {}).get("batch_id") or "")
     windows_by_id = {int(w["id"]): w for w in windows}
-    per_token = _per_token_outcomes(steps, windows_by_id)
+    promotions_by_window_id = _authoritative_promotions_for_run(conn, run_id)
+    per_token = _per_token_outcomes(steps, windows_by_id, promotions_by_window_id)
+    run_local_yield, memory_results = _memory_yield_report(per_token, windows)
     terminal_window_outcomes = sum(1 for t in per_token if t["reached_terminal_window"])
     budgets = _run_budgets(conn, run_id, discovery, steps)
     lifecycle = _continuous_lifecycle_report(conn, run_id, steps)
@@ -2457,24 +2598,18 @@ def _final_report(
         "eligible_pool_size": discovery.get("selection_handoff_report", {}).get("eligible_pool_size", 0),
         "selected_tokens": selected, "discovery_report": discovery,
         "scheduler_jobs": jobs, "steps": steps, "memory_windows": windows,
-        # V2-5: authoritative per-token outcomes and run-local yield, keyed by
-        # run_id/step/target/attached memory-window id. These, not embedded Lane
-        # K/E2Z pipeline summaries, are authoritative for yield and verdict.
+        # V2-9.7B.1: the attached window identifies the run-local candidate;
+        # its eligible printer_episodes row is authoritative for clean yield.
         "per_token_outcomes": per_token,
         "terminal_window_outcomes": terminal_window_outcomes,
-        "run_local_yield": {
-            "clean": sum(1 for t in per_token if t["terminal_status"] == "CLEAN"),
-            "dirty": sum(1 for t in per_token if t["terminal_status"] == "DIRTY"),
-            "blocked": sum(1 for t in per_token if t["terminal_status"] in {"BLOCKED_QUALITY", "TERMINAL_BLOCKED"}),
-            "token_local_failed": sum(1 for t in per_token if t["terminal_status"] == "TOKEN_LOCAL_FAILED"),
-            "authoritative_source": "run_step_attached_memory_window_ids",
-            "zero_clean_is_valid": True,
-        },
+        "run_local_yield": run_local_yield,
         "historical_report_note": (
             "Lane K/E2Z pipeline summaries embedded in step result_json may include "
-            "historical windows copied into the proof DB. They are NOT authoritative for "
-            "per-token yield or verdict; only per_token_outcomes and run_local_yield "
-            "(run-step-attached memory_window_ids) are authoritative."
+            "historical windows copied into the proof DB and are not authoritative "
+            "for clean yield on their own. Exact attached-window E2Z "
+            "events distinguish created from idempotent replay, but clean yield is "
+            "authoritative only when an eligible printer_episodes row matches the "
+            "run-attached window, token, pair, and window kind."
         ),
         "run_budgets": budgets,
         "four_hour_phase_usage": budgets.get("four_hour_phase_usage"),
@@ -2484,12 +2619,7 @@ def _final_report(
         "secondary_terminal_details": [],
         "continuous_lifecycle": lifecycle,
         "pending_or_running_run_steps": pending_run_steps,
-        "memory_results": {
-            "clean": sum(1 for row in windows if row.get("memory_quality_label") == "CLEAN_MEMORY"),
-            "dirty_or_audit_only": sum(1 for row in windows if row.get("memory_quality_label") in {"DIRTY_MEMORY", "AUDIT_ONLY_MEMORY", "DO_NOT_TRAIN"}),
-            "blocked_or_partial": sum(1 for row in windows if row.get("memory_quality_label") not in {"CLEAN_MEMORY", "DIRTY_MEMORY", "AUDIT_ONLY_MEMORY", "DO_NOT_TRAIN"}),
-            "zero_clean_is_valid": True,
-        },
+        "memory_results": memory_results,
         "counts_before": before, "counts_after": after, "table_deltas": deltas,
         "forbidden_deltas": forbidden, "running_jobs_after_stop": running,
         "locks_preserved": {

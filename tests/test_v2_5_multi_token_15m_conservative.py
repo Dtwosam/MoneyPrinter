@@ -338,7 +338,10 @@ class V2_5MultiTokenTests(unittest.TestCase):
     def test_run_local_yield_and_historical_note_present(self):
         result, _calls = self._run3()
         self.assertIn("run_local_yield", result)
-        self.assertEqual(result["run_local_yield"]["authoritative_source"], "run_step_attached_memory_window_ids")
+        self.assertEqual(
+            result["run_local_yield"]["authoritative_source"],
+            "eligible_printer_episodes_joined_to_run_step_attached_memory_window_ids",
+        )
         self.assertIn("historical_report_note", result)
         self.assertIn("not authoritative", result["historical_report_note"].lower())
         # run-local yield token counts sum to <= selected tokens
