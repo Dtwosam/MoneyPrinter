@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 import sqlite3
 import time
-from typing import Any, Callable, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator, Mapping
 import uuid
 
 
@@ -825,15 +825,32 @@ def finalize_execution_from_report(
     return inspect_execution(db_path, execution_id, now=instant)
 
 
+def _parse_launch_provenance_json(value: str) -> dict[str, Any]:
+    from printer_v1.operator_cli.git_provenance import (
+        GitProvenanceError,
+        validate_launch_provenance,
+    )
+
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise GitProvenanceError("launch Git provenance JSON is malformed") from exc
+    return validate_launch_provenance(parsed)
+
+
 def run_supervised_v2_9_proof(
     db_path: str | Path,
     backup_path: str | Path,
     execution_id: str,
+    launch_provenance: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Run the single approved proof with a lock-file cancellation probe."""
     from printer_v1.operator_cli.one_command_15m_factory import (
         run_one_command_15m_factory,
     )
+    from printer_v1.operator_cli.git_provenance import validate_launch_provenance
+
+    provenance = validate_launch_provenance(launch_provenance)
     supervision = inspect_execution(db_path, execution_id)
     lock_path = str(supervision["one_proof_lock_path"])
     print(json.dumps({
@@ -841,6 +858,7 @@ def run_supervised_v2_9_proof(
         "execution_id": execution_id,
         "process_id": os.getpid(),
         "at": _iso(),
+        "git_provenance": provenance,
     }, sort_keys=True), flush=True)
     return run_one_command_15m_factory(
         db_path,
@@ -856,6 +874,7 @@ def run_supervised_v2_9_proof(
         continuous_four_hour=True,
         four_hour_proof_mode=True,
         supervision_execution_id=execution_id,
+        launch_provenance=provenance,
         cancellation_probe=lambda: cooperative_stop_reason(lock_path, execution_id),
     )
 
@@ -866,11 +885,15 @@ def main_run_supervised_proof(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--db-path", required=True)
     parser.add_argument("--backup-proof-path", required=True)
     parser.add_argument("--execution-id", required=True)
+    parser.add_argument("--git-provenance-json", required=True)
     args = parser.parse_args(list(argv) if argv is not None else None)
     if not args.operator_approved:
         raise SystemExit("--operator-approved is required")
     report = run_supervised_v2_9_proof(
-        args.db_path, args.backup_proof_path, args.execution_id
+        args.db_path,
+        args.backup_proof_path,
+        args.execution_id,
+        _parse_launch_provenance_json(args.git_provenance_json),
     )
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report.get("run_status") != "FAILED" else 1
@@ -925,6 +948,7 @@ def main_supervision(argv: Iterable[str] | None = None) -> int:
     run.add_argument("--db-path", required=True)
     run.add_argument("--backup-proof-path", required=True)
     run.add_argument("--execution-id", required=True)
+    run.add_argument("--git-provenance-json", required=True)
     args = parser.parse_args(list(argv) if argv is not None else None)
     try:
         if args.action == "inspect-lock":
@@ -978,7 +1002,10 @@ def main_supervision(argv: Iterable[str] | None = None) -> int:
             if not args.operator_approved:
                 raise ProofSupervisionError("operator approval required")
             report = run_supervised_v2_9_proof(
-                args.db_path, args.backup_proof_path, args.execution_id
+                args.db_path,
+                args.backup_proof_path,
+                args.execution_id,
+                _parse_launch_provenance_json(args.git_provenance_json),
             )
         else:
             if not args.operator_approved:

@@ -27,10 +27,23 @@ from printer_v1.sources.governed_execution import (
 
 MINT_A = "A" * 32
 PAIR_A = "B" * 32
+TEST_GIT_PROVENANCE = {
+    "git_head": "a" * 40,
+    "git_tracked_tree_clean": True,
+    "git_staged_changes_present": False,
+    "git_unstaged_changes_present": False,
+    "git_untracked_present": True,
+    "git_provenance_captured_at": "2026-07-17T00:00:00+00:00",
+}
 
 
 class OneCommand15mFactoryTests(unittest.TestCase):
     def setUp(self):
+        self.git_provenance_patch = patch(
+            "printer_v1.operator_cli.one_command_15m_factory.capture_git_provenance",
+            return_value=dict(TEST_GIT_PROVENANCE),
+        )
+        self.git_provenance_patch.start()
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
         self.db = root / "proof.sqlite3"
@@ -40,6 +53,7 @@ class OneCommand15mFactoryTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+        self.git_provenance_patch.stop()
 
     def _discovery(self, *, with_target=True, lane="TRACK_FAST"):
         def run(_args):

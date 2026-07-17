@@ -11,8 +11,13 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
+from printer_v1.operator_cli.git_provenance import (
+    GitProvenanceError,
+    capture_git_provenance,
+    validate_launch_provenance,
+)
 from printer_v1.scheduler.contracts import JobKind, LockResult
 from printer_v1.scheduler.scheduler import (
     cancel_job,
@@ -2552,6 +2557,7 @@ def _final_report(
     discovery: dict[str, Any], before: dict[str, int], stop_reason: str,
     started_at: str,
 ) -> dict[str, Any]:
+    provenance = validate_launch_provenance(config.get("git_provenance", {}))
     after = _counts(conn)
     deltas = _deltas(before, after)
     steps = [dict(row) for row in conn.execute(
@@ -2594,7 +2600,8 @@ def _final_report(
         "command": COMMAND_NAME, "policy_version": POLICY_VERSION,
         "run_id": run_id, "run_status": effective_status,
         "stop_reason": effective_reason, "started_at": started_at, "finished_at": _iso(),
-        "config": config, "selection_seed": discovery.get("selection_handoff_report", {}).get("selection_seed"),
+        "config": config, "git_provenance": provenance,
+        "selection_seed": discovery.get("selection_handoff_report", {}).get("selection_seed"),
         "eligible_pool_size": discovery.get("selection_handoff_report", {}).get("eligible_pool_size", 0),
         "selected_tokens": selected, "discovery_report": discovery,
         "scheduler_jobs": jobs, "steps": steps, "memory_windows": windows,
@@ -2690,10 +2697,21 @@ def run_one_command_15m_factory(
     _window_seconds: float = 900.0, _sleep: Callable[[float], None] = time.sleep,
     _monotonic: Callable[[], float] = time.monotonic,
     _continuation_seconds: float = _CONTINUATION_SECONDS,
+    project_root: str | Path | None = None,
+    launch_provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     path = Path(db_path).resolve()
     backup = Path(backup_path).resolve()
     reasons: list[str] = []
+    provenance: dict[str, Any] | None = None
+    try:
+        provenance = (
+            capture_git_provenance(project_root or Path.cwd())
+            if launch_provenance is None
+            else validate_launch_provenance(launch_provenance)
+        )
+    except GitProvenanceError as exc:
+        reasons.append(f"Git provenance preflight failed: {exc}")
     if not operator_approved: reasons.append("operator approval required")
     if not proof_mode: reasons.append("first V2-4 command supports proof mode only")
     if window_kind != WINDOW_KIND: reasons.append(f"unsupported window_kind: {window_kind}")
@@ -2761,6 +2779,7 @@ def run_one_command_15m_factory(
         "continuous_four_hour": bool(continuous_four_hour),
         "four_hour_proof_mode": bool(four_hour_proof_mode),
         "supervision_execution_id": supervision_execution_id,
+        "git_provenance": provenance,
         "continuation_seconds": _continuation_seconds if continuous_first_hour else 0.0,
         "hard_ceilings": {
             "discovery_requests": _MAX_DISCOVERY_REQUESTS,

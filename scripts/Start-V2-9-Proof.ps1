@@ -60,6 +60,24 @@ $lockPath = Join-Path $runs 'v2-9-one-proof.lock.json'
 New-Item -ItemType Directory -Force -Path $runs | Out-Null
 Set-Location -LiteralPath $root
 
+# Capture one immutable launch-time provenance payload before preparation,
+# network preflight, proof DB creation, or child execution.
+$gitProvenanceOutput = @(
+    & $python -m printer_v1.operator_cli.git_provenance `
+        --project-root $root 2>&1
+)
+if ($LASTEXITCODE -ne 0) {
+    throw "V2-9 Git provenance preflight failed: $($gitProvenanceOutput -join ' ')"
+}
+try {
+    $gitProvenance = ($gitProvenanceOutput -join [Environment]::NewLine) |
+        ConvertFrom-Json
+    $gitProvenanceJson = ConvertTo-Json -InputObject $gitProvenance -Compress
+}
+catch {
+    throw "V2-9 Git provenance output is malformed: $($_.Exception.Message)"
+}
+
 # V2-9.4.3: launcher-event logging and native-output capture live behind a
 # reliability boundary. A logging fault can never discard a successful
 # supervision result, stop heartbeat renewal, kill a healthy child, become
@@ -110,6 +128,7 @@ Write-LauncherEvent -Event 'LAUNCHER_START' -Details @{
     artifact_prefix = $artifactPrefix
     heartbeat_seconds = $HeartbeatSeconds
     lease_seconds = $LeaseSeconds
+    git_provenance = $gitProvenance
 } | Out-Null
 
 $lockResult = Invoke-Supervision -Arguments @(
@@ -205,7 +224,8 @@ try {
             '--operator-approved',
             '--db-path', $proof,
             '--backup-proof-path', $backup,
-            '--execution-id', $executionId
+            '--execution-id', $executionId,
+            '--git-provenance-json', $gitProvenanceJson
         ) `
         -RedirectStandardOutput $stdoutLog `
         -RedirectStandardError $stderrLog `
@@ -436,6 +456,7 @@ if (-not (Test-LauncherLogHealthy)) {
     launcher_log = $launcherLog
     launcher_fallback_log = $launcherFallbackLog
     preparation_log = $prepareLog
+    git_provenance = $gitProvenance
     automatic_retries = 0
     forced_termination = $forcedTermination
     launcher_log_healthy = (Test-LauncherLogHealthy)

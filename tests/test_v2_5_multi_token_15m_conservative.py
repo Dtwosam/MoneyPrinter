@@ -12,6 +12,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from printer_v1.db import apply_migrations
 from printer_v1.operator_cli.one_command_15m_factory import (
@@ -31,6 +32,14 @@ from printer_v1.sources.governed_execution import build_fixture_source_adapter
 M1, M2, M3 = "1" * 32, "2" * 32, "3" * 32
 P1, P2, P3 = "a" * 32, "b" * 32, "c" * 32
 TOKENS = [(M1, P1), (M2, P2), (M3, P3)]
+TEST_GIT_PROVENANCE = {
+    "git_head": "b" * 40,
+    "git_tracked_tree_clean": True,
+    "git_staged_changes_present": False,
+    "git_unstaged_changes_present": False,
+    "git_untracked_present": True,
+    "git_provenance_captured_at": "2026-07-17T00:00:00+00:00",
+}
 
 
 def _snapshot_payload(token_mint, pair):
@@ -49,6 +58,11 @@ def _snapshot_payload(token_mint, pair):
 
 class V2_5MultiTokenTests(unittest.TestCase):
     def setUp(self):
+        self.git_provenance_patch = patch(
+            "printer_v1.operator_cli.one_command_15m_factory.capture_git_provenance",
+            return_value=dict(TEST_GIT_PROVENANCE),
+        )
+        self.git_provenance_patch.start()
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
         self.db = root / "proof.sqlite3"
@@ -58,6 +72,7 @@ class V2_5MultiTokenTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+        self.git_provenance_patch.stop()
 
     def _discovery(self, tokens, lanes):
         def run(_args):
