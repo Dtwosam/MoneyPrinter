@@ -78,11 +78,13 @@ Post-V2-9 update:
 - V2-9 is closed PASS at commit `51bcfdb`.
 - Attempt 7 produced a real, isolated, bounded `WINDOW_4H` clean memory result.
 - No further 4h proof is required before operational readiness review.
+- V2-9.7A and the focused V2-9.7B.1-B.5 repair program are closed PASS through
+  commit `b3d8761`.
 - Operational memory growth is still locked.
 - The next active memory-growth lane is:
 
 ```text
-V2-9.7A - Operational Memory Factory Readiness Audit
+V2-9.7C - Operational Memory Factory Design
 ```
 
 Known factual anchors from V2-0:
@@ -747,15 +749,16 @@ Goal: prepare and implement the operational Memory Factory only after V2-9 has
 closed PASS, without starting operational memory growth during the adoption or
 readiness-audit lanes.
 
-Status: active program, locked until its sub-lanes pass. The next active lane is
-`V2-9.7A - Operational Memory Factory Readiness Audit`.
+Status: active program, locked until its sub-lanes pass. V2-9.7A and the focused
+V2-9.7B.1-B.5 repair program are complete. The next active lane is
+`V2-9.7C - Operational Memory Factory Design`.
 
 Allowed: audit, targeted repair of proven operational blockers, campaign design,
 bounded implementation, two-token pilot proof, and activation closeout in the
 lane order below.
 
-Not allowed: starting V2-9.7A during this adoption, active memory-growth
-operations, V2-10, 12h/24h work, retrieval activation, paper decisions,
+Not allowed: active memory-growth operations, V2-10, 12h/24h work, retrieval
+activation, paper decisions,
 BUY/SELL/HOLD, positions, trades, paper trade audits, PnL, live execution,
 wallet/private-key/signing logic, paid APIs, scoring, ranking, confidence
 percentages, weighted logic, embeddings, vectors, unbounded runtime, or automatic
@@ -1613,12 +1616,14 @@ learning quality, evidence quality, report clarity, or lock safety is not done.
 
 ## 12. Next Recommended Lane
 
-After V2-9 final closeout and this operational adoption, the next active lane is:
+After the V2-9.7A readiness audit and focused V2-9.7B.1-B.5 repair program, the
+next active lane is:
 
 ```text
-V2-9.7A - Operational Memory Factory Readiness Audit
+V2-9.7C - Operational Memory Factory Design
 ```
 
-Reason: V2-9 proved the bounded 4h lifecycle. Printer now needs a read-only
-operational readiness audit before any persistent memory-growth campaign,
-implementation, V2-10, retrieval, or financial unlock can begin.
+Reason: the proven reusable reporting, lifecycle, supervision, and provenance
+blockers are repaired. Printer now needs a design-only campaign contract before
+bounded implementation, pilot proof, activation, V2-10, retrieval, or any
+financial unlock can begin.
