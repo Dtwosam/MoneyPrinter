@@ -73,6 +73,18 @@ No V2 section is complete merely because code exists.
 | Positions/trades/PnL | Locked |
 | Live trading/wallet/private keys/real funds | Out of scope for V1 |
 
+Post-V2-9 update:
+
+- V2-9 is closed PASS at commit `51bcfdb`.
+- Attempt 7 produced a real, isolated, bounded `WINDOW_4H` clean memory result.
+- No further 4h proof is required before operational readiness review.
+- Operational memory growth is still locked.
+- The next active memory-growth lane is:
+
+```text
+V2-9.7A - Operational Memory Factory Readiness Audit
+```
+
 Known factual anchors from V2-0:
 
 - Live DB has 15m memory growth evidence, including 30 complete clean
@@ -729,6 +741,239 @@ Sub-lanes:
 | Insufficient token diversity | 4h proof too narrow | Overfit | Weak corpus | Token selection criteria | Proof report | All same category |
 | Operator interruption risk | Long run fragile | Partial data | Confusion | Safe stop behavior | Stop proof | Cannot stop cleanly |
 
+### V2-9.7 - Operational Memory Factory Activation Program
+
+Goal: prepare and implement the operational Memory Factory only after V2-9 has
+closed PASS, without starting operational memory growth during the adoption or
+readiness-audit lanes.
+
+Status: active program, locked until its sub-lanes pass. The next active lane is
+`V2-9.7A - Operational Memory Factory Readiness Audit`.
+
+Allowed: audit, targeted repair of proven operational blockers, campaign design,
+bounded implementation, two-token pilot proof, and activation closeout in the
+lane order below.
+
+Not allowed: starting V2-9.7A during this adoption, active memory-growth
+operations, V2-10, 12h/24h work, retrieval activation, paper decisions,
+BUY/SELL/HOLD, positions, trades, paper trade audits, PnL, live execution,
+wallet/private-key/signing logic, paid APIs, scoring, ranking, confidence
+percentages, weighted logic, embeddings, vectors, unbounded runtime, or automatic
+restart after terminal failure.
+
+Final factory target flow:
+
+```text
+discovery
+-> selection
+-> tracking
+-> governed collection
+-> conditional WINDOW_5M_MICRO_EVENT support
+-> main WINDOW_15M closeout
+-> selective WINDOW_1H continuation
+-> conditional WINDOW_4H continuation
+-> clean/dirty/blocked audit
+-> cooldown/archive
+-> candidate rotation
+-> persistent corpus reporting
+-> safe stop
+```
+
+Selective continuation is mandatory. Printer must not track every timeframe for
+every token. Continuation to 1h or 4h must depend on evidence quality, learning
+value, source budget, token/pair continuity, and operator-approved campaign
+policy.
+
+`WINDOW_5M_MICRO_EVENT` remains support-only. It may be conditionally captured
+for early pumps, dumps, wicks, traps, and exit realism, but it must be
+exact-linked to the token, pair, run, and main 15m lifecycle; remain
+Source-Governed and Scheduler-led; never become a main outcome memory; never
+replace 15m; never independently trigger continuation; stay excluded from main
+clean-memory thresholds; and never unlock retrieval or financial capabilities.
+
+Known V2-9 carry-forward observations:
+
+- clean-promotion reporting under-count;
+- timeframe-confusing safety labels;
+- transient heartbeat lock-file contention;
+- partial wallet-level flow authenticity;
+- missing embedded Git provenance;
+- no separate live report-only replay.
+
+Sub-lanes:
+
+| Sub-lane | Goal | Allowed | Not allowed | Likely files/docs | Likely DB/tables | Tests/checks | Proof artifacts | Acceptance gate | Stop condition | Money-usefulness contribution |
+|---|---|---|---|---|---|---|---|---|---|---|
+| V2-9.7A | Operational Memory Factory Readiness Audit | Static/read-only audit of discovery, selection, tracking, scheduler, Source Governor, continuation gates, cooldown/archive, rotation, reporting, persistent DB safety, and V2-9 carry-forward observations | Code, DB writes, source fetching, runtime, operational command, V2-10, retrieval, paper/financial rows | Active docs, CLI/source/tests, read-only DB/report surfaces | Read-only only | Static inspection, accidental-unlock scan | Readiness audit closeout | Proven blockers and implementation scope are known | Needs mutation or runtime to answer | Prevents operational growth on a false-ready factory |
+| V2-9.7B | Repair only proven discovery/operational blockers | Minimal targeted repairs after V2-9.7A proves blockers | Broad refactor, new financial paths, unproven wishlist repairs | Discovery/selection/tracking/scheduler/report modules as proven by A | Temp/proof DB only if tests need it | Focused tests and regressions | Repair closeout | Proven blockers fixed without lock drift | Repair requires retrieval/financial unlock | Makes the factory operationally safe enough to design campaigns |
+| V2-9.7C | Multi-timeframe campaign design | Design only for 15m main, selective 1h, conditional 4h, 5m support, cooldown/archive, rotation, persistent reporting, stop policy | Runtime/source fetch/DB writes | Campaign design doc, command contract | None | Static design checks | Campaign design closeout | Implementer can build without inventing policy | Design implies all-timeframe tracking or auto restart | Turns proven 4h capability into controlled corpus growth policy |
+| V2-9.7D | Bounded implementation | Implement the committed operational command and reports | Running operational campaign, proof before approval, retrieval/paper/financial rows | CLI/runner/report/tests | Temp/proof DB for tests only | Targeted tests, no-unlock checks | Implementation closeout | Command exists but is not operated | Command can bypass governor/scheduler or auto-restart | Creates the tool needed for bounded real corpus growth |
+| V2-9.7E | Two-token pilot proof | Bounded two-token pilot against approved target with exact report and safe stop | Scaling to 3 tokens, unbounded campaign, V2-10, retrieval/paper/financial rows | Runner artifacts, pilot report | Approved target DB per lane scope | Source/scheduler/memory/lock deltas | Pilot proof closeout | Two-token pilot passes or blocks honestly | Token mixing, dirty clean promotion, unsafe stop | Proves initial operational memory growth can work without fake corpus claims |
+| V2-9.7F | Activation closeout | Decide whether V2-9.8A activation gate is ready | Starting operation, issuing command early | Closeout doc | None | Diff checks, unlock scan | Activation closeout | V2-9.8A is ready or explicitly blocked | Pilot unresolved or command unverified | Clean handoff to active bounded operations |
+
+#### Money-Usefulness Contribution
+
+V2-9.7 converts the successful one-token 4h proof into a disciplined operational
+program for growing a larger, more diverse, persistent clean-memory corpus. It
+keeps the work focused on evidence quality, selective continuation, realistic
+entry/exit evidence, negative outcomes, traps, round trips, and dirty/blocked
+honesty instead of raw row counts or profit claims.
+
+#### What This Program Improves
+
+- Moves from isolated proof success toward bounded persistent corpus growth.
+- Makes discovery, selection, tracking, cooldown/archive, and rotation part of
+  the same audited factory path.
+- Preserves selective continuation so source budget is spent on useful tokens,
+  not every timeframe for every token.
+- Carries V2-9 reporting/safety/supervision/provenance observations into the
+  next readiness audit instead of burying them.
+- Requires persistent corpus reporting before operational activation.
+
+#### What Remains Locked
+
+Operational memory growth, V2-10, 12h/24h, retrieval activation, paper decisions,
+BUY/SELL/HOLD, paper positions, trade events, paper trade audits, PnL, live
+execution, wallet/private-key/signing logic, paid APIs, scoring, ranking,
+confidence percentages, weighted logic, embeddings, vectors, unbounded runtime,
+auto-restart after terminal failure, dirty-memory retrieval, and 5m main outcome
+memory remain locked.
+
+#### Proof Required
+
+- V2-9.7A read-only readiness audit.
+- Focused repairs only for blockers proven in V2-9.7A.
+- Static campaign design closeout.
+- Bounded implementation tests and no-unlock checks.
+- Two-token pilot proof with safe stop and exact deltas.
+- Activation closeout before any V2-9.8 operation.
+
+#### Functionality Risks / Setbacks / Efficiency Blockers
+
+| Problem | Why it matters | How it could reduce memory quality or money-usefulness | Failure mode | Required mitigation | Proof/test needed | Stop condition |
+|---|---|---|---|---|---|---|
+| Starting operations before readiness audit | False operational confidence | Pollutes persistent corpus | Dirty rows or hidden failures | V2-9.7A first | Audit closeout | Runtime requested during A |
+| All-timeframe tracking | Wastes source budget | Fewer useful clean memories | Gaps and stale evidence | Selective continuation gates | Campaign tests/report | Every token gets every timeframe |
+| 5m support becomes a trigger | Violates support-only rule | Fake early-signal memory | 5m drives continuation or retrieval | Exact 15m linkage and exclusions | 5m exclusion tests | 5m acts as main evidence |
+| Discovery/selection bias | Corpus overfits to active winners | Weak avoid/trap/dead lessons | Winner-only corpus | Memory-diet and rotation reports | Diversity report | Concentration hidden |
+| Cooldown/archive missing | Same tokens dominate | Low diversity and stale lessons | Repeated same-pair loops | Lifecycle transitions | Rotation proof | No post-window transition |
+| Persistent DB safety unclear | Production corpus risk | Hard-to-recover pollution | Wrong DB/path or unbounded writes | Explicit target and backups | Preflight/report checks | DB target ambiguous |
+| Report under-count remains | Operator under-trusts or misreads yield | Bad go/no-go decisions | Clean promotion hidden | Repair or explicit reconciliation | Report tests | Episode/window counts conflict without explanation |
+| Safety label confusion persists | Timeframe policy unclear | False block or false clean | Wrong safety interpretation | Label/policy repair if proven | Safety report tests | Label contradicts gate |
+| Heartbeat contention recurs | Long run may lose supervision | Unclear terminal state | Expired lease | Durable renewal handling | Supervision tests/proof | Lease expires |
+| Partial flow overclaim | Flow authenticity overstated | Bad money lessons | Wallet-level claims without data | Explicit partial/caution reporting | Flow report checks | Report claims wallet authenticity |
+| Missing Git provenance | Harder audit | Poor reproducibility | Unknown code state | Embed HEAD/status in artifacts | Artifact tests | Provenance absent at operation |
+| No live replay | Idempotency less visible | Duplicate-risk uncertainty | Replay assumptions unproved | Replay/report-only plan if safe | Replay checks | Duplicate rows or replay mutation |
+
+### V2-9.8 - Active Bounded Memory Growth Campaigns
+
+Goal: operate bounded, persistent Memory Factory campaigns only after V2-9.7
+passes and the operator activates the gate.
+
+Status: locked until V2-9.7F passes. This is real persistent corpus production,
+not design, fixtures, implementation-only work, or a one-off proof.
+
+#### V2-9.8A - Operator Activation Gate
+
+Before any active bounded memory-growth campaign, the assistant must say exactly:
+
+```text
+This is the time for us to send a command to PowerShell and start growing
+Printer's real quality memory.
+```
+
+This may happen only after V2-9.7 passes. At that gate, the assistant must
+provide the exact verified PowerShell command from the committed implementation.
+The command must contain no placeholders; target the authoritative persistent
+corpus DB; not use a proof DB or the V2-9 proof launcher; run bounded automatic
+cycles; use Source Governor and Central Scheduler; perform discovery through
+reporting and safe shutdown; never automatically restart after terminal failure;
+and preserve all retrieval and financial locks.
+
+#### V2-9.8B - Active Bounded Memory Growth Operations
+
+Campaign rules:
+
+- begin with 2 active tokens;
+- increase to 3 only after the two-token pilot passes;
+- retain trustworthy positive and negative outcomes as clean when evidence is
+  complete;
+- keep incomplete, stale, mismatched, or unsupported evidence dirty or blocked;
+- report corpus growth, diversity, dirty reasons, source efficiency,
+  concentration, continuation yield, rotation, and safe shutdown;
+- continue through formal corpus-quality reviews, not raw row-count targets.
+
+Allowed: bounded persistent corpus production using the verified operational
+command after the activation gate.
+
+Not allowed: proof DB runs as a substitute for production, V2-9 proof launcher,
+placeholder commands, auto-restart after terminal failure, unbounded campaigns,
+retrieval activation, paper decisions, BUY/SELL/HOLD, positions, trades, paper
+trade audits, PnL, live execution, wallet/private-key/signing logic, paid APIs,
+scoring, ranking, confidence percentages, weighted logic, embeddings, vectors,
+or treating row counts as quality.
+
+Likely files/docs: operational run reports and corpus quality closeouts.
+
+Likely DB/tables: authoritative persistent corpus DB only after gate approval.
+
+Tests/checks: command verification, preflight DB target check, source/scheduler
+trace checks, corpus reports, safe-stop report, no-unlock deltas.
+
+Proof artifacts: operational campaign report, corpus quality report, safe-stop
+report, lock-preservation report.
+
+Acceptance gate: bounded campaign grows or honestly blocks persistent corpus
+memory with clear evidence, safe shutdown, and zero retrieval/financial deltas.
+
+Rollback/stop condition: wrong DB target, proof launcher use, placeholder
+command, Source Governor or Central Scheduler bypass, auto-restart, hidden dirty
+reasons, unsafe shutdown, or any retrieval/financial delta.
+
+#### Money-Usefulness Contribution
+
+V2-9.8 is where Printer begins growing real persistent quality memory from more
+than one active token. It is intended to increase the diversity and usefulness of
+clean 15m/1h/4h lessons while preserving bad outcomes, traps, failed
+continuations, realistic exits, and dirty/blocked reasons.
+
+#### What This Program Improves
+
+- Converts the factory from proof readiness to persistent corpus production.
+- Makes corpus growth, diversity, source efficiency, continuation yield, and
+  rotation visible to the operator.
+- Ensures operational campaigns remain bounded and stop safely.
+- Keeps quality reviews in charge instead of raw memory-row targets.
+
+#### What Remains Locked
+
+V2-10, 12h/24h, retrieval activation, paper decisions, BUY/SELL/HOLD, paper
+positions, trade events, paper trade audits, PnL, live execution,
+wallet/private-key/signing logic, paid APIs, scoring, ranking, confidence
+percentages, weighted logic, embeddings, vectors, unbounded runtime, proof
+launcher operation, and auto-restart remain locked.
+
+#### Proof Required
+
+- V2-9.7 PASS and activation closeout.
+- Exact committed PowerShell command with no placeholders.
+- Preflight proving authoritative persistent corpus DB target.
+- Bounded operation report from discovery through safe shutdown.
+- Corpus quality report and no-unlock deltas.
+
+#### Functionality Risks / Setbacks / Efficiency Blockers
+
+| Problem | Why it matters | How it could reduce memory quality or money-usefulness | Failure mode | Required mitigation | Proof/test needed | Stop condition |
+|---|---|---|---|---|---|---|
+| Wrong command | Could run proof path or wrong DB | No persistent corpus value | Proof DB or launcher used | Exact committed command | Command verification | Placeholder or proof path |
+| Persistent corpus pollution | Harder to undo than proof DB | Bad retrieval later | Dirty called clean | Strict audit gates | Corpus report | Unsupported clean row |
+| Raw row-count target | Incentivizes weak memory | Low quality corpus | Many dirty/low-value rows | Formal corpus quality reviews | Quality report | Row count used as success |
+| Token concentration | Overfits to few pairs | Weak money lessons | Same token dominates | Rotation/concentration reports | Diversity report | Concentration hidden |
+| Continuation overuse | Source waste | Stale/gappy long windows | Every token continues | Selective continuation policy | Continuation yield report | No continuation gate |
+| Source inefficiency | Free-source limits | More dirty/blocked windows | Budget exhaustion | Source efficiency reporting | Source deltas | Budget breach |
+| Unsafe terminal failure | Could restart or keep writing | Confusing corpus state | Auto-restart | No auto-restart rule | Terminal report | Restart after failure |
+| Financial drift | Violates V1 | Unsafe fake profit | Paper/financial rows appear | Lock deltas | No-unlock scan | Any forbidden delta |
+
 ### V2-10 - 12h/24h Lifecycle Readiness Review
 
 Goal: design long lifecycle memory only after 4h proof.
@@ -839,6 +1084,121 @@ Sub-lanes:
 | Fake clean promotion | Corrupts future retrieval | False confidence | Bad corpus | Strict gates | Regression tests | Unsupported clean |
 | Data but no learning value | Run succeeds technically | Weak money-usefulness | Empty lessons | Outcome analysis | Closeout report | No learning summary |
 | Report too vague | Operator cannot decide next | Drift | Bad planning | Required fields | Report review | Missing blockers |
+
+### V2-11.7 - Extend the Operational Factory to Selective 12h/24h Continuation
+
+Goal: after individual 12h/24h readiness and proof lanes pass, extend the
+operational factory so selected tokens can continue into 12h and 24h lifecycle
+windows.
+
+Allowed: readiness review, design, targeted implementation, bounded tests, and
+proof for selective 12h/24h continuation after V2-10 and V2-11 prove the long
+lifecycle path.
+
+Not allowed: activating 12h/24h during V2-9.7 or V2-9.8, tracking every token to
+12h/24h, fake aggregation from shorter windows, retrieval activation, paper
+decisions, BUY/SELL/HOLD, positions, trades, paper trade audits, PnL, live
+execution, wallet/private-key/signing logic, paid APIs, scoring, ranking,
+confidence percentages, weighted logic, embeddings, or vectors.
+
+Likely files/docs: long-continuation design, factory continuation policy,
+reporting docs, tests.
+
+Likely DB/tables: temp/proof DB for tests and approved bounded proofs; later
+persistent DB only after activation.
+
+Tests/checks: long-window evidence identity, stale handling, source budget,
+pair drift, selective continuation gates, no-unlock deltas.
+
+Proof artifacts: 12h/24h selective continuation proof report and closeout.
+
+Acceptance gate: operational factory can continue only selected tokens into
+12h/24h with honest clean/dirty/blocked outcomes and all locks preserved.
+
+Rollback/stop condition: all-token long continuation, fake long-window evidence,
+source budget exhaustion hidden, stale clean promotion, or any retrieval/
+financial delta.
+
+Money-usefulness contribution: adds delayed dump, revival, liquidity decay,
+longer consolidation, death, and full-cycle outcome lessons only for tokens
+whose earlier evidence justifies the longer source spend.
+
+What this lane improves: selective long-horizon learning without turning the
+factory into an all-timeframe source drain.
+
+What remains locked: retrieval, paper decisions, BUY/SELL/HOLD, positions,
+trades, paper trade audits, PnL, live execution, wallet/private-key/signing
+logic, paid APIs, scoring/ranking/confidence/weighted logic, embeddings,
+vectors, and unbounded campaigns.
+
+Proof required: V2-10/V2-11 PASS, selective continuation design, focused tests,
+bounded proof, corpus reporting, and no-unlock deltas.
+
+#### Functionality Risks / Setbacks / Efficiency Blockers
+
+| Problem | Why it matters | How it could reduce memory quality or money-usefulness | Failure mode | Required mitigation | Proof/test needed | Stop condition |
+|---|---|---|---|---|---|---|
+| Long-window overuse | 12h/24h are source-expensive | Fewer useful memories overall | Every token continues | Strict selection gates | Continuation report | No selectivity |
+| Stale evidence | Long windows amplify decay | Fake clean lifecycle | Stale clean row | Freshness gates | Staleness tests | Stale accepted |
+| Token/pair drift | Long lifecycles can migrate | Mixed evidence | Wrong pair memory | Pair identity checks | Drift proof | Pair drift unhandled |
+| Fake aggregation | Not real 12h/24h memory | False lifecycle lessons | Short windows reused | Evidence identity | Fixture tests | Aggregation-only proof |
+| Operator fatigue | Long campaigns are hard to audit | Hidden failures | Vague closeout | Report contract | Closeout review | Missing report fields |
+
+### V2-11.8 - Extended Bounded Multi-Timeframe Campaigns
+
+Goal: after V2-11.7 passes, operate bounded campaigns that include selective
+12h/24h continuation as part of the persistent corpus program.
+
+Allowed: bounded persistent campaigns with selected 15m, 1h, 4h, 12h, and 24h
+continuations according to approved policy and source budget.
+
+Not allowed: unbounded daemon operation, all-token all-timeframe tracking,
+retrieval activation, paper decisions, BUY/SELL/HOLD, positions, trades, paper
+trade audits, PnL, live execution, wallet/private-key/signing logic, paid APIs,
+scoring, ranking, confidence percentages, weighted logic, embeddings, vectors,
+auto-restart after terminal failure, or raw row-count success targets.
+
+Likely files/docs: extended campaign reports and corpus quality reviews.
+
+Likely DB/tables: authoritative persistent corpus DB after approved gate.
+
+Tests/checks: command verification, source/scheduler traces, long-window budget,
+corpus quality, concentration, no-unlock deltas, safe shutdown.
+
+Proof artifacts: extended campaign report, long-window corpus quality report,
+lock-preservation report.
+
+Acceptance gate: campaign produces or honestly blocks multi-timeframe corpus
+memory with clear source efficiency, continuation yield, diversity, dirty
+reasons, and safe shutdown.
+
+Rollback/stop condition: source budget breach, hidden dirty reasons,
+continuation concentration, unsafe terminal behavior, or any retrieval/financial
+delta.
+
+Money-usefulness contribution: grows richer lifecycle memory for survival,
+revival, delayed failure, liquidity decay, and full-day outcomes without turning
+that data into live trading or paper actions.
+
+What this lane improves: long-horizon corpus diversity and lifecycle realism.
+
+What remains locked: retrieval, paper decisions, BUY/SELL/HOLD, positions,
+trades, paper trade audits, PnL, live execution, wallet/private-key/signing
+logic, paid APIs, scoring/ranking/confidence/weighted logic, embeddings,
+vectors, and unbounded operation.
+
+Proof required: V2-11.7 PASS, exact verified command, bounded campaign report,
+long-window corpus quality review, no-unlock deltas, and safe-stop evidence.
+
+#### Functionality Risks / Setbacks / Efficiency Blockers
+
+| Problem | Why it matters | How it could reduce memory quality or money-usefulness | Failure mode | Required mitigation | Proof/test needed | Stop condition |
+|---|---|---|---|---|---|---|
+| Campaign too broad | Source budget collapses | Dirty/gappy corpus | Too many continuations | Caps and priority policy | Budget report | Budget breach |
+| Long-window concentration | Few survivors dominate | Biased lessons | Same token dominates long corpus | Concentration report | Diversity review | Concentration hidden |
+| Dirty long windows hidden | False readiness | Bad retrieval later | Dirty called clean | Strict audit and report | Dirty-reason report | Hidden dirty reason |
+| Safe stop weak | Long campaigns may straddle failures | Ambiguous DB state | Running/locked jobs after terminal | Stop contract | Shutdown report | Orphaned jobs/locks |
+| Row count mistaken for quality | Incentivizes junk corpus | Weak money-usefulness | Quantity target met | Formal corpus reviews | Quality review | Raw count used as pass |
 
 ### V2-12 - Memory Corpus Quality Report
 
@@ -1089,6 +1449,7 @@ V2 does not unlock:
 - Trade events.
 - Paper trade audits.
 - PnL.
+- Operational memory growth before V2-9.8A.
 
 ## 7. E2Q Repair Boundary
 
@@ -1139,32 +1500,39 @@ the operator can audit why each token was tracked.
 
 ## 9. Automation Boundary
 
-The automation target is a PowerShell-started operator command:
+After V2-9, the automation target is a PowerShell-started, bounded operational
+command, but the exact command must not be provided until V2-9.8A. The target
+factory flow is:
 
 ```text
-operator starts one command
--> discovery/selection
--> tracking queue
--> scheduler jobs
--> Source Governor calls
--> snapshots
--> WINDOW_15M memory windows
--> clean/dirty audit
--> report
+discovery
+-> selection
+-> tracking
+-> governed collection
+-> conditional WINDOW_5M_MICRO_EVENT support
+-> main WINDOW_15M closeout
+-> selective WINDOW_1H continuation
+-> conditional WINDOW_4H continuation
+-> clean/dirty/blocked audit
+-> cooldown/archive
+-> candidate rotation
+-> persistent corpus reporting
 -> safe stop
 ```
 
-The command should eventually move from discovery to memory-building without
-manual token-list patching.
+The command must move from discovery to reporting and safe shutdown without
+manual token-list patching once V2-9.7 passes.
 
-First automation target:
+The first operational activation remains bounded and conservative:
 
 ```text
-WINDOW_15M only
+2 active tokens first; 3 active tokens only after the two-token pilot passes
 ```
 
 `WINDOW_5M_MICRO_EVENT` may remain support-only if already approved, but it must
-not become a main memory window or unlock retrieval/paper/financial paths.
+not become a main memory window, replace 15m, independently trigger
+continuation, count toward main clean-memory thresholds, or unlock retrieval,
+paper decisions, BUY, positions, or PnL.
 
 The command must:
 
@@ -1173,10 +1541,12 @@ The command must:
 - Use Source Governor for source calls.
 - Use Central Scheduler for jobs.
 - Preserve source failure visibility.
-- Preserve clean/dirty audit visibility.
-- Avoid unsupported timeframes.
+- Preserve clean/dirty/blocked audit visibility.
+- Use selective continuation rather than every timeframe for every token.
+- Target the authoritative persistent corpus DB only at V2-9.8A or later.
+- Never use the V2-9 proof launcher for operational campaigns.
+- Never automatically restart after terminal failure.
 - Avoid retrieval/paper/financial rows.
-
 ## 10. Money-Usefulness Boundary
 
 The user's end goal is money-useful Printer. In V1, money-usefulness means:
@@ -1211,12 +1581,12 @@ learning quality, evidence quality, report clarity, or lock safety is not done.
 
 ## 12. Next Recommended Lane
 
-After V2-1 adoption, the next lane is:
+After V2-9 final closeout and this operational adoption, the next active lane is:
 
 ```text
-V2-2A - Audit current discovery/selection pipeline
+V2-9.7A - Operational Memory Factory Readiness Audit
 ```
 
-Reason: discovery/selection must prove it can feed useful learning tokens before
-the first real one-command memory-building implementation. The Memory Factory is
-only as useful as the token set it learns from.
+Reason: V2-9 proved the bounded 4h lifecycle. Printer now needs a read-only
+operational readiness audit before any persistent memory-growth campaign,
+implementation, V2-10, retrieval, or financial unlock can begin.

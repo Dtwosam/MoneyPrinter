@@ -23,7 +23,9 @@ Authority order:
 
 This guide does not authorize skipping active lanes.
 
-This guide does not authorize runtime expansion, source fetching, long-window collection, BUY unlock, paper positions, PnL, wallet logic, live trading, paid APIs, scoring, ranking, confidence systems, weighted decision logic, embeddings, vectors, or dirty-memory decisions.
+This guide does not authorize runtime expansion, source fetching, operational memory growth, long-window collection, BUY unlock, paper positions, PnL, wallet logic, live trading, paid APIs, scoring, ranking, confidence systems, weighted decision logic, embeddings, vectors, or dirty-memory decisions.
+
+Post-V2-9 status: V2-9 closed PASS at commit `51bcfdb`. No further 4h proof is required before operational readiness review, but operational memory growth remains locked until the active V2-9.7 program passes and the V2-9.8A operator activation gate is reached.
 
 ## 1. Purpose
 
@@ -94,16 +96,19 @@ It is an operator-approved, bounded workflow that coordinates existing Printer c
 
 ```text
 operator starts bounded cycle
-→ discovery finds candidates
-→ tracking queue selects limited batch
-→ Central Scheduler creates jobs
-→ Source Governor controls source calls
-→ token snapshots are captured
-→ evidence windows close
-→ memory quality audit runs
-→ clean memories become retrievable
-→ dirty/audit memories stay blocked
-→ operator receives report
+-> discovery
+-> selection
+-> tracking
+-> governed collection
+-> conditional WINDOW_5M_MICRO_EVENT support
+-> main WINDOW_15M closeout
+-> selective WINDOW_1H continuation
+-> conditional WINDOW_4H continuation
+-> clean/dirty/blocked audit
+-> cooldown/archive
+-> candidate rotation
+-> persistent corpus reporting
+-> safe stop
 ```
 
 The Memory Factory must be:
@@ -120,6 +125,8 @@ The Memory Factory must be:
 - unable to unlock BUY by itself
 - unable to open paper positions by itself
 - unable to create PnL by itself
+- unable to activate retrieval by itself
+- unable to start before the active V2-9.8A gate
 
 ## 4. Why Memory Factory Comes Before Paper Trading Expansion
 
@@ -372,11 +379,18 @@ Role:
 5m must not:
 
 - become a main outcome memory
+- replace 15m
+- independently trigger 1h, 4h, 12h, or 24h continuation
+- count toward main clean-memory thresholds
 - unlock retrieval by itself
 - unlock paper decisions
 - unlock BUY
 - open paper positions
 - create PnL
+
+5m may be conditionally captured for early pumps, dumps, wicks, traps, and exit
+realism. It must be exact-linked to the token, pair, run, and main 15m lifecycle;
+remain Source-Governed and Scheduler-led; and stay support-only.
 
 5m may inform a later main memory window.
 
@@ -440,7 +454,7 @@ Memory Factory should activate windows in this order:
 4. 12h survival/revival/delayed-dump memory
 5. 24h full-cycle memory
 
-Do not activate all timeframes at once.
+Do not activate all timeframes at once. Preserve selective continuation: not every token should receive every timeframe. Continue only when evidence quality, learning value, source budget, and token/pair continuity justify the next window.
 
 ## 9. Snapshot Frequency Policy
 
@@ -907,71 +921,67 @@ SELL/HOLD must be based on:
 
 ## 19. Roadmap Placement
 
-This guide should be used after current post-RC guardrail lanes are complete.
-
-Recommended order:
+This guide now follows the active post-V2-9 memory-growth roadmap:
 
 ```text
-Finish Lane 8C — Conservative Paper Decision Audit Review
-→ Lane 9 — BUY Unlock Preconditions, Documentation Only
-→ Lane 10 — Paper Position Re-Activation Review
-→ Memory Factory Guide adoption
-→ Conservative 15m Memory Factory lane
-→ 5m support integration lane
-→ 1h activation lane
-→ 4h activation lane
-→ 12h activation lane
-→ 24h activation lane
-→ Paper BUY/SELL expansion only after enough clean memory exists
+V2-9 closed PASS at commit 51bcfdb
+-> V2-9.7 Operational Memory Factory Activation Program
+-> V2-9.8 Active Bounded Memory Growth Campaigns
+-> V2-10 12h/24h Lifecycle Readiness Review
+-> V2-11 Bounded 12h/24h Lifecycle Proof
+-> V2-11.7 extend the operational factory to selective 12h/24h continuation
+-> V2-11.8 extended bounded multi-timeframe campaigns
+-> V2-12 Memory Corpus Quality Report
+-> V2-13 Clean Retrieval Reactivation Review
+-> V2-14 WAIT/AVOID/NO_ACTION Paper Decision Readiness
+-> V2-15 Paper BUY Readiness Review
 ```
 
-Do not use this guide to skip Lane 8C, Lane 9, or Lane 10.
+The next active lane is `V2-9.7A - Operational Memory Factory Readiness Audit`.
+Do not start operational campaigns, provide the operational PowerShell command,
+start V2-10, or unlock retrieval/paper/financial capabilities from this guide.
 
-If the active Post-RC Build Order is updated later, this roadmap placement must be updated to match the approved order.
+Do not use this guide to skip V2-9.7, V2-9.8A, corpus-quality reviews, Lane 9
+BUY policy, or Lane 10 paper-position policy.
 
-## 20. First Recommended Memory Factory Configuration
+If the active memory-growth build order is updated later, this roadmap placement
+must be updated to match the approved order.## 20. First Recommended Memory Factory Configuration
 
-First approved Memory Factory cycle should be conservative.
+The first operational Memory Factory configuration is not authorized by this
+guide alone. It must come from the committed V2-9.7 implementation and may be
+provided only at V2-9.8A.
 
-Suggested configuration:
+Policy requirements for the first active bounded campaign:
 
 ```text
-mode: conservative
-duration: 6h
-max_new_tokens: 50
-max_active_tokens: 10
-max_track_fast: 3
-max_track_normal: 7
-watch_only_limit: 40
-windows: WINDOW_5M_MICRO_EVENT + WINDOW_15M
-WINDOW_1H: open only after clean 15m and approved policy
-WINDOW_4H: disabled/readiness-only
-WINDOW_12H: disabled/readiness-only
-WINDOW_24H: disabled/readiness-only
-paper_decisions: off or WAIT/AVOID/NO_ACTION review-only depending on approved lane
+active_tokens: 2 first
+increase_to_3: only after the two-token pilot passes
+WINDOW_5M_MICRO_EVENT: conditional support-only
+WINDOW_15M: main closeout for active tokens
+WINDOW_1H: selective continuation only
+WINDOW_4H: conditional continuation only
+WINDOW_12H: locked until V2-11.7
+WINDOW_24H: locked until V2-11.7
+paper_decisions: off
 BUY: locked
 positions: locked
 PnL: locked
+retrieval_activation: locked
+safe_stop: required
+auto_restart_after_terminal_failure: forbidden
 ```
 
-Expected 6h output:
-
-```text
-discovered tokens: 20-50
-accepted tracking: 5-10
-clean 5m support: 3-10
-clean 15m memories: 2-6
-dirty/audit windows: 3-10
-paper BUY: 0
-positions: 0
-PnL: 0
-```
+At V2-9.8A, the assistant must provide the exact verified PowerShell command
+from the committed implementation. It must contain no placeholders, target the
+authoritative persistent corpus DB, avoid proof DBs and the V2-9 proof launcher,
+run bounded automatic cycles, use Source Governor and Central Scheduler, perform
+discovery through reporting and safe shutdown, never automatically restart after
+terminal failure, and preserve all retrieval and financial locks.
 
 The first goal is not trading.
 
-The first goal is proving that the Memory Factory can grow clean memory without polluting the database.
-
-## 21. Required Future Build Pattern
+The first goal is proving that the Memory Factory can grow clean persistent
+memory without polluting the corpus database.## 21. Required Future Build Pattern
 
 Every future Memory Factory implementation lane must specify:
 
