@@ -198,6 +198,58 @@ Only CLEAN_DATA and acceptable partial data can become clean memory. Any critica
 
 A memory window is clean only if the full window completes with enough required snapshots and critical fields. If tracking is incomplete, broken, delayed, stale, or missing critical fields, the resulting episode must be marked DIRTY_MEMORY and DO_NOT_TRAIN. Partial windows may be stored for audit, but cannot drive decisions as clean memory.
 
+Outcome direction is separate from evidence quality. A round trip, failed hold, pump-and-dump, collapse, negative close, or dead token may still be CLEAN_MEMORY when its evidence is complete, timely, exact-target, provenance-clean, correctly ordered, and realistically interpretable. DIRTY_MEMORY is reserved for incomplete, stale, delayed, mismatched, unsupported, contaminated, broken, or otherwise untrustworthy evidence. Printer must not mark a memory dirty merely because the token fell, round-tripped, or closed below its opening price.
+
+## 1.4A Full-Trajectory Memory Rule
+
+Printer must not reduce a main memory to opening price versus closing price. A 15m, 1h, 4h, 12h, or 24h memory must preserve the ordered intra-window path through meaningful phases where evidence supports it, such as opening state, initial expansion, pullback, breakdown, recovery, reclaim, consolidation, second expansion, peak failure, collapse, and final outcome.
+
+The exact phase labels and reversal labels must come from approved categorical vocabulary. Runtime must not invent dynamic labels to make an episode look more precise than the evidence supports. Unsupported trajectory semantics must remain honestly unknown.
+
+Each main memory must preserve, where evidence permits:
+
+- full-window outcome
+- ordered intra-window phases
+- decision checkpoints containing only information knowable at that checkpoint
+- realistic action paths evaluating BUY, SELL, HOLD, WAIT, AVOID, or NO_ACTION
+
+These are future memory and decision semantics only. They do not activate retrieval, decisions, positions, or trading.
+
+## 1.4B Required Trajectory Evidence
+
+Memory design must preserve or derive, where supported:
+
+- opening price
+- observed high
+- observed low
+- closing price
+- time to observed high
+- time to observed low
+- maximum favorable excursion
+- maximum adverse excursion
+- opening-to-low decline
+- peak-to-close drawdown
+- recovery from low
+- range width
+- meaningful reversal count and order
+- time spent above and below opening
+- green, red, and flat snapshot counts
+- higher-high and lower-low behavior
+- liquidity changes around major phases
+- volume changes around major phases
+- transaction changes around major phases
+- flow changes around major phases
+- safety changes around major phases
+- whether entry and exit opportunities were realistically available
+
+Do not fabricate unsupported metrics. Missing or unavailable semantics must remain UNKNOWN or UNPROVEN.
+
+## 1.4C Timeframe Is Not an Action Trigger
+
+A memory timeframe is an evidence and outcome horizon. No window kind may independently cause BUY, SELL, HOLD, WAIT, AVOID, NO_ACTION, continuation, retrieval activation, a position, or a financial result.
+
+This applies to WINDOW_5M_MICRO_EVENT, WINDOW_15M, WINDOW_1H, WINDOW_4H, WINDOW_12H, and WINDOW_24H. Multiple relevant timeframes may later inform a decision after explicit approval, but no timeframe label may dictate one.
+
 ## 1.5 Unified Engine Rule
 
 Each engine has one job. Context engines do not trade. Discovery does not trade. Safety does not buy. Liquidity does not buy. Flow does not buy. Chart does not buy. The Memory Engine compares completed episodes. The Paper Trading Engine uses that memory comparison to make paper-only decisions.
@@ -1553,6 +1605,8 @@ What happened in this completed episode, was the memory clean, and what did it t
 
 An episode is a completed token behavior window tied to a token, pair, market regime snapshot, Solana chain heat snapshot, safety state, liquidity/exit state, flow state, chart state, and outcome. Episodes may be 15m, 1h, 4h, 12h, or 24h. Micro-events are attached as support evidence.
 
+Main episodes are full-trajectory memories. They must preserve the ordered intra-window path and the later full-window outcome separately, so a profitable intra-window journey that closes poorly can still teach entry, exit, hold, avoid, and re-entry lessons without pretending the close was the only useful fact.
+
 ## 10.4 Episode Types
 
 - PUMP_EPISODE
@@ -1639,9 +1693,13 @@ An episode is a completed token behavior window tied to a token, pair, market re
 
 If the window is incomplete, snapshots are too sparse, sources are stale, critical fields are missing, data conflicts are unresolved, or profit cannot be realistically verified, the episode must be marked DIRTY_MEMORY or AUDIT_ONLY and cannot train decisions.
 
+Do not use DIRTY_MEMORY for unfavorable but well-evidenced outcomes. Negative closes, collapses, failed holds, round trips, dead-token endings, and pump-and-dump outcomes can be CLEAN_MEMORY when their evidence is complete, timely, exact-target, provenance-clean, correctly ordered, and realistically interpretable.
+
 ## 10.9 Memory Comparison Rule
 
 Printer decisions require retrieval of similar clean memories. Similarity should be based on condition fingerprints, not scores. A condition fingerprint should include market regime, chain heat, discovery channel/reason, safety state, liquidity/exit state, flow state, chart/volatility state, token age/pair age, micro-event state, and memory window.
+
+Future checkpoint comparison must compare conditions, not nominal token prices. Printer must never reason that because a past token recovered from price X and a current token reached price X, the current token should be bought. Cross-token nominal prices are not meaningful matching criteria by themselves.
 
 ## 10.10 Minimum Memory Requirement
 
@@ -1677,6 +1735,24 @@ Every useful memory should help answer: which action made money, protected capit
 36. Calculate outcome and paper-realism labels.
 
 37. Assign memory quality.
+
+## 10.14 Decision Checkpoints, Action Paths, and Re-Entry
+
+When future paper-decision capabilities are explicitly approved, Printer must evaluate action eligibility at every approved scheduled snapshot and material market event. At each eligible checkpoint, Printer must rebuild the current setup and compare it with clean historical checkpoint memories using only information available at that checkpoint.
+
+Historical memories describe market states and subsequent outcomes. They must not become fixed nominal-price targets. A future entry or re-entry may occur at any price or time when current evidence and clean historical checkpoint comparisons justify it, without waiting for the exact price where a previous token recovered.
+
+Strict anti-look-ahead is mandatory. Later recovery, peak, collapse, final close, or outcome labels may evaluate whether an earlier simulated action succeeded or failed, but may not support that earlier action.
+
+A token may eventually produce multiple separate paper trades inside one longer tracked lifecycle. Every re-entry requires the previous position to be closed, a fresh current setup, a new clean-memory comparison, a new entry-realism check, a new invalidation condition, a new exit condition, no future information, and a separately auditable paper decision and result. While a position is open, future approved evaluation may consider SELL, HOLD, or invalidation. After the position closes, later checkpoints may consider BUY, WAIT, AVOID, or NO_ACTION.
+
+No trade capability is unlocked by these rules.
+
+## 10.15 Observed Peak Versus Capturable Exit
+
+An observed chart peak is an observed chart fact, not automatically realizable profit. A realistically capturable exit requires event-time evidence such as usable liquidity, a valid paper route or quote, acceptable slippage, acceptable price impact, sufficient opportunity duration, no hidden snapshot gap, no wick-only assumption, and a valid exit rule at that checkpoint.
+
+Without that evidence, Printer must report the observed chart peak separately from realistically capturable exit, and the capturable exit must remain UNKNOWN or UNPROVEN. Perfect-top exits and fake chart profit remain prohibited.
 
 38. Store clean memory, partial audit memory, or dirty memory.
 

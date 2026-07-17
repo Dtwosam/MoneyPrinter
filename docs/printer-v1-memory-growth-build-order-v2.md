@@ -806,7 +806,7 @@ Sub-lanes:
 |---|---|---|---|---|---|---|---|---|---|---|
 | V2-9.7A | Operational Memory Factory Readiness Audit | Static/read-only audit of discovery, selection, tracking, scheduler, Source Governor, continuation gates, cooldown/archive, rotation, reporting, persistent DB safety, and V2-9 carry-forward observations | Code, DB writes, source fetching, runtime, operational command, V2-10, retrieval, paper/financial rows | Active docs, CLI/source/tests, read-only DB/report surfaces | Read-only only | Static inspection, accidental-unlock scan | Readiness audit closeout | Proven blockers and implementation scope are known | Needs mutation or runtime to answer | Prevents operational growth on a false-ready factory |
 | V2-9.7B | Repair only proven discovery/operational blockers | Minimal targeted repairs after V2-9.7A proves blockers | Broad refactor, new financial paths, unproven wishlist repairs | Discovery/selection/tracking/scheduler/report modules as proven by A | Temp/proof DB only if tests need it | Focused tests and regressions | Repair closeout | Proven blockers fixed without lock drift | Repair requires retrieval/financial unlock | Makes the factory operationally safe enough to design campaigns |
-| V2-9.7C | Multi-timeframe campaign design | Design only for 15m main, selective 1h, conditional 4h, 5m support, cooldown/archive, rotation, persistent reporting, stop policy | Runtime/source fetch/DB writes | Campaign design doc, command contract | None | Static design checks | Campaign design closeout | Implementer can build without inventing policy | Design implies all-timeframe tracking or auto restart | Turns proven 4h capability into controlled corpus growth policy |
+| V2-9.7C | Multi-timeframe campaign design | Design only for 15m main, selective 1h, conditional 4h, lifecycle-wide conditional 5m support, full-trajectory memory, checkpoint construction, realistic action paths, cooldown/archive, rotation, persistent reporting, stop policy | Runtime/source fetch/DB writes, retrieval/paper/financial activation | Campaign design doc, command contract | None | Static design checks including anti-look-ahead, 5m non-authority, and lock scans | Campaign design closeout | Implementer can build without inventing policy or trajectory semantics | Design implies all-timeframe tracking, auto restart, nominal-price matching, look-ahead, or 5m authority | Turns proven 4h capability into controlled corpus growth policy |
 | V2-9.7D | Bounded implementation | Implement the committed operational command and reports | Running operational campaign, proof before approval, retrieval/paper/financial rows | CLI/runner/report/tests | Temp/proof DB for tests only | Targeted tests, no-unlock checks | Implementation closeout | Command exists but is not operated | Command can bypass governor/scheduler or auto-restart | Creates the tool needed for bounded real corpus growth |
 | V2-9.7E | Two-token pilot proof | Bounded two-token pilot against approved target with exact report and safe stop | Scaling to 3 tokens, unbounded campaign, V2-10, retrieval/paper/financial rows | Runner artifacts, pilot report | Approved target DB per lane scope | Source/scheduler/memory/lock deltas | Pilot proof closeout | Two-token pilot passes or blocks honestly | Token mixing, dirty clean promotion, unsafe stop | Proves initial operational memory growth can work without fake corpus claims |
 | V2-9.7F | Activation closeout | Decide whether V2-9.8A activation gate is ready | Starting operation, issuing command early | Closeout doc | None | Diff checks, unlock scan | Activation closeout | V2-9.8A is ready or explicitly blocked | Pilot unresolved or command unverified | Clean handoff to active bounded operations |
@@ -848,6 +848,26 @@ memory remain locked.
 - Two-token pilot proof with safe stop and exact deltas.
 - Activation closeout before any V2-9.8 operation.
 
+V2-9.7C cannot pass unless its design specifies:
+
+- full-trajectory memory representation
+- phase and reversal representation using approved categorical vocabulary
+- historical decision-checkpoint construction
+- strict anti-look-ahead boundaries
+- realistic action-path evaluation
+- continuous scheduled/event checkpoint review
+- re-entry and separate-trade semantics
+- observed peak versus capturable exit separation
+- lifecycle-wide conditional 5m trigger categories
+- exact 5m parent linkage to campaign, run, token, pair, root 15m lifecycle,
+  containing main window, triggering snapshots, source provenance, and scheduler
+  work
+- 5m non-authority controls
+- minimum sufficient proof requirements
+
+V2-9.7C remains design-only unless the active build order explicitly says
+otherwise.
+
 #### Functionality Risks / Setbacks / Efficiency Blockers
 
 | Problem | Why it matters | How it could reduce memory quality or money-usefulness | Failure mode | Required mitigation | Proof/test needed | Stop condition |
@@ -855,6 +875,18 @@ memory remain locked.
 | Starting operations before readiness audit | False operational confidence | Pollutes persistent corpus | Dirty rows or hidden failures | V2-9.7A first | Audit closeout | Runtime requested during A |
 | All-timeframe tracking | Wastes source budget | Fewer useful clean memories | Gaps and stale evidence | Selective continuation gates | Campaign tests/report | Every token gets every timeframe |
 | 5m support becomes a trigger | Violates support-only rule | Fake early-signal memory | 5m drives continuation or retrieval | Exact 15m linkage and exclusions | 5m exclusion tests | 5m acts as main evidence |
+| Trajectory over-segmentation | Invented phases imply false precision | Dirty lessons look clean | Dynamic labels or excessive splits | Approved categorical phase vocabulary | Design scan and fixture plan | Labels invented at runtime |
+| False reversal labeling | Misreads noise as learning value | Bad entry/exit lessons | Reversal count/order unreliable | Snapshot coverage and evidence thresholds | Trajectory proof fixtures | Unsupported reversal becomes known |
+| Snapshot gaps | Path is incomplete | Fake continuity and fake exits | Hidden gap crosses peak or reversal | Gap-visible trajectory reporting | Cadence/gap tests | Gaps hidden in clean memory |
+| Wick-only observed peaks | Chart peak mistaken for tradable exit | Fake profit | Peak counted as capturable | Separate observed peak from capturable exit | Exit-realism fixtures | Perfect-top exit assumed |
+| Nominal-price matching | Cross-token prices are meaningless | Bad BUY imitation | Price X causes action | Condition-based comparison only | Static decision-policy scan | Nominal price used alone |
+| Future-data leakage | Later outcome justifies earlier action | Look-ahead memory | Recovery/close supports past action | Checkpoint evidence boundary | Anti-look-ahead fixtures | Later facts enter checkpoint |
+| Excessive checkpoint frequency | Source budget drain | Fewer complete memories | Every tick becomes checkpoint | Scheduled/event checkpoint limits | Budget/design tests | Unbounded checkpoint loop |
+| Re-entry churn | Repeated low-quality trades | Overfit and noisy audits | Re-entry without fresh setup | Closed prior position and new comparison | Re-entry design fixtures | Re-entry skips requirements |
+| Unconditional 5m capture | Support evidence becomes mandatory drain | Source budget waste | 5m for every token/window | Conditional trigger categories | Positive/negative capture tests | 5m always captured |
+| 5m accidental main outcome | Violates product law | Fake clean threshold | 5m counted as main memory | Main-window filters | 5m exclusion tests | 5m counts toward main clean yield |
+| Missing event-time execution evidence | Exit realism unproved | Fake paper profit | Chart opportunity treated as route | Quote/route/liquidity proof | Exit-realism tests | Capturable exit claimed without evidence |
+| Unavailable wallet-level authenticity | Flow can be overclaimed | Bad authenticity lesson | Partial/caution flow labels | Flow report checks | Wallet authenticity claimed |
 | Discovery/selection bias | Corpus overfits to active winners | Weak avoid/trap/dead lessons | Winner-only corpus | Memory-diet and rotation reports | Diversity report | Concentration hidden |
 | Cooldown/archive missing | Same tokens dominate | Low diversity and stale lessons | Repeated same-pair loops | Lifecycle transitions | Rotation proof | No post-window transition |
 | Persistent DB safety unclear | Production corpus risk | Hard-to-recover pollution | Wrong DB/path or unbounded writes | Explicit target and backups | Preflight/report checks | DB target ambiguous |

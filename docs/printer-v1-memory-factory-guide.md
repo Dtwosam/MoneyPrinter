@@ -375,6 +375,7 @@ Role:
 - untradable micro-pump
 - micro-exit realism
 - held-to-15m result
+- lifecycle-wide support event during an ongoing 15m, 1h, or 4h lifecycle
 
 5m must not:
 
@@ -382,17 +383,28 @@ Role:
 - replace 15m
 - independently trigger 1h, 4h, 12h, or 24h continuation
 - count toward main clean-memory thresholds
+- determine cooldown, archive, or reopen by itself
 - unlock retrieval by itself
 - unlock paper decisions
 - unlock BUY
+- unlock SELL, HOLD, WAIT, or AVOID
 - open paper positions
+- create trade events
+- create paper trade audits
 - create PnL
 
-5m may be conditionally captured for early pumps, dumps, wicks, traps, and exit
-realism. It must be exact-linked to the token, pair, run, and main 15m lifecycle;
-remain Source-Governed and Scheduler-led; and stay support-only.
+5m may be conditionally captured for early pumps, dumps, wicks, traps, liquidity
+shocks, reversals, failed breakdowns, reclaims, entry traps, exit-realism
+events, and rapid flow changes after V2-9.7C approves exact categories. It must
+be exact-linked to campaign, run, token, pair, root 15m lifecycle, containing
+main window, exact triggering snapshots, source provenance, and scheduler work;
+remain Source-Governed and Central-Scheduler-led; and stay support-only.
 
 5m may inform a later main memory window.
+
+5m must not be restricted to the opening portion of a token lifecycle. It can be
+support evidence anywhere inside an ongoing 15m, 1h, or 4h lifecycle, but it
+remains non-authoritative for main outcomes.
 
 ### WINDOW_15M
 
@@ -455,6 +467,11 @@ Memory Factory should activate windows in this order:
 5. 24h full-cycle memory
 
 Do not activate all timeframes at once. Preserve selective continuation: not every token should receive every timeframe. Continue only when evidence quality, learning value, source budget, and token/pair continuity justify the next window.
+
+No timeframe is an action trigger. WINDOW_5M_MICRO_EVENT, WINDOW_15M,
+WINDOW_1H, WINDOW_4H, WINDOW_12H, and WINDOW_24H are evidence and outcome
+horizons only. A window kind must not independently cause an action,
+continuation, retrieval activation, position, trade event, paper audit, or PnL.
 
 ## 9. Snapshot Frequency Policy
 
@@ -833,6 +850,60 @@ No future snapshot may support a past decision.
 A decision can only use data available at or before the decision timestamp.
 
 Outcome labels are assigned only after the window closes.
+
+Historical decision checkpoints must be constructed from the evidence available
+at that checkpoint only. Later recovery, observed high, collapse, final close,
+or outcome label can evaluate the checkpoint but cannot justify the checkpoint's
+simulated action.
+
+### Full trajectory, not just close
+
+Main memories must preserve the full intra-window path where evidence permits:
+opening state, expansions, pullbacks, breakdowns, recoveries, reclaims,
+consolidations, second expansions, peak failures, collapses, and final outcome.
+The exact phase vocabulary must be approved and categorical; runtime must not
+invent labels dynamically.
+
+The factory should preserve opening price, observed high and low, closing price,
+time to high and low, favorable and adverse excursion, drawdowns, recovery,
+range width, reversal count and order, time above and below opening, snapshot
+color counts, higher-high/lower-low behavior, phase-level liquidity, volume,
+transactions, flow, safety changes, and entry/exit realism where sources support
+them. Unsupported facts remain UNKNOWN or UNPROVEN.
+
+### Conditions, not nominal prices
+
+Future comparisons must use current setup evidence: path and reversals,
+liquidity, entry and exit realism, volume, transactions, trading flow, safety,
+volatility, market context, Solana context, time since prior expansion or
+collapse, current position state, and similar historical checkpoint outcomes.
+
+Printer must not match across tokens by nominal price alone. The prohibited
+reasoning is: past token recovered from price X, current token reached price X,
+therefore BUY.
+
+### Realistic action paths and re-entry
+
+When later paper-decision lanes explicitly unlock decision evaluation, each
+approved scheduled snapshot and material market event must rebuild the current
+setup and evaluate BUY, SELL, HOLD, WAIT, AVOID, and NO_ACTION eligibility
+against clean historical checkpoint memories.
+
+A token may eventually produce multiple separate paper trades inside one longer
+tracked lifecycle, but every re-entry requires a closed previous position, a
+fresh setup, a new clean-memory comparison, new entry and exit realism checks,
+new invalidation and exit conditions, no future information, and a separately
+auditable paper decision and result. This guide does not unlock those
+capabilities.
+
+### Observed peak versus capturable exit
+
+Observed highs are chart facts. They are not automatically paper profit.
+Realistically capturable exits require event-time evidence: usable liquidity,
+valid paper route or quote, acceptable slippage and price impact, sufficient
+opportunity duration, no hidden snapshot gap, no wick-only assumption, and a
+valid exit rule at that checkpoint. Otherwise the capturable exit remains
+UNKNOWN or UNPROVEN.
 
 ### No winner-only memory
 
