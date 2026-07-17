@@ -6137,6 +6137,22 @@ def _apply_clean_audit_evidence_labels(
         safety_accepted = composite_row_is_acceptable(safety_composite)
     else:
         safety_accepted = _clean_safety_evidence_row(safety_row, window_kind=window_kind)
+    from printer_v1.safety.composite import effective_safety_context_report
+
+    safety_effective = effective_safety_context_report(
+        safety_row,
+        gate_accepted=safety_accepted,
+        window_kind=window_kind,
+    )
+    effective.update({
+        key: value
+        for key, value in safety_effective.items()
+        if key != "window_kind"
+    })
+    overlays["safety_context_report"] = safety_effective
+    effective["safety_action_label"] = safety_effective[
+        "effective_safety_context_result"
+    ]
     if safety_accepted:
         if safety_composite:
             effective["safety_status_label"] = safety_composite["safety_contract_label"]

@@ -460,6 +460,16 @@ class OneCommand15mFactoryTests(unittest.TestCase):
             "SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY",
         )
         self.assertEqual(
+            shared["sections"]["safety_rug"]["labels"][
+                "effective_safety_context_result"
+            ],
+            "SAFETY_CONTEXT_ACCEPTABLE",
+        )
+        self.assertEqual(
+            shared["sections"]["safety_rug"]["effective_context"]["window_kind"],
+            "WINDOW_15M",
+        )
+        self.assertEqual(
             close_result["context_quality"]["context_labels"]["safety_status_label"],
             "SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY",
         )

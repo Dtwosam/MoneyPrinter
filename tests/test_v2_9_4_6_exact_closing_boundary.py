@@ -517,6 +517,11 @@ class ExactClosingBoundaryTest(unittest.TestCase):
         liquidity = result["sections"]["liquidity_exit_realism"]
         self.assertTrue(safety["can_support_clean_memory"])
         self.assertEqual(safety["labels"]["safety_status_label"], "SAFETY_CLEAN")
+        self.assertEqual(
+            safety["labels"]["effective_safety_context_result"],
+            "SAFETY_CONTEXT_ACCEPTABLE",
+        )
+        self.assertEqual(safety["effective_context"]["window_kind"], "WINDOW_4H")
         self.assertTrue(liquidity["can_support_clean_memory"])
         self.assertEqual(liquidity["labels"]["exit_realism_label"], "EXIT_REALISTIC")
 

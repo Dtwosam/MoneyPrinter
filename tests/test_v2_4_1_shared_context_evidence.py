@@ -311,7 +311,13 @@ class SharedWindow15mContextEvidenceTest(unittest.TestCase):
         self.assertTrue(first["clean_memory_context_ready"])
         self.assertEqual(first["blockers"], [])
         self.assertTrue(all(section["can_support_clean_memory"] for section in first["sections"].values()))
-        self.assertEqual(first["sections"]["safety_rug"]["labels"]["safety_status_label"], "SAFETY_CLEAN")
+        safety = first["sections"]["safety_rug"]
+        self.assertEqual(safety["labels"]["safety_status_label"], "SAFETY_CLEAN")
+        self.assertEqual(
+            safety["labels"]["effective_safety_context_result"],
+            "SAFETY_CONTEXT_ACCEPTABLE",
+        )
+        self.assertEqual(safety["effective_context"]["window_kind"], "WINDOW_15M")
         self.assertEqual(first["sections"]["liquidity_exit_realism"]["labels"]["entry_realism_label"], "ENTRY_REALISTIC")
         self.assertNotEqual(first["sections"]["trading_flow"]["labels"]["flow_direction_label"], "FLOW_UNKNOWN")
         self.assertNotEqual(first["sections"]["chart_volatility"]["labels"]["volatility_label"], "VOLATILITY_UNKNOWN")

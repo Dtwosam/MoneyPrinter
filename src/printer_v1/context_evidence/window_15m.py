@@ -30,7 +30,10 @@ from printer_v1.market_regime.lookup import market_snapshot_is_valid_for_memory
 from printer_v1.paper_quote.evidence import row_level_clean_eligible as quote_row_is_clean
 from printer_v1.safety.evidence import row_level_clean_eligible as safety_row_is_clean
 from printer_v1.safety.goplus_normalizer import safety_memory_policy_summary
-from printer_v1.safety.composite import composite_row_is_acceptable
+from printer_v1.safety.composite import (
+    composite_row_is_acceptable,
+    effective_safety_context_report,
+)
 from printer_v1.snapshots.cadence_policy import get_policy
 from printer_v1.trading_flow.classifier import (
     classify_flow_direction,
@@ -474,18 +477,32 @@ def _build_window_context_evidence(
             safety_blockers.append("CLOSING_EVIDENCE_TARGET_MISMATCH")
         else:
             safety_blockers.append("NO_VALID_EXACT_TARGET_SAFETY_EVIDENCE")
+    safety_effective = effective_safety_context_report(
+        safety,
+        gate_accepted=safety_clean,
+        window_kind=window_kind,
+    )
+    safety_effective_labels = {
+        key: value
+        for key, value in safety_effective.items()
+        if key != "window_kind"
+    }
     safety_section = _section(
         status="READY" if safety_clean else "UNKNOWN_SAFETY",
         clean=safety_clean,
         blockers=safety_blockers,
         row=safety,
         policy=safety_policy,
+        effective_context=safety_effective,
         labels={
             "safety_status_label": safety.get(
                 "safety_contract_label",
                 safety.get("safety_context_label", "UNKNOWN_SAFETY"),
             ),
-            "safety_action_label": safety.get("safety_action_label", "BLOCK_CLEAN_MEMORY"),
+            "safety_action_label": safety_effective[
+                "effective_safety_context_result"
+            ],
+            **safety_effective_labels,
         },
     )
 

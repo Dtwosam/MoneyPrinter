@@ -20,6 +20,10 @@ MAX_CONTRIBUTIONS = 2
 MAX_AGE_SECONDS = 1800
 SAFETY_BLOCKED = "SAFETY_BLOCKED_FOR_15M_MEMORY"
 
+SAFETY_CONTEXT_ACCEPTABLE = "SAFETY_CONTEXT_ACCEPTABLE"
+SAFETY_CONTEXT_BLOCKED = "SAFETY_CONTEXT_BLOCKED"
+SAFETY_CONTEXT_UNKNOWN = "SAFETY_CONTEXT_UNKNOWN"
+
 SAFETY_FIELDS = (
     "mint_authority_status",
     "freeze_authority_status",
@@ -30,6 +34,30 @@ SAFETY_FIELDS = (
     "known_risk_flag_label",
     "token_program_label",
 )
+
+
+def effective_safety_context_report(
+    row: Mapping[str, Any] | None,
+    *,
+    gate_accepted: bool | None,
+    window_kind: str,
+) -> dict[str, Any]:
+    """Separate stored/source labels from the already-decided effective gate."""
+    effective_result = (
+        SAFETY_CONTEXT_ACCEPTABLE
+        if gate_accepted is True
+        else SAFETY_CONTEXT_BLOCKED
+        if gate_accepted is False
+        else SAFETY_CONTEXT_UNKNOWN
+    )
+    evidence = row or {}
+    return {
+        "window_kind": window_kind,
+        "effective_safety_context_result": effective_result,
+        "raw_safety_context_label": evidence.get("safety_context_label"),
+        "raw_safety_contract_label": evidence.get("safety_contract_label"),
+        "raw_safety_action_label": evidence.get("safety_action_label"),
+    }
 
 
 def _time(value: Any) -> datetime | None:
