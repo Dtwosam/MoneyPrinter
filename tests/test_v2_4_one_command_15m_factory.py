@@ -562,8 +562,12 @@ class OneCommand15mFactoryTests(unittest.TestCase):
         self.assertEqual(result["table_deltas"]["printer_paper_quote_evidence"], 0)
         shared = close_result["context_quality"]["shared_context_evidence"]
         self.assertFalse(shared["clean_memory_context_ready"])
+        # V2-9.4.6 replaced the generic "no valid evidence" name with the precise
+        # cause. A safety composite bound to this exact closing snapshot does
+        # exist and records target_status=TARGET_MISMATCH, so the evidence is
+        # present but targets the wrong mint -- it is not absent.
         self.assertIn(
-            "NO_VALID_EXACT_TARGET_SAFETY_EVIDENCE", shared["blockers"]
+            "CLOSING_EVIDENCE_TARGET_MISMATCH", shared["blockers"]
         )
 
 
