@@ -30,6 +30,13 @@ This stack is subordinate to (in authority order):
 If this stack and the active Printer stack ever conflict, the active Printer
 stack wins and the conflicting module is corrected.
 
+The internal Printer governance documents
+`solana-agent-assistance-policy.md` and
+`official-solana-agent-resources.md` govern external official documentation and
+developer-assistance research. Such assistance remains subordinate until a
+finding is reviewed and committed into the source stack. It does not become
+Source Governor evidence and does not alter the A1-A7 hierarchy.
+
 ---
 
 ## 2. Authority Hierarchy (A1–A7)
@@ -227,6 +234,20 @@ put through the formal SB independent-verification gate:
 - [pumpswap-pool-confirmation-contract.md](pumpswap-pool-confirmation-contract.md)
 - [token-age-evidence-tier-registry.md](token-age-evidence-tier-registry.md)
 - [source-governor-evidence-rules.md](source-governor-evidence-rules.md)
+
+The following modules are internal Printer policy, not provider contracts and
+not operational source registrations:
+
+- [solana-agent-assistance-policy.md](solana-agent-assistance-policy.md) -
+  binding authority, reproducibility, untrusted-content, and capability
+  boundaries for external documentation assistance.
+- [official-solana-agent-resources.md](official-solana-agent-resources.md) -
+  dated informational register subordinate to the assistance policy.
+
+Neither document marks a provider contract complete. Official external MCP or
+documentation resources remain research assistance until their findings are
+committed under the policy, and external developer assistance never becomes
+Source Governor evidence.
 
 Remaining protocol/provider modules (pumpswap-amm-protocol,
 raydium-amm-label-context, jupiter-routing-protocol, geckoterminal-api-contract,

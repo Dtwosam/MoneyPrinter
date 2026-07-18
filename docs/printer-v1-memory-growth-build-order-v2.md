@@ -81,10 +81,13 @@ Post-V2-9 update:
 - V2-9.7A and the focused V2-9.7B.1-B.5 repair program are closed PASS through
   commit `b3d8761`.
 - V2-9.7C.0 money-usefulness readiness is closed PASS at commit `b8bafc9`.
-- V2-9.7C.0A is the current adoption lane until the
-  `Adopt manipulation-aware money-usefulness laws` commit closes.
+- V2-9.7C.0A manipulation-aware product-law adoption is complete.
+- The V2-9.7C Solana agent-assistance readiness audit is complete at commit
+  `9f2601b`.
+- Solana agent-assistance governance adoption is the current documentation step
+  until the `Adopt Solana agent assistance governance` commit closes.
 - Operational memory growth is still locked.
-- After V2-9.7C.0A PASS, the next active memory-growth lane is:
+- After this governance adoption passes, the next active memory-growth lane is:
 
 ```text
 V2-9.7C - Operational Memory Factory Design
@@ -752,9 +755,11 @@ Goal: prepare and implement the operational Memory Factory only after V2-9 has
 closed PASS, without starting operational memory growth during the adoption or
 readiness-audit lanes.
 
-Status: active program, locked until its sub-lanes pass. V2-9.7A and the focused
-V2-9.7B.1-B.5 repair program are complete. The next active lane is
-`V2-9.7C - Operational Memory Factory Design`.
+Status: active program, locked until its sub-lanes pass. V2-9.7A, the focused
+V2-9.7B.1-B.5 repair program, V2-9.7C.0, V2-9.7C.0A, and the Solana
+agent-assistance readiness audit are complete. The current documentation step
+is Solana agent-assistance governance adoption. After PASS, the next active lane
+is `V2-9.7C - Operational Memory Factory Design`.
 
 Allowed: audit, targeted repair of proven operational blockers, campaign design,
 bounded implementation, two-token pilot proof, and activation closeout in the
@@ -821,6 +826,15 @@ Required V2-9.7C source stack additions:
 
 - `docs/printer-v1-v2-9-7c-0-money-usefulness-requirements-readiness-audit.md`
 - `docs/printer-v1-manipulation-aware-money-usefulness-product-law.md`
+- `docs/solana-builder-source-of-truth/solana-agent-assistance-policy.md`
+- `docs/solana-builder-source-of-truth/official-solana-agent-resources.md`
+
+The official Solana MCP connection is optional and is not required for
+V2-9.7C design. A custom Printer MCP remains deferred. Before V2-9.7D
+implementation relies on affected evidence, Printer still requires a Jupiter
+route-and-quote provider contract, GoPlus and GeckoTerminal provider contracts,
+and public-RPC limit consolidation. A wallet and participant evidence source
+audit remains required before paper-decision readiness.
 
 V2-9.7C must trace all 19 canonical requirements from the V2-9.7C.0 audit:
 campaign model; selective continuation; fairness and budgets; conditional 5m
@@ -1662,8 +1676,9 @@ learning quality, evidence quality, report clarity, or lock safety is not done.
 ## 12. Next Recommended Lane
 
 After the V2-9.7A readiness audit, focused V2-9.7B.1-B.5 repair program,
-V2-9.7C.0 money-usefulness readiness audit, and V2-9.7C.0A product-law adoption,
-the next active lane is:
+V2-9.7C.0 money-usefulness readiness audit, V2-9.7C.0A product-law adoption,
+V2-9.7C Solana agent-assistance readiness audit at commit `9f2601b`, and the
+governance adoption recorded here, the next active lane is:
 
 ```text
 V2-9.7C - Operational Memory Factory Design
