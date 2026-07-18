@@ -179,7 +179,7 @@ When an agent picks up a Solana task, it MUST read the routed modules first.
 | Direct-signature T3 design | all of the above (per SB-1 §13) |
 | Discovery/selection intake | dexscreener-api-contract\*, geckoterminal-api-contract\*, pumpportal-api-contract\*, solana-mint-addresses |
 | Migration/graduation handling | pump-fun-bonding-curve-protocol\*, pumpswap-amm-protocol\*, raydium-amm-label-context\*, pumpportal-api-contract\* |
-| Safety / rug evidence | goplus-api-contract\*, solana-core-rpc-reference, solana-spl-token-program, solana-token-2022-program |
+| Safety / rug evidence | goplus-solana-token-security-api-contract, source-governor-evidence-rules, solana-core-rpc-reference, solana-spl-token-program, solana-token-2022-program |
 | Paper quote realism | jupiter-route-quote-api-contract, source-governor-evidence-rules |
 | Market/chain-heat context | coingecko-api-contract\*, defillama-api-contract\*, alternative-me-api-contract\*, geckoterminal-api-contract\* |
 | Any new source adapter | source-governor-evidence-rules\* + target provider module + solana-core-rpc-reference if on-chain |
@@ -245,6 +245,9 @@ source:
   `ALLOWED_FIXTURE_ONLY` pending later repair and proof. This is the adopted
   target for the legacy planned name `jupiter-quote-api-contract.md` still
   referenced by `solana-mint-addresses.md`; no second Jupiter contract exists.
+- [goplus-solana-token-security-api-contract.md](goplus-solana-token-security-api-contract.md) -
+  active Solana Beta; Printer `PARTIAL_WITH_BLOCKER`;
+  `ALLOWED_FIXTURE_ONLY` pending later field-mapping, provenance, and proof work.
 
 The following modules are internal Printer policy, not provider contracts and
 not operational source registrations:

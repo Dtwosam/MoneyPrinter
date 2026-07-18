@@ -86,6 +86,38 @@ enforce at the request boundary.
 | `token_created_at` | NO — DexScreener does not provide mint creation time |
 | T2/T3 token age | NOT available from DexScreener |
 
+## GoPlus Solana Token Security
+
+The adopted provider contract is
+`goplus-solana-token-security-api-contract.md`. The provider is active Beta;
+Printer is `PARTIAL_WITH_BLOCKER`; network reliance remains fixture-only until
+a later repair and proof passes.
+
+### Approved and proposed request kinds
+
+| Request kind | Current permission | Evidence contribution |
+|---|---|---|
+| `safety_reference` | `ALLOWED_FIXTURE_ONLY` | Exact-mint defensive token-security context |
+| `solana_token_security_reference` | `NOT_IMPLEMENTED` | Proposed clearer future exact-mint request name |
+| Transaction simulation, wallet, approval, signing, or execution | NO | None |
+
+### Evidence contribution rules
+
+| Evidence | Condition |
+|---|---|
+| authority/token-function danger | Explicit valid provider field for exact mint; missing is unknown |
+| holder concentration | Valid top-ten fields with strict units/ranges; account rows do not prove independent wallets |
+| DEX/LP context | Exact selected pool ID only; known-locker evidence is not universal lock proof |
+| provider malicious-address context | Preserve raw field/provenance; do not convert to identity or intent proof |
+| safety result | One composite input only; cannot independently prove a safe token or clean memory |
+
+Unknown/malformed envelopes, code 2 partial data, unsupported codes, missing
+mandatory fields, stale receipt, mint mismatch, pool mismatch, and incomplete
+provenance fail closed. Provider silence is never safety. GoPlus cannot prove
+wallet authenticity, common control, coordination, manipulation intent,
+executable tradeability, or profit. It cannot unlock memory, retrieval,
+decisions, positions, trades, audits, or PnL.
+
 ## Solana RPC
 
 ### Approved request kinds
