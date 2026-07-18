@@ -1,428 +1,405 @@
 # Solana Core RPC Reference
 
-**Status:** SB-2 CORE MODULE, DOCUMENTATION ONLY. SB-2.1 VERIFIED AND CORRECTED.
-
----
+**Status:** SB-2 CORE MODULE. V2-9.7D.1D PUBLIC-RPC CONTRACT ADOPTED,
+DOCUMENTATION ONLY. NETWORK USE REMAINS GOVERNED AND LOCKED TO EXPLICIT LANES.
 
 ## 1. Purpose
 
-This module documents the read-only Solana JSON-RPC methods Printer V1 uses or
-plans to use for evidence collection. Printer uses Solana RPC exclusively as a
-governed evidence source — never for transaction execution, signing, or wallet
-operations. The six methods covered here are the only in-scope RPC methods.
+This module defines the read-only Solana JSON-RPC evidence contract available
+to Printer V1. It covers only `getAccountInfo`, `getSignaturesForAddress`,
+`getTransaction`, `getBlockTime`, `getTokenLargestAccounts`, and
+`getTokenSupply`.
 
----
+RPC is evidence transport, never proof of every fact inferred from a response.
+It cannot authorize transaction construction, signing, submission, wallet use,
+retrieval, decisions, positions, trades, audits, or PnL.
 
 ## 2. Official Upstream Authorities
 
-| Tier | Resource | Canonical URL | Verified date |
-|---|---|---|---|
-| A3 | Solana RPC HTTP methods index | `https://solana.com/docs/rpc/http` | 2026-07-12 |
-| A3 | `getAccountInfo` | `https://solana.com/docs/rpc/http/getaccountinfo` | 2026-07-12 |
-| A3 | `getSignaturesForAddress` | `https://solana.com/docs/rpc/http/getsignaturesforaddress` | 2026-07-12 |
-| A3 | `getTransaction` | `https://solana.com/docs/rpc/http/gettransaction` | 2026-07-12 |
-| A3 | `getBlockTime` | `https://solana.com/docs/rpc/http/getblocktime` | 2026-07-12 |
-| A3 | `getTokenLargestAccounts` | `https://solana.com/docs/rpc/http/gettokenlargestaccounts` | 2026-07-12 |
-| A3 | `getTokenSupply` | `https://solana.com/docs/rpc/http/gettokensupply` | 2026-07-12 |
-| A3 | Solana clusters and endpoints | `https://solana.com/docs/references/clusters` | 2026-07-12 |
-| A3 | RPC overview and commitment | `https://solana.com/docs/rpc` | 2026-07-12 |
+Official Solana documentation was accessed on `2026-07-18`.
 
-Pinned upstream commit: not applicable for hosted Solana RPC documentation.
-No specific commit hash is pinnable for hosted docs. Later lanes should archive
-doc snapshots or reference the Agave release that introduced any changed
-behavior.
-
----
-
-## 3. Last Verified Date and Version
-
-- Verified: 2026-07-12
-- Solana runtime generation: Agave / current mainnet
-- API protocol: JSON-RPC 2.0 over HTTPS POST
-- No specific version identifier in hosted Solana RPC docs
-
----
-
-## 4. Authority/Status Dimensions
-
-| Dimension | Value |
-|---|---|
-| `upstream_lifecycle` | `ACTIVE` |
-| `printer_readiness` | `PARTIAL_WITH_BLOCKER` (T3 failure provenance must be preserved durably or in an explicit proof artifact before bounded live proof; live proof pending) |
-| `printer_role` | `TOKEN_AGE` (T3 mint-age evidence); `SAFETY` (holder concentration context) |
-| `access_policy` | `KEYLESS_PUBLIC` (public RPC endpoint; no API key required) |
-| `v1_permission` | `ALLOWED_GOVERNED` (governed read-only evidence only; execution prohibited) |
-
----
-
-## 5. Allowed Capabilities
-
-- `getAccountInfo`: read mint account state (owner, data, size) for T3 validation
-  and safety checks.
-- `getSignaturesForAddress`: walk transaction history for a mint to find
-  initialization signatures. Newest-first pagination only.
-- `getTransaction`: retrieve a specific transaction by signature for instruction
-  parsing (token-age evidence).
-- `getBlockTime`: retrieve block timestamp for a slot as T3 block-time fallback.
-- `getTokenLargestAccounts`: retrieve top holders for holder-concentration
-  safety context.
-- `getTokenSupply`: retrieve token supply data for safety and context.
-- All methods: governed, read-only, bounded by Source Governor budgets.
-- All methods: redact host information; report host-only in logs and audit rows.
-
----
-
-## 6. Prohibited Capabilities
-
-- No transaction construction, signing, simulation, or submission.
-- No `sendTransaction`, `simulateTransaction`, or any write-path method.
-- No wallet connection, private keys, or real fund movement.
-- No BUY, SELL, or HOLD decisions.
-- No retrieval activation. No paper positions or PnL.
-- No scheduling or runtime expansion outside Central Scheduler approval.
-- No Source Governor bypass. No independent direct RPC loop from any engine.
-- No paid RPC tier dependency. Public endpoint or operator-approved free RPC only.
-- No paid Helius tier. Helius free tier remains deferred (`REGISTERED_NOT_READY`).
-
----
-
-## 7. Authentication and Cost Model
-
-- Authentication: none required for the Solana public mainnet RPC endpoint.
-- Cost: free public endpoint; subject to documented shared-endpoint limits.
-- Public endpoint policy: official Solana cluster documentation describes these
-  endpoints as shared public infrastructure and warns that limits may change.
-  The limits independently verified in SB-2.3 are:
-  - 100 requests per 10 seconds per IP.
-  - 40 requests per 10 seconds per IP for one RPC method.
-  - 40 concurrent connections per IP.
-  - 40 connection attempts per 10 seconds per IP.
-  - 100 MB transferred per 30 seconds per IP.
-- Printer's Source Governor limits are stricter implementation budgets and do
-  not replace upstream public RPC limits.
-- Helius free tier (deferred): requires a free dashboard API key (sign-up at
-  helius.dev); 1M credits/month; 10 RPC req/s. Not a paid dependency, but
-  requires operator sign-up decision. Not a required dependency in V1.
-- No API key must ever be stored in Printer payloads, logs, or DB rows.
-
----
-
-## 8. Programs, Endpoints, Methods, and Request Contracts
-
-### 8.1 Endpoint
-
-**Official upstream (A3, SB-1/SB-2.1 verification date 2026-07-12):** Solana cluster docs listed `https://api.mainnet.solana.com`
-
-**Current Printer implementation (A6):** `https://api.mainnet-beta.solana.com`
-
-**Endpoint-policy conclusion:** official documentation and current Printer code
-name different public mainnet endpoints. SB-2.2 classifies this as
-`official documentation naming conflict / unresolved compatibility question`.
-No SB-2.2 live endpoint test was run, so this module must not claim both
-endpoints resolve. Future live proof must use an explicitly operator-approved,
-free, read-only endpoint through Source Governor boundaries.
-
-### 8.2 getAccountInfo
-
-- **Method:** POST `{"jsonrpc":"2.0","id":<int>,"method":"getAccountInfo","params":["<pubkey>",{"encoding":"<enc>","commitment":"<level>"}]}`
-- **Required parameters:** account pubkey (base58 string)
-- **Optional parameters Printer uses:** `encoding` (Printer uses `"base64"` for
-  raw mint-state decoding; `"jsonParsed"` for human-readable token accounts),
-  `commitment`
-- **Response:** `{"value": <AccountInfo>|null}`
-- **`value` can be null** if the account does not exist at the queried slot.
-- **AccountInfo fields:** `lamports` (u64), `owner` (pubkey string), `data`
-  (varies by encoding), `executable` (bool), `rentEpoch` (u64)
-- **Token-age use:** read raw mint account bytes (`base64`) for SPL Token / Token-2022
-  layout validation. Does not return creation transaction time.
-- **Safety use:** read `owner` to confirm token program identity; read account
-  existence.
-
-### 8.3 getSignaturesForAddress
-
-- **Method:** POST `{"jsonrpc":"2.0","id":<int>,"method":"getSignaturesForAddress","params":["<pubkey>",{"limit":<n>,"before":"<sig>","until":"<sig>","commitment":"<level>"}]}`
-- **Required parameters:** address pubkey
-- **Optional parameters Printer uses:** `limit` (max 1000 per page, default 1000),
-  `before` (exclusive - returns signatures older than this signature),
-  `until` (boundary semantics `UNKNOWN_REQUIRES_RESEARCH` in SB-2.2), `commitment`
-- **Pagination direction: NEWEST-FIRST.** The most recent signatures are
-  returned first. To page backwards through history, pass the last seen
-  signature as `before` in the next call.
-- **Response:** array of `{signature, slot, err, memo, blockTime, confirmationStatus}`
-- **`err` field:** null on successful transactions; non-null for failed transactions
-- **`blockTime` field:** Unix timestamp (i64) or null
-- **T3 use:** walk backwards from most recent to find the initialization signature.
-  Stop at `_T3_MAX_SIGNATURE_PAGES = 3` pages (current Printer budget).
-- **Pruning risk:** public RPC history is pruned. Mints older than the available
-  history window will return an empty or truncated list.
-
-### 8.4 getTransaction
-
-- **Method:** POST `{"jsonrpc":"2.0","id":<int>,"method":"getTransaction","params":["<signature>",{"encoding":"jsonParsed","commitment":"<level>","maxSupportedTransactionVersion":0}]}`
-- **Required parameters:** transaction signature (base58 string)
-- **Optional parameters Printer uses:** `encoding` (Printer uses `"jsonParsed"`),
-  `commitment`, `maxSupportedTransactionVersion` (required for v0/versioned
-  transactions — must be set to `0` to avoid an error on versioned tx)
-- **Response:** `null` if not found or pruned; otherwise transaction object
-- **`getTransaction` may return null** (pruned history, not found).
-- **Response fields:** `slot` (u64), `blockTime` (i64 or null), `transaction`
-  (nested), `meta` (nullable)
-- **`meta` can be null** on some responses.
-- **`meta.err`:** null on success; non-null for failed transactions. A failed
-  transaction cannot produce token-creation evidence.
-- **`meta.innerInstructions`:** array or null. Inner instructions contain CPIs
-  including SPL Token `initializeMint` from Pump `create` calls.
-- **`blockTime` can be null.** Null block time fails closed for T3 evidence.
-- **T3 use:** retrieve the specific transaction by signature and parse it for
-  `initializeMint` or `initializeMint2` targeting the exact requested mint.
-  Current Printer budget: `_T3_MAX_TRANSACTION_CALLS = 3`.
-- **Version handling:** legacy transactions have no `version` field; v0
-  transactions use address lookup tables (ALTs). Without
-  `maxSupportedTransactionVersion: 0`, RPC returns an error for v0 transactions.
-
-### 8.5 getBlockTime
-
-- **Method:** POST `{"jsonrpc":"2.0","id":<int>,"method":"getBlockTime","params":[<slot_number>]}`
-- **Required parameters:** slot number (u64)
-- **Response:** Unix timestamp (i64) or `null`
-- **`getBlockTime` may return null** for very recent or unpopulated slots.
-- **T3 use:** fallback block-time retrieval when `blockTime` in `getTransaction`
-  is null. Current Printer budget: `_T3_MAX_BLOCK_TIME_CALLS = 1`.
-
-### 8.6 getTokenLargestAccounts
-
-- **Method:** POST `{"jsonrpc":"2.0","id":<int>,"method":"getTokenLargestAccounts","params":["<mint_pubkey>",{"commitment":"<level>"}]}`
-- **Required parameters:** mint pubkey (base58 string)
-- **Optional parameters:** `commitment`
-- **Response:** `{"value": [{"address":<pubkey>,"amount":<raw_str>,"decimals":<int>,"uiAmount":<float|null>,"uiAmountString":<str>}, ...]}`
-- **Safety use:** top-holder context for concentration analysis. Not a token-age
-  evidence source.
-
-### 8.7 getTokenSupply
-
-- **Method:** POST `{"jsonrpc":"2.0","id":<int>,"method":"getTokenSupply","params":["<mint_pubkey>",{"commitment":"<level>"}]}`
-- **Required parameters:** mint pubkey (base58 string)
-- **Optional parameters:** `commitment`
-- **Response:** `{"value": {"amount":<raw_str>,"decimals":<int>,"uiAmount":<float|null>,"uiAmountString":<str>}}`
-- **Safety use:** supply context. Not a token-age evidence source.
-
----
-
-## 9. Response and Field Semantics
-
-- All responses follow JSON-RPC 2.0: `{"jsonrpc":"2.0","id":<int>,"result":<data>}` on success or `{"jsonrpc":"2.0","id":<int>,"error":{"code":<int>,"message":<str>}}` on error.
-- `blockTime` is a Unix timestamp in seconds (i64). Printer must reject any
-  `blockTime` that is in the future relative to call time.
-- `slot` is a monotonically increasing u64 slot counter; it is NOT the same as
-  block height or timestamp.
-- Account `data` encoding: `base64` returns raw bytes as a base64 string; `base58`
-  is limited to small accounts; `jsonParsed` returns structured JSON for known
-  program accounts.
-- Transaction instruction `parsed` field is present only for well-known programs
-  (SPL Token, System Program); other programs return `compiled` instructions.
-- `meta.innerInstructions` contains CPI calls in order of execution. Each inner
-  instruction carries the calling instruction's index and the CPI instruction list.
-
----
-
-## 10. Nullable/Missing-Field Behavior
-
-| Field | Null/missing behavior |
-|---|---|
-| `getAccountInfo.value` | null if account does not exist; Printer fails T3 closed |
-| `getTransaction` return | null if not found or pruned; Printer fails T3 closed |
-| `getTransaction.meta` | null on some responses; Printer fails T3 closed if meta absent |
-| `getTransaction.blockTime` | null is valid upstream; Printer tries `getBlockTime` fallback, then fails closed |
-| `getBlockTime` return | null for unpopulated slots; Printer fails T3 closed |
-| `getSignaturesForAddress` empty array | no history available; Printer fails T3 closed |
-| `meta.err` non-null | failed transaction; Printer must not accept as T3 evidence |
-
-Printer's fail-closed contract: any null, missing, future, or unresolvable
-required field must leave `token_created_at = None`, `token_age_seconds = None`,
-and no T3 tier. Failure provenance may be preserved separately (see §13).
-
----
-
-## 11. Rate Limits and Bounded-Use Rules
-
-**Current documented public-endpoint limits:**
-- Maximum 100 requests per 10 seconds per IP.
-- Maximum 40 requests per 10 seconds per IP for one RPC method.
-- Maximum 40 concurrent connections per IP.
-- Maximum 40 connection attempts per 10 seconds per IP.
-- Maximum 100 MB transferred per 30 seconds per IP.
-
-Solana states that these shared public-endpoint limits are subject to change.
-They are upstream limits, not Printer operating budgets.
-
-**Current Printer T3 Source Governor budgets (A6, from `solana_rpc_token_age.py`):**
-- `_T3_MAX_REQUESTS_PER_TOKEN = 8` (total RPC operations per mint)
-- `_T3_MAX_SIGNATURE_PAGES = 3` (getSignaturesForAddress pages)
-- `_T3_MAX_TRANSACTION_CALLS = 3` (getTransaction calls)
-- `_T3_MAX_BLOCK_TIME_CALLS = 1` (getBlockTime calls)
-- `_T3_RPC_TIMEOUT_SECONDS = 10.0` (per-request timeout)
-- Zero retries. No endpoint rotation.
-
-These are implementation facts, not permission to expand live coverage.
-Expanding any budget requires an explicit future implementation and proof lane.
-
----
-
-## 12. Evidence Strength
-
-| Method | Evidence type | Evidence tier |
+| Tier | Resource | Canonical URL |
 |---|---|---|
-| `getAccountInfo` | Mint-account validation (owner, size) | T3 prerequisite; no age by itself |
-| `getSignaturesForAddress` | Signature history walk | T3 locator (locator ≠ proof) |
-| `getTransaction` + init instruction + blockTime | Mint initialization proof | T3 (approved) |
-| `getBlockTime` | Block timestamp fallback | T3 fallback; null fails closed |
-| `getTokenLargestAccounts` | Holder concentration | Safety context; no evidence tier |
-| `getTokenSupply` | Supply data | Safety context; no evidence tier |
+| A3 | Clusters and public RPC endpoints | `https://solana.com/docs/references/clusters` |
+| A3 | RPC overview and commitment | `https://solana.com/docs/rpc` |
+| A3 | HTTP methods index | `https://solana.com/docs/rpc/http` |
+| A3 | `getAccountInfo` | `https://solana.com/docs/rpc/http/getaccountinfo` |
+| A3 | `getSignaturesForAddress` | `https://solana.com/docs/rpc/http/getsignaturesforaddress` |
+| A3 | `getTransaction` | `https://solana.com/docs/rpc/http/gettransaction` |
+| A3 | `getBlockTime` | `https://solana.com/docs/rpc/http/getblocktime` |
+| A3 | `getTokenLargestAccounts` | `https://solana.com/docs/rpc/http/gettokenlargestaccounts` |
+| A3 | `getTokenSupply` | `https://solana.com/docs/rpc/http/gettokensupply` |
+| A3 | `minimumLedgerSlot` | `https://solana.com/docs/rpc/http/minimumledgerslot` |
+| A3 | Shared JSON structures | `https://solana.com/docs/rpc/json-structures` |
 
-**Locator vs proof (SB-1 Rule 5):** A signature returned by
-`getSignaturesForAddress` is a locator. It becomes T3 proof only when
-`getTransaction` independently confirms the exact requested mint appears as
-a successful `initializeMint`/`initializeMint2` with a valid block time.
+Hosted documentation has no pinned commit or protocol version. Public limits
+are explicitly subject to change and must be rechecked before implementation or
+activation. No endpoint was probed in this audit.
 
-T3 is evidence tier 3. It is below T1 and T2 in the evidence hierarchy. Printer's
-adopted T3 evidence contract uses `finalized` commitment for mint validation,
-signature history, and transaction inspection. A successful T3 proof does not
-itself activate A3; A3 remains a separate paused lane.
+## 3. Version, Transport, Access, and Cost
 
----
+- Protocol: JSON-RPC 2.0 over HTTPS POST.
+- Solana support: Mainnet is the only Printer V1 chain/cluster in scope.
+- Authentication: no API key is documented for the official public endpoints.
+- Access: shared, keyless public infrastructure with rate limiting and possible
+  blocking.
+- Cost: no per-request charge is documented for the public endpoints. This is
+  not an SLA, production guarantee, or permission for unbounded use.
+- Printer remains free/public-source only. Dedicated, private, or paid RPC is
+  outside this adopted contract.
+- Public endpoints are not intended for production applications, and Solana
+  warns that limits or access can change without notice.
 
-## 13. Normalization and Failure Rules
+## 4. Authority and Permission
 
-- **Success path:** normalized result includes `token_created_at`, `token_age_seconds`,
-  `token_age_evidence_tier = "T3"`, the original 15 T3 provenance fields, and
-  explicit `t3_commitment = finalized` plus `t3_finality_status = finalized`.
-- **Failure path:** normalized result includes 8 T3 failure provenance fields
-  (via `_pfail()` closure in `_fetch_token_age_data()`): `t3_requested_mint`,
-  `t3_rpc_host_redacted`, `t3_rpc_methods_attempted`, `t3_request_ids`,
-  `t3_pages_fetched`, `t3_tx_calls_attempted`, `t3_block_time_calls_attempted`,
-  `t3_failure_stage`. Failure provenance must never populate success fields.
-- **Failure-provenance preservation requirement:** the 8 failure provenance
-  fields are observability hardening. They do not block direct-signature T3
-  design or fixture proof. Before bounded live proof, these fields must be
-  preserved either durably in the DB or explicitly in the proof artifact.
-- **Source status:** FAILED, STALE, MISSING_CRITICAL_DATA.
-- **A3 gate:** `assign_bucket()` requires `token_age_seconds is not None`.
-  Failure provenance never satisfies this gate. A3 remains locked.
+| Dimension | Adopted value |
+|---|---|
+| `upstream_lifecycle` | `ACTIVE_BUT_CHANGEABLE` |
+| `printer_readiness` | `PARTIAL_WITH_IMPLEMENTATION_GAPS` |
+| `printer_role` | `TOKEN_AGE` and `SAFETY_CONTEXT` read-only evidence |
+| `access_policy` | `KEYLESS_PUBLIC_SHARED` |
+| `v1_permission` | `ALLOWED_GOVERNED_ONLY` for already-approved read-only paths; no new activation |
 
----
+This adoption documents a provider boundary. It does not create a source
+request, implementation lane, operational command, or campaign permission.
 
-## 14. Security/Redaction Rules
+## 5. Public Endpoints and Naming Conflict
 
-- RPC host is redacted to hostname only before storage (`redacted_rpc_host()`
-  helper in `solana_rpc_token_age.py`).
-- No URL path, query string, API key, credential, or token may appear in any
-  stored payload, log, or DB row.
-- Example: `https://api.mainnet-beta.solana.com/v1?apikey=secret` becomes
-  `api.mainnet-beta.solana.com`.
-- All Source Governor traces must use the redacted host.
-- Printer must not log raw request URLs containing sensitive components.
+The current English official clusters and RPC pages identify:
 
----
+- Mainnet: `https://api.mainnet.solana.com`
+- Devnet: `https://api.devnet.solana.com`
+- Testnet: `https://api.testnet.solana.com`
 
-## 15. Known Upstream Quirks
+Printer V1 is Mainnet-only. Current Printer adapters use
+`https://api.mainnet-beta.solana.com`. Older or localized official Solana pages
+also expose the `mainnet-beta` name, while the current English primary pages use
+`mainnet`.
 
-- **Mainnet endpoint name discrepancy:** prior Solana docs verification listed
-  `api.mainnet.solana.com`; Printer uses `api.mainnet-beta.solana.com`. SB-2.2
-  did not run a live endpoint compatibility test, so endpoint compatibility
-  remains `UNKNOWN_REQUIRES_RESEARCH`.
-- **`blockTime` null on recent transactions:** `getTransaction` can return a
-  valid transaction with `blockTime = null` for very recent slots. This is
-  expected upstream behavior, not an error.
-- **History pruning:** the Solana public RPC does not guarantee full history.
-  Older mints may return empty or incomplete signature lists.
-- **Versioned transaction requirement:** without `maxSupportedTransactionVersion: 0`,
-  `getTransaction` returns an error for v0/versioned transactions rather than
-  the transaction data.
-- **`meta.innerInstructions` ordering:** inner instructions are indexed by the
-  top-level instruction that triggered the CPI. The index, not position, maps a
-  CPI call to its parent instruction.
+No official statement reviewed in this lane guarantees that the two hostnames
+are permanent aliases or behaviorally identical. Because probes were forbidden:
 
----
+- canonical current documentation name: `api.mainnet.solana.com`;
+- current implementation name: `api.mainnet-beta.solana.com`;
+- equivalence and long-term alias policy: `UNKNOWN_REQUIRES_RESEARCH`;
+- Printer must not silently rotate between them or call one a verified backup.
 
-## 16. Known Printer Mistakes
+The holder adapter's `https://solana-rpc.publicnode.com` fallback is a
+third-party endpoint, not an official Solana public endpoint. Its authentication,
+cost, limits, retention, and service contract are
+`UNKNOWN_REQUIRES_RESEARCH` under this module.
 
-| Mistake | Lane fixed | Fix |
+## 6. Official Shared-Endpoint Limits
+
+The official Mainnet public endpoint page currently publishes:
+
+| Limit | Published ceiling |
+|---|---:|
+| Total requests | 100 per 10 seconds per IP |
+| Requests to one RPC method | 40 per 10 seconds per IP |
+| Concurrent connections | 40 per IP |
+| Connection attempts | 40 per 10 seconds per IP |
+| Data transfer | 100 MB per 30 seconds per IP |
+
+These are shared upstream ceilings, not quotas promised to Printer. They may
+change without notice, and high-traffic clients may be blocked. Printer must
+remain below both upstream ceilings and its stricter Source Governor and Central
+Scheduler budgets.
+
+## 7. Commitment and Finality
+
+- `processed`: newest observed block state; rollback remains possible.
+- `confirmed`: a supermajority has voted on the block.
+- `finalized`: the strongest documented commitment level.
+- Solana says omitted commitment is typically `finalized`; typically is not
+  an immutable per-endpoint guarantee.
+
+Printer evidence must carry an explicit requested commitment and the response
+context where supplied. The token-age adapter explicitly requests `finalized`.
+The holder adapter currently omits commitment for `getTokenLargestAccounts` and
+`getTokenSupply`; this is an implementation gap. A default must not be promoted
+into proven finality merely because current docs describe it as typical.
+
+`minContextSlot`, where supported, is a minimum evaluation slot, not a request
+to wait for that slot. It is not implemented in the inspected adapters.
+
+## 8. Method Contracts
+
+### 8.1 `getAccountInfo`
+
+- Input: exact account public key plus optional encoding, commitment, and
+  `minContextSlot`.
+- Output: context plus account value, or `null` when the account does not exist
+  at the requested commitment.
+- Supported evidence: exact mint-account existence, program owner, data, size,
+  lamports, executable state, and response context.
+- Not proof of mint creation time, beneficial ownership, safety, or tradeability.
+- Printer use: T3 mint validation with base64 data and explicit `finalized`.
+
+### 8.2 `getSignaturesForAddress`
+
+- Input: exact address plus optional `commitment`, `minContextSlot`, `limit`,
+  `before`, and `until`.
+- Output: confirmed transaction-signature records newest first.
+- Record fields include `signature`, `slot`, nullable `err`, nullable `memo`,
+  nullable `blockTime`, and `confirmationStatus`.
+- `before` pages toward older records. Exact `until` inclusivity and a current
+  official numeric maximum for `limit` are `UNKNOWN_REQUIRES_RESEARCH` in the
+  reviewed primary page; Printer's `1000` value remains an implementation
+  assumption until fixture- or source-pinned.
+- An empty or bounded response is not proof that no earlier initialization
+  exists. It may reflect request bounds or node retention.
+- Printer use: locator only; never creation proof by itself.
+
+### 8.3 `getTransaction`
+
+- Input: exact signature plus optional encoding, commitment, and
+  `maxSupportedTransactionVersion`.
+- Output: transaction object or `null` when the transaction is not found or not
+  confirmed at the requested commitment.
+- `blockTime` and `meta` can be null.
+- Printer uses `jsonParsed`, `finalized`, and
+  `maxSupportedTransactionVersion: 0`.
+- Supported T3 evidence requires a successful transaction, exact requested
+  mint attribution, `initializeMint` or `initializeMint2`, and valid time.
+- A located signature, parsed name, or transaction record alone is insufficient.
+
+### 8.4 `getBlockTime`
+
+- Input: exact slot.
+- Output: estimated block-production Unix time derived from stake-weighted vote
+  timestamps when available.
+- Official documentation distinguishes available, unknown, and unavailable
+  time states, but exact JSON null-versus-error mapping for every unavailable
+  case is `UNKNOWN_REQUIRES_RESEARCH`.
+- Printer accepts only a valid non-future integer time and otherwise fails T3
+  closed.
+
+### 8.5 `getTokenLargestAccounts`
+
+- Input: exact SPL token mint plus optional commitment.
+- Output: the 20 largest token accounts and token-amount fields.
+- Supported evidence: concentration among returned token accounts relative to
+  an exact supply observation.
+- Not proof of 20 distinct wallets, beneficial owners, independent actors,
+  participant coordination, or the entire holder population.
+
+### 8.6 `getTokenSupply`
+
+- Input: exact SPL token mint plus optional commitment.
+- Output: current mint supply as raw amount, decimals, nullable `uiAmount`, and
+  `uiAmountString`.
+- Supported evidence: exact-mint supply at the observed context.
+- Not proof of circulating supply, unlocked supply, executable liquidity, or
+  economic value.
+
+## 9. Null, Missing, Partial, and Pruned Data
+
+| Condition | Printer treatment |
+|---|---|
+| `getAccountInfo.value = null` | Required account evidence missing; fail closed |
+| Empty signature list | No usable history in returned coverage; never prove nonexistence |
+| `getTransaction = null` | Transaction unavailable at requested context; fail closed |
+| Transaction `meta = null` or `meta.err != null` | No valid initialization proof |
+| Missing/null transaction `blockTime` | Use at most the approved fallback; otherwise fail closed |
+| Unknown/unavailable `getBlockTime` | No time proof; fail closed |
+| Missing/malformed token amount or supply | No concentration result; fail closed |
+| JSON-RPC error object | Provider failure, never an evidence value |
+
+`minimumLedgerSlot` proves that a node may delete older ledger data and that its
+lowest retained slot can increase. The public service publishes no fixed history
+retention window or archival guarantee. Therefore:
+
+- exact public-node retention depth: `UNKNOWN_REQUIRES_RESEARCH`;
+- empty history or null transaction does not prove historical nonexistence;
+- Printer must preserve request bounds and returned coverage rather than label
+  a bounded search complete.
+
+## 10. Transport, Timeout, Rate-Limit, and Retry Behavior
+
+- HTTP `403`: official docs describe the IP or site as blocked. Printer must
+  stop that endpoint path and report the failure; it must not evade the block.
+- HTTP `429`: upstream rate limit exceeded. Official docs require using the
+  `Retry-After` response header to determine wait time.
+- Other HTTP failures, timeout, malformed JSON, JSON-RPC error, null mandatory
+  result, or identity mismatch remain failures, not empty evidence.
+- No official numeric request-timeout or SLA is published. Printer's 10-second
+  timeout is a local bounded budget, not an upstream promise.
+- Retries must be finite, Scheduler-led, Source-Governed, separately accounted,
+  and limited to explicitly classified transient failures.
+- Retry must not change mint, pair, method, commitment, endpoint, or run identity.
+- `Retry-After` must be bounded by the campaign/run deadline; if it cannot be
+  honored safely, the request remains blocked/failed.
+- Endpoint substitution is not a retry unless the alternate provider has its
+  own adopted contract and provenance.
+
+Current token-age behavior uses zero retries and no endpoint rotation. Current
+holder redundancy permits one separately governed backup attempt only after a
+small transient allowlist. The generic registry's `max_retries = 2` metadata is
+not proof that adapters execute two safe retries.
+
+## 11. Upstream Limits Versus Printer Budgets
+
+| Boundary | Current Printer behavior | Relationship to upstream |
 |---|---|---|
-| Mainnet endpoint mismatch: Printer uses `api.mainnet-beta.solana.com`; prior upstream docs verification showed `api.mainnet.solana.com` | No production fix in SB-2.2; documented as implementation gap | Treat as official documentation naming conflict / unresolved compatibility question until a later approved live-test or official source resolves it |
-| T3 failure paths returned bare `{failure_type, failure_message}` with no partial trace | V2-2AL.4A (`11c6cf1`) | `_pfail()` closure now threads 8 audit fields into every failure return |
-| T3 failure provenance survived normalizer but not DB persistence | V2-2AL.4B (`538ce82`) verified gap | Fixed by migration 027 and governed failure recording in the real T3 lane |
+| Source registry | 30/min, stale 120s, retry-after 60s, max retries 2 | Stricter than 100/10s total but insufficient alone for method, connection, or bandwidth ceilings |
+| T3 token-age total | Maximum 8 RPC operations per mint | Per-token ceiling; still requires global IP/method scheduling |
+| T3 signature pages | Maximum 3 | Local coverage bound, not completeness |
+| T3 transaction calls | Maximum 3 | Local coverage bound |
+| T3 block-time calls | Maximum 1 | Local fallback bound |
+| T3 timeout | 10 seconds per HTTP operation | Local timeout; no upstream SLA equivalent |
+| Holder primary | Two RPC methods in one adapter call | One governed request consumes multiple upstream operations |
+| Holder backup | At most one governed alternate attempt after classified transient failure | Third-party limits are outside official Solana limits |
 
----
+The Source Governor currently counts governed source requests, while one such
+request can fan out into multiple JSON-RPC operations. Central scheduling must
+budget actual per-method operations, connections, bytes, and all active tokens,
+not merely top-level source requests. No current code proves consolidated
+IP-wide accounting.
 
-## 17. Required Fixtures/Proofs
+## 12. Request-Kind Mapping
 
-Before live T3 evidence is accepted by A3:
+| Printer request kind | RPC methods | Current boundary |
+|---|---|---|
+| `mint_creation_time_reference` | `getAccountInfo`, bounded signatures and transactions, optional `getBlockTime` | Implemented T3 path; explicit finalized; zero retry |
+| `holder_concentration_reference` | `getTokenLargestAccounts`, `getTokenSupply` | Implemented; implicit commitment must be repaired before operational reliance |
+| `mint_account_reference` | Potential `getAccountInfo` | Registry name broader than inspected executable contract |
+| `onchain_reference` | Unspecified generic read-only reference | Must not execute until exact method/schema/budget is adopted |
+| `pool_reference` | Unspecified generic read-only reference | Must not execute until exact account/program contract is adopted |
 
-1. All 132 T3 fixture tests pass (`tests/test_v2_2ak_t3_solana_rpc_token_age.py`).
-2. 112 T2 + OBSERVED_LIVE_LAUNCH cross-check tests pass.
-3. Failure provenance preserved either durably in DB rows or explicitly in the
-   bounded proof artifact.
-4. Bounded live proof passes on an approved mint
-   (`6LsqJCJ1p98UG3HYx1UuPgqNjTzAcYFdw4nSzfPzpump`).
-5. Finalized commitment and exact transaction attribution pass. A3 activation
-   remains separately operator-approved and is not implied by T3 evidence.
+No new governed request kind is adopted or implemented by V2-9.7D.1D.
 
-No live RPC call should be made without meeting all of the above.
+## 13. Provenance and Identity Rules
 
----
+Every accepted RPC observation must preserve, at minimum:
 
-## 18. Code and DB Integration Points
+- source/provider identity and redacted hostname;
+- exact request kind and RPC method;
+- exact mint and, where applicable, exact pair/account/signature/slot;
+- requested commitment and response context slot when returned;
+- request ID, attempt ordinal, capture time, and bounded coverage counters;
+- endpoint role (`primary` or separately approved `backup`);
+- returned null/partial/error state without relabeling it as absence;
+- parser/normalizer version and run linkage where required.
 
-**Adapter file:** `src/printer_v1/sources/solana_rpc_token_age.py`
+URLs, query strings, credentials, environment secrets, and raw sensitive
+configuration must not be persisted. Host redaction does not erase provider
+identity. A response for one mint, account, signature, slot, commitment, run, or
+endpoint must never satisfy another identity.
 
-**Request kinds:** `mint_creation_time_reference`
+## 14. Evidence Strength and Unsupported Proof
 
-**Key constants:**
-- `_T3_MAX_REQUESTS_PER_TOKEN = 8`
-- `_T3_MAX_SIGNATURE_PAGES = 3`
-- `_T3_MAX_TRANSACTION_CALLS = 3`
-- `_T3_MAX_BLOCK_TIME_CALLS = 1`
-- `_T3_RPC_TIMEOUT_SECONDS = 10.0`
-- `_T3_FAIL_PROVENANCE_FIELDS` (8 audit fields)
+| Method/result | Maximum supported meaning |
+|---|---|
+| Account info | Exact account state at returned context |
+| Signature history | Bounded newest-first locators for an address |
+| Successful exact-mint initialization transaction plus time | T3 mint-creation evidence |
+| Block time | Estimated production time for one slot |
+| Largest token accounts plus supply | Token-account concentration context |
+| Supply | Mint supply observation |
 
-**Supporting files:**
-- `src/printer_v1/sources/governed_execution.py` — Source Governor execution
-- `src/printer_v1/sources/recording.py` — Source Governor recording
-- `src/printer_v1/sources/contracts.py` — `NormalizedSourceResult`, evidence contracts
-- `src/printer_v1/sources/solana_rpc_holder.py` — holder-concentration use of
-  `getTokenLargestAccounts` and `getTokenSupply`
+Public RPC cannot by itself prove:
 
-**DB tables:**
-- `printer_source_failures` — failure audit rows (failure provenance must be
-  DB-durable or explicitly preserved in the bounded proof artifact before live
-  proof)
-- Source Governor tables (governed execution records)
+- complete historical coverage or token history before node retention;
+- token legitimacy, absence of risk, or future safety;
+- beneficial wallet ownership, wallet authenticity, or independent participants;
+- participant coordination, wash activity, manipulation intent, or causation;
+- pool reserves, executable routes, slippage, fills, exit realism, or profit;
+- off-chain identity, social claims, or provider-wide indexing completeness;
+- retrieval fitness, decision quality, BUY/SELL/HOLD, position validity, or PnL.
 
-**Test files:**
-- `tests/test_v2_2ak_t3_solana_rpc_token_age.py` (132 tests)
+Optional unknowns must remain unknown. No RPC field can become a score, ranking,
+confidence, weight, retrieval unlock, or financial capability.
+
+## 15. Current Implementation Gaps and Unsafe Assumptions
+
+| Gap | Risk | Required later repair/proof |
+|---|---|---|
+| Mainnet hostname differs from current primary official docs | Silent alias/equivalence assumption | Pin one approved endpoint after official clarification or a separately approved bounded probe |
+| Holder backup is third-party PublicNode | Official limits are inherited by another provider | Separate provider contract before reliance |
+| Holder calls omit explicit commitment | Typical default can be reported as proven finality | Send explicit commitment and fixture-test context/provenance |
+| Governor counts source requests, not underlying RPC operations | Multi-call adapters can exceed method/IP/bandwidth ceilings | Operation-level Scheduler budget and bounded proof |
+| Registry says max retries 2 while T3 is zero-retry and holder has one conditional backup | Retry policy appears more permissive than reality | Path-specific retry contract and focused tests |
+| HTTP 429 does not preserve `Retry-After` | Backoff cannot follow official signal | Parse, bound, account, and prove header behavior |
+| T3 uses `limit = 1000` without a pinned primary-page maximum | Unsupported numeric assumption | Pin official schema/source or configure conservatively |
+| Bounded signature pages can be called complete | Initialization can be outside returned coverage | Report bounds and incomplete coverage explicitly |
+| Generic/manual fallback is broader than operational holder allowlist | Non-retryable failures may rotate provider | Reconcile to one fail-closed transient allowlist |
+| No consolidated connection/byte accounting was found | Request count can still breach limits | Add operation/connection/byte design before activation |
+| No fixed public history-retention guarantee exists | Null/empty can be read as nonexistence | Preserve retention uncertainty; never infer absence |
+
+These gaps block provider implementation or operational reliance where stated.
+They do not block documentation adoption because the contract remains
+fail-closed and no new network path is activated.
+
+## 16. Required Future Proof
+
+Before operational public-RPC use expands beyond already approved historical
+paths, the relevant implementation lane must prove with fixtures and isolated
+harnesses:
+
+1. exact endpoint approval and immutable provenance;
+2. explicit commitment for every accepted evidence method;
+3. actual RPC-operation accounting across tokens and methods;
+4. ceilings below total, per-method, connection, and bandwidth limits;
+5. bounded 403/429/timeout/JSON-RPC/null/malformed handling;
+6. `Retry-After` parsing without unbounded sleep or automatic restart;
+7. no endpoint rotation after identity, parser, data, or provenance failures;
+8. bounded-history reporting without false completeness;
+9. exact mint/account/signature/slot isolation and idempotent replay;
+10. zero retrieval and financial deltas.
+
+No network proof or probe was authorized by V2-9.7D.1D.
+
+## 17. Code and Test Reconciliation
+
+Inspected implementation points:
+
+- `src/printer_v1/sources/solana_rpc_token_age.py`
+- `src/printer_v1/sources/solana_rpc_holder.py`
+- `src/printer_v1/sources/registry.py`
+- `src/printer_v1/sources/governor.py`
+- `src/printer_v1/operator_cli/safety_context_source_redundancy.py`
+- `src/printer_v1/operator_cli/one_command_15m_factory.py`
+- `src/printer_v1/evidence_fill/real.py`
+
+Inspected focused tests without executing them:
+
+- `tests/test_v2_2ak_t3_solana_rpc_token_age.py`
+- `tests/test_post_rc_solana_rpc_safety_evidence_fixture_normalizer.py`
 - `tests/test_post_rc_real_evidence_collection.py`
+- `tests/test_v2_9_6_safety_context_source_redundancy.py`
 
----
+Existing tests establish fixture-backed exact-mint checks, bounded T3 work,
+failure provenance, holder source isolation, and one conditional backup path.
+They do not prove current public-endpoint limits, endpoint alias equivalence,
+fixed retention, consolidated IP-wide budgets, or operational activation.
+
+## 18. Remaining Locks
+
+- No RPC call, endpoint probe, source fetch, runtime, campaign, or memory growth.
+- No provider or campaign implementation through this adoption.
+- No transaction simulation/submission, wallet, key, signing, or funds.
+- No retrieval, decisions, BUY/SELL/HOLD, positions, trades, audits, or PnL.
+- No paid dependency, scoring, ranking, confidence, weighting, embeddings, or
+  vectors.
+- No Source Governor or Central Scheduler bypass.
+- No public-RPC limit may be treated as a target utilization level.
 
 ## 19. Unresolved Questions
 
 | Item | Status |
 |---|---|
-| Official current public mainnet endpoint (`mainnet` vs `mainnet-beta`) | `UNKNOWN_REQUIRES_RESEARCH` - no live compatibility claim in SB-2.2 |
-| Solana public RPC rate limits for the public endpoint | Resolved in SB-2.3: numeric shared-endpoint limits are published but explicitly subject to change |
-| T3 commitment level and minimum-finality rule | Resolved for T3: `finalized`; A3 remains separately paused |
-| Failure-provenance preservation path | DB-durable in governed failure rows through migration 027 |
-| Bounded live proof on approved mint | Passed on 2026-07-12; see real T3 closeout |
-| History pruning behavior under heavy load | `UNKNOWN_REQUIRES_RESEARCH` — behavior not formally documented for public endpoint |
-
----
+| Guaranteed equivalence of `api.mainnet.solana.com` and `api.mainnet-beta.solana.com` | `UNKNOWN_REQUIRES_RESEARCH` |
+| Fixed archival/history-retention window for shared public endpoint | `UNKNOWN_REQUIRES_RESEARCH` |
+| Current official maximum/default signature-query limit in reviewed primary page | `UNKNOWN_REQUIRES_RESEARCH` |
+| Exact `getBlockTime` null-versus-error mapping for every unavailable state | `UNKNOWN_REQUIRES_RESEARCH` |
+| Public endpoint SLA and numeric timeout guarantee | `UNKNOWN_REQUIRES_RESEARCH` |
+| PublicNode fallback limits, retention, and provider contract | `UNKNOWN_REQUIRES_RESEARCH` |
+| Consolidated operation/connection/bandwidth accounting in Printer | `NOT_IMPLEMENTED` |
 
 ## 20. Change History
 
-| Date | Change | Author |
+| Date | Change | Author/lane |
 |---|---|---|
-| 2026-07-12 | SB-2: module authored; 19 sections, original structure | Claude Opus 4.8 / SB-2 |
-| 2026-07-12 | SB-2.1: restructured to exact 20-section template; method-level request/response contracts added for all 6 methods; mainnet endpoint gap documented; failure provenance and DB persistence blocker clarified; status dimensions updated to SB-1 section 6 vocabulary | Claude Sonnet 4.6 / SB-2.1 |
-| 2026-07-12 | SB-2.2: corrected public RPC endpoint wording, removed unsupported endpoint-resolution claim, changed `until` inclusivity to `UNKNOWN_REQUIRES_RESEARCH`, separated upstream public-RPC warnings from Printer Source Governor budgets, and corrected T3 failure-provenance sequencing | Codex standard/balanced / SB-2.2 |
-
-| 2026-07-12 | SB-2.3: independently verified public RPC numeric limits and preserved endpoint naming as an official-documentation conflict | Manual independent verification / SB-2.3 |
+| 2026-07-12 | SB-2 through SB-2.3 established the six-method reference, endpoint conflict, T3 provenance, and published shared limits | SB-2 series |
+| 2026-07-18 | Re-audited current official Solana docs; adopted endpoint, access, limits, commitment, transport, retention, per-method, provenance, and fail-closed boundaries; reconciled adapters, budgets, retries, and focused tests | V2-9.7D.1D |
