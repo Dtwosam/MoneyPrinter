@@ -84,13 +84,14 @@ Post-V2-9 update:
 - V2-9.7C.0A manipulation-aware product-law adoption is complete.
 - The V2-9.7C Solana agent-assistance readiness audit is complete at commit
   `9f2601b`.
-- Solana agent-assistance governance adoption is the current documentation step
-  until the `Adopt Solana agent assistance governance` commit closes.
+- Solana agent-assistance governance adoption is complete at commit `5c77651`.
+- V2-9.7C Operational Memory Factory Design is the current documentation lane
+  until the `Design operational memory factory campaigns` commit closes.
 - Operational memory growth is still locked.
-- After this governance adoption passes, the next active memory-growth lane is:
+- After V2-9.7C design passes, the next active memory-growth lane is:
 
 ```text
-V2-9.7C - Operational Memory Factory Design
+V2-9.7D - Bounded Implementation
 ```
 
 Known factual anchors from V2-0:
@@ -758,8 +759,8 @@ readiness-audit lanes.
 Status: active program, locked until its sub-lanes pass. V2-9.7A, the focused
 V2-9.7B.1-B.5 repair program, V2-9.7C.0, V2-9.7C.0A, and the Solana
 agent-assistance readiness audit are complete. The current documentation step
-is Solana agent-assistance governance adoption. After PASS, the next active lane
-is `V2-9.7C - Operational Memory Factory Design`.
+is V2-9.7C Operational Memory Factory Design. After PASS, the next active lane
+is `V2-9.7D - Bounded Implementation`.
 
 Allowed: audit, targeted repair of proven operational blockers, campaign design,
 bounded implementation, two-token pilot proof, and activation closeout in the
@@ -1678,13 +1679,15 @@ learning quality, evidence quality, report clarity, or lock safety is not done.
 After the V2-9.7A readiness audit, focused V2-9.7B.1-B.5 repair program,
 V2-9.7C.0 money-usefulness readiness audit, V2-9.7C.0A product-law adoption,
 V2-9.7C Solana agent-assistance readiness audit at commit `9f2601b`, and the
-governance adoption recorded here, the next active lane is:
+governance adoption at commit `5c77651`, V2-9.7C Operational Memory Factory
+Design is the current lane. After its PASS, the next active lane is:
 
 ```text
-V2-9.7C - Operational Memory Factory Design
+V2-9.7D - Bounded Implementation
 ```
 
-Reason: the proven reusable reporting, lifecycle, supervision, provenance,
-trajectory/checkpoint, manipulation-aware, and money-usefulness laws are binding.
-Printer now needs a design-only campaign contract before bounded implementation,
-pilot proof, activation, V2-10, retrieval, or any financial unlock can begin.
+Reason: the committed design fixes campaign, identity, fairness, selective
+continuation, conditional 5m, trajectory/checkpoint, manipulation/opportunity,
+persistence, replay, reporting, and safe-stop semantics. V2-9.7D may prepare the
+bounded implementation in a separate lane, but may not run an operational
+campaign or unlock retrieval or financial capability.
