@@ -80,8 +80,11 @@ Post-V2-9 update:
 - No further 4h proof is required before operational readiness review.
 - V2-9.7A and the focused V2-9.7B.1-B.5 repair program are closed PASS through
   commit `b3d8761`.
+- V2-9.7C.0 money-usefulness readiness is closed PASS at commit `b8bafc9`.
+- V2-9.7C.0A is the current adoption lane until the
+  `Adopt manipulation-aware money-usefulness laws` commit closes.
 - Operational memory growth is still locked.
-- The next active memory-growth lane is:
+- After V2-9.7C.0A PASS, the next active memory-growth lane is:
 
 ```text
 V2-9.7C - Operational Memory Factory Design
@@ -814,6 +817,38 @@ Sub-lanes:
 | V2-9.7E | Two-token pilot proof | Bounded two-token pilot against approved target with exact report and safe stop | Scaling to 3 tokens, unbounded campaign, V2-10, retrieval/paper/financial rows | Runner artifacts, pilot report | Approved target DB per lane scope | Source/scheduler/memory/lock deltas | Pilot proof closeout | Two-token pilot passes or blocks honestly | Token mixing, dirty clean promotion, unsafe stop | Proves initial operational memory growth can work without fake corpus claims |
 | V2-9.7F | Activation closeout | Decide whether V2-9.8A activation gate is ready | Starting operation, issuing command early | Closeout doc | None | Diff checks, unlock scan | Activation closeout | V2-9.8A is ready or explicitly blocked | Pilot unresolved or command unverified | Clean handoff to active bounded operations |
 
+Required V2-9.7C source stack additions:
+
+- `docs/printer-v1-v2-9-7c-0-money-usefulness-requirements-readiness-audit.md`
+- `docs/printer-v1-manipulation-aware-money-usefulness-product-law.md`
+
+V2-9.7C must trace all 19 canonical requirements from the V2-9.7C.0 audit:
+campaign model; selective continuation; fairness and budgets; conditional 5m
+support; trajectory and checkpoints; cooldown/archive/rotation; recovery and
+replay; reporting and supervision; Source-Governed evidence isolation;
+transition memory; manipulation-aware opportunity; wallet and participant
+evidence; event-time execution memory; multiple checkpoint decision paths;
+contradiction memory; balanced corpus coverage; recency and market-drift
+handling; frozen chronological validation; and optional operator capital policy
+with permanent safety invariants.
+
+V2-9.7C must also preserve the manipulation-aware and money-usefulness product
+laws by reference. The design must require:
+
+- four-way separation between evidence quality, market-integrity condition,
+  tradeability, and action eligibility
+- manipulation lifecycle coverage
+- all eight manipulation behaviours named in the law document
+- two separate outcome layers: full-window outcome and internal
+  trade-opportunity outcome
+- all twelve tradeable-path contexts named in the law document
+- hard blocks for missing mandatory evidence, unsafe evidence, unsupported
+  execution realism, unproven capturability, look-ahead, and any capability lock
+- anti-hindsight and checkpoint-time-only evidence boundaries
+- chronological-validation controls for later frozen-corpus proof lanes
+- optional capital-policy rules that can never disable permanent Printer safety
+  invariants
+
 #### Money-Usefulness Contribution
 
 V2-9.7 converts the successful one-token 4h proof into a disciplined operational
@@ -853,6 +888,8 @@ memory remain locked.
 
 V2-9.7C cannot pass unless its design specifies:
 
+- traceability from every one of the 19 canonical requirements to a concrete
+  design element
 - full-trajectory memory representation
 - phase and reversal representation using approved categorical vocabulary
 - historical decision-checkpoint construction
@@ -866,6 +903,14 @@ V2-9.7C cannot pass unless its design specifies:
   containing main window, triggering snapshots, source provenance, and scheduler
   work
 - 5m non-authority controls
+- four-way separation of evidence quality, market-integrity condition,
+  tradeability, and action eligibility
+- manipulation lifecycle and all eight manipulation behaviours from
+  `docs/printer-v1-manipulation-aware-money-usefulness-product-law.md`
+- separate full-window and internal trade-opportunity outcome layers
+- all twelve tradeable-path contexts from the law document
+- hard-block, anti-hindsight, chronological-validation, and optional
+  capital-policy contracts
 - minimum sufficient proof requirements
 
 V2-9.7C remains design-only unless the active build order explicitly says
@@ -1616,14 +1661,15 @@ learning quality, evidence quality, report clarity, or lock safety is not done.
 
 ## 12. Next Recommended Lane
 
-After the V2-9.7A readiness audit and focused V2-9.7B.1-B.5 repair program, the
-next active lane is:
+After the V2-9.7A readiness audit, focused V2-9.7B.1-B.5 repair program,
+V2-9.7C.0 money-usefulness readiness audit, and V2-9.7C.0A product-law adoption,
+the next active lane is:
 
 ```text
 V2-9.7C - Operational Memory Factory Design
 ```
 
-Reason: the proven reusable reporting, lifecycle, supervision, and provenance
-blockers are repaired. Printer now needs a design-only campaign contract before
-bounded implementation, pilot proof, activation, V2-10, retrieval, or any
-financial unlock can begin.
+Reason: the proven reusable reporting, lifecycle, supervision, provenance,
+trajectory/checkpoint, manipulation-aware, and money-usefulness laws are binding.
+Printer now needs a design-only campaign contract before bounded implementation,
+pilot proof, activation, V2-10, retrieval, or any financial unlock can begin.

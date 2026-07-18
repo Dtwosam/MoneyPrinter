@@ -18,6 +18,13 @@ Printer has one final goal: become a money-making machine. V1 does not try to do
 
 Printer must learn from action and inaction: buying, selling, holding, waiting, avoiding, missing entries, entering late, selling early, round-tripping, and doing nothing when data was weak.
 
+Printer's manipulation-aware and money-usefulness product law is binding by
+reference through
+`docs/printer-v1-manipulation-aware-money-usefulness-product-law.md`.
+Manipulation is a condition, not an automatic rejection or authorization. Chart
+outcome and executable trade opportunity are not the same thing, and
+full-window outcome must remain separate from internal opportunity outcome.
+
 ## 0.3 Scope
 
 | **Scope Item** | **V1 Rule**                                                                       |

@@ -27,6 +27,11 @@ This guide does not authorize runtime expansion, source fetching, operational me
 
 Post-V2-9 status: V2-9 closed PASS at commit `51bcfdb`. No further 4h proof is required before operational readiness review, but operational memory growth remains locked until the active V2-9.7 program passes and the V2-9.8A operator activation gate is reached.
 
+Manipulation-aware money-usefulness law: V2-9.7C.0A adopts
+`docs/printer-v1-manipulation-aware-money-usefulness-product-law.md` as the
+binding home for manipulation context, tradeable-path, and anti-hindsight
+product laws. This guide follows that document by reference.
+
 ## 1. Purpose
 
 Printer V1 is a Solana-only memecoin memory and paper-trading machine.
@@ -630,6 +635,51 @@ A main memory window is clean only if:
 A window must not become clean just because the token pumped.
 
 Clean memory is evidence quality plus outcome clarity, not price performance.
+
+## 12A. Manipulation-Aware Money-Usefulness Guidance
+
+Use `docs/printer-v1-manipulation-aware-money-usefulness-product-law.md` as the
+binding source for these operating rules.
+
+Manipulation context is not the same thing as evidence quality. A token that
+appears manipulated, coordinated, artificial, concentrated, or authenticity-weak
+may still produce clean memory when the observations are complete, timely,
+exact-target, Source-Governed, Scheduler-led, and realistically interpretable.
+The manipulation condition must be preserved as market-integrity context, not
+converted into automatic rejection or automatic authorization.
+
+Full-window outcome and internal trade-opportunity outcome are separate layers.
+A negative 15m, 1h, or 4h window can still contain useful internal opportunity
+segments, such as early expansion, valid hold, correctly avoided late chase,
+correct exit, missed upside, or failed re-entry. Those internal segments must
+not rewrite the full-window outcome.
+
+Chart profit is not executable profit. Observed peaks, ATHs, and wick highs are
+chart facts until event-time route, liquidity, slippage, price impact, duration,
+and exit evidence prove realistic capturability. Missing quantitative execution
+evidence must remain unknown or unproven.
+
+Wallet and participant authenticity remains `UNKNOWN` when unproven. Partial
+flow labels, holder concentration, or activity bursts must not be presented as
+proof of genuine participants, related-wallet clusters, or coordinated accounts
+unless a governed source supplies that exact evidence.
+
+Checkpoint anti-hindsight is mandatory. A checkpoint may use only facts
+available at that time, with finite predeclared action paths. Later outcomes may
+evaluate an earlier checkpoint but must never rewrite it, invent an exact-bottom
+entry, invent an exact-top exit, or reconstruct a completed-chart action path.
+
+`WINDOW_5M_MICRO_EVENT` remains permanently support-only and non-authoritative.
+It may explain early pumps, dumps, wicks, traps, and exit realism only when
+exact-linked to the token, pair, run, scheduler work, and containing main
+lifecycle. It never replaces 15m, independently triggers continuation, counts
+toward main clean-memory thresholds, unlocks retrieval, or unlocks financial
+capability.
+
+Optional operator capital policy is future paper-research policy only. It can
+never disable permanent Printer invariants such as Source Governor, Central
+Scheduler, clean-memory requirements, safety gates, paper-only mode, no live
+funds, no dirty-memory decisions, no scoring, and no hidden weighted logic.
 
 ## 13. Dirty and Audit Memory Rules
 
