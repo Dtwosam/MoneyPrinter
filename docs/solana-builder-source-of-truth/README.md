@@ -235,10 +235,10 @@ put through the formal SB independent-verification gate:
 - [token-age-evidence-tier-registry.md](token-age-evidence-tier-registry.md)
 - [source-governor-evidence-rules.md](source-governor-evidence-rules.md)
 
-The following provider module was independently audited against current
-official provider documentation and adopted by V2-9.7D.1A. Its adoption is
-module-specific and does not adopt the whole Builder stack or activate its
-source:
+The following provider modules were independently audited against current
+official provider documentation and adopted by V2-9.7D.1A through D.1C. Their
+adoption is module-specific and does not adopt the whole Builder stack or
+activate their sources:
 
 - [jupiter-route-quote-api-contract.md](jupiter-route-quote-api-contract.md) -
   Metis V1 `SUPERSEDED`; Printer `PARTIAL_WITH_BLOCKER`;
@@ -248,6 +248,10 @@ source:
 - [goplus-solana-token-security-api-contract.md](goplus-solana-token-security-api-contract.md) -
   active Solana Beta; Printer `PARTIAL_WITH_BLOCKER`;
   `ALLOWED_FIXTURE_ONLY` pending later field-mapping, provenance, and proof work.
+- [geckoterminal-api-contract.md](geckoterminal-api-contract.md) -
+  active keyless Public API v2 Beta; Printer `PARTIAL_WITH_BLOCKER`;
+  `ALLOWED_FIXTURE_ONLY` pending pagination, version/rate, OHLCV-ordering,
+  trade-coverage, provenance, and proof work.
 
 The following modules are internal Printer policy, not provider contracts and
 not operational source registrations:
@@ -264,8 +268,7 @@ committed under the policy, and external developer assistance never becomes
 Source Governor evidence.
 
 Remaining protocol/provider modules (pumpswap-amm-protocol,
-raydium-amm-label-context, geckoterminal-api-contract, etc.) are still planned
-for SB-3+ lanes.
+raydium-amm-label-context, etc.) are still planned for SB-3+ lanes.
 
 ---
 

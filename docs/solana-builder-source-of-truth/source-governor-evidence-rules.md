@@ -50,24 +50,45 @@ enforce at the request boundary.
 
 ## GeckoTerminal
 
+The adopted provider contract is `geckoterminal-api-contract.md`. The keyless
+Public API v2 is active Beta; Printer is `PARTIAL_WITH_BLOCKER`; every current
+request kind remains fixture-only until a later repair and proof passes.
+
 ### Approved request kinds
 
-| Request kind | Allowed | Evidence tier contributed |
+| Request kind | Current permission | Evidence tier contributed |
 |---|---|---|
-| `geckoterminal_new_pool_discovery` | YES | Pool/pair discovery metadata |
-| `geckoterminal_trending_pool_reference` | YES | Pool/pair discovery metadata |
-| `geckoterminal_ohlcv_15m` | YES | `price_change_15m`, `volume_15m` (PROVIDER_CANDLE_DERIVED) |
-| `geckoterminal_pool_trades_15m` | YES | `txns_15m` (PROVIDER_TRADES_WINDOW) |
+| `geckoterminal_new_pool_discovery` | `ALLOWED_FIXTURE_ONLY` | Bounded pool/pair discovery page |
+| `geckoterminal_trending_pool_reference` | `ALLOWED_FIXTURE_ONLY` | Provider-ranked pool reference only |
+| `pair_market_snapshot` | `ALLOWED_FIXTURE_ONLY` | Exact-pool market snapshot fallback |
+| `geckoterminal_ohlcv_15m` | `ALLOWED_FIXTURE_ONLY` | `price_change_15m`, `volume_15m` only after completed-candle proof |
+| `geckoterminal_pool_trades_15m` | `ALLOWED_FIXTURE_ONLY` | `txns_15m` only after unfiltered complete-window proof |
+| `geckoterminal_pool_snapshot` | `NOT_IMPLEMENTED` | Proposed exact-pool request name |
+| `geckoterminal_pool_ohlcv` | `NOT_IMPLEMENTED` | Proposed parameterized exact-pool OHLCV |
+| `geckoterminal_pool_trades` | `NOT_IMPLEMENTED` | Proposed parameterized exact-pool trades |
 
 ### Evidence contribution rules
 
 | Evidence field | Condition |
 |---|---|
-| `price_change_15m` | Only from completed 15m candle arithmetic; stale candles rejected |
-| `volume_15m` | Only from same completed candle |
-| `txns_15m` | Only when `oldest_reaches_window` proves complete coverage |
-| `token_created_at` | CONDITIONAL — from pool metadata `pool_created_at` → T4 only |
+| pool discovery | Preserve page, duration, receipt, exact pool/base/quote identity, and partial coverage |
+| trending reference | Provider ranking only; never Printer score, rank, confidence, weight, or signal |
+| `price_change_15m` | Exact-pool, exact-token-side completed 15m candle arithmetic; stale/ambiguous candles rejected |
+| `volume_15m` | Same exact completed candle, currency and gap policy retained |
+| `txns_15m` | Only after unfiltered, well-formed, non-truncated window coverage is proven |
+| `pool_created_at` / pair age | T4 pair/pool age only; never token creation time |
 | T2/T3 token age | NOT available from GeckoTerminal |
+
+HTTP 200 alone is not completeness. Missing/malformed fields, wrong
+network/pool/mint/token side, stale receipt, partial pages, rate limits,
+timeouts, provider errors, skipped/ambiguous OHLCV intervals, capped or
+filtered trade history, malformed trade records, and incomplete provenance
+fail closed. Receipt time is not provider observation time.
+
+GeckoTerminal cannot prove mint creation, wallet authenticity, beneficial
+ownership, participant coordination, manipulation intent, token safety,
+executable tradeability, fills, exits, or profit. It cannot unlock memory,
+retrieval, decisions, positions, trades, audits, or PnL.
 
 ## DexScreener
 
