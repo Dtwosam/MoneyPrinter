@@ -107,6 +107,36 @@ request/response remain separate governed traces. Printer may overlay them only
 on an exact mint match. A failed, missing, non-finalized, or mismatched T3 trace
 must leave token age unknown and cannot produce A3.
 
+## Jupiter Route and Quote
+
+The adopted provider contract is `jupiter-route-quote-api-contract.md`. Metis
+V1 is `SUPERSEDED`, and Printer's network adapter is
+`PARTIAL_WITH_BLOCKER`. Until a later repair and proof passes, the existing
+request kind is fixture-only.
+
+### Approved request kinds
+
+| Request kind | Current permission | Evidence contribution |
+|---|---|---|
+| `paper_quote_realism` | `ALLOWED_FIXTURE_ONLY` | Paper entry/exit route and quote context only |
+| Transaction, swap, execute, wallet, or signing request | NO | None |
+
+### Evidence contribution rules
+
+| Evidence field | Condition |
+|---|---|
+| route available | Structurally valid route for exact mint pair, direction, amount, mode, and response |
+| route unavailable | Explicit parsed provider no-route result; never generic HTTP 400 |
+| amount, threshold, impact, route, fees | Later repair/proof; exact reconciliation and finite parsing required |
+| quote freshness | Later conservative rule; receipt or registry duration alone is insufficient |
+| entry/exit realism | Context only; not a fill, transaction, landed execution, or realized profit |
+
+Missing auth, rate limiting, unknown HTTP errors, malformed JSON, schema or
+identity mismatch, and missing quantitative fields fail closed. Missing or
+malformed price impact must never become zero. Jupiter cannot contribute token
+safety, wallet-level flow authenticity, clean eligibility by itself, retrieval,
+decisions, positions, trades, audits, or PnL.
+
 ## Cross-Cycle A4 Evidence
 
 `A4 / FAILED_PUMP` is derived only from two distinct governed discovery

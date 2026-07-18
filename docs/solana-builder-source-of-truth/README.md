@@ -180,7 +180,7 @@ When an agent picks up a Solana task, it MUST read the routed modules first.
 | Discovery/selection intake | dexscreener-api-contract\*, geckoterminal-api-contract\*, pumpportal-api-contract\*, solana-mint-addresses |
 | Migration/graduation handling | pump-fun-bonding-curve-protocol\*, pumpswap-amm-protocol\*, raydium-amm-label-context\*, pumpportal-api-contract\* |
 | Safety / rug evidence | goplus-api-contract\*, solana-core-rpc-reference, solana-spl-token-program, solana-token-2022-program |
-| Paper quote realism | jupiter-quote-api-contract\*, jupiter-routing-protocol\* |
+| Paper quote realism | jupiter-route-quote-api-contract, source-governor-evidence-rules |
 | Market/chain-heat context | coingecko-api-contract\*, defillama-api-contract\*, alternative-me-api-contract\*, geckoterminal-api-contract\* |
 | Any new source adapter | source-governor-evidence-rules\* + target provider module + solana-core-rpc-reference if on-chain |
 
@@ -235,6 +235,17 @@ put through the formal SB independent-verification gate:
 - [token-age-evidence-tier-registry.md](token-age-evidence-tier-registry.md)
 - [source-governor-evidence-rules.md](source-governor-evidence-rules.md)
 
+The following provider module was independently audited against current
+official provider documentation and adopted by V2-9.7D.1A. Its adoption is
+module-specific and does not adopt the whole Builder stack or activate its
+source:
+
+- [jupiter-route-quote-api-contract.md](jupiter-route-quote-api-contract.md) -
+  Metis V1 `SUPERSEDED`; Printer `PARTIAL_WITH_BLOCKER`;
+  `ALLOWED_FIXTURE_ONLY` pending later repair and proof. This is the adopted
+  target for the legacy planned name `jupiter-quote-api-contract.md` still
+  referenced by `solana-mint-addresses.md`; no second Jupiter contract exists.
+
 The following modules are internal Printer policy, not provider contracts and
 not operational source registrations:
 
@@ -250,8 +261,8 @@ committed under the policy, and external developer assistance never becomes
 Source Governor evidence.
 
 Remaining protocol/provider modules (pumpswap-amm-protocol,
-raydium-amm-label-context, jupiter-routing-protocol, geckoterminal-api-contract,
-etc.) are still planned for SB-3+ lanes.
+raydium-amm-label-context, geckoterminal-api-contract, etc.) are still planned
+for SB-3+ lanes.
 
 ---
 
