@@ -41,6 +41,7 @@ IDENTITY_KINDS = frozenset(
         "pair",
         "lifecycle",
         "window",
+        "scheduler_work",
     }
 )
 
