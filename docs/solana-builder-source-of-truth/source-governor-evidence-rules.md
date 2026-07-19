@@ -51,15 +51,17 @@ enforce at the request boundary.
 ## GeckoTerminal
 
 The adopted provider contract is `geckoterminal-api-contract.md`. The keyless
-Public API v2 is active Beta; Printer is `PARTIAL_WITH_BLOCKER`; every current
-request kind remains fixture-only until a later repair and proof passes.
+Public API v2 is active Beta. The 7B.3B trending and exact active-pool contracts
+are repaired for fixture-only use; production network use still requires the
+later adapter and proof lanes.
 
 ### Approved request kinds
 
 | Request kind | Current permission | Evidence tier contributed |
 |---|---|---|
 | `geckoterminal_new_pool_discovery` | `ALLOWED_FIXTURE_ONLY` | Bounded pool/pair discovery page |
-| `geckoterminal_trending_pool_reference` | `ALLOWED_FIXTURE_ONLY` | Provider-ranked pool reference only |
+| `geckoterminal_trending_pool_reference` | `ALLOWED_FIXTURE_ONLY` | Page-1, 1h provider-ranked Solana pool reference only |
+| `geckoterminal_active_pool_reference` | `ALLOWED_FIXTURE_ONLY` | One exact pool with non-zero provider `transactions.m5` |
 | `pair_market_snapshot` | `ALLOWED_FIXTURE_ONLY` | Exact-pool market snapshot fallback |
 | `geckoterminal_ohlcv_15m` | `ALLOWED_FIXTURE_ONLY` | `price_change_15m`, `volume_15m` only after completed-candle proof |
 | `geckoterminal_pool_trades_15m` | `ALLOWED_FIXTURE_ONLY` | `txns_15m` only after unfiltered complete-window proof |
@@ -89,6 +91,39 @@ GeckoTerminal cannot prove mint creation, wallet authenticity, beneficial
 ownership, participant coordination, manipulation intent, token safety,
 executable tradeability, fills, exits, or profit. It cannot unlock memory,
 retrieval, decisions, positions, trades, audits, or PnL.
+
+## Solana Tracker Free REST
+
+The adopted provider contract is
+`solana-tracker-secondary-discovery-contract.md`. Only the free Data API REST
+plan and two fixture-only request kinds are permitted. Datastream, RPC, swap,
+wallet, PnL, trading, paid, and metered surfaces are outside this contract.
+
+### Approved request kinds
+
+| Request kind | Current permission | Evidence tier contributed |
+|---|---|---|
+| `solana_tracker_pumpfun_trending` | `ALLOWED_FIXTURE_ONLY` | Membership in `/tokens/trending/1h` after exact provider `pumpfun` pool filtering |
+| `solana_tracker_pumpfun_top` | `ALLOWED_FIXTURE_ONLY` | Membership in `/top-performers/1h` after exact provider `pumpfun` pool filtering |
+
+The required `x-api-key` is a secret reference only. It may not be logged,
+stored in fixtures, committed, or treated as wallet authority. Free-plan
+capacity is 10,000 requests/month and 3 requests/second as rechecked on
+2026-07-19. The 7B.2 local ceiling is stricter: one trending request plus one
+top request per cycle, 10 seconds each, zero retries.
+
+Only exact token mint and exact pool identity fields survive normalization.
+At least one pool must have `market == "pumpfun"` and
+`pool.tokenAddress == token.mint`. This is provider classification evidence,
+not canonical Pump.fun origin; direct finalized on-chain origin verification
+remains mandatory.
+
+Provider list position, response order, score, risk, popularity, performance,
+price change, promoted/verified status, holder/wallet analytics, and all
+similar fields are discarded before eligibility and selection. Missing,
+stale, malformed, ambiguous, unauthenticated, forbidden, rate-limited,
+quota-exhausted, non-2xx, or provider-error responses fail closed and cannot
+become empty success.
 
 ## DexScreener
 

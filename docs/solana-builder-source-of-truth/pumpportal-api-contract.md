@@ -1,9 +1,30 @@
 # PumpPortal API Contract
 
-**Status:** VERIFIED 2026-07-12  
-**Verification method:** Live probe from operator machine (9 events observed)
+**Status:** BLOCKED 2026-07-19 FOR AUTOMATIC PRINTER USE
+**Historical verification:** anonymous endpoint live probe on 2026-07-12
 
-## Access
+## Current Access Recheck
+
+Current official PumpPortal documentation was rechecked on `2026-07-19`.
+It documents:
+
+- `wss://pumpportal.fun/api/data?api-key=your-api-key-here`;
+- an API key associated with a linked wallet funded with at least `0.02 SOL`
+  for token/account subscriptions;
+- free new-token and migration event categories, but metered token/account
+  trade streams.
+
+The API-key, linked-wallet, and funded-account prerequisite conflicts with
+Printer V1's no-wallet, no-private-key, no-real-funds, and no-paid-access
+boundaries. PumpPortal therefore has no adopted 7B request kind and remains
+`SKIPPED_BLOCKED_CONTRACT`. Printer must not try the historical anonymous URL,
+create/connect a wallet, deposit SOL, sign, store a key, use real funds, or
+adopt a paid/metered stream.
+
+The material below is retained as historical evidence of the 2026-07-12 probe,
+not as current access authority.
+
+## Historical Access
 
 | Property | Value |
 |---|---|

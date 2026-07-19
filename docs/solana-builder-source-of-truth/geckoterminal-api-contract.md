@@ -1,6 +1,6 @@
 # GeckoTerminal Public API Contract
 
-**Status:** ADOPTED 2026-07-18 - CURRENT PRINTER IMPLEMENTATION PARTIAL WITH BLOCKER
+**Status:** ADOPTED 2026-07-19 - 7B.3B TRENDING/ACTIVE CONTRACT REPAIRED
 
 This module defines the official GeckoTerminal Public API facts Printer V1 may
 use for Solana pool discovery and pool-level market evidence. It is subordinate
@@ -22,6 +22,10 @@ authority, wallet-identity source, execution venue, or profit oracle.
 
 The following GeckoTerminal/CoinGecko-owned pages were accessed on
 `2026-07-18`. No API request or live probe was made.
+
+The keyless authentication, endpoint, trending, exact-pool, pagination, and
+rate-limit pages were rechecked on `2026-07-19` for V2-9.7D.7B.3B. This recheck
+adopts only the fixture-only trending and exact active-pool slices below.
 
 | Canonical source | Adopted facts |
 |---|---|
@@ -137,6 +141,16 @@ Printer must retain the requested duration/page. The current adapter hard-codes
 page 1 and does not set or record duration, so it represents only the provider
 default and partial list.
 
+For V2-9.7D.7B.3B the adopted request is exactly:
+
+`GET /networks/solana/trending_pools?include=base_token,quote_token,dex&page=1&duration=1h`
+
+Only page 1 is admitted, with at most 20 returned pools. Although official
+documentation permits pages 1-10 without the paid pagination extension, 7B.2
+allocates one trending request per cycle. Page 2, automatic pagination, a
+larger page, all-network trending, categories, and the paid CoinGecko root are
+outside this contract. Page-1 receipt is explicitly partial coverage.
+
 ## 8. Exact Pool Metadata Contract
 
 `GET /networks/solana/pools/{pool_address}`
@@ -161,6 +175,33 @@ context, not an executable quote or guaranteed exit.
 Pool metadata can support pair age, observed price, reserve/liquidity, volume,
 transaction, and price-change context for the exact pool. It cannot establish
 mint creation time or complete trade history.
+
+### 8.1 V2-9.7D.7B.3B Exact Active-Pool Slice
+
+The adopted request is exactly:
+
+`GET /networks/solana/pools/{pool_address}?include=base_token,quote_token,dex`
+
+It is one exact pool, not search or pagination. The requested address must
+equal `data.attributes.address`; `data.id` must be
+`solana_{pool_address}`; network identity must be `solana`; and base token,
+quote token, and DEX identities must resolve unambiguously through
+relationships/included resources.
+
+For the `ACTIVE_PUMPFUN` channel, the sole adopted activity interval is `m5`.
+`transactions.m5.buys` and `transactions.m5.sells` must be finite,
+non-negative integers and their sum must be greater than zero. Buyers, sellers,
+volume, price change, reserve, and liquidity may remain separately labeled
+provider observations but cannot substitute for the transaction condition.
+The pool's venue/DEX is identity only; it does not prove Pump.fun origin.
+
+The request receipt timestamp is Printer observation time. GeckoTerminal does
+not provide a per-response observation timestamp. The response is usable only
+when evaluated within Printer's existing 180-second receipt-age ceiling; the
+official public cache can be approximately one minute and data latency is not
+a guarantee. Missing receipt time, stale receipt, missing `m5`, zero activity,
+wrong identity, ambiguous token orientation, malformed counts, rate limit,
+timeout, non-2xx, or provider error yields no active contribution.
 
 ## 9. Pool OHLCV Contract
 
@@ -328,11 +369,12 @@ closed. One source must not overwrite equal/higher-authority evidence.
 | Request kind | Status | Purpose |
 |---|---|---|
 | `geckoterminal_new_pool_discovery` | Existing; fixture-only under this contract | Bounded Solana new-pool page |
-| `geckoterminal_trending_pool_reference` | Existing; fixture-only | Bounded provider-ranked Solana pool page |
+| `geckoterminal_trending_pool_reference` | 7B.3B adopted; fixture-only | Exact page-1, 1h provider-ranked Solana pool reference |
+| `geckoterminal_active_pool_reference` | 7B.3B adopted; fixture-only | One exact Solana pool's non-zero `transactions.m5` observation |
 | `pair_market_snapshot` | Existing shared compatibility kind; fixture-only | Exact-pool metadata fallback |
 | `geckoterminal_ohlcv_15m` | Existing; fixture-only | Exact-pool 15m OHLCV |
 | `geckoterminal_pool_trades_15m` | Existing; fixture-only | Exact-pool bounded trade history |
-| `geckoterminal_pool_snapshot` | Proposed, `NOT_IMPLEMENTED` | Provider-specific exact-pool metadata name |
+| `geckoterminal_pool_snapshot` | Superseded for 7B by `geckoterminal_active_pool_reference`; `NOT_IMPLEMENTED` | Broader provider-specific exact-pool name |
 | `geckoterminal_pool_ohlcv` | Proposed, `NOT_IMPLEMENTED` | Parameterized bounded exact-pool OHLCV |
 | `geckoterminal_pool_trades` | Proposed, `NOT_IMPLEMENTED` | Parameterized bounded exact-pool trades |
 
