@@ -1,0 +1,116 @@
+{
+  "contract_version": "V2-9.7D.7B.3A",
+  "official_repository_commit": "9c82f61cb711b044a17f770ab8ce9f9bdf78f333",
+  "official_idl_sha256": "b90bc471327f671449271d5d1d42354d1fae6f5a06502f5834459a3108138e49",
+  "program_id": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+  "supported_transaction_versions": ["legacy", 0],
+  "create": {
+    "discriminator_hex": "181ec828051c0777",
+    "accounts": [
+      "mint",
+      "mint_authority",
+      "bonding_curve",
+      "associated_bonding_curve",
+      "global",
+      "mpl_token_metadata",
+      "metadata",
+      "user",
+      "system_program",
+      "token_program",
+      "associated_token_program",
+      "rent",
+      "event_authority",
+      "program"
+    ],
+    "args": ["name", "symbol", "uri", "creator"]
+  },
+  "create_event": {
+    "cpi_wrapper_hex": "e445a52e51cb9a1d",
+    "discriminator_hex": "1b72a94ddeeb6376",
+    "fields": [
+      "name",
+      "symbol",
+      "uri",
+      "mint",
+      "bonding_curve",
+      "user",
+      "creator",
+      "timestamp",
+      "virtual_token_reserves",
+      "virtual_sol_reserves",
+      "real_token_reserves",
+      "token_total_supply",
+      "token_program",
+      "is_mayhem_mode",
+      "is_cashback_enabled",
+      "quote_mint",
+      "virtual_quote_reserves"
+    ]
+  },
+  "valid_create_transaction": {
+    "version": 0,
+    "slot": 42424242,
+    "blockTime": 1700000000,
+    "meta": {
+      "err": null,
+      "loadedAddresses": {
+        "writable": [],
+        "readonly": []
+      }
+    },
+    "transaction": {
+      "signatures": [
+        "5h6xBEauJ3PK6SWCZ1PGjBvj8vDdWG3KpwATGy1ARAXFSDwt8GFXM7W5Ncn16wmqokgpiKRLuS83KUxyZyv2sUYv"
+      ],
+      "message": {
+        "accountKeys": [
+          "3ELeRTTg5W5hAYaEFznzFV1jknNFkjHqS8ytwvQEQP1Z",
+          "TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM",
+          "5Pk716N113awdSaUDZEPZVi9Zs6hJmG5KCJtp5qQK3LB",
+          "So11111111111111111111111111111111111111112",
+          "4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf",
+          "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s",
+          "11111111111111111111111111111111",
+          "7Z9ZajGKvb6C6LaiB7fnsWQZNwq8roEKCFdtgFGaDheo",
+          "11111111111111111111111111111111",
+          "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+          "SysvarRent111111111111111111111111111111111",
+          "Ce6TQqeHC9p8KetsN5jKpP8W9zjWYHFj5N4jZVfUeZ9",
+          "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+        ],
+        "instructions": [
+          {
+            "programIdIndex": 13,
+            "accounts": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
+            "data": "wNTaVBovTHtKATGXedPqwwoPXTCXqH4yX1cAAhPcQ7t3oUMNmohaJVqHGTkeEEeGSLeELo8DoGCt3Ltg8nfM5dxbWt2ZBnoRpmo1y2Dm51QnKDh1JskDUdqactcntRDHhpLhSeuV"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "name": "Fixture Coin",
+      "symbol": "FIX",
+      "uri": "https://example.invalid/meta.json",
+      "mint": "3ELeRTTg5W5hAYaEFznzFV1jknNFkjHqS8ytwvQEQP1Z",
+      "bonding_curve": "5Pk716N113awdSaUDZEPZVi9Zs6hJmG5KCJtp5qQK3LB",
+      "associated_bonding_curve": "So11111111111111111111111111111111111111112",
+      "creator_address": "4wBqpZM9xaSheZzJSMawUKKwhdpChKbZ5eu5ky4Vigw",
+      "signature": "5h6xBEauJ3PK6SWCZ1PGjBvj8vDdWG3KpwATGy1ARAXFSDwt8GFXM7W5Ncn16wmqokgpiKRLuS83KUxyZyv2sUYv",
+      "slot": 42424242,
+      "block_time": 1700000000
+    }
+  },
+  "supported_event_data_hex": "e445a52e51cb9a1d1b72a94ddeeb63760c0000004669787475726520436f696e030000004649582100000068747470733a2f2f6578616d706c652e696e76616c69642f6d6574612e6a736f6e2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f800102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2000f1536500000000e803000000000000d007000000000000b80b000000000000a00f0000000000008182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa00001a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc08813000000000000",
+  "failure_mutations": [
+    "failed_transaction",
+    "wrong_program",
+    "malformed_accounts",
+    "unsupported_transaction_version",
+    "unsupported_create_v2",
+    "ambiguous_create",
+    "mint_mismatch",
+    "null_block_time",
+    "conflicting_duplicate"
+  ]
+}
