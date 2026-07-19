@@ -260,6 +260,8 @@ class Phase1DatabaseSchemaTest(unittest.TestCase):
                 ("028_memory_factory_run_ledger.sql",),
                 ("029_composite_safety_evidence.sql",),
                 ("030_v2_9_proof_run_supervision.sql",),
+                ("031_operational_campaign_persistence.sql",),
+                ("032_campaign_ownership_schema.sql",),
             ],
         )
 
