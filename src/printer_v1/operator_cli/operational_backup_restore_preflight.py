@@ -276,7 +276,7 @@ def operational_backup_restore_preflight(
         restore_validation = validate_runtime_schema(restore)
         restore_metadata = _inspect_read_only(restore)
         _require_healthy(restore_metadata, "migrated disposable restore")
-        if restore_metadata["latest_migration"] != MIGRATION_032:
+        if MIGRATION_032 not in restore_metadata["migration_ledger"]:
             raise OperationalBackupPreflightError(
                 "disposable restore did not reach migration 032"
             )
@@ -336,7 +336,8 @@ def operational_backup_restore_preflight(
             "restore_pre_migration_hash": source_hash_before,
             "restore_metadata": restore_metadata,
             "restore_validation": restore_validation,
-            "latest_rehearsed_migration": MIGRATION_032,
+            "required_rehearsed_migration": MIGRATION_032,
+            "latest_rehearsed_migration": restore_metadata["latest_migration"],
             "sources_run": False,
             "scheduler_runtime_run": False,
             "source_writes": 0,

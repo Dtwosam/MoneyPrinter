@@ -256,7 +256,6 @@ def reconcile_terminal_campaign_token(
             raise CampaignLifecycleAdapterError(
                 "B.3 lifecycle event is missing or ambiguous"
             )
-        active = _active_associated_work(connection, slot)
         queue = connection.execute(
             "SELECT queue_status FROM printer_tracking_queue WHERE id=?",
             (slot["tracking_queue_id"],),
@@ -265,6 +264,21 @@ def reconcile_terminal_campaign_token(
             transition["terminal_disposition"]
         ):
             raise CampaignLifecycleAdapterError("B.3 queue disposition mismatch")
+        connection.execute(
+            """UPDATE printer_memory_factory_campaign_scheduler_work
+               SET work_state='CANCELLED',first_terminal_cause=COALESCE(
+                       first_terminal_cause,?
+                   ),terminal_at=COALESCE(terminal_at,?),updated_at=?
+               WHERE campaign_id=? AND run_id=? AND cycle_id=?
+                 AND token_slot_id=?
+                 AND work_state IN ('PENDING','RUNNING','COOLDOWN')""",
+            (
+                reason, events[0]["created_at"], events[0]["created_at"],
+                slot["campaign_id"], slot["run_id"], slot["cycle_id"],
+                slot["token_slot_id"],
+            ),
+        )
+        active = _active_associated_work(connection, slot)
         if active["total"] != 0:
             raise CampaignLifecycleAdapterError(
                 "B.3 cleanup left active associated work"

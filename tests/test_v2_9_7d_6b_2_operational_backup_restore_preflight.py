@@ -107,8 +107,12 @@ class OperationalBackupRestorePreflightTests(unittest.TestCase):
         self.assertEqual(self.source.read_bytes(), source_bytes)
         self.assertEqual(_hash(self.source), source_hash)
         self.assertEqual(report["source_hash_before"], report["source_hash_after"])
-        self.assertEqual(report["latest_rehearsed_migration"], MIGRATION_032)
-        self.assertEqual(report["restore_metadata"]["latest_migration"], MIGRATION_032)
+        self.assertEqual(report["required_rehearsed_migration"], MIGRATION_032)
+        self.assertIn(MIGRATION_032, report["restore_metadata"]["migration_ledger"])
+        self.assertEqual(
+            report["latest_rehearsed_migration"],
+            report["restore_metadata"]["latest_migration"],
+        )
         self.assertEqual(report["restore_metadata"]["integrity_check"], ["ok"])
         self.assertEqual(report["restore_metadata"]["foreign_key_error_count"], 0)
         self.assertTrue(report["restore_validation"]["runtime_ready"])
