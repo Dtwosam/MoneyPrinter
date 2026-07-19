@@ -247,6 +247,121 @@ def persist_terminal_report(
     )
 
 
+def persist_terminal_report_with_objects(
+    db_path: str | Path,
+    *,
+    report_id: str,
+    campaign_id: str,
+    configuration_id: str,
+    report: Mapping[str, Any],
+    object_ids: tuple[str, ...],
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Atomically persist one terminal report and its immutable object links."""
+    report_id = _nonempty(report_id, "report_id")
+    campaign_id = _nonempty(campaign_id, "campaign_id")
+    configuration_id = _nonempty(configuration_id, "configuration_id")
+    if not isinstance(object_ids, tuple) or not object_ids or any(
+        not isinstance(value, str) or not value.strip() for value in object_ids
+    ):
+        raise CampaignPersistenceError("object_ids must be non-empty strings")
+    if len(set(object_ids)) != len(object_ids):
+        raise CampaignPersistenceError("object_ids must be unique")
+    ordered_object_ids = tuple(sorted(object_ids))
+    report_json = _canonical_json(report, "campaign report")
+    report_hash = _sha256_text(report_json)
+    connection = _connect(db_path)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        existing = connection.execute(
+            "SELECT * FROM printer_memory_factory_campaign_reports WHERE report_id=?",
+            (report_id,),
+        ).fetchone()
+        expected = {
+            "campaign_id": campaign_id,
+            "configuration_id": configuration_id,
+            "report_kind": "TERMINAL",
+            "report_state": "REPORT_TERMINAL",
+            "replay_of_report_id": None,
+            "report_hash": report_hash,
+            "report_json": report_json,
+        }
+        if existing is not None:
+            record = dict(existing)
+            if any(record[key] != value for key, value in expected.items()):
+                raise CampaignPersistenceError(
+                    "report identity or immutable payload already differs"
+                )
+            linked = tuple(
+                str(row[0]) for row in connection.execute(
+                    """SELECT object_id
+                       FROM printer_memory_factory_campaign_report_objects
+                       WHERE report_id=? ORDER BY object_id""",
+                    (report_id,),
+                ).fetchall()
+            )
+            if linked != ordered_object_ids:
+                raise CampaignPersistenceError("immutable report object links differ")
+            connection.rollback()
+            return {**record, "idempotent_replay": True}
+
+        known = tuple(
+            str(row[0]) for row in connection.execute(
+                """SELECT object_id FROM printer_memory_factory_campaign_objects
+                   WHERE campaign_id=? AND configuration_id=?
+                     AND object_id IN ({}) ORDER BY object_id""".format(
+                    ",".join("?" for _ in ordered_object_ids) or "NULL"
+                ),
+                (campaign_id, configuration_id, *ordered_object_ids),
+            ).fetchall()
+        )
+        if known != ordered_object_ids:
+            raise CampaignPersistenceError(
+                "report object ownership is incomplete or mismatched"
+            )
+        created_at = _utc_text(now)
+        connection.execute(
+            """INSERT INTO printer_memory_factory_campaign_reports(
+                   report_id,campaign_id,configuration_id,report_kind,
+                   report_state,created_at
+               ) VALUES (?,?,?,'TERMINAL','REPORT_PENDING',?)""",
+            (report_id, campaign_id, configuration_id, created_at),
+        )
+        connection.executemany(
+            """INSERT INTO printer_memory_factory_campaign_report_objects(
+                   report_id,campaign_id,configuration_id,object_id,created_at
+               ) VALUES (?,?,?,?,?)""",
+            (
+                (report_id, campaign_id, configuration_id, object_id, created_at)
+                for object_id in ordered_object_ids
+            ),
+        )
+        cursor = connection.execute(
+            """UPDATE printer_memory_factory_campaign_reports
+               SET report_state='REPORT_TERMINAL',report_hash=?,report_json=?
+               WHERE report_id=? AND report_state='REPORT_PENDING'""",
+            (report_hash, report_json, report_id),
+        )
+        if cursor.rowcount != 1:
+            raise CampaignPersistenceError(
+                "pending terminal report compare-and-update failed"
+            )
+        connection.commit()
+        row = connection.execute(
+            "SELECT * FROM printer_memory_factory_campaign_reports WHERE report_id=?",
+            (report_id,),
+        ).fetchone()
+        return {**dict(row), "idempotent_replay": False}
+    except CampaignPersistenceError:
+        connection.rollback()
+        raise
+    except sqlite3.Error as exc:
+        connection.rollback()
+        raise CampaignPersistenceError(f"report persistence failed: {exc}") from exc
+    finally:
+        connection.close()
+
+
 def persist_report_replay(
     db_path: str | Path,
     *,
