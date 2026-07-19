@@ -1,0 +1,35 @@
+{
+  "contract_version": "V2-9.7D.7B.4A",
+  "program_id": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+  "official_repository_commit": "9c82f61cb711b044a17f770ab8ce9f9bdf78f333",
+  "official_idl_sha256": "b90bc471327f671449271d5d1d42354d1fae6f5a06502f5834459a3108138e49",
+  "create_discriminator_hex": "181ec828051c0777",
+  "create_v2_discriminator_hex": "d6904cec5f8b31b4",
+  "prior_cursor": {
+    "slot": 100,
+    "signature": "sig-prior",
+    "continuity": "CONTIGUOUS"
+  },
+  "cycles": {
+    "first": {
+      "cutoff_slot": 101,
+      "signature": "sig-101",
+      "block_time": 1700000101
+    },
+    "next": {
+      "cutoff_slot": 102,
+      "signature": "sig-102",
+      "block_time": 1700000102
+    }
+  },
+  "ceilings": {
+    "live_sessions": 1,
+    "backfill_pages": 2,
+    "page_rows": 16,
+    "transaction_decodes": 16,
+    "underlying_rpc_operations": 45,
+    "ordinary_retries": 0,
+    "same_cycle_reconnects": 0
+  },
+  "creator_evidence_scope": "OBSERVED_EVIDENCE_ONLY"
+}
