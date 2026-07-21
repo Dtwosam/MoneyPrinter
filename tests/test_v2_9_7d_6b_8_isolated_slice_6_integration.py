@@ -625,7 +625,10 @@ class IsolatedSlice6IntegrationProofTests(unittest.TestCase):
     def test_completed_slice_6_components_work_together(self) -> None:
         self.assertEqual(self.preflight["status"], "OPERATIONAL_BACKUP_RESTORE_PREFLIGHT_READY")
         self.assertEqual(self.preflight["required_rehearsed_migration"], MIGRATION_032)
-        self.assertEqual(self.preflight["latest_rehearsed_migration"], "033_operational_campaign_supervision.sql")
+        self.assertEqual(
+            self.preflight["latest_rehearsed_migration"],
+            "034_discovery_persistence_reconciliation.sql",
+        )
 
         slots = (self._policy_slot(1), self._policy_slot(2))
         work = tuple(
@@ -802,7 +805,10 @@ class IsolatedSlice6IntegrationProofTests(unittest.TestCase):
         ))
         self.assertEqual(report["terminal"]["first_terminal_cause"], "SHARED_INTEGRITY_FAILURE")
         self.assertTrue(report["locked_capabilities"]["all_deltas_zero"])
-        self.assertEqual(report["backup_preflight_references"]["latest_migration"], "033_operational_campaign_supervision.sql")
+        self.assertEqual(
+            report["backup_preflight_references"]["latest_migration"],
+            "034_discovery_persistence_reconciliation.sql",
+        )
         self.assertNotEqual(
             report["opportunity_outcome_layers"][0]["full_window_outcome"],
             report["opportunity_outcome_layers"][0]["internal_trade_opportunity_outcome"],
