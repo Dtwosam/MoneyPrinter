@@ -206,10 +206,13 @@ def _validate_configuration(
     ):
         raise AbstractCommandError("immutable command configuration mismatch")
     backup = configuration.get("backup_preflight_references")
+    latest_migration = sorted(
+        migration_runner.MIGRATIONS_DIR.glob("*.sql")
+    )[-1].name
     required = {
         "preflight_status": "READY",
         "required_migration": "032_campaign_ownership_schema.sql",
-        "latest_migration": "033_operational_campaign_supervision.sql",
+        "latest_migration": latest_migration,
     }
     if not isinstance(backup, dict) or any(backup.get(k) != v for k, v in required.items()):
         raise AbstractCommandError("verified backup/restore prerequisite is missing")
@@ -281,8 +284,10 @@ def preflight_abstract_command(command: AbstractCampaignCommand) -> dict[str, An
                 migration_runner.MIGRATIONS_DIR.glob("*.sql")
             )
         )
-        if ledger != expected_ledger or not ledger or ledger[-1] != "033_operational_campaign_supervision.sql":
-            raise AbstractCommandError("database migration ledger is not canonical through 033")
+        # Ledger must match the repository migration head exactly. After 7B.4C
+        # the head includes 034_discovery_persistence_reconciliation.sql.
+        if ledger != expected_ledger or not ledger:
+            raise AbstractCommandError("database migration ledger is not canonical")
 
         leases = connection.execute(
             """SELECT supervision_state FROM printer_memory_factory_campaign_supervision
