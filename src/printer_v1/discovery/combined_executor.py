@@ -203,6 +203,9 @@ class CombinedDiscoveryFixtures:
     batch_seq: int = 1
     force_shared_fault: str | None = None
     provider_failures_injected: Mapping[str, str] = field(default_factory=dict)
+    # Atomic handoff injection points for focused repair proofs only.
+    # BEFORE_FIRST | DURING_SECOND | SECOND_SCHEDULER_JOB | DUPLICATE_ACTIVE | CONFLICTING_SLOT
+    force_handoff_failure: str | None = None
 
 
 @dataclass
@@ -632,17 +635,47 @@ class CombinedPumpfunCampaignExecutor:
 
         # 13-15. Persist selection + transactional handoff + first 15m jobs.
         selection_batch_id = f"selection:{discovery_batch_id}"
-        self._persist_selection_and_handoff(
-            connection,
-            command,
-            usage,
-            discovery_batch_id,
-            selection_batch_id,
-            selected,
-            vacancies,
-            cycle_seed,
-            now,
-        )
+        try:
+            self._persist_selection_and_handoff(
+                connection,
+                command,
+                usage,
+                discovery_batch_id,
+                selection_batch_id,
+                selected,
+                vacancies,
+                cycle_seed,
+                now,
+            )
+        except CombinedDiscoveryError as exc:
+            # Initial activation failures keep discovery facts but must not leave
+            # partial slots/queue/15m jobs (savepoint already rolled those back).
+            if fixtures.mode == "INITIAL" and exc.code in {
+                "HANDOFF_PREFLIGHT_FAILED",
+                "HANDOFF_BEFORE_FIRST",
+                "HANDOFF_DURING_SECOND",
+                "FIRST_15M_JOB_FAILED",
+                "DUPLICATE_ACTIVE_TRACKING",
+                "CONFLICTING_SLOT",
+                "HEALTHY_SLOT_MUTATION",
+                "HANDOFF_CEILING",
+                "FORBIDDEN_WINDOW_ACTIVATION",
+                "INITIAL_HANDOFF_INCOMPLETE",
+            }:
+                self._mark_discovery_batch_failed(
+                    connection, discovery_batch_id, exc.code, now
+                )
+                self._persist_reports(
+                    connection, command, discovery_batch_id, provider_reports, usage, now
+                )
+                return {
+                    "terminal_status": "FAILED",
+                    "first_terminal_cause": exc.code,
+                    "cancellation_reason": None,
+                    "selected_mints": [],
+                    "cycle_seed": cycle_seed,
+                }
+            raise
 
         self._persist_reports(
             connection, command, discovery_batch_id, provider_reports, usage, now
@@ -1536,6 +1569,270 @@ class CombinedPumpfunCampaignExecutor:
         shuffled = _fisher_yates(collapsed, cycle_seed)
         return shuffled[:vacancy_count]
 
+    def _mark_discovery_batch_failed(
+        self,
+        connection: sqlite3.Connection,
+        discovery_batch_id: str,
+        cause: str,
+        now: str,
+    ) -> None:
+        connection.execute(
+            """
+            UPDATE printer_discovery_batches
+            SET batch_state = 'TERMINAL_FAILED',
+                first_terminal_cause = ?,
+                terminal_at = ?
+            WHERE discovery_batch_id = ?
+              AND batch_state NOT LIKE 'TERMINAL_%'
+            """,
+            (cause, now, discovery_batch_id),
+        )
+
+    def _validate_initial_handoff_preflight(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        selected: Sequence[_Merged],
+        vacancies: Sequence[int],
+        usage: _Usage,
+    ) -> None:
+        if len(selected) != 2 or list(vacancies) != [1, 2]:
+            raise CombinedDiscoveryError(
+                "HANDOFF_PREFLIGHT_FAILED", "initial activation requires exactly two vacancies"
+            )
+        if usage.handoffs + 2 > TRACKING_HANDOFFS:
+            raise CombinedDiscoveryError("HANDOFF_CEILING")
+        if usage.scheduler_work + 2 > INTAKE_SCHEDULER_WORK:
+            raise CombinedDiscoveryError("SCHEDULER_WORK_CEILING")
+        for candidate in selected:
+            if not candidate.mint or not candidate.market_identity:
+                raise CombinedDiscoveryError(
+                    "HANDOFF_PREFLIGHT_FAILED", "selected candidate missing market identity"
+                )
+            if candidate.origin_state != "CONFIRMED":
+                raise CombinedDiscoveryError(
+                    "HANDOFF_PREFLIGHT_FAILED", "selected candidate lacks confirmed origin"
+                )
+        for ordinal in (1, 2):
+            existing = connection.execute(
+                """
+                SELECT token_slot_id, mint_identity, token_state
+                FROM printer_memory_factory_campaign_token_slots
+                WHERE cycle_id = ? AND slot_ordinal = ?
+                """,
+                (self.fixtures.cycle_id, ordinal),
+            ).fetchone()
+            if existing is None:
+                continue
+            if existing["token_state"] not in {
+                "FAILED",
+                "COOLDOWN",
+                "ARCHIVED",
+                "MANUAL_REVIEW",
+            }:
+                raise CombinedDiscoveryError(
+                    "CONFLICTING_SLOT",
+                    f"slot ordinal {ordinal} is not vacant for initial activation",
+                )
+
+    def _handoff_one_slot(
+        self,
+        connection: sqlite3.Connection,
+        command: AbstractCampaignCommand,
+        usage: _Usage,
+        *,
+        discovery_batch_id: str,
+        selection_batch_id: str,
+        candidate: _Merged,
+        ordinal: int,
+        cycle_seed: str,
+        now: str,
+        handoff_work: str,
+        force_scheduler_failure: bool = False,
+        force_duplicate_active: bool = False,
+    ) -> None:
+        fixtures = self.fixtures
+        mint = candidate.mint
+        pool = candidate.market_identity.rsplit(":", 1)[-1]
+        token_row = connection.execute(
+            "SELECT id FROM printer_tokens WHERE token_mint = ?",
+            (mint,),
+        ).fetchone()
+        if token_row is None:
+            cursor = connection.execute(
+                """
+                INSERT INTO printer_tokens(token_mint, token_status)
+                VALUES (?, 'TRACK_NORMAL')
+                """,
+                (mint,),
+            )
+            token_id = int(cursor.lastrowid)
+        else:
+            token_id = int(token_row["id"])
+        pair_row = connection.execute(
+            "SELECT id FROM printer_pairs WHERE pair_address = ?",
+            (pool,),
+        ).fetchone()
+        if pair_row is None:
+            cursor = connection.execute(
+                """
+                INSERT INTO printer_pairs(token_id, pair_address, base_token_mint)
+                VALUES (?, ?, ?)
+                """,
+                (token_id, pool, mint),
+            )
+            pair_id = int(cursor.lastrowid)
+        else:
+            pair_id = int(pair_row["id"])
+
+        if force_duplicate_active:
+            # Pre-create an active tracking row so the handoff duplicate check fails.
+            connection.execute(
+                """
+                INSERT INTO printer_tracking_queue(
+                    token_id, pair_id, tracking_lane, tracking_action, priority_reason,
+                    next_check_at, queue_status, source_status, data_quality_label
+                ) VALUES (?, ?, 'TRACK_NORMAL', 'PROMOTE_TO_TRACK_NORMAL', 'inject',
+                          ?, 'ACTIVE', 'COMPLETE', 'CLEAN_DATA')
+                """,
+                (token_id, pair_id, now),
+            )
+
+        created, queue_id = enqueue_tracking_item(
+            connection,
+            token_id=token_id,
+            pair_id=pair_id,
+            tracking_lane=TokenLifecycleState.TRACK_NORMAL,
+            tracking_action=LifecycleEvent.PROMOTE_TO_TRACK_NORMAL,
+            priority_reason="combined_discovery_handoff",
+            next_check_at=datetime.fromisoformat(now.replace("Z", "+00:00")),
+            source_status=SourceStatus.COMPLETE,
+            data_quality_label=DataQualityLabel.CLEAN_DATA,
+        )
+        if not created or queue_id is None:
+            raise CombinedDiscoveryError("DUPLICATE_ACTIVE_TRACKING")
+
+        if force_scheduler_failure:
+            raise CombinedDiscoveryError("FIRST_15M_JOB_FAILED", "injected scheduler failure")
+
+        job_result, job_id = enqueue_job(
+            connection,
+            job_name=f"window15m:{mint}:{pool}",
+            job_kind=JobKind.TRACK_NORMAL_FIRST_15M,
+            target_table="printer_tracking_queue",
+            target_id=queue_id,
+            scheduled_for=datetime.fromisoformat(now.replace("Z", "+00:00")),
+        )
+        if job_id is None:
+            raise CombinedDiscoveryError("FIRST_15M_JOB_FAILED", str(job_result))
+
+        banned_kinds = {
+            JobKind.TRACK_NORMAL_1H.value,
+            JobKind.TRACK_NORMAL_4H.value,
+            JobKind.TRACK_FAST_1H.value,
+            JobKind.TRACK_FAST_4H.value,
+            JobKind.TRACK_FAST_MICRO_EVENT.value,
+        }
+        if any(
+            row[0] in banned_kinds
+            for row in connection.execute(
+                "SELECT job_kind FROM printer_scheduler_jobs WHERE id = ?",
+                (job_id,),
+            )
+        ):
+            raise CombinedDiscoveryError("FORBIDDEN_WINDOW_ACTIVATION")
+
+        slot_id = f"slot-{fixtures.cycle_id}-{ordinal}"
+        existing_slot = connection.execute(
+            """
+            SELECT token_slot_id, mint_identity, token_state
+            FROM printer_memory_factory_campaign_token_slots
+            WHERE cycle_id = ? AND slot_ordinal = ?
+            """,
+            (fixtures.cycle_id, ordinal),
+        ).fetchone()
+        if existing_slot is None:
+            connection.execute(
+                """
+                INSERT INTO printer_memory_factory_campaign_token_slots(
+                    token_slot_id, campaign_id, run_id, cycle_id, slot_ordinal,
+                    token_identity, token_row_id, mint_identity, pair_identity,
+                    pair_row_id, lifecycle_identity, tracking_queue_id,
+                    token_state, created_at, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'SELECTED',?,?)
+                """,
+                (
+                    slot_id,
+                    command.campaign_id,
+                    command.run_id,
+                    fixtures.cycle_id,
+                    ordinal,
+                    _token_identity(mint),
+                    token_id,
+                    mint,
+                    pool,
+                    pair_id,
+                    candidate.lifecycle,
+                    queue_id,
+                    now,
+                    now,
+                ),
+            )
+        else:
+            if existing_slot["token_state"] not in {
+                "FAILED",
+                "COOLDOWN",
+                "ARCHIVED",
+                "MANUAL_REVIEW",
+            }:
+                if existing_slot["mint_identity"] != mint:
+                    raise CombinedDiscoveryError("HEALTHY_SLOT_MUTATION")
+                if fixtures.mode == "INITIAL":
+                    raise CombinedDiscoveryError("CONFLICTING_SLOT")
+            slot_id = existing_slot["token_slot_id"]
+
+        item_cursor = connection.execute(
+            """
+            INSERT INTO printer_selection_batch_items(
+                batch_id, item_status, token_id, pair_id, token_mint,
+                pair_address, chain, tracking_lane, selection_reason,
+                selected_at, created_at
+            ) VALUES (?, 'SELECTED', ?, ?, ?, ?, 'solana', 'TRACK_NORMAL',
+                      ?, ?, ?)
+            """,
+            (
+                selection_batch_id,
+                token_id,
+                pair_id,
+                mint,
+                pool,
+                f"uniform:{cycle_seed[:12]}",
+                now,
+                now,
+            ),
+        )
+        item_id = int(item_cursor.lastrowid)
+        link_selected_item(
+            connection,
+            discovery_batch_id=discovery_batch_id,
+            selection_batch_id=selection_batch_id,
+            selection_item_id=item_id,
+            merged_candidate_id=candidate.merged_candidate_id,
+            campaign_id=command.campaign_id,
+            run_id=command.run_id,
+            cycle_id=fixtures.cycle_id,
+            token_slot_id=slot_id,
+            tracking_handoff_state="HANDOFF_RECORDED",
+            first_window_15m_scheduler_job_id=int(job_id),
+            now=now,
+        )
+        usage.handoffs += 1
+        if usage.handoffs > TRACKING_HANDOFFS:
+            raise CombinedDiscoveryError("HANDOFF_CEILING")
+        self._terminalize_work(
+            connection, handoff_work, "SUCCEEDED", "HANDOFF_COMPLETE", now
+        )
+
     def _persist_selection_and_handoff(
         self,
         connection: sqlite3.Connection,
@@ -1549,6 +1846,21 @@ class CombinedPumpfunCampaignExecutor:
         now: str,
     ) -> None:
         fixtures = self.fixtures
+        if fixtures.mode == "INITIAL":
+            self._atomic_initial_two_slot_handoff(
+                connection,
+                command,
+                usage,
+                discovery_batch_id=discovery_batch_id,
+                selection_batch_id=selection_batch_id,
+                selected=selected,
+                vacancies=vacancies,
+                cycle_seed=cycle_seed,
+                now=now,
+            )
+            return
+
+        # Replacement: token-local single vacancy; healthy occupied slot untouched.
         connection.execute(
             """
             INSERT INTO printer_selection_batches(
@@ -1566,9 +1878,20 @@ class CombinedPumpfunCampaignExecutor:
             cycle_id=fixtures.cycle_id,
             now=now,
         )
-
         for index, candidate in enumerate(selected):
             ordinal = vacancies[index] if index < len(vacancies) else index + 1
+            # Never mutate healthy non-vacant ordinals during replacement.
+            if fixtures.healthy_slot_ids:
+                healthy = connection.execute(
+                    """
+                    SELECT token_slot_id, mint_identity, token_state, slot_ordinal
+                    FROM printer_memory_factory_campaign_token_slots
+                    WHERE cycle_id = ? AND token_slot_id = ?
+                    """,
+                    (fixtures.cycle_id, fixtures.healthy_slot_ids[0]),
+                ).fetchone()
+                if healthy is not None and int(healthy["slot_ordinal"]) == int(ordinal):
+                    raise CombinedDiscoveryError("HEALTHY_SLOT_MUTATION")
             work_type = (
                 "DISCOVERY_TRACKING_HANDOFF_SLOT_1"
                 if ordinal == 1
@@ -1578,174 +1901,139 @@ class CombinedPumpfunCampaignExecutor:
                 connection, command, usage, discovery_batch_id, work_type, now
             )
             try:
-                # Create exact token/pair identities only at handoff.
-                mint = candidate.mint
-                pool = candidate.market_identity.rsplit(":", 1)[-1]
-                token_row = connection.execute(
-                    "SELECT id FROM printer_tokens WHERE token_mint = ?",
-                    (mint,),
-                ).fetchone()
-                if token_row is None:
-                    cursor = connection.execute(
-                        """
-                        INSERT INTO printer_tokens(token_mint, token_status)
-                        VALUES (?, 'TRACK_NORMAL')
-                        """,
-                        (mint,),
+                if fixtures.force_handoff_failure:
+                    raise CombinedDiscoveryError(
+                        "DUPLICATE_ACTIVE_TRACKING",
+                        "injected replacement vacancy failure",
                     )
-                    token_id = int(cursor.lastrowid)
-                else:
-                    token_id = int(token_row["id"])
-                pair_row = connection.execute(
-                    "SELECT id FROM printer_pairs WHERE pair_address = ?",
-                    (pool,),
-                ).fetchone()
-                if pair_row is None:
-                    cursor = connection.execute(
-                        """
-                        INSERT INTO printer_pairs(token_id, pair_address, base_token_mint)
-                        VALUES (?, ?, ?)
-                        """,
-                        (token_id, pool, mint),
-                    )
-                    pair_id = int(cursor.lastrowid)
-                else:
-                    pair_id = int(pair_row["id"])
-
-                created, queue_id = enqueue_tracking_item(
+                self._handoff_one_slot(
                     connection,
-                    token_id=token_id,
-                    pair_id=pair_id,
-                    tracking_lane=TokenLifecycleState.TRACK_NORMAL,
-                    tracking_action=LifecycleEvent.PROMOTE_TO_TRACK_NORMAL,
-                    priority_reason="combined_discovery_handoff",
-                    next_check_at=datetime.fromisoformat(now.replace("Z", "+00:00")),
-                    source_status=SourceStatus.COMPLETE,
-                    data_quality_label=DataQualityLabel.CLEAN_DATA,
-                )
-                if not created or queue_id is None:
-                    raise CombinedDiscoveryError("DUPLICATE_ACTIVE_TRACKING")
-
-                job_result, job_id = enqueue_job(
-                    connection,
-                    job_name=f"window15m:{mint}:{pool}",
-                    job_kind=JobKind.TRACK_NORMAL_FIRST_15M,
-                    target_table="printer_tracking_queue",
-                    target_id=queue_id,
-                    scheduled_for=datetime.fromisoformat(now.replace("Z", "+00:00")),
-                )
-                if job_id is None:
-                    raise CombinedDiscoveryError("FIRST_15M_JOB_FAILED", str(job_result))
-
-                banned_kinds = {
-                    JobKind.TRACK_NORMAL_1H.value,
-                    JobKind.TRACK_NORMAL_4H.value,
-                    JobKind.TRACK_FAST_1H.value,
-                    JobKind.TRACK_FAST_4H.value,
-                    JobKind.TRACK_FAST_MICRO_EVENT.value,
-                }
-                if any(
-                    row[0] in banned_kinds
-                    for row in connection.execute(
-                        "SELECT job_kind FROM printer_scheduler_jobs WHERE id = ?",
-                        (job_id,),
-                    )
-                ):
-                    raise CombinedDiscoveryError("FORBIDDEN_WINDOW_ACTIVATION")
-
-                slot_id = f"slot-{fixtures.cycle_id}-{ordinal}"
-                existing_slot = connection.execute(
-                    """
-                    SELECT token_slot_id, mint_identity, token_state
-                    FROM printer_memory_factory_campaign_token_slots
-                    WHERE cycle_id = ? AND slot_ordinal = ?
-                    """,
-                    (fixtures.cycle_id, ordinal),
-                ).fetchone()
-                if existing_slot is None:
-                    connection.execute(
-                        """
-                        INSERT INTO printer_memory_factory_campaign_token_slots(
-                            token_slot_id, campaign_id, run_id, cycle_id, slot_ordinal,
-                            token_identity, token_row_id, mint_identity, pair_identity,
-                            pair_row_id, lifecycle_identity, tracking_queue_id,
-                            token_state, created_at, updated_at
-                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'SELECTED',?,?)
-                        """,
-                        (
-                            slot_id,
-                            command.campaign_id,
-                            command.run_id,
-                            fixtures.cycle_id,
-                            ordinal,
-                            _token_identity(mint),
-                            token_id,
-                            mint,
-                            pool,
-                            pair_id,
-                            candidate.lifecycle,
-                            queue_id,
-                            now,
-                            now,
-                        ),
-                    )
-                else:
-                    if existing_slot["token_state"] not in {
-                        "FAILED",
-                        "COOLDOWN",
-                        "ARCHIVED",
-                        "MANUAL_REVIEW",
-                    }:
-                        if existing_slot["mint_identity"] != mint:
-                            raise CombinedDiscoveryError("HEALTHY_SLOT_MUTATION")
-                    slot_id = existing_slot["token_slot_id"]
-
-                item_cursor = connection.execute(
-                    """
-                    INSERT INTO printer_selection_batch_items(
-                        batch_id, item_status, token_id, pair_id, token_mint,
-                        pair_address, chain, tracking_lane, selection_reason,
-                        selected_at, created_at
-                    ) VALUES (?, 'SELECTED', ?, ?, ?, ?, 'solana', 'TRACK_NORMAL',
-                              ?, ?, ?)
-                    """,
-                    (
-                        selection_batch_id,
-                        token_id,
-                        pair_id,
-                        mint,
-                        pool,
-                        f"uniform:{cycle_seed[:12]}",
-                        now,
-                        now,
-                    ),
-                )
-                item_id = int(item_cursor.lastrowid)
-                link_selected_item(
-                    connection,
+                    command,
+                    usage,
                     discovery_batch_id=discovery_batch_id,
                     selection_batch_id=selection_batch_id,
-                    selection_item_id=item_id,
-                    merged_candidate_id=candidate.merged_candidate_id,
-                    campaign_id=command.campaign_id,
-                    run_id=command.run_id,
-                    cycle_id=fixtures.cycle_id,
-                    token_slot_id=slot_id,
-                    tracking_handoff_state="HANDOFF_RECORDED",
-                    first_window_15m_scheduler_job_id=int(job_id),
+                    candidate=candidate,
+                    ordinal=int(ordinal),
+                    cycle_seed=cycle_seed,
                     now=now,
+                    handoff_work=handoff_work,
                 )
-                usage.handoffs += 1
-                if usage.handoffs > TRACKING_HANDOFFS:
-                    raise CombinedDiscoveryError("HANDOFF_CEILING")
-                self._terminalize_work(
-                    connection, handoff_work, "SUCCEEDED", "HANDOFF_COMPLETE", now
-                )
-            except Exception:
+            except CombinedDiscoveryError:
                 self._terminalize_work(
                     connection, handoff_work, "FAILED", "HANDOFF_ROLLED_BACK", now
                 )
                 raise
+
+    def _atomic_initial_two_slot_handoff(
+        self,
+        connection: sqlite3.Connection,
+        command: AbstractCampaignCommand,
+        usage: _Usage,
+        *,
+        discovery_batch_id: str,
+        selection_batch_id: str,
+        selected: Sequence[_Merged],
+        vacancies: Sequence[int],
+        cycle_seed: str,
+        now: str,
+    ) -> None:
+        """Commit both initial handoffs or neither (SAVEPOINT boundary)."""
+        fixtures = self.fixtures
+        self._validate_initial_handoff_preflight(
+            connection, selected=selected, vacancies=vacancies, usage=usage
+        )
+        if fixtures.force_handoff_failure == "BEFORE_FIRST":
+            raise CombinedDiscoveryError("HANDOFF_BEFORE_FIRST", "injected pre-mutation fault")
+        if fixtures.force_handoff_failure == "CONFLICTING_SLOT":
+            raise CombinedDiscoveryError(
+                "CONFLICTING_SLOT", "injected conflicting slot preflight"
+            )
+
+        # Pre-create both handoff work rows outside the mutation savepoint so
+        # first-fault work identity remains visible after activation rollback.
+        handoff_works: list[str] = []
+        for ordinal in (1, 2):
+            work_type = (
+                "DISCOVERY_TRACKING_HANDOFF_SLOT_1"
+                if ordinal == 1
+                else "DISCOVERY_TRACKING_HANDOFF_SLOT_2"
+            )
+            handoff_works.append(
+                self._create_work(
+                    connection, command, usage, discovery_batch_id, work_type, now
+                )
+            )
+
+        usage_handoffs_before = usage.handoffs
+        connection.execute("SAVEPOINT initial_two_slot_handoff")
+        try:
+            connection.execute(
+                """
+                INSERT INTO printer_selection_batches(
+                    batch_id, batch_status, window_kind, selected_count, created_at
+                ) VALUES (?, 'ASSEMBLED', 'WINDOW_15M', ?, ?)
+                """,
+                (selection_batch_id, len(selected), now),
+            )
+            link_selection_batch(
+                connection,
+                discovery_batch_id=discovery_batch_id,
+                selection_batch_id=selection_batch_id,
+                campaign_id=command.campaign_id,
+                run_id=command.run_id,
+                cycle_id=fixtures.cycle_id,
+                now=now,
+            )
+            for index, candidate in enumerate(selected):
+                ordinal = int(vacancies[index])
+                if index == 1 and fixtures.force_handoff_failure == "DURING_SECOND":
+                    raise CombinedDiscoveryError(
+                        "HANDOFF_DURING_SECOND", "injected failure after first handoff"
+                    )
+                self._handoff_one_slot(
+                    connection,
+                    command,
+                    usage,
+                    discovery_batch_id=discovery_batch_id,
+                    selection_batch_id=selection_batch_id,
+                    candidate=candidate,
+                    ordinal=ordinal,
+                    cycle_seed=cycle_seed,
+                    now=now,
+                    handoff_work=handoff_works[index],
+                    force_scheduler_failure=(
+                        index == 1
+                        and fixtures.force_handoff_failure == "SECOND_SCHEDULER_JOB"
+                    ),
+                    force_duplicate_active=(
+                        index == 1
+                        and fixtures.force_handoff_failure == "DUPLICATE_ACTIVE"
+                    ),
+                )
+
+            if usage.handoffs != usage_handoffs_before + 2:
+                raise CombinedDiscoveryError("INITIAL_HANDOFF_INCOMPLETE")
+            connection.execute("RELEASE SAVEPOINT initial_two_slot_handoff")
+        except Exception as exc:
+            connection.execute("ROLLBACK TO SAVEPOINT initial_two_slot_handoff")
+            connection.execute("RELEASE SAVEPOINT initial_two_slot_handoff")
+            usage.handoffs = usage_handoffs_before
+            cause = (
+                exc.code
+                if isinstance(exc, CombinedDiscoveryError)
+                else "HANDOFF_ROLLED_BACK"
+            )
+            for work_id in handoff_works:
+                self._terminalize_work(
+                    connection,
+                    work_id,
+                    "FAILED",
+                    cause,
+                    now,
+                )
+            if isinstance(exc, CombinedDiscoveryError):
+                raise
+            raise CombinedDiscoveryError("HANDOFF_DURING_SECOND", str(exc)) from exc
 
     def _persist_reports(
         self,
