@@ -613,6 +613,43 @@ The next decision is an explicit, operator-authorised scope question — whether
 Printer adopts `create_v2` into the pinned decoder contract — not another repair
 of this lane.
 
+---
+
+# Correction — 2026-07-21 (added by V2-9.7E.6)
+
+This correction is appended, not substituted. The historical 5 and 5A results
+above are preserved exactly as recorded and were not rewritten.
+
+**1. Free public RPC viability was demonstrated, not refuted.**
+The 5A capture returned HTTP 200 in 0.5 s with a full 16-row finalized page from
+the create-index address, and V2-9.7E.6 reproduced this twice more. The free
+public endpoint serves this query cheaply and reliably. Nothing in either lane
+showed a public-RPC capability limit.
+
+**2. The verdict label was constrained by the available choices.**
+`V2_9_7E_5A_BLOCKED_NO_VIABLE_FREE_PUBLIC_RPC_ARCHITECTURE` was the only one of
+the four permitted verdicts matching "returned data but could not produce two
+supported creates". Read literally it overstates an RPC problem that the
+evidence did not support. §5A.9 already flagged this; this correction records it
+against the verdict itself.
+
+**3. The actual unresolved blocker was ambiguous Pump create-layout compatibility.**
+`UNSUPPORTED_VERSION` was raised from two unrelated branches — the Solana
+transaction-envelope gate and the `create_v2` block — so the 5A evidence could
+not identify which fired. V2-9.7E.6 separated them and captured live evidence:
+**10 of 10 accepted envelopes contained a Pump `create_v2` instruction; zero
+envelopes were rejected.** The blocker was that Pump had moved to `create_v2`,
+which the pinned decoder deliberately did not support.
+
+**4. Two 5A statements are now settled.**
+The create-exclusivity of the index address, recorded in §5A.5.1 as *indicated
+but unproven*, is **confirmed**: V2-9.7E.6 measured a create density of 1.0.
+The §5A.12 item 3 evidence-granularity defect is **fixed** by the four-outcome
+split.
+
+Resolution and completion: `docs/printer-v1-v2-9-7e-6-pump-create-contract-reconciliation-design.md`
+and `docs/printer-v1-v2-9-7e-6-pump-create-origin-architecture-completion-closeout.md`.
+
 ## 16. Stop boundary
 
 V2-9.7E.5 ends **BLOCKED**. No commit. No tag. No rerun under this

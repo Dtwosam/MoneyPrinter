@@ -72,12 +72,18 @@ from printer_v1.sources.secondary_discovery import (
     normalize_gecko_trending,
     normalize_tracker_list,
 )
-from printer_v1.sources.pumpfun_direct import (
+from printer_v1.sources.pumpfun_direct import PumpCreateObservation
+from printer_v1.sources.pumpfun_origin import (
+    ACQUISITION_MODE_PROSPECTIVE,
+    PUMP_CREATE_INDEX_ADDRESS,
     ContinuityState,
-    FinalizedCursor,
-    PumpCreateObservation,
-    run_fixture_cycle,
-    run_mint_origin_lookup,
+    FinalizedOriginCursor,
+    OriginRegistryError,
+    load_origin_cursor,
+    lookup_confirmed_origin,
+    record_confirmed_origin,
+    run_acquisition_cycle,
+    save_origin_cursor,
 )
 
 
@@ -196,12 +202,11 @@ class CombinedDiscoveryFixtures:
     tracker_ops: tuple[FixtureSourceFact, ...] = ()
     dexscreener_ops: tuple[FixtureSourceFact, ...] = ()
     direct_observations: tuple[FixtureOriginProof, ...] = ()
+    # V2-9.7E.5: ordered pumpfun_origin.FixtureOperation plan for one bounded
+    # signature-anchored acquisition cycle on the create index address.
     direct_operations: tuple[Any, ...] = ()
-    prior_cursor: FinalizedCursor | None = None
+    prior_cursor: FinalizedOriginCursor | None = None
     origin_proofs: Mapping[str, FixtureOriginProof] = field(default_factory=dict)
-    # Optional fixture-only mint-scoped origin lookup ops (4C productivity).
-    # Keys are exact mint identities; values are ordered FixtureOperation plans.
-    origin_lookup_operations: Mapping[str, tuple[Any, ...]] = field(default_factory=dict)
     origin_cutoff_slot: int | None = None
     pumpswap_proofs: Mapping[str, FixturePumpSwapProof] = field(default_factory=dict)
     tracker_auth: SolanaTrackerAuthConfig | None = None
@@ -909,13 +914,18 @@ class CombinedPumpfunCampaignExecutor:
         observations: list[_Observation] = []
         # Prefer explicit origin proofs for fixture simplicity; optional full cycle.
         if fixtures.direct_operations:
-            prior = fixtures.prior_cursor or FinalizedCursor(None, ContinuityState.UNKNOWN)
-            result = run_fixture_cycle(fixtures.direct_operations, prior_cursor=prior)
+            # V2-9.7E.5 primary: signature-anchored finalized acquisition on the
+            # create-exclusive index address. No getSlot cutoff, no live session.
+            prior = fixtures.prior_cursor or load_origin_cursor(connection)
+            result = run_acquisition_cycle(
+                fixtures.direct_operations, prior_cursor=prior
+            )
             usage.underlying_rpc += result.accounting.underlying_rpc_operations
             if usage.underlying_rpc > INTAKE_UNDERLYING_RPC:
                 raise CombinedDiscoveryError("UNDERLYING_RPC_CEILING")
             usage.bump_source(sum(result.accounting.governed_requests.values()) or 1)
             creates = result.observations
+            save_origin_cursor(connection, result.cursor, now=now)
         else:
             creates = tuple(
                 PumpCreateObservation(
@@ -932,6 +942,20 @@ class CombinedPumpfunCampaignExecutor:
             )
             if creates:
                 usage.bump_source()
+
+        # Durable prospective evidence: confirmed creates outlive this cycle and
+        # are what later cycles read instead of rediscovering an aged create.
+        try:
+            for create in creates:
+                record_confirmed_origin(
+                    connection,
+                    create,
+                    now=now,
+                    acquisition_mode=ACQUISITION_MODE_PROSPECTIVE,
+                    index_address=PUMP_CREATE_INDEX_ADDRESS,
+                )
+        except OriginRegistryError as exc:
+            raise CombinedDiscoveryError(exc.code, exc.detail) from exc
 
         for index, create in enumerate(creates, start=1):
             req = self._governed_request(
@@ -1379,49 +1403,51 @@ class CombinedPumpfunCampaignExecutor:
         for candidate in secondary:
             if candidate.merged_candidate_id in admitted_ids:
                 proof = resolved_proofs.get(candidate.mint)
-                if (
-                    (proof is None or not proof.confirmed)
-                    and candidate.mint in fixtures.origin_lookup_operations
-                    and fixtures.origin_cutoff_slot is not None
-                ):
-                    lookup = run_mint_origin_lookup(
-                        fixtures.origin_lookup_operations[candidate.mint],
-                        expected_mint=candidate.mint,
-                        cutoff_slot=int(fixtures.origin_cutoff_slot),
-                    )
-                    usage.underlying_rpc += lookup.accounting.underlying_rpc_operations
-                    if usage.underlying_rpc > INTAKE_UNDERLYING_RPC:
-                        raise CombinedDiscoveryError("UNDERLYING_RPC_CEILING")
-                    governed = sum(lookup.accounting.governed_requests.values())
-                    if governed:
-                        usage.bump_source(governed)
-                    if lookup.observation is not None:
-                        obs = lookup.observation
+                origin_source = "cycle_direct_create"
+                if proof is None or not proof.confirmed:
+                    # V2-9.7E.5: exact-mint origin comes from the durable
+                    # prospective registry. Zero RPC, zero historical
+                    # rediscovery of an aged creation transaction.
+                    registered = lookup_confirmed_origin(connection, candidate.mint)
+                    if registered is not None:
+                        origin_source = "durable_origin_registry"
                         proof = FixtureOriginProof(
-                            mint=obs.mint,
-                            signature=obs.signature,
-                            slot=int(obs.slot),
-                            block_time=int(obs.block_time),
-                            bonding_curve=obs.bonding_curve,
-                            associated_bonding_curve=obs.associated_bonding_curve,
-                            creator_address=obs.creator_address,
+                            mint=str(registered["mint_identity"]),
+                            signature=str(registered["transaction_signature"]),
+                            slot=int(registered["slot"]),
+                            block_time=int(registered["block_time"]),
+                            bonding_curve=str(registered["bonding_curve"]),
+                            associated_bonding_curve=str(
+                                registered["associated_bonding_curve"]
+                            ),
+                            creator_address=str(registered["creator_address"]),
                             confirmed=True,
                         )
                         resolved_proofs[candidate.mint] = proof
                 if proof is not None and proof.confirmed and proof.mint == candidate.mint:
                     candidate.origin_state = "CONFIRMED"
                     verification_state = "CONFIRMED"
-                    admission_state = "ADMITTED"
+                    # Registry hits consume no source budget and no admission.
+                    admission_state = (
+                        "NOT_REQUIRED"
+                        if origin_source == "durable_origin_registry"
+                        else "ADMITTED"
+                    )
                 else:
                     candidate.origin_state = "FAILED"
                     verification_state = "FAILED"
                     admission_state = "ADMITTED"
+                    origin_source = "none"
                     candidate.gaps.append(
-                        {"kind": "ORIGIN_VERIFICATION_FAILED", "detail": "no_finalized_create"}
+                        {
+                            "kind": "ORIGIN_VERIFICATION_FAILED",
+                            "detail": "ORIGIN_NOT_IN_REGISTRY",
+                        }
                     )
             else:
                 admission_state = "NOT_ADMITTED_CEILING"
                 verification_state = "NOT_ATTEMPTED"
+                origin_source = "none"
                 candidate.origin_state = "NOT_ADMITTED_CEILING"
                 candidate.gaps.append(
                     {
@@ -1446,6 +1472,7 @@ class CombinedPumpfunCampaignExecutor:
                 evidence_detail={
                     "provider_label_unverified_until_direct": True,
                     "state": verification_state,
+                    "source": origin_source,
                 },
                 now=now,
             )

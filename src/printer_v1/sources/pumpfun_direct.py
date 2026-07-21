@@ -10,6 +10,34 @@ mint-scoped origin lookup via adopted origin request kinds.
 V2-9.7E.4G adds cutoff-bound pagination expectations (post-cutoff skips never
 consume decode budget) and multi-page historical mint-origin walk with early
 stop on exact finalized create.
+
+RETIRED AS PRIMARY — V2-9.7E.5
+------------------------------
+``run_fixture_cycle`` and ``run_mint_origin_lookup`` are no longer the Pump
+origin acquisition architecture. They are retained as SUPPORT_ONLY so the
+V2-9.7E.4A-4H evidence set stays reproducible.
+
+Why they are no longer authoritative:
+
+* ``run_fixture_cycle`` anchors admission to an independently sampled
+  ``getSlot(finalized)`` cutoff. The free public RPC is a multi-backend pool,
+  so that value comes from a different node than the signature pages and can
+  legitimately trail them. Genuinely finalized rows were rejected as
+  ``POST_CUTOFF`` (4D: 32/32, 4H: 32/32 after the 4G pagination repair), and
+  the cutoff added no safety the finalized signature row did not already carry.
+* It also polls the whole Pump program address, where creates are roughly one
+  percent of activity and cannot be separated from buys/sells without one
+  ``getTransaction`` each — unreachable inside the 45-operation budget.
+* ``run_mint_origin_lookup`` performs campaign-time historical archaeology,
+  which is unbounded for aged mints and retention-dependent.
+
+The primary architecture is now
+``printer_v1.sources.pumpfun_origin.run_acquisition_cycle``. See
+``docs/printer-v1-v2-9-7e-5-pump-origin-acquisition-architecture.md``.
+
+Both functions raise ``RetiredPrimaryPathError`` when invoked with
+``primary_path=True``. ``printer_v1.discovery.combined_executor`` must not
+import either symbol; a regression test asserts this.
 """
 
 from __future__ import annotations
@@ -38,6 +66,14 @@ ASSOCIATED_TOKEN_PROGRAM_ID = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
 RENT_SYSVAR_ID = "SysvarRent111111111111111111111111111111111"
 TOKEN_METADATA_PROGRAM_ID = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
 MINT_AUTHORITY_ID = "TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM"
+# V2-9.7E.6: adopted from the pinned IDL (commit 9c82f61…, sha256 b90bc471…).
+# create_v2 uses Token-2022, not SPL Token, and carries no metadata/rent account.
+TOKEN_2022_PROGRAM_ID = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+MAYHEM_PROGRAM_ID = "MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e"
+CREATE_ACCOUNT_COUNT = 14
+CREATE_V2_ACCOUNT_COUNT = 16
+CREATE_LAYOUT_LEGACY = "PUMP_CREATE_V1"
+CREATE_LAYOUT_V2 = "PUMP_CREATE_V2"
 GLOBAL_ID = "4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf"
 EVENT_AUTHORITY_ID = "Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1"
 
@@ -102,7 +138,9 @@ _MINT_ORIGIN_CONTINUE_CODES = frozenset(
     {
         "FAILED_TRANSACTION",
         "NOT_SUPPORTED_CREATE",
-        "UNSUPPORTED_VERSION",
+        "UNSUPPORTED_TRANSACTION_VERSION",
+        "UNSUPPORTED_PUMP_CREATE_V2",
+        "UNSUPPORTED_PUMP_CREATE_LAYOUT",
         "WRONG_PROGRAM",
         "AMBIGUOUS_CREATE",
         "EVENT_MISMATCH",
@@ -117,6 +155,15 @@ _MINT_ORIGIN_CONTINUE_CODES = frozenset(
 
 _B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 _B58_INDEX = {character: index for index, character in enumerate(_B58_ALPHABET)}
+
+
+#: V2-9.7E.5 — both cycle owners below are support-only evidence replay paths.
+ACQUISITION_ROLE = "SUPPORT_ONLY"
+RETIRED_AS_PRIMARY_LANE = "V2-9.7E.5"
+
+
+class RetiredPrimaryPathError(RuntimeError):
+    """A retired pre-V2-9.7E.5 acquisition path was invoked as primary."""
 
 
 class PumpContractError(RuntimeError):
@@ -165,6 +212,8 @@ class PumpCreateObservation:
     block_time: int
     program_id: str = PUMP_PROGRAM_ID
     creator_evidence_scope: str = "OBSERVED_EVIDENCE_ONLY"
+    # V2-9.7E.6: which adopted Pump create layout produced this origin.
+    create_layout: str = CREATE_LAYOUT_LEGACY
 
 
 @dataclass(frozen=True)
@@ -442,14 +491,94 @@ def _instruction_program(instruction: Mapping[str, Any], keys: Sequence[str]) ->
 
 
 def _instruction_accounts(
-    instruction: Mapping[str, Any], keys: Sequence[str]
+    instruction: Mapping[str, Any], keys: Sequence[str], *, expected: int = CREATE_ACCOUNT_COUNT
 ) -> tuple[str, ...]:
     indices = instruction.get("accounts")
-    if not isinstance(indices, list) or len(indices) != 14:
-        raise PumpContractError("MALFORMED_TRANSACTION", "create requires 14 accounts")
+    if not isinstance(indices, list) or len(indices) != expected:
+        raise PumpContractError(
+            "MALFORMED_TRANSACTION", f"create requires {expected} accounts"
+        )
     if any(type(index) is not int or index < 0 or index >= len(keys) for index in indices):
         raise PumpContractError("MALFORMED_TRANSACTION", "bad create account index")
     return tuple(keys[index] for index in indices)
+
+
+def _instruction_account_keys(
+    instruction: Mapping[str, Any], keys: Sequence[str]
+) -> tuple[str, ...]:
+    """Resolved account keys of one compiled instruction, arity-agnostic."""
+    indices = instruction.get("accounts")
+    if not isinstance(indices, list):
+        return ()
+    return tuple(
+        keys[index]
+        for index in indices
+        if type(index) is int and 0 <= index < len(keys)
+    )
+
+
+def _decode_create_v2_args(data: bytes) -> tuple[str, str, str, str, bool, bool]:
+    """Borsh args of the pinned `create_v2` instruction.
+
+    Pinned layout: name, symbol, uri, creator, is_mayhem_mode (bool),
+    is_cashback_enabled (OptionBool — a single-field struct over bool, so one
+    byte, not an Option tag plus payload).
+    """
+    offset = len(CREATE_V2_DISCRIMINATOR)
+    name, offset = _read_string(data, offset)
+    symbol, offset = _read_string(data, offset)
+    uri, offset = _read_string(data, offset)
+    creator, offset = _read_pubkey(data, offset)
+    if offset + 2 != len(data):
+        raise PumpContractError("MALFORMED_TRANSACTION", "trailing create_v2 bytes")
+    if any(value not in (0, 1) for value in data[offset : offset + 2]):
+        raise PumpContractError("MALFORMED_TRANSACTION", "invalid create_v2 boolean")
+    return name, symbol, uri, creator, bool(data[offset]), bool(data[offset + 1])
+
+
+def _validate_create_v2_account_identities(accounts: Sequence[str]) -> None:
+    """Validate the pinned `create_v2` account layout.
+
+    Derived only from the pinned IDL. Legacy `create` assumptions (metadata
+    account, rent sysvar, SPL Token program, index positions) are deliberately
+    NOT carried over — create_v2 has a different account set and ordering.
+    """
+    exact = {
+        1: MINT_AUTHORITY_ID,
+        4: GLOBAL_ID,
+        6: SYSTEM_PROGRAM_ID,
+        7: TOKEN_2022_PROGRAM_ID,
+        8: ASSOCIATED_TOKEN_PROGRAM_ID,
+        9: MAYHEM_PROGRAM_ID,
+        14: EVENT_AUTHORITY_ID,
+        15: PUMP_PROGRAM_ID,
+    }
+    if any(accounts[index] != expected for index, expected in exact.items()):
+        raise PumpContractError("MALFORMED_TRANSACTION", "fixed create_v2 account mismatch")
+    mint_bytes = _b58decode(accounts[0])
+    if len(mint_bytes) != 32:
+        raise PumpContractError("MALFORMED_TRANSACTION", "mint is not a pubkey")
+    expected_curve = derive_program_address((b"bonding-curve", mint_bytes), PUMP_PROGRAM_ID)
+    if accounts[2] != expected_curve:
+        raise PumpContractError("MALFORMED_TRANSACTION", "bonding curve PDA mismatch")
+    # ATA seeds use the instruction's own token program: Token-2022 here.
+    expected_ata = derive_program_address(
+        (_b58decode(accounts[2]), _b58decode(TOKEN_2022_PROGRAM_ID), mint_bytes),
+        ASSOCIATED_TOKEN_PROGRAM_ID,
+    )
+    if accounts[3] != expected_ata:
+        raise PumpContractError("MALFORMED_TRANSACTION", "bonding curve ATA mismatch")
+    expected_global_params = derive_program_address((b"global-params",), MAYHEM_PROGRAM_ID)
+    if accounts[10] != expected_global_params:
+        raise PumpContractError("MALFORMED_TRANSACTION", "global params PDA mismatch")
+    expected_sol_vault = derive_program_address((b"sol-vault",), MAYHEM_PROGRAM_ID)
+    if accounts[11] != expected_sol_vault:
+        raise PumpContractError("MALFORMED_TRANSACTION", "sol vault PDA mismatch")
+    expected_mayhem_state = derive_program_address(
+        (b"mayhem-state", mint_bytes), MAYHEM_PROGRAM_ID
+    )
+    if accounts[12] != expected_mayhem_state:
+        raise PumpContractError("MALFORMED_TRANSACTION", "mayhem state PDA mismatch")
 
 
 def _validate_account_identities(accounts: Sequence[str]) -> None:
@@ -502,9 +631,12 @@ def decode_finalized_create(
         raise PumpContractError("MALFORMED_TRANSACTION", "invalid cutoff")
     if not isinstance(result, Mapping):
         raise PumpContractError("UNAVAILABLE_HISTORY")
+    # V2-9.7E.6 Phase 2: transaction-envelope validation is independent of, and
+    # strictly prior to, any Pump instruction classification. A rejected
+    # envelope must never be reported as a Pump layout problem.
     version = result.get("version")
     if version not in ("legacy", 0) or isinstance(version, bool):
-        raise PumpContractError("UNSUPPORTED_VERSION")
+        raise PumpContractError("UNSUPPORTED_TRANSACTION_VERSION")
     try:
         slot = result["slot"]
         block_time = result["blockTime"]
@@ -530,8 +662,10 @@ def decode_finalized_create(
     keys = _resolved_keys(result)
     creates: list[tuple[Mapping[str, Any], bytes]] = []
     events: list[Mapping[str, object]] = []
+    creates_v2: list[tuple[Mapping[str, Any], bytes]] = []
     wrong_program = False
-    unsupported = False
+    create_v2_seen = False
+    create_family_marker = False
     for instruction in _compiled_instructions(result):
         data = _instruction_data(instruction)
         program = _instruction_program(instruction, keys)
@@ -540,8 +674,12 @@ def decode_finalized_create(
                 wrong_program = True
             else:
                 creates.append((instruction, data))
-        elif data.startswith(CREATE_V2_DISCRIMINATOR) and program == PUMP_PROGRAM_ID:
-            unsupported = True
+        elif data.startswith(CREATE_V2_DISCRIMINATOR):
+            if program != PUMP_PROGRAM_ID:
+                wrong_program = True
+            else:
+                create_v2_seen = True
+                creates_v2.append((instruction, data))
         elif (
             program == PUMP_PROGRAM_ID
             and (
@@ -550,19 +688,50 @@ def decode_finalized_create(
             )
         ):
             events.append(_decode_event(data))
+        elif program == PUMP_PROGRAM_ID and MINT_AUTHORITY_ID in _instruction_account_keys(
+            instruction, keys
+        ):
+            # A Pump instruction touching the create-exclusive mint authority
+            # but matching no adopted discriminator is an unrecognised create
+            # layout, not ordinary non-create traffic.
+            create_family_marker = True
     if wrong_program:
         raise PumpContractError("WRONG_PROGRAM")
-    if unsupported:
-        raise PumpContractError("UNSUPPORTED_VERSION")
-    if not creates:
+    if creates and creates_v2:
+        # Two adopted create layouts in one transaction is not a supported shape.
+        raise PumpContractError("AMBIGUOUS_CREATE")
+    if not creates and not creates_v2 and create_family_marker:
+        raise PumpContractError("UNSUPPORTED_PUMP_CREATE_LAYOUT")
+    if not creates and not creates_v2:
         raise PumpContractError("NOT_SUPPORTED_CREATE")
-    if len(creates) != 1:
+    if len(creates) > 1 or len(creates_v2) > 1:
         raise PumpContractError("AMBIGUOUS_CREATE")
 
-    instruction, data = creates[0]
-    name, symbol, uri, creator = _decode_create_args(data)
-    accounts = _instruction_accounts(instruction, keys)
-    _validate_account_identities(accounts)
+    # V2-9.7E.6: dispatch on the adopted layout. Legacy `create` keeps its exact
+    # prior validation; `create_v2` is validated only against the pinned IDL.
+    if creates_v2:
+        create_layout = CREATE_LAYOUT_V2
+        instruction, data = creates_v2[0]
+        name, symbol, uri, creator, is_mayhem_mode, is_cashback_enabled = (
+            _decode_create_v2_args(data)
+        )
+        accounts = _instruction_accounts(
+            instruction, keys, expected=CREATE_V2_ACCOUNT_COUNT
+        )
+        _validate_create_v2_account_identities(accounts)
+        layout_token_program = TOKEN_2022_PROGRAM_ID
+        event_extra = {
+            "is_mayhem_mode": is_mayhem_mode,
+            "is_cashback_enabled": is_cashback_enabled,
+        }
+    else:
+        create_layout = CREATE_LAYOUT_LEGACY
+        instruction, data = creates[0]
+        name, symbol, uri, creator = _decode_create_args(data)
+        accounts = _instruction_accounts(instruction, keys)
+        _validate_account_identities(accounts)
+        layout_token_program = TOKEN_PROGRAM_ID
+        event_extra = {}
     if expected_mint is not None and accounts[0] != expected_mint:
         raise PumpContractError("MINT_MISMATCH")
     for event in events:
@@ -573,12 +742,14 @@ def decode_finalized_create(
             "mint": accounts[0],
             "bonding_curve": accounts[2],
             "creator": creator,
-            "token_program": TOKEN_PROGRAM_ID,
+            "token_program": layout_token_program,
+            **event_extra,
         }
         if any(event[field] != value for field, value in expected_event.items()):
             raise PumpContractError("EVENT_MISMATCH")
     return PumpCreateObservation(
         mint=accounts[0],
+        create_layout=create_layout,
         bonding_curve=accounts[2],
         associated_bonding_curve=accounts[3],
         creator_address=creator,
@@ -744,8 +915,19 @@ def run_fixture_cycle(
     operations: Iterable[FixtureOperation],
     *,
     prior_cursor: FinalizedCursor,
+    primary_path: bool = False,
 ) -> DirectPumpCycleResult:
-    """Run one bounded fixture-only live session plus planned finalized backfill."""
+    """Run one bounded fixture-only live session plus planned finalized backfill.
+
+    RETIRED AS PRIMARY (V2-9.7E.5). Support-only evidence replay; see module
+    docstring. Raises RetiredPrimaryPathError if claimed as the primary path.
+    """
+    if primary_path:
+        raise RetiredPrimaryPathError(
+            "run_fixture_cycle was retired as the primary Pump origin path in "
+            "V2-9.7E.5 (cross-backend getSlot cutoff race); use "
+            "printer_v1.sources.pumpfun_origin.run_acquisition_cycle"
+        )
     port = FixtureOperationPort(operations)
     cutoff = port.take("getSlot", SESSION_REQUEST)
     if type(cutoff) is not int or cutoff < 0:
@@ -922,13 +1104,31 @@ def run_mint_origin_lookup(
     *,
     expected_mint: str,
     cutoff_slot: int,
+    primary_path: bool = False,
+    allow_support_only_history: bool = True,
 ) -> MintOriginLookupResult:
     """Bounded multi-page mint-scoped finalized origin lookup (fixture-only).
 
     Uses adopted origin request kinds only. Walks up to three signature pages
     older via sequential fixtures, tries up to two transactions oldest-first,
     and stops immediately on an exact successful finalized Pump create.
+
+    RETIRED FROM THE CRITICAL ACTIVATION PATH (V2-9.7E.5). Campaign eligibility
+    must resolve exact-mint origin from the durable registry
+    (``printer_v1.sources.pumpfun_origin.lookup_confirmed_origin``), never by
+    rediscovering an aged creation transaction. The campaign executor never
+    sets ``allow_support_only_history``.
     """
+    if primary_path:
+        raise RetiredPrimaryPathError(
+            "run_mint_origin_lookup was retired from the critical activation "
+            "path in V2-9.7E.5 (unbounded historical archaeology); resolve "
+            "exact-mint origin from the durable origin registry"
+        )
+    if not allow_support_only_history:
+        raise RetiredPrimaryPathError(
+            "historical mint-origin lookup is support-only after V2-9.7E.5"
+        )
     if not isinstance(expected_mint, str) or not expected_mint:
         raise PumpContractError("MALFORMED_TRANSACTION", "expected_mint required")
     if type(cutoff_slot) is not int or cutoff_slot < 0:

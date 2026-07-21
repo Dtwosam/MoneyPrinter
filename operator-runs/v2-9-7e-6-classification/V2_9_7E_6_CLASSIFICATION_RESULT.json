@@ -1,0 +1,443 @@
+{
+  "lane": "V2-9.7E.6 Phase 3 classification capture",
+  "proven_head": "c2ecff6cb7c1b8c80dd520a907710cd50f76ed00",
+  "started_utc": "2026-07-21T20:21:46Z",
+  "finished_utc": "2026-07-21T20:21:57Z",
+  "rpc_url": "https://api.mainnet-beta.solana.com",
+  "index_address": "TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM",
+  "health_check": {
+    "ok": true,
+    "is_proof_evidence": false
+  },
+  "capture": {
+    "attempts": 1,
+    "ok": true,
+    "status": 200,
+    "transport_error": null,
+    "rows_returned": 16,
+    "finalized_rows": 15
+  },
+  "counts": {
+    "transactions_inspected": 12,
+    "bodies_returned": 10,
+    "bodies_unavailable": 2,
+    "envelope_classification": {
+      "ACCEPTED": 10,
+      "UNAVAILABLE": 2
+    },
+    "pump_discriminators": {
+      "create_v2:d6904cec5f8b31b4": 10,
+      "UNKNOWN:66063d1201daebea": 6,
+      "event_cpi_wrapper:e445a52e51cb9a1d": 21,
+      "UNKNOWN:b817ee6167c5d33d": 2,
+      "UNKNOWN:ea66c2cb96483ee5": 1,
+      "UNKNOWN:38fc74089edfcd5f": 1,
+      "UNKNOWN:c2ab1c46684d5b2f": 1
+    },
+    "decode_outcomes": {
+      "UNSUPPORTED_PUMP_CREATE_V2": 10,
+      "UNAVAILABLE_HISTORY": 2
+    }
+  },
+  "gate_signals": {
+    "create_v2_observed": true,
+    "unknown_create_layout_observed": false,
+    "legacy_create_observed": false,
+    "envelope_rejected_count": 0
+  },
+  "per_transaction": [
+    {
+      "ordinal": 1,
+      "signature_prefix": "vnLangxZ",
+      "slot": 434371068,
+      "body_returned": true,
+      "envelope": "ACCEPTED",
+      "version": 0,
+      "pump_instructions": [
+        {
+          "discriminator_hex": "d6904cec5f8b31b4",
+          "known_as": "create_v2",
+          "account_count": 16,
+          "touches_mint_authority": true
+        },
+        {
+          "discriminator_hex": "66063d1201daebea",
+          "known_as": "UNKNOWN",
+          "account_count": 18,
+          "touches_mint_authority": false
+        },
+        {
+          "discriminator_hex": "e445a52e51cb9a1d",
+          "known_as": "event_cpi_wrapper",
+          "account_count": 1,
+          "touches_mint_authority": false
+        },
+        {
+          "discriminator_hex": "e445a52e51cb9a1d",
+          "known_as": "event_cpi_wrapper",
+          "account_count": 1,
+          "touches_mint_authority": false
+        }
+      ],
+      "decode_outcome": "UNSUPPORTED_PUMP_CREATE_V2"
+    },
+    {
+      "ordinal": 2,
+      "signature_prefix": "5DjxKxGK",
+      "slot": 434371069,
+      "body_returned": true,
+      "envelope": "ACCEPTED",
+      "version": 0,
+      "pump_instructions": [
+        {
+          "discriminator_hex": "d6904cec5f8b31b4",
+          "known_as": "create_v2",
+          "account_count": 16,
+          "touches_mint_authority": true
+        },
+        {
+          "discriminator_hex": "66063d1201daebea",
+          "known_as": "UNKNOWN",
+          "account_count": 18,
+          "touches_mint_authority": false
+        },
+        {
+          "discriminator_hex": "e445a52e51cb9a1d",
+          "known_as": "event_cpi_wrapper",
+          "account_count": 1,
+          "touches_mint_authority": false
+        },
+        {
+          "discriminator_hex": "e445a52e51cb9a1d",
+          "known_as": "event_cpi_wrapper",
+          "account_count": 1,
+          "touches_mint_authority": false
+        }
+      ],
+      "decode_outcome": "UNSUPPORTED_PUMP_CREATE_V2"
+    },
+    {
+      "ordinal": 3,
+      "signature_prefix": "aXR7JYnk",
+      "slot": 434371069,
+      "body_returned": true,
+      "envelope": "ACCEPTED",
+      "version": 0,
+      "pump_instructions": [
+        {
+          "discriminator_hex": "d6904cec5f8b31b4",
+          "known_as": "create_v2",
+          "account_count": 16,
+          "touches_mint_authority": true
+        },
+        {
+          "discriminator_hex": "66063d1201daebea",
+          "known_as": "UNKNOWN",
+          "account_count": 18,
+          "touches_mint_authority": false
+        },
+        {
+          "discriminator_hex": "e445a52e51cb9a1d",
+          "known_as": "event_cpi_wrapper",
+          "account_count": 1,
+          "touches_mint_authority": false
+        },
+        {
+          "discriminator_hex": "e445a52e51cb9a1d",
+          "known_as": "event_cpi_wrapper",
+          "account_count": 1,
+          "touches_mint_authority": false
+        }
+      ],
+      "decode_outcome": "UNSUPPORTED_PUMP_CREATE_V2"
+    },
+    {
+      "ordinal": 4,
+      "signature_prefix": "gdiyBuU6",
+      "slot": 434371069,
+      "body_returned": true,
+      "envelope": "ACCEPTED",
+      "version": 0,
+      "pump_instructions": [
+        {
+          "discriminator_hex": "d6904cec5f8b31b4",
+          "known_as": "create_v2",
+          "account_count": 16,
+          "touches_mint_authority": true
+        },
+        {
+          "discriminator_hex": "66063d1201daebea",
+          "known_as": "UNKNOWN",
+          "account_count": 18,
+          "touches_mint_authority": false
+        },
+        {
+          "discriminator_hex": "e445a52e51cb9a1d",
+          "known_as": "event_cpi_wrapper",
+          "account_count": 1,
+          "touches_mint_authority": false
+        },
+        {
+          "discriminator_hex": "e445a52e51cb9a1d",
+          "known_as": "event_cpi_wrapper",
+          "account_count": 1,
+          "touches_mint_authority": false
+        }
+      ],
+      "decode_outcome": "UNSUPPORTED_PUMP_CREATE_V2"
+    },
+    {
+      "ordinal": 5,
+      "signature_prefix": "3h4iHFqD",
+      "slot": 434371082,
+      "body_returned": true,
+      "envelope": "ACCEPTED",
+      "version": "legacy",
+      "pump_instructions": [
+        {
+          "discriminator_hex": "d6904cec5f8b31b4",
+          "known_as": "create_v2",
+          "account_count": 16,
+          "touches_mint_authority": true
+        },
+        {
+          "discriminator_hex": "66063d1201daebea",
+          "known_as": "UNKNOWN",
+          "account_count": 18,
+          "touches_mint_authority": false
+        },
+        {
+          "discriminator_hex": "e445a52e51cb9a1d",
+          "known_as": "event_cpi_wrapper",
+          "account_count": 1,
+          "touches_mint_authority": false
+        },
+        {
+          "discriminator_hex": "e445a52e51cb9a1d",
+          "known_as": "event_cpi_wrapper",
+          "account_count": 1,
+          "touches_mint_authority": false
+        }
+      ],
+      "decode_outcome": "UNSUPPORTED_PUMP_CREATE_V2"
+    },
+    {
+      "ordinal": 6,
+      "signature_prefix": "2FgeZgQF",
+      "slot": 434371092,
+      "body_returned": true,
+      "envelope": "ACCEPTED",
+      "version": 0,
+      "pump_instructions": [
+        {
+          "discriminator_hex": "d6904cec5f8b31b4",
+          "known_as": "create_v2",
+          "account_count": 16,
+          "touches_mint_authority": true
+        },
+        {
+          "discriminator_hex": "b817ee6167c5d33d",
+          "known_as": "UNKNOWN",
+          "account_count": 27,
+          "touches_mint_authority": false
+        },
+        {
+          "discriminator_hex": "e445a52e51cb9a1d",
+          "known_as": "event_cpi_wrapper",
+          "account_count": 1,
+          "touches_mint_authority": false
+        },
+        {
+          "discriminator_hex": "e445a52e51cb9a1d",
+          "known_as": "event_cpi_wrapper",
+          "account_count": 1,
+          "touches_mint_authority": false
+        }
+      ],
+      "decode_outcome": "UNSUPPORTED_PUMP_CREATE_V2"
+    },
+    {
+      "ordinal": 7,
+      "signature_prefix": "4veWaeRt",
+      "slot": 434371094,
+      "body_returned": true,
+      "envelope": "ACCEPTED",
+      "version": 0,
+      "pump_instructions": [
+        {
+          "discriminator_hex": "d6904cec5f8b31b4",
+          "known_as": "create_v2",
+          "account_count": 19,
+          "touches_mint_authority": true
+        },
+        {
+          "discriminator_hex": "ea66c2cb96483ee5",
+          "known_as": "UNKNOWN",
+          "account_count": 5,
+          "touches_mint_authority": false
+        },
+        {
+          "discriminator_hex": "38fc74089edfcd5f",
+          "known_as": "UNKNOWN",
+          "account_count": 18,
+          "touches_mint_authority": false
+        },
+        {
+          "discriminator_hex": "e445a52e51cb9a1d",
+          "known_as": "event_cpi_wrapper",
+          "account_count": 1,
+          "touches_mint_authority": false
+        },
+        {
+          "discriminator_hex": "e445a52e51cb9a1d",
+          "known_as": "event_cpi_wrapper",
+          "account_count": 1,
+          "touches_mint_authority": false
+        },
+        {
+          "discriminator_hex": "e445a52e51cb9a1d",
+          "known_as": "event_cpi_wrapper",
+          "account_count": 1,
+          "touches_mint_authority": false
+        }
+      ],
+      "decode_outcome": "UNSUPPORTED_PUMP_CREATE_V2"
+    },
+    {
+      "ordinal": 8,
+      "signature_prefix": "28c2xxae",
+      "slot": 434371115,
+      "body_returned": true,
+      "envelope": "ACCEPTED",
+      "version": 0,
+      "pump_instructions": [
+        {
+          "discriminator_hex": "d6904cec5f8b31b4",
+          "known_as": "create_v2",
+          "account_count": 16,
+          "touches_mint_authority": true
+        },
+        {
+          "discriminator_hex": "66063d1201daebea",
+          "known_as": "UNKNOWN",
+          "account_count": 18,
+          "touches_mint_authority": false
+        },
+        {
+          "discriminator_hex": "e445a52e51cb9a1d",
+          "known_as": "event_cpi_wrapper",
+          "account_count": 1,
+          "touches_mint_authority": false
+        },
+        {
+          "discriminator_hex": "e445a52e51cb9a1d",
+          "known_as": "event_cpi_wrapper",
+          "account_count": 1,
+          "touches_mint_authority": false
+        }
+      ],
+      "decode_outcome": "UNSUPPORTED_PUMP_CREATE_V2"
+    },
+    {
+      "ordinal": 9,
+      "signature_prefix": "4p5m1XAV",
+      "slot": 434371115,
+      "body_returned": true,
+      "envelope": "ACCEPTED",
+      "version": 0,
+      "pump_instructions": [
+        {
+          "discriminator_hex": "d6904cec5f8b31b4",
+          "known_as": "create_v2",
+          "account_count": 16,
+          "touches_mint_authority": true
+        },
+        {
+          "discriminator_hex": "b817ee6167c5d33d",
+          "known_as": "UNKNOWN",
+          "account_count": 27,
+          "touches_mint_authority": false
+        },
+        {
+          "discriminator_hex": "e445a52e51cb9a1d",
+          "known_as": "event_cpi_wrapper",
+          "account_count": 1,
+          "touches_mint_authority": false
+        },
+        {
+          "discriminator_hex": "e445a52e51cb9a1d",
+          "known_as": "event_cpi_wrapper",
+          "account_count": 1,
+          "touches_mint_authority": false
+        }
+      ],
+      "decode_outcome": "UNSUPPORTED_PUMP_CREATE_V2"
+    },
+    {
+      "ordinal": 10,
+      "signature_prefix": "3DayKm49",
+      "slot": 434371118,
+      "body_returned": true,
+      "envelope": "ACCEPTED",
+      "version": 0,
+      "pump_instructions": [
+        {
+          "discriminator_hex": "d6904cec5f8b31b4",
+          "known_as": "create_v2",
+          "account_count": 19,
+          "touches_mint_authority": true
+        },
+        {
+          "discriminator_hex": "e445a52e51cb9a1d",
+          "known_as": "event_cpi_wrapper",
+          "account_count": 1,
+          "touches_mint_authority": false
+        },
+        {
+          "discriminator_hex": "c2ab1c46684d5b2f",
+          "known_as": "UNKNOWN",
+          "account_count": 27,
+          "touches_mint_authority": false
+        },
+        {
+          "discriminator_hex": "e445a52e51cb9a1d",
+          "known_as": "event_cpi_wrapper",
+          "account_count": 1,
+          "touches_mint_authority": false
+        }
+      ],
+      "decode_outcome": "UNSUPPORTED_PUMP_CREATE_V2"
+    },
+    {
+      "ordinal": 11,
+      "signature_prefix": "4M2Qmix8",
+      "slot": 434371118,
+      "body_returned": false,
+      "envelope": "UNAVAILABLE",
+      "version": null,
+      "pump_instructions": [],
+      "decode_outcome": "UNAVAILABLE_HISTORY"
+    },
+    {
+      "ordinal": 12,
+      "signature_prefix": "2Y3Cn4QZ",
+      "slot": 434371121,
+      "body_returned": false,
+      "envelope": "UNAVAILABLE",
+      "version": null,
+      "pump_instructions": [],
+      "decode_outcome": "UNAVAILABLE_HISTORY"
+    }
+  ],
+  "accounting": {
+    "underlying_total": 13,
+    "by_method": {
+      "getSignaturesForAddress": 1,
+      "getTransaction": 12
+    },
+    "ceiling": 15,
+    "retries": 0,
+    "endpoint_rotations": 0,
+    "duration_seconds": 11
+  }
+}

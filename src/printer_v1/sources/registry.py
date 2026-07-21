@@ -175,6 +175,13 @@ SOURCE_REGISTRY: dict[str, SourceDefinition] = {
             "pool_reference",
             "holder_concentration_reference",
             "mint_creation_time_reference",
+            # V2-9.7E.5 primary: signature-anchored finalized create acquisition
+            # on the create-exclusive Pump mint-authority index address.
+            "pumpfun_create_index_signature_page",
+            "pumpfun_create_index_transaction",
+            # Retired primary paths (V2-9.7D.7B.3A .. V2-9.7E.4G). Kept
+            # registered so 4A-4H evidence stays reproducible; never consumed
+            # on the primary path after V2-9.7E.5.
             "pumpfun_create_event_subscription",
             "pumpfun_create_signature_backfill",
             "pumpfun_create_transaction_reference",

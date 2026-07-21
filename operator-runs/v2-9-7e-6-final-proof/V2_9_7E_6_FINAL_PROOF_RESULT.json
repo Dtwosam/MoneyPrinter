@@ -1,0 +1,176 @@
+{
+  "lane": "V2-9.7E.6 final proof",
+  "proven_head": "c2ecff6cb7c1b8c80dd520a907710cd50f76ed00",
+  "started_utc": "2026-07-21T20:49:42Z",
+  "finished_utc": "2026-07-21T20:49:47Z",
+  "rpc_url": "https://api.mainnet-beta.solana.com",
+  "index_address": "TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM",
+  "architecture": "SIGNATURE_ANCHORED_PROSPECTIVE",
+  "implementation_checks": {
+    "index_address_is_mint_authority": true,
+    "index_address_exact": true,
+    "page_ceiling_3": true,
+    "page_size_16": true,
+    "decode_ceiling_12": true,
+    "two_request_kinds": true,
+    "governor_allows_page": true,
+    "governor_allows_tx": true,
+    "retired_role_support_only": true,
+    "executor_no_retired_cycle": true,
+    "executor_no_archaeology": true,
+    "executor_uses_new_owner": true,
+    "migration_036_present": true,
+    "retired_cycle_guard": true,
+    "retired_archaeology_guard": true
+  },
+  "database_preflight": {
+    "migration_036_applied": true,
+    "migrations_applied": 36,
+    "integrity_check": "ok",
+    "foreign_key_violations": 0,
+    "registry_table_present": true,
+    "cursor_table_present": true,
+    "active_scheduler_jobs": 0
+  },
+  "safety": {
+    "rpc_url_is_free_public": true,
+    "no_auth_header": true,
+    "no_api_key_env": true,
+    "no_wallet_or_signing": true,
+    "paid_dependency": false
+  },
+  "health_check": {
+    "ok": true,
+    "seconds": 1.9,
+    "is_proof_evidence": false
+  },
+  "capture": {
+    "attempts": 1,
+    "ok": true,
+    "status": 200,
+    "transport_error": null,
+    "detail": null,
+    "rpc_error": null,
+    "seconds": 0.6,
+    "rows_returned": 16,
+    "usable": true
+  },
+  "counts": {
+    "signature_rows": 16,
+    "admitted_rows": 15,
+    "decode_attempts": 2,
+    "creates_confirmed": 2,
+    "distinct_mints": 2,
+    "create_density": 1.0,
+    "non_create_count": 0,
+    "create_v2_count": 0,
+    "decode_outcomes": [
+      {
+        "ordinal": 1,
+        "code": "CREATE_CONFIRMED"
+      },
+      {
+        "ordinal": 2,
+        "code": "CREATE_CONFIRMED"
+      }
+    ]
+  },
+  "linkage": {
+    "mint_prefixes": [
+      "76z7GnWs",
+      "Dt2aCSWK"
+    ],
+    "signature_prefixes": [
+      "3VXvNg5P",
+      "5Dra2hqC"
+    ],
+    "slots": [
+      434375045,
+      434375058
+    ],
+    "block_times": [
+      1784666938,
+      1784666943
+    ],
+    "program_ids": [
+      "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+    ],
+    "bonding_curve_prefixes": [
+      "D4MwVwHT",
+      "Fqkb2SLH"
+    ],
+    "create_layouts": [
+      "PUMP_CREATE_V2"
+    ],
+    "adopted_layout_confirmed": true,
+    "account_identity_validated_by_decoder": true,
+    "provider_label_origin": false
+  },
+  "owner": {
+    "error": null,
+    "continuity": "UNKNOWN",
+    "pages_used": 1,
+    "underlying_rpc_operations": 3,
+    "governed_requests": {
+      "pumpfun_create_index_signature_page": 1,
+      "pumpfun_create_index_transaction": 2
+    }
+  },
+  "registry": {
+    "error": null,
+    "rows_written": 2,
+    "storage_bytes": 2183168
+  },
+  "later_discovery_cycle": {
+    "zero_source": true,
+    "exact_mint_resolution": {
+      "76z7GnWs": {
+        "resolved": true,
+        "signature_match": true,
+        "slot_match": true,
+        "program_match": true,
+        "prospective": true,
+        "layout_match": true
+      },
+      "Dt2aCSWK": {
+        "resolved": true,
+        "signature_match": true,
+        "slot_match": true,
+        "program_match": true,
+        "prospective": true,
+        "layout_match": true
+      }
+    },
+    "all_resolved": true,
+    "cursor_continuity": "UNKNOWN"
+  },
+  "replay": {
+    "canonical_stable": true
+  },
+  "cleanup": {
+    "active_subscriptions": 0,
+    "active_leases": 0,
+    "child_processes": 0,
+    "scheduler_work_created": 0,
+    "proof_db_disposable": true
+  },
+  "accounting": {
+    "underlying_total": 3,
+    "by_method": {
+      "getSignaturesForAddress": 1,
+      "getTransaction": 2
+    },
+    "ceiling": 15,
+    "capture_attempts": 1,
+    "retries": 0,
+    "endpoint_rotations": 0,
+    "reconnects": 0,
+    "duration_seconds": 4,
+    "ceilings_respected": true
+  },
+  "architecture_block_reason": null,
+  "notes": [
+    "stopped after two confirmed creates"
+  ],
+  "verdict": "PASS"
+}

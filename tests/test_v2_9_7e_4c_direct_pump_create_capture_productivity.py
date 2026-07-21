@@ -197,6 +197,12 @@ def non_create_transaction(signature: str, slot: int, block_time: int) -> dict:
     raw = bytearray(b58decode(transaction["transaction"]["message"]["instructions"][0]["data"]))
     raw[0:8] = bytes((1, 2, 3, 4, 5, 6, 7, 8))
     transaction["transaction"]["message"]["instructions"][0]["data"] = b58encode(bytes(raw))
+    # V2-9.7E.6: ordinary Pump traffic (buy/sell) does not reference the
+    # create-exclusive mint authority. Drop account index 1 so this fixture is
+    # a realistic non-create rather than an unknown create-family layout.
+    transaction["transaction"]["message"]["instructions"][0]["accounts"] = [
+        index for index in range(14) if index != 1
+    ]
     return transaction
 
 
@@ -421,7 +427,11 @@ class ProductivityDirectCycleTests(unittest.TestCase):
         result = run_fixture_cycle(ops, prior_cursor=prior_contiguous())
         self.assertEqual(result.observations, ())
         self.assertEqual(result.cursor.continuity, ContinuityState.GAPPED)
-        self.assertIn("UNSUPPORTED_VERSION", [r.code for r in result.rejections])
+        # V2-9.7E.6: create_v2 is now adopted. This fixture is a legacy-shaped
+        # body carrying the create_v2 discriminator, which is fail-closed as
+        # MALFORMED_TRANSACTION. Genuine create_v2 support is proven in
+        # tests/test_v2_9_7e_6_pump_create_classification.py.
+        self.assertIn("MALFORMED_TRANSACTION", [r.code for r in result.rejections])
 
     def test_unavailable_history_is_genuine_gap(self) -> None:
         ops = (
@@ -622,7 +632,11 @@ class MintOriginLookupTests(unittest.TestCase):
             ops, expected_mint=expected["mint"], cutoff_slot=202
         )
         self.assertIsNone(result.observation)
-        self.assertIn("UNSUPPORTED_VERSION", [r.code for r in result.rejections])
+        # V2-9.7E.6: create_v2 is now adopted. This fixture is a legacy-shaped
+        # body carrying the create_v2 discriminator, which is fail-closed as
+        # MALFORMED_TRANSACTION. Genuine create_v2 support is proven in
+        # tests/test_v2_9_7e_6_pump_create_classification.py.
+        self.assertIn("MALFORMED_TRANSACTION", [r.code for r in result.rejections])
 
 
 class DecoderStillExact(unittest.TestCase):

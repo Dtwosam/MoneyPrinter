@@ -1,0 +1,69 @@
+{
+  "lane": "V2-9.7E.5",
+  "proven_head": "3396dfc6833c15f96e2dd45aa0a405858e1cb290",
+  "started_utc": "2026-07-21T19:22:32Z",
+  "finished_utc": "2026-07-21T19:22:45Z",
+  "rpc_url": "https://api.mainnet-beta.solana.com",
+  "index_address": "TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM",
+  "architecture": "SIGNATURE_ANCHORED_PROSPECTIVE",
+  "governor": {
+    "pumpfun_create_index_signature_page": {
+      "allowed": true,
+      "reason": "allowed"
+    },
+    "pumpfun_create_index_transaction": {
+      "allowed": true,
+      "reason": "allowed"
+    }
+  },
+  "capture": {
+    "signature_rows": 0,
+    "admitted_rows": 0,
+    "decode_attempts": 0,
+    "decode_outcomes": [],
+    "create_density": null
+  },
+  "owner": {
+    "error": null,
+    "observations": 0,
+    "distinct_mints": 0,
+    "mint_prefixes": [],
+    "signature_prefixes": [],
+    "slots": [],
+    "program_ids": [],
+    "continuity": "UNAVAILABLE",
+    "pages_used": 1,
+    "non_create_count": 0,
+    "create_v2_count": 0,
+    "underlying_rpc_operations": 1
+  },
+  "persistence": {
+    "error": null,
+    "rows_written": 0,
+    "storage_bytes": 2174976,
+    "disposable_target": "v2_9_7e_5_proof.sqlite3"
+  },
+  "replay": {
+    "zero_source": true,
+    "exact_mint_lookups_ok": {},
+    "cursor_continuity": "UNAVAILABLE",
+    "canonical_stable": true
+  },
+  "accounting": {
+    "underlying_total": 1,
+    "by_method": {
+      "getSignaturesForAddress": 1
+    },
+    "ceiling": 15,
+    "retries": 0,
+    "endpoint_rotations": 0,
+    "reconnects": 0,
+    "failures": 1,
+    "duration_seconds": 13
+  },
+  "provider_label_origin": false,
+  "notes": [
+    "signature page failed: URLError"
+  ],
+  "verdict": "BLOCKED"
+}

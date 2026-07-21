@@ -316,13 +316,17 @@ class DirectPumpDecoderTests(unittest.TestCase):
     def test_unsupported_version_create_v2_ambiguity_and_mint_mismatch(self) -> None:
         unsupported = deepcopy(self.transaction)
         unsupported["version"] = 1
-        self.assert_code("UNSUPPORTED_VERSION", lambda: self.decode(unsupported))
+        self.assert_code("UNSUPPORTED_TRANSACTION_VERSION", lambda: self.decode(unsupported))
 
         create_v2 = deepcopy(self.transaction)
         create_v2["transaction"]["message"]["instructions"][0]["data"] = b58encode(
             CREATE_V2_DISCRIMINATOR
         )
-        self.assert_code("UNSUPPORTED_VERSION", lambda: self.decode(create_v2))
+        # V2-9.7E.6: create_v2 is now adopted. This fixture is a legacy-shaped
+        # body carrying the create_v2 discriminator, which is fail-closed as
+        # MALFORMED_TRANSACTION. Genuine create_v2 support is proven in
+        # tests/test_v2_9_7e_6_pump_create_classification.py.
+        self.assert_code("MALFORMED_TRANSACTION", lambda: self.decode(create_v2))
 
         ambiguous = deepcopy(self.transaction)
         instruction = deepcopy(ambiguous["transaction"]["message"]["instructions"][0])

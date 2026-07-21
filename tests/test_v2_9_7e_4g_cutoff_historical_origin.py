@@ -190,6 +190,12 @@ def non_create_transaction(signature: str, slot: int, block_time: int) -> dict:
     )
     raw[0:8] = bytes((9, 9, 9, 9, 9, 9, 9, 9))
     transaction["transaction"]["message"]["instructions"][0]["data"] = b58encode(bytes(raw))
+    # V2-9.7E.6: ordinary Pump traffic (buy/sell) does not reference the
+    # create-exclusive mint authority. Drop account index 1 so this fixture is
+    # a realistic non-create rather than an unknown create-family layout.
+    transaction["transaction"]["message"]["instructions"][0]["accounts"] = [
+        index for index in range(14) if index != 1
+    ]
     return transaction
 
 
@@ -554,7 +560,11 @@ class HistoricalMintOriginTests(unittest.TestCase):
             ops_v2, expected_mint=expected["mint"], cutoff_slot=100
         )
         self.assertIsNone(result_v2.observation)
-        self.assertIn("UNSUPPORTED_VERSION", [r.code for r in result_v2.rejections])
+        # V2-9.7E.6: create_v2 is now adopted. This fixture is a legacy-shaped
+        # body carrying the create_v2 discriminator, which is fail-closed as
+        # MALFORMED_TRANSACTION. Genuine create_v2 support is proven in
+        # tests/test_v2_9_7e_6_pump_create_classification.py.
+        self.assertIn("MALFORMED_TRANSACTION", [r.code for r in result_v2.rejections])
 
     def test_exhausted_history_and_unavailable_tx(self) -> None:
         ops_empty = (
