@@ -423,16 +423,36 @@ class SolanaTrackerAdapterTests(unittest.TestCase):
                 self.assertNotIn(field, identity)
 
     def test_malformed_stale_ambiguous_rate_limit_and_ceilings(self) -> None:
+        # V2-9.7D.7B.4B.1: single-pool stale is row-level skip; the duplicate
+        # fresh pumpfun row in the fixture still contributes.
         stale_body = deepcopy(self.tracker["trending"]["body"])
         stale_body[0]["pools"][0]["lastUpdated"] -= 181_000
-        with self.assertRaises(SecondaryDiscoveryError) as stale:
+        stale_rows = normalize_tracker_list(
+            stale_body,
+            channel="TRENDING_PUMPFUN",
+            receipt_time=self.tracker["trending"]["receipt_time"],
+            evaluated_at=self.evaluated,
+        )
+        self.assertEqual(len(stale_rows), 1)
+        self.assertEqual(
+            stale_rows[0].mint, "MintB1111111111111111111111111111111111111"
+        )
+        self.assertEqual(stale_rows[0].provenance_count, 1)
+
+        all_stale = deepcopy(self.tracker["trending"]["body"])
+        for item in all_stale:
+            for pool in item.get("pools") or []:
+                if isinstance(pool, dict) and pool.get("market") == "pumpfun":
+                    pool["lastUpdated"] -= 181_000
+        self.assertEqual(
             normalize_tracker_list(
-                stale_body,
+                all_stale,
                 channel="TRENDING_PUMPFUN",
                 receipt_time=self.tracker["trending"]["receipt_time"],
                 evaluated_at=self.evaluated,
-            )
-        self.assertEqual(stale.exception.code, "STALE_OR_UNKNOWN")
+            ),
+            (),
+        )
 
         malformed = deepcopy(self.tracker["top"]["body"])
         malformed[0]["pools"][0].pop("quoteToken")

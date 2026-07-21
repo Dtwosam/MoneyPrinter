@@ -480,9 +480,12 @@ def normalize_tracker_list(
             updated = pool["lastUpdated"]
             if type(updated) is not int:
                 raise SecondaryDiscoveryError("MALFORMED_RESPONSE", "malformed_last_updated")
+            # Row-level freshness: stale or materially future pumpfun pools
+            # contribute nothing. They must not abort the rest of the body.
+            # Receipt-level staleness remains a response-level failure above.
             age = _epoch(evaluated_at) - updated / 1000
             if age < -5 or age > TRACKER_STALE_AFTER_SECONDS:
-                raise SecondaryDiscoveryError("STALE_OR_UNKNOWN", "stale_or_future_pool")
+                continue
             observation = ProviderObservation(
                 mint=mint,
                 pool=str(pool["poolId"]),

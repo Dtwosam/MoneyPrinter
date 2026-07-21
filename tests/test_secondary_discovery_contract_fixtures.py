@@ -99,9 +99,11 @@ def normalize_tracker(case: dict, contract: dict, channel: str, evaluated_at: st
             updated = pool["lastUpdated"]
             if type(updated) is not int:
                 raise ValueError("malformed_last_updated")
+            # Row-level freshness (V2-9.7D.7B.4B.1): stale/future rows contribute
+            # nothing; they do not abort the rest of the response body.
             age = _epoch(evaluated_at) - updated / 1000
             if age < -5 or age > contract["stale_after_seconds"]:
-                raise ValueError("stale_or_future_pool")
+                continue
             row = {
                 "provider": "solana_tracker",
                 "channel": channel,
@@ -200,9 +202,9 @@ def test_fail_closed_malformed_stale_and_ambiguous_cases():
         normalize_gecko_active(zero, evaluated)
 
     stale = copy.deepcopy(fixture["solana_tracker"])
+    # Sole pumpfun row made stale → empty contribution, not whole-body raise.
     stale["trending"]["body"][0]["pools"][0]["lastUpdated"] -= 181_000
-    with pytest.raises(ValueError, match="stale_or_future_pool"):
-        normalize_tracker(stale["trending"], stale, "TRENDING_PUMPFUN", evaluated)
+    assert normalize_tracker(stale["trending"], stale, "TRENDING_PUMPFUN", evaluated) == []
 
     malformed = copy.deepcopy(fixture["solana_tracker"])
     malformed["top"]["body"][0]["pools"][0].pop("quoteToken")
