@@ -12,6 +12,7 @@ import tempfile
 import unittest
 
 from printer_v1.db import apply_migrations
+from printer_v1.db import migrate as migration_runner
 from printer_v1.operator_cli.one_command_15m_factory import load_report_only
 from printer_v1.operator_cli.proof_supervision import (
     HOST_PROCESS_DISAPPEARED,
@@ -289,7 +290,22 @@ class DurableSupervisionTests(unittest.TestCase):
     def test_schema_and_launcher_contracts_are_canonical_and_locked(self) -> None:
         schema = validate_runtime_schema(self.db)
         self.assertTrue(schema["runtime_ready"])
-        self.assertEqual(schema["latest_migration"], "030_v2_9_proof_run_supervision.sql")
+        # V2-9.7E.7: derive the expected head from the authoritative migration
+        # owner instead of pinning a literal. The previous literal ("030") was
+        # stale from migration 031 onward and asserted a head the repository no
+        # longer had. A new literal would go stale the same way.
+        canonical = [
+            path.name for path in sorted(migration_runner.MIGRATIONS_DIR.glob("*.sql"))
+        ]
+        self.assertEqual(schema["latest_migration"], canonical[-1])
+        # Ordering stays locked: the canonical registry must be lexicographically
+        # ordered, and every canonical migration must be applied. Any missing,
+        # unknown, or renumbered migration already fails runtime_ready above.
+        self.assertEqual(canonical, sorted(canonical))
+        self.assertEqual(
+            schema["applied_migration_count"], schema["canonical_migration_count"]
+        )
+        self.assertEqual(schema["canonical_migration_count"], len(canonical))
         launcher = (
             Path(__file__).resolve().parents[1] / "scripts" / "Start-V2-9-Proof.ps1"
         ).read_text(encoding="utf-8")
