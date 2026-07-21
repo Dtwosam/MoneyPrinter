@@ -6,6 +6,10 @@ point. Every externally observed value enters through FixtureOperation.
 V2-9.7E.4C adds create-capture productivity rules (failed-signature filtering
 before decode budget, refined continuity faults, early-create stop) and bounded
 mint-scoped origin lookup via adopted origin request kinds.
+
+V2-9.7E.4G adds cutoff-bound pagination expectations (post-cutoff skips never
+consume decode budget) and multi-page historical mint-origin walk with early
+stop on exact finalized create.
 """
 
 from __future__ import annotations
@@ -77,15 +81,36 @@ BACKFILL_PAGE_CEILING = 2
 BACKFILL_PAGE_SIZE = 16
 TRANSACTION_DECODE_CEILING = 16
 EARLY_CREATE_STOP = 8
-ORIGIN_SIGNATURE_PAGE_CEILING = 1
+# 4G: deeper mint history within global origin pools (see 4F budget table).
+ORIGIN_SIGNATURE_PAGE_CEILING = 3
 ORIGIN_SIGNATURE_PAGE_SIZE = 16
-ORIGIN_TRANSACTION_PER_MINT = 1
+ORIGIN_TRANSACTION_ATTEMPTS_PER_MINT = 2
+ORIGIN_TRANSACTION_PER_MINT = ORIGIN_TRANSACTION_ATTEMPTS_PER_MINT  # alias
+ORIGIN_GLOBAL_SIGNATURE_PAGES = 16
+ORIGIN_GLOBAL_TRANSACTIONS = 8
 # Codes that are factual market noise / productivity stops — not continuity faults.
 _NON_FAULT_CLASSIFICATIONS = frozenset(
     {
         "FAILED_TRANSACTION",
         "NOT_SUPPORTED_CREATE",
         "EARLY_CREATE_STOP",
+        "POST_CUTOFF",
+    }
+)
+# Decode attempt may continue to an older candidate after these (mint path).
+_MINT_ORIGIN_CONTINUE_CODES = frozenset(
+    {
+        "FAILED_TRANSACTION",
+        "NOT_SUPPORTED_CREATE",
+        "UNSUPPORTED_VERSION",
+        "WRONG_PROGRAM",
+        "AMBIGUOUS_CREATE",
+        "EVENT_MISMATCH",
+        "MALFORMED_TRANSACTION",
+        "UNAVAILABLE_HISTORY",
+        "MISSING_FINALITY",
+        "SIGNATURE_OR_SLOT_MISMATCH",
+        "MINT_MISMATCH",
         "POST_CUTOFF",
     }
 )
@@ -181,6 +206,7 @@ class DirectPumpCycleResult:
     failed_signature_count: int = 0
     non_create_count: int = 0
     decode_attempts: int = 0
+    post_cutoff_count: int = 0
 
     def canonical(self) -> tuple[object, ...]:
         """Stable replay identity without mutable or wall-clock values."""
@@ -197,6 +223,7 @@ class DirectPumpCycleResult:
             self.failed_signature_count,
             self.non_create_count,
             self.decode_attempts,
+            self.post_cutoff_count,
         )
 
 
@@ -210,6 +237,7 @@ class MintOriginLookupResult:
     accounting: AccountingSnapshot
     signature_rows: int
     decode_attempts: int
+    pages_used: int = 0
 
     def canonical(self) -> tuple[object, ...]:
         return (
@@ -220,6 +248,7 @@ class MintOriginLookupResult:
             self.accounting.underlying_rpc_operations,
             self.signature_rows,
             self.decode_attempts,
+            self.pages_used,
         )
 
 
@@ -756,6 +785,7 @@ def run_fixture_cycle(
 
     rejections: list[Rejection] = []
     duplicates = 0
+    post_cutoff_count = 0
     references: dict[str, SignatureReference] = {}
     conflicting_signatures: set[str] = set()
     continuity_fault = live_disconnected or not interval_complete
@@ -765,9 +795,11 @@ def run_fixture_cycle(
     )
 
     def admit(reference: SignatureReference) -> None:
-        nonlocal duplicates, continuity_fault
+        nonlocal duplicates, continuity_fault, post_cutoff_count
         if reference.slot > cutoff:
+            # Skip only — never decode budget, never continuity fault alone.
             rejections.append(Rejection("POST_CUTOFF", reference.signature, reference.slot))
+            post_cutoff_count += 1
             return
         if reference.signature in conflicting_signatures:
             duplicates += 1
@@ -881,6 +913,7 @@ def run_fixture_cycle(
         failed_signature_count=failed_signature_count,
         non_create_count=non_create_count,
         decode_attempts=decode_attempts,
+        post_cutoff_count=post_cutoff_count,
     )
 
 
@@ -890,16 +923,18 @@ def run_mint_origin_lookup(
     expected_mint: str,
     cutoff_slot: int,
 ) -> MintOriginLookupResult:
-    """Bounded mint-scoped finalized origin lookup (fixture-only).
+    """Bounded multi-page mint-scoped finalized origin lookup (fixture-only).
 
-    Uses adopted origin request kinds only. One signature page and at most one
-    transaction per mint. Exact mint match required. Zero retries.
+    Uses adopted origin request kinds only. Walks up to three signature pages
+    older via sequential fixtures, tries up to two transactions oldest-first,
+    and stops immediately on an exact successful finalized Pump create.
     """
     if not isinstance(expected_mint, str) or not expected_mint:
         raise PumpContractError("MALFORMED_TRANSACTION", "expected_mint required")
     if type(cutoff_slot) is not int or cutoff_slot < 0:
         raise PumpContractError("MALFORMED_TRANSACTION", "invalid cutoff")
 
+    # One governed request-id reuse per kind; multiple underlying pages/txs.
     origin_request_ceilings = MappingProxyType(
         {
             ORIGIN_SIGNATURE_REQUEST: 1,
@@ -910,31 +945,51 @@ def run_mint_origin_lookup(
         operations,
         request_ceilings=origin_request_ceilings,
         operation_ceilings=MappingProxyType(
-            {"getSignaturesForAddress": 1, "getTransaction": 1}
+            {
+                "getSignaturesForAddress": ORIGIN_SIGNATURE_PAGE_CEILING,
+                "getTransaction": ORIGIN_TRANSACTION_ATTEMPTS_PER_MINT,
+            }
         ),
     )
     rejections: list[Rejection] = []
-    page = port.take("getSignaturesForAddress", ORIGIN_SIGNATURE_REQUEST)
-    if not isinstance(page, Mapping) or not isinstance(page.get("rows"), list):
-        raise PumpContractError("MALFORMED_TRANSACTION", "bad origin signature page")
-    if len(page["rows"]) > ORIGIN_SIGNATURE_PAGE_SIZE:
-        raise PumpContractError("BACKFILL_PAGE_SIZE_CEILING")
+    all_rows: list[SignatureReference] = []
+    pages_used = 0
+    history_exhausted = False
 
-    rows = [_signature_reference(row) for row in page["rows"]]
-    for reference in rows:
+    while (
+        pages_used < ORIGIN_SIGNATURE_PAGE_CEILING
+        and port.peek() is not None
+        and port.peek().rpc_operation == "getSignaturesForAddress"
+    ):
+        page = port.take("getSignaturesForAddress", ORIGIN_SIGNATURE_REQUEST)
+        pages_used += 1
+        if not isinstance(page, Mapping) or not isinstance(page.get("rows"), list):
+            raise PumpContractError("MALFORMED_TRANSACTION", "bad origin signature page")
+        if len(page["rows"]) > ORIGIN_SIGNATURE_PAGE_SIZE:
+            raise PumpContractError("BACKFILL_PAGE_SIZE_CEILING")
+        if not page["rows"]:
+            history_exhausted = True
+            break
+        page_refs = [_signature_reference(row) for row in page["rows"]]
+        all_rows.extend(page_refs)
+        if bool(page.get("history_complete", False)) or bool(
+            page.get("complete_to_prior_cursor", False)
+        ):
+            break
+
+    for reference in all_rows:
         if reference.slot > cutoff_slot:
             rejections.append(
                 Rejection("POST_CUTOFF", reference.signature, reference.slot)
             )
 
-    candidates = [
-        reference
-        for reference in rows
-        if reference.slot <= cutoff_slot
-    ]
-    candidates.sort(key=lambda item: (item.slot, item.signature))
+    # Oldest-first among in-cutoff rows — create tends to be early mint history.
+    candidates = sorted(
+        (reference for reference in all_rows if reference.slot <= cutoff_slot),
+        key=lambda item: (item.slot, item.signature),
+    )
 
-    decode_target: SignatureReference | None = None
+    decode_queue: list[SignatureReference] = []
     for reference in candidates:
         if reference.err is not None:
             rejections.append(
@@ -946,28 +1001,64 @@ def run_mint_origin_lookup(
                 Rejection("MISSING_FINALITY", reference.signature, reference.slot)
             )
             continue
-        decode_target = reference
-        break
+        decode_queue.append(reference)
 
     observation: PumpCreateObservation | None = None
     decode_attempts = 0
-    if decode_target is None:
-        rejections.append(Rejection("NOT_SUPPORTED_CREATE", None, None))
+    if not decode_queue:
+        rejections.append(
+            Rejection(
+                "NOT_SUPPORTED_CREATE" if all_rows else "UNAVAILABLE_HISTORY",
+                None,
+                None,
+            )
+        )
     else:
-        transaction = port.take("getTransaction", ORIGIN_TRANSACTION_REQUEST)
-        decode_attempts = 1
-        try:
-            observation = decode_finalized_create(
-                transaction,
-                reference=decode_target,
-                cutoff_slot=cutoff_slot,
-                expected_mint=expected_mint,
-            )
-        except PumpContractError as exc:
-            rejections.append(
-                Rejection(exc.code, decode_target.signature, decode_target.slot)
-            )
-            observation = None
+        for reference in decode_queue:
+            if decode_attempts >= ORIGIN_TRANSACTION_ATTEMPTS_PER_MINT:
+                rejections.append(
+                    Rejection(
+                        "TRANSACTION_DECODE_CEILING",
+                        reference.signature,
+                        reference.slot,
+                    )
+                )
+                break
+            if (
+                port.peek() is None
+                or port.peek().rpc_operation != "getTransaction"
+            ):
+                # No more planned transactions — stop without inventing fetches.
+                break
+            transaction = port.take("getTransaction", ORIGIN_TRANSACTION_REQUEST)
+            decode_attempts += 1
+            try:
+                observation = decode_finalized_create(
+                    transaction,
+                    reference=reference,
+                    cutoff_slot=cutoff_slot,
+                    expected_mint=expected_mint,
+                )
+            except PumpContractError as exc:
+                rejections.append(
+                    Rejection(exc.code, reference.signature, reference.slot)
+                )
+                if exc.code in _MINT_ORIGIN_CONTINUE_CODES:
+                    observation = None
+                    continue
+                observation = None
+                break
+            else:
+                # Exact create found — stop immediately.
+                break
+
+        if observation is None and decode_attempts == 0 and decode_queue:
+            rejections.append(Rejection("NOT_SUPPORTED_CREATE", None, None))
+
+    if history_exhausted and observation is None:
+        # Explicit exhausted-history signal when empty page observed.
+        if not any(item.code == "UNAVAILABLE_HISTORY" for item in rejections):
+            rejections.append(Rejection("UNAVAILABLE_HISTORY", None, None))
 
     port.assert_consumed()
     return MintOriginLookupResult(
@@ -975,6 +1066,7 @@ def run_mint_origin_lookup(
         observation=observation,
         rejections=tuple(rejections),
         accounting=port.accounting.snapshot(),
-        signature_rows=len(rows),
+        signature_rows=len(all_rows),
         decode_attempts=decode_attempts,
+        pages_used=pages_used,
     )
