@@ -262,6 +262,8 @@ class Phase1DatabaseSchemaTest(unittest.TestCase):
                 ("030_v2_9_proof_run_supervision.sql",),
                 ("031_operational_campaign_persistence.sql",),
                 ("032_campaign_ownership_schema.sql",),
+                ("033_operational_campaign_supervision.sql",),
+                ("034_discovery_persistence_reconciliation.sql",),
             ],
         )
 
