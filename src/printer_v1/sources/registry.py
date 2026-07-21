@@ -50,6 +50,8 @@ SOURCE_REGISTRY: dict[str, SourceDefinition] = {
         allowed_request_kinds=(
             "geckoterminal_new_pool_discovery",
             "geckoterminal_trending_pool_reference",
+            # V2-9.7D.7B.4B: exact active-pool m5 enrichment (fixture-only).
+            "geckoterminal_active_pool_reference",
             "geckoterminal_ohlcv_15m",
             "geckoterminal_pool_trades_15m",
             # V2-9.5: exact-pair snapshot fallback for a single Solana pool.
@@ -64,6 +66,28 @@ SOURCE_REGISTRY: dict[str, SourceDefinition] = {
         max_retries=2,
         priority_class="discovery",
         notes="Free/public Solana pool discovery and exact-pair snapshot fallback; conservative rate limits; no paid tier.",
+    ),
+    "solana_tracker": SourceDefinition(
+        source_name="solana_tracker",
+        purpose="free REST Pump.fun trending and top secondary discovery reference",
+        dependency_type="free_public",
+        requires_paid_plan=False,
+        supports_solana=True,
+        allowed_request_kinds=(
+            "solana_tracker_pumpfun_trending",
+            "solana_tracker_pumpfun_top",
+        ),
+        # Free plan is 3 rps; local cycle ceiling is 2 requests. Keep a
+        # conservative per-minute governor budget for fixture/admission work.
+        default_rate_limit_per_minute=10,
+        stale_after_seconds=180,
+        retry_after_seconds=60,
+        max_retries=0,
+        priority_class="discovery",
+        notes=(
+            "Free Data API REST only. Requires secret-ref x-api-key; never paid "
+            "Datastream/RPC/swap. Fixture-only until later live-proof lane."
+        ),
     ),
     "pumpportal": SourceDefinition(
         source_name="pumpportal",

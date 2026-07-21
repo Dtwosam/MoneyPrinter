@@ -1,0 +1,238 @@
+{
+  "contract_version": "V2-9.7D.7B.4B",
+  "evaluated_at": "2026-07-19T12:01:00Z",
+  "geckoterminal": {
+    "base_url": "https://api.geckoterminal.com/api/v2",
+    "authentication": "none",
+    "rate_ceiling_per_minute": 10,
+    "cycle_request_ceiling": 2,
+    "stale_after_seconds": 180,
+    "work_type": "DISCOVERY_GECKOTERMINAL_TRENDING_ACTIVE",
+    "trending": {
+      "request_kind": "geckoterminal_trending_pool_reference",
+      "path": "/networks/solana/trending_pools",
+      "params": {"include": "base_token,quote_token,dex", "page": 1, "duration": "1h"},
+      "receipt_time": "2026-07-19T12:00:00Z",
+      "body": {
+        "data": [
+          {
+            "id": "solana_PoolB1111111111111111111111111111111111111",
+            "type": "pool",
+            "attributes": {
+              "address": "PoolB1111111111111111111111111111111111111",
+              "gt_score": 99,
+              "rank": 1
+            },
+            "relationships": {
+              "base_token": {
+                "data": {
+                  "id": "solana_MintB1111111111111111111111111111111111111",
+                  "type": "token"
+                }
+              },
+              "quote_token": {
+                "data": {
+                  "id": "solana_So11111111111111111111111111111111111111112",
+                  "type": "token"
+                }
+              },
+              "dex": {"data": {"id": "pump-fun", "type": "dex"}}
+            }
+          },
+          {
+            "id": "solana_PoolA1111111111111111111111111111111111111",
+            "type": "pool",
+            "attributes": {
+              "address": "PoolA1111111111111111111111111111111111111",
+              "gt_score": 1,
+              "rank": 999
+            },
+            "relationships": {
+              "base_token": {
+                "data": {
+                  "id": "solana_MintA1111111111111111111111111111111111111",
+                  "type": "token"
+                }
+              },
+              "quote_token": {
+                "data": {
+                  "id": "solana_So11111111111111111111111111111111111111112",
+                  "type": "token"
+                }
+              },
+              "dex": {"data": {"id": "pump-fun", "type": "dex"}}
+            }
+          },
+          {
+            "id": "solana_PoolB1111111111111111111111111111111111111",
+            "type": "pool",
+            "attributes": {
+              "address": "PoolB1111111111111111111111111111111111111",
+              "gt_score": 50,
+              "rank": 2
+            },
+            "relationships": {
+              "base_token": {
+                "data": {
+                  "id": "solana_MintB1111111111111111111111111111111111111",
+                  "type": "token"
+                }
+              },
+              "quote_token": {
+                "data": {
+                  "id": "solana_So11111111111111111111111111111111111111112",
+                  "type": "token"
+                }
+              },
+              "dex": {"data": {"id": "pump-fun", "type": "dex"}}
+            }
+          }
+        ]
+      }
+    },
+    "active": {
+      "request_kind": "geckoterminal_active_pool_reference",
+      "requested_pool": "PoolA1111111111111111111111111111111111111",
+      "receipt_time": "2026-07-19T12:00:00Z",
+      "body": {
+        "data": {
+          "id": "solana_PoolA1111111111111111111111111111111111111",
+          "type": "pool",
+          "attributes": {
+            "address": "PoolA1111111111111111111111111111111111111",
+            "transactions": {
+              "m5": {"buys": 1, "sells": 2, "buyers": 1, "sellers": 2}
+            },
+            "volume_usd": {"m5": "123.45"},
+            "price_change_percentage": {"m5": "9000"},
+            "reserve_in_usd": "5000",
+            "gt_score": 100
+          },
+          "relationships": {
+            "base_token": {
+              "data": {
+                "id": "solana_MintA1111111111111111111111111111111111111",
+                "type": "token"
+              }
+            },
+            "quote_token": {
+              "data": {
+                "id": "solana_So11111111111111111111111111111111111111112",
+                "type": "token"
+              }
+            },
+            "dex": {"data": {"id": "pump-fun", "type": "dex"}}
+          }
+        }
+      }
+    }
+  },
+  "solana_tracker": {
+    "base_url": "https://data.solanatracker.io",
+    "authentication": "x-api-key",
+    "api_key_secret_ref": "SOLANA_TRACKER_API_KEY_REF",
+    "free_requests_per_month": 10000,
+    "free_requests_per_second": 3,
+    "free_requests_remaining_month": 9990,
+    "cycle_request_ceiling": 2,
+    "stale_after_seconds": 180,
+    "work_type": "DISCOVERY_SOLANA_TRACKER_TRENDING_TOP",
+    "trending": {
+      "request_kind": "solana_tracker_pumpfun_trending",
+      "path": "/tokens/trending/1h",
+      "receipt_time": "2026-07-19T12:00:00Z",
+      "body": [
+        {
+          "token": {
+            "mint": "MintB1111111111111111111111111111111111111",
+            "name": "promoted"
+          },
+          "pools": [
+            {
+              "poolId": "PoolB1111111111111111111111111111111111111",
+              "tokenAddress": "MintB1111111111111111111111111111111111111",
+              "quoteToken": "So11111111111111111111111111111111111111112",
+              "market": "pumpfun",
+              "lastUpdated": 1784462400000,
+              "score": 999
+            }
+          ],
+          "risk": {"score": 0, "rugged": false},
+          "score": 999,
+          "rank": 1,
+          "promoted": true,
+          "holders": 1000000
+        },
+        {
+          "token": {"mint": "Other11111111111111111111111111111111111111"},
+          "pools": [
+            {
+              "poolId": "OtherPool11111111111111111111111111111111111",
+              "tokenAddress": "Other11111111111111111111111111111111111111",
+              "quoteToken": "So11111111111111111111111111111111111111112",
+              "market": "raydium",
+              "lastUpdated": 1784462400000
+            }
+          ]
+        },
+        {
+          "token": {
+            "mint": "MintB1111111111111111111111111111111111111",
+            "name": "duplicate-prov"
+          },
+          "pools": [
+            {
+              "poolId": "PoolB1111111111111111111111111111111111111",
+              "tokenAddress": "MintB1111111111111111111111111111111111111",
+              "quoteToken": "So11111111111111111111111111111111111111112",
+              "market": "pumpfun",
+              "lastUpdated": 1784462400000,
+              "score": 1
+            }
+          ],
+          "rank": 99
+        }
+      ]
+    },
+    "top": {
+      "request_kind": "solana_tracker_pumpfun_top",
+      "path": "/top-performers/1h",
+      "receipt_time": "2026-07-19T12:00:00Z",
+      "body": [
+        {
+          "token": {
+            "mint": "MintA1111111111111111111111111111111111111",
+            "symbol": "TOP"
+          },
+          "pools": [
+            {
+              "poolId": "PoolA1111111111111111111111111111111111111",
+              "tokenAddress": "MintA1111111111111111111111111111111111111",
+              "quoteToken": "So11111111111111111111111111111111111111112",
+              "market": "pumpfun",
+              "lastUpdated": 1784462400000,
+              "price": {"usd": 999999},
+              "marketCap": {"usd": 999999999}
+            }
+          ],
+          "risk": {"score": 100, "rugged": true},
+          "jupiterVerified": true,
+          "performanceRank": 1,
+          "buys": 999999
+        },
+        {
+          "token": {"mint": "Mismatch11111111111111111111111111111111111"},
+          "pools": [
+            {
+              "poolId": "MismatchPool1111111111111111111111111111111",
+              "tokenAddress": "Different1111111111111111111111111111111111",
+              "quoteToken": "So11111111111111111111111111111111111111112",
+              "market": "pumpfun",
+              "lastUpdated": 1784462400000
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

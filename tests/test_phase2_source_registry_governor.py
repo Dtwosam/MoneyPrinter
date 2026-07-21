@@ -28,6 +28,7 @@ from printer_v1.sources.registry import ALLOWED_SOURCE_NAMES, SOURCE_REGISTRY, S
 EXPECTED_SOURCES = {
     "dexscreener",
     "geckoterminal",
+    "solana_tracker",
     "pumpportal",
     "pumpswap",
     "alternative_me",
