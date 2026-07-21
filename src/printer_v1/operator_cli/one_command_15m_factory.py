@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict, dataclass
 import hashlib
 import json
 import os
@@ -45,6 +46,7 @@ STOP_DB_DELTA = "SAFE_STOP_UNEXPECTED_DB_DELTA"
 # V2-5: global budget/integrity safe stop (run-wide or per-token ceiling breach).
 STOP_BUDGET = "SAFE_STOP_BUDGET_CEILING_EXCEEDED"
 STOP_TERMINAL_4H = "SAFE_STOP_4H_TERMINAL_INCOMPLETE"
+STOP_TWO_TOKEN_PROOF = "SAFE_STOP_TWO_TOKEN_CONTINUOUS_PROOF_INCOMPLETE"
 
 # V2-5: token-local terminal markers (never a run-wide stop).
 TOKEN_LOCAL_FAILED = "TOKEN_LOCAL_TERMINAL_FAILURE"
@@ -75,6 +77,52 @@ _MAX_HOLDER_RPC_REQUESTS_PER_TOKEN = (
 )
 _CONTINUATION_SECONDS = 2700.0
 _CONTINUOUS_MAX_SELECTED_TOKENS = 1
+
+
+@dataclass(frozen=True)
+class CompressedTwoTokenProofPlan:
+    """Exact fixture-evidence dispositions for one two-token proof only."""
+
+    continuation_token_mint: str
+    non_continuation_token_mint: str
+    continuation_evidence: str = "LIQUIDITY_SHOCK_OBSERVED"
+    non_continuation_evidence: str = "NO_UNRESOLVED_LEARNING_NEED"
+    support_5m_trigger_family: str = "LIQUIDITY_SHOCK"
+
+    def validate_shape(self) -> None:
+        if (
+            not self.continuation_token_mint
+            or not self.non_continuation_token_mint
+            or self.continuation_token_mint == self.non_continuation_token_mint
+        ):
+            raise ValueError("two-token proof requires two distinct mint identities")
+        if self.continuation_evidence != "LIQUIDITY_SHOCK_OBSERVED":
+            raise ValueError("unsupported continuation proof evidence")
+        if self.non_continuation_evidence != "NO_UNRESOLVED_LEARNING_NEED":
+            raise ValueError("unsupported non-continuation proof evidence")
+        if self.support_5m_trigger_family not in {
+            "FAST_COORDINATED_PUMP",
+            "FAST_DUMP_OR_COLLAPSE",
+            "WICK_OR_LATE_BUY_TRAP",
+            "EXIT_REALISM_CHANGE",
+            "LIQUIDITY_SHOCK",
+            "FAST_BREAKDOWN_OR_RECLAIM",
+        }:
+            raise ValueError("unsupported support-only 5m trigger family")
+
+    def validate_targets(self, targets: list[dict[str, Any]]) -> None:
+        self.validate_shape()
+        ordered = [str(target["token_mint"]) for target in targets]
+        if len(ordered) != 2 or set(ordered) != {
+            self.continuation_token_mint,
+            self.non_continuation_token_mint,
+        }:
+            raise ValueError("two-token proof plan does not match activated targets")
+
+        if ordered[-1] != self.continuation_token_mint:
+            raise ValueError(
+                "two-token proof continuation target must be the deterministic later target"
+            )
 
 
 def _cadence_expected_snapshots(lane: str) -> int:
@@ -114,6 +162,67 @@ _CONTINUOUS_MAX_SCHEDULER_ROWS = (
     + _continuation_expected_snapshots("TRACK_FAST")
     + _CONTINUOUS_MAX_SELECTED_TOKENS
 )
+_COMPRESSED_TWO_TOKEN_MAX_REQUESTS_RUN = (
+    _CONTINUOUS_MAX_REQUESTS_RUN + _MAX_GOVERNED_REQUESTS_PER_TOKEN
+)
+_COMPRESSED_TWO_TOKEN_MAX_SCHEDULER_ROWS = (
+    _CONTINUOUS_MAX_SCHEDULER_ROWS
+    + _MAX_SNAPSHOTS_PER_TOKEN
+    + 1  # second exact activation/discovery handoff allowance
+)
+
+
+def _compressed_two_token_plan(config: Mapping[str, Any]) -> dict[str, str] | None:
+    plan = config.get("compressed_two_token_proof_plan")
+    return dict(plan) if isinstance(plan, Mapping) else None
+
+
+def _cumulative_lifecycle_budget_for_run(
+    conn: sqlite3.Connection, run_id: str, continuation_lane: str,
+) -> dict[str, Any]:
+    """Return the one-token budget plus only the proof peer's 15m allowance."""
+    from printer_v1.operator_cli.one_token_4h_runtime import cumulative_lifecycle_budget
+
+    base = cumulative_lifecycle_budget(continuation_lane)
+    request_components = dict(base["request_components"])
+    scheduler_components = dict(base["scheduler_components"])
+    config = _load_run_config(conn, run_id)
+    plan = _compressed_two_token_plan(config)
+    if plan is not None:
+        row = conn.execute(
+            """SELECT tracking_lane FROM printer_memory_factory_run_steps
+               WHERE run_id=? AND token_mint=? ORDER BY id LIMIT 1""",
+            (run_id, plan["non_continuation_token_mint"]),
+        ).fetchone()
+        if row is None:
+            raise _GlobalStop(
+                STOP_BUDGET,
+                scope="CUMULATIVE_LIFECYCLE",
+                detail="non-continuation proof target missing from run ledger",
+            )
+        peer_lane = str(row[0])
+        peer_policy = _cadence_get_policy(WINDOW_KIND, peer_lane)
+        if peer_policy is None:
+            raise _GlobalStop(
+                STOP_BUDGET,
+                scope="CUMULATIVE_LIFECYCLE",
+                detail="non-continuation proof target has no 15m cadence policy",
+            )
+        request_components["proof_peer_window_15m"] = int(
+            peer_policy.minimum_required_snapshots
+        ) + _CONTEXT_REQUESTS_PER_TOKEN
+        scheduler_components["proof_peer_discovery_handoff"] = 1
+        scheduler_components["proof_peer_window_15m"] = int(
+            peer_policy.minimum_required_snapshots
+        )
+    return {
+        **base,
+        "request_components": request_components,
+        "request_ceiling": sum(request_components.values()),
+        "scheduler_components": scheduler_components,
+        "scheduler_ceiling": sum(scheduler_components.values()),
+        "compressed_two_token_proof": plan is not None,
+    }
 
 
 class _GlobalStop(Exception):
@@ -294,11 +403,20 @@ def _insert_step_and_job(
     # handoff per token that is the _MAX_SCHEDULER_ROWS design ceiling.
     run_config = _load_run_config(conn, run_id)
     continuous = bool(run_config.get("continuous_first_hour"))
+    compressed_two_token = _compressed_two_token_plan(run_config) is not None
     scheduler_ceiling = (
-        _CONTINUOUS_MAX_SCHEDULER_ROWS if continuous else _MAX_SCHEDULER_ROWS
+        _COMPRESSED_TWO_TOKEN_MAX_SCHEDULER_ROWS
+        if compressed_two_token
+        else _CONTINUOUS_MAX_SCHEDULER_ROWS
+        if continuous
+        else _MAX_SCHEDULER_ROWS
     )
     discovery_handoff_allowance = (
-        _CONTINUOUS_MAX_SELECTED_TOKENS if continuous else _V2_5_MAX_SELECTED_TOKENS
+        2
+        if compressed_two_token
+        else _CONTINUOUS_MAX_SELECTED_TOKENS
+        if continuous
+        else _V2_5_MAX_SELECTED_TOKENS
     )
     if _run_step_job_count(conn, run_id) >= scheduler_ceiling - discovery_handoff_allowance:
         raise _GlobalStop(STOP_BUDGET, scope="CUMULATIVE_LIFECYCLE")
@@ -1766,7 +1884,7 @@ def _enforce_budgets_before_step(conn: sqlite3.Connection, run_id: str, step: sq
         )
         lane = str(step["tracking_lane"])
         phase = runtime_budget(lane)
-        cumulative = cumulative_lifecycle_budget(lane)
+        cumulative = _cumulative_lifecycle_budget_for_run(conn, run_id, lane)
         phase_used = int(conn.execute(
             "SELECT COUNT(*) FROM printer_source_requests WHERE request_key LIKE ?",
             (f"{run_id}:%4h%",),
@@ -1796,7 +1914,14 @@ def _enforce_budgets_before_step(conn: sqlite3.Connection, run_id: str, step: sq
             ) from exc
         return
     continuous = bool(config.get("continuous_first_hour"))
-    run_ceiling = _CONTINUOUS_MAX_REQUESTS_RUN if continuous else _MAX_GOVERNED_REQUESTS_RUN
+    compressed_two_token = _compressed_two_token_plan(config) is not None
+    run_ceiling = (
+        _COMPRESSED_TWO_TOKEN_MAX_REQUESTS_RUN
+        if compressed_two_token
+        else _CONTINUOUS_MAX_REQUESTS_RUN
+        if continuous
+        else _MAX_GOVERNED_REQUESTS_RUN
+    )
     token_ceiling = (
         _CONTINUOUS_MAX_REQUESTS_PER_TOKEN
         if continuous else _MAX_GOVERNED_REQUESTS_PER_TOKEN
@@ -2088,7 +2213,7 @@ def _run_budgets(
             }
 
         phase = runtime_budget(lane)
-        cumulative = cumulative_lifecycle_budget(lane)
+        cumulative = _cumulative_lifecycle_budget_for_run(conn, run_id, lane)
         phase_requests = int(conn.execute(
             "SELECT COUNT(*) FROM printer_source_requests WHERE request_key LIKE ?",
             (f"{run_id}:%4h%",),
@@ -2155,9 +2280,25 @@ def _run_budgets(
             "budget_verdict": "WITHIN_CEILING" if cumulative_within else "EXCEEDED",
             "within_ceiling": cumulative_within,
         }
-        token_ceiling = int(cumulative["request_ceiling"]) - int(
-            cumulative["request_components"]["discovery"]
-        )
+        compressed_two_token = _compressed_two_token_plan(config) is not None
+        if compressed_two_token:
+            prefixes = sorted({_token_prefix(s["step_key"]) for s in steps})
+            per_token_requests = {
+                prefix: _token_request_count(conn, run_id, prefix)
+                for prefix in prefixes
+            }
+            token_ceiling = int(cumulative["request_ceiling"]) - int(
+                cumulative["request_components"]["discovery"]
+            )
+            per_token_within = all(
+                used <= token_ceiling for used in per_token_requests.values()
+            )
+        else:
+            token_ceiling = int(cumulative["request_ceiling"]) - int(
+                cumulative["request_components"]["discovery"]
+            )
+            per_token_requests = {"selected_token": runtime_requests}
+            per_token_within = runtime_requests <= token_ceiling
         return {
             "four_hour_phase_usage": phase_usage,
             "cumulative_lifecycle_usage": cumulative_usage,
@@ -2165,9 +2306,9 @@ def _run_budgets(
             "governed_requests_run": cumulative_requests,
             "governed_requests_run_ceiling": int(cumulative["request_ceiling"]),
             "governed_requests_run_within_ceiling": cumulative_requests_ok,
-            "governed_requests_per_token": {"selected_token": runtime_requests},
+            "governed_requests_per_token": per_token_requests,
             "governed_requests_per_token_ceiling": token_ceiling,
-            "governed_requests_per_token_within_ceiling": runtime_requests <= token_ceiling,
+            "governed_requests_per_token_within_ceiling": per_token_within,
             "holder_rpc_fallbacks": holder_fallbacks,
             "holder_rpc_fallbacks_ceiling": int(phase["holder_fallback_max"]),
             "scheduler_run_step_jobs": all_step_jobs,
@@ -2182,8 +2323,12 @@ def _run_budgets(
 
     prefixes = sorted({_token_prefix(s["step_key"]) for s in steps})
     per_token = {p: _token_request_count(conn, run_id, p) for p in prefixes}
+    compressed_two_token = _compressed_two_token_plan(config) is not None
     run_ceiling = (
-        _CONTINUOUS_MAX_REQUESTS_RUN if continuous
+        _COMPRESSED_TWO_TOKEN_MAX_REQUESTS_RUN
+        if compressed_two_token
+        else _CONTINUOUS_MAX_REQUESTS_RUN
+        if continuous
         else _MAX_GOVERNED_REQUESTS_RUN
     )
     token_ceiling = (
@@ -2191,7 +2336,11 @@ def _run_budgets(
         if continuous else _MAX_GOVERNED_REQUESTS_PER_TOKEN
     )
     scheduler_ceiling = (
-        _CONTINUOUS_MAX_SCHEDULER_ROWS if continuous else _MAX_SCHEDULER_ROWS
+        _COMPRESSED_TWO_TOKEN_MAX_SCHEDULER_ROWS
+        if compressed_two_token
+        else _CONTINUOUS_MAX_SCHEDULER_ROWS
+        if continuous
+        else _MAX_SCHEDULER_ROWS
     )
     return {
         "governed_requests_run": runtime_requests,
@@ -2552,6 +2701,145 @@ def _four_hour_terminal_validation(
         "cleanup_complete": pending_steps == 0 and running_jobs == 0,
     }
 
+def _two_token_continuous_proof_validation(
+    *,
+    config: Mapping[str, Any],
+    selected: list[dict[str, Any]],
+    steps: list[dict[str, Any]],
+    windows_by_id: Mapping[int, dict[str, Any]],
+    promotions_by_window_id: Mapping[int, dict[str, Any]],
+    pending_steps: int,
+    running_jobs: int,
+    forbidden: Mapping[str, int],
+    dirty_promotion_count: int,
+) -> dict[str, Any]:
+    """Validate the exact E.9 proof shape; ordinary continuous runs are untouched."""
+    plan = _compressed_two_token_plan(config)
+    if plan is None:
+        return {"enabled": False}
+
+    reasons: list[str] = []
+    selected_mints = [str(row.get("token_mint")) for row in selected]
+    expected_mints = {
+        plan["continuation_token_mint"],
+        plan["non_continuation_token_mint"],
+    }
+    if len(selected_mints) != 2 or set(selected_mints) != expected_mints:
+        reasons.append("selected_identity_set_mismatch")
+
+    relevant = [
+        step for step in steps
+        if step.get("step_kind") in {
+            "WINDOW_CLOSE", "CONTINUATION_CLOSE", "LONG_CONTINUATION_CLOSE"
+        }
+    ]
+    foreign = [
+        str(step.get("token_mint")) for step in steps
+        if str(step.get("token_mint")) not in expected_mints
+    ]
+    if foreign:
+        reasons.append("foreign_lifecycle_identity")
+
+    closes_15m = [step for step in relevant if step.get("step_kind") == "WINDOW_CLOSE"]
+    if len(closes_15m) != 2 or any(
+        step.get("step_status") != "SUCCEEDED" for step in closes_15m
+    ):
+        reasons.append("two_terminal_15m_closes_required")
+    for step in closes_15m:
+        window_id = step.get("memory_window_id")
+        window = windows_by_id.get(int(window_id)) if window_id is not None else None
+        if window is None or window.get("window_kind") != "WINDOW_15M":
+            reasons.append("invalid_15m_window_attachment")
+
+    by_mint = {str(step.get("token_mint")): step for step in closes_15m}
+    continuation_close_15m = by_mint.get(plan["continuation_token_mint"])
+    stopped_close_15m = by_mint.get(plan["non_continuation_token_mint"])
+    for step, expected_verdict, expected_reason in (
+        (continuation_close_15m, None, plan["continuation_evidence"]),
+        (stopped_close_15m, "VALID_NO_CAPTURE", plan["non_continuation_evidence"]),
+    ):
+        try:
+            result = json.loads(str(step.get("result_json") or "{}")) if step else {}
+        except json.JSONDecodeError:
+            result = {}
+        support = result.get("support_5m") if isinstance(result, dict) else None
+        continuation = result.get("continuation_plan") if isinstance(result, dict) else None
+        if expected_verdict is None:
+            if not isinstance(support, dict) or support.get("window_5m_id") is None:
+                reasons.append("positive_support_5m_missing")
+            if not isinstance(support, dict) or support.get("proof_evidence") != expected_reason:
+                reasons.append("continuation_evidence_mismatch")
+            if not isinstance(continuation, dict) or continuation.get("enqueue_ok") is not True:
+                reasons.append("continuation_plan_missing")
+        else:
+            if (
+                not isinstance(support, dict)
+                or support.get("verdict") != expected_verdict
+                or support.get("reason") != expected_reason
+                or support.get("window_5m_id") is not None
+            ):
+                reasons.append("negative_support_5m_disposition_missing")
+            if (
+                not isinstance(continuation, dict)
+                or continuation.get("verdict") != "STOP_AFTER_15M"
+                or continuation.get("reason") != expected_reason
+                or continuation.get("planned_jobs") != 0
+            ):
+                reasons.append("non_continuation_disposition_missing")
+
+    closes_1h = [step for step in relevant if step.get("step_kind") == "CONTINUATION_CLOSE"]
+    if (
+        len(closes_1h) != 1
+        or closes_1h[0].get("step_status") != "SUCCEEDED"
+        or closes_1h[0].get("token_mint") != plan["continuation_token_mint"]
+    ):
+        reasons.append("one_exact_terminal_1h_close_required")
+    elif windows_by_id.get(int(closes_1h[0]["memory_window_id"]), {}).get("window_kind") != "WINDOW_1H":
+        reasons.append("invalid_1h_window_attachment")
+
+    closes_4h = [step for step in relevant if step.get("step_kind") == "LONG_CONTINUATION_CLOSE"]
+    if (
+        len(closes_4h) != 1
+        or closes_4h[0].get("step_status") != "SUCCEEDED"
+        or closes_4h[0].get("token_mint") != plan["continuation_token_mint"]
+    ):
+        reasons.append("one_exact_terminal_4h_close_required")
+    elif windows_by_id.get(int(closes_4h[0]["memory_window_id"]), {}).get("window_kind") != "WINDOW_4H":
+        reasons.append("invalid_4h_window_attachment")
+
+    attached_ids = {
+        int(step["memory_window_id"])
+        for step in steps if step.get("memory_window_id") is not None
+    }
+    promotions = [
+        promotion for window_id, promotion in promotions_by_window_id.items()
+        if int(window_id) in attached_ids
+    ]
+    if len(promotions) != 1:
+        reasons.append(f"exactly_one_authoritative_clean_promotion_required:{len(promotions)}")
+    if dirty_promotion_count:
+        reasons.append(f"dirty_promotion_present:{dirty_promotion_count}")
+    if pending_steps:
+        reasons.append(f"pending_or_running_steps:{pending_steps}")
+    if running_jobs:
+        reasons.append(f"running_jobs:{running_jobs}")
+    if any(int(value) != 0 for value in forbidden.values()):
+        reasons.append("forbidden_table_delta")
+
+    return {
+        "enabled": True,
+        "complete": not reasons,
+        "reasons": reasons,
+        "continuation_token_mint": plan["continuation_token_mint"],
+        "non_continuation_token_mint": plan["non_continuation_token_mint"],
+        "terminal_15m_count": len(closes_15m),
+        "terminal_1h_count": len(closes_1h),
+        "terminal_4h_count": len(closes_4h),
+        "authoritative_clean_promotion_count": len(promotions),
+        "dirty_promotion_count": dirty_promotion_count,
+        "cleanup_complete": pending_steps == 0 and running_jobs == 0,
+    }
+
 def _final_report(
     conn: sqlite3.Connection, *, run_id: str, config: dict[str, Any],
     discovery: dict[str, Any], before: dict[str, int], stop_reason: str,
@@ -2576,6 +2864,19 @@ def _final_report(
     selected = _selected_targets(conn, discovery.get("selection_handoff_report", {}).get("batch_id") or "")
     windows_by_id = {int(w["id"]): w for w in windows}
     promotions_by_window_id = _authoritative_promotions_for_run(conn, run_id)
+    dirty_promotion_count = int(conn.execute(
+        """SELECT COUNT(DISTINCT e.id)
+           FROM printer_episodes e
+           JOIN printer_memory_factory_run_steps s ON s.memory_window_id=e.memory_window_id
+           WHERE s.run_id=? AND (
+               e.episode_status!='COMPLETE'
+               OR e.memory_status!='CLEAN_MEMORY'
+               OR e.data_quality_label!='CLEAN_DATA'
+               OR e.do_not_train!=0
+               OR e.memory_quality_label!='CLEAN_MEMORY'
+           )""",
+        (run_id,),
+    ).fetchone()[0])
     per_token = _per_token_outcomes(steps, windows_by_id, promotions_by_window_id)
     run_local_yield, memory_results = _memory_yield_report(per_token, windows)
     terminal_window_outcomes = sum(1 for t in per_token if t["reached_terminal_window"])
@@ -2588,6 +2889,14 @@ def _final_report(
         budgets=budgets, pending_steps=pending_run_steps, running_jobs=running,
         primary_cause=primary_cause,
     )
+    two_token_validation = _two_token_continuous_proof_validation(
+        config=config, selected=selected, steps=steps,
+        windows_by_id=windows_by_id,
+        promotions_by_window_id=promotions_by_window_id,
+        pending_steps=pending_run_steps, running_jobs=running,
+        forbidden=forbidden,
+        dirty_promotion_count=dirty_promotion_count,
+    )
     effective_status = "COMPLETED" if stop_reason == STOP_COMPLETED else "SAFE_STOPPED"
     effective_reason = stop_reason
     if primary_cause.get("present"):
@@ -2596,6 +2905,13 @@ def _final_report(
     elif terminal_validation.get("enabled"):
         effective_status = str(terminal_validation["run_status"])
         effective_reason = str(terminal_validation["stop_reason"])
+    if (
+        two_token_validation.get("enabled")
+        and not two_token_validation.get("complete")
+        and not primary_cause.get("present")
+    ):
+        effective_status = "SAFE_STOPPED"
+        effective_reason = STOP_TWO_TOKEN_PROOF
     return {
         "command": COMMAND_NAME, "policy_version": POLICY_VERSION,
         "run_id": run_id, "run_status": effective_status,
@@ -2622,6 +2938,7 @@ def _final_report(
         "four_hour_phase_usage": budgets.get("four_hour_phase_usage"),
         "cumulative_lifecycle_usage": budgets.get("cumulative_lifecycle_usage"),
         "four_hour_terminal_validation": terminal_validation,
+        "two_token_continuous_proof": two_token_validation,
         "primary_terminal_cause": primary_cause,
         "secondary_terminal_details": [],
         "continuous_lifecycle": lifecycle,
@@ -2688,6 +3005,7 @@ def run_one_command_15m_factory(
     continuous_first_hour: bool = False,
     continuous_four_hour: bool = False,
     four_hour_proof_mode: bool = False,
+    compressed_two_token_proof_plan: CompressedTwoTokenProofPlan | None = None,
     supervision_execution_id: str | None = None,
     cancellation_probe: Callable[[], str | None] | None = None,
     discovery_transport: Any = None, discovery_runner: Callable[..., dict[str, Any]] | None = None,
@@ -2720,8 +3038,21 @@ def run_one_command_15m_factory(
     if _is_persistent_db(path): reasons.append("persistent DB is forbidden in first proof")
     # V2-5: the explicit three-token proof mode permits exactly three autonomous
     # tokens. Normal mode stays capped at two. Four or more is always rejected.
+    if compressed_two_token_proof_plan is not None and not continuous_first_hour:
+        reasons.append("compressed two-token proof requires continuous first-hour mode")
     if continuous_first_hour:
-        if max_selected_tokens != _CONTINUOUS_MAX_SELECTED_TOKENS:
+        if compressed_two_token_proof_plan is not None:
+            try:
+                compressed_two_token_proof_plan.validate_shape()
+            except ValueError as exc:
+                reasons.append(str(exc))
+            if max_selected_tokens != 2:
+                reasons.append("compressed two-token continuous proof requires exactly two tokens")
+            if discovery_runner is None:
+                reasons.append("compressed two-token proof requires injected origin discovery")
+            if not continuous_four_hour or not four_hour_proof_mode:
+                reasons.append("compressed two-token proof requires terminal 4h proof mode")
+        elif max_selected_tokens != _CONTINUOUS_MAX_SELECTED_TOKENS:
             reasons.append("continuous first-hour proof requires exactly one autonomous token")
         if v2_5_proof_mode:
             reasons.append("continuous first-hour proof cannot use V2-5 three-token mode")
@@ -2778,6 +3109,10 @@ def run_one_command_15m_factory(
         "continuous_first_hour": bool(continuous_first_hour),
         "continuous_four_hour": bool(continuous_four_hour),
         "four_hour_proof_mode": bool(four_hour_proof_mode),
+        "compressed_two_token_proof_plan": (
+            asdict(compressed_two_token_proof_plan)
+            if compressed_two_token_proof_plan is not None else None
+        ),
         "supervision_execution_id": supervision_execution_id,
         "git_provenance": provenance,
         "continuation_seconds": _continuation_seconds if continuous_first_hour else 0.0,
@@ -2792,6 +3127,12 @@ def run_one_command_15m_factory(
             "continuous_governed_requests_run": _CONTINUOUS_MAX_REQUESTS_RUN,
             "continuous_governed_requests_per_token": _CONTINUOUS_MAX_REQUESTS_PER_TOKEN,
             "continuous_scheduler_rows": _CONTINUOUS_MAX_SCHEDULER_ROWS,
+            "compressed_two_token_governed_requests_run": (
+                _COMPRESSED_TWO_TOKEN_MAX_REQUESTS_RUN
+            ),
+            "compressed_two_token_scheduler_rows": (
+                _COMPRESSED_TWO_TOKEN_MAX_SCHEDULER_ROWS
+            ),
         },
     }
     run_id = str(uuid.uuid4())
@@ -2830,6 +3171,19 @@ def run_one_command_15m_factory(
         handoff = discovery.get("selection_handoff_report", {})
         batch_id = handoff.get("batch_id")
         targets = _selected_targets(conn, str(batch_id or ""))
+        if compressed_two_token_proof_plan is not None:
+            compressed_two_token_proof_plan.validate_targets(targets)
+            origin_projection_count = int(conn.execute(
+                """SELECT COUNT(*) FROM printer_selection_batch_items
+                   WHERE batch_id=? AND item_status='SELECTED'
+                     AND selection_reason='origin_confirmed_atomic_activation'
+                     AND source_name='solana_rpc'""",
+                (str(batch_id or ""),),
+            ).fetchone()[0])
+            if origin_projection_count != 2:
+                raise ValueError(
+                    "two-token proof targets must be exact origin-activated projections"
+                )
         conn.execute(
             "UPDATE printer_memory_factory_runs SET selection_seed=?,selection_batch_id=?,eligible_pool_size=?,selected_token_count=?,updated_at=? WHERE run_id=?",
             (handoff.get("selection_seed"), batch_id, handoff.get("eligible_pool_size", 0), len(targets), _iso(), run_id),
@@ -2952,42 +3306,69 @@ def run_one_command_15m_factory(
                             ),
                         )
                         conn.commit()
-                        support = _capture_same_stream_5m_support(
-                            conn,
-                            run_id=run_id,
-                            close_step=pending,
-                            parent_window_id=int(window_id),
+                        proof_plan = _compressed_two_token_plan(config)
+                        should_continue = (
+                            proof_plan is None
+                            or str(pending["token_mint"])
+                            == proof_plan["continuation_token_mint"]
                         )
-                        if support.get("window_5m_id") is None:
-                            raise ValueError(
-                                "same-stream 5m support capture blocked: "
-                                + "; ".join(support.get("blocked_reasons", []))
+                        if should_continue:
+                            support = _capture_same_stream_5m_support(
+                                conn,
+                                run_id=run_id,
+                                close_step=pending,
+                                parent_window_id=int(window_id),
                             )
-                        source = _resolve_current_run_15m_source(
-                            conn,
-                            run_id=run_id,
-                            token_id=int(pending["token_id"]),
-                            pair_id=int(pending["pair_id"]),
-                            tracking_lane=str(pending["tracking_lane"]),
-                            current_close_step_id=int(pending["id"]),
-                        )
-                        if not source.get("resolved"):
-                            raise ValueError(
-                                "current-run 15m continuation source blocked: "
-                                + "; ".join(source.get("reasons", []))
+                            if support.get("window_5m_id") is None:
+                                raise ValueError(
+                                    "same-stream 5m support capture blocked: "
+                                    + "; ".join(support.get("blocked_reasons", []))
+                                )
+                            if proof_plan is not None:
+                                support["trigger_family"] = proof_plan[
+                                    "support_5m_trigger_family"
+                                ]
+                                support["proof_evidence"] = proof_plan[
+                                    "continuation_evidence"
+                                ]
+                            source = _resolve_current_run_15m_source(
+                                conn,
+                                run_id=run_id,
+                                token_id=int(pending["token_id"]),
+                                pair_id=int(pending["pair_id"]),
+                                tracking_lane=str(pending["tracking_lane"]),
+                                current_close_step_id=int(pending["id"]),
                             )
-                        continuation_plan = _plan_continuation_jobs(
-                            conn,
-                            run_id=run_id,
-                            close_step=pending,
-                            fifteen_m=source["window"],
-                            continuation_seconds=_continuation_seconds,
-                        )
-                        if not continuation_plan.get("enqueue_ok"):
-                            raise ValueError(
-                                "continuation planning blocked: "
-                                + "; ".join(continuation_plan.get("reasons", []))
+                            if not source.get("resolved"):
+                                raise ValueError(
+                                    "current-run 15m continuation source blocked: "
+                                    + "; ".join(source.get("reasons", []))
+                                )
+                            continuation_plan = _plan_continuation_jobs(
+                                conn,
+                                run_id=run_id,
+                                close_step=pending,
+                                fifteen_m=source["window"],
+                                continuation_seconds=_continuation_seconds,
                             )
+                            if not continuation_plan.get("enqueue_ok"):
+                                raise ValueError(
+                                    "continuation planning blocked: "
+                                    + "; ".join(continuation_plan.get("reasons", []))
+                                )
+                        else:
+                            support = {
+                                "captured": False,
+                                "verdict": "VALID_NO_CAPTURE",
+                                "reason": proof_plan["non_continuation_evidence"],
+                                "window_5m_id": None,
+                            }
+                            continuation_plan = {
+                                "enqueue_ok": False,
+                                "planned_jobs": 0,
+                                "verdict": "STOP_AFTER_15M",
+                                "reason": proof_plan["non_continuation_evidence"],
+                            }
                         result["support_5m"] = support
                         result["continuation_plan"] = continuation_plan
                     elif pending["step_kind"] == "CONTINUATION_CLOSE" and continuous_four_hour:
@@ -3010,6 +3391,14 @@ def run_one_command_15m_factory(
                             tracking_lane=str(pending["tracking_lane"]),
                             current_close_step_id=int(pending["id"]),
                             explicit_proof_mode=four_hour_proof_mode,
+                            compressed_two_token_proof=(
+                                _compressed_two_token_plan(config) is not None
+                            ),
+                            cumulative_scheduler_ceiling=int(
+                                _cumulative_lifecycle_budget_for_run(
+                                    conn, run_id, str(pending["tracking_lane"])
+                                )["scheduler_ceiling"]
+                            ),
                         )
                         if not plan.get("planned"):
                             raise ValueError("4h planning blocked: " + "; ".join(plan.get("blocked_reasons", [])))

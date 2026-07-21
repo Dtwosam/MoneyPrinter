@@ -4932,10 +4932,24 @@ UNKNOWN_CONTEXT_VALUES = {
 
 
 def _collect_unknown_context_blockers(labels: dict[str, Any]) -> list[str]:
+    # Raw provider labels remain observed/reportable evidence. Once the
+    # canonical timeframe-aware safety gate has accepted WINDOW_15M evidence,
+    # those raw unknowns must not override the effective result and falsely
+    # downgrade otherwise clean memory. A blocked/unknown effective gate still
+    # fails closed through its own label and every other unknown remains active.
+    effective_safety_accepted = (
+        labels.get("effective_safety_context_result") == "SAFETY_CONTEXT_ACCEPTABLE"
+    )
+    explanatory_raw_safety = {
+        "raw_safety_context_label",
+        "raw_safety_action_label",
+        "raw_safety_contract_label",
+    }
     return [
         f"{key}={value if value is not None else 'UNKNOWN'}"
         for key, value in labels.items()
         if value in UNKNOWN_CONTEXT_VALUES
+        and not (effective_safety_accepted and key in explanatory_raw_safety)
     ]
 
 

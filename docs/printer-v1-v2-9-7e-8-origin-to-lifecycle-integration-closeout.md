@@ -212,3 +212,20 @@ live pilot itself was **not** run in this lane and is not claimed to have passed
 
 V2-9.7E.8 ends PASS. No tag. No live pilot. V2-9.7F, V2-9.8, retrieval,
 decisions, BUY/SELL/HOLD, positions, trades, audits, and PnL were not begun.
+
+## Dated correction — 2026-07-21 (V2-9.7E.9)
+
+The E.8 implementation and its original focused tests passed, and that
+historical result is preserved. Its integrated-proof verdict was nevertheless
+incomplete: E.8 projected only one of the two activated identities into the
+continuous harness, did not enable terminal 4h proof mode, and asserted that
+1h/4h report structures existed instead of proving succeeded terminal 1h and
+4h closes. Therefore E.8's original statement that the integrated two-token
+campaign was ready for a live pilot was premature.
+
+V2-9.7E.9 closes that proof gap with one exact two-slot campaign: both tokens
+reach terminal 15m, one stops, one reaches terminal 1h and 4h, one authoritative
+clean main-memory promotion is present, 5m remains support-only, cleanup and
+zero-source replay are deterministic, and all locks remain intact. This
+correction does not erase or reinterpret E.8's valid origin-to-lifecycle bridge;
+it narrows the historical claim to what E.8 actually proved.

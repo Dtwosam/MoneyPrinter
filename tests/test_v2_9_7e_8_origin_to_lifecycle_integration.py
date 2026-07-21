@@ -249,6 +249,7 @@ class _IntegrationBase(unittest.TestCase):
             "context_adapter_factories": self._context_factories(),
             "_window_seconds": 0.05,
             "total_duration_seconds": 3.0,
+            "launch_provenance": _provenance(),
         }
         lifecycle_kwargs.update(lifecycle_over)
         return driver.run(
@@ -457,6 +458,7 @@ class ContinuationDepthThroughHandoffTests(_IntegrationBase):
             _window_seconds=0.08,
             _continuation_seconds=0.12,
             total_duration_seconds=10.0,
+            launch_provenance=_provenance(),
         )
         self.assertEqual(result["run_status"], "COMPLETED")
         lifecycle = result["continuous_lifecycle"]

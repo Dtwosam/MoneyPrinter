@@ -130,6 +130,8 @@ def plan_current_run_4h(
     tracking_lane: str,
     current_close_step_id: int | None = None,
     explicit_proof_mode: bool = False,
+    compressed_two_token_proof: bool = False,
+    cumulative_scheduler_ceiling: int | None = None,
 ) -> dict[str, Any]:
     """Plan the exact policy-derived 4h jobs from this run's terminal 1h row."""
     budget = runtime_budget(tracking_lane)
@@ -139,8 +141,35 @@ def plan_current_run_4h(
         "SELECT selected_token_count FROM printer_memory_factory_runs WHERE run_id=?",
         (run_id,),
     ).fetchone()
-    if selected is None or int(selected[0] or 0) != 1:
-        return {"planned": False, "blocked_reasons": ["4h runtime requires exactly one selected token"]}
+    required_selected = 2 if compressed_two_token_proof else 1
+    if selected is None or int(selected[0] or 0) != required_selected:
+        return {
+            "planned": False,
+            "blocked_reasons": [
+                "4h runtime requires exactly "
+                f"{required_selected} selected token{'s' if required_selected != 1 else ''}"
+            ],
+        }
+    if compressed_two_token_proof:
+        continuation_rows = connection.execute(
+            """SELECT token_id,pair_id,tracking_lane,step_status
+               FROM printer_memory_factory_run_steps
+               WHERE run_id=? AND step_kind='CONTINUATION_CLOSE'
+                 AND step_status IN ('RUNNING','SUCCEEDED')""",
+            (run_id,),
+        ).fetchall()
+        if (
+            len(continuation_rows) != 1
+            or int(continuation_rows[0]["token_id"]) != token_id
+            or int(continuation_rows[0]["pair_id"]) != pair_id
+            or str(continuation_rows[0]["tracking_lane"]) != tracking_lane
+        ):
+            return {
+                "planned": False,
+                "blocked_reasons": [
+                    "two-token proof requires one exact continuation identity"
+                ],
+            }
     resolved = resolve_current_run_long_predecessor(
         connection,
         run_id=run_id,
@@ -188,13 +217,20 @@ def plan_current_run_4h(
         label="4h phase scheduler",
     )
     cumulative = cumulative_lifecycle_budget(tracking_lane)
+    effective_cumulative_ceiling = (
+        int(cumulative_scheduler_ceiling)
+        if compressed_two_token_proof and cumulative_scheduler_ceiling is not None
+        else int(cumulative["scheduler_ceiling"])
+    )
+    if effective_cumulative_ceiling < int(cumulative["scheduler_ceiling"]):
+        raise ValueError("two-token proof cumulative scheduler ceiling is too small")
     existing_jobs = int(connection.execute(
         "SELECT COUNT(DISTINCT scheduler_job_id) FROM printer_memory_factory_run_steps "
         "WHERE run_id=? AND scheduler_job_id IS NOT NULL", (run_id,),
     ).fetchone()[0])
     require_projected_capacity(
         current=existing_jobs + 1, projected=expected,
-        ceiling=int(cumulative["scheduler_ceiling"]),
+        ceiling=effective_cumulative_ceiling,
         label="cumulative lifecycle scheduler",
     )
     target = {
