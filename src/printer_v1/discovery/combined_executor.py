@@ -621,6 +621,31 @@ class CombinedPumpfunCampaignExecutor:
                 "INSUFFICIENT_ELIGIBLE_TWO_SLOT_POOL",
                 now,
             )
+            # Terminalize any still-open discovery work rows for this batch so
+            # supervision cleanup does not leave RUNNING discovery work.
+            connection.execute(
+                """
+                UPDATE printer_discovery_work
+                SET work_state = 'FAILED',
+                    first_terminal_cause = COALESCE(first_terminal_cause, ?),
+                    terminal_at = COALESCE(terminal_at, ?),
+                    updated_at = ?
+                WHERE discovery_batch_id = ?
+                  AND work_state IN ('PENDING', 'RUNNING', 'COOLDOWN')
+                """,
+                (
+                    "INSUFFICIENT_ELIGIBLE_TWO_SLOT_POOL",
+                    now,
+                    now,
+                    discovery_batch_id,
+                ),
+            )
+            self._mark_discovery_batch_failed(
+                connection,
+                discovery_batch_id,
+                "INSUFFICIENT_ELIGIBLE_TWO_SLOT_POOL",
+                now,
+            )
             self._persist_reports(
                 connection, command, discovery_batch_id, provider_reports, usage, now
             )

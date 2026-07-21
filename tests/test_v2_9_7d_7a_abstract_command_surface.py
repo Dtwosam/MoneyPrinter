@@ -93,7 +93,7 @@ class AbstractCommandSurfaceTests(unittest.TestCase):
                 "source_identity": "sha256:" + "a" * 64,
                 "backup_sha256": "b" * 64,
                 "required_migration": "032_campaign_ownership_schema.sql",
-                "latest_migration": "034_discovery_persistence_reconciliation.sql",
+                "latest_migration": "035_insufficient_pool_cycle_terminal_trigger.sql",
             },
         }
         created = create_campaign(

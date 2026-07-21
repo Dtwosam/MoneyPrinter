@@ -135,7 +135,40 @@ def _root(
     causes = {root["first_terminal_cause"], root["run_first_cause"]}
     if None in causes or len(causes) != 1:
         raise FinalCampaignReportError("campaign/run first terminal cause mismatch")
-    if not root["authoritative_run_id"] or not root["authoritative_report_json"]:
+    insufficient_pool = (
+        root["first_terminal_cause"] == "INSUFFICIENT_ELIGIBLE_TWO_SLOT_POOL"
+    )
+    if insufficient_pool and not root["authoritative_run_id"]:
+        # Discovery-only insufficient-pool campaigns never open an
+        # authoritative memory-factory run. Synthesize a zero-delta envelope
+        # from locked-capability tables without inventing activations.
+        zero = {table: 0 for table in LOCKED_CAPABILITY_TABLES}
+        for table in LOCKED_CAPABILITY_TABLES:
+            zero[table] = int(
+                connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+            )
+        root["authoritative_run_id"] = f"synthetic-insufficient-pool:{campaign_id}:{run_id}"
+        root["authoritative_run_status"] = "FAILED"
+        root["authoritative_stop_reason"] = "INSUFFICIENT_ELIGIBLE_TWO_SLOT_POOL"
+        root["authoritative_report_json"] = json.dumps(
+            {
+                "counts_before": zero,
+                "counts_after": zero,
+                "forbidden_deltas": {table: 0 for table in LOCKED_CAPABILITY_TABLES},
+                "run_budgets": {
+                    "governed_requests_run": 0,
+                    "governed_requests_run_ceiling": 0,
+                    "scheduler_rows_total": 0,
+                    "scheduler_rows_ceiling": 0,
+                    "automatic_retries": 0,
+                },
+                "selected_token_count": 0,
+                "first_terminal_cause": "INSUFFICIENT_ELIGIBLE_TWO_SLOT_POOL",
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    elif not root["authoritative_run_id"] or not root["authoritative_report_json"]:
         raise FinalCampaignReportError("authoritative run terminal report is missing")
     return root
 
@@ -146,6 +179,7 @@ def _stored_objects(
     campaign_id: str,
     configuration_id: str,
     run_id: str,
+    allow_empty_objects: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
     records: list[dict[str, Any]] = []
     grouped = {kind: [] for kind in OBJECT_KINDS}
@@ -179,7 +213,7 @@ def _stored_objects(
         records.append({"object_kind": kind, **item})
         grouped[kind].append(item)
     missing = [kind for kind, items in grouped.items() if not items]
-    if missing:
+    if missing and not allow_empty_objects:
         raise FinalCampaignReportError(f"required campaign objects missing: {missing}")
     return records, grouped
 
@@ -343,11 +377,21 @@ def assemble_final_campaign_report(
             (campaign_id, run_id),
         ).fetchall()]
         cycle_ids = {cycle["cycle_id"] for cycle in cycles}
-        if any(
-            sum(slot["cycle_id"] == cycle_id for slot in slots) != 2
-            for cycle_id in cycle_ids
-        ):
-            raise FinalCampaignReportError("every campaign cycle requires two tokens")
+        insufficient_pool = (
+            root["first_terminal_cause"] == "INSUFFICIENT_ELIGIBLE_TWO_SLOT_POOL"
+        )
+        for cycle_id in cycle_ids:
+            slot_count = sum(slot["cycle_id"] == cycle_id for slot in slots)
+            if insufficient_pool:
+                # Two-or-none: insufficient pool leaves zero activated slots.
+                if slot_count != 0:
+                    raise FinalCampaignReportError(
+                        "insufficient-pool campaigns must activate zero token slots"
+                    )
+            elif slot_count != 2:
+                raise FinalCampaignReportError(
+                    "every campaign cycle requires two tokens"
+                )
         windows = [dict(row) for row in connection.execute(
             """SELECT * FROM printer_memory_factory_campaign_windows
                WHERE campaign_id=? AND run_id=?
@@ -363,6 +407,7 @@ def assemble_final_campaign_report(
         records, objects = _stored_objects(
             connection, campaign_id=campaign_id,
             configuration_id=configuration_id, run_id=run_id,
+            allow_empty_objects=insufficient_pool,
         )
         supervision_rows = connection.execute(
             """SELECT * FROM printer_memory_factory_campaign_supervision

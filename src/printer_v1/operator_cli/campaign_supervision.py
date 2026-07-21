@@ -432,6 +432,16 @@ def _terminal_targets(terminal_status: str) -> tuple[str, str]:
     return "TERMINAL_FAILED", "TERMINAL_FAILED"
 
 
+def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
+    return (
+        connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone()
+        is not None
+    )
+
+
 def _finish_released_lease(
     db_path: str | Path, row: sqlite3.Row, *, released_at: str,
 ) -> None:
@@ -467,6 +477,12 @@ def cleanup_campaign_supervision(
     timestamp = _iso(now)
     connection = _connect(db_path)
     replay = False
+    discovery_work_rowcount = 0
+    discovery_batch_rowcount = 0
+    work_cursor = None
+    job_cursor = None
+    window_cursor = None
+    cycle_cursor = None
     try:
         connection.execute("BEGIN IMMEDIATE")
         row = _load_exact(
@@ -474,6 +490,9 @@ def cleanup_campaign_supervision(
             configuration_id=configuration_id, run_id=run_id, owner_id=owner_id,
         )
         if row["supervision_state"] == "TERMINAL":
+            # Idempotent same-identity cleanup always preserves the first
+            # terminal status/cause (first-fault). Ownership mismatches still
+            # fail closed via _load_exact before this branch.
             replay = True
             terminal_status = str(row["terminal_status"])
             cause = str(row["first_terminal_cause"])
@@ -503,18 +522,79 @@ def cleanup_campaign_supervision(
                      AND work_state IN ('PENDING','RUNNING','COOLDOWN')""",
                 (cause, timestamp, timestamp, campaign_id, run_id),
             )
-            job_cursor = connection.execute(
-                """UPDATE printer_scheduler_jobs
-                   SET status='CANCELLED',finished_at=?,locked_at=NULL,lock_owner=NULL,
-                       last_error=COALESCE(last_error,?),updated_at=?
-                   WHERE id IN (
-                       SELECT scheduler_job_id
-                       FROM printer_memory_factory_campaign_scheduler_work
-                       WHERE campaign_id=? AND run_id=? AND scheduler_job_id IS NOT NULL
-                   ) AND (status IN ('PENDING','RUNNING','COOLDOWN')
-                          OR locked_at IS NOT NULL OR lock_owner IS NOT NULL)""",
-                (timestamp, cause, timestamp, campaign_id, run_id),
-            )
+            # Discovery intake work is owned via printer_discovery_work (migration
+            # 034), not only campaign_scheduler_work. Terminalize those rows and
+            # cancel their Scheduler jobs so insufficient-pool stops leave no
+            # ACTIVE discovery residue.
+            discovery_work_rowcount = 0
+            discovery_batch_rowcount = 0
+            if _table_exists(connection, "printer_discovery_work"):
+                discovery_work_cursor = connection.execute(
+                    """UPDATE printer_discovery_work
+                       SET work_state=CASE
+                             WHEN work_state IN ('SUCCEEDED','FAILED','CANCELLED')
+                             THEN work_state ELSE 'FAILED' END,
+                           first_terminal_cause=COALESCE(first_terminal_cause,?),
+                           terminal_at=COALESCE(terminal_at,?),
+                           updated_at=?
+                       WHERE campaign_id=? AND run_id=?
+                         AND work_state IN ('PENDING','RUNNING','COOLDOWN')""",
+                    (cause, timestamp, timestamp, campaign_id, run_id),
+                )
+                discovery_work_rowcount = int(discovery_work_cursor.rowcount)
+            if _table_exists(connection, "printer_discovery_batches"):
+                discovery_batch_cursor = connection.execute(
+                    """UPDATE printer_discovery_batches
+                       SET batch_state='TERMINAL_FAILED',
+                           first_terminal_cause=COALESCE(first_terminal_cause,?),
+                           terminal_at=COALESCE(terminal_at,?)
+                       WHERE campaign_id=? AND run_id=?
+                         AND batch_state NOT LIKE 'TERMINAL_%'""",
+                    (cause, timestamp, campaign_id, run_id),
+                )
+                discovery_batch_rowcount = int(discovery_batch_cursor.rowcount)
+            if _table_exists(connection, "printer_discovery_work"):
+                job_cursor = connection.execute(
+                    """UPDATE printer_scheduler_jobs
+                       SET status='CANCELLED',finished_at=?,locked_at=NULL,
+                           lock_owner=NULL,
+                           last_error=COALESCE(last_error,?),updated_at=?
+                       WHERE (
+                           id IN (
+                               SELECT scheduler_job_id
+                               FROM printer_memory_factory_campaign_scheduler_work
+                               WHERE campaign_id=? AND run_id=?
+                                 AND scheduler_job_id IS NOT NULL
+                           )
+                           OR id IN (
+                               SELECT scheduler_job_id
+                               FROM printer_discovery_work
+                               WHERE campaign_id=? AND run_id=?
+                                 AND scheduler_job_id IS NOT NULL
+                           )
+                       ) AND (status IN ('PENDING','RUNNING','COOLDOWN')
+                              OR locked_at IS NOT NULL OR lock_owner IS NOT NULL)""",
+                    (
+                        timestamp, cause, timestamp,
+                        campaign_id, run_id,
+                        campaign_id, run_id,
+                    ),
+                )
+            else:
+                job_cursor = connection.execute(
+                    """UPDATE printer_scheduler_jobs
+                       SET status='CANCELLED',finished_at=?,locked_at=NULL,
+                           lock_owner=NULL,
+                           last_error=COALESCE(last_error,?),updated_at=?
+                       WHERE id IN (
+                           SELECT scheduler_job_id
+                           FROM printer_memory_factory_campaign_scheduler_work
+                           WHERE campaign_id=? AND run_id=?
+                             AND scheduler_job_id IS NOT NULL
+                       ) AND (status IN ('PENDING','RUNNING','COOLDOWN')
+                              OR locked_at IS NOT NULL OR lock_owner IS NOT NULL)""",
+                    (timestamp, cause, timestamp, campaign_id, run_id),
+                )
             window_cursor = connection.execute(
                 """UPDATE printer_memory_factory_campaign_windows
                    SET window_state='CANCELLED',first_terminal_cause=?,terminal_at=?,updated_at=?
@@ -553,7 +633,21 @@ def cleanup_campaign_supervision(
                           OR job.locked_at IS NOT NULL OR job.lock_owner IS NOT NULL)""",
                 (campaign_id, run_id),
             ).fetchone()[0])
-            if active_work:
+            active_discovery = 0
+            if _table_exists(connection, "printer_discovery_work"):
+                active_discovery = int(connection.execute(
+                    """SELECT COUNT(*)
+                       FROM printer_discovery_work AS work
+                       LEFT JOIN printer_scheduler_jobs AS job
+                         ON job.id=work.scheduler_job_id
+                       WHERE work.campaign_id=? AND work.run_id=?
+                         AND (work.work_state IN ('PENDING','RUNNING','COOLDOWN')
+                              OR job.status IN ('PENDING','RUNNING','COOLDOWN')
+                              OR job.locked_at IS NOT NULL
+                              OR job.lock_owner IS NOT NULL)""",
+                    (campaign_id, run_id),
+                ).fetchone()[0])
+            if active_work or active_discovery:
                 raise CampaignSupervisionError("campaign child-work cleanup is incomplete")
             connection.execute(
                 """UPDATE printer_memory_factory_campaign_supervision
@@ -586,6 +680,19 @@ def cleanup_campaign_supervision(
                       OR job.locked_at IS NOT NULL OR job.lock_owner IS NOT NULL)""",
             (campaign_id, run_id),
         ).fetchone()[0])
+        if _table_exists(connection, "printer_discovery_work"):
+            active_after += int(connection.execute(
+                """SELECT COUNT(*)
+                   FROM printer_discovery_work AS work
+                   LEFT JOIN printer_scheduler_jobs AS job
+                     ON job.id=work.scheduler_job_id
+                   WHERE work.campaign_id=? AND work.run_id=?
+                     AND (work.work_state IN ('PENDING','RUNNING','COOLDOWN')
+                          OR job.status IN ('PENDING','RUNNING','COOLDOWN')
+                          OR job.locked_at IS NOT NULL
+                          OR job.lock_owner IS NOT NULL)""",
+                (campaign_id, run_id),
+            ).fetchone()[0])
     finally:
         connection.close()
     released = _release_lock(Path(terminal_row["lease_lock_path"]), terminal_row)
@@ -601,6 +708,10 @@ def cleanup_campaign_supervision(
         "terminal_status": terminal_status,
         "first_terminal_cause": cause,
         "cancelled_campaign_work": 0 if replay else int(work_cursor.rowcount),
+        "cancelled_discovery_work": 0 if replay else discovery_work_rowcount,
+        "terminalized_discovery_batches": (
+            0 if replay else discovery_batch_rowcount
+        ),
         "cancelled_scheduler_jobs": 0 if replay else int(job_cursor.rowcount),
         "cancelled_windows": 0 if replay else int(window_cursor.rowcount),
         "terminalized_cycles": 0 if replay else int(cycle_cursor.rowcount),

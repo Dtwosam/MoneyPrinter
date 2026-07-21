@@ -627,7 +627,7 @@ class IsolatedSlice6IntegrationProofTests(unittest.TestCase):
         self.assertEqual(self.preflight["required_rehearsed_migration"], MIGRATION_032)
         self.assertEqual(
             self.preflight["latest_rehearsed_migration"],
-            "034_discovery_persistence_reconciliation.sql",
+            "035_insufficient_pool_cycle_terminal_trigger.sql",
         )
 
         slots = (self._policy_slot(1), self._policy_slot(2))
@@ -807,7 +807,7 @@ class IsolatedSlice6IntegrationProofTests(unittest.TestCase):
         self.assertTrue(report["locked_capabilities"]["all_deltas_zero"])
         self.assertEqual(
             report["backup_preflight_references"]["latest_migration"],
-            "034_discovery_persistence_reconciliation.sql",
+            "035_insufficient_pool_cycle_terminal_trigger.sql",
         )
         self.assertNotEqual(
             report["opportunity_outcome_layers"][0]["full_window_outcome"],

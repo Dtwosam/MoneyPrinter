@@ -261,8 +261,20 @@ def persist_terminal_report_with_objects(
     report_id = _nonempty(report_id, "report_id")
     campaign_id = _nonempty(campaign_id, "campaign_id")
     configuration_id = _nonempty(configuration_id, "configuration_id")
-    if not isinstance(object_ids, tuple) or not object_ids or any(
+    if not isinstance(object_ids, tuple) or any(
         not isinstance(value, str) or not value.strip() for value in object_ids
+    ):
+        raise CampaignPersistenceError("object_ids must be unique non-empty strings")
+    # Insufficient-pool discovery stops activate zero tokens and create no 4A-5C
+    # campaign objects. Empty object link sets are therefore valid for that cause.
+    terminal_cause = None
+    if isinstance(report, Mapping):
+        terminal = report.get("terminal")
+        if isinstance(terminal, Mapping):
+            terminal_cause = terminal.get("first_terminal_cause")
+    if (
+        not object_ids
+        and terminal_cause != "INSUFFICIENT_ELIGIBLE_TWO_SLOT_POOL"
     ):
         raise CampaignPersistenceError("object_ids must be non-empty strings")
     if len(set(object_ids)) != len(object_ids):
