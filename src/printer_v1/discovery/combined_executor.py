@@ -77,6 +77,7 @@ from printer_v1.sources.pumpfun_direct import (
     FinalizedCursor,
     PumpCreateObservation,
     run_fixture_cycle,
+    run_mint_origin_lookup,
 )
 
 
@@ -198,6 +199,10 @@ class CombinedDiscoveryFixtures:
     direct_operations: tuple[Any, ...] = ()
     prior_cursor: FinalizedCursor | None = None
     origin_proofs: Mapping[str, FixtureOriginProof] = field(default_factory=dict)
+    # Optional fixture-only mint-scoped origin lookup ops (4C productivity).
+    # Keys are exact mint identities; values are ordered FixtureOperation plans.
+    origin_lookup_operations: Mapping[str, tuple[Any, ...]] = field(default_factory=dict)
+    origin_cutoff_slot: int | None = None
     pumpswap_proofs: Mapping[str, FixturePumpSwapProof] = field(default_factory=dict)
     tracker_auth: SolanaTrackerAuthConfig | None = None
     batch_seq: int = 1
@@ -1370,9 +1375,39 @@ class CombinedPumpfunCampaignExecutor:
         )
         admitted = ranked[:ORIGIN_VERIFY_ADMISSIONS]
         admitted_ids = {item.merged_candidate_id for item in admitted}
+        resolved_proofs: dict[str, FixtureOriginProof] = dict(fixtures.origin_proofs)
         for candidate in secondary:
             if candidate.merged_candidate_id in admitted_ids:
-                proof = fixtures.origin_proofs.get(candidate.mint)
+                proof = resolved_proofs.get(candidate.mint)
+                if (
+                    (proof is None or not proof.confirmed)
+                    and candidate.mint in fixtures.origin_lookup_operations
+                    and fixtures.origin_cutoff_slot is not None
+                ):
+                    lookup = run_mint_origin_lookup(
+                        fixtures.origin_lookup_operations[candidate.mint],
+                        expected_mint=candidate.mint,
+                        cutoff_slot=int(fixtures.origin_cutoff_slot),
+                    )
+                    usage.underlying_rpc += lookup.accounting.underlying_rpc_operations
+                    if usage.underlying_rpc > INTAKE_UNDERLYING_RPC:
+                        raise CombinedDiscoveryError("UNDERLYING_RPC_CEILING")
+                    governed = sum(lookup.accounting.governed_requests.values())
+                    if governed:
+                        usage.bump_source(governed)
+                    if lookup.observation is not None:
+                        obs = lookup.observation
+                        proof = FixtureOriginProof(
+                            mint=obs.mint,
+                            signature=obs.signature,
+                            slot=int(obs.slot),
+                            block_time=int(obs.block_time),
+                            bonding_curve=obs.bonding_curve,
+                            associated_bonding_curve=obs.associated_bonding_curve,
+                            creator_address=obs.creator_address,
+                            confirmed=True,
+                        )
+                        resolved_proofs[candidate.mint] = proof
                 if proof is not None and proof.confirmed and proof.mint == candidate.mint:
                     candidate.origin_state = "CONFIRMED"
                     verification_state = "CONFIRMED"
@@ -1403,8 +1438,9 @@ class CombinedPumpfunCampaignExecutor:
                 admission_state=admission_state,
                 verification_state=verification_state,
                 transaction_signature=(
-                    fixtures.origin_proofs[candidate.mint].signature
-                    if candidate.mint in fixtures.origin_proofs
+                    resolved_proofs[candidate.mint].signature
+                    if candidate.mint in resolved_proofs
+                    and resolved_proofs[candidate.mint].confirmed
                     else None
                 ),
                 evidence_detail={
