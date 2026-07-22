@@ -39,11 +39,6 @@ from printer_v1.sources.contracts import (
 
 SOLANA_RPC_SOURCE_NAME = "solana_rpc"
 SOLANA_PUBLIC_RPC_URL = "https://api.mainnet-beta.solana.com"
-# V2-9.6: exactly one configured free/public, keyless backup RPC endpoint used
-# only after an eligible transient failure of the primary holder RPC. Operator
-# overridable; free/public and read-only, consistent with the allowed-source
-# list ("Solana public RPC"). No paid tier, no key.
-SOLANA_PUBLIC_RPC_BACKUP_URL = "https://solana-rpc.publicnode.com"
 SOLANA_RPC_TIMEOUT_SECONDS = 10.0
 SOLANA_RPC_PUBLIC_HEADERS = {
     "User-Agent": "PrinterV1/0.1 (+paper-only holder check)",

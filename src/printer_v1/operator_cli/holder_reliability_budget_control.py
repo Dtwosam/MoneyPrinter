@@ -21,6 +21,7 @@ OPERATION_CEILING = 45
 REQUIRED_DEX_SNAPSHOT_RESERVATION = 2
 COMBINED_ZERO_TRANSPORT_VALIDATION = 9
 HOLDER_WORST_CASE_GOVERNED_REQUESTS = 3
+HOLDER_WORST_CASE_TRANSPORT_OPERATIONS = 5
 HOLDER_REQUEST_PURPOSE = "pre_activation_holder_eligibility"
 HOLDER_POLICY_VERSION = "v2-9.7e.22"
 HOLDER_PARSER_VERSION = "v2-9.7e.22"
@@ -88,19 +89,19 @@ class CampaignOperationLedger:
 
     @property
     def charged_operations(self) -> int:
-        return self.governed_requests + self.zero_transport_operations
+        return self.underlying_transport_operations + self.zero_transport_operations
 
     @property
     def available_before_reservation(self) -> int:
         return self.operation_ceiling - self.charged_operations - self.reserved_snapshot_operations
 
     def candidate_cap(self) -> int:
-        return max(0, self.available_before_reservation // HOLDER_WORST_CASE_GOVERNED_REQUESTS)
+        return max(0, self.available_before_reservation // HOLDER_WORST_CASE_TRANSPORT_OPERATIONS)
 
     def admit_candidate(self, *, now: str | datetime) -> None:
         if _time(now) > self.deadline_at:
             raise HolderBudgetError("HOLDER_CAMPAIGN_DEADLINE_EXPIRED")
-        if self.available_before_reservation < HOLDER_WORST_CASE_GOVERNED_REQUESTS:
+        if self.available_before_reservation < HOLDER_WORST_CASE_TRANSPORT_OPERATIONS:
             raise HolderBudgetError("DEX_SNAPSHOT_RESERVATION_WOULD_BE_BREACHED")
 
 
@@ -228,7 +229,11 @@ def reuse_holder_fact(
     mint: str, evaluated_at: str,
 ) -> Mapping[str, Any] | None:
     """Reuse the first strict exact-source fact in the fixed source order."""
-    for source_name, endpoint_role in (("goplus", "PRIMARY"), ("solana_rpc", "PRIMARY")):
+    for source_name, endpoint_role in (
+        ("goplus", "PRIMARY"),
+        ("solana_rpc", "PRIMARY"),
+        ("helius_free", "BACKUP"),
+    ):
         row = reusable_evidence(
             connection, mint=mint, purpose=HOLDER_REQUEST_PURPOSE,
             source_name=source_name, endpoint_role=endpoint_role,
@@ -305,14 +310,17 @@ def persist_bundle_attempts(
         payload = dict(normalized.normalized_payload or {})
         is_rpc = key.startswith("holder")
         role = "BACKUP" if key == "holder_backup" else "PRIMARY"
-        host = (
-            "solana-rpc.publicnode.com" if role == "BACKUP"
+        source_name = str(getattr(normalized, "source_name", ""))
+        host = str(payload.get("redacted_host") or (
+            "mainnet.helius-rpc.com" if source_name == "helius_free"
             else "api.mainnet-beta.solana.com" if is_rpc
             else "api.gopluslabs.io"
-        )
-        operation_count = int(payload.get("underlying_operation_count") or (
-            2 if is_rpc and execution.response_record is not None else 1
         ))
+        raw_operation_count = payload.get("underlying_operation_count")
+        operation_count = int(
+            raw_operation_count if raw_operation_count is not None
+            else (2 if is_rpc and execution.response_record is not None else 1)
+        )
         transports += operation_count
         returned_mint = str(payload.get("token_mint") or "")
         holder_label = (
@@ -321,7 +329,7 @@ def persist_bundle_attempts(
         )
         record_attempt(
             connection, run_id=run_id, cycle_id=cycle_id, mint_identity=mint,
-            source_name="solana_rpc" if is_rpc else "goplus",
+            source_name=source_name or ("solana_rpc" if is_rpc else "goplus"),
             endpoint_role=role, redacted_host=host,
             source_request_id=int(execution.request_record.id),
             source_response_id=(int(execution.response_record.id) if execution.response_record else None),

@@ -825,17 +825,29 @@ def _holder_eligibility_from_bundle(
     goplus = _holder_execution_fact(
         executions.get("safety"), token_mint=token_mint, source_name="goplus"
     )
-    if goplus["eligible"]:
-        return goplus
-    holder = _holder_execution_fact(
-        executions.get("holder"),
-        token_mint=token_mint,
-        source_name="solana_rpc",
-    )
-    if holder["eligible"]:
-        return holder
-    # Preserve the most specific attempted on-chain reason when present.
-    return holder if executions.get("holder") is not None else goplus
+    facts = [goplus]
+    attempted: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for key in ("holder_primary", "holder_backup", "holder"):
+        execution = executions.get(key)
+        if execution is None or id(execution) in seen:
+            continue
+        seen.add(id(execution))
+        normalized_source = str(
+            getattr(execution.normalized_result, "source_name", "solana_rpc")
+        )
+        fact = _holder_execution_fact(
+            execution, token_mint=token_mint, source_name=normalized_source
+        )
+        facts.append(fact)
+        attempted.append(fact)
+    from printer_v1.sources.helius_holder import resolve_holder_concentration_facts
+    resolved = dict(resolve_holder_concentration_facts(tuple(facts)))
+    if resolved["reason"] != "HOLDER_EVIDENCE_UNAVAILABLE":
+        return resolved
+    # Preserve transport/auth/rate-limit/provider failure precedence. Target
+    # mismatch is returned only when an actual response supplied a wrong mint.
+    return attempted[-1] if attempted else goplus
 
 
 @dataclass(frozen=True)
@@ -943,6 +955,13 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 )
         lk["operational_natural_disposition"] = True
 
+        from printer_v1.operator_cli.durable_external_operation_log import (
+            DurablePumpRpcTransport,
+        )
+        pump_transport = DurablePumpRpcTransport(
+            pump_transport, db_path=command.db_path, run_id=command.run_id,
+            cycle_id=cycle_id,
+        )
         fixtures, acquisition, enrichment = self._build_fixtures(
             pump_transport=pump_transport,
             secondary_transport=secondary_transport,
@@ -1125,6 +1144,13 @@ class AuthoritativeLiveOperationalCampaignOwner:
 
         It never starts 15m, 1h, 4h, support-only 5m or promotion work.
         """
+        from printer_v1.operator_cli.durable_external_operation_log import (
+            DurablePumpRpcTransport,
+        )
+        pump_transport = DurablePumpRpcTransport(
+            pump_transport, db_path=command.db_path, run_id=command.run_id,
+            cycle_id=cycle_id,
+        )
         fixtures, acquisition, enrichment = self._build_fixtures(
             pump_transport=pump_transport,
             secondary_transport=secondary_transport,

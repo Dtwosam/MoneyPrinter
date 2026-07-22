@@ -815,15 +815,19 @@ def _collect_preclose_context(
     mint = str(step["token_mint"])
     pair = str(step["pair_address"])
     request_prefix = f"{step['run_id']}:{step['step_key']}:context"
-    # V2-9.6: resolve the single backup Solana-RPC holder endpoint. Tests inject
-    # a fixture via the "solana_rpc_holder_backup" factory; live runs use the
-    # real free/public keyless backup builder. Used only after an eligible
-    # transient primary-RPC failure.
+    # E.24: the sole backup is the fixed Helius Free mainnet endpoint. Tests may
+    # inject the new key or the historical fixture key; production has no
+    # endpoint override, retry, or rotation.
     from printer_v1.operator_cli.safety_context_source_redundancy import (
         build_default_solana_rpc_holder_backup_adapter,
     )
+    backup_source_name = (
+        "solana_rpc" if "solana_rpc_holder_backup" in factories
+        and "helius_holder_backup" not in factories else "helius_free"
+    )
     holder_backup_adapter_factory = (
-        factories.get("solana_rpc_holder_backup")
+        factories.get("helius_holder_backup")
+        or factories.get("solana_rpc_holder_backup")
         or build_default_solana_rpc_holder_backup_adapter
     )
 
@@ -966,7 +970,7 @@ def _collect_preclose_context(
             and is_eligible_transient_solana_rpc_failure(primary_holder)
         ):
             if request_pacer is not None:
-                request_pacer.pace("solana_rpc")
+                request_pacer.pace(backup_source_name)
             backup_holder = execute_solana_rpc_holder_backup(
                 conn,
                 run_id=str(step["run_id"]),
@@ -975,6 +979,7 @@ def _collect_preclose_context(
                 pair_address=pair,
                 backup_adapter_factory=holder_backup_adapter_factory,
                 timeout_seconds=timeout_seconds,
+                source_name=backup_source_name,
             )
             executions["holder_backup"] = backup_holder
             if backup_holder.response_record is not None:
