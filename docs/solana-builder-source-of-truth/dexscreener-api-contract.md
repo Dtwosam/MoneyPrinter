@@ -144,6 +144,26 @@ token creation time.
 
 See `token-age-evidence-tier-registry.md` and `source-governor-evidence-rules.md`.
 
+## E.26 readiness-snapshot role
+
+For a separately authorized bounded readiness proof, one governed exact-pair
+DexScreener request is the primary/base snapshot operation for each selected
+mint/pair. It may contribute current price, positive USD liquidity, 5m
+price-change/volume/transactions, and wider-window activity only when each
+value is present, well formed, fresh, and exact-linked to the requested Solana
+mint and pair.
+
+DexScreener does not expose an exact 15m bucket in the adopted pair schema.
+Its `m5`, `h1`, and `h24` buckets must not be relabeled or arithmetically
+interpolated as 15m evidence. Nullable or absent `liquidity.usd` remains
+missing evidence and fails readiness closed; a supplemental source may not
+fill or replace that base-liquidity requirement. Missing values may become
+zero only through the pre-existing E.19 verified-inactivity contract, never
+from source absence or pair youth.
+
+The E.26 path performs no retry, endpoint rotation, reconnect, or fallback for
+this primary request. One attempted transport is one charged operation.
+
 ## V1 Compliance
 
 | Requirement | Status |

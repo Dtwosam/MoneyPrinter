@@ -25,7 +25,8 @@ The following GeckoTerminal/CoinGecko-owned pages were accessed on
 
 The keyless authentication, endpoint, trending, exact-pool, pagination, and
 rate-limit pages were rechecked on `2026-07-19` for V2-9.7D.7B.3B. This recheck
-adopts only the fixture-only trending and exact active-pool slices below.
+adopts only the fixture-only trending and exact active-pool slices below. E.26
+subsequently offline-proved only the fixed OHLCV/trade readiness slices.
 
 | Canonical source | Adopted facts |
 |---|---|
@@ -58,7 +59,7 @@ command, source request, or runtime evidence.
 | `printer_readiness` | `PARTIAL_WITH_BLOCKER` | Governed adapters and storage exist, but coverage and freshness assumptions need repair/proof |
 | `printer_role` | `DISCOVERY` | Primary role is pool discovery; exact-pool/OHLCV/trade data is secondary pool-market evidence |
 | `access_policy` | `KEYLESS_PUBLIC` | Official keyless endpoint requires no authentication |
-| `v1_permission` | `ALLOWED_FIXTURE_ONLY` | No live use is authorized until later implementation repair and proof |
+| `v1_permission` | `FIXTURE_ONLY_EXCEPT_SEPARATELY_AUTHORIZED_READINESS` | E.26 permits only the two fixed OHLCV/trade kinds in a separately authorized bounded readiness proof |
 
 ## 4. Endpoint, Version, Authentication, and Limits
 
@@ -261,11 +262,12 @@ well formed. Reaching a timestamp at or before a target window boundary can
 support window coverage only when ordering, no omitted records, token
 orientation, and filter semantics are proven and preserved.
 
-Printer currently requests `trade_volume_in_usd_greater_than=0`, skips
-malformed records, and treats fewer than 300 returned records as complete.
-That can undercount records with null/zero USD volume and can call a malformed
-set complete. Current `txns_15m` is therefore not authoritative network
-transaction evidence until repaired and proven.
+The E.26 repair requests the endpoint without a volume filter, rejects the
+entire evidence item when any returned trade row or timestamp is malformed,
+and counts only trades whose timestamps fall inside the exact completed 15m
+OHLCV window. A returned set is complete only when it has fewer than 300 valid
+records or the oldest returned valid record reaches the window start. This is
+bounded exact-window evidence, not a claim of exhaustive chain activity.
 
 ## 11. Ordering, Freshness, and Coverage
 
@@ -372,8 +374,8 @@ closed. One source must not overwrite equal/higher-authority evidence.
 | `geckoterminal_trending_pool_reference` | 7B.3B adopted; fixture-only | Exact page-1, 1h provider-ranked Solana pool reference |
 | `geckoterminal_active_pool_reference` | 7B.3B adopted; fixture-only | One exact Solana pool's non-zero `transactions.m5` observation |
 | `pair_market_snapshot` | Existing shared compatibility kind; fixture-only | Exact-pool metadata fallback |
-| `geckoterminal_ohlcv_15m` | Existing; fixture-only | Exact-pool 15m OHLCV |
-| `geckoterminal_pool_trades_15m` | Existing; fixture-only | Exact-pool bounded trade history |
+| `geckoterminal_ohlcv_15m` | E.26 offline-proven; separately authorized readiness proof only | Exact-pool completed 15m OHLCV; one attempt, no retry/rotation |
+| `geckoterminal_pool_trades_15m` | E.26 offline-proven; separately authorized readiness proof only | Exact-pool unfiltered bounded trade history for the same 15m window; one attempt, no retry/rotation |
 | `geckoterminal_pool_snapshot` | Superseded for 7B by `geckoterminal_active_pool_reference`; `NOT_IMPLEMENTED` | Broader provider-specific exact-pool name |
 | `geckoterminal_pool_ohlcv` | Proposed, `NOT_IMPLEMENTED` | Parameterized bounded exact-pool OHLCV |
 | `geckoterminal_pool_trades` | Proposed, `NOT_IMPLEMENTED` | Parameterized bounded exact-pool trades |
@@ -391,13 +393,13 @@ downstream capabilities.
 | discovery URLs | Hard-coded page 1 | Partial coverage; pagination and bounded-page policy absent |
 | pool normalizer | Maps exact pool/base mint, price, reserve, volume, txns, pair age | Base/quote orientation and null/malformed semantics need stricter pinning |
 | pair snapshot | Requires price, liquidity, FDV/market cap, h24 volume/txns, pair age | Conservative local gate; requirements are Printer policy, not provider completeness |
-| `geckoterminal_15m.py` OHLCV | Requests two 15m rows and selects a mathematically completed candle | Good fail-closed intent; ordering and gap semantics unproven |
-| trade URL | Adds `trade_volume_in_usd_greater_than=0` | Filter can exclude records; incompatible with total-transaction proof |
-| trade counter | Counts records, skips malformed rows, accepts `<300` as complete | Can undercount and falsely label malformed/filtered history complete |
+| `geckoterminal_15m.py` OHLCV | Parses all valid rows, selects the newest completed exact 900-second candle, and rejects stale/malformed evidence without trusting response order | E.26 offline-proven for readiness composition |
+| trade URL | Sends no volume filter | Compatible with bounded total-returned-set transaction proof |
+| trade counter | Rejects malformed rows and requires exact OHLCV-window alignment plus bounded coverage | E.26 offline-proven; still bounded by the provider's 300-record response cap |
 | storage | Governed source traces plus normalized snapshot JSON/provenance | No migration needed; raw contract fields are not all first-class |
 | focused tests | Fixture-backed identity, rate/error, candle, cap, storage, zero-unlock behavior | Protect current code; do not prove current provider behavior |
 
-## 19. Required Later Repair and Proof
+## 19. Required Later Network Proof
 
 Before governed GeckoTerminal network reliance:
 
@@ -405,10 +407,11 @@ Before governed GeckoTerminal network reliance:
 2. Adopt the stricter current free ceiling and bounded per-cycle budgets.
 3. Implement bounded page/duration provenance and honest partial coverage.
 4. Strictly validate pool/base/quote identity, numeric nullability, and errors.
-5. Pin OHLCV ordering, skipped-interval behavior, and completed-candle boundary.
-6. Remove the trade-volume filter for total counts or relabel evidence as
-   filtered; reject any malformed record from complete coverage.
-7. Prove last-300 ordering and window-coverage logic without pagination claims.
+5. Confirm live responses preserve the E.26 ordering-independent completed
+   candle selection and exact 900-second boundary.
+6. Confirm the unfiltered trade response and fail-closed malformed-row behavior.
+7. Confirm live last-300 ordering and exact-window coverage without pagination
+   or exhaustive-chain claims.
 8. Preserve provider cache/freshness uncertainty and fail closed on stale data.
 9. Prove timeout/rate-limit/provider errors create no false zero or success.
 10. Prove isolated DB traces, exact provenance, bounded requests, and zero

@@ -167,7 +167,7 @@ def test_fixed_endpoint_zero_retry_governor_and_operation_accounting(
     assert "fixture-secret" not in str(dict(execution.normalized_result.normalized_payload))
     assert budget.build_ledger(
         pump_operations=12, deadline_at=NOW + timedelta(minutes=6)
-    ).candidate_cap() == 4
+    ).candidate_cap() == 3
 
 
 def test_helius_failure_message_cannot_persist_api_key(monkeypatch) -> None:

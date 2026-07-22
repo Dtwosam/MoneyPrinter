@@ -746,7 +746,7 @@ class TestModuleConstants:
         assert "solana" in trades_url
         assert "TEST_POOL" in trades_url
         assert "aggregate=15" in ohlcv_url
-        assert "trade_volume_in_usd_greater_than=0" in trades_url
+        assert "trade_volume_in_usd_greater_than" not in trades_url
 
     def test_candle_seconds_is_900(self):
         assert GT15M_CANDLE_SECONDS == 900

@@ -49,15 +49,37 @@ def build_bounded_readiness_report(
                WHERE run_id=? AND cycle_id=? ORDER BY evidence_id""",
             (run_id, cycle_id),
         )
-        ledgers = _rows(
-            connection,
-            """SELECT operation_ceiling,governed_requests,
-                      underlying_transport_operations,zero_transport_operations,
-                      reserved_snapshot_operations,deadline_at
-               FROM printer_holder_campaign_operation_ledgers
-               WHERE run_id=? AND cycle_id=?""",
-            (run_id, cycle_id),
-        )
+        ledger_columns = {
+            str(row[1])
+            for row in connection.execute(
+                "PRAGMA table_info(printer_holder_campaign_operation_ledgers)"
+            ).fetchall()
+        }
+        if "reserved_snapshot_completion_operations" in ledger_columns:
+            ledgers = _rows(
+                connection,
+                """SELECT operation_ceiling,governed_requests,
+                          underlying_transport_operations,zero_transport_operations,
+                          reserved_snapshot_operations,
+                          reserved_snapshot_completion_operations,
+                          (reserved_snapshot_operations +
+                           reserved_snapshot_completion_operations)
+                              AS total_readiness_snapshot_reservation,
+                          deadline_at
+                   FROM printer_holder_campaign_operation_ledgers
+                   WHERE run_id=? AND cycle_id=?""",
+                (run_id, cycle_id),
+            )
+        else:
+            ledgers = _rows(
+                connection,
+                """SELECT operation_ceiling,governed_requests,
+                          underlying_transport_operations,zero_transport_operations,
+                          reserved_snapshot_operations,deadline_at
+                   FROM printer_holder_campaign_operation_ledgers
+                   WHERE run_id=? AND cycle_id=?""",
+                (run_id, cycle_id),
+            )
         active_queue = int(connection.execute(
             """SELECT COUNT(*) FROM printer_tracking_queue
                WHERE queue_status IN ('PENDING','ACTIVE','TRACK_FAST','TRACK_NORMAL')"""
@@ -72,6 +94,24 @@ def build_bounded_readiness_report(
         }
         integrity = str(connection.execute("PRAGMA integrity_check").fetchone()[0])
         foreign_keys = len(connection.execute("PRAGMA foreign_key_check").fetchall())
+        readiness_snapshots = []
+        if "reserved_snapshot_completion_operations" in ledger_columns:
+            readiness_snapshots = _rows(
+                connection,
+                """SELECT s.id,s.captured_at,s.price_usd,s.liquidity_usd,
+                          s.price_change_5m,s.price_change_15m,
+                          s.volume_5m,s.volume_15m,s.volume_1h,
+                          s.txns_5m,s.txns_15m,s.txns_1h,
+                          s.source_status,s.data_quality_label,
+                          json_extract(s.normalized_snapshot_payload_json,
+                            '$.snapshot_readiness_contract.label')
+                              AS readiness_label
+                   FROM printer_token_snapshots AS s
+                   WHERE json_extract(s.normalized_snapshot_payload_json,
+                            '$.snapshot_readiness_contract.label') =
+                         'SNAPSHOT_READINESS_COMPLETE'
+                   ORDER BY s.id""",
+            )
     finally:
         connection.close()
     return {
@@ -89,6 +129,11 @@ def build_bounded_readiness_report(
         "foreign_key_violations": foreign_keys,
         "forbidden_capability_counts": forbidden,
         "source_requests_made_by_replay": 0,
+        **(
+            {"readiness_snapshots": readiness_snapshots}
+            if "reserved_snapshot_completion_operations" in ledger_columns
+            else {}
+        ),
     }
 
 

@@ -39,7 +39,9 @@ def _trades_payload(count: int = 2) -> dict:
     now = datetime.now(timezone.utc)
     return {
         "data": [
-            {"attributes": {"block_timestamp": (now - timedelta(minutes=i + 1)).isoformat()}}
+            {"attributes": {"block_timestamp": (
+                now - timedelta(minutes=16, seconds=i)
+            ).isoformat()}}
             for i in range(count)
         ]
     }

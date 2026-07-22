@@ -49,21 +49,25 @@ def _db(tmp_path) -> sqlite3.Connection:
     return conn
 
 
-def test_budget_derives_four_candidates_and_preserves_two_snapshots() -> None:
+def test_budget_derives_three_candidates_and_preserves_complete_snapshot_path() -> None:
     ledger = control.build_ledger(
         pump_operations=12, deadline_at=NOW + timedelta(minutes=6)
     )
-    assert ledger.candidate_cap() == 4
-    before_fourth = control.CampaignOperationLedger(
+    assert ledger.candidate_cap() == 3
+    before_third = control.CampaignOperationLedger(
+        **{**ledger.__dict__, "underlying_transport_operations": 22}
+    )
+    before_third.admit_candidate(now=NOW)
+    after_third = control.CampaignOperationLedger(
         **{**ledger.__dict__, "underlying_transport_operations": 27}
     )
-    before_fourth.admit_candidate(now=NOW)
-    after_fourth = control.CampaignOperationLedger(
-        **{**ledger.__dict__, "underlying_transport_operations": 32}
-    )
-    assert after_fourth.charged_operations + after_fourth.reserved_snapshot_operations == 43
+    assert (
+        after_third.charged_operations
+        + after_third.reserved_snapshot_operations
+        + after_third.reserved_snapshot_completion_operations
+    ) == 42
     with pytest.raises(control.HolderBudgetError, match="RESERVATION"):
-        after_fourth.admit_candidate(now=NOW)
+        after_third.admit_candidate(now=NOW)
 
 
 def test_fake_clock_pacing_is_fixed_sequential_and_has_no_retry_shape() -> None:

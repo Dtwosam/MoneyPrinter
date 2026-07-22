@@ -19,6 +19,8 @@ from printer_v1.sources.registry import SOURCE_REGISTRY
 
 OPERATION_CEILING = 45
 REQUIRED_DEX_SNAPSHOT_RESERVATION = 2
+REQUIRED_SNAPSHOT_COMPLETION_RESERVATION = 4
+REQUIRED_READINESS_SNAPSHOT_RESERVATION = 6
 COMBINED_ZERO_TRANSPORT_VALIDATION = 9
 HOLDER_WORST_CASE_GOVERNED_REQUESTS = 3
 HOLDER_WORST_CASE_TRANSPORT_OPERATIONS = 5
@@ -85,6 +87,7 @@ class CampaignOperationLedger:
     underlying_transport_operations: int
     zero_transport_operations: int
     reserved_snapshot_operations: int
+    reserved_snapshot_completion_operations: int
     deadline_at: datetime
 
     @property
@@ -93,7 +96,11 @@ class CampaignOperationLedger:
 
     @property
     def available_before_reservation(self) -> int:
-        return self.operation_ceiling - self.charged_operations - self.reserved_snapshot_operations
+        return (
+            self.operation_ceiling - self.charged_operations
+            - self.reserved_snapshot_operations
+            - self.reserved_snapshot_completion_operations
+        )
 
     def candidate_cap(self) -> int:
         return max(0, self.available_before_reservation // HOLDER_WORST_CASE_TRANSPORT_OPERATIONS)
@@ -116,9 +123,15 @@ def build_ledger(
         underlying_transport_operations=base_operations,
         zero_transport_operations=COMBINED_ZERO_TRANSPORT_VALIDATION,
         reserved_snapshot_operations=REQUIRED_DEX_SNAPSHOT_RESERVATION,
+        reserved_snapshot_completion_operations=REQUIRED_SNAPSHOT_COMPLETION_RESERVATION,
         deadline_at=_time(deadline_at),
     )
-    if ledger.charged_operations + ledger.reserved_snapshot_operations > OPERATION_CEILING:
+    if (
+        ledger.charged_operations
+        + ledger.reserved_snapshot_operations
+        + ledger.reserved_snapshot_completion_operations
+        > OPERATION_CEILING
+    ):
         raise HolderBudgetError("CAMPAIGN_BASE_WORK_EXCEEDS_RESERVED_BUDGET")
     return ledger
 
@@ -128,8 +141,9 @@ def persist_ledger(connection: sqlite3.Connection, *, run_id: str, cycle_id: str
         """INSERT INTO printer_holder_campaign_operation_ledgers(
             run_id,cycle_id,operation_ceiling,governed_requests,
             underlying_transport_operations,zero_transport_operations,
-            reserved_snapshot_operations,deadline_at,created_at,updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?)
+            reserved_snapshot_operations,reserved_snapshot_completion_operations,
+            deadline_at,created_at,updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(run_id,cycle_id) DO UPDATE SET
             governed_requests=excluded.governed_requests,
             underlying_transport_operations=excluded.underlying_transport_operations,
@@ -137,7 +151,9 @@ def persist_ledger(connection: sqlite3.Connection, *, run_id: str, cycle_id: str
             deadline_at=excluded.deadline_at,updated_at=excluded.updated_at""",
         (run_id, cycle_id, ledger.operation_ceiling, ledger.governed_requests,
          ledger.underlying_transport_operations, ledger.zero_transport_operations,
-         ledger.reserved_snapshot_operations, ledger.deadline_at.isoformat(), now, now),
+         ledger.reserved_snapshot_operations,
+         ledger.reserved_snapshot_completion_operations,
+         ledger.deadline_at.isoformat(), now, now),
     )
 
 

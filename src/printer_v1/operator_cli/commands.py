@@ -1749,12 +1749,18 @@ def enrich_eligible_geckoterminal_candidate_15m(
                 endpoint_url=endpoint,
             )
         else:
-            derived = enrich_candidate_15m_trades(
-                provider_payload,
-                pool_address=pool_address,
-                network="solana",
-                endpoint_url=endpoint,
-            )
+            candle_provenance = evidence.get("price_change_15m_provenance")
+            if not isinstance(candle_provenance, Mapping):
+                derived = {}
+            else:
+                derived = enrich_candidate_15m_trades(
+                    provider_payload,
+                    pool_address=pool_address,
+                    network="solana",
+                    endpoint_url=endpoint,
+                    window_start_iso=candle_provenance.get("candle_start_iso"),
+                    window_end_iso=candle_provenance.get("candle_end_iso"),
+                )
         for key, value in list(derived.items()):
             if key.endswith("_provenance") and isinstance(value, dict):
                 derived[key] = {

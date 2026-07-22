@@ -63,7 +63,7 @@ GT15M_OHLCV_URL_TEMPLATE = (
 )
 GT15M_TRADES_URL_TEMPLATE = (
     "https://api.geckoterminal.com/api/v2/networks/{network}/pools/{pool_address}"
-    "/trades?trade_volume_in_usd_greater_than=0"
+    "/trades"
 )
 
 GECKOTERMINAL_PUBLIC_API_HEADERS = {
@@ -116,49 +116,27 @@ def select_completed_15m_candle(
     ohlcv_list: list[Any],
     now: datetime,
 ) -> dict[str, Any] | None:
-    """Select the most recent completed, fresh 15m candle from an OHLCV list.
-
-    Each entry: [unix_timestamp_start, open, high, low, close, volume_usd]
-    List order: descending (most recent first).
-
-    A candle is COMPLETED when candle_start + 900 <= now_unix.
-    A candle is FRESH when now_unix - candle_end <= GT15M_CANDLE_MAX_AGE_SECONDS.
-
-    Returns None when:
-      - No valid candle found in the list
-      - The first completed candle is too stale (nothing fresher exists)
-      - Any required field is None or invalid
-    """
+    """Select the newest valid completed 15m candle without trusting row order."""
     if not isinstance(ohlcv_list, list) or not ohlcv_list:
         return None
 
     now_unix = now.timestamp()
-
+    completed: list[dict[str, Any]] = []
     for raw in ohlcv_list:
         if not isinstance(raw, (list, tuple)) or len(raw) < 6:
             continue
-
         ts = _to_float(raw[_OHLCV_IDX_TIMESTAMP])
         open_price = _to_float(raw[_OHLCV_IDX_OPEN])
         close_price = _to_float(raw[_OHLCV_IDX_CLOSE])
         volume = _to_float(raw[_OHLCV_IDX_VOLUME])
-
-        if any(v is None for v in (ts, open_price, close_price, volume)):
+        if any(value is None for value in (ts, open_price, close_price, volume)):
             continue
-        if open_price <= 0:
+        if open_price <= 0 or volume < 0:
             continue
-
         candle_end_unix = ts + GT15M_CANDLE_SECONDS
-
         if candle_end_unix > now_unix:
-            continue  # still in progress; try next
-
-        age_since_completion = now_unix - candle_end_unix
-        if age_since_completion > GT15M_CANDLE_MAX_AGE_SECONDS:
-            # Most recent completed candle is already stale; all older ones are worse
-            return None
-
-        return {
+            continue
+        completed.append({
             "candle_start_unix": int(ts),
             "candle_end_unix": int(candle_end_unix),
             "candle_start_iso": _unix_to_iso(ts),
@@ -166,10 +144,14 @@ def select_completed_15m_candle(
             "open": open_price,
             "close": close_price,
             "volume_usd": volume,
-            "age_since_completion_seconds": int(age_since_completion),
-        }
-
-    return None
+            "age_since_completion_seconds": int(now_unix - candle_end_unix),
+        })
+    if not completed:
+        return None
+    newest = max(completed, key=lambda candle: candle["candle_start_unix"])
+    if newest["age_since_completion_seconds"] > GT15M_CANDLE_MAX_AGE_SECONDS:
+        return None
+    return newest
 
 
 # ---------------------------------------------------------------------------
@@ -302,13 +284,22 @@ def count_txns_15m_from_trades(
 
     for trade in raw_trades_data:
         if not isinstance(trade, Mapping):
-            continue
+            return None, TRADE_HISTORY_TRUNCATED, {
+                "error": "malformed_trade_record",
+                "total_trades_returned": total_returned,
+            }
         attrs = trade.get("attributes") or {}
         if not isinstance(attrs, Mapping):
-            continue
+            return None, TRADE_HISTORY_TRUNCATED, {
+                "error": "malformed_trade_attributes",
+                "total_trades_returned": total_returned,
+            }
         ts = _parse_trade_block_timestamp(attrs)
         if ts is None:
-            continue
+            return None, TRADE_HISTORY_TRUNCATED, {
+                "error": "malformed_trade_timestamp",
+                "total_trades_returned": total_returned,
+            }
         all_timestamps.append(ts)
         if window_start_unix <= ts < window_end_unix:
             in_window_count += 1
@@ -412,6 +403,8 @@ def enrich_candidate_15m_trades(
     network: str,
     endpoint_url: str,
     now: datetime | None = None,
+    window_start_iso: str | None = None,
+    window_end_iso: str | None = None,
 ) -> dict[str, Any]:
     """Count txns_15m from a governed pool-trades payload with completeness proof.
 
@@ -420,8 +413,23 @@ def enrich_candidate_15m_trades(
     """
     _now = now or _now_utc()
     fetch_time_iso = _now.isoformat()
-    window_end_unix = _now.timestamp()
-    window_start_unix = window_end_unix - GT15M_CANDLE_SECONDS
+    if window_start_iso is not None or window_end_iso is not None:
+        if not isinstance(window_start_iso, str) or not isinstance(window_end_iso, str):
+            return {}
+        try:
+            window_start_unix = datetime.fromisoformat(
+                window_start_iso.replace("Z", "+00:00")
+            ).timestamp()
+            window_end_unix = datetime.fromisoformat(
+                window_end_iso.replace("Z", "+00:00")
+            ).timestamp()
+        except ValueError:
+            return {}
+        if window_end_unix - window_start_unix != GT15M_CANDLE_SECONDS:
+            return {}
+    else:
+        window_end_unix = _now.timestamp()
+        window_start_unix = window_end_unix - GT15M_CANDLE_SECONDS
 
     if _payload_is_failure(trades_payload):
         return {}

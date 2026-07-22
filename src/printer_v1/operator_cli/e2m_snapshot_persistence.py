@@ -219,6 +219,15 @@ def _insert_snapshot(
     source_name: str = E2M_SOURCE_NAME,
 ) -> int:
     """Insert one printer_token_snapshots row. Returns snapshot_id."""
+    readiness_provenance_fields = {
+        key: pair_data.get(key)
+        for key in (
+            "price_change_15m_source_kind", "price_change_15m_provenance",
+            "volume_15m_source_kind", "volume_15m_provenance",
+            "txns_15m_source_kind", "txns_15m_completeness",
+            "txns_15m_provenance",
+        )
+    }
     normalized_json = json.dumps(
         {
             "source_name": source_name,
@@ -237,6 +246,10 @@ def _insert_snapshot(
             "snapshot_inactivity_evidence": pair_data.get(
                 "snapshot_inactivity_evidence"
             ),
+            "snapshot_readiness_contract": pair_data.get(
+                "snapshot_readiness_contract"
+            ),
+            **readiness_provenance_fields,
         },
         sort_keys=True,
     )
@@ -320,6 +333,9 @@ def persist_snapshot_from_source_response(
     *,
     expected_pair_address: str | None = None,
     tracking_lane: str = E2M_TRACKING_LANE,
+    supplemental_15m_evidence: dict[str, Any] | None = None,
+    require_readiness_contract: bool = False,
+    evaluated_at: str | datetime | None = None,
 ) -> dict[str, Any]:
     """Persist exactly one token snapshot from a clean governed DexScreener response.
 
@@ -456,7 +472,124 @@ def persist_snapshot_from_source_response(
             "memory_windows_created": 0,
         }
 
+    if require_readiness_contract and str(resp_row["source_name"]) != E2M_SOURCE_NAME:
+        return {
+            "e2m_status": E2M_STATUS_BLOCKED,
+            "persisted": False,
+            "blocked_reasons": ["readiness primary source must be dexscreener"],
+            "approved_mint": approved_mint,
+            "source_response_id": source_response_id,
+            "hard_locks": dict(_HARD_LOCKS),
+        }
+
+    if require_readiness_contract and expected_pair_address is None:
+        return {
+            "e2m_status": E2M_STATUS_BLOCKED,
+            "persisted": False,
+            "blocked_reasons": ["readiness contract requires exact pair identity"],
+            "approved_mint": approved_mint,
+            "source_response_id": source_response_id,
+            "hard_locks": dict(_HARD_LOCKS),
+        }
+
+    if require_readiness_contract:
+        from printer_v1.operator_cli.snapshot_readiness_contract import (
+            READINESS_PRIMARY_TTL_SECONDS,
+            merge_exact_15m_evidence,
+            snapshot_readiness_blockers,
+        )
+
+        primary_pair, merge_blockers = merge_exact_15m_evidence(
+            primary_pair,
+            supplemental_15m_evidence,
+            expected_mint=approved_mint,
+            expected_pair=str(expected_pair_address),
+        )
+        if not merge_blockers and supplemental_15m_evidence:
+            lineage_kinds = {
+                "price_change_15m_provenance": "geckoterminal_ohlcv_15m",
+                "volume_15m_provenance": "geckoterminal_ohlcv_15m",
+                "txns_15m_provenance": "geckoterminal_pool_trades_15m",
+            }
+            for field, request_kind in lineage_kinds.items():
+                provenance = primary_pair.get(field)
+                if not isinstance(provenance, dict):
+                    continue
+                request_id = provenance.get("source_request_id")
+                response_id = provenance.get("source_response_id")
+                lineage = connection.execute(
+                    """SELECT 1 FROM printer_source_responses AS response
+                       JOIN printer_source_requests AS request
+                         ON request.id=response.source_request_id
+                       WHERE response.id=? AND request.id=?
+                         AND response.source_name='geckoterminal'
+                         AND request.source_name='geckoterminal'
+                         AND request.request_kind=?
+                         AND response.source_status='COMPLETE'
+                         AND response.data_quality_label='CLEAN_DATA'""",
+                    (response_id, request_id, request_kind),
+                ).fetchone()
+                if lineage is None:
+                    merge_blockers.append(
+                        f"READINESS_15M_PROVENANCE:{field}:lineage_missing"
+                    )
+        if merge_blockers:
+            return {
+                "e2m_status": E2M_STATUS_BLOCKED,
+                "persisted": False,
+                "blocked_reasons": sorted(set(merge_blockers)),
+                "approved_mint": approved_mint,
+                "source_response_id": source_response_id,
+                "hard_locks": dict(_HARD_LOCKS),
+            }
+
     primary_pair = _normalize_verified_inactivity(primary_pair)
+
+    if require_readiness_contract:
+        check_time = evaluated_at or datetime.now(timezone.utc)
+        try:
+            received = datetime.fromisoformat(
+                str(resp_row["received_at"]).replace("Z", "+00:00")
+            )
+            if received.tzinfo is None:
+                received = received.replace(tzinfo=timezone.utc)
+            current = (
+                check_time if isinstance(check_time, datetime)
+                else datetime.fromisoformat(str(check_time).replace("Z", "+00:00"))
+            )
+            if current.tzinfo is None:
+                current = current.replace(tzinfo=timezone.utc)
+            primary_age = (
+                current.astimezone(timezone.utc) - received.astimezone(timezone.utc)
+            ).total_seconds()
+        except (TypeError, ValueError):
+            primary_age = float("inf")
+        readiness_blockers = snapshot_readiness_blockers(
+            primary_pair,
+            expected_mint=approved_mint,
+            expected_pair=str(expected_pair_address),
+            evaluated_at=check_time,
+        )
+        if not -5 <= primary_age <= READINESS_PRIMARY_TTL_SECONDS:
+            readiness_blockers.append("READINESS_PRIMARY_STALE")
+        if readiness_blockers:
+            return {
+                "e2m_status": E2M_STATUS_BLOCKED,
+                "persisted": False,
+                "blocked_reasons": sorted(set(readiness_blockers)),
+                "approved_mint": approved_mint,
+                "source_response_id": source_response_id,
+                "hard_locks": dict(_HARD_LOCKS),
+            }
+        primary_pair["snapshot_readiness_contract"] = {
+            "label": "SNAPSHOT_READINESS_COMPLETE",
+            "primary_source": str(resp_row["source_name"]),
+            "primary_source_request_id": int(req_row["id"]),
+            "primary_source_response_id": source_response_id,
+            "exact_mint_and_pair": True,
+            "required_fields_complete": True,
+            "operation_reservation": 6,
+        }
 
     now = _utc_now()
     captured_at = str(resp_row["received_at"] or now)

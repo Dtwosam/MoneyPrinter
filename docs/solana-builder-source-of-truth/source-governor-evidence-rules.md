@@ -52,8 +52,9 @@ enforce at the request boundary.
 
 The adopted provider contract is `geckoterminal-api-contract.md`. The keyless
 Public API v2 is active Beta. The 7B.3B trending and exact active-pool contracts
-are repaired for fixture-only use; production network use still requires the
-later adapter and proof lanes.
+are repaired for fixture-only use. E.26 additionally offline-proves only the
+fixed OHLCV/trade kinds for a separately authorized bounded readiness proof;
+normal production network use remains blocked.
 
 ### Approved request kinds
 
@@ -63,8 +64,8 @@ later adapter and proof lanes.
 | `geckoterminal_trending_pool_reference` | `ALLOWED_FIXTURE_ONLY` | Page-1, 1h provider-ranked Solana pool reference only |
 | `geckoterminal_active_pool_reference` | `ALLOWED_FIXTURE_ONLY` | One exact pool with non-zero provider `transactions.m5` |
 | `pair_market_snapshot` | `ALLOWED_FIXTURE_ONLY` | Exact-pool market snapshot fallback |
-| `geckoterminal_ohlcv_15m` | `ALLOWED_FIXTURE_ONLY` | `price_change_15m`, `volume_15m` only after completed-candle proof |
-| `geckoterminal_pool_trades_15m` | `ALLOWED_FIXTURE_ONLY` | `txns_15m` only after unfiltered complete-window proof |
+| `geckoterminal_ohlcv_15m` | `ALLOWED_SEPARATELY_AUTHORIZED_READINESS_PROOF` | `price_change_15m`, `volume_15m` from one fresh, completed, exact 900-second candle; no retry/rotation |
+| `geckoterminal_pool_trades_15m` | `ALLOWED_SEPARATELY_AUTHORIZED_READINESS_PROOF` | `txns_15m` from one unfiltered, well-formed, complete returned set aligned to the same candle; no retry/rotation |
 | `geckoterminal_pool_snapshot` | `NOT_IMPLEMENTED` | Proposed exact-pool request name |
 | `geckoterminal_pool_ohlcv` | `NOT_IMPLEMENTED` | Proposed parameterized exact-pool OHLCV |
 | `geckoterminal_pool_trades` | `NOT_IMPLEMENTED` | Proposed parameterized exact-pool trades |
