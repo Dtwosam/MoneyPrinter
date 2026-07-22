@@ -32,7 +32,7 @@ from enum import StrEnum
 import hashlib
 import json
 from types import MappingProxyType
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Protocol, Sequence
 
 from printer_v1.scheduler.contracts import JobKind
 from printer_v1.sources.governor import can_request_source
@@ -350,58 +350,109 @@ def _signature_reference(row: Mapping[str, Any]) -> SignatureReference:
 
 # ---------------------------------------------------------------------------
 # Primary acquisition cycle
+#
+# V2-9.7E.11: the cycle is decomposed into a deterministic admission/planning
+# stage and a shared sequential decode kernel so that both the fixture-backed
+# ``run_acquisition_cycle`` and the bounded live adapter execute through the
+# *same* authoritative admission, ordering, decode, cursor, continuity and
+# accounting logic. The only variation between fixture and live is where each
+# signature page and transaction response comes from — a fixture list versus a
+# lazily requested Governor-admitted transport call — expressed by the
+# ``AcquisitionSource`` protocol. No admission, ordering, decode, cursor or
+# continuity logic is ever duplicated outside this module.
 # ---------------------------------------------------------------------------
 
 
-def run_acquisition_cycle(
-    operations: Iterable[FixtureOperation],
-    *,
-    prior_cursor: FinalizedOriginCursor | None = None,
-    index_address: str = PUMP_CREATE_INDEX_ADDRESS,
-) -> AcquisitionCycleResult:
-    """Run one bounded signature-anchored finalized create acquisition cycle.
+# Sentinel returned by a source when no further planned transaction response is
+# available (a fixture that supplied fewer getTransaction operations than the
+# planned decode queue). Live sources never return it: they fetch on demand.
+class _NoMoreTransactions:
+    __slots__ = ()
 
-    The anchor is the newest admitted finalized signature row. No independent
-    ``getSlot`` snapshot is taken, so no cross-backend cutoff race exists.
+
+NO_MORE_TRANSACTIONS = _NoMoreTransactions()
+
+
+class AcquisitionSource(Protocol):
+    """Ordered signature-page + lazy transaction provider for one cycle.
+
+    Implementations own Governor admission and per-operation accounting so the
+    shared kernel stays transport-agnostic. ``accounting`` must be the live
+    ``_Accounting`` recording every admitted operation.
+    """
+
+    accounting: "_Accounting"
+
+    def next_signature_page(self) -> Mapping[str, Any] | None:
+        """Return the next normalized ``{"rows": [...]}`` page, or None to stop."""
+
+    def next_transaction(self, reference: "SignatureReference") -> Any:
+        """Return the decoded-transaction response for ``reference``.
+
+        Return :data:`NO_MORE_TRANSACTIONS` when no further planned response is
+        available (fixture short-supply). Live sources fetch on demand and only
+        raise :class:`PumpContractError` on a genuine transport/ownership fault.
+        """
+
+    def finalize(self) -> None:
+        """Assert the source was fully consumed (fixture strictness)."""
+
+
+class _FixtureAcquisitionSource:
+    """Adapt the strict ``FixtureOperationPort`` to the shared kernel.
+
+    Behaviour is identical to the pre-E.11 inline fixture path: pages and
+    transactions are taken in supplied order, ownership bypass and malformed
+    operations fail closed, and any unconsumed operation fails ``finalize``.
+    """
+
+    def __init__(self, operations: Iterable[FixtureOperation]) -> None:
+        self._port = FixtureOperationPort(operations)
+        self.accounting = self._port.accounting
+
+    def next_signature_page(self) -> Mapping[str, Any] | None:
+        operation = self._port.peek()
+        if operation is None or operation.rpc_operation != "getSignaturesForAddress":
+            return None
+        return self._port.take("getSignaturesForAddress", SIGNATURE_PAGE_REQUEST)
+
+    def next_transaction(self, reference: SignatureReference) -> Any:
+        del reference  # fixture pairs positionally with the planned queue
+        operation = self._port.peek()
+        if operation is None or operation.rpc_operation != "getTransaction":
+            return NO_MORE_TRANSACTIONS
+        return self._port.take("getTransaction", TRANSACTION_REQUEST)
+
+    def finalize(self) -> None:
+        self._port.assert_consumed()
+
+
+@dataclass(frozen=True)
+class _AdmissionPlan:
+    """Deterministic outcome of the admission/planning stage over page rows."""
+
+    decode_queue: tuple[SignatureReference, ...]
+    anchor: CursorBoundary | None
+    stale_page: bool
+    admitted_count: int
+    duplicate_signatures: int
+    failed_signature_count: int
+    rejections: tuple[Rejection, ...]
+    continuity_fault: bool
+
+
+def plan_finalized_decode_queue(
+    page_rows: Sequence[SignatureReference],
+    prior_cursor: FinalizedOriginCursor | None = None,
+) -> _AdmissionPlan:
+    """Derive the finalized, ordered decode queue from bounded signature pages.
+
+    Pure and deterministic: identical page rows and prior cursor always yield an
+    identical plan regardless of the order responses arrived in, because
+    admission sorts by ``(slot, signature)``. Handles finality, failed rows,
+    duplicate/fork detection, the stored-boundary floor and the decode ceiling.
     """
     prior = prior_cursor or FinalizedOriginCursor(None, ContinuityState.UNKNOWN)
-    port = FixtureOperationPort(operations)
-
-    pages_used = 0
-    page_rows: list[SignatureReference] = []
-    boundary_reached = prior.boundary is None
-    history_unavailable = False
-    saw_short_page = False
-
-    while (
-        pages_used < CREATE_INDEX_PAGE_CEILING
-        and port.peek() is not None
-        and port.peek().rpc_operation == "getSignaturesForAddress"
-    ):
-        page = port.take("getSignaturesForAddress", SIGNATURE_PAGE_REQUEST)
-        pages_used += 1
-        if not isinstance(page, Mapping) or not isinstance(page.get("rows"), list):
-            raise PumpContractError("MALFORMED_TRANSACTION", "bad signature page")
-        rows = page["rows"]
-        if len(rows) > CREATE_INDEX_PAGE_SIZE:
-            raise PumpContractError("SIGNATURE_PAGE_SIZE_CEILING")
-        if not rows:
-            # Empty page: history unavailable or fully walked. Never a retry.
-            history_unavailable = True
-            break
-        references = [_signature_reference(row) for row in rows]
-        page_rows.extend(references)
-        if prior.boundary is not None and any(
-            reference.signature == prior.boundary.signature for reference in references
-        ):
-            boundary_reached = True
-            break
-        if len(rows) < CREATE_INDEX_PAGE_SIZE:
-            # Short page and boundary not seen: retention ended before it.
-            saw_short_page = True
-            break
-
-    # --- Admission: the finalized row is its own anchor. -------------------
     rejections: list[Rejection] = []
     duplicates = 0
     failed_signature_count = 0
@@ -456,7 +507,6 @@ def run_acquisition_cycle(
         and (anchor.slot, anchor.signature) <= (prior.boundary.slot, prior.boundary.signature)
     )
 
-    # --- Bounded finalized confirmation and decode -------------------------
     # Rows at or older than the stored boundary were already confirmed by an
     # earlier cycle. Re-decoding them would spend budget to relearn a fact the
     # registry already holds.
@@ -476,22 +526,88 @@ def run_acquisition_cycle(
             )
         decode_queue = decode_queue[:CREATE_INDEX_DECODE_CEILING]
 
+    return _AdmissionPlan(
+        decode_queue=tuple(decode_queue),
+        anchor=anchor,
+        stale_page=stale_page,
+        admitted_count=len(admitted_ordered),
+        duplicate_signatures=duplicates,
+        failed_signature_count=failed_signature_count,
+        rejections=tuple(rejections),
+        continuity_fault=continuity_fault,
+    )
+
+
+def run_acquisition_from_source(
+    source: AcquisitionSource,
+    *,
+    prior_cursor: FinalizedOriginCursor | None = None,
+    index_address: str = PUMP_CREATE_INDEX_ADDRESS,
+) -> AcquisitionCycleResult:
+    """Shared kernel: page intake, admission planning and lazy decode.
+
+    Both the fixture cycle and the bounded live adapter run through this single
+    authoritative path. Transactions are requested one at a time only when the
+    kernel reaches an admitted row and the outcome-dependent ``EARLY_CREATE_STOP``
+    has not been hit, so a live source never prefetches an unknowable number of
+    responses.
+    """
+    prior = prior_cursor or FinalizedOriginCursor(None, ContinuityState.UNKNOWN)
+
+    pages_used = 0
+    page_rows: list[SignatureReference] = []
+    boundary_reached = prior.boundary is None
+    history_unavailable = False
+    saw_short_page = False
+
+    while pages_used < CREATE_INDEX_PAGE_CEILING:
+        page = source.next_signature_page()
+        if page is None:
+            break
+        pages_used += 1
+        if not isinstance(page, Mapping) or not isinstance(page.get("rows"), list):
+            raise PumpContractError("MALFORMED_TRANSACTION", "bad signature page")
+        rows = page["rows"]
+        if len(rows) > CREATE_INDEX_PAGE_SIZE:
+            raise PumpContractError("SIGNATURE_PAGE_SIZE_CEILING")
+        if not rows:
+            # Empty page: history unavailable or fully walked. Never a retry.
+            history_unavailable = True
+            break
+        references = [_signature_reference(row) for row in rows]
+        page_rows.extend(references)
+        if prior.boundary is not None and any(
+            reference.signature == prior.boundary.signature for reference in references
+        ):
+            boundary_reached = True
+            break
+        if len(rows) < CREATE_INDEX_PAGE_SIZE:
+            # Short page and boundary not seen: retention ended before it.
+            saw_short_page = True
+            break
+
+    # --- Admission/planning: the finalized row is its own anchor. ----------
+    plan = plan_finalized_decode_queue(page_rows, prior)
+    rejections: list[Rejection] = list(plan.rejections)
+    continuity_fault = plan.continuity_fault
+
+    # --- Bounded finalized confirmation and decode (lazy, in plan order) ----
     observations: list[PumpCreateObservation] = []
     decode_attempts = 0
     non_create_count = 0
     create_v2_count = 0
     unsupported_transaction_version_count = 0
     unsupported_create_layout_count = 0
-    for reference in decode_queue:
+    for reference in plan.decode_queue:
         if len(observations) >= EARLY_CREATE_STOP:
             rejections.append(
                 Rejection("EARLY_CREATE_STOP", reference.signature, reference.slot)
             )
             continue
-        if port.peek() is None or port.peek().rpc_operation != "getTransaction":
+        transaction = source.next_transaction(reference)
+        if transaction is NO_MORE_TRANSACTIONS:
             # No planned confirmation remains. Never invent a fetch.
             break
-        transaction = port.take("getTransaction", TRANSACTION_REQUEST)
         decode_attempts += 1
         try:
             # cutoff_slot is the row's own slot: the retired POST_CUTOFF branch
@@ -514,7 +630,7 @@ def run_acquisition_cycle(
         else:
             observations.append(observation)
 
-    port.assert_consumed()
+    source.finalize()
 
     # --- Continuity resolution --------------------------------------------
     if history_unavailable and not page_rows:
@@ -527,29 +643,49 @@ def run_acquisition_cycle(
     else:
         state = ContinuityState.CONTIGUOUS
 
-    if anchor is not None and not stale_page:
-        boundary = anchor
+    if plan.anchor is not None and not plan.stale_page:
+        boundary = plan.anchor
     else:
         boundary = prior.boundary
 
     return AcquisitionCycleResult(
         index_address=index_address,
-        anchor=anchor,
+        anchor=plan.anchor,
         observations=tuple(observations),
         rejections=tuple(rejections),
         cursor=FinalizedOriginCursor(boundary, state, index_address),
-        accounting=port.accounting.snapshot(),
+        accounting=source.accounting.snapshot(),
         pages_used=pages_used,
         signature_rows=len(page_rows),
-        admitted_rows=len(admitted_ordered),
-        duplicate_signatures=duplicates,
-        failed_signature_count=failed_signature_count,
+        admitted_rows=plan.admitted_count,
+        duplicate_signatures=plan.duplicate_signatures,
+        failed_signature_count=plan.failed_signature_count,
         non_create_count=non_create_count,
         create_v2_count=create_v2_count,
         unsupported_transaction_version_count=unsupported_transaction_version_count,
         unsupported_create_layout_count=unsupported_create_layout_count,
         decode_attempts=decode_attempts,
-        stale_page=stale_page,
+        stale_page=plan.stale_page,
+    )
+
+
+def run_acquisition_cycle(
+    operations: Iterable[FixtureOperation],
+    *,
+    prior_cursor: FinalizedOriginCursor | None = None,
+    index_address: str = PUMP_CREATE_INDEX_ADDRESS,
+) -> AcquisitionCycleResult:
+    """Run one bounded signature-anchored finalized create acquisition cycle.
+
+    The anchor is the newest admitted finalized signature row. No independent
+    ``getSlot`` snapshot is taken, so no cross-backend cutoff race exists. This
+    is the authoritative fixture-backed entry point; it drives the shared kernel
+    through the strict :class:`FixtureOperationPort`.
+    """
+    return run_acquisition_from_source(
+        _FixtureAcquisitionSource(operations),
+        prior_cursor=prior_cursor,
+        index_address=index_address,
     )
 
 

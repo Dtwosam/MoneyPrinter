@@ -177,10 +177,31 @@ def _compressed_two_token_plan(config: Mapping[str, Any]) -> dict[str, str] | No
     return dict(plan) if isinstance(plan, Mapping) else None
 
 
+def _operational_natural(config: Mapping[str, Any]) -> bool:
+    """V2-9.7E.11 operational-natural two-token mode (no predeclared plan)."""
+    return bool(config.get("operational_natural_disposition"))
+
+
+def _two_token_lifecycle(config: Mapping[str, Any]) -> bool:
+    """Two-token 15m→1h→4h budget/scheduler shape: compressed proof OR natural.
+
+    Both drive exactly two atomic activations where one token may continue while
+    the other stops, so they share the two-token cumulative ceilings. They are
+    mutually exclusive (enforced at preflight and at the live owner boundary).
+    """
+    return _compressed_two_token_plan(config) is not None or _operational_natural(config)
+
+
 def _cumulative_lifecycle_budget_for_run(
     conn: sqlite3.Connection, run_id: str, continuation_lane: str,
+    continuing_token_mint: str | None = None,
 ) -> dict[str, Any]:
-    """Return the one-token budget plus only the proof peer's 15m allowance."""
+    """Return the one-token budget plus only the two-token peer's 15m allowance.
+
+    Compressed proof mode reads the peer from the predeclared plan; operational-
+    natural mode reads the peer as the other activated token in the run ledger.
+    Both allow exactly two 15m streams where one token continues.
+    """
     from printer_v1.operator_cli.one_token_4h_runtime import cumulative_lifecycle_budget
 
     base = cumulative_lifecycle_budget(continuation_lane)
@@ -188,17 +209,39 @@ def _cumulative_lifecycle_budget_for_run(
     scheduler_components = dict(base["scheduler_components"])
     config = _load_run_config(conn, run_id)
     plan = _compressed_two_token_plan(config)
+    peer_mint: str | None = None
     if plan is not None:
+        peer_mint = plan["non_continuation_token_mint"]
+    elif _operational_natural(config):
+        # Operational-natural two-token mode always reserves exactly one peer's
+        # 15m allowance (there are two activated tokens; one may continue). When
+        # the continuing token is known, the peer is the other token; otherwise
+        # any second distinct token gives the same allowance (both share a lane).
+        if continuing_token_mint is not None:
+            peer_row = conn.execute(
+                """SELECT token_mint FROM printer_memory_factory_run_steps
+                   WHERE run_id=? AND token_mint!=? ORDER BY token_mint LIMIT 1""",
+                (run_id, continuing_token_mint),
+            ).fetchone()
+            peer_mint = str(peer_row[0]) if peer_row is not None else None
+        else:
+            distinct = conn.execute(
+                """SELECT DISTINCT token_mint FROM printer_memory_factory_run_steps
+                   WHERE run_id=? ORDER BY token_mint""",
+                (run_id,),
+            ).fetchall()
+            peer_mint = str(distinct[-1][0]) if len(distinct) >= 2 else None
+    if peer_mint is not None:
         row = conn.execute(
             """SELECT tracking_lane FROM printer_memory_factory_run_steps
                WHERE run_id=? AND token_mint=? ORDER BY id LIMIT 1""",
-            (run_id, plan["non_continuation_token_mint"]),
+            (run_id, peer_mint),
         ).fetchone()
         if row is None:
             raise _GlobalStop(
                 STOP_BUDGET,
                 scope="CUMULATIVE_LIFECYCLE",
-                detail="non-continuation proof target missing from run ledger",
+                detail="two-token peer target missing from run ledger",
             )
         peer_lane = str(row[0])
         peer_policy = _cadence_get_policy(WINDOW_KIND, peer_lane)
@@ -206,7 +249,7 @@ def _cumulative_lifecycle_budget_for_run(
             raise _GlobalStop(
                 STOP_BUDGET,
                 scope="CUMULATIVE_LIFECYCLE",
-                detail="non-continuation proof target has no 15m cadence policy",
+                detail="two-token peer target has no 15m cadence policy",
             )
         request_components["proof_peer_window_15m"] = int(
             peer_policy.minimum_required_snapshots
@@ -221,7 +264,7 @@ def _cumulative_lifecycle_budget_for_run(
         "request_ceiling": sum(request_components.values()),
         "scheduler_components": scheduler_components,
         "scheduler_ceiling": sum(scheduler_components.values()),
-        "compressed_two_token_proof": plan is not None,
+        "compressed_two_token_proof": peer_mint is not None,
     }
 
 
@@ -403,7 +446,7 @@ def _insert_step_and_job(
     # handoff per token that is the _MAX_SCHEDULER_ROWS design ceiling.
     run_config = _load_run_config(conn, run_id)
     continuous = bool(run_config.get("continuous_first_hour"))
-    compressed_two_token = _compressed_two_token_plan(run_config) is not None
+    compressed_two_token = _two_token_lifecycle(run_config)
     scheduler_ceiling = (
         _COMPRESSED_TWO_TOKEN_MAX_SCHEDULER_ROWS
         if compressed_two_token
@@ -1556,6 +1599,119 @@ def _capture_same_stream_5m_support(
     return result
 
 
+def _operational_activated_token_count(
+    conn: sqlite3.Connection, run_id: str
+) -> int:
+    """Count activated tokens that have a first-15m close step for this run."""
+    return int(
+        conn.execute(
+            "SELECT COUNT(DISTINCT token_id || ':' || pair_id) "
+            "FROM printer_memory_factory_run_steps "
+            "WHERE run_id=? AND step_kind='WINDOW_CLOSE'",
+            (run_id,),
+        ).fetchone()[0]
+    )
+
+
+def _operational_terminal_15m_closes(
+    conn: sqlite3.Connection, run_id: str, *, current_step_id: int
+) -> list[sqlite3.Row]:
+    """Return every terminal 15m close (memory window attached) for this run.
+
+    A close is terminal once its 15m memory window is attached and the step is
+    SUCCEEDED, or is the exact current close still RUNNING. This is the barrier
+    input: the operational-natural disposition may only be derived once every
+    activated token appears here.
+    """
+    return conn.execute(
+        """
+        SELECT * FROM printer_memory_factory_run_steps
+        WHERE run_id=? AND step_kind='WINDOW_CLOSE'
+          AND memory_window_id IS NOT NULL
+          AND (step_status='SUCCEEDED' OR (id=? AND step_status='RUNNING'))
+        ORDER BY id
+        """,
+        (run_id, int(current_step_id)),
+    ).fetchall()
+
+
+def _natural_disposition_schedule(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    close_step: sqlite3.Row,
+    window_id: int,
+    continuation_seconds: float,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Derive one token's operational-natural disposition from its own governed
+    15m evidence and enqueue only the permitted continuation / support-only 5m.
+
+    Token-local: every query is scoped to ``close_step``'s token, pair and lane
+    and to its own 15m memory window, so the outcome is identical regardless of
+    which token closed first.
+    """
+    from printer_v1.operator_cli.authoritative_live_operational_campaign import (
+        derive_natural_disposition,
+    )
+
+    disposition = derive_natural_disposition(conn, int(window_id))
+    if disposition.should_continue:
+        support = _capture_same_stream_5m_support(
+            conn,
+            run_id=run_id,
+            close_step=close_step,
+            parent_window_id=int(window_id),
+        )
+        if support.get("window_5m_id") is None:
+            raise ValueError(
+                "same-stream 5m support capture blocked: "
+                + "; ".join(support.get("blocked_reasons", []))
+            )
+        # Support-only 5m trigger derived from observed micro-event evidence.
+        support["trigger_family"] = disposition.trigger_family
+        support["proof_evidence"] = disposition.evidence_label
+        source = _resolve_current_run_15m_source(
+            conn,
+            run_id=run_id,
+            token_id=int(close_step["token_id"]),
+            pair_id=int(close_step["pair_id"]),
+            tracking_lane=str(close_step["tracking_lane"]),
+            current_close_step_id=int(close_step["id"]),
+        )
+        if not source.get("resolved"):
+            raise ValueError(
+                "current-run 15m continuation source blocked: "
+                + "; ".join(source.get("reasons", []))
+            )
+        continuation_plan = _plan_continuation_jobs(
+            conn,
+            run_id=run_id,
+            close_step=close_step,
+            fifteen_m=source["window"],
+            continuation_seconds=continuation_seconds,
+        )
+        if not continuation_plan.get("enqueue_ok"):
+            raise ValueError(
+                "continuation planning blocked: "
+                + "; ".join(continuation_plan.get("reasons", []))
+            )
+        return support, continuation_plan
+    reason = disposition.evidence_label
+    support = {
+        "captured": False,
+        "verdict": "VALID_NO_CAPTURE",
+        "reason": reason,
+        "window_5m_id": None,
+    }
+    continuation_plan = {
+        "enqueue_ok": False,
+        "planned_jobs": 0,
+        "verdict": "STOP_AFTER_15M",
+        "reason": reason,
+    }
+    return support, continuation_plan
+
+
 def _execute_continuation_close(
     conn: sqlite3.Connection,
     step: sqlite3.Row,
@@ -1914,7 +2070,7 @@ def _enforce_budgets_before_step(conn: sqlite3.Connection, run_id: str, step: sq
             ) from exc
         return
     continuous = bool(config.get("continuous_first_hour"))
-    compressed_two_token = _compressed_two_token_plan(config) is not None
+    compressed_two_token = _two_token_lifecycle(config)
     run_ceiling = (
         _COMPRESSED_TWO_TOKEN_MAX_REQUESTS_RUN
         if compressed_two_token
@@ -2280,7 +2436,7 @@ def _run_budgets(
             "budget_verdict": "WITHIN_CEILING" if cumulative_within else "EXCEEDED",
             "within_ceiling": cumulative_within,
         }
-        compressed_two_token = _compressed_two_token_plan(config) is not None
+        compressed_two_token = _two_token_lifecycle(config)
         if compressed_two_token:
             prefixes = sorted({_token_prefix(s["step_key"]) for s in steps})
             per_token_requests = {
@@ -2323,7 +2479,7 @@ def _run_budgets(
 
     prefixes = sorted({_token_prefix(s["step_key"]) for s in steps})
     per_token = {p: _token_request_count(conn, run_id, p) for p in prefixes}
-    compressed_two_token = _compressed_two_token_plan(config) is not None
+    compressed_two_token = _two_token_lifecycle(config)
     run_ceiling = (
         _COMPRESSED_TWO_TOKEN_MAX_REQUESTS_RUN
         if compressed_two_token
@@ -3006,6 +3162,7 @@ def run_one_command_15m_factory(
     continuous_four_hour: bool = False,
     four_hour_proof_mode: bool = False,
     compressed_two_token_proof_plan: CompressedTwoTokenProofPlan | None = None,
+    operational_natural_disposition: bool = False,
     supervision_execution_id: str | None = None,
     cancellation_probe: Callable[[], str | None] | None = None,
     discovery_transport: Any = None, discovery_runner: Callable[..., dict[str, Any]] | None = None,
@@ -3040,6 +3197,15 @@ def run_one_command_15m_factory(
     # tokens. Normal mode stays capped at two. Four or more is always rejected.
     if compressed_two_token_proof_plan is not None and not continuous_first_hour:
         reasons.append("compressed two-token proof requires continuous first-hour mode")
+    # V2-9.7E.11: operational-natural two-token mode and the E.9 compressed proof
+    # plan are structurally mutually exclusive (predeclared dispositions can never
+    # enter operational mode).
+    if operational_natural_disposition and compressed_two_token_proof_plan is not None:
+        reasons.append(
+            "operational natural mode excludes the compressed two-token proof plan"
+        )
+    if operational_natural_disposition and not continuous_first_hour:
+        reasons.append("operational natural two-token mode requires continuous first-hour mode")
     if continuous_first_hour:
         if compressed_two_token_proof_plan is not None:
             try:
@@ -3052,6 +3218,13 @@ def run_one_command_15m_factory(
                 reasons.append("compressed two-token proof requires injected origin discovery")
             if not continuous_four_hour or not four_hour_proof_mode:
                 reasons.append("compressed two-token proof requires terminal 4h proof mode")
+        elif operational_natural_disposition:
+            if max_selected_tokens != 2:
+                reasons.append("operational natural two-token mode requires exactly two tokens")
+            if discovery_runner is None:
+                reasons.append("operational natural mode requires injected origin discovery")
+            if not continuous_four_hour or not four_hour_proof_mode:
+                reasons.append("operational natural two-token mode requires terminal 4h proof mode")
         elif max_selected_tokens != _CONTINUOUS_MAX_SELECTED_TOKENS:
             reasons.append("continuous first-hour proof requires exactly one autonomous token")
         if v2_5_proof_mode:
@@ -3113,6 +3286,7 @@ def run_one_command_15m_factory(
             asdict(compressed_two_token_proof_plan)
             if compressed_two_token_proof_plan is not None else None
         ),
+        "operational_natural_disposition": bool(operational_natural_disposition),
         "supervision_execution_id": supervision_execution_id,
         "git_provenance": provenance,
         "continuation_seconds": _continuation_seconds if continuous_first_hour else 0.0,
@@ -3307,70 +3481,151 @@ def run_one_command_15m_factory(
                         )
                         conn.commit()
                         proof_plan = _compressed_two_token_plan(config)
-                        should_continue = (
-                            proof_plan is None
-                            or str(pending["token_mint"])
-                            == proof_plan["continuation_token_mint"]
-                        )
-                        if should_continue:
-                            support = _capture_same_stream_5m_support(
-                                conn,
-                                run_id=run_id,
-                                close_step=pending,
-                                parent_window_id=int(window_id),
+                        natural_mode = _operational_natural(config)
+                        if natural_mode:
+                            # V2-9.7E.11 two-terminal-15m-close barrier: the first
+                            # terminal 15m close must not independently schedule
+                            # continuation or support-only 5m capture. Only once
+                            # every activated token has terminal 15m close evidence
+                            # is each token evaluated from its own governed 15m
+                            # window and the permitted continuation enqueued. The
+                            # decisions are token-local, so they are identical
+                            # regardless of close-arrival order.
+                            expected = _operational_activated_token_count(
+                                conn, run_id
                             )
-                            if support.get("window_5m_id") is None:
-                                raise ValueError(
-                                    "same-stream 5m support capture blocked: "
-                                    + "; ".join(support.get("blocked_reasons", []))
-                                )
-                            if proof_plan is not None:
-                                support["trigger_family"] = proof_plan[
-                                    "support_5m_trigger_family"
-                                ]
-                                support["proof_evidence"] = proof_plan[
-                                    "continuation_evidence"
-                                ]
-                            source = _resolve_current_run_15m_source(
-                                conn,
-                                run_id=run_id,
-                                token_id=int(pending["token_id"]),
-                                pair_id=int(pending["pair_id"]),
-                                tracking_lane=str(pending["tracking_lane"]),
-                                current_close_step_id=int(pending["id"]),
+                            closes = _operational_terminal_15m_closes(
+                                conn, run_id, current_step_id=int(pending["id"])
                             )
-                            if not source.get("resolved"):
-                                raise ValueError(
-                                    "current-run 15m continuation source blocked: "
-                                    + "; ".join(source.get("reasons", []))
-                                )
-                            continuation_plan = _plan_continuation_jobs(
-                                conn,
-                                run_id=run_id,
-                                close_step=pending,
-                                fifteen_m=source["window"],
-                                continuation_seconds=_continuation_seconds,
-                            )
-                            if not continuation_plan.get("enqueue_ok"):
-                                raise ValueError(
-                                    "continuation planning blocked: "
-                                    + "; ".join(continuation_plan.get("reasons", []))
-                                )
+                            if len(closes) < expected:
+                                # First terminal close: defer, schedule nothing.
+                                deferred_reason = "AWAITING_PEER_TERMINAL_15M_CLOSE"
+                                result["support_5m"] = {
+                                    "captured": False,
+                                    "verdict": "DEFERRED_PENDING_PEER_15M_CLOSE",
+                                    "reason": deferred_reason,
+                                    "window_5m_id": None,
+                                }
+                                result["continuation_plan"] = {
+                                    "enqueue_ok": False,
+                                    "planned_jobs": 0,
+                                    "verdict": "DEFERRED_PENDING_PEER_15M_CLOSE",
+                                    "reason": deferred_reason,
+                                }
+                            else:
+                                # Barrier released: evaluate and schedule for every
+                                # activated token from its own governed evidence.
+                                for close_row in closes:
+                                    row_window_id = int(
+                                        close_row["memory_window_id"]
+                                    )
+                                    support, continuation_plan = (
+                                        _natural_disposition_schedule(
+                                            conn,
+                                            run_id=run_id,
+                                            close_step=close_row,
+                                            window_id=row_window_id,
+                                            continuation_seconds=_continuation_seconds,
+                                        )
+                                    )
+                                    if int(close_row["id"]) == int(pending["id"]):
+                                        result["support_5m"] = support
+                                        result["continuation_plan"] = (
+                                            continuation_plan
+                                        )
+                                    else:
+                                        # Rewrite the earlier deferred close's
+                                        # persisted result now that the barrier
+                                        # has released.
+                                        peer_result = json.loads(
+                                            str(close_row["result_json"] or "{}")
+                                        )
+                                        peer_result["support_5m"] = support
+                                        peer_result["continuation_plan"] = (
+                                            continuation_plan
+                                        )
+                                        conn.execute(
+                                            "UPDATE printer_memory_factory_run_steps "
+                                            "SET result_json=?, updated_at=? "
+                                            "WHERE id=?",
+                                            (
+                                                _json(peer_result),
+                                                _iso(),
+                                                int(close_row["id"]),
+                                            ),
+                                        )
+                                conn.commit()
                         else:
-                            support = {
-                                "captured": False,
-                                "verdict": "VALID_NO_CAPTURE",
-                                "reason": proof_plan["non_continuation_evidence"],
-                                "window_5m_id": None,
-                            }
-                            continuation_plan = {
-                                "enqueue_ok": False,
-                                "planned_jobs": 0,
-                                "verdict": "STOP_AFTER_15M",
-                                "reason": proof_plan["non_continuation_evidence"],
-                            }
-                        result["support_5m"] = support
-                        result["continuation_plan"] = continuation_plan
+                            should_continue = (
+                                proof_plan is None
+                                or str(pending["token_mint"])
+                                == proof_plan["continuation_token_mint"]
+                            )
+                            if should_continue:
+                                support = _capture_same_stream_5m_support(
+                                    conn,
+                                    run_id=run_id,
+                                    close_step=pending,
+                                    parent_window_id=int(window_id),
+                                )
+                                if support.get("window_5m_id") is None:
+                                    raise ValueError(
+                                        "same-stream 5m support capture blocked: "
+                                        + "; ".join(support.get("blocked_reasons", []))
+                                    )
+                                if proof_plan is not None:
+                                    support["trigger_family"] = proof_plan[
+                                        "support_5m_trigger_family"
+                                    ]
+                                    support["proof_evidence"] = proof_plan[
+                                        "continuation_evidence"
+                                    ]
+                                source = _resolve_current_run_15m_source(
+                                    conn,
+                                    run_id=run_id,
+                                    token_id=int(pending["token_id"]),
+                                    pair_id=int(pending["pair_id"]),
+                                    tracking_lane=str(pending["tracking_lane"]),
+                                    current_close_step_id=int(pending["id"]),
+                                )
+                                if not source.get("resolved"):
+                                    raise ValueError(
+                                        "current-run 15m continuation source blocked: "
+                                        + "; ".join(source.get("reasons", []))
+                                    )
+                                continuation_plan = _plan_continuation_jobs(
+                                    conn,
+                                    run_id=run_id,
+                                    close_step=pending,
+                                    fifteen_m=source["window"],
+                                    continuation_seconds=_continuation_seconds,
+                                )
+                                if not continuation_plan.get("enqueue_ok"):
+                                    raise ValueError(
+                                        "continuation planning blocked: "
+                                        + "; ".join(continuation_plan.get("reasons", []))
+                                    )
+                            else:
+                                if proof_plan is not None:
+                                    no_continuation_reason = proof_plan[
+                                        "non_continuation_evidence"
+                                    ]
+                                else:
+                                    no_continuation_reason = "NO_UNRESOLVED_LEARNING_NEED"
+                                support = {
+                                    "captured": False,
+                                    "verdict": "VALID_NO_CAPTURE",
+                                    "reason": no_continuation_reason,
+                                    "window_5m_id": None,
+                                }
+                                continuation_plan = {
+                                    "enqueue_ok": False,
+                                    "planned_jobs": 0,
+                                    "verdict": "STOP_AFTER_15M",
+                                    "reason": no_continuation_reason,
+                                }
+                            result["support_5m"] = support
+                            result["continuation_plan"] = continuation_plan
                     elif pending["step_kind"] == "CONTINUATION_CLOSE" and continuous_four_hour:
                         from printer_v1.operator_cli.one_token_4h_runtime import plan_current_run_4h
                         window_id = result.get("memory_window_id")
@@ -3391,12 +3646,11 @@ def run_one_command_15m_factory(
                             tracking_lane=str(pending["tracking_lane"]),
                             current_close_step_id=int(pending["id"]),
                             explicit_proof_mode=four_hour_proof_mode,
-                            compressed_two_token_proof=(
-                                _compressed_two_token_plan(config) is not None
-                            ),
+                            compressed_two_token_proof=_two_token_lifecycle(config),
                             cumulative_scheduler_ceiling=int(
                                 _cumulative_lifecycle_budget_for_run(
-                                    conn, run_id, str(pending["tracking_lane"])
+                                    conn, run_id, str(pending["tracking_lane"]),
+                                    continuing_token_mint=str(pending["token_mint"]),
                                 )["scheduler_ceiling"]
                             ),
                         )
