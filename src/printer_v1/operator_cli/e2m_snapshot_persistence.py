@@ -18,6 +18,7 @@ Hard locks (permanent):
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -88,6 +89,50 @@ def _select_primary_pair(
         key=lambda p: (-(p.get("liquidity_usd") or 0.0), p.get("pair_address") or "")
     )
     return candidates[0]
+
+
+_INACTIVITY_FIELDS = (
+    "volume_5m", "volume_15m", "txns_5m", "txns_15m",
+    "price_change_5m", "price_change_15m",
+)
+
+
+def _finite_number(value: Any, *, positive: bool = False) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    numeric = float(value)
+    return math.isfinite(numeric) and (numeric > 0.0 if positive else numeric >= 0.0)
+
+
+def _normalize_verified_inactivity(pair_data: dict[str, Any]) -> dict[str, Any]:
+    """Fill absent short-window activity only from positive inactivity evidence."""
+    normalized = dict(pair_data)
+    predicate = (
+        _finite_number(pair_data.get("price_usd"), positive=True)
+        and _finite_number(pair_data.get("liquidity_usd"), positive=True)
+        and _finite_number(pair_data.get("volume_1h"))
+        and _finite_number(pair_data.get("txns_1h"))
+        and float(pair_data["volume_1h"]) == 0.0
+        and float(pair_data["txns_1h"]) == 0.0
+    )
+    converted = [
+        field_name for field_name in _INACTIVITY_FIELDS
+        if predicate and pair_data.get(field_name) is None
+    ]
+    for field_name in converted:
+        normalized[field_name] = 0
+    if converted:
+        normalized["snapshot_inactivity_evidence"] = {
+            "label": "SNAPSHOT_VERIFIED_INACTIVE",
+            "converted_fields": converted,
+            "predicate": {
+                "exact_pair_and_target_validated": True,
+                "source_complete_clean": True,
+                "price_and_liquidity_positive": True,
+                "wider_activity_present_and_inactive": True,
+            },
+        }
+    return normalized
 
 
 def _upsert_token(
@@ -189,6 +234,9 @@ def _insert_snapshot(
             "sells_1h": pair_data.get("sells_1h"),
             "buys_24h": pair_data.get("buys_24h"),
             "sells_24h": pair_data.get("sells_24h"),
+            "snapshot_inactivity_evidence": pair_data.get(
+                "snapshot_inactivity_evidence"
+            ),
         },
         sort_keys=True,
     )
@@ -207,10 +255,10 @@ def _insert_snapshot(
         ) VALUES (
             ?, ?, ?, ?, ?,
             ?, NULL, ?,
-            ?, NULL, ?, NULL, NULL, ?,
-            ?, NULL, ?, NULL, NULL, ?,
+            ?, ?, ?, NULL, NULL, ?,
+            ?, ?, ?, NULL, NULL, ?,
             ?, ?,
-            ?, NULL, ?,
+            ?, ?, ?,
             NULL, NULL, ?,
             'COMPLETE', 'CLEAN_DATA',
             ?, ?
@@ -225,14 +273,17 @@ def _insert_snapshot(
             pair_data.get("price_usd"),
             pair_data.get("liquidity_usd"),
             pair_data.get("volume_5m"),
+            pair_data.get("volume_15m"),
             pair_data.get("volume_1h"),
             pair_data.get("volume_24h"),
             pair_data.get("txns_5m"),
+            pair_data.get("txns_15m"),
             pair_data.get("txns_1h"),
             pair_data.get("txns_24h"),
             pair_data.get("fdv"),
             pair_data.get("market_cap"),
             pair_data.get("price_change_5m"),
+            pair_data.get("price_change_15m"),
             pair_data.get("price_change_1h"),
             pair_data.get("price_change_24h"),
             normalized_json,
@@ -404,6 +455,8 @@ def persist_snapshot_from_source_response(
             "memory_created": 0,
             "memory_windows_created": 0,
         }
+
+    primary_pair = _normalize_verified_inactivity(primary_pair)
 
     now = _utc_now()
     captured_at = str(resp_row["received_at"] or now)

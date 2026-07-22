@@ -1986,6 +1986,32 @@ def _cancel_pending_for_token(
     return len(rows)
 
 
+def _cancel_campaign_discovery_jobs(
+    conn: sqlite3.Connection, discovery_batch_id: str | None
+) -> dict[str, Any]:
+    """Cancel only active Scheduler discovery jobs owned by this exact batch."""
+    if not discovery_batch_id:
+        return {"discovery_batch_id": None, "cancelled_jobs": 0}
+    rows = conn.execute(
+        """
+        SELECT DISTINCT j.id
+        FROM printer_scheduler_jobs AS j
+        JOIN printer_discovery_work AS w ON w.scheduler_job_id = j.id
+        WHERE w.discovery_batch_id = ?
+          AND j.job_kind = ?
+          AND j.status IN ('PENDING', 'RUNNING')
+        ORDER BY j.id
+        """,
+        (discovery_batch_id, JobKind.DISCOVERY_REFRESH.value),
+    ).fetchall()
+    for row in rows:
+        cancel_job(conn, job_id=int(row["id"]))
+    return {
+        "discovery_batch_id": discovery_batch_id,
+        "cancelled_jobs": len(rows),
+    }
+
+
 def _token_prefix(step_key: str) -> str:
     """Return the per-token step-key prefix (e.g. 't1') for budget accounting."""
     return str(step_key).split("_", 1)[0]
@@ -2707,7 +2733,7 @@ def _four_hour_terminal_validation(
     pending_steps: int, running_jobs: int,
     primary_cause: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Independently prove a complete, audited terminal WINDOW_4H outcome."""
+    """Prove either a terminal 4h outcome or an exact natural two-stop end."""
     if not config.get("continuous_four_hour"):
         return {
             "enabled": False,
@@ -2725,6 +2751,8 @@ def _four_hour_terminal_validation(
     phase_state = str(
         phase.get("state") or ("STARTED" if long_steps else "UNAVAILABLE")
     )
+    operational_natural = bool(config.get("operational_natural_disposition")) \
+        and _compressed_two_token_plan(config) is None
     close_steps = [
         step for step in long_steps
         if step.get("step_kind") == "LONG_CONTINUATION_CLOSE"
@@ -2753,10 +2781,57 @@ def _four_hour_terminal_validation(
             or "transport" in str(step.get("error_or_skip_reason")).lower()
         )
     ]
-    if policy is None:
+    if policy is None and phase_state == "STARTED":
         reasons.append("missing_4h_cadence_policy")
     if phase_state == "NOT_STARTED":
-        reasons.append("four_hour_phase_not_started")
+        if operational_natural:
+            closes_15m = [
+                step for step in steps
+                if step.get("step_kind") == "WINDOW_CLOSE"
+            ]
+            if len(closes_15m) != 2 or any(
+                step.get("step_status") != "SUCCEEDED" for step in closes_15m
+            ):
+                reasons.append("two_clean_terminal_15m_closes_required")
+            if len({step.get("token_id") for step in closes_15m}) != 2:
+                reasons.append("two_distinct_terminal_tokens_required")
+            for step in closes_15m:
+                window_id = step.get("memory_window_id")
+                window = (
+                    windows_by_id.get(int(window_id))
+                    if window_id is not None else None
+                )
+                if (
+                    window is None
+                    or window.get("window_kind") != "WINDOW_15M"
+                    or window.get("window_status") != "COMPLETE"
+                    or window.get("memory_status") != "CLEAN_MEMORY"
+                    or window.get("memory_quality_label") != "CLEAN_MEMORY"
+                    or window.get("data_quality_label") != "CLEAN_DATA"
+                    or int(window.get("do_not_train") or 0) != 0
+                ):
+                    reasons.append("ineligible_or_dirty_terminal_15m_close")
+                    continue
+                try:
+                    result = json.loads(str(step.get("result_json") or "{}"))
+                except json.JSONDecodeError:
+                    result = {}
+                plan = result.get("continuation_plan")
+                if (
+                    not isinstance(plan, dict)
+                    or plan.get("verdict") != "STOP_AFTER_15M"
+                    or int(plan.get("planned_jobs") or 0) != 0
+                ):
+                    reasons.append("invalid_natural_stop_disposition")
+            if any(
+                step.get("step_kind") in {
+                    "CONTINUATION_CLOSE", "LONG_CONTINUATION_CLOSE"
+                }
+                for step in steps
+            ):
+                reasons.append("unexpected_continuation_in_natural_stop")
+        else:
+            reasons.append("four_hour_phase_not_started")
     elif phase_state == "STARTED" and actual != expected:
         reasons.append(f"incomplete_4h_collection:{actual}/{expected}")
 
@@ -2817,7 +2892,10 @@ def _four_hour_terminal_validation(
     if failure_reasons:
         reasons.append("terminal_4h_step_failure")
 
-    complete = phase_state == "STARTED" and not reasons
+    complete = (
+        phase_state == "STARTED"
+        or (operational_natural and phase_state == "NOT_STARTED")
+    ) and not reasons
     authoritative = primary_cause or {"present": False}
     if authoritative.get("present"):
         run_status = str(authoritative["run_status"])
@@ -2845,6 +2923,9 @@ def _four_hour_terminal_validation(
         "source_failure_reasons": source_failure_reasons,
         "budget_failure_scopes": budget_failure_scopes,
         "phase_state": phase_state,
+        "operational_natural_stop": (
+            operational_natural and phase_state == "NOT_STARTED"
+        ),
         "tracking_lane": lane or None,
         "expected_snapshots": expected,
         "actual_snapshots": actual,
@@ -3704,6 +3785,10 @@ def run_one_command_15m_factory(
             bool(supervision_execution_id), "TERMINAL_CAUSE", reason=stop_reason,
         )
         _cancel_pending(conn, run_id, stop_reason)
+        discovery_cleanup = _cancel_campaign_discovery_jobs(
+            conn,
+            discovery.get("selection_handoff_report", {}).get("batch_id"),
+        )
         conn.commit()
         report = _final_report(
             conn, run_id=run_id, config=config, discovery=discovery, before=before,
@@ -3727,6 +3812,7 @@ def run_one_command_15m_factory(
             stop_reason=stop_reason, started_at=started_at,
         )
         report["post_cycle_lifecycle_reconciliation"] = lifecycle_reconciliation
+        report["campaign_discovery_cleanup"] = discovery_cleanup
         _apply_post_report_integrity(report)
         report["full_run_evidence_deltas"] = dict(report["table_deltas"])
         report["recovery_evidence_deltas"] = {

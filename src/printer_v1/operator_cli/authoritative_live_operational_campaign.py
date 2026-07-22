@@ -19,7 +19,7 @@ logic is duplicated here.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 import sqlite3
 from pathlib import Path
@@ -73,6 +73,7 @@ GECKO_TRENDING_MAX = 1
 GECKO_ACTIVE_MAX = 1
 DEXSCREENER_MAX = 2
 TRACKER_MAX = 2
+HOLDER_ELIGIBILITY_CANDIDATE_MAX = 8
 
 
 class LiveOperationalError(RuntimeError):
@@ -739,6 +740,70 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _holder_execution_fact(
+    execution: Any, *, token_mint: str, source_name: str
+) -> dict[str, Any]:
+    if execution is None:
+        return {
+            "eligible": False,
+            "reason": "HOLDER_EVIDENCE_UNAVAILABLE",
+            "source_name": source_name,
+        }
+    normalized = execution.normalized_result
+    payload = normalized.normalized_payload
+    returned_mint = str(payload.get("token_mint") or "")
+    if returned_mint.lower() != token_mint.lower():
+        reason = "HOLDER_EVIDENCE_TARGET_MISMATCH"
+    elif normalized.source_status.value == "STALE":
+        reason = "HOLDER_EVIDENCE_STALE"
+    elif (
+        execution.response_record is None
+        or normalized.source_status.value != "COMPLETE"
+        or normalized.data_quality_label.value != "CLEAN_DATA"
+    ):
+        reason = "HOLDER_EVIDENCE_FAILED"
+    else:
+        if source_name == "goplus":
+            from printer_v1.safety.goplus_normalizer import (
+                holder_concentration_label_from_goplus,
+            )
+            label = holder_concentration_label_from_goplus(payload)
+        else:
+            label = str(
+                payload.get("holder_concentration_label")
+                or "HOLDER_CONCENTRATION_UNKNOWN"
+            )
+        if label != "HOLDER_CONCENTRATION_UNKNOWN":
+            return {
+                "eligible": True,
+                "reason": "VALID_EXACT_TARGET_HOLDER_EVIDENCE",
+                "source_name": source_name,
+                "holder_concentration_label": label,
+            }
+        reason = "HOLDER_CONCENTRATION_UNKNOWN"
+    return {"eligible": False, "reason": reason, "source_name": source_name}
+
+
+def _holder_eligibility_from_bundle(
+    bundle: Mapping[str, Any], *, token_mint: str
+) -> dict[str, Any]:
+    executions = bundle.get("executions", {})
+    goplus = _holder_execution_fact(
+        executions.get("safety"), token_mint=token_mint, source_name="goplus"
+    )
+    if goplus["eligible"]:
+        return goplus
+    holder = _holder_execution_fact(
+        executions.get("holder"),
+        token_mint=token_mint,
+        source_name="solana_rpc",
+    )
+    if holder["eligible"]:
+        return holder
+    # Preserve the most specific attempted on-chain reason when present.
+    return holder if executions.get("holder") is not None else goplus
+
+
 @dataclass(frozen=True)
 class ReadinessResult:
     status: str
@@ -844,7 +909,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 )
         lk["operational_natural_disposition"] = True
 
-        fixtures, _acq, _enrichment = self._build_fixtures(
+        fixtures, acquisition, _enrichment = self._build_fixtures(
             pump_transport=pump_transport,
             secondary_transport=secondary_transport,
             source_governor=source_governor,
@@ -857,6 +922,60 @@ class AuthoritativeLiveOperationalCampaignOwner:
             timeout_seconds=timeout_seconds,
             byte_ceiling=byte_ceiling,
             tracker_api_key=tracker_api_key,
+        )
+        bounded_candidates = tuple(sorted(
+            acquisition.origin_proofs,
+            key=lambda proof: (
+                proof.mint.lower(),
+                proof.bonding_curve,
+                proof.signature,
+                int(proof.slot),
+            ),
+        )[:HOLDER_ELIGIBILITY_CANDIDATE_MAX])
+        holder_facts: dict[str, Mapping[str, Any]] = {}
+        connection = sqlite3.connect(Path(command.db_path))
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        try:
+            from printer_v1.operator_cli.one_command_15m_factory import (
+                _collect_preclose_context,
+            )
+            context_factories = lk.get("context_adapter_factories")
+            for ordinal, proof in enumerate(bounded_candidates, start=1):
+                try:
+                    bundle = _collect_preclose_context(
+                        connection,
+                        {
+                            "run_id": command.run_id,
+                            "step_key": f"holder_eligibility_{ordinal}",
+                            "token_mint": proof.mint,
+                            "pair_address": proof.bonding_curve,
+                        },
+                        timeout_seconds=timeout_seconds,
+                        adapter_factories=(
+                            dict(context_factories)
+                            if isinstance(context_factories, Mapping) else None
+                        ),
+                        include=frozenset({"safety"}),
+                    )
+                    holder_facts[proof.mint.lower()] = (
+                        _holder_eligibility_from_bundle(
+                            bundle, token_mint=proof.mint
+                        )
+                    )
+                except Exception as exc:
+                    holder_facts[proof.mint.lower()] = {
+                        "eligible": False,
+                        "reason": f"HOLDER_EVIDENCE_COLLECTION_FAILED:{type(exc).__name__}",
+                        "source_name": None,
+                    }
+            connection.commit()
+        finally:
+            connection.close()
+        fixtures = replace(
+            fixtures,
+            direct_observations=bounded_candidates,
+            holder_evidence_eligibility=holder_facts,
         )
         return self._driver.run(
             command=command,

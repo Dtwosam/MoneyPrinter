@@ -349,8 +349,6 @@ class _OperationalBase(e8._IntegrationBase):
 
         def market(**_kwargs):
             phase["close"] += 1
-            if phase["close"] != 2:
-                return build_fixture_source_adapter("coingecko", fixture_kind=FIXTURE_FAILURE)
             return build_fixture_source_adapter(
                 "coingecko",
                 fixture_payload={
@@ -365,12 +363,11 @@ class _OperationalBase(e8._IntegrationBase):
 
         def safety(**kwargs):
             mint = kwargs.get("token_mint")
-            clean = mint == continue_mint and phase["close"] == 2
             return build_fixture_source_adapter(
                 "goplus",
                 fixture_payload={
                     "token_mint": mint,
-                    "mint_authority": None if clean else "observed-authority",
+                    "mint_authority": None,
                     "freeze_authority": None,
                     "metadata_mutable": False,
                     "total_supply": "1000000000",
@@ -381,8 +378,6 @@ class _OperationalBase(e8._IntegrationBase):
             )
 
         def quote(**kwargs):
-            if continue_mint not in {kwargs.get("input_mint"), kwargs.get("output_mint")} or phase["close"] != 2:
-                return build_fixture_source_adapter("jupiter_quote", fixture_kind=FIXTURE_FAILURE)
             return build_fixture_source_adapter(
                 "jupiter_quote",
                 fixture_payload={
@@ -536,7 +531,8 @@ class NaturalOperationalLifecycleProofTests(_OperationalBase):
         self.assertEqual(cont["support_5m"]["trigger_family"], "FAST_COORDINATED_PUMP")
         self.assertTrue(cont["continuation_plan"]["enqueue_ok"])
 
-        # Exactly one authoritative clean promotion, zero dirty promotions.
+        # E.19 valid clean contexts preserve both clean terminal 15m memories
+        # plus the continuing token's clean terminal 4h memory.
         connection = sqlite3.connect(self.db)
         connection.row_factory = sqlite3.Row
         try:
@@ -554,9 +550,10 @@ class NaturalOperationalLifecycleProofTests(_OperationalBase):
             ).fetchall()
         finally:
             connection.close()
-        self.assertEqual(len(promotions), 1)
+        self.assertEqual(len(promotions), 3)
         self.assertEqual(
-            [p["window_kind"] for p in promotions.values()], ["WINDOW_15M"]
+            sorted(p["window_kind"] for p in promotions.values()),
+            ["WINDOW_15M", "WINDOW_15M", "WINDOW_4H"],
         )
         self.assertEqual(dirty, 0)
         self.assertEqual(len(support_windows), 1)  # support-only, never promoted

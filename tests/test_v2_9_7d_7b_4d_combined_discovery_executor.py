@@ -462,6 +462,69 @@ class CombinedDiscoveryExecutorTests(unittest.TestCase):
         self.assertEqual(tracking, 0)
         self.connection.close()
 
+    def test_e19_holder_eligibility_replaces_from_bounded_pool_without_ranking(self) -> None:
+        fixtures = self._fixtures(
+            holder_evidence_eligibility={
+                MINT_A.lower(): {
+                    "eligible": False,
+                    "reason": "HOLDER_EVIDENCE_STALE",
+                    "source_name": "solana_rpc",
+                },
+                MINT_B.lower(): {"eligible": True},
+                MINT_C.lower(): {"eligible": True},
+            }
+        )
+        result, _ = self._execute(fixtures)
+        self.assertEqual(result.terminal_status, "COMPLETED")
+        self.connection = sqlite3.connect(self.db)
+        selected = {
+            row[0] for row in self.connection.execute(
+                "SELECT mint_identity FROM printer_memory_factory_campaign_token_slots"
+            )
+        }
+        self.assertEqual(selected, {MINT_B, MINT_C})
+        stale = self.connection.execute(
+            "SELECT evidence_gaps_json FROM printer_discovery_merged_candidates WHERE mint_identity=?",
+            (MINT_A,),
+        ).fetchone()[0]
+        self.assertIn("HOLDER_EVIDENCE_STALE", stale)
+        self.connection.close()
+
+    def test_e19_fewer_than_two_holder_eligible_is_atomic_no_activation(self) -> None:
+        fixtures = self._fixtures(
+            holder_evidence_eligibility={
+                MINT_A.lower(): {"eligible": True},
+                MINT_B.lower(): {
+                    "eligible": False,
+                    "reason": "HOLDER_EVIDENCE_FAILED",
+                },
+                MINT_C.lower(): {
+                    "eligible": False,
+                    "reason": "HOLDER_CONCENTRATION_UNKNOWN",
+                },
+            }
+        )
+        result, _ = self._execute(fixtures)
+        self.assertEqual(result.terminal_status, "FAILED")
+        self.assertEqual(
+            result.first_terminal_cause,
+            "INSUFFICIENT_ELIGIBLE_TWO_SLOT_POOL",
+        )
+        self.connection = sqlite3.connect(self.db)
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM printer_memory_factory_campaign_token_slots"
+            ).fetchone()[0],
+            0,
+        )
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM printer_scheduler_jobs WHERE job_name LIKE 'window15m:%'"
+            ).fetchone()[0],
+            0,
+        )
+        self.connection.close()
+
     def test_provider_failure_isolation_and_governor_scheduler_required(self) -> None:
         fixtures = self._fixtures(
             provider_failures_injected={"geckoterminal": "rate_limited"}

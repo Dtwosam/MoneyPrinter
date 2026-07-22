@@ -213,6 +213,10 @@ class CombinedDiscoveryFixtures:
     batch_seq: int = 1
     force_shared_fault: str | None = None
     provider_failures_injected: Mapping[str, str] = field(default_factory=dict)
+    # V2-9.7E.19 operational-only pre-activation holder-evidence facts.
+    holder_evidence_eligibility: Mapping[str, Mapping[str, Any]] = field(
+        default_factory=dict
+    )
     # Atomic handoff injection points for focused repair proofs only.
     # BEFORE_FIRST | DURING_SECOND | SECOND_SCHEDULER_JOB | DUPLICATE_ACTIVE | CONFLICTING_SLOT
     force_handoff_failure: str | None = None
@@ -565,6 +569,22 @@ class CombinedPumpfunCampaignExecutor:
         )
         merged = self._merge(observations)
         for candidate in merged.values():
+            if fixtures.holder_evidence_eligibility:
+                holder_fact = fixtures.holder_evidence_eligibility.get(
+                    candidate.mint.lower()
+                )
+                if holder_fact is None or holder_fact.get("eligible") is not True:
+                    candidate.gaps.append(
+                        {
+                            "kind": "HOLDER_EVIDENCE_INELIGIBLE",
+                            "detail": str(
+                                (holder_fact or {}).get(
+                                    "reason", "HOLDER_EVIDENCE_NOT_EVALUATED"
+                                )
+                            ),
+                            "source_name": (holder_fact or {}).get("source_name"),
+                        }
+                    )
             insert_merged_candidate(
                 connection,
                 merged_candidate_id=candidate.merged_candidate_id,
@@ -1572,7 +1592,12 @@ class CombinedPumpfunCampaignExecutor:
                 elif gate == "FRESHNESS_CUTOFF":
                     pass
                 elif gate == "EVIDENCE_QUALITY":
-                    if any(gap.get("kind") == "DIRTY" for gap in candidate.gaps):
+                    if any(
+                        gap.get("kind") in {
+                            "DIRTY", "HOLDER_EVIDENCE_INELIGIBLE"
+                        }
+                        for gap in candidate.gaps
+                    ):
                         failed = gate
                 elif gate == "CANDIDATE_ROLE":
                     if not candidate.channels:
