@@ -1,6 +1,6 @@
 # GoPlus Solana Token Security API Contract
 
-**Status:** ADOPTED 2026-07-18 - CURRENT PRINTER IMPLEMENTATION PARTIAL WITH BLOCKER
+**Status:** ADOPTED 2026-07-22 - BOUNDED READINESS ATTEMPT CONTRACT VERIFIED
 
 This module defines the official GoPlus Solana Token Security API facts that
 Printer V1 may use as paper-only safety evidence. It is subordinate to the
@@ -43,7 +43,7 @@ became a command, runtime input, or Source Governor evidence.
 | `printer_readiness` | `PARTIAL_WITH_BLOCKER` | Governed adapter/storage exist, but current field mapping and proof semantics are incomplete |
 | `printer_role` | `SAFETY` | Provider contributes defensive token-security context only |
 | `access_policy` | `KEYLESS_PUBLIC` | Official support states free 30 calls/minute; bearer access token is shown but not marked required |
-| `v1_permission` | `ALLOWED_FIXTURE_ONLY` | Governed network use requires later repair and proof |
+| `v1_permission` | `FIXTURE_ONLY_EXCEPT_SEPARATELY_AUTHORIZED_READINESS` | One exact-mint attempt may run in a separately authorized bounded readiness proof; incomplete evidence remains unknown |
 
 The keyless classification is limited to the published free quota. Higher-limit
 access-token use is not adopted. Authentication policy must be reverified before
@@ -232,7 +232,7 @@ Conflicting GoPlus and Solana-RPC holder evidence remains blocking.
 
 | Request kind | Status | Purpose |
 |---|---|---|
-| `safety_reference` | Existing compatibility kind; fixture-only under this contract | One exact-mint token-security response |
+| `safety_reference` | Separately authorized bounded readiness proof only | One exact-mint token-security response; one attempt, no retry |
 | `solana_token_security_reference` | Proposed, NOT_IMPLEMENTED | Explicit future name for one exact-mint response |
 | Any transaction simulation, wallet, approval, signing, or execution kind | PROHIBITED | Outside this provider contract and Printer V1 |
 
@@ -258,7 +258,7 @@ evidence or broaden provider acceptance.
 | Location | Current behavior | Contract result |
 |---|---|---|
 | `sources/goplus.py` | Correct endpoint and exact requested mint added to transport payload | Partial readiness; network metadata still says fixture-only |
-| transport headers | No bearer token | Compatible with published free/keyless reading, but reverify before live use |
+| transport headers | No bearer token | E.28 reverified the free 30/minute support contract; missing/mandatory auth remains a fail-closed source error |
 | `normalize_goplus_payload()` | Requires provider code 1; code 2 becomes failure | Conservative but loses documented partial/retry semantics |
 | response extraction | Expects result keyed by mint; falls back to first object for some fixtures | Exact live match is guarded; official envelope keying not schema-pinned |
 | capture/freshness | Adds local `captured_at`; complete payload becomes `CLEAN_DATA` | Receipt does not prove provider freshness or field completeness |
@@ -313,4 +313,5 @@ confidence, weighting, embedding, vector, or live execution.
 
 | Date | Change |
 |---|---|
+| 2026-07-22 | E.28 reverified endpoint, optional bearer surface and free 30/minute limit; bounded readiness permission remains fail-closed and exact-mint |
 | 2026-07-18 | Audited current official GoPlus Solana beta docs; adopted provider contract with Printer `PARTIAL_WITH_BLOCKER` and network reliance locked pending repair/proof |

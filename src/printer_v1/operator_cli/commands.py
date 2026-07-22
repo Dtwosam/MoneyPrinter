@@ -1666,6 +1666,7 @@ def enrich_eligible_geckoterminal_candidate_15m(
     timeout_seconds: float,
     request_key_prefix: str,
     transports: Mapping[str, Any] | None = None,
+    request_pacer: Any | None = None,
 ) -> dict[str, Any]:
     """Run at most two governed, pool-bound 15m requests for one candidate."""
     pool_address = str(candidate.get("pair_address") or "").strip()
@@ -1678,6 +1679,8 @@ def enrich_eligible_geckoterminal_candidate_15m(
         GECKOTERMINAL_OHLCV_REQUEST_KIND,
         GECKOTERMINAL_POOL_TRADES_REQUEST_KIND,
     ):
+        if request_pacer is not None:
+            request_pacer.pace("geckoterminal")
         endpoint, live_transport = build_geckoterminal_15m_transport(
             request_kind=request_kind,
             pool_address=pool_address,

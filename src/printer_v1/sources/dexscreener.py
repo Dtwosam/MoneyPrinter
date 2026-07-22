@@ -48,6 +48,8 @@ DEXSCREENER_TOKEN_PROFILES_URL = "https://api.dexscreener.com/token-profiles/lat
 DEXSCREENER_TOKENS_BATCH_URL_TEMPLATE = "https://api.dexscreener.com/tokens/v1/solana/{addresses}"
 _DEXSCREENER_FRESH_PROFILES_MAX_TOKENS = 30
 DEXSCREENER_SMOKE_TIMEOUT_SECONDS = 5.0
+DEXSCREENER_PAIR_PROVIDER_RATE_LIMIT_PER_MINUTE = 300
+DEXSCREENER_TRANSPORT_OPERATION_COST = 1
 DEXSCREENER_PUBLIC_API_HEADERS = {
     "User-Agent": "PrinterV1/0.1 (+paper-only source check)",
     "Accept": "application/json",

@@ -40,6 +40,15 @@ MINT = "e26-exact-mint"
 PAIR = "e26-exact-pair"
 
 
+class _NoSleepPacer:
+    def __init__(self):
+        self.trace = []
+
+    def pace(self, source_name):
+        self.trace.append(source_name)
+        return None
+
+
 def _connection(tmp_path) -> tuple[sqlite3.Connection, str]:
     path = tmp_path / "e26.sqlite3"
     apply_migrations(path)
@@ -144,6 +153,7 @@ def test_complete_exact_pair_bundle_accepts_three_governed_operations(tmp_path) 
     connection, db_path = _connection(tmp_path)
     now = datetime.now(timezone.utc)
     transports, candle_start, candle_end = _gt_fixtures(now)
+    pacer = _NoSleepPacer()
     result = execute_readiness_snapshot_bundle(
         connection,
         _step(),
@@ -151,10 +161,12 @@ def test_complete_exact_pair_bundle_accepts_three_governed_operations(tmp_path) 
         timeout_seconds=2.0,
         geckoterminal_transports=transports,
         evaluated_at=now,
+        request_pacer=pacer,
     )
     connection.commit()
     assert result["ok"]
     assert result["operations_attempted"] == 3
+    assert pacer.trace == ["dexscreener", "geckoterminal", "geckoterminal"]
     assert len(result["completion_records"]) == 2
     assert connection.execute("SELECT COUNT(*) FROM printer_source_requests").fetchone()[0] == 3
     row = connection.execute(
@@ -185,6 +197,7 @@ def test_missing_liquidity_fails_before_15m_completion_calls(tmp_path) -> None:
         timeout_seconds=2.0,
         geckoterminal_transports=transports,
         evaluated_at=now,
+        request_pacer=_NoSleepPacer(),
     )
     assert not result["ok"]
     assert result["operations_attempted"] == 1

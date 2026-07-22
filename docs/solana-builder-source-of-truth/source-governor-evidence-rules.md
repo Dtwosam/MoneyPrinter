@@ -53,8 +53,9 @@ enforce at the request boundary.
 The adopted provider contract is `geckoterminal-api-contract.md`. The keyless
 Public API v2 is active Beta. The 7B.3B trending and exact active-pool contracts
 are repaired for fixture-only use. E.26 additionally offline-proves only the
-fixed OHLCV/trade kinds for a separately authorized bounded readiness proof;
-normal production network use remains blocked.
+fixed OHLCV/trade kinds for a separately authorized bounded readiness proof.
+E.28 aligns their official version header, 10/minute ceiling, six-second pacing
+and zero-retry configuration; normal production network use remains blocked.
 
 ### Approved request kinds
 
@@ -133,6 +134,7 @@ become empty success.
 | Request kind | Allowed | Evidence tier contributed |
 |---|---|---|
 | `dexscreener_discovery` | YES | Pool/pair discovery; price; liquidity; volume; txns |
+| `pair_market_snapshot` | `ALLOWED_SEPARATELY_AUTHORIZED_READINESS_PROOF` | One exact Solana mint/pair base snapshot; one attempt, no retry/rotation |
 
 ### Evidence contribution rules
 
@@ -147,14 +149,15 @@ become empty success.
 
 The adopted provider contract is
 `goplus-solana-token-security-api-contract.md`. The provider is active Beta;
-Printer is `PARTIAL_WITH_BLOCKER`; network reliance remains fixture-only until
-a later repair and proof passes.
+Printer remains partial for broad safety claims. E.28 permits only one
+fail-closed exact-mint attempt per candidate inside a separately authorized
+bounded readiness proof; broader network reliance remains blocked.
 
 ### Approved and proposed request kinds
 
 | Request kind | Current permission | Evidence contribution |
 |---|---|---|
-| `safety_reference` | `ALLOWED_FIXTURE_ONLY` | Exact-mint defensive token-security context |
+| `safety_reference` | `ALLOWED_SEPARATELY_AUTHORIZED_READINESS_PROOF` | One exact-mint defensive response; one attempt, no retry; unknown remains ineligible |
 | `solana_token_security_reference` | `NOT_IMPLEMENTED` | Proposed clearer future exact-mint request name |
 | Transaction simulation, wallet, approval, signing, or execution | NO | None |
 
@@ -182,6 +185,7 @@ decisions, positions, trades, audits, or PnL.
 | Request kind | Allowed | Evidence tier contributed |
 |---|---|---|
 | `mint_creation_time_reference` | YES | `token_created_at` from on-chain block time (T3) |
+| `holder_concentration_reference` | `ALLOWED_SEPARATELY_AUTHORIZED_READINESS_PROOF` | Two finalized read-only methods for one exact mint; one attempt, no retry |
 
 ### Evidence contribution rules
 
@@ -195,6 +199,25 @@ For A3 enrichment, the market-source request/response and the Solana RPC T3
 request/response remain separate governed traces. Printer may overlay them only
 on an exact mint match. A failed, missing, non-finalized, or mismatched T3 trace
 must leave token age unknown and cannot produce A3.
+
+
+## Helius Free RPC
+
+Helius Free is a fixed authenticated backup for holder concentration only. The
+adopted endpoint is `https://mainnet.helius-rpc.com/?api-key=...`; the key is an
+operator runtime secret and never evidence. The Free RPC limit is 10 requests
+per second and standard RPC methods cost one credit each. Printer is stricter at
+30 operations/minute with two-second pacing.
+
+| Request kind | Current permission | Evidence contribution |
+|---|---|---|
+| `holder_concentration_reference` | `ALLOWED_SEPARATELY_AUTHORIZED_READINESS_PROOF` | Exact-mint `getTokenLargestAccounts` plus `getTokenSupply`, both finalized |
+
+One governed Helius holder request charges two underlying transport operations.
+It runs only after an eligible transient public-RPC failure, exactly once, on
+the fixed mainnet host. Missing auth, 4xx, malformed/RPC errors, target mismatch,
+stale/conflicting evidence, quota/rate failure or missing fields fail closed.
+There is no retry, endpoint rotation, second backup or paid fallback.
 
 ## Jupiter Route and Quote
 

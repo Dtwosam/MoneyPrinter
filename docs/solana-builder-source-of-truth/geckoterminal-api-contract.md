@@ -1,6 +1,6 @@
 # GeckoTerminal Public API Contract
 
-**Status:** ADOPTED 2026-07-19 - 7B.3B TRENDING/ACTIVE CONTRACT REPAIRED
+**Status:** ADOPTED 2026-07-22 - E.28 READINESS CONTRACT PREFLIGHT CLOSED
 
 This module defines the official GeckoTerminal Public API facts Printer V1 may
 use for Solana pool discovery and pool-level market evidence. It is subordinate
@@ -26,7 +26,7 @@ The following GeckoTerminal/CoinGecko-owned pages were accessed on
 The keyless authentication, endpoint, trending, exact-pool, pagination, and
 rate-limit pages were rechecked on `2026-07-19` for V2-9.7D.7B.3B. This recheck
 adopts only the fixture-only trending and exact active-pool slices below. E.26
-subsequently offline-proved only the fixed OHLCV/trade readiness slices.
+subsequently offline-proved only the fixed OHLCV/trade readiness slices. E.28 rechecked the official Public API documentation on `2026-07-22` and aligned the runtime header, limit and pacing.
 
 | Canonical source | Adopted facts |
 |---|---|
@@ -56,10 +56,10 @@ command, source request, or runtime evidence.
 | Dimension | Adopted value | Reason |
 |---|---|---|
 | `upstream_lifecycle` | `ACTIVE` | Official Public API v2 is published and explicitly Beta |
-| `printer_readiness` | `PARTIAL_WITH_BLOCKER` | Governed adapters and storage exist, but coverage and freshness assumptions need repair/proof |
+| `printer_readiness` | `READY_FOR_SEPARATELY_AUTHORIZED_READINESS_PROOF` | E.28 aligns the fixed OHLCV/trade runtime contract; live response reliability remains for the bounded proof |
 | `printer_role` | `DISCOVERY` | Primary role is pool discovery; exact-pool/OHLCV/trade data is secondary pool-market evidence |
 | `access_policy` | `KEYLESS_PUBLIC` | Official keyless endpoint requires no authentication |
-| `v1_permission` | `FIXTURE_ONLY_EXCEPT_SEPARATELY_AUTHORIZED_READINESS` | E.26 permits only the two fixed OHLCV/trade kinds in a separately authorized bounded readiness proof |
+| `v1_permission` | `FIXTURE_ONLY_EXCEPT_SEPARATELY_AUTHORIZED_READINESS` | Only the fixed OHLCV/trade kinds may run in a separately authorized bounded readiness proof |
 
 ## 4. Endpoint, Version, Authentication, and Limits
 
@@ -71,15 +71,16 @@ The API is Beta. Official Swagger recommends:
 
 `Accept: application/json;version=20230203`
 
-If the version is omitted, the latest version is used. Printer's current
-`version=20230302` header does not match the currently documented version and
-must be reconciled before network use.
+If the version is omitted, the latest version is used. E.28 aligns Printer's fixed readiness transports to the documented
+`version=20230203` header. The consolidated preflight blocks any future header
+or endpoint drift before live authorization.
 
 Authentication is not required for the keyless Public API. The current
 Swagger states approximately 10 calls per minute, fluctuating with network
-traffic. The older FAQ states 30 calls per minute. Printer adopts the stricter
-10-calls/minute ceiling and records the discrepancy for mandatory recheck
-before implementation. Paid CoinGecko plans are not adopted.
+traffic. Printer adopts exactly 10 calls/minute, derives a six-second minimum
+spacing, and permits one attempt per readiness request with no retry or
+rotation. The older FAQ's 30/minute statement is not used. Paid CoinGecko
+plans are not adopted.
 
 Official Swagger states that listed Public API endpoints are cached for one
 minute and data can update as fast as 2-3 seconds after blockchain
@@ -388,7 +389,7 @@ downstream capabilities.
 
 | Location | Current behavior | Contract result |
 |---|---|---|
-| `sources/registry.py` | Free/public Solana source; 30/min; 180-second stale policy | Rate ceiling conflicts with current Swagger; no live use until corrected |
+| `sources/registry.py` | Keyless Solana source; 10/min; 180-second stale policy; zero retries | E.28 aligned to the stricter current Swagger limit |
 | `sources/geckoterminal.py` | Correct v2 endpoint family, governed identity checks, fixture-only metadata | Useful base; version header differs from current docs |
 | discovery URLs | Hard-coded page 1 | Partial coverage; pagination and bounded-page policy absent |
 | pool normalizer | Maps exact pool/base mint, price, reserve, volume, txns, pair age | Base/quote orientation and null/malformed semantics need stricter pinning |
@@ -401,7 +402,7 @@ downstream capabilities.
 
 ## 19. Required Later Network Proof
 
-Before governed GeckoTerminal network reliance:
+Before any broader governed GeckoTerminal network reliance beyond the two bounded readiness kinds:
 
 1. Pin the current official v2 OpenAPI schemas and version header in fixtures.
 2. Adopt the stricter current free ceiling and bounded per-cycle budgets.
@@ -436,4 +437,5 @@ confidence, weighting, embedding, vector, or live execution.
 
 | Date | Change |
 |---|---|
+| 2026-07-22 | E.28 reverified the official Public API root, `version=20230203`, keyless access and approximately 10/minute limit; aligned registry, pacing and zero-retry readiness configuration |
 | 2026-07-18 | Audited current official GeckoTerminal/CoinGecko documentation; adopted provider contract as `PARTIAL_WITH_BLOCKER` and `ALLOWED_FIXTURE_ONLY` |

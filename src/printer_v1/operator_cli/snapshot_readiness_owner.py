@@ -26,6 +26,7 @@ def execute_readiness_snapshot_bundle(
     timeout_seconds: float,
     geckoterminal_transports: Mapping[str, Any] | None = None,
     evaluated_at: str | datetime | None = None,
+    request_pacer: Any | None = None,
 ) -> dict[str, Any]:
     """Run DexScreener once, then at most two exact-pool 15m requests.
 
@@ -37,6 +38,7 @@ def execute_readiness_snapshot_bundle(
     from printer_v1.operator_cli.commands import (
         enrich_eligible_geckoterminal_candidate_15m,
     )
+    from printer_v1.operator_cli.holder_reliability_budget_control import SequentialRequestPacer
     from printer_v1.sources.budget_accounting import count_recent_source_requests
     from printer_v1.sources.contracts import build_governed_source_request
     from printer_v1.sources.governed_execution import (
@@ -55,6 +57,8 @@ def execute_readiness_snapshot_bundle(
             "operations_attempted": 0,
         }
 
+    pacer = request_pacer or SequentialRequestPacer()
+    pacer.pace("dexscreener")
     request = build_governed_source_request(
         "dexscreener",
         "pair_market_snapshot",
@@ -122,6 +126,7 @@ def execute_readiness_snapshot_bundle(
             timeout_seconds=timeout_seconds,
             request_key_prefix=f"{run_id}:{step_key}:completion",
             transports=geckoterminal_transports,
+            request_pacer=pacer,
         )
         evidence = completion.get("evidence")
         result["operations_attempted"] += int(completion.get("requests_attempted") or 0)

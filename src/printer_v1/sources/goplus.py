@@ -34,6 +34,8 @@ GOPLUS_SOLANA_TOKEN_SECURITY_URL = (
     "https://api.gopluslabs.io/api/v1/solana/token_security?contract_addresses={token_mint}"
 )
 GOPLUS_TIMEOUT_SECONDS = 10.0
+GOPLUS_PROVIDER_RATE_LIMIT_PER_MINUTE = 30
+GOPLUS_TRANSPORT_OPERATION_COST = 1
 GOPLUS_PUBLIC_API_HEADERS = {
     "User-Agent": "PrinterV1/0.1 (+paper-only safety check)",
     "Accept": "application/json",

@@ -60,12 +60,12 @@ SOURCE_REGISTRY: dict[str, SourceDefinition] = {
             # after an eligible transient DexScreener transport failure.
             "pair_market_snapshot",
         ),
-        default_rate_limit_per_minute=30,
+        default_rate_limit_per_minute=10,
         stale_after_seconds=180,
         retry_after_seconds=60,
-        max_retries=2,
+        max_retries=0,
         priority_class="discovery",
-        notes="Free/public Solana pool discovery and exact-pair snapshot fallback; conservative rate limits; no paid tier.",
+        notes="Keyless Public API v2; 10/min; fixed readiness endpoints make one attempt with no retry/rotation.",
     ),
     "solana_tracker": SourceDefinition(
         source_name="solana_tracker",

@@ -40,6 +40,9 @@ from printer_v1.sources.contracts import (
 SOLANA_RPC_SOURCE_NAME = "solana_rpc"
 SOLANA_PUBLIC_RPC_URL = "https://api.mainnet-beta.solana.com"
 SOLANA_RPC_TIMEOUT_SECONDS = 10.0
+SOLANA_RPC_PROVIDER_GLOBAL_LIMIT_PER_10_SECONDS = 100
+SOLANA_RPC_PROVIDER_PER_METHOD_LIMIT_PER_10_SECONDS = 40
+SOLANA_RPC_HOLDER_TRANSPORT_OPERATION_COST = 2
 SOLANA_RPC_PUBLIC_HEADERS = {
     "User-Agent": "PrinterV1/0.1 (+paper-only holder check)",
     "Content-Type": "application/json",
