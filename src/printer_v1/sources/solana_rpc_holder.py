@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
 from urllib import error as url_error
@@ -192,10 +192,13 @@ def _rpc_post(
                     "fixture_status": "failure",
                     "failure_type": "solana_rpc_non_object_response",
                     "failure_message": f"RPC {method} returned non-object",
+                    "rpc_method": method,
+                    "underlying_operation_count": 1,
                 }
             return data
     except url_error.HTTPError as exc:
         code = int(exc.code)
+        retry_after = exc.headers.get("Retry-After") if exc.headers else None
         exc.close()
         # V2-9.6 eligibility split: 429 and temporary 5xx are transient and
         # backup-eligible; 4xx is a deterministic client error and is not.
@@ -205,6 +208,9 @@ def _rpc_post(
                 "failure_type": SOLANA_RPC_RATE_LIMIT_FAILURE_TYPE,
                 "failure_message": "Solana RPC HTTP 429 rate limit",
                 "status_code": 429,
+                "retry_after": retry_after,
+                "rpc_method": method,
+                "underlying_operation_count": 1,
             }
         if 500 <= code <= 599:
             return {
@@ -212,12 +218,18 @@ def _rpc_post(
                 "failure_type": "solana_rpc_http_server_error",
                 "failure_message": f"Solana RPC HTTP error {code}",
                 "status_code": code,
+                "retry_after": retry_after,
+                "rpc_method": method,
+                "underlying_operation_count": 1,
             }
         return {
             "fixture_status": "failure",
             "failure_type": "solana_rpc_http_client_error",
             "failure_message": f"Solana RPC HTTP error {code}",
             "status_code": code,
+            "retry_after": retry_after,
+            "rpc_method": method,
+            "underlying_operation_count": 1,
         }
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         # Parser/decode defect — a payload problem, never backup-eligible.
@@ -225,6 +237,8 @@ def _rpc_post(
             "fixture_status": "failure",
             "failure_type": "solana_rpc_malformed_response",
             "failure_message": str(exc),
+            "rpc_method": method,
+            "underlying_operation_count": 1,
         }
     except (OSError, TimeoutError) as exc:
         # TLS/connection interruption or connect/read timeout. Transient and
@@ -233,6 +247,8 @@ def _rpc_post(
             "fixture_status": "failure",
             "failure_type": "solana_rpc_transport_failure",
             "failure_message": str(exc),
+            "rpc_method": method,
+            "underlying_operation_count": 1,
         }
 
 
@@ -245,20 +261,24 @@ def _fetch_holder_data(
     largest_resp = _rpc_post(
         rpc_url,
         "getTokenLargestAccounts",
-        [token_mint],
+        [token_mint, {"commitment": "finalized"}],
         timeout_seconds=timeout_seconds,
     )
     if largest_resp.get("fixture_status") == "failure":
-        return MappingProxyType(dict(largest_resp))
+        return MappingProxyType({**dict(largest_resp), "commitment": "finalized"})
 
     supply_resp = _rpc_post(
         rpc_url,
         "getTokenSupply",
-        [token_mint],
+        [token_mint, {"commitment": "finalized"}],
         timeout_seconds=timeout_seconds,
     )
     if supply_resp.get("fixture_status") == "failure":
-        return MappingProxyType(dict(supply_resp))
+        return MappingProxyType({
+            **dict(supply_resp),
+            "commitment": "finalized",
+            "underlying_operation_count": 2,
+        })
 
     return MappingProxyType(
         {
@@ -266,6 +286,13 @@ def _fetch_holder_data(
             "largest_accounts_result": largest_resp,
             "token_supply_result": supply_resp,
             "captured_at": datetime.now(timezone.utc).isoformat(),
+            "rpc_method": "getTokenLargestAccounts+getTokenSupply",
+            "commitment": "finalized",
+            "context_slot": max(
+                int(largest_resp.get("result", {}).get("context", {}).get("slot") or 0),
+                int(supply_resp.get("result", {}).get("context", {}).get("slot") or 0),
+            ) or None,
+            "underlying_operation_count": 2,
         }
     )
 
@@ -336,6 +363,7 @@ def normalize_solana_rpc_holder_response(
             request_kind,
             str(payload.get("failure_type") or "solana_rpc_holder_fixture_failure"),
             str(payload.get("failure_message") or "Solana RPC holder fixture failure"),
+            payload=payload,
         )
 
     # If we have a pre-normalized holder_concentration_label (from a test fixture),
@@ -349,6 +377,10 @@ def normalize_solana_rpc_holder_response(
             "request_kind": request_kind,
             "captured_at": str(payload.get("captured_at") or datetime.now(timezone.utc).isoformat()),
             "paper_only_context": True,
+            "rpc_method": str(payload.get("rpc_method") or "getTokenLargestAccounts+getTokenSupply"),
+            "commitment": str(payload.get("commitment") or "finalized"),
+            "context_slot": payload.get("context_slot"),
+            "underlying_operation_count": int(payload.get("underlying_operation_count") or 2),
         }
         stale = bool(payload.get("fixture_stale"))
         return NormalizedSourceResult(
@@ -388,6 +420,10 @@ def normalize_solana_rpc_holder_response(
         "request_kind": request_kind,
         "captured_at": str(payload.get("captured_at") or datetime.now(timezone.utc).isoformat()),
         "paper_only_context": True,
+        "rpc_method": str(payload.get("rpc_method") or "getTokenLargestAccounts+getTokenSupply"),
+        "commitment": str(payload.get("commitment") or "finalized"),
+        "context_slot": payload.get("context_slot"),
+        "underlying_operation_count": int(payload.get("underlying_operation_count") or 2),
     }
 
     stale = bool(payload.get("fixture_stale"))
@@ -419,7 +455,19 @@ def _failure_result(
     request_kind: str,
     failure_type: str,
     failure_message: str,
+    *,
+    payload: Mapping[str, Any] | None = None,
 ) -> NormalizedSourceResult:
+    details = dict(payload or {})
+    retry_after_at = None
+    retry_after = details.get("retry_after")
+    if retry_after is not None:
+        try:
+            retry_after_at = (
+                datetime.now(timezone.utc) + timedelta(seconds=int(retry_after))
+            ).isoformat()
+        except (TypeError, ValueError):
+            retry_after_at = None
     return NormalizedSourceResult(
         source_name=SOLANA_RPC_SOURCE_NAME,
         request_kind=request_kind,
@@ -427,4 +475,7 @@ def _failure_result(
         data_quality_label=DataQualityLabel.MISSING_CRITICAL_DATA,
         failure_type=failure_type,
         failure_message=failure_message,
+        status_code=details.get("status_code"),
+        retry_after_at=retry_after_at,
+        normalized_payload=MappingProxyType(details),
     )

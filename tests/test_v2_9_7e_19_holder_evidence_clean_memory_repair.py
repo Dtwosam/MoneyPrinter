@@ -48,7 +48,7 @@ def test_holder_evidence_valid_missing_mismatch_stale_failed_and_unknown() -> No
         (None, "HOLDER_EVIDENCE_UNAVAILABLE"),
         (_execution(mint="other"), "HOLDER_EVIDENCE_TARGET_MISMATCH"),
         (_execution(status="STALE"), "HOLDER_EVIDENCE_STALE"),
-        (_execution(status="FAILED", response=False), "HOLDER_EVIDENCE_FAILED"),
+        (_execution(status="FAILED", response=False), "HOLDER_EVIDENCE_FAILED:missing_response"),
         (_execution(label="HOLDER_CONCENTRATION_UNKNOWN"), "HOLDER_CONCENTRATION_UNKNOWN"),
     )
     for execution, reason in cases:

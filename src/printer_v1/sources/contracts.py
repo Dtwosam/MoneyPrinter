@@ -82,6 +82,7 @@ class SourceFailureRecord:
     data_quality_label: DataQualityLabel
     retry_after_at: str | None = None
     normalized_payload: Mapping[str, Any] = field(default_factory=dict)
+    source_request_id: int | None = None
 
 
 @dataclass(frozen=True)

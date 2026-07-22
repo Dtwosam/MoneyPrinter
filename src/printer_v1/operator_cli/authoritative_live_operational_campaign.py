@@ -20,7 +20,7 @@ logic is duplicated here.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import sqlite3
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
@@ -751,18 +751,27 @@ def _holder_execution_fact(
         }
     normalized = execution.normalized_result
     payload = normalized.normalized_payload
-    returned_mint = str(payload.get("token_mint") or "")
-    if returned_mint.lower() != token_mint.lower():
-        reason = "HOLDER_EVIDENCE_TARGET_MISMATCH"
-    elif normalized.source_status.value == "STALE":
+    if (
+        getattr(execution, "response_record", None) is None
+        or getattr(execution, "failure_record", None) is not None
+    ):
+        subtype = str(getattr(normalized, "failure_type", None) or "missing_response")
+        reason = f"HOLDER_EVIDENCE_FAILED:{subtype}"
+    elif normalized.source_status.value in {"STALE", "CONFLICTING"}:
         reason = "HOLDER_EVIDENCE_STALE"
     elif (
-        execution.response_record is None
-        or normalized.source_status.value != "COMPLETE"
+        normalized.source_status.value != "COMPLETE"
         or normalized.data_quality_label.value != "CLEAN_DATA"
     ):
-        reason = "HOLDER_EVIDENCE_FAILED"
+        reason = "HOLDER_EVIDENCE_MALFORMED_OR_INCOMPLETE"
     else:
+        returned_mint = str(payload.get("token_mint") or "")
+        if returned_mint.lower() != token_mint.lower():
+            return {
+                "eligible": False,
+                "reason": "HOLDER_EVIDENCE_TARGET_MISMATCH",
+                "source_name": source_name,
+            }
         if source_name == "goplus":
             from printer_v1.safety.goplus_normalizer import (
                 holder_concentration_label_from_goplus,
@@ -782,6 +791,31 @@ def _holder_execution_fact(
             }
         reason = "HOLDER_CONCENTRATION_UNKNOWN"
     return {"eligible": False, "reason": reason, "source_name": source_name}
+
+
+def _finalized_holder_candidates(proofs: Any, *, limit: int) -> tuple[Any, ...]:
+    """Apply structural, zero-source finalized-proof gates before holder I/O."""
+    eligible = []
+    seen: set[tuple[str, str]] = set()
+    for proof in proofs:
+        identity = (str(proof.mint).lower(), str(proof.bonding_curve))
+        if (
+            not bool(proof.confirmed)
+            or not identity[0]
+            or not identity[1]
+            or not str(proof.signature)
+            or int(proof.slot) < 0
+            or identity in seen
+        ):
+            continue
+        seen.add(identity)
+        eligible.append(proof)
+    return tuple(sorted(
+        eligible,
+        key=lambda proof: (
+            proof.mint.lower(), proof.bonding_curve, proof.signature, int(proof.slot),
+        ),
+    )[:limit])
 
 
 def _holder_eligibility_from_bundle(
@@ -909,7 +943,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 )
         lk["operational_natural_disposition"] = True
 
-        fixtures, acquisition, _enrichment = self._build_fixtures(
+        fixtures, acquisition, enrichment = self._build_fixtures(
             pump_transport=pump_transport,
             secondary_transport=secondary_transport,
             source_governor=source_governor,
@@ -923,15 +957,26 @@ class AuthoritativeLiveOperationalCampaignOwner:
             byte_ceiling=byte_ceiling,
             tracker_api_key=tracker_api_key,
         )
-        bounded_candidates = tuple(sorted(
+        from printer_v1.operator_cli.holder_reliability_budget_control import (
+            build_ledger,
+            complete_maturation,
+            persist_bundle_attempts,
+            persist_ledger,
+            reuse_holder_fact,
+            schedule_maturation,
+            SequentialRequestPacer,
+        )
+        evaluated = datetime.fromisoformat(evaluated_at.replace("Z", "+00:00"))
+        deadline = evaluated + timedelta(seconds=command.ceilings.duration_seconds)
+        ledger = build_ledger(
+            pump_operations=acquisition.result.accounting.underlying_rpc_operations,
+            additional_governed_operations=enrichment.requested,
+            deadline_at=deadline,
+        )
+        bounded_candidates = _finalized_holder_candidates(
             acquisition.origin_proofs,
-            key=lambda proof: (
-                proof.mint.lower(),
-                proof.bonding_curve,
-                proof.signature,
-                int(proof.slot),
-            ),
-        )[:HOLDER_ELIGIBILITY_CANDIDATE_MAX])
+            limit=min(HOLDER_ELIGIBILITY_CANDIDATE_MAX, ledger.candidate_cap()),
+        )
         holder_facts: dict[str, Mapping[str, Any]] = {}
         connection = sqlite3.connect(Path(command.db_path))
         connection.row_factory = sqlite3.Row
@@ -941,8 +986,47 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 _collect_preclose_context,
             )
             context_factories = lk.get("context_adapter_factories")
+            request_pacer = lk.pop("holder_request_pacer", None) or SequentialRequestPacer()
+            persist_ledger(
+                connection, run_id=command.run_id, cycle_id=cycle_id,
+                ledger=ledger, now=evaluated.isoformat(),
+            )
             for ordinal, proof in enumerate(bounded_candidates, start=1):
+                ledger.admit_candidate(now=evaluated)
+                maturation = schedule_maturation(
+                    connection, run_id=command.run_id, cycle_id=cycle_id,
+                    mint=proof.mint, observed_at=str(proof.block_time),
+                    now=evaluated.isoformat(), deadline_at=deadline.isoformat(),
+                )
+                if maturation["work_state"] != "DUE":
+                    holder_facts[proof.mint.lower()] = {
+                        "eligible": False,
+                        "reason": f"HOLDER_MATURATION_{maturation['work_state']}",
+                        "source_name": None,
+                    }
+                    continue
                 try:
+                    reused_fact = reuse_holder_fact(
+                        connection, run_id=command.run_id, cycle_id=cycle_id,
+                        mint=proof.mint, evaluated_at=evaluated.isoformat(),
+                    )
+                    if reused_fact is not None:
+                        holder_facts[proof.mint.lower()] = reused_fact
+                        ledger = replace(
+                            ledger,
+                            zero_transport_operations=ledger.zero_transport_operations + 1,
+                        )
+                        persist_ledger(
+                            connection, run_id=command.run_id, cycle_id=cycle_id,
+                            ledger=ledger, now=evaluated.isoformat(),
+                        )
+                        complete_maturation(
+                            connection, work_id=str(maturation["work_id"]),
+                            cause="EVIDENCE_REUSED", now=evaluated.isoformat(),
+                        )
+                        if sum(bool(fact.get("eligible")) for fact in holder_facts.values()) == 2:
+                            break
+                        continue
                     bundle = _collect_preclose_context(
                         connection,
                         {
@@ -957,13 +1041,41 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             if isinstance(context_factories, Mapping) else None
                         ),
                         include=frozenset({"safety"}),
+                        request_pacer=request_pacer,
                     )
                     holder_facts[proof.mint.lower()] = (
                         _holder_eligibility_from_bundle(
                             bundle, token_mint=proof.mint
                         )
                     )
+                    governed_used, transports_used = persist_bundle_attempts(
+                        connection, run_id=command.run_id, cycle_id=cycle_id,
+                        mint=proof.mint, executions=bundle.get("executions", {}),
+                        created_at=evaluated.isoformat(),
+                    )
+                    ledger = replace(
+                        ledger,
+                        governed_requests=ledger.governed_requests + governed_used,
+                        underlying_transport_operations=(
+                            ledger.underlying_transport_operations + transports_used
+                        ),
+                    )
+                    persist_ledger(
+                        connection, run_id=command.run_id, cycle_id=cycle_id,
+                        ledger=ledger, now=evaluated.isoformat(),
+                    )
+                    complete_maturation(
+                        connection, work_id=str(maturation["work_id"]),
+                        cause="EVIDENCE_EVALUATED", now=evaluated.isoformat(),
+                    )
+                    if sum(bool(fact.get("eligible")) for fact in holder_facts.values()) == 2:
+                        break
                 except Exception as exc:
+                    complete_maturation(
+                        connection, work_id=str(maturation["work_id"]),
+                        cause=f"EVIDENCE_COLLECTION_FAILED:{type(exc).__name__}",
+                        now=evaluated.isoformat(),
+                    )
                     holder_facts[proof.mint.lower()] = {
                         "eligible": False,
                         "reason": f"HOLDER_EVIDENCE_COLLECTION_FAILED:{type(exc).__name__}",

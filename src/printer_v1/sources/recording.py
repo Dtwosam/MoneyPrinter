@@ -146,11 +146,15 @@ def record_source_failure(
 ) -> SourceFailureRecord:
     failure_time = failed_at or utc_now_iso()
     payload = dict(normalized_payload or {})
+    source_request_id = (
+        int(source_request.id) if isinstance(source_request, SourceRequestRecord) else None
+    )
     payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":")) if payload else None
     with writable_connection(db_path_or_conn) as connection:
         cursor = connection.execute(
             """
             INSERT INTO printer_source_failures (
+                source_request_id,
                 source_name,
                 request_kind,
                 failed_at,
@@ -160,9 +164,10 @@ def record_source_failure(
                 data_quality_label,
                 retry_after_at,
                 normalized_payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                source_request_id,
                 source_request.source_name,
                 source_request.request_kind,
                 failure_time,
@@ -186,4 +191,5 @@ def record_source_failure(
         data_quality_label=data_quality_label,
         retry_after_at=retry_after_at,
         normalized_payload=payload,
+        source_request_id=source_request_id,
     )

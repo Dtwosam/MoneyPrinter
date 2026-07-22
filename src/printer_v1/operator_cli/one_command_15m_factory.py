@@ -783,6 +783,7 @@ def _collect_preclose_context(
     adapter_factories: dict[str, Callable[..., Any]] | None = None,
     include: frozenset[str] | None = None,
     cancellation_probe: Callable[[], str | None] | None = None,
+    request_pacer: Any | None = None,
 ) -> dict[str, Any]:
     """Collect a fixed, governed context bundle before the close snapshot."""
     from printer_v1.paper_quote.jupiter_fixture import SOURCE_NAME as JUPITER_SOURCE
@@ -828,6 +829,8 @@ def _collect_preclose_context(
 
     def execute(source_name: str, request_kind: str, suffix: str, payload: dict[str, Any], adapter: Any) -> Any:
         _check_cancellation(cancellation_probe)
+        if request_pacer is not None:
+            request_pacer.pace(source_name)
         request = build_governed_source_request(
             source_name,
             request_kind,
@@ -948,6 +951,7 @@ def _collect_preclose_context(
             {},
             holder_adapter,
         )
+        executions["holder_primary"] = primary_holder
         chosen_holder = primary_holder
         # V2-9.6: on an eligible transient primary-RPC failure, attempt exactly
         # one governed backup RPC endpoint. The composite still receives a single
@@ -961,6 +965,8 @@ def _collect_preclose_context(
             holder_backup_adapter_factory is not None
             and is_eligible_transient_solana_rpc_failure(primary_holder)
         ):
+            if request_pacer is not None:
+                request_pacer.pace("solana_rpc")
             backup_holder = execute_solana_rpc_holder_backup(
                 conn,
                 run_id=str(step["run_id"]),
@@ -978,7 +984,7 @@ def _collect_preclose_context(
         "executions": executions,
         "report": {
             "source_request_budget": len(requested) + (1 if "safety" in requested else 0),
-            "source_requests_attempted": len(executions),
+            "source_requests_attempted": len({id(value) for value in executions.values()}),
             "items": {
                 key: _context_execution_summary(value)
                 for key, value in executions.items()
