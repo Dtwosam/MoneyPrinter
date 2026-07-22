@@ -54,6 +54,7 @@ SOURCE_REGISTRY: dict[str, SourceDefinition] = {
             "geckoterminal_active_pool_reference",
             "geckoterminal_ohlcv_15m",
             "geckoterminal_pool_trades_15m",
+            "geckoterminal_readiness_base_snapshot",
             # V2-9.5: exact-pair snapshot fallback for a single Solana pool.
             # Same request kind as DexScreener's primary snapshot; the
             # source_name distinguishes the provider. Attempted at most once

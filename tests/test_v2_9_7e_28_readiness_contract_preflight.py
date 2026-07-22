@@ -7,11 +7,16 @@ from printer_v1.operator_cli.readiness_source_contract_preflight import (
     assert_readiness_source_contract_preflight,
     build_readiness_source_contract_preflight,
 )
+from printer_v1.sources.geckoterminal import GECKOTERMINAL_POOL_URL_TEMPLATE
 from printer_v1.sources.geckoterminal_15m import (
     GECKOTERMINAL_PUBLIC_API_HEADERS,
     GECKOTERMINAL_PUBLIC_API_VERSION,
     GT15M_OHLCV_URL_TEMPLATE,
     GT15M_TRADES_URL_TEMPLATE,
+)
+from printer_v1.sources.pumpfun_origin import (
+    CREATE_INDEX_DECODE_CEILING,
+    CREATE_INDEX_PAGE_CEILING,
 )
 from printer_v1.sources.registry import SOURCE_REGISTRY
 
@@ -27,16 +32,19 @@ def test_all_readiness_source_contracts_and_budget_are_ready_offline() -> None:
         "candidate_cap": 3,
         "snapshot_reservation": 6,
         "contract_snapshot_reservation": 6,
-        "pump_worst_case_operations": 12,
+        "pump_worst_case_operations": 13,
         "zero_transport_operations": 9,
         "holder_worst_case_operations": 15,
-        "worst_case_total": 42,
+        "derived_candidate_cap": 3,
+        "worst_case_total": 43,
     }
     assert report["provenance"] == {
-        "primary_source": "dexscreener",
+        "primary_source": "geckoterminal",
         "supplemental_15m_source": "geckoterminal",
         "exact_window_seconds": 900,
     }
+    assert CREATE_INDEX_PAGE_CEILING == 3
+    assert CREATE_INDEX_DECODE_CEILING == 10
 
 
 def test_geckoterminal_header_endpoints_limit_retry_and_pacing_are_exact() -> None:
@@ -44,7 +52,7 @@ def test_geckoterminal_header_endpoints_limit_retry_and_pacing_are_exact() -> No
     gt = report["sources"]["geckoterminal"]
     assert GECKOTERMINAL_PUBLIC_API_VERSION == "20230203"
     assert GECKOTERMINAL_PUBLIC_API_HEADERS["Accept"] == "application/json;version=20230203"
-    assert gt["endpoints"] == (GT15M_OHLCV_URL_TEMPLATE, GT15M_TRADES_URL_TEMPLATE)
+    assert gt["endpoints"] == (GECKOTERMINAL_POOL_URL_TEMPLATE, GT15M_OHLCV_URL_TEMPLATE, GT15M_TRADES_URL_TEMPLATE)
     assert gt["provider_rate_limit_per_minute"] == 10
     assert gt["printer_rate_limit_per_minute"] == 10
     assert gt["minimum_spacing_seconds"] == 6
@@ -88,6 +96,10 @@ def test_consolidated_preflight_catches_auth_and_budget_drift() -> None:
         secret_present=True, budget_overrides={"operation_ceiling": 41}
     )
     assert "READINESS_BUDGET_CONTRACT_DRIFT" in bad_budget["issues"]
+    stale_pump = build_readiness_source_contract_preflight(
+        secret_present=True, budget_overrides={"pump_worst_case_operations": 12}
+    )
+    assert "READINESS_BUDGET_CONTRACT_DRIFT" in stale_pump["issues"]
     with pytest.raises(ReadinessSourceContractPreflightError):
         assert_readiness_source_contract_preflight(secret_present=False)
 

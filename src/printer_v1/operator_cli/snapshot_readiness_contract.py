@@ -13,14 +13,14 @@ import math
 from typing import Any, Mapping
 
 
-READINESS_PRIMARY_SOURCE = "dexscreener"
+READINESS_PRIMARY_SOURCE = "geckoterminal"
 READINESS_15M_SOURCE = "geckoterminal"
 READINESS_PRIMARY_OPERATIONS_PER_TOKEN = 1
 READINESS_15M_OPERATIONS_PER_TOKEN = 2
 READINESS_OPERATIONS_PER_TOKEN = 3
 READINESS_TOKEN_COUNT = 2
 READINESS_OPERATION_RESERVATION = 6
-READINESS_PRIMARY_TTL_SECONDS = 90
+READINESS_PRIMARY_TTL_SECONDS = 180
 READINESS_15M_TTL_SECONDS = 180
 READINESS_WINDOW_SECONDS = 900
 
@@ -70,6 +70,20 @@ def readiness_base_blockers(pair: Mapping[str, Any]) -> list[str]:
     for field in ("price_usd", "liquidity_usd"):
         if not _number(pair.get(field), positive=True):
             blockers.append(f"READINESS_MISSING_OR_INVALID:{field}")
+    liquidity_provenance = pair.get("liquidity_provenance")
+    if not isinstance(liquidity_provenance, Mapping):
+        blockers.append("READINESS_LIQUIDITY_PROVENANCE:missing")
+    else:
+        if liquidity_provenance.get("source") != READINESS_PRIMARY_SOURCE:
+            blockers.append("READINESS_LIQUIDITY_PROVENANCE:source")
+        if liquidity_provenance.get("raw_field") != "reserve_in_usd":
+            blockers.append("READINESS_LIQUIDITY_PROVENANCE:raw_field")
+        if liquidity_provenance.get("network") != "solana":
+            blockers.append("READINESS_LIQUIDITY_PROVENANCE:network")
+        if str(liquidity_provenance.get("pool_address") or "") != str(pair.get("pair_address") or ""):
+            blockers.append("READINESS_LIQUIDITY_PROVENANCE:pair")
+        if str(liquidity_provenance.get("token_mint") or "").lower() != str(pair.get("token_mint") or "").lower():
+            blockers.append("READINESS_LIQUIDITY_PROVENANCE:mint")
     if not isinstance(pair.get("price_change_5m"), (int, float)) or not math.isfinite(
         float(pair.get("price_change_5m") or 0)
     ):

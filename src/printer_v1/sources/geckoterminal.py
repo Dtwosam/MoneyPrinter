@@ -20,6 +20,7 @@ from printer_v1.sources.contracts import (
     validate_source_adapter_contract,
 )
 from printer_v1.sources.geckoterminal_15m import (
+    GECKOTERMINAL_PUBLIC_API_HEADERS,
     GECKOTERMINAL_OHLCV_REQUEST_KIND,
     GECKOTERMINAL_POOL_TRADES_REQUEST_KIND,
     build_gt15m_ohlcv_url,
@@ -35,16 +36,14 @@ GECKOTERMINAL_TRENDING_POOLS_URL = (
     "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?page=1"
 )
 GECKOTERMINAL_TIMEOUT_SECONDS = 8.0
-GECKOTERMINAL_PUBLIC_API_HEADERS = {
-    "User-Agent": "PrinterV1/0.1 (+paper-only source check)",
-    "Accept": "application/json;version=20230302",
-}
 
 # V2-9.5 exact-pair snapshot fallback: a single Solana pool lookup. Same request
 # kind as DexScreener's primary snapshot; source_name distinguishes the provider.
 GECKOTERMINAL_PAIR_SNAPSHOT_REQUEST_KIND = "pair_market_snapshot"
+GECKOTERMINAL_READINESS_BASE_REQUEST_KIND = "geckoterminal_readiness_base_snapshot"
 GECKOTERMINAL_POOL_URL_TEMPLATE = (
     "https://api.geckoterminal.com/api/v2/networks/solana/pools/{pool_address}"
+    "?include=base_token,quote_token,dex"
 )
 
 ALLOWED_REQUEST_KINDS = frozenset({
@@ -53,6 +52,7 @@ ALLOWED_REQUEST_KINDS = frozenset({
     "geckoterminal_ohlcv_15m",
     "geckoterminal_pool_trades_15m",
     GECKOTERMINAL_PAIR_SNAPSHOT_REQUEST_KIND,
+    GECKOTERMINAL_READINESS_BASE_REQUEST_KIND,
 })
 
 _SOLANA_NETWORK_IDS = frozenset({"solana", "sol"})
@@ -267,9 +267,13 @@ def normalize_geckoterminal_payload(
             retry_after_at=retry_at,
         )
 
-    if request_kind == GECKOTERMINAL_PAIR_SNAPSHOT_REQUEST_KIND:
+    if request_kind in {
+        GECKOTERMINAL_PAIR_SNAPSHOT_REQUEST_KIND,
+        GECKOTERMINAL_READINESS_BASE_REQUEST_KIND,
+    }:
         return _normalize_geckoterminal_pair_snapshot(
             payload,
+            request_kind=request_kind,
             expected_pool_address=expected_pool_address,
             expected_token_mint=expected_token_mint,
         )
@@ -410,6 +414,7 @@ def _txn_bucket_side(bucket: Any, side: str) -> int | None:
 def _normalize_geckoterminal_pair_snapshot(
     payload: Mapping[str, Any],
     *,
+    request_kind: str = GECKOTERMINAL_PAIR_SNAPSHOT_REQUEST_KIND,
     expected_pool_address: Any,
     expected_token_mint: Any,
 ) -> NormalizedSourceResult:
@@ -420,7 +425,7 @@ def _normalize_geckoterminal_pair_snapshot(
     field, staleness, or malformed body fails closed with MISSING_CRITICAL_DATA
     so the V2-9.5 fallback never persists partial or wrong-pair evidence.
     """
-    kind = GECKOTERMINAL_PAIR_SNAPSHOT_REQUEST_KIND
+    kind = request_kind
     expected_pool = str(expected_pool_address or "").strip()
     expected_mint = str(expected_token_mint or "").strip()
     if not expected_pool or not expected_mint:
@@ -452,6 +457,14 @@ def _normalize_geckoterminal_pair_snapshot(
             "geckoterminal_pair_snapshot_missing_data",
             "GeckoTerminal pair snapshot response missing pool object",
         )
+    resource_id = str(data.get("id") or "").strip()
+    if resource_id != f"solana_{expected_pool}":
+        return _failure_result(
+            kind,
+            "geckoterminal_pair_snapshot_resource_mismatch",
+            "GeckoTerminal pool resource id did not match the requested Solana pool",
+        )
+
     flat = _normalize_geckoterminal_pool(data)
     if not flat:
         return _failure_result(
@@ -489,6 +502,19 @@ def _normalize_geckoterminal_pair_snapshot(
     txns_24h = _txn_bucket_total(txns.get("h24"))
     pair_created_at = flat.get("pair_created_at") or attrs.get("pool_created_at")
 
+    reserve = _to_float(attrs.get("reserve_in_usd"))
+    base_component = _to_float(attrs.get("base_token_liquidity_usd"))
+    quote_component = _to_float(attrs.get("quote_token_liquidity_usd"))
+    if reserve is not None and base_component is not None and quote_component is not None:
+        component_total = base_component + quote_component
+        tolerance = max(0.01, abs(reserve) * 0.000001)
+        if abs(component_total - reserve) > tolerance:
+            return _failure_result(
+                kind,
+                "geckoterminal_pair_snapshot_liquidity_conflict",
+                "GeckoTerminal reserve_in_usd conflicts with pool composition",
+            )
+
     # Mandatory exact-pair contract fields. Missing any one fails closed —
     # required fields are never weakened and never combined across providers.
     missing: list[str] = []
@@ -496,13 +522,13 @@ def _normalize_geckoterminal_pair_snapshot(
         missing.append("price_usd")
     if liquidity_usd is None:
         missing.append("liquidity_usd")
-    if fdv is None and market_cap is None:
+    if kind == GECKOTERMINAL_PAIR_SNAPSHOT_REQUEST_KIND and fdv is None and market_cap is None:
         missing.append("fdv_or_market_cap")
     if volume_24h is None:
         missing.append("volume_24h")
     if txns_24h is None:
         missing.append("txns_24h")
-    if not pair_created_at:
+    if kind == GECKOTERMINAL_PAIR_SNAPSHOT_REQUEST_KIND and not pair_created_at:
         missing.append("pair_created_at")
     if missing:
         return _failure_result(
@@ -538,6 +564,15 @@ def _normalize_geckoterminal_pair_snapshot(
         "price_change_1h": flat.get("price_change_1h"),
         "price_change_24h": flat.get("price_change_24h"),
         "pair_created_at": pair_created_at,
+        "liquidity_provenance": {
+            "source": GECKOTERMINAL_SOURCE_NAME,
+            "raw_field": "reserve_in_usd",
+            "network": "solana",
+            "pool_address": observed_pair_address,
+            "token_mint": observed_mint,
+            "endpoint": str(payload.get("_requested_endpoint") or ""),
+            "composition_checked": base_component is not None and quote_component is not None,
+        },
     }
     return NormalizedSourceResult(
         source_name=GECKOTERMINAL_SOURCE_NAME,
@@ -549,7 +584,8 @@ def _normalize_geckoterminal_pair_snapshot(
                 "source_name": GECKOTERMINAL_SOURCE_NAME,
                 "request_kind": kind,
                 "pairs": [snapshot_pair],
-                "exact_pair_fallback": True,
+                "exact_pair_fallback": kind == GECKOTERMINAL_PAIR_SNAPSHOT_REQUEST_KIND,
+                "readiness_base": kind == GECKOTERMINAL_READINESS_BASE_REQUEST_KIND,
             }
         ),
         status_code=int(payload.get("_source_status_code") or 200),

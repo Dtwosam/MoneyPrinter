@@ -65,6 +65,7 @@ and zero-retry configuration; normal production network use remains blocked.
 | `geckoterminal_trending_pool_reference` | `ALLOWED_FIXTURE_ONLY` | Page-1, 1h provider-ranked Solana pool reference only |
 | `geckoterminal_active_pool_reference` | `ALLOWED_FIXTURE_ONLY` | One exact pool with non-zero provider `transactions.m5` |
 | `pair_market_snapshot` | `ALLOWED_FIXTURE_ONLY` | Exact-pool market snapshot fallback |
+| `geckoterminal_readiness_base_snapshot` | `ALLOWED_SEPARATELY_AUTHORIZED_READINESS_PROOF` | One exact Solana pool/base-mint metadata call for positive `reserve_in_usd`, price, m5 and h1 evidence; one attempt, no retry/rotation; must pass before OHLCV/trades |
 | `geckoterminal_ohlcv_15m` | `ALLOWED_SEPARATELY_AUTHORIZED_READINESS_PROOF` | `price_change_15m`, `volume_15m` from one fresh, completed, exact 900-second candle; no retry/rotation |
 | `geckoterminal_pool_trades_15m` | `ALLOWED_SEPARATELY_AUTHORIZED_READINESS_PROOF` | `txns_15m` from one unfiltered, well-formed, complete returned set aligned to the same candle; no retry/rotation |
 | `geckoterminal_pool_snapshot` | `NOT_IMPLEMENTED` | Proposed exact-pool request name |
@@ -134,7 +135,7 @@ become empty success.
 | Request kind | Allowed | Evidence tier contributed |
 |---|---|---|
 | `dexscreener_discovery` | YES | Pool/pair discovery; price; liquidity; volume; txns |
-| `pair_market_snapshot` | `ALLOWED_SEPARATELY_AUTHORIZED_READINESS_PROOF` | One exact Solana mint/pair base snapshot; one attempt, no retry/rotation |
+| `pair_market_snapshot` | `ALLOWED_SEPARATELY_AUTHORIZED_READINESS_PROOF` | Historical E.26 DexScreener base permission; superseded by the E.30 GeckoTerminal exact-pool base in the current readiness composition |
 
 ### Evidence contribution rules
 

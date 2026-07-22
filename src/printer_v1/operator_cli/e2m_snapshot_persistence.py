@@ -29,9 +29,13 @@ E2M_SOURCE_NAME: str = "dexscreener"
 # V2-9.5: the exact-pair snapshot may be served by the DexScreener primary or
 # the governed GeckoTerminal fallback. Both are free/public Solana sources and
 # both produce the identical normalized exact-pair contract. Any other source
-# name (e.g. coingecko) remains blocked. The request kind is identical for both.
+# remains blocked. E.30 adds a distinct governed GeckoTerminal readiness kind.
 E2M_ALLOWED_SOURCE_NAMES: frozenset[str] = frozenset({"dexscreener", "geckoterminal"})
 E2M_REQUEST_KIND: str = "pair_market_snapshot"
+E2M_ALLOWED_REQUEST_KINDS: frozenset[str] = frozenset({
+    E2M_REQUEST_KIND,
+    "geckoterminal_readiness_base_snapshot",
+})
 E2M_REQUIRED_SOURCE_STATUS: str = "COMPLETE"
 E2M_REQUIRED_QUALITY: str = "CLEAN_DATA"
 E2M_REQUIRED_CHAIN: str = "solana"
@@ -383,9 +387,9 @@ def persist_snapshot_from_source_response(
         blocked_reasons.append(
             f"source_request_id {resp_row['source_request_id']} not found"
         )
-    elif req_row["request_kind"] != E2M_REQUEST_KIND:
+    elif req_row["request_kind"] not in E2M_ALLOWED_REQUEST_KINDS:
         blocked_reasons.append(
-            f"request_kind must be {E2M_REQUEST_KIND!r};"
+            f"request_kind must be one of {sorted(E2M_ALLOWED_REQUEST_KINDS)!r};"
             f" got {req_row['request_kind']!r}"
         )
 
@@ -472,11 +476,11 @@ def persist_snapshot_from_source_response(
             "memory_windows_created": 0,
         }
 
-    if require_readiness_contract and str(resp_row["source_name"]) != E2M_SOURCE_NAME:
+    if require_readiness_contract and str(resp_row["source_name"]) != "geckoterminal":
         return {
             "e2m_status": E2M_STATUS_BLOCKED,
             "persisted": False,
-            "blocked_reasons": ["readiness primary source must be dexscreener"],
+            "blocked_reasons": ["readiness primary source must be geckoterminal"],
             "approved_mint": approved_mint,
             "source_response_id": source_response_id,
             "hard_locks": dict(_HARD_LOCKS),

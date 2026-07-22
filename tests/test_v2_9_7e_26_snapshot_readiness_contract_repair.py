@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from copy import deepcopy
 import json
 import sqlite3
 
@@ -17,15 +18,19 @@ from printer_v1.operator_cli.e2m_snapshot_persistence import (
 from printer_v1.operator_cli.holder_reliability_budget_control import build_ledger
 from printer_v1.operator_cli.snapshot_readiness_contract import (
     READINESS_OPERATION_RESERVATION,
+    readiness_base_blockers,
     merge_exact_15m_evidence,
     snapshot_readiness_blockers,
 )
 from printer_v1.operator_cli.snapshot_readiness_owner import (
     execute_readiness_snapshot_bundle,
 )
-from printer_v1.sources.dexscreener import (
-    build_dexscreener_adapter,
-    fixture_success_transport as dex_fixture,
+from printer_v1.sources.geckoterminal import (
+    normalize_geckoterminal_payload,
+    GECKOTERMINAL_POOL_URL_TEMPLATE,
+    build_geckoterminal_adapter,
+    fixture_success_transport as gt_fixture,
+    GECKOTERMINAL_READINESS_BASE_REQUEST_KIND,
 )
 from printer_v1.sources.geckoterminal_15m import (
     GECKOTERMINAL_OHLCV_REQUEST_KIND,
@@ -58,32 +63,40 @@ def _connection(tmp_path) -> tuple[sqlite3.Connection, str]:
     return connection, str(path)
 
 
-def _dex_payload(*, liquidity=25_000.0, wider_volume=1_200.0, wider_txns=12):
+def _gt_base_payload(*, liquidity=25_000.0, wider_volume=1_200.0, wider_txns=12):
     return {
-        "pairs": [{
-            "chainId": "solana",
-            "pairAddress": PAIR,
-            "baseToken": {"address": MINT, "symbol": "E26", "name": "E26"},
-            "priceUsd": "0.001",
-            "liquidity": ({"usd": liquidity} if liquidity is not None else None),
-            "volume": {"m5": 100.0, "h1": wider_volume, "h24": 4000.0},
-            "txns": {
-                "m5": {"buys": 2, "sells": 1},
-                "h1": {"buys": wider_txns, "sells": 0},
-                "h24": {"buys": 20, "sells": 10},
+        "_requested_pool_address": PAIR,
+        "_requested_token_mint": MINT,
+        "_requested_network": "solana",
+        "_requested_endpoint": f"https://api.geckoterminal.com/api/v2/networks/solana/pools/{PAIR}",
+        "data": {
+            "id": f"solana_{PAIR}",
+            "type": "pool",
+            "attributes": {
+                "address": PAIR,
+                "base_token_price_usd": "0.001",
+                "reserve_in_usd": (str(liquidity) if liquidity is not None else None),
+                "volume_usd": {"m5": "100", "h1": str(wider_volume), "h24": "4000"},
+                "transactions": {
+                    "m5": {"buys": 2, "sells": 1},
+                    "h1": {"buys": wider_txns, "sells": 0},
+                    "h24": {"buys": 20, "sells": 10},
+                },
+                "price_change_percentage": {"m5": "1", "h1": "2", "h24": "3"},
+                "fdv_usd": "100000",
+                "pool_created_at": "2026-07-22T22:20:00Z",
             },
-            "priceChange": {"m5": 1.0, "h1": 2.0, "h24": 3.0},
-            "fdv": 100_000.0,
-            "marketCap": 90_000.0,
-            "pairCreatedAt": 1_700_000_000_000,
-        }]
+            "relationships": {
+                "base_token": {"data": {"id": f"solana_{MINT}", "type": "token"}},
+            },
+        },
     }
 
 
-def _dex_factory(payload):
+def _gt_base_factory(payload):
     def factory(**_kwargs):
-        return build_dexscreener_adapter(
-            enabled=True, fixture_transport=dex_fixture(payload)
+        return build_geckoterminal_adapter(
+            enabled=True, fixture_transport=gt_fixture(payload)
         )
     return factory
 
@@ -129,17 +142,25 @@ def _insert_normalized_response(
     *,
     received_at: datetime,
 ) -> int:
+    pair = dict(pair)
+    pair.setdefault("liquidity_provenance", {
+        "source": "geckoterminal",
+        "raw_field": "reserve_in_usd",
+        "network": "solana",
+        "pool_address": PAIR,
+        "token_mint": MINT,
+    })
     request = connection.execute(
         """INSERT INTO printer_source_requests(
             source_name,request_kind,requested_at,source_status,data_quality_label
-        ) VALUES ('dexscreener','pair_market_snapshot',?,'COMPLETE','CLEAN_DATA')""",
+        ) VALUES ('geckoterminal','geckoterminal_readiness_base_snapshot',?,'COMPLETE','CLEAN_DATA')""",
         (received_at.isoformat(),),
     )
     response = connection.execute(
         """INSERT INTO printer_source_responses(
             source_request_id,source_name,received_at,source_status,
             data_quality_label,normalized_payload_json
-        ) VALUES (?,'dexscreener',?,'COMPLETE','CLEAN_DATA',?)""",
+        ) VALUES (?,'geckoterminal',?,'COMPLETE','CLEAN_DATA',?)""",
         (
             int(request.lastrowid), received_at.isoformat(),
             json.dumps({"pairs": [pair]}),
@@ -157,7 +178,7 @@ def test_complete_exact_pair_bundle_accepts_three_governed_operations(tmp_path) 
     result = execute_readiness_snapshot_bundle(
         connection,
         _step(),
-        dexscreener_adapter_factory=_dex_factory(_dex_payload()),
+        geckoterminal_base_adapter_factory=_gt_base_factory(_gt_base_payload()),
         timeout_seconds=2.0,
         geckoterminal_transports=transports,
         evaluated_at=now,
@@ -166,7 +187,7 @@ def test_complete_exact_pair_bundle_accepts_three_governed_operations(tmp_path) 
     connection.commit()
     assert result["ok"]
     assert result["operations_attempted"] == 3
-    assert pacer.trace == ["dexscreener", "geckoterminal", "geckoterminal"]
+    assert pacer.trace == ["geckoterminal", "geckoterminal", "geckoterminal"]
     assert len(result["completion_records"]) == 2
     assert connection.execute("SELECT COUNT(*) FROM printer_source_requests").fetchone()[0] == 3
     row = connection.execute(
@@ -190,18 +211,21 @@ def test_missing_liquidity_fails_before_15m_completion_calls(tmp_path) -> None:
     connection, _ = _connection(tmp_path)
     now = datetime.now(timezone.utc)
     transports, _, _ = _gt_fixtures(now)
+    pacer = _NoSleepPacer()
     result = execute_readiness_snapshot_bundle(
         connection,
         _step(),
-        dexscreener_adapter_factory=_dex_factory(_dex_payload(liquidity=None)),
+        geckoterminal_base_adapter_factory=_gt_base_factory(_gt_base_payload(liquidity=None)),
         timeout_seconds=2.0,
         geckoterminal_transports=transports,
         evaluated_at=now,
-        request_pacer=_NoSleepPacer(),
+        request_pacer=pacer,
     )
     assert not result["ok"]
     assert result["operations_attempted"] == 1
-    assert "READINESS_MISSING_OR_INVALID:liquidity_usd" in result["blocked_reasons"]
+    assert "geckoterminal_pair_snapshot_missing_mandatory_fields" in result["blocked_reasons"]
+    assert pacer.trace == ["geckoterminal"]
+    assert connection.execute("SELECT COUNT(*) FROM printer_source_requests").fetchone()[0] == 1
     assert connection.execute("SELECT COUNT(*) FROM printer_token_snapshots").fetchone()[0] == 0
 
 
@@ -320,12 +344,12 @@ def test_unfiltered_trade_contract_rejects_malformed_and_truncated() -> None:
 
 def test_budget_reserves_complete_path_and_derives_three_candidates() -> None:
     now = datetime.now(timezone.utc)
-    ledger = build_ledger(pump_operations=12, deadline_at=now + timedelta(minutes=6))
+    ledger = build_ledger(pump_operations=13, deadline_at=now + timedelta(minutes=6))
     assert READINESS_OPERATION_RESERVATION == 6
     assert ledger.reserved_snapshot_operations == 2
     assert ledger.reserved_snapshot_completion_operations == 4
     assert ledger.candidate_cap() == 3
-    assert 12 + 9 + (3 * 5) + 6 == 42 <= 45
+    assert 13 + 9 + (3 * 5) + 6 == 43 <= 45
 
 
 def test_integrity_cleanup_foreign_keys_and_forbidden_deltas_zero(tmp_path) -> None:
@@ -341,3 +365,85 @@ def test_integrity_cleanup_foreign_keys_and_forbidden_deltas_zero(tmp_path) -> N
     assert connection.execute(
         "SELECT COUNT(*) FROM printer_scheduler_jobs WHERE status IN ('PENDING','RUNNING','COOLDOWN')"
     ).fetchone()[0] == 0
+
+
+def test_exact_pool_reserve_provenance_and_liquidity_conflict_reject() -> None:
+    accepted = normalize_geckoterminal_payload(
+        _gt_base_payload(),
+        request_kind=GECKOTERMINAL_READINESS_BASE_REQUEST_KIND,
+        expected_pool_address=PAIR,
+        expected_token_mint=MINT,
+    )
+    pair = dict(accepted.normalized_payload["pairs"][0])
+    assert pair["liquidity_usd"] == 25_000.0
+    assert pair["liquidity_provenance"] == {
+        "source": "geckoterminal",
+        "raw_field": "reserve_in_usd",
+        "network": "solana",
+        "pool_address": PAIR,
+        "token_mint": MINT,
+        "endpoint": f"https://api.geckoterminal.com/api/v2/networks/solana/pools/{PAIR}",
+        "composition_checked": False,
+    }
+    conflict = deepcopy(_gt_base_payload())
+    conflict["data"]["attributes"].update({
+        "base_token_liquidity_usd": "10000",
+        "quote_token_liquidity_usd": "10000",
+    })
+    rejected = normalize_geckoterminal_payload(
+        conflict,
+        request_kind=GECKOTERMINAL_READINESS_BASE_REQUEST_KIND,
+        expected_pool_address=PAIR,
+        expected_token_mint=MINT,
+    )
+    assert rejected.failure_type == "geckoterminal_pair_snapshot_liquidity_conflict"
+
+
+def test_exact_pool_zero_stale_mismatch_and_malformed_fail_closed() -> None:
+    zero = normalize_geckoterminal_payload(
+        _gt_base_payload(liquidity=0),
+        request_kind=GECKOTERMINAL_READINESS_BASE_REQUEST_KIND,
+        expected_pool_address=PAIR,
+        expected_token_mint=MINT,
+    )
+    zero_pair = dict(zero.normalized_payload["pairs"][0])
+    assert "READINESS_MISSING_OR_INVALID:liquidity_usd" in readiness_base_blockers(zero_pair)
+
+    stale_payload = deepcopy(_gt_base_payload())
+    stale_payload["fixture_stale"] = True
+    stale = normalize_geckoterminal_payload(
+        stale_payload,
+        request_kind=GECKOTERMINAL_READINESS_BASE_REQUEST_KIND,
+        expected_pool_address=PAIR,
+        expected_token_mint=MINT,
+    )
+    assert stale.failure_type == "geckoterminal_pair_snapshot_stale"
+
+    resource_payload = deepcopy(_gt_base_payload())
+    resource_payload["data"]["id"] = "solana_wrong"
+    resource = normalize_geckoterminal_payload(
+        resource_payload,
+        request_kind=GECKOTERMINAL_READINESS_BASE_REQUEST_KIND,
+        expected_pool_address=PAIR,
+        expected_token_mint=MINT,
+    )
+    assert resource.failure_type == "geckoterminal_pair_snapshot_resource_mismatch"
+
+    mismatch_payload = deepcopy(_gt_base_payload())
+    mismatch_payload["data"]["relationships"]["base_token"]["data"]["id"] = "solana_wrong"
+    mismatch = normalize_geckoterminal_payload(
+        mismatch_payload,
+        request_kind=GECKOTERMINAL_READINESS_BASE_REQUEST_KIND,
+        expected_pool_address=PAIR,
+        expected_token_mint=MINT,
+    )
+    assert mismatch.failure_type == "geckoterminal_pair_snapshot_identity_mismatch"
+
+    malformed = normalize_geckoterminal_payload(
+        {"_requested_pool_address": PAIR, "_requested_network": "solana", "data": []},
+        request_kind=GECKOTERMINAL_READINESS_BASE_REQUEST_KIND,
+        expected_pool_address=PAIR,
+        expected_token_mint=MINT,
+    )
+    assert malformed.failure_type == "geckoterminal_pair_snapshot_missing_data"
+    assert GECKOTERMINAL_POOL_URL_TEMPLATE.endswith("?include=base_token,quote_token,dex")

@@ -33,6 +33,10 @@ from printer_v1.sources.dexscreener import (
     DEXSCREENER_PUBLIC_API_HEADERS,
     DEXSCREENER_TRANSPORT_OPERATION_COST,
 )
+from printer_v1.sources.geckoterminal import (
+    GECKOTERMINAL_POOL_URL_TEMPLATE,
+    GECKOTERMINAL_READINESS_BASE_REQUEST_KIND,
+)
 from printer_v1.sources.geckoterminal_15m import (
     GECKOTERMINAL_OHLCV_REQUEST_KIND,
     GECKOTERMINAL_POOL_TRADES_REQUEST_KIND,
@@ -56,6 +60,10 @@ from printer_v1.sources.helius_holder import (
     HELIUS_STANDARD_RPC_CREDITS_PER_OPERATION,
 )
 from printer_v1.sources.registry import SOURCE_REGISTRY
+from printer_v1.sources.pumpfun_origin import (
+    CREATE_INDEX_DECODE_CEILING,
+    CREATE_INDEX_PAGE_CEILING,
+)
 from printer_v1.sources.solana_rpc_holder import (
     SOLANA_PUBLIC_RPC_URL,
     SOLANA_RPC_HOLDER_TRANSPORT_OPERATION_COST,
@@ -65,9 +73,16 @@ from printer_v1.sources.solana_rpc_holder import (
 )
 
 
-PUMP_WORST_CASE_OPERATIONS = 12
+PUMP_WORST_CASE_OPERATIONS = (
+    CREATE_INDEX_PAGE_CEILING + CREATE_INDEX_DECODE_CEILING
+)
 READINESS_SELECTED_TOKEN_COUNT = 2
-READINESS_CANDIDATE_CAP = 3
+READINESS_CANDIDATE_CAP = max(
+    0,
+    (OPERATION_CEILING - PUMP_WORST_CASE_OPERATIONS
+     - COMBINED_ZERO_TRANSPORT_VALIDATION - REQUIRED_READINESS_SNAPSHOT_RESERVATION)
+    // HOLDER_WORST_CASE_TRANSPORT_OPERATIONS,
+)
 
 
 @dataclass(frozen=True)
@@ -135,17 +150,18 @@ _OFFICIAL_CONFIGURATION: dict[str, dict[str, Any]] = {
     },
     "geckoterminal": {
         "endpoints": (
+            "https://api.geckoterminal.com/api/v2/networks/solana/pools/{pool_address}?include=base_token,quote_token,dex",
             "https://api.geckoterminal.com/api/v2/networks/{network}/pools/{pool_address}/ohlcv/minute?aggregate=15&limit=2&currency=usd&token=base",
             "https://api.geckoterminal.com/api/v2/networks/{network}/pools/{pool_address}/trades",
         ),
         "required_headers": {"User-Agent": "PrinterV1/0.1 (+paper-only source check)", "Accept": "application/json;version=20230203"},
         "authentication": "KEYLESS_PUBLIC",
-        "request_kinds": ("geckoterminal_ohlcv_15m", "geckoterminal_pool_trades_15m"),
+        "request_kinds": ("geckoterminal_readiness_base_snapshot", "geckoterminal_ohlcv_15m", "geckoterminal_pool_trades_15m"),
         "provider_rate_limit_per_minute": 10,
         "printer_rate_limit_per_minute": 10,
         "minimum_spacing_seconds": 6,
-        "operation_costs": {"geckoterminal_ohlcv_15m": 1, "geckoterminal_pool_trades_15m": 1},
-        "required_response_fields": ("ohlcv_list", "timestamp/open/close/volume", "trade.attributes.block_timestamp", "exact_pool"),
+        "operation_costs": {"geckoterminal_readiness_base_snapshot": 1, "geckoterminal_ohlcv_15m": 1, "geckoterminal_pool_trades_15m": 1},
+        "required_response_fields": ("reserve_in_usd", "base_token_price_usd", "transactions.m5/h1/h24", "volume_usd.m5/h1/h24", "ohlcv_list", "timestamp/open/close/volume", "trade.attributes.block_timestamp", "exact_pool"),
     },
 }
 
@@ -211,18 +227,27 @@ def _contracts() -> dict[str, AdoptedReadinessSourceContract]:
         ),
         "geckoterminal": AdoptedReadinessSourceContract(
             source_name="geckoterminal",
-            endpoints=(GT15M_OHLCV_URL_TEMPLATE, GT15M_TRADES_URL_TEMPLATE),
+            endpoints=(
+                GECKOTERMINAL_POOL_URL_TEMPLATE,
+                GT15M_OHLCV_URL_TEMPLATE,
+                GT15M_TRADES_URL_TEMPLATE,
+            ),
             required_headers=dict(GECKOTERMINAL_PUBLIC_API_HEADERS),
             authentication="KEYLESS_PUBLIC",
-            request_kinds=(GECKOTERMINAL_OHLCV_REQUEST_KIND, GECKOTERMINAL_POOL_TRADES_REQUEST_KIND),
+            request_kinds=(
+                GECKOTERMINAL_READINESS_BASE_REQUEST_KIND,
+                GECKOTERMINAL_OHLCV_REQUEST_KIND,
+                GECKOTERMINAL_POOL_TRADES_REQUEST_KIND,
+            ),
             provider_rate_limit_per_minute=GECKOTERMINAL_PROVIDER_RATE_LIMIT_PER_MINUTE,
             printer_rate_limit_per_minute=SOURCE_REGISTRY["geckoterminal"].default_rate_limit_per_minute,
             minimum_spacing_seconds=deterministic_spacing_seconds("geckoterminal"),
             operation_costs={
                 GECKOTERMINAL_OHLCV_REQUEST_KIND: GECKOTERMINAL_TRANSPORT_OPERATION_COST,
+                GECKOTERMINAL_READINESS_BASE_REQUEST_KIND: GECKOTERMINAL_TRANSPORT_OPERATION_COST,
                 GECKOTERMINAL_POOL_TRADES_REQUEST_KIND: GECKOTERMINAL_TRANSPORT_OPERATION_COST,
             },
-            required_response_fields=("ohlcv_list", "timestamp/open/close/volume", "trade.attributes.block_timestamp", "exact_pool"),
+            required_response_fields=("reserve_in_usd", "base_token_price_usd", "transactions.m5/h1/h24", "volume_usd.m5/h1/h24", "ohlcv_list", "timestamp/open/close/volume", "trade.attributes.block_timestamp", "exact_pool"),
         ),
     }
 
@@ -314,6 +339,12 @@ def build_readiness_source_contract_preflight(
     }
     if budget_overrides:
         budget.update(dict(budget_overrides))
+    budget["derived_candidate_cap"] = max(
+        0,
+        (budget["operation_ceiling"] - budget["pump_worst_case_operations"]
+         - budget["zero_transport_operations"] - budget["snapshot_reservation"])
+        // HOLDER_WORST_CASE_TRANSPORT_OPERATIONS,
+    )
     budget["worst_case_total"] = (
         budget["pump_worst_case_operations"]
         + budget["zero_transport_operations"]
@@ -322,7 +353,9 @@ def build_readiness_source_contract_preflight(
     )
     if (
         budget["operation_ceiling"] != 45
-        or budget["candidate_cap"] != 3
+        or budget["pump_worst_case_operations"] != PUMP_WORST_CASE_OPERATIONS
+        or budget["candidate_cap"] != budget["derived_candidate_cap"]
+        or budget["holder_worst_case_operations"] != budget["candidate_cap"] * HOLDER_WORST_CASE_TRANSPORT_OPERATIONS
         or budget["snapshot_reservation"] != 6
         or budget["contract_snapshot_reservation"] != 6
         or budget["worst_case_total"] > budget["operation_ceiling"]
@@ -334,7 +367,7 @@ def build_readiness_source_contract_preflight(
         "exact_window_seconds": READINESS_WINDOW_SECONDS,
     }
     if provenance != {
-        "primary_source": "dexscreener",
+        "primary_source": "geckoterminal",
         "supplemental_15m_source": "geckoterminal",
         "exact_window_seconds": 900,
     }:

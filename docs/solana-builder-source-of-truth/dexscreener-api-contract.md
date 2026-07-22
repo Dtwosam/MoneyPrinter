@@ -188,3 +188,22 @@ this primary request. One attempted transport is one charged operation.
 | Date | Change | Author |
 |---|---|---|
 | 2026-07-12 | Authored from A4 docs + A6 implementation and governed live probe; Stage 2 categorical exclusion filters documented | Claude Opus 4.8 / DexScreener productivity repair |
+
+## E.30 readiness supersession
+
+E.29 queried two exact, identity-matched Solana pairs approximately 183 and
+171 seconds after their provider `pairCreatedAt` values. Both responses were
+`COMPLETE` / `CLEAN_DATA`, carried positive price and m5/h1/h24 activity, and
+returned nullable `liquidity.usd` as missing. Exact identity, malformed
+transport and normalizer field loss are therefore rejected as causes. Because
+raw provider bodies were not retained and the official contract makes the
+liquidity object nullable, the evidence cannot distinguish provider omission
+from provider-emitted null or prove a deterministic indexing-maturity cause.
+Pair youth is a supported inference, not an admission threshold.
+
+The current E.30 readiness composition no longer assigns base ownership to
+DexScreener. It uses GeckoTerminal exact-pool metadata as the single base
+operation so the fixed two-candidate snapshot reservation remains six rather
+than growing to eight. DexScreener remains available for its other governed
+roles and its historical E.26 permission remains auditable; it is not combined
+with, used to overwrite, or used as an automatic fallback for the E.30 base.

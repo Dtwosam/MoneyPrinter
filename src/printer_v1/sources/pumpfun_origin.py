@@ -87,11 +87,12 @@ SCHEDULER_WORK_TYPE = "DISCOVERY_PUMPFUN_LATEST"
 SIGNATURE_PAGE_REQUEST = "pumpfun_create_index_signature_page"
 TRANSACTION_REQUEST = "pumpfun_create_index_transaction"
 
-# Minimum-sufficient ceilings; see architecture doc section 3.10. Worst-case
-# underlying consumption is 3 + 12 = 15, down from the retired path's 45.
+# Minimum-sufficient ceilings. The readiness/pilot candidate cap is three, so
+# ten deterministic transaction decodes retain bounded replacement headroom
+# while fixing the actual acquisition maximum at 3 + 10 = 13 operations.
 CREATE_INDEX_PAGE_CEILING = 3
 CREATE_INDEX_PAGE_SIZE = 16
-CREATE_INDEX_DECODE_CEILING = 12
+CREATE_INDEX_DECODE_CEILING = 10
 EARLY_CREATE_STOP = 8
 UNDERLYING_OPERATION_CEILING = 45
 

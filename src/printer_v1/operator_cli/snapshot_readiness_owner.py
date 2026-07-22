@@ -22,15 +22,15 @@ def execute_readiness_snapshot_bundle(
     connection: sqlite3.Connection,
     step: Mapping[str, Any],
     *,
-    dexscreener_adapter_factory: Callable[..., Any],
+    geckoterminal_base_adapter_factory: Callable[..., Any],
     timeout_seconds: float,
     geckoterminal_transports: Mapping[str, Any] | None = None,
     evaluated_at: str | datetime | None = None,
     request_pacer: Any | None = None,
 ) -> dict[str, Any]:
-    """Run DexScreener once, then at most two exact-pool 15m requests.
+    """Run one exact-pool GeckoTerminal base, then at most two 15m requests.
 
-    Missing base liquidity/5m/wider evidence blocks before GeckoTerminal.  The
+    Missing base liquidity/5m/wider evidence blocks before microstructure. The
     two completion requests are made only when E.19 verified inactivity cannot
     already prove the absent 15m fields.  There is no retry, rotation, metadata
     fallback, or lifecycle activation.
@@ -58,20 +58,21 @@ def execute_readiness_snapshot_bundle(
         }
 
     pacer = request_pacer or SequentialRequestPacer()
-    pacer.pace("dexscreener")
+    pacer.pace("geckoterminal")
     request = build_governed_source_request(
-        "dexscreener",
-        "pair_market_snapshot",
-        request_key=f"{run_id}:{step_key}:dexscreener",
-        payload={"token_mint": mint, "pair_address": pair_address},
+        "geckoterminal",
+        "geckoterminal_readiness_base_snapshot",
+        request_key=f"{run_id}:{step_key}:geckoterminal_base",
+        payload={"token_mint": mint, "pool_address": pair_address},
     )
     execution = execute_source_request_with_governor(
         connection,
         request,
-        dexscreener_adapter_factory(
-            token_mint=mint, timeout_seconds=timeout_seconds
+        geckoterminal_base_adapter_factory(
+            pair_address=pair_address, token_mint=mint,
+            timeout_seconds=timeout_seconds,
         ),
-        recent_request_count=count_recent_source_requests(connection, "dexscreener"),
+        recent_request_count=count_recent_source_requests(connection, "geckoterminal"),
     )
     result: dict[str, Any] = {
         "ok": False,

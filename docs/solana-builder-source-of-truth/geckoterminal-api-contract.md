@@ -375,6 +375,7 @@ closed. One source must not overwrite equal/higher-authority evidence.
 | `geckoterminal_trending_pool_reference` | 7B.3B adopted; fixture-only | Exact page-1, 1h provider-ranked Solana pool reference |
 | `geckoterminal_active_pool_reference` | 7B.3B adopted; fixture-only | One exact Solana pool's non-zero `transactions.m5` observation |
 | `pair_market_snapshot` | Existing shared compatibility kind; fixture-only | Exact-pool metadata fallback |
+| `geckoterminal_readiness_base_snapshot` | E.30 offline-proven; separately authorized readiness proof only | Exact-pool positive `reserve_in_usd`, price, m5 and h1 base evidence; one attempt, no retry/rotation |
 | `geckoterminal_ohlcv_15m` | E.26 offline-proven; separately authorized readiness proof only | Exact-pool completed 15m OHLCV; one attempt, no retry/rotation |
 | `geckoterminal_pool_trades_15m` | E.26 offline-proven; separately authorized readiness proof only | Exact-pool unfiltered bounded trade history for the same 15m window; one attempt, no retry/rotation |
 | `geckoterminal_pool_snapshot` | Superseded for 7B by `geckoterminal_active_pool_reference`; `NOT_IMPLEMENTED` | Broader provider-specific exact-pool name |
@@ -439,3 +440,36 @@ confidence, weighting, embedding, vector, or live execution.
 |---|---|
 | 2026-07-22 | E.28 reverified the official Public API root, `version=20230203`, keyless access and approximately 10/minute limit; aligned registry, pacing and zero-retry readiness configuration |
 | 2026-07-18 | Audited current official GeckoTerminal/CoinGecko documentation; adopted provider contract as `PARTIAL_WITH_BLOCKER` and `ALLOWED_FIXTURE_ONLY` |
+
+## E.30 readiness base amendment
+
+The current bounded-readiness base is one fixed keyless request:
+
+`GET /networks/solana/pools/{pool_address}?include=base_token,quote_token,dex`
+
+It uses request kind `geckoterminal_readiness_base_snapshot`. The response must
+identify `data.attributes.address` and the `solana_{pool_address}` resource,
+resolve the requested mint as the exact base-token relationship, and provide
+finite positive `base_token_price_usd` and `reserve_in_usd` plus well-formed m5
+and h1 volume/transaction evidence. `reserve_in_usd` is stored with raw-field,
+provider, network, pool, mint, endpoint, request/response and receipt-time
+provenance. It remains provider pool-reserve context, not executable fill proof.
+
+Missing, zero, negative, non-finite, stale, malformed or mismatched liquidity
+fails closed. If optional base/quote liquidity components are present, their sum
+must agree with `reserve_in_usd` within a narrow numeric tolerance; disagreement
+is a source conflict and fails closed. Optional composition is not required and
+is not added to the fixed keyless request.
+
+The registry receipt-age ceiling remains 180 seconds, matching the existing
+GeckoTerminal policy and accounting honestly for the documented public cache.
+No pair-age delay is adopted: official documentation describes fast updates and
+one-minute caching but provides no deterministic indexing SLA from which a safe
+maturity threshold can be derived.
+
+After the exact-pool base passes, the same Scheduler pacer may make one completed
+15m OHLCV request and one complete-window trade request. Missing base liquidity
+blocks before either microstructure request. Thus each selected candidate still
+costs exactly three reserved operations and two candidates still reserve six.
+There is one attempt per fixed endpoint, with no retry, rotation, reconnect or
+successor.
