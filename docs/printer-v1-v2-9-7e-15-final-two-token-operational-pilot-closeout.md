@@ -1,154 +1,278 @@
 # V2-9.7E.15 Final Authorized Two-Token Operational Pilot — Closeout
 
-**Status:** BLOCKED AT PREFLIGHT — NO EXTERNAL REQUEST MADE
+**Status:** LIVE PILOT EXECUTED — HONEST BLOCK (clean governed safe-stop; mandatory clean-memory evidence unobtainable live)
 
-**Verdict:** `V2_9_7E_15_BLOCKED_PREFLIGHT`
+**Verdict:** `V2_9_7E_15_BLOCKED_SOURCE_OR_EVIDENCE`
 
-## Baseline and authorization
+---
 
-- Commit: `bdd7625565409c19a4d1a8d502a0edbd0e4e769b`
-- Message: `Add real-wall-clock two-token pilot runner`
+# Live pilot execution — 2026-07-22
+
+## Exact baseline and authorization
+
+- Commit: `fe64c36c9faf6c6d320a91483269585ac1b144d3`
+- Message: `Provision isolated two-token pilot source`
 - HEAD verified equal to the authorized baseline; clean tracked tree and index;
-  no stash; E.11–E.14 artifacts present; no active campaign, runner, process or
-  lease; no stale pilot target or execution.
+  no stash; E.11–E.16 artifacts present; no active campaign/runner/process/lease;
+  no stale E15 target/backup/restore/lock/log/report/execution.
 
 The operator authorized exactly one live real-wall-clock execution of the
-committed two-token pilot runner. **That authorization was NOT consumed.**
-Preflight failed before any external request, so no live source operation was
-transmitted and the single pilot authorization remains available for a future,
-correctly-provisioned attempt.
+committed two-token pilot runner. **That authorization was consumed by this
+run.** No production code was modified. No standalone reachability or readiness
+cycle was performed — the pilot was the only live source use.
 
-This lane modified no production code.
+## Full path manifest (all approved, absolute, mutually distinct, outside repo)
 
-## Explicit paths supplied
+| Artifact | Path |
+|---|---|
+| Persistent source DB | `C:\Users\dtwof\PrinterPilot\E15\source\printer-v1-e15-source.sqlite3` |
+| Pilot target DB | `C:\Users\dtwof\PrinterPilot\E15\printer-v1-e15-pilot.sqlite3` |
+| Pre-run backup file | `C:\Users\dtwof\PrinterPilot\E15\backups\printer-v1-e15-pre-run-backup.sqlite3` |
+| Restore-rehearsal DB | `C:\Users\dtwof\PrinterPilot\E15\restore\printer-v1-e15-restore-rehearsal.sqlite3` |
+| Report directory | `C:\Users\dtwof\PrinterPilot\E15\reports` |
+| Lock file | `C:\Users\dtwof\PrinterPilot\E15\locks\pilot.lock` |
+| Standard-output log | `C:\Users\dtwof\PrinterPilot\E15\logs\pilot.stdout.log` |
+| Standard-error log | `C:\Users\dtwof\PrinterPilot\E15\logs\pilot.stderr.log` |
 
-- Pilot target DB: `C:\Users\dtwof\PrinterPilot\E15\printer-v1-e15-pilot.sqlite3`
-- Backup directory: `C:\Users\dtwof\PrinterPilot\E15\backups`
-- Report directory: `C:\Users\dtwof\PrinterPilot\E15\reports`
+Launched via the committed unregistered runner
+`scripts/v2_9_7e_14_two_token_operational_pilot.py` (execution id
+`v2-9-7e-15-final-pilot`) with real, uncompressed production timing.
 
-State observed: the `E15\backups` and `E15\reports` directories exist and are
-empty; no `printer-v1-e15-pilot.sqlite3` target, backup file, or execution
-record exists. No stale artifact was treated as current evidence. The target
-file was **not** created — per the lane rule, only the committed runner may
-prepare and validate it, and it was never invoked.
+## Source identity before and after
 
-## The blocking preflight condition — missing approved source database
+- Before: size **2,183,168** bytes; SHA-256
+  `770fb92c0f3c5444aae6f559d8e474b2e62483191da8d3e9aeb74e6c3f562f20`; head
+  `036_pumpfun_finalized_origin_registry.sql`; ledger 36/36; `integrity_check`
+  `ok`; 0 foreign-key errors; all operational/retrieval/financial tables empty;
+  no active lease. Distinct from the authoritative corpus.
+- After: SHA-256 **unchanged** (`770fb92c…`). The runner treated the source as
+  logically read-only and only copied it into the isolated target; it never
+  migrated, mutated, leased, supervised, or executed against it.
 
-The committed runner requires an explicit **source database** and the task
-supplied none:
+## Backup and restore evidence
 
-- `two_token_operational_pilot_runner.PilotPaths.persistent_source_db` is a
-  required field, and `prepare_pilot_target` fails closed unless
-  `persistent_source_db.is_file()` — it copies that source into the isolated
-  target via `proof_db_schema_readiness.prepare_proof_db(persistent, target,
-  backup)`. The runner never creates a source; it must be supplied.
-- `scripts/v2_9_7e_14_two_token_operational_pilot.py` declares
-  `--persistent-source-db` as `required=True` with no default.
-- No approved non-authoritative source database is configured anywhere in the
-  committed runner, active configuration, or source-of-truth documents. The only
-  persistent database the repository defines is
-  `proof_db_schema_readiness.CANONICAL_PERSISTENT_DB`
-  (`…\MoneyPrinter\data\printer_v1.sqlite3`, confirmed present) — the
-  **authoritative corpus**, which this lane is explicitly forbidden to
-  automatically use or mutate, and which the runner also forbids as a target.
-- The three operator-approved paths (target, backup directory, report directory)
-  define where isolated pilot state is written; none of them is a source
-  database.
+- Byte-identical pre-run backup written (`target_hash == backup_hash ==
+  770FB92C…`), `proof_backup_byte_identical = true`, `persistent_unchanged =
+  true`.
+- Disposable restore rehearsal ran and passed (`restore_rehearsal_ok = true`)
+  and the rehearsal copy was removed. `prepare` returned `PILOT_TARGET_READY`
+  with `no_active_lease = true`.
 
-Per the lane's **Source database rule** — "If the runner requires an explicit
-source database and no approved non-authoritative source is already configured,
-stop before external use with `V2_9_7E_15_BLOCKED_PREFLIGHT`. Report the exact
-missing source-path requirement." — the condition is met exactly. Inventing a
-source path (for example, creating a fresh empty database and pointing the runner
-at it) would be guessing a source path, which the rule forbids; using the
-authoritative corpus is forbidden. Therefore no external request was made.
+## Start / end time and duration
 
-**Exact missing requirement:** an operator-approved, non-authoritative,
-already-existing, canonically-migrated `persistent_source_db` (SQLite file, path
-absolute and distinct from the authoritative corpus, the target, the backup and
-the report directory) for the committed runner to copy into the isolated pilot
-target. Also unspecified, and required by the runner once a source exists: the
-explicit backup **file** path (within the backup directory), the disposable
-`restore_rehearsal_db` file path, the one-proof lock path, and the stdout/stderr
-log file paths.
+- Start (UTC): `2026-07-22T14:28:42Z`
+- End (UTC): `2026-07-22T14:44:43Z`
+- Real duration: **≈16m01s**. The campaign terminated at the two 15m closes
+  because **no natural continuation formed** (see below); it did not need the
+  full ~4.25 h envelope.
 
-## Static/local preflight results (before the block)
+## Source and operation accounting
 
-- HEAD, message, clean tree, no stash, no active lease, no stale target — all
-  confirmed.
-- Committed runner and unregistered script compile and import intact; production
-  code unchanged.
-- Authoritative corpus present and correctly excluded as both source and target.
-- No reachability or readiness cycle was performed (the lane forbids a separate
-  reachability check; the pilot would have been the only live use).
+- Total governed source requests: **41**; responses **34**; failures **7**.
+  Finalized Pump-origin discovery via free-public Solana RPC succeeded and
+  yielded ≥2 finalized supported origins; per-token 15m snapshot lanes
+  (DexScreener) succeeded. The 7 failures were the isolated secondary/context
+  lanes (see risks), which are `ALLOWED_FIXTURE_ONLY` and fail live; they were
+  isolated and never weakened a gate.
+- Every external operation was Source-Governor-admitted before transport and
+  Central-Scheduler-owned (committed E.11 owner path). Status inspection was
+  local and zero-source throughout (`source_calls: 0`, `scheduler_calls: 0`).
 
-## Pilot evidence
+## Gate and activation results
 
-None. No campaign was launched, so there is no start/end time, source or gate
-accounting, discovery/gate funnel, activated identities, 15m/1h/4h/support-only-5m
-outcome, promotion result, report, replay, or cleanup evidence. All prohibited
-capability deltas are trivially zero because no campaign mutation occurred and no
-target database was created.
+- Finalized Pump origins: ≥2 observed; deterministic seeded selection.
+- **Exactly two-or-none atomic activation:** 2 slots `SELECTED` (ordinals 1, 2).
+- Selected identities exactly equal activated identities; no token/pair identity
+  mixing (redacted): slot 1 mint `id:5655ee1af66c` / pair `id:be133f108498`;
+  slot 2 mint `id:b1312c39e885` / pair `id:f319c3eda40d`.
 
-## Backup / restore evidence
+## Per-token lifecycle
 
-Not reached. `prepare_pilot_target` — which performs the canonical migration,
-integrity and foreign-key checks, the byte-identical backup and the disposable
-restore rehearsal — was never invoked, because the runner cannot prepare a target
-without an approved source database.
+- Both tokens received independent, real 15m streams (16 snapshot steps total
+  SUCCEEDED across the two tokens; the executor's 2 first-15m handoff jobs were
+  CANCELLED by design and superseded by the factory's own scheduling).
+- **Both terminal 15m closes SUCCEEDED**; 2 `WINDOW_15M` memory windows created;
+  2 `MEMORY_WINDOW_CLOSE` jobs SUCCEEDED.
+- Token-local isolation held: all run steps SUCCEEDED; no starvation; no
+  cross-token mixing; no shared fault.
+
+## Natural continuation and support-only 5m evidence
+
+- **Two-terminal-15m-close barrier** released only after both tokens had terminal
+  15m close evidence, then evaluated each token from its **own** governed window.
+- Both tokens' 15m windows classified **`DIRTY_MEMORY` / `OUTCOME_UNKNOWN`**.
+  Per the committed fail-closed natural-evidence disposition, ineligible
+  (dirty/unknown) memory can drive **no** continuation and **no** support
+  capture. Both dispositions were therefore, identically and order-independently:
+  `continuation_plan = STOP_AFTER_15M` (`enqueue_ok = false`) and
+  `support_5m = VALID_NO_CAPTURE`.
+- 15m→1h continuation: **none** (naturally absent — not manufactured).
+- 1h→4h continuation: **none** (naturally absent — not manufactured).
+- Support-only 5m: **0** capture windows; the only observed case was the valid
+  **no-capture** result on both tokens. The eligible-capture case did **not**
+  occur naturally and is reported as absent, not manufactured. No support-only
+  5m episode, continuation, retrieval or financial authority was created.
+
+## Memory and promotion evidence
+
+- Both 15m windows: `DIRTY_MEMORY` / `OUTCOME_UNKNOWN`.
+- Episodes built: **0**; dirty or `DO_NOT_TRAIN` promotions: **0**; eligible
+  clean promotions: **0**. The clean-memory and no-dirty-promotion locks held:
+  the dirty windows were honestly classified and correctly **not** promoted.
+- No favorable, negative, or neutral clean memory was promoted, because no clean
+  memory was produced this run.
+
+## Fairness and identity isolation
+
+- Exactly two tokens throughout; no expansion beyond two; no starvation; no
+  token/pair identity mixing; token-local jobs isolated; no shared fault; the
+  barrier produced identical, close-order-independent dispositions.
+
+## Report, replay, integrity and cleanup
+
+- Terminal report produced **exactly once** (`status: PILOT_TERMINAL`).
+- Report-only replay **deterministic** and **zero-source** (`replay_deterministic
+  = true`, `replay_new_source_calls = 0`).
+- `PRAGMA integrity_check` → `ok`; `PRAGMA foreign_key_check` → **0** errors.
+- Run-step cleanup clean: all 18 run steps SUCCEEDED; `pending_or_running_run_steps
+  = 0`; `running_jobs_after_stop = 0`; 0 run-step-linked scheduler jobs remain
+  pending/running.
+- One-proof lock **released** (`one_proof_lock_released = true`; lock file absent
+  after). Supervision execution is `TERMINAL` with terminal status
+  `GOVERNED_SAFE_STOP` and immutable first cause `SAFE_STOP_4H_TERMINAL_INCOMPLETE`.
+- No automatic restart or successor (`restart_created = false`,
+  `successor_created = false`).
+- Source hash **unchanged**; backup byte-identical; persistent source unchanged.
+- **Minor observation (non-blocking):** 10 `DISCOVERY_REFRESH` scheduler rows
+  remain `PENDING` in the isolated disposable target. They are **not** linked to
+  any run step, are not lifecycle/campaign work, and are inert (the execution is
+  terminal, the lock is released, no process exists, the target is disposable).
+  The runner's run-scoped cleanup contract (run steps and run-linked jobs) is
+  satisfied; these discovery-cadence rows are documented as a cleanup nuance, not
+  stale run work.
+
+## Prohibited-capability deltas
+
+All zero. Retrieval queries/matches, paper decisions, paper positions, paper
+trade events, paper trade audits, and paper audit reports: **0** rows each, and
+the runner's `forbidden_deltas` are all 0. No wallet, key, signing, funds, live
+execution, paid API, scoring, ranking, embedding, retrieval, decision,
+BUY/SELL/HOLD, position, trade, audit, or PnL occurred.
+
+## Exact blocker
+
+The pilot ran the committed owner exactly once, cleanly and safely, to a
+`GOVERNED_SAFE_STOP`. It did **not** reach a COMPLETED PASS because the **active
+V2-9.7E pilot gate requires a completed 4h terminal** (one clean natural
+selective continuation surviving to 4h), and that required evidence was
+**naturally absent**: both live tokens' 15m memory was `DIRTY_MEMORY`, so no
+clean promotion and no eligible continuation could form. The root cause is that
+the mandatory clean-memory context evidence — token safety (GoPlus), broad market
+context (CoinGecko), and paper-quote realism (Jupiter), and part of the secondary
+enrichment (GeckoTerminal) — is `ALLOWED_FIXTURE_ONLY` under the committed Source
+Governor evidence rules and therefore fails in live mode, producing dirty 15m
+memory. This is an **evidence** limitation, not a lifecycle or safety fault: the
+lifecycle, barrier, fail-closed dirty rejection, supervision, report, replay and
+cleanup all behaved correctly. Hence `V2_9_7E_15_BLOCKED_SOURCE_OR_EVIDENCE`.
 
 ## Money-usefulness contribution
 
-The lane preserves the operator's single, non-renewable live pilot authorization
-rather than spending it on an under-specified launch, and it pins the exact,
-minimal missing input: one operator-approved, non-authoritative, pre-migrated
-source database path (plus the backup/rehearsal/lock/log file paths the runner
-requires). Supplying these lets the already-proven E.14 runner execute the pilot
-without any code change, keeping the authoritative corpus and the authorization
-protected.
+This is the first end-to-end **live** exercise of the two-token operational
+pathway: real finalized Pump-origin discovery → exact two-or-none activation →
+two real 15m streams → both terminal 15m closes → the two-terminal-close barrier →
+fail-closed natural disposition on dirty evidence → clean governed safe-stop with
+deterministic zero-source replay and complete run cleanup, all with zero
+retrieval/financial surface and an unmutated source. It proves the intake,
+activation, barrier and safety machinery are trustworthy on live data, and it
+pinpoints the single remaining gap to clean-memory growth: promoting the
+fixture-only context/safety/quote source adapters to governed production-network
+use.
 
 ## What the pilot improves
 
-Nothing was executed, so no operational proof was produced. The lane's
-contribution is a precise, honest preflight block that prevents an unsafe or
-ambiguous live launch and documents the exact provisioning gap.
+- Confirms live: governed discovery, exact two-or-none activation,
+  identity-preserving handoff, two real 15m streams, the two-terminal-15m-close
+  barrier, order-independent per-token dispositions, and — critically — the
+  fail-closed rejection of dirty/`OUTCOME_UNKNOWN` memory (no continuation, no
+  support capture, no promotion).
+- Confirms live: durable lease/heartbeat, one execution, one campaign
+  invocation, cooperative-stop wiring, immutable terminal cause, report-once,
+  deterministic zero-source replay, clean run cleanup, no restart/successor,
+  integrity/FK clean, and an unmutated source.
 
 ## What remains locked
 
 All Printer V1 Solana-memecoin-only, paper-only, free/public-source, governance,
 two-or-none, clean-memory, support-only-5m, and financial/retrieval locks remain
-unchanged. No wallet, key, signing, funds, live execution, paid API, scoring,
-ranking, embedding, retrieval, decision, position, trade, audit, PnL, successor,
-or automatic restart was engaged. No operator command was published.
+unchanged. No operator command was published; no CLI was registered; retrieval
+and financial capabilities remain locked.
 
 ## Proof still required before V2-9.7F
 
-1. An operator-approved, non-authoritative, canonically-migrated source database
-   path (and the backup **file**, restore-rehearsal, lock, and log file paths),
-   supplied to the committed runner.
-2. One operator-authorized live execution of the committed runner against live
-   free-public sources on real wall-clock timing that either proves the two-token
-   operational invariants end to end (both terminal 15m closes, the
-   two-terminal-close barrier, selective natural 1h/4h continuation, conditional
-   support-only 5m, exactly one eligible clean promotion, report/replay/cleanup,
-   zero forbidden deltas) or blocks honestly — with any natural case the single
-   live campaign does not produce reported as absent, never manufactured.
+1. Promote the mandatory clean-memory context/safety/quote source adapters
+   (GoPlus token security, CoinGecko/market context, Jupiter paper-quote realism,
+   and the GeckoTerminal secondary lanes) from `ALLOWED_FIXTURE_ONLY` to governed
+   production-network use, each with its own committed adapter and proof lane, so
+   a live 15m window can classify **clean** rather than dirty.
+2. A subsequent authorized live pilot in which at least one token produces clean
+   15m memory and a naturally derived selective 1h→4h continuation with a
+   conditional support-only 5m capture and exactly one eligible clean promotion —
+   or an honest block — under a fresh authorization.
 
 ## Functionality Risks / Setbacks / Efficiency Blockers
 
-- **Setback:** the final pilot did not execute; the required non-authoritative
-  source database (and the backup/rehearsal/lock/log file paths) were not
-  provided, and neither the runner nor the repository configures a default,
-  non-authoritative pilot source.
-- **Risk:** re-attempting requires care that the supplied source is a
-  non-authoritative, pre-migrated copy — never the authoritative corpus — so the
-  single authorization is spent on a valid, isolated run.
-- **Efficiency blocker:** none technical; the block is purely a missing,
-  unambiguous source-path provision, resolvable without any code change.
+- **Setback (primary):** a live operational pilot cannot currently produce clean
+  promotable memory or a natural continuation, because the mandatory
+  clean-memory context/safety/quote adapters are fixture-only and fail live,
+  making every 15m window dirty. The pilot therefore always safe-stops as
+  `SAFE_STOP_4H_TERMINAL_INCOMPLETE`.
+- **Risk (design observation, not patched here):** the committed `run_operational`
+  runs in `four_hour_proof_mode`, so a live operational pilot can only reach a
+  COMPLETED PASS if the market naturally yields a clean continuation surviving to
+  4h — which the operator must not manufacture. Whether an operational (non-proof)
+  pilot should treat "both tokens cleanly stop after 15m" as a valid COMPLETED
+  outcome is an E.11-owner design question for a future lane; no production code
+  was changed here.
+- **Cleanup nuance:** 10 unlinked `DISCOVERY_REFRESH` rows remained `PENDING` in
+  the disposable target after terminal closeout (inert; not run work).
+- **Efficiency blocker:** none in the runner; the run terminated in ~16 minutes
+  because no continuation formed.
 
 ## Readiness for V2-9.7F
 
-**NOT READY for V2-9.7F.** The final V2-9.7E two-token operational pilot has not
-been executed; it is blocked at preflight for a missing approved source database.
-V2-9.7F must not begin. V2-9.8, the operational memory-growth command, and
-retrieval/decision/financial capabilities remain locked and were not started.
+**NOT READY for V2-9.7F.** The live pilot executed cleanly and safely but did not
+satisfy the active pilot gate: the mandatory clean-memory evidence was
+unobtainable live (fixture-only context/safety/quote adapters), so no clean
+promotion or natural continuation occurred. V2-9.7F must not begin. V2-9.8, the
+operational memory-growth command, and retrieval/decision/financial capabilities
+remain locked and were not started.
+
+---
+
+# Historical section — prior E.15 preflight block (2026-07-22, before source provisioning)
+
+**Status at the time:** BLOCKED AT PREFLIGHT — NO EXTERNAL REQUEST MADE
+
+**Verdict at the time:** `V2_9_7E_15_BLOCKED_PREFLIGHT`
+
+This earlier attempt (from baseline `bdd7625…`, before the E.16 source
+provisioning) blocked at preflight because the committed runner requires an
+explicit non-authoritative source database and none had yet been provided or
+configured — only the target/backup/report paths were supplied, and the sole
+persistent database was the authoritative corpus, which may not be used or
+guessed. The single pilot authorization was preserved, no external request was
+made, and no target was created. E.16 then provisioned the isolated source and
+the full execution-path contract, enabling the live execution recorded above.
+
+Key points preserved from that attempt:
+
+- The runner's `PilotPaths.persistent_source_db` is required and validated as an
+  existing file; `--persistent-source-db` is `required=True`; no default or
+  configured non-authoritative source existed.
+- The only persistent database was `CANONICAL_PERSISTENT_DB`
+  (`…\MoneyPrinter\data\printer_v1.sqlite3`) — the authoritative corpus, forbidden
+  as source or target.
+- Per the Source database rule, the lane stopped before any external use with
+  `V2_9_7E_15_BLOCKED_PREFLIGHT`, reporting the exact missing source-path
+  requirement; production code was unchanged and the authorization stayed
+  unconsumed.
