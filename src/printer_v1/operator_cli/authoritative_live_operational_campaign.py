@@ -821,6 +821,38 @@ def _holder_execution_fact(
     return {"eligible": False, "reason": reason, "source_name": source_name}
 
 
+def _mature_admission(
+    proofs: Any, *, evaluated: datetime, candidate_cap: int
+) -> tuple[tuple[Any, ...], tuple[tuple[Any, Any], ...]]:
+    """Deduplicate, classify 900s maturity, and admit up to ``candidate_cap`` DUE.
+
+    Maturity is applied to the whole deduplicated universe BEFORE the candidate
+    cap, so immature (newest, too-young) candidates never consume a cap slot and
+    can never displace a categorically mature candidate. Returns the admitted
+    mature candidates and the full ``(proof, decision)`` maturity decisions for
+    honest reporting.
+    """
+    materialized = tuple(proofs)
+    deduped = _finalized_holder_candidates(
+        materialized, limit=max(len(materialized), 1)
+    )
+    decisions = tuple(
+        (
+            proof,
+            evaluate_snapshot_maturity(
+                pump_block_time=proof.block_time, evaluated_at=evaluated
+            ),
+        )
+        for proof in deduped
+    )
+    mature = tuple(
+        proof
+        for proof, decision in decisions
+        if decision.state is SnapshotMaturityState.DUE
+    )[:candidate_cap]
+    return mature, decisions
+
+
 def _finalized_holder_candidates(proofs: Any, *, limit: int) -> tuple[Any, ...]:
     """Apply structural, zero-source finalized-proof gates before holder I/O."""
     eligible = []
@@ -1255,26 +1287,18 @@ class AuthoritativeLiveOperationalCampaignOwner:
             # BL-39-01 full-pilot admission: the candidate universe is the bounded
             # newest creates plus any due staged origins. The frozen 900s
             # categorical maturity boundary decides which candidates may reach
-            # expensive holder, market-readiness and lifecycle work. Immature
-            # (newest, too-young) creates are excluded from the active selection
-            # pool and remain staged for a later independent cycle.
-            universe = _finalized_holder_candidates(
+            # expensive holder, market-readiness and lifecycle work. Maturity is
+            # applied to the whole deduplicated universe BEFORE the candidate cap,
+            # so immature (newest, too-young) creates never consume a cap slot and
+            # can never crowd out categorically mature candidates. Immature
+            # candidates remain staged for a later independent cycle.
+            candidate_cap = min(
+                HOLDER_ELIGIBILITY_CANDIDATE_MAX, ledger.candidate_cap()
+            )
+            mature_candidates, maturity_decisions = _mature_admission(
                 tuple(acquisition.origin_proofs) + reloaded_due,
-                limit=min(HOLDER_ELIGIBILITY_CANDIDATE_MAX, ledger.candidate_cap()),
-            )
-            maturity_decisions = tuple(
-                (
-                    proof,
-                    evaluate_snapshot_maturity(
-                        pump_block_time=proof.block_time, evaluated_at=evaluated
-                    ),
-                )
-                for proof in universe
-            )
-            mature_candidates = tuple(
-                proof
-                for proof, decision in maturity_decisions
-                if decision.state is SnapshotMaturityState.DUE
+                evaluated=evaluated,
+                candidate_cap=candidate_cap,
             )
             admission = self._full_pilot_admission_diagnostics(
                 maturity_decisions=maturity_decisions,
@@ -1282,6 +1306,8 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 enrichment=enrichment,
                 reloaded_due=len(reloaded_due),
                 staged_now=staged_now,
+                admitted=len(mature_candidates),
+                candidate_cap=candidate_cap,
             )
 
             if len(mature_candidates) < 2:
@@ -1362,6 +1388,8 @@ class AuthoritativeLiveOperationalCampaignOwner:
         enrichment: Any,
         reloaded_due: int,
         staged_now: int,
+        admitted: int | None = None,
+        candidate_cap: int | None = None,
     ) -> dict[str, Any]:
         """Honest channel + observed-age diagnostics for the full-pilot report.
 
@@ -1406,6 +1434,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
             "threshold_seconds": SNAPSHOT_MATURITY_SECONDS,
             "candidate_universe": len(maturity_decisions),
             "mature_candidate_count": mature_count,
+            "mature_available": mature_count,
+            "mature_admitted": mature_count if admitted is None else admitted,
+            "candidate_cap": candidate_cap,
             "state_counts": state_counts,
             "candidates": tuple(records),
             "channel_counts": {
@@ -1417,8 +1448,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
             },
             "staged_this_cycle": staged_now,
             "note": (
-                "Active selection pool is the categorically due (>=900s) subset; "
-                "newest immature creates are staged, not selected."
+                "Maturity is applied before the candidate cap; the active pool is "
+                "the categorically due (>=900s) subset. Newest immature creates "
+                "are staged, not selected, and never consume a cap slot."
             ),
         }
 

@@ -215,6 +215,28 @@ full pilot. Created at V2-9.7E.39 (Full Pilot Attempt 1); updated at V2-9.7E.40
 - **Can recur:** the cold-start supply limitation recurs by construction until an
   operator decision resolves supply sufficiency.
 
+### BL-40-02 — maturity-before-cap ordering (E.40 pool integration, static)
+
+- **Found by:** static inspection while wiring the persistent pool into Attempt 3
+  (before spending the attempt).
+- **Category:** `CODE_DEFECT`.
+- **Root cause:** the E.40 admission applied the candidate cap (3) to the
+  identity-sorted union of live young creates + reloaded due origins *before*
+  classifying maturity. With more young creates than the cap, the young mints
+  (by base58 identity order) could displace the categorically due candidates, so
+  a pool with two due candidates could still block.
+- **Repair status:** `FIXED_IN_THIS_SPRINT`. Extracted `_mature_admission`,
+  which deduplicates, classifies 900s maturity over the whole universe, and then
+  admits up to the candidate cap from the DUE subset only — immature candidates
+  never consume a cap slot.
+- **Files changed:** `authoritative_live_operational_campaign.py`.
+- **Offline proof:**
+  `tests/test_v2_9_7e_40_full_pilot_admission.py::MaturityBeforeCapTests`
+  (five young + two due survive a cap of 3; >cap due is bounded) plus E.11
+  operational regression (43 with the pool suite).
+- **Can recur:** No — maturity precedes the cap and is unit-tested.
+- **Live proof after fix:** pending Attempt 3.
+
 ### BL-40-01 — pilot runner pre-lifecycle block defect (E.40 Attempt 1)
 
 - **Attempt/stage:** Attempt 1, post-`run_operational`, at `attach_run`.

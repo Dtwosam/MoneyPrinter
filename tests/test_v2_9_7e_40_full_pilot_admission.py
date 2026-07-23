@@ -22,7 +22,10 @@ from printer_v1.operator_cli.abstract_campaign_command import (
 )
 from printer_v1.operator_cli.authoritative_live_operational_campaign import (
     AuthoritativeLiveOperationalCampaignOwner,
+    _mature_admission,
 )
+from printer_v1.discovery.combined_executor import FixtureOriginProof
+from printer_v1.scheduler.snapshot_maturity import SnapshotMaturityState
 from printer_v1.sources.pumpfun_origin import load_due_staged_origins
 
 import test_v2_9_7e_8_origin_to_lifecycle_integration as e8
@@ -206,6 +209,54 @@ class FullPilotAdmissionProofTests(e8._IntegrationBase):
             self.assertEqual(len(all_due), 2)
         finally:
             connection.close()
+
+
+class MaturityBeforeCapTests(unittest.TestCase):
+    """Immature candidates must never displace mature ones under the cap."""
+
+    def setUp(self) -> None:
+        self.evaluated = datetime.fromisoformat(e8.NOW)
+
+    def _proof(self, mint: str, block_time: int) -> FixtureOriginProof:
+        return FixtureOriginProof(
+            mint=mint,
+            signature=f"sig-{mint}",
+            slot=1,
+            block_time=block_time,
+            bonding_curve=f"curve-{mint}",
+            associated_bonding_curve="ata",
+            creator_address="creator",
+            confirmed=True,
+        )
+
+    def test_due_candidates_survive_the_cap_despite_more_young(self) -> None:
+        # Five young mints whose identities sort BEFORE the two due mints, plus
+        # two due (mature) mints. A pre-maturity cap of 3 by identity would drop
+        # both due mints; maturity-before-cap must keep them.
+        young = [self._proof(f"aaa{i}pump", NOW_EPOCH - 60) for i in range(5)]
+        due = [
+            self._proof("zzz1pump", NOW_EPOCH - 1_000),
+            self._proof("zzz2pump", NOW_EPOCH - 1_000),
+        ]
+        mature, decisions = _mature_admission(
+            tuple(young) + tuple(due), evaluated=self.evaluated, candidate_cap=3
+        )
+        self.assertEqual(len(mature), 2)
+        self.assertEqual(
+            {p.mint for p in mature}, {"zzz1pump", "zzz2pump"}
+        )
+        # Every young candidate is classified IMMATURE and excluded.
+        immature = [
+            p for p, d in decisions if d.state is SnapshotMaturityState.IMMATURE
+        ]
+        self.assertEqual(len(immature), 5)
+
+    def test_more_due_than_cap_is_bounded(self) -> None:
+        due = [self._proof(f"ddd{i}pump", NOW_EPOCH - 1_000) for i in range(5)]
+        mature, _decisions = _mature_admission(
+            tuple(due), evaluated=self.evaluated, candidate_cap=3
+        )
+        self.assertEqual(len(mature), 3)
 
 
 class _BlockedFakeOwner:
