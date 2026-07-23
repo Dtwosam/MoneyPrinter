@@ -62,6 +62,24 @@ from printer_v1.sources import secondary_discovery as _sd
 
 CONTRACT_VERSION = "V2-9.7E.11"
 
+# V2-9.7E.33 canonical operational modes of the single committed runner. These
+# are the ONLY entry points; there is no parallel runner or disposable harness.
+#   ACTIVATION_ONLY    -> live origin + atomic two-or-none activation, then stop
+#                         (``run_readiness_only``; no snapshot bundles).
+#   SNAPSHOT_READINESS -> preflight, live origin, holder eligibility, exactly two
+#                         complete snapshot bundles or an honest blocker, report,
+#                         replay, cleanup, stop (``run_snapshot_readiness``). It
+#                         never reaches lifecycle windows, memory, retrieval,
+#                         decisions or financial paths.
+#   FULL_PILOT         -> the full operational natural lifecycle
+#                         (``run_operational``).
+ACTIVATION_ONLY = "ACTIVATION_ONLY"
+SNAPSHOT_READINESS = "SNAPSHOT_READINESS"
+FULL_PILOT = "FULL_PILOT"
+CANONICAL_OPERATIONAL_MODES = frozenset(
+    {ACTIVATION_ONLY, SNAPSHOT_READINESS, FULL_PILOT}
+)
+
 # Frozen E.11 per-call transport ceilings (readiness boundary).
 DEFAULT_CALL_TIMEOUT_SECONDS = 30.0
 DEFAULT_RESPONSE_BYTE_CEILING = 1_572_864  # 1.5 MiB
@@ -862,6 +880,54 @@ class ReadinessResult:
     replay_new_source_calls: int
 
 
+@dataclass(frozen=True)
+class SnapshotReadinessResult:
+    """Terminal record of one SNAPSHOT_READINESS boundary execution."""
+
+    status: str
+    preflight_status: str
+    complete_bundle_count: int
+    holder_eligible_count: int
+    snapshot_bundles: tuple[Mapping[str, Any], ...]
+    pump_accounting: Mapping[str, Any]
+    secondary_requested: int
+    secondary_failures: int
+    report: Mapping[str, Any]
+    report_sha256: str | None
+    replay_deterministic: bool
+    replay_new_source_calls: int
+    cancelled_dry_run_jobs: int
+    summary: Mapping[str, Any]
+    blocked_reasons: tuple[str, ...]
+
+
+def build_live_geckoterminal_base_adapter_factory(
+    *, timeout_seconds: float = DEFAULT_CALL_TIMEOUT_SECONDS
+) -> Any:
+    """Return the live exact-pool GeckoTerminal base adapter factory.
+
+    This is the committed live wiring the SNAPSHOT_READINESS mode uses for the
+    readiness base snapshot. Offline proofs inject a fixture factory of the same
+    shape instead; no live call is made in an offline lane.
+    """
+    from printer_v1.sources.geckoterminal import (
+        build_geckoterminal_adapter,
+        build_geckoterminal_pair_snapshot_transport,
+    )
+
+    def factory(
+        *, pair_address: str, token_mint: str, timeout_seconds: float = timeout_seconds
+    ) -> Any:
+        return build_geckoterminal_adapter(
+            enabled=True,
+            fixture_transport=build_geckoterminal_pair_snapshot_transport(
+                pair_address, token_mint, timeout_seconds=timeout_seconds
+            ),
+        )
+
+    return factory
+
+
 class AuthoritativeLiveOperationalCampaignOwner:
     """Sole internal live origin→lifecycle composition entry point (DI-only)."""
 
@@ -922,6 +988,152 @@ class AuthoritativeLiveOperationalCampaignOwner:
         )
         return fixtures, acquisition, enrichment
 
+    def _evaluate_holder_eligibility(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        command: AbstractCampaignCommand,
+        cycle_id: str,
+        bounded_candidates: Sequence[Any],
+        evaluated: datetime,
+        deadline: datetime,
+        ledger: Any,
+        timeout_seconds: float,
+        context_factories: Any,
+        request_pacer: Any,
+    ) -> tuple[dict[str, Mapping[str, Any]], Any]:
+        """Shared pre-activation holder-eligibility funnel.
+
+        The single committed implementation used by BOTH the full operational
+        campaign and the snapshot-readiness boundary. It admits candidates
+        against the operation ledger, replays matured evidence, collects the
+        governed GoPlus/RPC/Helius holder bundle through the existing owners, and
+        derives per-candidate eligibility. It stops after two eligible
+        candidates. No lifecycle, memory, retrieval or financial work occurs.
+        """
+        from printer_v1.operator_cli.one_command_15m_factory import (
+            _collect_preclose_context,
+        )
+        from printer_v1.operator_cli.holder_reliability_budget_control import (
+            complete_maturation,
+            persist_bundle_attempts,
+            persist_ledger,
+            reuse_holder_fact,
+            schedule_maturation,
+            SequentialRequestPacer,
+        )
+        holder_facts: dict[str, Mapping[str, Any]] = {}
+        pacer = request_pacer or SequentialRequestPacer()
+        persist_ledger(
+            connection, run_id=command.run_id, cycle_id=cycle_id,
+            ledger=ledger, now=evaluated.isoformat(),
+        )
+        for ordinal, proof in enumerate(bounded_candidates, start=1):
+            ledger.admit_candidate(now=evaluated)
+            maturation = schedule_maturation(
+                connection, run_id=command.run_id, cycle_id=cycle_id,
+                mint=proof.mint, observed_at=str(proof.block_time),
+                now=evaluated.isoformat(), deadline_at=deadline.isoformat(),
+            )
+            if maturation["work_state"] != "DUE":
+                holder_facts[proof.mint.lower()] = {
+                    "eligible": False,
+                    "reason": f"HOLDER_MATURATION_{maturation['work_state']}",
+                    "source_name": None,
+                }
+                continue
+            try:
+                reused_fact = reuse_holder_fact(
+                    connection, run_id=command.run_id, cycle_id=cycle_id,
+                    mint=proof.mint, evaluated_at=evaluated.isoformat(),
+                )
+                if reused_fact is not None:
+                    holder_facts[proof.mint.lower()] = reused_fact
+                    ledger = replace(
+                        ledger,
+                        zero_transport_operations=ledger.zero_transport_operations + 1,
+                    )
+                    persist_ledger(
+                        connection, run_id=command.run_id, cycle_id=cycle_id,
+                        ledger=ledger, now=evaluated.isoformat(),
+                    )
+                    complete_maturation(
+                        connection, work_id=str(maturation["work_id"]),
+                        cause="EVIDENCE_REUSED", now=evaluated.isoformat(),
+                    )
+                    if sum(bool(fact.get("eligible")) for fact in holder_facts.values()) == 2:
+                        break
+                    continue
+                bundle = _collect_preclose_context(
+                    connection,
+                    {
+                        "run_id": command.run_id,
+                        "step_key": f"holder_eligibility_{ordinal}",
+                        "token_mint": proof.mint,
+                        "pair_address": proof.bonding_curve,
+                    },
+                    timeout_seconds=timeout_seconds,
+                    adapter_factories=(
+                        dict(context_factories)
+                        if isinstance(context_factories, Mapping) else None
+                    ),
+                    include=frozenset({"safety"}),
+                    request_pacer=pacer,
+                )
+                holder_facts[proof.mint.lower()] = (
+                    _holder_eligibility_from_bundle(
+                        bundle, token_mint=proof.mint
+                    )
+                )
+                governed_used, transports_used = persist_bundle_attempts(
+                    connection, run_id=command.run_id, cycle_id=cycle_id,
+                    mint=proof.mint, executions=bundle.get("executions", {}),
+                    created_at=evaluated.isoformat(),
+                )
+                ledger = replace(
+                    ledger,
+                    governed_requests=ledger.governed_requests + governed_used,
+                    underlying_transport_operations=(
+                        ledger.underlying_transport_operations + transports_used
+                    ),
+                )
+                persist_ledger(
+                    connection, run_id=command.run_id, cycle_id=cycle_id,
+                    ledger=ledger, now=evaluated.isoformat(),
+                )
+                complete_maturation(
+                    connection, work_id=str(maturation["work_id"]),
+                    cause="EVIDENCE_EVALUATED", now=evaluated.isoformat(),
+                )
+                if sum(bool(fact.get("eligible")) for fact in holder_facts.values()) == 2:
+                    break
+            except Exception as exc:
+                complete_maturation(
+                    connection, work_id=str(maturation["work_id"]),
+                    cause=f"EVIDENCE_COLLECTION_FAILED:{type(exc).__name__}",
+                    now=evaluated.isoformat(),
+                )
+                holder_facts[proof.mint.lower()] = {
+                    "eligible": False,
+                    "reason": f"HOLDER_EVIDENCE_COLLECTION_FAILED:{type(exc).__name__}",
+                    "source_name": None,
+                }
+        return holder_facts, ledger
+
+    def run(self, *, mode: str, **kwargs: Any) -> Any:
+        """Single dispatch entry point for the three canonical operational modes.
+
+        There is exactly one committed runner; ``mode`` selects the bounded
+        behaviour. No parallel runner or temporary harness exists.
+        """
+        if mode == FULL_PILOT:
+            return self.run_operational(**kwargs)
+        if mode == ACTIVATION_ONLY:
+            return self.run_readiness_only(**kwargs)
+        if mode == SNAPSHOT_READINESS:
+            return self.run_snapshot_readiness(**kwargs)
+        raise LiveOperationalError("UNKNOWN_OPERATIONAL_MODE", str(mode))
+
     def run_operational(
         self,
         *,
@@ -978,12 +1190,6 @@ class AuthoritativeLiveOperationalCampaignOwner:
         )
         from printer_v1.operator_cli.holder_reliability_budget_control import (
             build_ledger,
-            complete_maturation,
-            persist_bundle_attempts,
-            persist_ledger,
-            reuse_holder_fact,
-            schedule_maturation,
-            SequentialRequestPacer,
         )
         evaluated = datetime.fromisoformat(evaluated_at.replace("Z", "+00:00"))
         deadline = evaluated + timedelta(seconds=command.ceilings.duration_seconds)
@@ -996,110 +1202,22 @@ class AuthoritativeLiveOperationalCampaignOwner:
             acquisition.origin_proofs,
             limit=min(HOLDER_ELIGIBILITY_CANDIDATE_MAX, ledger.candidate_cap()),
         )
-        holder_facts: dict[str, Mapping[str, Any]] = {}
         connection = sqlite3.connect(Path(command.db_path))
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         try:
-            from printer_v1.operator_cli.one_command_15m_factory import (
-                _collect_preclose_context,
+            holder_facts, ledger = self._evaluate_holder_eligibility(
+                connection,
+                command=command,
+                cycle_id=cycle_id,
+                bounded_candidates=bounded_candidates,
+                evaluated=evaluated,
+                deadline=deadline,
+                ledger=ledger,
+                timeout_seconds=timeout_seconds,
+                context_factories=lk.get("context_adapter_factories"),
+                request_pacer=lk.pop("holder_request_pacer", None),
             )
-            context_factories = lk.get("context_adapter_factories")
-            request_pacer = lk.pop("holder_request_pacer", None) or SequentialRequestPacer()
-            persist_ledger(
-                connection, run_id=command.run_id, cycle_id=cycle_id,
-                ledger=ledger, now=evaluated.isoformat(),
-            )
-            for ordinal, proof in enumerate(bounded_candidates, start=1):
-                ledger.admit_candidate(now=evaluated)
-                maturation = schedule_maturation(
-                    connection, run_id=command.run_id, cycle_id=cycle_id,
-                    mint=proof.mint, observed_at=str(proof.block_time),
-                    now=evaluated.isoformat(), deadline_at=deadline.isoformat(),
-                )
-                if maturation["work_state"] != "DUE":
-                    holder_facts[proof.mint.lower()] = {
-                        "eligible": False,
-                        "reason": f"HOLDER_MATURATION_{maturation['work_state']}",
-                        "source_name": None,
-                    }
-                    continue
-                try:
-                    reused_fact = reuse_holder_fact(
-                        connection, run_id=command.run_id, cycle_id=cycle_id,
-                        mint=proof.mint, evaluated_at=evaluated.isoformat(),
-                    )
-                    if reused_fact is not None:
-                        holder_facts[proof.mint.lower()] = reused_fact
-                        ledger = replace(
-                            ledger,
-                            zero_transport_operations=ledger.zero_transport_operations + 1,
-                        )
-                        persist_ledger(
-                            connection, run_id=command.run_id, cycle_id=cycle_id,
-                            ledger=ledger, now=evaluated.isoformat(),
-                        )
-                        complete_maturation(
-                            connection, work_id=str(maturation["work_id"]),
-                            cause="EVIDENCE_REUSED", now=evaluated.isoformat(),
-                        )
-                        if sum(bool(fact.get("eligible")) for fact in holder_facts.values()) == 2:
-                            break
-                        continue
-                    bundle = _collect_preclose_context(
-                        connection,
-                        {
-                            "run_id": command.run_id,
-                            "step_key": f"holder_eligibility_{ordinal}",
-                            "token_mint": proof.mint,
-                            "pair_address": proof.bonding_curve,
-                        },
-                        timeout_seconds=timeout_seconds,
-                        adapter_factories=(
-                            dict(context_factories)
-                            if isinstance(context_factories, Mapping) else None
-                        ),
-                        include=frozenset({"safety"}),
-                        request_pacer=request_pacer,
-                    )
-                    holder_facts[proof.mint.lower()] = (
-                        _holder_eligibility_from_bundle(
-                            bundle, token_mint=proof.mint
-                        )
-                    )
-                    governed_used, transports_used = persist_bundle_attempts(
-                        connection, run_id=command.run_id, cycle_id=cycle_id,
-                        mint=proof.mint, executions=bundle.get("executions", {}),
-                        created_at=evaluated.isoformat(),
-                    )
-                    ledger = replace(
-                        ledger,
-                        governed_requests=ledger.governed_requests + governed_used,
-                        underlying_transport_operations=(
-                            ledger.underlying_transport_operations + transports_used
-                        ),
-                    )
-                    persist_ledger(
-                        connection, run_id=command.run_id, cycle_id=cycle_id,
-                        ledger=ledger, now=evaluated.isoformat(),
-                    )
-                    complete_maturation(
-                        connection, work_id=str(maturation["work_id"]),
-                        cause="EVIDENCE_EVALUATED", now=evaluated.isoformat(),
-                    )
-                    if sum(bool(fact.get("eligible")) for fact in holder_facts.values()) == 2:
-                        break
-                except Exception as exc:
-                    complete_maturation(
-                        connection, work_id=str(maturation["work_id"]),
-                        cause=f"EVIDENCE_COLLECTION_FAILED:{type(exc).__name__}",
-                        now=evaluated.isoformat(),
-                    )
-                    holder_facts[proof.mint.lower()] = {
-                        "eligible": False,
-                        "reason": f"HOLDER_EVIDENCE_COLLECTION_FAILED:{type(exc).__name__}",
-                        "source_name": None,
-                    }
             connection.commit()
         finally:
             connection.close()
@@ -1314,4 +1432,371 @@ class AuthoritativeLiveOperationalCampaignOwner:
             cancelled_dry_run_jobs=cancelled,
             summary=summary,
             replay_new_source_calls=0,
+        )
+
+    def run_snapshot_readiness(
+        self,
+        *,
+        command: AbstractCampaignCommand,
+        pump_transport: PumpRpcTransport,
+        secondary_transport: SecondaryHttpTransport | None = None,
+        source_governor: OwnerPort,
+        central_scheduler: OwnerPort,
+        selection_seed: str,
+        cycle_id: str,
+        cycle_cutoff: str,
+        evaluated_at: str,
+        prior_cursor: FinalizedOriginCursor | None = None,
+        timeout_seconds: float = DEFAULT_CALL_TIMEOUT_SECONDS,
+        byte_ceiling: int = DEFAULT_RESPONSE_BYTE_CEILING,
+        tracker_api_key: str | None = None,
+        context_adapter_factories: Mapping[str, Any] | None = None,
+        holder_request_pacer: Any | None = None,
+        snapshot_request_pacer: Any | None = None,
+        geckoterminal_base_adapter_factory: Any | None = None,
+        geckoterminal_transports: Mapping[str, Any] | None = None,
+        secret_present: bool | None = None,
+        preflight_runtime_overrides: Mapping[str, Any] | None = None,
+        preflight_budget_overrides: Mapping[str, Any] | None = None,
+    ) -> SnapshotReadinessResult:
+        """Execute the SNAPSHOT_READINESS boundary and stop.
+
+        Flow: preflight -> live Pump acquisition -> holder eligibility -> exactly
+        two complete snapshot bundles or an honest blocker -> report, replay,
+        cleanup, stop. It NEVER reaches lifecycle windows, memory, retrieval,
+        decision or financial paths: the lifecycle driver is never invoked and no
+        memory window or run step is written.
+
+        The single non-renewable authorization is preserved on every fail-closed
+        path: preflight and single-use refusal both stop before any transport.
+        """
+        from printer_v1.operator_cli.bounded_readiness_report import (
+            build_bounded_readiness_report,
+            canonical_report_bytes,
+            canonical_report_sha256,
+        )
+        from printer_v1.operator_cli.holder_reliability_budget_control import (
+            SequentialRequestPacer,
+            build_ledger,
+        )
+        from printer_v1.operator_cli.readiness_source_contract_preflight import (
+            build_readiness_source_contract_preflight,
+        )
+        from printer_v1.operator_cli.snapshot_readiness_owner import (
+            execute_readiness_snapshot_bundle,
+        )
+
+        def _blocked(
+            status: str,
+            reasons: Sequence[str],
+            *,
+            preflight_status: str,
+            report: Mapping[str, Any] | None = None,
+            report_sha256: str | None = None,
+            replay_deterministic: bool = False,
+            replay_new_source_calls: int = 0,
+            complete: int = 0,
+            eligible: int = 0,
+            bundles: Sequence[Mapping[str, Any]] = (),
+            cancelled: int = 0,
+            pump_accounting: Mapping[str, Any] | None = None,
+            secondary_requested: int = 0,
+            secondary_failures: int = 0,
+            extra_summary: Mapping[str, Any] | None = None,
+        ) -> SnapshotReadinessResult:
+            summary = {
+                "contract_version": CONTRACT_VERSION,
+                "mode": SNAPSHOT_READINESS,
+                "cycle_id": cycle_id,
+                "preflight_status": preflight_status,
+                "complete_bundle_count": complete,
+                "holder_eligible_count": eligible,
+                "cancelled_dry_run_jobs": cancelled,
+                "lifecycle_started": False,
+                "memory_windows": 0,
+                "run_steps": 0,
+                "blocked_reasons": tuple(reasons),
+                **(dict(extra_summary) if extra_summary else {}),
+            }
+            return SnapshotReadinessResult(
+                status=status,
+                preflight_status=preflight_status,
+                complete_bundle_count=complete,
+                holder_eligible_count=eligible,
+                snapshot_bundles=tuple(bundles),
+                pump_accounting=dict(pump_accounting or {}),
+                secondary_requested=secondary_requested,
+                secondary_failures=secondary_failures,
+                report=dict(report or {}),
+                report_sha256=report_sha256,
+                replay_deterministic=replay_deterministic,
+                replay_new_source_calls=replay_new_source_calls,
+                cancelled_dry_run_jobs=cancelled,
+                summary=summary,
+                blocked_reasons=tuple(reasons),
+            )
+
+        # 1. Consolidated offline preflight (zero transport). A blocked preflight
+        # (missing secret or contract/budget drift) stops BEFORE any live call and
+        # before the single authorization can be consumed.
+        preflight = build_readiness_source_contract_preflight(
+            secret_present=secret_present,
+            runtime_overrides=preflight_runtime_overrides,
+            budget_overrides=preflight_budget_overrides,
+        )
+        if preflight["status"] != "READY":
+            return _blocked(
+                "BLOCKED_PREFLIGHT",
+                [f"preflight:{issue}" for issue in preflight["issues"]],
+                preflight_status=preflight["status"],
+            )
+
+        # 2. Single-use refusal: a committed operation ledger for this identity is
+        # the authorization marker. A second execution against the same run/cycle
+        # is refused before any transport (no rerun, retry or restart).
+        marker_connection = sqlite3.connect(Path(command.db_path))
+        try:
+            already = marker_connection.execute(
+                "SELECT COUNT(*) FROM printer_holder_campaign_operation_ledgers "
+                "WHERE run_id=? AND cycle_id=?",
+                (command.run_id, cycle_id),
+            ).fetchone()[0]
+        finally:
+            marker_connection.close()
+        if int(already):
+            return _blocked(
+                "REFUSED_SECOND_EXECUTION",
+                ["snapshot_readiness_already_executed"],
+                preflight_status=preflight["status"],
+            )
+
+        # 3. Live Pump acquisition + bounded governed secondary enrichment. A
+        # source/transport fault fails closed here (raises) with no retry.
+        from printer_v1.operator_cli.durable_external_operation_log import (
+            DurablePumpRpcTransport,
+        )
+        durable_pump = DurablePumpRpcTransport(
+            pump_transport, db_path=command.db_path, run_id=command.run_id,
+            cycle_id=cycle_id,
+        )
+        _fixtures, acquisition, enrichment = self._build_fixtures(
+            pump_transport=durable_pump,
+            secondary_transport=secondary_transport,
+            source_governor=source_governor,
+            central_scheduler=central_scheduler,
+            cycle_id=cycle_id,
+            cycle_cutoff=cycle_cutoff,
+            selection_seed=selection_seed,
+            evaluated_at=evaluated_at,
+            prior_cursor=prior_cursor,
+            timeout_seconds=timeout_seconds,
+            byte_ceiling=byte_ceiling,
+            tracker_api_key=tracker_api_key,
+        )
+        pump_accounting = {
+            "governed_requests": dict(
+                acquisition.result.accounting.governed_requests
+            ),
+            "underlying_rpc": acquisition.result.accounting.underlying_rpc_operations,
+        }
+
+        # 4. Operation ledger + bounded holder candidates (candidate cap derived).
+        evaluated = datetime.fromisoformat(evaluated_at.replace("Z", "+00:00"))
+        deadline = evaluated + timedelta(seconds=command.ceilings.duration_seconds)
+        ledger = build_ledger(
+            pump_operations=acquisition.result.accounting.underlying_rpc_operations,
+            additional_governed_operations=enrichment.requested,
+            deadline_at=deadline,
+        )
+        bounded_candidates = _finalized_holder_candidates(
+            acquisition.origin_proofs,
+            limit=min(HOLDER_ELIGIBILITY_CANDIDATE_MAX, ledger.candidate_cap()),
+        )
+
+        base_factory = (
+            geckoterminal_base_adapter_factory
+            or build_live_geckoterminal_base_adapter_factory(
+                timeout_seconds=timeout_seconds
+            )
+        )
+        snapshot_pacer = snapshot_request_pacer or SequentialRequestPacer()
+
+        bundle_results: list[dict[str, Any]] = []
+        complete_bundles = 0
+        holder_eligible = 0
+        connection = sqlite3.connect(Path(command.db_path))
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        try:
+            # 5. Holder eligibility (shared committed funnel).
+            holder_facts, ledger = self._evaluate_holder_eligibility(
+                connection,
+                command=command,
+                cycle_id=cycle_id,
+                bounded_candidates=bounded_candidates,
+                evaluated=evaluated,
+                deadline=deadline,
+                ledger=ledger,
+                timeout_seconds=timeout_seconds,
+                context_factories=context_adapter_factories,
+                request_pacer=holder_request_pacer,
+            )
+            eligible_candidates = [
+                proof for proof in bounded_candidates
+                if bool(holder_facts.get(proof.mint.lower(), {}).get("eligible"))
+            ]
+            holder_eligible = len(eligible_candidates)
+
+            # 6. Exactly two complete snapshot bundles or an honest blocker. The
+            # bundle is attempted only for holder-eligible candidates; it stops
+            # after two complete bundles.
+            for ordinal, proof in enumerate(eligible_candidates, start=1):
+                if complete_bundles >= 2:
+                    break
+                step = {
+                    "run_id": command.run_id,
+                    "step_key": f"readiness_snapshot_{ordinal}",
+                    "token_mint": proof.mint,
+                    "pair_address": proof.bonding_curve,
+                    "tracking_lane": "TRACK_FAST",
+                }
+                bundle = execute_readiness_snapshot_bundle(
+                    connection,
+                    step,
+                    geckoterminal_base_adapter_factory=base_factory,
+                    timeout_seconds=timeout_seconds,
+                    geckoterminal_transports=geckoterminal_transports,
+                    evaluated_at=evaluated,
+                    request_pacer=snapshot_pacer,
+                )
+                redacted = {
+                    "ok": bool(bundle.get("ok")),
+                    "operations_attempted": int(bundle.get("operations_attempted") or 0),
+                    "blocked_reasons": tuple(bundle.get("blocked_reasons") or ()),
+                    "snapshot_id": bundle.get("snapshot_id"),
+                }
+                bundle_results.append(redacted)
+                if redacted["ok"]:
+                    complete_bundles += 1
+            connection.commit()
+
+            # 7. Disposable cleanup: terminally cancel any first-15m handoff jobs
+            # that any owner may have staged. In snapshot-readiness none should
+            # exist because selection/activation is never run.
+            cancelled = 0
+            for (job_id,) in connection.execute(
+                "SELECT id FROM printer_scheduler_jobs "
+                "WHERE job_name LIKE 'window15m:%' AND status IN "
+                "('PENDING','RUNNING','COOLDOWN')"
+            ).fetchall():
+                cancel_job(connection, job_id=int(job_id))
+                cancelled += 1
+            connection.commit()
+
+            active_lifecycle_jobs = int(connection.execute(
+                "SELECT COUNT(*) FROM printer_scheduler_jobs "
+                "WHERE job_name LIKE 'window15m:%' AND status IN "
+                "('PENDING','RUNNING','COOLDOWN')"
+            ).fetchone()[0])
+            memory_windows = int(connection.execute(
+                "SELECT COUNT(*) FROM printer_memory_windows"
+            ).fetchone()[0])
+            run_steps = int(connection.execute(
+                "SELECT COUNT(*) FROM printer_memory_factory_run_steps"
+            ).fetchone()[0])
+        finally:
+            connection.close()
+
+        # 8. Deterministic DB-only report + zero-source replay (report built
+        # twice; canonical bytes must be identical and consume no source call).
+        report_a = build_bounded_readiness_report(
+            command.db_path, run_id=command.run_id, cycle_id=cycle_id
+        )
+        report_b = build_bounded_readiness_report(
+            command.db_path, run_id=command.run_id, cycle_id=cycle_id
+        )
+        replay_deterministic = (
+            canonical_report_bytes(report_a) == canonical_report_bytes(report_b)
+        )
+        replay_new_source_calls = int(report_a.get("source_requests_made_by_replay", 0))
+        report_sha256 = canonical_report_sha256(report_a)
+        forbidden = report_a.get("forbidden_capability_counts", {})
+        readiness_snapshots = report_a.get("readiness_snapshots", [])
+
+        # 9. Fixed readiness gates — every one must hold to become READY.
+        gates = {
+            "preflight_ready": preflight["status"] == "READY",
+            "exactly_two_complete_bundles": complete_bundles == 2,
+            "two_holder_eligible_candidates": holder_eligible >= 2,
+            "two_persisted_readiness_snapshots": len(readiness_snapshots) == 2,
+            "no_lifecycle_windows": active_lifecycle_jobs == 0,
+            "no_memory_windows": memory_windows == 0,
+            "no_run_steps": run_steps == 0,
+            "replay_deterministic": replay_deterministic,
+            "replay_zero_source_calls": replay_new_source_calls == 0,
+            "integrity_ok": report_a.get("integrity") == "ok",
+            "zero_foreign_key_violations": int(report_a.get("foreign_key_violations", 1)) == 0,
+            "zero_forbidden_capability_rows": all(
+                int(value) == 0 for value in forbidden.values()
+            ),
+        }
+        blocked_reasons = [name for name, ok in gates.items() if not ok]
+
+        if not blocked_reasons:
+            status = "READY"
+        elif holder_eligible < 2:
+            status = "BLOCKED_INSUFFICIENT_ELIGIBLE_POOL"
+        elif complete_bundles < 2:
+            status = "BLOCKED_SNAPSHOT_READINESS"
+        else:
+            status = "NOT_READY"
+
+        summary = {
+            "contract_version": CONTRACT_VERSION,
+            "mode": SNAPSHOT_READINESS,
+            "cycle_id": cycle_id,
+            "preflight_status": preflight["status"],
+            "origins_confirmed": len(acquisition.origin_proofs),
+            "pump_underlying_rpc": acquisition.result.accounting.underlying_rpc_operations,
+            "secondary_requested": enrichment.requested,
+            "secondary_failures": enrichment.failures,
+            "holder_eligible_count": holder_eligible,
+            "complete_bundle_count": complete_bundles,
+            "persisted_readiness_snapshots": len(readiness_snapshots),
+            "cancelled_dry_run_jobs": cancelled,
+            "active_lifecycle_jobs_after_cleanup": active_lifecycle_jobs,
+            "memory_windows": memory_windows,
+            "run_steps": run_steps,
+            "lifecycle_started": False,
+            "report_sha256": report_sha256,
+            "replay_deterministic": replay_deterministic,
+            "replay_new_source_calls": replay_new_source_calls,
+            "budget": {
+                "operation_ceiling": ledger.operation_ceiling,
+                "candidate_cap": bounded_candidates and ledger.candidate_cap(),
+                "reserved_snapshot_operations": ledger.reserved_snapshot_operations,
+                "reserved_snapshot_completion_operations": (
+                    ledger.reserved_snapshot_completion_operations
+                ),
+                "charged_operations": ledger.charged_operations,
+            },
+            "readiness_gates": gates,
+            "blocked_reasons": tuple(blocked_reasons),
+        }
+        return SnapshotReadinessResult(
+            status=status,
+            preflight_status=preflight["status"],
+            complete_bundle_count=complete_bundles,
+            holder_eligible_count=holder_eligible,
+            snapshot_bundles=tuple(bundle_results),
+            pump_accounting=pump_accounting,
+            secondary_requested=enrichment.requested,
+            secondary_failures=enrichment.failures,
+            report=report_a,
+            report_sha256=report_sha256,
+            replay_deterministic=replay_deterministic,
+            replay_new_source_calls=replay_new_source_calls,
+            cancelled_dry_run_jobs=cancelled,
+            summary=summary,
+            blocked_reasons=tuple(blocked_reasons),
         )
