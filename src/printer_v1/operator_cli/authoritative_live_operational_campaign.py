@@ -39,10 +39,17 @@ from printer_v1.operator_cli.abstract_campaign_command import (
     SOURCE_GOVERNOR_OWNER,
 )
 from printer_v1.operator_cli.origin_lifecycle_campaign import (
+    ActivationResult,
+    OriginLifecycleResult,
     OriginToLifecycleCampaignDriver,
     materialize_origin_activated_batch,
 )
 from printer_v1.scheduler.scheduler import ACTIVE_STATUS_VALUES, cancel_job
+from printer_v1.scheduler.snapshot_maturity import (
+    SNAPSHOT_MATURITY_SECONDS,
+    SnapshotMaturityState,
+    evaluate_snapshot_maturity,
+)
 from printer_v1.scheduler.support_only_5m_capture import SupportTriggerFamily
 from printer_v1.sources.pumpfun_origin import (
     CREATE_INDEX_PAGE_SIZE,
@@ -52,9 +59,12 @@ from printer_v1.sources.pumpfun_origin import (
     AcquisitionCycleResult,
     FinalizedOriginCursor,
     FixtureOperation,
+    OriginRegistryError,
     PumpContractError,
     SignatureReference,
     _Accounting,
+    load_due_staged_origins,
+    record_confirmed_origin,
     run_acquisition_from_source,
 )
 from printer_v1.sources import secondary_discovery as _sd
@@ -1190,27 +1200,126 @@ class AuthoritativeLiveOperationalCampaignOwner:
         )
         from printer_v1.operator_cli.holder_reliability_budget_control import (
             build_ledger,
+            persist_ledger,
         )
         evaluated = datetime.fromisoformat(evaluated_at.replace("Z", "+00:00"))
         deadline = evaluated + timedelta(seconds=command.ceilings.duration_seconds)
+        evaluated_epoch = int(evaluated.timestamp())
         ledger = build_ledger(
             pump_operations=acquisition.result.accounting.underlying_rpc_operations,
             additional_governed_operations=enrichment.requested,
             deadline_at=deadline,
         )
-        bounded_candidates = _finalized_holder_candidates(
-            acquisition.origin_proofs,
-            limit=min(HOLDER_ELIGIBILITY_CANDIDATE_MAX, ledger.candidate_cap()),
-        )
         connection = sqlite3.connect(Path(command.db_path))
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         try:
+            # BL-39-03 candidate supply: stage every confirmed origin from this
+            # cycle into the durable prospective-origin registry, then reload any
+            # previously staged origin that is now categorically due. This reuses
+            # the existing registry owner; it adds no source call, no rank/order,
+            # and no provider. On a fresh isolated DB the prior registry is empty,
+            # so the universe is the current bounded creates only.
+            staged_now = 0
+            for observation in acquisition.result.observations:
+                try:
+                    if record_confirmed_origin(
+                        connection, observation, now=evaluated.isoformat()
+                    ):
+                        staged_now += 1
+                except OriginRegistryError:
+                    # A conflicting confirmed origin never blocks the campaign;
+                    # the candidate is simply not restaged.
+                    pass
+            current_mints = {proof.mint for proof in acquisition.origin_proofs}
+            reloaded_due = tuple(
+                FixtureOriginProof(
+                    mint=str(row["mint"]),
+                    signature=str(row["signature"]),
+                    slot=int(row["slot"]),
+                    block_time=int(row["block_time"]),
+                    bonding_curve=str(row["bonding_curve"]),
+                    associated_bonding_curve=str(row["associated_bonding_curve"]),
+                    creator_address=str(row["creator_address"]),
+                    confirmed=True,
+                )
+                for row in load_due_staged_origins(
+                    connection,
+                    evaluated_epoch=evaluated_epoch,
+                    maturity_seconds=SNAPSHOT_MATURITY_SECONDS,
+                    exclude_mints=current_mints,
+                )
+            )
+            connection.commit()
+
+            # BL-39-01 full-pilot admission: the candidate universe is the bounded
+            # newest creates plus any due staged origins. The frozen 900s
+            # categorical maturity boundary decides which candidates may reach
+            # expensive holder, market-readiness and lifecycle work. Immature
+            # (newest, too-young) creates are excluded from the active selection
+            # pool and remain staged for a later independent cycle.
+            universe = _finalized_holder_candidates(
+                tuple(acquisition.origin_proofs) + reloaded_due,
+                limit=min(HOLDER_ELIGIBILITY_CANDIDATE_MAX, ledger.candidate_cap()),
+            )
+            maturity_decisions = tuple(
+                (
+                    proof,
+                    evaluate_snapshot_maturity(
+                        pump_block_time=proof.block_time, evaluated_at=evaluated
+                    ),
+                )
+                for proof in universe
+            )
+            mature_candidates = tuple(
+                proof
+                for proof, decision in maturity_decisions
+                if decision.state is SnapshotMaturityState.DUE
+            )
+            admission = self._full_pilot_admission_diagnostics(
+                maturity_decisions=maturity_decisions,
+                acquisition=acquisition,
+                enrichment=enrichment,
+                reloaded_due=len(reloaded_due),
+                staged_now=staged_now,
+            )
+
+            if len(mature_candidates) < 2:
+                # Fewer than two categorically mature candidates satisfy the
+                # full-pilot admission contract. No holder, snapshot, lifecycle or
+                # memory work occurs. Persist the ledger and close honestly before
+                # any activation.
+                persist_ledger(
+                    connection, run_id=command.run_id, cycle_id=cycle_id,
+                    ledger=ledger, now=evaluated.isoformat(),
+                )
+                connection.commit()
+                return OriginLifecycleResult(
+                    activation=ActivationResult(
+                        terminal_status="BLOCKED_INSUFFICIENT_MATURE_POOL",
+                        first_terminal_cause="BLOCKED_INSUFFICIENT_MATURE_POOL",
+                        activated_slots=(),
+                        selection_batch_id=None,
+                    ),
+                    lifecycle={
+                        "run_id": command.run_id,
+                        "run_status": "NOT_STARTED",
+                        "stop_reason": "BLOCKED_INSUFFICIENT_MATURE_POOL",
+                        "first_terminal_cause": "BLOCKED_INSUFFICIENT_MATURE_POOL",
+                        "lifecycle_started": False,
+                        "forbidden_deltas": {},
+                        "pending_or_running_run_steps": 0,
+                        "running_jobs_after_stop": 0,
+                        "full_pilot_admission": admission,
+                    },
+                    lifecycle_started=False,
+                )
+
             holder_facts, ledger = self._evaluate_holder_eligibility(
                 connection,
                 command=command,
                 cycle_id=cycle_id,
-                bounded_candidates=bounded_candidates,
+                bounded_candidates=mature_candidates,
                 evaluated=evaluated,
                 deadline=deadline,
                 ledger=ledger,
@@ -1223,10 +1332,10 @@ class AuthoritativeLiveOperationalCampaignOwner:
             connection.close()
         fixtures = replace(
             fixtures,
-            direct_observations=bounded_candidates,
+            direct_observations=mature_candidates,
             holder_evidence_eligibility=holder_facts,
         )
-        return self._driver.run(
+        result = self._driver.run(
             command=command,
             fixtures=fixtures,
             backup_path=backup_path,
@@ -1239,6 +1348,79 @@ class AuthoritativeLiveOperationalCampaignOwner:
             four_hour_proof_mode=True,
             lifecycle_kwargs=lk,
         )
+        try:
+            result.lifecycle.setdefault("full_pilot_admission", admission)
+        except (AttributeError, TypeError):  # pragma: no cover - defensive
+            pass
+        return result
+
+    @staticmethod
+    def _full_pilot_admission_diagnostics(
+        *,
+        maturity_decisions: Sequence[tuple[Any, Any]],
+        acquisition: Any,
+        enrichment: Any,
+        reloaded_due: int,
+        staged_now: int,
+    ) -> dict[str, Any]:
+        """Honest channel + observed-age diagnostics for the full-pilot report.
+
+        Age is the finalized Pump create age, never a pair age. Pair age is not
+        fetched at admission, so it is reported as an explicit unknown.
+        """
+        records: list[dict[str, Any]] = []
+        state_counts: dict[str, int] = {
+            state.value: 0 for state in SnapshotMaturityState
+        }
+        for proof, decision in maturity_decisions:
+            state_counts[decision.state.value] += 1
+            records.append(
+                {
+                    "mint_identity": proof.mint.lower(),
+                    "state": decision.state.value,
+                    "origin_block_time_epoch": int(proof.block_time),
+                    "observed_origin_age_seconds": (
+                        int(decision.evaluated_at_utc.timestamp())
+                        - int(proof.block_time)
+                    ),
+                    "origin_block_time_utc": (
+                        decision.origin_block_time_utc.isoformat()
+                        if decision.origin_block_time_utc is not None
+                        else None
+                    ),
+                    "due_at_utc": (
+                        decision.due_at_utc.isoformat()
+                        if decision.due_at_utc is not None
+                        else None
+                    ),
+                    "evaluated_at_utc": decision.evaluated_at_utc.isoformat(),
+                    "pair_age_context": "UNKNOWN_PAIR_AGE_NOT_FETCHED_AT_ADMISSION",
+                }
+            )
+        mature_count = sum(
+            1
+            for _proof, decision in maturity_decisions
+            if decision.state is SnapshotMaturityState.DUE
+        )
+        return {
+            "threshold_seconds": SNAPSHOT_MATURITY_SECONDS,
+            "candidate_universe": len(maturity_decisions),
+            "mature_candidate_count": mature_count,
+            "state_counts": state_counts,
+            "candidates": tuple(records),
+            "channel_counts": {
+                "LATEST_PUMPFUN": len(acquisition.origin_proofs),
+                "STAGED_DUE_REGISTRY": reloaded_due,
+                "GECKO_TRENDING_ENRICH": len(enrichment.gecko_ops),
+                "TRACKER_ENRICH": len(enrichment.tracker_ops),
+                "DEXSCREENER_ENRICH": len(enrichment.dexscreener_ops),
+            },
+            "staged_this_cycle": staged_now,
+            "note": (
+                "Active selection pool is the categorically due (>=900s) subset; "
+                "newest immature creates are staged, not selected."
+            ),
+        }
 
     def run_readiness_only(
         self,

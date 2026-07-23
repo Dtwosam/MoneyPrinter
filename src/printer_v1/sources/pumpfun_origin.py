@@ -815,6 +815,54 @@ def lookup_confirmed_origin(connection: Any, mint_identity: str) -> Mapping[str,
     return MappingProxyType(dict(row))
 
 
+def load_due_staged_origins(
+    connection: Any,
+    *,
+    evaluated_epoch: int,
+    maturity_seconds: int,
+    exclude_mints: Iterable[str] = (),
+) -> list[Mapping[str, Any]]:
+    """Zero-RPC reload of confirmed origins that are now categorically due.
+
+    Reuses the durable prospective-origin registry as a bounded staged candidate
+    pool. A mint confirmed in an earlier cycle becomes selectable in a later
+    independent cycle once ``evaluated_epoch >= block_time + maturity_seconds``.
+    It performs no historical rediscovery, no source call, and no rank/order use;
+    results are returned in canonical ``(block_time, mint_identity)`` order.
+    """
+    excluded = {str(mint) for mint in exclude_mints}
+    rows = connection.execute(
+        """
+        SELECT mint_identity, transaction_signature, slot, block_time,
+               bonding_curve, associated_bonding_curve, creator_address
+        FROM printer_pumpfun_finalized_origin_registry
+        WHERE origin_state = 'PUMPFUN_ORIGIN_CONFIRMED'
+        ORDER BY block_time, mint_identity
+        """
+    ).fetchall()
+    due: list[Mapping[str, Any]] = []
+    for row in rows:
+        mint = str(row["mint_identity"])
+        if mint in excluded:
+            continue
+        block_time = int(row["block_time"])
+        if evaluated_epoch >= block_time + int(maturity_seconds):
+            due.append(
+                MappingProxyType(
+                    {
+                        "mint": mint,
+                        "signature": str(row["transaction_signature"]),
+                        "slot": int(row["slot"]),
+                        "block_time": block_time,
+                        "bonding_curve": row["bonding_curve"],
+                        "associated_bonding_curve": row["associated_bonding_curve"],
+                        "creator_address": row["creator_address"],
+                    }
+                )
+            )
+    return due
+
+
 def load_origin_cursor(
     connection: Any, index_address: str = PUMP_CREATE_INDEX_ADDRESS
 ) -> FinalizedOriginCursor:
