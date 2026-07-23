@@ -19,6 +19,7 @@ import hashlib
 import json
 import sqlite3
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
 from printer_v1.contracts.enums import DataQualityLabel, SourceStatus
@@ -138,6 +139,43 @@ DEXSCREENER_SOURCE = "dexscreener"
 DEXSCREENER_WORK_TYPE = "DISCOVERY_DEXSCREENER_ACTIVE"
 DIRECT_WORK_TYPE = "DISCOVERY_PUMPFUN_LATEST"
 SEED_DOMAIN = "PrinterV1|combined-pumpfun-v1|"
+
+# V2-9.7E.41 graduation-only tracking law.
+#
+# The single selectable lifecycle state. Every other intake lifecycle state is
+# discovery-only and permanently ineligible for active selection.
+GRADUATED_LIFECYCLE = "PUMPSWAP_GRADUATED_CONFIRMED"
+PUMPSWAP_PROGRAM_ID = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
+PUMPSWAP_VENUE = "pumpswap"
+PUMPSWAP_MARKET_PREFIX = f"solana-mainnet:{PUMPSWAP_VENUE}:"
+
+# Channel -> distribution category. `LATEST_GRADUATED` is the newly-graduated
+# latest channel; every other category is "non-latest". Categories are provenance
+# labels only and never a comparative rank, score or popularity signal.
+_LATEST_CHANNELS = frozenset({"LATEST_PUMPFUN", "LATEST_GRADUATED"})
+_CHANNEL_CATEGORY = MappingProxyType(
+    {
+        "LATEST_PUMPFUN": "LATEST_GRADUATED",
+        "LATEST_GRADUATED": "LATEST_GRADUATED",
+        "ACTIVE_PUMPFUN": "ACTIVE",
+        "TRENDING_PUMPFUN": "TRENDING",
+        "TOP_PUMPFUN": "TOP",
+        "PERSISTED_ACTIVE": "PERSISTED_ACTIVE",
+        "REVIVAL_PUMPFUN": "REVIVAL",
+        "DUMP_PUMPFUN": "DUMP",
+        "CONSOLIDATION_PUMPFUN": "CONSOLIDATION",
+        "DECAY_PUMPFUN": "DECAY",
+    }
+)
+
+
+def _candidate_categories(channels: "set[str]") -> set[str]:
+    """Distribution categories a candidate belongs to (identity-deduped set)."""
+    return {_CHANNEL_CATEGORY.get(channel, "TOP") for channel in channels}
+
+
+def _non_latest_categories(channels: "set[str]") -> set[str]:
+    return {cat for cat in _candidate_categories(channels) if cat != "LATEST_GRADUATED"}
 
 
 class CombinedDiscoveryError(RuntimeError):
@@ -1514,18 +1552,22 @@ class CombinedPumpfunCampaignExecutor:
             if candidate.mint in fixtures.pumpswap_proofs
         ]
         claimed.sort(key=lambda item: _token_identity(item.mint))
-        ranked_ps = sorted(
-            claimed,
-            key=lambda item: (
-                _verification_key(cycle_seed, "pumpswap", _token_identity(item.mint)),
-                _token_identity(item.mint),
+        # V2-9.7E.41: graduation is a per-MINT fact (one migration claim per mint,
+        # confirmed unique-or-fail). Admit up to PUMPSWAP_ADMISSIONS unique mints
+        # ranked by seeded verification key, then confirm every candidate-market of
+        # an admitted mint. This prevents a mint appearing under several
+        # candidate-markets from starving the per-cycle confirmation ceiling.
+        claimed_mints = sorted(
+            {candidate.mint for candidate in claimed},
+            key=lambda mint: (
+                _verification_key(cycle_seed, "pumpswap", _token_identity(mint)),
+                _token_identity(mint),
             ),
         )
-        admitted_ps = ranked_ps[:PUMPSWAP_ADMISSIONS]
-        admitted_ps_ids = {item.merged_candidate_id for item in admitted_ps}
+        admitted_mints = set(claimed_mints[:PUMPSWAP_ADMISSIONS])
         for candidate in claimed:
             proof = fixtures.pumpswap_proofs[candidate.mint]
-            if candidate.merged_candidate_id not in admitted_ps_ids:
+            if candidate.mint not in admitted_mints:
                 admission_state = "NOT_ADMITTED_CEILING"
                 confirmation_state = "NOT_ATTEMPTED"
                 candidate.pumpswap_state = "NOT_ADMITTED_CEILING"
@@ -1533,12 +1575,28 @@ class CombinedPumpfunCampaignExecutor:
                 admission_state = "ADMITTED"
                 confirmation_state = "AMBIGUOUS"
                 candidate.pumpswap_state = "AMBIGUOUS"
-            elif proof.confirmed:
+            elif (
+                proof.confirmed
+                and proof.program_id == PUMPSWAP_PROGRAM_ID
+                and proof.mint == candidate.mint
+                and bool(proof.pool_address)
+            ):
+                # V2-9.7E.41 graduation-only law: an exact, unambiguous PumpSwap
+                # confirmation (owner == adopted program, base_mint == candidate
+                # mint, exactly one pool) graduates the candidate and rebinds its
+                # tracking market identity to the confirmed post-graduation
+                # PumpSwap pool. Migration/pool creation time is never stamped as
+                # token_created_at.
                 admission_state = "ADMITTED"
                 confirmation_state = "CONFIRMED"
                 candidate.pumpswap_state = "CONFIRMED"
-                candidate.lifecycle = "PUMPSWAP_GRADUATED_CONFIRMED"
+                candidate.lifecycle = GRADUATED_LIFECYCLE
+                candidate.market_identity = _market_identity(
+                    PUMPSWAP_VENUE, proof.pool_address
+                )
             else:
+                # Wrong owner, mint mismatch, missing pool, or an unconfirmed
+                # claim: the market identity fails closed (never graduated).
                 admission_state = "ADMITTED"
                 confirmation_state = "FAILED"
                 candidate.pumpswap_state = "FAILED"
@@ -1584,11 +1642,20 @@ class CombinedPumpfunCampaignExecutor:
                     if candidate.origin_state != "CONFIRMED":
                         failed = gate
                 elif gate == "LIFECYCLE_MARKET":
-                    if candidate.pumpswap_state == "AMBIGUOUS":
-                        failed = gate
+                    # V2-9.7E.41 graduation-only tracking law. A candidate is
+                    # selection-eligible ONLY when exact PumpSwap graduation is
+                    # confirmed and bound to a valid post-graduation PumpSwap
+                    # market identity. Every discovery-only lifecycle state
+                    # (PUMP_CREATED_UNPAIRED, PUMP_BONDING_CURVE_ACTIVE,
+                    # PUMP_MIGRATION_OBSERVED without confirmation,
+                    # PUMP_LIFECYCLE_UNKNOWN, DISCOVERED_UNPAIRED) fails closed and
+                    # remains discovery-only. Age is never a substitute.
                     if (
-                        "GRADUATED" in candidate.lifecycle
-                        and candidate.pumpswap_state != "CONFIRMED"
+                        candidate.lifecycle != GRADUATED_LIFECYCLE
+                        or candidate.pumpswap_state != "CONFIRMED"
+                        or not candidate.market_identity.startswith(
+                            PUMPSWAP_MARKET_PREFIX
+                        )
                     ):
                         failed = gate
                 elif gate == "FRESHNESS_CUTOFF":
@@ -1650,39 +1717,117 @@ class CombinedPumpfunCampaignExecutor:
     ) -> list[_Merged]:
         if vacancy_count <= 0:
             return []
-        lifecycle_rank = {
-            "PUMPSWAP_GRADUATED_CONFIRMED": 4,
-            "PUMP_BONDING_CURVE_ACTIVE": 3,
-            "PUMP_CREATED_UNPAIRED": 1,
-            "PUMP_LIFECYCLE_UNKNOWN": 2,
-        }
-        # Collapse to one current market per mint using lifecycle authority.
+        # V2-9.7E.41 graduation-only law: only graduation-confirmed candidates are
+        # ever selectable. Defense in depth — the LIFECYCLE_MARKET gate already
+        # excludes non-graduated candidates, but selection re-drops anything that
+        # is not GRADUATED with a valid PumpSwap market identity.
+        graduated = [
+            candidate
+            for candidate in eligible
+            if not candidate.conflicts
+            and candidate.lifecycle == GRADUATED_LIFECYCLE
+            and candidate.market_identity.startswith(PUMPSWAP_MARKET_PREFIX)
+        ]
+        # Collapse to one market per mint (identity dedup; a mint appearing in
+        # multiple channels is one candidate and gets no probability boost). The
+        # collapsed candidate keeps the union of its channel labels for category
+        # classification.
         by_mint: dict[str, list[_Merged]] = {}
-        for candidate in eligible:
-            if candidate.conflicts:
-                continue
+        for candidate in graduated:
             by_mint.setdefault(candidate.mint, []).append(candidate)
         collapsed: list[_Merged] = []
         for _mint, group in by_mint.items():
+            channels: set[str] = set()
+            for item in group:
+                channels |= item.channels
             group_sorted = sorted(
-                group,
-                key=lambda item: (
-                    -lifecycle_rank.get(item.lifecycle, 0),
-                    -len(item.channels),
-                    0 if "ACTIVE_PUMPFUN" in item.channels else 1,
-                    item.market_identity,
-                ),
+                group, key=lambda item: (-len(item.channels), item.market_identity)
             )
-            collapsed.append(group_sorted[0])
-        collapsed.sort(
+            chosen = group_sorted[0]
+            chosen.channels = channels
+            collapsed.append(chosen)
+        return self._categorical_two_slot(collapsed, cycle_seed, vacancy_count)
+
+    @staticmethod
+    def _uniform_pick(
+        candidates: Sequence[_Merged], cycle_seed: str, domain: str, count: int
+    ) -> list[_Merged]:
+        """Deterministic, seeded, uniform selection within one category."""
+        if count <= 0 or not candidates:
+            return []
+        ordered = sorted(
+            candidates,
             key=lambda item: (
                 _token_identity(item.mint),
                 item.market_identity,
                 item.lifecycle,
-            )
+            ),
         )
-        shuffled = _fisher_yates(collapsed, cycle_seed)
-        return shuffled[:vacancy_count]
+        shuffled = _fisher_yates(ordered, f"{cycle_seed}|{domain}")
+        return shuffled[:count]
+
+    def _categorical_two_slot(
+        self, candidates: Sequence[_Merged], cycle_seed: str, vacancy_count: int
+    ) -> list[_Merged]:
+        """Frozen smallest categorical distribution rule (no scoring/ranking).
+
+        When at least one latest-only graduated candidate and at least one
+        non-latest graduated candidate exist, the two selected slots must not both
+        be latest-only. Selection within each category is deterministic, seeded
+        and uniform; several non-latest categories are picked by durable
+        categorical round-robin, never by weight/rank/popularity.
+        """
+        if not candidates:
+            return []
+        latest_only = [
+            c for c in candidates if not _non_latest_categories(c.channels)
+        ]
+        non_latest = [c for c in candidates if _non_latest_categories(c.channels)]
+
+        if vacancy_count == 1:
+            return self._uniform_pick(candidates, cycle_seed, "single", 1)
+
+        # Two vacancies. Enforce the anti-concentration rule only when both a
+        # latest-only and a non-latest candidate are genuinely available.
+        if latest_only and non_latest and vacancy_count >= 2:
+            first = self._uniform_pick(
+                latest_only, cycle_seed, "LATEST_GRADUATED", 1
+            )
+            category = self._round_robin_non_latest(non_latest, cycle_seed)
+            members = [
+                c for c in non_latest if category in _non_latest_categories(c.channels)
+            ]
+            second = self._uniform_pick(members, cycle_seed, category, 1)
+            return first + second
+
+        # Only one partition is genuinely available: degrade honestly to a uniform
+        # pick within it (no fabricated category diversity).
+        pool = non_latest or latest_only
+        return self._uniform_pick(pool, cycle_seed, "SINGLE_CATEGORY", vacancy_count)
+
+    def _round_robin_non_latest(
+        self, non_latest: Sequence[_Merged], cycle_seed: str
+    ) -> str:
+        """Pick one non-latest category by durable seeded categorical round-robin.
+
+        Categories are ordered by a seeded key (not by count, rank or popularity)
+        and advanced by the persisted selection batch sequence, so repeated cycles
+        rotate fairly across the available non-latest categories.
+        """
+        categories: set[str] = set()
+        for candidate in non_latest:
+            categories |= _non_latest_categories(candidate.channels)
+        ordered = sorted(
+            categories,
+            key=lambda category: (
+                _sha256_text(f"{cycle_seed}|category|{category}"),
+                category,
+            ),
+        )
+        if not ordered:
+            return ""
+        cursor = max(int(getattr(self.fixtures, "batch_seq", 1)), 1) - 1
+        return ordered[cursor % len(ordered)]
 
     def _mark_discovery_batch_failed(
         self,

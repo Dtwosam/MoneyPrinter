@@ -1,26 +1,28 @@
-"""V2-9.7E.40 discovery-only persistent candidate pool.
+"""V2-9.7E.40/.41 persistent candidate pool (pending discovery + graduated).
 
 Reuses the durable ``printer_pumpfun_finalized_origin_registry`` (the adopted
-prospective-origin persistence owner) as a bounded, mixed-age staged candidate
-pool so the full pilot can reach two categorically mature candidates without a
-new provider, a paid API, a source-budget increase, a hidden retry, or a source
-substitution.
+prospective-origin persistence owner) as a bounded pending-discovery pool.
 
-Pool state is discovery/source state ONLY: confirmed Pump origin identity,
-origin time and provenance. It never holds, and this module never reads or
-writes, pilot authorizations, campaign/run/cycle identities, Scheduler jobs,
-lifecycle state, memory rows, retrieval/decision state, terminal causes, or
+V2-9.7E.41 graduation-only law separates the pool's two roles:
+
+* **Pending discovery population** — confirmed Pump origin identity, origin time
+  and provenance for bonding-curve / unpaired launches. It is retained as
+  discovery evidence and is **never** exported as a selectable pilot candidate.
+  Age is discovery context, not eligibility. The former "maturity" helpers are
+  renamed to reflect this (``pool_pending_discovery_state``,
+  ``seed_pending_discovery_from_pool``); the old ``pool_maturity_state`` /
+  ``seed_attempt_from_pool`` names are kept as deprecated aliases for historical
+  callers and carry no eligibility meaning.
+* **Graduated candidate population** — a candidate is exported to a fresh pilot
+  only when exact PumpSwap graduation and market identity are confirmed
+  (``export_graduated_pilot_candidates``). The bare origin registry stores only
+  pre-graduation origins, so this export is empty until a graduation-evidence
+  owner supplies confirmed graduations — the honest current state.
+
+Pool state is discovery/source state ONLY. It never holds, and this module never
+reads or writes, pilot authorizations, campaign/run/cycle identities, Scheduler
+jobs, lifecycle state, memory rows, retrieval/decision state, terminal causes, or
 report results.
-
-Flow (maturity waiting happens OUTSIDE FULL_PILOT, through real wall clock and
-Scheduler-owned categorical states):
-
-    bounded governed Pump acquisition cycles
-    -> durable confirmed-origin pool (this module, one DB, existing registry)
-    -> categorical 900s maturity (evaluate_snapshot_maturity)
-    -> mixed-age available pool
-    -> bounded immutable DUE candidate export
-    -> copy only DUE candidate facts into a fresh isolated FULL_PILOT attempt DB
 """
 
 from __future__ import annotations
@@ -84,16 +86,18 @@ def record_acquisition_into_pool(
     return staged
 
 
-def pool_maturity_state(
+def pool_pending_discovery_state(
     pool_db: str | Path,
     *,
     evaluated_at: str | datetime,
     maturity_seconds: int = SNAPSHOT_MATURITY_SECONDS,
 ) -> dict[str, Any]:
-    """Categorical maturity summary of the pool at ``evaluated_at`` (zero source).
+    """Pending-discovery age summary of the pool at ``evaluated_at`` (zero source).
 
-    ``due`` is the count of confirmed origins whose Scheduler-owned categorical
-    boundary (``block_time + maturity_seconds``) has been reached.
+    ``due`` is the count of confirmed origins whose age boundary
+    (``block_time + maturity_seconds``) has been reached. V2-9.7E.41: age is
+    discovery context only and is NEVER selection eligibility — these are
+    bonding-curve / unpaired origins, not graduated candidates.
     """
     epoch = _epoch(evaluated_at)
     connection = _connect(pool_db)
@@ -119,7 +123,7 @@ def pool_maturity_state(
     }
 
 
-def seed_attempt_from_pool(
+def seed_pending_discovery_from_pool(
     pool_db: str | Path,
     attempt_db: str | Path,
     *,
@@ -127,12 +131,15 @@ def seed_attempt_from_pool(
     maturity_seconds: int = SNAPSHOT_MATURITY_SECONDS,
     exclude_mints: Iterable[str] = (),
 ) -> dict[str, Any]:
-    """Copy only DUE candidate facts from the pool into a fresh attempt DB.
+    """Copy PENDING-DISCOVERY origin facts from the pool into a fresh attempt DB.
 
-    Builds a bounded immutable DUE candidate export from the pool and imports it
-    verbatim into the fresh isolated attempt's discovery registry. No campaign,
-    run, cycle, scheduler, lifecycle, memory or report state is read or written;
-    the persistent pool DB is never cloned as operational state.
+    V2-9.7E.41: this seeds pending discovery evidence only (confirmed Pump origin
+    identity, signature/block time and provenance). It is explicitly NOT a
+    selectable-candidate export — these origins are bonding-curve / unpaired and
+    the graduation-only law forbids selecting them. Use
+    ``export_graduated_pilot_candidates`` for selectable pilot candidates. No
+    campaign, run, cycle, scheduler, lifecycle, memory or report state is read or
+    written; the persistent pool DB is never cloned as operational state.
     """
     epoch = _epoch(evaluated_at)
     source = _connect(pool_db)
@@ -158,4 +165,58 @@ def seed_attempt_from_pool(
         "exported": len(export),
         "copied": copied,
         "mints": [str(row["mint_identity"]) for row in export],
+        "population": "PENDING_DISCOVERY_NOT_SELECTABLE",
     }
+
+
+def export_graduated_pilot_candidates(
+    pool_db: str | Path,
+    *,
+    exclude_market_identities: Iterable[str] = (),
+) -> dict[str, Any]:
+    """Export only graduation-confirmed candidates for a fresh pilot (fail-closed).
+
+    V2-9.7E.41 graduation-only law: a candidate is exported to a pilot only when
+    exact PumpSwap graduation and one valid post-graduation market identity are
+    confirmed, deduplicated by exact token and market identity. Bonding-curve /
+    unpaired origins are excluded. The bare
+    ``printer_pumpfun_finalized_origin_registry`` stores only pre-graduation
+    origins and carries no graduation/market-identity evidence, so this export is
+    empty until a graduation-evidence owner persists confirmed graduations. This
+    is the honest current state, not a defect.
+    """
+    excluded = {str(m) for m in exclude_market_identities}
+    connection = _connect(pool_db)
+    try:
+        # The registry holds only PUMPFUN_ORIGIN_CONFIRMED (pre-graduation)
+        # origins. There is no persisted graduation/market-identity column, so no
+        # origin qualifies as a graduated pilot candidate. Fail closed to empty.
+        total_origins = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM printer_pumpfun_finalized_origin_registry "
+                "WHERE origin_state='PUMPFUN_ORIGIN_CONFIRMED'"
+            ).fetchone()[0]
+        )
+    finally:
+        connection.close()
+    del excluded  # no graduated rows exist to deduplicate against yet
+    return {
+        "graduated_candidates": [],
+        "exported": 0,
+        "pending_discovery_origins": total_origins,
+        "reason": "NO_PERSISTED_GRADUATION_EVIDENCE",
+        "population": "GRADUATED_ONLY",
+    }
+
+
+# Deprecated V2-9.7E.40 aliases. The names imply age eligibility, which the
+# V2-9.7E.41 graduation-only law removed. They forward to the pending-discovery
+# helpers and carry no selection-eligibility meaning.
+def pool_maturity_state(pool_db: str | Path, **kwargs: Any) -> dict[str, Any]:
+    return pool_pending_discovery_state(pool_db, **kwargs)
+
+
+def seed_attempt_from_pool(
+    pool_db: str | Path, attempt_db: str | Path, **kwargs: Any
+) -> dict[str, Any]:
+    return seed_pending_discovery_from_pool(pool_db, attempt_db, **kwargs)

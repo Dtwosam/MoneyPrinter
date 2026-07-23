@@ -2,7 +2,14 @@
 
 Cumulative register of blockers encountered on the road to a bounded two-token
 full pilot. Created at V2-9.7E.39 (Full Pilot Attempt 1); updated at V2-9.7E.40
-(Continuous Full-Pilot Repair/Restart Session).
+(Continuous Full-Pilot Repair/Restart Session) and V2-9.7E.41 (Graduation-Only
+Selection and Mixed-Channel Discovery Repair).
+
+> **V2-9.7E.41 supersession note.** The E.40 900-second maturity-based
+> full-pilot admission policy (BL-39-01, BL-39-03) is preserved as historically
+> implemented but is **superseded** by the E.41 graduation-only tracking law. Age
+> is context, not eligibility. Old live-attempt facts are not rewritten; the
+> maturity gate remains intact only in `SNAPSHOT_READINESS`.
 
 ## Legend
 
@@ -20,6 +27,10 @@ full pilot. Created at V2-9.7E.39 (Full Pilot Attempt 1); updated at V2-9.7E.40
 | BL-39-02 | E.35 | E.36-38 | DESIGN_GAP | No approved categorical snapshot-maturity boundary coordinated candidate age with the completed-exact-15m requirement (readiness mode) | 900s categorical maturity admission before holder/snapshot I/O in `SNAPSHOT_READINESS`; `BLOCKED_INSUFFICIENT_MATURE_POOL` for <2 mature | Applies to `SNAPSHOT_READINESS` only; does not guarantee mature-candidate supply | `f7f5d73` | `tests/test_v2_9_7e_36_38_snapshot_maturity_boundary.py` (16 passed, 5 subtests) + regressions (44 passed) | No | N/A | FIXED |
 | BL-39-03 | E.34/E.35 | E.40 | CANDIDATE_SUPPLY | Full-pilot candidate universe consisted solely of the newest Pump create transactions (~170-243s old); no mechanism admitted older/staged candidates | E.40 admission (`68274a9`): newest-too-young creates categorically excluded, staged to registry, due reloaded zero-source. E.40 persistent pool: discovery-only durable pool retains confirmed origins across cycles, matures them categorically outside FULL_PILOT, and copies a bounded immutable DUE export into a fresh attempt for mixed-age mature supply | Discovery-channel diversity limited to direct LATEST_PUMPFUN; secondary trending/top/active coverage NOT proved (future operator decision); a live PASS needs ~15+ min maturation before 2 DUE | `68274a9` + `7dc0f62` + `3ab4bc2` | `test_v2_9_7e_40_full_pilot_admission.py` + `test_v2_9_7e_40b_persistent_candidate_pool.py` | Partial (mature admitted at Attempt 3) | No | PARTIAL |
 | BL-40-01 | E.40 Attempt 1 | E.40 Attempt 1 | CODE_DEFECT | The E.40 fail-closed admission terminal returns a campaign `run_id` with no `printer_memory_factory_runs` row; the live pilot runner unconditionally called `_sup.attach_run`, which failed the supervision `run_id` foreign key | E.40 repair: `run_two_token_operational_pilot` skips `attach_run` and factory replay when `lifecycle_started` is False, finalizing supervision directly from the honest terminal (a pre-lifecycle block has no factory run to attach) | None known; a lifecycle that does start still attaches + replays as before | `47e76e8` | `tests/test_v2_9_7e_40_full_pilot_admission.py::BlockedFullPilotThroughRunnerTests` + E.14 (13 passed) | Yes (Attempt 2 clean) | No | FIXED |
+| BL-41-01 | E.41 | E.41 | INCORRECT_ELIGIBILITY | `FULL_PILOT` used the categorical 900-second Pump-origin maturity boundary as the selection gate; the direct `LATEST_PUMPFUN` channel yields only pre-graduation bonding-curve creates, so the gate admitted **aged ungraduated (bonding-curve) tokens** — a violation of the graduation-only tracking law | E.41: `run_operational` replaces `_mature_admission` (900s) with `_graduated_admission` (exact PumpSwap graduation); the honest terminal is `BLOCKED_INSUFFICIENT_GRADUATED_POOL`; the 900s gate is removed from FULL_PILOT and retained only in `SNAPSHOT_READINESS` | No graduated-discovery channel is operationally wired for fresh live discovery, so cold-start FULL_PILOT honestly blocks `BLOCKED_INSUFFICIENT_GRADUATED_POOL` | `<repair commit>` | `tests/test_v2_9_7e_41_graduation_only_mixed_discovery.py` + updated E.40 admission suite | No (offline lane) | No | FIXED |
+| BL-41-02 | E.41 | E.41 | INCORRECT_ELIGIBILITY | Discovery-only lifecycle states (`PUMP_CREATED_UNPAIRED`, `PUMP_BONDING_CURVE_ACTIVE`, `PUMP_MIGRATION_OBSERVED` without confirmation, `PUMP_LIFECYCLE_UNKNOWN`, `DISCOVERED_UNPAIRED`) could reach pilot supply and selection: the executor `LIFECYCLE_MARKET` gate rejected only a candidate *claiming* GRADUATED without confirmation, and the E.40 persistent pool exported aged ungraduated origins as "candidates" | E.41: the executor `LIFECYCLE_MARKET` gate fails closed any candidate that is not `PUMPSWAP_GRADUATED_CONFIRMED` + `pumpswap_state==CONFIRMED` + a valid PumpSwap market identity; `_select` re-drops non-graduated; the persistent pool separates pending-discovery origins from a graduation-gated `export_graduated_pilot_candidates` (empty for bare origins); PumpSwap confirmation rebinds the tracking market identity to the confirmed pool | Graduated candidates must be supplied with confirmed PumpSwap evidence; no operational fresh-discovery graduated channel yet | `<repair commit>` | `tests/test_v2_9_7e_41_graduation_only_mixed_discovery.py`; `test_v2_9_7e_40b_persistent_candidate_pool.py`; combined-discovery suites | No (offline lane) | No | FIXED |
+| BL-41-03 | E.41 | E.41 | DISCOVERY_CONCENTRATION | Selection could concentrate on latest-only candidates; the old `_select` lifecycle-rank had no categorical distribution and could pick two latest candidates | E.41: `_categorical_two_slot` enforces that when at least one latest-only and one non-latest eligible graduated candidate exist, the two slots are not both latest-only (one latest + one non-latest by durable seeded categorical round-robin); deterministic seeded uniform within each category; multi-channel duplicates are one candidate with no boost | Applies only when both partitions have eligible **graduated** candidates; with a single available category it degrades honestly | `<repair commit>` | `tests/test_v2_9_7e_41_graduation_only_mixed_discovery.py::CategoricalDistributionTests` | No (offline lane) | No | FIXED |
+| BL-41-04 | E.41 | E.41 | BLOCKED_CONTRACT | Trending/top/active graduated-discovery channels (GeckoTerminal, Solana Tracker, PumpPortal migration feed) are not adopted/operationally permitted, so no operational channel supplies already-graduated Pump tokens for fresh live discovery | E.41: the channels remain explicitly `SKIPPED_BLOCKED_CONTRACT` and visible in the admission report; none is silently activated; no paid dependency added; DexScreener active-market enrichment and PumpSwap confirmation remain operational per contract | Fresh-discovery graduated supply remains unavailable until a graduated-discovery contract is adopted or a migration-signature locator is supplied — a future operator decision | `<repair commit>` | `tests/test_v2_9_7e_41_graduation_only_mixed_discovery.py::FullPilotNoMaturityGateTests::test_blocked_channels_remain_visible` | No (offline lane) | N/A | OPEN (contract) |
 
 ## Fixed blockers
 
@@ -340,3 +351,104 @@ or an adopted secondary discovery provider with live origin verification).
   `BLOCKED_INSUFFICIENT_MATURE_POOL` unless live throughput happens to place two
   bounded creates past the 900s boundary. That is an honest supply outcome, not
   a code defect; do not retry, wait, widen acquisition, or add a source.
+
+## V2-9.7E.41 repair updates (graduation-only selection and mixed discovery)
+
+E.41 froze the **Printer V1 Graduation-Only Tracking Law**: a Pump.fun token is
+selection-eligible only after exact governed evidence confirms graduation and
+binds its exact mint to one valid post-graduation PumpSwap market identity. Age
+is context, not eligibility. This supersedes the E.40 900-second maturity-based
+full-pilot admission policy, which is preserved as historically implemented.
+
+### BL-41-01 — incorrect 900-second FULL_PILOT age gate
+
+- **Category:** `INCORRECT_ELIGIBILITY`. **Repair status:** `FIXED_IN_THIS_SPRINT`.
+- **Root cause:** `run_operational` used the categorical 900-second Pump-origin
+  maturity boundary as the selection gate. The direct `LATEST_PUMPFUN` channel
+  yields only pre-graduation bonding-curve creates, so the gate admitted aged,
+  ungraduated (bonding-curve) tokens — a graduation-only-law violation.
+- **What was fixed:** `run_operational` replaces `_mature_admission` (900s) with
+  `_graduated_admission` (exact PumpSwap graduation). The honest terminal is
+  `BLOCKED_INSUFFICIENT_GRADUATED_POOL`. The 900s gate is removed from FULL_PILOT
+  and remains intact only in `SNAPSHOT_READINESS`. Confirmed origins are still
+  staged as pending discovery evidence.
+- **What remains unfixed:** no operational graduated-discovery channel supplies
+  fresh graduated candidates (BL-41-04), so cold-start FULL_PILOT honestly blocks.
+- **Tests:** `tests/test_v2_9_7e_41_graduation_only_mixed_discovery.py`
+  (`FullPilotNoMaturityGateTests`, `GraduationClassifierTests`); updated E.40
+  admission suite.
+- **Can block next pilot:** Yes — until a graduated-discovery supply exists,
+  cold-start FULL_PILOT blocks honestly. This is a correct outcome, not a defect.
+- **Operational channel coverage after repair:** PumpSwap on-chain confirmation
+  operational (confirmation-only); direct channel is pending-discovery only.
+
+### BL-41-02 — unpaired/bonding-curve candidates reaching pilot supply
+
+- **Category:** `INCORRECT_ELIGIBILITY`. **Repair status:** `FIXED_IN_THIS_SPRINT`.
+- **Root cause:** the executor `LIFECYCLE_MARKET` gate rejected only a candidate
+  claiming `GRADUATED` without confirmation, so discovery-only states
+  (`PUMP_CREATED_UNPAIRED`, `PUMP_BONDING_CURVE_ACTIVE`,
+  `PUMP_MIGRATION_OBSERVED` without confirmation, `PUMP_LIFECYCLE_UNKNOWN`,
+  `DISCOVERED_UNPAIRED`) passed selection; the E.40 persistent pool exported aged
+  ungraduated origins as "candidates".
+- **What was fixed:** the `LIFECYCLE_MARKET` gate fails closed any candidate that
+  is not `PUMPSWAP_GRADUATED_CONFIRMED` + `pumpswap_state==CONFIRMED` + a valid
+  PumpSwap market identity; `_select` re-drops non-graduated; PumpSwap
+  confirmation is now per-mint and rebinds the tracking market identity to the
+  confirmed pool; the persistent pool separates pending-discovery origins from a
+  graduation-gated `export_graduated_pilot_candidates` (empty for bare origins).
+- **What remains unfixed:** graduated candidates must be supplied with confirmed
+  PumpSwap evidence; there is no persisted graduated-candidate store yet.
+- **Tests:** `test_v2_9_7e_41_...::SelectGraduationOnlyTests`,
+  `GraduationClassifierTests`; `test_v2_9_7e_40b_persistent_candidate_pool.py`;
+  combined-discovery suites (7B.4d/4d.1/5) now run on graduated candidates.
+- **Can block next pilot:** No — it removes an unlawful path; it cannot itself
+  block a lawful graduated candidate.
+- **Operational channel coverage after repair:** unchanged; the gate is enforcement.
+
+### BL-41-03 — latest-only discovery concentration
+
+- **Category:** `DISCOVERY_CONCENTRATION`. **Repair status:** `FIXED_IN_THIS_SPRINT`.
+- **Root cause:** the old `_select` lifecycle-rank had no categorical distribution
+  and could select two latest-only candidates.
+- **What was fixed:** `_categorical_two_slot` enforces that when at least one
+  latest-only and one non-latest eligible graduated candidate exist, the two
+  slots are not both latest-only (one latest + one non-latest via durable seeded
+  categorical round-robin); deterministic seeded uniform within each category;
+  multi-channel duplicates are one candidate with no probability boost; provider
+  order/rank/score/popularity cannot affect selection.
+- **What remains unfixed:** applies only when both partitions have eligible
+  graduated candidates; a single available category degrades honestly.
+- **Tests:** `test_v2_9_7e_41_...::CategoricalDistributionTests`.
+- **Can block next pilot:** No.
+- **Operational channel coverage after repair:** the categorical rule is active;
+  its non-latest categories depend on graduated-discovery channels (BL-41-04).
+
+### BL-41-04 — still-blocked trending/top channel contracts
+
+- **Category:** `BLOCKED_CONTRACT`. **Repair status:**
+  `NOT_FIXED_REQUIRES_RESEARCH` (contract adoption is a separate operator lane).
+- **Root cause:** GeckoTerminal (fixture-only contract), Solana Tracker (free-REST
+  contract), and PumpPortal (wallet/funds requirement) remain unadopted, so no
+  operational channel supplies already-graduated Pump tokens for fresh live
+  discovery.
+- **What was fixed:** the channels remain explicitly `SKIPPED_BLOCKED_CONTRACT`
+  and visible in the admission report; none is silently activated; no paid
+  dependency added. DexScreener active-market enrichment and PumpSwap confirmation
+  remain operational per their contracts.
+- **What remains unfixed:** fresh graduated-candidate supply is unavailable until
+  a graduated-discovery contract is adopted or a migration-signature locator is
+  supplied. This is a future operator decision, not a code defect.
+- **Tests:** `test_v2_9_7e_41_...::FullPilotNoMaturityGateTests::test_blocked_channels_remain_visible`.
+- **Can block next pilot:** Yes — cold-start FULL_PILOT blocks honestly with no
+  graduated supply.
+- **Operational channel coverage after repair:** graduation confirmation
+  (PumpSwap on-chain) operational; graduated-discovery channels blocked.
+
+### E.41 supersession of E.40 maturity policy
+
+- **BL-39-01 / BL-39-03** (E.40 900s maturity + persistent maturity pool): marked
+  **historically implemented but superseded** by the graduation-only law. The
+  maturity boundary is not removed from `SNAPSHOT_READINESS`; it is removed only
+  from FULL_PILOT, where it was the wrong (age-based) eligibility gate. Old
+  live-attempt facts (Attempts 1–3) are not rewritten.

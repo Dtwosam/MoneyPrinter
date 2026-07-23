@@ -389,7 +389,17 @@ class IsolatedCombinedDiscoveryProof(unittest.TestCase):
                     mint=MINT_C, signature="sig-c", slot=12, block_time=3
                 ),
             },
+            # V2-9.7E.41 graduation-only law: selection requires confirmed PumpSwap
+            # graduation, so the valid-origin candidates MINT_A/B/C carry confirmed
+            # graduation proofs. MINT_D still fails origin and MINT_INFRA is an
+            # infrastructure exclusion regardless of any graduation claim.
             pumpswap_proofs={
+                MINT_A: FixturePumpSwapProof(
+                    mint=MINT_A, pool_address=POOL_A, confirmed=True
+                ),
+                MINT_B: FixturePumpSwapProof(
+                    mint=MINT_B, pool_address=POOL_B, confirmed=True
+                ),
                 MINT_C: FixturePumpSwapProof(
                     mint=MINT_C, pool_address=POOL_C, confirmed=True
                 ),
@@ -1051,9 +1061,17 @@ class IsolatedCombinedDiscoveryProof(unittest.TestCase):
         ambiguous, _ = self._execute(
             self._mixed_fixtures(
                 pumpswap_proofs={
+                    # A and B remain confirmed graduated; only C's claim is
+                    # ambiguous, so C is blocked while A and B still activate.
+                    MINT_A: FixturePumpSwapProof(
+                        mint=MINT_A, pool_address=POOL_A, confirmed=True
+                    ),
+                    MINT_B: FixturePumpSwapProof(
+                        mint=MINT_B, pool_address=POOL_B, confirmed=True
+                    ),
                     MINT_C: FixturePumpSwapProof(
                         mint=MINT_C, pool_address=POOL_C, confirmed=False, ambiguous=True
-                    )
+                    ),
                 }
             )
         )

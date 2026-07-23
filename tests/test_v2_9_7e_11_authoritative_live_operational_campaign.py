@@ -44,6 +44,7 @@ from printer_v1.sources.pumpfun_origin import (
     run_acquisition_cycle,
     run_acquisition_from_source,
 )
+from printer_v1.discovery.combined_executor import FixturePumpSwapProof
 
 import test_v2_9_7e_8_origin_to_lifecycle_integration as e8
 import test_v2_9_7e_9_two_token_continuous_lifecycle as e9
@@ -467,6 +468,14 @@ class _OperationalBase(e8._IntegrationBase):
             "total_duration_seconds": 20_000.0,
             "launch_provenance": e8._provenance(),
         }
+        # V2-9.7E.41 graduation-only law: the two candidates are graduated to
+        # their confirmed PumpSwap pools (the origin bonding-curve address, keeping
+        # the mint-keyed lifecycle consistent) so the operational campaign selects
+        # lawful graduated candidates.
+        graduation_proofs = {
+            mint: FixturePumpSwapProof(mint=mint, pool_address=pool)
+            for mint, pool in pools.items()
+        }
         with (
             patch("printer_v1.operator_cli.one_command_15m_factory._now", clock.now),
             patch("printer_v1.sources.contracts.datetime", e9._ClockDateTime),
@@ -483,6 +492,7 @@ class _OperationalBase(e8._IntegrationBase):
                 evaluated_at=e8.NOW,
                 backup_path=self.backup,
                 lifecycle_kwargs=kwargs,
+                graduation_proofs=graduation_proofs,
             )
         return result, continue_mint, stop_mint
 
@@ -721,6 +731,11 @@ class ReadinessOnlyModeTests(_OperationalBase):
             fail=[("/pools/", "UNAVAILABLE")],  # exact-pool lane fault is isolated
         )
         owner = AuthoritativeLiveOperationalCampaignOwner()
+        _a, _b, pools = self._origins_and_pools()
+        graduation_proofs = {
+            mint: FixturePumpSwapProof(mint=mint, pool_address=pool)
+            for mint, pool in pools.items()
+        }
         readiness = owner.run_readiness_only(
             command=self.command,
             pump_transport=transport,
@@ -731,6 +746,7 @@ class ReadinessOnlyModeTests(_OperationalBase):
             cycle_id="cyc",
             cycle_cutoff=e8.CUTOFF,
             evaluated_at=e8.NOW,
+            graduation_proofs=graduation_proofs,
         )
         self.assertEqual(readiness.status, "READY")
         self.assertEqual(len(readiness.activated_slots), 2)
@@ -916,7 +932,12 @@ class ReadinessFailClosedTests(_OperationalBase):
 
     def test_ready_only_after_exact_two_slot_atomic_handoff_and_cleanup(self) -> None:
         transport, mints = _two_create_transport()
-        readiness = self._readiness(transport)
+        _a, _b, pools = self._origins_and_pools()
+        graduation_proofs = {
+            mint: FixturePumpSwapProof(mint=mint, pool_address=pool)
+            for mint, pool in pools.items()
+        }
+        readiness = self._readiness(transport, graduation_proofs=graduation_proofs)
         self.assertEqual(readiness.status, "READY")
         self.assertEqual(len(readiness.activated_slots), 2)
         gates = readiness.summary["readiness_gates"]

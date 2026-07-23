@@ -1,12 +1,14 @@
-"""V2-9.7E.40 full-pilot admission and candidate-supply repair proof.
+"""V2-9.7E.40/.41 full-pilot admission proof (graduation-only, supersedes 900s).
 
 Fixture-only. Proves that the canonical FULL_PILOT path (``run_operational``)
-now applies the frozen 900-second categorical maturity boundary and a
-fail-closed two-mature-candidate admission gate BEFORE any holder, snapshot,
-lifecycle or memory work, and that immature (newest, too-young) creates are
-staged into the durable prospective-origin registry instead of becoming the
-active selection pool. No provider is contacted: ``pump_transport`` is a
-transport-shaped fake and ``secondary_transport`` is ``None``.
+now admits candidates by exact PumpSwap graduation (V2-9.7E.41 graduation-only
+law) instead of the retired 900-second maturity boundary: bonding-curve /
+unpaired creates of ANY age are pending discovery only and block with
+``BLOCKED_INSUFFICIENT_GRADUATED_POOL`` before any holder, snapshot, lifecycle or
+memory work, while confirmed origins are staged into the durable
+prospective-origin registry as pending discovery evidence. No provider is
+contacted: ``pump_transport`` is a transport-shaped fake and
+``secondary_transport`` is ``None``.
 """
 
 from __future__ import annotations
@@ -21,11 +23,16 @@ from printer_v1.operator_cli.abstract_campaign_command import (
     SOURCE_GOVERNOR_OWNER,
 )
 from printer_v1.operator_cli.authoritative_live_operational_campaign import (
+    BLOCKED_INSUFFICIENT_GRADUATED_POOL,
+    GRADUATION_ELIGIBLE,
+    GRADUATION_PENDING_DISCOVERY,
     AuthoritativeLiveOperationalCampaignOwner,
-    _mature_admission,
+    _graduated_admission,
 )
-from printer_v1.discovery.combined_executor import FixtureOriginProof
-from printer_v1.scheduler.snapshot_maturity import SnapshotMaturityState
+from printer_v1.discovery.combined_executor import (
+    FixtureOriginProof,
+    FixturePumpSwapProof,
+)
 from printer_v1.sources.pumpfun_origin import load_due_staged_origins
 
 import test_v2_9_7e_8_origin_to_lifecycle_integration as e8
@@ -45,8 +52,8 @@ GOV = OwnerPort(SOURCE_GOVERNOR_OWNER, True)
 SCH = OwnerPort(CENTRAL_SCHEDULER_OWNER, True)
 
 NOW_EPOCH = int(datetime.fromisoformat(e8.NOW).timestamp())
-YOUNG_BT = NOW_EPOCH - 60      # 60s old  -> IMMATURE (< 900s)
-DUE_BT = NOW_EPOCH - 1_000     # 1000s old -> DUE (>= 900s)
+YOUNG_BT = NOW_EPOCH - 60      # 60s old bonding-curve create
+OLD_BT = NOW_EPOCH - 10_000    # ~2.7h old bonding-curve create (age is irrelevant)
 
 
 def _transport(specs):
@@ -64,7 +71,7 @@ def _transport(specs):
     return _FakePumpTransport(list(reversed(rows)), txs), mints
 
 
-class FullPilotAdmissionProofTests(e8._IntegrationBase):
+class FullPilotGraduationAdmissionProofTests(e8._IntegrationBase):
     def _run(self, transport):
         owner = AuthoritativeLiveOperationalCampaignOwner()
         return owner.run_operational(
@@ -109,113 +116,82 @@ class FullPilotAdmissionProofTests(e8._IntegrationBase):
         finally:
             connection.close()
 
-    # -- two immature candidates: fail closed before any lifecycle -----------
+    # -- bonding-curve creates are pending discovery only, block regardless of age
 
-    def test_two_young_candidates_block_before_lifecycle(self) -> None:
-        transport, mints = _transport([(YOUNG_BT, "youngA"), (YOUNG_BT, "youngB")])
+    def test_young_bonding_curve_creates_block_graduated_pool(self) -> None:
+        transport, _mints = _transport([(YOUNG_BT, "youngA"), (YOUNG_BT, "youngB")])
         result = self._run(transport)
 
         self.assertFalse(result.lifecycle_started)
         self.assertEqual(result.lifecycle["run_status"], "NOT_STARTED")
         self.assertEqual(
-            result.lifecycle["stop_reason"], "BLOCKED_INSUFFICIENT_MATURE_POOL"
+            result.lifecycle["stop_reason"], BLOCKED_INSUFFICIENT_GRADUATED_POOL
         )
         self.assertEqual(result.lifecycle["run_id"], "run")
         self.assertEqual(result.activation.activated_slots, ())
         self.assertIsNone(result.activation.selection_batch_id)
 
         admission = result.lifecycle["full_pilot_admission"]
-        self.assertEqual(admission["threshold_seconds"], 900)
+        self.assertEqual(admission["eligibility_rule"], "GRADUATION_ONLY")
         self.assertEqual(admission["candidate_universe"], 2)
-        self.assertEqual(admission["mature_candidate_count"], 0)
-        self.assertEqual(admission["state_counts"]["IMMATURE"], 2)
-        self.assertEqual(admission["state_counts"]["DUE"], 0)
-        self.assertEqual(admission["channel_counts"]["LATEST_PUMPFUN"], 2)
-        self.assertEqual(admission["channel_counts"]["STAGED_DUE_REGISTRY"], 0)
-        # Age is the finalized create age, and pair age is an explicit unknown.
+        self.assertEqual(admission["graduated_candidate_count"], 0)
+        self.assertEqual(
+            admission["graduation_state_counts"][GRADUATION_PENDING_DISCOVERY], 2
+        )
+        # Age is context, never eligibility.
         for rec in admission["candidates"]:
-            self.assertEqual(rec["state"], "IMMATURE")
-            self.assertAlmostEqual(rec["observed_origin_age_seconds"], 60, delta=2)
-            self.assertEqual(
-                rec["pair_age_context"],
-                "UNKNOWN_PAIR_AGE_NOT_FETCHED_AT_ADMISSION",
-            )
+            self.assertEqual(rec["graduation_state"], GRADUATION_PENDING_DISCOVERY)
+            self.assertFalse(rec["selectable"])
+            self.assertEqual(rec["token_age_context"], "AGE_IS_CONTEXT_NOT_ELIGIBILITY")
 
-        # No holder / snapshot / lifecycle / memory / financial work happened.
         counts = self._forbidden_and_lifecycle_counts()
-        self.assertEqual(counts["run_steps"], 0)
-        self.assertEqual(counts["memory_windows"], 0)
-        self.assertEqual(counts["episodes"], 0)
-        self.assertEqual(counts["decisions"], 0)
-        self.assertEqual(counts["positions"], 0)
-        self.assertEqual(counts["window15m_jobs"], 0)
-        # Both confirmed origins were staged into the durable registry.
+        for key in (
+            "run_steps",
+            "memory_windows",
+            "episodes",
+            "decisions",
+            "positions",
+            "window15m_jobs",
+        ):
+            self.assertEqual(counts[key], 0)
+        # Both confirmed origins are staged as pending discovery evidence.
         self.assertEqual(counts["registry"], 2)
 
-    # -- one mature + one immature: still fail closed, partition proven -------
-
-    def test_single_mature_candidate_is_insufficient(self) -> None:
-        transport, mints = _transport([(DUE_BT, "matureA"), (YOUNG_BT, "youngB")])
+    def test_old_bonding_curve_creates_still_block(self) -> None:
+        # A bonding-curve token several hours old remains ineligible: graduation,
+        # not age, is eligibility.
+        transport, _mints = _transport([(OLD_BT, "oldA"), (OLD_BT, "oldB")])
         result = self._run(transport)
-
         self.assertFalse(result.lifecycle_started)
         self.assertEqual(
-            result.lifecycle["stop_reason"], "BLOCKED_INSUFFICIENT_MATURE_POOL"
+            result.lifecycle["stop_reason"], BLOCKED_INSUFFICIENT_GRADUATED_POOL
         )
         admission = result.lifecycle["full_pilot_admission"]
-        self.assertEqual(admission["candidate_universe"], 2)
-        self.assertEqual(admission["mature_candidate_count"], 1)
-        self.assertEqual(admission["state_counts"]["DUE"], 1)
-        self.assertEqual(admission["state_counts"]["IMMATURE"], 1)
+        self.assertEqual(admission["graduated_candidate_count"], 0)
         self.assertEqual(self._forbidden_and_lifecycle_counts()["window15m_jobs"], 0)
 
-    # -- staged registry reload is categorical and zero-source ---------------
-
-    def test_staged_registry_reload_returns_only_due_origins(self) -> None:
-        # Running with two immature creates stages both into the registry.
-        transport, mints = _transport([(YOUNG_BT, "youngA"), (DUE_BT, "dueB")])
+    def test_confirmed_origins_staged_as_pending_discovery(self) -> None:
+        transport, mints = _transport([(YOUNG_BT, "pendA"), (OLD_BT, "pendB")])
         self._run(transport)
-
         connection = sqlite3.connect(self.db)
         connection.row_factory = sqlite3.Row
         try:
-            # Evaluated exactly at NOW: only the >= 900s origin is due.
+            # The pending-discovery reload mechanics still function (age context),
+            # but these origins are never selectable without graduation.
             due = load_due_staged_origins(
                 connection,
                 evaluated_epoch=NOW_EPOCH,
                 maturity_seconds=900,
                 exclude_mints=(),
             )
-            due_mints = {row["mint"] for row in due}
-            self.assertIn(mints[1].lower(), {m.lower() for m in due_mints})
-            self.assertNotIn(mints[0].lower(), {m.lower() for m in due_mints})
-
-            # Excluding the current-cycle mint yields nothing (fresh cycle reuse).
-            excluded = load_due_staged_origins(
-                connection,
-                evaluated_epoch=NOW_EPOCH,
-                maturity_seconds=900,
-                exclude_mints={m for m in due_mints},
-            )
-            self.assertEqual(excluded, [])
-
-            # Far in the future, a previously immature origin becomes due too.
-            all_due = load_due_staged_origins(
-                connection,
-                evaluated_epoch=NOW_EPOCH + 10_000,
-                maturity_seconds=900,
-                exclude_mints=(),
-            )
-            self.assertEqual(len(all_due), 2)
+            due_mints = {m.lower() for m in (row["mint"] for row in due)}
+            self.assertIn(mints[1].lower(), due_mints)  # OLD is age-due context
         finally:
             connection.close()
 
 
-class MaturityBeforeCapTests(unittest.TestCase):
-    """Immature candidates must never displace mature ones under the cap."""
-
-    def setUp(self) -> None:
-        self.evaluated = datetime.fromisoformat(e8.NOW)
+class GraduatedAdmissionUnitTests(unittest.TestCase):
+    """`_graduated_admission` admits only graduation-confirmed candidates."""
 
     def _proof(self, mint: str, block_time: int) -> FixtureOriginProof:
         return FixtureOriginProof(
@@ -229,42 +205,66 @@ class MaturityBeforeCapTests(unittest.TestCase):
             confirmed=True,
         )
 
-    def test_due_candidates_survive_the_cap_despite_more_young(self) -> None:
-        # Five young mints whose identities sort BEFORE the two due mints, plus
-        # two due (mature) mints. A pre-maturity cap of 3 by identity would drop
-        # both due mints; maturity-before-cap must keep them.
-        young = [self._proof(f"aaa{i}pump", NOW_EPOCH - 60) for i in range(5)]
-        due = [
-            self._proof("zzz1pump", NOW_EPOCH - 1_000),
-            self._proof("zzz2pump", NOW_EPOCH - 1_000),
-        ]
-        mature, decisions = _mature_admission(
-            tuple(young) + tuple(due), evaluated=self.evaluated, candidate_cap=3
+    def test_one_second_old_graduated_token_is_admissible(self) -> None:
+        # A token confirmed graduated one second ago is eligible; a bonding-curve
+        # token of any age is not. Age is context, graduation is eligibility.
+        just_graduated = self._proof("gradApump", NOW_EPOCH - 1)
+        bonding_hours_old = self._proof("bondBpump", NOW_EPOCH - 10_000)
+        graduated, decisions = _graduated_admission(
+            (just_graduated, bonding_hours_old),
+            graduation_proofs={
+                "gradApump": FixturePumpSwapProof(
+                    mint="gradApump", pool_address="poolA"
+                ),
+            },
+            candidate_cap=3,
         )
-        self.assertEqual(len(mature), 2)
-        self.assertEqual(
-            {p.mint for p in mature}, {"zzz1pump", "zzz2pump"}
-        )
-        # Every young candidate is classified IMMATURE and excluded.
-        immature = [
-            p for p, d in decisions if d.state is SnapshotMaturityState.IMMATURE
-        ]
-        self.assertEqual(len(immature), 5)
+        self.assertEqual({p.mint for p in graduated}, {"gradApump"})
+        states = {p.mint: s for p, s in decisions}
+        self.assertEqual(states["gradApump"], GRADUATION_ELIGIBLE)
+        self.assertEqual(states["bondBpump"], GRADUATION_PENDING_DISCOVERY)
 
-    def test_more_due_than_cap_is_bounded(self) -> None:
-        due = [self._proof(f"ddd{i}pump", NOW_EPOCH - 1_000) for i in range(5)]
-        mature, _decisions = _mature_admission(
-            tuple(due), evaluated=self.evaluated, candidate_cap=3
+    def test_ambiguous_and_wrong_owner_and_mismatch_fail_closed(self) -> None:
+        proofs = (
+            self._proof("ambApump", NOW_EPOCH - 5),
+            self._proof("ownBpump", NOW_EPOCH - 5),
+            self._proof("mixCpump", NOW_EPOCH - 5),
         )
-        self.assertEqual(len(mature), 3)
+        graduated, decisions = _graduated_admission(
+            proofs,
+            graduation_proofs={
+                "ambApump": FixturePumpSwapProof(
+                    mint="ambApump", pool_address="p", confirmed=False, ambiguous=True
+                ),
+                "ownBpump": FixturePumpSwapProof(
+                    mint="ownBpump", pool_address="p", program_id="WRONGprogram"
+                ),
+                "mixCpump": FixturePumpSwapProof(
+                    mint="DIFFERENTMINT", pool_address="p"
+                ),
+            },
+            candidate_cap=3,
+        )
+        self.assertEqual(graduated, ())
+        states = {p.mint: s for p, s in decisions}
+        self.assertEqual(states["ambApump"], "AMBIGUOUS_MARKET")
+        self.assertEqual(states["ownBpump"], "MARKET_IDENTITY_INVALID")
+        self.assertEqual(states["mixCpump"], "MARKET_IDENTITY_INVALID")
+
+    def test_candidate_cap_bounds_graduated(self) -> None:
+        proofs = tuple(self._proof(f"g{i}pump", NOW_EPOCH - 5) for i in range(5))
+        graduation = {
+            f"g{i}pump": FixturePumpSwapProof(mint=f"g{i}pump", pool_address=f"p{i}")
+            for i in range(5)
+        }
+        graduated, _ = _graduated_admission(
+            proofs, graduation_proofs=graduation, candidate_cap=3
+        )
+        self.assertEqual(len(graduated), 3)
 
 
 class _BlockedFakeOwner:
-    """Owner that returns the pre-lifecycle fail-closed admission terminal.
-
-    It creates no factory lifecycle run — exactly the shape the real
-    ``run_operational`` returns when fewer than two mature candidates exist.
-    """
+    """Owner returning the pre-lifecycle graduation-block terminal (no factory run)."""
 
     def __init__(self, run_id: str = "pilot-run") -> None:
         self._run_id = run_id
@@ -274,21 +274,21 @@ class _BlockedFakeOwner:
         self.calls += 1
         return OriginLifecycleResult(
             activation=ActivationResult(
-                terminal_status="BLOCKED_INSUFFICIENT_MATURE_POOL",
-                first_terminal_cause="BLOCKED_INSUFFICIENT_MATURE_POOL",
+                terminal_status=BLOCKED_INSUFFICIENT_GRADUATED_POOL,
+                first_terminal_cause=BLOCKED_INSUFFICIENT_GRADUATED_POOL,
                 activated_slots=(),
                 selection_batch_id=None,
             ),
             lifecycle={
                 "run_id": self._run_id,
                 "run_status": "NOT_STARTED",
-                "stop_reason": "BLOCKED_INSUFFICIENT_MATURE_POOL",
-                "first_terminal_cause": "BLOCKED_INSUFFICIENT_MATURE_POOL",
+                "stop_reason": BLOCKED_INSUFFICIENT_GRADUATED_POOL,
+                "first_terminal_cause": BLOCKED_INSUFFICIENT_GRADUATED_POOL,
                 "lifecycle_started": False,
                 "forbidden_deltas": {},
                 "pending_or_running_run_steps": 0,
                 "running_jobs_after_stop": 0,
-                "full_pilot_admission": {"mature_candidate_count": 0},
+                "full_pilot_admission": {"graduated_candidate_count": 0},
             },
             lifecycle_started=False,
         )
@@ -317,12 +317,7 @@ class _ActivationFailedFakeOwner:
 
 
 class BlockedFullPilotThroughRunnerTests(e14._PilotRunnerBase):
-    """The live pilot runner must terminate a pre-lifecycle block cleanly.
-
-    Regression for the Attempt-1 defect: a fail-closed admission terminal has no
-    factory run, so ``attach_run`` must be skipped instead of raising a foreign
-    key error.
-    """
+    """The live pilot runner must terminate a pre-lifecycle block cleanly."""
 
     def test_pre_lifecycle_block_terminates_cleanly(self) -> None:
         owner = _BlockedFakeOwner()
@@ -332,9 +327,9 @@ class BlockedFullPilotThroughRunnerTests(e14._PilotRunnerBase):
         self.assertEqual(result["status"], "PILOT_TERMINAL")
         self.assertFalse(result["lifecycle_started"])
         self.assertEqual(result["run_status"], "NOT_STARTED")
-        self.assertEqual(result["stop_reason"], "BLOCKED_INSUFFICIENT_MATURE_POOL")
+        self.assertEqual(result["stop_reason"], BLOCKED_INSUFFICIENT_GRADUATED_POOL)
         self.assertEqual(
-            result["first_terminal_cause"], "BLOCKED_INSUFFICIENT_MATURE_POOL"
+            result["first_terminal_cause"], BLOCKED_INSUFFICIENT_GRADUATED_POOL
         )
         self.assertIsNotNone(result["terminal_status"])
         self.assertTrue(result["one_proof_lock_released"])
@@ -343,12 +338,10 @@ class BlockedFullPilotThroughRunnerTests(e14._PilotRunnerBase):
         self.assertFalse(result["restart_created"])
         self.assertFalse(result["successor_created"])
         self.assertEqual(
-            result["full_pilot_admission"], {"mature_candidate_count": 0}
+            result["full_pilot_admission"], {"graduated_candidate_count": 0}
         )
 
     def test_activation_failed_terminates_cleanly(self) -> None:
-        # No atomic activation -> no factory run identity. The runner must
-        # finalize a clean governed safe stop, not raise (BL-40-04).
         owner = _ActivationFailedFakeOwner()
         result, _owner, _paths = self._run(owner=owner, execution_id="e40-actfail-1")
         self.assertEqual(result["status"], "PILOT_TERMINAL")

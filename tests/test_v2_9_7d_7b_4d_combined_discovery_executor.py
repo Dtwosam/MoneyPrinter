@@ -15,6 +15,7 @@ from printer_v1.discovery.combined_executor import (
     CombinedDiscoveryFixtures,
     CombinedPumpfunCampaignExecutor,
     FixtureOriginProof,
+    FixturePumpSwapProof,
     FixtureSourceFact,
     derive_cycle_selection_seed,
 )
@@ -313,6 +314,15 @@ class CombinedDiscoveryExecutorTests(unittest.TestCase):
                 api_key_secret_ref="SOLANA_TRACKER_API_KEY_REF",
                 free_requests_remaining_month=9990,
             ),
+            # V2-9.7E.41 graduation-only law: candidates are selectable only when
+            # exact PumpSwap graduation is confirmed. These synthetic proofs
+            # graduate MINT_A/B/C to a confirmed PumpSwap pool so the selection /
+            # handoff plumbing under test operates on lawful graduated candidates.
+            pumpswap_proofs={
+                MINT_A: FixturePumpSwapProof(mint=MINT_A, pool_address=POOL_A),
+                MINT_B: FixturePumpSwapProof(mint=MINT_B, pool_address=POOL_B),
+                MINT_C: FixturePumpSwapProof(mint=MINT_C, pool_address=POOL_C),
+            },
         )
         return replace(base, **overrides) if overrides else base
 

@@ -26,11 +26,15 @@ from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
 from printer_v1.discovery.combined_executor import (
+    GRADUATED_LIFECYCLE,
+    PUMPSWAP_PROGRAM_ID,
     CombinedDiscoveryError,
     CombinedDiscoveryFixtures,
     CombinedPumpfunCampaignExecutor,
     FixtureOriginProof,
     FixtureSourceFact,
+    _candidate_categories,
+    _non_latest_categories,
 )
 from printer_v1.operator_cli.abstract_campaign_command import (
     AbstractCampaignCommand,
@@ -822,15 +826,47 @@ def _holder_execution_fact(
     return {"eligible": False, "reason": reason, "source_name": source_name}
 
 
-def _mature_admission(
-    proofs: Any, *, evaluated: datetime, candidate_cap: int
-) -> tuple[tuple[Any, ...], tuple[tuple[Any, Any], ...]]:
-    """Deduplicate, classify 900s maturity, and admit up to ``candidate_cap`` DUE.
+# V2-9.7E.41 graduation-only tracking law admission states.
+GRADUATION_ELIGIBLE = "GRADUATED"
+GRADUATION_PENDING_DISCOVERY = "PENDING_DISCOVERY"
+GRADUATION_AMBIGUOUS_MARKET = "AMBIGUOUS_MARKET"
+GRADUATION_FAILED = "GRADUATION_FAILED"
+GRADUATION_MARKET_IDENTITY_INVALID = "MARKET_IDENTITY_INVALID"
+BLOCKED_INSUFFICIENT_GRADUATED_POOL = "BLOCKED_INSUFFICIENT_GRADUATED_POOL"
 
-    Maturity is applied to the whole deduplicated universe BEFORE the candidate
-    cap, so immature (newest, too-young) candidates never consume a cap slot and
-    can never displace a categorically mature candidate. Returns the admitted
-    mature candidates and the full ``(proof, decision)`` maturity decisions for
+
+def _classify_graduation(proof: Any, *, graduation: Any) -> str:
+    """Classify one confirmed-origin candidate under the graduation-only law.
+
+    A candidate is selection-eligible only when exact PumpSwap graduation confirms
+    the exact mint bound to a valid post-graduation PumpSwap market identity
+    (owner == adopted program, exactly one pool, base_mint == mint). A bonding-curve
+    / unpaired origin with no confirmed graduation is PENDING_DISCOVERY at any age.
+    """
+    if graduation is None:
+        return GRADUATION_PENDING_DISCOVERY
+    if getattr(graduation, "ambiguous", False):
+        return GRADUATION_AMBIGUOUS_MARKET
+    if not getattr(graduation, "confirmed", False):
+        return GRADUATION_FAILED
+    if (
+        getattr(graduation, "program_id", None) != PUMPSWAP_PROGRAM_ID
+        or getattr(graduation, "mint", None) != proof.mint
+        or not getattr(graduation, "pool_address", None)
+    ):
+        return GRADUATION_MARKET_IDENTITY_INVALID
+    return GRADUATION_ELIGIBLE
+
+
+def _graduated_admission(
+    proofs: Any, *, graduation_proofs: Mapping[str, Any], candidate_cap: int
+) -> tuple[tuple[Any, ...], tuple[tuple[Any, str], ...]]:
+    """Deduplicate and admit only graduation-confirmed candidates (no age gate).
+
+    Replaces the retired 900-second maturity admission. Age is never eligibility:
+    a token confirmed graduated one second ago is admissible, while a bonding-curve
+    token of any age is not. Returns the admitted graduated candidates (bounded by
+    ``candidate_cap``) and the full ``(proof, graduation_state)`` decisions for
     honest reporting.
     """
     materialized = tuple(proofs)
@@ -838,20 +874,13 @@ def _mature_admission(
         materialized, limit=max(len(materialized), 1)
     )
     decisions = tuple(
-        (
-            proof,
-            evaluate_snapshot_maturity(
-                pump_block_time=proof.block_time, evaluated_at=evaluated
-            ),
-        )
+        (proof, _classify_graduation(proof, graduation=graduation_proofs.get(proof.mint)))
         for proof in deduped
     )
-    mature = tuple(
-        proof
-        for proof, decision in decisions
-        if decision.state is SnapshotMaturityState.DUE
+    graduated = tuple(
+        proof for proof, state in decisions if state == GRADUATION_ELIGIBLE
     )[:candidate_cap]
-    return mature, decisions
+    return graduated, decisions
 
 
 def _finalized_holder_candidates(proofs: Any, *, limit: int) -> tuple[Any, ...]:
@@ -1195,8 +1224,17 @@ class AuthoritativeLiveOperationalCampaignOwner:
         timeout_seconds: float = DEFAULT_CALL_TIMEOUT_SECONDS,
         byte_ceiling: int = DEFAULT_RESPONSE_BYTE_CEILING,
         tracker_api_key: str | None = None,
+        graduation_proofs: Mapping[str, Any] | None = None,
     ) -> Any:
-        """Run one authoritative live two-token operational-natural campaign."""
+        """Run one authoritative live two-token operational-natural campaign.
+
+        ``graduation_proofs`` carries confirmed PumpSwap graduation evidence
+        (mint -> confirmation) supplied by a graduated-discovery channel or an
+        operator migration-signature locator. Under the V2-9.7E.41 graduation-only
+        law, only mints with exact confirmed graduation are selectable; on a
+        cold-start live cycle with no graduation evidence the mapping is empty and
+        the campaign blocks with ``BLOCKED_INSUFFICIENT_GRADUATED_POOL``.
+        """
         lk = dict(lifecycle_kwargs or {})
         # Structural exclusion at the live owner boundary: fixture proof plans and
         # predeclared dispositions can never enter operational mode.
@@ -1231,6 +1269,12 @@ class AuthoritativeLiveOperationalCampaignOwner:
             byte_ceiling=byte_ceiling,
             tracker_api_key=tracker_api_key,
         )
+        # V2-9.7E.41: bind confirmed graduation evidence into the discovery
+        # fixtures so the executor's PumpSwap confirmation and the graduation-only
+        # gate operate on it. Empty on a cold-start cycle with no graduated supply.
+        fixtures = replace(
+            fixtures, pumpswap_proofs=dict(graduation_proofs or {})
+        )
         from printer_v1.operator_cli.holder_reliability_budget_control import (
             build_ledger,
             persist_ledger,
@@ -1247,12 +1291,14 @@ class AuthoritativeLiveOperationalCampaignOwner:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         try:
-            # BL-39-03 candidate supply: stage every confirmed origin from this
-            # cycle into the durable prospective-origin registry, then reload any
-            # previously staged origin that is now categorically due. This reuses
-            # the existing registry owner; it adds no source call, no rank/order,
-            # and no provider. On a fresh isolated DB the prior registry is empty,
-            # so the universe is the current bounded creates only.
+            # V2-9.7E.41 pending-discovery population: stage every confirmed
+            # origin from this cycle into the durable prospective-origin registry
+            # as PENDING DISCOVERY evidence (retaining exact Pump origin, mint
+            # identity, signature/block time and provenance). Staged origins are
+            # bonding-curve / unpaired launches; under the graduation-only law they
+            # are NEVER exported as selectable pilot candidates. This reuses the
+            # existing registry owner; it adds no source call, no rank/order, and
+            # no provider. The 900s age reload is retired.
             staged_now = 0
             for observation in acquisition.result.observations:
                 try:
@@ -1264,59 +1310,39 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     # A conflicting confirmed origin never blocks the campaign;
                     # the candidate is simply not restaged.
                     pass
-            current_mints = {proof.mint for proof in acquisition.origin_proofs}
-            reloaded_due = tuple(
-                FixtureOriginProof(
-                    mint=str(row["mint"]),
-                    signature=str(row["signature"]),
-                    slot=int(row["slot"]),
-                    block_time=int(row["block_time"]),
-                    bonding_curve=str(row["bonding_curve"]),
-                    associated_bonding_curve=str(row["associated_bonding_curve"]),
-                    creator_address=str(row["creator_address"]),
-                    confirmed=True,
-                    create_layout=str(row["create_layout"]),
-                )
-                for row in load_due_staged_origins(
-                    connection,
-                    evaluated_epoch=evaluated_epoch,
-                    maturity_seconds=SNAPSHOT_MATURITY_SECONDS,
-                    exclude_mints=current_mints,
-                )
-            )
             connection.commit()
 
-            # BL-39-01 full-pilot admission: the candidate universe is the bounded
-            # newest creates plus any due staged origins. The frozen 900s
-            # categorical maturity boundary decides which candidates may reach
-            # expensive holder, market-readiness and lifecycle work. Maturity is
-            # applied to the whole deduplicated universe BEFORE the candidate cap,
-            # so immature (newest, too-young) creates never consume a cap slot and
-            # can never crowd out categorically mature candidates. Immature
-            # candidates remain staged for a later independent cycle.
+            # V2-9.7E.41 graduation-only admission (supersedes the 900s maturity
+            # gate). The candidate universe is the bounded confirmed origins from
+            # this cycle. Eligibility is graduation, not age: only candidates with
+            # exact PumpSwap graduation (owner == adopted program, exactly one
+            # pool, base_mint == mint) bound to a valid post-graduation market
+            # identity may reach holder, market-readiness and lifecycle work.
+            # Bonding-curve / unpaired origins of any age remain discovery-only.
             candidate_cap = min(
                 HOLDER_ELIGIBILITY_CANDIDATE_MAX, ledger.candidate_cap()
             )
-            mature_candidates, maturity_decisions = _mature_admission(
-                tuple(acquisition.origin_proofs) + reloaded_due,
-                evaluated=evaluated,
+            graduated_candidates, graduation_decisions = _graduated_admission(
+                tuple(acquisition.origin_proofs),
+                graduation_proofs=dict(fixtures.pumpswap_proofs),
                 candidate_cap=candidate_cap,
             )
-            admission = self._full_pilot_admission_diagnostics(
-                maturity_decisions=maturity_decisions,
+            admission = self._full_pilot_graduation_diagnostics(
+                graduation_decisions=graduation_decisions,
                 acquisition=acquisition,
                 enrichment=enrichment,
-                reloaded_due=len(reloaded_due),
+                fixtures=fixtures,
                 staged_now=staged_now,
-                admitted=len(mature_candidates),
+                admitted=len(graduated_candidates),
                 candidate_cap=candidate_cap,
             )
 
-            if len(mature_candidates) < 2:
-                # Fewer than two categorically mature candidates satisfy the
-                # full-pilot admission contract. No holder, snapshot, lifecycle or
-                # memory work occurs. Persist the ledger and close honestly before
-                # any activation.
+            if len(graduated_candidates) < 2:
+                # Fewer than two graduation-confirmed candidates. No holder,
+                # snapshot, lifecycle or memory work occurs. Persist the ledger and
+                # close honestly with the graduation-only terminal before any
+                # activation. Ungraduated origins remain staged as pending
+                # discovery evidence.
                 persist_ledger(
                     connection, run_id=command.run_id, cycle_id=cycle_id,
                     ledger=ledger, now=evaluated.isoformat(),
@@ -1324,16 +1350,16 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 connection.commit()
                 return OriginLifecycleResult(
                     activation=ActivationResult(
-                        terminal_status="BLOCKED_INSUFFICIENT_MATURE_POOL",
-                        first_terminal_cause="BLOCKED_INSUFFICIENT_MATURE_POOL",
+                        terminal_status=BLOCKED_INSUFFICIENT_GRADUATED_POOL,
+                        first_terminal_cause=BLOCKED_INSUFFICIENT_GRADUATED_POOL,
                         activated_slots=(),
                         selection_batch_id=None,
                     ),
                     lifecycle={
                         "run_id": command.run_id,
                         "run_status": "NOT_STARTED",
-                        "stop_reason": "BLOCKED_INSUFFICIENT_MATURE_POOL",
-                        "first_terminal_cause": "BLOCKED_INSUFFICIENT_MATURE_POOL",
+                        "stop_reason": BLOCKED_INSUFFICIENT_GRADUATED_POOL,
+                        "first_terminal_cause": BLOCKED_INSUFFICIENT_GRADUATED_POOL,
                         "lifecycle_started": False,
                         "forbidden_deltas": {},
                         "pending_or_running_run_steps": 0,
@@ -1347,7 +1373,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 connection,
                 command=command,
                 cycle_id=cycle_id,
-                bounded_candidates=mature_candidates,
+                bounded_candidates=graduated_candidates,
                 evaluated=evaluated,
                 deadline=deadline,
                 ledger=ledger,
@@ -1360,7 +1386,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
             connection.close()
         fixtures = replace(
             fixtures,
-            direct_observations=mature_candidates,
+            direct_observations=graduated_candidates,
             holder_evidence_eligibility=holder_facts,
         )
         result = self._driver.run(
@@ -1383,76 +1409,91 @@ class AuthoritativeLiveOperationalCampaignOwner:
         return result
 
     @staticmethod
-    def _full_pilot_admission_diagnostics(
+    def _full_pilot_graduation_diagnostics(
         *,
-        maturity_decisions: Sequence[tuple[Any, Any]],
+        graduation_decisions: Sequence[tuple[Any, str]],
         acquisition: Any,
         enrichment: Any,
-        reloaded_due: int,
+        fixtures: Any,
         staged_now: int,
         admitted: int | None = None,
         candidate_cap: int | None = None,
     ) -> dict[str, Any]:
-        """Honest channel + observed-age diagnostics for the full-pilot report.
+        """Honest graduation, channel and category diagnostics for the report.
 
-        Age is the finalized Pump create age, never a pair age. Pair age is not
-        fetched at admission, so it is reported as an explicit unknown.
+        Age is context, never eligibility. The origin create age is reported as
+        context; the eligibility decision is graduation only. Pair / post-graduation
+        age is not fetched at admission and is reported as an explicit unknown.
         """
+        graduation_proofs = dict(getattr(fixtures, "pumpswap_proofs", {}) or {})
         records: list[dict[str, Any]] = []
         state_counts: dict[str, int] = {
-            state.value: 0 for state in SnapshotMaturityState
+            GRADUATION_ELIGIBLE: 0,
+            GRADUATION_PENDING_DISCOVERY: 0,
+            GRADUATION_AMBIGUOUS_MARKET: 0,
+            GRADUATION_FAILED: 0,
+            GRADUATION_MARKET_IDENTITY_INVALID: 0,
         }
-        for proof, decision in maturity_decisions:
-            state_counts[decision.state.value] += 1
+        latest_graduated = 0
+        non_latest_graduated = 0
+        for proof, state in graduation_decisions:
+            state_counts[state] = state_counts.get(state, 0) + 1
+            graduation = graduation_proofs.get(proof.mint)
+            market_identity = (
+                f"solana-mainnet:pumpswap:{graduation.pool_address}"
+                if state == GRADUATION_ELIGIBLE and graduation is not None
+                else None
+            )
+            if state == GRADUATION_ELIGIBLE:
+                # A direct-origin graduated candidate is a newly-graduated latest
+                # token; secondary-discovered graduated tokens are non-latest.
+                latest_graduated += 1
             records.append(
                 {
                     "mint_identity": proof.mint.lower(),
-                    "state": decision.state.value,
+                    "graduation_state": state,
+                    "selectable": state == GRADUATION_ELIGIBLE,
                     "origin_block_time_epoch": int(proof.block_time),
-                    "observed_origin_age_seconds": (
-                        int(decision.evaluated_at_utc.timestamp())
-                        - int(proof.block_time)
+                    "market_identity": market_identity,
+                    "token_age_context": "AGE_IS_CONTEXT_NOT_ELIGIBILITY",
+                    "post_graduation_age_context": (
+                        "UNKNOWN_NOT_FETCHED_AT_ADMISSION"
                     ),
-                    "origin_block_time_utc": (
-                        decision.origin_block_time_utc.isoformat()
-                        if decision.origin_block_time_utc is not None
-                        else None
-                    ),
-                    "due_at_utc": (
-                        decision.due_at_utc.isoformat()
-                        if decision.due_at_utc is not None
-                        else None
-                    ),
-                    "evaluated_at_utc": decision.evaluated_at_utc.isoformat(),
-                    "pair_age_context": "UNKNOWN_PAIR_AGE_NOT_FETCHED_AT_ADMISSION",
                 }
             )
-        mature_count = sum(
-            1
-            for _proof, decision in maturity_decisions
-            if decision.state is SnapshotMaturityState.DUE
-        )
+        graduated_count = state_counts[GRADUATION_ELIGIBLE]
+        blocked_channels = {
+            "GECKO_TRENDING_TOP": "SKIPPED_BLOCKED_CONTRACT",
+            "SOLANA_TRACKER_TRENDING_TOP": "SKIPPED_BLOCKED_CONTRACT",
+            "PUMPPORTAL_MIGRATION_FEED": "SKIPPED_BLOCKED_CONTRACT",
+        }
         return {
-            "threshold_seconds": SNAPSHOT_MATURITY_SECONDS,
-            "candidate_universe": len(maturity_decisions),
-            "mature_candidate_count": mature_count,
-            "mature_available": mature_count,
-            "mature_admitted": mature_count if admitted is None else admitted,
+            "eligibility_rule": "GRADUATION_ONLY",
+            "candidate_universe": len(graduation_decisions),
+            "graduated_candidate_count": graduated_count,
+            "graduated_available": graduated_count,
+            "graduated_admitted": graduated_count if admitted is None else admitted,
             "candidate_cap": candidate_cap,
-            "state_counts": state_counts,
+            "graduation_state_counts": state_counts,
+            "latest_vs_non_latest": {
+                "LATEST_GRADUATED": latest_graduated,
+                "NON_LATEST_GRADUATED": non_latest_graduated,
+            },
             "candidates": tuple(records),
             "channel_counts": {
-                "LATEST_PUMPFUN": len(acquisition.origin_proofs),
-                "STAGED_DUE_REGISTRY": reloaded_due,
+                "LATEST_PUMPFUN_PENDING_DISCOVERY": len(acquisition.origin_proofs),
                 "GECKO_TRENDING_ENRICH": len(enrichment.gecko_ops),
                 "TRACKER_ENRICH": len(enrichment.tracker_ops),
                 "DEXSCREENER_ENRICH": len(enrichment.dexscreener_ops),
+                "PUMPSWAP_CONFIRMED": graduated_count,
             },
-            "staged_this_cycle": staged_now,
+            "blocked_channels": blocked_channels,
+            "staged_pending_discovery_this_cycle": staged_now,
             "note": (
-                "Maturity is applied before the candidate cap; the active pool is "
-                "the categorically due (>=900s) subset. Newest immature creates "
-                "are staged, not selected, and never consume a cap slot."
+                "Graduation is mandatory eligibility; age is context only. Direct "
+                "LATEST_PUMPFUN creates are pending discovery (bonding-curve / "
+                "unpaired) and are never selectable without confirmed PumpSwap "
+                "graduation and an exact post-graduation market identity."
             ),
         }
 
@@ -1472,11 +1513,15 @@ class AuthoritativeLiveOperationalCampaignOwner:
         timeout_seconds: float = DEFAULT_CALL_TIMEOUT_SECONDS,
         byte_ceiling: int = DEFAULT_RESPONSE_BYTE_CEILING,
         tracker_api_key: str | None = None,
+        graduation_proofs: Mapping[str, Any] | None = None,
     ) -> ReadinessResult:
         """Reach live origin, secondary enrichment, merge/gates and a disposable
         dry-run atomic handoff — then stop before any lifecycle window.
 
         It never starts 15m, 1h, 4h, support-only 5m or promotion work.
+        V2-9.7E.41: activation is selection, so it obeys the graduation-only law —
+        only mints with confirmed PumpSwap graduation in ``graduation_proofs`` can
+        reach the dry-run handoff.
         """
         from printer_v1.operator_cli.durable_external_operation_log import (
             DurablePumpRpcTransport,
@@ -1498,6 +1543,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
             timeout_seconds=timeout_seconds,
             byte_ceiling=byte_ceiling,
             tracker_api_key=tracker_api_key,
+        )
+        fixtures = replace(
+            fixtures, pumpswap_proofs=dict(graduation_proofs or {})
         )
 
         executor = CombinedPumpfunCampaignExecutor(fixtures)

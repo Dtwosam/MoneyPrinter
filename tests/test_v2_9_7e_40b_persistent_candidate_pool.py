@@ -24,9 +24,10 @@ from printer_v1.operator_cli.authoritative_live_operational_campaign import (
     LivePumpOriginAdapter,
 )
 from printer_v1.operator_cli.persistent_candidate_pool import (
-    pool_maturity_state,
+    export_graduated_pilot_candidates,
+    pool_pending_discovery_state as pool_maturity_state,
     record_acquisition_into_pool,
-    seed_attempt_from_pool,
+    seed_pending_discovery_from_pool as seed_attempt_from_pool,
 )
 from printer_v1.sources.pumpfun_origin import (
     PumpCreateObservation,
@@ -214,6 +215,27 @@ class PersistentCandidatePoolTests(unittest.TestCase):
         seeded = seed_attempt_from_pool(self.pool, self.attempt, evaluated_at=near)
         self.assertEqual(seeded["exported"], 0)
         self.assertEqual(seeded["copied"], 0)
+
+    def test_graduated_export_excludes_pending_discovery_origins(self) -> None:
+        # V2-9.7E.41: pending-discovery seeding is NOT a selectable export, and the
+        # graduated-only pilot export is empty for bonding-curve origins of ANY age.
+        acquisition = _acquire(
+            [(BASE_BT, "penA"), (BASE_BT + 5, "penB"), (BASE_BT + 10, "penC")]
+        )
+        record_acquisition_into_pool(
+            self.pool, acquisition, now="2026-07-23T00:00:00+00:00"
+        )
+        far = datetime.fromtimestamp(BASE_BT + 10_000).astimezone().isoformat()
+        # Pending-discovery seeding still copies origins (age context) ...
+        seeded = seed_attempt_from_pool(self.pool, self.attempt, evaluated_at=far)
+        self.assertEqual(seeded["exported"], 3)
+        self.assertEqual(seeded["population"], "PENDING_DISCOVERY_NOT_SELECTABLE")
+        # ... but the graduated pilot export is empty (no graduation evidence).
+        graduated = export_graduated_pilot_candidates(self.pool)
+        self.assertEqual(graduated["exported"], 0)
+        self.assertEqual(graduated["graduated_candidates"], [])
+        self.assertEqual(graduated["pending_discovery_origins"], 3)
+        self.assertEqual(graduated["reason"], "NO_PERSISTED_GRADUATION_EVIDENCE")
 
 
 if __name__ == "__main__":  # pragma: no cover

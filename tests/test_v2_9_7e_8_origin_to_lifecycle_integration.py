@@ -23,6 +23,7 @@ from printer_v1.discovery.combined_executor import (
     CombinedDiscoveryFixtures,
     CombinedPumpfunCampaignExecutor,
     FixtureOriginProof,
+    FixturePumpSwapProof,
 )
 from printer_v1.operator_cli.abstract_campaign_command import (
     AbstractCampaignCommand,
@@ -175,6 +176,16 @@ class _IntegrationBase(unittest.TestCase):
         )
 
     def _fixtures(self, origins: tuple[FixtureOriginProof, ...]) -> CombinedDiscoveryFixtures:
+        # V2-9.7E.41 graduation-only law: activation requires confirmed PumpSwap
+        # graduation. Each origin is graduated to a confirmed PumpSwap pool (the
+        # origin's bonding-curve address) so the integration exercises lawful
+        # graduated candidates.
+        pumpswap_proofs = {
+            origin.mint: FixturePumpSwapProof(
+                mint=origin.mint, pool_address=origin.bonding_curve
+            )
+            for origin in origins
+        }
         return CombinedDiscoveryFixtures(
             cycle_id="cyc",
             cycle_cutoff=CUTOFF,
@@ -183,6 +194,7 @@ class _IntegrationBase(unittest.TestCase):
             git_provenance_identity="git-integration",
             evaluated_at=NOW,
             direct_observations=origins,
+            pumpswap_proofs=pumpswap_proofs,
         )
 
     def _two_origin_fixtures(self) -> CombinedDiscoveryFixtures:
