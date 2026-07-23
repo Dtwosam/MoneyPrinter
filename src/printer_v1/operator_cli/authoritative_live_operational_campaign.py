@@ -1458,6 +1458,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
         secret_present: bool | None = None,
         preflight_runtime_overrides: Mapping[str, Any] | None = None,
         preflight_budget_overrides: Mapping[str, Any] | None = None,
+        cancellation_requested: bool = False,
     ) -> SnapshotReadinessResult:
         """Execute the SNAPSHOT_READINESS boundary and stop.
 
@@ -1480,10 +1481,15 @@ class AuthoritativeLiveOperationalCampaignOwner:
             build_ledger,
         )
         from printer_v1.operator_cli.readiness_source_contract_preflight import (
+            READINESS_CANDIDATE_CAP,
             build_readiness_source_contract_preflight,
         )
         from printer_v1.operator_cli.snapshot_readiness_owner import (
             execute_readiness_snapshot_bundle,
+        )
+        from printer_v1.scheduler.snapshot_maturity import (
+            SnapshotMaturityState,
+            evaluate_snapshot_maturity,
         )
 
         def _blocked(
@@ -1610,8 +1616,50 @@ class AuthoritativeLiveOperationalCampaignOwner:
         )
         bounded_candidates = _finalized_holder_candidates(
             acquisition.origin_proofs,
-            limit=min(HOLDER_ELIGIBILITY_CANDIDATE_MAX, ledger.candidate_cap()),
+            limit=min(
+                HOLDER_ELIGIBILITY_CANDIDATE_MAX,
+                READINESS_CANDIDATE_CAP,
+                ledger.candidate_cap(),
+            ),
         )
+        maturity_decisions = tuple(
+            (
+                proof,
+                evaluate_snapshot_maturity(
+                    pump_block_time=proof.block_time,
+                    evaluated_at=evaluated,
+                    cancelled=cancellation_requested,
+                ),
+            )
+            for proof in bounded_candidates
+        )
+        mature_candidates = tuple(
+            proof
+            for proof, decision in maturity_decisions
+            if decision.state is SnapshotMaturityState.DUE
+        )
+        maturity_records = tuple(
+            {
+                "mint_identity": proof.mint.lower(),
+                "state": decision.state.value,
+                "origin_block_time_utc": (
+                    decision.origin_block_time_utc.isoformat()
+                    if decision.origin_block_time_utc is not None else None
+                ),
+                "due_at_utc": (
+                    decision.due_at_utc.isoformat()
+                    if decision.due_at_utc is not None else None
+                ),
+                "evaluated_at_utc": decision.evaluated_at_utc.isoformat(),
+            }
+            for proof, decision in maturity_decisions
+        )
+        maturity_state_counts = {
+            state.value: sum(
+                decision.state is state for _proof, decision in maturity_decisions
+            )
+            for state in SnapshotMaturityState
+        }
 
         base_factory = (
             geckoterminal_base_adapter_factory
@@ -1628,12 +1676,16 @@ class AuthoritativeLiveOperationalCampaignOwner:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         try:
-            # 5. Holder eligibility (shared committed funnel).
+            # 5. Holder eligibility (shared committed funnel). Snapshot maturity
+            # is Scheduler-owned and precedes holder I/O. A pool smaller than
+            # the two-bundle goal persists the ledger with zero holder calls.
             holder_facts, ledger = self._evaluate_holder_eligibility(
                 connection,
                 command=command,
                 cycle_id=cycle_id,
-                bounded_candidates=bounded_candidates,
+                bounded_candidates=(
+                    mature_candidates if len(mature_candidates) >= 2 else ()
+                ),
                 evaluated=evaluated,
                 deadline=deadline,
                 ledger=ledger,
@@ -1726,6 +1778,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
         # 9. Fixed readiness gates — every one must hold to become READY.
         gates = {
             "preflight_ready": preflight["status"] == "READY",
+            "two_mature_candidates": len(mature_candidates) >= 2,
             "exactly_two_complete_bundles": complete_bundles == 2,
             "two_holder_eligible_candidates": holder_eligible >= 2,
             "two_persisted_readiness_snapshots": len(readiness_snapshots) == 2,
@@ -1744,6 +1797,13 @@ class AuthoritativeLiveOperationalCampaignOwner:
 
         if not blocked_reasons:
             status = "READY"
+        elif cancellation_requested:
+            status = "CANCELLED"
+        elif (
+            len(mature_candidates) < 2
+            and len(mature_candidates) < len(bounded_candidates)
+        ):
+            status = "BLOCKED_INSUFFICIENT_MATURE_POOL"
         elif holder_eligible < 2:
             status = "BLOCKED_INSUFFICIENT_ELIGIBLE_POOL"
         elif complete_bundles < 2:
@@ -1760,6 +1820,12 @@ class AuthoritativeLiveOperationalCampaignOwner:
             "pump_underlying_rpc": acquisition.result.accounting.underlying_rpc_operations,
             "secondary_requested": enrichment.requested,
             "secondary_failures": enrichment.failures,
+            "snapshot_maturity": {
+                "threshold_seconds": 900,
+                "mature_candidate_count": len(mature_candidates),
+                "state_counts": maturity_state_counts,
+                "candidates": maturity_records,
+            },
             "holder_eligible_count": holder_eligible,
             "complete_bundle_count": complete_bundles,
             "persisted_readiness_snapshots": len(readiness_snapshots),
@@ -1773,7 +1839,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
             "replay_new_source_calls": replay_new_source_calls,
             "budget": {
                 "operation_ceiling": ledger.operation_ceiling,
-                "candidate_cap": bounded_candidates and ledger.candidate_cap(),
+                "candidate_cap": READINESS_CANDIDATE_CAP,
                 "reserved_snapshot_operations": ledger.reserved_snapshot_operations,
                 "reserved_snapshot_completion_operations": (
                     ledger.reserved_snapshot_completion_operations
