@@ -486,5 +486,108 @@ class TestOrchestratorAndPersistence:
         assert report["source_operation_ledger"]["graduated_candidates"] == 0
 
 
+class TestBL4201Robustness:
+    """BL-42-01: transient not-yet-finalized transactions re-verify; non-transient
+    failures never retry; multi-round collection accumulates and deduplicates."""
+
+    def test_transient_failure_reverifies_and_confirms(self):
+        db = _temp_db()
+        pool_acct = _pool_acct(_MINT_A)
+        tx = _migration_tx(_POOL_A, _MINT_A)
+        calls = {"n": 0}
+
+        def factory(mint, signature):
+            def transport(context):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    # First attempt: transaction not yet queryable (transient).
+                    return {
+                        "fixture_status": "failure",
+                        "failure_type": "pumpswap_rpc_transport_error",
+                        "failure_message": "timeout",
+                    }
+                # Second attempt after settle: confirmed.
+                from printer_v1.sources.pump_migration import verify_graduation_from_transaction
+                v = verify_graduation_from_transaction(tx, {_POOL_A: pool_acct}, expected_mint=mint)
+                return {
+                    "pumpswap_confirmation": v["pumpswap_confirmation"],
+                    "pumpswap_resolution": v["pumpswap_resolution"],
+                    "migration_signature": signature,
+                    "migration_block_time": v["migration_block_time"],
+                    "migration_slot": v["migration_slot"],
+                }
+            return transport
+
+        report = dmd.run_direct_migration_discovery(
+            db,
+            migration_transport=_migration_transport(
+                [{"mint": _MINT_A, "signature": _SIG_A, "newRaydiumPool": _POOL_A}]
+            ),
+            verifier_transport_factory=factory,
+            now=_NOW,
+            reverify_on_transient=True,
+        )
+        assert report["confirmed_count"] == 1
+        assert report["verifications"][0]["verify_attempts"] == 2
+        assert calls["n"] == 2
+
+    def test_non_transient_failure_not_retried(self):
+        db = _temp_db()
+        calls = {"n": 0}
+
+        def factory(mint, signature):
+            def transport(context):
+                calls["n"] += 1
+                # Non-transient: a genuine graduation failure (wrong owner).
+                return {
+                    "fixture_status": "failure",
+                    "failure_type": "graduation_verification_failed_pool_resolution_pool_owner_not_pumpswap_program",
+                    "failure_message": "wrong owner",
+                }
+            return transport
+
+        report = dmd.run_direct_migration_discovery(
+            db,
+            migration_transport=_migration_transport(
+                [{"mint": _MINT_A, "signature": _SIG_A, "newRaydiumPool": _POOL_A}]
+            ),
+            verifier_transport_factory=factory,
+            now=_NOW,
+            reverify_on_transient=True,
+        )
+        assert report["confirmed_count"] == 0
+        assert report["verifications"][0]["verify_attempts"] == 1
+        assert calls["n"] == 1
+
+    def test_multi_round_collection_accumulates_and_dedups(self, monkeypatch):
+        db = _temp_db()
+        by_sig = dict([
+            _graduated_case(_MINT_A, _SIG_A, _POOL_A),
+            _graduated_case(_MINT_B, _SIG_B, _POOL_B),
+        ])
+        factory = _live_verifier_factory(monkeypatch, by_sig)
+        rounds = {"n": 0}
+
+        def migration_transport(context):
+            rounds["n"] += 1
+            if rounds["n"] == 1:
+                return {"events": [{"mint": _MINT_A, "signature": _SIG_A, "newRaydiumPool": _POOL_A}]}
+            # Round 2 re-sees A (duplicate across rounds) and adds B.
+            return {"events": [
+                {"mint": _MINT_A, "signature": _SIG_A, "newRaydiumPool": _POOL_A},
+                {"mint": _MINT_B, "signature": _SIG_B, "newRaydiumPool": _POOL_B},
+            ]}
+
+        report = dmd.run_direct_migration_discovery(
+            db, migration_transport=migration_transport,
+            verifier_transport_factory=factory, now=_NOW, collection_rounds=2,
+        )
+        assert report["migration_intake"]["collection_rounds"] == 2
+        assert report["migration_intake"]["valid_pair_count"] == 2
+        assert report["migration_intake"]["duplicate"] == 1  # A re-seen in round 2
+        assert report["confirmed_count"] == 2
+        assert report["source_operation_ledger"]["graduated_candidates"] == 2
+
+
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))

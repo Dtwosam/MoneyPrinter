@@ -19,6 +19,7 @@ token creation time.
 from __future__ import annotations
 
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
@@ -60,6 +61,71 @@ _FORBIDDEN_TABLES = (
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# V2-9.7E.42 (BL-42-01): a migration NOTIFICATION arrives before its finalized
+# transaction is queryable on the public multi-backend RPC. A verification that
+# fails with one of these transient reasons is not a graduation failure — the
+# transaction is simply not yet retrievable — so it is eligible for exactly one
+# bounded governed re-verification after a settle window. Non-transient failures
+# (wrong owner, mint mismatch, zero/ambiguous pool, failed tx) are never retried.
+_TRANSIENT_VERIFY_MARKERS = (
+    "pumpswap_rpc_transport_error",
+    "pumpswap_rpc_http_error",
+    "pumpswap_rpc_malformed",
+    "migration_transaction_not_found",
+    "transaction_not_found",
+)
+
+
+def _is_transient_verify_failure(failure_type: str | None) -> bool:
+    if not failure_type:
+        return False
+    return any(marker in failure_type for marker in _TRANSIENT_VERIFY_MARKERS)
+
+
+def _merge_intakes(intakes: list[dict[str, Any]]) -> dict[str, Any]:
+    """Merge per-round intakes into one deduplicated intake across the attempt."""
+    merged_pairs: list[dict[str, str]] = []
+    by_mint: dict[str, str] = {}
+    by_sig: dict[str, str] = {}
+    conflicting: list[dict[str, str]] = []
+    events_received = 0
+    missing_mint = 0
+    missing_signature = 0
+    duplicate = 0
+    for intake in intakes:
+        events_received += intake["events_received"]
+        missing_mint += intake["missing_mint"]
+        missing_signature += intake["missing_signature"]
+        duplicate += intake["duplicate"]
+        conflicting.extend(intake["conflicting"])
+        for pair in intake["valid_pairs"]:
+            mint, sig = pair["mint"], pair["signature"]
+            prior_sig = by_mint.get(mint)
+            prior_mint = by_sig.get(sig)
+            if (prior_sig is not None and prior_sig != sig) or (
+                prior_mint is not None and prior_mint != mint
+            ):
+                conflicting.append({"kind": "CROSS_ROUND_CONFLICT", "mint": mint, "signature": sig})
+                continue
+            if prior_sig == sig or prior_mint == mint:
+                duplicate += 1
+                continue
+            by_mint[mint] = sig
+            by_sig[sig] = mint
+            merged_pairs.append({"mint": mint, "signature": sig})
+    return {
+        "events_received": events_received,
+        "valid_pairs": merged_pairs,
+        "valid_pair_count": len(merged_pairs),
+        "missing_mint": missing_mint,
+        "missing_signature": missing_signature,
+        "duplicate": duplicate,
+        "conflicting": conflicting,
+        "conflicting_count": len(conflicting),
+        "collection_rounds": len(intakes),
+    }
 
 
 def intake_migration_events(
@@ -162,6 +228,10 @@ def run_direct_migration_discovery(
     now: str | None = None,
     request_key_prefix: str = "v2-9-7e-42",
     max_candidates: int = 5,
+    collection_rounds: int = 1,
+    settle_seconds: float = 0.0,
+    reverify_on_transient: bool = False,
+    reverify_settle_seconds: float = 0.0,
 ) -> dict[str, Any]:
     """Run one bounded direct-migration discovery cycle (governed, fail-closed).
 
@@ -170,6 +240,15 @@ def run_direct_migration_discovery(
     the governed PumpSwap graduation-verifier transport for one candidate; when
     omitted, the live ``build_graduation_verifier_transport`` is used. All source
     execution goes through the Source Governor and is recorded in the source ledger.
+
+    BL-42-01 robustness (live discovery): ``collection_rounds`` issues that many
+    bounded governed migration requests, accumulating deduplicated locator pairs;
+    ``settle_seconds`` is a single bounded wait before verification so freshly
+    migrated transactions finalize; ``reverify_on_transient`` allows exactly one
+    additional bounded governed verification per candidate whose first attempt
+    failed with a transient RPC/not-found reason (never a graduation failure).
+    Defaults preserve the original single-round, no-wait behaviour for fixtures.
+
     Returns a full discovery report; raises nothing on ordinary market/verification
     failures (they are recorded honestly).
     """
@@ -183,71 +262,94 @@ def run_direct_migration_discovery(
     connection = sqlite3.connect(str(db_path))
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
-    try:
-        # --- Migration intake (governed) ------------------------------------
-        migration_adapter = build_pumpportal_adapter(
-            enabled=True, fixture_transport=migration_transport
-        )
-        migration_request = build_governed_source_request(
+    migration_request_count = 0
+    pumpswap_request_count = 0
+
+    def _governed_migration(round_index: int) -> dict[str, Any]:
+        nonlocal migration_request_count
+        adapter = build_pumpportal_adapter(enabled=True, fixture_transport=migration_transport)
+        request = build_governed_source_request(
             MIGRATION_SOURCE,
             MIGRATION_REQUEST_KIND,
-            request_key=f"{request_key_prefix}-migration",
+            request_key=f"{request_key_prefix}-migration-r{round_index}",
             tracking_priority=0,
             payload={"request_kind": MIGRATION_REQUEST_KIND, "chain": "solana"},
         )
-        migration_exec = execute_source_request_with_governor(
-            connection, migration_request, migration_adapter, recent_request_count=0
+        execution = execute_source_request_with_governor(
+            connection, request, adapter, recent_request_count=migration_request_count
         )
-        migration_result = migration_exec.normalized_result
-        migration_ok = (
-            migration_result.source_status in {SourceStatus.COMPLETE, SourceStatus.PARTIAL}
-            and not migration_result.failure_type
+        migration_request_count += 1
+        result = execution.normalized_result
+        ok = (
+            result.source_status in {SourceStatus.COMPLETE, SourceStatus.PARTIAL}
+            and not result.failure_type
         )
-        intake = intake_migration_events(
-            migration_result.normalized_payload if migration_ok else None
+        one = intake_migration_events(result.normalized_payload if ok else None)
+        if not ok:
+            one["migration_stream_failure"] = result.failure_type
+        return one
+
+    def _governed_verify(mint: str, signature: str, attempt: int):
+        nonlocal pumpswap_request_count
+        verifier_transport = verifier_transport_factory(mint, signature)
+        adapter = build_pumpswap_adapter(enabled=True, fixture_transport=verifier_transport)
+        request = build_governed_source_request(
+            VERIFY_SOURCE,
+            VERIFY_REQUEST_KIND,
+            request_key=f"{request_key_prefix}-verify-{mint}-a{attempt}",
+            tracking_priority=0,
+            payload={
+                "request_kind": VERIFY_REQUEST_KIND,
+                "mint": mint,
+                "migration_signature": signature,
+                "chain": "solana",
+            },
         )
-        if not migration_ok:
-            intake["migration_stream_failure"] = migration_result.failure_type
+        execution = execute_source_request_with_governor(
+            connection, request, adapter, recent_request_count=pumpswap_request_count
+        )
+        pumpswap_request_count += 1
+        return execution.normalized_result
+
+    try:
+        # --- Migration intake (governed, multi-round) -----------------------
+        round_intakes = [_governed_migration(r) for r in range(max(1, collection_rounds))]
+        intake = _merge_intakes(round_intakes)
+
+        # --- Bounded settle so freshly migrated transactions finalize -------
+        if settle_seconds > 0 and intake["valid_pair_count"] > 0:
+            time.sleep(settle_seconds)
 
         # --- Per-candidate governed on-chain verification -------------------
         verifications: list[dict[str, Any]] = []
         confirmed_this_cycle: list[str] = []
-        pumpswap_request_count = 0
         for pair in intake["valid_pairs"][:max_candidates]:
             mint = pair["mint"]
             signature = pair["signature"]
-            verifier_transport = verifier_transport_factory(mint, signature)
-            verify_adapter = build_pumpswap_adapter(
-                enabled=True, fixture_transport=verifier_transport
-            )
-            verify_request = build_governed_source_request(
-                VERIFY_SOURCE,
-                VERIFY_REQUEST_KIND,
-                request_key=f"{request_key_prefix}-verify-{mint}",
-                tracking_priority=0,
-                payload={
-                    "request_kind": VERIFY_REQUEST_KIND,
-                    "mint": mint,
-                    "migration_signature": signature,
-                    "chain": "solana",
-                },
-            )
-            verify_exec = execute_source_request_with_governor(
-                connection,
-                verify_request,
-                verify_adapter,
-                recent_request_count=pumpswap_request_count,
-            )
-            pumpswap_request_count += 1
-            vres = verify_exec.normalized_result
+            vres = _governed_verify(mint, signature, attempt=1)
             verified = (
                 vres.source_status in {SourceStatus.COMPLETE, SourceStatus.PARTIAL}
                 and not vres.failure_type
             )
+            attempts = 1
+            if (
+                not verified
+                and reverify_on_transient
+                and _is_transient_verify_failure(vres.failure_type)
+            ):
+                if reverify_settle_seconds > 0:
+                    time.sleep(reverify_settle_seconds)
+                vres = _governed_verify(mint, signature, attempt=2)
+                verified = (
+                    vres.source_status in {SourceStatus.COMPLETE, SourceStatus.PARTIAL}
+                    and not vres.failure_type
+                )
+                attempts = 2
             record: dict[str, Any] = {
                 "mint": mint,
                 "signature": signature,
                 "verified": verified,
+                "verify_attempts": attempts,
             }
             if not verified:
                 record["failure_type"] = vres.failure_type
