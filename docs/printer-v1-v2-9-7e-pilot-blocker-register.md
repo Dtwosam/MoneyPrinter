@@ -18,7 +18,7 @@ full pilot. Created at V2-9.7E.39 (Full Pilot Attempt 1); updated at V2-9.7E.40
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | BL-39-01 | E.39 | E.40 | MISSING_INTEGRATION | `FULL_PILOT` (`run_operational`) never integrated the E.36-38 900s maturity boundary; it composed newest-create activation straight into lifecycle | E.40: `run_operational` applies the frozen 900s categorical maturity boundary + fail-closed `BLOCKED_INSUFFICIENT_MATURE_POOL` before any holder/lifecycle/memory work; distinguishes historical admission evidence from the forward WINDOW_15M | Does not guarantee two mature candidates on a cold-start attempt (see BL-39-03) | `<pending E.40 repair commit>` | `tests/test_v2_9_7e_40_full_pilot_admission.py` (3 tests) + regressions (E.11 54, maturity/readiness/pilot 45+5, origin 71) | Pending Attempt 1 | No | FIXED |
 | BL-39-02 | E.35 | E.36-38 | DESIGN_GAP | No approved categorical snapshot-maturity boundary coordinated candidate age with the completed-exact-15m requirement (readiness mode) | 900s categorical maturity admission before holder/snapshot I/O in `SNAPSHOT_READINESS`; `BLOCKED_INSUFFICIENT_MATURE_POOL` for <2 mature | Applies to `SNAPSHOT_READINESS` only; does not guarantee mature-candidate supply | `f7f5d73` | `tests/test_v2_9_7e_36_38_snapshot_maturity_boundary.py` (16 passed, 5 subtests) + regressions (44 passed) | No | N/A | FIXED |
-| BL-39-03 | E.34/E.35 | E.40 | CANDIDATE_SUPPLY | Full-pilot candidate universe consisted solely of the newest Pump create transactions (~170-243s old); no mechanism admitted older/staged candidates | E.40: newest-too-young creates are categorically excluded from the active pool; every confirmed origin is staged into the durable prospective-origin registry; previously staged origins that are now due are reloaded (zero-source) and unioned into the universe; channel/age reporting added | Cross-run staged pool is inert on a fresh isolated DB, so a cold-start attempt still usually blocks on supply; guaranteed mature supply needs an adopted secondary discovery provider or a persistent cross-run pool (operator decisions) | `68274a9` | `tests/test_v2_9_7e_40_full_pilot_admission.py` (staging reload + partition) | Pending Attempt 2 | No | PARTIAL |
+| BL-39-03 | E.34/E.35 | E.40 | CANDIDATE_SUPPLY | Full-pilot candidate universe consisted solely of the newest Pump create transactions (~170-243s old); no mechanism admitted older/staged candidates | E.40 admission (`68274a9`): newest-too-young creates categorically excluded, staged to registry, due reloaded zero-source. E.40 persistent pool: discovery-only durable pool retains confirmed origins across cycles, matures them categorically outside FULL_PILOT, and copies a bounded immutable DUE export into a fresh attempt for mixed-age mature supply | Discovery-channel diversity limited to direct LATEST_PUMPFUN; secondary trending/top/active coverage NOT proved (future operator decision); a live PASS needs ~15+ min maturation before 2 DUE | `68274a9` + `<pending pool commit>` | `test_v2_9_7e_40_full_pilot_admission.py` + `test_v2_9_7e_40b_persistent_candidate_pool.py` | Pending Attempt 3 | No | PARTIAL |
 | BL-40-01 | E.40 Attempt 1 | E.40 Attempt 1 | CODE_DEFECT | The E.40 fail-closed admission terminal returns a campaign `run_id` with no `printer_memory_factory_runs` row; the live pilot runner unconditionally called `_sup.attach_run`, which failed the supervision `run_id` foreign key | E.40 repair: `run_two_token_operational_pilot` skips `attach_run` and factory replay when `lifecycle_started` is False, finalizing supervision directly from the honest terminal (a pre-lifecycle block has no factory run to attach) | None known; a lifecycle that does start still attaches + replays as before | `<pending E.40 attempt-1 repair commit>` | `tests/test_v2_9_7e_40_full_pilot_admission.py::BlockedFullPilotThroughRunnerTests` + E.14 (13 passed) | Pending Attempt 2 | No | FIXED |
 
 ## Fixed blockers
@@ -36,14 +36,27 @@ full pilot. Created at V2-9.7E.39 (Full Pilot Attempt 1); updated at V2-9.7E.40
 
 ## Partially fixed blockers
 
-- **BL-39-03** — Candidate supply. E.40 made the structural repair: newest,
-  too-young creates can no longer be the active selection pool (categorically
-  excluded by maturity), every confirmed origin is staged into the durable
-  prospective-origin registry, and previously staged origins that are now due
-  are reloaded with zero source calls. Remaining limitation: on a fresh isolated
-  DB the staged pool is empty, so a cold-start attempt still usually blocks on
-  supply. Full mature-supply sufficiency needs an adopted secondary discovery
-  provider or a persistent cross-run staged pool — both operator decisions.
+- **BL-39-03** — Candidate supply (structural, not observation-only). Two-stage
+  repair:
+  - E.40 admission (commit `68274a9`): newest, too-young creates can no longer be
+    the active selection pool (categorically excluded by maturity); confirmed
+    origins are staged into the durable registry; due staged origins reload
+    zero-source. Proved live at Attempt 2.
+  - E.40 persistent pool (operator-approved Option 1): a discovery-only
+    persistent pool (existing `printer_pumpfun_finalized_origin_registry`,
+    reused — no new table) retains confirmed origins across bounded acquisition
+    cycles; they mature categorically through real wall clock / Scheduler-owned
+    states outside `FULL_PILOT`; a bounded immutable DUE export is copied into a
+    fresh isolated attempt DB, and the existing E.40 admission + combined
+    selection produce two mature candidates. This supplies the mixed-age mature
+    candidates a cold start could not.
+  - **What is fixed:** the full-pilot candidate universe is no longer solely the
+    newest creates, and a persistent mixed-age Pump-origin supply now exists.
+  - **Remaining limitation (explicit):** discovery-channel diversity is still
+    limited to the direct `LATEST_PUMPFUN` origin channel; trending/top/active
+    secondary-channel candidate coverage is NOT proved by this repair and remains
+    a separate future operator decision. A live Attempt 3 also requires ~15+
+    minutes of real maturation time before two candidates are DUE.
 
 ## Open blockers
 
@@ -230,6 +243,22 @@ full pilot. Created at V2-9.7E.39 (Full Pilot Attempt 1); updated at V2-9.7E.40
     and no attach/FK error; E.14 pilot-runner suite (13) still passes.
   - **Can recur:** No — the pre-lifecycle branch is now explicit and tested.
 - **Live proof after fix:** pending Attempt 2.
+
+## E.40 live attempt log
+
+| Attempt | Commit | Execution id | Terminal | First cause | Notes |
+|---|---|---|---|---|---|
+| 1 | `68274a9` | `e40-attempt1-20260723T170534Z` | not clean (exception) | `attach_run` FK failure (BL-40-01) | Reached live acquisition + admission; blocked, but pilot runner raised on the pre-lifecycle terminal. Repaired at `47e76e8`. |
+| 2 | `47e76e8` | `e40-attempt2-20260723T171456Z` | `GOVERNED_SAFE_STOP` (clean) | `BLOCKED_INSUFFICIENT_MATURE_POOL` (CANDIDATE_SUPPLY) | 8 confirmed origins staged; universe 3, all IMMATURE (ages 118-121s; block_times ~2026-07-23T17:12Z). mature=0. Channels: LATEST_PUMPFUN 8, GECKO_TRENDING 2, DEXSCREENER 1, STAGED_DUE 0. integrity ok, FK 0, all forbidden-capability counts 0, replay deterministic zero-source, lock released. |
+
+**Attempt 2 interpretation:** live proof that the E.40 repair works end-to-end —
+the full pilot applies the 900s maturity boundary, stages confirmed origins, and
+fails closed honestly with zero holder/lifecycle/memory/financial work when no
+candidate is mature. The block is the BL-39-03 structural cold-start supply
+limitation: real Pump creates are ~2 minutes old and a fresh isolated DB has an
+empty staged pool. No narrow code repair can supply two mature candidates on a
+cold start; resolution is an operator decision (persistent cross-run staged pool
+or an adopted secondary discovery provider with live origin verification).
 
 ## Cross-attempt guidance
 

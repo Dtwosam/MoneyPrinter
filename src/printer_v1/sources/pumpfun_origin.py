@@ -863,6 +863,79 @@ def load_due_staged_origins(
     return due
 
 
+_REGISTRY_EXPORT_COLUMNS = (
+    "mint_identity", "transaction_signature", "slot", "block_time", "program_id",
+    "bonding_curve", "associated_bonding_curve", "creator_address",
+    "creator_evidence_scope", "origin_state", "acquisition_mode", "create_layout",
+    "create_discriminator_hex", "token_program", "index_address",
+    "contract_version", "idl_sha256", "evidence_hash", "first_confirmed_at",
+)
+
+
+def export_due_confirmed_origins(
+    connection: Any,
+    *,
+    evaluated_epoch: int,
+    maturity_seconds: int,
+    exclude_mints: Iterable[str] = (),
+) -> list[Mapping[str, Any]]:
+    """Bounded immutable export of DUE confirmed-origin rows (all columns).
+
+    A candidate export contains exact identity, origin evidence, timestamps and
+    provenance for confirmed origins that are categorically due. Zero source
+    calls; canonical ``(block_time, mint_identity)`` order.
+    """
+    excluded = {str(mint) for mint in exclude_mints}
+    cols = ",".join(_REGISTRY_EXPORT_COLUMNS)
+    rows = connection.execute(
+        f"SELECT {cols} FROM printer_pumpfun_finalized_origin_registry "
+        "WHERE origin_state='PUMPFUN_ORIGIN_CONFIRMED' "
+        "ORDER BY block_time, mint_identity"
+    ).fetchall()
+    export: list[Mapping[str, Any]] = []
+    for row in rows:
+        mint = str(row["mint_identity"])
+        if mint in excluded:
+            continue
+        if evaluated_epoch >= int(row["block_time"]) + int(maturity_seconds):
+            export.append(
+                MappingProxyType({col: row[col] for col in _REGISTRY_EXPORT_COLUMNS})
+            )
+    return export
+
+
+def import_confirmed_origin_row(connection: Any, row: Mapping[str, Any]) -> bool:
+    """Insert one exported confirmed-origin row verbatim into a fresh registry.
+
+    Idempotent for a byte-identical re-import; fail-closed as
+    ``ORIGIN_REGISTRY_CONFLICT`` for a conflicting signature/slot/evidence for a
+    known mint. Copies only immutable confirmed-origin candidate facts.
+    """
+    existing = connection.execute(
+        "SELECT transaction_signature, slot, evidence_hash FROM "
+        "printer_pumpfun_finalized_origin_registry WHERE mint_identity=?",
+        (row["mint_identity"],),
+    ).fetchone()
+    if existing is not None:
+        if (
+            existing["transaction_signature"] == row["transaction_signature"]
+            and int(existing["slot"]) == int(row["slot"])
+            and existing["evidence_hash"] == row["evidence_hash"]
+        ):
+            return False
+        raise OriginRegistryError(
+            "ORIGIN_REGISTRY_CONFLICT", str(row["mint_identity"])
+        )
+    cols = ",".join(_REGISTRY_EXPORT_COLUMNS)
+    placeholders = ",".join("?" * len(_REGISTRY_EXPORT_COLUMNS))
+    connection.execute(
+        f"INSERT INTO printer_pumpfun_finalized_origin_registry({cols}) "
+        f"VALUES ({placeholders})",
+        tuple(row[col] for col in _REGISTRY_EXPORT_COLUMNS),
+    )
+    return True
+
+
 def load_origin_cursor(
     connection: Any, index_address: str = PUMP_CREATE_INDEX_ADDRESS
 ) -> FinalizedOriginCursor:
