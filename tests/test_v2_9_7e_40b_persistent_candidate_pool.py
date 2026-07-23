@@ -28,7 +28,11 @@ from printer_v1.operator_cli.persistent_candidate_pool import (
     record_acquisition_into_pool,
     seed_attempt_from_pool,
 )
-from printer_v1.sources.pumpfun_origin import load_due_staged_origins
+from printer_v1.sources.pumpfun_origin import (
+    PumpCreateObservation,
+    load_due_staged_origins,
+    record_confirmed_origin,
+)
 
 from test_v2_9_7e_11_authoritative_live_operational_campaign import _FakePumpTransport
 from test_v2_9_7e_5_pump_origin_acquisition_architecture import (
@@ -140,6 +144,63 @@ class PersistentCandidatePoolTests(unittest.TestCase):
             exclude_mints={first["mints"][0]},
         )
         self.assertEqual(excluded["exported"], 1)
+
+    def test_reloaded_v2_origin_rerecord_is_idempotent(self) -> None:
+        # BL-40-03: a PUMP_CREATE_V2 origin, staged and reloaded, must carry its
+        # create_layout so the combined executor's re-record is idempotent rather
+        # than an evidence-hash conflict against the verbatim-seeded row.
+        conn = sqlite3.connect(self.pool)
+        conn.row_factory = sqlite3.Row
+        try:
+            for i in range(2):
+                obs = PumpCreateObservation(
+                    mint=f"v2mint{i}pump",
+                    bonding_curve=f"curve{i}",
+                    associated_bonding_curve=f"ata{i}",
+                    creator_address="creator",
+                    signature=f"v2sig{i}",
+                    slot=700 + i,
+                    block_time=BASE_BT + i,
+                    create_layout="PUMP_CREATE_V2",
+                )
+                record_confirmed_origin(conn, obs, now="2026-07-23T00:00:00+00:00")
+            conn.commit()
+        finally:
+            conn.close()
+
+        far = datetime.fromtimestamp(BASE_BT + 10_000).astimezone().isoformat()
+        seed_attempt_from_pool(self.pool, self.attempt, evaluated_at=far)
+
+        conn = sqlite3.connect(self.attempt)
+        conn.row_factory = sqlite3.Row
+        try:
+            due = load_due_staged_origins(
+                conn,
+                evaluated_epoch=BASE_BT + 10_000,
+                maturity_seconds=900,
+                exclude_mints=(),
+            )
+            self.assertEqual(len(due), 2)
+            for row in due:
+                self.assertEqual(row["create_layout"], "PUMP_CREATE_V2")
+                obs = PumpCreateObservation(
+                    mint=row["mint"],
+                    bonding_curve=row["bonding_curve"],
+                    associated_bonding_curve=row["associated_bonding_curve"],
+                    creator_address=row["creator_address"],
+                    signature=row["signature"],
+                    slot=row["slot"],
+                    block_time=row["block_time"],
+                    create_layout=row["create_layout"],
+                )
+                # Already present with matching evidence -> idempotent, no conflict.
+                self.assertFalse(
+                    record_confirmed_origin(
+                        conn, obs, now="2026-07-23T01:00:00+00:00"
+                    )
+                )
+        finally:
+            conn.close()
 
     def test_immature_pool_seeds_nothing(self) -> None:
         acquisition = _acquire([(BASE_BT, "young1"), (BASE_BT + 10, "young2")])

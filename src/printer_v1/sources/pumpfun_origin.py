@@ -834,7 +834,8 @@ def load_due_staged_origins(
     rows = connection.execute(
         """
         SELECT mint_identity, transaction_signature, slot, block_time,
-               bonding_curve, associated_bonding_curve, creator_address
+               bonding_curve, associated_bonding_curve, creator_address,
+               create_layout
         FROM printer_pumpfun_finalized_origin_registry
         WHERE origin_state = 'PUMPFUN_ORIGIN_CONFIRMED'
         ORDER BY block_time, mint_identity
@@ -857,6 +858,7 @@ def load_due_staged_origins(
                         "bonding_curve": row["bonding_curve"],
                         "associated_bonding_curve": row["associated_bonding_curve"],
                         "creator_address": row["creator_address"],
+                        "create_layout": row["create_layout"],
                     }
                 )
             )

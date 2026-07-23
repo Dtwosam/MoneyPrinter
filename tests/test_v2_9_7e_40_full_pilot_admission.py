@@ -294,6 +294,28 @@ class _BlockedFakeOwner:
         )
 
 
+class _ActivationFailedFakeOwner:
+    """Owner whose driver fails activation: no run identity, no lifecycle."""
+
+    def run_operational(self, *, command, **_kwargs):
+        return OriginLifecycleResult(
+            activation=ActivationResult(
+                terminal_status="FAILED",
+                first_terminal_cause="NO_ATOMIC_ACTIVATION",
+                activated_slots=(),
+                selection_batch_id=None,
+            ),
+            lifecycle={
+                "run_status": "NOT_STARTED",
+                "stop_reason": "NO_ATOMIC_ACTIVATION",
+                "first_terminal_cause": "NO_ATOMIC_ACTIVATION",
+                "lifecycle_started": False,
+                "forbidden_deltas": {},
+            },
+            lifecycle_started=False,
+        )
+
+
 class BlockedFullPilotThroughRunnerTests(e14._PilotRunnerBase):
     """The live pilot runner must terminate a pre-lifecycle block cleanly.
 
@@ -323,6 +345,18 @@ class BlockedFullPilotThroughRunnerTests(e14._PilotRunnerBase):
         self.assertEqual(
             result["full_pilot_admission"], {"mature_candidate_count": 0}
         )
+
+    def test_activation_failed_terminates_cleanly(self) -> None:
+        # No atomic activation -> no factory run identity. The runner must
+        # finalize a clean governed safe stop, not raise (BL-40-04).
+        owner = _ActivationFailedFakeOwner()
+        result, _owner, _paths = self._run(owner=owner, execution_id="e40-actfail-1")
+        self.assertEqual(result["status"], "PILOT_TERMINAL")
+        self.assertFalse(result["lifecycle_started"])
+        self.assertEqual(result["stop_reason"], "NO_ATOMIC_ACTIVATION")
+        self.assertIsNotNone(result["terminal_status"])
+        self.assertTrue(result["one_proof_lock_released"])
+        self.assertEqual(result["replay_new_source_calls"], 0)
 
 
 if __name__ == "__main__":  # pragma: no cover

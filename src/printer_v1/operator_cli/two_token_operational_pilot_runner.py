@@ -657,15 +657,16 @@ def run_two_token_operational_pilot(
 
     report = dict(result.lifecycle)
     run_id = str(report.get("run_id") or "")
-    if not run_id:
+    lifecycle_started = bool(getattr(result, "lifecycle_started", False))
+    if lifecycle_started and not run_id:
         raise PilotRunnerError("pilot campaign returned no run identity")
 
-    lifecycle_started = bool(getattr(result, "lifecycle_started", False))
-    # A full pilot that blocks in the pre-lifecycle admission gate (fewer than two
-    # categorically mature candidates) creates no factory lifecycle run. There is
-    # nothing to attach or replay: finalize supervision directly from the honest
-    # terminal report. Only a started lifecycle attaches a factory run and runs a
-    # deterministic report-only replay.
+    # A full pilot that terminates before any factory lifecycle run — a
+    # pre-lifecycle admission block (fewer than two mature candidates) or a
+    # no-atomic-activation / activation-failed terminal — creates no factory run.
+    # There is nothing to attach or replay: finalize supervision directly from the
+    # honest terminal report. Only a started lifecycle attaches a factory run and
+    # runs a deterministic report-only replay.
     if lifecycle_started:
         _sup.attach_run(target, execution_id, run_id, process_id=process_id)
     terminal = _sup.finalize_execution_from_report(target, execution_id, report)

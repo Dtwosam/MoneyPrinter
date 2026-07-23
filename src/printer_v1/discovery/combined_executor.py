@@ -174,6 +174,7 @@ class FixtureOriginProof:
     associated_bonding_curve: str = "ata"
     creator_address: str = "creator"
     confirmed: bool = True
+    create_layout: str = "PUMP_CREATE_V1"
 
 
 @dataclass(frozen=True)
@@ -956,6 +957,7 @@ class CombinedPumpfunCampaignExecutor:
                     signature=item.signature,
                     slot=item.slot,
                     block_time=item.block_time,
+                    create_layout=getattr(item, "create_layout", "PUMP_CREATE_V1"),
                 )
                 for item in fixtures.direct_observations
                 if item.confirmed

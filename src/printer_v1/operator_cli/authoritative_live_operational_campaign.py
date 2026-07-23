@@ -426,6 +426,7 @@ class LivePumpOriginAdapter:
                 associated_bonding_curve=observation.associated_bonding_curve,
                 creator_address=observation.creator_address,
                 confirmed=True,
+                create_layout=observation.create_layout,
             )
             for observation in result.observations
         )
@@ -1274,6 +1275,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     associated_bonding_curve=str(row["associated_bonding_curve"]),
                     creator_address=str(row["creator_address"]),
                     confirmed=True,
+                    create_layout=str(row["create_layout"]),
                 )
                 for row in load_due_staged_origins(
                     connection,

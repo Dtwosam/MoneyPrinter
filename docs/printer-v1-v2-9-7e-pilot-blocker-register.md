@@ -215,6 +215,53 @@ full pilot. Created at V2-9.7E.39 (Full Pilot Attempt 1); updated at V2-9.7E.40
 - **Can recur:** the cold-start supply limitation recurs by construction until an
   operator decision resolves supply sufficiency.
 
+### BL-40-03 — pool-seeded origin re-record layout conflict (E.40 Attempt 3)
+
+- **Attempt/stage:** Attempt 3, combined executor origin re-record, before any
+  observation/selection.
+- **Starting commit:** `61fe119`. **Execution id:** `e40-attempt3-20260723T174343Z`.
+- **First terminal cause:** `CombinedDiscoveryError(ORIGIN_REGISTRY_CONFLICT)`
+  from the executor, surfaced by the driver as `ACTIVATION_FAILED`.
+- **Evidence:** the 8 pool origins were `PUMP_CREATE_V2`; the executor
+  reconstructs `PumpCreateObservation` from the reduced `FixtureOriginProof`,
+  which dropped `create_layout` and defaulted to `PUMP_CREATE_V1`. Re-derived
+  `evidence_hash` differed from the verbatim-seeded rows for all 8, so
+  `record_confirmed_origin` raised `ORIGIN_REGISTRY_CONFLICT`. Reproduced offline
+  (8/8 hash mismatch).
+- **Category:** `CODE_DEFECT`.
+- **Root cause:** `FixtureOriginProof` (and `load_due_staged_origins`) did not
+  carry `create_layout`, so any round-trip through the reduced proof shape lost
+  the layout and conflicted with the verbatim confirmed-origin registry rows.
+- **Repair status:** `FIXED_IN_THIS_SPRINT`. `create_layout` is now carried by
+  `FixtureOriginProof`, returned by `load_due_staged_origins`, propagated by
+  live acquisition and the `run_operational` reload, and used in the executor's
+  reconstruction. The re-record is now idempotent for a matching origin.
+- **Files changed:** `combined_executor.py`,
+  `authoritative_live_operational_campaign.py`, `pumpfun_origin.py`.
+- **Offline proof:**
+  `tests/test_v2_9_7e_40b_persistent_candidate_pool.py::test_reloaded_v2_origin_rerecord_is_idempotent`
+  plus combined-executor / origin regressions.
+- **Can recur:** No for this cause. **Live proof after fix:** NOT yet — the
+  three-attempt ceiling is reached; a 4th attempt requires operator authorization.
+
+### BL-40-04 — pilot runner no-atomic-activation robustness (E.40 Attempt 3)
+
+- **Attempt/stage:** Attempt 3, post-`run_operational`, at the run-identity check.
+- **First terminal cause:** `PilotRunnerError("pilot campaign returned no run
+  identity")` — the driver's `ACTIVATION_FAILED`/`NO_ATOMIC_ACTIVATION` terminal
+  returns no `run_id`, and the runner unconditionally required one.
+- **Category:** `CODE_DEFECT` (framework robustness).
+- **Root cause:** the pilot runner assumed any non-pre-lifecycle terminal has a
+  factory run id; a legitimate activation-failed terminal has none.
+- **Repair status:** `FIXED_IN_THIS_SPRINT`. The runner now requires `run_id`
+  only when `lifecycle_started` is True; otherwise it finalizes supervision from
+  the honest terminal report (governed safe stop), like a pre-lifecycle block.
+- **Files changed:** `two_token_operational_pilot_runner.py`.
+- **Offline proof:**
+  `tests/test_v2_9_7e_40_full_pilot_admission.py::BlockedFullPilotThroughRunnerTests::test_activation_failed_terminates_cleanly`.
+- **Can recur:** No — the pre-run-identity path is explicit and tested.
+- **Live proof after fix:** NOT yet (ceiling reached).
+
 ### BL-40-02 — maturity-before-cap ordering (E.40 pool integration, static)
 
 - **Found by:** static inspection while wiring the persistent pool into Attempt 3
@@ -272,6 +319,7 @@ full pilot. Created at V2-9.7E.39 (Full Pilot Attempt 1); updated at V2-9.7E.40
 |---|---|---|---|---|---|
 | 1 | `68274a9` | `e40-attempt1-20260723T170534Z` | not clean (exception) | `attach_run` FK failure (BL-40-01) | Reached live acquisition + admission; blocked, but pilot runner raised on the pre-lifecycle terminal. Repaired at `47e76e8`. |
 | 2 | `47e76e8` | `e40-attempt2-20260723T171456Z` | `GOVERNED_SAFE_STOP` (clean) | `BLOCKED_INSUFFICIENT_MATURE_POOL` (CANDIDATE_SUPPLY) | 8 confirmed origins staged; universe 3, all IMMATURE (ages 118-121s; block_times ~2026-07-23T17:12Z). mature=0. Channels: LATEST_PUMPFUN 8, GECKO_TRENDING 2, DEXSCREENER 1, STAGED_DUE 0. integrity ok, FK 0, all forbidden-capability counts 0, replay deterministic zero-source, lock released. |
+| 3 | `61fe119` | `e40-attempt3-20260723T174343Z` | blocked, not clean (defects) | `ACTIVATION_FAILED` / `ORIGIN_REGISTRY_CONFLICT` (BL-40-03); pilot runner raised on no run_id (BL-40-04) | Pool populated (8 origins), matured through Scheduler-owned states OUTSIDE FULL_PILOT (~15 min), 8 DUE. Fresh attempt seeded with the bounded DUE export (8 copied). **Maturity/supply repair worked: mature candidates were admitted past the 900s gate.** But the executor's reduced-shape re-record of the seeded `PUMP_CREATE_V2` origins used a default `PUMP_CREATE_V1` layout → evidence-hash conflict → `ACTIVATION_FAILED`; no tokens/pairs/slots. All forbidden-capability counts 0. |
 
 **Attempt 2 interpretation:** live proof that the E.40 repair works end-to-end —
 the full pilot applies the 900s maturity boundary, stages confirmed origins, and
