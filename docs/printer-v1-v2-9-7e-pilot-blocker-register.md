@@ -18,7 +18,8 @@ full pilot. Created at V2-9.7E.39 (Full Pilot Attempt 1); updated at V2-9.7E.40
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | BL-39-01 | E.39 | E.40 | MISSING_INTEGRATION | `FULL_PILOT` (`run_operational`) never integrated the E.36-38 900s maturity boundary; it composed newest-create activation straight into lifecycle | E.40: `run_operational` applies the frozen 900s categorical maturity boundary + fail-closed `BLOCKED_INSUFFICIENT_MATURE_POOL` before any holder/lifecycle/memory work; distinguishes historical admission evidence from the forward WINDOW_15M | Does not guarantee two mature candidates on a cold-start attempt (see BL-39-03) | `<pending E.40 repair commit>` | `tests/test_v2_9_7e_40_full_pilot_admission.py` (3 tests) + regressions (E.11 54, maturity/readiness/pilot 45+5, origin 71) | Pending Attempt 1 | No | FIXED |
 | BL-39-02 | E.35 | E.36-38 | DESIGN_GAP | No approved categorical snapshot-maturity boundary coordinated candidate age with the completed-exact-15m requirement (readiness mode) | 900s categorical maturity admission before holder/snapshot I/O in `SNAPSHOT_READINESS`; `BLOCKED_INSUFFICIENT_MATURE_POOL` for <2 mature | Applies to `SNAPSHOT_READINESS` only; does not guarantee mature-candidate supply | `f7f5d73` | `tests/test_v2_9_7e_36_38_snapshot_maturity_boundary.py` (16 passed, 5 subtests) + regressions (44 passed) | No | N/A | FIXED |
-| BL-39-03 | E.34/E.35 | E.40 | CANDIDATE_SUPPLY | Full-pilot candidate universe consisted solely of the newest Pump create transactions (~170-243s old); no mechanism admitted older/staged candidates | E.40: newest-too-young creates are categorically excluded from the active pool; every confirmed origin is staged into the durable prospective-origin registry; previously staged origins that are now due are reloaded (zero-source) and unioned into the universe; channel/age reporting added | Cross-run staged pool is inert on a fresh isolated DB, so a cold-start attempt still usually blocks on supply; guaranteed mature supply needs an adopted secondary discovery provider or a persistent cross-run pool (operator decisions) | `<pending E.40 repair commit>` | `tests/test_v2_9_7e_40_full_pilot_admission.py` (staging reload + partition) | Pending Attempt 1 | No | PARTIAL |
+| BL-39-03 | E.34/E.35 | E.40 | CANDIDATE_SUPPLY | Full-pilot candidate universe consisted solely of the newest Pump create transactions (~170-243s old); no mechanism admitted older/staged candidates | E.40: newest-too-young creates are categorically excluded from the active pool; every confirmed origin is staged into the durable prospective-origin registry; previously staged origins that are now due are reloaded (zero-source) and unioned into the universe; channel/age reporting added | Cross-run staged pool is inert on a fresh isolated DB, so a cold-start attempt still usually blocks on supply; guaranteed mature supply needs an adopted secondary discovery provider or a persistent cross-run pool (operator decisions) | `68274a9` | `tests/test_v2_9_7e_40_full_pilot_admission.py` (staging reload + partition) | Pending Attempt 2 | No | PARTIAL |
+| BL-40-01 | E.40 Attempt 1 | E.40 Attempt 1 | CODE_DEFECT | The E.40 fail-closed admission terminal returns a campaign `run_id` with no `printer_memory_factory_runs` row; the live pilot runner unconditionally called `_sup.attach_run`, which failed the supervision `run_id` foreign key | E.40 repair: `run_two_token_operational_pilot` skips `attach_run` and factory replay when `lifecycle_started` is False, finalizing supervision directly from the honest terminal (a pre-lifecycle block has no factory run to attach) | None known; a lifecycle that does start still attaches + replays as before | `<pending E.40 attempt-1 repair commit>` | `tests/test_v2_9_7e_40_full_pilot_admission.py::BlockedFullPilotThroughRunnerTests` + E.14 (13 passed) | Pending Attempt 2 | No | FIXED |
 
 ## Fixed blockers
 
@@ -200,6 +201,35 @@ full pilot. Created at V2-9.7E.39 (Full Pilot Attempt 1); updated at V2-9.7E.40
   `tests/test_v2_9_7e_40_full_pilot_admission.py`.
 - **Can recur:** the cold-start supply limitation recurs by construction until an
   operator decision resolves supply sufficiency.
+
+### BL-40-01 — pilot runner pre-lifecycle block defect (E.40 Attempt 1)
+
+- **Attempt/stage:** Attempt 1, post-`run_operational`, at `attach_run`.
+- **Starting commit:** `68274a9`. **Execution id:** `e40-attempt1-20260723T170534Z`.
+- **First terminal cause:** `sqlite3.IntegrityError: FOREIGN KEY constraint
+  failed` at `proof_supervision.attach_run`. Attempt 1 did NOT terminate cleanly.
+- **Evidence:** Attempt 1 reached live acquisition and the new admission gate,
+  which returned a fail-closed `BLOCKED_INSUFFICIENT_MATURE_POOL` terminal with
+  `run_id="pilot-run"`. The live pilot runner then called `attach_run`, whose
+  supervision `run_id` FK references `printer_memory_factory_runs`; no factory
+  run exists for a pre-lifecycle block, so the FK failed and the process raised.
+- **Category:** `CODE_DEFECT` (integration of the new admission terminal with the
+  committed supervision/pilot-runner contract).
+- **Root cause:** the pilot runner assumed `run_operational` always starts a
+  factory lifecycle run; the E.40 admission gate legitimately blocks before any
+  factory run.
+- **Repair status:** `FIXED_IN_THIS_SPRINT`.
+  - **Fixed:** `run_two_token_operational_pilot` now skips `attach_run` and the
+    factory replay when `lifecycle_started` is False, finalizing supervision
+    directly from the honest terminal report; it surfaces `full_pilot_admission`.
+  - **Files changed:** `two_token_operational_pilot_runner.py`.
+  - **Offline proof:** new
+    `tests/test_v2_9_7e_40_full_pilot_admission.py::BlockedFullPilotThroughRunnerTests`
+    drives the runner with a pre-lifecycle fail-closed owner and asserts a clean
+    governed-safe-stop terminal, released lock, deterministic zero-source replay,
+    and no attach/FK error; E.14 pilot-runner suite (13) still passes.
+  - **Can recur:** No — the pre-lifecycle branch is now explicit and tested.
+- **Live proof after fix:** pending Attempt 2.
 
 ## Cross-attempt guidance
 

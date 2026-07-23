@@ -660,11 +660,23 @@ def run_two_token_operational_pilot(
     if not run_id:
         raise PilotRunnerError("pilot campaign returned no run identity")
 
-    # Attach the factory run and terminalize the execution exactly once.
-    _sup.attach_run(target, execution_id, run_id, process_id=process_id)
+    lifecycle_started = bool(getattr(result, "lifecycle_started", False))
+    # A full pilot that blocks in the pre-lifecycle admission gate (fewer than two
+    # categorically mature candidates) creates no factory lifecycle run. There is
+    # nothing to attach or replay: finalize supervision directly from the honest
+    # terminal report. Only a started lifecycle attaches a factory run and runs a
+    # deterministic report-only replay.
+    if lifecycle_started:
+        _sup.attach_run(target, execution_id, run_id, process_id=process_id)
     terminal = _sup.finalize_execution_from_report(target, execution_id, report)
 
-    replay = pilot_report_only_replay(target, run_id)
+    if lifecycle_started:
+        replay = pilot_report_only_replay(target, run_id)
+        replay_new_source_calls = replay.get("replay", {}).get("new_source_calls")
+        replay_deterministic = replay == pilot_report_only_replay(target, run_id)
+    else:
+        replay_new_source_calls = 0
+        replay_deterministic = True
     forbidden = report.get("forbidden_deltas", {})
 
     return {
@@ -673,15 +685,16 @@ def run_two_token_operational_pilot(
         "run_id": run_id,
         "run_status": report.get("run_status"),
         "stop_reason": report.get("stop_reason"),
-        "lifecycle_started": bool(getattr(result, "lifecycle_started", False)),
+        "lifecycle_started": lifecycle_started,
         "terminal_status": terminal.get("terminal_status"),
         "first_terminal_cause": terminal.get("first_stop_reason"),
         "one_proof_lock_released": not Path(lock_path).exists(),
         "pending_or_running_run_steps": report.get("pending_or_running_run_steps"),
         "running_jobs_after_stop": report.get("running_jobs_after_stop"),
         "forbidden_deltas": forbidden,
-        "replay_new_source_calls": replay.get("replay", {}).get("new_source_calls"),
-        "replay_deterministic": replay == pilot_report_only_replay(target, run_id),
+        "full_pilot_admission": report.get("full_pilot_admission"),
+        "replay_new_source_calls": replay_new_source_calls,
+        "replay_deterministic": replay_deterministic,
         "prepared": dict(prepared),
         "restart_created": False,
         "successor_created": False,

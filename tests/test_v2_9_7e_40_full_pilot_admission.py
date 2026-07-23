@@ -26,6 +26,11 @@ from printer_v1.operator_cli.authoritative_live_operational_campaign import (
 from printer_v1.sources.pumpfun_origin import load_due_staged_origins
 
 import test_v2_9_7e_8_origin_to_lifecycle_integration as e8
+import test_v2_9_7e_14_two_token_operational_pilot_runner as e14
+from printer_v1.operator_cli.origin_lifecycle_campaign import (
+    ActivationResult,
+    OriginLifecycleResult,
+)
 from test_v2_9_7e_11_authoritative_live_operational_campaign import _FakePumpTransport
 from test_v2_9_7e_5_pump_origin_acquisition_architecture import (
     create_transaction,
@@ -201,6 +206,72 @@ class FullPilotAdmissionProofTests(e8._IntegrationBase):
             self.assertEqual(len(all_due), 2)
         finally:
             connection.close()
+
+
+class _BlockedFakeOwner:
+    """Owner that returns the pre-lifecycle fail-closed admission terminal.
+
+    It creates no factory lifecycle run — exactly the shape the real
+    ``run_operational`` returns when fewer than two mature candidates exist.
+    """
+
+    def __init__(self, run_id: str = "pilot-run") -> None:
+        self._run_id = run_id
+        self.calls = 0
+
+    def run_operational(self, *, command, **_kwargs):
+        self.calls += 1
+        return OriginLifecycleResult(
+            activation=ActivationResult(
+                terminal_status="BLOCKED_INSUFFICIENT_MATURE_POOL",
+                first_terminal_cause="BLOCKED_INSUFFICIENT_MATURE_POOL",
+                activated_slots=(),
+                selection_batch_id=None,
+            ),
+            lifecycle={
+                "run_id": self._run_id,
+                "run_status": "NOT_STARTED",
+                "stop_reason": "BLOCKED_INSUFFICIENT_MATURE_POOL",
+                "first_terminal_cause": "BLOCKED_INSUFFICIENT_MATURE_POOL",
+                "lifecycle_started": False,
+                "forbidden_deltas": {},
+                "pending_or_running_run_steps": 0,
+                "running_jobs_after_stop": 0,
+                "full_pilot_admission": {"mature_candidate_count": 0},
+            },
+            lifecycle_started=False,
+        )
+
+
+class BlockedFullPilotThroughRunnerTests(e14._PilotRunnerBase):
+    """The live pilot runner must terminate a pre-lifecycle block cleanly.
+
+    Regression for the Attempt-1 defect: a fail-closed admission terminal has no
+    factory run, so ``attach_run`` must be skipped instead of raising a foreign
+    key error.
+    """
+
+    def test_pre_lifecycle_block_terminates_cleanly(self) -> None:
+        owner = _BlockedFakeOwner()
+        result, _owner, _paths = self._run(owner=owner, execution_id="e40-block-1")
+
+        self.assertEqual(owner.calls, 1)
+        self.assertEqual(result["status"], "PILOT_TERMINAL")
+        self.assertFalse(result["lifecycle_started"])
+        self.assertEqual(result["run_status"], "NOT_STARTED")
+        self.assertEqual(result["stop_reason"], "BLOCKED_INSUFFICIENT_MATURE_POOL")
+        self.assertEqual(
+            result["first_terminal_cause"], "BLOCKED_INSUFFICIENT_MATURE_POOL"
+        )
+        self.assertIsNotNone(result["terminal_status"])
+        self.assertTrue(result["one_proof_lock_released"])
+        self.assertTrue(result["replay_deterministic"])
+        self.assertEqual(result["replay_new_source_calls"], 0)
+        self.assertFalse(result["restart_created"])
+        self.assertFalse(result["successor_created"])
+        self.assertEqual(
+            result["full_pilot_admission"], {"mature_candidate_count": 0}
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover
