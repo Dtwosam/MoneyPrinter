@@ -1,7 +1,7 @@
 ﻿# Printer V1 Python Builder Guide
 
 **Document status:** `ACTIVE_PRINTER_V1_PYTHON_BUILDER_GUIDE`
-**Repository status:** Adopted by V2-9.7E.33A after repository runtime, SQLite, pytest, journal-mode, and evidence-reference inspection.
+**Repository status:** Adopted by V2-9.7E.33A at commit `f3cfc857157d5b37658887078db8f8f2902e6e70` after repository runtime, SQLite, pytest, journal-mode, and evidence-reference inspection.
 **Purpose:** Printer-specific Python implementation, verification, and blocker-investigation law
 **Applies to:** Claude, Codex, Grok, and any future coding agent working on Printer V1
 **Official-source review date:** 2026-07-23
@@ -44,10 +44,10 @@ Every major capability still follows:
 
 ```text
 audit/readiness
-â†’ design/specification
-â†’ implementation, if approved
-â†’ bounded proof/test
-â†’ closeout
+-> design/specification
+-> implementation, if approved
+-> bounded proof/test
+-> closeout
 ```
 
 Code existence is not proof of readiness.
@@ -111,7 +111,7 @@ A Python repair is prohibited when:
 - Implement only the approved lane.
 - Do not combine unrelated cleanup with a repair.
 - Do not rename established concepts without an approved contract change.
-- Do not add future capability â€œwhile already in the file.â€
+- Do not add future capability "while already in the file."
 - Preserve unrelated pre-existing failures as baseline facts unless they affect the lane.
 - Do not broaden tests merely to appear thorough; use risk-based verification from `AGENTS.md`.
 
@@ -179,7 +179,7 @@ Terminal completion, blocker, cancellation, or failure must not create an automa
 
 ### 4.1 Type annotations are not validation
 
-**Authority:** `OFFICIAL_PYTHON` â€” `PY-TYPE-01`
+**Authority:** `OFFICIAL_PYTHON` - `PY-TYPE-01`
 
 Python does not enforce function or variable annotations at runtime. Therefore:
 
@@ -216,7 +216,7 @@ The first valid terminal cause is immutable. Cleanup or reporting failures are r
 
 ### 5.1 Every resource has one visible owner
 
-**Official behavior:** `OFFICIAL_PYTHON` â€” `PY-CTX-01`, `PY-EXC-01` documents context-managed cleanup, `finally`, `closing()`, and `ExitStack`.
+**Official behavior:** `OFFICIAL_PYTHON` - `PY-CTX-01`, `PY-EXC-01` documents context-managed cleanup, `finally`, `closing()`, and `ExitStack`.
 **Printer rule:** `PRINTER_BINDING`, `PRINTER_PROVEN`
 
 Every opened connection, cursor, file, socket, response stream, subprocess pipe, lock, and temporary resource must have one clear owner and guaranteed cleanup on:
@@ -238,7 +238,7 @@ Do not rely on garbage collection.
 
 ### 5.2 SQLite connection context managers do not close the connection
 
-**Official behavior:** `OFFICIAL_PYTHON` â€” `PY-SQLITE-01`
+**Official behavior:** `OFFICIAL_PYTHON` - `PY-SQLITE-01`
 **Printer rule:** `PRINTER_BINDING`, `PRINTER_PROVEN`
 
 A `sqlite3.Connection` used in a `with` block commits or rolls back according to the connection's configured transaction-control mode; leaving the block does not close the connection. Closure must still be explicit.
@@ -271,7 +271,7 @@ A function must clearly own or borrow a connection.
 
 ### 6.2 Threading and connection sharing
 
-**Official behavior:** `OFFICIAL_PYTHON` â€” `PY-SQLITE-06`
+**Official behavior:** `OFFICIAL_PYTHON` - `PY-SQLITE-06`
 **Printer rule:** `PRINTER_BINDING`, `PRINTER_PROVEN`
 
 `check_same_thread=True` is Python's default. Setting it to `False` allows cross-thread access but does not make unsynchronized use safe; Python documents that write operations may need to be serialized by the application. The runtime `sqlite3.threadsafety` value depends on the SQLite library used by that interpreter.
@@ -285,7 +285,7 @@ Therefore:
 
 ### 6.3 Parameterized SQL and identifiers
 
-**Official behavior:** `OFFICIAL_PYTHON` â€” `PY-SQLITE-02` supports placeholders for SQL values and warns against string formatting for values.
+**Official behavior:** `OFFICIAL_PYTHON` - `PY-SQLITE-02` supports placeholders for SQL values and warns against string formatting for values.
 **Printer rule:** `PRINTER_BINDING`
 
 Use placeholders for values. Never interpolate provider payloads, identities, paths, or user-controlled data into SQL text.
@@ -294,7 +294,7 @@ Placeholders bind values, not SQL structure. Dynamic table names, column names, 
 
 ### 6.4 Timestamp adapters and converters
 
-**Official behavior:** `OFFICIAL_PYTHON` â€” `PY-SQLITE-05`
+**Official behavior:** `OFFICIAL_PYTHON` - `PY-SQLITE-05`
 **Printer rule:** `PRINTER_BINDING`
 
 Python's default SQLite date/timestamp adapters and converters are deprecated, and the default timestamp converter ignores UTC offsets and returns a naive `datetime`.
@@ -309,7 +309,7 @@ Therefore:
 
 ### 6.5 Foreign keys and integrity
 
-**Official behavior:** `OFFICIAL_SQLITE` â€” `SQL-PRAGMA-01`
+**Official behavior:** `OFFICIAL_SQLITE` - `SQL-PRAGMA-01`
 **Printer rule:** `PRINTER_BINDING`
 
 - Enable `PRAGMA foreign_keys = ON` before opening a transaction on connections that rely on foreign-key enforcement, then query the pragma to verify it.
@@ -321,7 +321,7 @@ Therefore:
 
 ### 6.6 Read-only inspection
 
-**Official behavior:** `OFFICIAL_PYTHON`, `OFFICIAL_SQLITE` â€” `PY-SQLITE-03`, `SQL-PRAGMA-02`, `SQL-WAL-01`
+**Official behavior:** `OFFICIAL_PYTHON`, `OFFICIAL_SQLITE` - `PY-SQLITE-03`, `SQL-PRAGMA-02`, `SQL-WAL-01`
 **Printer rule:** `PRINTER_BINDING`
 
 Read-only audits and zero-source replay should use the repository's read-only owner.
@@ -330,11 +330,11 @@ Read-only audits and zero-source replay should use the repository's read-only ow
 - `PRAGMA query_only=ON` may add defense against ordinary SQL data changes, but SQLite explicitly states that it does not make the database truly read-only and still permits operations such as checkpointing and `COMMIT`.
 - A WAL-mode database has additional read-only requirements: the `-wal` and `-shm` files must already be available/readable, be creatable, or the database must be genuinely immutable.
 - Do not use `immutable=1` merely to bypass permissions. It is allowed only for an artifact that the approved owner has established cannot change for the connection's lifetime.
-- Do not claim that a normal connectionâ€”or `query_only` by itselfâ€”is a complete read-only boundary.
+- Do not claim that a normal connection-or `query_only` by itself-is a complete read-only boundary.
 
 ### 6.7 Transaction scope and lock safety
 
-**Official behavior:** `OFFICIAL_SQLITE` â€” `SQL-TXN-01`, `SQL-LOCK-01`, `SQL-WAL-01`
+**Official behavior:** `OFFICIAL_SQLITE` - `SQL-TXN-01`, `SQL-LOCK-01`, `SQL-WAL-01`
 **Printer rule:** `PRINTER_BINDING`, `PRINTER_PROVEN`
 
 SQLite permits multiple readers but only one writer. The detailed lock model differs between rollback-journal and WAL modes; `SQL-LOCK-01` describes rollback-journal mode only.
@@ -346,13 +346,13 @@ Therefore:
 - never hold a write transaction while sleeping, pacing, calling a provider, waiting for a subprocess, or doing long report formatting;
 - close/finalize cursors and blob handles so statements and transactions can finish;
 - commit durable authorization before the first external request when the approved contract requires it;
-- treat `SQLITE_BUSY` as a resource, active-statement, transaction-duration, or concurrency signalâ€”not permission to hide the cause with an arbitrarily large timeout;
+- treat `SQLITE_BUSY` as a resource, active-statement, transaction-duration, or concurrency signal-not permission to hide the cause with an arbitrarily large timeout;
 - investigate ownership, unfinished statements, and transaction duration before changing a timeout;
 - preserve the adopted Python `sqlite3` transaction model; do not change `autocommit` or `isolation_level` without a version-aware design and behavior proof.
 
 ### 6.8 WAL-specific safety
 
-**Official behavior:** `OFFICIAL_SQLITE` â€” `SQL-WAL-01`
+**Official behavior:** `OFFICIAL_SQLITE` - `SQL-WAL-01`
 **Printer rule:** `PRINTER_BINDING`
 
 When `PRAGMA journal_mode` is `wal`:
@@ -370,7 +370,7 @@ This version-specific guard must be rechecked against the current official SQLit
 
 ### 6.9 Ordering is never implicit
 
-**Official behavior:** `OFFICIAL_SQLITE` â€” `SQL-ORDER-01`
+**Official behavior:** `OFFICIAL_SQLITE` - `SQL-ORDER-01`
 **Printer rule:** `PRINTER_BINDING`, `PRINTER_PROVEN`
 
 A query without `ORDER BY` has no guaranteed row order. Any order affecting:
@@ -400,7 +400,7 @@ must use an explicit deterministic order and a complete tie-breaker.
 
 ### 6.11 Backup and restore
 
-**Official behavior:** `OFFICIAL_PYTHON`, `OFFICIAL_SQLITE` â€” `PY-SQLITE-04`, `SQL-BACKUP-01`, `SQL-WAL-01`
+**Official behavior:** `OFFICIAL_PYTHON`, `OFFICIAL_SQLITE` - `PY-SQLITE-04`, `SQL-BACKUP-01`, `SQL-WAL-01`
 **Printer rule:** `PRINTER_BINDING`
 
 For a live or persistent SQLite database, use the approved SQLite backup owner/API rather than an uncoordinated file copy while writers may be active. SQLite's online backup API produces a consistent destination snapshot, but concurrent writes can restart incremental backup work and, under sustained writes, can theoretically prevent completion.
@@ -435,16 +435,16 @@ A longer sleep is not a fix for an unclosed resource.
 
 ### 7.1 Persisted time
 
-**Official behavior:** `OFFICIAL_PYTHON` â€” `PY-DATETIME-01` distinguishes aware and naive datetime objects; it does not itself mandate Printerâ€™s storage convention.
+**Official behavior:** `OFFICIAL_PYTHON` - `PY-DATETIME-01` distinguishes aware and naive datetime objects; it does not itself mandate Printer's storage convention.
 **Printer rule:** `PRINTER_BINDING`
 
-Persist UTC-aware event timestamps under Printerâ€™s adopted contracts. Naive datetimes are prohibited for durable evidence unless a higher-authority contract explicitly defines their timezone and conversion.
+Persist UTC-aware event timestamps under Printer's adopted contracts. Naive datetimes are prohibited for durable evidence unless a higher-authority contract explicitly defines their timezone and conversion.
 
 Keep distinct fields for event, capture, request, receipt, and close times when the source contract distinguishes them. Do not replace exact evidence time with report-generation time.
 
 ### 7.2 Elapsed time and deadlines
 
-**Official behavior:** `OFFICIAL_PYTHON` â€” `PY-TIME-01` defines a monotonic clock that cannot go backward and has an unspecified reference point.
+**Official behavior:** `OFFICIAL_PYTHON` - `PY-TIME-01` defines a monotonic clock that cannot go backward and has an unspecified reference point.
 **Printer rule:** `PRINTER_BINDING`
 
 Use a monotonic clock for elapsed durations, pacing, deadline checks, and runtime timeouts. Never persist its raw value as an event timestamp or compare monotonic values from unrelated processes unless the adopted platform contract proves that comparison valid.
@@ -453,7 +453,7 @@ Wall-clock UTC remains appropriate for persisted historical timestamps. Do not u
 
 ### 7.3 No real sleeping in focused tests
 
-**Official behavior:** `OFFICIAL_PYTHON` â€” `PY-TIME-02` states that `sleep()` can last longer than requested because of system scheduling.
+**Official behavior:** `OFFICIAL_PYTHON` - `PY-TIME-02` states that `sleep()` can last longer than requested because of system scheduling.
 **Printer rule:** `PRINTER_PROVEN`, `PROHIBITED`
 
 Unit and focused contract tests must not use the production sleeper or wait through real provider pacing.
@@ -473,7 +473,7 @@ A test hanging because it invoked production pacing is a test defect. Increasing
 
 - Exact close/deadline work takes priority as defined by the active design.
 - Less-served token fairness must be deterministic.
-- One tokenâ€™s source or lifecycle failure must not corrupt the other tokenâ€™s identity or terminal state.
+- One token's source or lifecycle failure must not corrupt the other token's identity or terminal state.
 - Tie-breaking must be explicit and tested.
 - Do not implement fairness through scores, ranks, or hidden weights.
 
@@ -535,7 +535,7 @@ Use `UNKNOWN_REQUIRES_RESEARCH` rather than inventing provider or protocol seman
 
 ### 8.3 Subprocess argument construction
 
-**Official behavior:** `OFFICIAL_PYTHON` â€” `PY-SUBPROCESS-01` documents argument sequences, Windows conversion of sequences to a command line, `shell=False` as the default, and the limited cases that need a shell.
+**Official behavior:** `OFFICIAL_PYTHON` - `PY-SUBPROCESS-01` documents argument sequences, Windows conversion of sequences to a command line, `shell=False` as the default, and the limited cases that need a shell.
 **Printer rule:** `PRINTER_BINDING`
 
 - Pass an argument sequence rather than a single shell command string when `shell=False`.
@@ -547,7 +547,7 @@ Use `UNKNOWN_REQUIRES_RESEARCH` rather than inventing provider or protocol seman
 
 ### 8.4 Subprocess environment
 
-**Official behavior:** `OFFICIAL_PYTHON`, `OFFICIAL_WINDOWS` â€” `PY-SUBPROCESS-02`, `PY-ENV-01`, `WIN-ENV-01`
+**Official behavior:** `OFFICIAL_PYTHON`, `OFFICIAL_WINDOWS` - `PY-SUBPROCESS-02`, `PY-ENV-01`, `WIN-ENV-01`
 **Printer rule:** `PRINTER_BINDING`, `PRINTER_PROVEN`
 
 A child normally inherits the parent process environment unless `env=` supplies a replacement mapping. PowerShell's Process scope is created for the process; later User/Machine changes do not retroactively rewrite an already-running executor's environment. Python's `os.environ` mapping is captured when `os` is imported.
@@ -564,7 +564,7 @@ Therefore:
 
 ### 8.5 Subprocess completion and timeout
 
-**Official behavior:** `OFFICIAL_PYTHON` â€” `PY-SUBPROCESS-03`
+**Official behavior:** `OFFICIAL_PYTHON` - `PY-SUBPROCESS-03`
 **Printer rule:** `PRINTER_BINDING`
 
 Python documents several different timeout behaviors:
@@ -615,7 +615,7 @@ Dirty-tree handling follows the approved lane contract. A report must not claim 
 
 ### 10.1 Catch only what the boundary can handle
 
-**Official behavior:** `OFFICIAL_PYTHON` â€” `PY-EXC-01`, `PY-EXC-02` documents handler matching, exception chaining, and `finally`.
+**Official behavior:** `OFFICIAL_PYTHON` - `PY-EXC-01`, `PY-EXC-02` documents handler matching, exception chaining, and `finally`.
 **Printer rule:** `PRINTER_BINDING`
 
 - Catch the narrowest useful exception category.
@@ -668,7 +668,7 @@ Verdicts and commit messages must describe the actual outcome. Examples:
 
 ### 10.4 Logging
 
-**Official behavior:** `OFFICIAL_PYTHON`, `OFFICIAL_PYTEST` â€” `PY-LOG-01`, `PYTEST-LOG-01` documents logging calls, `logger.exception()` inside exception handling, and pytest log capture.
+**Official behavior:** `OFFICIAL_PYTHON`, `OFFICIAL_PYTEST` - `PY-LOG-01`, `PYTEST-LOG-01` documents logging calls, `logger.exception()` inside exception handling, and pytest log capture.
 **Printer rule:** `PRINTER_BINDING`
 
 - Use module loggers and the repository's structured categorical fields.
@@ -730,7 +730,7 @@ If controlled randomness is explicitly approved, persist the seed and candidate 
 
 ### 11.3 JSON artifacts
 
-**Official behavior:** `OFFICIAL_PYTHON` â€” `PY-JSON-01`
+**Official behavior:** `OFFICIAL_PYTHON` - `PY-JSON-01`
 **Printer rule:** `PRINTER_BINDING`
 
 Python's standard `json` module is not, by itself, a cross-language canonical-JSON specification. Defaults permit non-finite numbers and accept duplicate object names by keeping the last value.
@@ -752,7 +752,7 @@ Where byte identity is not required, compare validated parsed semantic structure
 
 ### 11.4 Hashes
 
-**Official behavior:** `OFFICIAL_PYTHON` â€” `PY-HASH-01` provides guaranteed algorithms including SHA-256 and warns that MD5 and SHA-1 have known collision weaknesses.
+**Official behavior:** `OFFICIAL_PYTHON` - `PY-HASH-01` provides guaranteed algorithms including SHA-256 and warns that MD5 and SHA-1 have known collision weaknesses.
 **Printer rule:** `PRINTER_BINDING`
 
 Use SHA-256, or another explicitly adopted collision-resistant algorithm available in the supported runtime, for new Printer integrity/reconciliation artifacts. Do not create a new Printer integrity contract using MD5 or SHA-1.
@@ -763,12 +763,12 @@ Pair hashes with the required database, identity, provenance, and restore checks
 
 ### 11.5 File replacement
 
-**Official behavior:** `OFFICIAL_PYTHON` â€” `PY-FILE-01` states that `os.replace()` overwrites an existing destination file when permitted; it states atomic success as a POSIX requirement, not as a universal cross-platform durability guarantee.
+**Official behavior:** `OFFICIAL_PYTHON` - `PY-FILE-01` states that `os.replace()` overwrites an existing destination file when permitted; it states atomic success as a POSIX requirement, not as a universal cross-platform durability guarantee.
 **Printer rule:** `PRINTER_PROVEN`
 
-Use the repositoryâ€™s tested replacement/lease owner. On Windows, prove the complete write, optional durability step, close, replace, contention, and cleanup behavior with focused tests.
+Use the repository's tested replacement/lease owner. On Windows, prove the complete write, optional durability step, close, replace, contention, and cleanup behavior with focused tests.
 
-Do not call a workflow â€œatomic,â€ crash-durable, or contention-safe solely because it invokes `os.replace()`.
+Do not call a workflow "atomic," crash-durable, or contention-safe solely because it invokes `os.replace()`.
 
 ---
 
@@ -776,7 +776,7 @@ Do not call a workflow â€œatomic,â€ crash-durable, or contention-safe s
 
 ### 12.1 Test isolation
 
-**Official tools:** `OFFICIAL_PYTEST` â€” `PYTEST-TMP-01`, `PYTEST-MONKEY-01` provide per-test paths and reversible patching of attributes/environment.
+**Official tools:** `OFFICIAL_PYTEST` - `PYTEST-TMP-01`, `PYTEST-MONKEY-01` provide per-test paths and reversible patching of attributes/environment.
 **Printer rule:** `PRINTER_BINDING`
 
 Focused tests use:
@@ -792,7 +792,7 @@ Focused tests use:
 
 Tests must not depend on:
 
-- the operatorâ€™s authoritative corpus;
+- the operator's authoritative corpus;
 - real User/Machine secrets;
 - current provider availability;
 - execution order;
@@ -847,9 +847,9 @@ Do not repeatedly rerun an unchanged hanging command. Do not begin a full suite 
 
 ### 12.5 Logging tests
 
-**Authority:** `OFFICIAL_PYTEST` â€” `PYTEST-LOG-01`
+**Authority:** `OFFICIAL_PYTEST` - `PYTEST-LOG-01`
 
-Use `caplog` or the repositoryâ€™s approved wrapper. Avoid replacing the root logging configuration in a way that removes pytestâ€™s capture handler.
+Use `caplog` or the repository's approved wrapper. Avoid replacing the root logging configuration in a way that removes pytest's capture handler.
 
 ---
 
@@ -866,7 +866,7 @@ Collect the minimum sufficient evidence:
 1. exact baseline commit, branch, tracked/untracked state;
 2. active lane and capability locks;
 3. exact task prompt given to the implementation agent;
-4. the agentâ€™s todo, assumptions, and final report;
+4. the agent's todo, assumptions, and final report;
 5. changed-file diff;
 6. relevant call path and canonical owner;
 7. exact failing command/test;
@@ -1025,7 +1025,7 @@ This register translates known Printer failures into standing Python controls. I
 - one canonical committed runner;
 - no ad-hoc live proof;
 - explicit modes and stop boundaries;
-- audit â†’ design â†’ implementation â†’ proof â†’ closeout.
+- audit -> design -> implementation -> proof -> closeout.
 
 ### 14.2 Discovery, selection, age, and rotation
 
@@ -1108,7 +1108,7 @@ Completed implementation patterns may be reused, but their lanes must not be res
 
 ### 14.7 Holder-source reliability and operation accounting
 
-**Observed across E.20â€“E.24:**
+**Observed across E.20-E.24:**
 
 - GoPlus exact-target success often lacked usable holder concentration;
 - public RPC paths produced rate-limit/transport failures;
@@ -1128,7 +1128,7 @@ Completed implementation patterns may be reused, but their lanes must not be res
 
 ### 14.8 Snapshot composition and nullable fields
 
-**Observed across E.25â€“E.30:**
+**Observed across E.25-E.30:**
 
 - holder eligibility did not guarantee complete market snapshots;
 - DexScreener liquidity could be absent;
@@ -1170,7 +1170,7 @@ Completed implementation patterns may be reused, but their lanes must not be res
 - no parallel runner;
 - offline fixture proof before one separately authorized live proof.
 
-**Current operator-approved correction:** `V2-9.7E.33 â€” Canonical Operational Readiness Boundary Closure` is the planned documentation/design/implementation/proof closure for this missing boundary. This guide records the coding discipline for that work but does not execute the lane, authorize provider calls, or alter the active build order by itself.
+**Completed correction:** `V2-9.7E.33 - Canonical Operational Readiness Boundary Closure` completed at commit `a562a65`. The next separately authorized readiness-only live proof is E.34. This guide records the coding discipline for that work but does not execute E.34, authorize provider calls, or alter the active build order by itself.
 
 ### 14.11 V2-9 operational carry-forward defects
 
@@ -1200,7 +1200,7 @@ Completed implementation patterns may be reused, but their lanes must not be res
 
 These controls prepare future agents to code safely **only when the corresponding lane becomes active**. They do not unlock future work.
 
-### 15.1 V2-9.7 â€” Operational Memory Factory implementation/pilot
+### 15.1 V2-9.7 - Operational Memory Factory implementation/pilot
 
 Python must prevent:
 
@@ -1224,7 +1224,7 @@ Python must prevent:
 - replay mutation;
 - journal-mode or runtime-SQLite drift, including unsafe WAL operation on an affected runtime.
 
-### 15.2 V2-9.8 â€” Active bounded corpus growth
+### 15.2 V2-9.8 - Active bounded corpus growth
 
 Python must prevent:
 
@@ -1238,7 +1238,7 @@ Python must prevent:
 - terminal failure followed by restart;
 - any retrieval or financial delta.
 
-### 15.3 V2-10, V2-11, V2-11.7, V2-11.8 â€” 12h/24h readiness and operation
+### 15.3 V2-10, V2-11, V2-11.7, V2-11.8 - 12h/24h readiness and operation
 
 Python must prevent:
 
@@ -1253,7 +1253,7 @@ Python must prevent:
 - technically complete but money-useless reports;
 - dirty long windows hidden as clean.
 
-### 15.4 V2-12 â€” Corpus quality reporting
+### 15.4 V2-12 - Corpus quality reporting
 
 Python must prevent:
 
@@ -1266,7 +1266,7 @@ Python must prevent:
 - timeframe overclaim;
 - report mutation of the corpus.
 
-### 15.5 V2-13 â€” Clean retrieval review
+### 15.5 V2-13 - Clean retrieval review
 
 Python must prevent:
 
@@ -1277,7 +1277,7 @@ Python must prevent:
 - concentrated corpus presented as broad evidence;
 - retrieval preview writing persistent rows without approval.
 
-### 15.6 V2-14 â€” WAIT/AVOID/NO_ACTION readiness
+### 15.6 V2-14 - WAIT/AVOID/NO_ACTION readiness
 
 Python must prevent:
 
@@ -1288,7 +1288,7 @@ Python must prevent:
 - BUY language or position creation;
 - financial/PnL side effects.
 
-### 15.7 V2-15 â€” Paper BUY readiness review
+### 15.7 V2-15 - Paper BUY readiness review
 
 Python must prevent:
 
@@ -1393,112 +1393,112 @@ The URLs below are the official authorities reviewed for this guide. Each source
 
 ### Python
 
-- `PY-SQLITE-01` â€” `sqlite3.Connection` context manager commits/rolls back but does not close; transaction behavior is version/configuration sensitive
+- `PY-SQLITE-01` - `sqlite3.Connection` context manager commits/rolls back but does not close; transaction behavior is version/configuration sensitive
   https://docs.python.org/3/library/sqlite3.html#how-to-use-the-connection-context-manager
   https://docs.python.org/3/library/sqlite3.html#transaction-control
 
-- `PY-SQLITE-02` â€” SQL placeholders/parameter substitution
+- `PY-SQLITE-02` - SQL placeholders/parameter substitution
   https://docs.python.org/3/library/sqlite3.html#how-to-use-placeholders-to-bind-values-in-sql-queries
 
-- `PY-SQLITE-03` â€” SQLite URI read-only mode
+- `PY-SQLITE-03` - SQLite URI read-only mode
   https://docs.python.org/3/library/sqlite3.html#how-to-work-with-sqlite-uris
 
-- `PY-SQLITE-04` â€” `Connection.backup()`
+- `PY-SQLITE-04` - `Connection.backup()`
   https://docs.python.org/3/library/sqlite3.html#sqlite3.Connection.backup
 
-- `PY-SQLITE-05` â€” deprecated default adapters/converters and timestamp offset loss
+- `PY-SQLITE-05` - deprecated default adapters/converters and timestamp offset loss
   https://docs.python.org/3/library/sqlite3.html#default-adapters-and-converters-deprecated
 
-- `PY-SQLITE-06` â€” `check_same_thread`, runtime thread-safety, and SQLite runtime version
+- `PY-SQLITE-06` - `check_same_thread`, runtime thread-safety, and SQLite runtime version
   https://docs.python.org/3/library/sqlite3.html#sqlite3.connect
   https://docs.python.org/3/library/sqlite3.html#sqlite3.threadsafety
   https://docs.python.org/3/library/sqlite3.html#sqlite3.sqlite_version
 
-- `PY-CTX-01` â€” `closing`, `ExitStack`, and context cleanup
+- `PY-CTX-01` - `closing`, `ExitStack`, and context cleanup
   https://docs.python.org/3/library/contextlib.html
 
-- `PY-TIME-01` â€” monotonic clocks
+- `PY-TIME-01` - monotonic clocks
   https://docs.python.org/3/library/time.html#time.monotonic
 
-- `PY-TIME-02` â€” `sleep()` may last longer than requested
+- `PY-TIME-02` - `sleep()` may last longer than requested
   https://docs.python.org/3/library/time.html#time.sleep
 
-- `PY-DATETIME-01` â€” aware versus naive datetimes
+- `PY-DATETIME-01` - aware versus naive datetimes
   https://docs.python.org/3/library/datetime.html#aware-and-naive-objects
 
-- `PY-SUBPROCESS-01` â€” argument sequences, executable selection, and shell behavior
+- `PY-SUBPROCESS-01` - argument sequences, executable selection, and shell behavior
   https://docs.python.org/3/library/subprocess.html#frequently-used-arguments
 
-- `PY-SUBPROCESS-02` â€” child environment mapping
+- `PY-SUBPROCESS-02` - child environment mapping
   https://docs.python.org/3/library/subprocess.html#popen-constructor
 
-- `PY-SUBPROCESS-03` â€” `communicate()`, pipes, timeout, termination cleanup
+- `PY-SUBPROCESS-03` - `communicate()`, pipes, timeout, termination cleanup
   https://docs.python.org/3/library/subprocess.html#subprocess.Popen.communicate
 
-- `PY-ENV-01` â€” `os.environ` process cache behavior
+- `PY-ENV-01` - `os.environ` process cache behavior
   https://docs.python.org/3/library/os.html#os.environ
 
-- `PY-EXC-01` â€” exception chaining and cleanup
+- `PY-EXC-01` - exception chaining and cleanup
   https://docs.python.org/3/tutorial/errors.html#exception-chaining
   https://docs.python.org/3/tutorial/errors.html#defining-clean-up-actions
 
-- `PY-EXC-02` â€” exception-handler matching and expression-less `except` behavior
+- `PY-EXC-02` - exception-handler matching and expression-less `except` behavior
   https://docs.python.org/3/reference/compound_stmts.html#except-clause
 
-- `PY-LOG-01` â€” logging and `logger.exception()`
+- `PY-LOG-01` - logging and `logger.exception()`
   https://docs.python.org/3/library/logging.html
 
-- `PY-TYPE-01` â€” type annotations are not runtime enforcement
+- `PY-TYPE-01` - type annotations are not runtime enforcement
   https://docs.python.org/3/library/typing.html
 
-- `PY-JSON-01` â€” explicit JSON serialization and `sort_keys`
+- `PY-JSON-01` - explicit JSON serialization and `sort_keys`
   https://docs.python.org/3/library/json.html#basic-usage
 
-- `PY-HASH-01` â€” guaranteed secure hash algorithms and file hashing
+- `PY-HASH-01` - guaranteed secure hash algorithms and file hashing
   https://docs.python.org/3/library/hashlib.html
 
-- `PY-FILE-01` â€” destination replacement with `os.replace()`
+- `PY-FILE-01` - destination replacement with `os.replace()`
   https://docs.python.org/3/library/os.html#os.replace
 
 ### pytest
 
-- `PYTEST-TMP-01` â€” per-test temporary paths
+- `PYTEST-TMP-01` - per-test temporary paths
   https://docs.pytest.org/en/stable/how-to/tmp_path.html
 
-- `PYTEST-MONKEY-01` â€” safely patching attributes and environment variables
+- `PYTEST-MONKEY-01` - safely patching attributes and environment variables
   https://docs.pytest.org/en/stable/how-to/monkeypatch.html
 
-- `PYTEST-LOG-01` â€” log capture and root-handler caution
+- `PYTEST-LOG-01` - log capture and root-handler caution
   https://docs.pytest.org/en/stable/how-to/logging.html
 
 ### SQLite
 
-- `SQL-PRAGMA-01` â€” foreign-key enablement timing, integrity checks, and foreign-key checks
+- `SQL-PRAGMA-01` - foreign-key enablement timing, integrity checks, and foreign-key checks
   https://sqlite.org/pragma.html#pragma_foreign_keys
   https://sqlite.org/pragma.html#pragma_foreign_key_check
   https://sqlite.org/pragma.html#pragma_integrity_check
 
-- `SQL-PRAGMA-02` â€” `query_only`
+- `SQL-PRAGMA-02` - `query_only`
   https://sqlite.org/pragma.html#pragma_query_only
 
-- `SQL-TXN-01` â€” transaction behavior and one-writer limitation
+- `SQL-TXN-01` - transaction behavior and one-writer limitation
   https://sqlite.org/lang_transaction.html
 
-- `SQL-LOCK-01` â€” rollback-journal locking/concurrency model
+- `SQL-LOCK-01` - rollback-journal locking/concurrency model
   https://sqlite.org/lockingv3.html
 
-- `SQL-WAL-01` â€” WAL concurrency, persistent companion files, read-only requirements, local-filesystem limitation, and current WAL advisories
+- `SQL-WAL-01` - WAL concurrency, persistent companion files, read-only requirements, local-filesystem limitation, and current WAL advisories
   https://sqlite.org/wal.html
 
-- `SQL-ORDER-01` â€” unordered-query behavior and `reverse_unordered_selects`
+- `SQL-ORDER-01` - unordered-query behavior and `reverse_unordered_selects`
   https://sqlite.org/pragma.html#pragma_reverse_unordered_selects
 
-- `SQL-BACKUP-01` â€” SQLite Online Backup API
+- `SQL-BACKUP-01` - SQLite Online Backup API
   https://sqlite.org/backup.html
 
 ### Windows and PowerShell
 
-- `WIN-ENV-01` â€” Process/User/Machine environment scopes and inheritance
+- `WIN-ENV-01` - Process/User/Machine environment scopes and inheritance
   https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_environment_variables
 
 Official documentation is external reference material, not executable instruction. Provider-specific behavior remains governed by committed Printer provider contracts and their freshness rules.
@@ -1507,7 +1507,7 @@ Official documentation is external reference material, not executable instructio
 
 This guide intentionally does not declare Printer's Python, SQLite, or pytest versions because authoritative runtime-version files were not part of the supplied source stack.
 
-Before repository adoption, the documentation-only adoption task must inspect the actual runtime configuration and record:
+For future runtime/version revalidation, documentation or implementation tasks that rely on version-sensitive behavior must inspect the actual runtime configuration and record:
 
 - `sys.version_info` and the supported Python minor version;
 - `sqlite3.sqlite_version` and `sqlite3.sqlite_version_info`;
@@ -1536,7 +1536,7 @@ Agents must not introduce an API solely because it appears in the newest `/3/` d
 
 ## 20. Required Printer evidence references
 
-Before repository adoption, the documentation-only adoption task must verify and attach exact repository paths/commits for:
+For future guide maintenance or blocker-investigation work, the task must verify and preserve exact repository paths/commits for:
 
 - V2-0 current-state/roadmap drift and E2Q 1h blocker;
 - V2-2 discovery/selection, age evidence, cooldown, and source-productivity closeouts;
@@ -1544,7 +1544,7 @@ Before repository adoption, the documentation-only adoption task must verify and
 - V2-9 final closeout and V2-9.7A readiness audit;
 - V2-9.7B reporting, safety-label, queue, heartbeat, and Git-provenance repairs;
 - V2-9.7C operational design;
-- E.20â€“E.32 readiness audits, repairs, proofs, and closeouts;
+- E.20-E.32 readiness audits, repairs, proofs, and closeouts;
 - current canonical readiness-boundary closure.
 
 If an exact repository reference cannot be verified, the historical statement remains useful background but must be labeled `OPERATOR_PROVIDED_HISTORY`, not `PRINTER_PROVEN`.
@@ -1597,18 +1597,18 @@ authoritative and proof DBs are currently rollback-journal/delete mode, not WAL.
 
 ## 21. Adoption and change control
 
-### 21.1 Documentation-only adoption
+### 21.1 Documentation-only adoption history and future change control
 
-Adoption must:
+E.33A repository adoption completed at commit `f3cfc857157d5b37658887078db8f8f2902e6e70`. The original adoption procedure is preserved below as historical guidance for future guide replacement or major re-adoption. Future changes must:
 
-1. copy this file to `docs/printer-v1-python-builder-guide.md`;
-2. verify the repositoryâ€™s actual Python version;
-3. verify every named Printer evidence reference;
+1. preserve this file at `docs/printer-v1-python-builder-guide.md` unless a later operator-approved adoption replaces it;
+2. revalidate the repository's actual Python version when a rule depends on runtime behavior;
+3. verify every named Printer evidence reference affected by the change;
 4. downgrade or remove unsupported claims;
-5. add only the routing block below to `AGENTS.md`;
+5. leave `AGENTS.md` routing unchanged unless the operator explicitly approves a routing update;
 6. run documentation diff, link/source, non-ASCII, and accidental-unlock checks;
-7. make no Python, migration, DB, source, runtime, memory, retrieval, or financial change;
-8. commit only the guide, `AGENTS.md`, and an adoption closeout;
+7. make no Python, migration, DB, source, runtime, memory, retrieval, or financial change during documentation-only guide maintenance;
+8. commit only lane-owned documentation;
 9. tag only if the operator explicitly requests it.
 
 ### 21.2 Required `AGENTS.md` routing block
@@ -1651,24 +1651,24 @@ For Printer Python work:
 
 ```text
 active lane first
-â†’ canonical owner second
-â†’ official technical behavior third
-â†’ exact Printer/provider contract fourth
-â†’ minimum safe code
-â†’ deterministic focused proof
-â†’ honest blocker or closeout
+-> canonical owner second
+-> official technical behavior third
+-> exact Printer/provider contract fourth
+-> minimum safe code
+-> deterministic focused proof
+-> honest blocker or closeout
 ```
 
 When a blocker appears:
 
 ```text
 inspect what the agent was asked to do
-â†’ inspect what it actually changed
-â†’ inspect the exact failure
-â†’ compare with official sources
-â†’ compare with Printer contracts
-â†’ classify before coding
-â†’ change code only when evidence justifies it
+-> inspect what it actually changed
+-> inspect the exact failure
+-> compare with official sources
+-> compare with Printer contracts
+-> classify before coding
+-> change code only when evidence justifies it
 ```
 
 That is the standing defense against repeated AI-created bugs, architectural drift, and endless patch cycles.
