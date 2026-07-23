@@ -2,8 +2,10 @@
 
 Cumulative register of blockers encountered on the road to a bounded two-token
 full pilot. Created at V2-9.7E.39 (Full Pilot Attempt 1); updated at V2-9.7E.40
-(Continuous Full-Pilot Repair/Restart Session) and V2-9.7E.41 (Graduation-Only
-Selection and Mixed-Channel Discovery Repair).
+(Continuous Full-Pilot Repair/Restart Session), V2-9.7E.41 (Graduation-Only
+Selection and Mixed-Channel Discovery Repair), and V2-9.7E.42 (Direct Pump
+Migration Discovery and Graduated-Candidate Supply Repair — BL-41-04 direct channel
+now operational; BL-42-01 added and fixed).
 
 > **V2-9.7E.41 supersession note.** The E.40 900-second maturity-based
 > full-pilot admission policy (BL-39-01, BL-39-03) is preserved as historically
@@ -444,6 +446,64 @@ full-pilot admission policy, which is preserved as historically implemented.
   graduated supply.
 - **Operational channel coverage after repair:** graduation confirmation
   (PumpSwap on-chain) operational; graduated-discovery channels blocked.
+
+## V2-9.7E.42 repair updates (direct Pump migration discovery)
+
+E.42 made BL-41-04 operational for the **direct migration channel**: real
+already-graduated Pump.fun candidate supply from PumpPortal `subscribeMigration`
+events, with no manual migration signature. Two blockers are recorded.
+
+### BL-41-04 — trending/top channel contracts (E.42 partial resolution)
+
+- **Category:** `BLOCKED_CONTRACT`. **Repair status:** `PARTIALLY_FIXED` — the
+  direct migration channel is now operational; the trending/top channels remain
+  blocked.
+- **What became operational (E.42):** the keyless PumpPortal `subscribeMigration`
+  free stream + governed on-chain verification now supply confirmed
+  `PUMPSWAP_GRADUATED_CONFIRMED` candidates for fresh live discovery with **no
+  operator-supplied migration-signature locator**. The evidence chain is: migration
+  event (locator) → governed `getTransaction` → exact Pump migration proof (adopted
+  program presence + exact mint + success + finalized block time) → unique PumpSwap
+  pool resolution (owner + `base_mint@43 == mint`) → pool confirmation → persist to
+  the new durable `printer_pumpswap_graduated_candidate_registry` (migration 040).
+  `export_graduated_pilot_candidates` now reads that registry.
+- **Live proof:** Attempt 2 (`5dc63f5`) confirmed **three** real graduated Pump.fun
+  candidates end-to-end (mints `AVuU5FZ…`, `Hj3Kg6St…pump`, `2KpU8qUz…pump`; pools
+  `6MNGrmRL…`, `E3EmqM1H…`, `5SKDccVf…`); forbidden deltas 0; integrity/FK ok.
+- **What remains blocked:** GeckoTerminal (fixture-only contract) and Solana Tracker
+  (free-REST contract) trending/top graduated-discovery channels are still
+  `SKIPPED_BLOCKED_CONTRACT` — a separate operator lane. The direct migration
+  channel does not require them.
+- **Tests:** `tests/test_v2_9_7e_42_direct_migration_discovery.py` (29).
+- **Can block next pilot:** No for graduated supply — the direct channel supplies
+  candidates. Trending/top diversity remains optional.
+- **Current status:** `PARTIAL` (direct channel operational; trending/top blocked).
+
+### BL-42-01 — migration-verification transaction freshness
+
+- **First seen:** E.42 Attempt 1 (`f29c8b9`). **Category:** `CODE_DEFECT`
+  (live-discovery robustness). **Repair status:** `FIXED_IN_THIS_SPRINT`.
+- **Root cause:** a PumpPortal migration **notification** arrives before its
+  finalized transaction is queryable on the public multi-backend Solana RPC, so an
+  immediate governed `getTransaction` fails with a transient RPC/not-found reason
+  (`pumpswap_rpc_transport_error`) and verification correctly falls closed. The
+  pipeline was proven correct by re-verifying the exact Attempt-1 event minutes
+  later (confirmed end-to-end).
+- **What was fixed (`5dc63f5`):** the direct-migration orchestrator gained bounded,
+  governed, recorded robustness — `collection_rounds` (accumulate deduplicated
+  locator pairs across N bounded governed migration requests), `settle_seconds`
+  (one bounded wait before verification so fresh migrations finalize), and
+  `reverify_on_transient` (exactly one additional governed verification per
+  candidate whose first attempt failed **transiently** — never on a genuine
+  graduation failure). Fixture defaults unchanged (single round, no wait, no retry).
+- **Offline proof:** `tests/test_v2_9_7e_42_direct_migration_discovery.py`
+  (`TestBL4201Robustness`: transient re-verify confirms; non-transient never
+  retries; multi-round dedup).
+- **Live proof after fix:** Attempt 2 confirmed three candidates, all
+  `verify_attempts=1` after the settle window.
+- **Can recur:** No — the transient path is bounded and unit-tested; non-transient
+  failures are never retried.
+- **Current status:** `FIXED`.
 
 ### E.41 supersession of E.40 maturity policy
 
