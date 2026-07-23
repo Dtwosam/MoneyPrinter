@@ -39,6 +39,10 @@ from printer_v1.sources.pumpfun_origin import (
     import_confirmed_origin_row,
     record_confirmed_origin,
 )
+from printer_v1.sources.pumpswap_graduated_registry import (
+    export_graduated_candidates,
+    graduated_registry_exists,
+)
 
 
 class CandidatePoolError(RuntimeError):
@@ -188,23 +192,40 @@ def export_graduated_pilot_candidates(
     excluded = {str(m) for m in exclude_market_identities}
     connection = _connect(pool_db)
     try:
-        # The registry holds only PUMPFUN_ORIGIN_CONFIRMED (pre-graduation)
-        # origins. There is no persisted graduation/market-identity column, so no
-        # origin qualifies as a graduated pilot candidate. Fail closed to empty.
         total_origins = int(
             connection.execute(
                 "SELECT COUNT(*) FROM printer_pumpfun_finalized_origin_registry "
                 "WHERE origin_state='PUMPFUN_ORIGIN_CONFIRMED'"
             ).fetchone()[0]
         )
+        # V2-9.7E.42: the durable graduated-candidate registry (migration 040) is
+        # the graduation-evidence owner. When present, export its confirmed
+        # graduated candidates (deduplicated by exact mint / market identity). When
+        # absent or empty, keep the honest empty result — the origin registry stores
+        # only pre-graduation origins and carries no graduation evidence.
+        graduated: list[Mapping[str, Any]] = []
+        if graduated_registry_exists(connection):
+            graduated = [
+                dict(row)
+                for row in export_graduated_candidates(
+                    connection, exclude_market_identities=excluded
+                )
+            ]
     finally:
         connection.close()
-    del excluded  # no graduated rows exist to deduplicate against yet
+    if not graduated:
+        return {
+            "graduated_candidates": [],
+            "exported": 0,
+            "pending_discovery_origins": total_origins,
+            "reason": "NO_PERSISTED_GRADUATION_EVIDENCE",
+            "population": "GRADUATED_ONLY",
+        }
     return {
-        "graduated_candidates": [],
-        "exported": 0,
+        "graduated_candidates": graduated,
+        "exported": len(graduated),
         "pending_discovery_origins": total_origins,
-        "reason": "NO_PERSISTED_GRADUATION_EVIDENCE",
+        "reason": "GRADUATED_EVIDENCE_EXPORTED",
         "population": "GRADUATED_ONLY",
     }
 

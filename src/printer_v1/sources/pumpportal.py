@@ -483,11 +483,20 @@ def _normalize_pumpportal_event(
         ):
             live_observed_launch = True
 
+    # V2-9.7E.42: migration events carry the migration transaction signature as
+    # locator evidence for governed on-chain graduation verification. It is a
+    # locator only — never proof, never a timestamp, never token_created_at.
+    migration_signature: str | None = None
+    if request_kind == "pumpfun_migration_stream":
+        raw_sig = event.get("signature") or event.get("txSignature") or event.get("tx_signature")
+        migration_signature = str(raw_sig) if raw_sig else None
+
     return {
         "chain": _SOLANA_CHAIN,
         "mint": token_mint,
         "pairAddress": pair_address,
         "request_kind": request_kind,
+        "migration_signature": migration_signature,
         "symbol": event.get("symbol"),
         "name": event.get("name"),
         "dex": "pumpfun" if request_kind == "pumpfun_launch_stream" else "raydium",

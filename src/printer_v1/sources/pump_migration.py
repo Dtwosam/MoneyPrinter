@@ -1,0 +1,264 @@
+"""V2-9.7E.42 exact Pump migration proof + combined graduation verifier.
+
+The authoritative graduation evidence is the finalized Solana transaction plus the
+PumpSwap account confirmation — a PumpPortal migration event is locator evidence
+only. This module adds the exact **Pump migration** proof layer on top of the
+already-adopted PumpSwap signature→pool resolution and pool confirmation.
+
+`prove_pump_migration_transaction` is pure and deterministic: it proves the
+finalized migration transaction is the applicable Pump migration for the exact mint
+using only **adopted** program identities:
+
+  * the transaction succeeded (`meta.err is None`);
+  * the exact mint is referenced in the transaction account keys (static + ALT);
+  * the adopted Pump.fun program is invoked (present in account keys);
+  * the adopted PumpSwap AMM program is invoked (present in account keys — the
+    graduation pool is created/touched in this same transaction);
+  * a finalized block time is present (graduation evidence only).
+
+The exact Pump migration instruction discriminator remains
+`UNKNOWN_REQUIRES_RESEARCH`; it is deliberately not invented. Program-presence plus
+the unique PumpSwap pool created in the same finalized transaction is the adopted
+graduation proof. Read-only. No execution, signing, or fund movement.
+"""
+
+from __future__ import annotations
+
+from types import MappingProxyType
+from typing import Any, Callable, Mapping
+
+from printer_v1.sources.contracts import SourceAdapterContext
+from printer_v1.sources.pumpfun_direct import PUMP_PROGRAM_ID
+from printer_v1.sources.pumpswap import (
+    PUMPSWAP_AMM_PROGRAM_ID,
+    _DEFAULT_RPC_URL,
+    _rpc_post,
+    collect_transaction_account_keys,
+    confirm_pumpswap_pool_from_account,
+    resolve_pumpswap_pool_from_transaction,
+)
+
+MIGRATION_PROVENANCE = "PUMPPORTAL_SUBSCRIBE_MIGRATION"
+
+# Optional tolerance for a block time slightly ahead of the caller's clock.
+_FUTURE_BLOCK_TIME_TOLERANCE_SECONDS = 300
+
+
+def prove_pump_migration_transaction(
+    tx_result: Mapping[str, Any] | None,
+    *,
+    expected_mint: str,
+    now_epoch: int | None = None,
+) -> dict[str, Any]:
+    """Prove a finalized transaction is the applicable Pump migration for a mint.
+
+    Pure/deterministic. Every check is a hard categorical equality/membership; no
+    numeric magnitude is compared. Never raises. Returns a dict with ``proven`` and
+    a ``reason``; migration block time / slot are captured as graduation evidence
+    only and never become token creation time.
+    """
+    result: dict[str, Any] = {
+        "proven": False,
+        "reason": None,
+        "expected_mint": expected_mint,
+        "pump_program_id": PUMP_PROGRAM_ID,
+        "pumpswap_program_id": PUMPSWAP_AMM_PROGRAM_ID,
+        "account_keys_total": 0,
+        "mint_present": False,
+        "pump_program_present": False,
+        "pumpswap_program_present": False,
+        "migration_block_time": None,
+        "migration_slot": None,
+    }
+    if not isinstance(expected_mint, str) or not expected_mint:
+        result["reason"] = "expected_mint_invalid"
+        return result
+    if not tx_result:
+        result["reason"] = "migration_transaction_not_found"
+        return result
+    meta = tx_result.get("meta")
+    if not isinstance(meta, Mapping):
+        result["reason"] = "migration_transaction_meta_missing"
+        return result
+    if meta.get("err") is not None:
+        result["reason"] = "migration_transaction_failed"
+        return result
+
+    keys = collect_transaction_account_keys(tx_result)
+    result["account_keys_total"] = len(keys)
+    keyset = set(keys)
+    result["mint_present"] = expected_mint in keyset
+    result["pump_program_present"] = PUMP_PROGRAM_ID in keyset
+    result["pumpswap_program_present"] = PUMPSWAP_AMM_PROGRAM_ID in keyset
+
+    bt = tx_result.get("blockTime")
+    result["migration_block_time"] = int(bt) if isinstance(bt, (int, float)) else None
+    sl = tx_result.get("slot")
+    result["migration_slot"] = int(sl) if isinstance(sl, (int, float)) else None
+
+    if not result["mint_present"]:
+        result["reason"] = "mint_not_referenced"
+        return result
+    if not result["pump_program_present"]:
+        result["reason"] = "pump_program_not_present"
+        return result
+    if not result["pumpswap_program_present"]:
+        result["reason"] = "pumpswap_program_not_invoked"
+        return result
+    if result["migration_block_time"] is None:
+        result["reason"] = "migration_block_time_missing"
+        return result
+    if now_epoch is not None and result["migration_block_time"] > int(now_epoch) + _FUTURE_BLOCK_TIME_TOLERANCE_SECONDS:
+        result["reason"] = "migration_block_time_in_future"
+        return result
+
+    result["proven"] = True
+    result["reason"] = "proven_pump_migration"
+    return result
+
+
+def verify_graduation_from_transaction(
+    tx_result: Mapping[str, Any] | None,
+    account_infos: Mapping[str, Mapping[str, Any] | None],
+    *,
+    expected_mint: str,
+    now_epoch: int | None = None,
+) -> dict[str, Any]:
+    """Full graduation verification over a fetched migration transaction.
+
+    Pure/deterministic. Runs the exact Pump migration proof, then the existing
+    unique-or-fail PumpSwap pool resolution, then pool confirmation. Fails closed at
+    the first failing stage. Returns a dict with ``verified`` and the per-stage
+    evidence.
+    """
+    proof = prove_pump_migration_transaction(
+        tx_result, expected_mint=expected_mint, now_epoch=now_epoch
+    )
+    if not proof["proven"]:
+        return {
+            "verified": False,
+            "stage": "PUMP_MIGRATION_PROOF",
+            "reason": proof["reason"],
+            "pump_migration_proof": proof,
+            "pumpswap_resolution": None,
+            "pumpswap_confirmation": None,
+        }
+
+    resolution = resolve_pumpswap_pool_from_transaction(
+        tx_result, account_infos, expected_mint=expected_mint
+    )
+    if not resolution.get("resolved"):
+        return {
+            "verified": False,
+            "stage": "POOL_RESOLUTION",
+            "reason": resolution.get("reason"),
+            "pump_migration_proof": proof,
+            "pumpswap_resolution": resolution,
+            "pumpswap_confirmation": None,
+        }
+
+    pool = resolution["pool_address"]
+    confirmation = confirm_pumpswap_pool_from_account(
+        account_infos.get(pool), expected_mint=expected_mint, pool_address=pool
+    )
+    if not confirmation.get("confirmed"):
+        return {
+            "verified": False,
+            "stage": "POOL_CONFIRMATION",
+            "reason": confirmation.get("reason"),
+            "pump_migration_proof": proof,
+            "pumpswap_resolution": resolution,
+            "pumpswap_confirmation": confirmation,
+        }
+
+    return {
+        "verified": True,
+        "stage": "CONFIRMED",
+        "reason": "pumpswap_graduated_confirmed",
+        "pump_migration_proof": proof,
+        "pumpswap_resolution": resolution,
+        "pumpswap_confirmation": confirmation,
+        "pool_address": pool,
+        "migration_block_time": proof["migration_block_time"],
+        "migration_slot": proof["migration_slot"],
+    }
+
+
+def build_graduation_verifier_transport(
+    *,
+    migration_signature: str,
+    expected_mint: str,
+    rpc_url: str = _DEFAULT_RPC_URL,
+    timeout_seconds: float = 20.0,
+    now_epoch: int | None = None,
+) -> Callable[[SourceAdapterContext], Mapping[str, Any]]:
+    """Bounded governed transport: verify a Pump graduation from a migration sig.
+
+    Read-only sequence (same governed operations as the PumpSwap signature
+    resolver): ``getTransaction(signature)`` then batched ``getMultipleAccounts``.
+    Then the pure exact Pump migration proof + unique PumpSwap pool resolution +
+    pool confirmation. On success returns the payload consumed by
+    ``normalize_pumpswap_confirmation_payload`` plus the Pump migration proof and
+    provenance. On any failing stage returns a fail-closed ``fixture_status`` failure
+    that the confirmation normalizer rejects. No DexScreener dependency. No writes,
+    no execution, no signing. Migration block time is graduation evidence only.
+    """
+
+    def transport(context: SourceAdapterContext) -> Mapping[str, Any]:
+        del context
+        tx = _rpc_post(
+            rpc_url,
+            "getTransaction",
+            [migration_signature, {"maxSupportedTransactionVersion": 0, "encoding": "json"}],
+            timeout_seconds=timeout_seconds,
+        )
+        if tx.get("fixture_status") == "failure":
+            return MappingProxyType(dict(tx))
+        tx_result = tx.get("result")
+        if not isinstance(tx_result, Mapping):
+            return MappingProxyType({
+                "fixture_status": "failure",
+                "failure_type": "pump_migration_transaction_not_found",
+                "failure_message": "getTransaction returned no result for migration signature",
+            })
+
+        keys = collect_transaction_account_keys(tx_result)
+        account_infos: dict[str, Any] = {}
+        for i in range(0, len(keys), 100):
+            chunk = keys[i:i + 100]
+            res = _rpc_post(rpc_url, "getMultipleAccounts", [chunk, {"encoding": "base64"}], timeout_seconds=timeout_seconds)
+            if res.get("fixture_status") == "failure":
+                return MappingProxyType(dict(res))
+            values = (res.get("result") or {}).get("value") or []
+            for k, v in zip(chunk, values):
+                account_infos[k] = v
+
+        verification = verify_graduation_from_transaction(
+            tx_result, account_infos, expected_mint=expected_mint, now_epoch=now_epoch
+        )
+        if not verification["verified"]:
+            return MappingProxyType({
+                "fixture_status": "failure",
+                "failure_type": (
+                    f"graduation_verification_failed_"
+                    f"{verification['stage'].lower()}_{verification.get('reason') or 'unknown'}"
+                ),
+                "failure_message": (
+                    f"Pump graduation not verified at {verification['stage']}: "
+                    f"{verification.get('reason')}"
+                ),
+                "pump_migration_proof": verification["pump_migration_proof"],
+                "pumpswap_resolution": verification["pumpswap_resolution"],
+            })
+
+        return MappingProxyType({
+            "pumpswap_confirmation": verification["pumpswap_confirmation"],
+            "pumpswap_resolution": verification["pumpswap_resolution"],
+            "pump_migration_proof": verification["pump_migration_proof"],
+            "migration_provenance": MIGRATION_PROVENANCE,
+            "migration_signature": migration_signature,
+            "migration_block_time": verification["migration_block_time"],
+            "migration_slot": verification["migration_slot"],
+        })
+
+    return transport
