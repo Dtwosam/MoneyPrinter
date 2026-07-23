@@ -1,4 +1,4 @@
-# Printer V1 Build Rules
+﻿# Printer V1 Build Rules
 
 
 
@@ -865,4 +865,17 @@ The next active memory-growth lane is:
 - `V2-9.7A - Operational Memory Factory Readiness Audit`
 
 V2-9.7A remains audit-only until completed. It does not unlock source fetching, DB mutation, operational memory growth, retrieval, paper decisions, BUY/SELL/HOLD, positions, trades, audits, or PnL.
+## Printer V1 Python Builder Guide
 
+For every Printer V1 Python implementation, repair, migration, runner,
+scheduler, source adapter, report, test, or proof-tooling task, use
+`docs/printer-v1-python-builder-guide.md` inside the active Printer V1 source
+stack. It is not the sole source of truth and cannot override the active lane,
+Clean Master Spec, active build order, approved designs, provider contracts,
+Source Governor, Central Scheduler, or capability locks.
+
+Before Claude, Codex, Grok, ChatGPT, or any future assistant suggests or
+implements Python code for any blocker, bug, failing test, or live-proof failure,
+it must perform the guide's Mandatory Source-Grounded Blocker Investigation and
+classify the issue. Do not issue a repair prompt until the classification shows
+that code is justified.
