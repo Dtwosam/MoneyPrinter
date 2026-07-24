@@ -333,7 +333,15 @@ def build_graduated_supply(
     selected_latest = front_door.get("selected_latest")
     selected_persisted = front_door.get("selected_persisted")
     selected = front_door.get("selected") or ()
-    reserve = front_door.get("holder_reserve_order") or ()
+    # V2-9.7E.46B: feed the holder funnel from the single combined-pool order so
+    # any lawful two-token composition is reachable (no compulsory LATEST+PERSISTED
+    # quota). Fall back to the legacy round-robin order only if a caller supplies an
+    # older front-door report without the combined key.
+    reserve = (
+        front_door.get("combined_reserve_order")
+        or front_door.get("holder_reserve_order")
+        or ()
+    )
 
     # --- Build the confirmed-origin + graduation carriers -------------------
     connection = sqlite3.connect(str(db_path))
@@ -361,7 +369,12 @@ def build_graduated_supply(
     finally:
         connection.close()
 
-    ready = selected_latest is not None and selected_persisted is not None
+    # V2-9.7E.46B: readiness is the availability of at least two lawful eligible
+    # graduated candidates in the combined reserve pool — of ANY lawful provenance
+    # composition — not a compulsory one-LATEST-plus-one-PERSISTED pair. The holder
+    # funnel then selects two distinct holder-eligible tokens from this pool. Fewer
+    # than two eligible $3K+ candidates is honest market supply, not a code defect.
+    ready = len(reserve_supply) >= 2
     terminal = (
         "GRADUATED_SUPPLY_READY"
         if ready
@@ -376,6 +389,7 @@ def build_graduated_supply(
         "front_door_candidate_count": int(front_door.get("candidate_count") or 0),
         "latest_eligible_count": int(front_door.get("latest_eligible_count") or 0),
         "persisted_eligible_count": int(front_door.get("persisted_eligible_count") or 0),
+        "combined_reserve_count": len(reserve_supply),
         "below_floor_count": int(front_door.get("below_floor_count") or 0),
         "unproven_count": int(front_door.get("unproven_count") or 0),
         "selection_floor_usd": front_door.get("selection_floor_usd"),

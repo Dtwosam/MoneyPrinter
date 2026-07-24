@@ -887,6 +887,33 @@ def _graduated_admission(
     return graduated, decisions
 
 
+def _classify_pre_lifecycle_terminal(
+    holder_facts: Mapping[str, Mapping[str, Any]], *, reserve_count: int
+) -> str:
+    """Distinguish a holder-source outage from healthy discovery-coverage exhaustion.
+
+    V2-9.7E.46B item 8: healthy-source exhaustion must be reported as
+    ``DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT`` (or capacity-exhausted when the
+    approved candidate-search cap stopped coverage early), never casually attributed
+    to the market. A transport/auth/rate-limit/stale/collection failure for any
+    evaluated candidate is instead ``PRE_LIFECYCLE_HOLDER_EVIDENCE_BLOCKED``.
+    """
+    from printer_v1.discovery.graduated_liquidity_front_door import (
+        HOLDER_SOURCE_UNAVAILABLE_PREFIXES,
+    )
+
+    saw_source_outage = any(
+        not fact.get("eligible")
+        and str(fact.get("reason") or "").startswith(HOLDER_SOURCE_UNAVAILABLE_PREFIXES)
+        for fact in holder_facts.values()
+    )
+    if saw_source_outage:
+        return "PRE_LIFECYCLE_HOLDER_EVIDENCE_BLOCKED"
+    if len(holder_facts) < reserve_count:
+        return "PRE_LIFECYCLE_DISCOVERY_SELECTION_CAPACITY_EXHAUSTED"
+    return "PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT"
+
+
 def _finalized_holder_candidates(proofs: Any, *, limit: int) -> tuple[Any, ...]:
     """Apply structural, zero-source finalized-proof gates before holder I/O."""
     eligible = []
@@ -1476,14 +1503,21 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     lifecycle_started=False,
                 )
 
-            partition_by_mint = {}
+            # V2-9.7E.46B: provenance is recorded truthfully per candidate but is
+            # NOT a compulsory pair quota. Provenance is used only to label the two
+            # selected tokens honestly; selection itself walks one combined pool.
+            provenance_by_mint = {}
             if supply is not None:
-                partition_by_mint = {
+                provenance_by_mint = {
                     mint.lower(): str(candidate.get("provenance") or "")
                     for mint, candidate in dict(
                         getattr(supply, "holder_reserve_candidates", {})
                     ).items()
                 }
+            # Combined-pool holder funnel: partition gating disabled so any lawful
+            # two-token composition (LATEST+LATEST, LATEST+PERSISTED,
+            # PERSISTED+PERSISTED) is reachable. The funnel continues past holder
+            # failures and stops after any two eligible candidates.
             holder_facts, ledger = self._evaluate_holder_eligibility(
                 connection,
                 command=command,
@@ -1495,32 +1529,46 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 timeout_seconds=timeout_seconds,
                 context_factories=lk.get("context_adapter_factories"),
                 request_pacer=lk.pop("holder_request_pacer", None),
-                partition_by_mint=partition_by_mint or None,
+                partition_by_mint=None,
             )
             connection.commit()
         finally:
             connection.close()
 
         readiness_bundle = None
-        if supply is not None and partition_by_mint:
-            selected_by_partition: dict[str, Any] = {}
-            for proof in graduated_candidates:
-                partition = partition_by_mint.get(proof.mint.lower())
-                fact = holder_facts.get(proof.mint.lower(), {})
-                if partition and fact.get("eligible") and partition not in selected_by_partition:
-                    selected_by_partition[partition] = proof
-            required = {"LATEST_GRADUATED", "PERSISTED_GRADUATED"}
-            if set(selected_by_partition) == required:
-                graduated_candidates = tuple(
-                    selected_by_partition[name]
-                    for name in ("LATEST_GRADUATED", "PERSISTED_GRADUATED")
-                )
+        selection_terminal = None
+        if supply is not None and provenance_by_mint:
+            # Deterministic combined order: honour the seeded combined reserve order
+            # (front door) so which two eligible tokens are chosen is fair and
+            # replayable, never provider/recency/liquidity biased.
+            admitted_by_mint = {p.mint.lower(): p for p in graduated_candidates}
+            reserve_order = [
+                p.mint.lower()
+                for p in getattr(supply, "holder_reserve_supply", ())
+                if p.mint.lower() in admitted_by_mint
+            ]
+            for mint in sorted(admitted_by_mint):
+                if mint not in reserve_order:
+                    reserve_order.append(mint)
+            chosen: list[Any] = []
+            seen: set[str] = set()
+            for mint in reserve_order:
+                fact = holder_facts.get(mint, {})
+                if fact.get("eligible") and mint not in seen:
+                    chosen.append(admitted_by_mint[mint])
+                    seen.add(mint)
+                if len(chosen) == 2:
+                    break
+
+            if len(chosen) == 2:
+                graduated_candidates = tuple(chosen)
+                selection_terminal = "PILOT_INPUT_READY"
                 from printer_v1.operator_cli.pilot_input_readiness import (
                     ReadinessCandidate,
                     build_pilot_input_ready_bundle,
                 )
 
-                def readiness_candidate(proof: Any, provenance: str) -> ReadinessCandidate:
+                def readiness_candidate(proof: Any) -> ReadinessCandidate:
                     item = dict(supply.holder_reserve_candidates[proof.mint.lower()])
                     liquidity = dict(item.get("liquidity") or {})
                     return ReadinessCandidate(
@@ -1533,7 +1581,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         ),
                         activation_route=str(proof.origin_route),
                         holder_eligible=True,
-                        provenance=provenance,
+                        # True provenance per token; a LATEST token is never
+                        # relabelled PERSISTED (or vice versa).
+                        provenance=provenance_by_mint.get(proof.mint.lower(), ""),
                     )
 
                 readiness_connection = sqlite3.connect(Path(command.db_path))
@@ -1542,14 +1592,8 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     readiness_bundle = build_pilot_input_ready_bundle(
                         readiness_connection,
                         readiness_id=f"{command.run_id}:{cycle_id}:pilot-input",
-                        latest=readiness_candidate(
-                            selected_by_partition["LATEST_GRADUATED"],
-                            "LATEST_GRADUATED",
-                        ),
-                        persisted=readiness_candidate(
-                            selected_by_partition["PERSISTED_GRADUATED"],
-                            "PERSISTED_GRADUATED",
-                        ),
+                        latest=readiness_candidate(chosen[0]),
+                        persisted=readiness_candidate(chosen[1]),
                         holder_evidence={
                             mint: dict(fact) for mint, fact in holder_facts.items()
                         },
@@ -1572,13 +1616,19 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 finally:
                     readiness_connection.close()
             else:
+                # Fewer than two holder-eligible tokens. Classify the terminal
+                # honestly: a source/network outage is never attributed to market
+                # coverage (item 8).
                 graduated_candidates = ()
+                selection_terminal = _classify_pre_lifecycle_terminal(
+                    holder_facts, reserve_count=len(admitted_by_mint)
+                )
 
-        # V2-9.7E.44 bounded pre-lifecycle boundary: return atomic two-slot
+        # V2-9.7E.44/46B bounded pre-lifecycle boundary: return atomic two-slot
         # readiness (admission + holder eligibility + handoff readiness) without
         # invoking the scheduler/lifecycle/memory driver. No tracking is enqueued.
         if stop_before_lifecycle or (
-            supply is not None and partition_by_mint and readiness_bundle is None
+            supply is not None and provenance_by_mint and readiness_bundle is None
         ):
             holder_eligible = sum(
                 1 for fact in holder_facts.values() if fact.get("eligible")
@@ -1588,9 +1638,13 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 "PILOT_INPUT_READY"
                 if readiness_bundle is not None
                 else (
-                    "PRE_LIFECYCLE_ATOMIC_TWO_SLOT_READY"
-                    if atomic_ready and not partition_by_mint
-                    else "PRE_LIFECYCLE_HOLDER_EVIDENCE_BLOCKED"
+                    selection_terminal
+                    if selection_terminal is not None
+                    else (
+                        "PRE_LIFECYCLE_ATOMIC_TWO_SLOT_READY"
+                        if atomic_ready and not provenance_by_mint
+                        else "PRE_LIFECYCLE_HOLDER_EVIDENCE_BLOCKED"
+                    )
                 )
             )
             return OriginLifecycleResult(

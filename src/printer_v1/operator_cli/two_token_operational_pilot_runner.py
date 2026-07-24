@@ -45,7 +45,11 @@ from printer_v1.operator_cli.authoritative_live_operational_campaign import (
     OneShotUrllibPumpTransport,
     OneShotUrllibSecondaryTransport,
 )
-from printer_v1.operator_cli.campaign_ownership import create_campaign_run
+from printer_v1.operator_cli.campaign_ownership import (
+    CampaignOwnershipError,
+    create_campaign_run,
+    transition_state,
+)
 from printer_v1.operator_cli.campaign_persistence import (
     DB_MODE_PROOF_ISOLATED,
     create_campaign,
@@ -573,6 +577,70 @@ def _refuse_relaunch_if_present(target_db: Path, execution_id: str) -> None:
         )
 
 
+def _reconcile_pre_lifecycle_terminal_metadata(
+    target_db: Path,
+    *,
+    campaign_id: str,
+    run_id: str,
+    cycle_id: str,
+    terminal_cause: str,
+    now: str,
+) -> dict[str, Any]:
+    """Reconcile launch metadata to honest terminal states (item 9).
+
+    The launch graph leaves campaign=RUNNING, run=RUNNING, cycle=PLANNED. When a
+    proof terminates before any factory lifecycle run, that metadata must not remain
+    active with zero work. A clean readiness stop (``PILOT_INPUT_READY``) reconciles
+    to ``TERMINAL_STOPPED`` (a governed safe stop); every other pre-lifecycle cause
+    reconciles to ``TERMINAL_BLOCKED``. Already-terminal rows are left untouched
+    (immutable). This creates no restart or successor and no active work.
+    """
+    cause = (terminal_cause or "PRE_LIFECYCLE_GOVERNED_SAFE_STOP").strip()
+    new_state = (
+        "TERMINAL_STOPPED" if cause == "PILOT_INPUT_READY" else "TERMINAL_BLOCKED"
+    )
+    targets = (
+        ("campaign", campaign_id, ("RUNNING", "STOP_REQUESTED")),
+        ("run", run_id, ("RUNNING", "STOP_REQUESTED")),
+        ("cycle", cycle_id, ("PLANNED",)),
+    )
+    reconciled: dict[str, Any] = {
+        "reconciled": True,
+        "terminal_cause": cause,
+        "new_state": new_state,
+        "records": {},
+    }
+    connection = sqlite3.connect(str(target_db))
+    connection.execute("PRAGMA foreign_keys = ON")
+    try:
+        for record_kind, identity, expected_states in targets:
+            outcome = "not_found"
+            for expected_state in expected_states:
+                try:
+                    result = transition_state(
+                        connection,
+                        record_kind=record_kind,
+                        identity=identity,
+                        expected_state=expected_state,
+                        new_state=new_state,
+                        terminal_cause=cause,
+                        now=now,
+                    )
+                    outcome = result.current_state
+                    break
+                except CampaignOwnershipError as exc:
+                    message = str(exc)
+                    if "terminal state" in message or "immutable" in message:
+                        outcome = "already_terminal"
+                        break
+                    # Otherwise the expected-state guess did not match; try the next.
+                    outcome = f"skipped:{type(exc).__name__}"
+            reconciled["records"][record_kind] = outcome
+    finally:
+        connection.close()
+    return reconciled
+
+
 # ---------------------------------------------------------------------------
 # The pilot runner
 # ---------------------------------------------------------------------------
@@ -700,13 +768,25 @@ def run_two_token_operational_pilot(
             duration_seconds=120.0,
             connect_timeout_seconds=10.0,
         )
+    # V2-9.7E.46B candidate-search depth (item 6). The holder operation ceiling is
+    # 45 (OPERATION_CEILING). Of these, 9 are fixed zero-transport validations and
+    # 2 + 4 = 6 are reserved snapshot/completion operations, leaving 30 usable
+    # operations. Fully vetting one candidate costs 1 governed DexScreener exact-pool
+    # liquidity request plus up to HOLDER_WORST_CASE_TRANSPORT_OPERATIONS (5) holder
+    # transport operations = 6, so the ceiling supports floor(30 / 6) = 5 fully
+    # vetted candidates before the direct-migration discovery pump operations are
+    # charged. The combined front-door pool is therefore sized to 6 (one more than
+    # the holder-vetting depth) so a candidate that fails liquidity or holder
+    # evidence can be lawfully replaced within the same bounded budget, and the
+    # confirmed-LATEST discovery depth is 5. This is the maximum safe depth: a
+    # larger pool would raise the charged base and drive candidate_cap below two.
     supply_kwargs = {
         "collection_rounds": 3,
-        "max_candidates": 4,
+        "max_candidates": 5,
         "settle_seconds": 6.0,
         "reverify_on_transient": True,
         "reverify_settle_seconds": 6.0,
-        "front_door_max_candidates": 4,
+        "front_door_max_candidates": 6,
         "run_locator": True,
         "discovery_request_key_prefix": f"{execution_id}-supply",
         "front_door_request_key_prefix": f"{execution_id}-market",
@@ -755,6 +835,28 @@ def run_two_token_operational_pilot(
         _sup.attach_run(target, execution_id, run_id, process_id=process_id)
     terminal = _sup.finalize_execution_from_report(target, execution_id, report)
 
+    # V2-9.7E.46B item 9: on every pre-lifecycle terminal path (no factory
+    # lifecycle run), reconcile the campaign/run/cycle ownership graph from its
+    # launch metadata (campaign RUNNING / run RUNNING / cycle PLANNED) to honest
+    # terminal states. No terminal proof may leave RUNNING/RUNNING/PLANNED metadata
+    # with zero active work. A started lifecycle owns its own terminal reconciliation.
+    metadata_reconciliation: dict[str, Any] = {"reconciled": False}
+    if not lifecycle_started:
+        terminal_cause = str(
+            report.get("first_terminal_cause")
+            or report.get("stop_reason")
+            or terminal.get("first_stop_reason")
+            or "PRE_LIFECYCLE_GOVERNED_SAFE_STOP"
+        )
+        metadata_reconciliation = _reconcile_pre_lifecycle_terminal_metadata(
+            target,
+            campaign_id=campaign_id,
+            run_id=run_id or f"{execution_id}-campaign-run",
+            cycle_id=cycle_id,
+            terminal_cause=terminal_cause,
+            now=_iso(_utc_now()),
+        )
+
     if lifecycle_started:
         replay = pilot_report_only_replay(target, run_id)
         replay_new_source_calls = replay.get("replay", {}).get("new_source_calls")
@@ -795,4 +897,5 @@ def run_two_token_operational_pilot(
         "prepared": dict(prepared),
         "restart_created": False,
         "successor_created": False,
+        "terminal_metadata_reconciliation": metadata_reconciliation,
     }

@@ -41,6 +41,32 @@ from printer_v1.discovery.combined_executor import (
     _fisher_yates,
     _token_identity,
 )
+
+# V2-9.7E.46B combined-pool (partition-flexible) selection domain and terminals.
+# A single deterministic seeded-uniform order is taken over the *union* of both
+# provenance partitions so any lawful two-token composition (LATEST+LATEST,
+# LATEST+PERSISTED, PERSISTED+PERSISTED) can be selected. Provenance stays a
+# truthful attribute of each candidate; it is never a compulsory pair quota and
+# never a score/rank/weight.
+COMBINED_TWO_TOKEN_CHANNEL = "COMBINED_TWO_TOKEN"
+
+# Selection terminals distinguishing healthy exhaustion from source outage.
+SELECTION_TWO_TOKEN_READY = "SELECTION_TWO_TOKEN_READY"
+SELECTION_HOLDER_SOURCE_BLOCKED = "SELECTION_HOLDER_SOURCE_BLOCKED"
+SELECTION_CAPACITY_EXHAUSTED = "DISCOVERY_SELECTION_CAPACITY_EXHAUSTED"
+SELECTION_COVERAGE_INSUFFICIENT = "DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT"
+
+# Holder-fact reasons that mean the source/network could not deliver evidence
+# (transport/auth/rate-limit/stale/collection failure) rather than a truthful
+# holder disqualification (concentration/target-mismatch/conflict). A source
+# outage must never be silently attributed to insufficient market coverage.
+HOLDER_SOURCE_UNAVAILABLE_PREFIXES = (
+    "HOLDER_EVIDENCE_UNAVAILABLE",
+    "HOLDER_EVIDENCE_FAILED",
+    "HOLDER_EVIDENCE_STALE",
+    "HOLDER_EVIDENCE_COLLECTION_FAILED",
+    "MISSING_CRITICAL_DATA",
+)
 from printer_v1.discovery.selection_batch import (
     check_pair_selection_cooldown,
     check_token_selection_cooldown,
@@ -372,6 +398,127 @@ def holder_reserve_order(
         if ordinal < len(persisted_queue):
             ordered.append(persisted_queue[ordinal])
     return ordered
+
+
+def combined_reserve_order(
+    eligible: Sequence[FrontDoorCandidate],
+    *,
+    cycle_seed: str,
+) -> list[FrontDoorCandidate]:
+    """One deterministic seeded-uniform order over the *combined* eligible pool.
+
+    Unlike ``holder_reserve_order`` (which round-robins the two partitions), this
+    is a single-pool order: LATEST and PERSISTED candidates are drawn from one
+    identity-sorted, seeded-shuffled queue. This is what makes any lawful two-token
+    composition reachable without a compulsory one-per-partition quota. Ordering is
+    seeded-uniform only; provenance, liquidity magnitude, recency and provider order
+    never affect it.
+    """
+    return _seeded_uniform(
+        list(eligible), cycle_seed, COMBINED_TWO_TOKEN_CHANNEL, len(list(eligible))
+    )
+
+
+def _composition_label(selected: Sequence[FrontDoorCandidate]) -> str:
+    """Truthful composition label from the *actual* provenances of the two slots."""
+    latest = sum(1 for c in selected if c.provenance == LATEST_GRADUATED_CHANNEL)
+    persisted = sum(
+        1 for c in selected if c.provenance == PERSISTED_GRADUATED_CHANNEL
+    )
+    if len(selected) < 2:
+        return "SINGLE"
+    if latest == 2:
+        return "LATEST+LATEST"
+    if persisted == 2:
+        return "PERSISTED+PERSISTED"
+    return "LATEST+PERSISTED"
+
+
+def select_two_eligible_tokens(
+    eligible: Sequence[FrontDoorCandidate],
+    *,
+    cycle_seed: str,
+    holder_evaluator: "Callable[[FrontDoorCandidate], tuple[bool, str]]",
+    candidate_cap: int,
+    source_unavailable_reasons: "frozenset[str] | set[str] | None" = None,
+) -> dict[str, Any]:
+    """V2-9.7E.46B partition-flexible two-token selection from one combined pool.
+
+    Walks the single deterministic ``combined_reserve_order`` and runs the injected
+    holder gate in that order within a frozen total holder-operation ``candidate_cap``.
+    On a holder failure/unknown it continues immediately to the next lawful candidate.
+    It stops as soon as **two distinct** holder-eligible tokens exist — of *any* lawful
+    provenance composition — or the pool is exhausted or the cap is reached. A rejected
+    identity gets no second chance; no holder result becomes a score/rank/confidence/
+    weight.
+
+    Terminal classification (item 8):
+      * ``SELECTION_TWO_TOKEN_READY`` — two distinct eligible tokens found;
+      * ``SELECTION_HOLDER_SOURCE_BLOCKED`` — a holder source/network was unavailable
+        for at least one evaluated candidate and fewer than two are eligible;
+      * ``DISCOVERY_SELECTION_CAPACITY_EXHAUSTED`` — the approved candidate-search cap
+        was reached before the pool was fully covered and healthy sources answered;
+      * ``DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT`` — the whole bounded pool was
+        covered by healthy sources and fewer than two tokens are eligible.
+    """
+    if candidate_cap < 0:
+        raise GraduatedFrontDoorError("INVALID_CANDIDATE_CAP", str(candidate_cap))
+    source_prefixes = tuple(
+        source_unavailable_reasons
+        if source_unavailable_reasons is not None
+        else HOLDER_SOURCE_UNAVAILABLE_PREFIXES
+    )
+    order = combined_reserve_order(eligible, cycle_seed=cycle_seed)
+    selected: list[FrontDoorCandidate] = []
+    funnel: list[dict[str, Any]] = []
+    ops = 0
+    cap_reached = False
+    saw_source_outage = False
+    for candidate in order:
+        if len(selected) == 2:
+            break
+        if ops >= candidate_cap:
+            cap_reached = True
+            break
+        ops += 1
+        eligible_flag, reason = holder_evaluator(candidate)
+        if not eligible_flag and str(reason).startswith(source_prefixes):
+            saw_source_outage = True
+        funnel.append(
+            {
+                "mint": candidate.mint,
+                "pool": candidate.pumpswap_pool,
+                "provenance": candidate.provenance,
+                "holder_eligible": bool(eligible_flag),
+                "reason": reason,
+                "operation_ordinal": ops,
+            }
+        )
+        if eligible_flag:
+            selected.append(candidate)
+
+    fully_covered = ops >= len(order) and not cap_reached
+    if len(selected) == 2:
+        terminal = SELECTION_TWO_TOKEN_READY
+    elif saw_source_outage:
+        terminal = SELECTION_HOLDER_SOURCE_BLOCKED
+    elif not fully_covered:
+        terminal = SELECTION_CAPACITY_EXHAUSTED
+    else:
+        terminal = SELECTION_COVERAGE_INSUFFICIENT
+
+    return {
+        "selected": selected,
+        "terminal": terminal,
+        "composition": _composition_label(selected),
+        "funnel": funnel,
+        "holder_operations": ops,
+        "candidate_cap": candidate_cap,
+        "cap_reached": cap_reached,
+        "pool_size": len(order),
+        "fully_covered": fully_covered,
+        "eligible_count": len(selected),
+    }
 
 
 def select_holder_eligible_pair(
@@ -785,6 +932,16 @@ def run_graduated_liquidity_front_door(
             candidate.to_dict()
             for candidate in holder_reserve_order(
                 latest_eligible, persisted_eligible, cycle_seed=cycle_seed
+            )
+        ],
+        # V2-9.7E.46B: the single combined-pool order that feeds the partition-
+        # flexible holder funnel (any lawful composition). This supersedes the
+        # round-robin reserve order for downstream two-token selection.
+        "combined_reserve_order": [
+            candidate.to_dict()
+            for candidate in combined_reserve_order(
+                list(latest_eligible) + list(persisted_eligible),
+                cycle_seed=cycle_seed,
             )
         ],
         "handoff_readiness": handoff,
