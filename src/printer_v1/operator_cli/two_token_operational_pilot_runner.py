@@ -256,7 +256,9 @@ def prepare_pilot_target(
         export = export_isolated_attempt_registry(
             paths.persistent_source_db,
             paths.target_db,
-            export_identity=f"pilot-export:{paths.target_db.name}",
+            export_identity=(
+                f"pilot-export:{paths.target_db.parent.name}:{paths.target_db.name}"
+            ),
         )
         validate_runtime_schema(paths.target_db)
         source_hash_before = _sha256(paths.persistent_source_db)

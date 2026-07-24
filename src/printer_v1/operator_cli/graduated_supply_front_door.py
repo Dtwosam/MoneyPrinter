@@ -56,10 +56,15 @@ from printer_v1.sources.pumpfun_direct import (
 from printer_v1.sources.pumpswap_graduated_registry import (
     lookup_graduated_candidate,
 )
+from printer_v1.sources.contracts import build_governed_source_request
 from printer_v1.sources.dexscreener import (
+    DEXSCREENER_SOURCE_NAME,
+    build_dexscreener_adapter,
     build_dexscreener_fresh_profiles_transport,
 )
-from printer_v1.sources.governor import can_request_source
+from printer_v1.sources.governed_execution import (
+    execute_source_request_with_governor,
+)
 
 # Repair 2C locator dispositions.
 LOCATOR_MATCHED_REGISTRY = "LOCATOR_MATCHED_REGISTRY"
@@ -165,7 +170,7 @@ def _fresh_profile_mints(payload: Mapping[str, Any]) -> list[str]:
         addr = None
         if isinstance(base, Mapping):
             addr = base.get("address")
-        addr = addr or item.get("mint")
+        addr = addr or item.get("mint") or item.get("token_mint")
         if isinstance(addr, str) and addr and addr not in seen:
             seen.add(addr)
             mints.append(addr)
@@ -181,63 +186,74 @@ def run_fresh_profile_locator(
     request_key: str = "v2-9-7e-45-locator",
     now: str | None = None,
 ) -> dict[str, Any]:
-    """V2-9.7E.45 Repair 2C — DexScreener fresh-profiles locator (locator-only).
-
-    Surfaces currently-visible Solana mints/pairs and cross-references them against
-    the canonical graduated registry. A fresh-profile mint may proceed ONLY when it
-    already matches an exact confirmed graduated-registry row; otherwise it is
-    retained as locator-only evidence with an explicit rejection reason and can never
-    be smuggled into selection. Response ordering, rank, boosts, popularity and
-    promotional fields are discarded. Exactly one governed keyless request is spent;
-    no retry / rotation / provider racing. This locator NEVER establishes graduation
-    on its own — DexScreener cannot prove Pump origin or graduation.
-    """
+    """Run one governed DexScreener fresh-profile locator-only request."""
     del now
-    decision = can_request_source("dexscreener", "dexscreener_fresh_profiles", 0)
-    if not decision.allowed:
-        raise GraduatedSupplyError(f"LOCATOR_SOURCE_GOVERNOR_BLOCKED:{decision.reason}")
     transport = transport or build_dexscreener_fresh_profiles_transport()
-    payload = transport(None)
-    fixture_status = (
-        str(payload.get("fixture_status")) if isinstance(payload, Mapping) else "failure"
+    adapter = build_dexscreener_adapter(
+        enabled=True,
+        fixture_transport=transport,
     )
-    if fixture_status in {"failure", "rate_limited", "error"}:
-        return {
-            "request_key": request_key,
-            "status": fixture_status,
-            "surfaced_count": 0,
-            "matched_count": 0,
-            "locator_only_count": 0,
-            "matched_mints": [],
-            "dispositions": [],
-        }
-
-    mints = _fresh_profile_mints(payload)
+    request = build_governed_source_request(
+        DEXSCREENER_SOURCE_NAME,
+        "dexscreener_fresh_profiles",
+        request_key=request_key,
+        tracking_priority=0,
+        payload={"request_kind": "dexscreener_fresh_profiles", "chain": "solana"},
+    )
     connection = sqlite3.connect(str(db_path))
     connection.row_factory = sqlite3.Row
-    matched: list[str] = []
-    dispositions: list[dict[str, str]] = []
+    connection.execute("PRAGMA foreign_keys = ON")
     try:
+        execution = execute_source_request_with_governor(
+            connection,
+            request,
+            adapter,
+            recent_request_count=0,
+        )
+        result = execution.normalized_result
+        if result.failure_type:
+            connection.commit()
+            return {
+                "request_key": request_key,
+                "status": (
+                    "rate_limited"
+                    if result.failure_type == "dexscreener_rate_limited_fixture"
+                    else str(result.failure_type)
+                ),
+                "surfaced_count": 0,
+                "matched_count": 0,
+                "locator_only_count": 0,
+                "matched_mints": [],
+                "dispositions": [],
+            }
+
+        payload = result.normalized_payload or {}
+        mints = _fresh_profile_mints(payload)
+        matched: list[str] = []
+        dispositions: list[dict[str, str]] = []
         for mint in mints:
             row = lookup_graduated_candidate(connection, mint)
             if row is not None:
                 matched.append(mint)
-                dispositions.append({"mint": mint, "disposition": LOCATOR_MATCHED_REGISTRY})
+                dispositions.append(
+                    {"mint": mint, "disposition": LOCATOR_MATCHED_REGISTRY}
+                )
             else:
                 dispositions.append(
                     {"mint": mint, "disposition": LOCATOR_ONLY_NO_GRADUATION_PROOF}
                 )
+        connection.commit()
+        return {
+            "request_key": request_key,
+            "status": "ok",
+            "surfaced_count": len(mints),
+            "matched_count": len(matched),
+            "locator_only_count": len(mints) - len(matched),
+            "matched_mints": matched,
+            "dispositions": dispositions,
+        }
     finally:
         connection.close()
-    return {
-        "request_key": request_key,
-        "status": "ok",
-        "surfaced_count": len(mints),
-        "matched_count": len(matched),
-        "locator_only_count": len(mints) - len(matched),
-        "matched_mints": matched,
-        "dispositions": dispositions,
-    }
 
 
 def build_graduated_supply(

@@ -367,6 +367,27 @@ class WiringTests(e8._IntegrationBase):
         finally:
             conn.close()
 
+    def test_e46_graduation_native_supply_skips_unused_create_acquisition(self):
+        class RefuseCreateTransport:
+            def json_rpc(self, *_args, **_kwargs):
+                raise AssertionError("graduation-native FULL_PILOT must not fetch creates")
+
+        result = AuthoritativeLiveOperationalCampaignOwner().run_operational(
+            command=self.command,
+            pump_transport=RefuseCreateTransport(),
+            secondary_transport=None,
+            source_governor=GOV,
+            central_scheduler=SCH,
+            selection_seed="e46-no-create",
+            cycle_id="cyc",
+            cycle_cutoff=e8.CUTOFF,
+            evaluated_at=e8.NOW,
+            backup_path=self.backup,
+            lifecycle_kwargs={"context_adapter_factories": _clean_goplus_context()},
+            graduated_supply=self._supply(),
+            stop_before_lifecycle=True,
+        )
+        assert result.lifecycle["graduated_candidate_count"] == 2
     def test_e46_holder_reserve_writes_readiness_before_lifecycle(self):
         base = self._supply()
         candidates = {

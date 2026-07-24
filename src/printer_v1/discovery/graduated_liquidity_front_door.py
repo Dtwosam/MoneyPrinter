@@ -579,6 +579,41 @@ def _cooldown_ok(
     return True, ""
 
 
+def _bounded_refresh_rows(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    latest_mints: set[str],
+    cycle_seed: str,
+    max_candidates: int,
+) -> list[Mapping[str, Any]]:
+    """Choose a bounded categorical refresh batch without provider ordering."""
+    if max_candidates <= 0:
+        return []
+    latest = sorted(
+        (row for row in rows if str(row["mint_identity"]) in latest_mints),
+        key=lambda row: str(row["mint_identity"]),
+    )
+    persisted = sorted(
+        (row for row in rows if str(row["mint_identity"]) not in latest_mints),
+        key=lambda row: str(row["mint_identity"]),
+    )
+    latest = _fisher_yates(latest, f"{cycle_seed}|REFRESH_LATEST")
+    persisted = _fisher_yates(persisted, f"{cycle_seed}|REFRESH_PERSISTED")
+    if not latest or not persisted:
+        return list((latest or persisted)[:max_candidates])
+
+    latest_cap = max(1, max_candidates // 2)
+    persisted_cap = max(1, max_candidates - latest_cap)
+    selected = list(latest[:latest_cap]) + list(persisted[:persisted_cap])
+    remaining = max_candidates - len(selected)
+    if remaining > 0:
+        selected.extend(latest[latest_cap:latest_cap + remaining])
+        remaining = max_candidates - len(selected)
+    if remaining > 0:
+        selected.extend(persisted[persisted_cap:persisted_cap + remaining])
+    return selected
+
+
 # --------------------------------------------------------------------------- #
 # Front door                                                                   #
 # --------------------------------------------------------------------------- #
@@ -621,14 +656,19 @@ def run_graduated_liquidity_front_door(
     connection.execute("PRAGMA foreign_keys = ON")
     dex_request_count = 0
     try:
-        rows = export_graduated_candidates(connection)
+        rows = _bounded_refresh_rows(
+            export_graduated_candidates(connection),
+            latest_mints=latest_set,
+            cycle_seed=cycle_seed,
+            max_candidates=max_candidates,
+        )
         candidates: list[FrontDoorCandidate] = []
         latest_eligible: list[FrontDoorCandidate] = []
         persisted_eligible: list[FrontDoorCandidate] = []
         below_floor = 0
         unproven = 0
 
-        for row in rows[:max_candidates]:
+        for row in rows:
             mint = str(row["mint_identity"])
             pool = str(row["pumpswap_pool"])
             market_identity = str(row["market_identity"])

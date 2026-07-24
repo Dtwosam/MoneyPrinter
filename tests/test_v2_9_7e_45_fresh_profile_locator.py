@@ -77,6 +77,18 @@ class FreshProfileLocatorTests(unittest.TestCase):
         self.assertEqual(report["surfaced_count"], 2)
         self.assertEqual(report["matched_count"], 1)
         self.assertEqual(report["locator_only_count"], 1)
+        conn = sqlite3.connect(self.db)
+        try:
+            self.assertEqual(
+                conn.execute(
+                    "SELECT COUNT(*) FROM printer_source_requests "
+                    "WHERE source_name='dexscreener' "
+                    "AND request_kind='dexscreener_fresh_profiles'"
+                ).fetchone()[0],
+                1,
+            )
+        finally:
+            conn.close()
         self.assertEqual(report["matched_mints"], [_mint("A")])
         dispo = {d["mint"]: d["disposition"] for d in report["dispositions"]}
         self.assertEqual(dispo[_mint("A")], LOCATOR_MATCHED_REGISTRY)

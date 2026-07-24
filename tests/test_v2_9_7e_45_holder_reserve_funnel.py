@@ -7,6 +7,7 @@ import unittest
 from printer_v1.discovery.graduated_liquidity_front_door import (
     LIQUIDITY_PROVEN,
     FrontDoorCandidate,
+    _bounded_refresh_rows,
     LiquidityEvidence,
     select_holder_eligible_pair,
 )
@@ -49,6 +50,24 @@ def _evaluator(eligible_mints: set[str]):
     _eval.calls = calls  # type: ignore[attr-defined]
     return _eval
 
+
+class BoundedRefreshBatchTests(unittest.TestCase):
+    def test_persisted_first_registry_cannot_starve_latest_partition(self) -> None:
+        rows = [
+            {"mint_identity": f"P{i}"} for i in range(4)
+        ] + [
+            {"mint_identity": f"L{i}"} for i in range(4)
+        ]
+        selected = _bounded_refresh_rows(
+            rows,
+            latest_mints={f"L{i}" for i in range(4)},
+            cycle_seed=SEED,
+            max_candidates=4,
+        )
+        identities = {str(row["mint_identity"]) for row in selected}
+        self.assertEqual(len(identities), 4)
+        self.assertEqual(sum(mint.startswith("L") for mint in identities), 2)
+        self.assertEqual(sum(mint.startswith("P") for mint in identities), 2)
 
 class HolderReserveFunnelTests(unittest.TestCase):
     def test_replacement_within_partition(self) -> None:

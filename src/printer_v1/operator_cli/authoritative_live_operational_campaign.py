@@ -60,6 +60,7 @@ from printer_v1.sources.pumpfun_origin import (
     PUMP_CREATE_INDEX_ADDRESS,
     SIGNATURE_PAGE_REQUEST,
     TRANSACTION_REQUEST,
+    AccountingSnapshot,
     AcquisitionCycleResult,
     FinalizedOriginCursor,
     FixtureOperation,
@@ -1023,17 +1024,33 @@ class AuthoritativeLiveOperationalCampaignOwner:
         timeout_seconds: float,
         byte_ceiling: int,
         tracker_api_key: str | None,
+        graduation_native_only: bool = False,
     ) -> tuple[CombinedDiscoveryFixtures, LivePumpAcquisition, LiveSecondaryEnrichment]:
-        pump = LivePumpOriginAdapter(
-            pump_transport, timeout_seconds=timeout_seconds, byte_ceiling=byte_ceiling
-        )
-        acquisition = pump.acquire(
-            source_governor=source_governor,
-            central_scheduler=central_scheduler,
-            prior_cursor=prior_cursor,
-        )
+        if graduation_native_only:
+            acquisition = LivePumpAcquisition(
+                result=AcquisitionCycleResult(
+                    index_address=PUMP_CREATE_INDEX_ADDRESS,
+                    anchor=None,
+                    observations=(),
+                    rejections=(),
+                    cursor=FinalizedOriginCursor(None),
+                    accounting=AccountingSnapshot({}, 0),
+                ),
+                origin_proofs=(),
+            )
+        else:
+            pump = LivePumpOriginAdapter(
+                pump_transport,
+                timeout_seconds=timeout_seconds,
+                byte_ceiling=byte_ceiling,
+            )
+            acquisition = pump.acquire(
+                source_governor=source_governor,
+                central_scheduler=central_scheduler,
+                prior_cursor=prior_cursor,
+            )
         enrichment = LiveSecondaryEnrichment()
-        if secondary_transport is not None:
+        if secondary_transport is not None and not graduation_native_only:
             secondary = LiveSecondaryDiscoveryAdapter(
                 secondary_transport,
                 timeout_seconds=timeout_seconds,
@@ -1304,6 +1321,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
             timeout_seconds=timeout_seconds,
             byte_ceiling=byte_ceiling,
             tracker_api_key=tracker_api_key,
+            graduation_native_only=(
+                migration_transport is not None or graduated_supply is not None
+            ),
         )
         # V2-9.7E.44: wire E.42 direct-migration discovery + E.43 $3K front door
         # into the FULL_PILOT candidate supply. When a prebuilt supply or a live
