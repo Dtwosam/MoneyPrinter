@@ -1225,8 +1225,24 @@ class AuthoritativeLiveOperationalCampaignOwner:
         byte_ceiling: int = DEFAULT_RESPONSE_BYTE_CEILING,
         tracker_api_key: str | None = None,
         graduation_proofs: Mapping[str, Any] | None = None,
+        graduated_supply: Any | None = None,
+        migration_transport: Any | None = None,
+        graduated_supply_kwargs: Mapping[str, Any] | None = None,
+        stop_before_lifecycle: bool = False,
     ) -> Any:
         """Run one authoritative live two-token operational-natural campaign.
+
+        V2-9.7E.44: when ``graduated_supply`` (a prebuilt
+        ``graduated_supply_front_door.GraduatedSupply``) or a live
+        ``migration_transport`` is provided, the E.42 direct-migration discovery and
+        E.43 ``$3,000`` exact-pool front door supply the candidate universe: only
+        floor-passing front-door-selected candidates (one ``LATEST`` + one
+        ``PERSISTED``) become graduation proofs and admission carriers. This is the
+        canonical FULL_PILOT candidate-supply wiring; it reuses the adopted owners
+        verbatim and adds no new gate, score, ranking, selector or provider.
+        ``stop_before_lifecycle`` returns the pre-lifecycle readiness bundle
+        (admission + holder eligibility + atomic two-slot handoff readiness) without
+        invoking the scheduler/lifecycle/memory driver.
 
         ``graduation_proofs`` carries confirmed PumpSwap graduation evidence
         (mint -> confirmation) supplied by a graduated-discovery channel or an
@@ -1269,6 +1285,30 @@ class AuthoritativeLiveOperationalCampaignOwner:
             byte_ceiling=byte_ceiling,
             tracker_api_key=tracker_api_key,
         )
+        # V2-9.7E.44: wire E.42 direct-migration discovery + E.43 $3K front door
+        # into the FULL_PILOT candidate supply. When a prebuilt supply or a live
+        # migration transport is provided, discovery+front-door produce the eligible
+        # mixed pair; only floor-passing front-door-selected candidates become
+        # graduation proofs and admission-universe carriers. Reuses the adopted
+        # owners verbatim (no new gate, score, ranking, selector or provider).
+        supply = graduated_supply
+        if supply is None and migration_transport is not None:
+            from printer_v1.operator_cli.graduated_supply_front_door import (
+                build_graduated_supply,
+            )
+            supply = build_graduated_supply(
+                command.db_path,
+                cycle_seed=selection_seed,
+                migration_transport=migration_transport,
+                now=evaluated_at,
+                **dict(graduated_supply_kwargs or {}),
+            )
+        graduated_supply_proofs: tuple[Any, ...] = ()
+        if supply is not None:
+            merged_proofs = dict(graduation_proofs or {})
+            merged_proofs.update(dict(supply.graduation_proofs))
+            graduation_proofs = merged_proofs
+            graduated_supply_proofs = tuple(supply.graduated_supply)
         # V2-9.7E.41: bind confirmed graduation evidence into the discovery
         # fixtures so the executor's PumpSwap confirmation and the graduation-only
         # gate operate on it. Empty on a cold-start cycle with no graduated supply.
@@ -1323,7 +1363,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 HOLDER_ELIGIBILITY_CANDIDATE_MAX, ledger.candidate_cap()
             )
             graduated_candidates, graduation_decisions = _graduated_admission(
-                tuple(acquisition.origin_proofs),
+                tuple(acquisition.origin_proofs) + graduated_supply_proofs,
                 graduation_proofs=dict(fixtures.pumpswap_proofs),
                 candidate_cap=candidate_cap,
             )
@@ -1365,6 +1405,10 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         "pending_or_running_run_steps": 0,
                         "running_jobs_after_stop": 0,
                         "full_pilot_admission": admission,
+                        "stopped_before_lifecycle": bool(stop_before_lifecycle),
+                        "graduated_supply_diagnostics": (
+                            dict(supply.diagnostics) if supply is not None else {}
+                        ),
                     },
                     lifecycle_started=False,
                 )
@@ -1384,6 +1428,52 @@ class AuthoritativeLiveOperationalCampaignOwner:
             connection.commit()
         finally:
             connection.close()
+
+        # V2-9.7E.44 bounded pre-lifecycle boundary: return atomic two-slot
+        # readiness (admission + holder eligibility + handoff readiness) without
+        # invoking the scheduler/lifecycle/memory driver. No tracking is enqueued.
+        if stop_before_lifecycle:
+            holder_eligible = sum(
+                1 for fact in holder_facts.values() if fact.get("eligible")
+            )
+            atomic_ready = len(graduated_candidates) >= 2 and holder_eligible >= 2
+            terminal = (
+                "PRE_LIFECYCLE_ATOMIC_TWO_SLOT_READY"
+                if atomic_ready
+                else "PRE_LIFECYCLE_HOLDER_EVIDENCE_BLOCKED"
+            )
+            return OriginLifecycleResult(
+                activation=ActivationResult(
+                    terminal_status=terminal,
+                    first_terminal_cause=terminal,
+                    activated_slots=(),
+                    selection_batch_id=None,
+                ),
+                lifecycle={
+                    "run_id": command.run_id,
+                    "run_status": "NOT_STARTED",
+                    "stop_reason": terminal,
+                    "first_terminal_cause": terminal,
+                    "lifecycle_started": False,
+                    "stopped_before_lifecycle": True,
+                    "atomic_two_slot_ready": atomic_ready,
+                    "graduated_candidate_count": len(graduated_candidates),
+                    "holder_eligible_count": holder_eligible,
+                    "holder_facts": holder_facts,
+                    "handoff_readiness": (
+                        dict(supply.handoff_readiness) if supply is not None else {}
+                    ),
+                    "forbidden_deltas": {},
+                    "pending_or_running_run_steps": 0,
+                    "running_jobs_after_stop": 0,
+                    "full_pilot_admission": admission,
+                    "graduated_supply_diagnostics": (
+                        dict(supply.diagnostics) if supply is not None else {}
+                    ),
+                },
+                lifecycle_started=False,
+            )
+
         fixtures = replace(
             fixtures,
             direct_observations=graduated_candidates,
