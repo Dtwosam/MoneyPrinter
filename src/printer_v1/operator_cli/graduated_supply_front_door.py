@@ -13,12 +13,15 @@ Design: ``docs/printer-v1-v2-9-7e-44-full-pilot-supply-integration-design.md``.
 For each front-door-*selected* graduated candidate it builds the two carriers the
 existing ``run_operational`` admission path consumes:
 
-* a ``FixtureOriginProof`` — the confirmed-origin carrier. ``signature`` is the
-  real on-chain migration signature (the graduation-lineage proof under the E.41
+* a ``FixtureOriginProof`` carrying ``origin_route="GRADUATION_NATIVE"`` — the
+  V2-9.7E.45 typed graduation-native carrier (Route B). ``signature`` is the real
+  on-chain migration signature (the graduation-lineage proof under the E.41
   graduation-only law), ``slot``/``block_time`` the graduation slot/block time, and
   ``bonding_curve`` the **real** Pump bonding-curve PDA derived deterministically
   from the mint (no fabricated address). The historical Pump create transaction is
-  never re-fetched; graduation, not the create, is the eligibility event.
+  never re-fetched and is never fabricated; the migration signature is never
+  persisted into a create-signature field; graduation, not the create, is the
+  eligibility and activation event.
 * a ``FixturePumpSwapProof`` — the exact PumpSwap graduation confirmation bound to
   the confirmed pool.
 
@@ -117,6 +120,11 @@ def _origin_proof_for(row: Mapping[str, Any]) -> FixtureOriginProof:
         block_time=int(row["graduation_block_time"]),
         bonding_curve=derive_bonding_curve(mint),
         confirmed=True,
+        # V2-9.7E.45: a migration-discovered candidate activates through the typed
+        # graduation-native route (Route B). ``signature`` is the migration
+        # (graduation-lineage) signature, ``slot``/``block_time`` are the graduation
+        # slot/block time. It is never written to the create origin registry.
+        origin_route="GRADUATION_NATIVE",
     )
 
 

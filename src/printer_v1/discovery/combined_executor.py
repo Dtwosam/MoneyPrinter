@@ -216,6 +216,15 @@ class FixtureOriginProof:
     creator_address: str = "creator"
     confirmed: bool = True
     create_layout: str = "PUMP_CREATE_V1"
+    # V2-9.7E.45 typed activation route. "PUMP_CREATE" is the create-native origin
+    # (Route A): ``signature``/``slot``/``block_time`` are the Pump *create*
+    # transaction fields written to the create origin registry. "GRADUATION_NATIVE"
+    # (Route B) is a migration-discovered candidate whose ``signature`` is the
+    # migration (graduation-lineage) signature and ``slot``/``block_time`` are the
+    # graduation slot/block time. A graduation-native proof is NEVER written to the
+    # create origin registry and its migration signature is NEVER persisted into a
+    # create-signature field.
+    origin_route: str = "PUMP_CREATE"
 
 
 @dataclass(frozen=True)
@@ -317,6 +326,7 @@ class _Observation:
     pumpfun_origin_status: str = PUMPFUN_ORIGIN_STATUS
     lifecycle: str = "PUMP_LIFECYCLE_UNKNOWN"
     activity_count: int | None = None
+    origin_route: str = "PUMP_CREATE"
 
 
 @dataclass
@@ -333,6 +343,7 @@ class _Merged:
     pumpswap_state: str = "NOT_REQUIRED"
     first_failed_gate: str | None = None
     eligible: bool = False
+    origin_route: str = "PUMP_CREATE"
 
 
 def _utc_now() -> str:
@@ -974,6 +985,9 @@ class CombinedPumpfunCampaignExecutor:
             return []
 
         observations: list[_Observation] = []
+        # V2-9.7E.45: migration-discovered graduation-native proofs never enter the
+        # create-origin registry and are activated through Route B below.
+        grad_native_proofs: tuple[FixtureOriginProof, ...] = ()
         # Prefer explicit origin proofs for fixture simplicity; optional full cycle.
         if fixtures.direct_operations:
             # V2-9.7E.5 primary: signature-anchored finalized acquisition on the
@@ -988,7 +1002,29 @@ class CombinedPumpfunCampaignExecutor:
             usage.bump_source(sum(result.accounting.governed_requests.values()) or 1)
             creates = result.observations
             save_origin_cursor(connection, result.cursor, now=now)
+            grad_native_proofs = tuple(
+                item
+                for item in fixtures.direct_observations
+                if item.confirmed
+                and getattr(item, "origin_route", "PUMP_CREATE") == "GRADUATION_NATIVE"
+            )
         else:
+            # V2-9.7E.45 typed route split. Only create-native proofs become
+            # PumpCreateObservations written to the create origin registry; the
+            # migration signature of a graduation-native proof is NEVER persisted
+            # into a create-signature field.
+            create_proofs = tuple(
+                item
+                for item in fixtures.direct_observations
+                if item.confirmed
+                and getattr(item, "origin_route", "PUMP_CREATE") == "PUMP_CREATE"
+            )
+            grad_native_proofs = tuple(
+                item
+                for item in fixtures.direct_observations
+                if item.confirmed
+                and getattr(item, "origin_route", "PUMP_CREATE") == "GRADUATION_NATIVE"
+            )
             creates = tuple(
                 PumpCreateObservation(
                     mint=item.mint,
@@ -1000,8 +1036,7 @@ class CombinedPumpfunCampaignExecutor:
                     block_time=item.block_time,
                     create_layout=getattr(item, "create_layout", "PUMP_CREATE_V1"),
                 )
-                for item in fixtures.direct_observations
-                if item.confirmed
+                for item in create_proofs
             )
             if creates:
                 usage.bump_source()
@@ -1108,6 +1143,119 @@ class CombinedPumpfunCampaignExecutor:
             )
             usage.observations += 1
             usage.unique_mints.add(create.mint)
+
+        # V2-9.7E.45 Route B — graduation-native activation. A migration-discovered
+        # candidate is origin-confirmed by its Pump migration lineage (exact Pump
+        # migration signature + graduation slot/block time), NOT by a create
+        # transaction. It is never written to the create origin registry and no
+        # create signature/slot/block-time/creator/layout is fabricated. Its exact
+        # PumpSwap pool comes from the confirmed graduation proof; the observation
+        # carries the confirmed-origin status so the merge/origin/PumpSwap gates
+        # graduate it and rebind the tracking market identity to the exact pool —
+        # producing token/pair/queue/scheduler identities identical to Route A.
+        gn_ordinal = len(creates)
+        for proof in grad_native_proofs:
+            graduation = fixtures.pumpswap_proofs.get(proof.mint)
+            if graduation is None or not getattr(graduation, "pool_address", ""):
+                # No confirmed graduation proof: not selectable (two-or-none).
+                continue
+            pool = str(graduation.pool_address)
+            gn_ordinal += 1
+            req = self._governed_request(
+                connection,
+                usage,
+                source_name="solana_rpc",
+                request_kind="pumpfun_origin_transaction_reference",
+                now=now,
+            )
+            payload = {
+                "mint": proof.mint,
+                "migration_signature": proof.signature,
+                "graduation_slot": int(proof.slot),
+                "graduation_block_time": int(proof.block_time),
+                "pumpswap_pool": pool,
+                "origin": "PUMPFUN_MIGRATION_GRADUATION_CONFIRMED",
+                "origin_route": "GRADUATION_NATIVE",
+            }
+            resp = self._store_response(
+                connection,
+                usage,
+                request_id=req,
+                source_name="solana_rpc",
+                now=now,
+                payload=payload,
+            )
+            link_discovery_work_source(
+                connection,
+                discovery_work_id=work_id,
+                link_ordinal=gn_ordinal,
+                source_request_id=req,
+                source_response_id=resp,
+                now=now,
+            )
+            obs_id = f"obs:graduation_native:{proof.mint}:{proof.signature}"
+            # The executor observation ``channel`` is the provider-lane label — the
+            # direct Pump / graduation-lineage lane (LATEST_PUMPFUN). The truthful
+            # LATEST_GRADUATED vs PERSISTED_GRADUATED provenance is owned separately
+            # by the front door + graduated registry, not the provider-lane label.
+            factual = {
+                "provider": "solana_rpc",
+                "channel": "LATEST_PUMPFUN",
+                "network": "solana",
+                "mint": proof.mint,
+                "pool": pool,
+                "quote_mint": "So11111111111111111111111111111111111111112",
+                "venue": PUMPSWAP_VENUE,
+                "observed_at": now,
+                "pumpfun_origin_status": "PUMPFUN_ORIGIN_CONFIRMED",
+            }
+            raw_hash = _sha256_text(_canonical(payload))
+            insert_provider_observation(
+                connection,
+                observation_id=obs_id,
+                discovery_batch_id=discovery_batch_id,
+                discovery_work_id=work_id,
+                campaign_id=command.campaign_id,
+                run_id=command.run_id,
+                cycle_id=fixtures.cycle_id,
+                source_name="solana_rpc",
+                request_kind="pumpfun_origin_transaction_reference",
+                channel="LATEST_PUMPFUN",
+                mint_identity=proof.mint,
+                market_identity=_market_identity(PUMPSWAP_VENUE, pool),
+                lifecycle_identity="PUMP_MIGRATION_CONFIRMED",
+                observed_at=now,
+                captured_at=now,
+                raw_payload_hash=raw_hash,
+                factual_payload=factual,
+                source_request_id=req,
+                source_response_id=resp,
+                now=now,
+            )
+            observations.append(
+                _Observation(
+                    observation_id=obs_id,
+                    provider="solana_rpc",
+                    request_kind="pumpfun_origin_transaction_reference",
+                    channel="LATEST_PUMPFUN",
+                    mint=proof.mint,
+                    pool=pool,
+                    quote_mint="So11111111111111111111111111111111111111112",
+                    venue=PUMPSWAP_VENUE,
+                    observed_at=now,
+                    raw_payload_hash=raw_hash,
+                    source_request_id=req,
+                    source_response_id=resp,
+                    source_failure_id=None,
+                    work_id=work_id,
+                    pumpfun_origin_status="PUMPFUN_ORIGIN_CONFIRMED",
+                    lifecycle="PUMP_MIGRATION_CONFIRMED",
+                    origin_route="GRADUATION_NATIVE",
+                )
+            )
+            usage.observations += 1
+            usage.unique_mints.add(proof.mint)
+
         self._terminalize_work(connection, work_id, "SUCCEEDED", "DIRECT_COMPLETE", now)
         return observations
 
@@ -1395,6 +1543,8 @@ class CombinedPumpfunCampaignExecutor:
             if obs.observation_id not in candidate.observation_ids:
                 candidate.observation_ids.append(obs.observation_id)
             candidate.channels.add(obs.channel)
+            if getattr(obs, "origin_route", "PUMP_CREATE") == "GRADUATION_NATIVE":
+                candidate.origin_route = "GRADUATION_NATIVE"
             if (
                 obs.pumpfun_origin_status == "PUMPFUN_ORIGIN_CONFIRMED"
                 or obs.mint in confirmed_mints
@@ -1435,6 +1585,14 @@ class CombinedPumpfunCampaignExecutor:
             if candidate.origin_state == "CONFIRMED"
         ]
         for candidate in already_confirmed:
+            # V2-9.7E.45: label the confirmed-origin evidence source by activation
+            # route. A graduation-native candidate is origin-confirmed by its Pump
+            # migration lineage, not by a create transaction.
+            evidence_source = (
+                "migration_graduation_lineage"
+                if candidate.origin_route == "GRADUATION_NATIVE"
+                else "direct_finalized_create"
+            )
             insert_origin_verification(
                 connection,
                 origin_verification_id=f"origin:{candidate.merged_candidate_id}",
@@ -1443,7 +1601,7 @@ class CombinedPumpfunCampaignExecutor:
                 mint_identity=candidate.mint,
                 admission_state="NOT_REQUIRED",
                 verification_state="CONFIRMED",
-                evidence_detail={"source": "direct_finalized_create"},
+                evidence_detail={"source": evidence_source},
                 now=now,
             )
 
