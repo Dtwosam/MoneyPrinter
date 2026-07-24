@@ -1,0 +1,101 @@
+IDENTITY=v2-9-7e-43-live-1784886758 DB=C:\Users\dtwof\AppData\Local\Temp\v2-9-7e-43-live-1784886758-80z23ri1.db
+
+=== cycle1: 4 live migration rounds x 25.0s ===
+{
+  "events": 0,
+  "valid_pairs": 0,
+  "confirmed_this_cycle": [],
+  "confirmed_count": 0,
+  "ledger": {
+    "source_requests": 4,
+    "source_responses": 0,
+    "source_failures": 4,
+    "graduated_candidates": 0
+  },
+  "forbidden_total": 0
+}
+
+--- settle A (75s: index cycle1 pools / separate cycles) ---
+
+=== cycle2: 4 live migration rounds x 25.0s ===
+{
+  "events": 0,
+  "valid_pairs": 0,
+  "confirmed_this_cycle": [],
+  "confirmed_count": 0,
+  "ledger": {
+    "source_requests": 8,
+    "source_responses": 0,
+    "source_failures": 8,
+    "graduated_candidates": 0
+  },
+  "forbidden_total": 0
+}
+
+--- settle B (75s: index cycle2 pools) ---
+
+=== FRONT DOOR (latest=[]) ===
+{
+  "generated_at": "2026-07-24T09:58:41.575638+00:00",
+  "selection_floor_usd": 3000.0,
+  "cycle_seed": "v2-9-7e-43-live-1784886758-selection-seed",
+  "candidate_count": 0,
+  "candidates": [],
+  "latest_eligible_count": 0,
+  "persisted_eligible_count": 0,
+  "below_floor_count": 0,
+  "unproven_count": 0,
+  "rejected_count": 0,
+  "rejected": [],
+  "mix_state": "SINGLE_CATEGORY_DEGRADED",
+  "selected": [],
+  "selected_latest": null,
+  "selected_persisted": null,
+  "selected_count": 0,
+  "selected_pair_identity": [],
+  "handoff_readiness": {
+    "atomic_two_slot_ready": false,
+    "selected_slot_count": 0,
+    "checks": [],
+    "tracking_enqueued": false,
+    "scheduler_started": false,
+    "lifecycle_started": false,
+    "snapshot_started": false
+  },
+  "source_operation_ledger": {
+    "liquidity_requests": 0,
+    "liquidity_responses": 0,
+    "liquidity_failures": 0
+  },
+  "forbidden_capability_deltas": {
+    "printer_paper_decisions": 0,
+    "printer_paper_positions": 0,
+    "printer_paper_trades": 0,
+    "printer_paper_trade_audit": 0,
+    "printer_episode_memory": 0,
+    "printer_memory_retrieval": 0,
+    "printer_memory_factory_runs": 0
+  },
+  "forbidden_delta_total": 0,
+  "integrity_check": "ok",
+  "foreign_key_violations": 0
+}
+
+=== CRITERIA ===
+{
+  "real_graduated_candidates": false,
+  "fresh_liquidity_every_candidate": true,
+  "every_below_3000_excluded": true,
+  "eligible_latest_present": false,
+  "eligible_persisted_present": false,
+  "one_latest_selected": false,
+  "one_persisted_selected": false,
+  "atomic_handoff_ready": false,
+  "deterministic_replay": true,
+  "zero_forbidden": true,
+  "integrity_ok": true,
+  "fk_ok": true
+}
+
+VERDICT=NOT_PASS
+DB=C:\Users\dtwof\AppData\Local\Temp\v2-9-7e-43-live-1784886758-80z23ri1.db

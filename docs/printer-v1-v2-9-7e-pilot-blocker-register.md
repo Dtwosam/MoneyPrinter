@@ -5,7 +5,9 @@ full pilot. Created at V2-9.7E.39 (Full Pilot Attempt 1); updated at V2-9.7E.40
 (Continuous Full-Pilot Repair/Restart Session), V2-9.7E.41 (Graduation-Only
 Selection and Mixed-Channel Discovery Repair), and V2-9.7E.42 (Direct Pump
 Migration Discovery and Graduated-Candidate Supply Repair — BL-41-04 direct channel
-now operational; BL-42-01 added and fixed).
+now operational; BL-42-01 added and fixed), and V2-9.7E.43 ($3K Graduated
+Discovery and Selection Front-Door Repair — exact-pool liquidity floor added;
+BL-43-01 live discovery-window supply tuning recorded).
 
 > **V2-9.7E.41 supersession note.** The E.40 900-second maturity-based
 > full-pilot admission policy (BL-39-01, BL-39-03) is preserved as historically
@@ -512,3 +514,68 @@ events, with no manual migration signature. Two blockers are recorded.
   maturity boundary is not removed from `SNAPSHOT_READINESS`; it is removed only
   from FULL_PILOT, where it was the wrong (age-based) eligibility gate. Old
   live-attempt facts (Attempts 1–3) are not rewritten.
+
+## V2-9.7E.43 repair updates ($3K graduated selection front door)
+
+E.43 added the market-performance front door on top of the E.41 graduation-only law
+and the E.42 direct-migration supply: a confirmed graduated candidate may enter
+active selection only once a governed, fresh, **exact-pool** DexScreener observation
+proves `liquidity_usd >= 3000` for the exact Solana mint and exact confirmed
+PumpSwap pool. `$3,000` is the only numeric market-performance threshold. Verdict
+`V2_9_7E_43_3K_GRADUATED_FRONT_DOOR_PASS` (live Attempt 3).
+
+### BL-43-01 — live migration-supply timing (proof orchestration)
+
+- **First seen:** E.43 Attempt 1 (`d7ed63a`). **Category:** `CANDIDATE_SUPPLY`
+  (live-stream timing). **Repair status:** `MITIGATED` (proof-driver tuning; no
+  production code change).
+- **Root cause:** PumpPortal `subscribeMigration` graduations are sparse and bursty
+  — a single short bounded window may catch zero events. Attempt 1 used 25 s windows
+  (0 graduations both cycles); Attempt 2 used 120 s windows but cycle 1 fell in a
+  quiet burst gap (0), while cycle 2 caught 5.
+- **What was fixed:** the bounded **proof driver** (scratchpad, not production) was
+  tuned — discovery windows widened to the approved 120 s ceiling and cycle 1 made
+  to persist (loop) until it confirms ≥ 2 graduated candidates before separating the
+  cycles. The front-door production code was unchanged across all three attempts.
+- **Live proof:** Attempt 3 (`d7ed63a`) confirmed 2 persisted (cycle 1) + 2 latest
+  (cycle 2) real graduated candidates, all four with fresh live exact-pool liquidity
+  ≥ $3,000, one LATEST + one PERSISTED selected, deterministic replay, atomic-handoff
+  ready, forbidden deltas 0.
+- **Can block next pilot:** Partially — a productive session must persist discovery
+  until an eligible cohort exists; this is honest live-supply behaviour, not a code
+  defect.
+- **Current status:** `MITIGATED`.
+
+### E.43 — exact-pool liquidity floor (front door)
+
+- **Category:** `INCORRECT_ELIGIBILITY` (missing market-performance gate).
+  **Repair status:** `FIXED_IN_THIS_SPRINT`.
+- **Root cause:** graduation-only selection admitted *any* confirmed graduated token
+  regardless of tradeable liquidity; a token with a near-zero pool (live: `$8.70`,
+  Attempt 2) could consume a scarce tracking slot.
+- **What was fixed:** new `discovery/graduated_liquidity_front_door.py` enriches
+  every graduated candidate (LATEST and PERSISTED) with one governed DexScreener
+  `pair_market_snapshot` against the exact confirmed pool and applies the `$3,000`
+  floor before selection. Below-floor → `LIQUIDITY_BELOW_SELECTION_FLOOR` (retained,
+  not selectable); missing/stale/conflicting/token-level/wrong-pool/non-exact →
+  `LIQUIDITY_UNPROVEN` (never zero). Truthful `LATEST_GRADUATED` /
+  `PERSISTED_GRADUATED` provenance replaces the misleading `PERSISTED_ACTIVE`. The
+  frozen mixed two-slot law and the tracking boundary are preserved.
+- **Live proof:** Attempt 3 selected LATEST
+  `4tNCRgigHBPiMsPfrCaU1kE6gGofxgXLmEq8mRK1pump`
+  (pool `BDhvEqa1KjHBsNSFxN9Np4t3CLZjaCvDtCRjrqsbQ21p`, `$9,723.71`) + PERSISTED
+  `4FN5PSaprS73Z2SRGx2HG9eaES1yVURMU5yAPpDQpump`
+  (pool `9yuowVdGRZ35yM339cjyTWfhAdJJVPJqPKGHhyCXG3fo`, `$15,350.10`). The `$8.70`
+  pool (Attempt 2) was correctly excluded live.
+- **Tests:** `tests/test_v2_9_7e_43_graduated_liquidity_front_door.py` (26).
+- **Can block next pilot:** No — it removes an untradeable-pool path; it cannot
+  block a lawful `$3K+` graduated candidate.
+- **Current status:** `FIXED`.
+
+### E.43 live attempt log
+
+| Attempt | Commit | Cycle 1 | Cycle 2 | Front door | Terminal |
+|---|---|---|---|---|---|
+| 1 | `d7ed63a` | 0 (25 s windows too short) | 0 | 0 candidates | NOT_PASS (BL-43-01) |
+| 2 | `d7ed63a` | 0 (quiet burst gap) | 5 confirmed; 4 ≥ $3,000; `$8.70` excluded | 4 LATEST eligible, 0 PERSISTED | NOT_PASS (no persisted cohort) |
+| 3 | `d7ed63a` | 2 confirmed | 2 confirmed | 2 LATEST + 2 PERSISTED eligible; 1+1 selected | **PASS** |

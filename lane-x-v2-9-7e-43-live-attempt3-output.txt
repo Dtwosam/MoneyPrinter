@@ -1,0 +1,231 @@
+IDENTITY=v2-9-7e-43-live-1784888247 DB=C:\Users\dtwof\AppData\Local\Temp\v2-9-7e-43-live-1784888247-a4m1t7or.db
+
+=== cycle1: collect >= 2 over <= 8 rounds x 120.0s ===
+{"round": 0, "events": 2, "valid_pairs": 2, "round_confirmed": ["4FN5PSaprS73Z2SRGx2HG9eaES1yVURMU5yAPpDQpump", "632skL8Uoa1E76boixN2PFedZSASwNBUoVyx5uFipump"], "cycle_confirmed_total": 2, "forbidden_total": 0}
+cycle1 confirmed cohort: ['4FN5PSaprS73Z2SRGx2HG9eaES1yVURMU5yAPpDQpump', '632skL8Uoa1E76boixN2PFedZSASwNBUoVyx5uFipump']
+
+--- settle A (60s: separate cycles) ---
+
+=== cycle2: collect >= 2 over <= 6 rounds x 120.0s ===
+{"round": 0, "events": 2, "valid_pairs": 2, "round_confirmed": ["jCMiKp7G9oq8fE1MN83gnQ8ZkzPZcNJ9uvfi7C8pump", "4tNCRgigHBPiMsPfrCaU1kE6gGofxgXLmEq8mRK1pump"], "cycle_confirmed_total": 2, "forbidden_total": 0}
+cycle2 confirmed cohort: ['jCMiKp7G9oq8fE1MN83gnQ8ZkzPZcNJ9uvfi7C8pump', '4tNCRgigHBPiMsPfrCaU1kE6gGofxgXLmEq8mRK1pump']
+
+--- settle B (90s: index cycle2 pools) ---
+
+=== FRONT DOOR (latest=['4tNCRgigHBPiMsPfrCaU1kE6gGofxgXLmEq8mRK1pump', 'jCMiKp7G9oq8fE1MN83gnQ8ZkzPZcNJ9uvfi7C8pump']) ===
+{
+  "generated_at": "2026-07-24T10:25:08.664092+00:00",
+  "selection_floor_usd": 3000.0,
+  "cycle_seed": "v2-9-7e-43-live-1784888247-selection-seed",
+  "candidate_count": 4,
+  "candidates": [
+    {
+      "mint": "4FN5PSaprS73Z2SRGx2HG9eaES1yVURMU5yAPpDQpump",
+      "pool": "9yuowVdGRZ35yM339cjyTWfhAdJJVPJqPKGHhyCXG3fo",
+      "market_identity": "solana-mainnet:pumpswap:9yuowVdGRZ35yM339cjyTWfhAdJJVPJqPKGHhyCXG3fo",
+      "provenance": "PERSISTED_GRADUATED",
+      "lifecycle_state": "PUMPSWAP_GRADUATED_CONFIRMED",
+      "graduation_block_time": 1784888265,
+      "liquidity": {
+        "status": "LIQUIDITY_PROVEN",
+        "liquidity_usd": 15350.1,
+        "mint": "4FN5PSaprS73Z2SRGx2HG9eaES1yVURMU5yAPpDQpump",
+        "pool": "9yuowVdGRZ35yM339cjyTWfhAdJJVPJqPKGHhyCXG3fo",
+        "reason": "AT_OR_ABOVE_3000_FLOOR",
+        "source_status": "COMPLETE"
+      },
+      "eligible": true,
+      "rejection": null
+    },
+    {
+      "mint": "632skL8Uoa1E76boixN2PFedZSASwNBUoVyx5uFipump",
+      "pool": "AcSoP5p3WW5GRS3ZjKcRFLcZQjwwo2arTVaxy6BCroao",
+      "market_identity": "solana-mainnet:pumpswap:AcSoP5p3WW5GRS3ZjKcRFLcZQjwwo2arTVaxy6BCroao",
+      "provenance": "PERSISTED_GRADUATED",
+      "lifecycle_state": "PUMPSWAP_GRADUATED_CONFIRMED",
+      "graduation_block_time": 1784888353,
+      "liquidity": {
+        "status": "LIQUIDITY_PROVEN",
+        "liquidity_usd": 8484.73,
+        "mint": "632skL8Uoa1E76boixN2PFedZSASwNBUoVyx5uFipump",
+        "pool": "AcSoP5p3WW5GRS3ZjKcRFLcZQjwwo2arTVaxy6BCroao",
+        "reason": "AT_OR_ABOVE_3000_FLOOR",
+        "source_status": "COMPLETE"
+      },
+      "eligible": true,
+      "rejection": null
+    },
+    {
+      "mint": "jCMiKp7G9oq8fE1MN83gnQ8ZkzPZcNJ9uvfi7C8pump",
+      "pool": "CCBDZpCuQ3LqZJ7wP7wak711Tz1g66HXKArvHzXRzV4Y",
+      "market_identity": "solana-mainnet:pumpswap:CCBDZpCuQ3LqZJ7wP7wak711Tz1g66HXKArvHzXRzV4Y",
+      "provenance": "LATEST_GRADUATED",
+      "lifecycle_state": "PUMPSWAP_GRADUATED_CONFIRMED",
+      "graduation_block_time": 1784888547,
+      "liquidity": {
+        "status": "LIQUIDITY_PROVEN",
+        "liquidity_usd": 293803.47,
+        "mint": "jCMiKp7G9oq8fE1MN83gnQ8ZkzPZcNJ9uvfi7C8pump",
+        "pool": "CCBDZpCuQ3LqZJ7wP7wak711Tz1g66HXKArvHzXRzV4Y",
+        "reason": "AT_OR_ABOVE_3000_FLOOR",
+        "source_status": "COMPLETE"
+      },
+      "eligible": true,
+      "rejection": null
+    },
+    {
+      "mint": "4tNCRgigHBPiMsPfrCaU1kE6gGofxgXLmEq8mRK1pump",
+      "pool": "BDhvEqa1KjHBsNSFxN9Np4t3CLZjaCvDtCRjrqsbQ21p",
+      "market_identity": "solana-mainnet:pumpswap:BDhvEqa1KjHBsNSFxN9Np4t3CLZjaCvDtCRjrqsbQ21p",
+      "provenance": "LATEST_GRADUATED",
+      "lifecycle_state": "PUMPSWAP_GRADUATED_CONFIRMED",
+      "graduation_block_time": 1784888569,
+      "liquidity": {
+        "status": "LIQUIDITY_PROVEN",
+        "liquidity_usd": 9723.71,
+        "mint": "4tNCRgigHBPiMsPfrCaU1kE6gGofxgXLmEq8mRK1pump",
+        "pool": "BDhvEqa1KjHBsNSFxN9Np4t3CLZjaCvDtCRjrqsbQ21p",
+        "reason": "AT_OR_ABOVE_3000_FLOOR",
+        "source_status": "COMPLETE"
+      },
+      "eligible": true,
+      "rejection": null
+    }
+  ],
+  "latest_eligible_count": 2,
+  "persisted_eligible_count": 2,
+  "below_floor_count": 0,
+  "unproven_count": 0,
+  "rejected_count": 0,
+  "rejected": [],
+  "mix_state": "MIXED_TWO_SLOT",
+  "selected": [
+    {
+      "mint": "4tNCRgigHBPiMsPfrCaU1kE6gGofxgXLmEq8mRK1pump",
+      "pool": "BDhvEqa1KjHBsNSFxN9Np4t3CLZjaCvDtCRjrqsbQ21p",
+      "market_identity": "solana-mainnet:pumpswap:BDhvEqa1KjHBsNSFxN9Np4t3CLZjaCvDtCRjrqsbQ21p",
+      "provenance": "LATEST_GRADUATED",
+      "liquidity_usd": 9723.71,
+      "graduation_block_time": 1784888569
+    },
+    {
+      "mint": "4FN5PSaprS73Z2SRGx2HG9eaES1yVURMU5yAPpDQpump",
+      "pool": "9yuowVdGRZ35yM339cjyTWfhAdJJVPJqPKGHhyCXG3fo",
+      "market_identity": "solana-mainnet:pumpswap:9yuowVdGRZ35yM339cjyTWfhAdJJVPJqPKGHhyCXG3fo",
+      "provenance": "PERSISTED_GRADUATED",
+      "liquidity_usd": 15350.1,
+      "graduation_block_time": 1784888265
+    }
+  ],
+  "selected_latest": {
+    "mint": "4tNCRgigHBPiMsPfrCaU1kE6gGofxgXLmEq8mRK1pump",
+    "pool": "BDhvEqa1KjHBsNSFxN9Np4t3CLZjaCvDtCRjrqsbQ21p",
+    "market_identity": "solana-mainnet:pumpswap:BDhvEqa1KjHBsNSFxN9Np4t3CLZjaCvDtCRjrqsbQ21p",
+    "provenance": "LATEST_GRADUATED",
+    "lifecycle_state": "PUMPSWAP_GRADUATED_CONFIRMED",
+    "graduation_block_time": 1784888569,
+    "liquidity": {
+      "status": "LIQUIDITY_PROVEN",
+      "liquidity_usd": 9723.71,
+      "mint": "4tNCRgigHBPiMsPfrCaU1kE6gGofxgXLmEq8mRK1pump",
+      "pool": "BDhvEqa1KjHBsNSFxN9Np4t3CLZjaCvDtCRjrqsbQ21p",
+      "reason": "AT_OR_ABOVE_3000_FLOOR",
+      "source_status": "COMPLETE"
+    },
+    "eligible": true,
+    "rejection": null
+  },
+  "selected_persisted": {
+    "mint": "4FN5PSaprS73Z2SRGx2HG9eaES1yVURMU5yAPpDQpump",
+    "pool": "9yuowVdGRZ35yM339cjyTWfhAdJJVPJqPKGHhyCXG3fo",
+    "market_identity": "solana-mainnet:pumpswap:9yuowVdGRZ35yM339cjyTWfhAdJJVPJqPKGHhyCXG3fo",
+    "provenance": "PERSISTED_GRADUATED",
+    "lifecycle_state": "PUMPSWAP_GRADUATED_CONFIRMED",
+    "graduation_block_time": 1784888265,
+    "liquidity": {
+      "status": "LIQUIDITY_PROVEN",
+      "liquidity_usd": 15350.1,
+      "mint": "4FN5PSaprS73Z2SRGx2HG9eaES1yVURMU5yAPpDQpump",
+      "pool": "9yuowVdGRZ35yM339cjyTWfhAdJJVPJqPKGHhyCXG3fo",
+      "reason": "AT_OR_ABOVE_3000_FLOOR",
+      "source_status": "COMPLETE"
+    },
+    "eligible": true,
+    "rejection": null
+  },
+  "selected_count": 2,
+  "selected_pair_identity": [
+    "4FN5PSaprS73Z2SRGx2HG9eaES1yVURMU5yAPpDQpump|9yuowVdGRZ35yM339cjyTWfhAdJJVPJqPKGHhyCXG3fo",
+    "4tNCRgigHBPiMsPfrCaU1kE6gGofxgXLmEq8mRK1pump|BDhvEqa1KjHBsNSFxN9Np4t3CLZjaCvDtCRjrqsbQ21p"
+  ],
+  "handoff_readiness": {
+    "atomic_two_slot_ready": true,
+    "selected_slot_count": 2,
+    "checks": [
+      {
+        "slot_ordinal": 1,
+        "mint": "4tNCRgigHBPiMsPfrCaU1kE6gGofxgXLmEq8mRK1pump",
+        "pool": "BDhvEqa1KjHBsNSFxN9Np4t3CLZjaCvDtCRjrqsbQ21p",
+        "market_identity": "solana-mainnet:pumpswap:BDhvEqa1KjHBsNSFxN9Np4t3CLZjaCvDtCRjrqsbQ21p",
+        "mint_ok": true,
+        "market_identity_ok": true,
+        "distinct_slot_ok": true,
+        "graduated_ok": true,
+        "liquidity_floor_ok": true,
+        "compatible": true
+      },
+      {
+        "slot_ordinal": 2,
+        "mint": "4FN5PSaprS73Z2SRGx2HG9eaES1yVURMU5yAPpDQpump",
+        "pool": "9yuowVdGRZ35yM339cjyTWfhAdJJVPJqPKGHhyCXG3fo",
+        "market_identity": "solana-mainnet:pumpswap:9yuowVdGRZ35yM339cjyTWfhAdJJVPJqPKGHhyCXG3fo",
+        "mint_ok": true,
+        "market_identity_ok": true,
+        "distinct_slot_ok": true,
+        "graduated_ok": true,
+        "liquidity_floor_ok": true,
+        "compatible": true
+      }
+    ],
+    "tracking_enqueued": false,
+    "scheduler_started": false,
+    "lifecycle_started": false,
+    "snapshot_started": false
+  },
+  "source_operation_ledger": {
+    "liquidity_requests": 4,
+    "liquidity_responses": 4,
+    "liquidity_failures": 0
+  },
+  "forbidden_capability_deltas": {
+    "printer_paper_decisions": 0,
+    "printer_paper_positions": 0,
+    "printer_paper_trades": 0,
+    "printer_paper_trade_audit": 0,
+    "printer_episode_memory": 0,
+    "printer_memory_retrieval": 0,
+    "printer_memory_factory_runs": 0
+  },
+  "forbidden_delta_total": 0,
+  "integrity_check": "ok",
+  "foreign_key_violations": 0
+}
+
+=== CRITERIA ===
+{
+  "real_graduated_candidates": true,
+  "fresh_liquidity_every_candidate": true,
+  "every_below_3000_excluded": true,
+  "eligible_latest_present": true,
+  "eligible_persisted_present": true,
+  "one_latest_selected": true,
+  "one_persisted_selected": true,
+  "atomic_handoff_ready": true,
+  "deterministic_replay": true,
+  "zero_forbidden": true,
+  "integrity_ok": true,
+  "fk_ok": true
+}
+
+VERDICT=V2_9_7E_43_3K_GRADUATED_FRONT_DOOR_PASS
+DB=C:\Users\dtwof\AppData\Local\Temp\v2-9-7e-43-live-1784888247-a4m1t7or.db

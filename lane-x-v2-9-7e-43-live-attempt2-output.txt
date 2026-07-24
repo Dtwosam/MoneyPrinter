@@ -1,0 +1,279 @@
+IDENTITY=v2-9-7e-43-live-1784887190 DB=C:\Users\dtwof\AppData\Local\Temp\v2-9-7e-43-live-1784887190-gz6929q_.db
+
+=== cycle1: 3 live migration rounds x 120.0s ===
+{
+  "events": 0,
+  "valid_pairs": 0,
+  "confirmed_this_cycle": [],
+  "confirmed_count": 0,
+  "ledger": {
+    "source_requests": 3,
+    "source_responses": 0,
+    "source_failures": 3,
+    "graduated_candidates": 0
+  },
+  "forbidden_total": 0
+}
+
+--- settle A (90s: index cycle1 pools / separate cycles) ---
+
+=== cycle2: 3 live migration rounds x 120.0s ===
+{
+  "events": 5,
+  "valid_pairs": 5,
+  "confirmed_this_cycle": [
+    "8uQBeCU8VwHFyGvcrwvwKxn54ZGoFkBfMXtbwYMzpump",
+    "FrZkukdXdQcqN9WzJvhaL5faSZkzwY8KSxf1AiW8pump",
+    "BCnszPbrNusvDBnpLjaN9y9kidmafmA4ceMnLSmBpump",
+    "BuwZp1xnKL3FDzuuLMtTfEFnJnb7DDUDB73XMWnxpump",
+    "FbcC7Fr9N2AKDaT2w255Uv7SMCoeDE9EE82Uu8Vrpump"
+  ],
+  "confirmed_count": 5,
+  "ledger": {
+    "source_requests": 11,
+    "source_responses": 8,
+    "source_failures": 3,
+    "graduated_candidates": 5
+  },
+  "forbidden_total": 0
+}
+
+--- settle B (90s: index cycle2 pools) ---
+
+=== FRONT DOOR (latest=['8uQBeCU8VwHFyGvcrwvwKxn54ZGoFkBfMXtbwYMzpump', 'BCnszPbrNusvDBnpLjaN9y9kidmafmA4ceMnLSmBpump', 'BuwZp1xnKL3FDzuuLMtTfEFnJnb7DDUDB73XMWnxpump', 'FbcC7Fr9N2AKDaT2w255Uv7SMCoeDE9EE82Uu8Vrpump', 'FrZkukdXdQcqN9WzJvhaL5faSZkzwY8KSxf1AiW8pump']) ===
+{
+  "generated_at": "2026-07-24T10:15:39.533828+00:00",
+  "selection_floor_usd": 3000.0,
+  "cycle_seed": "v2-9-7e-43-live-1784887190-selection-seed",
+  "candidate_count": 5,
+  "candidates": [
+    {
+      "mint": "8uQBeCU8VwHFyGvcrwvwKxn54ZGoFkBfMXtbwYMzpump",
+      "pool": "BKyawdFmPwKci7vjAi9TkfekuTrRouLnZuwe1b47REv9",
+      "market_identity": "solana-mainnet:pumpswap:BKyawdFmPwKci7vjAi9TkfekuTrRouLnZuwe1b47REv9",
+      "provenance": "LATEST_GRADUATED",
+      "lifecycle_state": "PUMPSWAP_GRADUATED_CONFIRMED",
+      "graduation_block_time": 1784887693,
+      "liquidity": {
+        "status": "LIQUIDITY_PROVEN",
+        "liquidity_usd": 17262.5,
+        "mint": "8uQBeCU8VwHFyGvcrwvwKxn54ZGoFkBfMXtbwYMzpump",
+        "pool": "BKyawdFmPwKci7vjAi9TkfekuTrRouLnZuwe1b47REv9",
+        "reason": "AT_OR_ABOVE_3000_FLOOR",
+        "source_status": "COMPLETE"
+      },
+      "eligible": true,
+      "rejection": null
+    },
+    {
+      "mint": "FrZkukdXdQcqN9WzJvhaL5faSZkzwY8KSxf1AiW8pump",
+      "pool": "CLZd2XF8KMt45vXpV3TGivJzYNR7KYGtsC8HTrmoAuZj",
+      "market_identity": "solana-mainnet:pumpswap:CLZd2XF8KMt45vXpV3TGivJzYNR7KYGtsC8HTrmoAuZj",
+      "provenance": "LATEST_GRADUATED",
+      "lifecycle_state": "PUMPSWAP_GRADUATED_CONFIRMED",
+      "graduation_block_time": 1784887739,
+      "liquidity": {
+        "status": "LIQUIDITY_PROVEN",
+        "liquidity_usd": 142211.95,
+        "mint": "FrZkukdXdQcqN9WzJvhaL5faSZkzwY8KSxf1AiW8pump",
+        "pool": "CLZd2XF8KMt45vXpV3TGivJzYNR7KYGtsC8HTrmoAuZj",
+        "reason": "AT_OR_ABOVE_3000_FLOOR",
+        "source_status": "COMPLETE"
+      },
+      "eligible": true,
+      "rejection": null
+    },
+    {
+      "mint": "BCnszPbrNusvDBnpLjaN9y9kidmafmA4ceMnLSmBpump",
+      "pool": "GW5HTg3AXnG7KG65Y4vBg59hZLJTYAmibZoYBphSzrKy",
+      "market_identity": "solana-mainnet:pumpswap:GW5HTg3AXnG7KG65Y4vBg59hZLJTYAmibZoYBphSzrKy",
+      "provenance": "LATEST_GRADUATED",
+      "lifecycle_state": "PUMPSWAP_GRADUATED_CONFIRMED",
+      "graduation_block_time": 1784887805,
+      "liquidity": {
+        "status": "LIQUIDITY_BELOW_SELECTION_FLOOR",
+        "liquidity_usd": 8.7,
+        "mint": "BCnszPbrNusvDBnpLjaN9y9kidmafmA4ceMnLSmBpump",
+        "pool": "GW5HTg3AXnG7KG65Y4vBg59hZLJTYAmibZoYBphSzrKy",
+        "reason": "BELOW_3000_FLOOR",
+        "source_status": "COMPLETE"
+      },
+      "eligible": false,
+      "rejection": "LIQUIDITY_BELOW_SELECTION_FLOOR"
+    },
+    {
+      "mint": "BuwZp1xnKL3FDzuuLMtTfEFnJnb7DDUDB73XMWnxpump",
+      "pool": "JAfbS5H5kL2W16cRzYoHRDbxuBH3ajFy4TSEXJppXAt6",
+      "market_identity": "solana-mainnet:pumpswap:JAfbS5H5kL2W16cRzYoHRDbxuBH3ajFy4TSEXJppXAt6",
+      "provenance": "LATEST_GRADUATED",
+      "lifecycle_state": "PUMPSWAP_GRADUATED_CONFIRMED",
+      "graduation_block_time": 1784887856,
+      "liquidity": {
+        "status": "LIQUIDITY_PROVEN",
+        "liquidity_usd": 11927.04,
+        "mint": "BuwZp1xnKL3FDzuuLMtTfEFnJnb7DDUDB73XMWnxpump",
+        "pool": "JAfbS5H5kL2W16cRzYoHRDbxuBH3ajFy4TSEXJppXAt6",
+        "reason": "AT_OR_ABOVE_3000_FLOOR",
+        "source_status": "COMPLETE"
+      },
+      "eligible": true,
+      "rejection": null
+    },
+    {
+      "mint": "FbcC7Fr9N2AKDaT2w255Uv7SMCoeDE9EE82Uu8Vrpump",
+      "pool": "FpWdxNrBYXfAV2Qv8XyhrS5cPwjbQUpNpxwXZ3FG4rbG",
+      "market_identity": "solana-mainnet:pumpswap:FpWdxNrBYXfAV2Qv8XyhrS5cPwjbQUpNpxwXZ3FG4rbG",
+      "provenance": "LATEST_GRADUATED",
+      "lifecycle_state": "PUMPSWAP_GRADUATED_CONFIRMED",
+      "graduation_block_time": 1784887904,
+      "liquidity": {
+        "status": "LIQUIDITY_PROVEN",
+        "liquidity_usd": 9144.26,
+        "mint": "FbcC7Fr9N2AKDaT2w255Uv7SMCoeDE9EE82Uu8Vrpump",
+        "pool": "FpWdxNrBYXfAV2Qv8XyhrS5cPwjbQUpNpxwXZ3FG4rbG",
+        "reason": "AT_OR_ABOVE_3000_FLOOR",
+        "source_status": "COMPLETE"
+      },
+      "eligible": true,
+      "rejection": null
+    }
+  ],
+  "latest_eligible_count": 4,
+  "persisted_eligible_count": 0,
+  "below_floor_count": 1,
+  "unproven_count": 0,
+  "rejected_count": 1,
+  "rejected": [
+    {
+      "mint": "BCnszPbrNusvDBnpLjaN9y9kidmafmA4ceMnLSmBpump",
+      "pool": "GW5HTg3AXnG7KG65Y4vBg59hZLJTYAmibZoYBphSzrKy",
+      "market_identity": "solana-mainnet:pumpswap:GW5HTg3AXnG7KG65Y4vBg59hZLJTYAmibZoYBphSzrKy",
+      "provenance": "LATEST_GRADUATED",
+      "lifecycle_state": "PUMPSWAP_GRADUATED_CONFIRMED",
+      "graduation_block_time": 1784887805,
+      "liquidity": {
+        "status": "LIQUIDITY_BELOW_SELECTION_FLOOR",
+        "liquidity_usd": 8.7,
+        "mint": "BCnszPbrNusvDBnpLjaN9y9kidmafmA4ceMnLSmBpump",
+        "pool": "GW5HTg3AXnG7KG65Y4vBg59hZLJTYAmibZoYBphSzrKy",
+        "reason": "BELOW_3000_FLOOR",
+        "source_status": "COMPLETE"
+      },
+      "eligible": false,
+      "rejection": "LIQUIDITY_BELOW_SELECTION_FLOOR"
+    }
+  ],
+  "mix_state": "SINGLE_CATEGORY_DEGRADED",
+  "selected": [
+    {
+      "mint": "BuwZp1xnKL3FDzuuLMtTfEFnJnb7DDUDB73XMWnxpump",
+      "pool": "JAfbS5H5kL2W16cRzYoHRDbxuBH3ajFy4TSEXJppXAt6",
+      "market_identity": "solana-mainnet:pumpswap:JAfbS5H5kL2W16cRzYoHRDbxuBH3ajFy4TSEXJppXAt6",
+      "provenance": "LATEST_GRADUATED",
+      "liquidity_usd": 11927.04,
+      "graduation_block_time": 1784887856
+    },
+    {
+      "mint": "FrZkukdXdQcqN9WzJvhaL5faSZkzwY8KSxf1AiW8pump",
+      "pool": "CLZd2XF8KMt45vXpV3TGivJzYNR7KYGtsC8HTrmoAuZj",
+      "market_identity": "solana-mainnet:pumpswap:CLZd2XF8KMt45vXpV3TGivJzYNR7KYGtsC8HTrmoAuZj",
+      "provenance": "LATEST_GRADUATED",
+      "liquidity_usd": 142211.95,
+      "graduation_block_time": 1784887739
+    }
+  ],
+  "selected_latest": {
+    "mint": "BuwZp1xnKL3FDzuuLMtTfEFnJnb7DDUDB73XMWnxpump",
+    "pool": "JAfbS5H5kL2W16cRzYoHRDbxuBH3ajFy4TSEXJppXAt6",
+    "market_identity": "solana-mainnet:pumpswap:JAfbS5H5kL2W16cRzYoHRDbxuBH3ajFy4TSEXJppXAt6",
+    "provenance": "LATEST_GRADUATED",
+    "lifecycle_state": "PUMPSWAP_GRADUATED_CONFIRMED",
+    "graduation_block_time": 1784887856,
+    "liquidity": {
+      "status": "LIQUIDITY_PROVEN",
+      "liquidity_usd": 11927.04,
+      "mint": "BuwZp1xnKL3FDzuuLMtTfEFnJnb7DDUDB73XMWnxpump",
+      "pool": "JAfbS5H5kL2W16cRzYoHRDbxuBH3ajFy4TSEXJppXAt6",
+      "reason": "AT_OR_ABOVE_3000_FLOOR",
+      "source_status": "COMPLETE"
+    },
+    "eligible": true,
+    "rejection": null
+  },
+  "selected_persisted": null,
+  "selected_count": 2,
+  "selected_pair_identity": [
+    "BuwZp1xnKL3FDzuuLMtTfEFnJnb7DDUDB73XMWnxpump|JAfbS5H5kL2W16cRzYoHRDbxuBH3ajFy4TSEXJppXAt6",
+    "FrZkukdXdQcqN9WzJvhaL5faSZkzwY8KSxf1AiW8pump|CLZd2XF8KMt45vXpV3TGivJzYNR7KYGtsC8HTrmoAuZj"
+  ],
+  "handoff_readiness": {
+    "atomic_two_slot_ready": true,
+    "selected_slot_count": 2,
+    "checks": [
+      {
+        "slot_ordinal": 1,
+        "mint": "BuwZp1xnKL3FDzuuLMtTfEFnJnb7DDUDB73XMWnxpump",
+        "pool": "JAfbS5H5kL2W16cRzYoHRDbxuBH3ajFy4TSEXJppXAt6",
+        "market_identity": "solana-mainnet:pumpswap:JAfbS5H5kL2W16cRzYoHRDbxuBH3ajFy4TSEXJppXAt6",
+        "mint_ok": true,
+        "market_identity_ok": true,
+        "distinct_slot_ok": true,
+        "graduated_ok": true,
+        "liquidity_floor_ok": true,
+        "compatible": true
+      },
+      {
+        "slot_ordinal": 2,
+        "mint": "FrZkukdXdQcqN9WzJvhaL5faSZkzwY8KSxf1AiW8pump",
+        "pool": "CLZd2XF8KMt45vXpV3TGivJzYNR7KYGtsC8HTrmoAuZj",
+        "market_identity": "solana-mainnet:pumpswap:CLZd2XF8KMt45vXpV3TGivJzYNR7KYGtsC8HTrmoAuZj",
+        "mint_ok": true,
+        "market_identity_ok": true,
+        "distinct_slot_ok": true,
+        "graduated_ok": true,
+        "liquidity_floor_ok": true,
+        "compatible": true
+      }
+    ],
+    "tracking_enqueued": false,
+    "scheduler_started": false,
+    "lifecycle_started": false,
+    "snapshot_started": false
+  },
+  "source_operation_ledger": {
+    "liquidity_requests": 5,
+    "liquidity_responses": 5,
+    "liquidity_failures": 0
+  },
+  "forbidden_capability_deltas": {
+    "printer_paper_decisions": 0,
+    "printer_paper_positions": 0,
+    "printer_paper_trades": 0,
+    "printer_paper_trade_audit": 0,
+    "printer_episode_memory": 0,
+    "printer_memory_retrieval": 0,
+    "printer_memory_factory_runs": 0
+  },
+  "forbidden_delta_total": 0,
+  "integrity_check": "ok",
+  "foreign_key_violations": 0
+}
+
+=== CRITERIA ===
+{
+  "real_graduated_candidates": true,
+  "fresh_liquidity_every_candidate": true,
+  "every_below_3000_excluded": true,
+  "eligible_latest_present": true,
+  "eligible_persisted_present": false,
+  "one_latest_selected": true,
+  "one_persisted_selected": false,
+  "atomic_handoff_ready": true,
+  "deterministic_replay": true,
+  "zero_forbidden": true,
+  "integrity_ok": true,
+  "fk_ok": true
+}
+
+VERDICT=NOT_PASS
+DB=C:\Users\dtwof\AppData\Local\Temp\v2-9-7e-43-live-1784887190-gz6929q_.db
