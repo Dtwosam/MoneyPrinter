@@ -345,6 +345,99 @@ def _mixed_two_slot(
     return selected, "SINGLE_CATEGORY_DEGRADED"
 
 
+def _seeded_order(
+    candidates: Sequence[FrontDoorCandidate], cycle_seed: str, domain: str
+) -> list[FrontDoorCandidate]:
+    """The full deterministic seeded-uniform queue for a partition (not just a pick)."""
+    return _seeded_uniform(candidates, cycle_seed, domain, len(candidates))
+
+
+def select_holder_eligible_pair(
+    latest_eligible: Sequence[FrontDoorCandidate],
+    persisted_eligible: Sequence[FrontDoorCandidate],
+    *,
+    cycle_seed: str,
+    holder_evaluator: "Callable[[FrontDoorCandidate], tuple[bool, str]]",
+    candidate_cap: int,
+) -> dict[str, Any]:
+    """V2-9.7E.45 Repair 4 — holder-aware reserve selection with lawful replacement.
+
+    Produces a deterministic seeded-uniform ordered queue per partition and runs the
+    injected holder gate in that order, round-robin across partitions, within a frozen
+    total holder-operation ``candidate_cap``. On a failure/unknown the funnel advances
+    to the next deterministic candidate **within the same partition only**; it stops as
+    soon as one holder-eligible candidate exists per partition or a partition is
+    exhausted. Once a partition is accepted no further holder ops are spent on it. A
+    rejected evidence identity gets no second chance. No holder result becomes a
+    score/rank/confidence/weight — ordering is seeded-uniform, never holder-derived.
+
+    Returns ``selected_latest`` / ``selected_persisted`` (``FrontDoorCandidate`` or
+    ``None``) and the per-candidate funnel evidence + exact operation accounting.
+    """
+    if candidate_cap < 0:
+        raise GraduatedFrontDoorError("INVALID_CANDIDATE_CAP", str(candidate_cap))
+    latest_queue = _seeded_order(latest_eligible, cycle_seed, LATEST_GRADUATED_CHANNEL)
+    persisted_queue = _seeded_order(
+        persisted_eligible, cycle_seed, PERSISTED_GRADUATED_CHANNEL
+    )
+    li = pi = 0
+    selected_latest: FrontDoorCandidate | None = None
+    selected_persisted: FrontDoorCandidate | None = None
+    funnel: list[dict[str, Any]] = []
+    ops = 0
+    cap_reached = False
+
+    def _try(partition: str, candidate: FrontDoorCandidate) -> bool:
+        nonlocal ops
+        ops += 1
+        eligible, reason = holder_evaluator(candidate)
+        funnel.append(
+            {
+                "partition": partition,
+                "mint": candidate.mint,
+                "pool": candidate.pumpswap_pool,
+                "holder_eligible": bool(eligible),
+                "reason": reason,
+                "operation_ordinal": ops,
+            }
+        )
+        return bool(eligible)
+
+    # Round-robin advance within each partition's own deterministic order.
+    while (selected_latest is None and li < len(latest_queue)) or (
+        selected_persisted is None and pi < len(persisted_queue)
+    ):
+        if ops >= candidate_cap:
+            cap_reached = True
+            break
+        if selected_latest is None and li < len(latest_queue):
+            candidate = latest_queue[li]
+            li += 1
+            if _try("LATEST_GRADUATED", candidate):
+                selected_latest = candidate
+            if ops >= candidate_cap and (
+                selected_persisted is None and pi < len(persisted_queue)
+            ):
+                cap_reached = True
+                break
+        if selected_persisted is None and pi < len(persisted_queue):
+            candidate = persisted_queue[pi]
+            pi += 1
+            if _try("PERSISTED_GRADUATED", candidate):
+                selected_persisted = candidate
+
+    return {
+        "selected_latest": selected_latest,
+        "selected_persisted": selected_persisted,
+        "funnel": funnel,
+        "holder_operations": ops,
+        "candidate_cap": candidate_cap,
+        "cap_reached": cap_reached,
+        "latest_queue_len": len(latest_queue),
+        "persisted_queue_len": len(persisted_queue),
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Atomic-handoff compatibility (proved, never enqueued)                        #
 # --------------------------------------------------------------------------- #
