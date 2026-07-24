@@ -56,6 +56,14 @@ from printer_v1.sources.pumpfun_direct import (
 from printer_v1.sources.pumpswap_graduated_registry import (
     lookup_graduated_candidate,
 )
+from printer_v1.sources.dexscreener import (
+    build_dexscreener_fresh_profiles_transport,
+)
+from printer_v1.sources.governor import can_request_source
+
+# Repair 2C locator dispositions.
+LOCATOR_MATCHED_REGISTRY = "LOCATOR_MATCHED_REGISTRY"
+LOCATOR_ONLY_NO_GRADUATION_PROOF = "LOCATOR_ONLY_NO_GRADUATION_PROOF"
 
 # Bounded terminal used when the lawful mixed pair is unavailable at the ceiling.
 BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL = (
@@ -136,6 +144,95 @@ def _graduation_proof_for(row: Mapping[str, Any]) -> FixturePumpSwapProof:
         confirmed=True,
         ambiguous=False,
     )
+
+
+def _fresh_profile_mints(payload: Mapping[str, Any]) -> list[str]:
+    """Distinct Solana mints from a fresh-profiles payload. Ordering discarded."""
+    pairs = payload.get("pairs") if isinstance(payload, Mapping) else None
+    if not isinstance(pairs, list):
+        return []
+    seen: set[str] = set()
+    mints: list[str] = []
+    for item in pairs:
+        if not isinstance(item, Mapping):
+            continue
+        base = item.get("baseToken")
+        addr = None
+        if isinstance(base, Mapping):
+            addr = base.get("address")
+        addr = addr or item.get("mint")
+        if isinstance(addr, str) and addr and addr not in seen:
+            seen.add(addr)
+            mints.append(addr)
+    # Sort to canonical identity order so provider response order confers no
+    # advantage whatsoever (recency/rank/boost/popularity are never consulted).
+    return sorted(mints)
+
+
+def run_fresh_profile_locator(
+    db_path: str | Path,
+    *,
+    transport: Callable[[Any], Mapping[str, Any]] | None = None,
+    request_key: str = "v2-9-7e-45-locator",
+    now: str | None = None,
+) -> dict[str, Any]:
+    """V2-9.7E.45 Repair 2C — DexScreener fresh-profiles locator (locator-only).
+
+    Surfaces currently-visible Solana mints/pairs and cross-references them against
+    the canonical graduated registry. A fresh-profile mint may proceed ONLY when it
+    already matches an exact confirmed graduated-registry row; otherwise it is
+    retained as locator-only evidence with an explicit rejection reason and can never
+    be smuggled into selection. Response ordering, rank, boosts, popularity and
+    promotional fields are discarded. Exactly one governed keyless request is spent;
+    no retry / rotation / provider racing. This locator NEVER establishes graduation
+    on its own — DexScreener cannot prove Pump origin or graduation.
+    """
+    del now
+    decision = can_request_source("dexscreener", "dexscreener_fresh_profiles", 0)
+    if not decision.allowed:
+        raise GraduatedSupplyError(f"LOCATOR_SOURCE_GOVERNOR_BLOCKED:{decision.reason}")
+    transport = transport or build_dexscreener_fresh_profiles_transport()
+    payload = transport(None)
+    fixture_status = (
+        str(payload.get("fixture_status")) if isinstance(payload, Mapping) else "failure"
+    )
+    if fixture_status in {"failure", "rate_limited", "error"}:
+        return {
+            "request_key": request_key,
+            "status": fixture_status,
+            "surfaced_count": 0,
+            "matched_count": 0,
+            "locator_only_count": 0,
+            "matched_mints": [],
+            "dispositions": [],
+        }
+
+    mints = _fresh_profile_mints(payload)
+    connection = sqlite3.connect(str(db_path))
+    connection.row_factory = sqlite3.Row
+    matched: list[str] = []
+    dispositions: list[dict[str, str]] = []
+    try:
+        for mint in mints:
+            row = lookup_graduated_candidate(connection, mint)
+            if row is not None:
+                matched.append(mint)
+                dispositions.append({"mint": mint, "disposition": LOCATOR_MATCHED_REGISTRY})
+            else:
+                dispositions.append(
+                    {"mint": mint, "disposition": LOCATOR_ONLY_NO_GRADUATION_PROOF}
+                )
+    finally:
+        connection.close()
+    return {
+        "request_key": request_key,
+        "status": "ok",
+        "surfaced_count": len(mints),
+        "matched_count": len(matched),
+        "locator_only_count": len(mints) - len(matched),
+        "matched_mints": matched,
+        "dispositions": dispositions,
+    }
 
 
 def build_graduated_supply(
