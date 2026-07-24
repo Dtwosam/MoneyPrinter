@@ -352,6 +352,28 @@ def _seeded_order(
     return _seeded_uniform(candidates, cycle_seed, domain, len(candidates))
 
 
+def holder_reserve_order(
+    latest_eligible: Sequence[FrontDoorCandidate],
+    persisted_eligible: Sequence[FrontDoorCandidate],
+    *,
+    cycle_seed: str,
+) -> list[FrontDoorCandidate]:
+    """Return the deterministic round-robin holder reserve evaluation order."""
+    latest_queue = _seeded_order(
+        latest_eligible, cycle_seed, LATEST_GRADUATED_CHANNEL
+    )
+    persisted_queue = _seeded_order(
+        persisted_eligible, cycle_seed, PERSISTED_GRADUATED_CHANNEL
+    )
+    ordered: list[FrontDoorCandidate] = []
+    for ordinal in range(max(len(latest_queue), len(persisted_queue))):
+        if ordinal < len(latest_queue):
+            ordered.append(latest_queue[ordinal])
+        if ordinal < len(persisted_queue):
+            ordered.append(persisted_queue[ordinal])
+    return ordered
+
+
 def select_holder_eligible_pair(
     latest_eligible: Sequence[FrontDoorCandidate],
     persisted_eligible: Sequence[FrontDoorCandidate],
@@ -719,6 +741,12 @@ def run_graduated_liquidity_front_door(
         ),
         "selected_count": len(selected),
         "selected_pair_identity": selected_pair_identity,
+        "holder_reserve_order": [
+            candidate.to_dict()
+            for candidate in holder_reserve_order(
+                latest_eligible, persisted_eligible, cycle_seed=cycle_seed
+            )
+        ],
         "handoff_readiness": handoff,
         "source_operation_ledger": ledger,
         "forbidden_capability_deltas": forbidden,

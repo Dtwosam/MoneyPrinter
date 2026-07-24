@@ -246,10 +246,31 @@ def prepare_pilot_target(
     restore rehearsal, or an active/foreign lease. No campaign mutation occurs.
     """
     _require_paths(paths, allow_authoritative_target=allow_authoritative_target)
+    if paths.target_db.exists() or paths.backup_db.exists():
+        raise PilotRunnerError("pilot target and backup must be fresh")
     try:
-        prep = prepare_proof_db(
-            paths.persistent_source_db, paths.target_db, paths.backup_db
+        from printer_v1.sources.graduated_registry_bootstrap import (
+            export_isolated_attempt_registry,
         )
+
+        export = export_isolated_attempt_registry(
+            paths.persistent_source_db,
+            paths.target_db,
+            export_identity=f"pilot-export:{paths.target_db.name}",
+        )
+        validate_runtime_schema(paths.target_db)
+        source_hash_before = _sha256(paths.persistent_source_db)
+        paths.backup_db.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(paths.target_db, paths.backup_db)
+        target_hash = _sha256(paths.target_db)
+        backup_hash_created = _sha256(paths.backup_db)
+        prep = {
+            "proof_hash": target_hash,
+            "backup_hash": backup_hash_created,
+            "proof_backup_byte_identical": target_hash == backup_hash_created,
+            "persistent_unchanged": _sha256(paths.persistent_source_db) == source_hash_before,
+            "candidate_export": export.to_dict(),
+        }
     except (ProofDbReadinessError, sqlite3.Error, OSError, ValueError) as exc:
         raise PilotRunnerError(f"target preparation blocked: {exc}") from exc
 
@@ -283,6 +304,7 @@ def prepare_pilot_target(
         "persistent_unchanged": prep["persistent_unchanged"],
         "restore_rehearsal_ok": restore_rehearsal_ok,
         "no_active_lease": True,
+        "candidate_export": prep["candidate_export"],
     }
 
 
@@ -308,6 +330,7 @@ def build_pilot_command(
     configuration_id: str = "pilot-cfg",
     run_id: str = "pilot-run",
     report_id: str = "pilot-rep",
+    cycle_id: str = "pilot-cyc",
     now: str,
 ) -> AbstractCampaignCommand:
     """Create the campaign/config/run/cycle graph and return the command."""
@@ -357,9 +380,9 @@ def build_pilot_command(
             INSERT INTO printer_memory_factory_campaign_cycles(
                 cycle_id, campaign_id, run_id, cycle_ordinal, cycle_state,
                 created_at, updated_at
-            ) VALUES ('pilot-cyc', ?, ?, 1, 'PLANNED', ?, ?)
+            ) VALUES (?, ?, ?, 1, 'PLANNED', ?, ?)
             """,
-            (campaign_id, run_id, now, now),
+            (cycle_id, campaign_id, run_id, now, now),
         )
         connection.execute(
             "UPDATE printer_memory_factory_campaigns SET campaign_state='RUNNING'"
@@ -570,6 +593,8 @@ def run_two_token_operational_pilot(
     process_id: int | None = None,
     lease_seconds: int = CANONICAL_LEASE_SECONDS,
     heartbeat: HeartbeatWorker | None = None,
+    migration_transport: Any | None = None,
+    graduated_supply_kwargs: Mapping[str, Any] | None = None,
     now: str | None = None,
 ) -> dict[str, Any]:
     """Run exactly one bounded two-token live operational pilot under real timing.
@@ -609,11 +634,22 @@ def run_two_token_operational_pilot(
     )
     lock_path = str(supervision["one_proof_lock_path"])
 
+    identity_prefix = execution_id
+    campaign_id = f"{identity_prefix}-campaign"
+    configuration_id = f"{identity_prefix}-configuration"
+    run_id = f"{identity_prefix}-campaign-run"
+    cycle_id = f"{identity_prefix}-cycle"
+    report_id = f"{identity_prefix}-report"
     command = build_pilot_command(
         target,
         paths.report_dir,
         launch_provenance=provenance,
         selection_seed=selection_seed,
+        campaign_id=campaign_id,
+        configuration_id=configuration_id,
+        run_id=run_id,
+        report_id=report_id,
+        cycle_id=cycle_id,
         now=instant,
     )
 
@@ -634,6 +670,27 @@ def run_two_token_operational_pilot(
     governor = source_governor or OwnerPort(SOURCE_GOVERNOR_OWNER, True)
     scheduler = central_scheduler or OwnerPort(CENTRAL_SCHEDULER_OWNER, True)
 
+    if migration_transport is None:
+        from printer_v1.sources.pumpportal import build_pumpportal_migration_transport
+
+        migration_transport = build_pumpportal_migration_transport(
+            max_events=4,
+            duration_seconds=120.0,
+            connect_timeout_seconds=10.0,
+        )
+    supply_kwargs = {
+        "collection_rounds": 3,
+        "max_candidates": 4,
+        "settle_seconds": 6.0,
+        "reverify_on_transient": True,
+        "reverify_settle_seconds": 6.0,
+        "front_door_max_candidates": 4,
+        "run_locator": True,
+        "discovery_request_key_prefix": f"{execution_id}-supply",
+        "front_door_request_key_prefix": f"{execution_id}-market",
+    }
+    supply_kwargs.update(dict(graduated_supply_kwargs or {}))
+
     worker = heartbeat or HeartbeatWorker(
         lock_path, execution_id, lease_seconds=lease_seconds, process_id=process_id
     )
@@ -646,11 +703,13 @@ def run_two_token_operational_pilot(
             source_governor=governor,
             central_scheduler=scheduler,
             selection_seed=selection_seed,
-            cycle_id="pilot-cyc",
+            cycle_id=cycle_id,
             cycle_cutoff=cycle_cutoff,
             evaluated_at=evaluated_at,
             backup_path=paths.backup_db,
             lifecycle_kwargs=lifecycle_kwargs,
+            migration_transport=migration_transport,
+            graduated_supply_kwargs=supply_kwargs,
         )
     finally:
         worker.stop()
@@ -683,6 +742,9 @@ def run_two_token_operational_pilot(
     return {
         "status": "PILOT_TERMINAL",
         "execution_id": execution_id,
+        "authorization_id": execution_id,
+        "campaign_id": campaign_id,
+        "cycle_id": cycle_id,
         "run_id": run_id,
         "run_status": report.get("run_status"),
         "stop_reason": report.get("stop_reason"),

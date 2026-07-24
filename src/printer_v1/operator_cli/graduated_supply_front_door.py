@@ -94,12 +94,17 @@ class GraduatedSupply:
     discovery_report: Mapping[str, Any]
     front_door_report: Mapping[str, Any]
     diagnostics: Mapping[str, Any] = field(default_factory=dict)
+    holder_reserve_supply: tuple[FixtureOriginProof, ...] = ()
+    holder_reserve_candidates: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "ready": self.ready,
             "terminal": self.terminal,
             "selected_mints": sorted(self.graduation_proofs),
+            "holder_reserve_mints": [
+                proof.mint for proof in self.holder_reserve_supply
+            ],
             "selected_latest": (
                 None if self.selected_latest is None else dict(self.selected_latest)
             ),
@@ -254,6 +259,8 @@ def build_graduated_supply(
     discovery_request_key_prefix: str = "v2-9-7e-44",
     front_door_request_key_prefix: str = "v2-9-7e-44",
     batch_seq: int = 1,
+    run_locator: bool = False,
+    locator_transport: Callable[[Any], Mapping[str, Any]] | None = None,
 ) -> GraduatedSupply:
     """Compose E.42 discovery + E.43 front door into FULL_PILOT graduated supply.
 
@@ -268,6 +275,17 @@ def build_graduated_supply(
     """
     if not cycle_seed or not str(cycle_seed).strip():
         raise GraduatedSupplyError("MISSING_CYCLE_SEED")
+
+    locator = (
+        run_fresh_profile_locator(
+            db_path,
+            transport=locator_transport,
+            request_key=f"{discovery_request_key_prefix}-locator",
+            now=now,
+        )
+        if run_locator
+        else {"status": "NOT_REQUESTED", "matched_count": 0}
+    )
 
     # --- E.42 direct-migration discovery (governed, bounded) ----------------
     discovery = run_direct_migration_discovery(
@@ -299,21 +317,31 @@ def build_graduated_supply(
     selected_latest = front_door.get("selected_latest")
     selected_persisted = front_door.get("selected_persisted")
     selected = front_door.get("selected") or ()
+    reserve = front_door.get("holder_reserve_order") or ()
 
     # --- Build the confirmed-origin + graduation carriers -------------------
     connection = sqlite3.connect(str(db_path))
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     supply: list[FixtureOriginProof] = []
+    reserve_supply: list[FixtureOriginProof] = []
+    reserve_candidates: dict[str, Mapping[str, Any]] = {}
     proofs: dict[str, FixturePumpSwapProof] = {}
     try:
-        for item in selected:
+        for item in reserve:
             mint = str(item["mint"])
             row = lookup_graduated_candidate(connection, mint)
             if row is None:  # pragma: no cover - registry guarantees the row
                 raise GraduatedSupplyError(f"SELECTED_MINT_NOT_IN_REGISTRY:{mint}")
-            supply.append(_origin_proof_for(row))
+            proof = _origin_proof_for(row)
+            reserve_supply.append(proof)
+            reserve_candidates[mint.lower()] = dict(item)
             proofs[mint] = _graduation_proof_for(row)
+        selected_mints = {str(item["mint"]).lower() for item in selected}
+        supply = [
+            proof for proof in reserve_supply
+            if proof.mint.lower() in selected_mints
+        ]
     finally:
         connection.close()
 
@@ -341,6 +369,8 @@ def build_graduated_supply(
         "front_door_forbidden_delta_total": int(
             front_door.get("forbidden_delta_total") or 0
         ),
+        "locator_status": locator.get("status"),
+        "locator_matched_count": int(locator.get("matched_count") or 0),
         "integrity_check": front_door.get("integrity_check"),
         "foreign_key_violations": int(front_door.get("foreign_key_violations") or 0),
     }
@@ -348,6 +378,8 @@ def build_graduated_supply(
         ready=ready,
         terminal=terminal,
         graduated_supply=tuple(supply),
+        holder_reserve_supply=tuple(reserve_supply),
+        holder_reserve_candidates=reserve_candidates,
         graduation_proofs=proofs,
         selected_latest=selected_latest,
         selected_persisted=selected_persisted,

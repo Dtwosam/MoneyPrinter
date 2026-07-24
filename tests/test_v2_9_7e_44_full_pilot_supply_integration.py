@@ -22,6 +22,7 @@ into the canonical ``run_operational`` (FULL_PILOT) candidate-supply path:
 from __future__ import annotations
 
 import base64
+from dataclasses import replace
 import pathlib
 import sqlite3
 import sys
@@ -363,6 +364,55 @@ class WiringTests(e8._IntegrationBase):
                 assert int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]) == 0
             assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
             assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        finally:
+            conn.close()
+
+    def test_e46_holder_reserve_writes_readiness_before_lifecycle(self):
+        base = self._supply()
+        candidates = {
+            _MINT_LATEST.lower(): {
+                "mint": _MINT_LATEST,
+                "pool": _POOL_LATEST,
+                "market_identity": f"solana-mainnet:pumpswap:{_POOL_LATEST}",
+                "provenance": "LATEST_GRADUATED",
+                "liquidity": {"liquidity_usd": 5000.0},
+            },
+            _MINT_PERSISTED.lower(): {
+                "mint": _MINT_PERSISTED,
+                "pool": _POOL_PERSISTED,
+                "market_identity": f"solana-mainnet:pumpswap:{_POOL_PERSISTED}",
+                "provenance": "PERSISTED_GRADUATED",
+                "liquidity": {"liquidity_usd": 6000.0},
+            },
+        }
+        supply = replace(
+            base,
+            holder_reserve_supply=base.graduated_supply,
+            holder_reserve_candidates=candidates,
+            front_door_report={"generated_at": e8.NOW},
+        )
+        result = AuthoritativeLiveOperationalCampaignOwner().run_operational(
+            command=self.command,
+            pump_transport=_FakePumpTransport([], {}),
+            secondary_transport=None,
+            source_governor=GOV,
+            central_scheduler=SCH,
+            selection_seed="e46-wire",
+            cycle_id="cyc",
+            cycle_cutoff=e8.CUTOFF,
+            evaluated_at=e8.NOW,
+            backup_path=self.backup,
+            lifecycle_kwargs={"context_adapter_factories": _clean_goplus_context()},
+            graduated_supply=supply,
+            stop_before_lifecycle=True,
+        )
+        assert result.lifecycle["stop_reason"] == "PILOT_INPUT_READY"
+        assert result.lifecycle["pilot_input_readiness"]["readiness_state"] == "PILOT_INPUT_READY"
+        conn = sqlite3.connect(self.db)
+        try:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM printer_pilot_input_readiness_bundle"
+            ).fetchone()[0] == 1
         finally:
             conn.close()
 

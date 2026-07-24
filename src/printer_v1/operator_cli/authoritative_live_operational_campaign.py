@@ -1073,6 +1073,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
         timeout_seconds: float,
         context_factories: Any,
         request_pacer: Any,
+        partition_by_mint: Mapping[str, str] | None = None,
     ) -> tuple[dict[str, Mapping[str, Any]], Any]:
         """Shared pre-activation holder-eligibility funnel.
 
@@ -1095,12 +1096,17 @@ class AuthoritativeLiveOperationalCampaignOwner:
             SequentialRequestPacer,
         )
         holder_facts: dict[str, Mapping[str, Any]] = {}
+        accepted_partitions: set[str] = set()
+        required_partitions = set((partition_by_mint or {}).values())
         pacer = request_pacer or SequentialRequestPacer()
         persist_ledger(
             connection, run_id=command.run_id, cycle_id=cycle_id,
             ledger=ledger, now=evaluated.isoformat(),
         )
         for ordinal, proof in enumerate(bounded_candidates, start=1):
+            partition = (partition_by_mint or {}).get(proof.mint.lower())
+            if partition is not None and partition in accepted_partitions:
+                continue
             ledger.admit_candidate(now=evaluated)
             maturation = schedule_maturation(
                 connection, run_id=command.run_id, cycle_id=cycle_id,
@@ -1133,7 +1139,14 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         connection, work_id=str(maturation["work_id"]),
                         cause="EVIDENCE_REUSED", now=evaluated.isoformat(),
                     )
-                    if sum(bool(fact.get("eligible")) for fact in holder_facts.values()) == 2:
+                    if reused_fact.get("eligible") and partition is not None:
+                        accepted_partitions.add(partition)
+                    if (
+                        required_partitions and accepted_partitions == required_partitions
+                    ) or (
+                        not required_partitions
+                        and sum(bool(fact.get("eligible")) for fact in holder_facts.values()) == 2
+                    ):
                         break
                     continue
                 bundle = _collect_preclose_context(
@@ -1177,7 +1190,14 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     connection, work_id=str(maturation["work_id"]),
                     cause="EVIDENCE_EVALUATED", now=evaluated.isoformat(),
                 )
-                if sum(bool(fact.get("eligible")) for fact in holder_facts.values()) == 2:
+                if holder_facts[proof.mint.lower()].get("eligible") and partition is not None:
+                    accepted_partitions.add(partition)
+                if (
+                    required_partitions and accepted_partitions == required_partitions
+                ) or (
+                    not required_partitions
+                    and sum(bool(fact.get("eligible")) for fact in holder_facts.values()) == 2
+                ):
                     break
             except Exception as exc:
                 complete_maturation(
@@ -1308,7 +1328,10 @@ class AuthoritativeLiveOperationalCampaignOwner:
             merged_proofs = dict(graduation_proofs or {})
             merged_proofs.update(dict(supply.graduation_proofs))
             graduation_proofs = merged_proofs
-            graduated_supply_proofs = tuple(supply.graduated_supply)
+            graduated_supply_proofs = tuple(
+                getattr(supply, "holder_reserve_supply", ())
+                or supply.graduated_supply
+            )
         # V2-9.7E.41: bind confirmed graduation evidence into the discovery
         # fixtures so the executor's PumpSwap confirmation and the graduation-only
         # gate operate on it. Empty on a cold-start cycle with no graduated supply.
@@ -1322,9 +1345,22 @@ class AuthoritativeLiveOperationalCampaignOwner:
         evaluated = datetime.fromisoformat(evaluated_at.replace("Z", "+00:00"))
         deadline = evaluated + timedelta(seconds=command.ceilings.duration_seconds)
         evaluated_epoch = int(evaluated.timestamp())
+        supply_source_operations = 0
+        if supply is not None:
+            supply_source_operations = int(
+                supply.discovery_report.get("source_operation_ledger", {}).get(
+                    "source_requests", 0
+                )
+            ) + int(
+                supply.front_door_report.get("source_operation_ledger", {}).get(
+                    "liquidity_requests", 0
+                )
+            )
         ledger = build_ledger(
             pump_operations=acquisition.result.accounting.underlying_rpc_operations,
-            additional_governed_operations=enrichment.requested,
+            additional_governed_operations=(
+                enrichment.requested + supply_source_operations
+            ),
             deadline_at=deadline,
         )
         connection = sqlite3.connect(Path(command.db_path))
@@ -1413,6 +1449,14 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     lifecycle_started=False,
                 )
 
+            partition_by_mint = {}
+            if supply is not None:
+                partition_by_mint = {
+                    mint.lower(): str(candidate.get("provenance") or "")
+                    for mint, candidate in dict(
+                        getattr(supply, "holder_reserve_candidates", {})
+                    ).items()
+                }
             holder_facts, ledger = self._evaluate_holder_eligibility(
                 connection,
                 command=command,
@@ -1424,23 +1468,103 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 timeout_seconds=timeout_seconds,
                 context_factories=lk.get("context_adapter_factories"),
                 request_pacer=lk.pop("holder_request_pacer", None),
+                partition_by_mint=partition_by_mint or None,
             )
             connection.commit()
         finally:
             connection.close()
 
+        readiness_bundle = None
+        if supply is not None and partition_by_mint:
+            selected_by_partition: dict[str, Any] = {}
+            for proof in graduated_candidates:
+                partition = partition_by_mint.get(proof.mint.lower())
+                fact = holder_facts.get(proof.mint.lower(), {})
+                if partition and fact.get("eligible") and partition not in selected_by_partition:
+                    selected_by_partition[partition] = proof
+            required = {"LATEST_GRADUATED", "PERSISTED_GRADUATED"}
+            if set(selected_by_partition) == required:
+                graduated_candidates = tuple(
+                    selected_by_partition[name]
+                    for name in ("LATEST_GRADUATED", "PERSISTED_GRADUATED")
+                )
+                from printer_v1.operator_cli.pilot_input_readiness import (
+                    ReadinessCandidate,
+                    build_pilot_input_ready_bundle,
+                )
+
+                def readiness_candidate(proof: Any, provenance: str) -> ReadinessCandidate:
+                    item = dict(supply.holder_reserve_candidates[proof.mint.lower()])
+                    liquidity = dict(item.get("liquidity") or {})
+                    return ReadinessCandidate(
+                        mint=proof.mint,
+                        pool=str(item["pool"]),
+                        market_identity=str(item["market_identity"]),
+                        liquidity_usd=float(liquidity["liquidity_usd"]),
+                        liquidity_observed_at=str(
+                            supply.front_door_report.get("generated_at") or evaluated_at
+                        ),
+                        activation_route=str(proof.origin_route),
+                        holder_eligible=True,
+                        provenance=provenance,
+                    )
+
+                readiness_connection = sqlite3.connect(Path(command.db_path))
+                readiness_connection.execute("PRAGMA foreign_keys = ON")
+                try:
+                    readiness_bundle = build_pilot_input_ready_bundle(
+                        readiness_connection,
+                        readiness_id=f"{command.run_id}:{cycle_id}:pilot-input",
+                        latest=readiness_candidate(
+                            selected_by_partition["LATEST_GRADUATED"],
+                            "LATEST_GRADUATED",
+                        ),
+                        persisted=readiness_candidate(
+                            selected_by_partition["PERSISTED_GRADUATED"],
+                            "PERSISTED_GRADUATED",
+                        ),
+                        holder_evidence={
+                            mint: dict(fact) for mint, fact in holder_facts.items()
+                        },
+                        source_ledger={
+                            "operation_ceiling": ledger.operation_ceiling,
+                            "governed_requests": ledger.governed_requests,
+                            "underlying_transport_operations": (
+                                ledger.underlying_transport_operations
+                            ),
+                            "zero_transport_operations": ledger.zero_transport_operations,
+                        },
+                        selection_seed=selection_seed,
+                        git_provenance_identity=str(
+                            command.launch_git_provenance.get("git_head") or ""
+                        ),
+                        configuration_hash=command.configuration_hash,
+                        expires_at=(evaluated + timedelta(minutes=10)).isoformat(),
+                        now=evaluated.isoformat(),
+                    )
+                finally:
+                    readiness_connection.close()
+            else:
+                graduated_candidates = ()
+
         # V2-9.7E.44 bounded pre-lifecycle boundary: return atomic two-slot
         # readiness (admission + holder eligibility + handoff readiness) without
         # invoking the scheduler/lifecycle/memory driver. No tracking is enqueued.
-        if stop_before_lifecycle:
+        if stop_before_lifecycle or (
+            supply is not None and partition_by_mint and readiness_bundle is None
+        ):
             holder_eligible = sum(
                 1 for fact in holder_facts.values() if fact.get("eligible")
             )
             atomic_ready = len(graduated_candidates) >= 2 and holder_eligible >= 2
             terminal = (
-                "PRE_LIFECYCLE_ATOMIC_TWO_SLOT_READY"
-                if atomic_ready
-                else "PRE_LIFECYCLE_HOLDER_EVIDENCE_BLOCKED"
+                "PILOT_INPUT_READY"
+                if readiness_bundle is not None
+                else (
+                    "PRE_LIFECYCLE_ATOMIC_TWO_SLOT_READY"
+                    if atomic_ready and not partition_by_mint
+                    else "PRE_LIFECYCLE_HOLDER_EVIDENCE_BLOCKED"
+                )
             )
             return OriginLifecycleResult(
                 activation=ActivationResult(
@@ -1456,6 +1580,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     "first_terminal_cause": terminal,
                     "lifecycle_started": False,
                     "stopped_before_lifecycle": True,
+                    "pilot_input_readiness": readiness_bundle,
                     "atomic_two_slot_ready": atomic_ready,
                     "graduated_candidate_count": len(graduated_candidates),
                     "holder_eligible_count": holder_eligible,
@@ -1494,6 +1619,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
         )
         try:
             result.lifecycle.setdefault("full_pilot_admission", admission)
+            result.lifecycle.setdefault("pilot_input_readiness", readiness_bundle)
         except (AttributeError, TypeError):  # pragma: no cover - defensive
             pass
         return result
@@ -1634,6 +1760,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
             byte_ceiling=byte_ceiling,
             tracker_api_key=tracker_api_key,
         )
+
         fixtures = replace(
             fixtures, pumpswap_proofs=dict(graduation_proofs or {})
         )

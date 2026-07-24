@@ -97,6 +97,12 @@ class _FakeOwner:
                 "pump_transport": pump_transport,
                 "secondary_transport": secondary_transport,
                 "cycle_id": cycle_id,
+                "migration_transport": _extra.get("migration_transport"),
+                "graduated_supply_kwargs": dict(
+                    _extra.get("graduated_supply_kwargs") or {}
+                ),
+                "campaign_id": command.campaign_id,
+                "run_id": command.run_id,
             }
         )
         report = {
@@ -244,6 +250,14 @@ class ProvenanceAndTimingTests(_PilotRunnerBase):
         # Canonical real windows are the factory defaults (never passed).
         self.assertEqual(CANONICAL_15M_WINDOW_SECONDS, 900.0)
         self.assertEqual(CANONICAL_CONTINUATION_SECONDS, 2700.0)
+        self.assertTrue(callable(owner.received[0]["migration_transport"]))
+        supply_kwargs = owner.received[0]["graduated_supply_kwargs"]
+        self.assertTrue(supply_kwargs["run_locator"])
+        self.assertEqual(supply_kwargs["collection_rounds"], 3)
+        self.assertEqual(supply_kwargs["max_candidates"], 4)
+        self.assertEqual(owner.received[0]["cycle_id"], "exec-1-cycle")
+        self.assertEqual(owner.received[0]["campaign_id"], "exec-1-campaign")
+        self.assertEqual(owner.received[0]["run_id"], "exec-1-campaign-run")
 
     def test_production_lifecycle_kwargs_reject_compression(self) -> None:
         kwargs = production_lifecycle_kwargs(
