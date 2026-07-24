@@ -34,6 +34,16 @@ numeric market-performance threshold. `< 3000` →
 `LIQUIDITY_BELOW_SELECTION_FLOOR`; missing/stale/conflicting/estimated/token-level/
 wrong-pool/non-exact → `LIQUIDITY_UNPROVEN`; missing liquidity is never zero.
 
+> **V2-9.7E.44 factual corrections (wording only; E.43 was not rerun).**
+> 1. Discovery persists **only within explicit finite ceilings** (discovery-round,
+>    duration, source-operation, empty-round and failure ceilings). There is no
+>    unbounded "continue until successful" loop; at the ceiling the lane terminates
+>    honestly (e.g. `BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL`).
+> 2. The `$3,000` floor proves **active-tracking admission only** — that the exact
+>    confirmed pool holds enough liquidity for a candidate to consume a scarce
+>    tracking slot. It does **not** by itself prove realistic entry, exit, route,
+>    slippage or price impact; those remain owned by downstream snapshots/memory.
+
 ## What was fixed
 
 1. **Exact-pool liquidity enrichment** — new

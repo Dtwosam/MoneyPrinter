@@ -579,3 +579,64 @@ PumpSwap pool. `$3,000` is the only numeric market-performance threshold. Verdic
 | 1 | `d7ed63a` | 0 (25 s windows too short) | 0 | 0 candidates | NOT_PASS (BL-43-01) |
 | 2 | `d7ed63a` | 0 (quiet burst gap) | 5 confirmed; 4 ≥ $3,000; `$8.70` excluded | 4 LATEST eligible, 0 PERSISTED | NOT_PASS (no persisted cohort) |
 | 3 | `d7ed63a` | 2 confirmed | 2 confirmed | 2 LATEST + 2 PERSISTED eligible; 1+1 selected | **PASS** |
+
+## V2-9.7E.44 repair updates (FULL_PILOT graduated candidate-supply integration)
+
+### BL-44-01 — graduated discovery + $3K front door not wired into FULL_PILOT
+
+- **First seen:** E.44 (operational continuation of BL-41-04).
+- **Category:** `MISSING_INTEGRATION`.
+- **Root cause:** the adopted E.42 direct-migration discovery and E.43 `$3,000`
+  exact-pool front door were committed but had **no caller in `src/`**;
+  `run_two_token_operational_pilot` invoked `run_operational` with **no
+  `graduation_proofs`**, and `run_operational` never ran discovery or the front
+  door. A live FULL_PILOT therefore cold-started straight to
+  `BLOCKED_INSUFFICIENT_GRADUATED_POOL` and could never reach holder, activation or
+  lifecycle.
+- **Fixed behaviour:** new `graduated_supply_front_door.build_graduated_supply`
+  composes the two owners verbatim (no new gate/score/selector/provider) and, for
+  each front-door-*selected* mint, builds the confirmed-origin carrier (real derived
+  Pump bonding-curve PDA + on-chain migration signature) and the exact PumpSwap
+  graduation proof. `run_operational` gains
+  `graduated_supply` / `migration_transport` / `graduated_supply_kwargs` /
+  `stop_before_lifecycle`: the graduated candidates join the admission universe,
+  holder eligibility runs, and the pre-lifecycle path returns atomic two-slot
+  readiness without invoking the scheduler/lifecycle/memory driver.
+- **Remaining limitation (deferred operator decision):** migration-discovered
+  graduated candidates carry no original Pump **create** transaction (create
+  signature/slot, associated bonding curve, creator address), which the executor
+  activation path (`record_confirmed_origin`) requires. The narrow slice therefore
+  wires the supply → `$3K` front door → holder → **atomic two-slot readiness**
+  boundary and stops before create-centric activation. A create-origin backfill (or
+  a graduation-native activation path) plus a continuously supervised real-wall-clock
+  `15m → 1h → 4h` lifecycle session is the operator decision.
+- **Fix commit:** `b273179`.
+- **Offline proof:** `tests/test_v2_9_7e_44_full_pilot_supply_integration.py`
+  (5 tests) + 137 directly affected regressions (142 total pass).
+- **Live proof after fix:** bounded live pre-lifecycle supply proof — see the E.44
+  live attempt log below.
+- **Current status:** `PARTIAL` (supply integration committed + live-proven to
+  atomic readiness; activation+lifecycle deferred).
+
+### E.44 live attempt log (bounded supply proof — NOT a FULL_PILOT attempt)
+
+One bounded live pre-lifecycle supply proof at HEAD `b273179`, fresh isolated proof
+DB, explicit ceilings (2 discovery cycles, ≤4 migration events / 110 s per window,
+≤4 verifications, 6 s settle, single transient reverify). Did **not** consume a
+sustained FULL_PILOT attempt.
+
+| Cycle | Live migrations | Confirmed graduated | Front-door result | Terminal |
+|---|---|---|---|---|
+| 1 | 0 (quiet window) | 0 | — | seeds nothing |
+| 2 | 1 | 1 LATEST (on-chain verified, persisted) | fresh exact-pool liquidity **< $3,000** → 1 `LIQUIDITY_BELOW_SELECTION_FLOOR`; 0 eligible | `BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL` |
+
+The full integration executed **live end-to-end** — PumpPortal `subscribeMigration`
+→ governed on-chain graduation verification → durable graduated registry → E.43
+exact-pool DexScreener enrichment → `$3,000` floor — and the floor **fired live** on
+a real below-floor freshly-migrated pool (positive evidence, mirroring E.43
+Attempt 2's `$8.70` exclusion). Sparse/quiet live migration supply (BL-43-01) meant
+no lawful `LATEST ≥ $3,000` and no `PERSISTED` cohort within the ceilings, so the
+lane terminated honestly before holder/atomic work. `integrity_check == ok`,
+`foreign_key_violations == 0`, discovery + front-door forbidden-delta totals `0`.
+Per policy this sparse-supply/below-floor outcome is **not** a code defect and no
+retry-until-success was performed.
