@@ -13,7 +13,7 @@ DBs only (no live network, no persistent-DB mutation, no lifecycle/pilot/memory)
   DM-08  migration time never becomes token_created_at (no such column/field)
   DM-09  duplicate migration events are idempotent
   DM-10  confirmed candidates persist and refresh across cycles
-  DM-11  fresh (LATEST_GRADUATED) vs persisted (PERSISTED_ACTIVE) stay distinct
+  DM-11  fresh (LATEST_GRADUATED) vs persisted (PERSISTED_GRADUATED) stay distinct
   DM-12  ungraduated origin-only pool export stays empty (never selectable)
   DM-13  export_graduated_pilot_candidates reads the graduated registry
   DM-14  graduation evidence immutable; delete blocked; replay deterministic
@@ -377,9 +377,10 @@ class TestOrchestratorAndPersistence:
         )
         cats = {m["mint"]: m["category"] for m in report["candidate_mix"]}
         assert cats[_MINT_B] == "LATEST_GRADUATED"
-        assert cats[_MINT_A] == "PERSISTED_ACTIVE"
+        # V2-9.7E.43: truthful persisted-graduated provenance (was PERSISTED_ACTIVE).
+        assert cats[_MINT_A] == "PERSISTED_GRADUATED"
         assert report["latest_graduated_count"] == 1
-        assert report["persisted_active_count"] == 1
+        assert report["persisted_graduated_count"] == 1
 
     def test_dm12_origin_only_pool_export_empty(self):
         db = _temp_db()

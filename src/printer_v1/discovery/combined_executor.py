@@ -160,7 +160,10 @@ _CHANNEL_CATEGORY = MappingProxyType(
         "ACTIVE_PUMPFUN": "ACTIVE",
         "TRENDING_PUMPFUN": "TRENDING",
         "TOP_PUMPFUN": "TOP",
-        "PERSISTED_ACTIVE": "PERSISTED_ACTIVE",
+        # V2-9.7E.43: the truthful persisted graduated category. The former
+        # "PERSISTED_ACTIVE" label is kept as a deprecated alias mapping to it.
+        "PERSISTED_GRADUATED": "PERSISTED_GRADUATED",
+        "PERSISTED_ACTIVE": "PERSISTED_GRADUATED",
         "REVIVAL_PUMPFUN": "REVIVAL",
         "DUMP_PUMPFUN": "DUMP",
         "CONSOLIDATION_PUMPFUN": "CONSOLIDATION",

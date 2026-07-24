@@ -31,7 +31,16 @@ GRADUATED_LIFECYCLE = "PUMPSWAP_GRADUATED_CONFIRMED"
 PUMPSWAP_VENUE = "pumpswap"
 
 LATEST_GRADUATED_CHANNEL = "LATEST_GRADUATED"
-PERSISTED_ACTIVE_CHANNEL = "PERSISTED_ACTIVE"
+# V2-9.7E.43: the persisted graduated candidate label. The former
+# "PERSISTED_ACTIVE" label claimed post-selection *activity* that no snapshot has
+# ever proved in the discovery lane; it is replaced by the truthful
+# PERSISTED_GRADUATED (confirmed graduated before the current cycle, not
+# rediscovered as a current-cycle migration). Behavioral categories
+# (DUMP/DECAY/REVIVAL/CONSOLIDATION) are never derived in discovery.
+PERSISTED_GRADUATED_CHANNEL = "PERSISTED_GRADUATED"
+# Deprecated E.42 name kept for import compatibility; it now resolves to the
+# truthful PERSISTED_GRADUATED value.
+PERSISTED_ACTIVE_CHANNEL = PERSISTED_GRADUATED_CHANNEL
 
 
 class GraduatedCandidateError(RuntimeError):

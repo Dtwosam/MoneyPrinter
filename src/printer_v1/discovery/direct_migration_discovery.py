@@ -36,7 +36,7 @@ from printer_v1.sources.pumpportal import build_pumpportal_adapter
 from printer_v1.sources.pumpswap import build_pumpswap_adapter
 from printer_v1.sources.pumpswap_graduated_registry import (
     LATEST_GRADUATED_CHANNEL,
-    PERSISTED_ACTIVE_CHANNEL,
+    PERSISTED_GRADUATED_CHANNEL,
     export_graduated_candidates,
     record_graduated_candidate,
 )
@@ -408,10 +408,11 @@ def run_direct_migration_discovery(
                 category = LATEST_GRADUATED_CHANNEL
                 latest_count += 1
             else:
-                # Richer DUMP/CONSOLIDATION/DECAY/REVIVAL categories require adopted
-                # DexScreener exact-market delta evidence not computed in this lane;
-                # degrade honestly to PERSISTED_ACTIVE (never fabricated).
-                category = PERSISTED_ACTIVE_CHANNEL
+                # V2-9.7E.43: truthful provenance. A candidate confirmed before the
+                # current cycle and not rediscovered as a current-cycle migration is
+                # PERSISTED_GRADUATED. Behavioral categories
+                # (DUMP/CONSOLIDATION/DECAY/REVIVAL) are never derived in discovery.
+                category = PERSISTED_GRADUATED_CHANNEL
                 persisted_count += 1
             mix.append(
                 {
@@ -437,7 +438,7 @@ def run_direct_migration_discovery(
         "confirmed_count": len(confirmed_this_cycle),
         "candidate_mix": mix,
         "latest_graduated_count": latest_count,
-        "persisted_active_count": persisted_count,
+        "persisted_graduated_count": persisted_count,
         "total_persisted_graduated": len(mix),
         "source_operation_ledger": ledger,
         "forbidden_capability_deltas": forbidden,
