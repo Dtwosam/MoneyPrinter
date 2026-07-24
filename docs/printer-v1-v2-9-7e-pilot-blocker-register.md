@@ -640,3 +640,55 @@ lane terminated honestly before holder/atomic work. `integrity_check == ok`,
 `foreign_key_violations == 0`, discovery + front-door forbidden-delta totals `0`.
 Per policy this sparse-supply/below-floor outcome is **not** a code defect and no
 retry-until-success was performed.
+
+**E.44 live-vs-offline distinction (added at E.45).** The E.44 live proof covered
+discovery → on-chain graduation confirmation → durable registry → the `$3,000`
+exact-pool front door **live** (the floor fired live). Holder eligibility, atomic
+two-slot readiness and activation were proved **offline only** at E.44
+(`stop_before_lifecycle` returned the pre-lifecycle readiness bundle without invoking
+the driver). The migration-discovered candidate carried no create transaction, so the
+E.44 supply carrier stuffed the migration signature into a `FixtureOriginProof`
+consumed by the create-origin path and **stopped before activation** — that carrier
+shape is superseded by the E.45 typed graduation-native route (BL-44-01 below).
+
+## V2-9.7E.45 repair updates (canonical supply + graduation-native activation)
+
+### BL-44-01 — graduation-native activation (RESOLVED at E.45)
+
+- **Category:** `MISSING_INTEGRATION` / `DESIGN_GAP`. **Repair status:**
+  `FIXED_IN_THIS_SPRINT` (offline) + live supply-ready.
+- **Root cause (E.44 remaining limitation):** migration-discovered graduated
+  candidates carry no Pump **create** transaction, and the executor activation path
+  (`_run_direct_lane` → `record_confirmed_origin`) requires create-centric evidence.
+  E.44 therefore fed the migration signature through a create-shaped
+  `FixtureOriginProof` and stopped before activation — a fake-create anti-pattern.
+- **What was fixed (E.45):** a typed `origin_route` (`PUMP_CREATE` |
+  `GRADUATION_NATIVE`) on `FixtureOriginProof`/`_Observation`/`_Merged`. The
+  executor's `_run_direct_lane` routes `GRADUATION_NATIVE` candidates through a new
+  block that records the Pump **migration lineage** (migration signature + graduation
+  slot/block time) as migration evidence, **never** writes or fabricates a Pump
+  create-origin row, and produces token/pair/queue/scheduler/slot identities
+  identical to the create route (verified: `_handoff_one_slot` reads only the merged
+  candidate's mint + rebound PumpSwap market identity, never the create registry).
+  Create-native activation (Route A) is unchanged; activation stays two-or-none.
+- **Companion repairs:** canonical registry bootstrap + immutable isolated export
+  (Repair 1); DexScreener fresh-profiles **locator-only** wiring (Repair 2C);
+  holder-aware reserve selection with lawful replacement (Repair 4); immutable
+  `PILOT_INPUT_READY` boundary, migration 041 (Repair 6).
+- **Fix commits:** `e8fdeed` (Repair 5 + design), `81d2ba6` (Repair 1),
+  `cf65b4a` (Repair 6), `57dcfdb` (Repair 4), `6544d44` (Repair 2C).
+- **Offline proof:** 28 E.45 tests + 60 (E.42/E.43/E.44) + 47 (combined-executor /
+  atomic-handoff / graduation-only / origin-to-lifecycle) regressions; full suite
+  collects 8283 with no import breakage.
+- **Live proof:** `lane-x-v2-9-7e-45-bounded-live-supply-readiness-output.txt` — a
+  fresh isolated DB reached `GRADUATED_SUPPLY_READY` live over two cycles with one
+  real LATEST (`aPij1aZg…pump`) + one real PERSISTED (`Z95okeyh…pump`) graduated
+  candidate, both on exact confirmed PumpSwap pools `$3K+`; a decayed prior-cycle
+  pool was correctly excluded below floor; integrity ok, FK 0, forbidden deltas 0.
+- **Remaining limitation:** live holder chaining, live graduation-native activation,
+  the live `PILOT_INPUT_READY` bundle write, and the sustained `15m → 1h → 4h`
+  two-token `FULL_PILOT` (≥ 4 h continuous foreground supervision) were **not** run —
+  a hard environment duration limit. Verdict `V2_9_7E_45_OPERATOR_DECISION_REQUIRED`;
+  V2-9.7E stays active; V2-9.7F not started.
+- **Current status:** `PARTIAL` — activation architecture resolved and offline-proven;
+  supply proven live-ready; sustained pilot environment-blocked.

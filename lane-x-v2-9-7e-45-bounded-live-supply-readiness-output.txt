@@ -1,0 +1,55 @@
+V2-9.7E.45 bounded live readiness proof — canonical repaired supply path
+=========================================================================
+Fresh isolated attempt DB. Live PumpPortal subscribeMigration -> governed on-chain
+graduation verification -> durable graduated registry -> E.43 exact-pool DexScreener
+$3K front door -> truthful LATEST/PERSISTED partitions -> mixed two-slot selection.
+No paid RPC; no endpoint rotation; no retry-until-success. Ceilings: 2 collection
+rounds, <=5 migration events / 100 s per round, 6 s settle, single transient reverify.
+
+--- PumpPortal reachability probe (pre-proof) ---
+WebSocket wss://pumpportal.fun/api/data reachable; 55 s window, connect ok, 0 events
+(documented bursty/quiet-window behaviour; the stream is live but sparse).
+
+--- Cycle 1 (fresh DB; establishes the persisted universe) ---
+elapsed_s 212.8
+ready False   terminal BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL
+confirmed_this_cycle: 2  (sJt3RRBKrTqssw5YQM4qqnNpW9zjrsGgqsAuCRVpump,
+                          Z95okeyhiWa5K261FpVBByJaTLoo7kmwdCd8Z6ypump)
+latest_graduated_count 2 | persisted_graduated_count 0
+front_door_candidate_count 2 | latest_eligible 2 | persisted_eligible 0
+below_floor 0 | unproven 0 | selection_floor_usd 3000.0
+discovery_forbidden_delta_total 0 | front_door_forbidden_delta_total 0
+integrity_check ok | foreign_key_violations 0
+=> Honest block: a fresh isolated DB's first cycle has NO persisted cohort. The two
+   live-confirmed graduated candidates are now durably persisted for the next cycle.
+
+--- Cycle 2 (same DB; the cycle-1 confirmations are now PERSISTED) ---
+registry rows before cycle 2 (persisted universe): 2
+elapsed_s 216.4
+ready True    terminal GRADUATED_SUPPLY_READY
+confirmed_this_cycle: 2  (2 NEW live migrations -> LATEST)
+latest_graduated_count 2 | persisted_graduated_count 2 (refreshed)
+front_door_candidate_count 4 | latest_eligible 2 | persisted_eligible 1
+below_floor 1  (one prior-cycle pool decayed below $3,000 and was correctly excluded)
+unproven 0 | selection_floor_usd 3000.0
+discovery_forbidden_delta_total 0 | front_door_forbidden_delta_total 0
+integrity_check ok | foreign_key_violations 0
+selected_latest    aPij1aZg1xiyKFxogaJmscDE1K31d4FPkTLfHVNpump  (confirmed this cycle)
+selected_persisted Z95okeyhiWa5K261FpVBByJaTLoo7kmwdCd8Z6ypump  (confirmed cycle 1, still >= $3K)
+
+=> Live end-to-end proof of DISCOVERY_READY + SELECTION_READY + MARKET_READY through
+   the canonical repaired path: one REAL latest + one REAL persisted graduated
+   candidate, both on exact confirmed PumpSwap pools >= $3,000, selected as a lawful
+   mixed pair. A quiet migration window did NOT erase the previously-confirmed
+   graduated universe; the $3K floor correctly excluded a decayed pool; provenance
+   is truthful (not fabricated). This directly resolves the core architectural
+   complaint (insufficient graduated candidates despite lawful $3K+ markets).
+
+NOT run in this session (require a supervised real-wall-clock session):
+  - live HOLDER_READY chaining on the selected pair (GoPlus -> fixed public Solana
+    RPC -> fixed Helius Free backup) — proven OFFLINE (holder reserve funnel).
+  - graduation-native ACTIVATION_READY on the selected pair — proven OFFLINE
+    (typed Route B atomic activation).
+  - immutable PILOT_INPUT_READY bundle write — proven OFFLINE (migration 041 owner).
+  - sustained two-token FULL_PILOT 15m -> 1h -> 4h (>= 4 h continuous foreground
+    supervision) — a hard environment duration limit; not attempted; NOT PASS.

@@ -198,3 +198,21 @@ BUY/SELL/HOLD; no positions/trade events/paper audits/PnL; no FULL_PILOT lifecyc
 execution in this slice; no successor or automatic restart; no V2-9.7F / V2-9.8 or
 later work. The free-tier Helius secret was confirmed present and never printed or
 persisted.
+
+## Addendum (added at V2-9.7E.45): precise live-vs-offline scope
+
+To avoid any overstatement, the E.44 evidence is scoped precisely:
+
+* **Proved LIVE at E.44:** discovery → governed on-chain graduation confirmation →
+  durable graduated registry → the E.43 exact-pool DexScreener `$3,000` front door.
+  The `$3,000` floor fired live on a real below-floor freshly-migrated pool.
+* **Proved OFFLINE only at E.44:** holder eligibility, atomic two-slot readiness and
+  activation. E.44 used `stop_before_lifecycle` and returned the pre-lifecycle
+  readiness bundle without invoking the driver/lifecycle.
+* **Superseded carrier:** E.44 fed the migration signature through a create-shaped
+  `FixtureOriginProof` and stopped before activation because migration-discovered
+  candidates carry no create transaction. V2-9.7E.45 replaces that with a typed
+  `GRADUATION_NATIVE` activation route (see the E.45 closeout and BL-44-01), which
+  never writes or fabricates a create-origin row and activates two-or-none. At E.45
+  the repaired supply path was additionally proved **live** to a real mixed
+  `LATEST + PERSISTED` `$3K+` cohort (`GRADUATED_SUPPLY_READY`).
