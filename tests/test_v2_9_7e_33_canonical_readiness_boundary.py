@@ -26,6 +26,7 @@ from printer_v1.operator_cli.authoritative_live_operational_campaign import (
     ACTIVATION_ONLY,
     CANONICAL_OPERATIONAL_MODES,
     FULL_PILOT,
+    PILOT_INPUT_READINESS,
     SNAPSHOT_READINESS,
     AuthoritativeLiveOperationalCampaignOwner,
     LiveOperationalError,
@@ -423,10 +424,15 @@ class SingleUseAndReplayTests(_SnapshotReadinessBase):
 
 
 class CanonicalModeSurfaceTests(_SnapshotReadinessBase):
-    def test_exactly_three_canonical_modes(self) -> None:
+    def test_exactly_four_canonical_modes(self) -> None:
         self.assertEqual(
             CANONICAL_OPERATIONAL_MODES,
-            {ACTIVATION_ONLY, SNAPSHOT_READINESS, FULL_PILOT},
+            {
+                ACTIVATION_ONLY,
+                SNAPSHOT_READINESS,
+                PILOT_INPUT_READINESS,
+                FULL_PILOT,
+            },
         )
 
     def test_unknown_mode_fails_closed(self) -> None:

@@ -8,11 +8,13 @@ authorization stays unconsumed. This does not re-prove market outcomes.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from printer_v1.db.migrate import apply_migrations
 from printer_v1.operator_cli import proof_supervision as sup
@@ -22,6 +24,7 @@ from printer_v1.operator_cli.two_token_operational_pilot_runner import (
     CANONICAL_CONTINUATION_SECONDS,
     HeartbeatWorker,
     PilotPaths,
+    PILOT_INPUT_READINESS,
     PilotRunnerError,
     _FORBIDDEN_PRODUCTION_TIMING_KEYS,
     _no_active_lease,
@@ -63,10 +66,12 @@ def _dirty_provenance() -> dict[str, object]:
 
 
 class _FakeResult:
-    def __init__(self, lifecycle: dict[str, object]) -> None:
+    def __init__(
+        self, lifecycle: dict[str, object], *, lifecycle_started: bool = True
+    ) -> None:
         self.lifecycle = lifecycle
         self.activation = None
-        self.lifecycle_started = True
+        self.lifecycle_started = lifecycle_started
 
 
 class _FakeOwner:
@@ -103,6 +108,10 @@ class _FakeOwner:
                 ),
                 "campaign_id": command.campaign_id,
                 "run_id": command.run_id,
+                "stop_before_lifecycle_present": (
+                    "stop_before_lifecycle" in _extra
+                ),
+                "stop_before_lifecycle": _extra.get("stop_before_lifecycle"),
             }
         )
         report = {
@@ -130,8 +139,39 @@ class _FakeOwner:
         return _FakeResult(report)
 
 
+class _FakePreLifecycleOwner:
+    """Records the readiness call and returns before every lifecycle owner."""
+
+    def __init__(
+        self, *, stop_reason: str = "PRE_LIFECYCLE_HOLDER_EVIDENCE_BLOCKED"
+    ) -> None:
+        self.calls = 0
+        self.received: list[dict[str, object]] = []
+        self._stop_reason = stop_reason
+
+    def run_operational(self, **kwargs):
+        self.calls += 1
+        self.received.append(dict(kwargs))
+        report = {
+            "run_id": kwargs["command"].run_id,
+            "run_status": "NOT_STARTED",
+            "stop_reason": self._stop_reason,
+            "first_terminal_cause": self._stop_reason,
+            "lifecycle_started": False,
+            "stopped_before_lifecycle": True,
+            "forbidden_deltas": {t: 0 for t in _FORBIDDEN_DELTA_TABLES},
+            "pending_or_running_run_steps": 0,
+            "running_jobs_after_stop": 0,
+        }
+        return _FakeResult(report, lifecycle_started=False)
+
 class _PilotRunnerBase(unittest.TestCase):
     def setUp(self) -> None:
+        self._env = patch.dict(
+            os.environ, {"PRINTER_HELIUS_API_KEY": "e46a-offline-fake-key"}
+        )
+        self._env.start()
+        self.addCleanup(self._env.stop)
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
         self.persistent = self.root / "persistent.sqlite3"
@@ -227,6 +267,83 @@ class TargetPreparationTests(_PilotRunnerBase):
 
 
 # ===========================================================================
+# E.46A zero-transport holder-readiness preflight
+# ===========================================================================
+
+
+class HolderReadinessPreflightTests(_PilotRunnerBase):
+    def test_missing_key_blocks_before_all_mutation_and_source_work(self) -> None:
+        owner = _FakeOwner()
+        paths = self._paths()
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(
+                PilotRunnerError, "readiness source contract preflight blocked"
+            ) as caught:
+                self._run(owner=owner, paths=paths)
+        self.assertEqual(owner.calls, 0)
+        self.assertFalse(paths.target_db.exists())
+        self.assertFalse(paths.backup_db.exists())
+        self.assertFalse(paths.restore_rehearsal_db.exists())
+        self.assertFalse(paths.one_proof_lock_path.exists())
+        self.assertNotIn("PRINTER_HELIUS_API_KEY", str(caught.exception))
+
+    def test_source_or_budget_drift_blocks_at_the_same_zero_mutation_point(self) -> None:
+        from printer_v1.operator_cli.readiness_source_contract_preflight import (
+            ReadinessSourceContractPreflightError,
+        )
+
+        target = (
+            "printer_v1.operator_cli.two_token_operational_pilot_runner."
+            "assert_readiness_source_contract_preflight"
+        )
+        secret = "e46a-secret-must-not-escape"
+        for issue in (
+            "SOURCE_CONTRACT_DRIFT:helius_free:authentication",
+            "READINESS_BUDGET_CONTRACT_DRIFT",
+        ):
+            with self.subTest(issue=issue):
+                owner = _FakeOwner()
+                paths = self._paths()
+                with patch(
+                    target,
+                    side_effect=ReadinessSourceContractPreflightError(
+                        f"{issue}:{secret}"
+                    ),
+                ):
+                    with self.assertRaisesRegex(
+                        PilotRunnerError,
+                        "readiness source contract preflight blocked",
+                    ) as caught:
+                        self._run(owner=owner, paths=paths)
+                self.assertEqual(owner.calls, 0)
+                self.assertFalse(paths.target_db.exists())
+                self.assertFalse(paths.backup_db.exists())
+                self.assertFalse(paths.restore_rehearsal_db.exists())
+                self.assertFalse(paths.one_proof_lock_path.exists())
+                self.assertNotIn(secret, str(caught.exception))
+
+    def test_fake_key_presence_permits_progress_without_secret_persistence(self) -> None:
+        fake_key = "e46a-offline-fake-key"
+        result, owner, paths = self._run()
+        self.assertEqual(owner.calls, 1)
+        self.assertEqual(result["readiness_preflight"], {
+            "status": "READY",
+            "issues": (),
+            "external_requests": 0,
+            "secret_material_recorded": False,
+        })
+        encoded = json.dumps(result, sort_keys=True)
+        self.assertNotIn(fake_key, encoded)
+        for path in (
+            paths.target_db,
+            paths.backup_db,
+            paths.stdout_log_path,
+            paths.stderr_log_path,
+        ):
+            if path.exists():
+                self.assertNotIn(fake_key.encode(), path.read_bytes())
+
+# ===========================================================================
 # Provenance and real-timing contract (proofs 5, 8, 9)
 # ===========================================================================
 
@@ -258,6 +375,9 @@ class ProvenanceAndTimingTests(_PilotRunnerBase):
         self.assertEqual(owner.received[0]["cycle_id"], "exec-1-cycle")
         self.assertEqual(owner.received[0]["campaign_id"], "exec-1-campaign")
         self.assertEqual(owner.received[0]["run_id"], "exec-1-campaign-run")
+        self.assertFalse(
+            owner.received[0]["stop_before_lifecycle_present"]
+        )
 
     def test_production_lifecycle_kwargs_reject_compression(self) -> None:
         kwargs = production_lifecycle_kwargs(
@@ -307,6 +427,65 @@ class HeartbeatDurabilityTests(_PilotRunnerBase):
             last_expiry = expiry
         self.assertEqual(worker.beats, 240)
 
+
+# ===========================================================================
+# E.46A PILOT_INPUT_READINESS mode
+# ===========================================================================
+
+
+class PilotInputReadinessModeTests(_PilotRunnerBase):
+    def test_readiness_mode_stops_before_lifecycle_and_cleans_up(self) -> None:
+        owner = _FakePreLifecycleOwner()
+        result, owner, paths = self._run(
+            owner=owner, mode=PILOT_INPUT_READINESS
+        )
+        self.assertEqual(result["mode"], PILOT_INPUT_READINESS)
+        self.assertEqual(owner.calls, 1)
+        self.assertIs(owner.received[0]["stop_before_lifecycle"], True)
+        self.assertFalse(result["lifecycle_started"])
+        self.assertEqual(
+            result["stop_reason"], "PRE_LIFECYCLE_HOLDER_EVIDENCE_BLOCKED"
+        )
+        self.assertTrue(result["replay_deterministic"])
+        self.assertEqual(result["replay_new_source_calls"], 0)
+        self.assertTrue(result["one_proof_lock_released"])
+        self.assertFalse(paths.one_proof_lock_path.exists())
+        self.assertFalse(result["restart_created"])
+        self.assertFalse(result["successor_created"])
+
+        connection = sqlite3.connect(paths.target_db)
+        try:
+            for table in (
+                "printer_memory_factory_runs",
+                "printer_memory_windows",
+                "printer_memory_fingerprints",
+                "printer_memory_retrieval_queries",
+                "printer_memory_retrieval_matches",
+                "printer_paper_decisions",
+                "printer_paper_positions",
+                "printer_paper_trade_events",
+                "printer_paper_trade_audits",
+                "printer_paper_decision_audits",
+            ):
+                self.assertEqual(
+                    connection.execute(
+                        f"SELECT COUNT(*) FROM {table}"
+                    ).fetchone()[0],
+                    0,
+                    table,
+                )
+            self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+            self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+        finally:
+            connection.close()
+
+    def test_unknown_runner_mode_blocks_before_target_creation(self) -> None:
+        owner = _FakeOwner()
+        paths = self._paths()
+        with self.assertRaisesRegex(PilotRunnerError, "unsupported pilot mode"):
+            self._run(owner=owner, paths=paths, mode="NOT_A_MODE")
+        self.assertEqual(owner.calls, 0)
+        self.assertFalse(paths.target_db.exists())
 
 # ===========================================================================
 # Full runner: invocation, report, replay, cleanup, no-restart (7,11-19)

@@ -86,13 +86,16 @@ CONTRACT_VERSION = "V2-9.7E.11"
 #                         replay, cleanup, stop (``run_snapshot_readiness``). It
 #                         never reaches lifecycle windows, memory, retrieval,
 #                         decisions or financial paths.
+#   PILOT_INPUT_READINESS -> the FULL_PILOT input boundary through immutable
+#                         PILOT_INPUT_READY, then stop before lifecycle.
 #   FULL_PILOT         -> the full operational natural lifecycle
 #                         (``run_operational``).
 ACTIVATION_ONLY = "ACTIVATION_ONLY"
 SNAPSHOT_READINESS = "SNAPSHOT_READINESS"
+PILOT_INPUT_READINESS = "PILOT_INPUT_READINESS"
 FULL_PILOT = "FULL_PILOT"
 CANONICAL_OPERATIONAL_MODES = frozenset(
-    {ACTIVATION_ONLY, SNAPSHOT_READINESS, FULL_PILOT}
+    {ACTIVATION_ONLY, SNAPSHOT_READINESS, PILOT_INPUT_READINESS, FULL_PILOT}
 )
 
 # Frozen E.11 per-call transport ceilings (readiness boundary).
@@ -1230,7 +1233,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
         return holder_facts, ledger
 
     def run(self, *, mode: str, **kwargs: Any) -> Any:
-        """Single dispatch entry point for the three canonical operational modes.
+        """Single dispatch entry point for the canonical operational modes.
 
         There is exactly one committed runner; ``mode`` selects the bounded
         behaviour. No parallel runner or temporary harness exists.
@@ -1241,6 +1244,10 @@ class AuthoritativeLiveOperationalCampaignOwner:
             return self.run_readiness_only(**kwargs)
         if mode == SNAPSHOT_READINESS:
             return self.run_snapshot_readiness(**kwargs)
+        if mode == PILOT_INPUT_READINESS:
+            operational_kwargs = dict(kwargs)
+            operational_kwargs["stop_before_lifecycle"] = True
+            return self.run_operational(**operational_kwargs)
         raise LiveOperationalError("UNKNOWN_OPERATIONAL_MODE", str(mode))
 
     def run_operational(

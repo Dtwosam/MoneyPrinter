@@ -49,6 +49,7 @@ from printer_v1.operator_cli.abstract_campaign_command import (
 from printer_v1.operator_cli.authoritative_live_operational_campaign import (
     AuthoritativeLiveOperationalCampaignOwner,
     BLOCKED_INSUFFICIENT_GRADUATED_POOL,
+    PILOT_INPUT_READINESS,
 )
 from printer_v1.operator_cli.graduated_supply_front_door import (
     BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL,
@@ -412,7 +413,8 @@ class WiringTests(e8._IntegrationBase):
             holder_reserve_candidates=candidates,
             front_door_report={"generated_at": e8.NOW},
         )
-        result = AuthoritativeLiveOperationalCampaignOwner().run_operational(
+        result = AuthoritativeLiveOperationalCampaignOwner().run(
+            mode=PILOT_INPUT_READINESS,
             command=self.command,
             pump_transport=_FakePumpTransport([], {}),
             secondary_transport=None,
@@ -425,15 +427,30 @@ class WiringTests(e8._IntegrationBase):
             backup_path=self.backup,
             lifecycle_kwargs={"context_adapter_factories": _clean_goplus_context()},
             graduated_supply=supply,
-            stop_before_lifecycle=True,
         )
         assert result.lifecycle["stop_reason"] == "PILOT_INPUT_READY"
         assert result.lifecycle["pilot_input_readiness"]["readiness_state"] == "PILOT_INPUT_READY"
+        assert result.lifecycle_started is False
+        assert result.lifecycle["stopped_before_lifecycle"] is True
         conn = sqlite3.connect(self.db)
         try:
             assert conn.execute(
                 "SELECT COUNT(*) FROM printer_pilot_input_readiness_bundle"
             ).fetchone()[0] == 1
+            for table in (
+                "printer_memory_factory_runs",
+                "printer_memory_windows",
+                "printer_memory_retrieval_queries",
+                "printer_memory_retrieval_matches",
+                "printer_paper_decisions",
+                "printer_paper_positions",
+                "printer_paper_trade_events",
+                "printer_paper_trade_audits",
+                "printer_paper_decision_audits",
+            ):
+                assert conn.execute(
+                    f"SELECT COUNT(*) FROM {table}"
+                ).fetchone()[0] == 0
         finally:
             conn.close()
 

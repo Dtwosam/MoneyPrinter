@@ -39,6 +39,8 @@ from printer_v1.operator_cli.abstract_campaign_command import (
 )
 from printer_v1.operator_cli.authoritative_live_operational_campaign import (
     DEFAULT_CALL_TIMEOUT_SECONDS,
+    FULL_PILOT,
+    PILOT_INPUT_READINESS,
     AuthoritativeLiveOperationalCampaignOwner,
     OneShotUrllibPumpTransport,
     OneShotUrllibSecondaryTransport,
@@ -60,6 +62,9 @@ from printer_v1.operator_cli.proof_db_schema_readiness import (
     ProofDbReadinessError,
     prepare_proof_db,
     validate_runtime_schema,
+)
+from printer_v1.operator_cli.readiness_source_contract_preflight import (
+    assert_readiness_source_contract_preflight,
 )
 from printer_v1.operator_cli import proof_supervision as _sup
 
@@ -598,6 +603,7 @@ def run_two_token_operational_pilot(
     migration_transport: Any | None = None,
     graduated_supply_kwargs: Mapping[str, Any] | None = None,
     now: str | None = None,
+    mode: str = FULL_PILOT,
 ) -> dict[str, Any]:
     """Run exactly one bounded two-token live operational pilot under real timing.
 
@@ -606,14 +612,28 @@ def run_two_token_operational_pilot(
     No timing is compressible on this path. In offline proofs an injected fake
     owner replaces the live owner; no provider is contacted.
     """
-    instant = now or _iso()
-    target = paths.target_db.resolve()
-
     # Fail closed on dirty Git provenance before any supervision or mutation.
     try:
         provenance = validate_launch_provenance(launch_provenance)
     except GitProvenanceError as exc:
         raise PilotRunnerError(f"launch Git provenance blocked: {exc}") from exc
+
+    # E.46A: the exact executor must prove the zero-transport source, secret and
+    # budget contract before any path/DB inspection, preparation, supervision,
+    # lock, authorization, owner or provider boundary. Never surface exception
+    # detail here: a future secret-bearing exception must remain redacted.
+    try:
+        readiness_preflight = assert_readiness_source_contract_preflight()
+    except Exception:
+        raise PilotRunnerError(
+            "readiness source contract preflight blocked"
+        ) from None
+
+    if mode not in {FULL_PILOT, PILOT_INPUT_READINESS}:
+        raise PilotRunnerError(f"unsupported pilot mode: {mode}")
+
+    instant = now or _iso()
+    target = paths.target_db.resolve()
 
     # A relaunch that finds an existing execution refuses to rerun or restart.
     _refuse_relaunch_if_present(target, execution_id)
@@ -698,21 +718,24 @@ def run_two_token_operational_pilot(
     )
     worker.start()
     try:
-        result = active_owner.run_operational(
-            command=command,
-            pump_transport=active_pump,
-            secondary_transport=active_secondary,
-            source_governor=governor,
-            central_scheduler=scheduler,
-            selection_seed=selection_seed,
-            cycle_id=cycle_id,
-            cycle_cutoff=cycle_cutoff,
-            evaluated_at=evaluated_at,
-            backup_path=paths.backup_db,
-            lifecycle_kwargs=lifecycle_kwargs,
-            migration_transport=migration_transport,
-            graduated_supply_kwargs=supply_kwargs,
-        )
+        operational_kwargs = {
+            "command": command,
+            "pump_transport": active_pump,
+            "secondary_transport": active_secondary,
+            "source_governor": governor,
+            "central_scheduler": scheduler,
+            "selection_seed": selection_seed,
+            "cycle_id": cycle_id,
+            "cycle_cutoff": cycle_cutoff,
+            "evaluated_at": evaluated_at,
+            "backup_path": paths.backup_db,
+            "lifecycle_kwargs": lifecycle_kwargs,
+            "migration_transport": migration_transport,
+            "graduated_supply_kwargs": supply_kwargs,
+        }
+        if mode == PILOT_INPUT_READINESS:
+            operational_kwargs["stop_before_lifecycle"] = True
+        result = active_owner.run_operational(**operational_kwargs)
     finally:
         worker.stop()
 
@@ -743,6 +766,15 @@ def run_two_token_operational_pilot(
 
     return {
         "status": "PILOT_TERMINAL",
+        "mode": mode,
+        "readiness_preflight": {
+            "status": readiness_preflight["status"],
+            "issues": tuple(readiness_preflight["issues"]),
+            "external_requests": readiness_preflight["external_requests"],
+            "secret_material_recorded": readiness_preflight[
+                "secret_material_recorded"
+            ],
+        },
         "execution_id": execution_id,
         "authorization_id": execution_id,
         "campaign_id": campaign_id,
