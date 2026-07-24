@@ -5,9 +5,11 @@ full pilot. Created at V2-9.7E.39 (Full Pilot Attempt 1); updated at V2-9.7E.40
 (Continuous Full-Pilot Repair/Restart Session), V2-9.7E.41 (Graduation-Only
 Selection and Mixed-Channel Discovery Repair), and V2-9.7E.42 (Direct Pump
 Migration Discovery and Graduated-Candidate Supply Repair — BL-41-04 direct channel
-now operational; BL-42-01 added and fixed), and V2-9.7E.43 ($3K Graduated
+now operational; BL-42-01 added and fixed), V2-9.7E.43 ($3K Graduated
 Discovery and Selection Front-Door Repair — exact-pool liquidity floor added;
-BL-43-01 live discovery-window supply tuning recorded).
+BL-43-01 live discovery-window supply tuning recorded), V2-9.7E.45 (canonical
+graduated supply + graduation-native activation), and V2-9.7E.46 (canonical
+two-token full-pilot execution; BL-46-01 holder-source environment blocker).
 
 > **V2-9.7E.41 supersession note.** The E.40 900-second maturity-based
 > full-pilot admission policy (BL-39-01, BL-39-03) is preserved as historically
@@ -692,3 +694,54 @@ shape is superseded by the E.45 typed graduation-native route (BL-44-01 below).
   V2-9.7E stays active; V2-9.7F not started.
 - **Current status:** `PARTIAL` — activation architecture resolved and offline-proven;
   supply proven live-ready; sustained pilot environment-blocked.
+
+## V2-9.7E.46 live full-pilot update
+
+### BL-46-01 — adopted holder evidence sources unavailable
+
+- **First seen:** E.46 Attempt 2; independently repeated at Attempt 3.
+- **Category:** `CONFIG_OR_ENVIRONMENT_BLOCKER__NO_PRODUCT_CODE`.
+- **Root cause:** every selected token's fixed public Solana RPC primary
+  `getTokenLargestAccounts(finalized)` returned HTTP 429, while the fixed Helius
+  Free backup returned `helius_auth_missing` because `PRINTER_HELIUS_API_KEY` was
+  not configured. GoPlus completed with clean exact-target safety context but does
+  not establish wallet concentration, so the aggregate holder result correctly
+  remained `HOLDER_CONCENTRATION_UNKNOWN`.
+- **Observed scope:** Attempt 2 evaluated two exact-pool `$3K+` latest candidates;
+  Attempt 3 evaluated the required mixed pair—LATEST `4yxNHzN7…pump` on
+  `AeaiCGUs…5nSJ` at `$8,765.55`, and PERSISTED `9XuWt4W2…pump` on
+  `PKztZQTM…DddE` at `$8,019.03`. Both fresh executions produced the same
+  primary/backup failure for both tokens.
+- **Fixed behavior:** no code change is justified. The existing holder owner
+  failed closed before atomic activation or `PILOT_INPUT_READY`; no endpoint was
+  added or rotated, no provider raced, no retry hidden, and no stale evidence
+  reused.
+- **Remaining limitation:** the live graduation-native activation and sustained
+  `15m → 1h → 4h` lifecycle cannot begin until the adopted holder contract returns
+  valid evidence. A lawful future retry requires fresh identities/evidence after
+  the operator configures the already-approved Helius Free credential through the
+  existing secret boundary, or after the fixed public endpoint supplies evidence.
+- **Repair status:** `OBSERVE_NOT_YET_STRUCTURAL`; environment/configuration action,
+  not product repair.
+- **Fix commit:** N/A.
+- **Offline proof:** existing E.22 holder fail-closed contract plus E.45 holder
+  reserve tests; E.46 focused/regression suites remain PASS.
+- **Live proof:** E.46 Attempts 2 and 3, fresh isolated DBs and identities.
+- **Repeated after fix:** not applicable; no fix was claimed.
+- **Current status:** `OPEN` (environment/configuration).
+
+### E.46 execution and repair log
+
+| Execution | HEAD | First terminal cause | Repair / disposition |
+|---|---|---|---|
+| Attempt 1b | `e86c6a2` | `BLOCKED_INSUFFICIENT_GRADUATED_POOL` | Exposed irrelevant create-acquisition budget use, non-durable locator accounting and latest-partition starvation; repaired at `18f9c6b`. |
+| Attempt 2 | `18f9c6b` | `PRE_LIFECYCLE_HOLDER_EVIDENCE_BLOCKED` | Holder primary HTTP 429 + missing Helius Free auth for both eligible tokens; no code repair. Subsequent durable-registry merge exposed tuple-row idempotency defect, repaired at `08a1c9d`. |
+| Attempt 3 | `08a1c9d` | `PRE_LIFECYCLE_HOLDER_EVIDENCE_BLOCKED` | Required LATEST + PERSISTED `$3K+` pair reached holder funnel; identical provider-wide holder evidence block reproduced. |
+
+All executions stopped before lifecycle launch, ended `GOVERNED_SAFE_STOP`, released
+the proof lock, left zero scheduler/run work, used zero-source deterministic replay,
+created no successor/restart, passed integrity/FK checks, and produced zero
+retrieval/decision/position/trade/audit/PnL deltas. No sustained attempt was consumed.
+
+**E.46 verdict:** `V2_9_7E_46_BLOCKED_HOLDER_EVIDENCE`. V2-9.7E remains active;
+V2-9.7F is not ready and was not started.
