@@ -267,9 +267,9 @@ def import_graduated_candidate_row(connection: Any, row: Mapping[str, Any]) -> b
     ).fetchone()
     if existing is not None:
         if (
-            existing["migration_signature"] == row["migration_signature"]
-            and existing["pumpswap_pool"] == row["pumpswap_pool"]
-            and existing["confirmation_evidence_hash"] == row["confirmation_evidence_hash"]
+            existing[0] == row["migration_signature"]
+            and existing[1] == row["pumpswap_pool"]
+            and existing[2] == row["confirmation_evidence_hash"]
         ):
             return False
         raise GraduatedCandidateError(

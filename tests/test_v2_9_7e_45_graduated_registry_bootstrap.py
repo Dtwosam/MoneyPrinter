@@ -83,6 +83,16 @@ class GraduatedRegistryBootstrapTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_idempotent_overlap_accepts_default_tuple_row_factory(self) -> None:
+        conn = sqlite3.connect(self.canonical)
+        conn.execute("PRAGMA foreign_keys = ON")
+        try:
+            first = bootstrap_from_prior_registry(conn, self.prior)
+            second = bootstrap_from_prior_registry(conn, self.prior)
+            self.assertEqual(first.imported, 2)
+            self.assertEqual(second.already_present, 2)
+        finally:
+            conn.close()
     def test_validator_fails_closed_on_tamper_and_gaps(self) -> None:
         # The registry itself is immutable (evidence cannot be UPDATEd), so
         # fail-closed validation is proved directly against the row validator: a
