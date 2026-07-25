@@ -260,6 +260,7 @@ def enrich_pool_liquidity(
     dexscreener_transport: Callable[[Any], Mapping[str, Any]],
     request_key: str,
     recent_request_count: int = 0,
+    on_request: Callable[[int], None] | None = None,
 ) -> LiquidityEvidence:
     """Run one governed exact-pair DexScreener request and classify its liquidity.
 
@@ -288,6 +289,11 @@ def enrich_pool_liquidity(
     execution = execute_source_request_with_governor(
         connection, request, adapter, recent_request_count=recent_request_count
     )
+    # V2-9.7E.46B.2: report the exact durable request identity this invocation
+    # created, before any status branching, so a failed pair snapshot is charged
+    # exactly once and stage-local accounting never re-counts another stage's row.
+    if on_request is not None:
+        on_request(int(execution.request_record.id))
     result = execution.normalized_result
     source_status = getattr(result.source_status, "name", str(result.source_status))
 
@@ -669,22 +675,42 @@ def _handoff_compatibility(selected: Sequence[FrontDoorCandidate]) -> dict[str, 
 # Ledger / integrity                                                           #
 # --------------------------------------------------------------------------- #
 
-def _dexscreener_ledger(connection: sqlite3.Connection) -> dict[str, int]:
+def _dexscreener_ledger(
+    connection: sqlite3.Connection, *, request_ids: "Sequence[int]"
+) -> dict[str, int]:
+    """Stage-local liquidity accounting over this invocation's exact identities.
+
+    V2-9.7E.46B.2. This deliberately does NOT count whole-table totals such as
+    ``WHERE source_name='dexscreener'``: that form also counted requests owned by
+    other stages (the discovery fresh-profile locator), and the campaign — which
+    adds the discovery and front-door totals — then charged that locator twice.
+    Only the exact ``pair_market_snapshot`` request rows created by this
+    invocation are charged, each exactly once, whether it succeeded or failed.
+    """
+    identities = sorted({int(value) for value in request_ids})
+    if not identities:
+        return {
+            "liquidity_requests": 0,
+            "liquidity_responses": 0,
+            "liquidity_failures": 0,
+        }
+    placeholders = ",".join("?" * len(identities))
+
     def _count(sql: str) -> int:
         try:
-            return int(connection.execute(sql).fetchone()[0])
+            return int(connection.execute(sql, identities).fetchone()[0])
         except sqlite3.Error:
             return 0
 
     return {
-        "liquidity_requests": _count(
-            "SELECT COUNT(*) FROM printer_source_requests WHERE source_name='dexscreener'"
-        ),
+        "liquidity_requests": len(identities),
         "liquidity_responses": _count(
-            "SELECT COUNT(*) FROM printer_source_responses WHERE source_name='dexscreener'"
+            "SELECT COUNT(*) FROM printer_source_responses "
+            f"WHERE source_request_id IN ({placeholders})"
         ),
         "liquidity_failures": _count(
-            "SELECT COUNT(*) FROM printer_source_failures WHERE source_name='dexscreener'"
+            "SELECT COUNT(*) FROM printer_source_failures "
+            f"WHERE source_request_id IN ({placeholders})"
         ),
     }
 
@@ -802,6 +828,9 @@ def run_graduated_liquidity_front_door(
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     dex_request_count = 0
+    # V2-9.7E.46B.2: the exact durable request identities this invocation creates.
+    # Stage-local accounting is derived from these, never from a whole-table total.
+    stage_request_ids: list[int] = []
     try:
         rows = _bounded_refresh_rows(
             export_graduated_candidates(connection),
@@ -831,6 +860,7 @@ def run_graduated_liquidity_front_door(
                 dexscreener_transport=transport,
                 request_key=f"{request_key_prefix}-liq-{mint}",
                 recent_request_count=dex_request_count,
+                on_request=stage_request_ids.append,
             )
             dex_request_count += 1
 
@@ -887,7 +917,7 @@ def run_graduated_liquidity_front_door(
             (c for c in selected if c.provenance == PERSISTED_GRADUATED_CHANNEL), None
         )
         handoff = _handoff_compatibility(selected)
-        ledger = _dexscreener_ledger(connection)
+        ledger = _dexscreener_ledger(connection, request_ids=stage_request_ids)
         forbidden = _forbidden_deltas(connection)
         integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
         fk_violations = connection.execute("PRAGMA foreign_key_check").fetchall()

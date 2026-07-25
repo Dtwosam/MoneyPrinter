@@ -1399,6 +1399,21 @@ class AuthoritativeLiveOperationalCampaignOwner:
         evaluated = datetime.fromisoformat(evaluated_at.replace("Z", "+00:00"))
         deadline = evaluated + timedelta(seconds=command.ceilings.duration_seconds)
         evaluated_epoch = int(evaluated.timestamp())
+        # V2-9.7E.46B.2 accounting contract: campaign governed_requests equals the
+        # DISTINCT durable governed source requests attributable to the campaign.
+        # Each stage total must therefore be disjoint from every other stage's.
+        #   discovery.source_requests   — every campaign request up to and including
+        #                                 the end of discovery (locator + migration +
+        #                                 PumpSwap verification). The canonical runner
+        #                                 always prepares a FRESH attempt target, so
+        #                                 this whole-table count contains nothing but
+        #                                 this campaign's own rows.
+        #   front_door.liquidity_requests — ONLY the exact pair_market_snapshot request
+        #                                 identities that invocation created.
+        # Before E.46B.2 the front-door total was a whole-table
+        # `WHERE source_name='dexscreener'` count, which re-counted the discovery
+        # fresh-profile locator and charged it twice (E.46B.1: 9 + 7 + 6 = 22 against
+        # 21 distinct durable rows). Do not reintroduce a whole-table total here.
         supply_source_operations = 0
         if supply is not None:
             supply_source_operations = int(
