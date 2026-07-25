@@ -8,8 +8,10 @@ Migration Discovery and Graduated-Candidate Supply Repair — BL-41-04 direct ch
 now operational; BL-42-01 added and fixed), V2-9.7E.43 ($3K Graduated
 Discovery and Selection Front-Door Repair — exact-pool liquidity floor added;
 BL-43-01 live discovery-window supply tuning recorded), V2-9.7E.45 (canonical
-graduated supply + graduation-native activation), and V2-9.7E.46 (canonical
-two-token full-pilot execution; BL-46-01 holder-source environment blocker).
+graduated supply + graduation-native activation), V2-9.7E.46 (canonical
+two-token full-pilot execution; BL-46-01 holder-source environment blocker),
+V2-9.7E.47 (lifecycle + clean-memory repair), and the post-E.47 bounded full-pilot
+proof (`V2_9_7E_POST_E47_FULL_PILOT_PASS`).
 
 > **V2-9.7E.41 supersession note.** The E.40 900-second maturity-based
 > full-pilot admission policy (BL-39-01, BL-39-03) is preserved as historically
@@ -957,13 +959,53 @@ Offline proof: `tests/test_v2_9_7e_47_lifecycle_and_clean_memory_repair.py`
 
 ### E.47 open items
 
-- Live confirmation of every BL-47-* repair (all proved offline and against
-  recorded evidence; none observed on a live run).
+- ~~Live confirmation of every BL-47-* repair (all proved offline and against
+  recorded evidence; none observed on a live run).~~
+  **Live confirmation completed** at post-E.47 full pilot (below).
 - BL-47-05 6B campaign-object graph remains deferred.
 - BL-46-01 (holder evidence) remains an `OPEN` environment/configuration
-  condition, unchanged by this lane.
-- BL-43-01 sparse live migration supply remains `MITIGATED`, unchanged.
+  condition, unchanged by this lane (public Solana RPC 429 still observed; Helius
+  Free backup supplied exact-target holder evidence when primary RPC failed).
+- BL-43-01 sparse live migration supply remains `MITIGATED`, unchanged
+  (`pumpportal_no_valid_solana_events` ×1 this run; two graduated admits still
+  obtained).
 
 **E.47 verdict:** `V2_9_7E_47_LIFECYCLE_AND_CLEAN_MEMORY_REPAIR_PASS`. One fresh
 full-pilot attempt may be considered under separate authorization. V2-9.7E
 remains active; V2-9.7F was not started.
+
+## V2-9.7E post-E.47 live full-pilot proof (2026-07-25)
+
+**Verdict: `V2_9_7E_POST_E47_FULL_PILOT_PASS`.**
+
+Closeout: `docs/printer-v1-v2-9-7e-post-e47-bounded-full-pilot-proof-closeout.md`.
+
+| Field | Value |
+|---|---|
+| HEAD | `7df7ac0c1587e8b1d5a8af6464b5fbc4ad461fbe` |
+| Execution id | `e47-full-20260725-7df7ac0` |
+| Entry point | `scripts/v2_9_7e_14_two_token_operational_pilot.py` (macOS/zsh Python) |
+| Wall clock | 1320.4 s |
+| First terminal cause | `COMPLETED_CLEAN_OR_DIRTY_RESULTS_REPORTED` |
+| Campaign / run / cycle | `TERMINAL_COMPLETED` ×3 |
+| Discovery jobs after close | 8/8 `SUCCEEDED`, **0** `PENDING` |
+| Campaign report + zero-source replay | 1 row / 1 artifact; `new_source_calls=0` |
+| WINDOW_15M | 2 closed (~906 s / ~912 s); both `DIRTY_MEMORY` + truthful `DEAD` |
+| Forbidden deltas | all 0 |
+| Restart / successor | false / false |
+
+Live status updates for E.47 blockers:
+
+| Blocker | Live after post-E.47 pilot |
+|---|---|
+| BL-47-01 | **Live PASS** |
+| BL-47-02 | **Live PASS** |
+| BL-47-03 | **Live PASS** |
+| BL-47-04 | **Live PASS** |
+| BL-47-05 | **Live PASS** (report path; 6B graph still deferred) |
+| BL-47-06 | **Live PASS** |
+| BL-47-07 / BL-47-08 / BL-47-09 | **Live PASS** on adverse path (outcomes preserved; dirty only for real safety absence) |
+
+**Readiness:** V2-9.7E pilot proof resolved for the post-E.47 bounded two-token
+path. Live `CLEAN_MEMORY` and 1h/4h continuation remain open market/eligibility
+items, not re-blocks of terminal closure. **V2-9.7F was not started.**
