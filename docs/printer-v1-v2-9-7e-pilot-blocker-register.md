@@ -745,3 +745,225 @@ retrieval/decision/position/trade/audit/PnL deltas. No sustained attempt was con
 
 **E.46 verdict:** `V2_9_7E_46_BLOCKED_HOLDER_EVIDENCE`. V2-9.7E remains active;
 V2-9.7F is not ready and was not started.
+
+## V2-9.7E.46 authorized full-pilot retry (lifecycle evidence)
+
+The separately authorized canonical `FULL_PILOT` at HEAD `26e0b22` completed two
+real `WINDOW_15M` lifecycles and terminated `V2_9_7E_46_BLOCKED_LIFECYCLE_EVIDENCE`
+(closeout `printer-v1-v2-9-7e-46-authorized-full-pilot-retry-closeout.md`). It
+recorded four new blockers plus two evidence-semantics faults, all repaired at
+V2-9.7E.47 below.
+
+## V2-9.7E.47 repair updates (unified terminal closure + clean-memory contract)
+
+All blockers below were confirmed against current code **and** against a
+byte-identical disposable copy of the retained E.46 attempt database (SHA-256
+`a29db0d9f3049b31a266ee6d28ed98708cfc896e6519954a57162cd80fa28ef3`, re-verified
+unmutated). Verdict `V2_9_7E_47_LIFECYCLE_AND_CLEAN_MEMORY_REPAIR_PASS`.
+Offline proof: `tests/test_v2_9_7e_47_lifecycle_and_clean_memory_repair.py`
+(39 tests, 30 subtests) plus directly affected regressions.
+
+### BL-47-01 — lifecycle-started terminal leaves the ownership graph RUNNING
+
+- **First seen:** E.46 §10.1. **Category:** `CODE_DEFECT`.
+  **Repair status:** `FIXED_IN_THIS_SPRINT`.
+- **Root cause:** `_reconcile_pre_lifecycle_terminal_metadata` was gated on
+  `not lifecycle_started` (`two_token_operational_pilot_runner.py:844`) on the
+  stated assumption that "a started lifecycle owns its own terminal
+  reconciliation". Nothing on the started path reconciled campaign/run/cycle.
+- **Live evidence:** campaign `RUNNING`, run `RUNNING`, cycle `PLANNED`, all
+  `first_terminal_cause = NULL`, while supervision was `TERMINAL` /
+  `GOVERNED_SAFE_STOP` with zero active run steps.
+- **Fixed behaviour:** one authoritative terminal path
+  (`unified_terminal_closure.reconcile_campaign_terminal`) runs on **every**
+  terminal and reconciles campaign, campaign run, cycle, factory run,
+  supervision, every started campaign window, and all campaign-scoped work and
+  Scheduler jobs, preserving the immutable first terminal cause.
+- **Disposable-copy reconciliation:** `RUNNING/RUNNING/PLANNED` →
+  `TERMINAL_STOPPED` ×3 with cause `SAFE_STOP_4H_TERMINAL_INCOMPLETE`.
+- **Can recur:** No — the path is unconditional and unit-tested.
+- **Live proof after fix:** NOT yet. **Current status:** `FIXED` (offline).
+
+### BL-47-02 — discovery Scheduler jobs never transitioned out of PENDING
+
+- **First seen:** E.46 §10.2. **Category:** `CODE_DEFECT` /
+  `MISSING_INTEGRATION`. **Repair status:** `FIXED_IN_THIS_SPRINT`.
+- **Root cause (two independent faults):** (a)
+  `combined_executor._terminalize_work` updated only `printer_discovery_work`
+  and never transitioned the `DISCOVERY_REFRESH` job it had enqueued; (b)
+  `_cancel_campaign_discovery_jobs` was invoked with the **handoff** batch id
+  `origin-activated:<cycle>` while the executor writes work under
+  `discovery-batch:<campaign>:<run>:<cycle>`, so the query matched zero rows —
+  and blanket cancellation would in any case have been the wrong terminal for
+  work that had SUCCEEDED.
+- **Live evidence:** 8/8 work rows `SUCCEEDED` with explicit terminal causes;
+  8/8 linked jobs `PENDING` with no `last_error`.
+- **Fixed behaviour:** frozen parity mapping in
+  `discovery/scheduler_parity.py` — successful work → `SUCCEEDED`, failed work →
+  `FAILED`, abandoned/superseded/terminally-unnecessary work → `CANCELLED` —
+  applied at the moment work becomes terminal and again at campaign terminal,
+  always through the committed Central Scheduler owner. Cleanup is scoped by
+  campaign/run/cycle identity; the handoff batch id is only a fallback.
+- **Disposable-copy reconciliation:** 8 `PENDING` → 8 `SUCCEEDED`;
+  terminal-work-with-active-job 8 → 0.
+- **Can recur:** No. **Live proof after fix:** NOT yet. **Status:** `FIXED`.
+
+### BL-47-03 — active-work accounting could not observe the defect
+
+- **First seen:** E.46 §10.2. **Category:** `CODE_DEFECT` (observability).
+  **Repair status:** `FIXED_IN_THIS_SPRINT`.
+- **Root cause:** `running_jobs_after_stop` counted only jobs reachable through
+  the run's factory run-steps whose status was `RUNNING` or which held a lock.
+  `PENDING` and `COOLDOWN` were invisible and discovery jobs unreachable, so the
+  reported `0` was accurate under that definition and still missed all eight.
+- **Fixed behaviour:** `campaign_active_work.campaign_active_work_report` gives
+  exact campaign-scoped accounting over `PENDING`/`RUNNING`/`COOLDOWN`/locked
+  jobs across factory run-step jobs, discovery jobs and campaign scheduler work,
+  plus active work rows. The narrow value is preserved as
+  `running_or_locked_run_step_jobs`. A terminal campaign requires zero active
+  jobs and zero active work rows.
+- **Can recur:** No. **Status:** `FIXED`.
+
+### BL-47-04 — false `SAFE_STOP_4H_TERMINAL_INCOMPLETE`
+
+- **First seen:** E.46 §10 / §15 item 1. **Category:** `INCORRECT_ELIGIBILITY`
+  (terminal semantics). **Repair status:** `FIXED_IN_THIS_SPRINT`.
+- **Root cause:** `_four_hour_terminal_validation` required both closed 15m
+  windows to be `CLEAN_MEMORY` before a natural no-continuation stop could be
+  `complete`, conflating lifecycle completion with clean-memory success. A second
+  contributing cause was found during confirmation: the same branch compared
+  `window_status != "COMPLETE"`, a value no owner writes (`e2o_memory_window_close`
+  writes `WINDOW_CLOSED`; the audit path writes `WINDOW_AUDIT_ONLY`), so even a
+  fully clean natural stop could never be reported complete.
+- **Fixed behaviour:** a lawful no-continuation close is a `COMPLETED` governed
+  lifecycle. `SAFE_STOP_4H_TERMINAL_INCOMPLETE` is reserved for a continuation or
+  required terminal phase that actually started or was required and did not
+  complete. Memory quality is reported separately as `memory_acceptance`
+  (`CLEAN_MEMORY_ACHIEVED` / `MEMORY_EVIDENCE_BLOCKED`) and blocks only the pilot
+  acceptance verdict.
+- **Superseded assertion:** `test_v2_9_7e_19_...::test_two_clean_natural_stops_complete_but_dirty_or_proof_mode_does_not`
+  asserted the defect and was rewritten as
+  `test_natural_stops_complete_regardless_of_memory_quality`.
+- **Can recur:** No. **Status:** `FIXED`.
+
+### BL-47-05 — no campaign report row or artifact on any terminal
+
+- **First seen:** E.46 §13. **Category:** `MISSING_INTEGRATION`.
+  **Repair status:** `FIXED_IN_THIS_SPRINT`.
+- **Root cause:** no campaign report owner had a caller on the pilot path;
+  `handle_abstract_command` (which calls `persist_final_campaign_report`) is
+  never invoked by `run_operational`, the driver or the pilot runner.
+- **Live evidence:** `printer_memory_factory_campaign_reports` = 0 rows,
+  `reports\` empty after a completed two-window lifecycle.
+- **Fixed behaviour:** every terminal outcome writes exactly one immutable row
+  through the committed `campaign_persistence` terminal-report owner plus exactly
+  one durable canonical artifact in the configured report directory, with exact
+  campaign/run/cycle/factory-run/report identity linkage and a deterministic
+  zero-source `replay_campaign_terminal_report` that creates no duplicate.
+- **Remaining limitation:** `final_campaign_report.persist_final_campaign_report`
+  is still unused on this path because it requires the full 6B campaign-object
+  graph (campaign objects of every kind, campaign windows, campaign scheduler
+  work, campaign supervision rows) that the pilot path has never created. Wiring
+  that graph is a separate lane.
+- **Disposable-copy reconciliation:** 0 rows / 0 artifacts → 1 / 1; replay
+  `new_source_calls = 0`, `new_scheduler_work = 0`, duplicates 0, DB writes 0.
+- **Status:** `PARTIAL` (report and replay committed; 6B object graph deferred).
+
+### BL-47-06 — declared dependency verified only after mutable state existed
+
+- **First seen:** E.46 §2. **Category:** `CODE_DEFECT` (preflight ordering).
+  **Repair status:** `FIXED_IN_THIS_SPRINT`.
+- **Root cause:** the PumpPortal migration transport was constructed **after**
+  supervision, the campaign graph and the proof lock. `websockets>=12.0` is a
+  declared `pyproject.toml` dependency but was absent from the selected
+  interpreter, so an authorized launch burned its identity and left supervision
+  `STARTING`, campaign `RUNNING/RUNNING/PLANNED` and a lock on disk.
+- **Fixed behaviour:** `assert_runtime_dependency_preflight` resolves the exact
+  interpreter, verifies every declared runtime dependency and minimum version,
+  confirms the canonical package imports from this repository, constructs the
+  required adapters without external calls, and validates invocation arguments
+  and paths — all before any mutable attempt state or authorization. Zero
+  external requests, zero database writes, so a failure creates zero campaign,
+  run, cycle, supervision, lock or source rows. Anything that fails **after**
+  state exists routes through `_emergency_terminal_closure`, which preserves the
+  first failure, terminalises every ownership row, cancels active work, releases
+  the lock, writes the terminal report, and creates no retry, restart or
+  successor.
+- **Can recur:** No for this cause. **Status:** `FIXED`.
+
+### BL-47-07 — two disagreeing clean-memory evidence contracts
+
+- **First seen:** E.46 §8. **Category:** `DESIGN_GAP` / `CODE_DEFECT`.
+  **Repair status:** `FIXED_IN_THIS_SPRINT`.
+- **Root cause:** the shared exact-ledger resolver (`context_evidence/window_15m.py`)
+  and the older `_classify_first_memory_review` disagreed. The classifier applied
+  a blanket "any label whose value looks UNKNOWN is a blocker" rule that swept in
+  **support-only 5m** descriptors, required a `micro_event` context row for a main
+  window, and relabelled every non-clean result `MISSING_CRITICAL_DATA`.
+- **Live evidence:** window 2 had `clean_memory_context_ready = true` and
+  `evidence_blockers = []` from the shared resolver and was still refused.
+- **Fixed behaviour:** one explicit required-evidence matrix for `WINDOW_15M`.
+  Required: exact identity and current-run snapshot ledger; complete cadence and
+  duration; price and liquidity fields; clean snapshot source status/quality;
+  clean source provenance and traces; market regime; Solana chain heat; mandatory
+  exact-target safety; entry/exit realism; trading-flow and chart evidence; clear
+  outcome evidence. Optional/contextual: support-only 5m descriptors, whose
+  absence stays an explicit `UNKNOWN` reported as `optional_unknown_context` and
+  never converts to `MISSING_CRITICAL_DATA` on its own. Market regime and chain
+  heat stay **mandatory** (Clean Master Spec 10.7 item 26 and 12.4); no
+  contract conflict was found, so no `BLOCKED_CONTRACT_CONFLICT` was raised.
+- **Status:** `FIXED`.
+
+### BL-47-08 — measured `+5%..+25%` held-to-15m result became unknown
+
+- **First seen:** E.46 §8 (window 2). **Category:** `CODE_DEFECT`
+  (categorical gap). **Repair status:** `FIXED_IN_THIS_SPRINT`.
+- **Root cause:** `classify_holding_to_15m_result` returned
+  `HELD_TO_15M_UNKNOWN` for any `held_change > 5` below the `25` threshold.
+- **Live evidence:** window 2 measured **+21.1217%** on **$324,448.66** exact-pool
+  liquidity and was labelled unknown; that label was its **only** remaining
+  blocker.
+- **Fixed behaviour:** one added categorical label
+  `HELD_TO_15M_MODERATE_CONTINUATION` (enum, classifier, outcome mapping to the
+  existing approved `SHORT_TERM_PUMP`, persistence via migration `042`, reporting
+  and tests). No score, rank, confidence or weighted logic. Surrounding bands
+  unchanged; an absent measurement is still honestly `HELD_TO_15M_UNKNOWN`.
+- **Disposable-copy reconciliation:** window 2 becomes
+  `CLEAN_MEMORY` / `CLEAN_DATA` / `do_not_train = 0` with zero blockers — the
+  program's first clean memory from real recorded evidence.
+- **Status:** `FIXED`.
+
+### BL-47-09 — known outcome erased by memory quality
+
+- **First seen:** E.46 §8. **Category:** `CODE_DEFECT`.
+  **Repair status:** `FIXED_IN_THIS_SPRINT`.
+- **Root cause:** `_classify_first_memory_review` returned
+  `"OUTCOME_UNKNOWN" if memory_quality != "CLEAN_MEMORY"`, discarding the
+  truthful measured outcome.
+- **Live evidence:** window 1, an unambiguous −99.986% collapse
+  (`HELD_TO_15M_DEAD`), was stored as `OUTCOME_UNKNOWN`.
+- **Fixed behaviour:** the truthful known outcome is persisted independently of
+  memory quality (collapse/dead, dump, fade, consolidation, moderate
+  continuation, strong continuation, round trip). Only a genuinely unresolved
+  trajectory stays unknown. A window may truthfully be
+  `outcome = DEAD_OR_COLLAPSE` with either `DIRTY_MEMORY` or `CLEAN_MEMORY`
+  depending solely on evidence completeness. A fully evidenced ≈−99.99% collapse
+  is eligible for `CLEAN_MEMORY` with `do_not_train = 0`; `CLEAN_MEMORY` never
+  implies favourable, safe to buy or profitable.
+- **Disposable-copy reconciliation:** window 1 keeps `HELD_TO_15M_DEAD` and is
+  still refused as training material because its mandatory exact-target safety
+  evidence is genuinely absent — no safety gate weakened.
+- **Status:** `FIXED`.
+
+### E.47 open items
+
+- Live confirmation of every BL-47-* repair (all proved offline and against
+  recorded evidence; none observed on a live run).
+- BL-47-05 6B campaign-object graph remains deferred.
+- BL-46-01 (holder evidence) remains an `OPEN` environment/configuration
+  condition, unchanged by this lane.
+- BL-43-01 sparse live migration supply remains `MITIGATED`, unchanged.
+
+**E.47 verdict:** `V2_9_7E_47_LIFECYCLE_AND_CLEAN_MEMORY_REPAIR_PASS`. One fresh
+full-pilot attempt may be considered under separate authorization. V2-9.7E
+remains active; V2-9.7F was not started.

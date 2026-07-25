@@ -4899,9 +4899,65 @@ def _resolve_memory_context_rows(connection: sqlite3.Connection, target: dict[st
     return context
 
 
+# ---------------------------------------------------------------------------
+# V2-9.7E.47 B1 — the one authoritative WINDOW_15M evidence-quality contract.
+#
+# Before this lane two contracts disagreed. The shared exact-ledger resolver
+# (`context_evidence.window_15m`) governed six sections and could report
+# `clean_memory_context_ready = true` with zero blockers, while this older
+# first-memory classifier independently dirtied the same window using a blanket
+# "any label whose value looks UNKNOWN is a blocker" rule that also swept in
+# support-only 5m descriptors. V2-9.7E.46 window 2 is the recorded proof: the
+# shared resolver passed it with `evidence_blockers = []`, and the classifier
+# still refused it.
+#
+# The matrix below is derived from the active source stack:
+#
+#   * Clean Master Spec 10.7 item 26 and 12.4 — price, liquidity, volume/txns,
+#     source status, data quality, MARKET context, CHAIN HEAT context, and
+#     safety/liquidity realism are critical fields; every memory links to market
+#     regime and chain heat context. These therefore stay REQUIRED. The Memory
+#     Factory Guide 12 permits "attached OR explicitly recorded as
+#     acceptable/known missing under current policy"; "attached" satisfies both
+#     documents, so the strict reading is kept and nothing is weakened.
+#   * AGENTS.md and Memory Factory Guide 12A — WINDOW_5M_MICRO_EVENT is
+#     permanently support-only, never counts toward main clean-memory
+#     thresholds, and cannot independently dirty a main 15m memory. Support-only
+#     5m descriptors are therefore OPTIONAL: their absence is an explicit
+#     UNKNOWN, never MISSING_CRITICAL_DATA on its own.
+#   * Memory Factory Guide 12 — "outcome label is clear". The held-to-15m result
+#     is derived from the MAIN 15m snapshot path, not from 5m evidence, so it is
+#     REQUIRED outcome evidence.
+#
+# No mandatory safety, provenance, authenticity, exit-realism or source-quality
+# gate is relaxed by this matrix.
+# ---------------------------------------------------------------------------
+
+#: Context engines whose rows must exist for a main window. `micro_event` is
+#: deliberately absent: it is the support-only 5m engine.
+REQUIRED_MAIN_WINDOW_CONTEXT_ENGINES = frozenset(
+    {"market", "chain_heat", "safety", "liquidity_exit", "trading_flow", "chart_volatility"}
+)
+
+#: Labels whose UNKNOWN value is honestly optional/contextual for WINDOW_15M.
+#: Absence stays an explicit UNKNOWN and never becomes MISSING_CRITICAL_DATA on
+#: its own. These are support-only 5m descriptors.
+OPTIONAL_CONTEXT_LABELS = frozenset(
+    {
+        "micro_event_state_label",
+        "micro_event_move_label",
+        "micro_exit_realism_label",
+        "late_buy_trap_label",
+        "micro_event_payload_quality_label",
+        "micro_event_memory_gate_label",
+    }
+)
+
+
 def _context_is_present(context_rows: dict[str, dict[str, Any]]) -> bool:
-    required = {"market", "chain_heat", "safety", "liquidity_exit", "trading_flow", "chart_volatility", "micro_event"}
-    return all(context_rows.get(key) for key in required)
+    return all(
+        context_rows.get(key) for key in REQUIRED_MAIN_WINDOW_CONTEXT_ENGINES
+    )
 
 
 def _context_memory_labels(context_rows: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -4954,11 +5010,24 @@ def _collect_unknown_context_blockers(labels: dict[str, Any]) -> list[str]:
         "raw_safety_action_label",
         "raw_safety_contract_label",
     }
+    # V2-9.7E.47 B1: support-only 5m descriptors are honestly optional context.
+    # An UNKNOWN there is reported (see `optional_unknown_context` below) but
+    # never blocks a valid main 15m memory — the permanent 5m support-only law.
     return [
         f"{key}={value if value is not None else 'UNKNOWN'}"
         for key, value in labels.items()
         if value in UNKNOWN_CONTEXT_VALUES
+        and key not in OPTIONAL_CONTEXT_LABELS
         and not (effective_safety_accepted and key in explanatory_raw_safety)
+    ]
+
+
+def _collect_optional_unknown_context(labels: dict[str, Any]) -> list[str]:
+    """Report honestly-optional unknowns as explicit UNKNOWN, not as blockers."""
+    return [
+        f"{key}={value if value is not None else 'UNKNOWN'}"
+        for key, value in labels.items()
+        if value in UNKNOWN_CONTEXT_VALUES and key in OPTIONAL_CONTEXT_LABELS
     ]
 
 
@@ -5203,6 +5272,7 @@ def _classify_first_memory_review(
         rejection_reasons.append("MISSING_OR_UNKNOWN_CONTEXT")
     labels = effective_labels or _context_memory_labels(context_rows)
     unknown_context_blockers = _collect_unknown_context_blockers(labels)
+    optional_unknown_context = _collect_optional_unknown_context(labels)
     if unknown_context_blockers:
         rejection_reasons.append("MISSING_OR_UNKNOWN_CONTEXT")
     if context_freshness:
@@ -5222,12 +5292,51 @@ def _classify_first_memory_review(
     else:
         memory_quality = "AUDIT_ONLY_MEMORY"
     unique_reasons = list(dict.fromkeys(rejection_reasons or ["REVIEW_PASSED"]))
+    # V2-9.7E.47 B3 — permanent law: memory quality describes evidence
+    # trustworthiness; outcome describes what happened to the token. A bad
+    # outcome must never become dirty merely because it was bad, and a known
+    # outcome must never be erased merely because the evidence around it is
+    # incomplete. The truthful measured outcome is persisted independently of
+    # memory quality; only a genuinely unresolved trajectory stays unknown.
+    known_outcome = str(outcome_label or "").strip()
+    if known_outcome in {"", "UNKNOWN_OUTCOME", "OUTCOME_UNKNOWN"}:
+        resolved_outcome = (
+            "OUTCOME_UNKNOWN" if memory_quality != "CLEAN_MEMORY" else "NO_PUMP"
+        )
+    else:
+        resolved_outcome = known_outcome
+    # V2-9.7E.47 B1 — a non-clean result is not automatically
+    # MISSING_CRITICAL_DATA. That label is reserved for a genuinely missing
+    # REQUIRED item (snapshots, critical fields, source quality, required
+    # context, mandatory safety/realism evidence). When every reason is an
+    # honestly optional or contextual unknown, the evidence is acceptable
+    # partial data held as audit-only.
+    _required_gap_reasons = {
+        "REJECT_MISSING_SNAPSHOTS",
+        "INSUFFICIENT_SNAPSHOT_COVERAGE",
+        "REJECT_MISSING_CRITICAL_FIELDS",
+        "REJECT_BAD_SNAPSHOT_SOURCE_STATUS",
+        "REJECT_BAD_SNAPSHOT_DATA_QUALITY",
+        "MISSING_OR_UNKNOWN_CONTEXT",
+        "REJECT_5M_ONLY_WINDOW",
+    }
+    has_required_gap = bool(
+        exact_evidence_blockers
+        or (context_freshness or {}).get("context_blocking_reasons")
+        or _required_gap_reasons.intersection(unique_reasons)
+    )
+    if memory_quality == "CLEAN_MEMORY":
+        data_quality = "CLEAN_DATA"
+    elif has_required_gap:
+        data_quality = "MISSING_CRITICAL_DATA"
+    else:
+        data_quality = "ACCEPTABLE_PARTIAL_DATA"
     return {
-        "outcome_label": "OUTCOME_UNKNOWN" if memory_quality != "CLEAN_MEMORY" else (outcome_label or "NO_PUMP"),
+        "outcome_label": resolved_outcome,
         "action_lesson_label": "ACTION_LESSON_UNKNOWN",
         "memory_quality_label": memory_quality,
         "memory_status": _memory_storage_status(memory_quality),
-        "data_quality_label": "MISSING_CRITICAL_DATA" if memory_quality != "CLEAN_MEMORY" else "CLEAN_DATA",
+        "data_quality_label": data_quality,
         "do_not_train": 0 if memory_quality == "CLEAN_MEMORY" else 1,
         "rejection_reasons": unique_reasons,
         "retrieval_ready": memory_quality == "CLEAN_MEMORY",
@@ -5237,7 +5346,9 @@ def _classify_first_memory_review(
         "missing_snapshot_count": missing_snapshot_count,
         "coverage_state": coverage_state,
         "unknown_context_blockers": unknown_context_blockers,
+        "optional_unknown_context": optional_unknown_context,
         "evidence_blockers": list(dict.fromkeys(evidence_blockers or [])),
+        "outcome_preserved_independently_of_memory_quality": True,
     }
 
 
@@ -5296,6 +5407,10 @@ def _snapshots_are_clean_window_evidence(snapshots: list[dict[str, Any]], expect
 def _outcome_label_from_held_to_15m(held_label: str | None) -> str:
     return {
         "HELD_TO_15M_CONTINUED": "SHORT_TERM_PUMP",
+        # V2-9.7E.47 B2: a moderate (+5%..+25%) continuation is truthfully a
+        # short-term pump. The strength distinction stays in the held label; no
+        # new outcome category, score, rank or weight is introduced.
+        "HELD_TO_15M_MODERATE_CONTINUATION": "SHORT_TERM_PUMP",
         "HELD_TO_15M_CONSOLIDATED": "CONSOLIDATION",
         "HELD_TO_15M_FADED": "SLOW_BLEED",
         "HELD_TO_15M_DUMPED": "DUMP",

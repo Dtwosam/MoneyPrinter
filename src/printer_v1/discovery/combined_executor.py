@@ -54,6 +54,10 @@ from printer_v1.operator_cli.abstract_campaign_command import (
     OwnerPort,
     SOURCE_GOVERNOR_OWNER,
 )
+from printer_v1.discovery.scheduler_parity import (
+    reconcile_discovery_work_jobs,
+    terminalize_scheduler_job_for_work,
+)
 from printer_v1.scheduler.contracts import JobKind
 from printer_v1.scheduler.scheduler import enqueue_job
 from printer_v1.sources.governor import can_request_source
@@ -723,6 +727,13 @@ class CombinedPumpfunCampaignExecutor:
                     discovery_batch_id,
                 ),
             )
+            # V2-9.7E.47 A2: every linked Scheduler job follows its work row
+            # terminally, through the committed Scheduler owner.
+            reconcile_discovery_work_jobs(
+                connection,
+                discovery_batch_id=discovery_batch_id,
+                abandoned_cause="INSUFFICIENT_ELIGIBLE_TWO_SLOT_POOL",
+            )
             self._mark_discovery_batch_failed(
                 connection,
                 discovery_batch_id,
@@ -871,6 +882,25 @@ class CombinedPumpfunCampaignExecutor:
             WHERE discovery_work_id = ?
             """,
             (state, cause, now, now, work_id),
+        )
+        # V2-9.7E.47 A2: discovery work and its linked Scheduler job must agree
+        # terminally. Before this repair the work row went terminal while the
+        # DISCOVERY_REFRESH job it owns stayed PENDING for the whole lifecycle
+        # (E.46 §10.2: 8 PENDING jobs against 8 SUCCEEDED work rows). The
+        # transition always goes through the committed Scheduler owner; no
+        # status is written by an unowned UPDATE.
+        row = connection.execute(
+            "SELECT scheduler_job_id FROM printer_discovery_work "
+            "WHERE discovery_work_id = ?",
+            (work_id,),
+        ).fetchone()
+        if row is None or row["scheduler_job_id"] is None:
+            return
+        terminalize_scheduler_job_for_work(
+            connection,
+            job_id=int(row["scheduler_job_id"]),
+            work_state=state,
+            cause=cause,
         )
 
     def _governed_request(
@@ -2007,6 +2037,15 @@ class CombinedPumpfunCampaignExecutor:
               AND batch_state NOT LIKE 'TERMINAL_%'
             """,
             (cause, now, discovery_batch_id),
+        )
+        # V2-9.7E.47 A2: a failed discovery batch leaves no active work row and
+        # no active Scheduler job behind. Still-open work is cancelled (the work
+        # is terminally unnecessary) and its job follows through the Scheduler
+        # owner; already-terminal rows and jobs are never rewritten.
+        reconcile_discovery_work_jobs(
+            connection,
+            discovery_batch_id=discovery_batch_id,
+            abandoned_cause=cause,
         )
 
     def _validate_initial_handoff_preflight(

@@ -14,6 +14,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from printer_v1.discovery.scheduler_parity import reconcile_discovery_work_jobs
+from printer_v1.operator_cli.campaign_active_work import campaign_active_work_report
 from printer_v1.operator_cli.git_provenance import (
     GitProvenanceError,
     capture_git_provenance,
@@ -51,6 +53,15 @@ STOP_TWO_TOKEN_PROOF = "SAFE_STOP_TWO_TOKEN_CONTINUOUS_PROOF_INCOMPLETE"
 # V2-5: token-local terminal markers (never a run-wide stop).
 TOKEN_LOCAL_FAILED = "TOKEN_LOCAL_TERMINAL_FAILURE"
 TOKEN_LOCAL_CANCELLED = "TOKEN_LOCAL_CANCELLED_AFTER_FAILURE"
+
+# V2-9.7E.47 A4: the committed 15m close owner (`e2o_memory_window_close`) writes
+# `WINDOW_CLOSED`, and the audit path writes `WINDOW_AUDIT_ONLY`. The terminal
+# validation previously compared against `COMPLETE`, a value no owner writes, so
+# even a fully clean two-token natural stop could never be reported complete.
+# `COMPLETE` is retained for pre-existing fixtures.
+_TERMINAL_WINDOW_STATUSES = frozenset(
+    {"WINDOW_CLOSED", "WINDOW_AUDIT_ONLY", "COMPLETE"}
+)
 
 CLEAN_PROMOTED = "CLEAN_PROMOTED"
 DIRTY_OR_BLOCKED = "DIRTY_OR_BLOCKED"
@@ -1998,28 +2009,62 @@ def _cancel_pending_for_token(
 
 
 def _cancel_campaign_discovery_jobs(
-    conn: sqlite3.Connection, discovery_batch_id: str | None
+    conn: sqlite3.Connection,
+    discovery_batch_id: str | None,
+    *,
+    campaign_id: str | None = None,
+    campaign_run_id: str | None = None,
+    cycle_id: str | None = None,
+    terminal_cause: str = "DISCOVERY_WORK_ABANDONED_AT_TERMINAL",
 ) -> dict[str, Any]:
-    """Cancel only active Scheduler discovery jobs owned by this exact batch."""
-    if not discovery_batch_id:
-        return {"discovery_batch_id": None, "cancelled_jobs": 0}
-    rows = conn.execute(
-        """
-        SELECT DISTINCT j.id
-        FROM printer_scheduler_jobs AS j
-        JOIN printer_discovery_work AS w ON w.scheduler_job_id = j.id
-        WHERE w.discovery_batch_id = ?
-          AND j.job_kind = ?
-          AND j.status IN ('PENDING', 'RUNNING')
-        ORDER BY j.id
-        """,
-        (discovery_batch_id, JobKind.DISCOVERY_REFRESH.value),
-    ).fetchall()
-    for row in rows:
-        cancel_job(conn, job_id=int(row["id"]))
+    """Bring campaign discovery work and its Scheduler jobs to terminal parity.
+
+    V2-9.7E.47 A2. Two defects are repaired here.
+
+    1. The caller previously passed the *handoff* batch id
+       (``origin-activated:<cycle>``) while the executor writes its work rows
+       under ``discovery-batch:<campaign>:<run>:<cycle>``, so the old query
+       matched zero rows and never cancelled anything — the exact mechanism that
+       left eight ``DISCOVERY_REFRESH`` jobs ``PENDING`` at V2-9.7E.46 §10.2.
+       The scope now also accepts the campaign / run / cycle identities, which
+       every discovery work row carries directly.
+    2. Cancelling was the wrong terminal for *successful* work. Parity is now
+       driven by the work row's own terminal state through the Scheduler owner:
+       ``SUCCEEDED`` work completes its job, ``FAILED`` work fails it, and only
+       abandoned or terminally unnecessary work is cancelled.
+    """
+    if not any((discovery_batch_id, campaign_id, campaign_run_id, cycle_id)):
+        return {
+            "discovery_batch_id": None,
+            "cancelled_jobs": 0,
+            "job_actions": {},
+            "terminal_work_with_active_job": 0,
+        }
+    # Identity scope wins when available: the id the factory receives is the
+    # *handoff* batch (`origin-activated:<cycle>`), which is not the executor's
+    # discovery batch id and matches no work row. Combining the two with AND
+    # would reproduce the E.46 zero-match defect, so the handoff id is used only
+    # as the fallback scope when no ownership identity was supplied.
+    identity_scope = any((campaign_id, campaign_run_id, cycle_id))
+    parity = reconcile_discovery_work_jobs(
+        conn,
+        discovery_batch_id=None if identity_scope else discovery_batch_id,
+        campaign_id=campaign_id,
+        run_id=campaign_run_id,
+        cycle_id=cycle_id,
+        abandoned_cause=terminal_cause,
+    )
+    actions = dict(parity["job_actions"])
     return {
         "discovery_batch_id": discovery_batch_id,
-        "cancelled_jobs": len(rows),
+        "scope": parity["scope"],
+        "work_rows": parity["work_rows"],
+        "cancelled_active_work": parity["cancelled_active_work"],
+        "cancelled_jobs": int(actions.get("CANCEL", 0)),
+        "completed_jobs": int(actions.get("COMPLETE", 0)),
+        "failed_jobs": int(actions.get("FAIL", 0)),
+        "job_actions": actions,
+        "terminal_work_with_active_job": parity["terminal_work_with_active_job"],
     }
 
 
@@ -2792,6 +2837,21 @@ def _four_hour_terminal_validation(
             or "transport" in str(step.get("error_or_skip_reason")).lower()
         )
     ]
+    # V2-9.7E.47 A4: lifecycle completion and clean-memory success are separate
+    # verdicts. A lawful no-continuation close is a COMPLETED governed
+    # lifecycle; a dirty or audit-only memory result blocks only the pilot
+    # ACCEPTANCE verdict below. Before this repair a dirty 15m close produced
+    # `ineligible_or_dirty_terminal_15m_close` and therefore
+    # SAFE_STOP_4H_TERMINAL_INCOMPLETE, which is reserved for a continuation or
+    # required terminal phase that actually started or was required and did not
+    # complete (V2-9.7E.46 §10 / §15 item 1).
+    memory_acceptance: dict[str, Any] = {
+        "evaluated": False,
+        "clean_windows": 0,
+        "dirty_or_audit_only_windows": 0,
+        "verdict": "NOT_EVALUATED",
+        "blocking_windows": [],
+    }
     if policy is None and phase_state == "STARTED":
         reasons.append("missing_4h_cadence_policy")
     if phase_state == "NOT_STARTED":
@@ -2803,26 +2863,53 @@ def _four_hour_terminal_validation(
             if len(closes_15m) != 2 or any(
                 step.get("step_status") != "SUCCEEDED" for step in closes_15m
             ):
-                reasons.append("two_clean_terminal_15m_closes_required")
+                reasons.append("two_terminal_15m_closes_required")
             if len({step.get("token_id") for step in closes_15m}) != 2:
                 reasons.append("two_distinct_terminal_tokens_required")
+            memory_acceptance["evaluated"] = True
             for step in closes_15m:
                 window_id = step.get("memory_window_id")
                 window = (
                     windows_by_id.get(int(window_id))
                     if window_id is not None else None
                 )
+                # Lifecycle requirement: the window exists, is the approved main
+                # 15m kind, and terminally completed. Evidence quality is NOT a
+                # lifecycle-completion requirement.
                 if (
                     window is None
                     or window.get("window_kind") != "WINDOW_15M"
-                    or window.get("window_status") != "COMPLETE"
-                    or window.get("memory_status") != "CLEAN_MEMORY"
-                    or window.get("memory_quality_label") != "CLEAN_MEMORY"
-                    or window.get("data_quality_label") != "CLEAN_DATA"
-                    or int(window.get("do_not_train") or 0) != 0
+                    or str(window.get("window_status") or "")
+                    not in _TERMINAL_WINDOW_STATUSES
                 ):
-                    reasons.append("ineligible_or_dirty_terminal_15m_close")
+                    reasons.append("incomplete_terminal_15m_close")
                     continue
+                clean = (
+                    window.get("memory_status") == "CLEAN_MEMORY"
+                    and window.get("memory_quality_label") == "CLEAN_MEMORY"
+                    and window.get("data_quality_label") == "CLEAN_DATA"
+                    and int(window.get("do_not_train") or 0) == 0
+                )
+                if clean:
+                    memory_acceptance["clean_windows"] += 1
+                else:
+                    memory_acceptance["dirty_or_audit_only_windows"] += 1
+                    memory_acceptance["blocking_windows"].append(
+                        {
+                            "window_id": (
+                                int(window["id"])
+                                if window.get("id") is not None
+                                else step.get("memory_window_id")
+                            ),
+                            "memory_quality_label": window.get(
+                                "memory_quality_label"
+                            ),
+                            "data_quality_label": window.get(
+                                "data_quality_label"
+                            ),
+                            "do_not_train": int(window.get("do_not_train") or 0),
+                        }
+                    )
                 try:
                     result = json.loads(str(step.get("result_json") or "{}"))
                 except json.JSONDecodeError:
@@ -2841,6 +2928,11 @@ def _four_hour_terminal_validation(
                 for step in steps
             ):
                 reasons.append("unexpected_continuation_in_natural_stop")
+            memory_acceptance["verdict"] = (
+                "CLEAN_MEMORY_ACHIEVED"
+                if memory_acceptance["clean_windows"] == 2
+                else "MEMORY_EVIDENCE_BLOCKED"
+            )
         else:
             reasons.append("four_hour_phase_not_started")
     elif phase_state == "STARTED" and actual != expected:
@@ -2947,6 +3039,11 @@ def _four_hour_terminal_validation(
         ),
         "audit_path_complete": audit_path_complete,
         "cleanup_complete": pending_steps == 0 and running_jobs == 0,
+        # V2-9.7E.47 A4: the pilot ACCEPTANCE verdict, reported separately from
+        # the lifecycle terminal. Dirty or audit-only memory blocks acceptance
+        # without falsely producing SAFE_STOP_4H_TERMINAL_INCOMPLETE.
+        "memory_acceptance": memory_acceptance,
+        "lifecycle_completion_independent_of_memory_quality": True,
     }
 
 def _two_token_continuous_proof_validation(
@@ -3103,7 +3200,23 @@ def _final_report(
         "SELECT j.* FROM printer_scheduler_jobs j JOIN printer_memory_factory_run_steps s ON s.scheduler_job_id=j.id WHERE s.run_id=? ORDER BY j.id",
         (run_id,),
     ).fetchall()]
-    running = sum(1 for job in jobs if job["status"] == "RUNNING" or job["locked_at"] or job["lock_owner"])
+    # V2-9.7E.47 A3: the historic narrow count (this run's step jobs that are
+    # RUNNING or locked) is preserved as a compatibility field, but the
+    # authoritative terminal gate is now exact campaign-scoped active-work
+    # accounting: PENDING / RUNNING / COOLDOWN / locked, across factory
+    # run-step jobs, discovery jobs and campaign scheduler work.
+    running_or_locked_run_step_jobs = sum(
+        1 for job in jobs
+        if job["status"] == "RUNNING" or job["locked_at"] or job["lock_owner"]
+    )
+    active_work = campaign_active_work_report(
+        conn,
+        factory_run_id=run_id,
+        campaign_id=config.get("campaign_id") or None,
+        run_id=config.get("campaign_run_id") or None,
+        cycle_id=config.get("cycle_id") or None,
+    )
+    running = int(active_work["active_jobs"])
     forbidden = {table: deltas.get(table, 0) for table in _FORBIDDEN_DELTA_TABLES}
     windows = [dict(row) for row in conn.execute(
         "SELECT * FROM printer_memory_windows WHERE id IN (SELECT memory_window_id FROM printer_memory_factory_run_steps WHERE run_id=? AND memory_window_id IS NOT NULL)",
@@ -3194,6 +3307,11 @@ def _final_report(
         "memory_results": memory_results,
         "counts_before": before, "counts_after": after, "table_deltas": deltas,
         "forbidden_deltas": forbidden, "running_jobs_after_stop": running,
+        # V2-9.7E.47 A3 exact active-work report + preserved compatibility field.
+        "campaign_active_work": active_work,
+        "active_jobs_after_stop": int(active_work["active_jobs"]),
+        "active_work_rows_after_stop": int(active_work["active_work_rows"]),
+        "running_or_locked_run_step_jobs": running_or_locked_run_step_jobs,
         "locks_preserved": {
             "retrieval": all(value == 0 for table, value in forbidden.items() if "retrieval" in table),
             "financial": all(value == 0 for table, value in forbidden.items() if "retrieval" not in table),
@@ -3256,6 +3374,9 @@ def run_one_command_15m_factory(
     compressed_two_token_proof_plan: CompressedTwoTokenProofPlan | None = None,
     operational_natural_disposition: bool = False,
     supervision_execution_id: str | None = None,
+    campaign_id: str | None = None,
+    campaign_run_id: str | None = None,
+    cycle_id: str | None = None,
     cancellation_probe: Callable[[], str | None] | None = None,
     discovery_transport: Any = None, discovery_runner: Callable[..., dict[str, Any]] | None = None,
     snapshot_adapter_factory: Callable[..., Any] | None = None,
@@ -3380,6 +3501,12 @@ def run_one_command_15m_factory(
         ),
         "operational_natural_disposition": bool(operational_natural_disposition),
         "supervision_execution_id": supervision_execution_id,
+        # V2-9.7E.47 A2/A3: the campaign ownership identities the discovery work
+        # rows carry, so terminal cleanup and active-work accounting can scope
+        # every attributable Scheduler job without guessing a batch id.
+        "campaign_id": campaign_id,
+        "campaign_run_id": campaign_run_id,
+        "cycle_id": cycle_id,
         "git_provenance": provenance,
         "continuation_seconds": _continuation_seconds if continuous_first_hour else 0.0,
         "hard_ceilings": {
@@ -3799,6 +3926,10 @@ def run_one_command_15m_factory(
         discovery_cleanup = _cancel_campaign_discovery_jobs(
             conn,
             discovery.get("selection_handoff_report", {}).get("batch_id"),
+            campaign_id=campaign_id,
+            campaign_run_id=campaign_run_id,
+            cycle_id=cycle_id,
+            terminal_cause=stop_reason,
         )
         conn.commit()
         report = _final_report(

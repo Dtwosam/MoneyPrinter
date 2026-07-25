@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import json
+import pathlib
 import sqlite3
+import tempfile
 from types import SimpleNamespace
 
+from printer_v1.db.migrate import apply_migrations
+from printer_v1.scheduler.contracts import JobKind
+from printer_v1.scheduler.scheduler import enqueue_job
 from printer_v1.operator_cli.authoritative_live_operational_campaign import (
     HOLDER_ELIGIBILITY_CANDIDATE_MAX,
     _holder_execution_fact,
@@ -167,11 +172,27 @@ def _natural_terminal(*, dirty: bool = False, operational: bool = True):
     )
 
 
-def test_two_clean_natural_stops_complete_but_dirty_or_proof_mode_does_not() -> None:
+def test_natural_stops_complete_regardless_of_memory_quality() -> None:
+    """V2-9.7E.47 A4 supersedes the original assertion.
+
+    This test previously asserted that a DIRTY two-token natural stop was NOT a
+    complete lifecycle. That conflated lifecycle completion with clean-memory
+    success and produced the false ``SAFE_STOP_4H_TERMINAL_INCOMPLETE`` recorded
+    at V2-9.7E.46 §10. A lawful no-continuation close is now a COMPLETED
+    governed lifecycle; only the pilot ACCEPTANCE verdict is blocked by dirty or
+    audit-only memory. Proof mode still requires the 4h phase.
+    """
     clean = _natural_terminal()
     assert clean["complete"]
     assert clean["run_status"] == "COMPLETED"
-    assert not _natural_terminal(dirty=True)["complete"]
+    assert clean["memory_acceptance"]["verdict"] == "CLEAN_MEMORY_ACHIEVED"
+
+    dirty = _natural_terminal(dirty=True)
+    assert dirty["complete"]
+    assert dirty["run_status"] == "COMPLETED"
+    assert dirty["memory_acceptance"]["verdict"] == "MEMORY_EVIDENCE_BLOCKED"
+    assert dirty["memory_acceptance"]["dirty_or_audit_only_windows"] == 2
+
     proof = _natural_terminal(operational=False)
     assert not proof["complete"]
     assert "four_hour_phase_not_started" in proof["reasons"]
@@ -202,36 +223,123 @@ def test_started_continuation_still_requires_complete_four_hour_audit() -> None:
 
 
 def test_exact_discovery_cleanup_is_idempotent_and_preserves_unrelated_jobs() -> None:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.executescript(
-        """
-        CREATE TABLE printer_scheduler_jobs (
-            id INTEGER PRIMARY KEY, job_kind TEXT, status TEXT, finished_at TEXT,
-            locked_at TEXT, lock_owner TEXT, updated_at TEXT
-        );
-        CREATE TABLE printer_discovery_work (
-            discovery_batch_id TEXT, scheduler_job_id INTEGER
-        );
-        """
-    )
-    rows = (
-        (1, "DISCOVERY_REFRESH", "PENDING"),
-        (2, "DISCOVERY_REFRESH", "RUNNING"),
-        (3, "DISCOVERY_REFRESH", "PENDING"),
-        (4, "TOKEN_SNAPSHOT", "PENDING"),
-    )
-    conn.executemany(
-        "INSERT INTO printer_scheduler_jobs VALUES (?, ?, ?, NULL, NULL, NULL, NULL)",
-        rows,
-    )
-    conn.executemany(
-        "INSERT INTO printer_discovery_work VALUES (?, ?)",
-        (("batch-a", 1), ("batch-a", 2), ("batch-b", 3), ("batch-a", 4)),
-    )
-    first = _cancel_campaign_discovery_jobs(conn, "batch-a")
-    second = _cancel_campaign_discovery_jobs(conn, "batch-a")
-    assert first["cancelled_jobs"] == 2
-    assert second["cancelled_jobs"] == 0
-    statuses = dict(conn.execute("SELECT id, status FROM printer_scheduler_jobs"))
-    assert statuses == {1: "CANCELLED", 2: "CANCELLED", 3: "PENDING", 4: "PENDING"}
+    """V2-9.7E.47 A2 supersedes the original blanket-cancel assertion.
+
+    Cancelling every active ``DISCOVERY_REFRESH`` job was the wrong terminal for
+    work that had already SUCCEEDED. Parity now follows the work row's own
+    terminal state through the committed Scheduler owner. Unrelated jobs are
+    still untouched and repeat calls are still idempotent.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        db = pathlib.Path(tmp) / "cleanup.sqlite3"
+        apply_migrations(str(db))
+        conn = sqlite3.connect(str(db))
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        now = "2026-07-25T12:00:00+00:00"
+        conn.execute(
+            """INSERT INTO printer_memory_factory_campaigns(
+                   campaign_id, campaign_state, db_mode, db_target_identity,
+                   proof_source_db_identity, policy_version,
+                   created_at, updated_at)
+               VALUES ('camp','RUNNING','PROOF_ISOLATED','iso','src','v1',?,?)""",
+            (now, now),
+        )
+        conn.execute(
+            """INSERT INTO printer_memory_factory_campaign_configurations(
+                   configuration_id, campaign_id, configuration_hash,
+                   configuration_json, launch_provenance_json, created_at)
+               VALUES ('cfg','camp',?, '{}', '{}', ?)""",
+            ("c" * 64, now),
+        )
+        conn.execute(
+            """INSERT INTO printer_memory_factory_campaign_runs(
+                   run_id, campaign_id, run_ordinal, run_state,
+                   created_at, updated_at)
+               VALUES ('run','camp',1,'RUNNING',?,?)""",
+            (now, now),
+        )
+        # Two cycles in one campaign; the schema pins one discovery batch per
+        # cycle, so batch-b is the "other batch that must stay untouched".
+        for batch, cycle, ordinal in (
+            ("batch-a", "cyc-a", 1), ("batch-b", "cyc-b", 2),
+        ):
+            conn.execute(
+                """INSERT INTO printer_memory_factory_campaign_cycles(
+                       cycle_id, campaign_id, run_id, cycle_ordinal, cycle_state,
+                       created_at, updated_at)
+                   VALUES (?, 'camp', 'run', ?, 'PLANNED', ?, ?)""",
+                (cycle, ordinal, now, now),
+            )
+            conn.execute(
+                """INSERT INTO printer_discovery_batches(
+                       discovery_batch_id, campaign_id, configuration_id, run_id,
+                       cycle_id, cycle_cutoff, policy_version,
+                       provider_contract_versions_json, git_provenance_identity,
+                       campaign_selection_seed_identity, cycle_seed_hash,
+                       pump_continuity_state, batch_state, canonical_hash,
+                       created_at)
+                   VALUES (?, 'camp', 'cfg', 'run', ?, ?, 'v1', '{}', ?, 'seed',
+                           ?, 'NONE', 'DISCOVERING', ?, ?)""",
+                (batch, cycle, now, "0" * 40, "a" * 64, "b" * 64, now),
+            )
+        seeded: dict[str, int] = {}
+        plan = (
+            ("batch-a", "camp", "cyc-a", "DISCOVERY_PUMPFUN_LATEST", "SUCCEEDED"),
+            ("batch-a", "camp", "cyc-a", "DISCOVERY_IDENTITY_MERGE", "FAILED"),
+            ("batch-a", "camp", "cyc-a", "DISCOVERY_UNIFORM_SELECTION", "RUNNING"),
+            ("batch-b", "camp", "cyc-b", "DISCOVERY_PUMPFUN_LATEST", "SUCCEEDED"),
+        )
+        for index, (batch, campaign, cycle, work_type, state) in enumerate(plan, start=1):
+            _result, job_id = enqueue_job(
+                conn,
+                job_name=f"{work_type}:{batch}",
+                job_kind=JobKind.DISCOVERY_REFRESH,
+                target_table="printer_discovery_batches",
+            )
+            seeded[f"{batch}-{index}"] = int(job_id)
+            terminal = state not in {"PENDING", "RUNNING", "COOLDOWN"}
+            conn.execute(
+                """INSERT INTO printer_discovery_work(
+                       discovery_work_id, discovery_batch_id, campaign_id, run_id,
+                       cycle_id, scheduler_job_id, work_type, work_state,
+                       deadline_at, first_terminal_cause, terminal_at,
+                       created_at, updated_at)
+                   VALUES (?,?,?, 'run', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    f"work-{index}", batch, campaign, cycle, int(job_id),
+                    work_type, state, now,
+                    "DIRECT_COMPLETE" if terminal else None,
+                    now if terminal else None, now, now,
+                ),
+            )
+        # An unrelated non-discovery job must survive untouched.
+        _result, unrelated = enqueue_job(
+            conn, job_name="unrelated-snapshot",
+            job_kind=JobKind.TRACK_NORMAL_FIRST_15M,
+            target_table="printer_tracking_queue",
+        )
+        conn.commit()
+
+        first = _cancel_campaign_discovery_jobs(conn, "batch-a")
+        second = _cancel_campaign_discovery_jobs(conn, "batch-a")
+        conn.commit()
+        statuses = {
+            int(row["id"]): str(row["status"])
+            for row in conn.execute(
+                "SELECT id, status FROM printer_scheduler_jobs"
+            ).fetchall()
+        }
+        conn.close()
+
+    assert first["completed_jobs"] == 1
+    assert first["failed_jobs"] == 1
+    assert first["cancelled_jobs"] == 1
+    assert first["terminal_work_with_active_job"] == 0
+    assert second["job_actions"] == {}
+    assert statuses[seeded["batch-a-1"]] == "SUCCEEDED"
+    assert statuses[seeded["batch-a-2"]] == "FAILED"
+    assert statuses[seeded["batch-a-3"]] == "CANCELLED"
+    # Another batch and an unrelated job kind are untouched.
+    assert statuses[seeded["batch-b-4"]] == "PENDING"
+    assert statuses[int(unrelated)] == "PENDING"

@@ -294,6 +294,11 @@ class OriginToLifecycleCampaignDriver:
                 "discovery_results": [],
             }
 
+        # V2-9.7E.47 A2/A3: the lifecycle owner receives the exact campaign
+        # ownership identities so its terminal cleanup can reach every
+        # campaign-scoped Scheduler job. The handoff batch id
+        # (`origin-activated:<cycle>`) is deliberately NOT the executor's
+        # discovery batch id, which is why identity-based scoping is required.
         lifecycle = self._lifecycle_runner(
             command.db_path,
             backup_path,
@@ -304,6 +309,9 @@ class OriginToLifecycleCampaignDriver:
             continuous_four_hour=continuous_four_hour,
             four_hour_proof_mode=four_hour_proof_mode,
             max_selected_tokens=2,
+            campaign_id=command.campaign_id,
+            campaign_run_id=command.run_id,
+            cycle_id=fixtures.cycle_id,
             **(lifecycle_kwargs or {}),
         )
         return OriginLifecycleResult(

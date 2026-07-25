@@ -85,7 +85,10 @@ def classify_holding_to_15m_result(normalized_payload: Mapping[str, Any]) -> Hel
     if -5 <= held_change <= 5:
         return HeldTo15mResultLabel.HELD_TO_15M_CONSOLIDATED
     if held_change > 5:
-        return HeldTo15mResultLabel.HELD_TO_15M_UNKNOWN
+        # V2-9.7E.47 B2: (+5%, +25%) is a measured, known trajectory. It
+        # previously fell into HELD_TO_15M_UNKNOWN purely because it sat between
+        # two thresholds, which then dirtied an otherwise clean 15m memory.
+        return HeldTo15mResultLabel.HELD_TO_15M_MODERATE_CONTINUATION
     if held_change <= -45:
         return HeldTo15mResultLabel.HELD_TO_15M_DEAD
     if held_change <= -25:

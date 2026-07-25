@@ -46,9 +46,7 @@ from printer_v1.operator_cli.authoritative_live_operational_campaign import (
     OneShotUrllibSecondaryTransport,
 )
 from printer_v1.operator_cli.campaign_ownership import (
-    CampaignOwnershipError,
     create_campaign_run,
-    transition_state,
 )
 from printer_v1.operator_cli.campaign_persistence import (
     DB_MODE_PROOF_ISOLATED,
@@ -69,6 +67,14 @@ from printer_v1.operator_cli.proof_db_schema_readiness import (
 )
 from printer_v1.operator_cli.readiness_source_contract_preflight import (
     assert_readiness_source_contract_preflight,
+)
+from printer_v1.operator_cli.unified_terminal_closure import (
+    TerminalClosureError,
+    assert_runtime_dependency_preflight,
+    build_campaign_terminal_report,
+    reconcile_campaign_terminal,
+    replay_campaign_terminal_report,
+    write_campaign_terminal_report,
 )
 from printer_v1.operator_cli import proof_supervision as _sup
 
@@ -585,60 +591,32 @@ def _reconcile_pre_lifecycle_terminal_metadata(
     cycle_id: str,
     terminal_cause: str,
     now: str,
+    factory_run_id: str | None = None,
+    run_status: str | None = None,
+    lifecycle_started: bool = False,
 ) -> dict[str, Any]:
-    """Reconcile launch metadata to honest terminal states (item 9).
+    """Reconcile launch metadata to honest terminal states.
 
-    The launch graph leaves campaign=RUNNING, run=RUNNING, cycle=PLANNED. When a
-    proof terminates before any factory lifecycle run, that metadata must not remain
-    active with zero work. A clean readiness stop (``PILOT_INPUT_READY``) reconciles
-    to ``TERMINAL_STOPPED`` (a governed safe stop); every other pre-lifecycle cause
-    reconciles to ``TERMINAL_BLOCKED``. Already-terminal rows are left untouched
-    (immutable). This creates no restart or successor and no active work.
+    V2-9.7E.47 A1: this is now a thin alias over the single authoritative
+    terminal path. It was previously reachable ONLY when ``lifecycle_started``
+    was false, on the assumption that "a started lifecycle owns its own terminal
+    reconciliation" — an assumption V2-9.7E.46 §10.1 disproved by closing
+    supervision ``TERMINAL`` with ``RUNNING`` / ``RUNNING`` / ``PLANNED``
+    ownership metadata still standing. Both paths now run the same
+    reconciliation, which preserves the immutable first terminal cause, leaves
+    zero active campaign work, and creates no restart or successor.
     """
-    cause = (terminal_cause or "PRE_LIFECYCLE_GOVERNED_SAFE_STOP").strip()
-    new_state = (
-        "TERMINAL_STOPPED" if cause == "PILOT_INPUT_READY" else "TERMINAL_BLOCKED"
+    return reconcile_campaign_terminal(
+        target_db,
+        campaign_id=campaign_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
+        terminal_cause=(terminal_cause or "PRE_LIFECYCLE_GOVERNED_SAFE_STOP").strip(),
+        run_status=run_status,
+        factory_run_id=factory_run_id,
+        lifecycle_started=lifecycle_started,
+        now=now,
     )
-    targets = (
-        ("campaign", campaign_id, ("RUNNING", "STOP_REQUESTED")),
-        ("run", run_id, ("RUNNING", "STOP_REQUESTED")),
-        ("cycle", cycle_id, ("PLANNED",)),
-    )
-    reconciled: dict[str, Any] = {
-        "reconciled": True,
-        "terminal_cause": cause,
-        "new_state": new_state,
-        "records": {},
-    }
-    connection = sqlite3.connect(str(target_db))
-    connection.execute("PRAGMA foreign_keys = ON")
-    try:
-        for record_kind, identity, expected_states in targets:
-            outcome = "not_found"
-            for expected_state in expected_states:
-                try:
-                    result = transition_state(
-                        connection,
-                        record_kind=record_kind,
-                        identity=identity,
-                        expected_state=expected_state,
-                        new_state=new_state,
-                        terminal_cause=cause,
-                        now=now,
-                    )
-                    outcome = result.current_state
-                    break
-                except CampaignOwnershipError as exc:
-                    message = str(exc)
-                    if "terminal state" in message or "immutable" in message:
-                        outcome = "already_terminal"
-                        break
-                    # Otherwise the expected-state guess did not match; try the next.
-                    outcome = f"skipped:{type(exc).__name__}"
-            reconciled["records"][record_kind] = outcome
-    finally:
-        connection.close()
-    return reconciled
 
 
 # ---------------------------------------------------------------------------
@@ -648,6 +626,82 @@ def _reconcile_pre_lifecycle_terminal_metadata(
 
 def _default_owner() -> AuthoritativeLiveOperationalCampaignOwner:
     return AuthoritativeLiveOperationalCampaignOwner()
+
+
+def _emergency_terminal_closure(
+    target: Path,
+    *,
+    paths: PilotPaths,
+    execution_id: str,
+    campaign_id: str,
+    configuration_id: str,
+    run_id: str,
+    cycle_id: str,
+    report_id: str,
+    provenance: Mapping[str, Any],
+    cause: str,
+) -> dict[str, Any]:
+    """Close a post-state-creation failure through the one terminal path.
+
+    V2-9.7E.47 A6. Best-effort by construction: the original failure is the
+    authoritative first cause and must reach the caller, so a secondary fault in
+    cleanup is recorded rather than raised. Creates no retry, restart or
+    successor.
+    """
+    outcome: dict[str, Any] = {"cause": cause, "issues": []}
+    try:
+        outcome["supervision"] = dict(
+            _sup.finalize_execution_from_report(
+                target,
+                execution_id,
+                {"run_status": "FAILED", "stop_reason": cause},
+            )
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        outcome["issues"].append(f"supervision:{type(exc).__name__}")
+    try:
+        outcome["reconciliation"] = reconcile_campaign_terminal(
+            target,
+            campaign_id=campaign_id,
+            run_id=run_id,
+            cycle_id=cycle_id,
+            terminal_cause=cause,
+            run_status="FAILED",
+            factory_run_id=None,
+            lifecycle_started=False,
+            now=_iso(_utc_now()),
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        outcome["issues"].append(f"reconciliation:{type(exc).__name__}")
+    try:
+        outcome["campaign_report"] = write_campaign_terminal_report(
+            target,
+            paths.report_dir,
+            report_id=report_id,
+            campaign_id=campaign_id,
+            configuration_id=configuration_id,
+            report=build_campaign_terminal_report(
+                campaign_id=campaign_id,
+                configuration_id=configuration_id,
+                run_id=run_id,
+                cycle_id=cycle_id,
+                report_id=report_id,
+                factory_run_id=None,
+                execution_id=execution_id,
+                terminal_status="GOVERNED_SAFE_STOP",
+                terminal_cause=cause,
+                run_status="FAILED",
+                lifecycle_started=False,
+                reconciliation=outcome.get("reconciliation", {"reconciled": False}),
+                forbidden_deltas={},
+                launch_git_provenance=provenance,
+            ),
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        outcome["issues"].append(f"report:{type(exc).__name__}")
+    outcome["restart_created"] = False
+    outcome["successor_created"] = False
+    return outcome
 
 
 def run_two_token_operational_pilot(
@@ -699,6 +753,52 @@ def run_two_token_operational_pilot(
 
     if mode not in {FULL_PILOT, PILOT_INPUT_READINESS}:
         raise PilotRunnerError(f"unsupported pilot mode: {mode}")
+
+    # V2-9.7E.47 A6: resolve the exact interpreter, verify every declared runtime
+    # dependency (including websockets>=12.0), confirm the canonical package
+    # resolves from this repository, construct the required live adapters, and
+    # validate the invocation paths — all BEFORE any mutable attempt state or
+    # authorization is consumed. E.46 §2 lost an authorized launch to an
+    # interpreter that lacked a declared dependency; the failure surfaced only
+    # after supervision, the campaign graph and the proof lock already existed.
+    # This preflight makes zero external requests and zero database writes, so a
+    # failure creates zero campaign, run, cycle, supervision, lock or source rows.
+    adapter_builders: list[tuple[str, Any]] = []
+    if migration_transport is None:
+        def _build_migration_transport() -> Any:
+            from printer_v1.sources.pumpportal import (
+                build_pumpportal_migration_transport,
+            )
+
+            return build_pumpportal_migration_transport(
+                max_events=4,
+                duration_seconds=120.0,
+                connect_timeout_seconds=10.0,
+            )
+
+        adapter_builders.append(("pumpportal_migration_transport", _build_migration_transport))
+    dependency_preflight = assert_runtime_dependency_preflight(
+        adapter_builders=tuple(adapter_builders),
+        paths={
+            "persistent_source_db": paths.persistent_source_db,
+            "target_db": paths.target_db,
+            "backup_db": paths.backup_db,
+            "restore_rehearsal_db": paths.restore_rehearsal_db,
+            "report_dir": paths.report_dir,
+            "one_proof_lock_path": paths.one_proof_lock_path,
+            "stdout_log_path": paths.stdout_log_path,
+            "stderr_log_path": paths.stderr_log_path,
+            "execution_id": execution_id,
+            "selection_seed": selection_seed,
+            "cycle_cutoff": cycle_cutoff,
+            "evaluated_at": evaluated_at,
+        },
+    )
+    if dependency_preflight.status != "READY":
+        raise PilotRunnerError(
+            "runtime dependency preflight blocked: "
+            + ", ".join(dependency_preflight.issues)
+        )
 
     instant = now or _iso()
     target = paths.target_db.resolve()
@@ -761,6 +861,8 @@ def run_two_token_operational_pilot(
     scheduler = central_scheduler or OwnerPort(CENTRAL_SCHEDULER_OWNER, True)
 
     if migration_transport is None:
+        # Already proved constructible by the A6 preflight above, before any
+        # mutable state existed; this only builds the instance the run uses.
         from printer_v1.sources.pumpportal import build_pumpportal_migration_transport
 
         migration_transport = build_pumpportal_migration_transport(
@@ -816,13 +918,36 @@ def run_two_token_operational_pilot(
         if mode == PILOT_INPUT_READINESS:
             operational_kwargs["stop_before_lifecycle"] = True
         result = active_owner.run_operational(**operational_kwargs)
+    except BaseException as exc:
+        # V2-9.7E.47 A6: anything that fails AFTER mutable state exists takes the
+        # unified terminal path — preserve the first failure, terminalise every
+        # ownership row, cancel active work, release the lock, write the terminal
+        # report, and create no retry, restart or successor.
+        worker.stop()
+        _emergency_terminal_closure(
+            target,
+            paths=paths,
+            execution_id=execution_id,
+            campaign_id=campaign_id,
+            configuration_id=configuration_id,
+            run_id=run_id,
+            cycle_id=cycle_id,
+            report_id=report_id,
+            provenance=provenance,
+            cause=f"PILOT_INITIALIZATION_FAILED:{type(exc).__name__}",
+        )
+        if isinstance(exc, PilotRunnerError):
+            raise
+        raise PilotRunnerError(
+            f"pilot terminated after state creation: {type(exc).__name__}"
+        ) from exc
     finally:
         worker.stop()
 
     report = dict(result.lifecycle)
-    run_id = str(report.get("run_id") or "")
+    factory_run_id = str(report.get("run_id") or "")
     lifecycle_started = bool(getattr(result, "lifecycle_started", False))
-    if lifecycle_started and not run_id:
+    if lifecycle_started and not factory_run_id:
         raise PilotRunnerError("pilot campaign returned no run identity")
 
     # A full pilot that terminates before any factory lifecycle run — a
@@ -832,39 +957,82 @@ def run_two_token_operational_pilot(
     # honest terminal report. Only a started lifecycle attaches a factory run and
     # runs a deterministic report-only replay.
     if lifecycle_started:
-        _sup.attach_run(target, execution_id, run_id, process_id=process_id)
+        _sup.attach_run(target, execution_id, factory_run_id, process_id=process_id)
     terminal = _sup.finalize_execution_from_report(target, execution_id, report)
 
-    # V2-9.7E.46B item 9: on every pre-lifecycle terminal path (no factory
-    # lifecycle run), reconcile the campaign/run/cycle ownership graph from its
-    # launch metadata (campaign RUNNING / run RUNNING / cycle PLANNED) to honest
-    # terminal states. No terminal proof may leave RUNNING/RUNNING/PLANNED metadata
-    # with zero active work. A started lifecycle owns its own terminal reconciliation.
-    metadata_reconciliation: dict[str, Any] = {"reconciled": False}
-    if not lifecycle_started:
-        terminal_cause = str(
-            report.get("first_terminal_cause")
-            or report.get("stop_reason")
-            or terminal.get("first_stop_reason")
-            or "PRE_LIFECYCLE_GOVERNED_SAFE_STOP"
-        )
-        metadata_reconciliation = _reconcile_pre_lifecycle_terminal_metadata(
-            target,
-            campaign_id=campaign_id,
-            run_id=run_id or f"{execution_id}-campaign-run",
-            cycle_id=cycle_id,
-            terminal_cause=terminal_cause,
-            now=_iso(_utc_now()),
-        )
+    terminal_cause = str(
+        report.get("first_terminal_cause")
+        or report.get("stop_reason")
+        or terminal.get("first_stop_reason")
+        or "PRE_LIFECYCLE_GOVERNED_SAFE_STOP"
+    )
+    # V2-9.7E.47 A1: ONE authoritative terminal path, taken on every terminal —
+    # pre-lifecycle and lifecycle-started alike. It reconciles campaign, campaign
+    # run, cycle, factory run, every started campaign window, campaign-scoped work
+    # and Scheduler jobs, preserving the immutable first terminal cause. E.46 §10.1
+    # left RUNNING/RUNNING/PLANNED behind precisely because the lifecycle-started
+    # path was excluded here.
+    metadata_reconciliation = reconcile_campaign_terminal(
+        target,
+        campaign_id=campaign_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
+        terminal_cause=terminal_cause,
+        run_status=report.get("run_status"),
+        factory_run_id=factory_run_id or None,
+        lifecycle_started=lifecycle_started,
+        now=_iso(_utc_now()),
+    )
 
     if lifecycle_started:
-        replay = pilot_report_only_replay(target, run_id)
+        replay = pilot_report_only_replay(target, factory_run_id)
         replay_new_source_calls = replay.get("replay", {}).get("new_source_calls")
-        replay_deterministic = replay == pilot_report_only_replay(target, run_id)
+        replay_deterministic = replay == pilot_report_only_replay(
+            target, factory_run_id
+        )
     else:
         replay_new_source_calls = 0
         replay_deterministic = True
     forbidden = report.get("forbidden_deltas", {})
+
+    # V2-9.7E.47 A5: every terminal outcome creates exactly one persistent
+    # campaign-report row and exactly one durable artifact in the configured
+    # report directory, with exact identity linkage and a deterministic
+    # zero-source report-only replay that creates no duplicate.
+    campaign_report_payload = build_campaign_terminal_report(
+        campaign_id=campaign_id,
+        configuration_id=configuration_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
+        report_id=report_id,
+        factory_run_id=factory_run_id or None,
+        execution_id=execution_id,
+        terminal_status=str(terminal.get("terminal_status") or ""),
+        terminal_cause=terminal_cause,
+        run_status=report.get("run_status"),
+        lifecycle_started=lifecycle_started,
+        reconciliation=metadata_reconciliation,
+        forbidden_deltas=forbidden,
+        launch_git_provenance=provenance,
+    )
+    try:
+        campaign_report = write_campaign_terminal_report(
+            target,
+            paths.report_dir,
+            report_id=report_id,
+            campaign_id=campaign_id,
+            configuration_id=configuration_id,
+            report=campaign_report_payload,
+        )
+        campaign_report_replay = replay_campaign_terminal_report(
+            target,
+            paths.report_dir,
+            report_id=report_id,
+            campaign_id=campaign_id,
+            configuration_id=configuration_id,
+        )
+    except TerminalClosureError as exc:
+        raise PilotRunnerError(f"terminal campaign report blocked: {exc}") from exc
 
     return {
         "status": "PILOT_TERMINAL",
@@ -877,11 +1045,15 @@ def run_two_token_operational_pilot(
                 "secret_material_recorded"
             ],
         },
+        "dependency_preflight": dependency_preflight.to_dict(),
         "execution_id": execution_id,
         "authorization_id": execution_id,
         "campaign_id": campaign_id,
+        "configuration_id": configuration_id,
         "cycle_id": cycle_id,
-        "run_id": run_id,
+        "report_id": report_id,
+        "run_id": factory_run_id,
+        "campaign_run_id": run_id,
         "run_status": report.get("run_status"),
         "stop_reason": report.get("stop_reason"),
         "lifecycle_started": lifecycle_started,
@@ -890,10 +1062,16 @@ def run_two_token_operational_pilot(
         "one_proof_lock_released": not Path(lock_path).exists(),
         "pending_or_running_run_steps": report.get("pending_or_running_run_steps"),
         "running_jobs_after_stop": report.get("running_jobs_after_stop"),
+        "active_jobs_after_stop": metadata_reconciliation.get(
+            "active_work", {}
+        ).get("active_jobs", 0),
+        "campaign_active_work": metadata_reconciliation.get("active_work", {}),
         "forbidden_deltas": forbidden,
         "full_pilot_admission": report.get("full_pilot_admission"),
         "replay_new_source_calls": replay_new_source_calls,
         "replay_deterministic": replay_deterministic,
+        "campaign_report": campaign_report,
+        "campaign_report_replay": campaign_report_replay,
         "prepared": dict(prepared),
         "restart_created": False,
         "successor_created": False,

@@ -49,6 +49,13 @@ class LateBuyTrapLabel(StrEnum):
 
 class HeldTo15mResultLabel(StrEnum):
     HELD_TO_15M_CONTINUED = "HELD_TO_15M_CONTINUED"
+    # V2-9.7E.47 B2: a measured held-to-15m change between +5% and +25% is a
+    # KNOWN moderate continuation, not an unknown trajectory. Before this label
+    # existed the classifier returned HELD_TO_15M_UNKNOWN for that band, which
+    # became a MISSING_OR_UNKNOWN_CONTEXT evidence blocker and was the single
+    # remaining blocker on the near-clean V2-9.7E.46 window 2. This is a
+    # categorical label only: no score, rank, confidence or weight.
+    HELD_TO_15M_MODERATE_CONTINUATION = "HELD_TO_15M_MODERATE_CONTINUATION"
     HELD_TO_15M_CONSOLIDATED = "HELD_TO_15M_CONSOLIDATED"
     HELD_TO_15M_FADED = "HELD_TO_15M_FADED"
     HELD_TO_15M_DUMPED = "HELD_TO_15M_DUMPED"

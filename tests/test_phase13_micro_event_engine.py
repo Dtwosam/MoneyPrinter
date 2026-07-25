@@ -151,8 +151,12 @@ class Phase13MicroEventEngineTest(unittest.TestCase):
         self.assertEqual({label.value for label in LateBuyTrapLabel}, {
             "NO_LATE_BUY_TRAP", "POSSIBLE_LATE_BUY_TRAP", "CONFIRMED_LATE_BUY_TRAP", "LATE_BUY_TRAP_UNKNOWN"
         })
+        # V2-9.7E.47 B2 adds exactly one categorical label for the measured
+        # (+5%, +25%) band, which previously fell into HELD_TO_15M_UNKNOWN.
         self.assertEqual({label.value for label in HeldTo15mResultLabel}, {
-            "HELD_TO_15M_CONTINUED", "HELD_TO_15M_CONSOLIDATED", "HELD_TO_15M_FADED", "HELD_TO_15M_DUMPED", "HELD_TO_15M_DEAD", "HELD_TO_15M_UNKNOWN"
+            "HELD_TO_15M_CONTINUED", "HELD_TO_15M_MODERATE_CONTINUATION",
+            "HELD_TO_15M_CONSOLIDATED", "HELD_TO_15M_FADED", "HELD_TO_15M_DUMPED",
+            "HELD_TO_15M_DEAD", "HELD_TO_15M_UNKNOWN"
         })
         self.assertEqual({label.value for label in MicroEventPayloadQualityLabel}, {
             "MICRO_EVENT_CONTEXT_CLEAN", "MICRO_EVENT_CONTEXT_PARTIAL", "MICRO_EVENT_CONTEXT_STALE", "MICRO_EVENT_CONTEXT_CONFLICTING", "MICRO_EVENT_CONTEXT_UNKNOWN", "MICRO_EVENT_CONTEXT_DO_NOT_USE_FOR_MEMORY"
