@@ -765,16 +765,18 @@ Historical proposal:
 
 - docs/printer-v1-proposed-memory-growth-build-order.md
 
-Current active memory-growth lane after V2-9.7F activation readiness PASS:
+Current active memory-growth lane after V2-9.8A operator activation PASS:
 
-- V2-9.8A — Operator Activation Gate
+- V2-9.8B — Active Bounded Memory Growth Operations
 
 V2-9 is closed PASS at commit 51bcfdb (`Close V2-9 four-hour proof lane`).
 V2-9.7A through V2-9.7F are closed. V2-9.7F activation readiness is
 `V2_9_7F_ACTIVATION_READINESS_PASS` (closeout:
 `docs/printer-v1-v2-9-7f-activation-readiness-closeout.md`).
-Operational memory growth remains locked until the V2-9.8A operator activation
-gate is explicitly completed.
+V2-9.8A is closed `V2_9_8A_OPERATOR_ACTIVATION_GATE_PASS` (closeout:
+`docs/printer-v1-v2-9-8a-operator-activation-gate-closeout.md`). The committed
+PowerShell command is published but has not been run. V2-9.8B remains a
+separate operator-run lane.
 
 The Memory Growth Automation Audit and V2-0 current-state audit remain required supporting audit/readiness sources. They are not the active lane-order document.
 
@@ -783,8 +785,7 @@ The previous memory-growth build order remains historical for the X1-X14 era. It
 Do not restart from V2-2A, V2-3, V2-4, V2-5, V2-6, V2-7, V2-8, or V2-9 unless the operator explicitly requests a historical audit.
 
 Do not restart V2-9.7A–F unless the operator explicitly requests a historical audit.
-Do not provide the operational PowerShell command until V2-9.8A.
-Do not begin V2-10, V2-11, 12h/24h work, retrieval, paper decisions, or any financial lane during V2-9.8A unless that lane explicitly authorizes them (it does not unlock financial capabilities).
+Do not begin V2-10, V2-11, 1h/4h/12h/24h production work, retrieval, paper decisions, or any financial lane during V2-9.8B unless a later explicit lane authorizes them.
 
 Every V2 major capability must follow this pattern:
 
@@ -866,10 +867,10 @@ This build order is active inside the required source stack for Printer V1 memor
 
 The next active memory-growth lane is:
 
-- `V2-9.8A — Operator Activation Gate`
+- `V2-9.8B — Active Bounded Memory Growth Operations`
 
-V2-9.8A is a separate explicit operator gate. It must not be started from a
-readiness closeout alone. It does not unlock retrieval, paper decisions,
+V2-9.8A is closed PASS. V2-9.8B is the separately operator-run bounded
+persistent 15m campaign lane. It does not unlock retrieval, paper decisions,
 BUY/SELL/HOLD, positions, trades, audits, or PnL.
 ## Printer V1 Python Builder Guide
 

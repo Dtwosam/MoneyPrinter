@@ -83,11 +83,11 @@ Post-V2-9 update:
 - V2-9.7F activation readiness is closed PASS:
   `V2_9_7F_ACTIVATION_READINESS_PASS`
   (`docs/printer-v1-v2-9-7f-activation-readiness-closeout.md`).
-- Operational memory growth is still locked until V2-9.8A.
+- V2-9.8A is closed `V2_9_8A_OPERATOR_ACTIVATION_GATE_PASS`.
 - The next active memory-growth lane is:
 
 ```text
-V2-9.8A — Operator Activation Gate
+V2-9.8B — Active Bounded Memory Growth Operations
 ```
 
 Known factual anchors from V2-0:
@@ -752,16 +752,16 @@ Goal: prepare and implement the operational Memory Factory only after V2-9 has
 closed PASS, without starting operational memory growth during the adoption or
 readiness-audit lanes.
 
-Status: V2-9.7A through V2-9.7F are closed PASS. V2-9.7F activation readiness
-is `V2_9_7F_ACTIVATION_READINESS_PASS`. The next active memory-growth lane is:
+Status: V2-9.7A through V2-9.7F and V2-9.8A are closed PASS. V2-9.8A is
+`V2_9_8A_OPERATOR_ACTIVATION_GATE_PASS`. The next active memory-growth lane is:
 
 ```text
-V2-9.8A — Operator Activation Gate
+V2-9.8B — Active Bounded Memory Growth Operations
 ```
 
-V2-9.8A remains a separate explicit operator gate. Operational memory growth,
-the operational PowerShell command, retrieval, and financial capabilities
-remain locked until that gate is completed.
+The operational command is published but has not run. V2-9.8B remains a
+separate operator-run bounded campaign lane. Retrieval and financial
+capabilities remain locked.
 
 Historical allowed work inside V2-9.7 (now complete): audit, targeted repair of
 proven operational blockers, campaign design, bounded implementation, two-token
@@ -1679,17 +1679,15 @@ learning quality, evidence quality, report clarity, or lock safety is not done.
 
 ## 12. Next Recommended Lane
 
-V2-9.7A through V2-9.7F are closed. V2-9.7F activation readiness is
-`V2_9_7F_ACTIVATION_READINESS_PASS`. The next active memory-growth lane is:
+V2-9.7A through V2-9.7F and V2-9.8A are closed. V2-9.8A verdict is
+`V2_9_8A_OPERATOR_ACTIVATION_GATE_PASS`. The next active memory-growth lane is:
 
 ```text
-V2-9.8A — Operator Activation Gate
+V2-9.8B — Active Bounded Memory Growth Operations
 ```
 
-Reason: the operational Memory Factory command surface, supervision, safe stop,
-reporting, zero-source replay, E.47 terminal/memory repairs, and E.48
-holder-condition / memory-quality separation are ready for the separate
-explicit operator activation gate. V2-9.8A must not be started from a readiness
-closeout alone. It must not publish the operational command early, and it must
-not unlock retrieval, paper decisions, BUY/SELL/HOLD, positions, trades,
-audits, or PnL.
+Reason: the exact bounded command, authoritative backup, Scheduler residue
+reconciliation, supervision, safe stop, reporting, replay, two-token policy,
+and 15m-only boundary passed the operator activation gate. V2-9.8B may run only
+through a separate explicit operator action. Retrieval, paper decisions,
+BUY/SELL/HOLD, positions, trades, audits, and PnL remain locked.

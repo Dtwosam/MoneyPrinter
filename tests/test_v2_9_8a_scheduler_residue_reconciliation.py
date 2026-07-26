@@ -31,6 +31,21 @@ class SchedulerResidueReconciliationTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.db = self.root / "disposable.sqlite3"
         shutil.copy2(SOURCE, self.db)
+        # The authoritative corpus is terminal after the one-time A.9 repair.
+        # Recreate the audited pre-repair state explicitly in this disposable
+        # fixture so the repair proof remains repeatable without depending on
+        # live corpus state.
+        connection = sqlite3.connect(self.db)
+        placeholders = ",".join("?" * len(AUDITED_JOB_IDS))
+        connection.execute(
+            f"""UPDATE printer_scheduler_jobs
+                SET status='PENDING',finished_at=NULL,locked_at=NULL,lock_owner=NULL,
+                    updated_at=created_at
+                WHERE id IN ({placeholders})""",
+            AUDITED_JOB_IDS,
+        )
+        connection.commit()
+        connection.close()
         self.before_hash = sha256(self.db)
 
     def tearDown(self) -> None:

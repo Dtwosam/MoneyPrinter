@@ -59,16 +59,16 @@ passes.
 The next active lane is:
 
 ```text
-V2-9.8A — Operator Activation Gate
+V2-9.8B — Active Bounded Memory Growth Operations
 ```
 
 V2-9.7A through V2-9.7F are closed. V2-9.7F verdict:
 `V2_9_7F_ACTIVATION_READINESS_PASS` at closeout
 `docs/printer-v1-v2-9-7f-activation-readiness-closeout.md`.
 
-V2-9.8A is a separate explicit operator gate. Do not start it from a readiness
-closeout alone. Do not publish the operational PowerShell command until V2-9.8A.
-Operational memory growth, retrieval, paper decisions, BUY/SELL/HOLD, positions,
+V2-9.8A is closed `V2_9_8A_OPERATOR_ACTIVATION_GATE_PASS`. The operational
+PowerShell command is published but has not run. V2-9.8B remains a separate
+operator-run lane. Retrieval, paper decisions, BUY/SELL/HOLD, positions,
 trades, audits, and PnL remain locked.
 
 ## 4. Assistant Behavior Rules
@@ -152,17 +152,16 @@ The following locks remain active:
 The next active memory-growth lane is:
 
 ```text
-V2-9.8A — Operator Activation Gate
+V2-9.8B — Active Bounded Memory Growth Operations
 ```
 
 V2-2A and later historical V2 audit/design/implementation lanes are closed
 history unless the operator explicitly requests a historical audit. Do not
 treat `V2-2A` as the next lane.
 
-V2-9.8A is a separate explicit operator gate. Allowed only when the operator
-explicitly starts that gate under the active build order. It does not unlock
-retrieval, paper decisions, BUY/SELL/HOLD, positions, trades, audits, or PnL,
-and it must not publish the operational PowerShell command before the gate.
+V2-9.8A is closed PASS. V2-9.8B is allowed only through a separate explicit
+operator run under the active build order. It does not unlock retrieval, paper
+decisions, BUY/SELL/HOLD, positions, trades, audits, or PnL.
 
 ## 7. Automation Boundary Reminder
 
@@ -191,12 +190,11 @@ For Printer V1 memory-growth work, assistants must start from the active V2
 build order and keep the next active lane as:
 
 ```text
-V2-9.8A — Operator Activation Gate
+V2-9.8B — Active Bounded Memory Growth Operations
 ```
 
-unless the operator explicitly completes that gate or adopts a later
+unless the operator explicitly completes that lane or adopts a later
 source-of-truth update. Do not restart V2-2A, V2-9.7A–F, or any closed
 historical lane as "next" without an explicit historical-audit request.
-Preserve V2-9.7F PASS, keep V2-9.8A as a separate explicit gate, withhold the
-operational command until that gate, and preserve all retrieval and financial
-locks.
+Preserve V2-9.7F and V2-9.8A PASS, require a separate explicit operator action
+for V2-9.8B, and preserve all retrieval and financial locks.
