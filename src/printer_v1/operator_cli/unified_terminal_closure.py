@@ -476,6 +476,8 @@ def reconcile_campaign_terminal(
 # ---------------------------------------------------------------------------
 
 REPORT_ARTIFACT_SUFFIX = ".campaign-report.json"
+BLOCKED_INSUFFICIENT_GRADUATED_POOL = "BLOCKED_INSUFFICIENT_GRADUATED_POOL"
+LIQUIDITY_BELOW_SELECTION_FLOOR = "LIQUIDITY_BELOW_SELECTION_FLOOR"
 
 
 def _canonical_json(payload: Mapping[str, Any]) -> str:
@@ -483,6 +485,251 @@ def _canonical_json(payload: Mapping[str, Any]) -> str:
         dict(payload), sort_keys=True, separators=(",", ":"),
         ensure_ascii=True, allow_nan=False,
     )
+
+
+def load_campaign_operation_totals(
+    db_path: str | Path,
+    *,
+    run_id: str,
+    cycle_id: str,
+) -> dict[str, int]:
+    """Read campaign-attributable operation totals from the holder ledger only.
+
+    This is a reporting read of the existing holder budget owner. It does not
+    create a second source-accounting path and never whole-table-counts
+    ``printer_source_requests``.
+    """
+    path = Path(db_path).resolve()
+    connection = sqlite3.connect(
+        f"file:{path.as_posix()}?mode=ro", uri=True, timeout=0.0
+    )
+    connection.row_factory = sqlite3.Row
+    try:
+        connection.execute("PRAGMA query_only=ON")
+        row = connection.execute(
+            """SELECT governed_requests, underlying_transport_operations
+               FROM printer_holder_campaign_operation_ledgers
+               WHERE run_id=? AND cycle_id=?""",
+            (run_id, cycle_id),
+        ).fetchone()
+    finally:
+        connection.close()
+    if row is None:
+        return {
+            "campaign_source_calls": 0,
+            "campaign_transport_operations": 0,
+            "campaign_scheduler_calls": 0,
+            "ledger_present": 0,
+        }
+    return {
+        "campaign_source_calls": int(row["governed_requests"] or 0),
+        "campaign_transport_operations": int(
+            row["underlying_transport_operations"] or 0
+        ),
+        "campaign_scheduler_calls": 0,
+        "ledger_present": 1,
+    }
+
+
+def build_candidate_supply_report(
+    candidate: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Normalize one front-door / supply candidate into the terminal report shape."""
+    liquidity = candidate.get("liquidity")
+    if isinstance(liquidity, Mapping):
+        liquidity_usd = liquidity.get("liquidity_usd")
+        liquidity_status = liquidity.get("status")
+        liquidity_reason = liquidity.get("reason")
+        pool_from_liquidity = liquidity.get("pool")
+    else:
+        liquidity_usd = candidate.get("liquidity_usd")
+        liquidity_status = candidate.get("liquidity_status")
+        liquidity_reason = candidate.get("liquidity_reason")
+        pool_from_liquidity = None
+
+    eligible = bool(candidate.get("eligible"))
+    rejection = candidate.get("rejection")
+    if rejection is None:
+        rejection = candidate.get("rejection_or_exclusion_reason")
+    if not eligible and rejection is None and liquidity_status == LIQUIDITY_BELOW_SELECTION_FLOOR:
+        rejection = LIQUIDITY_BELOW_SELECTION_FLOOR
+    if not eligible and rejection is None and liquidity_reason:
+        rejection = str(liquidity_reason)
+
+    pool = candidate.get("pool") or candidate.get("pumpswap_pool") or pool_from_liquidity
+    migration = candidate.get("migration_evidence")
+    if migration is None:
+        migration = {
+            "migration_signature": candidate.get("migration_signature"),
+            "migration_provenance": candidate.get("migration_provenance"),
+        }
+    pool_confirmation = candidate.get("pool_confirmation")
+    if pool_confirmation is None:
+        pool_confirmation = {
+            "pool": pool,
+            "market_identity": candidate.get("market_identity"),
+            "lifecycle_state": candidate.get("lifecycle_state"),
+            "confirmed": bool(
+                candidate.get("pumpswap_confirmed", candidate.get("lifecycle_state")
+                              == "PUMPSWAP_GRADUATED_CONFIRMED")
+            ),
+        }
+    source_path = candidate.get("source_path")
+    if not source_path:
+        provenance = str(candidate.get("provenance") or "")
+        if provenance:
+            source_path = f"graduated_registry_or_migration:{provenance}"
+        else:
+            source_path = "graduated_liquidity_front_door"
+    stage_reached = candidate.get("stage_reached")
+    if not stage_reached:
+        if eligible:
+            stage_reached = "MARKET_ELIGIBLE"
+        elif rejection in {LIQUIDITY_BELOW_SELECTION_FLOOR, "BELOW_3000_FLOOR"}:
+            stage_reached = "LIQUIDITY_FLOOR_FAILED"
+        else:
+            stage_reached = "EVALUATED"
+
+    return {
+        "mint": candidate.get("mint") or candidate.get("mint_identity"),
+        "source_path": source_path,
+        "stage_reached": stage_reached,
+        "migration_evidence": dict(migration) if isinstance(migration, Mapping) else migration,
+        "pool_confirmation": (
+            dict(pool_confirmation)
+            if isinstance(pool_confirmation, Mapping)
+            else pool_confirmation
+        ),
+        "liquidity": liquidity_usd,
+        "liquidity_status": liquidity_status,
+        "market_cap": candidate.get("market_cap"),
+        "eligibility_result": "eligible" if eligible else "rejected",
+        "rejection_or_exclusion_reason": None if eligible else (
+            None if rejection is None else str(rejection)
+        ),
+    }
+
+
+def build_blocked_supply_reporting(
+    *,
+    required_token_capacity: int,
+    candidates: Iterable[Mapping[str, Any]],
+    blocked_supply_reason: str | None,
+    campaign_source_calls: int,
+    campaign_scheduler_calls: int = 0,
+) -> dict[str, Any]:
+    """Build the authoritative blocked-supply + campaign activity report surface."""
+    candidate_reports = [
+        build_candidate_supply_report(candidate) for candidate in candidates
+    ]
+    eligible = sum(
+        1 for item in candidate_reports if item.get("eligibility_result") == "eligible"
+    )
+    validated = sum(
+        1
+        for item in candidate_reports
+        if item.get("liquidity") is not None
+        or item.get("pool_confirmation")
+        or item.get("eligibility_result") == "eligible"
+    )
+    observed = len(candidate_reports)
+    reason = blocked_supply_reason
+    if reason is None and required_token_capacity > eligible:
+        reason = BLOCKED_INSUFFICIENT_GRADUATED_POOL
+    return {
+        "campaign_activity": {
+            "campaign_source_calls": int(campaign_source_calls),
+            "campaign_scheduler_calls": int(campaign_scheduler_calls),
+        },
+        "blocked_supply": {
+            "required_token_capacity": int(required_token_capacity),
+            "candidates_observed": observed,
+            "candidates_validated": validated,
+            "eligible_candidates": eligible,
+            "blocked_supply_reason": reason,
+            "candidates": candidate_reports,
+        },
+        "campaign_source_calls": int(campaign_source_calls),
+        "campaign_scheduler_calls": int(campaign_scheduler_calls),
+        "candidates_observed": observed,
+        "candidates_validated": validated,
+        "eligible_candidates": eligible,
+        "required_token_capacity": int(required_token_capacity),
+        "blocked_supply_reason": reason,
+    }
+
+
+def assemble_campaign_terminal_reporting(
+    db_path: str | Path,
+    *,
+    run_id: str,
+    cycle_id: str,
+    terminal_cause: str | None,
+    lifecycle: Mapping[str, Any] | None = None,
+    required_token_capacity: int = 2,
+    campaign_scheduler_calls: int | None = None,
+) -> dict[str, Any]:
+    """Assemble campaign totals and blocked-supply detail for terminal reporting.
+
+    Prefers durable holder-ledger source totals. Candidate detail comes from
+    lifecycle packaging produced at the insufficient-pool boundary; no network
+    I/O and no second source-accounting owner.
+    """
+    totals = load_campaign_operation_totals(
+        db_path, run_id=run_id, cycle_id=cycle_id
+    )
+    lifecycle = dict(lifecycle or {})
+    reporting = dict(lifecycle.get("terminal_reporting") or {})
+    candidates_raw = (
+        reporting.get("candidates")
+        or lifecycle.get("front_door_candidates")
+        or lifecycle.get("blocked_supply_candidates")
+        or []
+    )
+    if campaign_scheduler_calls is None:
+        campaign_scheduler_calls = int(
+            reporting.get("campaign_scheduler_calls")
+            if reporting.get("campaign_scheduler_calls") is not None
+            else totals.get("campaign_scheduler_calls") or 0
+        )
+    source_calls = int(
+        reporting.get("campaign_source_calls")
+        if reporting.get("campaign_source_calls") is not None
+        else totals["campaign_source_calls"]
+    )
+    capacity = int(
+        reporting.get("required_token_capacity")
+        if reporting.get("required_token_capacity") is not None
+        else required_token_capacity
+    )
+    reason = (
+        reporting.get("blocked_supply_reason")
+        or lifecycle.get("blocked_supply_reason")
+        or (
+            terminal_cause
+            if terminal_cause in {
+                BLOCKED_INSUFFICIENT_GRADUATED_POOL,
+                "BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL",
+            }
+            else None
+        )
+    )
+    surface = build_blocked_supply_reporting(
+        required_token_capacity=capacity,
+        candidates=list(candidates_raw),
+        blocked_supply_reason=None if reason is None else str(reason),
+        campaign_source_calls=source_calls,
+        campaign_scheduler_calls=int(campaign_scheduler_calls),
+    )
+    # If no candidates were packaged and the terminal is not a blocked-supply
+    # close, keep activity totals without inventing a blocked-supply story.
+    if not candidates_raw and reason is None:
+        return {
+            "campaign_activity": surface["campaign_activity"],
+            "campaign_source_calls": surface["campaign_source_calls"],
+            "campaign_scheduler_calls": surface["campaign_scheduler_calls"],
+        }
+    return surface
 
 
 def build_campaign_terminal_report(
@@ -501,9 +748,18 @@ def build_campaign_terminal_report(
     reconciliation: Mapping[str, Any],
     forbidden_deltas: Mapping[str, int] | None = None,
     launch_git_provenance: Mapping[str, Any] | None = None,
+    campaign_activity: Mapping[str, Any] | None = None,
+    blocked_supply: Mapping[str, Any] | None = None,
+    campaign_source_calls: int | None = None,
+    campaign_scheduler_calls: int | None = None,
+    candidates_observed: int | None = None,
+    candidates_validated: int | None = None,
+    eligible_candidates: int | None = None,
+    required_token_capacity: int | None = None,
+    blocked_supply_reason: str | None = None,
 ) -> dict[str, Any]:
     """Assemble the canonical terminal report payload from stored facts only."""
-    return {
+    payload: dict[str, Any] = {
         "report_kind": "PILOT_CAMPAIGN_TERMINAL",
         "policy_version": "V2_9_7E_47_UNIFIED_TERMINAL_CLOSURE",
         "identity": {
@@ -536,6 +792,64 @@ def build_campaign_terminal_report(
         "restart_created": False,
         "successor_created": False,
     }
+    if campaign_activity is not None:
+        payload["campaign_activity"] = dict(campaign_activity)
+        payload["campaign_source_calls"] = int(
+            campaign_activity.get("campaign_source_calls")
+            if campaign_source_calls is None
+            else campaign_source_calls
+        )
+        payload["campaign_scheduler_calls"] = int(
+            campaign_activity.get("campaign_scheduler_calls")
+            if campaign_scheduler_calls is None
+            else campaign_scheduler_calls
+        )
+    elif campaign_source_calls is not None or campaign_scheduler_calls is not None:
+        payload["campaign_source_calls"] = int(campaign_source_calls or 0)
+        payload["campaign_scheduler_calls"] = int(campaign_scheduler_calls or 0)
+        payload["campaign_activity"] = {
+            "campaign_source_calls": payload["campaign_source_calls"],
+            "campaign_scheduler_calls": payload["campaign_scheduler_calls"],
+        }
+    if blocked_supply is not None:
+        payload["blocked_supply"] = dict(blocked_supply)
+        payload["candidates_observed"] = int(
+            blocked_supply.get("candidates_observed")
+            if candidates_observed is None
+            else candidates_observed
+        )
+        payload["candidates_validated"] = int(
+            blocked_supply.get("candidates_validated")
+            if candidates_validated is None
+            else candidates_validated
+        )
+        payload["eligible_candidates"] = int(
+            blocked_supply.get("eligible_candidates")
+            if eligible_candidates is None
+            else eligible_candidates
+        )
+        payload["required_token_capacity"] = int(
+            blocked_supply.get("required_token_capacity")
+            if required_token_capacity is None
+            else required_token_capacity
+        )
+        payload["blocked_supply_reason"] = (
+            blocked_supply.get("blocked_supply_reason")
+            if blocked_supply_reason is None
+            else blocked_supply_reason
+        )
+    else:
+        if candidates_observed is not None:
+            payload["candidates_observed"] = int(candidates_observed)
+        if candidates_validated is not None:
+            payload["candidates_validated"] = int(candidates_validated)
+        if eligible_candidates is not None:
+            payload["eligible_candidates"] = int(eligible_candidates)
+        if required_token_capacity is not None:
+            payload["required_token_capacity"] = int(required_token_capacity)
+        if blocked_supply_reason is not None:
+            payload["blocked_supply_reason"] = blocked_supply_reason
+    return payload
 
 
 def write_campaign_terminal_report(
@@ -554,6 +868,10 @@ def write_campaign_terminal_report(
     rejects a differing payload under the same identity) and writes the same
     canonical bytes to one file in the configured report directory. A replay
     creates no duplicate row and no second artifact.
+
+    ``campaign_source_calls`` / ``source_calls`` on the return surface are the
+    original campaign totals embedded in the report payload. Report-write itself
+    performs no Source Governor work; replay surfaces use ``replay_new_*``.
     """
     canonical = _canonical_json(report)
     report_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -587,6 +905,26 @@ def write_campaign_terminal_report(
     written = sorted(
         path.name for path in directory.glob(f"*{REPORT_ARTIFACT_SUFFIX}")
     )
+    activity = report.get("campaign_activity") if isinstance(report, Mapping) else None
+    campaign_source_calls = int(
+        report.get("campaign_source_calls")
+        if report.get("campaign_source_calls") is not None
+        else (
+            activity.get("campaign_source_calls")
+            if isinstance(activity, Mapping) and activity.get("campaign_source_calls") is not None
+            else 0
+        )
+    )
+    campaign_scheduler_calls = int(
+        report.get("campaign_scheduler_calls")
+        if report.get("campaign_scheduler_calls") is not None
+        else (
+            activity.get("campaign_scheduler_calls")
+            if isinstance(activity, Mapping)
+            and activity.get("campaign_scheduler_calls") is not None
+            else 0
+        )
+    )
     return {
         "report_id": report_id,
         "campaign_id": campaign_id,
@@ -597,8 +935,17 @@ def write_campaign_terminal_report(
         "artifact_created": artifact_created,
         "artifact_count": len(written),
         "artifacts": written,
-        "source_calls": 0,
-        "scheduler_calls": 0,
+        "campaign_source_calls": campaign_source_calls,
+        "campaign_scheduler_calls": campaign_scheduler_calls,
+        # Compatibility alias: original campaign total, not report-write work.
+        "source_calls": campaign_source_calls,
+        "scheduler_calls": campaign_scheduler_calls,
+        "candidates_observed": report.get("candidates_observed"),
+        "candidates_validated": report.get("candidates_validated"),
+        "eligible_candidates": report.get("eligible_candidates"),
+        "required_token_capacity": report.get("required_token_capacity"),
+        "blocked_supply_reason": report.get("blocked_supply_reason"),
+        "blocked_supply": report.get("blocked_supply"),
     }
 
 
@@ -644,6 +991,27 @@ def replay_campaign_terminal_report(
     artifact_matches = (
         artifact.is_file() and artifact.read_text(encoding="utf-8") == canonical
     )
+    activity = stored.get("campaign_activity") if isinstance(stored, dict) else None
+    campaign_source_calls = int(
+        stored.get("campaign_source_calls")
+        if stored.get("campaign_source_calls") is not None
+        else (
+            activity.get("campaign_source_calls")
+            if isinstance(activity, Mapping)
+            and activity.get("campaign_source_calls") is not None
+            else 0
+        )
+    )
+    campaign_scheduler_calls = int(
+        stored.get("campaign_scheduler_calls")
+        if stored.get("campaign_scheduler_calls") is not None
+        else (
+            activity.get("campaign_scheduler_calls")
+            if isinstance(activity, Mapping)
+            and activity.get("campaign_scheduler_calls") is not None
+            else 0
+        )
+    )
     return {
         "mode": "REPORT_ONLY",
         "report_id": report_id,
@@ -652,20 +1020,37 @@ def replay_campaign_terminal_report(
         "report_rows": 1,
         "duplicate_reports_created": 0,
         "artifact_matches": artifact_matches,
+        "campaign_source_calls": campaign_source_calls,
+        "campaign_scheduler_calls": campaign_scheduler_calls,
+        "replay_new_source_calls": 0,
+        "replay_new_scheduler_calls": 0,
+        # Compatibility aliases for earlier replay consumers.
         "new_source_calls": 0,
         "new_scheduler_work": 0,
         "database_writes": total_changes,
+        "candidates_observed": stored.get("candidates_observed"),
+        "candidates_validated": stored.get("candidates_validated"),
+        "eligible_candidates": stored.get("eligible_candidates"),
+        "required_token_capacity": stored.get("required_token_capacity"),
+        "blocked_supply_reason": stored.get("blocked_supply_reason"),
+        "blocked_supply": stored.get("blocked_supply"),
     }
 
 
 __all__ = [
+    "BLOCKED_INSUFFICIENT_GRADUATED_POOL",
     "CANONICAL_PACKAGE",
     "DependencyPreflight",
+    "LIQUIDITY_BELOW_SELECTION_FLOOR",
     "REPORT_ARTIFACT_SUFFIX",
     "REQUIRED_RUNTIME_DEPENDENCIES",
     "TerminalClosureError",
+    "assemble_campaign_terminal_reporting",
     "assert_runtime_dependency_preflight",
+    "build_blocked_supply_reporting",
     "build_campaign_terminal_report",
+    "build_candidate_supply_report",
+    "load_campaign_operation_totals",
     "reconcile_campaign_terminal",
     "replay_campaign_terminal_report",
     "resolve_terminal_state",

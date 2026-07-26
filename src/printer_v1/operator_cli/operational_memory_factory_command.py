@@ -70,6 +70,7 @@ from printer_v1.operator_cli.readiness_source_contract_preflight import (
     build_readiness_source_contract_preflight,
 )
 from printer_v1.operator_cli.unified_terminal_closure import (
+    assemble_campaign_terminal_reporting,
     assert_runtime_dependency_preflight,
     build_campaign_terminal_report,
     reconcile_campaign_terminal,
@@ -601,6 +602,14 @@ def _terminalize_initialized_failure(
         )
     except BaseException as exc:  # preserve and continue to report owner
         closure_errors.append(f"reconciliation:{type(exc).__name__}:{exc}")
+    reporting = assemble_campaign_terminal_reporting(
+        command.db_path,
+        run_id=command.run_id,
+        cycle_id=cycle_id,
+        terminal_cause=cause,
+        lifecycle={},
+        required_token_capacity=TOKEN_CAPACITY,
+    )
     payload = build_campaign_terminal_report(
         campaign_id=command.campaign_id,
         configuration_id=command.configuration_id,
@@ -616,6 +625,15 @@ def _terminalize_initialized_failure(
         reconciliation=reconciliation,
         forbidden_deltas={},
         launch_git_provenance=launch_git_provenance,
+        campaign_activity=reporting.get("campaign_activity"),
+        blocked_supply=reporting.get("blocked_supply"),
+        campaign_source_calls=reporting.get("campaign_source_calls"),
+        campaign_scheduler_calls=reporting.get("campaign_scheduler_calls"),
+        candidates_observed=reporting.get("candidates_observed"),
+        candidates_validated=reporting.get("candidates_validated"),
+        eligible_candidates=reporting.get("eligible_candidates"),
+        required_token_capacity=reporting.get("required_token_capacity"),
+        blocked_supply_reason=reporting.get("blocked_supply_reason"),
     )
     report: Mapping[str, Any] = {"report_written": False}
     try:
@@ -809,6 +827,14 @@ def run_operational_campaign(
             lifecycle_started=bool(result.lifecycle_started),
             now=_iso(),
         )
+        reporting = assemble_campaign_terminal_reporting(
+            command.db_path,
+            run_id=command.run_id,
+            cycle_id=cycle_id,
+            terminal_cause=cause,
+            lifecycle=lifecycle,
+            required_token_capacity=TOKEN_CAPACITY,
+        )
         payload = build_campaign_terminal_report(
             campaign_id=command.campaign_id,
             configuration_id=command.configuration_id,
@@ -824,6 +850,15 @@ def run_operational_campaign(
             reconciliation=reconciliation,
             forbidden_deltas=dict(lifecycle.get("forbidden_deltas") or {}),
             launch_git_provenance=preflight["git_provenance"],
+            campaign_activity=reporting.get("campaign_activity"),
+            blocked_supply=reporting.get("blocked_supply"),
+            campaign_source_calls=reporting.get("campaign_source_calls"),
+            campaign_scheduler_calls=reporting.get("campaign_scheduler_calls"),
+            candidates_observed=reporting.get("candidates_observed"),
+            candidates_validated=reporting.get("candidates_validated"),
+            eligible_candidates=reporting.get("eligible_candidates"),
+            required_token_capacity=reporting.get("required_token_capacity"),
+            blocked_supply_reason=reporting.get("blocked_supply_reason"),
         )
         report = write_campaign_terminal_report(
             command.db_path,
@@ -840,6 +875,14 @@ def run_operational_campaign(
             "run_status": lifecycle.get("run_status"),
             "first_terminal_cause": cause,
             "report": report,
+            "campaign_source_calls": report.get("campaign_source_calls"),
+            "campaign_scheduler_calls": report.get("campaign_scheduler_calls"),
+            "candidates_observed": report.get("candidates_observed"),
+            "candidates_validated": report.get("candidates_validated"),
+            "eligible_candidates": report.get("eligible_candidates"),
+            "required_token_capacity": report.get("required_token_capacity")
+            or TOKEN_CAPACITY,
+            "blocked_supply_reason": report.get("blocked_supply_reason"),
             "token_capacity": TOKEN_CAPACITY,
             "main_window": MAIN_WINDOW,
             "support_5m_only": True,
@@ -979,6 +1022,18 @@ def report_only() -> dict[str, Any]:
     return {
         "mode": "REPORT_ONLY",
         "replay": replay,
+        # Original campaign totals from the stored terminal report.
+        "campaign_source_calls": replay.get("campaign_source_calls"),
+        "campaign_scheduler_calls": replay.get("campaign_scheduler_calls"),
+        "candidates_observed": replay.get("candidates_observed"),
+        "candidates_validated": replay.get("candidates_validated"),
+        "eligible_candidates": replay.get("eligible_candidates"),
+        "required_token_capacity": replay.get("required_token_capacity"),
+        "blocked_supply_reason": replay.get("blocked_supply_reason"),
+        "blocked_supply": replay.get("blocked_supply"),
+        # Report-only itself performs no new Source Governor / Scheduler work.
+        "replay_new_source_calls": 0,
+        "replay_new_scheduler_calls": 0,
         "source_calls": 0,
         "scheduler_runtime_calls": 0,
         "database_writes": 0,

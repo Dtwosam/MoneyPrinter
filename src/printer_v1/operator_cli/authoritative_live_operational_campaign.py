@@ -1501,6 +1501,21 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     ledger=ledger, now=evaluated.isoformat(),
                 )
                 connection.commit()
+                # V2-9.8B.4 reporting package only: preserve front-door candidate
+                # outcomes and durable ledger totals for the terminal report. No
+                # network I/O, no second source-accounting owner, no activation.
+                front_door_candidates = []
+                if supply is not None:
+                    front_door_candidates = list(
+                        (supply.front_door_report or {}).get("candidates") or []
+                    )
+                terminal_reporting = {
+                    "campaign_source_calls": int(ledger.governed_requests),
+                    "campaign_scheduler_calls": 0,
+                    "required_token_capacity": 2,
+                    "blocked_supply_reason": BLOCKED_INSUFFICIENT_GRADUATED_POOL,
+                    "candidates": front_door_candidates,
+                }
                 return OriginLifecycleResult(
                     activation=ActivationResult(
                         terminal_status=BLOCKED_INSUFFICIENT_GRADUATED_POOL,
@@ -1522,6 +1537,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         "graduated_supply_diagnostics": (
                             dict(supply.diagnostics) if supply is not None else {}
                         ),
+                        "front_door_candidates": front_door_candidates,
+                        "blocked_supply_reason": BLOCKED_INSUFFICIENT_GRADUATED_POOL,
+                        "terminal_reporting": terminal_reporting,
                     },
                     lifecycle_started=False,
                 )
