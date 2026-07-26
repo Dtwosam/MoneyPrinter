@@ -87,7 +87,7 @@ Post-V2-9 update:
 - The next active memory-growth lane is:
 
 ```text
-V2-9.8A - Operator Activation Gate
+V2-9.8A — Operator Activation Gate
 ```
 
 Known factual anchors from V2-0:
@@ -752,22 +752,27 @@ Goal: prepare and implement the operational Memory Factory only after V2-9 has
 closed PASS, without starting operational memory growth during the adoption or
 readiness-audit lanes.
 
-Status: active program, locked until its sub-lanes pass. V2-9.7A, the focused
-V2-9.7B.1-B.5 repair program, V2-9.7C.0, V2-9.7C.0A, and the Solana
-agent-assistance readiness audit are complete. The current documentation step
-is V2-9.7C Operational Memory Factory Design. After PASS, the next active lane
-is `V2-9.7D - Bounded Implementation`.
+Status: V2-9.7A through V2-9.7F are closed PASS. V2-9.7F activation readiness
+is `V2_9_7F_ACTIVATION_READINESS_PASS`. The next active memory-growth lane is:
 
-Allowed: audit, targeted repair of proven operational blockers, campaign design,
-bounded implementation, two-token pilot proof, and activation closeout in the
-lane order below.
+```text
+V2-9.8A — Operator Activation Gate
+```
 
-Not allowed: active memory-growth operations, V2-10, 12h/24h work, retrieval
-activation, paper decisions,
-BUY/SELL/HOLD, positions, trades, paper trade audits, PnL, live execution,
-wallet/private-key/signing logic, paid APIs, scoring, ranking, confidence
-percentages, weighted logic, embeddings, vectors, unbounded runtime, or automatic
-restart after terminal failure.
+V2-9.8A remains a separate explicit operator gate. Operational memory growth,
+the operational PowerShell command, retrieval, and financial capabilities
+remain locked until that gate is completed.
+
+Historical allowed work inside V2-9.7 (now complete): audit, targeted repair of
+proven operational blockers, campaign design, bounded implementation, two-token
+pilot proof, and activation closeout in the lane order below.
+
+Not allowed before/without V2-9.8A: active memory-growth operations, V2-10,
+12h/24h work, retrieval activation, paper decisions, BUY/SELL/HOLD, positions,
+trades, paper trade audits, PnL, live execution, wallet/private-key/signing
+logic, paid APIs, scoring, ranking, confidence percentages, weighted logic,
+embeddings, vectors, unbounded runtime, or automatic restart after terminal
+failure.
 
 Final factory target flow:
 
@@ -966,7 +971,7 @@ campaigns remain locked until V2-9.8A operator activation. This is real
 persistent corpus production, not design, fixtures, implementation-only work,
 or a one-off proof.
 
-#### V2-9.8A - Operator Activation Gate
+#### V2-9.8A — Operator Activation Gate
 
 Before any active bounded memory-growth campaign, the assistant must say exactly:
 
@@ -1674,18 +1679,17 @@ learning quality, evidence quality, report clarity, or lock safety is not done.
 
 ## 12. Next Recommended Lane
 
-After the V2-9.7A readiness audit, focused V2-9.7B.1-B.5 repair program,
-V2-9.7C.0 money-usefulness readiness audit, V2-9.7C.0A product-law adoption,
-V2-9.7C Solana agent-assistance readiness audit at commit `9f2601b`, and the
-governance adoption at commit `5c77651`, V2-9.7C Operational Memory Factory
-Design is the current lane. After its PASS, the next active lane is:
+V2-9.7A through V2-9.7F are closed. V2-9.7F activation readiness is
+`V2_9_7F_ACTIVATION_READINESS_PASS`. The next active memory-growth lane is:
 
 ```text
-V2-9.7D - Bounded Implementation
+V2-9.8A — Operator Activation Gate
 ```
 
-Reason: the committed design fixes campaign, identity, fairness, selective
-continuation, conditional 5m, trajectory/checkpoint, manipulation/opportunity,
-persistence, replay, reporting, and safe-stop semantics. V2-9.7D may prepare the
-bounded implementation in a separate lane, but may not run an operational
-campaign or unlock retrieval or financial capability.
+Reason: the operational Memory Factory command surface, supervision, safe stop,
+reporting, zero-source replay, E.47 terminal/memory repairs, and E.48
+holder-condition / memory-quality separation are ready for the separate
+explicit operator activation gate. V2-9.8A must not be started from a readiness
+closeout alone. It must not publish the operational command early, and it must
+not unlock retrieval, paper decisions, BUY/SELL/HOLD, positions, trades,
+audits, or PnL.

@@ -59,7 +59,7 @@ passes.
 The next active lane is:
 
 ```text
-V2-9.8A - Operator Activation Gate
+V2-9.8A — Operator Activation Gate
 ```
 
 V2-9.7A through V2-9.7F are closed. V2-9.7F verdict:
@@ -147,31 +147,22 @@ The following locks remain active:
 - No paper trade audits.
 - No PnL.
 
-## 6. V2-2A Boundary
+## 6. Current Active-Lane Boundary
 
-`V2-2A` is audit-only.
+The next active memory-growth lane is:
 
-Allowed in `V2-2A`:
+```text
+V2-9.8A — Operator Activation Gate
+```
 
-- static inspection
-- read-only DB inspection
-- existing artifact review
-- audit documentation
+V2-2A and later historical V2 audit/design/implementation lanes are closed
+history unless the operator explicitly requests a historical audit. Do not
+treat `V2-2A` as the next lane.
 
-Not allowed in `V2-2A`:
-
-- discovery runs
-- source fetching
-- DB mutation
-- memory generation
-- runtime
-- retrieval
-- paper decisions
-- BUY/SELL/HOLD
-- positions
-- trades
-- audits
-- PnL
+V2-9.8A is a separate explicit operator gate. Allowed only when the operator
+explicitly starts that gate under the active build order. It does not unlock
+retrieval, paper decisions, BUY/SELL/HOLD, positions, trades, audits, or PnL,
+and it must not publish the operational PowerShell command before the gate.
 
 ## 7. Automation Boundary Reminder
 
@@ -197,5 +188,15 @@ Do not run another 1h proof until the later V2 E2Q/audit repair lane passes.
 ## 8. Final Anchor Rule
 
 For Printer V1 memory-growth work, assistants must start from the active V2
-build order and keep V2-2A as the next audit-only lane unless the operator
-explicitly adopts a later source-of-truth update.
+build order and keep the next active lane as:
+
+```text
+V2-9.8A — Operator Activation Gate
+```
+
+unless the operator explicitly completes that gate or adopts a later
+source-of-truth update. Do not restart V2-2A, V2-9.7A–F, or any closed
+historical lane as "next" without an explicit historical-audit request.
+Preserve V2-9.7F PASS, keep V2-9.8A as a separate explicit gate, withhold the
+operational command until that gate, and preserve all retrieval and financial
+locks.

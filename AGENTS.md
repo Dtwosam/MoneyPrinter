@@ -767,7 +767,7 @@ Historical proposal:
 
 Current active memory-growth lane after V2-9.7F activation readiness PASS:
 
-- V2-9.8A - Operator Activation Gate
+- V2-9.8A — Operator Activation Gate
 
 V2-9 is closed PASS at commit 51bcfdb (`Close V2-9 four-hour proof lane`).
 V2-9.7A through V2-9.7F are closed. V2-9.7F activation readiness is
@@ -866,7 +866,7 @@ This build order is active inside the required source stack for Printer V1 memor
 
 The next active memory-growth lane is:
 
-- `V2-9.8A - Operator Activation Gate`
+- `V2-9.8A — Operator Activation Gate`
 
 V2-9.8A is a separate explicit operator gate. It must not be started from a
 readiness closeout alone. It does not unlock retrieval, paper decisions,
