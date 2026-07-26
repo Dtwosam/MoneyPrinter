@@ -1049,3 +1049,28 @@ Closeout:
 
 **Readiness:** V2-9.7E.48 is closed. Retrieval and every financial capability
 remain locked. Next: `V2-9.7F — Activation Readiness Review` (not started).
+
+## V2-9.7F activation readiness (2026-07-25)
+
+**Verdict: `V2_9_7F_ACTIVATION_READINESS_PASS`.**
+
+Closeout: `docs/printer-v1-v2-9-7f-activation-readiness-closeout.md`.
+
+Starting HEAD: `7326b9a4a23a859819a56f474e6746ec66df4401` (clean tracked tree).
+Mode: static/read-only review only; no source calls, runtime, DB mutation,
+pilot, code repair, or V2-9.8A start.
+
+| Criterion | Result |
+|---|---|
+| Canonical command / supervision / safe stop / report / zero-source replay | PASS (committed + post-E.47 live-proven) |
+| E.47 / E.48 blockers | PASS (fixed or non-activation residuals) |
+| Memory quality vs outcome / safety / profitability / holder condition | PASS |
+| Healthy / concentrated / extreme do not block collection or clean solely on condition | PASS |
+| UNKNOWN / unavailable / conflicting pre-lifecycle admission | Standing resolved-holder collection gate; **not** a money-learning contract violation; wrong target / contamination / invalid provenance remain fail-closed |
+| No governor/scheduler bypass, auto-restart, 5m authority, unsupported windows | PASS |
+| Retrieval / paper / financial locks | PASS (remain locked) |
+| V2-9.8A not started here | PASS |
+
+No open code-level activation blocker remains. Next lane:
+
+`V2-9.8A — Operator Activation Gate` (separate explicit operator gate; not started).

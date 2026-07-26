@@ -78,20 +78,16 @@ Post-V2-9 update:
 - V2-9 is closed PASS at commit `51bcfdb`.
 - Attempt 7 produced a real, isolated, bounded `WINDOW_4H` clean memory result.
 - No further 4h proof is required before operational readiness review.
-- V2-9.7A and the focused V2-9.7B.1-B.5 repair program are closed PASS through
-  commit `b3d8761`.
-- V2-9.7C.0 money-usefulness readiness is closed PASS at commit `b8bafc9`.
-- V2-9.7C.0A manipulation-aware product-law adoption is complete.
-- The V2-9.7C Solana agent-assistance readiness audit is complete at commit
-  `9f2601b`.
-- Solana agent-assistance governance adoption is complete at commit `5c77651`.
-- V2-9.7C Operational Memory Factory Design is the current documentation lane
-  until the `Design operational memory factory campaigns` commit closes.
-- Operational memory growth is still locked.
-- After V2-9.7C design passes, the next active memory-growth lane is:
+- V2-9.7A through V2-9.7E are closed through post-E.47 full-pilot PASS and
+  E.48 holder-condition / memory-quality separation PASS.
+- V2-9.7F activation readiness is closed PASS:
+  `V2_9_7F_ACTIVATION_READINESS_PASS`
+  (`docs/printer-v1-v2-9-7f-activation-readiness-closeout.md`).
+- Operational memory growth is still locked until V2-9.8A.
+- The next active memory-growth lane is:
 
 ```text
-V2-9.7D - Bounded Implementation
+V2-9.8A - Operator Activation Gate
 ```
 
 Known factual anchors from V2-0:
@@ -965,8 +961,10 @@ otherwise.
 Goal: operate bounded, persistent Memory Factory campaigns only after V2-9.7
 passes and the operator activates the gate.
 
-Status: locked until V2-9.7F passes. This is real persistent corpus production,
-not design, fixtures, implementation-only work, or a one-off proof.
+Status: V2-9.7F passed (`V2_9_7F_ACTIVATION_READINESS_PASS`). Active bounded
+campaigns remain locked until V2-9.8A operator activation. This is real
+persistent corpus production, not design, fixtures, implementation-only work,
+or a one-off proof.
 
 #### V2-9.8A - Operator Activation Gate
 

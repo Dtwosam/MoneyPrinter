@@ -59,8 +59,17 @@ passes.
 The next active lane is:
 
 ```text
-V2-2A - Audit current discovery/selection pipeline
+V2-9.8A - Operator Activation Gate
 ```
+
+V2-9.7A through V2-9.7F are closed. V2-9.7F verdict:
+`V2_9_7F_ACTIVATION_READINESS_PASS` at closeout
+`docs/printer-v1-v2-9-7f-activation-readiness-closeout.md`.
+
+V2-9.8A is a separate explicit operator gate. Do not start it from a readiness
+closeout alone. Do not publish the operational PowerShell command until V2-9.8A.
+Operational memory growth, retrieval, paper decisions, BUY/SELL/HOLD, positions,
+trades, audits, and PnL remain locked.
 
 ## 4. Assistant Behavior Rules
 
@@ -79,18 +88,16 @@ Assistants must push back if a suggestion:
 - weakens locks
 - drifts from Solana-only paper-only V1
 - treats historical X1-X14 work as the current active lane sequence
-- treats V2-2A as implementation instead of audit-only
+- restarts V2-9.7A–F without an explicit historical-audit request
+- treats V2-9.7F PASS as already-activated memory growth
+- publishes the operational command before V2-9.8A
 
-Assistants must keep `V2-2A` audit-only until it is completed.
+Assistants must keep V2-9.8A as an explicit operator gate until completed.
 
 Assistants must not move early into:
 
-- `V2-2B`
-- `V2-2C`
-- implementation
-- proof
-- automation
-- memory generation
+- V2-9.8B active campaigns without V2-9.8A
+- V2-10 / V2-11
 - retrieval
 - paper decisions
 - BUY/SELL/HOLD
