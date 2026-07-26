@@ -295,52 +295,88 @@ def _fetch_holder_data(
     )
 
 
-def _compute_holder_concentration(
+def _compute_holder_concentration_facts(
     largest_accounts_result: Mapping[str, Any],
     token_supply_result: Mapping[str, Any],
     token_mint: str,
-) -> str:
-    """Compute deterministic holder concentration label from RPC results."""
+) -> dict[str, Any]:
+    """Compute token-account concentration and preserve its limitations."""
+    del token_mint
+    limitations = [
+        "GET_TOKEN_LARGEST_ACCOUNTS_RETURNS_TOKEN_ACCOUNTS_NOT_BENEFICIAL_OWNERS",
+        "RELATED_WALLETS_ARE_NOT_CLUSTERED",
+        "POOL_VAULT_BURN_AND_PROGRAM_ACCOUNTS_ARE_NOT_IDENTIFIED_OR_EXCLUDED",
+    ]
+
+    def unknown(reason: str) -> dict[str, Any]:
+        return {
+            "holder_concentration_label": "HOLDER_CONCENTRATION_UNKNOWN",
+            "top_10_holder_percent": None,
+            "holder_measurement_basis": "SOLANA_GET_TOKEN_LARGEST_ACCOUNTS",
+            "holder_measurement_limitations": limitations,
+            "holder_condition_reason": reason,
+        }
+
     supply_value = (
         token_supply_result.get("result", {})
         .get("value", {})
         .get("amount")
     )
     if supply_value is None:
-        return "HOLDER_CONCENTRATION_UNKNOWN"
+        return unknown("TOKEN_SUPPLY_UNAVAILABLE")
     try:
         total_supply = float(supply_value)
     except (TypeError, ValueError):
-        return "HOLDER_CONCENTRATION_UNKNOWN"
+        return unknown("TOKEN_SUPPLY_INVALID")
     if total_supply <= 0:
-        return "HOLDER_CONCENTRATION_UNKNOWN"
+        return unknown("TOKEN_SUPPLY_NON_POSITIVE")
 
     accounts = (
         largest_accounts_result.get("result", {})
         .get("value") or []
     )
     if not isinstance(accounts, list) or not accounts:
-        return "HOLDER_CONCENTRATION_UNKNOWN"
+        return unknown("LARGEST_TOKEN_ACCOUNTS_UNAVAILABLE")
 
     top_accounts = accounts[:10]
     top_total = 0.0
     for acct in top_accounts:
         if not isinstance(acct, dict):
-            return "HOLDER_CONCENTRATION_UNKNOWN"
+            return unknown("LARGEST_TOKEN_ACCOUNT_ENTRY_INVALID")
         amt = acct.get("amount")
         if amt is None:
-            return "HOLDER_CONCENTRATION_UNKNOWN"
+            return unknown("LARGEST_TOKEN_ACCOUNT_AMOUNT_UNAVAILABLE")
         try:
             top_total += float(amt)
         except (TypeError, ValueError):
-            return "HOLDER_CONCENTRATION_UNKNOWN"
+            return unknown("LARGEST_TOKEN_ACCOUNT_AMOUNT_INVALID")
 
     top_pct = (top_total / total_supply) * 100.0
+    label = "HOLDER_CONCENTRATION_HEALTHY"
     if top_pct >= HOLDER_CONCENTRATION_EXTREME_THRESHOLD:
-        return "HOLDER_CONCENTRATION_EXTREME"
-    if top_pct >= HOLDER_CONCENTRATION_CONCENTRATED_THRESHOLD:
-        return "HOLDER_CONCENTRATION_CONCENTRATED"
-    return "HOLDER_CONCENTRATION_HEALTHY"
+        label = "HOLDER_CONCENTRATION_EXTREME"
+    elif top_pct >= HOLDER_CONCENTRATION_CONCENTRATED_THRESHOLD:
+        label = "HOLDER_CONCENTRATION_CONCENTRATED"
+    return {
+        "holder_concentration_label": label,
+        "top_10_holder_percent": top_pct,
+        "holder_measurement_basis": "SOLANA_GET_TOKEN_LARGEST_ACCOUNTS",
+        "holder_measurement_limitations": limitations,
+        "holder_condition_reason": "HOLDER_CONDITION_MEASURED",
+    }
+
+
+def _compute_holder_concentration(
+    largest_accounts_result: Mapping[str, Any],
+    token_supply_result: Mapping[str, Any],
+    token_mint: str,
+) -> str:
+    """Compatibility wrapper for callers that need only the categorical label."""
+    return str(
+        _compute_holder_concentration_facts(
+            largest_accounts_result, token_supply_result, token_mint
+        )["holder_concentration_label"]
+    )
 
 
 def normalize_solana_rpc_holder_response(
@@ -370,6 +406,19 @@ def normalize_solana_rpc_holder_response(
         label = str(payload["holder_concentration_label"])
         normalized = {
             "holder_concentration_label": label,
+            "top_10_holder_percent": payload.get("top_10_holder_percent"),
+            "holder_measurement_basis": payload.get("holder_measurement_basis"),
+            "holder_measurement_limitations": list(
+                payload.get("holder_measurement_limitations") or []
+            ),
+            "holder_condition_reason": str(
+                payload.get("holder_condition_reason")
+                or (
+                    "HOLDER_CONDITION_UNKNOWN"
+                    if label == "HOLDER_CONCENTRATION_UNKNOWN"
+                    else "HOLDER_CONDITION_MEASURED"
+                )
+            ),
             "token_mint": str(payload.get("token_mint") or ""),
             "source_name": SOLANA_RPC_SOURCE_NAME,
             "request_kind": request_kind,
@@ -407,12 +456,12 @@ def normalize_solana_rpc_holder_response(
             "Solana RPC returned error in holder concentration response",
         )
 
-    holder_label = _compute_holder_concentration(
+    holder_facts = _compute_holder_concentration_facts(
         largest_accounts_result, token_supply_result, token_mint
     )
 
     normalized = {
-        "holder_concentration_label": holder_label,
+        **holder_facts,
         "token_mint": token_mint,
         "source_name": SOLANA_RPC_SOURCE_NAME,
         "request_kind": request_kind,

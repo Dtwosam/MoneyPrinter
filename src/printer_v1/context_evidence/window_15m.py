@@ -447,11 +447,22 @@ def _build_window_context_evidence(
             expected_source=safety.get("source_name"),
         )
     )
+    composite_acceptable = (
+        composite_row_is_acceptable(safety_composite)
+        if safety_composite
+        else False
+    )
     safety_base_clean = bool(
         safety
         and safety_trace_clean
-        and safety.get("source_status") in CLEAN_SOURCE_STATUSES
-        and safety.get("data_quality_label") in CLEAN_DATA_QUALITY
+        and (
+            composite_acceptable
+            or safety.get("source_status") in CLEAN_SOURCE_STATUSES
+        )
+        and (
+            composite_acceptable
+            or safety.get("data_quality_label") in CLEAN_DATA_QUALITY
+        )
         and safety.get("target_status") == "TARGET_MATCH"
         and safety.get("freshness_label") in {"SAFETY_EVIDENCE_FRESH", "SAFETY_EVIDENCE_ACCEPTABLE"}
         and bool(safety.get("paper_only_context"))
@@ -460,7 +471,7 @@ def _build_window_context_evidence(
     safety_clean = bool(
         safety_base_clean
         and (
-            composite_row_is_acceptable(safety_composite)
+            composite_acceptable
             if safety_composite
             else safety_row_is_clean(safety)
             or safety_policy.get("safety_acceptable_for_15m_memory")
@@ -475,6 +486,19 @@ def _build_window_context_evidence(
             safety_blockers.append("CLOSING_SAFETY_EVIDENCE_ABSENT_FOR_EXACT_SNAPSHOT")
         elif safety.get("target_status") not in (None, "TARGET_MATCH"):
             safety_blockers.append("CLOSING_EVIDENCE_TARGET_MISMATCH")
+        elif safety_composite:
+            composite_blockers = json.loads(
+                str(safety_composite.get("blockers_json") or "[]")
+            )
+            if "HOLDER_EVIDENCE_TARGET_MISMATCH" in composite_blockers:
+                safety_blockers.append("HOLDER_EVIDENCE_TARGET_MISMATCH")
+            elif (
+                "HOLDER_EVIDENCE_PROVENANCE_INVALID" in composite_blockers
+                or "SAFETY_COMPOSITE_PROVENANCE_INCOMPLETE" in composite_blockers
+            ):
+                safety_blockers.append("HOLDER_EVIDENCE_PROVENANCE_INVALID")
+            else:
+                safety_blockers.append("NO_VALID_EXACT_TARGET_SAFETY_EVIDENCE")
         else:
             safety_blockers.append("NO_VALID_EXACT_TARGET_SAFETY_EVIDENCE")
     safety_effective = effective_safety_context_report(

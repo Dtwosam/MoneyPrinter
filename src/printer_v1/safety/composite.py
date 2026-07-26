@@ -10,6 +10,7 @@ from typing import Any, Mapping
 from printer_v1.safety.goplus_normalizer import (
     SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY,
     compute_safety_context_label,
+    holder_concentration_facts_from_goplus,
     normalize_goplus_safety_response,
     safety_memory_policy_summary,
 )
@@ -223,6 +224,7 @@ def persist_safety_composite(
         goplus_payload, pair_address
     )
     goplus_fields = {field: base.get(field) for field in SAFETY_FIELDS}
+    goplus_fields.update(holder_concentration_facts_from_goplus(goplus_payload))
     goplus_fields.update(_provider_risk_evidence(goplus_payload))
     contributions = [
         _execution_contribution(
@@ -245,7 +247,15 @@ def persist_safety_composite(
             "holder_concentration_label": str(
                 holder_payload.get("holder_concentration_label")
                 or "HOLDER_CONCENTRATION_UNKNOWN"
-            )
+            ),
+            "top_10_holder_percent": holder_payload.get("top_10_holder_percent"),
+            "holder_measurement_basis": holder_payload.get("holder_measurement_basis"),
+            "holder_measurement_limitations": list(
+                holder_payload.get("holder_measurement_limitations") or []
+            ),
+            "holder_condition_reason": holder_payload.get(
+                "holder_condition_reason"
+            ),
         }
         contribution = _execution_contribution(
             connection,
@@ -258,7 +268,9 @@ def persist_safety_composite(
         )
         contributions.append(contribution)
         if contribution["usable"] and holder_fields["holder_concentration_label"] != "HOLDER_CONCENTRATION_UNKNOWN":
-            holder_labels.append(("solana_rpc", holder_fields["holder_concentration_label"]))
+            holder_labels.append(
+                (contribution["source_name"], holder_fields["holder_concentration_label"])
+            )
     if len(contributions) > MAX_CONTRIBUTIONS:
         raise ValueError("composite safety contribution budget exceeded")
 
@@ -284,15 +296,32 @@ def persist_safety_composite(
 
     policy = safety_memory_policy_summary(base)
     blockers = list(policy["hard_blocking_safety_fields"])
-    if conflicts:
-        blockers.extend(conflicts)
     if not contributions[0]["usable"]:
         blockers.append("GOPLUS_MANDATORY_SAFETY_SOURCE_NOT_USABLE")
-    provenance_complete = all(item["trace_complete"] for item in contributions)
+    for contribution in contributions[1:]:
+        if contribution["rejection_reason"] == "SOURCE_TRACE_MISMATCH":
+            blockers.append("HOLDER_EVIDENCE_PROVENANCE_INVALID")
+        elif contribution["rejection_reason"] == "TARGET_MINT_MISMATCH":
+            blockers.append("HOLDER_EVIDENCE_TARGET_MISMATCH")
+    provenance_complete = all(
+        item["trace_complete"]
+        for item in contributions
+        if item["evidence_category"] != "HOLDER_CONCENTRATION"
+        or item["rejection_reason"] == "SOURCE_TRACE_MISMATCH"
+        or item["usable"]
+    )
     if not provenance_complete:
         blockers.append("SAFETY_COMPOSITE_PROVENANCE_INCOMPLETE")
     blockers = list(dict.fromkeys(blockers))
     optional_unknowns = list(policy["source_coverage_pending_fields"])
+    if conflicts:
+        optional_unknowns.append("HOLDER_CONDITION_CONFLICTING")
+    elif not holder_labels:
+        optional_unknowns.append("HOLDER_CONDITION_UNAVAILABLE")
+    for contribution in contributions[1:]:
+        if contribution["rejection_reason"] == "SAFETY_EVIDENCE_STALE":
+            optional_unknowns.append("HOLDER_CONDITION_STALE")
+    optional_unknowns = list(dict.fromkeys(optional_unknowns))
     contract_label = (
         "SAFETY_CLEAN"
         if not blockers and base.get("safety_context_label") == "SAFETY_CLEAN"
@@ -302,8 +331,8 @@ def persist_safety_composite(
     )
     target_status = contributions[0]["target_status"]
     freshness_label = contributions[0]["freshness_label"]
-    source_status = "CONFLICTING" if conflicts else "COMPLETE" if not blockers else "PARTIAL"
-    data_quality = "CONFLICTING_DATA" if conflicts else "CLEAN_DATA" if not blockers else "ACCEPTABLE_PARTIAL_DATA"
+    source_status = "COMPLETE" if not blockers else "PARTIAL"
+    data_quality = "CLEAN_DATA" if not blockers else "ACCEPTABLE_PARTIAL_DATA"
 
     connection.execute(
         """
@@ -375,11 +404,24 @@ def persist_safety_composite(
 
 
 def composite_row_is_acceptable(row: Mapping[str, Any] | None) -> bool:
+    if not row:
+        return False
+    blockers = [
+        str(item)
+        for item in json.loads(str(row.get("blockers_json") or "[]"))
+        if str(item) != "holder_concentration_label"
+    ]
+    conflicts = [
+        str(item)
+        for item in json.loads(str(row.get("conflicts_json") or "[]"))
+        if str(item) != "HOLDER_CONCENTRATION_SOURCE_CONFLICT"
+    ]
+    policy = safety_memory_policy_summary(row)
     return bool(
-        row
-        and row.get("target_status") == "TARGET_MATCH"
+        row.get("target_status") == "TARGET_MATCH"
         and row.get("freshness_label") in {"SAFETY_EVIDENCE_FRESH", "SAFETY_EVIDENCE_ACCEPTABLE"}
         and bool(row.get("provenance_complete"))
-        and row.get("safety_contract_label") in {"SAFETY_CLEAN", SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY}
-        and not json.loads(str(row.get("blockers_json") or "[]"))
+        and not blockers
+        and not conflicts
+        and not policy["hard_blocking_safety_fields"]
     )

@@ -114,6 +114,7 @@ from printer_v1.evidence_fill.real import (
     collect_real_evidence,
 )
 from printer_v1.safety.goplus_normalizer import (
+    SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY,
     safety_memory_policy_summary,
 )
 from printer_v1.sources.jupiter_quote import (
@@ -1202,13 +1203,18 @@ def build_collect_real_evidence_once_payload(args: argparse.Namespace) -> dict[s
     safety_context_label = safety_resolution["safety_context_label"]
     safety_15m_memory_policy_label = safety_resolution["safety_15m_memory_policy_label"]
     safety_acceptable_for_15m_memory = bool(safety_resolution["safety_acceptable_for_15m_memory"])
-    overall_clean_eligible = safety_context_label == "SAFETY_CLEAN" and bool(resolved_fields)
+    overall_clean_eligible = (
+        safety_acceptable_for_15m_memory
+        and not unresolved_fields
+        and bool(resolved_fields)
+    )
     overall_audit_only = not overall_clean_eligible
 
-    if hard_blocking_safety_fields or unresolved_fields or source_coverage_pending_fields:
+    if hard_blocking_safety_fields or unresolved_fields:
         if holder_rpc["holder_rpc_rate_limited"]:
             holder_hint = (
-                "Holder concentration remains unresolved because Solana RPC was rate limited. "
+                "Holder concentration remains unavailable because Solana RPC was rate limited; "
+                "this limits market-integrity context but does not independently dirty memory. "
                 "Use an operator-approved free/read-only RPC endpoint with --solana-rpc-url "
                 "or retry later. "
             )
@@ -1223,10 +1229,15 @@ def build_collect_real_evidence_once_payload(args: argparse.Namespace) -> dict[s
             f"Safety context is {safety_context_label}. "
             f"Unresolved fields: {unresolved_fields}. "
             f"{holder_hint}"
-            "Memory remains AUDIT_ONLY — do not rebuild as clean. "
-            "Do not use this memory for Lane 7. "
-            "Collect missing evidence (holder concentration, liquidity lock/burn, risk flags) "
-            "before attempting a clean memory window build."
+            "Memory remains AUDIT_ONLY because mandatory evidence is unresolved or invalid. "
+            "Do not rebuild as clean until those non-holder evidence defects are repaired."
+        )
+    elif source_coverage_pending_fields:
+        next_step_hint = (
+            f"Safety context is {safety_context_label}. "
+            f"Optional descriptive context pending: {source_coverage_pending_fields}. "
+            "Holder condition and optional source coverage limitations must remain visible, "
+            "but do not independently block an otherwise evidence-complete 15m memory build."
         )
     else:
         next_step_hint = (
@@ -5279,6 +5290,9 @@ def _classify_first_memory_review(
         for reason in context_freshness.get("context_blocking_reasons", []):
             rejection_reasons.append(reason)
     exact_evidence_blockers = list(evidence_blockers or [])
+    known_outcome = str(outcome_label or "").strip()
+    if known_outcome in {"", "UNKNOWN_OUTCOME", "OUTCOME_UNKNOWN"}:
+        exact_evidence_blockers.append("MISSING_REQUIRED_OUTCOME_EVIDENCE")
     if exact_evidence_blockers:
         rejection_reasons.append("MISSING_OR_UNKNOWN_CONTEXT")
     for reason in exact_evidence_blockers:
@@ -5298,11 +5312,8 @@ def _classify_first_memory_review(
     # outcome must never be erased merely because the evidence around it is
     # incomplete. The truthful measured outcome is persisted independently of
     # memory quality; only a genuinely unresolved trajectory stays unknown.
-    known_outcome = str(outcome_label or "").strip()
     if known_outcome in {"", "UNKNOWN_OUTCOME", "OUTCOME_UNKNOWN"}:
-        resolved_outcome = (
-            "OUTCOME_UNKNOWN" if memory_quality != "CLEAN_MEMORY" else "NO_PUMP"
-        )
+        resolved_outcome = "OUTCOME_UNKNOWN"
     else:
         resolved_outcome = known_outcome
     # V2-9.7E.47 B1 — a non-clean result is not automatically
@@ -6293,9 +6304,16 @@ def _apply_clean_audit_evidence_labels(
     ]
     if safety_accepted:
         if safety_composite:
-            effective["safety_status_label"] = safety_composite["safety_contract_label"]
+            effective["safety_status_label"] = (
+                safety_composite["safety_contract_label"]
+                if safety_composite["safety_contract_label"]
+                in {"SAFETY_CLEAN", SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY}
+                else SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY
+            )
             effective["rug_risk_label"] = "RUG_RISK_ACCEPTABLE_FOR_15M"
-            overlays["safety_15m_memory_policy_label"] = safety_composite["safety_contract_label"]
+            overlays["safety_15m_memory_policy_label"] = effective[
+                "safety_status_label"
+            ]
             overlays["hard_blocking_safety_fields"] = []
             overlays["source_coverage_pending_fields"] = json.loads(
                 str(safety_composite.get("optional_unknowns_json") or "[]")

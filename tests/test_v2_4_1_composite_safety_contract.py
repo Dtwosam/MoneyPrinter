@@ -138,7 +138,7 @@ class CompositeSafetyContractTests(unittest.TestCase):
         self.assertEqual(goplus_fields["provider_risk_field"], "risk_flags")
         self.assertEqual(goplus_fields["provider_risk_value"], [])
 
-    def test_known_concentration_and_provider_risk_block(self):
+    def test_known_concentration_is_descriptive_but_provider_risk_blocks(self):
         goplus = self._execute(
             "goplus",
             "safety_reference",
@@ -151,7 +151,7 @@ class CompositeSafetyContractTests(unittest.TestCase):
         result = self._persist(goplus)
         self.assertEqual(result["holder_concentration_label"], "HOLDER_CONCENTRATION_EXTREME")
         self.assertEqual(result["known_risk_flag_label"], "KNOWN_RISK_FLAGS_PRESENT")
-        self.assertIn("holder_concentration_label", result["blockers"])
+        self.assertNotIn("holder_concentration_label", result["blockers"])
         self.assertIn("known_risk_flag_label", result["blockers"])
 
     def test_source_conflict_and_partial_failure_fail_closed(self):
@@ -168,9 +168,12 @@ class CompositeSafetyContractTests(unittest.TestCase):
         )
         conflict = self._persist(goplus, holder)
         self.assertIn("HOLDER_CONCENTRATION_SOURCE_CONFLICT", conflict["conflicts"])
-        self.assertEqual(conflict["safety_contract_label"], "SAFETY_BLOCKED_FOR_15M_MEMORY")
+        self.assertEqual(
+            conflict["safety_contract_label"],
+            "SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY",
+        )
 
-    def test_failure_trace_is_visible_and_unknown_holder_blocks(self):
+    def test_failure_trace_is_visible_and_unknown_holder_is_descriptive(self):
         goplus = self._execute(
             "goplus", "safety_reference", self._goplus_payload(holders=[])
         )
@@ -180,7 +183,10 @@ class CompositeSafetyContractTests(unittest.TestCase):
             fixture_kind=FIXTURE_FAILURE,
         )
         result = self._persist(goplus, holder)
-        self.assertEqual(result["safety_contract_label"], "SAFETY_BLOCKED_FOR_15M_MEMORY")
+        self.assertEqual(
+            result["safety_contract_label"],
+            "SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY",
+        )
         contribution = self.conn.execute(
             "SELECT * FROM printer_safety_evidence_contributions WHERE source_name='solana_rpc'"
         ).fetchone()

@@ -1729,8 +1729,12 @@ class EffectiveSafetyMergeTests(unittest.TestCase):
         ev = {**self._all_clean(), "holder_concentration_label": "HOLDER_CONCENTRATION_UNKNOWN"}
         self.assertEqual(compute_safety_context_label(ev), "SAFETY_UNKNOWN")
         policy = safety_memory_policy_summary(ev)
-        self.assertEqual(policy["safety_15m_memory_policy_label"], "SAFETY_BLOCKED_FOR_15M_MEMORY")
-        self.assertIn("holder_concentration_label", policy["hard_blocking_safety_fields"])
+        self.assertEqual(
+            policy["safety_15m_memory_policy_label"],
+            SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY,
+        )
+        self.assertIn("holder_concentration_label", policy["source_coverage_pending_fields"])
+        self.assertNotIn("holder_concentration_label", policy["hard_blocking_safety_fields"])
 
     def test_missing_mint_authority_produces_safety_unknown(self):
         ev = {**self._all_clean(), "mint_authority_status": "MINT_AUTHORITY_UNKNOWN"}
@@ -1772,17 +1776,23 @@ class EffectiveSafetyMergeTests(unittest.TestCase):
         ev = {**self._all_clean(), "holder_concentration_label": "HOLDER_CONCENTRATION_CONCENTRATED"}
         self.assertNotEqual(compute_safety_context_label(ev), "SAFETY_CLEAN")
         policy = safety_memory_policy_summary(ev)
-        self.assertEqual(policy["safety_15m_memory_policy_label"], "SAFETY_BLOCKED_FOR_15M_MEMORY")
+        self.assertEqual(
+            policy["safety_15m_memory_policy_label"],
+            SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY,
+        )
         self.assertIn("holder_concentration_label", policy["observed_risk_fields"])
-        self.assertIn("holder_concentration_label", policy["hard_blocking_safety_fields"])
+        self.assertNotIn("holder_concentration_label", policy["hard_blocking_safety_fields"])
 
-    def test_extreme_holders_are_observed_risk_and_15m_hard_blocker(self):
+    def test_extreme_holders_are_observed_risk_but_not_memory_blocker(self):
         ev = {**self._all_clean(), "holder_concentration_label": "HOLDER_CONCENTRATION_EXTREME"}
         self.assertNotEqual(compute_safety_context_label(ev), "SAFETY_CLEAN")
         policy = safety_memory_policy_summary(ev)
-        self.assertEqual(policy["safety_15m_memory_policy_label"], "SAFETY_BLOCKED_FOR_15M_MEMORY")
+        self.assertEqual(
+            policy["safety_15m_memory_policy_label"],
+            SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY,
+        )
         self.assertIn("holder_concentration_label", policy["observed_risk_fields"])
-        self.assertIn("holder_concentration_label", policy["hard_blocking_safety_fields"])
+        self.assertNotIn("holder_concentration_label", policy["hard_blocking_safety_fields"])
 
     def test_optional_source_pending_is_15m_only_memory_acceptable(self):
         ev = {
@@ -2089,23 +2099,23 @@ class OperatorOutputEnhancedTests(unittest.TestCase):
 
     def test_partial_safety_gives_clean_eligible_false(self):
         payload = self._run_with_transports(_goplus_real_solana_payload("out-mint"))
-        self.assertFalse(payload["clean_eligible"])
-        self.assertTrue(payload["audit_only"])
+        self.assertTrue(payload["clean_eligible"])
+        self.assertFalse(payload["audit_only"])
 
-    def test_next_step_hint_mentions_audit_only_when_unresolved(self):
+    def test_next_step_hint_preserves_optional_context_without_blocking_memory(self):
         payload = self._run_with_transports(_goplus_real_solana_payload("out-mint"))
         hint = payload["next_step_hint"].upper()
-        self.assertIn("AUDIT_ONLY", hint)
+        self.assertIn("DO NOT INDEPENDENTLY BLOCK", hint)
 
-    def test_next_step_hint_mentions_lane_7_when_unresolved(self):
+    def test_next_step_hint_names_holder_context_when_optional(self):
         payload = self._run_with_transports(_goplus_real_solana_payload("out-mint"))
         hint = payload["next_step_hint"].upper()
-        self.assertIn("LANE 7", hint)
+        self.assertIn("HOLDER CONDITION", hint)
 
-    def test_next_step_hint_mentions_clean_when_unresolved(self):
+    def test_next_step_hint_mentions_memory_when_optional(self):
         payload = self._run_with_transports(_goplus_real_solana_payload("out-mint"))
         hint = payload["next_step_hint"].upper()
-        self.assertIn("CLEAN", hint)
+        self.assertIn("15M MEMORY BUILD", hint)
 
     def test_goplus_safety_in_safety_sources_used_when_inserted(self):
         payload = self._run_with_transports(_goplus_clean_payload("out-mint"))

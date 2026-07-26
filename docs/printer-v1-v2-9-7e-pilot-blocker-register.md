@@ -1009,3 +1009,43 @@ Live status updates for E.47 blockers:
 **Readiness:** V2-9.7E pilot proof resolved for the post-E.47 bounded two-token
 path. Live `CLEAN_MEMORY` and 1h/4h continuation remain open market/eligibility
 items, not re-blocks of terminal closure. **V2-9.7F was not started.**
+
+## V2-9.7E.48 holder-condition / memory-quality separation (2026-07-25)
+
+**Verdict: `V2_9_7E_48_HOLDER_CONDITION_MEMORY_QUALITY_SEPARATION_PASS`.**
+
+Closeout:
+`docs/printer-v1-v2-9-7e-48-holder-condition-memory-quality-separation-closeout.md`.
+
+### BL-48-01 — holder condition incorrectly controlled memory quality
+
+- **Category:** `COMMITTED_CODE_DEFECT`. **Status:** `FIXED`.
+- **Root cause:** concentrated, extreme, unknown, unavailable and conflicting
+  holder evidence flowed through safety-policy/composite blockers into the 15m
+  memory-quality gate. This conflated descriptive market-integrity risk with
+  episode evidence trustworthiness.
+- **Retained evidence:** both post-E.47 `DEAD` windows were dirty solely because
+  `HOLDER_CONCENTRATION_EXTREME` was treated as a hard memory blocker.
+- **Fixed behaviour:** all six holder states remain explicit descriptive
+  evidence but never independently dirty memory. Wrong identity, contamination,
+  invalid provenance, incomplete cadence/duration, missing snapshots/outcome,
+  stale/broken core evidence and missing entry/exit realism still fail closed.
+- **Disposable-copy reconciliation:** both windows retain `DEAD` and
+  `HOLDER_CONCENTRATION_EXTREME`, become `CLEAN_MEMORY` / `CLEAN_DATA` /
+  `do_not_train=0`, with zero forbidden capability deltas; integrity `ok`, FK 0.
+
+### BL-48-02 — holder evidence provenance and measurement facts were lossy
+
+- **Category:** `COMMITTED_CODE_DEFECT`. **Status:** `FIXED_FOR_NEW_EVIDENCE`.
+- **Root cause:** top-ten percentage/basis/limitations were discarded and the
+  Helius holder field was bound as `solana_rpc`.
+- **Fixed behaviour:** new GoPlus/RPC/Helius composite contributions retain
+  percentage, basis, reason and limitations and bind the field to the actual
+  source. Thresholds remain 55%/80%. Token-account versus beneficial-owner,
+  wallet-clustering and pool/vault/burn/program-account limitations are
+  explicit.
+- **Historical limitation:** retained composites are not rewritten; their
+  original contribution rows and field-binding text remain historical.
+
+**Readiness:** V2-9.7E.48 is closed. Retrieval and every financial capability
+remain locked. Next: `V2-9.7F — Activation Readiness Review` (not started).

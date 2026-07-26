@@ -123,39 +123,85 @@ def _supply_sanity_label(token_data: Mapping[str, Any]) -> str:
     return "SUPPLY_SANITY_UNKNOWN"
 
 
-def _holder_concentration_label(token_data: Mapping[str, Any]) -> str:
+def holder_concentration_facts_from_goplus(
+    token_data: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return descriptive holder condition without implying memory eligibility.
+
+    GoPlus can expose either percentages or account balances.  Neither shape
+    proves beneficial ownership, wallet clustering, or whether a listed token
+    account is a pool, vault, burn account, or another program-controlled
+    account.  Those limitations travel with the derived percentage.
+    """
     top_10 = token_data.get("top_10_holders")
     total_pct: float | None = None
+    measurement_basis: str | None = None
     if isinstance(top_10, list) and top_10:
         values: list[float] = []
         for holder in top_10[:10]:
             if not isinstance(holder, Mapping):
-                return "HOLDER_CONCENTRATION_UNKNOWN"
+                return _unknown_holder_facts("GOPLUS_TOP_TEN_ENTRY_INVALID")
             value = _to_float(holder.get("percent") or holder.get("balance_percent"))
             if value is None or value < 0:
-                return "HOLDER_CONCENTRATION_UNKNOWN"
+                return _unknown_holder_facts("GOPLUS_TOP_TEN_PERCENT_UNAVAILABLE")
             values.append(value)
         total_pct = sum(values)
+        measurement_basis = "GOPLUS_TOP_TEN_REPORTED_PERCENT"
     else:
         # Live GoPlus Solana shape: holder balances plus validated total supply.
         holders = token_data.get("holders")
         supply = _to_float(token_data.get("total_supply"))
         if not isinstance(holders, list) or not holders or supply is None or supply <= 0:
-            return "HOLDER_CONCENTRATION_UNKNOWN"
+            return _unknown_holder_facts("GOPLUS_HOLDER_MEASUREMENT_UNAVAILABLE")
         balances: list[float] = []
         for holder in holders:
             if not isinstance(holder, Mapping):
-                return "HOLDER_CONCENTRATION_UNKNOWN"
+                return _unknown_holder_facts("GOPLUS_HOLDER_ENTRY_INVALID")
             balance = _to_float(holder.get("balance") or holder.get("amount"))
             if balance is None or balance < 0:
-                return "HOLDER_CONCENTRATION_UNKNOWN"
+                return _unknown_holder_facts("GOPLUS_HOLDER_BALANCE_UNAVAILABLE")
             balances.append(balance)
         total_pct = (sum(sorted(balances, reverse=True)[:10]) / supply) * 100.0
+        measurement_basis = "GOPLUS_TOP_TEN_BALANCES_OVER_REPORTED_SUPPLY"
+    label = "HOLDER_CONCENTRATION_HEALTHY"
     if total_pct >= 80:
-        return "HOLDER_CONCENTRATION_EXTREME"
-    if total_pct >= 55:
-        return "HOLDER_CONCENTRATION_CONCENTRATED"
-    return "HOLDER_CONCENTRATION_HEALTHY"
+        label = "HOLDER_CONCENTRATION_EXTREME"
+    elif total_pct >= 55:
+        label = "HOLDER_CONCENTRATION_CONCENTRATED"
+    return {
+        "holder_concentration_label": label,
+        "top_10_holder_percent": total_pct,
+        "holder_measurement_basis": measurement_basis,
+        "holder_measurement_limitations": [
+            "TOKEN_ACCOUNTS_ARE_NOT_PROVEN_BENEFICIAL_OWNERS",
+            "RELATED_WALLETS_ARE_NOT_CLUSTERED",
+            "POOL_VAULT_BURN_AND_PROGRAM_ACCOUNTS_ARE_NOT_IDENTIFIED_OR_EXCLUDED",
+        ],
+        "holder_condition_reason": "HOLDER_CONDITION_MEASURED",
+    }
+
+
+def _unknown_holder_facts(reason: str) -> dict[str, Any]:
+    return {
+        "holder_concentration_label": "HOLDER_CONCENTRATION_UNKNOWN",
+        "top_10_holder_percent": None,
+        "holder_measurement_basis": None,
+        "holder_measurement_limitations": [
+            "HOLDER_PERCENTAGE_UNAVAILABLE",
+            "TOKEN_ACCOUNTS_ARE_NOT_PROVEN_BENEFICIAL_OWNERS",
+            "RELATED_WALLETS_ARE_NOT_CLUSTERED",
+            "POOL_VAULT_BURN_AND_PROGRAM_ACCOUNTS_ARE_NOT_IDENTIFIED_OR_EXCLUDED",
+        ],
+        "holder_condition_reason": reason,
+    }
+
+
+def _holder_concentration_label(token_data: Mapping[str, Any]) -> str:
+    return str(
+        holder_concentration_facts_from_goplus(token_data)[
+            "holder_concentration_label"
+        ]
+    )
 
 
 def holder_concentration_label_from_goplus(token_data: Mapping[str, Any]) -> str:
@@ -254,12 +300,10 @@ def safety_memory_policy_summary(evidence: Mapping[str, Any]) -> dict[str, Any]:
         resolved.append("holder_concentration_label")
         if holder_value != "HOLDER_CONCENTRATION_HEALTHY":
             observed_risk.append("holder_concentration_label")
-            hard_blocking.append("holder_concentration_label")
     elif holder_value == SOURCE_COVERAGE_PENDING_VALUES["holder_concentration_label"]:
-        unresolved.append("holder_concentration_label")
-        hard_blocking.append("holder_concentration_label")
+        source_coverage_pending.append("holder_concentration_label")
     else:
-        hard_blocking.append("holder_concentration_label")
+        source_coverage_pending.append("holder_concentration_label")
 
     for field in ("liquidity_lock_or_burn_label", "known_risk_flag_label"):
         value = evidence.get(field)
