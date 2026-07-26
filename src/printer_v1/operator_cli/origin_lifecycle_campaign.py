@@ -217,6 +217,7 @@ class OriginToLifecycleCampaignDriver:
         continuous_first_hour: bool = False,
         continuous_four_hour: bool = False,
         four_hour_proof_mode: bool = False,
+        operational_persistent_mode: bool = False,
         lifecycle_kwargs: dict[str, Any] | None = None,
     ) -> OriginLifecycleResult:
         """Run one integrated campaign: activation, then lifecycle on those slots."""
@@ -308,6 +309,7 @@ class OriginToLifecycleCampaignDriver:
             continuous_first_hour=continuous_first_hour,
             continuous_four_hour=continuous_four_hour,
             four_hour_proof_mode=four_hour_proof_mode,
+            operational_persistent_mode=operational_persistent_mode,
             max_selected_tokens=2,
             campaign_id=command.campaign_id,
             campaign_run_id=command.run_id,

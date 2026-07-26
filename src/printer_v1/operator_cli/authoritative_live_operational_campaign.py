@@ -1300,6 +1300,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
         migration_transport: Any | None = None,
         graduated_supply_kwargs: Mapping[str, Any] | None = None,
         stop_before_lifecycle: bool = False,
+        fifteen_minute_only: bool = False,
     ) -> Any:
         """Run one authoritative live two-token operational-natural campaign.
 
@@ -1707,10 +1708,11 @@ class AuthoritativeLiveOperationalCampaignOwner:
             source_governor=source_governor,
             central_scheduler=central_scheduler,
             selection_seed=selection_seed,
-            proof_mode=True,
-            continuous_first_hour=True,
-            continuous_four_hour=True,
-            four_hour_proof_mode=True,
+            proof_mode=not fifteen_minute_only,
+            continuous_first_hour=not fifteen_minute_only,
+            continuous_four_hour=not fifteen_minute_only,
+            four_hour_proof_mode=not fifteen_minute_only,
+            operational_persistent_mode=fifteen_minute_only,
             lifecycle_kwargs=lk,
         )
         try:

@@ -65,6 +65,7 @@ printer-run-one-command-15m-memory-factory = "printer_v1.operator_cli.commands:m
 printer-prepare-v2-9-proof-db = "printer_v1.operator_cli.proof_db_schema_readiness:main_prepare_proof_db"
 printer-supervise-v2-9-proof = "printer_v1.operator_cli.proof_supervision:main_supervision"
 printer-run-v2-9-supervised-proof = "printer_v1.operator_cli.proof_supervision:main_run_supervised_proof"
+printer-run-v2-9-8-memory-factory = "printer_v1.operator_cli.operational_memory_factory_command:main"
 
 [tool.unittest]
 start-directory = "tests"

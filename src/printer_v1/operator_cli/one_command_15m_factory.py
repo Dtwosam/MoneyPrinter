@@ -3387,6 +3387,7 @@ def run_one_command_15m_factory(
     _continuation_seconds: float = _CONTINUATION_SECONDS,
     project_root: str | Path | None = None,
     launch_provenance: Mapping[str, Any] | None = None,
+    operational_persistent_mode: bool = False,
 ) -> dict[str, Any]:
     path = Path(db_path).resolve()
     backup = Path(backup_path).resolve()
@@ -3401,11 +3402,22 @@ def run_one_command_15m_factory(
     except GitProvenanceError as exc:
         reasons.append(f"Git provenance preflight failed: {exc}")
     if not operator_approved: reasons.append("operator approval required")
-    if not proof_mode: reasons.append("first V2-4 command supports proof mode only")
+    if not proof_mode and not operational_persistent_mode:
+        reasons.append("non-proof execution requires operational persistent mode")
+    if proof_mode and operational_persistent_mode:
+        reasons.append("proof and operational persistent modes are mutually exclusive")
     if window_kind != WINDOW_KIND: reasons.append(f"unsupported window_kind: {window_kind}")
     if not path.is_file(): reasons.append(f"proof DB missing: {path}")
     if not backup.is_file(): reasons.append(f"backup missing: {backup}")
-    if _is_persistent_db(path): reasons.append("persistent DB is forbidden in first proof")
+    if operational_persistent_mode:
+        from printer_v1.operator_cli.proof_db_schema_readiness import (
+            CANONICAL_PERSISTENT_DB,
+        )
+        canonical = Path(CANONICAL_PERSISTENT_DB).resolve()
+        if path != canonical:
+            reasons.append("operational persistent mode requires the authoritative corpus")
+    elif _is_persistent_db(path):
+        reasons.append("persistent DB is forbidden in proof mode")
     # V2-5: the explicit three-token proof mode permits exactly three autonomous
     # tokens. Normal mode stays capped at two. Four or more is always rejected.
     if compressed_two_token_proof_plan is not None and not continuous_first_hour:
@@ -3417,8 +3429,14 @@ def run_one_command_15m_factory(
         reasons.append(
             "operational natural mode excludes the compressed two-token proof plan"
         )
-    if operational_natural_disposition and not continuous_first_hour:
-        reasons.append("operational natural two-token mode requires continuous first-hour mode")
+    if (
+        operational_natural_disposition
+        and not continuous_first_hour
+        and not operational_persistent_mode
+    ):
+        reasons.append(
+            "operational natural 15m-only mode requires operational persistent mode"
+        )
     if continuous_first_hour:
         if compressed_two_token_proof_plan is not None:
             try:
@@ -3484,7 +3502,11 @@ def run_one_command_15m_factory(
         fallback_snapshot_adapter_factory or build_default_geckoterminal_fallback_adapter
     )
     config = {
-        "db_mode": "PROOF_ONLY", "db_path": str(path), "backup_path": str(backup),
+        "db_mode": (
+            "OPERATIONAL_PERSISTENT"
+            if operational_persistent_mode else "PROOF_ONLY"
+        ),
+        "db_path": str(path), "backup_path": str(backup),
         "window_kind": window_kind, "max_selected_tokens": max_selected_tokens,
         "max_source_requests": max_source_requests, "timeout_seconds": timeout_seconds,
         "total_duration_seconds": total_duration_seconds, "window_seconds": _window_seconds,
@@ -3500,6 +3522,7 @@ def run_one_command_15m_factory(
             if compressed_two_token_proof_plan is not None else None
         ),
         "operational_natural_disposition": bool(operational_natural_disposition),
+        "operational_persistent_mode": bool(operational_persistent_mode),
         "supervision_execution_id": supervision_execution_id,
         # V2-9.7E.47 A2/A3: the campaign ownership identities the discovery work
         # rows carry, so terminal cleanup and active-work accounting can scope
@@ -3537,8 +3560,17 @@ def run_one_command_15m_factory(
     _require_schema(conn)
     before = _counts(conn)
     conn.execute(
-        "INSERT INTO printer_memory_factory_runs (run_id,run_status,window_kind,db_mode,config_hash,config_json,started_at,created_at,updated_at) VALUES (?,'RUNNING',?,'PROOF_ONLY',?,?,?,?,?)",
-        (run_id, window_kind, _config_hash(config), _json(config), started_at, started_at, started_at),
+        "INSERT INTO printer_memory_factory_runs (run_id,run_status,window_kind,db_mode,config_hash,config_json,started_at,created_at,updated_at) VALUES (?,'RUNNING',?,?,?,?,?,?,?)",
+        (
+            run_id,
+            window_kind,
+            config["db_mode"],
+            _config_hash(config),
+            _json(config),
+            started_at,
+            started_at,
+            started_at,
+        ),
     )
     conn.commit()
     if supervision_execution_id:
