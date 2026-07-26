@@ -210,11 +210,14 @@ def run_fresh_profile_locator(
             adapter,
             recent_request_count=0,
         )
+        request_id = int(execution.request_record.id)
         result = execution.normalized_result
         if result.failure_type:
             connection.commit()
             return {
                 "request_key": request_key,
+                "request_id": request_id,
+                "source_requests": 1,
                 "status": (
                     "rate_limited"
                     if result.failure_type == "dexscreener_rate_limited_fixture"
@@ -245,6 +248,8 @@ def run_fresh_profile_locator(
         connection.commit()
         return {
             "request_key": request_key,
+            "request_id": request_id,
+            "source_requests": 1,
             "status": "ok",
             "surfaced_count": len(mints),
             "matched_count": len(matched),
@@ -300,7 +305,12 @@ def build_graduated_supply(
             now=now,
         )
         if run_locator
-        else {"status": "NOT_REQUESTED", "matched_count": 0}
+        else {
+            "status": "NOT_REQUESTED",
+            "matched_count": 0,
+            "source_requests": 0,
+            "request_id": None,
+        }
     )
 
     # --- E.42 direct-migration discovery (governed, bounded) ----------------
@@ -401,6 +411,31 @@ def build_graduated_supply(
         ),
         "locator_status": locator.get("status"),
         "locator_matched_count": int(locator.get("matched_count") or 0),
+        "locator_source_requests": int(locator.get("source_requests") or 0),
+        "discovery_source_requests": int(
+            (discovery.get("source_operation_ledger") or {}).get("source_requests") or 0
+        ),
+        "front_door_liquidity_requests": int(
+            (front_door.get("source_operation_ledger") or {}).get(
+                "liquidity_requests"
+            )
+            or 0
+        ),
+        "stage_local_source_requests": (
+            int(locator.get("source_requests") or 0)
+            + int(
+                (discovery.get("source_operation_ledger") or {}).get(
+                    "source_requests"
+                )
+                or 0
+            )
+            + int(
+                (front_door.get("source_operation_ledger") or {}).get(
+                    "liquidity_requests"
+                )
+                or 0
+            )
+        ),
         "integrity_check": front_door.get("integrity_check"),
         "foreign_key_violations": int(front_door.get("foreign_key_violations") or 0),
     }

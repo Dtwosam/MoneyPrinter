@@ -32,7 +32,20 @@ MATURATION_THRESHOLD_STATE = "UNPROVEN_DISABLED"
 
 
 class HolderBudgetError(RuntimeError):
-    pass
+    """Raised when campaign holder/admission budget is impossible or breached.
+
+    ``code`` is the stable machine-readable cause. ``detail`` carries exact
+    expected / reserved / available values for operator and test inspection.
+    """
+
+    def __init__(self, code: str, *, detail: Mapping[str, Any] | None = None) -> None:
+        self.code = str(code)
+        self.detail = dict(detail or {})
+        if self.detail:
+            parts = ",".join(f"{key}={self.detail[key]}" for key in sorted(self.detail))
+            super().__init__(f"{self.code}:{parts}")
+        else:
+            super().__init__(self.code)
 
 
 def _time(value: str | datetime) -> datetime:
@@ -105,11 +118,133 @@ class CampaignOperationLedger:
     def candidate_cap(self) -> int:
         return max(0, self.available_before_reservation // HOLDER_WORST_CASE_TRANSPORT_OPERATIONS)
 
+    def budget_detail(self) -> dict[str, int | str]:
+        reserved = (
+            self.reserved_snapshot_operations
+            + self.reserved_snapshot_completion_operations
+        )
+        charged_plus_reserved = self.charged_operations + reserved
+        return {
+            "operation_ceiling": self.operation_ceiling,
+            "governed_requests": self.governed_requests,
+            "underlying_transport_operations": self.underlying_transport_operations,
+            "zero_transport_operations": self.zero_transport_operations,
+            "charged_operations": self.charged_operations,
+            "reserved_snapshot_operations": self.reserved_snapshot_operations,
+            "reserved_snapshot_completion_operations": (
+                self.reserved_snapshot_completion_operations
+            ),
+            "reserved_total": reserved,
+            "charged_plus_reserved": charged_plus_reserved,
+            "available_before_reservation": self.available_before_reservation,
+            "holder_worst_case_transport_operations": (
+                HOLDER_WORST_CASE_TRANSPORT_OPERATIONS
+            ),
+            "candidate_cap": self.candidate_cap(),
+            "deadline_at": self.deadline_at.isoformat(),
+        }
+
     def admit_candidate(self, *, now: str | datetime) -> None:
         if _time(now) > self.deadline_at:
-            raise HolderBudgetError("HOLDER_CAMPAIGN_DEADLINE_EXPIRED")
+            raise HolderBudgetError(
+                "HOLDER_CAMPAIGN_DEADLINE_EXPIRED",
+                detail=self.budget_detail(),
+            )
         if self.available_before_reservation < HOLDER_WORST_CASE_TRANSPORT_OPERATIONS:
-            raise HolderBudgetError("DEX_SNAPSHOT_RESERVATION_WOULD_BE_BREACHED")
+            raise HolderBudgetError(
+                "DEX_SNAPSHOT_RESERVATION_WOULD_BE_BREACHED",
+                detail=self.budget_detail(),
+            )
+
+
+def budget_contract_constants() -> dict[str, int]:
+    """Authoritative admission/holder budget constants shared by preflight+runtime."""
+    return {
+        "operation_ceiling": OPERATION_CEILING,
+        "required_dex_snapshot_reservation": REQUIRED_DEX_SNAPSHOT_RESERVATION,
+        "required_snapshot_completion_reservation": (
+            REQUIRED_SNAPSHOT_COMPLETION_RESERVATION
+        ),
+        "required_readiness_snapshot_reservation": (
+            REQUIRED_READINESS_SNAPSHOT_RESERVATION
+        ),
+        "combined_zero_transport_validation": COMBINED_ZERO_TRANSPORT_VALIDATION,
+        "holder_worst_case_governed_requests": HOLDER_WORST_CASE_GOVERNED_REQUESTS,
+        "holder_worst_case_transport_operations": HOLDER_WORST_CASE_TRANSPORT_OPERATIONS,
+    }
+
+
+def build_operational_budget_preflight(
+    *,
+    admission_operation_ceiling: int = OPERATION_CEILING,
+    discovery_request_ceiling: int | None = None,
+    governed_15m_request_ceiling: int | None = None,
+    governed_requests_per_token: int | None = None,
+) -> dict[str, Any]:
+    """Zero-source preflight of the static admission budget contract.
+
+    Rejects impossible static configurations before any campaign row is created.
+    Does not raise approved ceilings and does not inspect live source usage.
+    """
+    constants = budget_contract_constants()
+    reserved_total = (
+        constants["required_dex_snapshot_reservation"]
+        + constants["required_snapshot_completion_reservation"]
+    )
+    fixed_charge = constants["combined_zero_transport_validation"] + reserved_total
+    available_for_base = constants["operation_ceiling"] - fixed_charge
+    issues: list[str] = []
+    if int(admission_operation_ceiling) != constants["operation_ceiling"]:
+        issues.append(
+            "ADMISSION_CEILING_MISMATCH:"
+            f"configured={int(admission_operation_ceiling)}"
+            f":authoritative={constants['operation_ceiling']}"
+        )
+    if available_for_base < 0:
+        issues.append("STATIC_RESERVATIONS_EXCEED_OPERATION_CEILING")
+    if constants["operation_ceiling"] != 45:
+        issues.append("OPERATION_CEILING_DRIFT")
+    if constants["required_dex_snapshot_reservation"] != 2:
+        issues.append("DEX_SNAPSHOT_RESERVATION_DRIFT")
+    if constants["required_snapshot_completion_reservation"] != 4:
+        issues.append("SNAPSHOT_COMPLETION_RESERVATION_DRIFT")
+    if constants["combined_zero_transport_validation"] != 9:
+        issues.append("ZERO_TRANSPORT_VALIDATION_DRIFT")
+    if constants["holder_worst_case_transport_operations"] != 5:
+        issues.append("HOLDER_WORST_CASE_TRANSPORT_DRIFT")
+    # Optional outer campaign ceilings are reported only; they must not silently
+    # override the admission operation ledger.
+    outer = {
+        "discovery_request_ceiling": discovery_request_ceiling,
+        "governed_15m_request_ceiling": governed_15m_request_ceiling,
+        "governed_requests_per_token": governed_requests_per_token,
+    }
+    return {
+        "status": "READY" if not issues else "BLOCKED",
+        "issues": issues,
+        "source_calls": 0,
+        "scheduler_runtime_calls": 0,
+        "expected": {
+            "operation_ceiling": constants["operation_ceiling"],
+            "zero_transport_operations": constants[
+                "combined_zero_transport_validation"
+            ],
+            "reserved_snapshot_operations": constants[
+                "required_dex_snapshot_reservation"
+            ],
+            "reserved_snapshot_completion_operations": constants[
+                "required_snapshot_completion_reservation"
+            ],
+            "reserved_total": reserved_total,
+            "fixed_charge_before_base_work": fixed_charge,
+            "available_for_base_work": available_for_base,
+            "holder_worst_case_transport_operations": constants[
+                "holder_worst_case_transport_operations"
+            ],
+        },
+        "outer_ceilings": outer,
+        "constants": constants,
+    }
 
 
 def build_ledger(
@@ -126,13 +261,30 @@ def build_ledger(
         reserved_snapshot_completion_operations=REQUIRED_SNAPSHOT_COMPLETION_RESERVATION,
         deadline_at=_time(deadline_at),
     )
-    if (
+    charged_plus_reserved = (
         ledger.charged_operations
         + ledger.reserved_snapshot_operations
         + ledger.reserved_snapshot_completion_operations
-        > OPERATION_CEILING
-    ):
-        raise HolderBudgetError("CAMPAIGN_BASE_WORK_EXCEEDS_RESERVED_BUDGET")
+    )
+    if charged_plus_reserved > OPERATION_CEILING:
+        detail = ledger.budget_detail()
+        detail.update(
+            {
+                "pump_operations": int(pump_operations),
+                "additional_governed_operations": int(additional_governed_operations),
+                "base_operations": base_operations,
+                "available_for_base_work": (
+                    OPERATION_CEILING
+                    - COMBINED_ZERO_TRANSPORT_VALIDATION
+                    - REQUIRED_DEX_SNAPSHOT_RESERVATION
+                    - REQUIRED_SNAPSHOT_COMPLETION_RESERVATION
+                ),
+            }
+        )
+        raise HolderBudgetError(
+            "CAMPAIGN_BASE_WORK_EXCEEDS_RESERVED_BUDGET",
+            detail=detail,
+        )
     return ledger
 
 

@@ -313,20 +313,14 @@ class CampaignTotalEqualsDurableSetTests(_Base):
     """Campaign accounting equals the distinct durable campaign request set."""
 
     def test_campaign_total_equals_distinct_durable_requests(self) -> None:
-        self._run_locator()
-        # Snapshot the whole-table count exactly where discovery reports it.
-        conn = sqlite3.connect(f"file:{self.db}?mode=ro", uri=True)
-        try:
-            discovery_total = conn.execute(
-                "SELECT COUNT(*) FROM printer_source_requests"
-            ).fetchone()[0]
-        finally:
-            conn.close()
-
+        locator = self._run_locator()
+        locator_total = int(locator.get("source_requests") or 1)
         report = self._run_front_door(self._uniform())
         front_door_total = report["source_operation_ledger"]["liquidity_requests"]
 
-        supply_source_operations = discovery_total + front_door_total
+        # V2-9.8B.2: stage-local totals only. Discovery is not run here, so its
+        # contribution is zero; locator + front-door must equal durable rows.
+        supply_source_operations = locator_total + 0 + front_door_total
         durable_distinct = len(self._durable_requests())
 
         self.assertEqual(
@@ -335,6 +329,15 @@ class CampaignTotalEqualsDurableSetTests(_Base):
             "campaign governed_requests must equal distinct durable requests",
         )
         self.assertEqual(supply_source_operations - durable_distinct, 0)
+        # Whole-table discovery counting is forbidden for campaign charging.
+        conn = sqlite3.connect(f"file:{self.db}?mode=ro", uri=True)
+        try:
+            whole_table = conn.execute(
+                "SELECT COUNT(*) FROM printer_source_requests"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(whole_table, durable_distinct)
 
 
 class CandidateCapArithmeticTests(_Base):

@@ -191,18 +191,60 @@ def intake_migration_events(
     }
 
 
-def _ledger_counts(connection: sqlite3.Connection) -> dict[str, int]:
-    def _count(table: str) -> int:
+def _ledger_counts(
+    connection: sqlite3.Connection,
+    *,
+    request_ids: list[int] | tuple[int, ...] = (),
+) -> dict[str, int]:
+    """Stage-local discovery accounting over this invocation's exact identities.
+
+    V2-9.8B.2: whole-table ``COUNT(*)`` on ``printer_source_requests`` charged every
+    historical durable row on the operational persistent DB into the holder
+    campaign ledger (1121+ base ops against a 45-op admission ceiling). Only the
+    exact migration/verify request rows created by this discovery invocation may
+    be charged, each exactly once, whether it succeeded or failed.
+    """
+    identities = sorted({int(value) for value in request_ids})
+
+    def _registry_count() -> int:
         try:
-            return int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            return int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM printer_pumpswap_graduated_candidate_registry"
+                ).fetchone()[0]
+            )
+        except sqlite3.Error:
+            return 0
+
+    if not identities:
+        return {
+            "source_requests": 0,
+            "source_responses": 0,
+            "source_failures": 0,
+            "graduated_candidates": _registry_count(),
+            "request_ids": [],
+        }
+
+    placeholders = ",".join("?" * len(identities))
+
+    def _count(sql: str) -> int:
+        try:
+            return int(connection.execute(sql, identities).fetchone()[0])
         except sqlite3.Error:
             return 0
 
     return {
-        "source_requests": _count("printer_source_requests"),
-        "source_responses": _count("printer_source_responses"),
-        "source_failures": _count("printer_source_failures"),
-        "graduated_candidates": _count("printer_pumpswap_graduated_candidate_registry"),
+        "source_requests": len(identities),
+        "source_responses": _count(
+            "SELECT COUNT(*) FROM printer_source_responses "
+            f"WHERE source_request_id IN ({placeholders})"
+        ),
+        "source_failures": _count(
+            "SELECT COUNT(*) FROM printer_source_failures "
+            f"WHERE source_request_id IN ({placeholders})"
+        ),
+        "graduated_candidates": _registry_count(),
+        "request_ids": identities,
     }
 
 
@@ -264,6 +306,7 @@ def run_direct_migration_discovery(
     connection.execute("PRAGMA foreign_keys = ON")
     migration_request_count = 0
     pumpswap_request_count = 0
+    stage_request_ids: list[int] = []
 
     def _governed_migration(round_index: int) -> dict[str, Any]:
         nonlocal migration_request_count
@@ -278,6 +321,7 @@ def run_direct_migration_discovery(
         execution = execute_source_request_with_governor(
             connection, request, adapter, recent_request_count=migration_request_count
         )
+        stage_request_ids.append(int(execution.request_record.id))
         migration_request_count += 1
         result = execution.normalized_result
         ok = (
@@ -308,6 +352,7 @@ def run_direct_migration_discovery(
         execution = execute_source_request_with_governor(
             connection, request, adapter, recent_request_count=pumpswap_request_count
         )
+        stage_request_ids.append(int(execution.request_record.id))
         pumpswap_request_count += 1
         return execution.normalized_result
 
@@ -425,7 +470,7 @@ def run_direct_migration_discovery(
                 }
             )
 
-        ledger = _ledger_counts(connection)
+        ledger = _ledger_counts(connection, request_ids=stage_request_ids)
         forbidden = _forbidden_deltas(connection)
     finally:
         connection.close()

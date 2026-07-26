@@ -63,6 +63,9 @@ from printer_v1.operator_cli.operational_campaign_recovery import (
 from printer_v1.operator_cli.proof_db_schema_readiness import (
     CANONICAL_PERSISTENT_DB,
 )
+from printer_v1.operator_cli.holder_reliability_budget_control import (
+    build_operational_budget_preflight,
+)
 from printer_v1.operator_cli.readiness_source_contract_preflight import (
     build_readiness_source_contract_preflight,
 )
@@ -249,8 +252,18 @@ def build_activation_preflight(
     provenance = _capture_operational_git_provenance(root)
     source = build_readiness_source_contract_preflight()
     dependency = assert_runtime_dependency_preflight(repository_root=root)
+    budget = build_operational_budget_preflight(
+        admission_operation_ceiling=ADMISSION_OPERATION_CEILING,
+        discovery_request_ceiling=DISCOVERY_REQUEST_CEILING,
+        governed_15m_request_ceiling=GOVERNED_15M_REQUEST_CEILING,
+        governed_requests_per_token=GOVERNED_REQUESTS_PER_TOKEN,
+    )
     if source["status"] != "READY" or dependency.status != "READY":
         raise OperationalMemoryFactoryError("source or dependency preflight is not READY")
+    if budget["status"] != "READY":
+        raise OperationalMemoryFactoryError(
+            "holder budget preflight is not READY: " + ";".join(budget["issues"])
+        )
 
     connection = _read_only(path)
     try:
@@ -301,6 +314,12 @@ def build_activation_preflight(
             "status": source["status"],
             "external_requests": source["external_requests"],
             "secret_material_recorded": source["secret_material_recorded"],
+        },
+        "holder_budget_preflight": {
+            "status": budget["status"],
+            "expected": budget["expected"],
+            "issues": budget["issues"],
+            "source_calls": budget["source_calls"],
         },
         "dependency_preflight": dependency.to_dict(),
         "git_provenance": provenance,
@@ -457,27 +476,59 @@ def _create_campaign_command(
 
 
 class _CampaignHeartbeat:
+    """Background lease renewer. Never performs terminal cleanup (V2-9.8B.2)."""
+
     def __init__(self, command: AbstractCampaignCommand) -> None:
         self.command = command
         self.stop_event = threading.Event()
+        self.failure_event = threading.Event()
+        self._failure_lock = threading.Lock()
+        self._failure: dict[str, Any] | None = None
         self.thread: threading.Thread | None = None
 
     def start(self) -> None:
         def loop() -> None:
             while not self.stop_event.wait(HEARTBEAT_SECONDS):
-                result = renew_campaign_lease(
-                    self.command.db_path,
-                    supervision_id=self.command.supervision_id,
-                    campaign_id=self.command.campaign_id,
-                    configuration_id=self.command.configuration_id,
-                    run_id=self.command.run_id,
-                    owner_id=self.command.owner_id,
-                    lease_seconds=LEASE_SECONDS,
-                )
-                if not result.get("renewal_confirmed"):
+                try:
+                    result = renew_campaign_lease(
+                        self.command.db_path,
+                        supervision_id=self.command.supervision_id,
+                        campaign_id=self.command.campaign_id,
+                        configuration_id=self.command.configuration_id,
+                        run_id=self.command.run_id,
+                        owner_id=self.command.owner_id,
+                        lease_seconds=LEASE_SECONDS,
+                    )
+                except BaseException as exc:  # signal main; never cleanup here
+                    with self._failure_lock:
+                        self._failure = {
+                            "renewal_confirmed": False,
+                            "renewal_error": f"{type(exc).__name__}:{exc}",
+                            "renewal_error_type": type(exc).__name__,
+                            "terminal_cleanup_performed": False,
+                            "signal_main_coordinator": True,
+                            "suggested_terminal_cause": "LEASE_RENEWAL_UNCONFIRMED",
+                        }
+                    self.failure_event.set()
                     break
-        self.thread = threading.Thread(target=loop, daemon=True)
+                if not result.get("renewal_confirmed"):
+                    with self._failure_lock:
+                        self._failure = dict(result)
+                        self._failure["terminal_cleanup_performed"] = bool(
+                            result.get("terminal_cleanup_performed")
+                        )
+                    self.failure_event.set()
+                    break
+        self.thread = threading.Thread(
+            target=loop, daemon=True, name="campaign-heartbeat"
+        )
         self.thread.start()
+
+    def poll_failure(self) -> dict[str, Any] | None:
+        with self._failure_lock:
+            if self._failure is None:
+                return None
+            return dict(self._failure)
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -665,6 +716,12 @@ def run_operational_campaign(
             )
 
         def cancellation_probe() -> str | None:
+            hb_failure = heartbeat.poll_failure() if heartbeat is not None else None
+            if hb_failure is not None:
+                return str(
+                    hb_failure.get("suggested_terminal_cause")
+                    or "LEASE_RENEWAL_UNCONFIRMED"
+                )
             connection = _read_only()
             try:
                 row = connection.execute(
@@ -705,12 +762,30 @@ def run_operational_campaign(
             migration_transport=migration_transport,
             fifteen_minute_only=True,
         )
+        # Heartbeat never terminalizes. Main coordinator observes failure signal.
+        heartbeat_failure = heartbeat.poll_failure() if heartbeat is not None else None
+        if heartbeat is not None:
+            heartbeat.stop()
+            heartbeat = None
         lifecycle = dict(result.lifecycle)
         cause = str(
             lifecycle.get("first_terminal_cause")
             or lifecycle.get("stop_reason")
             or "PRE_LIFECYCLE_GOVERNED_SAFE_STOP"
         )
+        if heartbeat_failure is not None and lifecycle.get("run_status") not in {
+            "FAILED", "CANCELLED", "TERMINAL_FAILED",
+        }:
+            # Prefer an existing lifecycle terminal cause; otherwise surface the
+            # heartbeat signal so the main path can cleanup once.
+            if cause in {"PRE_LIFECYCLE_GOVERNED_SAFE_STOP", ""}:
+                cause = str(
+                    heartbeat_failure.get("suggested_terminal_cause")
+                    or "LEASE_RENEWAL_UNCONFIRMED"
+                )
+                lifecycle["run_status"] = "FAILED"
+                lifecycle["first_terminal_cause"] = cause
+                lifecycle["heartbeat_failure"] = dict(heartbeat_failure)
         cleanup = cleanup_campaign_supervision(
             command.db_path,
             supervision_id=command.supervision_id,

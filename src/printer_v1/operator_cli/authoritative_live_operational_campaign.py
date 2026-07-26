@@ -1415,17 +1415,24 @@ class AuthoritativeLiveOperationalCampaignOwner:
         # `WHERE source_name='dexscreener'` count, which re-counted the discovery
         # fresh-profile locator and charged it twice (E.46B.1: 9 + 7 + 6 = 22 against
         # 21 distinct durable rows). Do not reintroduce a whole-table total here.
+        # V2-9.8B.2: every stage total must be invocation-local. Discovery must
+        # not whole-table-count the persistent operational DB. Prefer the supply
+        # composition's stage-local sum (locator + discovery + front door).
         supply_source_operations = 0
         if supply is not None:
-            supply_source_operations = int(
-                supply.discovery_report.get("source_operation_ledger", {}).get(
-                    "source_requests", 0
-                )
-            ) + int(
-                supply.front_door_report.get("source_operation_ledger", {}).get(
-                    "liquidity_requests", 0
-                )
-            )
+            stage_local = supply.diagnostics.get("stage_local_source_requests")
+            if stage_local is not None:
+                supply_source_operations = int(stage_local)
+            else:
+                supply_source_operations = int(
+                    supply.discovery_report.get("source_operation_ledger", {}).get(
+                        "source_requests", 0
+                    )
+                ) + int(
+                    supply.front_door_report.get("source_operation_ledger", {}).get(
+                        "liquidity_requests", 0
+                    )
+                ) + int(supply.diagnostics.get("locator_source_requests") or 0)
         ledger = build_ledger(
             pump_operations=acquisition.result.accounting.underlying_rpc_operations,
             additional_governed_operations=(

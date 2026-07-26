@@ -262,7 +262,8 @@ class OperationalCampaignSupervisionTests(unittest.TestCase):
         self.assertEqual(active["supervision_state"], "ACTIVE")
         self.assertTrue(self.lock.exists())
 
-    def test_unconfirmed_renewal_stops_children_and_preserves_first_fault(self) -> None:
+    def test_unconfirmed_renewal_signals_main_without_terminal_cleanup(self) -> None:
+        """V2-9.8B.2: renew reports failure; main coordinator owns cleanup."""
         self._acquire()
         error = PermissionError("sharing violation")
         error.winerror = 5
@@ -276,37 +277,62 @@ class OperationalCampaignSupervisionTests(unittest.TestCase):
         self.assertFalse(result["renewal_confirmed"])
         self.assertEqual(replace.call_count, 3)
         self.assertEqual(sleep.call_count, 2)
-        self.assertEqual(result["safe_stop"]["active_owned_work_after"], 0)
+        self.assertIsNone(result.get("safe_stop"))
+        self.assertFalse(result.get("terminal_cleanup_performed"))
+        self.assertTrue(result.get("signal_main_coordinator"))
+        self.assertEqual(result.get("suggested_terminal_cause"), "LEASE_RENEWAL_UNCONFIRMED")
+        # Supervision stays ACTIVE until the main terminal coordinator cleans up.
+        supervision = self.connection.execute(
+            """SELECT supervision_state,terminal_status,first_terminal_cause
+               FROM printer_memory_factory_campaign_supervision"""
+        ).fetchone()
+        self.assertEqual(supervision["supervision_state"], "ACTIVE")
+        self.assertIsNone(supervision["terminal_status"])
+        self.assertIsNone(supervision["first_terminal_cause"])
+        # Main coordinator cleanup preserves the first terminal cause it supplies.
+        cleanup = self._cleanup(
+            "LEASE_RENEWAL_UNCONFIRMED", "LEASE_RENEWAL_UNCONFIRMED",
+            at=T0 + timedelta(seconds=40),
+        )
+        self.assertTrue(cleanup["cleanup_completed"])
+        self.assertEqual(cleanup["first_terminal_cause"], "LEASE_RENEWAL_UNCONFIRMED")
+        self.assertEqual(cleanup["active_owned_work_after"], 0)
         self.assertFalse(self.lock.exists())
-        replay = self._cleanup("FAILED", "WORKER_FAILED", at=T0 + timedelta(seconds=40))
+        replay = self._cleanup("FAILED", "WORKER_FAILED", at=T0 + timedelta(seconds=50))
         self.assertTrue(replay["idempotent_replay"])
         self.assertEqual(replay["first_terminal_cause"], "LEASE_RENEWAL_UNCONFIRMED")
         self.assertEqual(replay["terminal_status"], "LEASE_RENEWAL_UNCONFIRMED")
 
-    def test_foreign_lock_during_exact_owner_renewal_still_stops_children(self) -> None:
+    def test_foreign_lock_during_exact_owner_renewal_signals_without_cleanup(self) -> None:
         self._acquire()
         payload = json.loads(self.lock.read_text(encoding="utf-8"))
         payload["owner_id"] = "foreign-owner"
         self.lock.write_text(json.dumps(payload), encoding="utf-8")
-        with self.assertRaisesRegex(CampaignSupervisionError, "ownership mismatch"):
-            renew_campaign_lease(
-                self.db, **self._identity(), now=T0 + timedelta(seconds=30),
-            )
+        result = renew_campaign_lease(
+            self.db, **self._identity(), now=T0 + timedelta(seconds=30),
+        )
+        self.assertFalse(result["renewal_confirmed"])
+        self.assertIn("ownership mismatch", result["renewal_error"])
+        self.assertFalse(result.get("terminal_cleanup_performed"))
+        self.assertTrue(result.get("signal_main_coordinator"))
         supervision = self.connection.execute(
             """SELECT supervision_state,terminal_status,first_terminal_cause,
                       lease_released_at
                FROM printer_memory_factory_campaign_supervision"""
         ).fetchone()
-        self.assertEqual(tuple(supervision[:3]), (
-            "TERMINAL", "LEASE_RENEWAL_UNCONFIRMED",
-            "LEASE_RENEWAL_UNCONFIRMED",
-        ))
+        self.assertEqual(supervision["supervision_state"], "ACTIVE")
+        self.assertIsNone(supervision["terminal_status"])
+        self.assertIsNone(supervision["first_terminal_cause"])
         self.assertIsNone(supervision["lease_released_at"])
-        self.assertEqual(self.connection.execute(
-            """SELECT COUNT(*)
-               FROM printer_memory_factory_campaign_scheduler_work
-               WHERE work_state IN ('PENDING','RUNNING','COOLDOWN')"""
-        ).fetchone()[0], 0)
+        # Active owned work remains until main cleanup; renew did not cancel it.
+        self.assertGreaterEqual(
+            self.connection.execute(
+                """SELECT COUNT(*)
+                   FROM printer_memory_factory_campaign_scheduler_work
+                   WHERE work_state IN ('PENDING','RUNNING','COOLDOWN')"""
+            ).fetchone()[0],
+            0,
+        )
         self.assertTrue(self.lock.exists())
 
     def test_cancellation_and_failure_share_idempotent_cleanup(self) -> None:

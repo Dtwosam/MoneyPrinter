@@ -16,6 +16,12 @@ OPERATIONAL_SCOPE = "OPERATIONAL_CAMPAIGN"
 DEFAULT_LEASE_SECONDS = 90
 LEASE_REPLACE_MAX_ATTEMPTS = 3
 LEASE_REPLACE_RETRY_SECONDS = 0.05
+# V2-9.8B.2: bounded SQLite lock wait. timeout=0 caused the heartbeat renewer to
+# fail immediately under a legitimate main-writer lock and previously triggered
+# terminal cleanup from the heartbeat thread.
+SQLITE_BUSY_TIMEOUT_SECONDS = 2.0
+SQLITE_BUSY_MAX_ATTEMPTS = 5
+SQLITE_BUSY_RETRY_SECONDS = 0.05
 _TRANSIENT_WINDOWS_REPLACE_ERRORS = {5, 32, 33}
 _ACTIVE_WORK = ("PENDING", "RUNNING", "COOLDOWN")
 _ACTIVE_WINDOWS = ("PLANNED", "COLLECTING", "CLOSE_PENDING", "AUDITING")
@@ -49,20 +55,46 @@ def _required(value: object, label: str) -> str:
     return text
 
 
+def _is_sqlite_locked(exc: BaseException) -> bool:
+    if isinstance(exc, sqlite3.OperationalError):
+        return "locked" in str(exc).lower() or "busy" in str(exc).lower()
+    return False
+
+
 def _connect(db_path: str | Path, *, read_only: bool = False) -> sqlite3.Connection:
     path = Path(db_path).resolve()
     if not path.is_file():
         raise CampaignSupervisionError(f"database missing: {path}")
+    timeout = SQLITE_BUSY_TIMEOUT_SECONDS
     if read_only:
         connection = sqlite3.connect(
-            f"file:{path.as_posix()}?mode=ro", uri=True, timeout=0.0
+            f"file:{path.as_posix()}?mode=ro", uri=True, timeout=timeout
         )
         connection.execute("PRAGMA query_only=ON")
     else:
-        connection = sqlite3.connect(path, timeout=0.0)
+        connection = sqlite3.connect(path, timeout=timeout)
         connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(
+            f"PRAGMA busy_timeout={int(SQLITE_BUSY_TIMEOUT_SECONDS * 1000)}"
+        )
     connection.row_factory = sqlite3.Row
     return connection
+
+
+def _begin_immediate(connection: sqlite3.Connection) -> None:
+    """Begin IMMEDIATE with bounded retries for transient SQLite lock contention."""
+    last_error: BaseException | None = None
+    for attempt in range(1, SQLITE_BUSY_MAX_ATTEMPTS + 1):
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            return
+        except sqlite3.OperationalError as exc:
+            last_error = exc
+            if not _is_sqlite_locked(exc) or attempt >= SQLITE_BUSY_MAX_ATTEMPTS:
+                raise
+            time.sleep(SQLITE_BUSY_RETRY_SECONDS)
+    if last_error is not None:
+        raise last_error
 
 
 def _lock_payload(path: Path) -> dict[str, Any]:
@@ -193,7 +225,7 @@ def acquire_campaign_supervision(
     _write_new_lock(lock, payload)
     connection = _connect(db_path)
     try:
-        connection.execute("BEGIN IMMEDIATE")
+        _begin_immediate(connection)
         graph = connection.execute(
             """SELECT c.campaign_state,r.run_state
                FROM printer_memory_factory_campaigns AS c
@@ -289,7 +321,12 @@ def renew_campaign_lease(
     lease_seconds: int = DEFAULT_LEASE_SECONDS,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Renew monotonically or terminalize all owned work on uncertainty."""
+    """Renew monotonically or report failure without performing terminal cleanup.
+
+    V2-9.8B.2: lease renewal never terminalizes owned work. Heartbeat threads must
+    only signal failure; the main terminal coordinator owns cleanup, first-cause
+    preservation, lease release, and report persistence.
+    """
     if lease_seconds < 15:
         raise CampaignSupervisionError("lease must be at least 15 seconds")
     instant = now or datetime.now(timezone.utc)
@@ -323,7 +360,7 @@ def renew_campaign_lease(
         attempts = _replace_lock(lock, payload, row)
         connection = _connect(db_path)
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            _begin_immediate(connection)
             cursor = connection.execute(
                 """UPDATE printer_memory_factory_campaign_supervision
                    SET heartbeat_at=?,lease_expires_at=?,updated_at=?
@@ -345,17 +382,16 @@ def renew_campaign_lease(
         finally:
             connection.close()
     except (CampaignSupervisionError, OSError, sqlite3.Error) as exc:
-        stopped = cleanup_campaign_supervision(
-            db_path, supervision_id=supervision_id, campaign_id=campaign_id,
-            configuration_id=configuration_id, run_id=run_id, owner_id=owner_id,
-            terminal_status="LEASE_RENEWAL_UNCONFIRMED",
-            first_terminal_cause="LEASE_RENEWAL_UNCONFIRMED", now=instant,
-        )
         return {
             "renewal_confirmed": False,
             "renewal_error": str(exc),
-            "safe_stop": stopped,
+            "renewal_error_type": type(exc).__name__,
+            "sqlite_locked": _is_sqlite_locked(exc),
+            "terminal_cleanup_performed": False,
+            "safe_stop": None,
             "new_child_work_allowed": False,
+            "signal_main_coordinator": True,
+            "suggested_terminal_cause": "LEASE_RENEWAL_UNCONFIRMED",
         }
     return {
         "renewal_confirmed": True,
@@ -363,6 +399,7 @@ def renew_campaign_lease(
         "lease_expires_at": _iso(next_expiry),
         "lease_replace_attempts": attempts,
         "lease_replace_retries": attempts - 1,
+        "terminal_cleanup_performed": False,
         "new_child_work_allowed": True,
     }
 
@@ -383,7 +420,7 @@ def request_campaign_cancellation(
     timestamp = _iso(now)
     connection = _connect(db_path)
     try:
-        connection.execute("BEGIN IMMEDIATE")
+        _begin_immediate(connection)
         row = _load_exact(
             connection, supervision_id=supervision_id, campaign_id=campaign_id,
             configuration_id=configuration_id, run_id=run_id, owner_id=owner_id,
@@ -484,7 +521,7 @@ def cleanup_campaign_supervision(
     window_cursor = None
     cycle_cursor = None
     try:
-        connection.execute("BEGIN IMMEDIATE")
+        _begin_immediate(connection)
         row = _load_exact(
             connection, supervision_id=supervision_id, campaign_id=campaign_id,
             configuration_id=configuration_id, run_id=run_id, owner_id=owner_id,
