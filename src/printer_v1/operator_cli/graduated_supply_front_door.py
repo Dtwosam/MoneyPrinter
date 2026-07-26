@@ -75,6 +75,18 @@ BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL = (
     "BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL"
 )
 
+# V2-9.7E.46B / V2-9.8B.6 shared production+pilot graduated-supply depth.
+# Admission ceiling remains 45. Do not raise ceilings or lower floors here.
+OPERATIONAL_GRADUATED_SUPPLY_KWARGS: dict[str, object] = {
+    "collection_rounds": 3,
+    "max_candidates": 5,
+    "settle_seconds": 6.0,
+    "reverify_on_transient": True,
+    "reverify_settle_seconds": 6.0,
+    "front_door_max_candidates": 6,
+    "run_locator": True,
+}
+
 
 class GraduatedSupplyError(RuntimeError):
     """Fail-closed graduated-supply composition fault."""

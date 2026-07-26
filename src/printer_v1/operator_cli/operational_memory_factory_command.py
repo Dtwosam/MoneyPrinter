@@ -36,6 +36,9 @@ from printer_v1.operator_cli.authoritative_live_operational_campaign import (
     OneShotUrllibPumpTransport,
     OneShotUrllibSecondaryTransport,
 )
+from printer_v1.operator_cli.graduated_supply_front_door import (
+    OPERATIONAL_GRADUATED_SUPPLY_KWARGS,
+)
 from printer_v1.operator_cli.campaign_ownership import create_campaign_run
 from printer_v1.operator_cli.campaign_persistence import (
     DB_MODE_OPERATIONAL_PERSISTENT,
@@ -98,6 +101,8 @@ HEARTBEAT_SECONDS = 30
 FREE_PUBLIC_SOLANA_RPC = "https://api.mainnet-beta.solana.com"
 ARTIFACT_ROOT = Path.home() / "PrinterOperations" / "v2-9-8"
 AUTHORITATIVE_DB = Path(CANONICAL_PERSISTENT_DB).resolve()
+# Re-export shared E.46B / V2-9.8B.6 supply bounds for public production wiring.
+EXPECTED_MIGRATION_COUNT = 43
 LOCKED_WINDOWS = ("WINDOW_1H", "WINDOW_4H", "WINDOW_12H", "WINDOW_24H")
 AUTHORITATIVE_SQLITE_RUNTIME_SIDECARS = (
     "data/printer_v1.sqlite3-journal",
@@ -290,7 +295,7 @@ def build_activation_preflight(
         )
     finally:
         connection.close()
-    if migrations != expected or len(migrations) != 42:
+    if migrations != expected or len(migrations) != EXPECTED_MIGRATION_COUNT:
         raise OperationalMemoryFactoryError("canonical migration ledger mismatch")
     if integrity != ("ok",) or foreign_keys:
         raise OperationalMemoryFactoryError("database integrity or foreign keys failed")
@@ -778,6 +783,7 @@ def run_operational_campaign(
                 "cancellation_probe": cancellation_probe,
             },
             migration_transport=migration_transport,
+            graduated_supply_kwargs=dict(OPERATIONAL_GRADUATED_SUPPLY_KWARGS),
             fifteen_minute_only=True,
         )
         # Heartbeat never terminalizes. Main coordinator observes failure signal.
@@ -1091,8 +1097,10 @@ if __name__ == "__main__":  # pragma: no cover
 
 __all__ = [
     "AUTHORITATIVE_DB",
+    "EXPECTED_MIGRATION_COUNT",
     "LOCKED_WINDOWS",
     "MAIN_WINDOW",
+    "OPERATIONAL_GRADUATED_SUPPLY_KWARGS",
     "TOKEN_CAPACITY",
     "build_activation_preflight",
     "cooperative_stop",

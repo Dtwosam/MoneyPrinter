@@ -31,7 +31,7 @@ from __future__ import annotations
 import math
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -96,6 +96,12 @@ LIQUIDITY_REQUEST_KIND = "pair_market_snapshot"
 LIQUIDITY_PROVEN = "LIQUIDITY_PROVEN"
 LIQUIDITY_BELOW_SELECTION_FLOOR = "LIQUIDITY_BELOW_SELECTION_FLOOR"
 LIQUIDITY_UNPROVEN = "LIQUIDITY_UNPROVEN"
+# Front-door skip reason when durable below-floor cooldown is still active.
+# No DexScreener call is made; last measured liquidity is retained for reporting.
+LIQUIDITY_BELOW_SELECTION_FLOOR_COOLDOWN = "LIQUIDITY_BELOW_SELECTION_FLOOR_COOLDOWN"
+# V2-9.8B.6: one hour categorical below-floor market revalidation cooldown.
+# Not a rank/score. Fresh exact-pool evidence is still required after expiry.
+BELOW_FLOOR_MARKET_COOLDOWN_SECONDS = 3600
 
 # Forbidden-capability tables. This lane must never write any of these; the report
 # proves each stayed at zero (integrity guard, not just an assertion of intent).
@@ -752,6 +758,92 @@ def _cooldown_ok(
     return True, ""
 
 
+def _parse_iso(value: str) -> datetime:
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def load_market_floor_state(
+    connection: sqlite3.Connection, mint: str
+) -> dict[str, Any] | None:
+    """Read durable market-floor revalidation state for one graduated mint."""
+    try:
+        row = connection.execute(
+            """SELECT mint_identity, pumpswap_pool, liquidity_status, liquidity_usd,
+                      last_checked_at, cooldown_until, updated_at
+               FROM printer_graduated_market_floor_state
+               WHERE mint_identity=?""",
+            (mint,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        # Pre-migration disposable fixtures may lack the table; fail open to
+        # normal fresh enrichment rather than inventing state.
+        return None
+    if row is None:
+        return None
+    return dict(row)
+
+
+def market_floor_cooldown_active(
+    state: Mapping[str, Any] | None, *, now: str
+) -> bool:
+    """True when a below-floor cooldown is present and has not expired."""
+    if state is None:
+        return False
+    if str(state.get("liquidity_status") or "") != LIQUIDITY_BELOW_SELECTION_FLOOR:
+        return False
+    cooldown_until = state.get("cooldown_until")
+    if not cooldown_until:
+        return False
+    return _parse_iso(str(now)) < _parse_iso(str(cooldown_until))
+
+
+def record_market_floor_state(
+    connection: sqlite3.Connection,
+    *,
+    mint: str,
+    pool: str,
+    liquidity: LiquidityEvidence,
+    now: str,
+    cooldown_seconds: int = BELOW_FLOOR_MARKET_COOLDOWN_SECONDS,
+) -> None:
+    """Persist last exact-pool liquidity classification and below-floor cooldown."""
+    cooldown_until = None
+    if liquidity.status == LIQUIDITY_BELOW_SELECTION_FLOOR:
+        cooldown_until = (
+            _parse_iso(now) + timedelta(seconds=int(cooldown_seconds))
+        ).isoformat()
+    try:
+        connection.execute(
+            """INSERT INTO printer_graduated_market_floor_state(
+                mint_identity, pumpswap_pool, liquidity_status, liquidity_usd,
+                last_checked_at, cooldown_until, updated_at
+            ) VALUES (?,?,?,?,?,?,?)
+            ON CONFLICT(mint_identity) DO UPDATE SET
+                pumpswap_pool=excluded.pumpswap_pool,
+                liquidity_status=excluded.liquidity_status,
+                liquidity_usd=excluded.liquidity_usd,
+                last_checked_at=excluded.last_checked_at,
+                cooldown_until=excluded.cooldown_until,
+                updated_at=excluded.updated_at""",
+            (
+                mint,
+                pool,
+                liquidity.status,
+                liquidity.liquidity_usd,
+                now,
+                cooldown_until,
+                now,
+            ),
+        )
+    except sqlite3.OperationalError:
+        # Table absent (pre-migration fixture) — market path still classifies
+        # in-memory; durable cooldown simply does not persist.
+        return
+
+
 def _bounded_refresh_rows(
     rows: Sequence[Mapping[str, Any]],
     *,
@@ -843,6 +935,7 @@ def run_graduated_liquidity_front_door(
         persisted_eligible: list[FrontDoorCandidate] = []
         below_floor = 0
         unproven = 0
+        cooldown_skips = 0
 
         for row in rows:
             mint = str(row["mint_identity"])
@@ -851,18 +944,6 @@ def run_graduated_liquidity_front_door(
             lifecycle_state = str(row["lifecycle_state"])
             graduation_block_time = int(row["graduation_block_time"])
             provenance = provenance_for(mint, latest_set)
-
-            transport = dexscreener_transport_factory(mint, pool)
-            liquidity = enrich_pool_liquidity(
-                connection,
-                mint=mint,
-                pumpswap_pool=pool,
-                dexscreener_transport=transport,
-                request_key=f"{request_key_prefix}-liq-{mint}",
-                recent_request_count=dex_request_count,
-                on_request=stage_request_ids.append,
-            )
-            dex_request_count += 1
 
             rejection: str | None = None
             # Identity + graduation gate (defense in depth; registry guarantees it).
@@ -873,18 +954,68 @@ def run_graduated_liquidity_front_door(
                 or not market_identity.startswith(PUMPSWAP_MARKET_PREFIX)
             ):
                 rejection = "IDENTITY_OR_GRADUATION_UNCONFIRMED"
-            # Liquidity floor gate.
-            elif liquidity.status == LIQUIDITY_BELOW_SELECTION_FLOOR:
-                rejection = LIQUIDITY_BELOW_SELECTION_FLOOR
-                below_floor += 1
-            elif liquidity.status != LIQUIDITY_PROVEN:
-                rejection = LIQUIDITY_UNPROVEN
-                unproven += 1
+                liquidity = LiquidityEvidence(
+                    LIQUIDITY_UNPROVEN,
+                    None,
+                    mint,
+                    pool,
+                    "IDENTITY_OR_GRADUATION_UNCONFIRMED",
+                    "SKIPPED",
+                )
             else:
-                # STNP / cooldown / rotation gate.
-                ok, reason = _cooldown_ok(connection, mint, pool, batch_seq)
-                if not ok:
-                    rejection = reason
+                floor_state = load_market_floor_state(connection, mint)
+                if market_floor_cooldown_active(floor_state, now=now):
+                    # V2-9.8B.6: skip DexScreener while below-floor cooldown is
+                    # active. Retain last measured liquidity for honest reporting.
+                    cooldown_skips += 1
+                    below_floor += 1
+                    prior_usd = (
+                        None
+                        if floor_state is None
+                        else floor_state.get("liquidity_usd")
+                    )
+                    prior_value = (
+                        None if prior_usd is None else float(prior_usd)
+                    )
+                    liquidity = LiquidityEvidence(
+                        LIQUIDITY_BELOW_SELECTION_FLOOR,
+                        prior_value,
+                        mint,
+                        pool,
+                        LIQUIDITY_BELOW_SELECTION_FLOOR_COOLDOWN,
+                        "COOLDOWN_SKIP",
+                    )
+                    rejection = LIQUIDITY_BELOW_SELECTION_FLOOR_COOLDOWN
+                else:
+                    transport = dexscreener_transport_factory(mint, pool)
+                    liquidity = enrich_pool_liquidity(
+                        connection,
+                        mint=mint,
+                        pumpswap_pool=pool,
+                        dexscreener_transport=transport,
+                        request_key=f"{request_key_prefix}-liq-{mint}",
+                        recent_request_count=dex_request_count,
+                        on_request=stage_request_ids.append,
+                    )
+                    dex_request_count += 1
+                    record_market_floor_state(
+                        connection,
+                        mint=mint,
+                        pool=pool,
+                        liquidity=liquidity,
+                        now=now,
+                    )
+                    if liquidity.status == LIQUIDITY_BELOW_SELECTION_FLOOR:
+                        rejection = LIQUIDITY_BELOW_SELECTION_FLOOR
+                        below_floor += 1
+                    elif liquidity.status != LIQUIDITY_PROVEN:
+                        rejection = LIQUIDITY_UNPROVEN
+                        unproven += 1
+                    else:
+                        # STNP / cooldown / rotation gate.
+                        ok, reason = _cooldown_ok(connection, mint, pool, batch_seq)
+                        if not ok:
+                            rejection = reason
 
             eligible = rejection is None
             candidate = FrontDoorCandidate(
@@ -936,6 +1067,8 @@ def run_graduated_liquidity_front_door(
         "persisted_eligible_count": len(persisted_eligible),
         "below_floor_count": below_floor,
         "unproven_count": unproven,
+        "cooldown_skip_count": cooldown_skips,
+        "market_calls": dex_request_count,
         "rejected_count": len(rejected),
         "rejected": rejected,
         "mix_state": mix_state,

@@ -870,26 +870,14 @@ def run_two_token_operational_pilot(
             duration_seconds=120.0,
             connect_timeout_seconds=10.0,
         )
-    # V2-9.7E.46B candidate-search depth (item 6). The holder operation ceiling is
-    # 45 (OPERATION_CEILING). Of these, 9 are fixed zero-transport validations and
-    # 2 + 4 = 6 are reserved snapshot/completion operations, leaving 30 usable
-    # operations. Fully vetting one candidate costs 1 governed DexScreener exact-pool
-    # liquidity request plus up to HOLDER_WORST_CASE_TRANSPORT_OPERATIONS (5) holder
-    # transport operations = 6, so the ceiling supports floor(30 / 6) = 5 fully
-    # vetted candidates before the direct-migration discovery pump operations are
-    # charged. The combined front-door pool is therefore sized to 6 (one more than
-    # the holder-vetting depth) so a candidate that fails liquidity or holder
-    # evidence can be lawfully replaced within the same bounded budget, and the
-    # confirmed-LATEST discovery depth is 5. This is the maximum safe depth: a
-    # larger pool would raise the charged base and drive candidate_cap below two.
+    # V2-9.7E.46B / V2-9.8B.6 candidate-search depth: shared with the public
+    # operational command. Admission ceiling remains 45; reserve depth 6.
+    from printer_v1.operator_cli.graduated_supply_front_door import (
+        OPERATIONAL_GRADUATED_SUPPLY_KWARGS,
+    )
+
     supply_kwargs = {
-        "collection_rounds": 3,
-        "max_candidates": 5,
-        "settle_seconds": 6.0,
-        "reverify_on_transient": True,
-        "reverify_settle_seconds": 6.0,
-        "front_door_max_candidates": 6,
-        "run_locator": True,
+        **dict(OPERATIONAL_GRADUATED_SUPPLY_KWARGS),
         "discovery_request_key_prefix": f"{execution_id}-supply",
         "front_door_request_key_prefix": f"{execution_id}-market",
     }

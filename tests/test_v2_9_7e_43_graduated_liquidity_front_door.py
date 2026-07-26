@@ -311,10 +311,14 @@ class TestEligibilityCrossings:
         low = _run(db, set(), _uniform_factory(1500.0))
         assert low["candidates"][0]["provenance"] == PERSISTED_GRADUATED_CHANNEL
         assert low["candidates"][0]["eligible"] is False
-        # Later clean observation crosses above the floor -> eligible.
-        high = _run(db, set(), _uniform_factory(3200.0))
+        # V2-9.8B.6: below-floor cooldown skips re-enrichment until expiry.
+        # After cooldown, a fresh exact-pool observation may cross above the floor.
+        later = "2026-07-24T01:00:01+00:00"
+        high = _run(db, set(), _uniform_factory(3200.0), now=later)
         assert high["candidates"][0]["eligible"] is True
         assert high["persisted_eligible_count"] == 1
+        assert high["market_calls"] == 1
+        assert high["cooldown_skip_count"] == 0
 
     def test_fd08_persisted_below_floor_excluded(self):
         db = _temp_db()
