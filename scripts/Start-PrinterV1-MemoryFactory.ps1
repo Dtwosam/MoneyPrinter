@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('preflight-only', 'run', 'status', 'cooperative-stop', 'report-only')]
+    [ValidateSet('preflight-only', 'run', 'status', 'cooperative-stop', 'recover-orphan', 'report-only')]
     [string]$Mode = 'preflight-only',
     [switch]$OperatorApproved
 )

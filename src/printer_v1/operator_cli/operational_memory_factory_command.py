@@ -49,9 +49,16 @@ from printer_v1.operator_cli.campaign_supervision import (
     request_campaign_cancellation,
 )
 from printer_v1.operator_cli.final_campaign_report import LOCKED_CAPABILITY_TABLES
-from printer_v1.operator_cli.git_provenance import capture_git_provenance
+from printer_v1.operator_cli.git_provenance import (
+    GitProvenanceError,
+    capture_git_provenance,
+)
 from printer_v1.operator_cli.operational_backup_restore_preflight import (
     operational_backup_restore_preflight,
+)
+from printer_v1.operator_cli.operational_campaign_recovery import (
+    production_recovery_paths,
+    recover_exact_orphan,
 )
 from printer_v1.operator_cli.proof_db_schema_readiness import (
     CANONICAL_PERSISTENT_DB,
@@ -88,6 +95,11 @@ FREE_PUBLIC_SOLANA_RPC = "https://api.mainnet-beta.solana.com"
 ARTIFACT_ROOT = Path.home() / "PrinterOperations" / "v2-9-8"
 AUTHORITATIVE_DB = Path(CANONICAL_PERSISTENT_DB).resolve()
 LOCKED_WINDOWS = ("WINDOW_1H", "WINDOW_4H", "WINDOW_12H", "WINDOW_24H")
+AUTHORITATIVE_SQLITE_RUNTIME_SIDECARS = (
+    "data/printer_v1.sqlite3-journal",
+    "data/printer_v1.sqlite3-wal",
+    "data/printer_v1.sqlite3-shm",
+)
 
 
 class OperationalMemoryFactoryError(RuntimeError):
@@ -202,6 +214,17 @@ def _validate_locked_baseline(counts: Mapping[str, int]) -> None:
             )
 
 
+def _capture_operational_git_provenance(root: Path) -> dict[str, Any]:
+    provenance = capture_git_provenance(
+        root, allowed_untracked_paths=AUTHORITATIVE_SQLITE_RUNTIME_SIDECARS
+    )
+    if provenance["git_untracked_present"]:
+        raise GitProvenanceError(
+            "launch Git tree contains an arbitrary untracked file"
+        )
+    return provenance
+
+
 def build_activation_preflight(
     *,
     db_path: str | Path = AUTHORITATIVE_DB,
@@ -223,7 +246,7 @@ def build_activation_preflight(
         if repository_root is not None
         else AUTHORITATIVE_DB.parent.parent
     )
-    provenance = capture_git_provenance(root)
+    provenance = _capture_operational_git_provenance(root)
     source = build_readiness_source_contract_preflight()
     dependency = assert_runtime_dependency_preflight(repository_root=root)
     if source["status"] != "READY" or dependency.status != "READY":
@@ -462,6 +485,127 @@ class _CampaignHeartbeat:
             self.thread.join(timeout=HEARTBEAT_SECONDS + 5)
 
 
+def _existing_first_terminal_cause(command: AbstractCampaignCommand) -> str | None:
+    connection = _read_only(command.db_path)
+    try:
+        row = connection.execute(
+            """SELECT c.first_terminal_cause AS campaign_cause,
+                      s.first_terminal_cause AS supervision_cause
+               FROM printer_memory_factory_campaigns AS c
+               LEFT JOIN printer_memory_factory_campaign_supervision AS s
+                 ON s.campaign_id=c.campaign_id AND s.run_id=?
+               WHERE c.campaign_id=?""",
+            (command.run_id, command.campaign_id),
+        ).fetchone()
+    finally:
+        connection.close()
+    if row is None:
+        return None
+    return str(row["campaign_cause"] or row["supervision_cause"] or "").strip() or None
+
+
+def _terminalize_initialized_failure(
+    *,
+    original_exception: BaseException,
+    command: AbstractCampaignCommand,
+    cycle_id: str,
+    execution_id: str,
+    paths: Mapping[str, Path],
+    launch_git_provenance: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Attempt every canonical terminal owner without replacing the first fault."""
+    original_cause = f"OPERATIONAL_CAMPAIGN_FAILED:{type(original_exception).__name__}"
+    cause = _existing_first_terminal_cause(command) or original_cause
+    closure_errors: list[str] = []
+    reconciliation: Mapping[str, Any] = {
+        "reconciled": False,
+        "restart_created": False,
+        "successor_created": False,
+    }
+    cleanup: Mapping[str, Any] = {"cleanup_completed": False}
+    try:
+        cleanup = cleanup_campaign_supervision(
+            command.db_path,
+            supervision_id=command.supervision_id,
+            campaign_id=command.campaign_id,
+            configuration_id=command.configuration_id,
+            run_id=command.run_id,
+            owner_id=command.owner_id,
+            terminal_status="FAILED",
+            first_terminal_cause=cause,
+        )
+    except BaseException as exc:  # report still has to be attempted
+        closure_errors.append(f"cleanup:{type(exc).__name__}:{exc}")
+    try:
+        reconciliation = reconcile_campaign_terminal(
+            command.db_path,
+            campaign_id=command.campaign_id,
+            run_id=command.run_id,
+            cycle_id=cycle_id,
+            terminal_cause=cause,
+            run_status="FAILED",
+            factory_run_id=None,
+            lifecycle_started=False,
+            now=_iso(),
+        )
+    except BaseException as exc:  # preserve and continue to report owner
+        closure_errors.append(f"reconciliation:{type(exc).__name__}:{exc}")
+    payload = build_campaign_terminal_report(
+        campaign_id=command.campaign_id,
+        configuration_id=command.configuration_id,
+        run_id=command.run_id,
+        cycle_id=cycle_id,
+        report_id=command.report_id,
+        factory_run_id=None,
+        execution_id=execution_id,
+        terminal_status="FAILED",
+        terminal_cause=cause,
+        run_status="FAILED",
+        lifecycle_started=False,
+        reconciliation=reconciliation,
+        forbidden_deltas={},
+        launch_git_provenance=launch_git_provenance,
+    )
+    report: Mapping[str, Any] = {"report_written": False}
+    try:
+        report = write_campaign_terminal_report(
+            command.db_path,
+            paths["reports"],
+            report_id=command.report_id,
+            campaign_id=command.campaign_id,
+            configuration_id=command.configuration_id,
+            report=payload,
+        )
+    except BaseException as exc:
+        closure_errors.append(f"report:{type(exc).__name__}:{exc}")
+    terminal = {
+        "status": "OPERATIONAL_CAMPAIGN_TERMINAL_FAILURE",
+        "execution_id": execution_id,
+        "campaign_id": command.campaign_id,
+        "first_terminal_cause": cause,
+        "original_exception_type": type(original_exception).__name__,
+        "reconciliation": dict(reconciliation),
+        "cleanup": dict(cleanup),
+        "report": dict(report),
+        "closure_errors": tuple(closure_errors),
+        "restart_created": False,
+        "successor_created": False,
+    }
+    try:
+        paths["summary"].write_text(
+            json.dumps(terminal, indent=2, sort_keys=True, default=str) + "\n",
+            encoding="utf-8",
+        )
+    except BaseException as exc:
+        closure_errors.append(f"summary:{type(exc).__name__}:{exc}")
+    if closure_errors:
+        original_exception.add_note(
+            "post-initialization terminalization diagnostics: "
+            + " | ".join(closure_errors)
+        )
+    return terminal
+
+
 def run_operational_campaign(
     *,
     operator_approved: bool,
@@ -497,45 +641,51 @@ def run_operational_campaign(
         execution_id=execution_id, paths=paths, preflight=preflight,
         backup=backup, now=now,
     )
-    acquire_campaign_supervision(
-        command.db_path,
-        lock_path=command.lease_lock_path,
-        supervision_id=command.supervision_id,
-        campaign_id=command.campaign_id,
-        configuration_id=command.configuration_id,
-        run_id=command.run_id,
-        owner_id=command.owner_id,
-        lease_seconds=LEASE_SECONDS,
-    )
-    heartbeat = _CampaignHeartbeat(command)
-    heartbeat.start()
-    active_owner = owner or AuthoritativeLiveOperationalCampaignOwner()
-    active_pump = pump_transport or OneShotUrllibPumpTransport(FREE_PUBLIC_SOLANA_RPC)
-    active_secondary = secondary_transport or OneShotUrllibSecondaryTransport()
-    if migration_transport is None:
-        from printer_v1.sources.pumpportal import build_pumpportal_migration_transport
-        migration_transport = build_pumpportal_migration_transport(
-            max_events=4, duration_seconds=120.0, connect_timeout_seconds=10.0,
-        )
-    def cancellation_probe() -> str | None:
-        connection = _read_only()
-        try:
-            row = connection.execute(
-                """SELECT supervision_state,cancellation_reason
-                   FROM printer_memory_factory_campaign_supervision
-                   WHERE supervision_id=? AND campaign_id=? AND run_id=?""",
-                (command.supervision_id, command.campaign_id, command.run_id),
-            ).fetchone()
-        finally:
-            connection.close()
-        if row is None:
-            return "CAMPAIGN_SUPERVISION_MISSING"
-        if row["supervision_state"] == "STOPPING":
-            return str(row["cancellation_reason"] or "OPERATOR_REQUESTED_COOPERATIVE_STOP")
-        if row["supervision_state"] == "TERMINAL":
-            return "CAMPAIGN_SUPERVISION_TERMINAL"
-        return None
+    heartbeat: _CampaignHeartbeat | None = None
     try:
+        acquire_campaign_supervision(
+            command.db_path,
+            lock_path=command.lease_lock_path,
+            supervision_id=command.supervision_id,
+            campaign_id=command.campaign_id,
+            configuration_id=command.configuration_id,
+            run_id=command.run_id,
+            owner_id=command.owner_id,
+            lease_seconds=LEASE_SECONDS,
+        )
+        heartbeat = _CampaignHeartbeat(command)
+        heartbeat.start()
+        active_owner = owner or AuthoritativeLiveOperationalCampaignOwner()
+        active_pump = pump_transport or OneShotUrllibPumpTransport(FREE_PUBLIC_SOLANA_RPC)
+        active_secondary = secondary_transport or OneShotUrllibSecondaryTransport()
+        if migration_transport is None:
+            from printer_v1.sources.pumpportal import build_pumpportal_migration_transport
+            migration_transport = build_pumpportal_migration_transport(
+                max_events=4, duration_seconds=120.0, connect_timeout_seconds=10.0,
+            )
+
+        def cancellation_probe() -> str | None:
+            connection = _read_only()
+            try:
+                row = connection.execute(
+                    """SELECT supervision_state,cancellation_reason
+                       FROM printer_memory_factory_campaign_supervision
+                       WHERE supervision_id=? AND campaign_id=? AND run_id=?""",
+                    (command.supervision_id, command.campaign_id, command.run_id),
+                ).fetchone()
+            finally:
+                connection.close()
+            if row is None:
+                return "CAMPAIGN_SUPERVISION_MISSING"
+            if row["supervision_state"] == "STOPPING":
+                return str(
+                    row["cancellation_reason"]
+                    or "OPERATOR_REQUESTED_COOPERATIVE_STOP"
+                )
+            if row["supervision_state"] == "TERMINAL":
+                return "CAMPAIGN_SUPERVISION_TERMINAL"
+            return None
+
         result = active_owner.run_operational(
             command=command,
             pump_transport=active_pump,
@@ -561,17 +711,6 @@ def run_operational_campaign(
             or lifecycle.get("stop_reason")
             or "PRE_LIFECYCLE_GOVERNED_SAFE_STOP"
         )
-        reconciliation = reconcile_campaign_terminal(
-            command.db_path,
-            campaign_id=command.campaign_id,
-            run_id=command.run_id,
-            cycle_id=cycle_id,
-            terminal_cause=cause,
-            run_status=lifecycle.get("run_status"),
-            factory_run_id=str(lifecycle.get("run_id") or "") or None,
-            lifecycle_started=bool(result.lifecycle_started),
-            now=_iso(),
-        )
         cleanup = cleanup_campaign_supervision(
             command.db_path,
             supervision_id=command.supervision_id,
@@ -583,6 +722,17 @@ def run_operational_campaign(
                 "FAILED" if lifecycle.get("run_status") == "FAILED" else "COMPLETED"
             ),
             first_terminal_cause=cause,
+        )
+        reconciliation = reconcile_campaign_terminal(
+            command.db_path,
+            campaign_id=command.campaign_id,
+            run_id=command.run_id,
+            cycle_id=cycle_id,
+            terminal_cause=cause,
+            run_status=lifecycle.get("run_status"),
+            factory_run_id=str(lifecycle.get("run_id") or "") or None,
+            lifecycle_started=bool(result.lifecycle_started),
+            now=_iso(),
         )
         payload = build_campaign_terminal_report(
             campaign_id=command.campaign_id,
@@ -626,60 +776,26 @@ def run_operational_campaign(
         )
         return terminal
     except BaseException as exc:
-        cause = f"OPERATIONAL_CAMPAIGN_FAILED:{type(exc).__name__}"
-        reconciliation: Mapping[str, Any] = {"reconciled": False}
+        if heartbeat is not None:
+            heartbeat.stop()
         try:
-            reconciliation = reconcile_campaign_terminal(
-                command.db_path,
-                campaign_id=command.campaign_id,
-                run_id=command.run_id,
+            _terminalize_initialized_failure(
+                original_exception=exc,
+                command=command,
                 cycle_id=cycle_id,
-                terminal_cause=cause,
-                run_status="FAILED",
-                factory_run_id=None,
-                lifecycle_started=False,
-                now=_iso(),
+                execution_id=execution_id,
+                paths=paths,
+                launch_git_provenance=preflight["git_provenance"],
             )
-        finally:
-            cleanup_campaign_supervision(
-                command.db_path,
-                supervision_id=command.supervision_id,
-                campaign_id=command.campaign_id,
-                configuration_id=command.configuration_id,
-                run_id=command.run_id,
-                owner_id=command.owner_id,
-                terminal_status="FAILED",
-                first_terminal_cause=cause,
+        except BaseException as closure_exc:
+            exc.add_note(
+                "post-initialization terminalization coordinator fault: "
+                f"{type(closure_exc).__name__}:{closure_exc}"
             )
-        payload = build_campaign_terminal_report(
-            campaign_id=command.campaign_id,
-            configuration_id=command.configuration_id,
-            run_id=command.run_id,
-            cycle_id=cycle_id,
-            report_id=command.report_id,
-            factory_run_id=None,
-            execution_id=execution_id,
-            terminal_status="FAILED",
-            terminal_cause=cause,
-            run_status="FAILED",
-            lifecycle_started=False,
-            reconciliation=reconciliation,
-            forbidden_deltas={},
-            launch_git_provenance=preflight["git_provenance"],
-        )
-        write_campaign_terminal_report(
-            command.db_path,
-            paths["reports"],
-            report_id=command.report_id,
-            campaign_id=command.campaign_id,
-            configuration_id=command.configuration_id,
-            report=payload,
-        )
-        raise OperationalMemoryFactoryError(
-            "operational campaign failed through safe terminal closure"
-        ) from exc
+        raise
     finally:
-        heartbeat.stop()
+        if heartbeat is not None:
+            heartbeat.stop()
 
 
 def _latest_supervision(connection: sqlite3.Connection) -> sqlite3.Row:
@@ -742,6 +858,18 @@ def cooperative_stop(*, operator_approved: bool) -> dict[str, Any]:
     }
 
 
+def recover_orphan(*, operator_approved: bool) -> dict[str, Any]:
+    """Run the one exact V2-9.8B.1 operator-approved orphan recovery."""
+    paths = production_recovery_paths()
+    return recover_exact_orphan(
+        operator_approved=operator_approved,
+        current_db=paths["current_db"],
+        pre_campaign_backup=paths["pre_campaign_backup"],
+        artifact_root=paths["artifact_root"],
+        recovery_root=paths["recovery_root"],
+    )
+
+
 def report_only() -> dict[str, Any]:
     connection = _read_only()
     try:
@@ -788,7 +916,10 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
     parser.add_argument(
         "mode",
-        choices=("preflight-only", "run", "status", "cooperative-stop", "report-only"),
+        choices=(
+            "preflight-only", "run", "status", "cooperative-stop",
+            "recover-orphan", "report-only",
+        ),
     )
     parser.add_argument("--operator-approved", action="store_true")
     args = parser.parse_args(list(argv) if argv is not None else None)
@@ -801,6 +932,8 @@ def main(argv: Iterable[str] | None = None) -> int:
             result = operational_status()
         elif args.mode == "cooperative-stop":
             result = cooperative_stop(operator_approved=args.operator_approved)
+        elif args.mode == "recover-orphan":
+            result = recover_orphan(operator_approved=args.operator_approved)
         else:
             result = report_only()
         print(json.dumps(result, indent=2, sort_keys=True, default=str))
@@ -835,6 +968,7 @@ __all__ = [
     "cooperative_stop",
     "main",
     "operational_status",
+    "recover_orphan",
     "report_only",
     "run_operational_campaign",
 ]

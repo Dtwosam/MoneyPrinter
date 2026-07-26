@@ -103,8 +103,14 @@ def capture_git_provenance(
     timeout_seconds: float = GIT_COMMAND_TIMEOUT_SECONDS,
     runner: Callable[..., Any] = subprocess.run,
     now: datetime | None = None,
+    allowed_untracked_paths: Iterable[str] = (),
 ) -> dict[str, Any]:
-    """Capture exact HEAD and tracked/untracked state without storing file names."""
+    """Capture exact HEAD and tracked/untracked state without storing file names.
+
+    ``allowed_untracked_paths`` is an exact repository-relative allowlist.  It
+    exists for narrow runtime companions such as the authoritative SQLite
+    journal; it never accepts globs, directories, absolute paths, or traversal.
+    """
     if not 0 < timeout_seconds <= GIT_COMMAND_TIMEOUT_SECONDS:
         raise GitProvenanceError("Git provenance timeout is outside the fixed ceiling")
     root = Path(project_root).resolve()
@@ -159,13 +165,28 @@ def capture_git_provenance(
     untracked_output = getattr(untracked_result, "stdout", None)
     if not isinstance(untracked_output, str):
         raise GitProvenanceError("Git untracked output is malformed")
+    allowed: set[str] = set()
+    for item in allowed_untracked_paths:
+        value = str(item)
+        candidate = Path(value)
+        if (
+            not value
+            or candidate.is_absolute()
+            or ".." in candidate.parts
+            or value.endswith("/")
+            or any(character in value for character in ("*", "?", "["))
+        ):
+            raise GitProvenanceError("Git untracked allowlist path is malformed")
+        allowed.add(candidate.as_posix())
+    observed = {item for item in untracked_output.split("\0") if item}
+    unexpected_untracked = observed - allowed
 
     provenance = {
         "git_head": head,
         "git_tracked_tree_clean": not staged and not unstaged,
         "git_staged_changes_present": staged,
         "git_unstaged_changes_present": unstaged,
-        "git_untracked_present": bool(untracked_output),
+        "git_untracked_present": bool(unexpected_untracked),
         "git_provenance_captured_at": _utc_text(now),
     }
     return validate_launch_provenance(provenance)

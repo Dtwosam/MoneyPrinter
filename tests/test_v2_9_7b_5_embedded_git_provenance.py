@@ -15,6 +15,7 @@ from printer_v1.operator_cli.git_provenance import (
     GitProvenanceError,
     capture_git_provenance,
 )
+from printer_v1.operator_cli import operational_memory_factory_command
 from printer_v1.operator_cli.one_command_15m_factory import (
     load_report_only,
     run_one_command_15m_factory,
@@ -97,6 +98,73 @@ class EmbeddedGitProvenanceTests(unittest.TestCase):
 
         self.assertTrue(provenance["git_tracked_tree_clean"])
         self.assertTrue(provenance["git_untracked_present"])
+
+    def test_exact_authoritative_sqlite_sidecars_may_be_allowed(self):
+        repo = self._repo()
+        allowed = (
+            "data/printer_v1.sqlite3-journal",
+            "data/printer_v1.sqlite3-wal",
+            "data/printer_v1.sqlite3-shm",
+        )
+        (repo / "data").mkdir()
+        for relative in allowed:
+            (repo / relative).write_text("runtime companion", encoding="ascii")
+
+        provenance = capture_git_provenance(
+            repo, allowed_untracked_paths=allowed
+        )
+
+        self.assertFalse(provenance["git_untracked_present"])
+
+    def test_sidecar_allowlist_still_reports_arbitrary_untracked_files(self):
+        repo = self._repo()
+        (repo / "data").mkdir()
+        (repo / "data" / "printer_v1.sqlite3-journal").write_text(
+            "runtime companion", encoding="ascii"
+        )
+        (repo / "unexpected.txt").write_text("blocked", encoding="ascii")
+
+        provenance = capture_git_provenance(
+            repo,
+            allowed_untracked_paths=("data/printer_v1.sqlite3-journal",),
+        )
+
+        self.assertTrue(provenance["git_untracked_present"])
+
+    def test_operational_provenance_permits_only_exact_runtime_sidecars(self):
+        repo = self._repo()
+        (repo / "data").mkdir()
+        for name in (
+            "printer_v1.sqlite3-journal",
+            "printer_v1.sqlite3-wal",
+            "printer_v1.sqlite3-shm",
+        ):
+            (repo / "data" / name).write_text(
+                "runtime companion", encoding="ascii"
+            )
+
+        provenance = (
+            operational_memory_factory_command._capture_operational_git_provenance(
+                repo
+            )
+        )
+
+        self.assertFalse(provenance["git_untracked_present"])
+
+    def test_operational_provenance_blocks_arbitrary_untracked_files(self):
+        repo = self._repo()
+        (repo / "data").mkdir()
+        (repo / "data" / "printer_v1.sqlite3-journal").write_text(
+            "runtime companion", encoding="ascii"
+        )
+        (repo / "unexpected.txt").write_text("blocked", encoding="ascii")
+
+        with self.assertRaisesRegex(
+            GitProvenanceError, "arbitrary untracked file"
+        ):
+            operational_memory_factory_command._capture_operational_git_provenance(
+                repo
+            )
 
     def test_detached_head_is_supported(self):
         repo = self._repo()

@@ -25,6 +25,25 @@ class PublicOperationalCommandTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.db = Path(self.temp.name) / "printer_v1.sqlite3"
         shutil.copy2(SOURCE, self.db)
+        # The authoritative corpus may contain the operator-approved V2-9.8B
+        # orphan while its repair lane is active.  A.8 preflight tests require a
+        # quiescent disposable fixture, not a byte copy of active campaign state.
+        connection = __import__("sqlite3").connect(self.db)
+        try:
+            connection.execute(
+                "DROP TRIGGER IF EXISTS printer_campaign_configuration_immutable_delete"
+            )
+            for table in (
+                "printer_memory_factory_campaign_supervision",
+                "printer_memory_factory_campaign_cycles",
+                "printer_memory_factory_campaign_runs",
+                "printer_memory_factory_campaign_configurations",
+                "printer_memory_factory_campaigns",
+            ):
+                connection.execute(f"DELETE FROM {table}")
+            connection.commit()
+        finally:
+            connection.close()
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -63,11 +82,11 @@ class PublicOperationalCommandTests(unittest.TestCase):
         }
         provenance = {
             "git_head": "93a3ca214277c5840fc35d88f44ca15c1ec10863",
-            "tracked_tree_clean": True,
-            "staged_changes": False,
-            "unstaged_changes": False,
-            "untracked_changes": False,
-            "captured_at": "2026-07-26T17:00:00+00:00",
+            "git_tracked_tree_clean": True,
+            "git_staged_changes_present": False,
+            "git_unstaged_changes_present": False,
+            "git_untracked_present": False,
+            "git_provenance_captured_at": "2026-07-26T17:00:00+00:00",
         }
         with (
             patch.object(command, "AUTHORITATIVE_DB", self.db.resolve()),
