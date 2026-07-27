@@ -166,7 +166,7 @@ class MigrationAndFactoryInsertTests(unittest.TestCase):
         expected_names = canonical_migration_names()
         self.assertEqual(EXPECTED_MIGRATION_COUNT, expected_count)
         self.assertEqual(expected_count, len(expected_names))
-        self.assertTrue(expected_names[-1].startswith("045"))
+        self.assertTrue(expected_names[-1].startswith("046"))
         with tempfile.TemporaryDirectory() as temporary:
             db = Path(temporary) / "mig.sqlite3"
             apply_migrations(db)
@@ -178,7 +178,7 @@ class MigrationAndFactoryInsertTests(unittest.TestCase):
                 self.assertEqual(count, expected_count)
                 latest = connection.execute(
                     "SELECT version FROM printer_schema_migrations "
-                    "WHERE version LIKE '045%'"
+                    "WHERE version LIKE '046%'"
                 ).fetchone()
                 self.assertIsNotNone(latest)
                 self.assertEqual(latest[0], expected_names[-1])

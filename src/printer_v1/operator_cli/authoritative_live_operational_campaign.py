@@ -1516,12 +1516,26 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     front_door_candidates = list(
                         (supply.front_door_report or {}).get("candidates") or []
                     )
+                supply_diag = (
+                    dict(supply.diagnostics) if supply is not None else {}
+                )
                 terminal_reporting = {
                     "campaign_source_calls": int(ledger.governed_requests),
                     "campaign_scheduler_calls": 0,
                     "required_token_capacity": 2,
                     "blocked_supply_reason": BLOCKED_INSUFFICIENT_GRADUATED_POOL,
                     "candidates": front_door_candidates,
+                    # V2-9.8B.21: honest exhaustion evidence when present.
+                    "exhaustion_certificate": supply_diag.get(
+                        "exhaustion_certificate"
+                    ),
+                    "shortage_classification": supply_diag.get(
+                        "shortage_classification"
+                    ),
+                    "discovery_rounds": supply_diag.get("discovery_rounds"),
+                    "eligible_reserve_count": supply_diag.get(
+                        "eligible_reserve_count"
+                    ),
                 }
                 return OriginLifecycleResult(
                     activation=ActivationResult(

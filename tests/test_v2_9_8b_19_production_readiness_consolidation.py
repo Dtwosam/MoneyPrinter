@@ -166,17 +166,18 @@ class CanonicalMigrationLedgerTests(unittest.TestCase):
         count = canonical_migration_count()
         self.assertEqual(count, len(names))
         self.assertEqual(count, command.EXPECTED_MIGRATION_COUNT)
-        self.assertEqual(count, 45)
-        self.assertTrue(names[-1].startswith("045"))
-        self.assertEqual(names[-1], "045_heartbeat_failure_evidence.sql")
+        self.assertEqual(count, 46)
+        self.assertTrue(names[-1].startswith("046"))
+        self.assertEqual(names[-1], "046_eligible_token_supply.sql")
         # Stale hard-code must not reappear as the sole authority.
         self.assertNotEqual(command.EXPECTED_MIGRATION_COUNT, 44)
+        self.assertNotEqual(command.EXPECTED_MIGRATION_COUNT, 45)
 
     def test_current_ledger_passes_and_corruptions_fail_with_exact_reasons(self) -> None:
         expected = list(canonical_migration_names())
         ok = validate_migration_ledger(expected)
         self.assertTrue(ok["matches"])
-        self.assertEqual(ok["canonical_count"], 45)
+        self.assertEqual(ok["canonical_count"], 46)
         self.assertEqual(ok["latest_canonical"], expected[-1])
 
         missing = validate_migration_ledger(expected[:-1])
@@ -218,7 +219,7 @@ class CanonicalMigrationLedgerTests(unittest.TestCase):
             finally:
                 connection.close()
             self.assertEqual(applied, list(canonical_migration_names()))
-            self.assertEqual(len(applied), 45)
+            self.assertEqual(len(applied), 46)
 
 
 class ActionLocalBlockedCountersTests(unittest.TestCase):
@@ -278,6 +279,7 @@ class PreflightStatusReportZeroSurfaceTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.db = self.root / "printer_v1.sqlite3"
         _copy_authoritative_corpus(self.db)
+        apply_migrations(self.db)
         _quiesce_operational_surfaces(self.db)
         self.provenance = _provenance()
         self.source_ready = {
@@ -289,7 +291,7 @@ class PreflightStatusReportZeroSurfaceTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def test_preflight_ready_migration_45_zero_source_zero_write(self) -> None:
+    def test_preflight_ready_migration_46_zero_source_zero_write(self) -> None:
         before = self.db.read_bytes()
         with (
             patch.object(command, "AUTHORITATIVE_DB", self.db.resolve()),
@@ -313,9 +315,9 @@ class PreflightStatusReportZeroSurfaceTests(unittest.TestCase):
                 db_path=self.db, repository_root=ROOT
             )
         self.assertEqual(report["status"], "V2_9_8_OPERATIONAL_PREFLIGHT_READY")
-        self.assertEqual(report["migration_count"], 45)
-        self.assertEqual(report["canonical_migration_count"], 45)
-        self.assertTrue(str(report["latest_migration"]).startswith("045"))
+        self.assertEqual(report["migration_count"], 46)
+        self.assertEqual(report["canonical_migration_count"], 46)
+        self.assertTrue(str(report["latest_migration"]).startswith("046"))
         self.assertEqual(report["source_calls"], 0)
         self.assertEqual(report["scheduler_runtime_calls"], 0)
         self.assertEqual(report["database_writes"], 0)
@@ -328,7 +330,7 @@ class PreflightStatusReportZeroSurfaceTests(unittest.TestCase):
         connection = sqlite3.connect(self.db)
         try:
             connection.execute(
-                "DELETE FROM printer_schema_migrations WHERE version LIKE '045%'"
+                "DELETE FROM printer_schema_migrations WHERE version LIKE '046%'"
             )
             connection.commit()
         finally:
@@ -358,7 +360,7 @@ class PreflightStatusReportZeroSurfaceTests(unittest.TestCase):
         message = str(raised.exception)
         self.assertIn("gate=migration_ledger", message)
         self.assertIn("missing canonical migrations", message)
-        self.assertIn("045_heartbeat_failure_evidence.sql", message)
+        self.assertIn("046_eligible_token_supply.sql", message)
 
     def test_status_and_report_only_are_zero_source_zero_write(self) -> None:
         before = self.db.read_bytes()
@@ -383,6 +385,7 @@ class BackupRestoreAndCorpusShapeTests(unittest.TestCase):
             backup = root / "backup.sqlite3"
             restore = root / "restore.sqlite3"
             _copy_authoritative_corpus(source)
+            apply_migrations(source)
             _quiesce_operational_surfaces(source)
             identity = f"sha256:{command._sha256(source)}"
             result = operational_backup_restore_preflight(
@@ -397,7 +400,7 @@ class BackupRestoreAndCorpusShapeTests(unittest.TestCase):
                 result["status"], "OPERATIONAL_BACKUP_RESTORE_PREFLIGHT_READY"
             )
             self.assertTrue(result["backup_byte_identical"])
-            self.assertTrue(str(result["latest_rehearsed_migration"]).startswith("045"))
+            self.assertTrue(str(result["latest_rehearsed_migration"]).startswith("046"))
             self.assertEqual(result["sources_run"], False)
             self.assertEqual(result["scheduler_runtime_run"], False)
 
@@ -405,6 +408,7 @@ class BackupRestoreAndCorpusShapeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             db = Path(temporary) / "corpus.sqlite3"
             _copy_authoritative_corpus(db)
+            apply_migrations(db)
             _quiesce_operational_surfaces(db)
             connection = sqlite3.connect(db)
             try:

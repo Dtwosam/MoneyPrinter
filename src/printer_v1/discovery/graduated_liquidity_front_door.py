@@ -850,16 +850,26 @@ def _bounded_refresh_rows(
     latest_mints: set[str],
     cycle_seed: str,
     max_candidates: int,
+    exclude_mints: "set[str] | None" = None,
 ) -> list[Mapping[str, Any]]:
-    """Choose a bounded categorical refresh batch without provider ordering."""
+    """Choose a bounded categorical refresh batch without provider ordering.
+
+    ``max_candidates`` is the size of **one evaluation batch**, not the entire
+    discovery universe. Callers that need multi-round completeness must loop with
+    ``exclude_mints`` covering earlier rounds (V2-9.8B.21).
+    """
     if max_candidates <= 0:
         return []
+    excluded = {str(m) for m in (exclude_mints or set())}
+    filtered = [
+        row for row in rows if str(row["mint_identity"]) not in excluded
+    ]
     latest = sorted(
-        (row for row in rows if str(row["mint_identity"]) in latest_mints),
+        (row for row in filtered if str(row["mint_identity"]) in latest_mints),
         key=lambda row: str(row["mint_identity"]),
     )
     persisted = sorted(
-        (row for row in rows if str(row["mint_identity"]) not in latest_mints),
+        (row for row in filtered if str(row["mint_identity"]) not in latest_mints),
         key=lambda row: str(row["mint_identity"]),
     )
     latest = _fisher_yates(latest, f"{cycle_seed}|REFRESH_LATEST")
@@ -893,15 +903,21 @@ def run_graduated_liquidity_front_door(
     batch_seq: int = 1,
     request_key_prefix: str = "v2-9-7e-43",
     max_candidates: int = 64,
+    exclude_mints: "set[str] | Sequence[str] | None" = None,
 ) -> dict[str, Any]:
     """Enrich, floor, gate, and select graduated candidates from the registry.
 
-    Reads all confirmed graduated candidates from the durable registry, enriches
-    each with governed exact-pool liquidity, applies the $3,000 floor and the
-    existing identity / source-quality / STNP / cooldown gates, assigns truthful
-    LATEST/PERSISTED provenance, and selects at most one candidate from each
-    partition via the frozen categorical two-slot rule. Stops at deterministic
-    selected-pair readiness (atomic-handoff compatibility proved, never enqueued).
+    Reads confirmed graduated candidates from the durable registry, enriches a
+    bounded evaluation batch with governed exact-pool liquidity, applies the
+    $3,000 floor and the existing identity / source-quality / STNP / cooldown
+    gates, assigns truthful LATEST/PERSISTED provenance, and selects at most one
+    candidate from each partition via the frozen categorical two-slot rule.
+    Stops at deterministic selected-pair readiness (atomic-handoff compatibility
+    proved, never enqueued).
+
+    ``max_candidates`` bounds **one evaluation batch**. Multi-round discovery
+    (V2-9.8B.21) must call this repeatedly with ``exclude_mints`` covering earlier
+    rounds; it must not treat a single batch as the entire governed market.
 
     ``dexscreener_transport_factory(mint, pool)`` returns the governed exact-pair
     transport for one candidate; when omitted the live
@@ -910,6 +926,7 @@ def run_graduated_liquidity_front_door(
     """
     now = now or _utc_now_iso()
     latest_set = set(latest_mints)
+    excluded_set = {str(m) for m in (exclude_mints or ())}
     if not cycle_seed or not str(cycle_seed).strip():
         raise GraduatedFrontDoorError("MISSING_SELECTION_SEED")
     if dexscreener_transport_factory is None:
@@ -929,6 +946,7 @@ def run_graduated_liquidity_front_door(
             latest_mints=latest_set,
             cycle_seed=cycle_seed,
             max_candidates=max_candidates,
+            exclude_mints=excluded_set,
         )
         candidates: list[FrontDoorCandidate] = []
         latest_eligible: list[FrontDoorCandidate] = []
@@ -1072,6 +1090,8 @@ def run_graduated_liquidity_front_door(
         "rejected_count": len(rejected),
         "rejected": rejected,
         "mix_state": mix_state,
+        "excluded_mint_count": len(excluded_set),
+        "evaluation_batch_size": int(max_candidates),
         "selected": [
             {
                 "mint": c.mint,

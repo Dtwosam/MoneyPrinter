@@ -1,0 +1,1041 @@
+"""V2-9.8B.21 Canonical Eligible Token Supply service.
+
+Owns:
+
+* durable eligible reserve across campaigns (with mandatory revalidation);
+* persistent multi-round discovery loop inside one authorized campaign;
+* honest exhaustion certificates and shortage classification;
+* completeness invariants:
+
+  - ELIGIBLE_ONE_COMPLETENESS
+  - ELIGIBLE_CAPACITY_COMPLETENESS
+  - PERSISTENT_DISCOVERY_UNTIL_CAPACITY
+  - HONEST_EXHAUSTION
+
+Does **not** own migration verification, exact-pool market transport, Source
+Governor, Scheduler, holder funnel, or tracking handoff. Those remain with their
+existing owners. This module composes them into a complete supply loop.
+
+Locked: no scoring/ranking/confidence/weights, no retrieval/decisions/positions/
+trades/audits/PnL, no automatic retry/restart/successor, no wallet/signing, no
+paid APIs, no embeddings/vectors.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Mapping, Sequence
+
+from printer_v1.discovery.direct_migration_discovery import (
+    run_direct_migration_discovery,
+)
+from printer_v1.discovery.graduated_liquidity_front_door import (
+    LIQUIDITY_BELOW_SELECTION_FLOOR,
+    LIQUIDITY_PROVEN,
+    LIQUIDITY_UNPROVEN,
+    SELECTION_FLOOR_USD,
+    run_graduated_liquidity_front_door,
+)
+from printer_v1.sources.pumpswap_graduated_registry import (
+    export_graduated_candidates,
+)
+
+REQUIRED_TOKEN_CAPACITY = 2
+EVALUATION_BATCH_SIZE = 6
+DEFAULT_DISCOVERY_OPERATION_BUDGET = 30
+LIFECYCLE_OPERATION_CEILING = 45
+CERTIFICATE_VERSION = "V2_9_8B_21_EXHAUSTION_V1"
+
+# Eligibility reserve statuses.
+ELIGIBLE_FRESH = "ELIGIBLE_FRESH"
+ELIGIBLE_STALE = "ELIGIBLE_STALE"
+REMOVED = "REMOVED"
+EXCLUDED = "EXCLUDED"
+
+# Shortage classifications (exactly one per certificate).
+TRUE_MARKET_SUPPLY_SHORTAGE = "TRUE_MARKET_SUPPLY_SHORTAGE"
+SOURCE_VISIBILITY_SHORTAGE = "SOURCE_VISIBILITY_SHORTAGE"
+SOURCE_AVAILABILITY_FAILURE = "SOURCE_AVAILABILITY_FAILURE"
+BUDGET_EXHAUSTION = "BUDGET_EXHAUSTION"
+DURATION_EXHAUSTION = "DURATION_EXHAUSTION"
+STALE_EVIDENCE_SHORTAGE = "STALE_EVIDENCE_SHORTAGE"
+DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE = "DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE"
+
+SHORTAGE_CLASSIFICATIONS = (
+    TRUE_MARKET_SUPPLY_SHORTAGE,
+    SOURCE_VISIBILITY_SHORTAGE,
+    SOURCE_AVAILABILITY_FAILURE,
+    BUDGET_EXHAUSTION,
+    DURATION_EXHAUSTION,
+    STALE_EVIDENCE_SHORTAGE,
+    DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE,
+)
+
+BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL = (
+    "BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL"
+)
+GRADUATED_SUPPLY_READY = "GRADUATED_SUPPLY_READY"
+
+
+class EligibleTokenSupplyError(RuntimeError):
+    """Fail-closed eligible-token-supply fault."""
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_iso(value: str) -> datetime:
+    dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _connect(db_path: str | Path) -> sqlite3.Connection:
+    connection = sqlite3.connect(str(db_path))
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    return connection
+
+
+def _table_exists(connection: sqlite3.Connection, name: str) -> bool:
+    row = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (name,),
+    ).fetchone()
+    return row is not None
+
+
+# --------------------------------------------------------------------------- #
+# Reserve persistence                                                          #
+# --------------------------------------------------------------------------- #
+
+def load_eligible_reserve(
+    connection: sqlite3.Connection,
+    *,
+    statuses: Sequence[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Load durable eligible-reserve rows (empty if table absent)."""
+    if not _table_exists(connection, "printer_eligible_token_reserve"):
+        return []
+    if statuses:
+        placeholders = ",".join("?" for _ in statuses)
+        rows = connection.execute(
+            f"""SELECT * FROM printer_eligible_token_reserve
+                WHERE eligibility_status IN ({placeholders})
+                ORDER BY mint_identity""",
+            tuple(statuses),
+        ).fetchall()
+    else:
+        rows = connection.execute(
+            """SELECT * FROM printer_eligible_token_reserve
+               ORDER BY mint_identity"""
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def upsert_eligible_reserve(
+    connection: sqlite3.Connection,
+    *,
+    mint: str,
+    pumpswap_pool: str,
+    market_identity: str,
+    provenance: str,
+    liquidity_usd: float | None,
+    liquidity_status: str,
+    eligibility_status: str,
+    last_validated_at: str,
+    source_provenance: str | None,
+    last_campaign_id: str | None,
+    exclusion_reason: str | None = None,
+) -> None:
+    if not _table_exists(connection, "printer_eligible_token_reserve"):
+        return
+    now = last_validated_at
+    connection.execute(
+        """INSERT INTO printer_eligible_token_reserve(
+            mint_identity, pumpswap_pool, market_identity, provenance,
+            liquidity_usd, liquidity_status, eligibility_status,
+            last_validated_at, source_provenance, last_campaign_id,
+            exclusion_reason, created_at, updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(mint_identity) DO UPDATE SET
+            pumpswap_pool=excluded.pumpswap_pool,
+            market_identity=excluded.market_identity,
+            provenance=excluded.provenance,
+            liquidity_usd=excluded.liquidity_usd,
+            liquidity_status=excluded.liquidity_status,
+            eligibility_status=excluded.eligibility_status,
+            last_validated_at=excluded.last_validated_at,
+            source_provenance=excluded.source_provenance,
+            last_campaign_id=excluded.last_campaign_id,
+            exclusion_reason=excluded.exclusion_reason,
+            updated_at=excluded.updated_at""",
+        (
+            mint,
+            pumpswap_pool,
+            market_identity,
+            provenance,
+            liquidity_usd,
+            liquidity_status,
+            eligibility_status,
+            last_validated_at,
+            source_provenance,
+            last_campaign_id,
+            exclusion_reason,
+            now,
+            now,
+        ),
+    )
+
+
+def mark_reserve_status(
+    connection: sqlite3.Connection,
+    mint: str,
+    *,
+    status: str,
+    now: str,
+    exclusion_reason: str | None = None,
+) -> None:
+    if not _table_exists(connection, "printer_eligible_token_reserve"):
+        return
+    connection.execute(
+        """UPDATE printer_eligible_token_reserve
+           SET eligibility_status=?, exclusion_reason=?, updated_at=?
+           WHERE mint_identity=?""",
+        (status, exclusion_reason, now, mint),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Exhaustion certificate                                                       #
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class ExhaustionCertificate:
+    """Durable honest exhaustion evidence when capacity is unmet."""
+
+    certificate_id: str
+    campaign_id: str | None
+    execution_id: str | None
+    run_id: str | None
+    cycle_id: str | None
+    required_eligible_capacity: int
+    eligible_reserve_count: int
+    approved_discovery_channels_attempted: list[str]
+    channels_unavailable: list[str]
+    unique_tokens_observed: int
+    duplicate_observations_removed: int
+    tokens_already_known_from_inventory: int
+    pools_confirmed: int
+    fresh_market_checks: int
+    eligible_count: int
+    rejected_count: int
+    rejection_reasons: dict[str, int]
+    cooldown_skips: int
+    stale_evidence_exclusions: int
+    provider_failures: int
+    source_operations_used: int
+    source_operations_remaining: int
+    duration_used_seconds: float | None
+    duration_remaining_seconds: float | None
+    unexplored_work_prevented_by_hard_ceiling: bool
+    last_reason_discovery_could_not_continue: str
+    shortage_classification: str
+    discovery_rounds: int
+    certificate_version: str = CERTIFICATE_VERSION
+    created_at: str = field(default_factory=_utc_now_iso)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "certificate_id": self.certificate_id,
+            "campaign_id": self.campaign_id,
+            "execution_id": self.execution_id,
+            "run_id": self.run_id,
+            "cycle_id": self.cycle_id,
+            "required_eligible_capacity": self.required_eligible_capacity,
+            "eligible_reserve_count": self.eligible_reserve_count,
+            "approved_discovery_channels_attempted": list(
+                self.approved_discovery_channels_attempted
+            ),
+            "channels_unavailable": list(self.channels_unavailable),
+            "unique_tokens_observed": self.unique_tokens_observed,
+            "duplicate_observations_removed": self.duplicate_observations_removed,
+            "tokens_already_known_from_inventory": self.tokens_already_known_from_inventory,
+            "pools_confirmed": self.pools_confirmed,
+            "fresh_market_checks": self.fresh_market_checks,
+            "eligible_count": self.eligible_count,
+            "rejected_count": self.rejected_count,
+            "rejection_reasons": dict(self.rejection_reasons),
+            "cooldown_skips": self.cooldown_skips,
+            "stale_evidence_exclusions": self.stale_evidence_exclusions,
+            "provider_failures": self.provider_failures,
+            "source_operations_used": self.source_operations_used,
+            "source_operations_remaining": self.source_operations_remaining,
+            "duration_used_seconds": self.duration_used_seconds,
+            "duration_remaining_seconds": self.duration_remaining_seconds,
+            "unexplored_work_prevented_by_hard_ceiling": (
+                self.unexplored_work_prevented_by_hard_ceiling
+            ),
+            "last_reason_discovery_could_not_continue": (
+                self.last_reason_discovery_could_not_continue
+            ),
+            "shortage_classification": self.shortage_classification,
+            "discovery_rounds": self.discovery_rounds,
+            "certificate_version": self.certificate_version,
+            "created_at": self.created_at,
+        }
+
+
+def persist_exhaustion_certificate(
+    connection: sqlite3.Connection,
+    certificate: ExhaustionCertificate,
+) -> None:
+    if not _table_exists(connection, "printer_discovery_exhaustion_certificates"):
+        return
+    connection.execute(
+        """INSERT INTO printer_discovery_exhaustion_certificates(
+            certificate_id, campaign_id, execution_id, run_id, cycle_id,
+            required_eligible_capacity, eligible_reserve_count,
+            shortage_classification, certificate_json, certificate_version,
+            created_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            certificate.certificate_id,
+            certificate.campaign_id,
+            certificate.execution_id,
+            certificate.run_id,
+            certificate.cycle_id,
+            certificate.required_eligible_capacity,
+            certificate.eligible_reserve_count,
+            certificate.shortage_classification,
+            json.dumps(certificate.to_dict(), sort_keys=True),
+            certificate.certificate_version,
+            certificate.created_at,
+        ),
+    )
+
+
+def classify_shortage(
+    *,
+    provider_failures: int,
+    channels_unavailable: Sequence[str],
+    duration_remaining_seconds: float | None,
+    source_operations_remaining: int,
+    unexplored_unique_remaining: int,
+    eligible_count: int,
+    unique_tokens_observed: int,
+    discovery_rounds: int,
+    evaluation_batch_size: int,
+    all_channels_exhausted: bool,
+) -> str:
+    """Return exactly one shortage classification.
+
+    Provider unavailability, budget, and duration are never reported as true
+    market insufficiency. A single small batch with remaining budget and
+    unexplored inventory is architecture-false shortage (must not be the normal
+    post-repair path).
+    """
+    if provider_failures > 0 and (
+        channels_unavailable or unique_tokens_observed == 0
+    ):
+        return SOURCE_AVAILABILITY_FAILURE
+    if duration_remaining_seconds is not None and duration_remaining_seconds <= 0:
+        return DURATION_EXHAUSTION
+    if source_operations_remaining <= 0:
+        return BUDGET_EXHAUSTION
+    if (
+        unexplored_unique_remaining > 0
+        and source_operations_remaining > 0
+        and (duration_remaining_seconds is None or duration_remaining_seconds > 0)
+    ):
+        # Lawful work remained — architecture must not stop here after repair.
+        return DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE
+    if eligible_count == 0 and unique_tokens_observed == 0 and all_channels_exhausted:
+        return SOURCE_VISIBILITY_SHORTAGE
+    if all_channels_exhausted and unexplored_unique_remaining == 0:
+        return TRUE_MARKET_SUPPLY_SHORTAGE
+    if (
+        discovery_rounds <= 1
+        and unique_tokens_observed <= evaluation_batch_size
+        and source_operations_remaining > 0
+    ):
+        return DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE
+    if unexplored_unique_remaining == 0 and all_channels_exhausted:
+        return TRUE_MARKET_SUPPLY_SHORTAGE
+    return TRUE_MARKET_SUPPLY_SHORTAGE
+
+
+# --------------------------------------------------------------------------- #
+# Result                                                                       #
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class PersistentSupplyResult:
+    """Outcome of one campaign-scoped persistent eligible-supply run."""
+
+    ready: bool
+    terminal: str
+    eligible_reserve: list[dict[str, Any]]
+    all_candidates: list[dict[str, Any]]
+    discovery_report: Mapping[str, Any]
+    front_door_report: Mapping[str, Any]
+    locator_report: Mapping[str, Any]
+    diagnostics: dict[str, Any]
+    exhaustion_certificate: ExhaustionCertificate | None = None
+    shortage_classification: str | None = None
+    discovery_rounds: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ready": self.ready,
+            "terminal": self.terminal,
+            "eligible_reserve_count": len(self.eligible_reserve),
+            "discovery_rounds": self.discovery_rounds,
+            "shortage_classification": self.shortage_classification,
+            "exhaustion_certificate": (
+                None
+                if self.exhaustion_certificate is None
+                else self.exhaustion_certificate.to_dict()
+            ),
+            "diagnostics": dict(self.diagnostics),
+        }
+
+
+# --------------------------------------------------------------------------- #
+# Candidate helpers                                                            #
+# --------------------------------------------------------------------------- #
+
+def _candidate_from_front_door_item(item: Mapping[str, Any]) -> dict[str, Any]:
+    liquidity = item.get("liquidity") or {}
+    if not isinstance(liquidity, Mapping):
+        liquidity = {}
+    mint = str(item.get("mint") or "")
+    pool = str(item.get("pool") or item.get("pumpswap_pool") or "")
+    return {
+        "mint": mint,
+        "pool": pool,
+        "pumpswap_pool": pool,
+        "market_identity": str(item.get("market_identity") or ""),
+        "provenance": str(item.get("provenance") or ""),
+        "lifecycle_state": str(item.get("lifecycle_state") or ""),
+        "graduation_block_time": item.get("graduation_block_time"),
+        "liquidity_usd": liquidity.get("liquidity_usd"),
+        "liquidity_status": str(
+            liquidity.get("status") or item.get("liquidity_status") or LIQUIDITY_UNPROVEN
+        ),
+        "eligible": bool(item.get("eligible")),
+        "rejection": item.get("rejection"),
+        "source_path": (
+            f"graduated_registry_or_migration:{item.get('provenance') or 'UNKNOWN'}"
+        ),
+    }
+
+
+def _merge_rejection_reasons(
+    bucket: dict[str, int], candidates: Sequence[Mapping[str, Any]]
+) -> None:
+    for c in candidates:
+        if c.get("eligible"):
+            continue
+        reason = str(c.get("rejection") or "UNKNOWN_REJECTION")
+        bucket[reason] = bucket.get(reason, 0) + 1
+
+
+# --------------------------------------------------------------------------- #
+# Persistent discovery loop                                                    #
+# --------------------------------------------------------------------------- #
+
+def run_persistent_eligible_token_supply(
+    db_path: str | Path,
+    *,
+    cycle_seed: str,
+    migration_transport: Callable[[Any], Mapping[str, Any]],
+    verifier_transport_factory: Callable[[str, str], Callable[[Any], Mapping[str, Any]]]
+    | None = None,
+    dexscreener_transport_factory: Callable[[str, str], Callable[[Any], Mapping[str, Any]]]
+    | None = None,
+    locator_transport: Callable[[Any], Mapping[str, Any]] | None = None,
+    now: str | None = None,
+    collection_rounds: int = 1,
+    max_candidates: int = 5,
+    settle_seconds: float = 0.0,
+    reverify_on_transient: bool = False,
+    reverify_settle_seconds: float = 0.0,
+    front_door_max_candidates: int = EVALUATION_BATCH_SIZE,
+    discovery_request_key_prefix: str = "v2-9-8b-21",
+    front_door_request_key_prefix: str = "v2-9-8b-21",
+    batch_seq: int = 1,
+    run_locator: bool = False,
+    required_token_capacity: int = REQUIRED_TOKEN_CAPACITY,
+    discovery_operation_budget: int = DEFAULT_DISCOVERY_OPERATION_BUDGET,
+    deadline_at: str | None = None,
+    campaign_id: str | None = None,
+    execution_id: str | None = None,
+    run_id: str | None = None,
+    cycle_id: str | None = None,
+    locator_runner: Callable[..., Mapping[str, Any]] | None = None,
+) -> PersistentSupplyResult:
+    """Run persistent multi-round eligible discovery inside one campaign.
+
+    Continues bounded evaluation batches until ``required_token_capacity`` freshly
+    eligible tokens are in the campaign reserve, or a governed exhaustion
+    condition is proven. Never creates a retry, restart, or successor campaign.
+    """
+    if not cycle_seed or not str(cycle_seed).strip():
+        raise EligibleTokenSupplyError("MISSING_CYCLE_SEED")
+    if required_token_capacity < 1:
+        raise EligibleTokenSupplyError("INVALID_REQUIRED_CAPACITY")
+    if front_door_max_candidates < 1:
+        raise EligibleTokenSupplyError("INVALID_EVALUATION_BATCH_SIZE")
+
+    now = now or _utc_now_iso()
+    started_at = _parse_iso(now)
+    deadline_dt = _parse_iso(deadline_at) if deadline_at else None
+
+    # --- Locator (optional, once) -------------------------------------------
+    if locator_runner is not None and run_locator:
+        locator = dict(
+            locator_runner(
+                db_path,
+                transport=locator_transport,
+                request_key=f"{discovery_request_key_prefix}-locator",
+                now=now,
+            )
+        )
+    elif run_locator:
+        from printer_v1.operator_cli.graduated_supply_front_door import (
+            run_fresh_profile_locator,
+        )
+
+        locator = run_fresh_profile_locator(
+            db_path,
+            transport=locator_transport,
+            request_key=f"{discovery_request_key_prefix}-locator",
+            now=now,
+        )
+    else:
+        locator = {
+            "status": "NOT_REQUESTED",
+            "matched_count": 0,
+            "source_requests": 0,
+            "request_id": None,
+        }
+
+    # --- Migration discovery (once at campaign start) -----------------------
+    discovery = run_direct_migration_discovery(
+        db_path,
+        migration_transport=migration_transport,
+        verifier_transport_factory=verifier_transport_factory,
+        now=now,
+        request_key_prefix=discovery_request_key_prefix,
+        max_candidates=max_candidates,
+        collection_rounds=collection_rounds,
+        settle_seconds=settle_seconds,
+        reverify_on_transient=reverify_on_transient,
+        reverify_settle_seconds=reverify_settle_seconds,
+    )
+    latest_mints = set(discovery.get("confirmed_this_cycle") or ())
+
+    ops_used = int(locator.get("source_requests") or 0) + int(
+        (discovery.get("source_operation_ledger") or {}).get("source_requests") or 0
+    )
+    provider_failures = 0
+    channels_attempted: list[str] = []
+    channels_unavailable: list[str] = []
+    if run_locator:
+        channels_attempted.append("dexscreener_fresh_profiles_locator")
+        if str(locator.get("status") or "").upper() not in {
+            "OK",
+            "NOT_REQUESTED",
+            "SUCCESS",
+        } and int(locator.get("source_requests") or 0) > 0:
+            # Non-ok locator status with a request is treated as soft unavailability.
+            if locator.get("status") not in (None, "ok", "OK"):
+                pass
+    channels_attempted.append("pumpportal_migration_stream")
+    channels_attempted.append("solana_rpc_graduation_verify")
+    channels_attempted.append("dexscreener_exact_pool_market")
+
+    if discovery.get("status") == "PROVIDER_FAILURE":
+        provider_failures += 1
+        channels_unavailable.append("pumpportal_migration_stream")
+
+    evaluated_mints: set[str] = set()
+    campaign_eligible: dict[str, dict[str, Any]] = {}
+    all_candidates: list[dict[str, Any]] = []
+    rejection_reasons: dict[str, int] = {}
+    cooldown_skips = 0
+    stale_exclusions = 0
+    fresh_market_checks = 0
+    duplicate_observations_removed = 0
+    discovery_rounds = 0
+    last_front_door: dict[str, Any] = {}
+    last_stop_reason = "NOT_STARTED"
+    inventory_known_at_start = 0
+
+    connection = _connect(db_path)
+    try:
+        inventory_rows = export_graduated_candidates(connection)
+        inventory_known_at_start = len(inventory_rows)
+        inventory_mints = {str(r["mint_identity"]) for r in inventory_rows}
+
+        # Load prior reserve and mark stale for mandatory revalidation.
+        # Stale rows never count toward eligible capacity until revalidated.
+        prior_reserve = load_eligible_reserve(
+            connection, statuses=(ELIGIBLE_FRESH, ELIGIBLE_STALE)
+        )
+        for row in prior_reserve:
+            mint = str(row["mint_identity"])
+            mark_reserve_status(
+                connection, mint, status=ELIGIBLE_STALE, now=now
+            )
+        connection.commit()
+
+        def _ops_remaining() -> int:
+            return max(0, int(discovery_operation_budget) - ops_used)
+
+        def _duration_remaining() -> float | None:
+            if deadline_dt is None:
+                return None
+            return (deadline_dt - _parse_iso(now)).total_seconds()
+
+        def _unexplored() -> set[str]:
+            return inventory_mints - evaluated_mints
+
+        # Prefer revalidating prior reserve members first (freshness gate).
+        revalidate_mints = {
+            str(r["mint_identity"]) for r in prior_reserve
+        } & inventory_mints
+
+        max_rounds = max(
+            1,
+            (len(inventory_mints) // max(1, front_door_max_candidates)) + 3,
+        )
+
+        while len(campaign_eligible) < required_token_capacity:
+            if discovery_rounds >= max_rounds:
+                last_stop_reason = "ALL_REACHABLE_CANDIDATES_EVALUATED"
+                break
+            if _ops_remaining() <= 0:
+                last_stop_reason = "DISCOVERY_OPERATION_BUDGET_EXHAUSTED"
+                break
+            dur_rem = _duration_remaining()
+            if dur_rem is not None and dur_rem <= 0:
+                last_stop_reason = "CAMPAIGN_DURATION_EXHAUSTED"
+                break
+
+            unexplored = _unexplored()
+            # Build exclude set: already evaluated this campaign.
+            # For the first pass after prior-reserve load, allow revalidation of
+            # stale reserve mints even if not yet in evaluated set.
+            if discovery_rounds == 0 and revalidate_mints:
+                batch_focus = revalidate_mints - evaluated_mints
+            else:
+                batch_focus = set()
+
+            if not unexplored and not batch_focus:
+                last_stop_reason = "NO_ADDITIONAL_UNIQUE_CANDIDATES_REACHABLE"
+                break
+
+            # Cap the evaluation batch by remaining discovery ops so a round
+            # cannot overshoot the governed discovery budget (worst case every
+            # candidate needs one exact-pool market call).
+            batch_size = min(int(front_door_max_candidates), int(_ops_remaining()))
+            if batch_size <= 0:
+                last_stop_reason = "DISCOVERY_OPERATION_BUDGET_EXHAUSTED"
+                break
+
+            # exclude everything already evaluated; front door will pick up to
+            # batch_size from the remainder.
+            exclude = set(evaluated_mints)
+            # When focusing revalidation, also exclude non-focus unexplored so the
+            # batch prioritizes stale reserve first (deterministic completeness).
+            if batch_focus:
+                exclude |= inventory_mints - batch_focus - evaluated_mints
+
+            discovery_rounds += 1
+            round_seed = f"{cycle_seed}|ROUND_{discovery_rounds}"
+            front_door = run_graduated_liquidity_front_door(
+                db_path,
+                cycle_seed=round_seed,
+                latest_mints=latest_mints,
+                dexscreener_transport_factory=dexscreener_transport_factory,
+                now=now,
+                batch_seq=batch_seq,
+                request_key_prefix=(
+                    f"{front_door_request_key_prefix}-r{discovery_rounds}"
+                ),
+                max_candidates=batch_size,
+                exclude_mints=exclude,
+            )
+            last_front_door = front_door
+            market_calls = int(front_door.get("market_calls") or 0)
+            fresh_market_checks += market_calls
+            ops_used += market_calls
+            cooldown_skips += int(front_door.get("cooldown_skip_count") or 0)
+
+            batch_candidates = [
+                _candidate_from_front_door_item(c)
+                for c in (front_door.get("candidates") or [])
+            ]
+            if not batch_candidates and not unexplored:
+                last_stop_reason = "NO_ADDITIONAL_UNIQUE_CANDIDATES_REACHABLE"
+                break
+            if not batch_candidates:
+                # Exclude set may have over-constrained revalidation focus; clear
+                # focus and continue with pure unexplored walk.
+                if batch_focus:
+                    revalidate_mints.clear()
+                    continue
+                last_stop_reason = "NO_ADDITIONAL_UNIQUE_CANDIDATES_REACHABLE"
+                break
+
+            round_seen: set[str] = set()
+            for cand in batch_candidates:
+                mint = cand["mint"]
+                if not mint:
+                    continue
+                if mint in evaluated_mints:
+                    duplicate_observations_removed += 1
+                    continue
+                if mint in round_seen:
+                    duplicate_observations_removed += 1
+                    continue
+                round_seen.add(mint)
+                evaluated_mints.add(mint)
+                all_candidates.append(cand)
+
+                if cand.get("eligible"):
+                    campaign_eligible[mint] = cand
+                    upsert_eligible_reserve(
+                        connection,
+                        mint=mint,
+                        pumpswap_pool=str(cand["pumpswap_pool"]),
+                        market_identity=str(cand["market_identity"]),
+                        provenance=str(cand["provenance"]),
+                        liquidity_usd=(
+                            None
+                            if cand.get("liquidity_usd") is None
+                            else float(cand["liquidity_usd"])
+                        ),
+                        liquidity_status=str(cand["liquidity_status"]),
+                        eligibility_status=ELIGIBLE_FRESH,
+                        last_validated_at=now,
+                        source_provenance=str(cand.get("source_path") or ""),
+                        last_campaign_id=campaign_id,
+                    )
+                else:
+                    reason = str(cand.get("rejection") or "UNKNOWN_REJECTION")
+                    rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+                    # If a previously eligible reserve mint fails revalidation,
+                    # remove it from capacity and durable fresh status.
+                    if mint in campaign_eligible:
+                        del campaign_eligible[mint]
+                    prior = next(
+                        (r for r in prior_reserve if str(r["mint_identity"]) == mint),
+                        None,
+                    )
+                    if prior is not None:
+                        mark_reserve_status(
+                            connection,
+                            mint,
+                            status=REMOVED,
+                            now=now,
+                            exclusion_reason=reason,
+                        )
+                        stale_exclusions += 1
+
+            connection.commit()
+
+            if len(campaign_eligible) >= required_token_capacity:
+                last_stop_reason = "ELIGIBLE_CAPACITY_MET"
+                break
+
+            # After first revalidation pass, clear focus so remaining unexplored
+            # inventory is walked in subsequent rounds.
+            revalidate_mints.clear()
+
+            # If batch returned only already-evaluated or empty net progress and
+            # no unexplored left, stop.
+            if not _unexplored():
+                last_stop_reason = "ALL_REACHABLE_CANDIDATES_EVALUATED"
+                break
+
+        # Refresh inventory size after discovery (new confirms).
+        inventory_rows = export_graduated_candidates(connection)
+        inventory_mints = {str(r["mint_identity"]) for r in inventory_rows}
+        pools_confirmed = len(inventory_mints)
+        unexplored_remaining = len(inventory_mints - evaluated_mints)
+
+        eligible_list = list(campaign_eligible.values())
+        # Deterministic non-ranked order by mint identity for handoff stability.
+        eligible_list.sort(key=lambda c: str(c["mint"]))
+
+        ready = len(eligible_list) >= required_token_capacity
+        certificate: ExhaustionCertificate | None = None
+        shortage: str | None = None
+
+        duration_used = (_parse_iso(now) - started_at).total_seconds()
+        duration_remaining = _duration_remaining()
+
+        if ready:
+            terminal = GRADUATED_SUPPLY_READY
+            last_stop_reason = "ELIGIBLE_CAPACITY_MET"
+        else:
+            terminal = BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL
+            all_channels_exhausted = (
+                unexplored_remaining == 0
+                and last_stop_reason
+                in {
+                    "ALL_REACHABLE_CANDIDATES_EVALUATED",
+                    "NO_ADDITIONAL_UNIQUE_CANDIDATES_REACHABLE",
+                }
+            )
+            unexplored_prevented = last_stop_reason in {
+                "DISCOVERY_OPERATION_BUDGET_EXHAUSTED",
+                "CAMPAIGN_DURATION_EXHAUSTED",
+            } and unexplored_remaining > 0
+            shortage = classify_shortage(
+                provider_failures=provider_failures,
+                channels_unavailable=channels_unavailable,
+                duration_remaining_seconds=duration_remaining,
+                source_operations_remaining=_ops_remaining(),
+                unexplored_unique_remaining=unexplored_remaining,
+                eligible_count=len(eligible_list),
+                unique_tokens_observed=len(evaluated_mints),
+                discovery_rounds=discovery_rounds,
+                evaluation_batch_size=front_door_max_candidates,
+                all_channels_exhausted=all_channels_exhausted,
+            )
+            # Prefer stop-reason-driven classification when more specific.
+            if last_stop_reason == "DISCOVERY_OPERATION_BUDGET_EXHAUSTED":
+                shortage = BUDGET_EXHAUSTION
+            elif last_stop_reason == "CAMPAIGN_DURATION_EXHAUSTED":
+                shortage = DURATION_EXHAUSTION
+            elif provider_failures > 0 and len(evaluated_mints) == 0:
+                shortage = SOURCE_AVAILABILITY_FAILURE
+            elif all_channels_exhausted and len(eligible_list) < required_token_capacity:
+                if len(evaluated_mints) == 0:
+                    shortage = SOURCE_VISIBILITY_SHORTAGE
+                else:
+                    shortage = TRUE_MARKET_SUPPLY_SHORTAGE
+
+            certificate = ExhaustionCertificate(
+                certificate_id=(
+                    f"exh-{execution_id or campaign_id or uuid.uuid4().hex[:12]}"
+                ),
+                campaign_id=campaign_id,
+                execution_id=execution_id,
+                run_id=run_id,
+                cycle_id=cycle_id,
+                required_eligible_capacity=required_token_capacity,
+                eligible_reserve_count=len(eligible_list),
+                approved_discovery_channels_attempted=channels_attempted,
+                channels_unavailable=channels_unavailable,
+                unique_tokens_observed=len(evaluated_mints),
+                duplicate_observations_removed=duplicate_observations_removed,
+                tokens_already_known_from_inventory=inventory_known_at_start,
+                pools_confirmed=pools_confirmed,
+                fresh_market_checks=fresh_market_checks,
+                eligible_count=len(eligible_list),
+                rejected_count=sum(1 for c in all_candidates if not c.get("eligible")),
+                rejection_reasons=dict(rejection_reasons),
+                cooldown_skips=cooldown_skips,
+                stale_evidence_exclusions=stale_exclusions,
+                provider_failures=provider_failures,
+                source_operations_used=ops_used,
+                source_operations_remaining=_ops_remaining(),
+                duration_used_seconds=duration_used,
+                duration_remaining_seconds=duration_remaining,
+                unexplored_work_prevented_by_hard_ceiling=unexplored_prevented,
+                last_reason_discovery_could_not_continue=last_stop_reason,
+                shortage_classification=shortage,
+                discovery_rounds=discovery_rounds,
+                created_at=now,
+            )
+            persist_exhaustion_certificate(connection, certificate)
+            connection.commit()
+
+        # Build a synthetic front-door report compatible with existing consumers.
+        combined_reserve = eligible_list[: max(required_token_capacity, len(eligible_list))]
+        synthetic_front_door = dict(last_front_door) if last_front_door else {}
+        synthetic_front_door.update(
+            {
+                "candidates": [
+                    {
+                        "mint": c["mint"],
+                        "pool": c["pumpswap_pool"],
+                        "market_identity": c["market_identity"],
+                        "provenance": c["provenance"],
+                        "lifecycle_state": c.get("lifecycle_state"),
+                        "graduation_block_time": c.get("graduation_block_time"),
+                        "liquidity": {
+                            "status": c["liquidity_status"],
+                            "liquidity_usd": c.get("liquidity_usd"),
+                            "mint": c["mint"],
+                            "pool": c["pumpswap_pool"],
+                            "reason": c.get("rejection") or "AT_OR_ABOVE_3000_FLOOR",
+                            "source_status": "COMPLETE",
+                        },
+                        "eligible": bool(c.get("eligible")),
+                        "rejection": c.get("rejection"),
+                    }
+                    for c in all_candidates
+                ],
+                "candidate_count": len(all_candidates),
+                "combined_reserve_order": [
+                    {
+                        "mint": c["mint"],
+                        "pool": c["pumpswap_pool"],
+                        "market_identity": c["market_identity"],
+                        "provenance": c["provenance"],
+                        "lifecycle_state": c.get("lifecycle_state"),
+                        "graduation_block_time": c.get("graduation_block_time"),
+                        "liquidity": {
+                            "status": c["liquidity_status"],
+                            "liquidity_usd": c.get("liquidity_usd"),
+                            "mint": c["mint"],
+                            "pool": c["pumpswap_pool"],
+                            "reason": "AT_OR_ABOVE_3000_FLOOR",
+                            "source_status": "COMPLETE",
+                        },
+                        "eligible": True,
+                        "rejection": None,
+                    }
+                    for c in combined_reserve
+                ],
+                "holder_reserve_order": [
+                    {
+                        "mint": c["mint"],
+                        "pool": c["pumpswap_pool"],
+                        "market_identity": c["market_identity"],
+                        "provenance": c["provenance"],
+                        "eligible": True,
+                    }
+                    for c in combined_reserve
+                ],
+                "latest_eligible_count": sum(
+                    1
+                    for c in eligible_list
+                    if "LATEST" in str(c.get("provenance") or "")
+                ),
+                "persisted_eligible_count": sum(
+                    1
+                    for c in eligible_list
+                    if "LATEST" not in str(c.get("provenance") or "")
+                ),
+                "market_calls": fresh_market_checks,
+                "cooldown_skip_count": cooldown_skips,
+                "selection_floor_usd": SELECTION_FLOOR_USD,
+                "discovery_rounds": discovery_rounds,
+                "evaluated_unique_mints": len(evaluated_mints),
+                "eligible_reserve_count": len(eligible_list),
+            }
+        )
+
+        integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
+        fk = connection.execute("PRAGMA foreign_key_check").fetchall()
+
+        diagnostics = {
+            "confirmed_this_cycle": int(discovery.get("confirmed_count") or 0),
+            "latest_graduated_count": int(discovery.get("latest_graduated_count") or 0),
+            "persisted_graduated_count": int(
+                discovery.get("persisted_graduated_count") or 0
+            ),
+            "front_door_candidate_count": len(all_candidates),
+            "latest_eligible_count": synthetic_front_door["latest_eligible_count"],
+            "persisted_eligible_count": synthetic_front_door["persisted_eligible_count"],
+            "combined_reserve_count": len(eligible_list),
+            "below_floor_count": int(rejection_reasons.get(LIQUIDITY_BELOW_SELECTION_FLOOR, 0)),
+            "unproven_count": int(rejection_reasons.get(LIQUIDITY_UNPROVEN, 0)),
+            "selection_floor_usd": SELECTION_FLOOR_USD,
+            "discovery_forbidden_delta_total": int(
+                discovery.get("forbidden_delta_total") or 0
+            ),
+            "front_door_forbidden_delta_total": int(
+                (last_front_door or {}).get("forbidden_delta_total") or 0
+            ),
+            "locator_status": locator.get("status"),
+            "locator_matched_count": int(locator.get("matched_count") or 0),
+            "locator_source_requests": int(locator.get("source_requests") or 0),
+            "discovery_source_requests": int(
+                (discovery.get("source_operation_ledger") or {}).get("source_requests")
+                or 0
+            ),
+            "front_door_liquidity_requests": fresh_market_checks,
+            "stage_local_source_requests": ops_used,
+            "integrity_check": integrity,
+            "foreign_key_violations": len(fk),
+            "discovery_rounds": discovery_rounds,
+            "evaluated_unique_mints": len(evaluated_mints),
+            "unexplored_unique_remaining": unexplored_remaining,
+            "discovery_operation_budget": discovery_operation_budget,
+            "discovery_operations_used": ops_used,
+            "discovery_operations_remaining": _ops_remaining(),
+            "last_stop_reason": last_stop_reason,
+            "shortage_classification": shortage,
+            "required_token_capacity": required_token_capacity,
+            "eligible_reserve_count": len(eligible_list),
+            "cooldown_skips": cooldown_skips,
+            "stale_evidence_exclusions": stale_exclusions,
+            "duplicate_observations_removed": duplicate_observations_removed,
+            "evaluation_batch_size": front_door_max_candidates,
+            "lifecycle_operation_ceiling": LIFECYCLE_OPERATION_CEILING,
+            "restart_created": False,
+            "successor_created": False,
+            "automatic_retry_created": False,
+        }
+
+        return PersistentSupplyResult(
+            ready=ready,
+            terminal=terminal,
+            eligible_reserve=eligible_list,
+            all_candidates=all_candidates,
+            discovery_report=discovery,
+            front_door_report=synthetic_front_door,
+            locator_report=locator,
+            diagnostics=diagnostics,
+            exhaustion_certificate=certificate,
+            shortage_classification=shortage,
+            discovery_rounds=discovery_rounds,
+        )
+    finally:
+        connection.close()
+
+
+__all__ = [
+    "REQUIRED_TOKEN_CAPACITY",
+    "EVALUATION_BATCH_SIZE",
+    "DEFAULT_DISCOVERY_OPERATION_BUDGET",
+    "LIFECYCLE_OPERATION_CEILING",
+    "ELIGIBLE_FRESH",
+    "ELIGIBLE_STALE",
+    "REMOVED",
+    "EXCLUDED",
+    "TRUE_MARKET_SUPPLY_SHORTAGE",
+    "SOURCE_VISIBILITY_SHORTAGE",
+    "SOURCE_AVAILABILITY_FAILURE",
+    "BUDGET_EXHAUSTION",
+    "DURATION_EXHAUSTION",
+    "STALE_EVIDENCE_SHORTAGE",
+    "DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE",
+    "SHORTAGE_CLASSIFICATIONS",
+    "BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL",
+    "GRADUATED_SUPPLY_READY",
+    "EligibleTokenSupplyError",
+    "ExhaustionCertificate",
+    "PersistentSupplyResult",
+    "load_eligible_reserve",
+    "upsert_eligible_reserve",
+    "mark_reserve_status",
+    "persist_exhaustion_certificate",
+    "classify_shortage",
+    "run_persistent_eligible_token_supply",
+]

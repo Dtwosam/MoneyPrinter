@@ -294,78 +294,100 @@ def build_graduated_supply(
     batch_seq: int = 1,
     run_locator: bool = False,
     locator_transport: Callable[[Any], Mapping[str, Any]] | None = None,
+    discovery_operation_budget: int | None = None,
+    deadline_at: str | None = None,
+    campaign_id: str | None = None,
+    execution_id: str | None = None,
+    run_id: str | None = None,
+    cycle_id: str | None = None,
+    required_token_capacity: int = 2,
 ) -> GraduatedSupply:
-    """Compose E.42 discovery + E.43 front door into FULL_PILOT graduated supply.
+    """Compose discovery + front door via persistent multi-round supply loop.
 
-    Bounded and fail-closed. ``migration_transport`` supplies the PumpPortal
-    ``subscribeMigration`` events (live or fixture); the verifier and DexScreener
-    factories default to the live governed transports. Returns a ``GraduatedSupply``
-    whose ``graduation_proofs``/``graduated_supply`` carry exactly the front-door
-    selected candidates (``<= 1 LATEST`` + ``<= 1 PERSISTED``). When fewer than two
-    eligible ``$3K+`` candidates exist, ``ready`` is False and ``terminal`` is
-    ``BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL`` — market supply is not a code
-    defect.
+    V2-9.8B.21: ``front_door_max_candidates`` bounds **one evaluation batch**, not
+    the entire discovery universe. The canonical Eligible Token Supply service
+    continues bounded batches inside this campaign until two distinct freshly
+    eligible tokens are reserved or honest exhaustion is proven.
+
+    ``migration_transport`` supplies PumpPortal ``subscribeMigration`` events
+    (live or fixture). When fewer than two eligible ``$3K+`` candidates exist
+    after governed exhaustion, ``ready`` is False and ``terminal`` is
+    ``BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL`` with an exhaustion certificate.
     """
     if not cycle_seed or not str(cycle_seed).strip():
         raise GraduatedSupplyError("MISSING_CYCLE_SEED")
 
-    locator = (
-        run_fresh_profile_locator(
-            db_path,
-            transport=locator_transport,
-            request_key=f"{discovery_request_key_prefix}-locator",
-            now=now,
-        )
-        if run_locator
-        else {
-            "status": "NOT_REQUESTED",
-            "matched_count": 0,
-            "source_requests": 0,
-            "request_id": None,
-        }
+    from printer_v1.discovery.eligible_token_supply import (
+        DEFAULT_DISCOVERY_OPERATION_BUDGET,
+        run_persistent_eligible_token_supply,
     )
 
-    # --- E.42 direct-migration discovery (governed, bounded) ----------------
-    discovery = run_direct_migration_discovery(
+    persistent = run_persistent_eligible_token_supply(
         db_path,
+        cycle_seed=cycle_seed,
         migration_transport=migration_transport,
         verifier_transport_factory=verifier_transport_factory,
+        dexscreener_transport_factory=dexscreener_transport_factory,
+        locator_transport=locator_transport,
         now=now,
-        request_key_prefix=discovery_request_key_prefix,
-        max_candidates=max_candidates,
         collection_rounds=collection_rounds,
+        max_candidates=max_candidates,
         settle_seconds=settle_seconds,
         reverify_on_transient=reverify_on_transient,
         reverify_settle_seconds=reverify_settle_seconds,
-    )
-    latest_mints = set(discovery.get("confirmed_this_cycle") or ())
-
-    # --- E.43 exact-pool $3K front door + mixed two-slot selection ----------
-    front_door = run_graduated_liquidity_front_door(
-        db_path,
-        cycle_seed=cycle_seed,
-        latest_mints=latest_mints,
-        dexscreener_transport_factory=dexscreener_transport_factory,
-        now=now,
+        front_door_max_candidates=front_door_max_candidates,
+        discovery_request_key_prefix=discovery_request_key_prefix,
+        front_door_request_key_prefix=front_door_request_key_prefix,
         batch_seq=batch_seq,
-        request_key_prefix=front_door_request_key_prefix,
-        max_candidates=front_door_max_candidates,
+        run_locator=run_locator,
+        required_token_capacity=required_token_capacity,
+        discovery_operation_budget=(
+            DEFAULT_DISCOVERY_OPERATION_BUDGET
+            if discovery_operation_budget is None
+            else int(discovery_operation_budget)
+        ),
+        deadline_at=deadline_at,
+        campaign_id=campaign_id,
+        execution_id=execution_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
+        locator_runner=run_fresh_profile_locator if run_locator else None,
     )
 
-    selected_latest = front_door.get("selected_latest")
-    selected_persisted = front_door.get("selected_persisted")
-    selected = front_door.get("selected") or ()
-    # V2-9.7E.46B: feed the holder funnel from the single combined-pool order so
-    # any lawful two-token composition is reachable (no compulsory LATEST+PERSISTED
-    # quota). Fall back to the legacy round-robin order only if a caller supplies an
-    # older front-door report without the combined key.
+    discovery = dict(persistent.discovery_report)
+    front_door = dict(persistent.front_door_report)
+    locator = dict(persistent.locator_report)
     reserve = (
         front_door.get("combined_reserve_order")
         or front_door.get("holder_reserve_order")
         or ()
     )
+    # Prefer the campaign eligible reserve (fresh) when available.
+    if persistent.eligible_reserve:
+        reserve = [
+            {
+                "mint": c["mint"],
+                "pool": c.get("pumpswap_pool") or c.get("pool"),
+                "market_identity": c.get("market_identity"),
+                "provenance": c.get("provenance"),
+                "lifecycle_state": c.get("lifecycle_state"),
+                "graduation_block_time": c.get("graduation_block_time"),
+                "liquidity": {
+                    "status": c.get("liquidity_status"),
+                    "liquidity_usd": c.get("liquidity_usd"),
+                },
+                "eligible": True,
+                "rejection": None,
+            }
+            for c in persistent.eligible_reserve
+        ]
 
-    # --- Build the confirmed-origin + graduation carriers -------------------
+    selected_latest = front_door.get("selected_latest")
+    selected_persisted = front_door.get("selected_persisted")
+    # Deterministic two from eligible reserve when ready (non-ranked identity order
+    # already applied by the supply service; take first two).
+    selected = list(reserve)[:required_token_capacity] if persistent.ready else []
+
     connection = sqlite3.connect(str(db_path))
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
@@ -388,69 +410,42 @@ def build_graduated_supply(
             proof for proof in reserve_supply
             if proof.mint.lower() in selected_mints
         ]
+        if persistent.ready and len(supply) >= required_token_capacity:
+            # Ensure graduated_supply carries exactly the first two selected.
+            supply = list(supply)[:required_token_capacity]
+        # Backfill selected_latest / selected_persisted labels when missing.
+        if selected_latest is None or selected_persisted is None:
+            for item in selected:
+                prov = str(item.get("provenance") or "")
+                if "LATEST" in prov and selected_latest is None:
+                    selected_latest = dict(item)
+                elif selected_persisted is None:
+                    selected_persisted = dict(item)
     finally:
         connection.close()
 
-    # V2-9.7E.46B: readiness is the availability of at least two lawful eligible
-    # graduated candidates in the combined reserve pool — of ANY lawful provenance
-    # composition — not a compulsory one-LATEST-plus-one-PERSISTED pair. The holder
-    # funnel then selects two distinct holder-eligible tokens from this pool. Fewer
-    # than two eligible $3K+ candidates is honest market supply, not a code defect.
-    ready = len(reserve_supply) >= 2
+    ready = bool(persistent.ready) and len(reserve_supply) >= required_token_capacity
     terminal = (
         "GRADUATED_SUPPLY_READY"
         if ready
         else BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL
     )
-    diagnostics = {
-        "confirmed_this_cycle": int(discovery.get("confirmed_count") or 0),
-        "latest_graduated_count": int(discovery.get("latest_graduated_count") or 0),
-        "persisted_graduated_count": int(
-            discovery.get("persisted_graduated_count") or 0
-        ),
-        "front_door_candidate_count": int(front_door.get("candidate_count") or 0),
-        "latest_eligible_count": int(front_door.get("latest_eligible_count") or 0),
-        "persisted_eligible_count": int(front_door.get("persisted_eligible_count") or 0),
-        "combined_reserve_count": len(reserve_supply),
-        "below_floor_count": int(front_door.get("below_floor_count") or 0),
-        "unproven_count": int(front_door.get("unproven_count") or 0),
-        "selection_floor_usd": front_door.get("selection_floor_usd"),
-        "discovery_forbidden_delta_total": int(
-            discovery.get("forbidden_delta_total") or 0
-        ),
-        "front_door_forbidden_delta_total": int(
-            front_door.get("forbidden_delta_total") or 0
-        ),
-        "locator_status": locator.get("status"),
-        "locator_matched_count": int(locator.get("matched_count") or 0),
-        "locator_source_requests": int(locator.get("source_requests") or 0),
-        "discovery_source_requests": int(
-            (discovery.get("source_operation_ledger") or {}).get("source_requests") or 0
-        ),
-        "front_door_liquidity_requests": int(
-            (front_door.get("source_operation_ledger") or {}).get(
-                "liquidity_requests"
-            )
-            or 0
-        ),
-        "stage_local_source_requests": (
-            int(locator.get("source_requests") or 0)
-            + int(
-                (discovery.get("source_operation_ledger") or {}).get(
-                    "source_requests"
-                )
-                or 0
-            )
-            + int(
-                (front_door.get("source_operation_ledger") or {}).get(
-                    "liquidity_requests"
-                )
-                or 0
-            )
-        ),
-        "integrity_check": front_door.get("integrity_check"),
-        "foreign_key_violations": int(front_door.get("foreign_key_violations") or 0),
-    }
+    diagnostics = dict(persistent.diagnostics)
+    diagnostics.update(
+        {
+            "combined_reserve_count": len(reserve_supply),
+            "locator_status": locator.get("status"),
+            "locator_matched_count": int(locator.get("matched_count") or 0),
+            "locator_source_requests": int(locator.get("source_requests") or 0),
+            "exhaustion_certificate": (
+                None
+                if persistent.exhaustion_certificate is None
+                else persistent.exhaustion_certificate.to_dict()
+            ),
+            "shortage_classification": persistent.shortage_classification,
+            "discovery_rounds": persistent.discovery_rounds,
+        }
+    )
     return GraduatedSupply(
         ready=ready,
         terminal=terminal,
