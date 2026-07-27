@@ -22,7 +22,12 @@ import time
 from typing import Any, Iterable, Mapping
 import uuid
 
-from printer_v1.db import migrate as migration_runner
+from printer_v1.db.migrate import (
+    canonical_migration_count,
+    canonical_migration_names,
+    describe_migration_ledger_mismatch,
+    validate_migration_ledger,
+)
 from printer_v1.operator_cli.abstract_campaign_command import (
     CAMPAIGN_MODE,
     CENTRAL_SCHEDULER_OWNER,
@@ -103,14 +108,17 @@ HEARTBEAT_SECONDS = 30
 FREE_PUBLIC_SOLANA_RPC = "https://api.mainnet-beta.solana.com"
 ARTIFACT_ROOT = Path.home() / "PrinterOperations" / "v2-9-8"
 AUTHORITATIVE_DB = Path(CANONICAL_PERSISTENT_DB).resolve()
-# Re-export shared E.46B / V2-9.8B.6 supply bounds for public production wiring.
-EXPECTED_MIGRATION_COUNT = 44
+# Live-derived from the single ordered migrations/*.sql source. Never hard-code.
+EXPECTED_MIGRATION_COUNT = canonical_migration_count()
 LOCKED_WINDOWS = ("WINDOW_1H", "WINDOW_4H", "WINDOW_12H", "WINDOW_24H")
 AUTHORITATIVE_SQLITE_RUNTIME_SIDECARS = (
     "data/printer_v1.sqlite3-journal",
     "data/printer_v1.sqlite3-wal",
     "data/printer_v1.sqlite3-shm",
 )
+# Action-local run identity for blocked-command source accounting. Never inherit
+# a previous campaign's holder-ledger totals into a different public action.
+_ACTION_RUN_CONTEXT: dict[str, str | None] = {"run_id": None}
 
 
 class OperationalMemoryFactoryError(RuntimeError):
@@ -135,11 +143,15 @@ def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
     ).fetchone() is not None
 
 
-def _read_only(path: Path = AUTHORITATIVE_DB) -> sqlite3.Connection:
-    if path.resolve() != AUTHORITATIVE_DB or not path.is_file():
+def _read_only(path: Path | None = None) -> sqlite3.Connection:
+    # Resolve against the live module constant so tests can patch AUTHORITATIVE_DB
+    # without being defeated by a function-default binding at import time.
+    target = Path(path).resolve() if path is not None else AUTHORITATIVE_DB.resolve()
+    expected = AUTHORITATIVE_DB.resolve()
+    if target != expected or not target.is_file():
         raise OperationalMemoryFactoryError("authoritative database target mismatch")
     connection = sqlite3.connect(
-        f"file:{path.as_posix()}?mode=ro", uri=True, timeout=0.0
+        f"file:{target.as_posix()}?mode=ro", uri=True, timeout=0.0
     )
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA query_only=ON")
@@ -221,8 +233,16 @@ def _validate_locked_baseline(counts: Mapping[str, int]) -> None:
     for table, count in counts.items():
         if int(count) != allowed.get(table, 0):
             raise OperationalMemoryFactoryError(
-                f"locked capability baseline drift: {table}={count}"
+                f"locked capability baseline drift: gate=locked_capability "
+                f"table={table} actual={count} expected={allowed.get(table, 0)}"
             )
+
+
+def _preflight_fail(gate: str, detail: str) -> None:
+    """Fail closed with the exact preflight gate that blocked readiness."""
+    raise OperationalMemoryFactoryError(
+        f"operational preflight blocked: gate={gate}: {detail}"
+    )
 
 
 def _capture_operational_git_provenance(root: Path) -> dict[str, Any]:
@@ -244,20 +264,30 @@ def build_activation_preflight(
     """Run the complete read-only, zero-source activation preflight."""
     path = Path(db_path).resolve()
     if path != AUTHORITATIVE_DB or not path.is_file():
-        raise OperationalMemoryFactoryError("only data/printer_v1.sqlite3 is allowed")
+        _preflight_fail(
+            "database_target",
+            "only data/printer_v1.sqlite3 is allowed "
+            f"(resolved={path} expected={AUTHORITATIVE_DB})",
+        )
     sidecars = [
         str(Path(f"{path}{suffix}"))
         for suffix in ("-wal", "-shm", "-journal")
         if Path(f"{path}{suffix}").exists()
     ]
     if sidecars:
-        raise OperationalMemoryFactoryError("SQLite sidecar state is not quiescent")
+        _preflight_fail(
+            "sqlite_sidecar_quiescence",
+            "SQLite sidecar state is not quiescent: " + ", ".join(sidecars),
+        )
     root = (
         Path(repository_root).resolve()
         if repository_root is not None
         else AUTHORITATIVE_DB.parent.parent
     )
-    provenance = _capture_operational_git_provenance(root)
+    try:
+        provenance = _capture_operational_git_provenance(root)
+    except GitProvenanceError as exc:
+        _preflight_fail("git_provenance", str(exc))
     source = build_readiness_source_contract_preflight()
     dependency = assert_runtime_dependency_preflight(repository_root=root)
     budget = build_operational_budget_preflight(
@@ -266,11 +296,20 @@ def build_activation_preflight(
         governed_15m_request_ceiling=GOVERNED_15M_REQUEST_CEILING,
         governed_requests_per_token=GOVERNED_REQUESTS_PER_TOKEN,
     )
-    if source["status"] != "READY" or dependency.status != "READY":
-        raise OperationalMemoryFactoryError("source or dependency preflight is not READY")
+    if source["status"] != "READY":
+        _preflight_fail(
+            "source_contract",
+            f"status={source.get('status')!r} detail={source!r}",
+        )
+    if dependency.status != "READY":
+        _preflight_fail(
+            "runtime_dependency",
+            f"status={dependency.status!r} detail={dependency.to_dict()!r}",
+        )
     if budget["status"] != "READY":
-        raise OperationalMemoryFactoryError(
-            "holder budget preflight is not READY: " + ";".join(budget["issues"])
+        _preflight_fail(
+            "holder_budget",
+            ";".join(budget["issues"]) or f"status={budget['status']!r}",
         )
 
     connection = _read_only(path)
@@ -279,9 +318,6 @@ def build_activation_preflight(
             str(row[0]) for row in connection.execute(
                 "SELECT version FROM printer_schema_migrations ORDER BY version"
             ).fetchall()
-        )
-        expected = tuple(
-            item.name for item in sorted(migration_runner.MIGRATIONS_DIR.glob("*.sql"))
         )
         integrity = tuple(
             str(row[0]) for row in connection.execute("PRAGMA integrity_check").fetchall()
@@ -297,22 +333,65 @@ def build_activation_preflight(
         )
     finally:
         connection.close()
-    if migrations != expected or len(migrations) != EXPECTED_MIGRATION_COUNT:
-        raise OperationalMemoryFactoryError("canonical migration ledger mismatch")
-    if integrity != ("ok",) or foreign_keys:
-        raise OperationalMemoryFactoryError("database integrity or foreign keys failed")
-    if any(active.values()):
-        raise OperationalMemoryFactoryError(f"active operational state exists: {active}")
-    _validate_locked_baseline(locked)
-    if historical_audit != 1:
-        raise OperationalMemoryFactoryError("historical paper-audit evidence drifted")
 
+    ledger = validate_migration_ledger(migrations)
+    if not ledger["matches"]:
+        issues = describe_migration_ledger_mismatch(migrations)
+        _preflight_fail(
+            "migration_ledger",
+            "; ".join(issues)
+            or (
+                f"applied_count={ledger['applied_count']} "
+                f"canonical_count={ledger['canonical_count']}"
+            ),
+        )
+    # Defensive equality: count is always derived from the same canonical source.
+    if int(ledger["canonical_count"]) != canonical_migration_count():
+        _preflight_fail(
+            "migration_ledger",
+            "canonical migration count derivation drifted",
+        )
+    if integrity != ("ok",):
+        _preflight_fail(
+            "database_integrity",
+            f"PRAGMA integrity_check returned {integrity!r}",
+        )
+    if foreign_keys:
+        sample = ", ".join(
+            f"{row[0]}->{row[2]}" for row in foreign_keys[:5]
+        )
+        _preflight_fail(
+            "foreign_keys",
+            f"{len(foreign_keys)} violation(s); sample={sample}",
+        )
+    if any(active.values()):
+        _preflight_fail(
+            "active_operational_state",
+            f"active counts={dict(active)}",
+        )
+    try:
+        _validate_locked_baseline(locked)
+    except OperationalMemoryFactoryError as exc:
+        # Re-raise with gate prefix if not already structured.
+        message = str(exc)
+        if message.startswith("operational preflight blocked:"):
+            raise
+        _preflight_fail("locked_capability_baseline", message)
+    if historical_audit != 1:
+        _preflight_fail(
+            "historical_paper_audit",
+            f"expected exactly 1 null-position paper audit row, found {historical_audit}",
+        )
+
+    expected_names = canonical_migration_names()
     return {
         "status": "V2_9_8_OPERATIONAL_PREFLIGHT_READY",
         "database_path": str(path),
         "database_sha256": _sha256(path),
         "migration_count": len(migrations),
+        "canonical_migration_count": len(expected_names),
         "latest_migration": migrations[-1],
+        "latest_canonical_migration": expected_names[-1],
         "integrity": "ok",
         "foreign_key_violations": 0,
         "active_counts": active,
@@ -457,6 +536,8 @@ def _create_campaign_command(
             )
     finally:
         connection.close()
+    # Publish the exact run identity so blocked-command counters stay action-local.
+    _ACTION_RUN_CONTEXT["run_id"] = run_id
     return (
         AbstractCampaignCommand(
             mode=CAMPAIGN_MODE,
@@ -619,11 +700,17 @@ def _with_sqlite_busy_retry(label: str, operation, *, attempts: int = 8, base_sl
     raise RuntimeError(f"{label}: busy retry exhausted without result")
 
 
-def _latest_campaign_source_total(db_path: Path | str | None = None) -> int | None:
+def _latest_campaign_source_total(
+    db_path: Path | str | None = None,
+    *,
+    run_id: str | None = None,
+) -> int | None:
     """Best-effort durable campaign source total from the holder ledger.
 
-    Prefers the latest supervision run's ledger row. Returns None when unavailable
-    so pre-ledger faults can still report honest zeros.
+    When ``run_id`` is provided, only that exact campaign run is considered so
+    blocked-command counters stay action-local. Without a run filter this still
+    prefers the latest supervision ledger row for recovery/diagnostics, but the
+    public ``main`` blocked path must pass the current action's run identity.
     """
     path = Path(db_path) if db_path is not None else AUTHORITATIVE_DB
     try:
@@ -638,14 +725,24 @@ def _latest_campaign_source_total(db_path: Path | str | None = None) -> int | No
             )
             connection.row_factory = sqlite3.Row
         try:
-            row = connection.execute(
-                """SELECT l.governed_requests
-                   FROM printer_holder_campaign_operation_ledgers AS l
-                   JOIN printer_memory_factory_campaign_supervision AS s
-                     ON s.run_id = l.run_id
-                   ORDER BY s.created_at DESC, s.supervision_id DESC
-                   LIMIT 1"""
-            ).fetchone()
+            if run_id is not None:
+                row = connection.execute(
+                    """SELECT governed_requests
+                       FROM printer_holder_campaign_operation_ledgers
+                       WHERE run_id=?
+                       ORDER BY created_at DESC
+                       LIMIT 1""",
+                    (run_id,),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    """SELECT l.governed_requests
+                       FROM printer_holder_campaign_operation_ledgers AS l
+                       JOIN printer_memory_factory_campaign_supervision AS s
+                         ON s.run_id = l.run_id
+                       ORDER BY s.created_at DESC, s.supervision_id DESC
+                       LIMIT 1"""
+                ).fetchone()
             if row is None:
                 return None
             return int(row["governed_requests"])
@@ -1236,6 +1333,9 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
     parser.add_argument("--operator-approved", action="store_true")
     args = parser.parse_args(list(argv) if argv is not None else None)
+    # Reset action-local identity at the start of every public invocation so a
+    # blocked preflight/status/report never inherits a previous campaign total.
+    _ACTION_RUN_CONTEXT["run_id"] = None
     try:
         if args.mode == "preflight-only":
             result = build_activation_preflight()
@@ -1252,21 +1352,32 @@ def main(argv: Iterable[str] | None = None) -> int:
         print(json.dumps(result, indent=2, sort_keys=True, default=str))
         return 0
     except Exception as exc:
-        # V2-9.8B.10: when a campaign already wrote a holder ledger, surface that
-        # durable total instead of hard-coding zero (which hid 18 ops on the
-        # audited IntegrityError path).
-        campaign_source_calls = _latest_campaign_source_total()
+        # V2-9.8B.10 / V2-9.8B.19: surface a durable total only for the exact
+        # run identity created by this action. Never copy a previous campaign's
+        # holder-ledger counters into preflight/status/report-only failures.
+        action_run_id = _ACTION_RUN_CONTEXT.get("run_id")
+        campaign_source_calls: int | None = None
+        if args.mode == "run" and action_run_id:
+            campaign_source_calls = _latest_campaign_source_total(run_id=str(action_run_id))
+        elif args.mode == "run":
+            # Run failed before campaign creation (e.g. preflight). Action-local
+            # total remains zero; do not inherit historical ledgers.
+            campaign_source_calls = None
+        source_calls = (
+            int(campaign_source_calls) if campaign_source_calls is not None else 0
+        )
         print(
             json.dumps(
                 {
                     "status": "OPERATIONAL_COMMAND_BLOCKED",
                     "error_type": type(exc).__name__,
+                    "error_message": str(exc),
+                    "mode": args.mode,
+                    "action_run_id": action_run_id,
                     "campaign_source_calls": campaign_source_calls,
-                    "source_calls": (
-                        int(campaign_source_calls)
-                        if campaign_source_calls is not None
-                        else 0
-                    ),
+                    "source_calls": source_calls,
+                    "scheduler_runtime_calls": 0,
+                    "database_writes": 0,
                     "restart_created": False,
                     "successor_created": False,
                 },
@@ -1288,14 +1399,18 @@ __all__ = [
     "MAIN_WINDOW",
     "OPERATIONAL_GRADUATED_SUPPLY_KWARGS",
     "TOKEN_CAPACITY",
+    "_ACTION_RUN_CONTEXT",
     "_latest_campaign_source_total",
     "_terminalize_initialized_failure",
     "_with_sqlite_busy_retry",
     "build_activation_preflight",
+    "canonical_migration_count",
+    "canonical_migration_names",
     "cooperative_stop",
     "main",
     "operational_status",
     "recover_orphan",
     "report_only",
     "run_operational_campaign",
+    "validate_migration_ledger",
 ]

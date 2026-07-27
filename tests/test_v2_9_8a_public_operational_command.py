@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 import shutil
+import sqlite3
 import tempfile
 import unittest
 from unittest.mock import patch
 
+from printer_v1.db.migrate import (
+    canonical_migration_count,
+    canonical_migration_names,
+)
 from printer_v1.operator_cli import operational_memory_factory_command as command
 
 
@@ -16,34 +20,103 @@ SOURCE = ROOT / "data" / "printer_v1.sqlite3"
 
 class _Dependency:
     status = "READY"
+
     def to_dict(self):
         return {"status": "READY", "external_requests": 0, "database_writes": 0}
+
+
+def _build_quiescent_preflight_fixture(destination: Path) -> None:
+    """Copy the authoritative corpus into a relationally valid quiescent fixture.
+
+    Historical campaign/discovery/holder rows remain intact so foreign keys stay
+    valid. Only active operational surfaces are forced terminal/unlocked.
+    """
+    if not SOURCE.is_file():
+        raise unittest.SkipTest("authoritative corpus unavailable for fixture copy")
+    shutil.copy2(SOURCE, destination)
+    connection = sqlite3.connect(destination)
+    try:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(
+            """
+            UPDATE printer_scheduler_jobs
+            SET status='CANCELLED',
+                finished_at=COALESCE(finished_at, '2026-07-26T17:00:00+00:00'),
+                updated_at='2026-07-26T17:00:00+00:00',
+                locked_at=NULL,
+                lock_owner=NULL
+            WHERE status IN ('PENDING', 'RUNNING')
+               OR locked_at IS NOT NULL
+               OR lock_owner IS NOT NULL
+            """
+        )
+        connection.execute(
+            """
+            UPDATE printer_memory_factory_campaigns
+            SET campaign_state='TERMINAL_COMPLETED',
+                updated_at='2026-07-26T17:00:00+00:00'
+            WHERE campaign_state IN ('PREFLIGHT', 'RUNNING', 'STOP_REQUESTED', 'DRAFT')
+            """
+        )
+        connection.execute(
+            """
+            UPDATE printer_memory_factory_campaign_runs
+            SET run_state='TERMINAL_COMPLETED',
+                updated_at='2026-07-26T17:00:00+00:00'
+            WHERE run_state IN ('RUNNING', 'STOP_REQUESTED')
+            """
+        )
+        connection.execute(
+            """
+            UPDATE printer_memory_factory_campaign_supervision
+            SET supervision_state='TERMINAL',
+                terminal_status=COALESCE(terminal_status, 'COMPLETED'),
+                updated_at='2026-07-26T17:00:00+00:00'
+            WHERE supervision_state IN ('ACTIVE', 'STOPPING')
+            """
+        )
+        connection.execute(
+            """
+            UPDATE printer_discovery_work
+            SET work_state='TERMINAL',
+                updated_at='2026-07-26T17:00:00+00:00'
+            WHERE work_state IN ('PENDING', 'RUNNING', 'COOLDOWN')
+            """
+        )
+        connection.execute(
+            """
+            UPDATE printer_memory_factory_run_steps
+            SET step_status='SKIPPED',
+                updated_at='2026-07-26T17:00:00+00:00'
+            WHERE step_status IN ('PENDING', 'RUNNING')
+            """
+        )
+        connection.execute(
+            """
+            UPDATE printer_proof_run_supervision
+            SET execution_status='TERMINAL',
+                updated_at='2026-07-26T17:00:00+00:00'
+            WHERE execution_status IN ('STARTING', 'RUNNING')
+            """
+        )
+        foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchall()
+        if foreign_keys:
+            raise AssertionError(
+                f"quiescent fixture has FK violations: {foreign_keys[:5]}"
+            )
+        integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
+        if integrity != "ok":
+            raise AssertionError(f"quiescent fixture integrity failed: {integrity}")
+        connection.commit()
+    finally:
+        connection.close()
 
 
 class PublicOperationalCommandTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.db = Path(self.temp.name) / "printer_v1.sqlite3"
-        shutil.copy2(SOURCE, self.db)
-        # The authoritative corpus may contain the operator-approved V2-9.8B
-        # orphan while its repair lane is active.  A.8 preflight tests require a
-        # quiescent disposable fixture, not a byte copy of active campaign state.
-        connection = __import__("sqlite3").connect(self.db)
-        try:
-            connection.execute(
-                "DROP TRIGGER IF EXISTS printer_campaign_configuration_immutable_delete"
-            )
-            for table in (
-                "printer_memory_factory_campaign_supervision",
-                "printer_memory_factory_campaign_cycles",
-                "printer_memory_factory_campaign_runs",
-                "printer_memory_factory_campaign_configurations",
-                "printer_memory_factory_campaigns",
-            ):
-                connection.execute(f"DELETE FROM {table}")
-            connection.commit()
-        finally:
-            connection.close()
+        _build_quiescent_preflight_fixture(self.db)
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -65,7 +138,7 @@ class PublicOperationalCommandTests(unittest.TestCase):
             command.build_activation_preflight(db_path=self.db)
 
     def test_preflight_is_zero_source_and_zero_write_after_scheduler_terminal(self) -> None:
-        connection = __import__("sqlite3").connect(self.db)
+        connection = sqlite3.connect(self.db)
         connection.execute(
             "UPDATE printer_scheduler_jobs SET status='CANCELLED',"
             "finished_at='2026-07-26T17:00:00+00:00',"
@@ -90,14 +163,29 @@ class PublicOperationalCommandTests(unittest.TestCase):
         }
         with (
             patch.object(command, "AUTHORITATIVE_DB", self.db.resolve()),
-            patch.object(command, "build_readiness_source_contract_preflight", return_value=source_ready),
-            patch.object(command, "assert_runtime_dependency_preflight", return_value=_Dependency()),
+            patch.object(
+                command,
+                "build_readiness_source_contract_preflight",
+                return_value=source_ready,
+            ),
+            patch.object(
+                command,
+                "assert_runtime_dependency_preflight",
+                return_value=_Dependency(),
+            ),
             patch.object(command, "capture_git_provenance", return_value=provenance),
+            patch.object(
+                command,
+                "_capture_operational_git_provenance",
+                return_value=provenance,
+            ),
         ):
             report = command.build_activation_preflight(
                 db_path=self.db, repository_root=ROOT
             )
         self.assertEqual("V2_9_8_OPERATIONAL_PREFLIGHT_READY", report["status"])
+        self.assertEqual(canonical_migration_count(), report["migration_count"])
+        self.assertEqual(canonical_migration_names()[-1], report["latest_migration"])
         self.assertEqual(0, report["source_calls"])
         self.assertEqual(0, report["scheduler_runtime_calls"])
         self.assertEqual(0, report["database_writes"])

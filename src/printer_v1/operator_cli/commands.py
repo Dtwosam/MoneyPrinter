@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 from urllib.parse import quote
 
-from printer_v1.db.migrate import MIGRATIONS_DIR
+from printer_v1.db.migrate import MIGRATIONS_DIR, canonical_migration_names
 from printer_v1.hardening.flow_validation import (
     initialize_temp_validation_db,
     run_full_synthetic_validation_flow,
@@ -461,7 +461,7 @@ def _print_error(exc: Exception) -> int:
 
 
 def _migration_files() -> list[str]:
-    return [path.name for path in sorted(MIGRATIONS_DIR.glob("*.sql"))]
+    return list(canonical_migration_names())
 
 
 def build_migration_status(db_path: str | Path | None = None, project_root: str | Path | None = None) -> dict[str, Any]:

@@ -13,7 +13,7 @@ from pathlib import Path
 import sqlite3
 from typing import Any, Callable, Mapping
 
-from printer_v1.db import migrate as migration_runner
+from printer_v1.db.migrate import canonical_migration_names
 from printer_v1.operator_cli.campaign_supervision import (
     acquire_campaign_supervision,
     cleanup_campaign_supervision,
@@ -207,9 +207,7 @@ def _validate_configuration(
     ):
         raise AbstractCommandError("immutable command configuration mismatch")
     backup = configuration.get("backup_preflight_references")
-    latest_migration = sorted(
-        migration_runner.MIGRATIONS_DIR.glob("*.sql")
-    )[-1].name
+    latest_migration = canonical_migration_names()[-1]
     required = {
         "preflight_status": "READY",
         "required_migration": "032_campaign_ownership_schema.sql",
@@ -280,13 +278,8 @@ def preflight_abstract_command(command: AbstractCampaignCommand) -> dict[str, An
                 "SELECT version FROM printer_schema_migrations ORDER BY version"
             ).fetchall()
         )
-        expected_ledger = tuple(
-            migration.name for migration in sorted(
-                migration_runner.MIGRATIONS_DIR.glob("*.sql")
-            )
-        )
-        # Ledger must match the repository migration head exactly. After 7B.4C
-        # the head includes 034_discovery_persistence_reconciliation.sql.
+        expected_ledger = canonical_migration_names()
+        # Ledger must match the single ordered canonical migration source exactly.
         if ledger != expected_ledger or not ledger:
             raise AbstractCommandError("database migration ledger is not canonical")
 

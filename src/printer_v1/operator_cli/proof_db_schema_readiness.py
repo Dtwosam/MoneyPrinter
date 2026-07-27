@@ -16,6 +16,9 @@ import sqlite3
 from typing import Any, Iterable
 
 from printer_v1.db import migrate as migration_runner
+from printer_v1.db.migrate import (
+    canonical_migration_names as _shared_canonical_migration_names,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -132,7 +135,8 @@ def _sha256(path: Path) -> str:
 
 
 def _canonical_migration_names() -> list[str]:
-    return [path.name for path in sorted(migration_runner.MIGRATIONS_DIR.glob("*.sql"))]
+    """Ordered names from the single canonical migrations/*.sql source."""
+    return list(_shared_canonical_migration_names())
 
 
 def _table_exists(connection: sqlite3.Connection, table: str) -> bool:

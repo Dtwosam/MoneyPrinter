@@ -16,6 +16,10 @@ import unittest
 from unittest import mock
 
 from printer_v1.db import apply_migrations
+from printer_v1.db.migrate import (
+    canonical_migration_count,
+    canonical_migration_names,
+)
 from printer_v1.operator_cli.abstract_campaign_command import (
     AbstractCampaignCommand,
     CampaignCeilings,
@@ -38,6 +42,7 @@ from printer_v1.operator_cli.holder_reliability_budget_control import (
 from printer_v1.operator_cli.one_command_15m_factory import run_one_command_15m_factory
 from printer_v1.operator_cli.operational_memory_factory_command import (
     EXPECTED_MIGRATION_COUNT,
+    OperationalMemoryFactoryError,
     _latest_campaign_source_total,
     _terminalize_initialized_failure,
     _with_sqlite_busy_retry,
@@ -157,7 +162,11 @@ def _command(
 
 class MigrationAndFactoryInsertTests(unittest.TestCase):
     def test_migration_count_and_operational_factory_insert(self) -> None:
-        self.assertEqual(EXPECTED_MIGRATION_COUNT, 44)
+        expected_count = canonical_migration_count()
+        expected_names = canonical_migration_names()
+        self.assertEqual(EXPECTED_MIGRATION_COUNT, expected_count)
+        self.assertEqual(expected_count, len(expected_names))
+        self.assertTrue(expected_names[-1].startswith("045"))
         with tempfile.TemporaryDirectory() as temporary:
             db = Path(temporary) / "mig.sqlite3"
             apply_migrations(db)
@@ -166,12 +175,13 @@ class MigrationAndFactoryInsertTests(unittest.TestCase):
                 count = connection.execute(
                     "SELECT COUNT(*) FROM printer_schema_migrations"
                 ).fetchone()[0]
-                self.assertEqual(count, 44)
+                self.assertEqual(count, expected_count)
                 latest = connection.execute(
                     "SELECT version FROM printer_schema_migrations "
-                    "WHERE version LIKE '044%'"
+                    "WHERE version LIKE '045%'"
                 ).fetchone()
                 self.assertIsNotNone(latest)
+                self.assertEqual(latest[0], expected_names[-1])
                 connection.execute(
                     """INSERT INTO printer_memory_factory_runs
                        (run_id,run_status,window_kind,db_mode,config_hash,
@@ -568,25 +578,52 @@ class PublicFailureSurfaceTests(unittest.TestCase):
             self.assertEqual(total, 18)
 
     def test_main_exception_surface_reports_durable_source_total(self) -> None:
+        from printer_v1.operator_cli import operational_memory_factory_command as omf
+
+        def _failing_run(**_kwargs):
+            omf._ACTION_RUN_CONTEXT["run_id"] = "run-with-ledger"
+            raise sqlite3.IntegrityError(
+                "CHECK constraint failed: db_mode = 'PROOF_ONLY'"
+            )
+
         with mock.patch(
             "printer_v1.operator_cli.operational_memory_factory_command."
             "run_operational_campaign",
-            side_effect=sqlite3.IntegrityError(
-                "CHECK constraint failed: db_mode = 'PROOF_ONLY'"
-            ),
+            side_effect=_failing_run,
         ), mock.patch(
             "printer_v1.operator_cli.operational_memory_factory_command."
             "_latest_campaign_source_total",
             return_value=18,
-        ):
+        ) as source_total:
             code = main(["run", "--operator-approved"])
         self.assertEqual(code, 1)
+        source_total.assert_called_once()
+        self.assertEqual(source_total.call_args.kwargs.get("run_id"), "run-with-ledger")
+
+    def test_main_blocked_preflight_does_not_inherit_prior_campaign_source_total(
+        self,
+    ) -> None:
+        with mock.patch(
+            "printer_v1.operator_cli.operational_memory_factory_command."
+            "build_activation_preflight",
+            side_effect=OperationalMemoryFactoryError(
+                "operational preflight blocked: gate=migration_ledger: test"
+            ),
+        ), mock.patch(
+            "printer_v1.operator_cli.operational_memory_factory_command."
+            "_latest_campaign_source_total",
+            return_value=22,
+        ) as source_total:
+            code = main(["preflight-only"])
+        self.assertEqual(code, 1)
+        source_total.assert_not_called()
 
 
 class LockPreservationSmokeTests(unittest.TestCase):
     def test_no_restart_successor_or_ceiling_drift_constants(self) -> None:
         self.assertEqual(OPERATION_CEILING, 45)
-        self.assertEqual(EXPECTED_MIGRATION_COUNT, 44)
+        self.assertEqual(EXPECTED_MIGRATION_COUNT, canonical_migration_count())
+        self.assertGreaterEqual(EXPECTED_MIGRATION_COUNT, 45)
 
 
 if __name__ == "__main__":

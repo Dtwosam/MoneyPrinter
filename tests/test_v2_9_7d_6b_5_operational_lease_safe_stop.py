@@ -312,7 +312,15 @@ class OperationalCampaignSupervisionTests(unittest.TestCase):
             self.db, **self._identity(), now=T0 + timedelta(seconds=30),
         )
         self.assertFalse(result["renewal_confirmed"])
-        self.assertIn("ownership mismatch", result["renewal_error"])
+        # Safe redacted surface: raw exception text is not returned.
+        self.assertIn(
+            "ownership could not be confirmed",
+            str(result.get("renewal_error") or "").lower(),
+        )
+        self.assertEqual(
+            result.get("suggested_terminal_cause"),
+            "LEASE_RENEWAL_OWNERSHIP_MISMATCH",
+        )
         self.assertFalse(result.get("terminal_cleanup_performed"))
         self.assertTrue(result.get("signal_main_coordinator"))
         supervision = self.connection.execute(

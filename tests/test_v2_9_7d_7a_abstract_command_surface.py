@@ -13,6 +13,7 @@ import tempfile
 import unittest
 
 from printer_v1.db import apply_migrations
+from printer_v1.db.migrate import canonical_migration_names
 from printer_v1.operator_cli.abstract_campaign_command import (
     AbstractCampaignCommand,
     AbstractCommandError,
@@ -93,7 +94,8 @@ class AbstractCommandSurfaceTests(unittest.TestCase):
                 "source_identity": "sha256:" + "a" * 64,
                 "backup_sha256": "b" * 64,
                 "required_migration": "032_campaign_ownership_schema.sql",
-                "latest_migration": "035_insufficient_pool_cycle_terminal_trigger.sql",
+                # Must track the single ordered canonical migration head.
+                "latest_migration": canonical_migration_names()[-1],
             },
         }
         created = create_campaign(
