@@ -28,6 +28,29 @@ _ACTIVE_WINDOWS = ("PLANNED", "COLLECTING", "CLOSE_PENDING", "AUDITING")
 _TERMINAL_STATUSES = {
     "COMPLETED", "FAILED", "CANCELLED", "LEASE_RENEWAL_UNCONFIRMED",
 }
+_LEASE_FAILURE_FILE_KEY = "first_heartbeat_renewal_failure"
+_SAFE_FAILURES = {
+    "SQLITE_LOCK_CONTENTION": (
+        "SQLiteOperationalError",
+        "SQLite lease renewal was not confirmed because the database was busy or locked.",
+        "LEASE_RENEWAL_SQLITE_LOCKED",
+    ),
+    "LEASE_EXPIRED": (
+        "CampaignSupervisionError",
+        "The operational campaign lease had expired before renewal could be confirmed.",
+        "LEASE_RENEWAL_LEASE_EXPIRED",
+    ),
+    "OWNERSHIP_MISMATCH": (
+        "CampaignSupervisionError",
+        "Operational campaign lease ownership could not be confirmed.",
+        "LEASE_RENEWAL_OWNERSHIP_MISMATCH",
+    ),
+    "LEASE_RENEWAL_ERROR": (
+        "LeaseRenewalError",
+        "Operational campaign lease renewal was not confirmed.",
+        "LEASE_RENEWAL_UNCONFIRMED",
+    ),
+}
 
 
 class CampaignSupervisionError(RuntimeError):
@@ -59,6 +82,137 @@ def _is_sqlite_locked(exc: BaseException) -> bool:
     if isinstance(exc, sqlite3.OperationalError):
         return "locked" in str(exc).lower() or "busy" in str(exc).lower()
     return False
+
+
+def _safe_renewal_failure(
+    exc: BaseException,
+    *,
+    attempted_at: str,
+    prior_heartbeat_at: str | None,
+    prior_lease_expires_at: str | None,
+) -> dict[str, Any]:
+    raw = str(exc).lower()
+    if _is_sqlite_locked(exc):
+        category = "SQLITE_LOCK_CONTENTION"
+    elif "expired" in raw:
+        category = "LEASE_EXPIRED"
+    elif "ownership mismatch" in raw:
+        category = "OWNERSHIP_MISMATCH"
+    else:
+        category = "LEASE_RENEWAL_ERROR"
+    safe_type, safe_message, terminal_cause = _SAFE_FAILURES[category]
+    return {
+        "safe_error_type": safe_type,
+        "safe_error_category": category,
+        "safe_message": safe_message,
+        "sqlite_locked": category == "SQLITE_LOCK_CONTENTION",
+        "attempted_at": attempted_at,
+        "prior_heartbeat_at": prior_heartbeat_at,
+        "prior_lease_expires_at": prior_lease_expires_at,
+        "renewal_confirmed": False,
+        "terminal_cause": terminal_cause,
+    }
+
+
+def _persist_failure_to_lease_file(
+    row: sqlite3.Row, evidence: dict[str, Any]
+) -> bool:
+    lock = Path(str(row["lease_lock_path"]))
+    payload = _lock_payload(lock)
+    _exact_lock(payload, row)
+    existing = payload.get(_LEASE_FAILURE_FILE_KEY)
+    if existing is not None:
+        return existing == evidence
+    payload[_LEASE_FAILURE_FILE_KEY] = dict(evidence)
+    _replace_lock(lock, payload, row)
+    return True
+
+
+def persist_campaign_heartbeat_failure(
+    db_path: str | Path,
+    *,
+    supervision_id: str,
+    campaign_id: str,
+    configuration_id: str,
+    run_id: str,
+    owner_id: str,
+    evidence: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist the first sanitized renewal failure; identical replay is a no-op."""
+    required = {
+        "safe_error_type", "safe_error_category", "safe_message",
+        "sqlite_locked", "attempted_at", "renewal_confirmed", "terminal_cause",
+    }
+    if not required.issubset(evidence):
+        raise CampaignSupervisionError("heartbeat failure evidence is incomplete")
+    connection = _connect(db_path)
+    try:
+        _begin_immediate(connection)
+        row = _load_exact(
+            connection, supervision_id=supervision_id, campaign_id=campaign_id,
+            configuration_id=configuration_id, run_id=run_id, owner_id=owner_id,
+        )
+        existing = connection.execute(
+            "SELECT * FROM printer_memory_factory_campaign_heartbeat_failures "
+            "WHERE supervision_id=?", (supervision_id,),
+        ).fetchone()
+        record = {
+            "supervision_id": supervision_id,
+            "campaign_id": campaign_id,
+            "configuration_id": configuration_id,
+            "run_id": run_id,
+            "owner_id": owner_id,
+            **evidence,
+        }
+        if existing is None:
+            connection.execute(
+                """INSERT INTO printer_memory_factory_campaign_heartbeat_failures(
+                       supervision_id,campaign_id,configuration_id,run_id,owner_id,
+                       safe_error_type,safe_error_category,safe_message,sqlite_locked,
+                       attempted_at,prior_heartbeat_at,prior_lease_expires_at,
+                       renewal_confirmed,terminal_cause,created_at
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    supervision_id, campaign_id, configuration_id, run_id, owner_id,
+                    evidence["safe_error_type"], evidence["safe_error_category"],
+                    evidence["safe_message"], int(bool(evidence["sqlite_locked"])),
+                    evidence["attempted_at"], evidence.get("prior_heartbeat_at"),
+                    evidence.get("prior_lease_expires_at"),
+                    int(bool(evidence["renewal_confirmed"])),
+                    evidence["terminal_cause"], evidence["attempted_at"],
+                ),
+            )
+            created = True
+        else:
+            comparable = dict(existing)
+            comparable["sqlite_locked"] = bool(comparable["sqlite_locked"])
+            comparable["renewal_confirmed"] = bool(comparable["renewal_confirmed"])
+            expected = {key: record.get(key) for key in comparable if key != "created_at"}
+            actual = {key: comparable.get(key) for key in comparable if key != "created_at"}
+            if actual != expected:
+                raise CampaignSupervisionError(
+                    "first heartbeat-renewal failure is immutable"
+                )
+            created = False
+        connection.commit()
+        try:
+            lock_payload = _lock_payload(Path(str(row["lease_lock_path"])))
+            _exact_lock(lock_payload, row)
+        except CampaignSupervisionError:
+            lock_payload = {}
+        return {
+            "persisted": True,
+            "created": created,
+            "lease_file_evidence_present": (
+                lock_payload.get(_LEASE_FAILURE_FILE_KEY) == evidence
+            ),
+            "evidence": dict(evidence),
+        }
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
 
 
 def _connect(db_path: str | Path, *, read_only: bool = False) -> sqlite3.Connection:
@@ -330,6 +484,8 @@ def renew_campaign_lease(
     if lease_seconds < 15:
         raise CampaignSupervisionError("lease must be at least 15 seconds")
     instant = now or datetime.now(timezone.utc)
+    attempt_at = _iso(instant)
+    row: sqlite3.Row | None = None
     connection = _connect(db_path, read_only=True)
     try:
         row = _load_exact(
@@ -382,16 +538,42 @@ def renew_campaign_lease(
         finally:
             connection.close()
     except (CampaignSupervisionError, OSError, sqlite3.Error) as exc:
+        evidence = _safe_renewal_failure(
+            exc,
+            attempted_at=attempt_at,
+            prior_heartbeat_at=(None if row is None else str(row["heartbeat_at"])),
+            prior_lease_expires_at=(
+                None if row is None else str(row["lease_expires_at"])
+            ),
+        )
+        durable_location: str | None = None
+        try:
+            persist_campaign_heartbeat_failure(
+                db_path,
+                supervision_id=supervision_id, campaign_id=campaign_id,
+                configuration_id=configuration_id, run_id=run_id,
+                owner_id=owner_id, evidence=evidence,
+            )
+            durable_location = "SQLITE"
+        except (CampaignSupervisionError, OSError, sqlite3.Error):
+            if row is not None and _persist_failure_to_lease_file(row, evidence):
+                durable_location = "LEASE_FILE"
         return {
             "renewal_confirmed": False,
-            "renewal_error": str(exc),
-            "renewal_error_type": type(exc).__name__,
-            "sqlite_locked": _is_sqlite_locked(exc),
+            "renewal_error": evidence["safe_message"],
+            "renewal_error_type": evidence["safe_error_type"],
+            "renewal_error_category": evidence["safe_error_category"],
+            "sqlite_locked": evidence["sqlite_locked"],
+            "attempted_at": evidence["attempted_at"],
+            "prior_heartbeat_at": evidence["prior_heartbeat_at"],
+            "prior_lease_expires_at": evidence["prior_lease_expires_at"],
+            "failure_evidence": evidence,
+            "durable_evidence_location": durable_location,
             "terminal_cleanup_performed": False,
             "safe_stop": None,
             "new_child_work_allowed": False,
             "signal_main_coordinator": True,
-            "suggested_terminal_cause": "LEASE_RENEWAL_UNCONFIRMED",
+            "suggested_terminal_cause": evidence["terminal_cause"],
         }
     return {
         "renewal_confirmed": True,

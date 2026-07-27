@@ -297,6 +297,7 @@ class _ExternalStop(Exception):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+        self.terminal_cause = reason
 
 
 def _check_cancellation(probe: Callable[[], str | None] | None) -> None:
@@ -3378,6 +3379,7 @@ def run_one_command_15m_factory(
     campaign_run_id: str | None = None,
     cycle_id: str | None = None,
     cancellation_probe: Callable[[], str | None] | None = None,
+    factory_run_initialized: Callable[[str], None] | None = None,
     discovery_transport: Any = None, discovery_runner: Callable[..., dict[str, Any]] | None = None,
     snapshot_adapter_factory: Callable[..., Any] | None = None,
     fallback_snapshot_adapter_factory: Callable[..., Any] | None = None,
@@ -3592,9 +3594,13 @@ def run_one_command_15m_factory(
     discovery: dict[str, Any] = {}
     stop_reason = STOP_COMPLETED
     start_mono = _monotonic()
-    _emit_supervision_event(bool(supervision_execution_id), "RUN_START", run_id=run_id)
-    _check_cancellation(cancellation_probe)
     try:
+        if factory_run_initialized is not None:
+            factory_run_initialized(run_id)
+        _emit_supervision_event(
+            bool(supervision_execution_id), "RUN_START", run_id=run_id
+        )
+        _check_cancellation(cancellation_probe)
         args = _build_discovery_args(
             path, max_selected_tokens=max_selected_tokens,
             max_source_requests=max_source_requests, timeout_seconds=timeout_seconds,

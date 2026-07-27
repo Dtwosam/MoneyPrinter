@@ -49,6 +49,7 @@ from printer_v1.operator_cli.campaign_supervision import (
     acquire_campaign_supervision,
     cleanup_campaign_supervision,
     inspect_campaign_supervision,
+    persist_campaign_heartbeat_failure,
     renew_campaign_lease,
     request_campaign_cancellation,
 )
@@ -505,11 +506,29 @@ class _CampaignHeartbeat:
                         lease_seconds=LEASE_SECONDS,
                     )
                 except BaseException as exc:  # signal main; never cleanup here
+                    evidence = {
+                        "safe_error_type": "HeartbeatThreadError",
+                        "safe_error_category": "LEASE_RENEWAL_ERROR",
+                        "safe_message": (
+                            "The heartbeat renewal thread did not confirm lease renewal."
+                        ),
+                        "sqlite_locked": False,
+                        "attempted_at": _iso(),
+                        "prior_heartbeat_at": None,
+                        "prior_lease_expires_at": None,
+                        "renewal_confirmed": False,
+                        "terminal_cause": "LEASE_RENEWAL_UNCONFIRMED",
+                    }
                     with self._failure_lock:
                         self._failure = {
                             "renewal_confirmed": False,
-                            "renewal_error": f"{type(exc).__name__}:{exc}",
-                            "renewal_error_type": type(exc).__name__,
+                            "renewal_error": evidence["safe_message"],
+                            "renewal_error_type": evidence["safe_error_type"],
+                            "renewal_error_category": evidence[
+                                "safe_error_category"
+                            ],
+                            "sqlite_locked": False,
+                            "failure_evidence": evidence,
                             "terminal_cleanup_performed": False,
                             "signal_main_coordinator": True,
                             "suggested_terminal_cause": "LEASE_RENEWAL_UNCONFIRMED",
@@ -644,9 +663,20 @@ def _terminalize_initialized_failure(
     execution_id: str,
     paths: Mapping[str, Path],
     launch_git_provenance: Mapping[str, Any],
+    factory_run_id: str | None = None,
+    heartbeat_failure: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Attempt every canonical terminal owner without replacing the first fault."""
-    original_cause = f"OPERATIONAL_CAMPAIGN_FAILED:{type(original_exception).__name__}"
+    heartbeat_evidence = dict(
+        (heartbeat_failure or {}).get("failure_evidence") or {}
+    )
+    supplied_cause = str(
+        heartbeat_evidence.get("terminal_cause")
+        or getattr(original_exception, "terminal_cause", "")
+    ).strip()
+    original_cause = supplied_cause or (
+        f"OPERATIONAL_CAMPAIGN_FAILED:{type(original_exception).__name__}"
+    )
     cause = _existing_first_terminal_cause(command) or original_cause
     closure_errors: list[str] = []
     reconciliation: Mapping[str, Any] = {
@@ -655,6 +685,24 @@ def _terminalize_initialized_failure(
         "successor_created": False,
     }
     cleanup: Mapping[str, Any] = {"cleanup_completed": False}
+    if heartbeat_evidence:
+        try:
+            _with_sqlite_busy_retry(
+                "heartbeat-evidence",
+                lambda: persist_campaign_heartbeat_failure(
+                    command.db_path,
+                    supervision_id=command.supervision_id,
+                    campaign_id=command.campaign_id,
+                    configuration_id=command.configuration_id,
+                    run_id=command.run_id,
+                    owner_id=command.owner_id,
+                    evidence=heartbeat_evidence,
+                ),
+            )
+        except BaseException as exc:
+            closure_errors.append(
+                f"heartbeat-evidence:{type(exc).__name__}:{exc}"
+            )
     # V2-9.8B.10: retry cleanup/report under transient SQLite lock contention so
     # heartbeat or a just-closed factory connection cannot leave RUNNING residue.
     try:
@@ -683,8 +731,8 @@ def _terminalize_initialized_failure(
                 cycle_id=cycle_id,
                 terminal_cause=cause,
                 run_status="FAILED",
-                factory_run_id=None,
-                lifecycle_started=False,
+                factory_run_id=factory_run_id,
+                lifecycle_started=bool(factory_run_id),
                 now=_iso(),
             ),
         )
@@ -704,12 +752,12 @@ def _terminalize_initialized_failure(
         run_id=command.run_id,
         cycle_id=cycle_id,
         report_id=command.report_id,
-        factory_run_id=None,
+        factory_run_id=factory_run_id,
         execution_id=execution_id,
         terminal_status="FAILED",
         terminal_cause=cause,
         run_status="FAILED",
-        lifecycle_started=False,
+        lifecycle_started=bool(factory_run_id),
         reconciliation=reconciliation,
         forbidden_deltas={},
         launch_git_provenance=launch_git_provenance,
@@ -722,6 +770,10 @@ def _terminalize_initialized_failure(
         eligible_candidates=reporting.get("eligible_candidates"),
         required_token_capacity=reporting.get("required_token_capacity"),
         blocked_supply_reason=reporting.get("blocked_supply_reason"),
+        fault_details=(
+            {"heartbeat_failure": heartbeat_evidence}
+            if heartbeat_evidence else None
+        ),
     )
     report: Mapping[str, Any] = {"report_written": False}
     try:
@@ -801,6 +853,8 @@ def run_operational_campaign(
         backup=backup, now=now,
     )
     heartbeat: _CampaignHeartbeat | None = None
+    initialized_factory_run_id: str | None = None
+    observed_heartbeat_failure: Mapping[str, Any] | None = None
     try:
         acquire_campaign_supervision(
             command.db_path,
@@ -851,6 +905,19 @@ def run_operational_campaign(
                 return "CAMPAIGN_SUPERVISION_TERMINAL"
             return None
 
+        def retain_factory_run_id(factory_run_id: str) -> None:
+            nonlocal initialized_factory_run_id
+            candidate = str(factory_run_id).strip()
+            if not candidate:
+                raise OperationalMemoryFactoryError(
+                    "initialized factory-run identity is empty"
+                )
+            if initialized_factory_run_id not in (None, candidate):
+                raise OperationalMemoryFactoryError(
+                    "initialized factory-run identity changed"
+                )
+            initialized_factory_run_id = candidate
+
         result = active_owner.run_operational(
             command=command,
             pump_transport=active_pump,
@@ -866,6 +933,7 @@ def run_operational_campaign(
                 "total_duration_seconds": TOTAL_DURATION_SECONDS,
                 "launch_provenance": preflight["git_provenance"],
                 "cancellation_probe": cancellation_probe,
+                "factory_run_initialized": retain_factory_run_id,
             },
             migration_transport=migration_transport,
             graduated_supply_kwargs=dict(OPERATIONAL_GRADUATED_SUPPLY_KWARGS),
@@ -873,21 +941,38 @@ def run_operational_campaign(
         )
         # Heartbeat never terminalizes. Main coordinator observes failure signal.
         heartbeat_failure = heartbeat.poll_failure() if heartbeat is not None else None
+        observed_heartbeat_failure = heartbeat_failure
         if heartbeat is not None:
             heartbeat.stop()
             heartbeat = None
         lifecycle = dict(result.lifecycle)
+        returned_factory_run_id = str(lifecycle.get("run_id") or "").strip() or None
+        if returned_factory_run_id is not None:
+            retain_factory_run_id(returned_factory_run_id)
         cause = str(
             lifecycle.get("first_terminal_cause")
             or lifecycle.get("stop_reason")
             or "PRE_LIFECYCLE_GOVERNED_SAFE_STOP"
         )
-        if heartbeat_failure is not None and lifecycle.get("run_status") not in {
-            "FAILED", "CANCELLED", "TERMINAL_FAILED",
-        }:
+        if heartbeat_failure is not None:
+            heartbeat_evidence = dict(
+                heartbeat_failure.get("failure_evidence") or {}
+            )
+            if heartbeat_evidence:
+                persist_campaign_heartbeat_failure(
+                    command.db_path,
+                    supervision_id=command.supervision_id,
+                    campaign_id=command.campaign_id,
+                    configuration_id=command.configuration_id,
+                    run_id=command.run_id,
+                    owner_id=command.owner_id,
+                    evidence=heartbeat_evidence,
+                )
             # Prefer an existing lifecycle terminal cause; otherwise surface the
             # heartbeat signal so the main path can cleanup once.
-            if cause in {"PRE_LIFECYCLE_GOVERNED_SAFE_STOP", ""}:
+            if cause in {"PRE_LIFECYCLE_GOVERNED_SAFE_STOP", ""} or cause.startswith(
+                "LEASE_RENEWAL_"
+            ):
                 cause = str(
                     heartbeat_failure.get("suggested_terminal_cause")
                     or "LEASE_RENEWAL_UNCONFIRMED"
@@ -914,7 +999,7 @@ def run_operational_campaign(
             cycle_id=cycle_id,
             terminal_cause=cause,
             run_status=lifecycle.get("run_status"),
-            factory_run_id=str(lifecycle.get("run_id") or "") or None,
+            factory_run_id=initialized_factory_run_id,
             lifecycle_started=bool(result.lifecycle_started),
             now=_iso(),
         )
@@ -932,7 +1017,7 @@ def run_operational_campaign(
             run_id=command.run_id,
             cycle_id=cycle_id,
             report_id=command.report_id,
-            factory_run_id=str(lifecycle.get("run_id") or "") or None,
+            factory_run_id=initialized_factory_run_id,
             execution_id=execution_id,
             terminal_status=str(cleanup.get("terminal_status") or "COMPLETED"),
             terminal_cause=cause,
@@ -997,6 +1082,11 @@ def run_operational_campaign(
                 execution_id=execution_id,
                 paths=paths,
                 launch_git_provenance=preflight["git_provenance"],
+                factory_run_id=initialized_factory_run_id,
+                heartbeat_failure=(
+                    heartbeat.poll_failure()
+                    if heartbeat is not None else observed_heartbeat_failure
+                ),
             )
         except BaseException as closure_exc:
             exc.add_note(

@@ -326,6 +326,7 @@ def reconcile_campaign_terminal(
         "discovery_parity": {},
         "windows": {},
         "factory_run": "not_found",
+        "pre_lifecycle_dispositions": [],
     }
     connection = sqlite3.connect(str(db_path))
     connection.row_factory = sqlite3.Row
@@ -418,6 +419,66 @@ def reconcile_campaign_terminal(
                 report["factory_run"] = "SAFE_STOPPED"
             else:
                 report["factory_run"] = str(row["run_status"])
+
+        # 4a. Preserve selected evidence while removing active ownership for a
+        # terminal reached before any main-window lifecycle step.
+        if _table_exists(
+            connection, "printer_memory_factory_campaign_token_slots"
+        ):
+            slot_rows = connection.execute(
+                """SELECT token_slot_id,tracking_queue_id,token_state
+                   FROM printer_memory_factory_campaign_token_slots
+                   WHERE campaign_id=? AND run_id=? AND cycle_id=?
+                   ORDER BY slot_ordinal,token_slot_id""",
+                (campaign_id, run_id, cycle_id),
+            ).fetchall()
+            dispositions: list[dict[str, Any]] = []
+            for slot in slot_rows:
+                slot_id = str(slot["token_slot_id"])
+                queue_id = slot["tracking_queue_id"]
+                slot_result = "already_terminal"
+                queue_result = "not_linked"
+                if queue_id is not None:
+                    cursor = connection.execute(
+                        """UPDATE printer_tracking_queue
+                           SET queue_status='SKIPPED',tracking_action='MANUAL_REVIEW',
+                               priority_reason=?,last_checked_at=?,updated_at=?
+                           WHERE id=? AND queue_status='QUEUED'""",
+                        (f"campaign_terminal:{cause}", instant, instant, int(queue_id)),
+                    )
+                    if cursor.rowcount == 1:
+                        queue_result = "SKIPPED"
+                    else:
+                        current = connection.execute(
+                            "SELECT queue_status FROM printer_tracking_queue WHERE id=?",
+                            (int(queue_id),),
+                        ).fetchone()
+                        queue_result = (
+                            "not_found" if current is None else str(current[0])
+                        )
+                if str(slot["token_state"]) == "SELECTED":
+                    # transition_state commits the active transaction. Queue
+                    # first so the exact queue/slot terminal pair commits
+                    # together; a later already-terminal campaign transition
+                    # must not roll the queue disposition back.
+                    slot_result = _transition(
+                        connection,
+                        record_kind="token_slot",
+                        identity=slot_id,
+                        candidate_states=("SELECTED",),
+                        new_state="MANUAL_REVIEW",
+                        cause=cause,
+                        now=instant,
+                    )
+                dispositions.append(
+                    {
+                        "token_slot_id": slot_id,
+                        "slot_disposition": slot_result,
+                        "tracking_queue_id": queue_id,
+                        "queue_disposition": queue_result,
+                    }
+                )
+            report["pre_lifecycle_dispositions"] = dispositions
 
         # 5. Cycle, run and campaign. The cycle may sit anywhere in its own
         #    sequence; the campaign/run may be RUNNING or STOP_REQUESTED.
