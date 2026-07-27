@@ -3556,23 +3556,34 @@ def run_one_command_15m_factory(
     started_at = _iso(started_dt)
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    _require_schema(conn)
-    before = _counts(conn)
-    conn.execute(
-        "INSERT INTO printer_memory_factory_runs (run_id,run_status,window_kind,db_mode,config_hash,config_json,started_at,created_at,updated_at) VALUES (?,'RUNNING',?,?,?,?,?,?,?)",
-        (
-            run_id,
-            window_kind,
-            config["db_mode"],
-            _config_hash(config),
-            _json(config),
-            started_at,
-            started_at,
-            started_at,
-        ),
-    )
-    conn.commit()
+    # V2-9.8B.10: factory-run insert sits outside the later lifecycle try/finally.
+    # Close the connection on any pre-lifecycle fault so terminal cleanup cannot
+    # contend with a leaked write handle (secondary cause of database is locked).
+    try:
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA busy_timeout=5000")
+        _require_schema(conn)
+        before = _counts(conn)
+        conn.execute(
+            "INSERT INTO printer_memory_factory_runs (run_id,run_status,window_kind,db_mode,config_hash,config_json,started_at,created_at,updated_at) VALUES (?,'RUNNING',?,?,?,?,?,?,?)",
+            (
+                run_id,
+                window_kind,
+                config["db_mode"],
+                _config_hash(config),
+                _json(config),
+                started_at,
+                started_at,
+                started_at,
+            ),
+        )
+        conn.commit()
+    except BaseException:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        raise
     if supervision_execution_id:
         from printer_v1.operator_cli.proof_supervision import attach_run
         attach_run(

@@ -264,7 +264,7 @@ class DiscoveryProductivityRepairTests(unittest.TestCase):
             OPERATIONAL_GRADUATED_SUPPLY_KWARGS["front_door_max_candidates"], 6
         )
         self.assertTrue(OPERATIONAL_GRADUATED_SUPPLY_KWARGS["run_locator"])
-        self.assertEqual(EXPECTED_MIGRATION_COUNT, 43)
+        self.assertEqual(EXPECTED_MIGRATION_COUNT, 44)
         self.assertEqual(OPERATION_CEILING, 45)
 
     def test_five_distinct_migrations_confirm_up_to_five(self) -> None:

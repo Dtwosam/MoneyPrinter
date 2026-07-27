@@ -18,6 +18,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import threading
+import time
 from typing import Any, Iterable, Mapping
 import uuid
 
@@ -102,7 +103,7 @@ FREE_PUBLIC_SOLANA_RPC = "https://api.mainnet-beta.solana.com"
 ARTIFACT_ROOT = Path.home() / "PrinterOperations" / "v2-9-8"
 AUTHORITATIVE_DB = Path(CANONICAL_PERSISTENT_DB).resolve()
 # Re-export shared E.46B / V2-9.8B.6 supply bounds for public production wiring.
-EXPECTED_MIGRATION_COUNT = 43
+EXPECTED_MIGRATION_COUNT = 44
 LOCKED_WINDOWS = ("WINDOW_1H", "WINDOW_4H", "WINDOW_12H", "WINDOW_24H")
 AUTHORITATIVE_SQLITE_RUNTIME_SIDECARS = (
     "data/printer_v1.sqlite3-journal",
@@ -537,13 +538,29 @@ class _CampaignHeartbeat:
             return dict(self._failure)
 
     def stop(self) -> None:
+        """Stop renewals and wait long enough for an in-flight renew to finish."""
         self.stop_event.set()
         if self.thread is not None:
-            self.thread.join(timeout=HEARTBEAT_SECONDS + 5)
+            # Join covers one heartbeat interval plus the supervision busy budget
+            # so cleanup does not race a mid-renew write lock.
+            self.thread.join(timeout=HEARTBEAT_SECONDS + 15)
+
+
+def _connect_query_only(path: Path) -> sqlite3.Connection:
+    """Read-only connection for the authoritative DB or disposable fixtures."""
+    resolved = Path(path).resolve()
+    if resolved == AUTHORITATIVE_DB.resolve() and resolved.is_file():
+        return _read_only(resolved)
+    connection = sqlite3.connect(
+        f"file:{resolved.as_posix()}?mode=ro", uri=True, timeout=0.0
+    )
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA query_only=ON")
+    return connection
 
 
 def _existing_first_terminal_cause(command: AbstractCampaignCommand) -> str | None:
-    connection = _read_only(command.db_path)
+    connection = _connect_query_only(Path(command.db_path))
     try:
         row = connection.execute(
             """SELECT c.first_terminal_cause AS campaign_cause,
@@ -559,6 +576,66 @@ def _existing_first_terminal_cause(command: AbstractCampaignCommand) -> str | No
     if row is None:
         return None
     return str(row["campaign_cause"] or row["supervision_cause"] or "").strip() or None
+
+
+def _is_sqlite_locked_error(exc: BaseException) -> bool:
+    if isinstance(exc, sqlite3.OperationalError):
+        text = str(exc).lower()
+        return "locked" in text or "busy" in text
+    text = str(exc).lower()
+    return "database is locked" in text or "database is busy" in text
+
+
+def _with_sqlite_busy_retry(label: str, operation, *, attempts: int = 8, base_sleep: float = 0.05):
+    """Bounded retry for transient SQLite lock contention during terminalization."""
+    last_error: BaseException | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return operation()
+        except BaseException as exc:
+            last_error = exc
+            if not _is_sqlite_locked_error(exc) or attempt >= attempts:
+                raise
+            time.sleep(base_sleep * attempt)
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError(f"{label}: busy retry exhausted without result")
+
+
+def _latest_campaign_source_total(db_path: Path | str | None = None) -> int | None:
+    """Best-effort durable campaign source total from the holder ledger.
+
+    Prefers the latest supervision run's ledger row. Returns None when unavailable
+    so pre-ledger faults can still report honest zeros.
+    """
+    path = Path(db_path) if db_path is not None else AUTHORITATIVE_DB
+    try:
+        resolved = path.resolve()
+        if resolved == AUTHORITATIVE_DB.resolve() and resolved.is_file():
+            connection = _read_only(resolved)
+        else:
+            if not resolved.is_file():
+                return None
+            connection = sqlite3.connect(
+                f"file:{resolved.as_posix()}?mode=ro", uri=True, timeout=0.0
+            )
+            connection.row_factory = sqlite3.Row
+        try:
+            row = connection.execute(
+                """SELECT l.governed_requests
+                   FROM printer_holder_campaign_operation_ledgers AS l
+                   JOIN printer_memory_factory_campaign_supervision AS s
+                     ON s.run_id = l.run_id
+                   ORDER BY s.created_at DESC, s.supervision_id DESC
+                   LIMIT 1"""
+            ).fetchone()
+            if row is None:
+                return None
+            return int(row["governed_requests"])
+        finally:
+            connection.close()
+    except Exception:
+        return None
 
 
 def _terminalize_initialized_failure(
@@ -580,30 +657,38 @@ def _terminalize_initialized_failure(
         "successor_created": False,
     }
     cleanup: Mapping[str, Any] = {"cleanup_completed": False}
+    # V2-9.8B.10: retry cleanup/report under transient SQLite lock contention so
+    # heartbeat or a just-closed factory connection cannot leave RUNNING residue.
     try:
-        cleanup = cleanup_campaign_supervision(
-            command.db_path,
-            supervision_id=command.supervision_id,
-            campaign_id=command.campaign_id,
-            configuration_id=command.configuration_id,
-            run_id=command.run_id,
-            owner_id=command.owner_id,
-            terminal_status="FAILED",
-            first_terminal_cause=cause,
+        cleanup = _with_sqlite_busy_retry(
+            "cleanup",
+            lambda: cleanup_campaign_supervision(
+                command.db_path,
+                supervision_id=command.supervision_id,
+                campaign_id=command.campaign_id,
+                configuration_id=command.configuration_id,
+                run_id=command.run_id,
+                owner_id=command.owner_id,
+                terminal_status="FAILED",
+                first_terminal_cause=cause,
+            ),
         )
     except BaseException as exc:  # report still has to be attempted
         closure_errors.append(f"cleanup:{type(exc).__name__}:{exc}")
     try:
-        reconciliation = reconcile_campaign_terminal(
-            command.db_path,
-            campaign_id=command.campaign_id,
-            run_id=command.run_id,
-            cycle_id=cycle_id,
-            terminal_cause=cause,
-            run_status="FAILED",
-            factory_run_id=None,
-            lifecycle_started=False,
-            now=_iso(),
+        reconciliation = _with_sqlite_busy_retry(
+            "reconciliation",
+            lambda: reconcile_campaign_terminal(
+                command.db_path,
+                campaign_id=command.campaign_id,
+                run_id=command.run_id,
+                cycle_id=cycle_id,
+                terminal_cause=cause,
+                run_status="FAILED",
+                factory_run_id=None,
+                lifecycle_started=False,
+                now=_iso(),
+            ),
         )
     except BaseException as exc:  # preserve and continue to report owner
         closure_errors.append(f"reconciliation:{type(exc).__name__}:{exc}")
@@ -642,13 +727,16 @@ def _terminalize_initialized_failure(
     )
     report: Mapping[str, Any] = {"report_written": False}
     try:
-        report = write_campaign_terminal_report(
-            command.db_path,
-            paths["reports"],
-            report_id=command.report_id,
-            campaign_id=command.campaign_id,
-            configuration_id=command.configuration_id,
-            report=payload,
+        report = _with_sqlite_busy_retry(
+            "report",
+            lambda: write_campaign_terminal_report(
+                command.db_path,
+                paths["reports"],
+                report_id=command.report_id,
+                campaign_id=command.campaign_id,
+                configuration_id=command.configuration_id,
+                report=payload,
+            ),
         )
     except BaseException as exc:
         closure_errors.append(f"report:{type(exc).__name__}:{exc}")
@@ -664,6 +752,7 @@ def _terminalize_initialized_failure(
         "closure_errors": tuple(closure_errors),
         "restart_created": False,
         "successor_created": False,
+        "campaign_source_calls": reporting.get("campaign_source_calls"),
     }
     try:
         paths["summary"].write_text(
@@ -1075,12 +1164,21 @@ def main(argv: Iterable[str] | None = None) -> int:
         print(json.dumps(result, indent=2, sort_keys=True, default=str))
         return 0
     except Exception as exc:
+        # V2-9.8B.10: when a campaign already wrote a holder ledger, surface that
+        # durable total instead of hard-coding zero (which hid 18 ops on the
+        # audited IntegrityError path).
+        campaign_source_calls = _latest_campaign_source_total()
         print(
             json.dumps(
                 {
                     "status": "OPERATIONAL_COMMAND_BLOCKED",
                     "error_type": type(exc).__name__,
-                    "source_calls": 0,
+                    "campaign_source_calls": campaign_source_calls,
+                    "source_calls": (
+                        int(campaign_source_calls)
+                        if campaign_source_calls is not None
+                        else 0
+                    ),
                     "restart_created": False,
                     "successor_created": False,
                 },
@@ -1102,6 +1200,9 @@ __all__ = [
     "MAIN_WINDOW",
     "OPERATIONAL_GRADUATED_SUPPLY_KWARGS",
     "TOKEN_CAPACITY",
+    "_latest_campaign_source_total",
+    "_terminalize_initialized_failure",
+    "_with_sqlite_busy_retry",
     "build_activation_preflight",
     "cooperative_stop",
     "main",

@@ -243,8 +243,17 @@ def validate_runtime_schema_connection(
         normalized_sql = " ".join(str(row[0] or "").lower().split())
         if "check (window_kind = 'window_15m')" not in normalized_sql:
             issues.append("runs table missing WINDOW_15M check constraint")
-        if "check (db_mode = 'proof_only')" not in normalized_sql:
-            issues.append("runs table missing PROOF_ONLY check constraint")
+        # V2-9.8B.10: operational lifecycle entry requires OPERATIONAL_PERSISTENT.
+        # Accept the historical PROOF_ONLY-only form or the widened lawful pair.
+        has_proof_only = "check (db_mode = 'proof_only')" in normalized_sql
+        has_operational_pair = (
+            "db_mode in ('proof_only', 'operational_persistent')" in normalized_sql
+            or "db_mode in ('operational_persistent', 'proof_only')" in normalized_sql
+        )
+        if not (has_proof_only or has_operational_pair):
+            issues.append(
+                "runs table missing PROOF_ONLY/OPERATIONAL_PERSISTENT db_mode check"
+            )
 
     if _table_exists(connection, "printer_memory_factory_run_steps"):
         actual_foreign_keys = {
