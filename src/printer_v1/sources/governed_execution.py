@@ -24,6 +24,7 @@ from printer_v1.sources.contracts import (
     build_source_adapter_contract,
     validate_source_adapter_contract,
 )
+from printer_v1.db.sqlite_write_contracts import release_write_transaction
 from printer_v1.sources.recording import (
     record_source_failure,
     record_source_request,
@@ -139,12 +140,22 @@ def execute_source_request_with_governor(
     recent_request_count: int = 0,
     now: datetime | None = None,
 ) -> GovernedSourceExecutionResult:
+    """Record a governed source request, execute the adapter, then record the result.
+
+    V2-9.8B.20 architecture contract: the request row is committed (write lock
+    released) *before* ``adapter.execute``. Source I/O, sleeps, or long work
+    must never run while a shared SQLite write transaction remains open. The
+    response/failure write is a separate short transaction after the adapter
+    returns. Source Governor admission remains authoritative.
+    """
     decision = build_governor_decision(
         source_request,
         recent_request_count=recent_request_count,
         now=now,
     )
     request_record = record_source_request(db_path_or_conn, source_request, decision)
+    # Release any deferred write held by a shared connection before adapter I/O.
+    release_write_transaction(db_path_or_conn)
 
     if not decision.allowed:
         failure_record = record_source_failure(
@@ -155,6 +166,7 @@ def execute_source_request_with_governor(
             source_status=decision.source_status,
             data_quality_label=decision.data_quality_label,
         )
+        release_write_transaction(db_path_or_conn)
         result = NormalizedSourceResult(
             source_name=source_request.source_name,
             request_kind=source_request.request_kind,
@@ -175,9 +187,11 @@ def execute_source_request_with_governor(
         decision=decision,
         governor_approved=True,
     )
+    # Adapter transport / fixture work runs with no open write transaction.
     result = adapter.execute(context)
     if result.source_status in {SourceStatus.COMPLETE, SourceStatus.PARTIAL, SourceStatus.STALE} and not result.failure_type:
         response_record = record_source_response(db_path_or_conn, request_record, result)
+        release_write_transaction(db_path_or_conn)
         return GovernedSourceExecutionResult(
             request_record=request_record,
             normalized_result=result,
@@ -195,6 +209,7 @@ def execute_source_request_with_governor(
         retry_after_at=result.retry_after_at,
         normalized_payload=result.normalized_payload,
     )
+    release_write_transaction(db_path_or_conn)
     return GovernedSourceExecutionResult(
         request_record=request_record,
         normalized_result=result,

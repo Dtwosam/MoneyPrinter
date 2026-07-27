@@ -26,6 +26,10 @@ from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
 from printer_v1.contracts.enums import SourceStatus
+from printer_v1.db.sqlite_write_contracts import (
+    connect_operational,
+    release_write_transaction,
+)
 from printer_v1.sources.contracts import build_governed_source_request
 from printer_v1.sources.governed_execution import execute_source_request_with_governor
 from printer_v1.sources.pump_migration import (
@@ -301,9 +305,7 @@ def run_direct_migration_discovery(
                 migration_signature=signature, expected_mint=mint
             )
 
-    connection = sqlite3.connect(str(db_path))
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
+    connection = connect_operational(db_path)
     migration_request_count = 0
     pumpswap_request_count = 0
     stage_request_ids: list[int] = []
@@ -362,7 +364,9 @@ def run_direct_migration_discovery(
         intake = _merge_intakes(round_intakes)
 
         # --- Bounded settle so freshly migrated transactions finalize -------
+        # V2-9.8B.20: never sleep while holding a SQLite write transaction.
         if settle_seconds > 0 and intake["valid_pair_count"] > 0:
+            release_write_transaction(connection)
             time.sleep(settle_seconds)
 
         # --- Per-candidate governed on-chain verification -------------------
@@ -383,6 +387,7 @@ def run_direct_migration_discovery(
                 and _is_transient_verify_failure(vres.failure_type)
             ):
                 if reverify_settle_seconds > 0:
+                    release_write_transaction(connection)
                     time.sleep(reverify_settle_seconds)
                 vres = _governed_verify(mint, signature, attempt=2)
                 verified = (

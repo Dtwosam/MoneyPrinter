@@ -916,9 +916,9 @@ def run_graduated_liquidity_front_door(
         def dexscreener_transport_factory(mint: str, pool: str):  # type: ignore[misc]
             return build_dexscreener_pair_snapshot_transport(pool)
 
-    connection = sqlite3.connect(str(db_path))
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
+    from printer_v1.db.sqlite_write_contracts import connect_operational
+
+    connection = connect_operational(db_path)
     dex_request_count = 0
     # V2-9.7E.46B.2: the exact durable request identities this invocation creates.
     # Stage-local accounting is derived from these, never from a whole-table total.

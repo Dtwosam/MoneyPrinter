@@ -212,9 +212,9 @@ def run_fresh_profile_locator(
         tracking_priority=0,
         payload={"request_kind": "dexscreener_fresh_profiles", "chain": "solana"},
     )
-    connection = sqlite3.connect(str(db_path))
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
+    from printer_v1.db.sqlite_write_contracts import connect_operational
+
+    connection = connect_operational(db_path)
     try:
         execution = execute_source_request_with_governor(
             connection,

@@ -1150,6 +1150,8 @@ class AuthoritativeLiveOperationalCampaignOwner:
             connection, run_id=command.run_id, cycle_id=cycle_id,
             ledger=ledger, now=evaluated.isoformat(),
         )
+        from printer_v1.db.sqlite_write_contracts import release_write_transaction
+
         for ordinal, proof in enumerate(bounded_candidates, start=1):
             partition = (partition_by_mint or {}).get(proof.mint.lower())
             if partition is not None and partition in accepted_partitions:
@@ -1196,6 +1198,8 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     ):
                         break
                     continue
+                # V2-9.8B.20: pure ledger/maturation writes must not span holder I/O.
+                release_write_transaction(connection)
                 bundle = _collect_preclose_context(
                     connection,
                     {
@@ -1440,9 +1444,12 @@ class AuthoritativeLiveOperationalCampaignOwner:
             ),
             deadline_at=deadline,
         )
-        connection = sqlite3.connect(Path(command.db_path))
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
+        from printer_v1.db.sqlite_write_contracts import (
+            connect_operational,
+            release_write_transaction,
+        )
+
+        connection = connect_operational(command.db_path)
         try:
             # V2-9.7E.41 pending-discovery population: stage every confirmed
             # origin from this cycle into the durable prospective-origin registry
@@ -1559,6 +1566,8 @@ class AuthoritativeLiveOperationalCampaignOwner:
             # two-token composition (LATEST+LATEST, LATEST+PERSISTED,
             # PERSISTED+PERSISTED) is reachable. The funnel continues past holder
             # failures and stops after any two eligible candidates.
+            # V2-9.8B.20: holder pacing/source I/O must not inherit an open write.
+            release_write_transaction(connection)
             holder_facts, ledger = self._evaluate_holder_eligibility(
                 connection,
                 command=command,

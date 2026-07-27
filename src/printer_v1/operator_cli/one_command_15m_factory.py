@@ -844,7 +844,11 @@ def _collect_preclose_context(
     )
 
     def execute(source_name: str, request_kind: str, suffix: str, payload: dict[str, Any], adapter: Any) -> Any:
+        from printer_v1.db.sqlite_write_contracts import release_write_transaction
+
         _check_cancellation(cancellation_probe)
+        # V2-9.8B.20: pacing sleeps must not hold a deferred write lock.
+        release_write_transaction(conn)
         if request_pacer is not None:
             request_pacer.pace(source_name)
         request = build_governed_source_request(
@@ -981,6 +985,9 @@ def _collect_preclose_context(
             holder_backup_adapter_factory is not None
             and is_eligible_transient_solana_rpc_failure(primary_holder)
         ):
+            from printer_v1.db.sqlite_write_contracts import release_write_transaction
+
+            release_write_transaction(conn)
             if request_pacer is not None:
                 request_pacer.pace(backup_source_name)
             backup_holder = execute_solana_rpc_holder_backup(

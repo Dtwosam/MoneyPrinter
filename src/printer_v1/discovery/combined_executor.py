@@ -471,9 +471,9 @@ class CombinedPumpfunCampaignExecutor:
         self._persistence_stage = "DISCOVERY_CYCLE_INITIALIZATION"
         self._persistence_object_kind = "discovery_batch"
         usage = _Usage()
-        connection = sqlite3.connect(Path(command.db_path))
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
+        from printer_v1.db.sqlite_write_contracts import connect_operational
+
+        connection = connect_operational(command.db_path)
         terminal = "COMPLETED"
         cause = "DISCOVERY_CYCLE_COMPLETED"
         cancellation: str | None = None
