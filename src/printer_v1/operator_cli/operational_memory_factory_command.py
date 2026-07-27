@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -119,6 +119,106 @@ AUTHORITATIVE_SQLITE_RUNTIME_SIDECARS = (
 # Action-local run identity for blocked-command source accounting. Never inherit
 # a previous campaign's holder-ledger totals into a different public action.
 _ACTION_RUN_CONTEXT: dict[str, str | None] = {"run_id": None}
+
+# V2-9.8B.22 discovery-only qualification mode.
+DISCOVERY_ONLY_MODE = "discovery-only"
+DISCOVERY_ONLY_DURATION_SECONDS = 900
+DISCOVERY_ONLY_OPERATION_BUDGET = 30
+DISCOVERY_ONLY_REPORT_FILENAME = "discovery-only-qualification-report.json"
+DISCOVERY_ONLY_CAPACITY_READY = "DISCOVERY_ONLY_CAPACITY_READY"
+DISCOVERY_ONLY_HONEST_EXHAUSTION = "DISCOVERY_ONLY_HONEST_EXHAUSTION"
+DISCOVERY_ONLY_SOURCE_UNAVAILABLE = "DISCOVERY_ONLY_SOURCE_UNAVAILABLE"
+DISCOVERY_ONLY_BUDGET_EXHAUSTED = "DISCOVERY_ONLY_BUDGET_EXHAUSTED"
+DISCOVERY_ONLY_DURATION_EXHAUSTED = "DISCOVERY_ONLY_DURATION_EXHAUSTED"
+DISCOVERY_ONLY_FAILED = "DISCOVERY_ONLY_FAILED"
+DISCOVERY_ONLY_TERMINAL_STATUSES = (
+    DISCOVERY_ONLY_CAPACITY_READY,
+    DISCOVERY_ONLY_HONEST_EXHAUSTION,
+    DISCOVERY_ONLY_SOURCE_UNAVAILABLE,
+    DISCOVERY_ONLY_BUDGET_EXHAUSTED,
+    DISCOVERY_ONLY_DURATION_EXHAUSTED,
+    DISCOVERY_ONLY_FAILED,
+)
+# Tables the discovery-only mode may write (discovery-owned evidence only).
+DISCOVERY_ONLY_MUTATION_ALLOWLIST = (
+    "printer_source_requests",
+    "printer_source_responses",
+    "printer_source_failures",
+    "printer_source_health",
+    "printer_source_rate_limits",
+    "printer_external_source_operations",
+    "printer_pumpswap_graduated_candidate_registry",
+    "printer_discovery_batches",
+    "printer_discovery_work",
+    "printer_discovery_work_source_links",
+    "printer_discovery_candidates",
+    "printer_discovery_merged_candidates",
+    "printer_discovery_candidate_contributions",
+    "printer_discovery_provider_observations",
+    "printer_discovery_provider_report_links",
+    "printer_discovery_origin_verifications",
+    "printer_discovery_pumpswap_confirmations",
+    "printer_discovery_selection_links",
+    "printer_discovery_selected_item_links",
+    "printer_graduated_market_floor_state",
+    "printer_eligible_token_reserve",
+    "printer_discovery_exhaustion_certificates",
+    "printer_pumpfun_finalized_origin_registry",
+    "printer_pumpfun_origin_cursor",
+    "printer_tokens",
+    "printer_pairs",
+)
+# Production / financial / scheduler surfaces that must show zero row deltas.
+DISCOVERY_ONLY_PROTECTED_ZERO_DELTA_TABLES = (
+    "printer_memory_factory_campaigns",
+    "printer_memory_factory_campaign_runs",
+    "printer_memory_factory_campaign_cycles",
+    "printer_memory_factory_campaign_token_slots",
+    "printer_memory_factory_campaign_supervision",
+    "printer_memory_factory_campaign_configurations",
+    "printer_memory_factory_campaign_reports",
+    "printer_memory_factory_campaign_report_objects",
+    "printer_memory_factory_campaign_objects",
+    "printer_memory_factory_campaign_scheduler_work",
+    "printer_memory_factory_campaign_windows",
+    "printer_memory_factory_campaign_heartbeat_failures",
+    "printer_memory_factory_runs",
+    "printer_memory_factory_run_steps",
+    "printer_scheduler_jobs",
+    "printer_tracking_queue",
+    "printer_memory_windows",
+    "printer_episodes",
+    "printer_episode_outcomes",
+    "printer_episode_snapshots",
+    "printer_memory_fingerprints",
+    "printer_memory_audit_reports",
+    "printer_memory_retrieval_queries",
+    "printer_memory_retrieval_matches",
+    "printer_paper_decisions",
+    "printer_paper_decision_audits",
+    "printer_paper_positions",
+    "printer_paper_trade_events",
+    "printer_paper_trade_audits",
+    "printer_paper_audit_reports",
+    "printer_paper_quote_evidence",
+    "printer_proof_run_supervision",
+    "printer_token_snapshots",
+    "printer_snapshot_window_coverage",
+    "printer_snapshot_gap_audits",
+    "printer_micro_events",
+    "printer_trading_flow_snapshots",
+    "printer_safety_rug_snapshots",
+    "printer_liquidity_exit_snapshots",
+    "printer_market_regime_snapshots",
+    "printer_solana_chain_heat_snapshots",
+    "printer_holder_campaign_operation_ledgers",
+    "printer_holder_evidence_attempts",
+    "printer_holder_maturation_work",
+    "printer_selection_batches",
+    "printer_selection_batch_items",
+    "printer_selection_rotation_state",
+    "printer_token_lifecycle_events",
+)
 
 
 class OperationalMemoryFactoryError(RuntimeError):
@@ -1206,23 +1306,480 @@ def _latest_supervision(connection: sqlite3.Connection) -> sqlite3.Row:
     return row
 
 
-def operational_status() -> dict[str, Any]:
-    connection = _read_only()
+def _table_row_counts(connection: sqlite3.Connection) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for (name,) in connection.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'printer_%'"
+    ).fetchall():
+        table = str(name)
+        try:
+            counts[table] = int(
+                connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+            )
+        except sqlite3.Error:
+            counts[table] = -1
+    return counts
+
+
+def _count_deltas(
+    before: Mapping[str, int], after: Mapping[str, int]
+) -> dict[str, int]:
+    keys = set(before) | set(after)
+    deltas: dict[str, int] = {}
+    for key in sorted(keys):
+        delta = int(after.get(key, 0)) - int(before.get(key, 0))
+        if delta != 0:
+            deltas[key] = delta
+    return deltas
+
+
+def _protected_nonzero_deltas(deltas: Mapping[str, int]) -> dict[str, int]:
+    return {
+        table: int(deltas[table])
+        for table in DISCOVERY_ONLY_PROTECTED_ZERO_DELTA_TABLES
+        if int(deltas.get(table, 0)) != 0
+    }
+
+
+def _allowlist_write_total(deltas: Mapping[str, int]) -> int:
+    total = 0
+    for table in DISCOVERY_ONLY_MUTATION_ALLOWLIST:
+        delta = int(deltas.get(table, 0))
+        if delta > 0:
+            total += delta
+    return total
+
+
+def _discovery_only_report_path(execution_id: str) -> Path:
+    return (ARTIFACT_ROOT / execution_id / DISCOVERY_ONLY_REPORT_FILENAME).resolve()
+
+
+def _load_latest_discovery_only_report() -> dict[str, Any] | None:
+    """Load the newest discovery-only qualification report from the artifact root."""
+    root = ARTIFACT_ROOT
+    if not root.is_dir():
+        return None
+    newest: tuple[float, Path] | None = None
+    for path in root.glob(f"*/{DISCOVERY_ONLY_REPORT_FILENAME}"):
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if newest is None or mtime > newest[0]:
+            newest = (mtime, path)
+    if newest is None:
+        return None
     try:
-        row = _latest_supervision(connection)
+        payload = json.loads(newest[1].read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if str(payload.get("mode") or "") != DISCOVERY_ONLY_MODE:
+        return None
+    payload = dict(payload)
+    payload.setdefault("report_path", str(newest[1]))
+    return payload
+
+
+def _map_discovery_only_status(
+    *,
+    ready: bool,
+    shortage_classification: str | None,
+    last_stop_reason: str | None,
+) -> str:
+    from printer_v1.discovery.eligible_token_supply import (
+        BUDGET_EXHAUSTION,
+        DURATION_EXHAUSTION,
+        SOURCE_AVAILABILITY_FAILURE,
+        SOURCE_VISIBILITY_SHORTAGE,
+        TRUE_MARKET_SUPPLY_SHORTAGE,
+    )
+
+    if ready:
+        return DISCOVERY_ONLY_CAPACITY_READY
+    classification = str(shortage_classification or "")
+    stop = str(last_stop_reason or "")
+    if classification == SOURCE_AVAILABILITY_FAILURE or stop in {
+        "PROVIDER_FAILURE",
+        "SOURCE_UNAVAILABLE",
+    }:
+        return DISCOVERY_ONLY_SOURCE_UNAVAILABLE
+    if classification == BUDGET_EXHAUSTION or stop == "DISCOVERY_OPERATION_BUDGET_EXHAUSTED":
+        return DISCOVERY_ONLY_BUDGET_EXHAUSTED
+    if classification == DURATION_EXHAUSTION or stop == "CAMPAIGN_DURATION_EXHAUSTED":
+        return DISCOVERY_ONLY_DURATION_EXHAUSTED
+    if classification in {
+        TRUE_MARKET_SUPPLY_SHORTAGE,
+        SOURCE_VISIBILITY_SHORTAGE,
+    }:
+        return DISCOVERY_ONLY_HONEST_EXHAUSTION
+    if classification:
+        return DISCOVERY_ONLY_FAILED
+    return DISCOVERY_ONLY_FAILED
+
+
+def _write_discovery_only_report(path: Path, payload: Mapping[str, Any]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(dict(payload), indent=2, sort_keys=True, default=str) + "\n"
+    path.write_text(text, encoding="utf-8")
+    summary = path.parent / "terminal-summary.json"
+    summary.write_text(text, encoding="utf-8")
+    return path
+
+
+def run_discovery_only_qualification(
+    *,
+    operator_approved: bool,
+    migration_transport: Any | None = None,
+    dexscreener_transport_factory: Any | None = None,
+    verifier_transport_factory: Any | None = None,
+    locator_transport: Any | None = None,
+    now: str | None = None,
+    discovery_operation_budget: int | None = None,
+    duration_seconds: int | None = None,
+    collection_rounds: int | None = None,
+    max_candidates: int | None = None,
+    settle_seconds: float | None = None,
+    reverify_on_transient: bool | None = None,
+    reverify_settle_seconds: float | None = None,
+    front_door_max_candidates: int | None = None,
+    run_locator: bool | None = None,
+) -> dict[str, Any]:
+    """Run one bounded discovery-only live qualification (no production campaign).
+
+    Fixture transports may be injected for disposable proof. Default transports
+    are live free sources through Source Governor. This mode never calls Central
+    Scheduler runtime, never creates production campaign/supervision, and never
+    unlocks retrieval or financial capabilities.
+    """
+    if not operator_approved:
+        raise OperationalMemoryFactoryError("explicit operator approval is required")
+
+    # Resolve against the live module constant so disposable tests can patch
+    # AUTHORITATIVE_DB (function defaults bind the import-time path).
+    preflight = build_activation_preflight(db_path=AUTHORITATIVE_DB)
+    started = datetime.now(timezone.utc)
+    now_iso = now or _iso(started)
+    execution_id = (
+        started.strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:12]
+    )
+    qualification_id = f"{execution_id}-discovery-only"
+    run_id = f"{qualification_id}-run"
+    cycle_id = f"{qualification_id}-cycle"
+    _ACTION_RUN_CONTEXT["run_id"] = run_id
+
+    paths = _artifact_paths(execution_id)
+    paths["root"].mkdir(parents=True, exist_ok=False)
+    paths["reports"].mkdir()
+    report_path = paths["root"] / DISCOVERY_ONLY_REPORT_FILENAME
+
+    duration = (
+        DISCOVERY_ONLY_DURATION_SECONDS
+        if duration_seconds is None
+        else int(duration_seconds)
+    )
+    budget = (
+        DISCOVERY_ONLY_OPERATION_BUDGET
+        if discovery_operation_budget is None
+        else int(discovery_operation_budget)
+    )
+    deadline_dt = datetime.fromisoformat(now_iso.replace("Z", "+00:00"))
+    if deadline_dt.tzinfo is None:
+        deadline_dt = deadline_dt.replace(tzinfo=timezone.utc)
+    deadline_at = (deadline_dt + timedelta(seconds=duration)).isoformat()
+
+    supply_kwargs = dict(OPERATIONAL_GRADUATED_SUPPLY_KWARGS)
+    if collection_rounds is not None:
+        supply_kwargs["collection_rounds"] = int(collection_rounds)
+    if max_candidates is not None:
+        supply_kwargs["max_candidates"] = int(max_candidates)
+    if settle_seconds is not None:
+        supply_kwargs["settle_seconds"] = float(settle_seconds)
+    if reverify_on_transient is not None:
+        supply_kwargs["reverify_on_transient"] = bool(reverify_on_transient)
+    if reverify_settle_seconds is not None:
+        supply_kwargs["reverify_settle_seconds"] = float(reverify_settle_seconds)
+    if front_door_max_candidates is not None:
+        supply_kwargs["front_door_max_candidates"] = int(front_door_max_candidates)
+    if run_locator is not None:
+        supply_kwargs["run_locator"] = bool(run_locator)
+
+    if migration_transport is None:
+        from printer_v1.sources.pumpportal import build_pumpportal_migration_transport
+
+        migration_transport = build_pumpportal_migration_transport(
+            max_events=4, duration_seconds=120.0, connect_timeout_seconds=10.0,
+        )
+
+    connection = sqlite3.connect(AUTHORITATIVE_DB)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys=ON")
+    try:
+        before_counts = _table_row_counts(connection)
     finally:
         connection.close()
-    result = inspect_campaign_supervision(
-        AUTHORITATIVE_DB,
-        supervision_id=row["supervision_id"],
-        campaign_id=row["campaign_id"],
-        configuration_id=row["configuration_id"],
-        run_id=row["run_id"],
-        owner_id=row["owner_id"],
+
+    from printer_v1.discovery.eligible_token_supply import (
+        run_persistent_eligible_token_supply,
     )
+
+    terminal_status = DISCOVERY_ONLY_FAILED
+    supply_result: Any | None = None
+    failure_message: str | None = None
+    try:
+        supply_result = run_persistent_eligible_token_supply(
+            AUTHORITATIVE_DB,
+            cycle_seed=execution_id,
+            migration_transport=migration_transport,
+            verifier_transport_factory=verifier_transport_factory,
+            dexscreener_transport_factory=dexscreener_transport_factory,
+            locator_transport=locator_transport,
+            now=now_iso,
+            collection_rounds=int(supply_kwargs["collection_rounds"]),
+            max_candidates=int(supply_kwargs["max_candidates"]),
+            settle_seconds=float(supply_kwargs["settle_seconds"]),
+            reverify_on_transient=bool(supply_kwargs["reverify_on_transient"]),
+            reverify_settle_seconds=float(supply_kwargs["reverify_settle_seconds"]),
+            front_door_max_candidates=int(supply_kwargs["front_door_max_candidates"]),
+            discovery_request_key_prefix=f"v2-9-8b-22-{execution_id}",
+            front_door_request_key_prefix=f"v2-9-8b-22-{execution_id}",
+            run_locator=bool(supply_kwargs["run_locator"]),
+            required_token_capacity=TOKEN_CAPACITY,
+            discovery_operation_budget=budget,
+            deadline_at=deadline_at,
+            campaign_id=qualification_id,
+            execution_id=execution_id,
+            run_id=run_id,
+            cycle_id=cycle_id,
+        )
+    except BaseException as exc:
+        failure_message = f"{type(exc).__name__}:{exc}"
+        supply_result = None
+
+    connection = sqlite3.connect(AUTHORITATIVE_DB)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys=ON")
+    try:
+        after_counts = _table_row_counts(connection)
+        active = _active_counts(connection)
+        integrity = tuple(
+            str(row[0])
+            for row in connection.execute("PRAGMA integrity_check").fetchall()
+        )
+        foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchall()
+    finally:
+        connection.close()
+
+    deltas = _count_deltas(before_counts, after_counts)
+    protected_deltas = _protected_nonzero_deltas(deltas)
+    unexpected_writes = {
+        table: delta
+        for table, delta in deltas.items()
+        if delta > 0 and table not in DISCOVERY_ONLY_MUTATION_ALLOWLIST
+    }
+    database_writes = _allowlist_write_total(deltas) + sum(
+        max(0, int(v)) for v in unexpected_writes.values()
+    )
+
+    diagnostics: dict[str, Any] = {}
+    eligible_reserve: list[dict[str, Any]] = []
+    exhaustion_certificate: dict[str, Any] | None = None
+    shortage_classification: str | None = None
+    discovery_rounds = 0
+    candidates_observed = 0
+    unique_candidates_observed = 0
+    duplicate_candidates_removed = 0
+    candidates_validated = 0
+    source_operations_used = 0
+    source_operations_remaining = budget
+    selected_candidate_mints: list[str] = []
+    ready = False
+
+    if supply_result is not None:
+        diagnostics = dict(supply_result.diagnostics or {})
+        eligible_reserve = list(supply_result.eligible_reserve or [])
+        ready = bool(supply_result.ready)
+        discovery_rounds = int(supply_result.discovery_rounds or 0)
+        shortage_classification = supply_result.shortage_classification
+        if supply_result.exhaustion_certificate is not None:
+            exhaustion_certificate = supply_result.exhaustion_certificate.to_dict()
+        all_candidates = list(supply_result.all_candidates or [])
+        candidates_observed = len(all_candidates)
+        unique_candidates_observed = int(
+            diagnostics.get("evaluated_unique_mints") or len(all_candidates)
+        )
+        duplicate_candidates_removed = int(
+            diagnostics.get("duplicate_observations_removed") or 0
+        )
+        candidates_validated = candidates_observed
+        source_operations_used = int(
+            diagnostics.get("discovery_operations_used")
+            or diagnostics.get("stage_local_source_requests")
+            or 0
+        )
+        source_operations_remaining = int(
+            diagnostics.get("discovery_operations_remaining")
+            if diagnostics.get("discovery_operations_remaining") is not None
+            else max(0, budget - source_operations_used)
+        )
+        selected_candidate_mints = [
+            str(c["mint"]) for c in eligible_reserve[:TOKEN_CAPACITY] if c.get("mint")
+        ]
+        terminal_status = _map_discovery_only_status(
+            ready=ready,
+            shortage_classification=shortage_classification,
+            last_stop_reason=str(diagnostics.get("last_stop_reason") or ""),
+        )
+        if ready and len(selected_candidate_mints) < TOKEN_CAPACITY:
+            terminal_status = DISCOVERY_ONLY_FAILED
+            failure_message = "capacity-ready without two selected mints"
+    else:
+        terminal_status = DISCOVERY_ONLY_FAILED
+
+    if protected_deltas or unexpected_writes:
+        terminal_status = DISCOVERY_ONLY_FAILED
+        failure_message = (
+            (failure_message + "; " if failure_message else "")
+            + f"mutation_boundary protected={protected_deltas} unexpected={unexpected_writes}"
+        )
+    if any(active.values()):
+        terminal_status = DISCOVERY_ONLY_FAILED
+        failure_message = (
+            (failure_message + "; " if failure_message else "")
+            + f"active_residue={dict(active)}"
+        )
+    if integrity != ("ok",):
+        terminal_status = DISCOVERY_ONLY_FAILED
+        failure_message = (
+            (failure_message + "; " if failure_message else "")
+            + f"integrity={integrity!r}"
+        )
+    if foreign_keys:
+        terminal_status = DISCOVERY_ONLY_FAILED
+        failure_message = (
+            (failure_message + "; " if failure_message else "")
+            + f"foreign_keys={len(foreign_keys)}"
+        )
+
+    if (
+        terminal_status == DISCOVERY_ONLY_HONEST_EXHAUSTION
+        and exhaustion_certificate is None
+    ):
+        terminal_status = DISCOVERY_ONLY_FAILED
+        failure_message = (
+            (failure_message + "; " if failure_message else "")
+            + "honest exhaustion missing certificate"
+        )
+
+    payload: dict[str, Any] = {
+        "mode": DISCOVERY_ONLY_MODE,
+        "execution_id": execution_id,
+        "qualification_id": qualification_id,
+        "status": terminal_status,
+        "discovery_rounds": discovery_rounds,
+        "candidates_observed": candidates_observed,
+        "unique_candidates_observed": unique_candidates_observed,
+        "duplicate_candidates_removed": duplicate_candidates_removed,
+        "candidates_validated": candidates_validated,
+        "eligible_reserve_count": len(eligible_reserve),
+        "required_token_capacity": TOKEN_CAPACITY,
+        "selected_candidate_mints": selected_candidate_mints,
+        "source_operations_used": source_operations_used,
+        "source_operations_remaining": source_operations_remaining,
+        "scheduler_runtime_calls": 0,
+        "database_writes": database_writes,
+        "shortage_classification": shortage_classification,
+        "exhaustion_certificate": exhaustion_certificate,
+        "report_path": str(report_path),
+        "restart_created": False,
+        "successor_created": False,
+        "automatic_retry_created": False,
+        "source_calls": source_operations_used,
+        "source_accounting": {
+            "source_operations_used": source_operations_used,
+            "source_operations_remaining": source_operations_remaining,
+            "discovery_operation_budget": budget,
+            "admission_operation_ceiling": ADMISSION_OPERATION_CEILING,
+            "scheduler_runtime_calls": 0,
+        },
+        "mutation_allowlist": list(DISCOVERY_ONLY_MUTATION_ALLOWLIST),
+        "protected_table_deltas": protected_deltas,
+        "unexpected_table_deltas": unexpected_writes,
+        "table_deltas": deltas,
+        "active_residue": dict(active),
+        "integrity": "ok" if integrity == ("ok",) else list(integrity),
+        "foreign_key_violations": len(foreign_keys),
+        "git_provenance": preflight.get("git_provenance"),
+        "duration_seconds": duration,
+        "deadline_at": deadline_at,
+        "diagnostics": diagnostics,
+        "failure_message": failure_message,
+        "policy": {
+            "token_capacity": TOKEN_CAPACITY,
+            "main_window": MAIN_WINDOW,
+            "support_5m_only": True,
+            "automatic_retries": AUTOMATIC_RETRIES,
+            "selection_floor_usd": 3000.0,
+            "evaluation_batch_size": int(supply_kwargs["front_door_max_candidates"]),
+            "no_central_scheduler_runtime": True,
+            "no_production_campaign": True,
+            "no_tracking_handoff": True,
+            "no_retrieval_or_financial_unlock": True,
+        },
+    }
+    _write_discovery_only_report(report_path, payload)
+    return payload
+
+
+def operational_status() -> dict[str, Any]:
+    discovery_only = _load_latest_discovery_only_report()
+    discovery_summary = None
+    if discovery_only is not None:
+        discovery_summary = {
+            "mode": discovery_only.get("mode"),
+            "execution_id": discovery_only.get("execution_id"),
+            "qualification_id": discovery_only.get("qualification_id"),
+            "status": discovery_only.get("status"),
+            "eligible_reserve_count": discovery_only.get("eligible_reserve_count"),
+            "required_token_capacity": discovery_only.get("required_token_capacity"),
+            "selected_candidate_mints": discovery_only.get("selected_candidate_mints"),
+            "shortage_classification": discovery_only.get("shortage_classification"),
+            "report_path": discovery_only.get("report_path"),
+            "source_operations_used": discovery_only.get("source_operations_used"),
+            "scheduler_runtime_calls": discovery_only.get("scheduler_runtime_calls"),
+            "restart_created": discovery_only.get("restart_created"),
+            "successor_created": discovery_only.get("successor_created"),
+        }
+    campaign_status: Any | None = None
+    supervision_error: str | None = None
+    row = None
+    connection = _read_only()
+    try:
+        try:
+            row = _latest_supervision(connection)
+        except OperationalMemoryFactoryError as exc:
+            supervision_error = str(exc)
+            row = None
+    finally:
+        connection.close()
+    if row is not None:
+        campaign_status = inspect_campaign_supervision(
+            AUTHORITATIVE_DB,
+            supervision_id=row["supervision_id"],
+            campaign_id=row["campaign_id"],
+            configuration_id=row["configuration_id"],
+            run_id=row["run_id"],
+            owner_id=row["owner_id"],
+        )
+    elif discovery_summary is None:
+        raise OperationalMemoryFactoryError(
+            supervision_error or "no operational campaign supervision exists"
+        )
     return {
         "mode": "STATUS",
-        "status": result,
+        "status": campaign_status,
+        "discovery_only_qualification": discovery_summary,
         "source_calls": 0,
         "scheduler_runtime_calls": 0,
         "database_writes": 0,
@@ -1269,11 +1826,12 @@ def recover_orphan(*, operator_approved: bool) -> dict[str, Any]:
 
 
 def report_only() -> dict[str, Any]:
+    discovery_only = _load_latest_discovery_only_report()
     connection = _read_only()
     try:
         row = connection.execute(
             """SELECT r.report_id,r.campaign_id,r.configuration_id,
-                      c.configuration_json
+                      c.configuration_json, r.created_at
                FROM printer_memory_factory_campaign_reports AS r
                JOIN printer_memory_factory_campaign_configurations AS c
                  ON c.configuration_id=r.configuration_id
@@ -1282,7 +1840,88 @@ def report_only() -> dict[str, Any]:
         ).fetchone()
     finally:
         connection.close()
+
+    # Prefer discovery-only when it is the only report or newer than the latest
+    # campaign terminal report.
+    prefer_discovery = False
+    if discovery_only is not None:
+        if row is None:
+            prefer_discovery = True
+        else:
+            try:
+                discovery_path = Path(str(discovery_only.get("report_path") or ""))
+                if discovery_path.is_file():
+                    discovery_mtime = discovery_path.stat().st_mtime
+                    # Campaign report created_at is ISO; compare via path mtime
+                    # of matching report dir when available, else prefer discovery
+                    # when its execution_id is newer lexicographically.
+                    campaign_created = str(row["created_at"] or "")
+                    discovery_exec = str(discovery_only.get("execution_id") or "")
+                    prefer_discovery = bool(
+                        discovery_exec
+                        and (
+                            discovery_exec >= campaign_created.replace(":", "").replace(
+                                "+", ""
+                            )[:15]
+                            or discovery_mtime > 0
+                        )
+                    )
+                    # Strong rule: if discovery-only report exists and was written
+                    # after the campaign report timestamp, prefer it.
+                    try:
+                        campaign_dt = datetime.fromisoformat(
+                            campaign_created.replace("Z", "+00:00")
+                        )
+                        prefer_discovery = discovery_mtime >= campaign_dt.timestamp()
+                    except ValueError:
+                        prefer_discovery = True
+            except OSError:
+                prefer_discovery = True
+
+    if prefer_discovery and discovery_only is not None:
+        return {
+            "mode": "REPORT_ONLY",
+            "report_kind": DISCOVERY_ONLY_MODE,
+            "qualification": discovery_only,
+            "execution_id": discovery_only.get("execution_id"),
+            "qualification_id": discovery_only.get("qualification_id"),
+            "status": discovery_only.get("status"),
+            "discovery_rounds": discovery_only.get("discovery_rounds"),
+            "candidates_observed": discovery_only.get("candidates_observed"),
+            "candidates_validated": discovery_only.get("candidates_validated"),
+            "eligible_candidates": discovery_only.get("eligible_reserve_count"),
+            "required_token_capacity": discovery_only.get("required_token_capacity"),
+            "selected_candidate_mints": discovery_only.get("selected_candidate_mints"),
+            "shortage_classification": discovery_only.get("shortage_classification"),
+            "exhaustion_certificate": discovery_only.get("exhaustion_certificate"),
+            "report_path": discovery_only.get("report_path"),
+            "restart_created": False,
+            "successor_created": False,
+            "replay_new_source_calls": 0,
+            "replay_new_scheduler_calls": 0,
+            "source_calls": 0,
+            "scheduler_runtime_calls": 0,
+            "database_writes": 0,
+        }
+
     if row is None:
+        if discovery_only is not None:
+            return {
+                "mode": "REPORT_ONLY",
+                "report_kind": DISCOVERY_ONLY_MODE,
+                "qualification": discovery_only,
+                "execution_id": discovery_only.get("execution_id"),
+                "qualification_id": discovery_only.get("qualification_id"),
+                "status": discovery_only.get("status"),
+                "report_path": discovery_only.get("report_path"),
+                "restart_created": False,
+                "successor_created": False,
+                "replay_new_source_calls": 0,
+                "replay_new_scheduler_calls": 0,
+                "source_calls": 0,
+                "scheduler_runtime_calls": 0,
+                "database_writes": 0,
+            }
         raise OperationalMemoryFactoryError("no terminal operational report exists")
     configuration = json.loads(str(row["configuration_json"]))
     report_dir = None
@@ -1301,6 +1940,7 @@ def report_only() -> dict[str, Any]:
     )
     return {
         "mode": "REPORT_ONLY",
+        "report_kind": "campaign",
         "replay": replay,
         # Original campaign totals from the stored terminal report.
         "campaign_source_calls": replay.get("campaign_source_calls"),
@@ -1311,6 +1951,16 @@ def report_only() -> dict[str, Any]:
         "required_token_capacity": replay.get("required_token_capacity"),
         "blocked_supply_reason": replay.get("blocked_supply_reason"),
         "blocked_supply": replay.get("blocked_supply"),
+        "discovery_only_qualification": (
+            None
+            if discovery_only is None
+            else {
+                "execution_id": discovery_only.get("execution_id"),
+                "qualification_id": discovery_only.get("qualification_id"),
+                "status": discovery_only.get("status"),
+                "report_path": discovery_only.get("report_path"),
+            }
+        ),
         # Report-only itself performs no new Source Governor / Scheduler work.
         "replay_new_source_calls": 0,
         "replay_new_scheduler_calls": 0,
@@ -1322,13 +1972,17 @@ def report_only() -> dict[str, Any]:
 
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Printer V1 bounded persistent 15m Memory Factory command."
+        description=(
+            "Printer V1 bounded persistent 15m Memory Factory command. "
+            "Modes: preflight-only, run, status, cooperative-stop, "
+            "recover-orphan, report-only, discovery-only."
+        )
     )
     parser.add_argument(
         "mode",
         choices=(
             "preflight-only", "run", "status", "cooperative-stop",
-            "recover-orphan", "report-only",
+            "recover-orphan", "report-only", "discovery-only",
         ),
     )
     parser.add_argument("--operator-approved", action="store_true")
@@ -1341,6 +1995,10 @@ def main(argv: Iterable[str] | None = None) -> int:
             result = build_activation_preflight()
         elif args.mode == "run":
             result = run_operational_campaign(operator_approved=args.operator_approved)
+        elif args.mode == "discovery-only":
+            result = run_discovery_only_qualification(
+                operator_approved=args.operator_approved
+            )
         elif args.mode == "status":
             result = operational_status()
         elif args.mode == "cooperative-stop":
@@ -1362,6 +2020,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         elif args.mode == "run":
             # Run failed before campaign creation (e.g. preflight). Action-local
             # total remains zero; do not inherit historical ledgers.
+            campaign_source_calls = None
+        elif args.mode == "discovery-only":
+            # Discovery-only never inherits campaign holder ledgers.
             campaign_source_calls = None
         source_calls = (
             int(campaign_source_calls) if campaign_source_calls is not None else 0
@@ -1394,6 +2055,10 @@ if __name__ == "__main__":  # pragma: no cover
 
 __all__ = [
     "AUTHORITATIVE_DB",
+    "DISCOVERY_ONLY_MODE",
+    "DISCOVERY_ONLY_MUTATION_ALLOWLIST",
+    "DISCOVERY_ONLY_PROTECTED_ZERO_DELTA_TABLES",
+    "DISCOVERY_ONLY_TERMINAL_STATUSES",
     "EXPECTED_MIGRATION_COUNT",
     "LOCKED_WINDOWS",
     "MAIN_WINDOW",
@@ -1411,6 +2076,7 @@ __all__ = [
     "operational_status",
     "recover_orphan",
     "report_only",
+    "run_discovery_only_qualification",
     "run_operational_campaign",
     "validate_migration_ledger",
 ]
