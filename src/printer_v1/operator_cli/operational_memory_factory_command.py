@@ -366,8 +366,6 @@ def _artifact_paths(execution_id: str) -> dict[str, Path]:
         "restore": root / "printer_v1.restore-rehearsal.sqlite3",
         "reports": root / "reports",
         "lock": root / "campaign.lease.lock",
-        "stdout": root / "stdout.log",
-        "stderr": root / "stderr.log",
         "summary": root / "terminal-summary.json",
     }
 
@@ -789,8 +787,6 @@ def run_operational_campaign(
     paths = _artifact_paths(execution_id)
     paths["root"].mkdir(parents=True, exist_ok=False)
     paths["reports"].mkdir()
-    paths["stdout"].touch(exist_ok=False)
-    paths["stderr"].touch(exist_ok=False)
     backup = operational_backup_restore_preflight(
         AUTHORITATIVE_DB,
         expected_source_path=AUTHORITATIVE_DB,
@@ -954,6 +950,7 @@ def run_operational_campaign(
             eligible_candidates=reporting.get("eligible_candidates"),
             required_token_capacity=reporting.get("required_token_capacity"),
             blocked_supply_reason=reporting.get("blocked_supply_reason"),
+            fault_details=lifecycle.get("fault_details"),
         )
         report = write_campaign_terminal_report(
             command.db_path,
@@ -978,6 +975,7 @@ def run_operational_campaign(
             "required_token_capacity": report.get("required_token_capacity")
             or TOKEN_CAPACITY,
             "blocked_supply_reason": report.get("blocked_supply_reason"),
+            "fault_details": dict(lifecycle.get("fault_details") or {}),
             "token_capacity": TOKEN_CAPACITY,
             "main_window": MAIN_WINDOW,
             "support_5m_only": True,

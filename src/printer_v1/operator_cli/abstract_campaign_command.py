@@ -104,6 +104,7 @@ class CampaignExecutionResult:
     support_5m_only: bool = True
     successor_created: bool = False
     restart_created: bool = False
+    fault_details: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)

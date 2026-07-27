@@ -358,6 +358,43 @@ def _sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _batch_scoped_object_id(
+    object_kind: str,
+    discovery_batch_id: str,
+    *semantic_parts: object,
+) -> str:
+    """Return a deterministic immutable ID owned by one discovery batch."""
+    kind = str(object_kind).strip()
+    batch = str(discovery_batch_id).strip()
+    parts = tuple(str(part) for part in semantic_parts)
+    if not kind or not batch or not parts or any(not part for part in parts):
+        raise CombinedDiscoveryError("MISSING_BATCH_SCOPED_IDENTITY")
+    semantic = "".join(f"{len(part)}:{part}" for part in (kind, *parts))
+    return (
+        f"{kind}:{_sha256_text(batch)[:24]}:"
+        f"{_sha256_text('PrinterV1|batch-object-v1|' + semantic)[:24]}"
+    )
+
+
+_SAFE_PERSISTENCE_MESSAGES = frozenset(
+    {
+        "conflicting provider observation repeat rejected",
+        "identical observation content already owned by another id",
+        "conflicting merged candidate repeat rejected",
+        "duplicate candidate authority rejected for batch identity",
+        "conflicting origin verification repeat rejected",
+        "conflicting pumpswap confirmation repeat rejected",
+    }
+)
+
+
+def _safe_persistence_message(exc: DiscoveryPersistenceError) -> str:
+    message = str(exc).strip()
+    if message in _SAFE_PERSISTENCE_MESSAGES:
+        return message
+    return "discovery persistence contract rejected"
+
+
 def _canonical(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
@@ -408,6 +445,12 @@ class CombinedPumpfunCampaignExecutor:
     def __init__(self, fixtures: CombinedDiscoveryFixtures) -> None:
         self.fixtures = fixtures
         self._last_canonical: tuple[object, ...] | None = None
+        self._persistence_stage = "DISCOVERY_CYCLE_INITIALIZATION"
+        self._persistence_object_kind = "discovery_batch"
+
+    def _mark_persistence(self, stage: str, object_kind: str) -> None:
+        self._persistence_stage = stage
+        self._persistence_object_kind = object_kind
 
     def execute(
         self,
@@ -425,6 +468,8 @@ class CombinedPumpfunCampaignExecutor:
             raise CombinedDiscoveryError("CENTRAL_SCHEDULER_UNAVAILABLE")
 
         started = datetime.now(timezone.utc)
+        self._persistence_stage = "DISCOVERY_CYCLE_INITIALIZATION"
+        self._persistence_object_kind = "discovery_batch"
         usage = _Usage()
         connection = sqlite3.connect(Path(command.db_path))
         connection.row_factory = sqlite3.Row
@@ -432,6 +477,7 @@ class CombinedPumpfunCampaignExecutor:
         terminal = "COMPLETED"
         cause = "DISCOVERY_CYCLE_COMPLETED"
         cancellation: str | None = None
+        fault_details: dict[str, Any] | None = None
         try:
             if self.fixtures.force_shared_fault:
                 raise CombinedDiscoveryError(self.fixtures.force_shared_fault)
@@ -453,7 +499,14 @@ class CombinedPumpfunCampaignExecutor:
             cause = "PERSISTENCE_FAULT"
             cancellation = "SHARED_FAILURE"
             usage.failures = max(usage.failures, 1)
-            del exc
+            fault_details = {
+                "exception_type": type(exc).__name__,
+                "safe_message": _safe_persistence_message(exc),
+                "persistence_stage": self._persistence_stage,
+                "object_kind": self._persistence_object_kind,
+                "first_terminal_cause": cause,
+                "lifecycle_started": False,
+            }
         except Exception:
             connection.rollback()
             terminal = "FAILED"
@@ -480,6 +533,7 @@ class CombinedPumpfunCampaignExecutor:
             support_5m_only=True,
             successor_created=False,
             restart_created=False,
+            fault_details=fault_details,
         )
 
     def _run_cycle(
@@ -548,6 +602,7 @@ class CombinedPumpfunCampaignExecutor:
         cycle_seed_hash = _sha256_text(cycle_seed)
 
         # Discovery batch
+        self._mark_persistence("DISCOVERY_BATCH_CREATE", "discovery_batch")
         insert_discovery_batch(
             connection,
             discovery_batch_id=discovery_batch_id,
@@ -624,7 +679,7 @@ class CombinedPumpfunCampaignExecutor:
             "DISCOVERY_IDENTITY_MERGE",
             now,
         )
-        merged = self._merge(observations)
+        merged = self._merge(observations, discovery_batch_id)
         for candidate in merged.values():
             if fixtures.holder_evidence_eligibility:
                 holder_fact = fixtures.holder_evidence_eligibility.get(
@@ -642,6 +697,7 @@ class CombinedPumpfunCampaignExecutor:
                             "source_name": (holder_fact or {}).get("source_name"),
                         }
                     )
+            self._mark_persistence("DISCOVERY_CANDIDATE_MERGE", "merged_candidate")
             insert_merged_candidate(
                 connection,
                 merged_candidate_id=candidate.merged_candidate_id,
@@ -660,6 +716,9 @@ class CombinedPumpfunCampaignExecutor:
                 now=now,
             )
             for ordinal, obs_id in enumerate(candidate.observation_ids, start=1):
+                self._mark_persistence(
+                    "DISCOVERY_CANDIDATE_CONTRIBUTION", "candidate_contribution"
+                )
                 link_candidate_contribution(
                     connection,
                     merged_candidate_id=candidate.merged_candidate_id,
@@ -852,6 +911,7 @@ class CombinedPumpfunCampaignExecutor:
                 raise CombinedDiscoveryError("SCHEDULER_JOB_CREATE_FAILED", str(result))
             job_id = int(row["id"])
         work_id = f"work:{work_type}:{discovery_batch_id}"
+        self._mark_persistence("DISCOVERY_WORK_CREATE", "discovery_work")
         insert_discovery_work(
             connection,
             discovery_work_id=work_id,
@@ -1116,7 +1176,9 @@ class CombinedPumpfunCampaignExecutor:
                 source_response_id=resp,
                 now=now,
             )
-            obs_id = f"obs:direct:{create.mint}:{create.signature}"
+            obs_id = _batch_scoped_object_id(
+                "obs", discovery_batch_id, "direct", create.mint, create.signature
+            )
             factual = {
                 "provider": "solana_rpc",
                 "channel": "LATEST_PUMPFUN",
@@ -1129,6 +1191,9 @@ class CombinedPumpfunCampaignExecutor:
                 "pumpfun_origin_status": "PUMPFUN_ORIGIN_CONFIRMED",
             }
             raw_hash = _sha256_text(_canonical(payload))
+            self._mark_persistence(
+                "DISCOVERY_PROVIDER_OBSERVATION", "provider_observation"
+            )
             insert_provider_observation(
                 connection,
                 observation_id=obs_id,
@@ -1223,7 +1288,13 @@ class CombinedPumpfunCampaignExecutor:
                 source_response_id=resp,
                 now=now,
             )
-            obs_id = f"obs:graduation_native:{proof.mint}:{proof.signature}"
+            obs_id = _batch_scoped_object_id(
+                "obs",
+                discovery_batch_id,
+                "graduation_native",
+                proof.mint,
+                proof.signature,
+            )
             # The executor observation ``channel`` is the provider-lane label — the
             # direct Pump / graduation-lineage lane (LATEST_PUMPFUN). The truthful
             # LATEST_GRADUATED vs PERSISTED_GRADUATED provenance is owned separately
@@ -1240,6 +1311,9 @@ class CombinedPumpfunCampaignExecutor:
                 "pumpfun_origin_status": "PUMPFUN_ORIGIN_CONFIRMED",
             }
             raw_hash = _sha256_text(_canonical(payload))
+            self._mark_persistence(
+                "DISCOVERY_PROVIDER_OBSERVATION", "provider_observation"
+            )
             insert_provider_observation(
                 connection,
                 observation_id=obs_id,
@@ -1407,7 +1481,16 @@ class CombinedPumpfunCampaignExecutor:
                 pool = str(row["pool"])
                 venue = str(row["venue"])
                 channel = str(row["channel"])
-                obs_id = f"obs:{op.source_name}:{channel}:{mint}:{pool}:{ordinal}"
+                obs_id = _batch_scoped_object_id(
+                    "obs",
+                    discovery_batch_id,
+                    "secondary",
+                    op.source_name,
+                    channel,
+                    mint,
+                    pool,
+                    ordinal,
+                )
                 raw_hash = _sha256_text(_canonical(op.body) + "|" + obs_id)
                 factual = {
                     "provider": op.source_name,
@@ -1420,6 +1503,9 @@ class CombinedPumpfunCampaignExecutor:
                     "observed_at": row.get("observed_at") or op.receipt_time,
                     "pumpfun_origin_status": PUMPFUN_ORIGIN_STATUS,
                 }
+                self._mark_persistence(
+                    "DISCOVERY_PROVIDER_OBSERVATION", "provider_observation"
+                )
                 insert_provider_observation(
                     connection,
                     observation_id=obs_id,
@@ -1545,7 +1631,11 @@ class CombinedPumpfunCampaignExecutor:
             return rows
         return []
 
-    def _merge(self, observations: Sequence[_Observation]) -> dict[str, _Merged]:
+    def _merge(
+        self,
+        observations: Sequence[_Observation],
+        discovery_batch_id: str,
+    ) -> dict[str, _Merged]:
         confirmed_mints = {
             obs.mint
             for obs in observations
@@ -1560,7 +1650,9 @@ class CombinedPumpfunCampaignExecutor:
             )
             if key not in merged:
                 merged[key] = _Merged(
-                    merged_candidate_id=f"candidate:{_sha256_text(key)[:24]}",
+                    merged_candidate_id=_batch_scoped_object_id(
+                        "candidate", discovery_batch_id, key
+                    ),
                     mint=obs.mint,
                     market_identity=_market_identity(obs.venue, obs.pool),
                     lifecycle=obs.lifecycle,
@@ -1623,9 +1715,14 @@ class CombinedPumpfunCampaignExecutor:
                 if candidate.origin_route == "GRADUATION_NATIVE"
                 else "direct_finalized_create"
             )
+            self._mark_persistence(
+                "DISCOVERY_ORIGIN_VERIFICATION", "origin_verification"
+            )
             insert_origin_verification(
                 connection,
-                origin_verification_id=f"origin:{candidate.merged_candidate_id}",
+                origin_verification_id=_batch_scoped_object_id(
+                    "origin", discovery_batch_id, candidate.merged_candidate_id
+                ),
                 discovery_batch_id=discovery_batch_id,
                 merged_candidate_id=candidate.merged_candidate_id,
                 mint_identity=candidate.mint,
@@ -1706,9 +1803,14 @@ class CombinedPumpfunCampaignExecutor:
                         "detail": "budget",
                     }
                 )
+            self._mark_persistence(
+                "DISCOVERY_ORIGIN_VERIFICATION", "origin_verification"
+            )
             insert_origin_verification(
                 connection,
-                origin_verification_id=f"origin:{candidate.merged_candidate_id}",
+                origin_verification_id=_batch_scoped_object_id(
+                    "origin", discovery_batch_id, candidate.merged_candidate_id
+                ),
                 discovery_batch_id=discovery_batch_id,
                 merged_candidate_id=candidate.merged_candidate_id,
                 mint_identity=candidate.mint,
@@ -1791,9 +1893,14 @@ class CombinedPumpfunCampaignExecutor:
                 admission_state = "ADMITTED"
                 confirmation_state = "FAILED"
                 candidate.pumpswap_state = "FAILED"
+            self._mark_persistence(
+                "DISCOVERY_PUMPSWAP_CONFIRMATION", "pumpswap_confirmation"
+            )
             insert_pumpswap_confirmation(
                 connection,
-                pumpswap_confirmation_id=f"pumpswap:{candidate.merged_candidate_id}",
+                pumpswap_confirmation_id=_batch_scoped_object_id(
+                    "pumpswap", discovery_batch_id, candidate.merged_candidate_id
+                ),
                 discovery_batch_id=discovery_batch_id,
                 merged_candidate_id=candidate.merged_candidate_id,
                 mint_identity=candidate.mint,

@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import sqlite3
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from printer_v1.discovery.combined_executor import (
     CombinedDiscoveryError,
@@ -62,6 +62,7 @@ class ActivationResult:
     first_terminal_cause: str
     activated_slots: tuple[dict[str, Any], ...]
     selection_batch_id: str | None
+    fault_details: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -268,17 +269,21 @@ class OriginToLifecycleCampaignDriver:
             first_terminal_cause=activation.first_terminal_cause,
             activated_slots=tuple(slots),
             selection_batch_id=batch_id,
+            fault_details=activation.fault_details,
         )
 
         if batch_id is None:
             # Zero-slot or rolled-back activation: no lifecycle work.
+            lifecycle = {
+                "run_status": "NOT_STARTED",
+                "stop_reason": "NO_ATOMIC_ACTIVATION",
+                "first_terminal_cause": activation.first_terminal_cause,
+            }
+            if activation.fault_details:
+                lifecycle["fault_details"] = dict(activation.fault_details)
             return OriginLifecycleResult(
                 activation=activation_result,
-                lifecycle={
-                    "run_status": "NOT_STARTED",
-                    "stop_reason": "NO_ATOMIC_ACTIVATION",
-                    "first_terminal_cause": activation.first_terminal_cause,
-                },
+                lifecycle=lifecycle,
                 lifecycle_started=False,
             )
 

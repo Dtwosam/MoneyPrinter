@@ -757,6 +757,7 @@ def build_campaign_terminal_report(
     eligible_candidates: int | None = None,
     required_token_capacity: int | None = None,
     blocked_supply_reason: str | None = None,
+    fault_details: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Assemble the canonical terminal report payload from stored facts only."""
     payload: dict[str, Any] = {
@@ -792,6 +793,10 @@ def build_campaign_terminal_report(
         "restart_created": False,
         "successor_created": False,
     }
+    if fault_details:
+        payload["terminal"]["fault_details"] = json.loads(
+            _canonical_json(dict(fault_details))
+        )
     if campaign_activity is not None:
         payload["campaign_activity"] = dict(campaign_activity)
         payload["campaign_source_calls"] = int(
