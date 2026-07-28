@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from printer_v1.db.migrate import (
+    MIGRATIONS_DIR,
     canonical_migration_count,
     canonical_migration_names,
 )
@@ -37,6 +38,29 @@ def _build_quiescent_preflight_fixture(destination: Path) -> None:
     connection = sqlite3.connect(destination)
     try:
         connection.execute("PRAGMA foreign_keys=ON")
+        # Apply any canonical migrations missing from the live corpus copy so
+        # preflight can validate against the current code surface without
+        # mutating data/printer_v1.sqlite3.
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS printer_schema_migrations (
+                   version TEXT PRIMARY KEY,
+                   applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+               )"""
+        )
+        applied = {
+            row[0]
+            for row in connection.execute(
+                "SELECT version FROM printer_schema_migrations"
+            )
+        }
+        for migration in sorted(MIGRATIONS_DIR.glob("*.sql")):
+            if migration.name in applied:
+                continue
+            connection.executescript(migration.read_text(encoding="utf-8"))
+            connection.execute(
+                "INSERT INTO printer_schema_migrations(version) VALUES (?)",
+                (migration.name,),
+            )
         connection.execute(
             """
             UPDATE printer_scheduler_jobs

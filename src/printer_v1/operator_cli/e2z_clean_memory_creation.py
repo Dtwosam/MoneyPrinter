@@ -4,10 +4,11 @@ The only module in the Lane E sequence that writes to printer_episodes.
 All prior Lane E modules (E2X, E2Y) are read-only. This module closes the
 gap between E2Y-reviewed candidates and actual clean-memory rows.
 
-Eligibility mirrors the E2X classification gate:
-  WINDOW_15M + WINDOW_CLOSED + CLEAN_DATA + PARTIAL_MEMORY
+Eligibility mirrors the E2X classification gate for main outcome windows:
+  (WINDOW_15M | WINDOW_1H | WINDOW_4H) + WINDOW_CLOSED + CLEAN_DATA + PARTIAL_MEMORY
   + e2q_audited (in supporting_context_json) + snapshot link present
   + do_not_train=0 + no legacy CLEAN_MEMORY label on the window row.
+  WINDOW_1H requires genuine 1h identity already enforced by E2Q before promotion.
 
 Idempotency: if printer_episodes already contains a CLEAN_MEMORY row for
 the given memory_window_id, the call is a no-op and returns
@@ -36,7 +37,9 @@ E2Z_STATUS_CREATED: str = "E2Z_MEMORY_CREATED"
 E2Z_STATUS_ALREADY_EXISTS: str = "E2Z_ALREADY_EXISTS"
 E2Z_STATUS_BLOCKED: str = "E2Z_BLOCKED"
 
-_ALLOWED_WINDOW_KINDS: frozenset[str] = frozenset({"WINDOW_15M", "WINDOW_4H"})
+_ALLOWED_WINDOW_KINDS: frozenset[str] = frozenset(
+    {"WINDOW_15M", "WINDOW_1H", "WINDOW_4H"}
+)
 _REQUIRED_WINDOW_STATUS: str = "WINDOW_CLOSED"
 _REQUIRED_DATA_QUALITY: str = "CLEAN_DATA"
 _REQUIRED_MEMORY_STATUS: str = "PARTIAL_MEMORY"
@@ -181,7 +184,7 @@ def create_clean_memory_from_window(
     individual_promotion: bool = False,
     lane_q_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Promote one eligible WINDOW_15M to a clean printer_episodes row.
+    """Promote one eligible main window to a clean printer_episodes row.
 
     Two promotion modes:
 

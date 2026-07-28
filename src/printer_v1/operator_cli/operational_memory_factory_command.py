@@ -1114,6 +1114,27 @@ def run_operational_campaign(
                     "initialized factory-run identity changed"
                 )
             initialized_factory_run_id = candidate
+            # Best-effort one-shot authoritative bind if factory path did not
+            # already bind (idempotent). Never enables selective 1h production.
+            try:
+                bind_conn = sqlite3.connect(AUTHORITATIVE_DB)
+                bind_conn.execute("PRAGMA foreign_keys=ON")
+                try:
+                    from printer_v1.operator_cli.operational_selective_1h import (
+                        ensure_authoritative_factory_link,
+                    )
+                    ensure_authoritative_factory_link(
+                        bind_conn,
+                        campaign_run_id=str(command.run_id),
+                        factory_run_id=candidate,
+                    )
+                    bind_conn.commit()
+                finally:
+                    bind_conn.close()
+            except Exception:
+                # Factory already binds when campaign_run_id is present; this
+                # path is a redundant safety net and must not abort production.
+                pass
 
         result = active_owner.run_operational(
             command=command,
@@ -1131,6 +1152,9 @@ def run_operational_campaign(
                 "launch_provenance": preflight["git_provenance"],
                 "cancellation_probe": cancellation_probe,
                 "factory_run_initialized": retain_factory_run_id,
+                # Production remains 15m-only. Selective 1h stays default-off.
+                "selective_1h_continuation": False,
+                "configuration_id": command.configuration_id,
             },
             migration_transport=migration_transport,
             graduated_supply_kwargs=dict(OPERATIONAL_GRADUATED_SUPPLY_KWARGS),

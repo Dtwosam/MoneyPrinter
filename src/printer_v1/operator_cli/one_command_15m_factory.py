@@ -1665,6 +1665,78 @@ def _operational_terminal_15m_closes(
     ).fetchall()
 
 
+def _selective_1h_schedule_for_close(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    close_step: sqlite3.Row,
+    window_id: int,
+    continuation_seconds: float,
+    evaluation: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Enqueue 1h continuation only when the selective evaluation says CONTINUE."""
+    from printer_v1.operator_cli.operational_selective_1h import should_continue_token
+
+    token_id = int(close_step["token_id"])
+    if not should_continue_token(evaluation, token_id=token_id):
+        plan = next(
+            (
+                p
+                for p in evaluation.get("token_plans") or ()
+                if int(p["token_row_id"]) == token_id
+            ),
+            None,
+        )
+        return (
+            {
+                "captured": False,
+                "verdict": "VALID_NO_CAPTURE",
+                "reason": (plan or {}).get("verdict", "STOP_OR_BLOCK"),
+                "window_5m_id": None,
+            },
+            {
+                "enqueue_ok": False,
+                "planned_jobs": 0,
+                "verdict": (plan or {}).get("verdict", "STOP_AFTER_WINDOW_15M"),
+                "reason": ";".join((plan or {}).get("reasons") or ["selective_stop"]),
+            },
+        )
+    support = _capture_same_stream_5m_support(
+        conn,
+        run_id=run_id,
+        close_step=close_step,
+        parent_window_id=int(window_id),
+    )
+    source = _resolve_current_run_15m_source(
+        conn,
+        run_id=run_id,
+        token_id=token_id,
+        pair_id=int(close_step["pair_id"]),
+        tracking_lane=str(close_step["tracking_lane"]),
+        current_close_step_id=int(close_step["id"]),
+    )
+    if not source.get("resolved"):
+        raise ValueError(
+            "current-run 15m continuation source blocked: "
+            + "; ".join(source.get("reasons", []))
+        )
+    continuation_plan = _plan_continuation_jobs(
+        conn,
+        run_id=run_id,
+        close_step=close_step,
+        fifteen_m=source["window"],
+        continuation_seconds=continuation_seconds,
+    )
+    if not continuation_plan.get("enqueue_ok"):
+        raise ValueError(
+            "continuation planning blocked: "
+            + "; ".join(continuation_plan.get("reasons", []))
+        )
+    continuation_plan["verdict"] = "CONTINUE_TO_WINDOW_1H"
+    continuation_plan["selective_1h"] = True
+    return support, continuation_plan
+
+
 def _natural_disposition_schedule(
     conn: sqlite3.Connection,
     *,
@@ -3379,12 +3451,14 @@ def run_one_command_15m_factory(
     continuous_first_hour: bool = False,
     continuous_four_hour: bool = False,
     four_hour_proof_mode: bool = False,
+    selective_1h_continuation: bool = False,
     compressed_two_token_proof_plan: CompressedTwoTokenProofPlan | None = None,
     operational_natural_disposition: bool = False,
     supervision_execution_id: str | None = None,
     campaign_id: str | None = None,
     campaign_run_id: str | None = None,
     cycle_id: str | None = None,
+    configuration_id: str | None = None,
     cancellation_probe: Callable[[], str | None] | None = None,
     factory_run_initialized: Callable[[str], None] | None = None,
     discovery_transport: Any = None, discovery_runner: Callable[..., dict[str, Any]] | None = None,
@@ -3480,6 +3554,23 @@ def run_one_command_15m_factory(
         reasons.append("4h continuation requires the same-run continuous first-hour path")
     if continuous_four_hour and not four_hour_proof_mode:
         reasons.append("WINDOW_4H real collection remains disabled without explicit proof mode")
+    if selective_1h_continuation:
+        if continuous_four_hour or four_hour_proof_mode:
+            reasons.append(
+                "selective 1h continuation cannot enable 4h; 4h remains a separate locked lane"
+            )
+        if not campaign_id or not campaign_run_id or not cycle_id:
+            reasons.append(
+                "selective 1h continuation requires campaign_id, campaign_run_id, and cycle_id"
+            )
+        if max_selected_tokens != 2:
+            reasons.append("selective 1h continuation requires exactly two token slots")
+        # Selective 1h reuses the continuous first-hour collection machinery for
+        # CONTINUE tokens only; it does not unlock production by default.
+        if not continuous_first_hour and not operational_persistent_mode:
+            reasons.append(
+                "selective 1h requires continuous_first_hour proof path or operational persistent mode"
+            )
     if supervision_execution_id:
         try:
             from printer_v1.operator_cli.proof_supervision import inspect_execution
@@ -3490,7 +3581,13 @@ def run_one_command_15m_factory(
                 reasons.append("supervision execution is not active")
         except Exception as exc:
             reasons.append(f"supervision preflight failed: {type(exc).__name__}: {exc}")
-    required_duration = _window_seconds + (_continuation_seconds if continuous_first_hour else 0.0) + (10_800.0 if continuous_four_hour else 0.0)
+    selective_1h = bool(selective_1h_continuation)
+    effective_continuous_1h = bool(continuous_first_hour or selective_1h)
+    required_duration = (
+        _window_seconds
+        + (_continuation_seconds if effective_continuous_1h else 0.0)
+        + (10_800.0 if continuous_four_hour else 0.0)
+    )
     if total_duration_seconds <= required_duration:
         reasons.append("total duration must exceed the complete approved lifecycle duration")
     if reasons:
@@ -3523,7 +3620,9 @@ def run_one_command_15m_factory(
         "context_source_requests_per_selected_token": 5,
         "context_source_request_budget": 5 * max_selected_tokens,
         "v2_5_proof_mode": bool(v2_5_proof_mode),
-        "continuous_first_hour": bool(continuous_first_hour),
+        # selective_1h reuses continuous 1h collection machinery for CONTINUE
+        # tokens only; production public command never sets selective_1h.
+        "continuous_first_hour": bool(effective_continuous_1h),
         "continuous_four_hour": bool(continuous_four_hour),
         "four_hour_proof_mode": bool(four_hour_proof_mode),
         "compressed_two_token_proof_plan": (
@@ -3539,8 +3638,12 @@ def run_one_command_15m_factory(
         "campaign_id": campaign_id,
         "campaign_run_id": campaign_run_id,
         "cycle_id": cycle_id,
+        "configuration_id": configuration_id,
+        "selective_1h_continuation": bool(selective_1h),
         "git_provenance": provenance,
-        "continuation_seconds": _continuation_seconds if continuous_first_hour else 0.0,
+        "continuation_seconds": (
+            _continuation_seconds if effective_continuous_1h else 0.0
+        ),
         "hard_ceilings": {
             "discovery_requests": _MAX_DISCOVERY_REQUESTS,
             "governed_requests_run": _MAX_GOVERNED_REQUESTS_RUN,
@@ -3604,6 +3707,18 @@ def run_one_command_15m_factory(
     try:
         if factory_run_initialized is not None:
             factory_run_initialized(run_id)
+        # One-shot campaign → factory authoritative linkage when campaign
+        # ownership identities are present (V2-9.8B selective 1h readiness).
+        if campaign_run_id:
+            from printer_v1.operator_cli.operational_selective_1h import (
+                ensure_authoritative_factory_link,
+            )
+            ensure_authoritative_factory_link(
+                conn,
+                campaign_run_id=str(campaign_run_id),
+                factory_run_id=run_id,
+            )
+            conn.commit()
         _emit_supervision_event(
             bool(supervision_execution_id), "RUN_START", run_id=run_id
         )
@@ -3738,7 +3853,7 @@ def run_one_command_15m_factory(
                             first_snapshot_captured_at=str(captured[0]),
                             window_seconds=_window_seconds,
                         )
-                    elif pending["step_kind"] == "WINDOW_CLOSE" and continuous_first_hour:
+                    elif pending["step_kind"] == "WINDOW_CLOSE" and effective_continuous_1h:
                         window_id = result.get("memory_window_id")
                         if window_id is None:
                             raise ValueError("current-run 15m close did not attach a memory window")
@@ -3757,7 +3872,8 @@ def run_one_command_15m_factory(
                         conn.commit()
                         proof_plan = _compressed_two_token_plan(config)
                         natural_mode = _operational_natural(config)
-                        if natural_mode:
+                        selective_mode = bool(config.get("selective_1h_continuation"))
+                        if selective_mode or natural_mode:
                             # V2-9.7E.11 two-terminal-15m-close barrier: the first
                             # terminal 15m close must not independently schedule
                             # continuation or support-only 5m capture. Only once
@@ -3788,21 +3904,92 @@ def run_one_command_15m_factory(
                                     "reason": deferred_reason,
                                 }
                             else:
+                                selective_eval: dict[str, Any] | None = None
+                                if selective_mode:
+                                    from printer_v1.operator_cli.operational_selective_1h import (
+                                        evaluate_selective_1h_for_cycle,
+                                        persist_15m_campaign_window,
+                                    )
+                                    # Persist exact 15m campaign windows then evaluate
+                                    # B.1-backed selective continuation for both slots.
+                                    for close_row in closes:
+                                        slot = conn.execute(
+                                            """
+                                            SELECT token_slot_id, lifecycle_identity,
+                                                   mint_identity, pair_identity
+                                            FROM printer_memory_factory_campaign_token_slots
+                                            WHERE campaign_id=? AND run_id=? AND cycle_id=?
+                                              AND token_row_id=? AND pair_row_id=?
+                                            """,
+                                            (
+                                                config.get("campaign_id"),
+                                                config.get("campaign_run_id"),
+                                                config.get("cycle_id"),
+                                                int(close_row["token_id"]),
+                                                int(close_row["pair_id"]),
+                                            ),
+                                        ).fetchone()
+                                        if slot is None:
+                                            raise ValueError(
+                                                "missing campaign token slot for "
+                                                "selective 1h lineage"
+                                            )
+                                        persist_15m_campaign_window(
+                                            conn,
+                                            campaign_id=str(config["campaign_id"]),
+                                            run_id=str(config["campaign_run_id"]),
+                                            cycle_id=str(config["cycle_id"]),
+                                            token_slot_id=str(slot["token_slot_id"]),
+                                            token_row_id=int(close_row["token_id"]),
+                                            pair_row_id=int(close_row["pair_id"]),
+                                            lifecycle_identity=str(
+                                                slot["lifecycle_identity"]
+                                            ),
+                                            memory_window_row_id=int(
+                                                close_row["memory_window_id"]
+                                            ),
+                                            checkpoint_cutoff=_iso(),
+                                            window_state="AUDITING",
+                                        )
+                                    selective_eval = evaluate_selective_1h_for_cycle(
+                                        conn,
+                                        db_path=str(path),
+                                        campaign_id=str(config["campaign_id"]),
+                                        configuration_id=str(
+                                            config.get("configuration_id")
+                                            or config["campaign_id"]
+                                        ),
+                                        run_id=str(config["campaign_run_id"]),
+                                        cycle_id=str(config["cycle_id"]),
+                                    )
+                                    result["selective_1h_evaluation"] = selective_eval
                                 # Barrier released: evaluate and schedule for every
                                 # activated token from its own governed evidence.
                                 for close_row in closes:
                                     row_window_id = int(
                                         close_row["memory_window_id"]
                                     )
-                                    support, continuation_plan = (
-                                        _natural_disposition_schedule(
-                                            conn,
-                                            run_id=run_id,
-                                            close_step=close_row,
-                                            window_id=row_window_id,
-                                            continuation_seconds=_continuation_seconds,
+                                    if selective_mode and selective_eval is not None:
+                                        support, continuation_plan = (
+                                            _selective_1h_schedule_for_close(
+                                                conn,
+                                                run_id=run_id,
+                                                close_step=close_row,
+                                                window_id=row_window_id,
+                                                continuation_seconds=_continuation_seconds,
+                                                evaluation=selective_eval,
+                                            )
                                         )
-                                    )
+                                    else:
+                                        support, continuation_plan = (
+                                            _natural_disposition_schedule(
+                                                conn,
+                                                run_id=run_id,
+                                                close_step=close_row,
+                                                window_id=row_window_id,
+                                                continuation_seconds=_continuation_seconds,
+                                            )
+                                        )
                                     if int(close_row["id"]) == int(pending["id"]):
                                         result["support_5m"] = support
                                         result["continuation_plan"] = (
@@ -3819,6 +4006,10 @@ def run_one_command_15m_factory(
                                         peer_result["continuation_plan"] = (
                                             continuation_plan
                                         )
+                                        if selective_eval is not None:
+                                            peer_result["selective_1h_evaluation"] = (
+                                                selective_eval
+                                            )
                                         conn.execute(
                                             "UPDATE printer_memory_factory_run_steps "
                                             "SET result_json=?, updated_at=? "

@@ -134,6 +134,121 @@ def create_campaign_run(
         )
 
 
+def bind_authoritative_run_id(
+    connection: sqlite3.Connection,
+    *,
+    campaign_run_id: str,
+    factory_run_id: str,
+    now: str | None = None,
+) -> StateTransitionResult:
+    """One-shot bind of campaign run → factory run (NULL → value only)."""
+    timestamp = now or _utc_now()
+    campaign_run = _required(campaign_run_id, "campaign_run_id")
+    factory_run = _required(factory_run_id, "factory_run_id")
+    try:
+        with connection:
+            row = connection.execute(
+                """SELECT authoritative_run_id, run_state
+                   FROM printer_memory_factory_campaign_runs WHERE run_id=?""",
+                (campaign_run,),
+            ).fetchone()
+            if row is None:
+                raise CampaignOwnershipError(
+                    f"unknown campaign run identity: {campaign_run}"
+                )
+            current = row[0]
+            if current is not None:
+                if str(current) == factory_run:
+                    return StateTransitionResult(
+                        campaign_run, str(row[1]), str(row[1]), None, None, False
+                    )
+                raise CampaignOwnershipError(
+                    "authoritative_run_id already bound to a different factory run"
+                )
+            factory = connection.execute(
+                "SELECT run_id FROM printer_memory_factory_runs WHERE run_id=?",
+                (factory_run,),
+            ).fetchone()
+            if factory is None:
+                raise CampaignOwnershipError(
+                    f"factory run missing for authoritative bind: {factory_run}"
+                )
+            cursor = connection.execute(
+                """UPDATE printer_memory_factory_campaign_runs
+                   SET authoritative_run_id=?, updated_at=?
+                   WHERE run_id=? AND authoritative_run_id IS NULL""",
+                (factory_run, timestamp, campaign_run),
+            )
+            if cursor.rowcount != 1:
+                raise CampaignOwnershipError(
+                    "authoritative_run_id bind failed compare-and-update"
+                )
+            return StateTransitionResult(
+                campaign_run, str(row[1]), str(row[1]), None, None, True
+            )
+    except sqlite3.Error as exc:
+        raise CampaignOwnershipError(str(exc)) from exc
+
+
+def bind_window_memory_row_id(
+    connection: sqlite3.Connection,
+    *,
+    window_id: str,
+    memory_window_row_id: int,
+    now: str | None = None,
+) -> bool:
+    """One-shot bind of campaign window → printer_memory_windows row."""
+    timestamp = now or _utc_now()
+    identity = _required(window_id, "window_id")
+    row_id = int(memory_window_row_id)
+    try:
+        with connection:
+            row = connection.execute(
+                """SELECT memory_window_row_id, window_kind, token_row_id, pair_row_id
+                   FROM printer_memory_factory_campaign_windows WHERE window_id=?""",
+                (identity,),
+            ).fetchone()
+            if row is None:
+                raise CampaignOwnershipError(f"unknown campaign window: {identity}")
+            current = row[0]
+            if current is not None:
+                if int(current) == row_id:
+                    return False
+                raise CampaignOwnershipError(
+                    "memory_window_row_id already bound to a different row"
+                )
+            memory = connection.execute(
+                """SELECT id, token_id, pair_id, window_kind
+                   FROM printer_memory_windows WHERE id=?""",
+                (row_id,),
+            ).fetchone()
+            if memory is None:
+                raise CampaignOwnershipError(
+                    f"memory window missing for bind: {row_id}"
+                )
+            if (
+                int(memory[1]) != int(row[2])
+                or int(memory[2]) != int(row[3])
+                or str(memory[3]) != str(row[1])
+            ):
+                raise CampaignOwnershipError(
+                    "memory window identity mismatch on bind"
+                )
+            cursor = connection.execute(
+                """UPDATE printer_memory_factory_campaign_windows
+                   SET memory_window_row_id=?, updated_at=?
+                   WHERE window_id=? AND memory_window_row_id IS NULL""",
+                (row_id, timestamp, identity),
+            )
+            if cursor.rowcount != 1:
+                raise CampaignOwnershipError(
+                    "memory_window_row_id bind failed compare-and-update"
+                )
+            return True
+    except sqlite3.Error as exc:
+        raise CampaignOwnershipError(str(exc)) from exc
+
+
 def create_cycle_with_two_slots(
     connection: sqlite3.Connection,
     *,

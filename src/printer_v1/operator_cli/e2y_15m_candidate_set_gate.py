@@ -147,16 +147,53 @@ def _select_best_pair_group(
     return best_members, best_key[0], best_key[1]
 
 
+def _period_keys(candidates: list[dict[str, Any]]) -> list[str]:
+    """Stable period identities so distinct 1h periods are not collapsed.
+
+    Preference order for period identity:
+    1. snapshot_start_id (genuine 1h anchor)
+    2. parsed_snapshot_link / snapshot_id (15m close anchor)
+    3. window id (always unique per candidate row)
+    """
+    keys: list[str] = []
+    for item in candidates:
+        kind = str(item.get("window_kind") or "")
+        start = item.get("snapshot_start_id")
+        snap = item.get("parsed_snapshot_link") or item.get("snapshot_id")
+        window_id = item.get("id")
+        if start is not None:
+            keys.append(f"{kind}:start:{start}")
+        elif snap is not None:
+            keys.append(f"{kind}:snap:{snap}")
+        else:
+            keys.append(f"{kind}:id:{window_id}")
+    return keys
+
+
 def _build_set_gate(candidates: list[dict[str, Any]]) -> dict[str, bool]:
     snapshot_ids = _candidate_snapshot_links(candidates)
     token_pairs = _candidate_token_pairs(candidates) if candidates else []
     memory_statuses = _unique_values(candidates, "memory_status")
     memory_quality_labels = _unique_values(candidates, "memory_quality_label")
+    window_kinds = _unique_values(candidates, "window_kind")
+    period_keys = _period_keys(candidates)
+    # 15m set gate remains the historical default. Mixed kinds fail closed.
+    # Distinct periods must remain distinct identities (no collapse).
+    homogeneous_kind = len(window_kinds) == 1 if candidates else False
+    all_15m = window_kinds == ["WINDOW_15M"]
+    all_1h = window_kinds == ["WINDOW_1H"]
+    periods_distinct = len(period_keys) == len(set(period_keys)) if candidates else True
 
+    # Historical 15m set gate requires all_window_15m. Kind-homogeneous and
+    # distinct-period checks fail closed for mixed or collapsed periods. The
+    # informational all_window_1h flag is not part of all(set_gate.values()).
     return {
         "candidate_count_is_5": len(candidates) >= _REQUIRED_CANDIDATE_COUNT,
         "all_same_token_pair": len(token_pairs) == 1,
-        "all_window_15m": _unique_values(candidates, "window_kind") == ["WINDOW_15M"],
+        "all_window_15m": all_15m,
+        "all_same_window_kind": homogeneous_kind,
+        "no_mixed_window_kinds": homogeneous_kind,
+        "distinct_period_identities": periods_distinct,
         "all_window_closed": _unique_values(candidates, "window_status") == ["WINDOW_CLOSED"],
         "all_clean_data": _unique_values(candidates, "data_quality_label") == ["CLEAN_DATA"],
         "all_partial_memory": (
@@ -196,6 +233,13 @@ def _build_set_gate(candidates: list[dict[str, Any]]) -> dict[str, bool]:
         "no_buy_sell_hold": True,
         "no_positions": True,
         "no_pnl": True,
+        # Informational only (excluded from all() by using non-bool? Keep as
+        # nested metadata so set_gate_passed stays 15m-compatible).
+        "period_awareness": {
+            "all_window_1h": all_1h,
+            "window_kinds": window_kinds,
+            "period_keys": period_keys,
+        },
     }
 
 
