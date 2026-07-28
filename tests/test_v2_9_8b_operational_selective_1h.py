@@ -12,6 +12,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from printer_v1.db import migrate as migration_runner
 from printer_v1.operator_cli.campaign_ownership import (
@@ -764,6 +765,64 @@ class OperationalSelective1hTests(unittest.TestCase):
         self.assertIn("WINDOW_4H", LOCKED_WINDOWS)
         self.assertEqual(MAIN_WINDOW, "WINDOW_15M")
         self.assertEqual(TOTAL_DURATION_SECONDS, 1200)
+
+    def test_selective_two_token_factory_ceilings_are_cadence_derived(self) -> None:
+        from printer_v1.operator_cli import one_command_15m_factory as factory
+
+        self.assertEqual(factory._MAX_SNAPSHOTS_PER_TOKEN, 16)
+        self.assertEqual(factory._continuation_expected_snapshots("TRACK_FAST"), 24)
+        self.assertEqual(factory._SELECTIVE_1H_MAX_REQUESTS_PER_TOKEN, 45)
+        self.assertEqual(factory._SELECTIVE_1H_MAX_REQUESTS_RUN, 92)
+        self.assertEqual(factory._SELECTIVE_1H_MAX_SCHEDULER_ROWS, 82)
+        self.assertTrue(
+            factory._selective_1h_lifecycle(
+                {
+                    "selective_1h_continuation": True,
+                    "continuous_four_hour": False,
+                }
+            )
+        )
+
+    def test_selective_factory_enforces_source_and_scheduler_ceilings(self) -> None:
+        from printer_v1.operator_cli import one_command_15m_factory as factory
+
+        config = {
+            "continuous_first_hour": True,
+            "selective_1h_continuation": True,
+        }
+        step = {
+            "step_kind": "CONTINUATION_SNAPSHOT",
+            "step_key": "t1_1h_snapshot_999",
+        }
+        with (
+            patch.object(factory, "_load_run_config", return_value=config),
+            patch.object(
+                factory,
+                "_run_request_count",
+                return_value=factory._SELECTIVE_1H_MAX_REQUESTS_RUN,
+            ),
+            patch.object(factory, "_token_request_count", return_value=0),
+        ):
+            with self.assertRaises(factory._GlobalStop):
+                factory._enforce_budgets_before_step(object(), "run", step)
+
+        with (
+            patch.object(factory, "_load_run_config", return_value=config),
+            patch.object(
+                factory,
+                "_run_step_job_count",
+                return_value=factory._SELECTIVE_1H_MAX_SCHEDULER_ROWS - 2,
+            ),
+        ):
+            with self.assertRaises(factory._GlobalStop):
+                factory._insert_step_and_job(
+                    object(),
+                    run_id="run",
+                    target={"tracking_lane": "TRACK_FAST"},
+                    step_key="t1_1h_snapshot_999",
+                    step_kind="CONTINUATION_SNAPSHOT",
+                    scheduled_for=T0,
+                )
 
     def test_no_retry_restart_successor_fields(self) -> None:
         self.fx.prepare_eligible(token_id=1, window_id=191, outcome="DUMP")

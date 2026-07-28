@@ -181,6 +181,19 @@ _COMPRESSED_TWO_TOKEN_MAX_SCHEDULER_ROWS = (
     + _MAX_SNAPSHOTS_PER_TOKEN
     + 1  # second exact activation/discovery handoff allowance
 )
+# Exact selective-1h proof ceilings for two TRACK_FAST tokens. The cadence
+# counts include the mandatory 15m and 1h close steps; the Scheduler total also
+# includes one discovery/handoff allowance per token.
+_SELECTIVE_1H_MAX_REQUESTS_PER_TOKEN = _CONTINUOUS_MAX_REQUESTS_PER_TOKEN
+_SELECTIVE_1H_MAX_REQUESTS_RUN = (
+    _MAX_DISCOVERY_REQUESTS
+    + 2 * _SELECTIVE_1H_MAX_REQUESTS_PER_TOKEN
+)
+_SELECTIVE_1H_MAX_SCHEDULER_ROWS = 2 * (
+    _MAX_SNAPSHOTS_PER_TOKEN
+    + _continuation_expected_snapshots("TRACK_FAST")
+    + 1
+)
 
 
 def _compressed_two_token_plan(config: Mapping[str, Any]) -> dict[str, str] | None:
@@ -201,6 +214,11 @@ def _two_token_lifecycle(config: Mapping[str, Any]) -> bool:
     mutually exclusive (enforced at preflight and at the live owner boundary).
     """
     return _compressed_two_token_plan(config) is not None or _operational_natural(config)
+
+
+def _selective_1h_lifecycle(config: Mapping[str, Any]) -> bool:
+    """True only for the explicit campaign-owned selective WINDOW_1H path."""
+    return bool(config.get("selective_1h_continuation"))
 
 
 def _cumulative_lifecycle_budget_for_run(
@@ -458,9 +476,12 @@ def _insert_step_and_job(
     # handoff per token that is the _MAX_SCHEDULER_ROWS design ceiling.
     run_config = _load_run_config(conn, run_id)
     continuous = bool(run_config.get("continuous_first_hour"))
+    selective_1h = _selective_1h_lifecycle(run_config)
     compressed_two_token = _two_token_lifecycle(run_config)
     scheduler_ceiling = (
-        _COMPRESSED_TWO_TOKEN_MAX_SCHEDULER_ROWS
+        _SELECTIVE_1H_MAX_SCHEDULER_ROWS
+        if selective_1h
+        else _COMPRESSED_TWO_TOKEN_MAX_SCHEDULER_ROWS
         if compressed_two_token
         else _CONTINUOUS_MAX_SCHEDULER_ROWS
         if continuous
@@ -468,7 +489,7 @@ def _insert_step_and_job(
     )
     discovery_handoff_allowance = (
         2
-        if compressed_two_token
+        if selective_1h or compressed_two_token
         else _CONTINUOUS_MAX_SELECTED_TOKENS
         if continuous
         else _V2_5_MAX_SELECTED_TOKENS
@@ -2232,9 +2253,12 @@ def _enforce_budgets_before_step(conn: sqlite3.Connection, run_id: str, step: sq
             ) from exc
         return
     continuous = bool(config.get("continuous_first_hour"))
+    selective_1h = _selective_1h_lifecycle(config)
     compressed_two_token = _two_token_lifecycle(config)
     run_ceiling = (
-        _COMPRESSED_TWO_TOKEN_MAX_REQUESTS_RUN
+        _SELECTIVE_1H_MAX_REQUESTS_RUN
+        if selective_1h
+        else _COMPRESSED_TWO_TOKEN_MAX_REQUESTS_RUN
         if compressed_two_token
         else _CONTINUOUS_MAX_REQUESTS_RUN
         if continuous
@@ -2641,9 +2665,12 @@ def _run_budgets(
 
     prefixes = sorted({_token_prefix(s["step_key"]) for s in steps})
     per_token = {p: _token_request_count(conn, run_id, p) for p in prefixes}
+    selective_1h = _selective_1h_lifecycle(config)
     compressed_two_token = _two_token_lifecycle(config)
     run_ceiling = (
-        _COMPRESSED_TWO_TOKEN_MAX_REQUESTS_RUN
+        _SELECTIVE_1H_MAX_REQUESTS_RUN
+        if selective_1h
+        else _COMPRESSED_TWO_TOKEN_MAX_REQUESTS_RUN
         if compressed_two_token
         else _CONTINUOUS_MAX_REQUESTS_RUN
         if continuous
@@ -2654,7 +2681,9 @@ def _run_budgets(
         if continuous else _MAX_GOVERNED_REQUESTS_PER_TOKEN
     )
     scheduler_ceiling = (
-        _COMPRESSED_TWO_TOKEN_MAX_SCHEDULER_ROWS
+        _SELECTIVE_1H_MAX_SCHEDULER_ROWS
+        if selective_1h
+        else _COMPRESSED_TWO_TOKEN_MAX_SCHEDULER_ROWS
         if compressed_two_token
         else _CONTINUOUS_MAX_SCHEDULER_ROWS
         if continuous
@@ -3655,6 +3684,13 @@ def run_one_command_15m_factory(
             "continuous_governed_requests_run": _CONTINUOUS_MAX_REQUESTS_RUN,
             "continuous_governed_requests_per_token": _CONTINUOUS_MAX_REQUESTS_PER_TOKEN,
             "continuous_scheduler_rows": _CONTINUOUS_MAX_SCHEDULER_ROWS,
+            "selective_1h_governed_requests_run": (
+                _SELECTIVE_1H_MAX_REQUESTS_RUN
+            ),
+            "selective_1h_governed_requests_per_token": (
+                _SELECTIVE_1H_MAX_REQUESTS_PER_TOKEN
+            ),
+            "selective_1h_scheduler_rows": _SELECTIVE_1H_MAX_SCHEDULER_ROWS,
             "compressed_two_token_governed_requests_run": (
                 _COMPRESSED_TWO_TOKEN_MAX_REQUESTS_RUN
             ),

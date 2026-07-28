@@ -9,7 +9,7 @@ modes. The legacy V2-9.7E pilot launcher is neither imported nor promoted.
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -103,6 +103,14 @@ ADMISSION_OPERATION_CEILING = 45
 STORAGE_BYTE_CEILING = 64 * 1024 * 1024
 FAILURE_CEILING = 20
 AUTOMATIC_RETRIES = 0
+SELECTIVE_1H_MODE = "selective-1h-proof"
+SELECTIVE_1H_PREFLIGHT_MODE = "selective-1h-preflight"
+SELECTIVE_1H_REQUIRED_MIGRATION = "047_campaign_oneshot_linkage_binds.sql"
+SELECTIVE_1H_TOTAL_DURATION_SECONDS = 3_900
+SELECTIVE_1H_GOVERNED_REQUEST_CEILING = 92
+SELECTIVE_1H_GOVERNED_REQUESTS_PER_TOKEN = 45
+SELECTIVE_1H_SCHEDULER_ROW_CEILING = 82
+SELECTIVE_1H_CONTINUATION_SECONDS = 2_700
 LEASE_SECONDS = 90
 HEARTBEAT_SECONDS = 30
 FREE_PUBLIC_SOLANA_RPC = "https://api.mainnet-beta.solana.com"
@@ -119,6 +127,37 @@ AUTHORITATIVE_SQLITE_RUNTIME_SIDECARS = (
 # Action-local run identity for blocked-command source accounting. Never inherit
 # a previous campaign's holder-ledger totals into a different public action.
 _ACTION_RUN_CONTEXT: dict[str, str | None] = {"run_id": None}
+
+
+@dataclass(frozen=True)
+class _OperationalCampaignPolicy:
+    mode: str
+    duration_seconds: int
+    selective_1h_continuation: bool
+    governed_request_ceiling: int
+    governed_requests_per_token: int
+    scheduler_row_ceiling: int
+    locked_windows: tuple[str, ...]
+
+
+_NORMAL_CAMPAIGN_POLICY = _OperationalCampaignPolicy(
+    mode="run",
+    duration_seconds=TOTAL_DURATION_SECONDS,
+    selective_1h_continuation=False,
+    governed_request_ceiling=GOVERNED_15M_REQUEST_CEILING,
+    governed_requests_per_token=GOVERNED_REQUESTS_PER_TOKEN,
+    scheduler_row_ceiling=SCHEDULER_ROW_CEILING,
+    locked_windows=LOCKED_WINDOWS,
+)
+_SELECTIVE_1H_PROOF_POLICY = _OperationalCampaignPolicy(
+    mode=SELECTIVE_1H_MODE,
+    duration_seconds=SELECTIVE_1H_TOTAL_DURATION_SECONDS,
+    selective_1h_continuation=True,
+    governed_request_ceiling=SELECTIVE_1H_GOVERNED_REQUEST_CEILING,
+    governed_requests_per_token=SELECTIVE_1H_GOVERNED_REQUESTS_PER_TOKEN,
+    scheduler_row_ceiling=SELECTIVE_1H_SCHEDULER_ROW_CEILING,
+    locked_windows=("WINDOW_4H", "WINDOW_12H", "WINDOW_24H"),
+)
 
 # V2-9.8B.22 discovery-only qualification mode.
 DISCOVERY_ONLY_MODE = "discovery-only"
@@ -538,6 +577,127 @@ def build_activation_preflight(
     }
 
 
+def build_selective_1h_preflight(
+    *,
+    db_path: str | Path = AUTHORITATIVE_DB,
+    repository_root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Fail-closed, read-only preflight for one selective WINDOW_1H proof."""
+    path = Path(db_path).resolve()
+    if path != AUTHORITATIVE_DB or not path.is_file():
+        _preflight_fail(
+            "database_target",
+            "selective 1h proof requires the authoritative database identity",
+        )
+    connection = _read_only(path)
+    try:
+        applied_047 = connection.execute(
+            "SELECT 1 FROM printer_schema_migrations WHERE version=?",
+            (SELECTIVE_1H_REQUIRED_MIGRATION,),
+        ).fetchone()
+    except sqlite3.Error as exc:
+        _preflight_fail("migration_047", str(exc))
+    finally:
+        connection.close()
+    if applied_047 is None:
+        _preflight_fail(
+            "migration_047",
+            f"required migration is not applied: {SELECTIVE_1H_REQUIRED_MIGRATION}",
+        )
+
+    base = build_activation_preflight(
+        db_path=path,
+        repository_root=repository_root,
+    )
+    try:
+        from printer_v1.operator_cli.one_command_15m_factory import (
+            run_one_command_15m_factory,
+        )
+        from printer_v1.operator_cli.operational_selective_1h import (
+            evaluate_token_local_continuations,
+        )
+    except ImportError as exc:
+        _preflight_fail("selective_1h_implementation", str(exc))
+    if not callable(run_one_command_15m_factory) or not callable(
+        evaluate_token_local_continuations
+    ):
+        _preflight_fail(
+            "selective_1h_implementation",
+            "canonical factory or continuation owner is unavailable",
+        )
+    required_locks = {"WINDOW_4H", "WINDOW_12H", "WINDOW_24H"}
+    if set(_SELECTIVE_1H_PROOF_POLICY.locked_windows) != required_locks:
+        _preflight_fail(
+            "later_window_locks",
+            "WINDOW_4H, WINDOW_12H and WINDOW_24H must remain locked",
+        )
+    if AUTOMATIC_RETRIES != 0:
+        _preflight_fail("retry_policy", "automatic retries must remain zero")
+    selective_budget = build_operational_budget_preflight(
+        admission_operation_ceiling=ADMISSION_OPERATION_CEILING,
+        discovery_request_ceiling=DISCOVERY_REQUEST_CEILING,
+        governed_15m_request_ceiling=SELECTIVE_1H_GOVERNED_REQUEST_CEILING,
+        governed_requests_per_token=SELECTIVE_1H_GOVERNED_REQUESTS_PER_TOKEN,
+    )
+    if selective_budget["status"] != "READY":
+        _preflight_fail(
+            "selective_1h_budget",
+            ";".join(selective_budget["issues"]),
+        )
+
+    return {
+        **base,
+        "mode": SELECTIVE_1H_PREFLIGHT_MODE,
+        "status": "V2_9_8B_SELECTIVE_1H_PREFLIGHT_READY",
+        "migration_requirement": {
+            "required": SELECTIVE_1H_REQUIRED_MIGRATION,
+            "applied": True,
+        },
+        "selective_1h_implementation_available": True,
+        "selective_1h_budget_preflight": selective_budget,
+        "proof_policy": {
+            "campaigns": 1,
+            "cycles": 1,
+            "starting_token_maximum": TOKEN_CAPACITY,
+            "main_window": MAIN_WINDOW,
+            "main_window_seconds": MAIN_WINDOW_SECONDS,
+            "selective_1h_continuation": True,
+            "continuation_seconds": SELECTIVE_1H_CONTINUATION_SECONDS,
+            "continuous_four_hour": False,
+            "locked_windows": _SELECTIVE_1H_PROOF_POLICY.locked_windows,
+            "categorical_continue_only": True,
+            "authoritative_clean_15m_episode_required": True,
+            "automatic_retries": 0,
+            "restart_created": False,
+            "successor_created": False,
+        },
+        "proof_ceilings": {
+            "duration_seconds": SELECTIVE_1H_TOTAL_DURATION_SECONDS,
+            "discovery_requests": DISCOVERY_REQUEST_CEILING,
+            "governed_requests": SELECTIVE_1H_GOVERNED_REQUEST_CEILING,
+            "governed_requests_per_token": (
+                SELECTIVE_1H_GOVERNED_REQUESTS_PER_TOKEN
+            ),
+            "scheduler_rows": SELECTIVE_1H_SCHEDULER_ROW_CEILING,
+            "admission_operations": ADMISSION_OPERATION_CEILING,
+            "reserved_mandatory_close_steps": TOKEN_CAPACITY * 2,
+        },
+        "host_awake_requirement": {
+            "required": True,
+            "operator_approval_affirms_host_awake": True,
+            "recommended_guard": "caffeinate",
+            "lease_expiry_behavior": "terminal_fail_closed_no_restart",
+        },
+        "backup_restore_requirement": {
+            "required_before_campaign_creation": True,
+            "owner": "operational_backup_restore_preflight",
+        },
+        "source_calls": 0,
+        "scheduler_runtime_calls": 0,
+        "database_writes": 0,
+    }
+
+
 def _artifact_paths(execution_id: str) -> dict[str, Path]:
     root = (ARTIFACT_ROOT / execution_id).resolve()
     return {
@@ -557,6 +717,7 @@ def _create_campaign_command(
     preflight: Mapping[str, Any],
     backup: Mapping[str, Any],
     now: str,
+    policy: _OperationalCampaignPolicy = _NORMAL_CAMPAIGN_POLICY,
 ) -> tuple[AbstractCampaignCommand, str]:
     campaign_id = f"{execution_id}-campaign"
     configuration_id = f"{execution_id}-configuration"
@@ -567,9 +728,9 @@ def _create_campaign_command(
     ceilings = CampaignCeilings(
         campaign_count=1,
         cycle_count=1,
-        duration_seconds=TOTAL_DURATION_SECONDS,
+        duration_seconds=policy.duration_seconds,
         source_calls=ADMISSION_OPERATION_CEILING,
-        scheduler_work=SCHEDULER_ROW_CEILING,
+        scheduler_work=policy.scheduler_row_ceiling,
         storage_bytes=STORAGE_BYTE_CEILING,
         failures=FAILURE_CEILING,
     )
@@ -578,8 +739,11 @@ def _create_campaign_command(
         "ceilings": asdict(ceilings),
         "main_window": MAIN_WINDOW,
         "main_window_seconds": MAIN_WINDOW_SECONDS,
-        "continuous_first_hour": False,
+        "continuous_first_hour": bool(policy.selective_1h_continuation),
         "continuous_four_hour": False,
+        "selective_1h_continuation": bool(policy.selective_1h_continuation),
+        "command_mode": policy.mode,
+        "locked_windows": policy.locked_windows,
         "support_5m_only": True,
         "automatic_retries": AUTOMATIC_RETRIES,
         "report_directory_identity": report_identity,
@@ -587,14 +751,21 @@ def _create_campaign_command(
             "preflight_status": "READY",
             "source_identity": backup["source_identity"],
             "backup_sha256": backup["backup_hash"],
-            "required_migration": "032_campaign_ownership_schema.sql",
+            "required_migration": (
+                SELECTIVE_1H_REQUIRED_MIGRATION
+                if policy.selective_1h_continuation
+                else "032_campaign_ownership_schema.sql"
+            ),
             "latest_migration": backup["latest_rehearsed_migration"],
         },
         "inner_15m_ceilings": {
             "discovery_requests": DISCOVERY_REQUEST_CEILING,
-            "governed_requests": GOVERNED_15M_REQUEST_CEILING,
-            "governed_requests_per_token": GOVERNED_REQUESTS_PER_TOKEN,
-            "scheduler_rows": SCHEDULER_ROW_CEILING,
+            "governed_requests": policy.governed_request_ceiling,
+            "governed_requests_per_token": policy.governed_requests_per_token,
+            "scheduler_rows": policy.scheduler_row_ceiling,
+            "reserved_mandatory_close_steps": (
+                TOKEN_CAPACITY * 2 if policy.selective_1h_continuation else TOKEN_CAPACITY
+            ),
         },
     }
     target_identity = f"sha256:{preflight['database_sha256']}"
@@ -1016,18 +1187,23 @@ def _terminalize_initialized_failure(
     return terminal
 
 
-def run_operational_campaign(
+def _run_operational_campaign(
     *,
+    policy: _OperationalCampaignPolicy,
     operator_approved: bool,
     owner: Any | None = None,
     pump_transport: Any | None = None,
     secondary_transport: Any | None = None,
     migration_transport: Any | None = None,
 ) -> dict[str, Any]:
-    """Run one bounded persistent 15m campaign. V2-9.8A must not call this."""
+    """Run one fixed-policy campaign through the canonical V2-9.8B owner."""
     if not operator_approved:
         raise OperationalMemoryFactoryError("explicit operator approval is required")
-    preflight = build_activation_preflight()
+    preflight = (
+        build_selective_1h_preflight()
+        if policy.selective_1h_continuation
+        else build_activation_preflight()
+    )
     execution_id = (
         datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         + "-"
@@ -1047,7 +1223,7 @@ def run_operational_campaign(
     now = _iso()
     command, cycle_id = _create_campaign_command(
         execution_id=execution_id, paths=paths, preflight=preflight,
-        backup=backup, now=now,
+        backup=backup, now=now, policy=policy,
     )
     heartbeat: _CampaignHeartbeat | None = None
     initialized_factory_run_id: str | None = None
@@ -1148,12 +1324,12 @@ def run_operational_campaign(
             evaluated_at=now,
             backup_path=paths["backup"],
             lifecycle_kwargs={
-                "total_duration_seconds": TOTAL_DURATION_SECONDS,
+                "total_duration_seconds": policy.duration_seconds,
                 "launch_provenance": preflight["git_provenance"],
                 "cancellation_probe": cancellation_probe,
                 "factory_run_initialized": retain_factory_run_id,
-                # Production remains 15m-only. Selective 1h stays default-off.
-                "selective_1h_continuation": False,
+                # Fixed by the public mode; normal run can never opt into 1h.
+                "selective_1h_continuation": policy.selective_1h_continuation,
                 "configuration_id": command.configuration_id,
             },
             migration_transport=migration_transport,
@@ -1284,6 +1460,9 @@ def run_operational_campaign(
             "fault_details": dict(lifecycle.get("fault_details") or {}),
             "token_capacity": TOKEN_CAPACITY,
             "main_window": MAIN_WINDOW,
+            "selective_1h_continuation": policy.selective_1h_continuation,
+            "continuous_four_hour": False,
+            "locked_windows": policy.locked_windows,
             "support_5m_only": True,
             "restart_created": False,
             "successor_created": False,
@@ -1318,6 +1497,44 @@ def run_operational_campaign(
     finally:
         if heartbeat is not None:
             heartbeat.stop()
+
+
+def run_operational_campaign(
+    *,
+    operator_approved: bool,
+    owner: Any | None = None,
+    pump_transport: Any | None = None,
+    secondary_transport: Any | None = None,
+    migration_transport: Any | None = None,
+) -> dict[str, Any]:
+    """Run one bounded persistent 15m-only production campaign."""
+    return _run_operational_campaign(
+        policy=_NORMAL_CAMPAIGN_POLICY,
+        operator_approved=operator_approved,
+        owner=owner,
+        pump_transport=pump_transport,
+        secondary_transport=secondary_transport,
+        migration_transport=migration_transport,
+    )
+
+
+def run_selective_1h_proof(
+    *,
+    operator_approved: bool,
+    owner: Any | None = None,
+    pump_transport: Any | None = None,
+    secondary_transport: Any | None = None,
+    migration_transport: Any | None = None,
+) -> dict[str, Any]:
+    """Run exactly one operator-approved bounded selective WINDOW_1H proof."""
+    return _run_operational_campaign(
+        policy=_SELECTIVE_1H_PROOF_POLICY,
+        operator_approved=operator_approved,
+        owner=owner,
+        pump_transport=pump_transport,
+        secondary_transport=secondary_transport,
+        migration_transport=migration_transport,
+    )
 
 
 def _latest_supervision(connection: sqlite3.Connection) -> sqlite3.Row:
@@ -1998,15 +2215,17 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Printer V1 bounded persistent 15m Memory Factory command. "
-            "Modes: preflight-only, run, status, cooperative-stop, "
-            "recover-orphan, report-only, discovery-only."
+            "Modes: preflight-only, run, selective-1h-preflight, "
+            "selective-1h-proof, status, cooperative-stop, recover-orphan, "
+            "report-only, discovery-only."
         )
     )
     parser.add_argument(
         "mode",
         choices=(
-            "preflight-only", "run", "status", "cooperative-stop",
-            "recover-orphan", "report-only", "discovery-only",
+            "preflight-only", "run", SELECTIVE_1H_PREFLIGHT_MODE,
+            SELECTIVE_1H_MODE, "status", "cooperative-stop", "recover-orphan",
+            "report-only", "discovery-only",
         ),
     )
     parser.add_argument("--operator-approved", action="store_true")
@@ -2017,8 +2236,14 @@ def main(argv: Iterable[str] | None = None) -> int:
     try:
         if args.mode == "preflight-only":
             result = build_activation_preflight()
+        elif args.mode == SELECTIVE_1H_PREFLIGHT_MODE:
+            result = build_selective_1h_preflight()
         elif args.mode == "run":
             result = run_operational_campaign(operator_approved=args.operator_approved)
+        elif args.mode == SELECTIVE_1H_MODE:
+            result = run_selective_1h_proof(
+                operator_approved=args.operator_approved
+            )
         elif args.mode == "discovery-only":
             result = run_discovery_only_qualification(
                 operator_approved=args.operator_approved
@@ -2039,9 +2264,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         # holder-ledger counters into preflight/status/report-only failures.
         action_run_id = _ACTION_RUN_CONTEXT.get("run_id")
         campaign_source_calls: int | None = None
-        if args.mode == "run" and action_run_id:
+        campaign_modes = {"run", SELECTIVE_1H_MODE}
+        if args.mode in campaign_modes and action_run_id:
             campaign_source_calls = _latest_campaign_source_total(run_id=str(action_run_id))
-        elif args.mode == "run":
+        elif args.mode in campaign_modes:
             # Run failed before campaign creation (e.g. preflight). Action-local
             # total remains zero; do not inherit historical ledgers.
             campaign_source_calls = None
@@ -2087,12 +2313,20 @@ __all__ = [
     "LOCKED_WINDOWS",
     "MAIN_WINDOW",
     "OPERATIONAL_GRADUATED_SUPPLY_KWARGS",
+    "SELECTIVE_1H_GOVERNED_REQUEST_CEILING",
+    "SELECTIVE_1H_GOVERNED_REQUESTS_PER_TOKEN",
+    "SELECTIVE_1H_MODE",
+    "SELECTIVE_1H_PREFLIGHT_MODE",
+    "SELECTIVE_1H_REQUIRED_MIGRATION",
+    "SELECTIVE_1H_SCHEDULER_ROW_CEILING",
+    "SELECTIVE_1H_TOTAL_DURATION_SECONDS",
     "TOKEN_CAPACITY",
     "_ACTION_RUN_CONTEXT",
     "_latest_campaign_source_total",
     "_terminalize_initialized_failure",
     "_with_sqlite_busy_retry",
     "build_activation_preflight",
+    "build_selective_1h_preflight",
     "canonical_migration_count",
     "canonical_migration_names",
     "cooperative_stop",
@@ -2102,5 +2336,6 @@ __all__ = [
     "report_only",
     "run_discovery_only_qualification",
     "run_operational_campaign",
+    "run_selective_1h_proof",
     "validate_migration_ledger",
 ]

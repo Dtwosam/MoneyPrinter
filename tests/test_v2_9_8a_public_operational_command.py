@@ -226,6 +226,135 @@ class PublicOperationalCommandTests(unittest.TestCase):
         self.assertIn("operational_memory_factory_command:main", pyproject)
         self.assertNotIn("Start-V2-9-Proof", wrapper)
         self.assertNotIn("v2_9_7e_14_two_token_operational_pilot", wrapper)
+        self.assertIn("selective-1h-preflight", wrapper)
+        self.assertIn("selective-1h-proof", wrapper)
+
+    def test_normal_run_and_selective_proof_use_distinct_fixed_policies(self) -> None:
+        with patch.object(
+            command, "_run_operational_campaign", return_value={"status": "TEST"}
+        ) as runner:
+            command.run_operational_campaign(operator_approved=True)
+            normal = runner.call_args.kwargs["policy"]
+            self.assertEqual("run", normal.mode)
+            self.assertFalse(normal.selective_1h_continuation)
+            self.assertIn("WINDOW_1H", normal.locked_windows)
+            self.assertEqual(1200, normal.duration_seconds)
+
+            command.run_selective_1h_proof(operator_approved=True)
+            selective = runner.call_args.kwargs["policy"]
+            self.assertEqual("selective-1h-proof", selective.mode)
+            self.assertTrue(selective.selective_1h_continuation)
+            self.assertNotIn("WINDOW_1H", selective.locked_windows)
+            self.assertEqual(
+                ("WINDOW_4H", "WINDOW_12H", "WINDOW_24H"),
+                selective.locked_windows,
+            )
+            self.assertEqual(3900, selective.duration_seconds)
+            self.assertEqual(92, selective.governed_request_ceiling)
+            self.assertEqual(45, selective.governed_requests_per_token)
+            self.assertEqual(82, selective.scheduler_row_ceiling)
+
+    def test_selective_proof_requires_operator_approval_before_preflight(self) -> None:
+        with self.assertRaises(command.OperationalMemoryFactoryError):
+            command.run_selective_1h_proof(operator_approved=False)
+
+    def test_python_cli_dispatches_both_selective_modes(self) -> None:
+        with (
+            patch.object(
+                command,
+                "build_selective_1h_preflight",
+                return_value={"mode": "selective-1h-preflight"},
+            ) as preflight,
+            patch("builtins.print"),
+        ):
+            self.assertEqual(0, command.main(["selective-1h-preflight"]))
+        preflight.assert_called_once_with()
+
+        with (
+            patch.object(
+                command,
+                "run_selective_1h_proof",
+                return_value={"mode": "selective-1h-proof"},
+            ) as proof,
+            patch("builtins.print"),
+        ):
+            self.assertEqual(
+                0,
+                command.main(["selective-1h-proof", "--operator-approved"]),
+            )
+        proof.assert_called_once_with(operator_approved=True)
+
+    def test_selective_preflight_is_read_only_and_reports_fixed_policy(self) -> None:
+        before = self.db.read_bytes()
+        source_ready = {
+            "status": "READY",
+            "external_requests": 0,
+            "secret_material_recorded": False,
+        }
+        provenance = {
+            "git_head": "67ae2a3a1d7bdd89d1acdf44a00f21091d727661",
+            "git_tracked_tree_clean": True,
+            "git_staged_changes_present": False,
+            "git_unstaged_changes_present": False,
+            "git_untracked_present": False,
+            "git_provenance_captured_at": "2026-07-28T17:00:00+00:00",
+        }
+        with (
+            patch.object(command, "AUTHORITATIVE_DB", self.db.resolve()),
+            patch.object(
+                command,
+                "build_readiness_source_contract_preflight",
+                return_value=source_ready,
+            ),
+            patch.object(
+                command,
+                "assert_runtime_dependency_preflight",
+                return_value=_Dependency(),
+            ),
+            patch.object(command, "capture_git_provenance", return_value=provenance),
+            patch.object(
+                command,
+                "_capture_operational_git_provenance",
+                return_value=provenance,
+            ),
+        ):
+            report = command.build_selective_1h_preflight(
+                db_path=self.db, repository_root=ROOT
+            )
+        self.assertEqual(
+            "V2_9_8B_SELECTIVE_1H_PREFLIGHT_READY", report["status"]
+        )
+        self.assertEqual(0, report["source_calls"])
+        self.assertEqual(0, report["scheduler_runtime_calls"])
+        self.assertEqual(0, report["database_writes"])
+        self.assertTrue(report["migration_requirement"]["applied"])
+        self.assertEqual(92, report["proof_ceilings"]["governed_requests"])
+        self.assertEqual(82, report["proof_ceilings"]["scheduler_rows"])
+        self.assertEqual(4, report["proof_ceilings"]["reserved_mandatory_close_steps"])
+        self.assertTrue(report["host_awake_requirement"]["required"])
+        self.assertTrue(
+            report["backup_restore_requirement"]["required_before_campaign_creation"]
+        )
+        self.assertFalse(report["proof_policy"]["continuous_four_hour"])
+        self.assertFalse(report["proof_policy"]["restart_created"])
+        self.assertFalse(report["proof_policy"]["successor_created"])
+        self.assertEqual(before, self.db.read_bytes())
+
+    def test_selective_preflight_blocks_when_migration_047_is_missing(self) -> None:
+        connection = sqlite3.connect(self.db)
+        connection.execute(
+            "DELETE FROM printer_schema_migrations WHERE version=?",
+            (command.SELECTIVE_1H_REQUIRED_MIGRATION,),
+        )
+        connection.commit()
+        connection.close()
+        before = self.db.read_bytes()
+        with patch.object(command, "AUTHORITATIVE_DB", self.db.resolve()):
+            with self.assertRaisesRegex(
+                command.OperationalMemoryFactoryError, "gate=migration_047"
+            ):
+                command.build_selective_1h_preflight(db_path=self.db)
+        self.assertEqual(before, self.db.read_bytes())
 
     def test_cli_parser_rejects_unknown_mode(self) -> None:
         with self.assertRaises(SystemExit):
