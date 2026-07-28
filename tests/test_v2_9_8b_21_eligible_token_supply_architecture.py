@@ -317,6 +317,128 @@ class EligibleTokenSupplyArchitectureTests(unittest.TestCase):
         self.assertEqual(order.index(eligible_a), 7)
         self.assertEqual(order.index(eligible_b), 19)
 
+    def test_tracking_blocker_is_skipped_before_market_and_fresh_reserve_replaces_it(self) -> None:
+        specs = SPECS20[:3]
+        _seed_registry(self.connection, specs)
+        blocked_mint, _blocked_sig, blocked_pool = specs[0]
+        token_id = int(self.connection.execute(
+            "INSERT INTO printer_tokens(token_mint,token_status) VALUES (?,'TRACK_NORMAL')",
+            (blocked_mint,),
+        ).lastrowid)
+        pair_id = int(self.connection.execute(
+            "INSERT INTO printer_pairs(token_id,pair_address,base_token_mint) VALUES (?,?,?)",
+            (token_id, blocked_pool, blocked_mint),
+        ).lastrowid)
+        self.connection.execute(
+            """INSERT INTO printer_tracking_queue(
+                token_id,pair_id,tracking_lane,tracking_action,priority_reason,
+                next_check_at,last_checked_at,queue_status,source_status,data_quality_label
+            ) VALUES (?,?,'TRACK_NORMAL','ENTER_COOLDOWN','fixture',?,?,'COOLDOWN',
+                      'COMPLETE','CLEAN_DATA')""",
+            (
+                token_id,
+                pair_id,
+                (datetime.fromisoformat(NOW) + timedelta(minutes=30)).isoformat(),
+                NOW,
+            ),
+        )
+        self.connection.commit()
+        factory_calls: list[str] = []
+        payloads = {
+            pool: _pair_payload(pool, mint, 12_000.0)
+            for mint, _sig, pool in specs
+        }
+
+        def factory(mint, pool):
+            factory_calls.append(pool)
+            return fixture_success_transport(payloads[pool])
+
+        result = run_persistent_eligible_token_supply(
+            self.db,
+            cycle_seed=SEED,
+            migration_transport=_empty_migration_transport(),
+            dexscreener_transport_factory=factory,
+            now=NOW,
+            collection_rounds=1,
+            front_door_max_candidates=6,
+            required_token_capacity=2,
+            tracking_precheck=True,
+        )
+        self.assertTrue(result.ready)
+        self.assertNotIn(blocked_pool, factory_calls)
+        self.assertEqual(len(factory_calls), 2)
+        self.assertEqual(
+            {candidate["mint"] for candidate in result.eligible_reserve},
+            {specs[1][0], specs[2][0]},
+        )
+        blocked = next(
+            candidate for candidate in result.all_candidates
+            if candidate["mint"] == blocked_mint
+        )
+        self.assertTrue(blocked["excluded_before_market_source"])
+        self.assertEqual(blocked["rejection"], "COOLDOWN_REOPEN_REQUIRED")
+        self.assertEqual(result.diagnostics["pre_source_tracking_exclusions"], 1)
+
+    def test_expired_cooldown_is_revalidated_with_fresh_market_evidence(self) -> None:
+        specs = SPECS20[:2]
+        _seed_registry(self.connection, specs)
+        mint, _sig, pool = specs[0]
+        token_id = int(self.connection.execute(
+            "INSERT INTO printer_tokens(token_mint,token_status) VALUES (?,'TRACK_NORMAL')",
+            (mint,),
+        ).lastrowid)
+        pair_id = int(self.connection.execute(
+            "INSERT INTO printer_pairs(token_id,pair_address,base_token_mint) VALUES (?,?,?)",
+            (token_id, pool, mint),
+        ).lastrowid)
+        last_checked = datetime.fromisoformat(NOW) - timedelta(hours=1)
+        self.connection.execute(
+            """INSERT INTO printer_tracking_queue(
+                token_id,pair_id,tracking_lane,tracking_action,priority_reason,
+                next_check_at,last_checked_at,queue_status,source_status,data_quality_label
+            ) VALUES (?,?,'TRACK_NORMAL','ENTER_COOLDOWN','fixture',?,?,'COOLDOWN',
+                      'COMPLETE','CLEAN_DATA')""",
+            (
+                token_id,
+                pair_id,
+                (last_checked - timedelta(minutes=1)).isoformat(),
+                last_checked.isoformat(),
+            ),
+        )
+        self.connection.commit()
+        factory_calls: list[str] = []
+        payloads = {
+            candidate_pool: _pair_payload(candidate_pool, candidate_mint, 12_000.0)
+            for candidate_mint, _candidate_sig, candidate_pool in specs
+        }
+
+        def factory(candidate_mint, candidate_pool):
+            factory_calls.append(candidate_pool)
+            return fixture_success_transport(payloads[candidate_pool])
+
+        result = run_persistent_eligible_token_supply(
+            self.db,
+            cycle_seed=SEED,
+            migration_transport=_empty_migration_transport(),
+            dexscreener_transport_factory=factory,
+            now=NOW,
+            collection_rounds=1,
+            front_door_max_candidates=6,
+            required_token_capacity=2,
+            tracking_precheck=True,
+        )
+        self.assertTrue(result.ready)
+        self.assertIn(pool, factory_calls)
+        refreshed = next(
+            candidate for candidate in result.eligible_reserve
+            if candidate["mint"] == mint
+        )
+        self.assertTrue(refreshed["tracking_requalification_required"])
+        self.assertEqual(
+            refreshed["tracking_handoff"]["category"],
+            "COOLDOWN_REQUALIFICATION_REQUIRED",
+        )
+
     def test_round1_eligible_preserved_until_later_round(self) -> None:
         specs = SPECS20[:12]
         _seed_registry(self.connection, specs)

@@ -351,7 +351,15 @@ class AtomicTwoSlotHandoffTests(unittest.TestCase):
             ),
         }
 
-    def _seed_tracking(self, mint: str, pool: str, status: str) -> int:
+    def _seed_tracking(
+        self,
+        mint: str,
+        pool: str,
+        status: str,
+        *,
+        next_check_at: str = NOW,
+        last_checked_at: str | None = None,
+    ) -> int:
         with self.connection:
             token = self.connection.execute(
                 "SELECT id FROM printer_tokens WHERE token_mint=?", (mint,)
@@ -377,11 +385,11 @@ class AtomicTwoSlotHandoffTests(unittest.TestCase):
                 """
                 INSERT INTO printer_tracking_queue(
                     token_id,pair_id,tracking_lane,tracking_action,priority_reason,
-                    next_check_at,queue_status,source_status,data_quality_label
+                    next_check_at,last_checked_at,queue_status,source_status,data_quality_label
                 ) VALUES (?,?,'TRACK_NORMAL','PROMOTE_TO_TRACK_NORMAL','fixture',
-                          ?,?,'COMPLETE','CLEAN_DATA')
+                          ?,?,?,'COMPLETE','CLEAN_DATA')
                 """,
-                (token_id, pair_id, NOW, status),
+                (token_id, pair_id, next_check_at, last_checked_at, status),
             ).lastrowid)
 
     def _assert_owned_candidate_uses_reserve(self, status: str) -> None:
@@ -469,6 +477,63 @@ class AtomicTwoSlotHandoffTests(unittest.TestCase):
                     "WHERE job_kind='TRACK_NORMAL_FIRST_15M'"
                 ).fetchone()[0],
                 0,
+            )
+        finally:
+            connection.close()
+
+    def test_expired_cooldown_requalifies_into_exact_lane_once(self) -> None:
+        from datetime import datetime, timedelta
+
+        instant = datetime.fromisoformat(NOW)
+        old_queue_id = self._seed_tracking(
+            MINT_A,
+            POOL_A,
+            "COOLDOWN",
+            next_check_at=(instant - timedelta(hours=2)).isoformat(),
+            last_checked_at=(instant - timedelta(hours=1)).isoformat(),
+        )
+        fixtures = self._fixtures(
+            holder_evidence_eligibility={
+                MINT_A.lower(): {
+                    "eligible": True,
+                    "tracking_requalification_required": True,
+                    "source_name": "fixture-current-holder",
+                },
+                MINT_B.lower(): {"eligible": True},
+                MINT_C.lower(): {"eligible": False, "reason": "fixture-reserve"},
+            }
+        )
+        result = self._execute(fixtures)
+        self.assertEqual(result.terminal_status, "COMPLETED")
+        connection = self._reopen()
+        try:
+            queues = connection.execute(
+                "SELECT id,queue_status,tracking_action FROM printer_tracking_queue "
+                "WHERE token_id=(SELECT id FROM printer_tokens WHERE token_mint=?) "
+                "ORDER BY id",
+                (MINT_A,),
+            ).fetchall()
+            self.assertEqual(
+                [(row["queue_status"], row["tracking_action"]) for row in queues],
+                [
+                    ("COOLDOWN", "PROMOTE_TO_TRACK_NORMAL"),
+                    ("QUEUED", "REOPEN_REVIVED_TOKEN"),
+                ],
+            )
+            self.assertEqual(queues[0]["id"], old_queue_id)
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM printer_token_lifecycle_events "
+                    "WHERE lifecycle_event='REOPEN_REVIVED_TOKEN'"
+                ).fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM printer_scheduler_jobs "
+                    "WHERE job_kind='TRACK_NORMAL_FIRST_15M'"
+                ).fetchone()[0],
+                2,
             )
         finally:
             connection.close()

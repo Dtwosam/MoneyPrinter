@@ -920,6 +920,17 @@ def summarize_selective_1h_reporting(
         ).fetchone()
         if config_row is not None:
             factory_config = _loads(config_row[0])
+    if not factory_config:
+        campaign_config = connection.execute(
+            """SELECT c.configuration_json
+               FROM printer_memory_factory_campaign_runs AS r
+               JOIN printer_memory_factory_campaign_configurations AS c
+                 ON c.campaign_id = r.campaign_id
+               WHERE r.run_id=? AND r.campaign_id=?""",
+            (run_id, campaign_id),
+        ).fetchone()
+        if campaign_config is not None:
+            factory_config = _loads(campaign_config[0])
     selective_authorized = bool(factory_config.get("selective_1h_continuation"))
     close_counts = {str(row[0]): int(row[1]) for row in connection.execute(
         """SELECT step_status, COUNT(*)

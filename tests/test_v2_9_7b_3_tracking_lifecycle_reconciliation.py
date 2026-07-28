@@ -111,6 +111,20 @@ class TrackingLifecycleReconciliationTests(unittest.TestCase):
         self.assertEqual(self._queue_status(self.targets[0]), "COOLDOWN")
         self.assertEqual(transition["remaining_active_scheduler_jobs"], 0)
         self.assertTrue(result["exactly_one_disposition_per_selected_token"])
+        queue = self.conn.execute(
+            "SELECT next_check_at,last_checked_at FROM printer_tracking_queue WHERE id=?",
+            (self.targets[0]["tracking_queue_id"],),
+        ).fetchone()
+        self.assertGreater(queue["next_check_at"], queue["last_checked_at"])
+        payload = json.loads(self.conn.execute(
+            "SELECT event_payload_json FROM printer_token_lifecycle_events "
+            "WHERE priority_reason='factory_post_cycle_reconciliation'"
+        ).fetchone()[0])
+        self.assertEqual(payload["cooldown_seconds"], 1800)
+        self.assertEqual(payload["cooldown_until"], queue["next_check_at"])
+        self.assertEqual(
+            payload["tracking_queue_id"], self.targets[0]["tracking_queue_id"]
+        )
 
     def test_dirty_main_completion_can_use_explicit_archive_policy(self) -> None:
         result = self._run(

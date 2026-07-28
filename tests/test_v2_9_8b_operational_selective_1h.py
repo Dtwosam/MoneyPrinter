@@ -1116,6 +1116,20 @@ class OperationalSelective1hTests(unittest.TestCase):
             lifecycle_started=True,
             reconciliation={"reconciled": True},
             selective_1h=selective,
+            pre_lifecycle_admission={
+                "required_token_capacity": 2,
+                "holder_eligible_count": 0,
+                "terminal_classification": "COOLDOWN_REOPEN_REQUIRED",
+                "candidates": [
+                    {
+                        "mint": "mint-1",
+                        "tracking_handoff": {
+                            "category": "COOLDOWN_REOPEN_REQUIRED",
+                            "cooldown_until": NOW,
+                        },
+                    }
+                ],
+            },
         )
         self.assertEqual(
             payload["terminal"]["first_terminal_cause"],
@@ -1144,6 +1158,12 @@ class OperationalSelective1hTests(unittest.TestCase):
         self.assertEqual(replay["new_source_calls"], 0)
         self.assertEqual(replay["new_scheduler_work"], 0)
         self.assertEqual(
+            replay["report"]["pre_lifecycle_admission"][
+                "terminal_classification"
+            ],
+            "COOLDOWN_REOPEN_REQUIRED",
+        )
+        self.assertEqual(
             replay["report"]["selective_1h"]["selective_1h_outcome"],
             "ZERO_ELIGIBLE_CONTINUATIONS",
         )
@@ -1160,6 +1180,40 @@ class OperationalSelective1hTests(unittest.TestCase):
         )
         self.assertEqual(
             blocked["selective_1h_outcome"], "EVALUATION_BLOCKED_SYSTEM_DEFECT"
+        )
+
+    def test_pre_lifecycle_reporting_uses_immutable_campaign_configuration(self) -> None:
+        create_campaign(
+            self.fx.db,
+            campaign_id="campaign-pre-lifecycle",
+            configuration_id="config-pre-lifecycle",
+            configuration={
+                "policy": SELECTIVE_1H_POLICY_VERSION,
+                "selective_1h_continuation": True,
+                "command_mode": "selective-1h-proof",
+            },
+            launch_provenance=_provenance(),
+            db_mode=DB_MODE_PROOF_ISOLATED,
+            db_target_identity="proof-pre-lifecycle",
+            proof_source_db_identity="proof-source-pre-lifecycle",
+            policy_version=SELECTIVE_1H_POLICY_VERSION,
+        )
+        create_campaign_run(
+            self.fx.connection,
+            campaign_id="campaign-pre-lifecycle",
+            run_id="run-pre-lifecycle",
+            run_ordinal=1,
+            now=NOW,
+        )
+        report = summarize_selective_1h_reporting(
+            self.fx.connection,
+            campaign_id="campaign-pre-lifecycle",
+            run_id="run-pre-lifecycle",
+        )
+        self.assertIsNone(report["authoritative_run_id"])
+        self.assertTrue(report["selective_1h_authorized"])
+        self.assertEqual(
+            report["selective_1h_outcome"], "EVALUATION_NOT_REACHED"
         )
 
     def test_15m_campaign_window_terminal_state_reconciliation(self) -> None:

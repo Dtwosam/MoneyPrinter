@@ -207,6 +207,19 @@ class BlockedSupplySourceReportingTests(unittest.TestCase):
         self.temp.cleanup()
 
     def _write_terminal(self) -> dict[str, object]:
+        pre_lifecycle_admission = {
+            "required_token_capacity": 2,
+            "holder_eligible_count": 1,
+            "terminal_classification": "COOLDOWN_REOPEN_REQUIRED",
+            "candidates": [
+                {
+                    "mint": "mint-a",
+                    "tracking_handoff": {
+                        "category": "COOLDOWN_REOPEN_REQUIRED"
+                    },
+                }
+            ],
+        }
         lifecycle = {
             "first_terminal_cause": BLOCKED_INSUFFICIENT_GRADUATED_POOL,
             "terminal_reporting": {
@@ -215,6 +228,7 @@ class BlockedSupplySourceReportingTests(unittest.TestCase):
                 "required_token_capacity": 2,
                 "blocked_supply_reason": BLOCKED_INSUFFICIENT_GRADUATED_POOL,
                 "candidates": _fixture_candidates(),
+                "pre_lifecycle_admission": pre_lifecycle_admission,
             },
             "front_door_candidates": _fixture_candidates(),
         }
@@ -225,6 +239,10 @@ class BlockedSupplySourceReportingTests(unittest.TestCase):
             terminal_cause=BLOCKED_INSUFFICIENT_GRADUATED_POOL,
             lifecycle=lifecycle,
             required_token_capacity=2,
+        )
+        self.assertEqual(
+            reporting["pre_lifecycle_admission"]["terminal_classification"],
+            "COOLDOWN_REOPEN_REQUIRED",
         )
         reconciliation = reconcile_campaign_terminal(
             self.db,
@@ -261,6 +279,7 @@ class BlockedSupplySourceReportingTests(unittest.TestCase):
             eligible_candidates=reporting.get("eligible_candidates"),
             required_token_capacity=reporting.get("required_token_capacity"),
             blocked_supply_reason=reporting.get("blocked_supply_reason"),
+            pre_lifecycle_admission=reporting.get("pre_lifecycle_admission"),
         )
         return write_campaign_terminal_report(
             self.db,
@@ -359,6 +378,12 @@ class BlockedSupplySourceReportingTests(unittest.TestCase):
         self.assertEqual(replay_b["report_hash"], replay_a["report_hash"])
         self.assertEqual(replay_a["eligible_candidates"], 1)
         self.assertEqual(replay_a["required_token_capacity"], 2)
+        self.assertEqual(
+            replay_a["report"]["pre_lifecycle_admission"][
+                "terminal_classification"
+            ],
+            "COOLDOWN_REOPEN_REQUIRED",
+        )
 
         rows = self.connection.execute(
             "SELECT COUNT(*) FROM printer_memory_factory_campaign_reports"

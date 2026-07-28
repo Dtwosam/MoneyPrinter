@@ -786,6 +786,10 @@ def assemble_campaign_terminal_reporting(
     )
     lifecycle = dict(lifecycle or {})
     reporting = dict(lifecycle.get("terminal_reporting") or {})
+    pre_lifecycle_admission = (
+        reporting.get("pre_lifecycle_admission")
+        or lifecycle.get("pre_lifecycle_admission")
+    )
     candidates_raw = (
         reporting.get("candidates")
         or lifecycle.get("front_door_candidates")
@@ -840,11 +844,16 @@ def assemble_campaign_terminal_reporting(
     # If no candidates were packaged and the terminal is not a blocked-supply
     # close, keep activity totals without inventing a blocked-supply story.
     if not candidates_raw and reason is None:
-        return {
+        result = {
             "campaign_activity": surface["campaign_activity"],
             "campaign_source_calls": surface["campaign_source_calls"],
             "campaign_scheduler_calls": surface["campaign_scheduler_calls"],
         }
+        if isinstance(pre_lifecycle_admission, Mapping):
+            result["pre_lifecycle_admission"] = dict(pre_lifecycle_admission)
+        return result
+    if isinstance(pre_lifecycle_admission, Mapping):
+        surface["pre_lifecycle_admission"] = dict(pre_lifecycle_admission)
     return surface
 
 
@@ -875,6 +884,7 @@ def build_campaign_terminal_report(
     blocked_supply_reason: str | None = None,
     fault_details: Mapping[str, Any] | None = None,
     selective_1h: Mapping[str, Any] | None = None,
+    pre_lifecycle_admission: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Assemble the canonical terminal report payload from stored facts only."""
     payload: dict[str, Any] = {
@@ -917,6 +927,10 @@ def build_campaign_terminal_report(
     if selective_1h is not None:
         payload["selective_1h"] = json.loads(
             _canonical_json(dict(selective_1h))
+        )
+    if pre_lifecycle_admission is not None:
+        payload["pre_lifecycle_admission"] = json.loads(
+            _canonical_json(dict(pre_lifecycle_admission))
         )
     if campaign_activity is not None:
         payload["campaign_activity"] = dict(campaign_activity)

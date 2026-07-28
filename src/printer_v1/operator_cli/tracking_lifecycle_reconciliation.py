@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from typing import Any
+
+from printer_v1.lifecycle.tracking_queue import TRACKING_COOLDOWN_SECONDS
 
 from printer_v1.operator_cli.lane_x3_post_cycle_lifecycle import (
     _ACTIVE_JOB_STATUSES,
@@ -97,6 +100,23 @@ def reconcile_factory_post_cycle_lifecycle(
             conn, queue_id, handoff.get("scheduler_job_id"), support_rows
         )
         now = _utc_now()
+        cooldown_until = None
+        if disposition == _QUEUE_STATUS_COOLDOWN:
+            parsed_now = datetime.fromisoformat(str(now).replace("Z", "+00:00"))
+            if parsed_now.tzinfo is None:
+                parsed_now = parsed_now.replace(tzinfo=timezone.utc)
+            cooldown_until = (
+                parsed_now.astimezone(timezone.utc)
+                + timedelta(seconds=TRACKING_COOLDOWN_SECONDS)
+            ).isoformat()
+            if existing_event is not None:
+                try:
+                    existing_payload = json.loads(
+                        str(existing_event["event_payload_json"] or "{}")
+                    )
+                except (TypeError, json.JSONDecodeError):
+                    existing_payload = {}
+                cooldown_until = existing_payload.get("cooldown_until")
         for support in support_rows:
             if support["step_status"] in {"PENDING", "RUNNING"}:
                 conn.execute(
@@ -112,11 +132,13 @@ def reconcile_factory_post_cycle_lifecycle(
         if queue_id is not None:
             conn.execute(
                 "UPDATE printer_tracking_queue SET queue_status=?,tracking_action=?,"
-                "priority_reason=?,last_checked_at=?,updated_at=? WHERE id=? "
+                "priority_reason=?,next_check_at=CASE WHEN ? IS NULL THEN next_check_at ELSE ? END,"
+                "last_checked_at=?,updated_at=? WHERE id=? "
                 "AND queue_status IN (?,?,?,?) AND queue_status<>?",
                 (
                     disposition, lifecycle_event,
-                    f"factory_terminal:{stop_reason}:{terminal_status}", now, now,
+                    f"factory_terminal:{stop_reason}:{terminal_status}",
+                    cooldown_until, cooldown_until, now, now,
                     queue_id, *_ACTIVE_QUEUE_STATUSES, disposition,
                 ),
             )
@@ -135,6 +157,15 @@ def reconcile_factory_post_cycle_lifecycle(
                     int(row["memory_window_id"])
                     for row in support_rows if row.get("memory_window_id") is not None
                 ],
+                "tracking_queue_id": queue_id,
+                "cooldown_started_at": (
+                    now if disposition == _QUEUE_STATUS_COOLDOWN else None
+                ),
+                "cooldown_until": cooldown_until,
+                "cooldown_seconds": (
+                    TRACKING_COOLDOWN_SECONDS
+                    if disposition == _QUEUE_STATUS_COOLDOWN else None
+                ),
             }
             cursor = conn.execute(
                 "INSERT INTO printer_token_lifecycle_events "
@@ -161,6 +192,7 @@ def reconcile_factory_post_cycle_lifecycle(
             "terminal_reason": f"{stop_reason}:{terminal_status}",
             "lifecycle_event": lifecycle_event,
             "lifecycle_event_id": event_id,
+            "cooldown_until": cooldown_until,
             "idempotent_replay": existing_event is not None,
             "cancelled_scheduler_job_ids": cancelled_job_ids,
             "remaining_active_scheduler_jobs": remaining_jobs,

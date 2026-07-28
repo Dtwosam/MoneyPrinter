@@ -53,7 +53,7 @@ from printer_v1.lifecycle.tracking_queue import (
     HANDOFF_UNSUPPORTED_STATE,
     assess_tracking_handoff,
     assess_tracking_handoff_by_identity,
-    enqueue_tracking_item,
+    claim_tracking_item,
 )
 from printer_v1.operator_cli.abstract_campaign_command import (
     AbstractCampaignCommand,
@@ -1991,6 +1991,9 @@ class CombinedPumpfunCampaignExecutor:
                         token_mint=candidate.mint,
                         pair_address=pool,
                         tracking_lane=TokenLifecycleState.TRACK_NORMAL,
+                        assessed_at=datetime.fromisoformat(
+                            fixtures.evaluated_at.replace("Z", "+00:00")
+                        ),
                     )
                     if not handoff.eligible:
                         failed = handoff.reason_code or HANDOFF_UNSUPPORTED_STATE
@@ -2308,13 +2311,24 @@ class CombinedPumpfunCampaignExecutor:
             token_id=token_id,
             pair_id=pair_id,
             tracking_lane=TokenLifecycleState.TRACK_NORMAL,
+            assessed_at=datetime.fromisoformat(now.replace("Z", "+00:00")),
         )
         if not handoff.eligible:
             raise CombinedDiscoveryError(
                 handoff.reason_code or HANDOFF_UNSUPPORTED_STATE
             )
+        holder_fact = dict(
+            fixtures.holder_evidence_eligibility.get(mint.lower()) or {}
+        )
+        fresh_requalification = bool(
+            handoff.requalification_eligible
+            and holder_fact.get("eligible") is True
+            and holder_fact.get("tracking_requalification_required") is True
+        )
+        if handoff.requalification_eligible and not fresh_requalification:
+            raise CombinedDiscoveryError(handoff.category)
 
-        created, queue_id = enqueue_tracking_item(
+        created, queue_id = claim_tracking_item(
             connection,
             token_id=token_id,
             pair_id=pair_id,
@@ -2324,6 +2338,18 @@ class CombinedPumpfunCampaignExecutor:
             next_check_at=datetime.fromisoformat(now.replace("Z", "+00:00")),
             source_status=SourceStatus.COMPLETE,
             data_quality_label=DataQualityLabel.CLEAN_DATA,
+            assessed_at=datetime.fromisoformat(now.replace("Z", "+00:00")),
+            fresh_evidence_requalification=fresh_requalification,
+            requalification_lineage={
+                "campaign_id": command.campaign_id,
+                "run_id": command.run_id,
+                "cycle_id": fixtures.cycle_id,
+                "discovery_batch_id": discovery_batch_id,
+                "selection_batch_id": selection_batch_id,
+                "fresh_evidence_evaluated_at": now,
+                "holder_source_name": holder_fact.get("source_name"),
+                "holder_evidence_reason": holder_fact.get("reason"),
+            },
         )
         if not created or queue_id is None:
             handoff = assess_tracking_handoff(
@@ -2331,6 +2357,7 @@ class CombinedPumpfunCampaignExecutor:
                 token_id=token_id,
                 pair_id=pair_id,
                 tracking_lane=TokenLifecycleState.TRACK_NORMAL,
+                assessed_at=datetime.fromisoformat(now.replace("Z", "+00:00")),
             )
             raise CombinedDiscoveryError(
                 handoff.reason_code or HANDOFF_UNSUPPORTED_STATE

@@ -851,6 +851,11 @@ def _graduated_supply_terminal_cause(supply: Any | None) -> str:
         return BLOCKED_INSUFFICIENT_GRADUATED_POOL
     diagnostics = dict(getattr(supply, "diagnostics", {}) or {})
     classification = str(diagnostics.get("shortage_classification") or "")
+    if classification == "TRACKING_STATE_CAPACITY_BLOCKED":
+        return str(
+            diagnostics.get("tracking_terminal_cause")
+            or "COOLDOWN_REOPEN_REQUIRED"
+        )
     if not classification or classification == "TRUE_MARKET_SUPPLY_SHORTAGE":
         return BLOCKED_INSUFFICIENT_GRADUATED_POOL
     return classification
@@ -931,11 +936,6 @@ def _classify_pre_lifecycle_terminal(
         HANDOFF_TERMINAL_REOPEN_REQUIRED,
         HANDOFF_UNSUPPORTED_STATE,
     }
-    for fact in holder_facts.values():
-        reason = str(fact.get("reason") or "")
-        if reason in tracking_reasons:
-            return reason
-
     saw_source_outage = any(
         not fact.get("eligible")
         and str(fact.get("reason") or "").startswith(HOLDER_SOURCE_UNAVAILABLE_PREFIXES)
@@ -943,6 +943,10 @@ def _classify_pre_lifecycle_terminal(
     )
     if saw_source_outage:
         return "PRE_LIFECYCLE_HOLDER_EVIDENCE_BLOCKED"
+    for fact in holder_facts.values():
+        reason = str(fact.get("reason") or "")
+        if reason in tracking_reasons:
+            return reason
     if len(holder_facts) < reserve_count:
         return "PRE_LIFECYCLE_DISCOVERY_SELECTION_CAPACITY_EXHAUSTED"
     return "PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT"
@@ -1202,14 +1206,26 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     proof.mint.lower(), proof.bonding_curve
                 ),
                 tracking_lane=TokenLifecycleState.TRACK_NORMAL,
+                assessed_at=evaluated,
             )
+            handoff_detail = {
+                "tracking_handoff_category": handoff.category,
+                "tracking_queue_id": handoff.queue_id,
+                "tracking_queue_status": handoff.queue_status,
+                "tracking_requalification_required": (
+                    handoff.requalification_eligible
+                ),
+                "cooldown_until": handoff.cooldown_until,
+                "historical_cooldown_expiry_derived": (
+                    handoff.historical_cooldown_expiry_derived
+                ),
+            }
             if not handoff.eligible:
                 holder_facts[proof.mint.lower()] = {
                     "eligible": False,
                     "reason": handoff.reason_code,
                     "source_name": None,
-                    "tracking_queue_id": handoff.queue_id,
-                    "tracking_queue_status": handoff.queue_status,
+                    **handoff_detail,
                 }
                 continue
             ledger.admit_candidate(now=evaluated)
@@ -1231,7 +1247,10 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     mint=proof.mint, evaluated_at=evaluated.isoformat(),
                 )
                 if reused_fact is not None:
-                    holder_facts[proof.mint.lower()] = reused_fact
+                    holder_facts[proof.mint.lower()] = {
+                        **dict(reused_fact),
+                        **handoff_detail,
+                    }
                     ledger = replace(
                         ledger,
                         zero_transport_operations=ledger.zero_transport_operations + 1,
@@ -1272,11 +1291,12 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     include=frozenset({"safety"}),
                     request_pacer=pacer,
                 )
-                holder_facts[proof.mint.lower()] = (
-                    _holder_eligibility_from_bundle(
+                holder_facts[proof.mint.lower()] = {
+                    **_holder_eligibility_from_bundle(
                         bundle, token_mint=proof.mint
-                    )
-                )
+                    ),
+                    **handoff_detail,
+                }
                 governed_used, transports_used = persist_bundle_attempts(
                     connection, run_id=command.run_id, cycle_id=cycle_id,
                     mint=proof.mint, executions=bundle.get("executions", {}),
@@ -1316,6 +1336,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     "eligible": False,
                     "reason": f"HOLDER_EVIDENCE_COLLECTION_FAILED:{type(exc).__name__}",
                     "source_name": None,
+                    **handoff_detail,
                 }
         return holder_facts, ledger
 
@@ -1432,6 +1453,10 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 build_graduated_supply,
             )
             supply_kwargs = dict(graduated_supply_kwargs or {})
+            # The V2-9.8B operational path applies exact tracking feasibility
+            # before exact-pool market work. Other front-door consumers retain
+            # their explicit default until they opt into this campaign contract.
+            supply_kwargs.setdefault("tracking_precheck", True)
             # Bind existing exhaustion-certificate ownership to the canonical
             # operational action. selection_seed is the execution identity used
             # by the outer V2-9.8B command.
@@ -1586,6 +1611,24 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     dict(supply.diagnostics) if supply is not None else {}
                 )
                 supply_terminal_cause = _graduated_supply_terminal_cause(supply)
+                pre_lifecycle_admission = {
+                    "required_token_capacity": 2,
+                    "graduated_candidate_count": len(graduated_candidates),
+                    "holder_eligible_count": 0,
+                    "terminal_classification": supply_terminal_cause,
+                    "shortage_classification": supply_diag.get(
+                        "shortage_classification"
+                    ),
+                    "provider_failures": supply_diag.get(
+                        "provider_failures", 0
+                    ),
+                    "pre_source_tracking_exclusions": supply_diag.get(
+                        "pre_source_tracking_exclusions", 0
+                    ),
+                    "candidates": front_door_candidates,
+                    "campaign_source_calls": int(ledger.governed_requests),
+                    "campaign_scheduler_calls": 0,
+                }
                 terminal_reporting = {
                     "campaign_source_calls": int(ledger.governed_requests),
                     "campaign_scheduler_calls": 0,
@@ -1603,6 +1646,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     "eligible_reserve_count": supply_diag.get(
                         "eligible_reserve_count"
                     ),
+                    "pre_lifecycle_admission": pre_lifecycle_admission,
                 }
                 return OriginLifecycleResult(
                     activation=ActivationResult(
@@ -1627,6 +1671,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         ),
                         "front_door_candidates": front_door_candidates,
                         "blocked_supply_reason": supply_terminal_cause,
+                        "pre_lifecycle_admission": pre_lifecycle_admission,
                         "terminal_reporting": terminal_reporting,
                     },
                     lifecycle_started=False,
@@ -1759,6 +1804,64 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     holder_facts, reserve_count=len(admitted_by_mint)
                 )
 
+        front_door_candidates = (
+            list((supply.front_door_report or {}).get("candidates") or [])
+            if supply is not None else []
+        )
+        admission_candidates: list[dict[str, Any]] = []
+        for candidate in front_door_candidates:
+            item = dict(candidate)
+            mint_key = str(item.get("mint") or "").lower()
+            holder = dict(holder_facts.get(mint_key) or {})
+            tracking = dict(item.get("tracking_handoff") or {})
+            if holder:
+                tracking.update({
+                    "category": holder.get("tracking_handoff_category"),
+                    "tracking_queue_id": holder.get("tracking_queue_id"),
+                    "tracking_queue_status": holder.get("tracking_queue_status"),
+                    "requalification_required": holder.get(
+                        "tracking_requalification_required"
+                    ),
+                    "cooldown_until": holder.get("cooldown_until"),
+                    "historical_cooldown_expiry_derived": holder.get(
+                        "historical_cooldown_expiry_derived"
+                    ),
+                })
+            item["tracking_handoff"] = {
+                key: value for key, value in tracking.items() if value is not None
+            }
+            item["holder_eligibility"] = holder
+            item["excluded_before_market_source"] = bool(
+                item.get("excluded_before_market_source")
+            )
+            item["fresh_requalification_required"] = bool(
+                tracking.get("requalification_required")
+            )
+            item["fresh_requalification_completed"] = False
+            admission_candidates.append(item)
+
+        supply_diagnostics = (
+            dict(supply.diagnostics) if supply is not None else {}
+        )
+        pre_lifecycle_admission = {
+            "required_token_capacity": 2,
+            "graduated_candidate_count": len(graduated_candidates),
+            "holder_eligible_count": sum(
+                1 for fact in holder_facts.values() if fact.get("eligible")
+            ),
+            "terminal_classification": selection_terminal,
+            "shortage_classification": supply_diagnostics.get(
+                "shortage_classification"
+            ),
+            "provider_failures": supply_diagnostics.get("provider_failures", 0),
+            "pre_source_tracking_exclusions": supply_diagnostics.get(
+                "pre_source_tracking_exclusions", 0
+            ),
+            "candidates": admission_candidates,
+            "campaign_source_calls": int(ledger.governed_requests),
+            "campaign_scheduler_calls": 0,
+        }
+
         # V2-9.7E.44/46B bounded pre-lifecycle boundary: return atomic two-slot
         # readiness (admission + holder eligibility + handoff readiness) without
         # invoking the scheduler/lifecycle/memory driver. No tracking is enqueued.
@@ -1811,6 +1914,18 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     "graduated_supply_diagnostics": (
                         dict(supply.diagnostics) if supply is not None else {}
                     ),
+                    "pre_lifecycle_admission": pre_lifecycle_admission,
+                    "terminal_reporting": {
+                        "campaign_source_calls": int(ledger.governed_requests),
+                        "campaign_scheduler_calls": 0,
+                        "required_token_capacity": 2,
+                        "blocked_supply_reason": terminal,
+                        "shortage_classification": supply_diagnostics.get(
+                            "shortage_classification"
+                        ),
+                        "candidates": admission_candidates,
+                        "pre_lifecycle_admission": pre_lifecycle_admission,
+                    },
                 },
                 lifecycle_started=False,
             )
@@ -1837,6 +1952,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
         try:
             result.lifecycle.setdefault("full_pilot_admission", admission)
             result.lifecycle.setdefault("pilot_input_readiness", readiness_bundle)
+            result.lifecycle.setdefault(
+                "pre_lifecycle_admission", pre_lifecycle_admission
+            )
         except (AttributeError, TypeError):  # pragma: no cover - defensive
             pass
         return result

@@ -3,7 +3,7 @@
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import json
 import sqlite3
@@ -16,6 +16,7 @@ from printer_v1.lifecycle.contracts import (
     TokenLifecycleState,
 )
 from printer_v1.scheduler.contracts import JobKind, LockResult
+from printer_v1.scheduler.resource_governor import next_check_interval_seconds
 from printer_v1.scheduler.scheduler import enqueue_job
 
 
@@ -39,8 +40,16 @@ TERMINAL_TRACKING_STATUSES = frozenset(
 HANDOFF_FRESH = "FRESH_TRACKING_IDENTITY"
 HANDOFF_ACTIVE_CONFLICT = "DUPLICATE_ACTIVE_TRACKING"
 HANDOFF_COOLDOWN_REOPEN_REQUIRED = "COOLDOWN_REOPEN_REQUIRED"
+HANDOFF_COOLDOWN_REQUALIFICATION_REQUIRED = "COOLDOWN_REQUALIFICATION_REQUIRED"
 HANDOFF_TERMINAL_REOPEN_REQUIRED = "TERMINAL_TRACKING_STATE"
 HANDOFF_UNSUPPORTED_STATE = "UNSUPPORTED_TRACKING_QUEUE_STATE"
+
+# Existing Resource Governor cadence for BACKUP_SOURCE_CHECK. Lifecycle cooldown
+# uses the same categorical clock; it is deliberately separate from the market
+# liquidity-floor cooldown.
+TRACKING_COOLDOWN_SECONDS = next_check_interval_seconds(
+    JobKind.BACKUP_SOURCE_CHECK
+)
 
 
 @dataclass(frozen=True)
@@ -50,6 +59,9 @@ class TrackingHandoffAssessment:
     reason_code: str | None
     queue_id: int | None
     queue_status: str | None
+    requalification_eligible: bool = False
+    cooldown_until: str | None = None
+    historical_cooldown_expiry_derived: bool = False
 
 
 QUEUE_LANE_PRIORITY = {
@@ -93,7 +105,34 @@ def normalize_pair_id(pair_id: int | None) -> int:
     return -1 if pair_id is None else pair_id
 
 
-def _handoff_assessment(row: sqlite3.Row | None) -> TrackingHandoffAssessment:
+def _parse_timestamp(value: object) -> datetime | None:
+    if value is None or not str(value).strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _effective_cooldown_expiry(
+    row: sqlite3.Row,
+) -> tuple[datetime | None, bool]:
+    """Resolve future and historical cooldown rows without mutating history."""
+    last_checked = _parse_timestamp(row["last_checked_at"])
+    next_check = _parse_timestamp(row["next_check_at"])
+    if last_checked is None:
+        return None, False
+    if next_check is not None and next_check > last_checked:
+        return next_check, False
+    return last_checked + timedelta(seconds=TRACKING_COOLDOWN_SECONDS), True
+
+
+def _handoff_assessment(
+    row: sqlite3.Row | None, *, assessed_at: datetime | None = None
+) -> TrackingHandoffAssessment:
     if row is None:
         return TrackingHandoffAssessment(True, HANDOFF_FRESH, None, None, None)
     raw_status = str(row["queue_status"] or "")
@@ -110,7 +149,34 @@ def _handoff_assessment(row: sqlite3.Row | None) -> TrackingHandoffAssessment:
     if status in LIVE_TRACKING_OWNERSHIP_STATUSES:
         category = HANDOFF_ACTIVE_CONFLICT
     elif status is QueueStatus.COOLDOWN:
-        category = HANDOFF_COOLDOWN_REOPEN_REQUIRED
+        cooldown_until, derived = _effective_cooldown_expiry(row)
+        instant = assessed_at
+        if instant is not None and instant.tzinfo is None:
+            instant = instant.replace(tzinfo=timezone.utc)
+        if instant is not None:
+            instant = instant.astimezone(timezone.utc)
+        if cooldown_until is not None and instant is not None and instant >= cooldown_until:
+            return TrackingHandoffAssessment(
+                True,
+                HANDOFF_COOLDOWN_REQUALIFICATION_REQUIRED,
+                None,
+                int(row["id"]),
+                status.value,
+                requalification_eligible=True,
+                cooldown_until=to_timestamp(cooldown_until),
+                historical_cooldown_expiry_derived=derived,
+            )
+        return TrackingHandoffAssessment(
+            False,
+            HANDOFF_COOLDOWN_REOPEN_REQUIRED,
+            HANDOFF_COOLDOWN_REOPEN_REQUIRED,
+            int(row["id"]),
+            status.value,
+            cooldown_until=(
+                None if cooldown_until is None else to_timestamp(cooldown_until)
+            ),
+            historical_cooldown_expiry_derived=derived,
+        )
     elif status in TERMINAL_TRACKING_STATUSES:
         category = HANDOFF_TERMINAL_REOPEN_REQUIRED
     else:  # pragma: no cover - QueueStatus is exhaustively handled above.
@@ -126,6 +192,7 @@ def assess_tracking_handoff(
     token_id: int,
     pair_id: int | None,
     tracking_lane: TokenLifecycleState | str,
+    assessed_at: datetime | None = None,
 ) -> TrackingHandoffAssessment:
     """Classify the latest exact token/pair/lane row for a fresh handoff.
 
@@ -137,7 +204,7 @@ def assess_tracking_handoff(
     with connect(db_or_connection) as connection:
         row = connection.execute(
             """
-            SELECT id, queue_status
+            SELECT id, queue_status, next_check_at, last_checked_at
             FROM printer_tracking_queue
             WHERE token_id = ?
               AND COALESCE(pair_id, -1) = ?
@@ -147,7 +214,7 @@ def assess_tracking_handoff(
             """,
             (token_id, normalize_pair_id(pair_id), lane.value),
         ).fetchone()
-    return _handoff_assessment(row)
+    return _handoff_assessment(row, assessed_at=assessed_at)
 
 
 def assess_tracking_handoff_by_identity(
@@ -156,13 +223,14 @@ def assess_tracking_handoff_by_identity(
     token_mint: str,
     pair_address: str,
     tracking_lane: TokenLifecycleState | str,
+    assessed_at: datetime | None = None,
 ) -> TrackingHandoffAssessment:
     """Read-only exact-identity assessment usable before token/pair creation."""
     lane = TokenLifecycleState(tracking_lane)
     with connect(db_or_connection) as connection:
         row = connection.execute(
             """
-            SELECT q.id, q.queue_status
+            SELECT q.id, q.queue_status, q.next_check_at, q.last_checked_at
             FROM printer_tracking_queue AS q
             JOIN printer_tokens AS t ON t.id = q.token_id
             JOIN printer_pairs AS p ON p.id = q.pair_id AND p.token_id = t.id
@@ -174,7 +242,7 @@ def assess_tracking_handoff_by_identity(
             """,
             (token_mint, pair_address, lane.value),
         ).fetchone()
-    return _handoff_assessment(row)
+    return _handoff_assessment(row, assessed_at=assessed_at)
 
 
 def has_active_tracking_duplicate(
@@ -205,18 +273,59 @@ def enqueue_tracking_item(
     source_status: SourceStatus,
     data_quality_label: DataQualityLabel,
 ) -> tuple[bool, int | None]:
-    lane = TokenLifecycleState(tracking_lane)
-    action = LifecycleEvent(tracking_action)
-    assessment = assess_tracking_handoff(
+    return claim_tracking_item(
         db_or_connection,
         token_id=token_id,
         pair_id=pair_id,
-        tracking_lane=lane,
+        tracking_lane=tracking_lane,
+        tracking_action=tracking_action,
+        priority_reason=priority_reason,
+        next_check_at=next_check_at,
+        source_status=source_status,
+        data_quality_label=data_quality_label,
     )
-    if not assessment.eligible:
-        return False, None
 
+
+def claim_tracking_item(
+    db_or_connection: str | Path | sqlite3.Connection,
+    *,
+    token_id: int,
+    pair_id: int | None,
+    tracking_lane: TokenLifecycleState | str,
+    tracking_action: LifecycleEvent | str,
+    priority_reason: str,
+    next_check_at: datetime,
+    source_status: SourceStatus,
+    data_quality_label: DataQualityLabel,
+    assessed_at: datetime | None = None,
+    fresh_evidence_requalification: bool = False,
+    requalification_lineage: dict[str, object] | None = None,
+) -> tuple[bool, int | None]:
+    """Atomically claim a fresh or freshly requalified exact tracking lane.
+
+    Ordinary callers remain fresh-only. The operational campaign may supply a
+    fixed assessment instant plus current-evidence lineage to append a new exact
+    lane row after an expired cooldown. Historical queue rows are preserved.
+    """
+    lane = TokenLifecycleState(tracking_lane)
+    action = LifecycleEvent(tracking_action)
     with connect(db_or_connection) as connection:
+        assessment = assess_tracking_handoff(
+            connection,
+            token_id=token_id,
+            pair_id=pair_id,
+            tracking_lane=lane,
+            assessed_at=assessed_at,
+        )
+        if not assessment.eligible:
+            return False, None
+        if assessment.requalification_eligible and not fresh_evidence_requalification:
+            return False, None
+        claim_action = (
+            LifecycleEvent.REOPEN_REVIVED_TOKEN
+            if assessment.requalification_eligible
+            else action
+        )
         cursor = connection.execute(
             """
             INSERT INTO printer_tracking_queue (
@@ -236,7 +345,7 @@ def enqueue_tracking_item(
                 token_id,
                 pair_id,
                 lane.value,
-                action.value,
+                claim_action.value,
                 priority_reason,
                 to_timestamp(next_check_at),
                 QueueStatus.QUEUED.value,
@@ -244,7 +353,33 @@ def enqueue_tracking_item(
                 data_quality_label.value,
             ),
         )
-        return True, int(cursor.lastrowid)
+        queue_id = int(cursor.lastrowid)
+        if assessment.requalification_eligible:
+            payload = {
+                "predecessor_queue_id": assessment.queue_id,
+                "predecessor_queue_status": assessment.queue_status,
+                "predecessor_tracking_lane": lane.value,
+                "cooldown_until": assessment.cooldown_until,
+                "historical_cooldown_expiry_derived": (
+                    assessment.historical_cooldown_expiry_derived
+                ),
+                "fresh_evidence_requalification": True,
+                "new_tracking_queue_id": queue_id,
+                **dict(requalification_lineage or {}),
+            }
+            record_lifecycle_event(
+                connection,
+                token_id=token_id,
+                pair_id=pair_id,
+                previous_state=TokenLifecycleState.COOLDOWN,
+                new_state=lane,
+                lifecycle_event=LifecycleEvent.REOPEN_REVIVED_TOKEN,
+                priority_reason="expired_cooldown_fresh_requalification",
+                source_status=source_status,
+                data_quality_label=data_quality_label,
+                event_payload=payload,
+            )
+        return True, queue_id
 
 
 def update_tracking_lane(

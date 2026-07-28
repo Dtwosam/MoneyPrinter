@@ -1171,6 +1171,7 @@ def _terminalize_initialized_failure(
             campaign_id=command.campaign_id,
             run_id=command.run_id,
         ),
+        pre_lifecycle_admission=reporting.get("pre_lifecycle_admission"),
     )
     report: Mapping[str, Any] = {"report_written": False}
     try:
@@ -1467,6 +1468,7 @@ def _run_operational_campaign(
                 campaign_id=command.campaign_id,
                 run_id=command.run_id,
             ),
+            pre_lifecycle_admission=reporting.get("pre_lifecycle_admission"),
         )
         report = write_campaign_terminal_report(
             command.db_path,

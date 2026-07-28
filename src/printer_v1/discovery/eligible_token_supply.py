@@ -68,6 +68,7 @@ BUDGET_EXHAUSTION = "BUDGET_EXHAUSTION"
 DURATION_EXHAUSTION = "DURATION_EXHAUSTION"
 STALE_EVIDENCE_SHORTAGE = "STALE_EVIDENCE_SHORTAGE"
 DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE = "DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE"
+TRACKING_STATE_CAPACITY_BLOCKED = "TRACKING_STATE_CAPACITY_BLOCKED"
 
 SHORTAGE_CLASSIFICATIONS = (
     TRUE_MARKET_SUPPLY_SHORTAGE,
@@ -77,6 +78,7 @@ SHORTAGE_CLASSIFICATIONS = (
     DURATION_EXHAUSTION,
     STALE_EVIDENCE_SHORTAGE,
     DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE,
+    TRACKING_STATE_CAPACITY_BLOCKED,
 )
 
 BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL = (
@@ -537,6 +539,7 @@ def run_persistent_eligible_token_supply(
     run_id: str | None = None,
     cycle_id: str | None = None,
     locator_runner: Callable[..., Mapping[str, Any]] | None = None,
+    tracking_precheck: bool = False,
 ) -> PersistentSupplyResult:
     """Run persistent multi-round eligible discovery inside one campaign.
 
@@ -638,6 +641,7 @@ def run_persistent_eligible_token_supply(
     last_front_door: dict[str, Any] = {}
     last_stop_reason = "NOT_STARTED"
     inventory_known_at_start = 0
+    tracking_dispositions: dict[str, dict[str, Any]] = {}
 
     connection = _connect(db_path)
     try:
@@ -655,6 +659,84 @@ def run_persistent_eligible_token_supply(
             mark_reserve_status(
                 connection, mint, status=ELIGIBLE_STALE, now=now
             )
+
+        # V2-9.8B selective-1h repair: do not spend exact-pool market work on
+        # known identities that cannot possibly be claimed by this campaign.
+        # Expired cooldown is only permission for fresh requalification, so it
+        # remains in the evaluation walk and receives no stale-evidence credit.
+        if tracking_precheck:
+            from printer_v1.lifecycle.contracts import TokenLifecycleState
+            from printer_v1.lifecycle.tracking_queue import (
+                HANDOFF_COOLDOWN_REOPEN_REQUIRED,
+                assess_tracking_handoff_by_identity,
+            )
+
+            prior_mints = {str(row["mint_identity"]) for row in prior_reserve}
+            for inventory_row in inventory_rows:
+                mint = str(inventory_row["mint_identity"])
+                pool = str(inventory_row["pumpswap_pool"])
+                assessment = assess_tracking_handoff_by_identity(
+                    connection,
+                    token_mint=mint,
+                    pair_address=pool,
+                    tracking_lane=TokenLifecycleState.TRACK_NORMAL,
+                    assessed_at=started_at,
+                )
+                disposition = {
+                    "category": assessment.category,
+                    "eligible_for_evidence": assessment.eligible,
+                    "tracking_queue_id": assessment.queue_id,
+                    "tracking_queue_status": assessment.queue_status,
+                    "requalification_required": (
+                        assessment.requalification_eligible
+                    ),
+                    "cooldown_until": assessment.cooldown_until,
+                    "historical_cooldown_expiry_derived": (
+                        assessment.historical_cooldown_expiry_derived
+                    ),
+                }
+                tracking_dispositions[mint] = disposition
+                if assessment.eligible:
+                    continue
+                reason = str(assessment.reason_code or assessment.category)
+                evaluated_mints.add(mint)
+                rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+                if reason == HANDOFF_COOLDOWN_REOPEN_REQUIRED:
+                    cooldown_skips += 1
+                all_candidates.append(
+                    {
+                        "mint": mint,
+                        "pool": pool,
+                        "pumpswap_pool": pool,
+                        "market_identity": str(inventory_row["market_identity"]),
+                        "provenance": str(
+                            inventory_row.get("latest_channel")
+                            or inventory_row.get("discovery_channel")
+                            or "PERSISTED_GRADUATED"
+                        ),
+                        "lifecycle_state": str(inventory_row["lifecycle_state"]),
+                        "graduation_block_time": inventory_row[
+                            "graduation_block_time"
+                        ],
+                        "liquidity": {},
+                        "liquidity_usd": None,
+                        "liquidity_status": LIQUIDITY_UNPROVEN,
+                        "eligible": False,
+                        "rejection": reason,
+                        "current_eligibility_status": EXCLUDED,
+                        "excluded_before_market_source": True,
+                        "tracking_handoff": disposition,
+                        "source_path": "zero_source_tracking_precheck",
+                    }
+                )
+                if mint in prior_mints:
+                    mark_reserve_status(
+                        connection,
+                        mint,
+                        status=EXCLUDED,
+                        now=now,
+                        exclusion_reason=reason,
+                    )
         connection.commit()
 
         def _ops_remaining() -> int:
@@ -744,6 +826,13 @@ def run_persistent_eligible_token_supply(
                 _candidate_from_front_door_item(c)
                 for c in (front_door.get("candidates") or [])
             ]
+            for candidate in batch_candidates:
+                disposition = tracking_dispositions.get(str(candidate["mint"]))
+                if disposition is not None:
+                    candidate["tracking_handoff"] = dict(disposition)
+                    candidate["tracking_requalification_required"] = bool(
+                        disposition.get("requalification_required")
+                    )
             for candidate in batch_candidates:
                 liquidity = candidate.get("liquidity")
                 if not isinstance(liquidity, Mapping):
@@ -933,8 +1022,13 @@ def run_persistent_eligible_token_supply(
                 shortage = BUDGET_EXHAUSTION
             elif last_stop_reason == "CAMPAIGN_DURATION_EXHAUSTED":
                 shortage = DURATION_EXHAUSTION
-            elif provider_failures > 0 and len(evaluated_mints) == 0:
+            elif provider_failures > 0 and channels_unavailable:
                 shortage = SOURCE_AVAILABILITY_FAILURE
+            elif any(
+                not bool(item.get("eligible_for_evidence"))
+                for item in tracking_dispositions.values()
+            ):
+                shortage = TRACKING_STATE_CAPACITY_BLOCKED
             elif all_channels_exhausted and len(eligible_list) < required_token_capacity:
                 if len(evaluated_mints) == 0:
                     shortage = SOURCE_VISIBILITY_SHORTAGE
@@ -1006,6 +1100,16 @@ def run_persistent_eligible_token_supply(
                             "current_eligibility_status",
                             ELIGIBLE_FRESH if c.get("eligible") else EXCLUDED,
                         ),
+                        "excluded_before_market_source": bool(
+                            c.get("excluded_before_market_source")
+                        ),
+                        "tracking_handoff": dict(c.get("tracking_handoff") or {}),
+                        "tracking_requalification_required": bool(
+                            c.get("tracking_requalification_required")
+                            or (c.get("tracking_handoff") or {}).get(
+                                "requalification_required"
+                            )
+                        ),
                         "eligible": bool(c.get("eligible")),
                         "rejection": (
                             None if c.get("eligible") else _candidate_rejection_reason(c)
@@ -1023,6 +1127,10 @@ def run_persistent_eligible_token_supply(
                         "lifecycle_state": c.get("lifecycle_state"),
                         "graduation_block_time": c.get("graduation_block_time"),
                         "liquidity": dict(c.get("liquidity") or {}),
+                        "tracking_handoff": dict(c.get("tracking_handoff") or {}),
+                        "tracking_requalification_required": bool(
+                            c.get("tracking_requalification_required")
+                        ),
                         "eligible": True,
                         "rejection": None,
                     }
@@ -1101,6 +1209,21 @@ def run_persistent_eligible_token_supply(
             "required_token_capacity": required_token_capacity,
             "eligible_reserve_count": len(eligible_list),
             "cooldown_skips": cooldown_skips,
+            "tracking_precheck_enabled": bool(tracking_precheck),
+            "tracking_dispositions": dict(tracking_dispositions),
+            "tracking_terminal_cause": next(
+                (
+                    str(item.get("category"))
+                    for _, item in sorted(tracking_dispositions.items())
+                    if not bool(item.get("eligible_for_evidence"))
+                ),
+                None,
+            ),
+            "pre_source_tracking_exclusions": sum(
+                1
+                for candidate in all_candidates
+                if candidate.get("excluded_before_market_source")
+            ),
             "stale_evidence_exclusions": stale_exclusions,
             "provider_failures": provider_failures,
             "liquidity_stage_provider_failures": (
@@ -1153,6 +1276,7 @@ __all__ = [
     "DURATION_EXHAUSTION",
     "STALE_EVIDENCE_SHORTAGE",
     "DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE",
+    "TRACKING_STATE_CAPACITY_BLOCKED",
     "SHORTAGE_CLASSIFICATIONS",
     "BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL",
     "GRADUATED_SUPPLY_READY",

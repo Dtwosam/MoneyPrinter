@@ -301,6 +301,7 @@ def build_graduated_supply(
     run_id: str | None = None,
     cycle_id: str | None = None,
     required_token_capacity: int = 2,
+    tracking_precheck: bool = False,
 ) -> GraduatedSupply:
     """Compose discovery + front door via persistent multi-round supply loop.
 
@@ -352,6 +353,7 @@ def build_graduated_supply(
         run_id=run_id,
         cycle_id=cycle_id,
         locator_runner=run_fresh_profile_locator if run_locator else None,
+        tracking_precheck=tracking_precheck,
     )
 
     discovery = dict(persistent.discovery_report)
@@ -378,6 +380,10 @@ def build_graduated_supply(
                 }),
                 "historical_reserve_evidence": c.get(
                     "historical_reserve_evidence"
+                ),
+                "tracking_handoff": dict(c.get("tracking_handoff") or {}),
+                "tracking_requalification_required": bool(
+                    c.get("tracking_requalification_required")
                 ),
                 "eligible": True,
                 "rejection": None,

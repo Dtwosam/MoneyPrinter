@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import json
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -20,14 +21,18 @@ from printer_v1.lifecycle.contracts import (
 from printer_v1.lifecycle.tracking_queue import (
     HANDOFF_ACTIVE_CONFLICT,
     HANDOFF_COOLDOWN_REOPEN_REQUIRED,
+    HANDOFF_COOLDOWN_REQUALIFICATION_REQUIRED,
     HANDOFF_TERMINAL_REOPEN_REQUIRED,
+    TRACKING_COOLDOWN_SECONDS,
     assess_tracking_handoff,
     assess_tracking_handoff_by_identity,
+    claim_tracking_item,
     enqueue_tracking_item,
 )
 from printer_v1.operator_cli.lane_x3_post_cycle_lifecycle import reopen_token
 from printer_v1.operator_cli.authoritative_live_operational_campaign import (
     AuthoritativeLiveOperationalCampaignOwner,
+    _classify_pre_lifecycle_terminal,
 )
 from printer_v1.operator_cli.holder_reliability_budget_control import build_ledger
 
@@ -129,6 +134,122 @@ class SelectiveOneHourTrackingHandoffContractTests(unittest.TestCase):
             assessment.reason_code, HANDOFF_COOLDOWN_REOPEN_REQUIRED
         )
         self.assertEqual(self._enqueue(), (False, None))
+
+    def test_historical_cooldown_derives_expiry_and_requires_fresh_claim(self) -> None:
+        row_id = self._row(QueueStatus.COOLDOWN)
+        self.connection.execute(
+            "UPDATE printer_tracking_queue SET next_check_at=?,last_checked_at=? WHERE id=?",
+            (
+                (NOW - timedelta(hours=1)).isoformat(),
+                NOW.isoformat(),
+                row_id,
+            ),
+        )
+        before = assess_tracking_handoff(
+            self.connection,
+            token_id=self.token_id,
+            pair_id=self.pair_id,
+            tracking_lane=TokenLifecycleState.TRACK_NORMAL,
+            assessed_at=NOW + timedelta(seconds=TRACKING_COOLDOWN_SECONDS - 1),
+        )
+        self.assertFalse(before.eligible)
+        self.assertTrue(before.historical_cooldown_expiry_derived)
+        expired_at = NOW + timedelta(seconds=TRACKING_COOLDOWN_SECONDS)
+        expired = assess_tracking_handoff(
+            self.connection,
+            token_id=self.token_id,
+            pair_id=self.pair_id,
+            tracking_lane=TokenLifecycleState.TRACK_NORMAL,
+            assessed_at=expired_at,
+        )
+        self.assertTrue(expired.eligible)
+        self.assertTrue(expired.requalification_eligible)
+        self.assertEqual(
+            expired.category, HANDOFF_COOLDOWN_REQUALIFICATION_REQUIRED
+        )
+        # Expiry alone is never permission to reuse old evidence.
+        refused = claim_tracking_item(
+            self.connection,
+            token_id=self.token_id,
+            pair_id=self.pair_id,
+            tracking_lane=TokenLifecycleState.TRACK_NORMAL,
+            tracking_action=LifecycleEvent.PROMOTE_TO_TRACK_NORMAL,
+            priority_reason="fixture",
+            next_check_at=expired_at,
+            source_status=SourceStatus.COMPLETE,
+            data_quality_label=DataQualityLabel.CLEAN_DATA,
+            assessed_at=expired_at,
+            fresh_evidence_requalification=False,
+        )
+        self.assertEqual(refused, (False, None))
+        created, new_queue_id = claim_tracking_item(
+            self.connection,
+            token_id=self.token_id,
+            pair_id=self.pair_id,
+            tracking_lane=TokenLifecycleState.TRACK_NORMAL,
+            tracking_action=LifecycleEvent.PROMOTE_TO_TRACK_NORMAL,
+            priority_reason="fixture",
+            next_check_at=expired_at,
+            source_status=SourceStatus.COMPLETE,
+            data_quality_label=DataQualityLabel.CLEAN_DATA,
+            assessed_at=expired_at,
+            fresh_evidence_requalification=True,
+            requalification_lineage={"run_id": "run-new"},
+        )
+        self.assertTrue(created)
+        self.assertIsNotNone(new_queue_id)
+        rows = self.connection.execute(
+            "SELECT id,queue_status,tracking_action FROM printer_tracking_queue ORDER BY id"
+        ).fetchall()
+        self.assertEqual(
+            [(row["queue_status"], row["tracking_action"]) for row in rows],
+            [
+                ("COOLDOWN", "PROMOTE_TO_TRACK_NORMAL"),
+                ("QUEUED", "REOPEN_REVIVED_TOKEN"),
+            ],
+        )
+        event = self.connection.execute(
+            "SELECT event_payload_json FROM printer_token_lifecycle_events "
+            "WHERE lifecycle_event='REOPEN_REVIVED_TOKEN'"
+        ).fetchone()
+        payload = json.loads(event[0])
+        self.assertEqual(payload["predecessor_queue_id"], row_id)
+        self.assertEqual(payload["new_tracking_queue_id"], new_queue_id)
+        self.assertEqual(payload["run_id"], "run-new")
+        self.assertTrue(payload["fresh_evidence_requalification"])
+        # The new live owner prevents a duplicate decision/queue.
+        duplicate = claim_tracking_item(
+            self.connection,
+            token_id=self.token_id,
+            pair_id=self.pair_id,
+            tracking_lane=TokenLifecycleState.TRACK_NORMAL,
+            tracking_action=LifecycleEvent.PROMOTE_TO_TRACK_NORMAL,
+            priority_reason="fixture",
+            next_check_at=expired_at,
+            source_status=SourceStatus.COMPLETE,
+            data_quality_label=DataQualityLabel.CLEAN_DATA,
+            assessed_at=expired_at,
+            fresh_evidence_requalification=True,
+        )
+        self.assertEqual(duplicate, (False, None))
+
+    def test_future_cooldown_expiry_is_not_derived_or_reopened_early(self) -> None:
+        row_id = self._row(QueueStatus.COOLDOWN)
+        future = NOW + timedelta(hours=1)
+        self.connection.execute(
+            "UPDATE printer_tracking_queue SET next_check_at=?,last_checked_at=? WHERE id=?",
+            (future.isoformat(), NOW.isoformat(), row_id),
+        )
+        assessment = assess_tracking_handoff(
+            self.connection,
+            token_id=self.token_id,
+            pair_id=self.pair_id,
+            tracking_lane=TokenLifecycleState.TRACK_NORMAL,
+            assessed_at=NOW + timedelta(minutes=30),
+        )
+        self.assertFalse(assessment.eligible)
+        self.assertFalse(assessment.historical_cooldown_expiry_derived)
+        self.assertEqual(assessment.cooldown_until, future.isoformat())
 
     def test_terminal_states_require_an_approved_reopen(self) -> None:
         for status in (QueueStatus.SKIPPED, QueueStatus.ARCHIVED):
@@ -235,6 +356,22 @@ class SelectiveOneHourTrackingHandoffContractTests(unittest.TestCase):
             ).fetchone()[0],
             0,
         )
+
+    def test_provider_failure_precedes_tracking_in_mixed_terminal(self) -> None:
+        terminal = _classify_pre_lifecycle_terminal(
+            {
+                "mint-a": {
+                    "eligible": False,
+                    "reason": HANDOFF_COOLDOWN_REOPEN_REQUIRED,
+                },
+                "mint-b": {
+                    "eligible": False,
+                    "reason": "HOLDER_EVIDENCE_COLLECTION_FAILED:TimeoutError",
+                },
+            },
+            reserve_count=2,
+        )
+        self.assertEqual(terminal, "PRE_LIFECYCLE_HOLDER_EVIDENCE_BLOCKED")
 
 
 if __name__ == "__main__":
