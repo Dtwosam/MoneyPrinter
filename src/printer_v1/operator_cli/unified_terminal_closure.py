@@ -874,6 +874,7 @@ def build_campaign_terminal_report(
     required_token_capacity: int | None = None,
     blocked_supply_reason: str | None = None,
     fault_details: Mapping[str, Any] | None = None,
+    selective_1h: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Assemble the canonical terminal report payload from stored facts only."""
     payload: dict[str, Any] = {
@@ -912,6 +913,10 @@ def build_campaign_terminal_report(
     if fault_details:
         payload["terminal"]["fault_details"] = json.loads(
             _canonical_json(dict(fault_details))
+        )
+    if selective_1h is not None:
+        payload["selective_1h"] = json.loads(
+            _canonical_json(dict(selective_1h))
         )
     if campaign_activity is not None:
         payload["campaign_activity"] = dict(campaign_activity)

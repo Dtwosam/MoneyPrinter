@@ -20,7 +20,12 @@ from printer_v1.operator_cli.campaign_ownership import (
     bind_authoritative_run_id,
     create_campaign_run,
     create_cycle_with_two_slots,
+    persist_immutable_object,
     persist_window,
+    transition_state,
+)
+from printer_v1.operator_cli.campaign_authority_adapters import (
+    load_authoritative_window_safety,
 )
 from printer_v1.operator_cli.campaign_persistence import (
     DB_MODE_PROOF_ISOLATED,
@@ -39,12 +44,19 @@ from printer_v1.operator_cli.operational_selective_1h import (
     campaign_window_id_for,
     ensure_authoritative_factory_link,
     evaluate_selective_1h_for_cycle,
+    load_selective_1h_reporting,
     persist_15m_campaign_window,
+    reconcile_15m_campaign_window,
     should_continue_token,
     summarize_selective_1h_reporting,
 )
 from printer_v1.scheduler.token_local_continuation import ContinuationVerdict
 from printer_v1.safety.composite import SAFETY_CONTEXT_ACCEPTABLE
+from printer_v1.operator_cli.unified_terminal_closure import (
+    build_campaign_terminal_report,
+    replay_campaign_terminal_report,
+    write_campaign_terminal_report,
+)
 
 
 T0 = datetime(2026, 7, 28, 0, 0, tzinfo=timezone.utc)
@@ -122,6 +134,7 @@ class Selective1hFixture:
                 "policy": SELECTIVE_1H_POLICY_VERSION,
                 "token_capacity": 2,
                 "main_window": "WINDOW_15M",
+                "selective_1h_continuation": True,
             },
             launch_provenance=_provenance(),
             db_mode=DB_MODE_PROOF_ISOLATED,
@@ -135,8 +148,8 @@ class Selective1hFixture:
                     run_id,run_status,window_kind,db_mode,config_hash,config_json,
                     selected_token_count,started_at
                 ) VALUES ('factory-run-1','RUNNING','WINDOW_15M','PROOF_ONLY',
-                    'hash','{}',2,?)""",
-                (NOW,),
+                    'hash',?,2,?)""",
+                (json.dumps({"selective_1h_continuation": True}), NOW),
             )
             for identity in (1, 2):
                 self.connection.execute(
@@ -215,6 +228,8 @@ class Selective1hFixture:
         data_quality: str = "CLEAN_DATA",
         do_not_train: int = 0,
         continuity: str = "CONTINUITY_CONTINUOUS",
+        safety_composite_id: int | None = None,
+        closing_snapshot_id: int | None = None,
     ) -> None:
         ctx = {
             "snapshot_id": 9000 + window_id,
@@ -223,6 +238,9 @@ class Selective1hFixture:
             "e2q_audit_status": "E2Q_AUDIT_CLEAN_CANDIDATE",
             "continuity": {"status": continuity},
             "continuity_status": continuity,
+            "memory_build_evidence_overlays": {
+                "safety_composite_id": safety_composite_id,
+            },
         }
         with self.connection:
             self.connection.execute(
@@ -230,8 +248,8 @@ class Selective1hFixture:
                     id,token_id,pair_id,window_kind,opened_at,closed_at,
                     memory_status,data_quality_label,window_status,
                     memory_quality_label,outcome_label,do_not_train,
-                    supporting_context_json
-                ) VALUES (?,?,?,'WINDOW_15M',?,?,?,?, 'WINDOW_CLOSED',?,?,?,?)""",
+                    snapshot_end_id,supporting_context_json
+                ) VALUES (?,?,?,'WINDOW_15M',?,?,?,?, 'WINDOW_CLOSED',?,?,?,?,?)""",
                 (
                     window_id,
                     token_id,
@@ -243,6 +261,7 @@ class Selective1hFixture:
                     quality,
                     outcome,
                     do_not_train,
+                    closing_snapshot_id,
                     json.dumps(ctx),
                 ),
             )
@@ -291,7 +310,14 @@ class Selective1hFixture:
             )
             return int(cur.lastrowid)
 
-    def insert_safety(self, *, window_id: int, token_id: int, pair_id: int, suffix: int) -> int:
+    def insert_safety(
+        self,
+        *,
+        window_id: int | None,
+        token_id: int,
+        pair_id: int,
+        suffix: int,
+    ) -> int:
         snap = 5000 + suffix
         req = 6000 + suffix
         resp = 7000 + suffix
@@ -348,7 +374,26 @@ class Selective1hFixture:
                     NOW,
                 ),
             )
-            return int(cur.lastrowid)
+            composite_id = int(cur.lastrowid)
+            self.connection.execute(
+                """INSERT INTO printer_safety_evidence_contributions(
+                    composite_id,source_name,evidence_category,source_request_id,
+                    source_response_id,captured_at,freshness_label,token_mint,
+                    pair_address,fields_supplied_json,source_status,
+                    data_quality_label,target_status,rejection_reason
+                ) VALUES (?,'goplus','AUTHORITY_AND_RISK',?,?,?,
+                    'SAFETY_EVIDENCE_FRESH',?,?, '{}','COMPLETE','CLEAN_DATA',
+                    'TARGET_MATCH',NULL)""",
+                (
+                    composite_id,
+                    req,
+                    resp,
+                    NOW,
+                    f"mint-{token_id}",
+                    f"pair-{token_id}",
+                ),
+            )
+            return composite_id
 
     def prepare_eligible(
         self,
@@ -358,11 +403,19 @@ class Selective1hFixture:
         outcome: str = "SHORT_TERM_PUMP",
         promote: bool = True,
     ) -> int | None:
+        safety_id = self.insert_safety(
+            window_id=None,
+            token_id=token_id,
+            pair_id=token_id,
+            suffix=token_id,
+        )
         self.insert_15m_window(
             window_id=window_id,
             token_id=token_id,
             pair_id=token_id,
             outcome=outcome,
+            safety_composite_id=safety_id,
+            closing_snapshot_id=5000 + token_id,
         )
         episode_id = None
         if promote:
@@ -374,9 +427,6 @@ class Selective1hFixture:
             token_id=token_id,
             pair_id=token_id,
             episode_id=episode_id,
-        )
-        self.insert_safety(
-            window_id=window_id, token_id=token_id, pair_id=token_id, suffix=token_id
         )
         persist_15m_campaign_window(
             self.connection,
@@ -403,6 +453,24 @@ class Selective1hFixture:
             run_id="run-1h",
             cycle_id="cycle-1h",
             now=NOW,
+        )
+
+    def safety(self, *, token_id: int, window_id: int) -> dict:
+        campaign_window = campaign_window_id_for(
+            campaign_id="campaign-1h",
+            run_id="run-1h",
+            cycle_id="cycle-1h",
+            token_slot_id=f"slot-{token_id}",
+            window_kind="WINDOW_15M",
+            period_key=str(window_id),
+        )
+        return load_authoritative_window_safety(
+            self.db,
+            campaign_id="campaign-1h",
+            run_id="run-1h",
+            cycle_id="cycle-1h",
+            token_slot_id=f"slot-{token_id}",
+            window_id=campaign_window,
         )
 
     def locked_counts(self) -> dict[str, int]:
@@ -443,6 +511,136 @@ class OperationalSelective1hTests(unittest.TestCase):
                 campaign_run_id="run-1h",
                 factory_run_id="factory-run-2",
             )
+
+    def test_exact_window_safety_accepts_real_producer_null_lineage(self) -> None:
+        self.fx.prepare_eligible(token_id=1, window_id=91)
+        evidence = self.fx.safety(token_id=1, window_id=91)
+        self.assertTrue(evidence["gate_accepted"])
+        self.assertEqual(
+            evidence["effective_safety_context"]["effective_safety_context_result"],
+            SAFETY_CONTEXT_ACCEPTABLE,
+        )
+        self.assertIsNone(evidence["raw_composite"]["memory_window_id"])
+        self.assertEqual(
+            evidence["raw_composite"]["safety_contract_label"],
+            "SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY",
+        )
+        self.assertEqual(
+            evidence["raw_composite"]["liquidity_lock_or_burn_label"],
+            "LIQUIDITY_LOCK_OR_BURN_UNKNOWN",
+        )
+        self.assertEqual(
+            evidence["raw_composite"]["known_risk_flag_label"],
+            "KNOWN_RISK_FLAGS_UNKNOWN",
+        )
+
+    def test_exact_window_safety_rejects_wrong_composite_id(self) -> None:
+        self.fx.prepare_eligible(token_id=1, window_id=92)
+        row = self.fx.connection.execute(
+            "SELECT supporting_context_json FROM printer_memory_windows WHERE id=92"
+        ).fetchone()
+        context = json.loads(row[0])
+        context["memory_build_evidence_overlays"]["safety_composite_id"] = 999999
+        with self.fx.connection:
+            self.fx.connection.execute(
+                "UPDATE printer_memory_windows SET supporting_context_json=? WHERE id=92",
+                (json.dumps(context),),
+            )
+        evidence = self.fx.safety(token_id=1, window_id=92)
+        self.assertIsNone(evidence["gate_accepted"])
+        self.assertIn("persisted_safety_composite_missing", evidence["reasons"])
+
+    def test_exact_window_safety_rejects_identity_and_snapshot_mismatch(self) -> None:
+        for field, value, reason in (
+            ("token_id", 2, "safety_target_identity_mismatch"),
+            ("pair_id", 2, "safety_target_identity_mismatch"),
+            ("snapshot_id", 5002, "safety_closing_snapshot_mismatch"),
+        ):
+            with self.subTest(field=field):
+                local = Selective1hFixture()
+                try:
+                    local.prepare_eligible(token_id=1, window_id=93)
+                    local.prepare_eligible(token_id=2, window_id=94)
+                    composite_id = json.loads(
+                        local.connection.execute(
+                            "SELECT supporting_context_json FROM printer_memory_windows WHERE id=93"
+                        ).fetchone()[0]
+                    )["memory_build_evidence_overlays"]["safety_composite_id"]
+                    with local.connection:
+                        local.connection.execute(
+                            f"UPDATE printer_safety_evidence_composites SET {field}=? WHERE id=?",
+                            (value, composite_id),
+                        )
+                    evidence = local.safety(token_id=1, window_id=93)
+                    self.assertFalse(evidence["gate_accepted"])
+                    self.assertIn(reason, evidence["reasons"])
+                finally:
+                    local.close()
+
+    def test_exact_window_safety_rejects_wrong_window_lineage(self) -> None:
+        self.fx.prepare_eligible(token_id=1, window_id=95)
+        self.fx.prepare_eligible(token_id=2, window_id=96)
+        composite_id = self.fx.safety(token_id=1, window_id=95)["safety_composite_id"]
+        with self.fx.connection:
+            self.fx.connection.execute(
+                "UPDATE printer_safety_evidence_composites SET memory_window_id=96 WHERE id=?",
+                (composite_id,),
+            )
+        evidence = self.fx.safety(token_id=1, window_id=95)
+        self.assertFalse(evidence["gate_accepted"])
+        self.assertIn("safety_memory_window_mismatch", evidence["reasons"])
+
+    def test_exact_window_safety_rejects_stale_partial_blocked_and_untraceable(self) -> None:
+        cases = (
+            (
+                "stale",
+                "UPDATE printer_safety_evidence_composites SET evidence_captured_at=? WHERE id=?",
+                (_iso(T0 - timedelta(hours=1)),),
+                "safety_evidence_stale_or_post_cutoff",
+            ),
+            (
+                "partial",
+                "UPDATE printer_safety_evidence_composites SET provenance_complete=0 WHERE id=?",
+                (),
+                "authoritative_safety_gate_blocked",
+            ),
+            (
+                "blocked",
+                "UPDATE printer_safety_evidence_composites SET blockers_json='[\"mint_authority_status\"]' WHERE id=?",
+                (),
+                "authoritative_safety_gate_blocked",
+            ),
+            (
+                "conflicted",
+                "UPDATE printer_safety_evidence_composites SET conflicts_json='[\"AUTHORITY_SOURCE_CONFLICT\"]' WHERE id=?",
+                (),
+                "authoritative_safety_gate_blocked",
+            ),
+        )
+        for label, statement, params, reason in cases:
+            with self.subTest(label=label):
+                local = Selective1hFixture()
+                try:
+                    local.prepare_eligible(token_id=1, window_id=97)
+                    composite_id = local.safety(token_id=1, window_id=97)["safety_composite_id"]
+                    with local.connection:
+                        local.connection.execute(statement, (*params, composite_id))
+                    evidence = local.safety(token_id=1, window_id=97)
+                    self.assertFalse(evidence["gate_accepted"])
+                    self.assertIn(reason, evidence["reasons"])
+                finally:
+                    local.close()
+
+        self.fx.prepare_eligible(token_id=1, window_id=98)
+        composite_id = self.fx.safety(token_id=1, window_id=98)["safety_composite_id"]
+        with self.fx.connection:
+            self.fx.connection.execute(
+                "DELETE FROM printer_safety_evidence_contributions WHERE composite_id=?",
+                (composite_id,),
+            )
+        evidence = self.fx.safety(token_id=1, window_id=98)
+        self.assertFalse(evidence["gate_accepted"])
+        self.assertIn("safety_source_trace_missing", evidence["reasons"])
 
     def test_zero_eligible_tokens_zero_continuation(self) -> None:
         # Both windows exist but ordinary outcomes → STOP, no CONTINUE.
@@ -539,6 +737,174 @@ class OperationalSelective1hTests(unittest.TestCase):
         self.assertEqual(int(obj_count), 2)
         self.assertFalse(second["continuation_objects"][0]["created"])
         self.assertFalse(second["continuation_objects"][1]["created"])
+        self.assertTrue(second["idempotent"])
+        window_count = self.fx.connection.execute(
+            "SELECT COUNT(*) FROM printer_memory_factory_campaign_windows "
+            "WHERE window_kind='WINDOW_1H'"
+        ).fetchone()[0]
+        self.assertEqual(int(window_count), 2)
+
+    def test_conflicting_recomputation_fails_closed_without_replacement(self) -> None:
+        self.fx.prepare_eligible(token_id=1, window_id=163, outcome="DUMP")
+        self.fx.prepare_eligible(token_id=2, window_id=164, outcome="DUMP")
+        first = self.fx.evaluate()
+        before = [
+            tuple(row)
+            for row in self.fx.connection.execute(
+                "SELECT object_id,object_hash,object_json FROM printer_memory_factory_campaign_objects "
+                "WHERE object_kind='CONTINUATION_4A' ORDER BY object_id"
+            ).fetchall()
+        ]
+        with self.fx.connection:
+            self.fx.connection.execute(
+                "UPDATE printer_memory_windows SET outcome_label='CONSOLIDATION' WHERE id=163"
+            )
+        with self.assertRaisesRegex(Exception, "conflicting recomputation"):
+            self.fx.evaluate()
+        after = [
+            tuple(row)
+            for row in self.fx.connection.execute(
+                "SELECT object_id,object_hash,object_json FROM printer_memory_factory_campaign_objects "
+                "WHERE object_kind='CONTINUATION_4A' ORDER BY object_id"
+            ).fetchall()
+        ]
+        self.assertEqual(before, after)
+        self.assertEqual(first["continue_count"], 2)
+
+    def test_partial_immutable_object_set_fails_closed(self) -> None:
+        self.fx.prepare_eligible(token_id=1, window_id=169, outcome="DUMP")
+        self.fx.prepare_eligible(token_id=2, window_id=170, outcome="DUMP")
+        window = campaign_window_id_for(
+            campaign_id="campaign-1h",
+            run_id="run-1h",
+            cycle_id="cycle-1h",
+            token_slot_id="slot-1",
+            window_kind="WINDOW_15M",
+            period_key="169",
+        )
+        persist_immutable_object(
+            self.fx.connection,
+            object_id="cont4a:campaign-1h:run-1h:cycle-1h:slot-1:169",
+            object_kind="CONTINUATION_4A",
+            campaign_id="campaign-1h",
+            configuration_id="config-1h",
+            run_id="run-1h",
+            cycle_id="cycle-1h",
+            token_slot_id="slot-1",
+            window_id=window,
+            payload={"verdict": "BLOCK_CONTINUATION"},
+            now=NOW,
+        )
+        with self.assertRaisesRegex(Exception, "partial or foreign"):
+            self.fx.evaluate()
+
+    def test_post_success_campaign_barrier_is_close_order_independent(self) -> None:
+        from printer_v1.operator_cli import one_command_15m_factory as factory
+
+        for order in ((1, 2), (2, 1)):
+            with self.subTest(order=order):
+                local = Selective1hFixture()
+                try:
+                    windows = {1: 165, 2: 166}
+                    for token_id in order:
+                        local.prepare_eligible(
+                            token_id=token_id,
+                            window_id=windows[token_id],
+                            outcome="DUMP",
+                        )
+                    later_id = local.connection.execute(
+                        "SELECT id FROM printer_memory_factory_run_steps WHERE step_key=?",
+                        (f"close-{order[1]}",),
+                    ).fetchone()[0]
+                    with local.connection:
+                        local.connection.execute(
+                            "UPDATE printer_memory_factory_run_steps SET step_status='RUNNING' WHERE id=?",
+                            (later_id,),
+                        )
+                    config = {
+                        "campaign_id": "campaign-1h",
+                        "campaign_run_id": "run-1h",
+                        "cycle_id": "cycle-1h",
+                        "configuration_id": "config-1h",
+                    }
+                    with patch.object(factory, "_selective_1h_schedule_for_close") as schedule:
+                        pending = factory._run_selective_1h_campaign_barrier(
+                            local.connection,
+                            db_path=str(local.db),
+                            run_id="factory-run-1",
+                            config=config,
+                            continuation_seconds=3600,
+                        )
+                        self.assertFalse(pending["evaluation_reached"])
+                        self.assertEqual(schedule.call_count, 0)
+                        # Both episodes already exist, but the RUNNING close is
+                        # deliberately not authoritative B.1 evidence.
+                        self.assertEqual(
+                            local.connection.execute(
+                                "SELECT COUNT(*) FROM printer_episodes"
+                            ).fetchone()[0],
+                            2,
+                        )
+                        with local.connection:
+                            local.connection.execute(
+                                "UPDATE printer_memory_factory_run_steps SET step_status='SUCCEEDED' WHERE id=?",
+                                (later_id,),
+                            )
+                        schedule.return_value = (
+                            {"captured": False, "window_5m_id": None},
+                            {"enqueue_ok": True, "planned_jobs": 1},
+                        )
+                        reached = factory._run_selective_1h_campaign_barrier(
+                            local.connection,
+                            db_path=str(local.db),
+                            run_id="factory-run-1",
+                            config=config,
+                            continuation_seconds=3600,
+                        )
+                        self.assertTrue(reached["evaluation_reached"])
+                        self.assertTrue(reached["evaluation_created"])
+                        self.assertEqual(schedule.call_count, 2)
+                        self.assertEqual(reached["evaluation"]["continue_count"], 2)
+                finally:
+                    local.close()
+
+    def test_repeated_campaign_barrier_creates_no_scheduler_work(self) -> None:
+        from printer_v1.operator_cli import one_command_15m_factory as factory
+
+        self.fx.prepare_eligible(token_id=1, window_id=167, outcome="DUMP")
+        self.fx.prepare_eligible(token_id=2, window_id=168, outcome="CONSOLIDATION")
+        config = {
+            "campaign_id": "campaign-1h",
+            "campaign_run_id": "run-1h",
+            "cycle_id": "cycle-1h",
+            "configuration_id": "config-1h",
+        }
+        with patch.object(
+            factory,
+            "_selective_1h_schedule_for_close",
+            return_value=(
+                {"captured": False, "window_5m_id": None},
+                {"enqueue_ok": True, "planned_jobs": 1},
+            ),
+        ) as schedule:
+            first = factory._run_selective_1h_campaign_barrier(
+                self.fx.connection,
+                db_path=str(self.fx.db),
+                run_id="factory-run-1",
+                config=config,
+                continuation_seconds=3600,
+            )
+            self.assertTrue(first["evaluation_created"])
+            self.assertEqual(schedule.call_count, 2)
+            second = factory._run_selective_1h_campaign_barrier(
+                self.fx.connection,
+                db_path=str(self.fx.db),
+                run_id="factory-run-1",
+                config=config,
+                continuation_seconds=3600,
+            )
+            self.assertFalse(second["evaluation_created"])
+            self.assertEqual(schedule.call_count, 2)
 
     def test_separate_1h_periods_remain_distinct(self) -> None:
         id_a = campaign_window_id_for(
@@ -717,8 +1083,151 @@ class OperationalSelective1hTests(unittest.TestCase):
         self.assertGreaterEqual(report["window_counts_by_kind"]["WINDOW_15M"], 2)
         self.assertEqual(report["window_counts_by_kind"]["WINDOW_1H"], 2)
         self.assertEqual(len(report["continuation_objects"]), 2)
+        self.assertEqual(len(report["token_plans"]), 2)
+        self.assertEqual(report["continue_count"], 2)
+        self.assertEqual(report["block_count"], 0)
+        self.assertEqual(report["stop_count"], 0)
+        self.assertEqual(report["actual_persisted_window_1h_count"], 2)
+        self.assertEqual(report["selective_1h_outcome"], "TWO_CONTINUATIONS")
         self.assertFalse(report["locked_downstream"]["retrieval_activated"])
         self.assertFalse(report["locked_downstream"]["window_4h_enabled"])
+
+    def test_zero_continuation_canonical_report_and_zero_source_replay(self) -> None:
+        self.fx.prepare_eligible(token_id=1, window_id=173, outcome="CONSOLIDATION")
+        self.fx.prepare_eligible(token_id=2, window_id=174, outcome="NO_PUMP")
+        self.fx.evaluate()
+        selective = load_selective_1h_reporting(
+            str(self.fx.db), campaign_id="campaign-1h", run_id="run-1h"
+        )
+        self.assertEqual(selective["selective_1h_outcome"], "ZERO_ELIGIBLE_CONTINUATIONS")
+        self.assertTrue(selective["zero_continuation"])
+        self.assertEqual(selective["actual_persisted_window_1h_count"], 0)
+        payload = build_campaign_terminal_report(
+            campaign_id="campaign-1h",
+            configuration_id="config-1h",
+            run_id="run-1h",
+            cycle_id="cycle-1h",
+            report_id="report-selective-zero",
+            factory_run_id="factory-run-1",
+            execution_id="execution-selective-zero",
+            terminal_status="COMPLETED",
+            terminal_cause="COMPLETED_CLEAN_OR_DIRTY_RESULTS_REPORTED",
+            run_status="COMPLETED",
+            lifecycle_started=True,
+            reconciliation={"reconciled": True},
+            selective_1h=selective,
+        )
+        self.assertEqual(
+            payload["terminal"]["first_terminal_cause"],
+            "COMPLETED_CLEAN_OR_DIRTY_RESULTS_REPORTED",
+        )
+        self.assertEqual(
+            payload["selective_1h"]["selective_1h_outcome"],
+            "ZERO_ELIGIBLE_CONTINUATIONS",
+        )
+        report_dir = Path(self.fx.tmp.name) / "reports"
+        write_campaign_terminal_report(
+            self.fx.db,
+            report_dir,
+            report_id="report-selective-zero",
+            campaign_id="campaign-1h",
+            configuration_id="config-1h",
+            report=payload,
+        )
+        replay = replay_campaign_terminal_report(
+            self.fx.db,
+            report_dir,
+            report_id="report-selective-zero",
+            campaign_id="campaign-1h",
+            configuration_id="config-1h",
+        )
+        self.assertEqual(replay["new_source_calls"], 0)
+        self.assertEqual(replay["new_scheduler_work"], 0)
+        self.assertEqual(
+            replay["report"]["selective_1h"]["selective_1h_outcome"],
+            "ZERO_ELIGIBLE_CONTINUATIONS",
+        )
+
+    def test_reporting_distinguishes_not_reached_and_system_defect(self) -> None:
+        not_reached = summarize_selective_1h_reporting(
+            self.fx.connection, campaign_id="campaign-1h", run_id="run-1h"
+        )
+        self.assertEqual(not_reached["selective_1h_outcome"], "EVALUATION_NOT_REACHED")
+        self.fx.prepare_eligible(token_id=1, window_id=186)
+        self.fx.prepare_eligible(token_id=2, window_id=187)
+        blocked = summarize_selective_1h_reporting(
+            self.fx.connection, campaign_id="campaign-1h", run_id="run-1h"
+        )
+        self.assertEqual(
+            blocked["selective_1h_outcome"], "EVALUATION_BLOCKED_SYSTEM_DEFECT"
+        )
+
+    def test_15m_campaign_window_terminal_state_reconciliation(self) -> None:
+        cases = (
+            ("CLEAN_PROMOTED", {}, "CLEAN_PROMOTED", False),
+            ("ALREADY_EXISTS_IDEMPOTENT", {}, "CLEAN_PROMOTED", False),
+            ("NO_PROMOTION", {}, "NO_PROMOTION", False),
+            ("NO_PROMOTION", {"blocked_reason": "evidence mismatch"}, "BLOCKED", False),
+            ("DIRTY_OR_BLOCKED", {}, "BLOCKED", False),
+            ("NO_PROMOTION", {}, "DIRTY", True),
+        )
+        for index, (promotion_status, extra, expected, dirty) in enumerate(cases, 1):
+            with self.subTest(expected=expected, index=index):
+                local = Selective1hFixture()
+                try:
+                    window_id = 175 + index
+                    local.prepare_eligible(token_id=1, window_id=window_id)
+                    if dirty:
+                        with local.connection:
+                            local.connection.execute(
+                                """UPDATE printer_memory_windows
+                                   SET memory_quality_label='DIRTY_MEMORY',
+                                       data_quality_label='DIRTY_DATA',do_not_train=1
+                                   WHERE id=?""",
+                                (window_id,),
+                            )
+                    campaign_window = campaign_window_id_for(
+                        campaign_id="campaign-1h",
+                        run_id="run-1h",
+                        cycle_id="cycle-1h",
+                        token_slot_id="slot-1",
+                        window_kind="WINDOW_15M",
+                        period_key=str(window_id),
+                    )
+                    outcome = reconcile_15m_campaign_window(
+                        local.connection,
+                        campaign_window_id=campaign_window,
+                        promotion={"promotion_status": promotion_status, **extra},
+                        now=NOW,
+                    )
+                    self.assertEqual(outcome["window_state"], expected)
+                finally:
+                    local.close()
+
+    def test_genuine_campaign_window_cancellation_remains_cancellation(self) -> None:
+        self.fx.prepare_eligible(token_id=1, window_id=185)
+        campaign_window = campaign_window_id_for(
+            campaign_id="campaign-1h",
+            run_id="run-1h",
+            cycle_id="cycle-1h",
+            token_slot_id="slot-1",
+            window_kind="WINDOW_15M",
+            period_key="185",
+        )
+        transition_state(
+            self.fx.connection,
+            record_kind="window",
+            identity=campaign_window,
+            expected_state="AUDITING",
+            new_state="CANCELLED",
+            terminal_cause="OPERATOR_CANCELLED",
+            now=NOW,
+        )
+        row = self.fx.connection.execute(
+            "SELECT window_state,first_terminal_cause FROM printer_memory_factory_campaign_windows WHERE window_id=?",
+            (campaign_window,),
+        ).fetchone()
+        self.assertEqual(tuple(row), ("CANCELLED", "OPERATOR_CANCELLED"))
 
     def test_bind_1h_memory_and_terminalize(self) -> None:
         self.fx.prepare_eligible(token_id=1, window_id=181, outcome="DUMP")

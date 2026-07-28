@@ -119,6 +119,30 @@ AUTHORITATIVE_DB = Path(CANONICAL_PERSISTENT_DB).resolve()
 # Live-derived from the single ordered migrations/*.sql source. Never hard-code.
 EXPECTED_MIGRATION_COUNT = canonical_migration_count()
 LOCKED_WINDOWS = ("WINDOW_1H", "WINDOW_4H", "WINDOW_12H", "WINDOW_24H")
+
+
+def _selective_1h_terminal_projection(
+    db_path: str | Path, *, campaign_id: str, run_id: str
+) -> Mapping[str, Any] | None:
+    """Return selective truth only for an authorized/reached selective run."""
+    try:
+        from printer_v1.operator_cli.operational_selective_1h import (
+            load_selective_1h_reporting,
+        )
+
+        projection = load_selective_1h_reporting(
+            str(db_path), campaign_id=campaign_id, run_id=run_id
+        )
+    except Exception:
+        return None
+    if (
+        projection.get("selective_1h_authorized")
+        or projection.get("continuation_objects")
+    ):
+        return projection
+    return None
+
+
 AUTHORITATIVE_SQLITE_RUNTIME_SIDECARS = (
     "data/printer_v1.sqlite3-journal",
     "data/printer_v1.sqlite3-wal",
@@ -1142,6 +1166,11 @@ def _terminalize_initialized_failure(
             {"heartbeat_failure": heartbeat_evidence}
             if heartbeat_evidence else None
         ),
+        selective_1h=_selective_1h_terminal_projection(
+            command.db_path,
+            campaign_id=command.campaign_id,
+            run_id=command.run_id,
+        ),
     )
     report: Mapping[str, Any] = {"report_written": False}
     try:
@@ -1433,6 +1462,11 @@ def _run_operational_campaign(
             required_token_capacity=reporting.get("required_token_capacity"),
             blocked_supply_reason=reporting.get("blocked_supply_reason"),
             fault_details=lifecycle.get("fault_details"),
+            selective_1h=_selective_1h_terminal_projection(
+                command.db_path,
+                campaign_id=command.campaign_id,
+                run_id=command.run_id,
+            ),
         )
         report = write_campaign_terminal_report(
             command.db_path,

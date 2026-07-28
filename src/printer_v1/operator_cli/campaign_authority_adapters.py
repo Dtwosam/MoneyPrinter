@@ -405,6 +405,209 @@ def load_authoritative_checkpoint_safety(
         }
 
 
+def load_authoritative_window_safety(
+    db_path: str | Path,
+    *,
+    campaign_id: str,
+    run_id: str,
+    cycle_id: str,
+    token_slot_id: str,
+    window_id: str,
+) -> dict[str, Any]:
+    """Load the exact safety composite retained by one memory-window context.
+
+    The real producer is allowed to create the composite before the memory
+    window exists, so ``memory_window_id`` on the composite may be null.  The
+    immutable linkage is the exact composite id retained by the authoritative
+    memory-window build context; no latest-evidence lookup is permitted here.
+    """
+    with _read_only_database(db_path) as connection:
+        graph = _graph_window(
+            connection,
+            campaign_id=campaign_id,
+            run_id=run_id,
+            cycle_id=cycle_id,
+            token_slot_id=token_slot_id,
+            window_id=window_id,
+        )
+        memory_window = connection.execute(
+            "SELECT * FROM printer_memory_windows WHERE id=?",
+            (int(graph["memory_window_row_id"]),),
+        ).fetchone()
+        if memory_window is None:
+            return _unknown_safety(
+                graph,
+                checkpoint_object_id="memory_window_context",
+                reason="authoritative_memory_window_missing",
+            )
+        window = dict(memory_window)
+        try:
+            context = json.loads(str(window.get("supporting_context_json") or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            context = {}
+        overlays = (
+            context.get("memory_build_evidence_overlays", {})
+            if isinstance(context, dict)
+            else {}
+        )
+        composite_id_raw = (
+            overlays.get("safety_composite_id")
+            if isinstance(overlays, dict)
+            else None
+        )
+        try:
+            composite_id = int(composite_id_raw)
+        except (TypeError, ValueError):
+            return _unknown_safety(
+                graph,
+                checkpoint_object_id="memory_window_context",
+                reason="memory_window_safety_composite_id_missing_or_invalid",
+            )
+
+        composite_row = connection.execute(
+            "SELECT * FROM printer_safety_evidence_composites WHERE id=?",
+            (composite_id,),
+        ).fetchone()
+        if composite_row is None:
+            return _unknown_safety(
+                graph,
+                checkpoint_object_id="memory_window_context",
+                reason="persisted_safety_composite_missing",
+            )
+        composite = dict(composite_row)
+        traces = [
+            dict(row)
+            for row in connection.execute(
+                """
+                SELECT contribution.*,
+                       request.source_name AS request_source_name,
+                       response.source_name AS response_source_name,
+                       response.source_request_id AS response_request_id,
+                       failure.source_name AS failure_source_name
+                FROM printer_safety_evidence_contributions AS contribution
+                LEFT JOIN printer_source_requests AS request
+                  ON request.id=contribution.source_request_id
+                LEFT JOIN printer_source_responses AS response
+                  ON response.id=contribution.source_response_id
+                LEFT JOIN printer_source_failures AS failure
+                  ON failure.id=contribution.source_failure_id
+                WHERE contribution.composite_id=?
+                ORDER BY contribution.id
+                """,
+                (composite_id,),
+            ).fetchall()
+        ]
+
+        reasons: list[str] = []
+        if (
+            int(window["token_id"]) != int(graph["token_row_id"])
+            or int(window["pair_id"]) != int(graph["pair_row_id"])
+        ):
+            reasons.append("memory_window_target_identity_mismatch")
+        if (
+            int(composite["token_id"]) != int(graph["token_row_id"])
+            or int(composite["pair_id"]) != int(graph["pair_row_id"])
+            or str(composite["token_mint"]) != str(graph["mint_identity"])
+            or str(composite["pair_address"]) != str(graph["pair_identity"])
+            or composite["target_status"] != "TARGET_MATCH"
+        ):
+            reasons.append("safety_target_identity_mismatch")
+        closing_snapshot_id = window.get("snapshot_end_id")
+        if (
+            closing_snapshot_id is None
+            or int(composite["snapshot_id"]) != int(closing_snapshot_id)
+        ):
+            reasons.append("safety_closing_snapshot_mismatch")
+        if (
+            composite["memory_window_id"] is not None
+            and int(composite["memory_window_id"])
+            != int(graph["memory_window_row_id"])
+        ):
+            reasons.append("safety_memory_window_mismatch")
+
+        cutoff = _time(graph["checkpoint_cutoff"])
+        captured = _time(composite["evidence_captured_at"])
+        age = (cutoff - captured).total_seconds() if cutoff and captured else None
+        if age is None or age < 0 or age > MAX_AGE_SECONDS:
+            reasons.append("safety_evidence_stale_or_post_cutoff")
+        if composite["freshness_label"] not in {
+            "SAFETY_EVIDENCE_FRESH",
+            "SAFETY_EVIDENCE_ACCEPTABLE",
+        }:
+            reasons.append("safety_freshness_label_not_acceptable")
+
+        if not traces:
+            reasons.append("safety_source_trace_missing")
+        for trace in traces:
+            trace_captured = _time(trace["captured_at"])
+            trace_age = (
+                (cutoff - trace_captured).total_seconds()
+                if cutoff and trace_captured
+                else None
+            )
+            trace_valid = (
+                trace["request_source_name"] == trace["source_name"]
+                and str(trace["token_mint"]) == str(graph["mint_identity"])
+                and str(trace["pair_address"]) == str(graph["pair_identity"])
+                and trace["target_status"] == "TARGET_MATCH"
+                and trace["freshness_label"]
+                in {"SAFETY_EVIDENCE_FRESH", "SAFETY_EVIDENCE_ACCEPTABLE"}
+                and trace["source_status"] in {"COMPLETE", "PARTIAL"}
+                and trace["data_quality_label"]
+                in {"CLEAN_DATA", "ACCEPTABLE_PARTIAL_DATA"}
+                and trace["rejection_reason"] is None
+                and trace_age is not None
+                and 0 <= trace_age <= MAX_AGE_SECONDS
+                and (
+                    trace["source_response_id"] is None
+                    or (
+                        trace["response_source_name"] == trace["source_name"]
+                        and int(trace["response_request_id"])
+                        == int(trace["source_request_id"])
+                    )
+                )
+                and (
+                    trace["source_failure_id"] is None
+                    or trace["failure_source_name"] == trace["source_name"]
+                )
+            )
+            if not trace_valid:
+                reasons.append("safety_source_trace_mismatch")
+                break
+
+        try:
+            gate_accepted = composite_row_is_acceptable(composite) and not reasons
+        except (TypeError, ValueError, json.JSONDecodeError):
+            gate_accepted = False
+            reasons.append("safety_composite_payload_invalid")
+        if not gate_accepted and not reasons:
+            reasons.append("authoritative_safety_gate_blocked")
+        effective = effective_safety_context_report(
+            composite,
+            gate_accepted=gate_accepted,
+            window_kind=str(graph["window_kind"]),
+        )
+        return {
+            "authority": "B.2_EFFECTIVE_SAFETY",
+            "campaign_id": campaign_id,
+            "run_id": run_id,
+            "cycle_id": cycle_id,
+            "token_slot_id": token_slot_id,
+            "window_id": window_id,
+            "window_kind": graph["window_kind"],
+            "checkpoint_object_id": "memory_window_context",
+            "memory_window_row_id": int(graph["memory_window_row_id"]),
+            "closing_snapshot_id": closing_snapshot_id,
+            "safety_composite_id": composite_id,
+            "gate_accepted": gate_accepted,
+            "effective_safety_context": effective,
+            "raw_composite": composite,
+            "source_traces": traces,
+            "reasons": list(dict.fromkeys(reasons)),
+            "read_only": True,
+        }
+
+
 def build_4a_authority_facts(
     promotion: Mapping[str, Any], safety: Mapping[str, Any],
 ) -> dict[str, Any]:

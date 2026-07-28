@@ -22,21 +22,16 @@ from printer_v1.operator_cli.campaign_authority_adapters import (
     CampaignAuthorityAdapterError,
     build_4a_authority_facts,
     load_authoritative_promotion_outcome,
+    load_authoritative_window_safety,
 )
 from printer_v1.operator_cli.campaign_ownership import (
     CampaignOwnershipError,
     bind_authoritative_run_id,
     bind_window_memory_row_id,
+    canonical_object_payload,
     persist_immutable_object,
     persist_window,
     transition_state,
-)
-from printer_v1.safety.composite import (
-    SAFETY_CONTEXT_ACCEPTABLE,
-    SAFETY_CONTEXT_BLOCKED,
-    SAFETY_CONTEXT_UNKNOWN,
-    composite_row_is_acceptable,
-    effective_safety_context_report,
 )
 from printer_v1.scheduler.token_local_continuation import (
     CampaignContinuationContext,
@@ -80,6 +75,12 @@ _LOCKED_DOWNSTREAM = {
     "window_12h_enabled": False,
     "window_24h_enabled": False,
 }
+
+ZERO_ELIGIBLE_CONTINUATIONS = "ZERO_ELIGIBLE_CONTINUATIONS"
+ONE_CONTINUATION = "ONE_CONTINUATION"
+TWO_CONTINUATIONS = "TWO_CONTINUATIONS"
+EVALUATION_BLOCKED_SYSTEM_DEFECT = "EVALUATION_BLOCKED_SYSTEM_DEFECT"
+EVALUATION_NOT_REACHED = "EVALUATION_NOT_REACHED"
 
 
 class Selective1hError(ValueError):
@@ -249,6 +250,79 @@ def persist_15m_campaign_window(
     }
 
 
+def reconcile_15m_campaign_window(
+    connection: sqlite3.Connection,
+    *,
+    campaign_window_id: str,
+    promotion: Mapping[str, Any],
+    now: str | None = None,
+) -> dict[str, Any]:
+    """Terminalize a completed predecessor from its authoritative B.1 truth."""
+    row = connection.execute(
+        """SELECT window_state, memory_window_row_id
+           FROM printer_memory_factory_campaign_windows WHERE window_id=?""",
+        (campaign_window_id,),
+    ).fetchone()
+    if row is None or row["memory_window_row_id"] is None:
+        raise Selective1hError("15m campaign window lacks terminal lineage")
+    memory = connection.execute(
+        """SELECT window_status, memory_quality_label, data_quality_label,
+                  do_not_train
+           FROM printer_memory_windows WHERE id=?""",
+        (int(row["memory_window_row_id"]),),
+    ).fetchone()
+    if memory is None or str(memory["window_status"]) != "WINDOW_CLOSED":
+        raise Selective1hError("15m predecessor is not authoritatively closed")
+
+    status = str(promotion.get("promotion_status") or "NO_PROMOTION")
+    if status in {"CLEAN_PROMOTED", "ALREADY_EXISTS_IDEMPOTENT"}:
+        terminal_state = "CLEAN_PROMOTED"
+    elif (
+        bool(memory["do_not_train"])
+        or str(memory["memory_quality_label"])
+        in {"DIRTY_MEMORY", "DO_NOT_TRAIN"}
+        or str(memory["data_quality_label"])
+        in {
+            "DIRTY_DATA",
+            "STALE_DATA",
+            "MISSING_CRITICAL_DATA",
+            "CONFLICTING_DATA",
+            "DO_NOT_TRAIN",
+        }
+    ):
+        terminal_state = "DIRTY"
+    elif status == "DIRTY_OR_BLOCKED" or promotion.get("blocked_reason"):
+        terminal_state = "BLOCKED"
+    else:
+        terminal_state = "NO_PROMOTION"
+
+    current = str(row["window_state"])
+    if current == terminal_state:
+        return {
+            "window_id": campaign_window_id,
+            "window_state": current,
+            "changed": False,
+        }
+    if current != "AUDITING":
+        raise Selective1hError(
+            f"15m campaign window terminal conflict: {current} != {terminal_state}"
+        )
+    transition = transition_state(
+        connection,
+        record_kind="window",
+        identity=campaign_window_id,
+        expected_state="AUDITING",
+        new_state=terminal_state,
+        terminal_cause=f"15M_{terminal_state}",
+        now=now or _utc_now(),
+    )
+    return {
+        "window_id": campaign_window_id,
+        "window_state": transition.current_state,
+        "changed": transition.changed,
+    }
+
+
 def _slot_rows(
     connection: sqlite3.Connection, *, campaign_id: str, run_id: str, cycle_id: str
 ) -> list[dict[str, Any]]:
@@ -317,27 +391,6 @@ def _promotion_facts(
             "token_slot_id": token_slot_id,
             "window_id": campaign_window_id,
         }
-
-
-def _safety_stub(graph: Mapping[str, Any], *, reason: str) -> dict[str, Any]:
-    """When B.2 composite is absent, fail closed with explicit reason."""
-    return {
-        "authority": "B.2_EFFECTIVE_SAFETY",
-        "campaign_id": graph["campaign_id"],
-        "run_id": graph["run_id"],
-        "cycle_id": graph["cycle_id"],
-        "token_slot_id": graph["token_slot_id"],
-        "window_id": graph["window_id"],
-        "window_kind": graph.get("window_kind", WINDOW_15M),
-        "checkpoint_object_id": "absent",
-        "safety_composite_id": None,
-        "gate_accepted": None,
-        "effective_safety_context": {
-            "effective_safety_context_result": "SAFETY_CONTEXT_UNKNOWN",
-        },
-        "reasons": [reason],
-        "read_only": True,
-    }
 
 
 def _continuity_for_window(
@@ -423,50 +476,20 @@ def evaluate_selective_1h_for_cycle(
             token_slot_id=token_slot_id,
             campaign_window_id=campaign_window_id,
         )
-        safety = _safety_stub(
-            {
-                "campaign_id": campaign_id,
-                "run_id": run_id,
-                "cycle_id": cycle_id,
-                "token_slot_id": token_slot_id,
-                "window_id": campaign_window_id,
-                "window_kind": WINDOW_15M,
-            },
-            reason="selective_1h_uses_promotion_authority_without_required_b2_composite",
+        reconcile_15m_campaign_window(
+            connection,
+            campaign_window_id=campaign_window_id,
+            promotion=promotion,
+            now=stamp,
         )
-        # Prefer explicit safety composite if present for this memory window.
-        composite = connection.execute(
-            """
-            SELECT *
-            FROM printer_safety_evidence_composites
-            WHERE memory_window_id=?
-            ORDER BY id DESC LIMIT 1
-            """,
-            (memory_window_id,),
-        ).fetchone()
-        if composite is not None:
-            composite_map = dict(composite)
-            accepted = composite_row_is_acceptable(composite_map)
-            effective = effective_safety_context_report(
-                composite_map,
-                gate_accepted=accepted,
-                window_kind=WINDOW_15M,
-            )
-            safety = {
-                "authority": "B.2_EFFECTIVE_SAFETY",
-                "campaign_id": campaign_id,
-                "run_id": run_id,
-                "cycle_id": cycle_id,
-                "token_slot_id": token_slot_id,
-                "window_id": campaign_window_id,
-                "window_kind": WINDOW_15M,
-                "checkpoint_object_id": f"composite:{composite_map['id']}",
-                "safety_composite_id": int(composite_map["id"]),
-                "gate_accepted": accepted,
-                "effective_safety_context": effective,
-                "reasons": [] if accepted else ["safety_composite_not_acceptable"],
-                "read_only": True,
-            }
+        safety = load_authoritative_window_safety(
+            db_path,
+            campaign_id=campaign_id,
+            run_id=run_id,
+            cycle_id=cycle_id,
+            token_slot_id=token_slot_id,
+            window_id=campaign_window_id,
+        )
         try:
             facts = build_4a_authority_facts(promotion, safety)
         except CampaignAuthorityAdapterError as exc:
@@ -554,9 +577,7 @@ def evaluate_selective_1h_for_cycle(
     results = evaluate_token_local_continuations(
         campaign=campaign_ctx, tokens=token_inputs
     )
-    plans: list[Selective1hTokenPlan] = []
-    objects: list[dict[str, Any]] = []
-
+    candidates: list[dict[str, Any]] = []
     for result, info in zip(results, meta, strict=True):
         continue_ok = result.verdict == ContinuationVerdict.CONTINUE_TO_WINDOW_1H
         window_1h_id = None
@@ -569,28 +590,123 @@ def evaluate_selective_1h_for_cycle(
                 window_kind=WINDOW_1H,
                 period_key=str(info["memory_window_15m_id"]),
             )
+        payload = {
+            "policy_version": SELECTIVE_1H_POLICY_VERSION,
+            "verdict": str(result.verdict),
+            "reasons": list(result.reasons),
+            "token_slot_id": info["token_slot_id"],
+            "token_row_id": info["token_row_id"],
+            "pair_row_id": info["pair_row_id"],
+            "predecessor_campaign_window_id": info["campaign_window_15m_id"],
+            "predecessor_memory_window_id": info["memory_window_15m_id"],
+            "authoritative_episode_id": info["authoritative_episode_id"],
+            "learning_need": info["learning_need"],
+            "successor_window_kind": WINDOW_1H if continue_ok else None,
+            "campaign_window_1h_id": window_1h_id,
+            "locked_downstream": dict(_LOCKED_DOWNSTREAM),
+        }
+        object_id = (
+            f"cont4a:{campaign_id}:{run_id}:{cycle_id}:"
+            f"{info['token_slot_id']}:{info['memory_window_15m_id']}"
+        )
+        candidates.append(
+            {
+                "object_id": object_id,
+                "payload": payload,
+                "info": info,
+                "continue_ok": continue_ok,
+            }
+        )
+
+    existing_rows = connection.execute(
+        """
+        SELECT object_id, object_json, object_hash
+        FROM printer_memory_factory_campaign_objects
+        WHERE campaign_id=? AND run_id=? AND cycle_id=? AND object_kind=?
+        ORDER BY object_id
+        """,
+        (campaign_id, run_id, cycle_id, CONTINUATION_OBJECT_KIND),
+    ).fetchall()
+    expected_ids = {str(item["object_id"]) for item in candidates}
+    existing_by_id = {str(row["object_id"]): dict(row) for row in existing_rows}
+    if existing_by_id and set(existing_by_id) != expected_ids:
+        raise Selective1hError(
+            "partial or foreign CONTINUATION_4A object set conflicts with evaluation"
+        )
+
+    first_evaluation = not existing_by_id
+    objects: list[dict[str, Any]] = []
+    for candidate in candidates:
+        object_id = str(candidate["object_id"])
+        payload = dict(candidate["payload"])
+        if not first_evaluation:
+            persisted = _loads(existing_by_id[object_id]["object_json"])
+            _, candidate_hash = canonical_object_payload(payload)
+            if (
+                candidate_hash != str(existing_by_id[object_id]["object_hash"])
+                or persisted != payload
+            ):
+                raise Selective1hError(
+                    f"conflicting recomputation for immutable {object_id}"
+                )
+            payload = persisted
+            candidate["payload"] = persisted
+        else:
+            info = candidate["info"]
+            persist_immutable_object(
+                connection,
+                object_id=object_id,
+                object_kind=CONTINUATION_OBJECT_KIND,
+                campaign_id=campaign_id,
+                configuration_id=configuration_id,
+                run_id=run_id,
+                cycle_id=cycle_id,
+                token_slot_id=info["token_slot_id"],
+                window_id=info["campaign_window_15m_id"],
+                payload=payload,
+                authoritative_episode_id=info["authoritative_episode_id"],
+                now=stamp,
+            )
+        objects.append(
+            {
+                "object_id": object_id,
+                "created": first_evaluation,
+                "payload": payload,
+            }
+        )
+
+    # Continuation windows and token-slot advancement are side effects of only
+    # the first authoritative immutable evaluation.
+    if first_evaluation:
+        for candidate in candidates:
+            if not candidate["continue_ok"]:
+                continue
+            info = candidate["info"]
+            window_1h_id = candidate["payload"]["campaign_window_1h_id"]
             existing_1h = connection.execute(
                 "SELECT window_id FROM printer_memory_factory_campaign_windows "
                 "WHERE window_id=?",
                 (window_1h_id,),
             ).fetchone()
-            if existing_1h is None:
-                persist_window(
-                    connection,
-                    window_id=window_1h_id,
-                    campaign_id=campaign_id,
-                    run_id=run_id,
-                    cycle_id=cycle_id,
-                    token_slot_id=info["token_slot_id"],
-                    token_row_id=info["token_row_id"],
-                    pair_row_id=info["pair_row_id"],
-                    window_kind=WINDOW_1H,
-                    root_15m_lifecycle_identity=info["lifecycle_identity"],
-                    predecessor_window_id=info["campaign_window_15m_id"],
-                    checkpoint_cutoff=stamp,
-                    now=stamp,
+            if existing_1h is not None:
+                raise Selective1hError(
+                    "pre-existing WINDOW_1H conflicts with first continuation evaluation"
                 )
-            # Slot transitions toward 1h continuation (fail soft if already advanced).
+            persist_window(
+                connection,
+                window_id=window_1h_id,
+                campaign_id=campaign_id,
+                run_id=run_id,
+                cycle_id=cycle_id,
+                token_slot_id=info["token_slot_id"],
+                token_row_id=info["token_row_id"],
+                pair_row_id=info["pair_row_id"],
+                window_kind=WINDOW_1H,
+                root_15m_lifecycle_identity=info["lifecycle_identity"],
+                predecessor_window_id=info["campaign_window_15m_id"],
+                checkpoint_cutoff=stamp,
+                now=stamp,
+            )
             try:
                 transition_state(
                     connection,
@@ -618,55 +734,10 @@ def evaluate_selective_1h_for_cycle(
                 except CampaignOwnershipError:
                     continue
 
-        payload = {
-            "policy_version": SELECTIVE_1H_POLICY_VERSION,
-            "verdict": str(result.verdict),
-            "reasons": list(result.reasons),
-            "token_slot_id": info["token_slot_id"],
-            "token_row_id": info["token_row_id"],
-            "pair_row_id": info["pair_row_id"],
-            "predecessor_campaign_window_id": info["campaign_window_15m_id"],
-            "predecessor_memory_window_id": info["memory_window_15m_id"],
-            "authoritative_episode_id": info["authoritative_episode_id"],
-            "learning_need": info["learning_need"],
-            "successor_window_kind": WINDOW_1H if continue_ok else None,
-            "campaign_window_1h_id": window_1h_id,
-            "locked_downstream": dict(_LOCKED_DOWNSTREAM),
-        }
-        object_id = (
-            f"cont4a:{campaign_id}:{run_id}:{cycle_id}:"
-            f"{info['token_slot_id']}:{info['memory_window_15m_id']}"
-        )
-        existing_obj = connection.execute(
-            "SELECT object_id FROM printer_memory_factory_campaign_objects "
-            "WHERE object_id=?",
-            (object_id,),
-        ).fetchone()
-        if existing_obj is None:
-            persist_immutable_object(
-                connection,
-                object_id=object_id,
-                object_kind=CONTINUATION_OBJECT_KIND,
-                campaign_id=campaign_id,
-                configuration_id=configuration_id,
-                run_id=run_id,
-                cycle_id=cycle_id,
-                token_slot_id=info["token_slot_id"],
-                window_id=info["campaign_window_15m_id"],
-                payload=payload,
-                authoritative_episode_id=info["authoritative_episode_id"],
-                now=stamp,
-            )
-            created = True
-        else:
-            created = False
-        objects.append(
-            {
-                "object_id": object_id,
-                "created": created,
-                "payload": payload,
-            }
-        )
+    plans: list[Selective1hTokenPlan] = []
+    for candidate in candidates:
+        info = candidate["info"]
+        payload = candidate["payload"]
         plans.append(
             Selective1hTokenPlan(
                 token_slot_id=info["token_slot_id"],
@@ -677,11 +748,11 @@ def evaluate_selective_1h_for_cycle(
                 lifecycle_identity=info["lifecycle_identity"],
                 campaign_window_15m_id=info["campaign_window_15m_id"],
                 memory_window_15m_id=info["memory_window_15m_id"],
-                verdict=str(result.verdict),
-                reasons=tuple(result.reasons),
+                verdict=str(payload["verdict"]),
+                reasons=tuple(payload["reasons"]),
                 learning_need=info["learning_need"],
                 authoritative_episode_id=info["authoritative_episode_id"],
-                campaign_window_1h_id=window_1h_id,
+                campaign_window_1h_id=payload["campaign_window_1h_id"],
             )
         )
 
@@ -719,6 +790,8 @@ def evaluate_selective_1h_for_cycle(
             1 for p in plans if p.verdict == ContinuationVerdict.BLOCK_CONTINUATION
         ),
         "selective_1h_enabled_path": True,
+        "evaluation_created": first_evaluation,
+        "idempotent": not first_evaluation,
         "locked_downstream": dict(_LOCKED_DOWNSTREAM),
         "evaluated_at": stamp,
     }
@@ -823,13 +896,103 @@ def summarize_selective_1h_reporting(
             (campaign_id, run_id, CONTINUATION_OBJECT_KIND),
         ).fetchall()
     ]
+    token_plans = [_loads(row["object_json"]) for row in objects]
+    continue_count = sum(
+        1
+        for plan in token_plans
+        if plan.get("verdict") == ContinuationVerdict.CONTINUE_TO_WINDOW_1H.value
+    )
+    stop_count = sum(
+        1
+        for plan in token_plans
+        if plan.get("verdict") == ContinuationVerdict.STOP_AFTER_WINDOW_15M.value
+    )
+    block_count = sum(
+        1
+        for plan in token_plans
+        if plan.get("verdict") == ContinuationVerdict.BLOCK_CONTINUATION.value
+    )
+    factory_config: dict[str, Any] = {}
+    if auth is not None and auth[0]:
+        config_row = connection.execute(
+            "SELECT config_json FROM printer_memory_factory_runs WHERE run_id=?",
+            (auth[0],),
+        ).fetchone()
+        if config_row is not None:
+            factory_config = _loads(config_row[0])
+    selective_authorized = bool(factory_config.get("selective_1h_continuation"))
+    close_counts = {str(row[0]): int(row[1]) for row in connection.execute(
+        """SELECT step_status, COUNT(*)
+           FROM printer_memory_factory_run_steps
+           WHERE run_id=? AND step_kind='WINDOW_CLOSE'
+           GROUP BY step_status""",
+        (None if auth is None else auth[0],),
+    ).fetchall()}
+    counts_by_kind = {
+        kind: sum(1 for w in windows if w["window_kind"] == kind)
+        for kind in (WINDOW_15M, WINDOW_1H, "WINDOW_4H", "WINDOW_5M_MICRO_EVENT")
+    }
+    decision_set_complete = (
+        len(token_plans) == 2
+        and continue_count + stop_count + block_count == 2
+    )
+    persistence_consistent = counts_by_kind[WINDOW_1H] == continue_count
+    if decision_set_complete and persistence_consistent:
+        selective_outcome = (
+            ZERO_ELIGIBLE_CONTINUATIONS
+            if continue_count == 0
+            else ONE_CONTINUATION
+            if continue_count == 1
+            else TWO_CONTINUATIONS
+            if continue_count == 2
+            else EVALUATION_BLOCKED_SYSTEM_DEFECT
+        )
+    elif token_plans or (
+        selective_authorized
+        and close_counts.get("SUCCEEDED", 0) > 0
+        and sum(close_counts.values()) == close_counts.get("SUCCEEDED", 0)
+    ):
+        selective_outcome = EVALUATION_BLOCKED_SYSTEM_DEFECT
+    else:
+        selective_outcome = EVALUATION_NOT_REACHED
+
+    counts_by_kind_and_state: dict[str, dict[str, int]] = {}
+    for window in windows:
+        kind = str(window["window_kind"])
+        state = str(window["window_state"])
+        counts_by_kind_and_state.setdefault(kind, {})[state] = (
+            counts_by_kind_and_state.setdefault(kind, {}).get(state, 0) + 1
+        )
     return {
         "authoritative_run_id": None if auth is None else auth[0],
         "windows": windows,
         "continuation_objects": objects,
-        "window_counts_by_kind": {
-            kind: sum(1 for w in windows if w["window_kind"] == kind)
-            for kind in (WINDOW_15M, WINDOW_1H, "WINDOW_4H", "WINDOW_5M_MICRO_EVENT")
-        },
+        "token_plans": token_plans,
+        "continue_count": continue_count,
+        "block_count": block_count,
+        "stop_count": stop_count,
+        "window_counts_by_kind": counts_by_kind,
+        "window_counts_by_kind_and_state": counts_by_kind_and_state,
+        "actual_persisted_window_1h_count": counts_by_kind[WINDOW_1H],
+        "selective_1h_outcome": selective_outcome,
+        "selective_1h_authorized": selective_authorized,
+        "zero_continuation": selective_outcome == ZERO_ELIGIBLE_CONTINUATIONS,
         "locked_downstream": dict(_LOCKED_DOWNSTREAM),
+        "restart_created": False,
+        "successor_created": False,
     }
+
+
+def load_selective_1h_reporting(
+    db_path: str,
+    *,
+    campaign_id: str,
+    run_id: str,
+) -> dict[str, Any]:
+    """Load the canonical selective projection without creating writes."""
+    from printer_v1.operator_cli.campaign_authority_adapters import _read_only_database
+
+    with _read_only_database(db_path) as connection:
+        return summarize_selective_1h_reporting(
+            connection, campaign_id=campaign_id, run_id=run_id
+        )
