@@ -839,6 +839,23 @@ GRADUATION_MARKET_IDENTITY_INVALID = "MARKET_IDENTITY_INVALID"
 BLOCKED_INSUFFICIENT_GRADUATED_POOL = "BLOCKED_INSUFFICIENT_GRADUATED_POOL"
 
 
+def _graduated_supply_terminal_cause(supply: Any | None) -> str:
+    """Return a truthful pre-lifecycle cause for an unmet graduated supply.
+
+    Only proven true market-supply exhaustion retains the historical
+    insufficient-pool terminal. Source, stale, malformed/visibility, budget,
+    duration, or architecture blockers keep their existing categorical shortage
+    name and can never be presented as a market conclusion.
+    """
+    if supply is None:
+        return BLOCKED_INSUFFICIENT_GRADUATED_POOL
+    diagnostics = dict(getattr(supply, "diagnostics", {}) or {})
+    classification = str(diagnostics.get("shortage_classification") or "")
+    if not classification or classification == "TRUE_MARKET_SUPPLY_SHORTAGE":
+        return BLOCKED_INSUFFICIENT_GRADUATED_POOL
+    return classification
+
+
 def _classify_graduation(proof: Any, *, graduation: Any) -> str:
     """Classify one confirmed-origin candidate under the graduation-only law.
 
@@ -1414,12 +1431,22 @@ class AuthoritativeLiveOperationalCampaignOwner:
             from printer_v1.operator_cli.graduated_supply_front_door import (
                 build_graduated_supply,
             )
+            supply_kwargs = dict(graduated_supply_kwargs or {})
+            # Bind existing exhaustion-certificate ownership to the canonical
+            # operational action. selection_seed is the execution identity used
+            # by the outer V2-9.8B command.
+            supply_kwargs.update({
+                "campaign_id": command.campaign_id,
+                "execution_id": selection_seed,
+                "run_id": command.run_id,
+                "cycle_id": cycle_id,
+            })
             supply = build_graduated_supply(
                 command.db_path,
                 cycle_seed=selection_seed,
                 migration_transport=migration_transport,
                 now=evaluated_at,
-                **dict(graduated_supply_kwargs or {}),
+                **supply_kwargs,
             )
         graduated_supply_proofs: tuple[Any, ...] = ()
         if supply is not None:
@@ -1558,11 +1585,12 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 supply_diag = (
                     dict(supply.diagnostics) if supply is not None else {}
                 )
+                supply_terminal_cause = _graduated_supply_terminal_cause(supply)
                 terminal_reporting = {
                     "campaign_source_calls": int(ledger.governed_requests),
                     "campaign_scheduler_calls": 0,
                     "required_token_capacity": 2,
-                    "blocked_supply_reason": BLOCKED_INSUFFICIENT_GRADUATED_POOL,
+                    "blocked_supply_reason": supply_terminal_cause,
                     "candidates": front_door_candidates,
                     # V2-9.8B.21: honest exhaustion evidence when present.
                     "exhaustion_certificate": supply_diag.get(
@@ -1578,16 +1606,16 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 }
                 return OriginLifecycleResult(
                     activation=ActivationResult(
-                        terminal_status=BLOCKED_INSUFFICIENT_GRADUATED_POOL,
-                        first_terminal_cause=BLOCKED_INSUFFICIENT_GRADUATED_POOL,
+                        terminal_status=supply_terminal_cause,
+                        first_terminal_cause=supply_terminal_cause,
                         activated_slots=(),
                         selection_batch_id=None,
                     ),
                     lifecycle={
                         "run_id": command.run_id,
                         "run_status": "NOT_STARTED",
-                        "stop_reason": BLOCKED_INSUFFICIENT_GRADUATED_POOL,
-                        "first_terminal_cause": BLOCKED_INSUFFICIENT_GRADUATED_POOL,
+                        "stop_reason": supply_terminal_cause,
+                        "first_terminal_cause": supply_terminal_cause,
                         "lifecycle_started": False,
                         "forbidden_deltas": {},
                         "pending_or_running_run_steps": 0,
@@ -1598,7 +1626,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             dict(supply.diagnostics) if supply is not None else {}
                         ),
                         "front_door_candidates": front_door_candidates,
-                        "blocked_supply_reason": BLOCKED_INSUFFICIENT_GRADUATED_POOL,
+                        "blocked_supply_reason": supply_terminal_cause,
                         "terminal_reporting": terminal_reporting,
                     },
                     lifecycle_started=False,

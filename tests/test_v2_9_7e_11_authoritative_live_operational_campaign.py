@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -657,6 +658,83 @@ class OperationalNegativeMatrixTests(_OperationalBase):
             lifecycle_kwargs=self._minimal_lifecycle_kwargs(),
         )
         self.assertFalse(result.lifecycle_started)
+
+    def test_liquidity_source_unavailability_binds_ownership_and_starts_nothing(self) -> None:
+        supply = SimpleNamespace(
+            graduation_proofs={},
+            holder_reserve_supply=(),
+            graduated_supply=(),
+            front_door_report={
+                "candidates": [{
+                    "mint": "mint-a",
+                    "pool": "pool-a",
+                    "eligible": False,
+                    "rejection": "LIQUIDITY_SOURCE_dexscreener_transport_failure",
+                    "liquidity": {
+                        "status": "LIQUIDITY_UNPROVEN",
+                        "liquidity_usd": None,
+                        "mint": "mint-a",
+                        "pool": "pool-a",
+                        "reason": "LIQUIDITY_SOURCE_dexscreener_transport_failure",
+                        "detailed_reason": "No route to host",
+                        "source_status": "FAILED",
+                        "outcome_category": "LIQUIDITY_SOURCE_UNAVAILABLE",
+                        "source_request_id": 101,
+                        "source_response_id": None,
+                        "source_failure_id": 51,
+                        "failure_type": "dexscreener_transport_failure",
+                    },
+                }],
+                "source_operation_ledger": {"liquidity_requests": 1},
+            },
+            discovery_report={"source_operation_ledger": {"source_requests": 0}},
+            diagnostics={
+                "stage_local_source_requests": 1,
+                "shortage_classification": "SOURCE_AVAILABILITY_FAILURE",
+                "exhaustion_certificate": {
+                    "campaign_id": self.command.campaign_id,
+                    "execution_id": "execution-liquidity-blocked",
+                    "run_id": self.command.run_id,
+                    "cycle_id": "cyc",
+                    "provider_failures": 1,
+                },
+                "eligible_reserve_count": 0,
+                "discovery_rounds": 1,
+            },
+        )
+        owner = AuthoritativeLiveOperationalCampaignOwner()
+        with patch(
+            "printer_v1.operator_cli.graduated_supply_front_door.build_graduated_supply",
+            return_value=supply,
+        ) as build_supply:
+            result = owner.run_operational(
+                command=self.command,
+                pump_transport=_FakePumpTransport([], {}),
+                source_governor=GOV,
+                central_scheduler=SCH,
+                selection_seed="execution-liquidity-blocked",
+                cycle_id="cyc",
+                cycle_cutoff=e8.CUTOFF,
+                evaluated_at=e8.NOW,
+                backup_path=self.backup,
+                lifecycle_kwargs=self._minimal_lifecycle_kwargs(),
+                migration_transport=lambda _context: {},
+            )
+        kwargs = build_supply.call_args.kwargs
+        self.assertEqual(kwargs["campaign_id"], self.command.campaign_id)
+        self.assertEqual(kwargs["execution_id"], "execution-liquidity-blocked")
+        self.assertEqual(kwargs["run_id"], self.command.run_id)
+        self.assertEqual(kwargs["cycle_id"], "cyc")
+        self.assertEqual(
+            result.activation.first_terminal_cause,
+            "SOURCE_AVAILABILITY_FAILURE",
+        )
+        self.assertFalse(result.lifecycle_started)
+        self.assertEqual(result.lifecycle["run_status"], "NOT_STARTED")
+        self.assertEqual(
+            result.lifecycle["terminal_reporting"]["campaign_scheduler_calls"],
+            0,
+        )
 
     def test_transport_faults_fail_closed_without_retry(self) -> None:
         for code in ("TIMEOUT", "HTTP_429", "UNAVAILABLE", "MALFORMED"):

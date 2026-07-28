@@ -37,6 +37,9 @@ from printer_v1.discovery.direct_migration_discovery import (
 from printer_v1.discovery.graduated_liquidity_front_door import (
     LIQUIDITY_BELOW_SELECTION_FLOOR,
     LIQUIDITY_PROVEN,
+    LIQUIDITY_RESPONSE_MALFORMED_OR_PARTIAL,
+    LIQUIDITY_SOURCE_RATE_LIMITED_OR_STALE,
+    LIQUIDITY_SOURCE_UNAVAILABLE,
     LIQUIDITY_UNPROVEN,
     SELECTION_FLOOR_USD,
     run_graduated_liquidity_front_door,
@@ -49,7 +52,7 @@ REQUIRED_TOKEN_CAPACITY = 2
 EVALUATION_BATCH_SIZE = 6
 DEFAULT_DISCOVERY_OPERATION_BUDGET = 30
 LIFECYCLE_OPERATION_CEILING = 45
-CERTIFICATE_VERSION = "V2_9_8B_21_EXHAUSTION_V1"
+CERTIFICATE_VERSION = "V2_9_8B_LIQUIDITY_EVIDENCE_EXHAUSTION_V2"
 
 # Eligibility reserve statuses.
 ELIGIBLE_FRESH = "ELIGIBLE_FRESH"
@@ -241,6 +244,9 @@ class ExhaustionCertificate:
     cooldown_skips: int
     stale_evidence_exclusions: int
     provider_failures: int
+    liquidity_stage_provider_failures: int
+    liquidity_outcome_counts: dict[str, int]
+    candidate_liquidity_lineage: list[dict[str, Any]]
     source_operations_used: int
     source_operations_remaining: int
     duration_used_seconds: float | None
@@ -276,6 +282,13 @@ class ExhaustionCertificate:
             "cooldown_skips": self.cooldown_skips,
             "stale_evidence_exclusions": self.stale_evidence_exclusions,
             "provider_failures": self.provider_failures,
+            "liquidity_stage_provider_failures": (
+                self.liquidity_stage_provider_failures
+            ),
+            "liquidity_outcome_counts": dict(self.liquidity_outcome_counts),
+            "candidate_liquidity_lineage": [
+                dict(item) for item in self.candidate_liquidity_lineage
+            ],
             "source_operations_used": self.source_operations_used,
             "source_operations_remaining": self.source_operations_remaining,
             "duration_used_seconds": self.duration_used_seconds,
@@ -334,6 +347,9 @@ def classify_shortage(
     discovery_rounds: int,
     evaluation_batch_size: int,
     all_channels_exhausted: bool,
+    liquidity_source_unavailable: int = 0,
+    liquidity_stale_or_rate_limited: int = 0,
+    liquidity_malformed_or_partial: int = 0,
 ) -> str:
     """Return exactly one shortage classification.
 
@@ -342,6 +358,12 @@ def classify_shortage(
     unexplored inventory is architecture-false shortage (must not be the normal
     post-repair path).
     """
+    if liquidity_source_unavailable > 0:
+        return SOURCE_AVAILABILITY_FAILURE
+    if liquidity_stale_or_rate_limited > 0:
+        return STALE_EVIDENCE_SHORTAGE
+    if liquidity_malformed_or_partial > 0:
+        return SOURCE_VISIBILITY_SHORTAGE
     if provider_failures > 0 and (
         channels_unavailable or unique_tokens_observed == 0
     ):
@@ -418,6 +440,7 @@ def _candidate_from_front_door_item(item: Mapping[str, Any]) -> dict[str, Any]:
         liquidity = {}
     mint = str(item.get("mint") or "")
     pool = str(item.get("pool") or item.get("pumpswap_pool") or "")
+    liquidity_evidence = dict(liquidity)
     return {
         "mint": mint,
         "pool": pool,
@@ -430,6 +453,11 @@ def _candidate_from_front_door_item(item: Mapping[str, Any]) -> dict[str, Any]:
         "liquidity_status": str(
             liquidity.get("status") or item.get("liquidity_status") or LIQUIDITY_UNPROVEN
         ),
+        "liquidity_reason": liquidity.get("reason"),
+        "liquidity_detailed_reason": liquidity.get("detailed_reason"),
+        "liquidity_source_status": liquidity.get("source_status"),
+        "liquidity_outcome_category": liquidity.get("outcome_category"),
+        "liquidity": liquidity_evidence,
         "eligible": bool(item.get("eligible")),
         "rejection": item.get("rejection"),
         "source_path": (
@@ -444,8 +472,36 @@ def _merge_rejection_reasons(
     for c in candidates:
         if c.get("eligible"):
             continue
-        reason = str(c.get("rejection") or "UNKNOWN_REJECTION")
+        reason = str(
+            c.get("liquidity_reason")
+            if c.get("rejection") == LIQUIDITY_UNPROVEN and c.get("liquidity_reason")
+            else c.get("rejection") or "UNKNOWN_REJECTION"
+        )
         bucket[reason] = bucket.get(reason, 0) + 1
+
+
+def _candidate_rejection_reason(candidate: Mapping[str, Any]) -> str:
+    rejection = candidate.get("rejection")
+    if rejection == LIQUIDITY_UNPROVEN and candidate.get("liquidity_reason"):
+        return str(candidate["liquidity_reason"])
+    return str(rejection or candidate.get("liquidity_reason") or "UNKNOWN_REJECTION")
+
+
+def _candidate_liquidity_lineage(candidate: Mapping[str, Any]) -> dict[str, Any]:
+    liquidity = candidate.get("liquidity")
+    evidence = dict(liquidity) if isinstance(liquidity, Mapping) else {}
+    return {
+        "mint": candidate.get("mint"),
+        "pool": candidate.get("pumpswap_pool") or candidate.get("pool"),
+        "source_request_id": evidence.get("source_request_id"),
+        "source_response_id": evidence.get("source_response_id"),
+        "source_failure_id": evidence.get("source_failure_id"),
+        "failure_type": evidence.get("failure_type"),
+        "reason": evidence.get("reason"),
+        "detailed_reason": evidence.get("detailed_reason"),
+        "source_status": evidence.get("source_status"),
+        "outcome_category": evidence.get("outcome_category"),
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -547,6 +603,9 @@ def run_persistent_eligible_token_supply(
         (discovery.get("source_operation_ledger") or {}).get("source_requests") or 0
     )
     provider_failures = 0
+    liquidity_stage_provider_failures = 0
+    liquidity_outcome_counts: dict[str, int] = {}
+    liquidity_failure_ids: set[int] = set()
     channels_attempted: list[str] = []
     channels_unavailable: list[str] = []
     if run_locator:
@@ -685,6 +744,31 @@ def run_persistent_eligible_token_supply(
                 _candidate_from_front_door_item(c)
                 for c in (front_door.get("candidates") or [])
             ]
+            for candidate in batch_candidates:
+                liquidity = candidate.get("liquidity")
+                if not isinstance(liquidity, Mapping):
+                    continue
+                category = str(liquidity.get("outcome_category") or "UNKNOWN")
+                liquidity_outcome_counts[category] = (
+                    liquidity_outcome_counts.get(category, 0) + 1
+                )
+                failure_id = liquidity.get("source_failure_id")
+                if failure_id is not None:
+                    liquidity_failure_ids.add(int(failure_id))
+            liquidity_stage_provider_failures = len(liquidity_failure_ids)
+            provider_failures = (
+                (1 if discovery.get("status") == "PROVIDER_FAILURE" else 0)
+                + liquidity_stage_provider_failures
+            )
+            if any(
+                liquidity_outcome_counts.get(category, 0) > 0
+                for category in (
+                    LIQUIDITY_SOURCE_UNAVAILABLE,
+                    LIQUIDITY_SOURCE_RATE_LIMITED_OR_STALE,
+                    LIQUIDITY_RESPONSE_MALFORMED_OR_PARTIAL,
+                )
+            ) and "dexscreener_exact_pool_market" not in channels_unavailable:
+                channels_unavailable.append("dexscreener_exact_pool_market")
             if not batch_candidates and not unexplored:
                 last_stop_reason = "NO_ADDITIONAL_UNIQUE_CANDIDATES_REACHABLE"
                 break
@@ -732,7 +816,7 @@ def run_persistent_eligible_token_supply(
                         last_campaign_id=campaign_id,
                     )
                 else:
-                    reason = str(cand.get("rejection") or "UNKNOWN_REJECTION")
+                    reason = _candidate_rejection_reason(cand)
                     rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
                     # If a previously eligible reserve mint fails revalidation,
                     # remove it from capacity and durable fresh status.
@@ -743,6 +827,16 @@ def run_persistent_eligible_token_supply(
                         None,
                     )
                     if prior is not None:
+                        cand["historical_reserve_evidence"] = {
+                            "liquidity_usd": prior.get("liquidity_usd"),
+                            "liquidity_status": prior.get("liquidity_status"),
+                            "last_validated_at": prior.get("last_validated_at"),
+                            "source_provenance": prior.get("source_provenance"),
+                            "last_campaign_id": prior.get("last_campaign_id"),
+                            "evidence_role": "HISTORICAL_LAST_SUCCESSFUL_ONLY",
+                            "admitted_as_current": False,
+                        }
+                        cand["current_eligibility_status"] = REMOVED
                         mark_reserve_status(
                             connection,
                             mint,
@@ -804,7 +898,7 @@ def run_persistent_eligible_token_supply(
             } and unexplored_remaining > 0
             shortage = classify_shortage(
                 provider_failures=provider_failures,
-                channels_unavailable=channels_unavailable,
+                channels_unavailable=sorted(set(channels_unavailable)),
                 duration_remaining_seconds=duration_remaining,
                 source_operations_remaining=_ops_remaining(),
                 unexplored_unique_remaining=unexplored_remaining,
@@ -813,9 +907,29 @@ def run_persistent_eligible_token_supply(
                 discovery_rounds=discovery_rounds,
                 evaluation_batch_size=front_door_max_candidates,
                 all_channels_exhausted=all_channels_exhausted,
+                liquidity_source_unavailable=liquidity_outcome_counts.get(
+                    LIQUIDITY_SOURCE_UNAVAILABLE, 0
+                ),
+                liquidity_stale_or_rate_limited=liquidity_outcome_counts.get(
+                    LIQUIDITY_SOURCE_RATE_LIMITED_OR_STALE, 0
+                ),
+                liquidity_malformed_or_partial=liquidity_outcome_counts.get(
+                    LIQUIDITY_RESPONSE_MALFORMED_OR_PARTIAL, 0
+                ),
             )
-            # Prefer stop-reason-driven classification when more specific.
-            if last_stop_reason == "DISCOVERY_OPERATION_BUDGET_EXHAUSTED":
+            # Source-evidence failures take precedence over a budget consumed by
+            # those failed operations. Healthy evidence may still exhaust budget.
+            if liquidity_outcome_counts.get(LIQUIDITY_SOURCE_UNAVAILABLE, 0) > 0:
+                shortage = SOURCE_AVAILABILITY_FAILURE
+            elif liquidity_outcome_counts.get(
+                LIQUIDITY_SOURCE_RATE_LIMITED_OR_STALE, 0
+            ) > 0:
+                shortage = STALE_EVIDENCE_SHORTAGE
+            elif liquidity_outcome_counts.get(
+                LIQUIDITY_RESPONSE_MALFORMED_OR_PARTIAL, 0
+            ) > 0:
+                shortage = SOURCE_VISIBILITY_SHORTAGE
+            elif last_stop_reason == "DISCOVERY_OPERATION_BUDGET_EXHAUSTED":
                 shortage = BUDGET_EXHAUSTION
             elif last_stop_reason == "CAMPAIGN_DURATION_EXHAUSTED":
                 shortage = DURATION_EXHAUSTION
@@ -850,6 +964,14 @@ def run_persistent_eligible_token_supply(
                 cooldown_skips=cooldown_skips,
                 stale_evidence_exclusions=stale_exclusions,
                 provider_failures=provider_failures,
+                liquidity_stage_provider_failures=(
+                    liquidity_stage_provider_failures
+                ),
+                liquidity_outcome_counts=dict(liquidity_outcome_counts),
+                candidate_liquidity_lineage=[
+                    _candidate_liquidity_lineage(candidate)
+                    for candidate in all_candidates
+                ],
                 source_operations_used=ops_used,
                 source_operations_remaining=_ops_remaining(),
                 duration_used_seconds=duration_used,
@@ -876,16 +998,18 @@ def run_persistent_eligible_token_supply(
                         "provenance": c["provenance"],
                         "lifecycle_state": c.get("lifecycle_state"),
                         "graduation_block_time": c.get("graduation_block_time"),
-                        "liquidity": {
-                            "status": c["liquidity_status"],
-                            "liquidity_usd": c.get("liquidity_usd"),
-                            "mint": c["mint"],
-                            "pool": c["pumpswap_pool"],
-                            "reason": c.get("rejection") or "AT_OR_ABOVE_3000_FLOOR",
-                            "source_status": "COMPLETE",
-                        },
+                        "liquidity": dict(c.get("liquidity") or {}),
+                        "historical_reserve_evidence": c.get(
+                            "historical_reserve_evidence"
+                        ),
+                        "current_eligibility_status": c.get(
+                            "current_eligibility_status",
+                            ELIGIBLE_FRESH if c.get("eligible") else EXCLUDED,
+                        ),
                         "eligible": bool(c.get("eligible")),
-                        "rejection": c.get("rejection"),
+                        "rejection": (
+                            None if c.get("eligible") else _candidate_rejection_reason(c)
+                        ),
                     }
                     for c in all_candidates
                 ],
@@ -898,14 +1022,7 @@ def run_persistent_eligible_token_supply(
                         "provenance": c["provenance"],
                         "lifecycle_state": c.get("lifecycle_state"),
                         "graduation_block_time": c.get("graduation_block_time"),
-                        "liquidity": {
-                            "status": c["liquidity_status"],
-                            "liquidity_usd": c.get("liquidity_usd"),
-                            "mint": c["mint"],
-                            "pool": c["pumpswap_pool"],
-                            "reason": "AT_OR_ABOVE_3000_FLOOR",
-                            "source_status": "COMPLETE",
-                        },
+                        "liquidity": dict(c.get("liquidity") or {}),
                         "eligible": True,
                         "rejection": None,
                     }
@@ -985,6 +1102,16 @@ def run_persistent_eligible_token_supply(
             "eligible_reserve_count": len(eligible_list),
             "cooldown_skips": cooldown_skips,
             "stale_evidence_exclusions": stale_exclusions,
+            "provider_failures": provider_failures,
+            "liquidity_stage_provider_failures": (
+                liquidity_stage_provider_failures
+            ),
+            "channels_unavailable": sorted(set(channels_unavailable)),
+            "liquidity_outcome_counts": dict(liquidity_outcome_counts),
+            "candidate_liquidity_lineage": [
+                _candidate_liquidity_lineage(candidate)
+                for candidate in all_candidates
+            ],
             "duplicate_observations_removed": duplicate_observations_removed,
             "evaluation_batch_size": front_door_max_candidates,
             "lifecycle_operation_ceiling": LIFECYCLE_OPERATION_CEILING,

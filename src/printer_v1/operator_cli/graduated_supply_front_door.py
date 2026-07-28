@@ -372,10 +372,13 @@ def build_graduated_supply(
                 "provenance": c.get("provenance"),
                 "lifecycle_state": c.get("lifecycle_state"),
                 "graduation_block_time": c.get("graduation_block_time"),
-                "liquidity": {
+                "liquidity": dict(c.get("liquidity") or {
                     "status": c.get("liquidity_status"),
                     "liquidity_usd": c.get("liquidity_usd"),
-                },
+                }),
+                "historical_reserve_evidence": c.get(
+                    "historical_reserve_evidence"
+                ),
                 "eligible": True,
                 "rejection": None,
             }

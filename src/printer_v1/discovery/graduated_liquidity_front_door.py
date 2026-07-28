@@ -96,6 +96,22 @@ LIQUIDITY_REQUEST_KIND = "pair_market_snapshot"
 LIQUIDITY_PROVEN = "LIQUIDITY_PROVEN"
 LIQUIDITY_BELOW_SELECTION_FLOOR = "LIQUIDITY_BELOW_SELECTION_FLOOR"
 LIQUIDITY_UNPROVEN = "LIQUIDITY_UNPROVEN"
+
+# Candidate-local evidence outcome categories. They explain why a current
+# exact-pool attempt passed or failed without changing the adopted three-state
+# liquidity admission contract above.
+LIQUIDITY_EXACT_ABOVE_FLOOR = "LIQUIDITY_EXACT_ABOVE_FLOOR"
+LIQUIDITY_EXACT_BELOW_FLOOR = "LIQUIDITY_EXACT_BELOW_FLOOR"
+LIQUIDITY_SOURCE_UNAVAILABLE = "LIQUIDITY_SOURCE_UNAVAILABLE"
+LIQUIDITY_SOURCE_RATE_LIMITED_OR_STALE = "LIQUIDITY_SOURCE_RATE_LIMITED_OR_STALE"
+LIQUIDITY_RESPONSE_MALFORMED_OR_PARTIAL = "LIQUIDITY_RESPONSE_MALFORMED_OR_PARTIAL"
+LIQUIDITY_EXACT_PAIR_UNAVAILABLE_OR_MISMATCH = (
+    "LIQUIDITY_EXACT_PAIR_UNAVAILABLE_OR_MISMATCH"
+)
+LIQUIDITY_HISTORICAL_BELOW_FLOOR_COOLDOWN = (
+    "LIQUIDITY_HISTORICAL_BELOW_FLOOR_COOLDOWN"
+)
+LIQUIDITY_IDENTITY_UNCONFIRMED = "LIQUIDITY_IDENTITY_UNCONFIRMED"
 # Front-door skip reason when durable below-floor cooldown is still active.
 # No DexScreener call is made; last measured liquidity is retained for reporting.
 LIQUIDITY_BELOW_SELECTION_FLOOR_COOLDOWN = "LIQUIDITY_BELOW_SELECTION_FLOOR_COOLDOWN"
@@ -145,6 +161,12 @@ class LiquidityEvidence:
     pool: str
     reason: str
     source_status: str
+    outcome_category: str | None = None
+    detailed_reason: str | None = None
+    source_request_id: int | None = None
+    source_response_id: int | None = None
+    source_failure_id: int | None = None
+    failure_type: str | None = None
 
     @property
     def passes_floor(self) -> bool:
@@ -157,7 +179,21 @@ class LiquidityEvidence:
             "mint": self.mint,
             "pool": self.pool,
             "reason": self.reason,
+            "detailed_reason": self.detailed_reason or self.reason,
             "source_status": self.source_status,
+            "outcome_category": (
+                self.outcome_category or _category_from_liquidity_fact(
+                    status=self.status,
+                    reason=self.reason,
+                    source_status=self.source_status,
+                    failure_type=self.failure_type,
+                )
+            ),
+            "source_channel": "dexscreener_exact_pool_market",
+            "source_request_id": self.source_request_id,
+            "source_response_id": self.source_response_id,
+            "source_failure_id": self.source_failure_id,
+            "failure_type": self.failure_type,
         }
 
 
@@ -241,20 +277,105 @@ def _extract_exact_pair_liquidity(
     return value, "LIQUIDITY_EXACT_POOL"
 
 
-def classify_liquidity(value: float | None, *, mint: str, pool: str, reason: str,
-                       source_status: str) -> LiquidityEvidence:
+_EXACT_PAIR_IDENTITY_REASONS = frozenset({
+    "LIQUIDITY_NO_EXACT_PAIR",
+    "LIQUIDITY_AMBIGUOUS_EXACT_PAIR",
+    "LIQUIDITY_MINT_MISMATCH",
+    "LIQUIDITY_POOL_MISMATCH_TOKEN_LEVEL",
+})
+_MALFORMED_LIQUIDITY_REASONS = frozenset({
+    "LIQUIDITY_MISSING",
+    "LIQUIDITY_MALFORMED",
+    "LIQUIDITY_NON_FINITE",
+    "LIQUIDITY_NEGATIVE",
+})
+
+
+def _category_from_liquidity_fact(
+    *, status: str, reason: str, source_status: str, failure_type: str | None
+) -> str:
+    """Map evidence to one truthful category without changing admission."""
+    if status == LIQUIDITY_PROVEN:
+        return LIQUIDITY_EXACT_ABOVE_FLOOR
+    if status == LIQUIDITY_BELOW_SELECTION_FLOOR:
+        if reason == LIQUIDITY_BELOW_SELECTION_FLOOR_COOLDOWN:
+            return LIQUIDITY_HISTORICAL_BELOW_FLOOR_COOLDOWN
+        return LIQUIDITY_EXACT_BELOW_FLOOR
+    if reason == "IDENTITY_OR_GRADUATION_UNCONFIRMED":
+        return LIQUIDITY_IDENTITY_UNCONFIRMED
+    if reason in _EXACT_PAIR_IDENTITY_REASONS:
+        return LIQUIDITY_EXACT_PAIR_UNAVAILABLE_OR_MISMATCH
+    lowered_failure = str(failure_type or "").lower()
+    lowered_reason = str(reason or "").lower()
+    status_upper = str(source_status or "").upper()
+    if (
+        status_upper == "STALE"
+        or "rate_limit" in lowered_failure
+        or "rate_limit" in lowered_reason
+        or "stale" in lowered_failure
+        or "stale" in lowered_reason
+    ):
+        return LIQUIDITY_SOURCE_RATE_LIMITED_OR_STALE
+    if (
+        status_upper == "PARTIAL"
+        or reason in _MALFORMED_LIQUIDITY_REASONS
+        or any(
+            marker in lowered_failure
+            for marker in ("malformed", "missing_critical", "parse", "decode")
+        )
+    ):
+        return LIQUIDITY_RESPONSE_MALFORMED_OR_PARTIAL
+    return LIQUIDITY_SOURCE_UNAVAILABLE
+
+
+def classify_liquidity(
+    value: float | None,
+    *,
+    mint: str,
+    pool: str,
+    reason: str,
+    source_status: str,
+    detailed_reason: str | None = None,
+    source_request_id: int | None = None,
+    source_response_id: int | None = None,
+    source_failure_id: int | None = None,
+    failure_type: str | None = None,
+) -> LiquidityEvidence:
     """Apply the $3,000 floor to an exact-pool liquidity value (categorical)."""
     if value is None:
         return LiquidityEvidence(
-            LIQUIDITY_UNPROVEN, None, mint, pool, reason, source_status
+            LIQUIDITY_UNPROVEN, None, mint, pool, reason, source_status,
+            _category_from_liquidity_fact(
+                status=LIQUIDITY_UNPROVEN,
+                reason=reason,
+                source_status=source_status,
+                failure_type=failure_type,
+            ),
+            detailed_reason or reason,
+            source_request_id,
+            source_response_id,
+            source_failure_id,
+            failure_type,
         )
     if value < SELECTION_FLOOR_USD:
         return LiquidityEvidence(
             LIQUIDITY_BELOW_SELECTION_FLOOR, value, mint, pool,
             "BELOW_3000_FLOOR", source_status,
+            LIQUIDITY_EXACT_BELOW_FLOOR,
+            detailed_reason or "BELOW_3000_FLOOR",
+            source_request_id,
+            source_response_id,
+            source_failure_id,
+            failure_type,
         )
     return LiquidityEvidence(
-        LIQUIDITY_PROVEN, value, mint, pool, "AT_OR_ABOVE_3000_FLOOR", source_status
+        LIQUIDITY_PROVEN, value, mint, pool, "AT_OR_ABOVE_3000_FLOOR", source_status,
+        LIQUIDITY_EXACT_ABOVE_FLOOR,
+        detailed_reason or "AT_OR_ABOVE_3000_FLOOR",
+        source_request_id,
+        source_response_id,
+        source_failure_id,
+        failure_type,
     )
 
 
@@ -302,24 +423,59 @@ def enrich_pool_liquidity(
         on_request(int(execution.request_record.id))
     result = execution.normalized_result
     source_status = getattr(result.source_status, "name", str(result.source_status))
+    request_id = int(execution.request_record.id)
+    response_id = (
+        None if execution.response_record is None else int(execution.response_record.id)
+    )
+    failure_id = (
+        None if execution.failure_record is None else int(execution.failure_record.id)
+    )
+    failure_type = result.failure_type
+    detailed_reason = result.failure_message
 
     if result.source_status == SourceStatus.STALE:
         return LiquidityEvidence(
             LIQUIDITY_UNPROVEN, None, mint, pumpswap_pool,
             "LIQUIDITY_STALE_SOURCE", source_status,
+            LIQUIDITY_SOURCE_RATE_LIMITED_OR_STALE,
+            detailed_reason or "LIQUIDITY_STALE_SOURCE",
+            request_id,
+            response_id,
+            failure_id,
+            failure_type,
         )
     if result.source_status != SourceStatus.COMPLETE or result.failure_type:
+        reason = f"LIQUIDITY_SOURCE_{result.failure_type or source_status}"
         return LiquidityEvidence(
             LIQUIDITY_UNPROVEN, None, mint, pumpswap_pool,
-            f"LIQUIDITY_SOURCE_{result.failure_type or source_status}",
-            source_status,
+            reason, source_status,
+            _category_from_liquidity_fact(
+                status=LIQUIDITY_UNPROVEN,
+                reason=reason,
+                source_status=source_status,
+                failure_type=failure_type,
+            ),
+            detailed_reason or reason,
+            request_id,
+            response_id,
+            failure_id,
+            failure_type,
         )
 
     payload = result.normalized_payload or {}
     pairs = payload.get("pairs") or []
     value, reason = _extract_exact_pair_liquidity(pairs, mint=mint, pool=pumpswap_pool)
     return classify_liquidity(
-        value, mint=mint, pool=pumpswap_pool, reason=reason, source_status=source_status
+        value,
+        mint=mint,
+        pool=pumpswap_pool,
+        reason=reason,
+        source_status=source_status,
+        detailed_reason=reason,
+        source_request_id=request_id,
+        source_response_id=response_id,
+        source_failure_id=failure_id,
+        failure_type=failure_type,
     )
 
 
@@ -979,6 +1135,7 @@ def run_graduated_liquidity_front_door(
                     pool,
                     "IDENTITY_OR_GRADUATION_UNCONFIRMED",
                     "SKIPPED",
+                    LIQUIDITY_IDENTITY_UNCONFIRMED,
                 )
             else:
                 floor_state = load_market_floor_state(connection, mint)
@@ -1002,6 +1159,7 @@ def run_graduated_liquidity_front_door(
                         pool,
                         LIQUIDITY_BELOW_SELECTION_FLOOR_COOLDOWN,
                         "COOLDOWN_SKIP",
+                        LIQUIDITY_HISTORICAL_BELOW_FLOOR_COOLDOWN,
                     )
                     rejection = LIQUIDITY_BELOW_SELECTION_FLOOR_COOLDOWN
                 else:

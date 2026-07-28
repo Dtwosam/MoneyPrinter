@@ -601,12 +601,32 @@ def build_candidate_supply_report(
         liquidity_usd = liquidity.get("liquidity_usd")
         liquidity_status = liquidity.get("status")
         liquidity_reason = liquidity.get("reason")
+        liquidity_detailed_reason = liquidity.get("detailed_reason")
+        liquidity_source_status = liquidity.get("source_status")
+        liquidity_outcome_category = liquidity.get("outcome_category")
         pool_from_liquidity = liquidity.get("pool")
+        source_lineage = {
+            "source_channel": liquidity.get("source_channel"),
+            "source_request_id": liquidity.get("source_request_id"),
+            "source_response_id": liquidity.get("source_response_id"),
+            "source_failure_id": liquidity.get("source_failure_id"),
+            "failure_type": liquidity.get("failure_type"),
+        }
     else:
         liquidity_usd = candidate.get("liquidity_usd")
         liquidity_status = candidate.get("liquidity_status")
         liquidity_reason = candidate.get("liquidity_reason")
+        liquidity_detailed_reason = candidate.get("liquidity_detailed_reason")
+        liquidity_source_status = candidate.get("liquidity_source_status")
+        liquidity_outcome_category = candidate.get("liquidity_outcome_category")
         pool_from_liquidity = None
+        source_lineage = {
+            "source_channel": candidate.get("liquidity_source_channel"),
+            "source_request_id": candidate.get("source_request_id"),
+            "source_response_id": candidate.get("source_response_id"),
+            "source_failure_id": candidate.get("source_failure_id"),
+            "failure_type": candidate.get("failure_type"),
+        }
 
     eligible = bool(candidate.get("eligible"))
     rejection = candidate.get("rejection")
@@ -663,6 +683,22 @@ def build_candidate_supply_report(
         ),
         "liquidity": liquidity_usd,
         "liquidity_status": liquidity_status,
+        "liquidity_reason": liquidity_reason,
+        "liquidity_detailed_reason": (
+            liquidity_detailed_reason or liquidity_reason
+        ),
+        "liquidity_source_status": liquidity_source_status,
+        "liquidity_outcome_category": liquidity_outcome_category,
+        "liquidity_source_lineage": source_lineage,
+        "current_liquidity_evidence": (
+            dict(liquidity) if isinstance(liquidity, Mapping) else None
+        ),
+        "historical_reserve_evidence": candidate.get(
+            "historical_reserve_evidence"
+        ),
+        "current_eligibility_status": candidate.get(
+            "current_eligibility_status"
+        ),
         "market_cap": candidate.get("market_cap"),
         "eligibility_result": "eligible" if eligible else "rejected",
         "rejection_or_exclusion_reason": None if eligible else (
@@ -678,6 +714,8 @@ def build_blocked_supply_reporting(
     blocked_supply_reason: str | None,
     campaign_source_calls: int,
     campaign_scheduler_calls: int = 0,
+    shortage_classification: str | None = None,
+    exhaustion_certificate: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the authoritative blocked-supply + campaign activity report surface."""
     candidate_reports = [
@@ -697,19 +735,24 @@ def build_blocked_supply_reporting(
     reason = blocked_supply_reason
     if reason is None and required_token_capacity > eligible:
         reason = BLOCKED_INSUFFICIENT_GRADUATED_POOL
+    blocked_supply = {
+        "required_token_capacity": int(required_token_capacity),
+        "candidates_observed": observed,
+        "candidates_validated": validated,
+        "eligible_candidates": eligible,
+        "blocked_supply_reason": reason,
+        "shortage_classification": shortage_classification,
+        "exhaustion_certificate": (
+            None if exhaustion_certificate is None else dict(exhaustion_certificate)
+        ),
+        "candidates": candidate_reports,
+    }
     return {
         "campaign_activity": {
             "campaign_source_calls": int(campaign_source_calls),
             "campaign_scheduler_calls": int(campaign_scheduler_calls),
         },
-        "blocked_supply": {
-            "required_token_capacity": int(required_token_capacity),
-            "candidates_observed": observed,
-            "candidates_validated": validated,
-            "eligible_candidates": eligible,
-            "blocked_supply_reason": reason,
-            "candidates": candidate_reports,
-        },
+        "blocked_supply": blocked_supply,
         "campaign_source_calls": int(campaign_source_calls),
         "campaign_scheduler_calls": int(campaign_scheduler_calls),
         "candidates_observed": observed,
@@ -717,6 +760,8 @@ def build_blocked_supply_reporting(
         "eligible_candidates": eligible,
         "required_token_capacity": int(required_token_capacity),
         "blocked_supply_reason": reason,
+        "shortage_classification": shortage_classification,
+        "exhaustion_certificate": blocked_supply["exhaustion_certificate"],
     }
 
 
@@ -781,6 +826,16 @@ def assemble_campaign_terminal_reporting(
         blocked_supply_reason=None if reason is None else str(reason),
         campaign_source_calls=source_calls,
         campaign_scheduler_calls=int(campaign_scheduler_calls),
+        shortage_classification=(
+            None
+            if reporting.get("shortage_classification") is None
+            else str(reporting.get("shortage_classification"))
+        ),
+        exhaustion_certificate=(
+            reporting.get("exhaustion_certificate")
+            if isinstance(reporting.get("exhaustion_certificate"), Mapping)
+            else None
+        ),
     )
     # If no candidates were packaged and the terminal is not a blocked-supply
     # close, keep activity totals without inventing a blocked-supply story.
@@ -879,6 +934,12 @@ def build_campaign_terminal_report(
         }
     if blocked_supply is not None:
         payload["blocked_supply"] = dict(blocked_supply)
+        payload["shortage_classification"] = blocked_supply.get(
+            "shortage_classification"
+        )
+        payload["exhaustion_certificate"] = blocked_supply.get(
+            "exhaustion_certificate"
+        )
         payload["candidates_observed"] = int(
             blocked_supply.get("candidates_observed")
             if candidates_observed is None
@@ -1012,6 +1073,8 @@ def write_campaign_terminal_report(
         "required_token_capacity": report.get("required_token_capacity"),
         "blocked_supply_reason": report.get("blocked_supply_reason"),
         "blocked_supply": report.get("blocked_supply"),
+        "shortage_classification": report.get("shortage_classification"),
+        "exhaustion_certificate": report.get("exhaustion_certificate"),
     }
 
 
@@ -1100,6 +1163,8 @@ def replay_campaign_terminal_report(
         "required_token_capacity": stored.get("required_token_capacity"),
         "blocked_supply_reason": stored.get("blocked_supply_reason"),
         "blocked_supply": stored.get("blocked_supply"),
+        "shortage_classification": stored.get("shortage_classification"),
+        "exhaustion_certificate": stored.get("exhaustion_certificate"),
     }
 
 
