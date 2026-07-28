@@ -46,7 +46,15 @@ from printer_v1.discovery.selection_batch import (
     check_token_selection_cooldown,
 )
 from printer_v1.lifecycle.contracts import LifecycleEvent, TokenLifecycleState
-from printer_v1.lifecycle.tracking_queue import enqueue_tracking_item
+from printer_v1.lifecycle.tracking_queue import (
+    HANDOFF_ACTIVE_CONFLICT,
+    HANDOFF_COOLDOWN_REOPEN_REQUIRED,
+    HANDOFF_TERMINAL_REOPEN_REQUIRED,
+    HANDOFF_UNSUPPORTED_STATE,
+    assess_tracking_handoff,
+    assess_tracking_handoff_by_identity,
+    enqueue_tracking_item,
+)
 from printer_v1.operator_cli.abstract_campaign_command import (
     AbstractCampaignCommand,
     CampaignExecutionResult,
@@ -128,6 +136,7 @@ GATE_ORDER = (
     "SOLANA_IDENTITY",
     "PUMPFUN_ORIGIN",
     "LIFECYCLE_MARKET",
+    "TRACKING_HANDOFF",
     "FRESHNESS_CUTOFF",
     "EVIDENCE_QUALITY",
     "CANDIDATE_ROLE",
@@ -760,11 +769,27 @@ class CombinedPumpfunCampaignExecutor:
             vacancies = [1, 2]
         selected = self._select(eligible, cycle_seed, vacancy_count=len(vacancies))
         if fixtures.mode == "INITIAL" and len(selected) < 2:
+            tracking_causes = {
+                HANDOFF_ACTIVE_CONFLICT,
+                HANDOFF_COOLDOWN_REOPEN_REQUIRED,
+                HANDOFF_TERMINAL_REOPEN_REQUIRED,
+                HANDOFF_UNSUPPORTED_STATE,
+            }
+            shortfall_cause = next(
+                (
+                    candidate.first_failed_gate
+                    for candidate in sorted(
+                        merged.values(), key=lambda item: item.merged_candidate_id
+                    )
+                    if candidate.first_failed_gate in tracking_causes
+                ),
+                "INSUFFICIENT_ELIGIBLE_TWO_SLOT_POOL",
+            )
             self._terminalize_work(
                 connection,
                 select_work,
                 "FAILED",
-                "INSUFFICIENT_ELIGIBLE_TWO_SLOT_POOL",
+                shortfall_cause,
                 now,
             )
             # Terminalize any still-open discovery work rows for this batch so
@@ -780,7 +805,7 @@ class CombinedPumpfunCampaignExecutor:
                   AND work_state IN ('PENDING', 'RUNNING', 'COOLDOWN')
                 """,
                 (
-                    "INSUFFICIENT_ELIGIBLE_TWO_SLOT_POOL",
+                    shortfall_cause,
                     now,
                     now,
                     discovery_batch_id,
@@ -791,12 +816,12 @@ class CombinedPumpfunCampaignExecutor:
             reconcile_discovery_work_jobs(
                 connection,
                 discovery_batch_id=discovery_batch_id,
-                abandoned_cause="INSUFFICIENT_ELIGIBLE_TWO_SLOT_POOL",
+                abandoned_cause=shortfall_cause,
             )
             self._mark_discovery_batch_failed(
                 connection,
                 discovery_batch_id,
-                "INSUFFICIENT_ELIGIBLE_TWO_SLOT_POOL",
+                shortfall_cause,
                 now,
             )
             self._persist_reports(
@@ -804,7 +829,7 @@ class CombinedPumpfunCampaignExecutor:
             )
             return {
                 "terminal_status": "FAILED",
-                "first_terminal_cause": "INSUFFICIENT_ELIGIBLE_TWO_SLOT_POOL",
+                "first_terminal_cause": shortfall_cause,
                 "cancellation_reason": None,
             }
         self._terminalize_work(
@@ -834,6 +859,9 @@ class CombinedPumpfunCampaignExecutor:
                 "HANDOFF_DURING_SECOND",
                 "FIRST_15M_JOB_FAILED",
                 "DUPLICATE_ACTIVE_TRACKING",
+                "COOLDOWN_REOPEN_REQUIRED",
+                "TERMINAL_TRACKING_STATE",
+                "UNSUPPORTED_TRACKING_QUEUE_STATE",
                 "CONFLICTING_SLOT",
                 "HEALTHY_SLOT_MUTATION",
                 "HANDOFF_CEILING",
@@ -1956,6 +1984,16 @@ class CombinedPumpfunCampaignExecutor:
                         )
                     ):
                         failed = gate
+                elif gate == "TRACKING_HANDOFF":
+                    pool = candidate.market_identity.rsplit(":", 1)[-1]
+                    handoff = assess_tracking_handoff_by_identity(
+                        connection,
+                        token_mint=candidate.mint,
+                        pair_address=pool,
+                        tracking_lane=TokenLifecycleState.TRACK_NORMAL,
+                    )
+                    if not handoff.eligible:
+                        failed = handoff.reason_code or HANDOFF_UNSUPPORTED_STATE
                 elif gate == "FRESHNESS_CUTOFF":
                     pass
                 elif gate == "EVIDENCE_QUALITY":
@@ -2265,6 +2303,17 @@ class CombinedPumpfunCampaignExecutor:
                 (token_id, pair_id, now),
             )
 
+        handoff = assess_tracking_handoff(
+            connection,
+            token_id=token_id,
+            pair_id=pair_id,
+            tracking_lane=TokenLifecycleState.TRACK_NORMAL,
+        )
+        if not handoff.eligible:
+            raise CombinedDiscoveryError(
+                handoff.reason_code or HANDOFF_UNSUPPORTED_STATE
+            )
+
         created, queue_id = enqueue_tracking_item(
             connection,
             token_id=token_id,
@@ -2277,7 +2326,15 @@ class CombinedPumpfunCampaignExecutor:
             data_quality_label=DataQualityLabel.CLEAN_DATA,
         )
         if not created or queue_id is None:
-            raise CombinedDiscoveryError("DUPLICATE_ACTIVE_TRACKING")
+            handoff = assess_tracking_handoff(
+                connection,
+                token_id=token_id,
+                pair_id=pair_id,
+                tracking_lane=TokenLifecycleState.TRACK_NORMAL,
+            )
+            raise CombinedDiscoveryError(
+                handoff.reason_code or HANDOFF_UNSUPPORTED_STATE
+            )
 
         if force_scheduler_failure:
             raise CombinedDiscoveryError("FIRST_15M_JOB_FAILED", "injected scheduler failure")

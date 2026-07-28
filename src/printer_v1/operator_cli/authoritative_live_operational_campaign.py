@@ -901,6 +901,23 @@ def _classify_pre_lifecycle_terminal(
     from printer_v1.discovery.graduated_liquidity_front_door import (
         HOLDER_SOURCE_UNAVAILABLE_PREFIXES,
     )
+    from printer_v1.lifecycle.tracking_queue import (
+        HANDOFF_ACTIVE_CONFLICT,
+        HANDOFF_COOLDOWN_REOPEN_REQUIRED,
+        HANDOFF_TERMINAL_REOPEN_REQUIRED,
+        HANDOFF_UNSUPPORTED_STATE,
+    )
+
+    tracking_reasons = {
+        HANDOFF_ACTIVE_CONFLICT,
+        HANDOFF_COOLDOWN_REOPEN_REQUIRED,
+        HANDOFF_TERMINAL_REOPEN_REQUIRED,
+        HANDOFF_UNSUPPORTED_STATE,
+    }
+    for fact in holder_facts.values():
+        reason = str(fact.get("reason") or "")
+        if reason in tracking_reasons:
+            return reason
 
     saw_source_outage = any(
         not fact.get("eligible")
@@ -1121,6 +1138,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
         context_factories: Any,
         request_pacer: Any,
         partition_by_mint: Mapping[str, str] | None = None,
+        tracking_pair_by_mint: Mapping[str, str] | None = None,
     ) -> tuple[dict[str, Mapping[str, Any]], Any]:
         """Shared pre-activation holder-eligibility funnel.
 
@@ -1142,6 +1160,10 @@ class AuthoritativeLiveOperationalCampaignOwner:
             schedule_maturation,
             SequentialRequestPacer,
         )
+        from printer_v1.lifecycle.contracts import TokenLifecycleState
+        from printer_v1.lifecycle.tracking_queue import (
+            assess_tracking_handoff_by_identity,
+        )
         holder_facts: dict[str, Mapping[str, Any]] = {}
         accepted_partitions: set[str] = set()
         required_partitions = set((partition_by_mint or {}).values())
@@ -1155,6 +1177,23 @@ class AuthoritativeLiveOperationalCampaignOwner:
         for ordinal, proof in enumerate(bounded_candidates, start=1):
             partition = (partition_by_mint or {}).get(proof.mint.lower())
             if partition is not None and partition in accepted_partitions:
+                continue
+            handoff = assess_tracking_handoff_by_identity(
+                connection,
+                token_mint=proof.mint,
+                pair_address=(tracking_pair_by_mint or {}).get(
+                    proof.mint.lower(), proof.bonding_curve
+                ),
+                tracking_lane=TokenLifecycleState.TRACK_NORMAL,
+            )
+            if not handoff.eligible:
+                holder_facts[proof.mint.lower()] = {
+                    "eligible": False,
+                    "reason": handoff.reason_code,
+                    "source_name": None,
+                    "tracking_queue_id": handoff.queue_id,
+                    "tracking_queue_status": handoff.queue_status,
+                }
                 continue
             ledger.admit_candidate(now=evaluated)
             maturation = schedule_maturation(
@@ -1594,6 +1633,10 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 context_factories=lk.get("context_adapter_factories"),
                 request_pacer=lk.pop("holder_request_pacer", None),
                 partition_by_mint=None,
+                tracking_pair_by_mint={
+                    mint.lower(): proof.pool_address
+                    for mint, proof in fixtures.pumpswap_proofs.items()
+                },
             )
             connection.commit()
         finally:

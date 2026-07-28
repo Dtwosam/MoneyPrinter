@@ -2,6 +2,7 @@
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import json
@@ -24,6 +25,32 @@ ACTIVE_QUEUE_STATUSES = (
     QueueStatus.PAUSED,
     QueueStatus.COOLDOWN,
 )
+
+# Discovery-to-tracking handoff uses a stricter categorical contract than the
+# scheduler's broader "active/due" view above. COOLDOWN is not live ownership,
+# but it is also not permission to append a fresh queue row.
+LIVE_TRACKING_OWNERSHIP_STATUSES = frozenset(
+    {QueueStatus.QUEUED, QueueStatus.ACTIVE, QueueStatus.PAUSED}
+)
+TERMINAL_TRACKING_STATUSES = frozenset(
+    {QueueStatus.SKIPPED, QueueStatus.ARCHIVED}
+)
+
+HANDOFF_FRESH = "FRESH_TRACKING_IDENTITY"
+HANDOFF_ACTIVE_CONFLICT = "DUPLICATE_ACTIVE_TRACKING"
+HANDOFF_COOLDOWN_REOPEN_REQUIRED = "COOLDOWN_REOPEN_REQUIRED"
+HANDOFF_TERMINAL_REOPEN_REQUIRED = "TERMINAL_TRACKING_STATE"
+HANDOFF_UNSUPPORTED_STATE = "UNSUPPORTED_TRACKING_QUEUE_STATE"
+
+
+@dataclass(frozen=True)
+class TrackingHandoffAssessment:
+    eligible: bool
+    category: str
+    reason_code: str | None
+    queue_id: int | None
+    queue_status: str | None
+
 
 QUEUE_LANE_PRIORITY = {
     lane: index + 1 for index, lane in enumerate(TRACKING_LANE_DUE_ORDER)
@@ -66,6 +93,90 @@ def normalize_pair_id(pair_id: int | None) -> int:
     return -1 if pair_id is None else pair_id
 
 
+def _handoff_assessment(row: sqlite3.Row | None) -> TrackingHandoffAssessment:
+    if row is None:
+        return TrackingHandoffAssessment(True, HANDOFF_FRESH, None, None, None)
+    raw_status = str(row["queue_status"] or "")
+    try:
+        status = QueueStatus(raw_status)
+    except ValueError:
+        return TrackingHandoffAssessment(
+            False,
+            HANDOFF_UNSUPPORTED_STATE,
+            HANDOFF_UNSUPPORTED_STATE,
+            int(row["id"]),
+            raw_status or None,
+        )
+    if status in LIVE_TRACKING_OWNERSHIP_STATUSES:
+        category = HANDOFF_ACTIVE_CONFLICT
+    elif status is QueueStatus.COOLDOWN:
+        category = HANDOFF_COOLDOWN_REOPEN_REQUIRED
+    elif status in TERMINAL_TRACKING_STATUSES:
+        category = HANDOFF_TERMINAL_REOPEN_REQUIRED
+    else:  # pragma: no cover - QueueStatus is exhaustively handled above.
+        category = HANDOFF_UNSUPPORTED_STATE
+    return TrackingHandoffAssessment(
+        False, category, category, int(row["id"]), status.value
+    )
+
+
+def assess_tracking_handoff(
+    db_or_connection: str | Path | sqlite3.Connection,
+    *,
+    token_id: int,
+    pair_id: int | None,
+    tracking_lane: TokenLifecycleState | str,
+) -> TrackingHandoffAssessment:
+    """Classify the latest exact token/pair/lane row for a fresh handoff.
+
+    History is retained, but only the latest row is the current categorical
+    state. No non-fresh category permits enqueue; revival/reopen remains owned
+    by the committed lifecycle owner.
+    """
+    lane = TokenLifecycleState(tracking_lane)
+    with connect(db_or_connection) as connection:
+        row = connection.execute(
+            """
+            SELECT id, queue_status
+            FROM printer_tracking_queue
+            WHERE token_id = ?
+              AND COALESCE(pair_id, -1) = ?
+              AND tracking_lane = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (token_id, normalize_pair_id(pair_id), lane.value),
+        ).fetchone()
+    return _handoff_assessment(row)
+
+
+def assess_tracking_handoff_by_identity(
+    db_or_connection: str | Path | sqlite3.Connection,
+    *,
+    token_mint: str,
+    pair_address: str,
+    tracking_lane: TokenLifecycleState | str,
+) -> TrackingHandoffAssessment:
+    """Read-only exact-identity assessment usable before token/pair creation."""
+    lane = TokenLifecycleState(tracking_lane)
+    with connect(db_or_connection) as connection:
+        row = connection.execute(
+            """
+            SELECT q.id, q.queue_status
+            FROM printer_tracking_queue AS q
+            JOIN printer_tokens AS t ON t.id = q.token_id
+            JOIN printer_pairs AS p ON p.id = q.pair_id AND p.token_id = t.id
+            WHERE t.token_mint = ?
+              AND p.pair_address = ?
+              AND q.tracking_lane = ?
+            ORDER BY q.id DESC
+            LIMIT 1
+            """,
+            (token_mint, pair_address, lane.value),
+        ).fetchone()
+    return _handoff_assessment(row)
+
+
 def has_active_tracking_duplicate(
     db_or_connection: str | Path | sqlite3.Connection,
     *,
@@ -73,26 +184,13 @@ def has_active_tracking_duplicate(
     pair_id: int | None,
     tracking_lane: TokenLifecycleState | str,
 ) -> bool:
-    lane = TokenLifecycleState(tracking_lane)
-    with connect(db_or_connection) as connection:
-        row = connection.execute(
-            """
-            SELECT 1
-            FROM printer_tracking_queue
-            WHERE token_id = ?
-              AND COALESCE(pair_id, -1) = ?
-              AND tracking_lane = ?
-              AND queue_status IN (?, ?, ?, ?)
-            LIMIT 1
-            """,
-            (
-                token_id,
-                normalize_pair_id(pair_id),
-                lane.value,
-                *(status.value for status in ACTIVE_QUEUE_STATUSES),
-            ),
-        ).fetchone()
-    return row is not None
+    assessment = assess_tracking_handoff(
+        db_or_connection,
+        token_id=token_id,
+        pair_id=pair_id,
+        tracking_lane=tracking_lane,
+    )
+    return assessment.reason_code == HANDOFF_ACTIVE_CONFLICT
 
 
 def enqueue_tracking_item(
@@ -109,12 +207,13 @@ def enqueue_tracking_item(
 ) -> tuple[bool, int | None]:
     lane = TokenLifecycleState(tracking_lane)
     action = LifecycleEvent(tracking_action)
-    if has_active_tracking_duplicate(
+    assessment = assess_tracking_handoff(
         db_or_connection,
         token_id=token_id,
         pair_id=pair_id,
         tracking_lane=lane,
-    ):
+    )
+    if not assessment.eligible:
         return False, None
 
     with connect(db_or_connection) as connection:

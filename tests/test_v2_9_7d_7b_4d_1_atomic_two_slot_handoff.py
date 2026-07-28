@@ -351,6 +351,67 @@ class AtomicTwoSlotHandoffTests(unittest.TestCase):
             ),
         }
 
+    def _seed_tracking(self, mint: str, pool: str, status: str) -> int:
+        with self.connection:
+            token = self.connection.execute(
+                "SELECT id FROM printer_tokens WHERE token_mint=?", (mint,)
+            ).fetchone()
+            if token is None:
+                token_id = int(self.connection.execute(
+                    "INSERT INTO printer_tokens(token_mint,token_status) "
+                    "VALUES (?, 'TRACK_NORMAL')", (mint,)
+                ).lastrowid)
+            else:
+                token_id = int(token[0])
+            pair = self.connection.execute(
+                "SELECT id FROM printer_pairs WHERE pair_address=?", (pool,)
+            ).fetchone()
+            if pair is None:
+                pair_id = int(self.connection.execute(
+                    "INSERT INTO printer_pairs(token_id,pair_address,base_token_mint) "
+                    "VALUES (?,?,?)", (token_id, pool, mint)
+                ).lastrowid)
+            else:
+                pair_id = int(pair[0])
+            return int(self.connection.execute(
+                """
+                INSERT INTO printer_tracking_queue(
+                    token_id,pair_id,tracking_lane,tracking_action,priority_reason,
+                    next_check_at,queue_status,source_status,data_quality_label
+                ) VALUES (?,?,'TRACK_NORMAL','PROMOTE_TO_TRACK_NORMAL','fixture',
+                          ?,?,'COMPLETE','CLEAN_DATA')
+                """,
+                (token_id, pair_id, NOW, status),
+            ).lastrowid)
+
+    def _assert_owned_candidate_uses_reserve(self, status: str) -> None:
+        seeded_id = self._seed_tracking(MINT_A, POOL_A, status)
+        result = self._execute()
+        self.assertEqual(result.terminal_status, "COMPLETED")
+        connection = self._reopen()
+        try:
+            selected_mints = {
+                row["mint_identity"]
+                for row in connection.execute(
+                    "SELECT mint_identity FROM printer_memory_factory_campaign_token_slots "
+                    "WHERE cycle_id='cycle-atomic'"
+                )
+            }
+            self.assertEqual(selected_mints, {MINT_B, MINT_C})
+            seeded = connection.execute(
+                "SELECT queue_status FROM printer_tracking_queue WHERE id=?",
+                (seeded_id,),
+            ).fetchone()
+            self.assertEqual(seeded["queue_status"], status)
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM printer_tracking_queue"
+                ).fetchone()[0],
+                3,
+            )
+        finally:
+            connection.close()
+
     def test_successful_initial_activation_commits_both(self) -> None:
         result = self._execute()
         self.assertEqual(result.terminal_status, "COMPLETED")
@@ -373,6 +434,42 @@ class AtomicTwoSlotHandoffTests(unittest.TestCase):
                 self.assertEqual(
                     connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0], 0
                 )
+        finally:
+            connection.close()
+
+    def test_cooldown_candidate_is_excluded_and_valid_reserve_activates(self) -> None:
+        self._assert_owned_candidate_uses_reserve("COOLDOWN")
+
+    def test_queued_candidate_is_excluded_and_valid_reserve_activates(self) -> None:
+        self._assert_owned_candidate_uses_reserve("QUEUED")
+
+    def test_active_candidate_is_excluded_and_valid_reserve_activates(self) -> None:
+        self._assert_owned_candidate_uses_reserve("ACTIVE")
+
+    def test_paused_candidate_is_excluded_and_valid_reserve_activates(self) -> None:
+        self._assert_owned_candidate_uses_reserve("PAUSED")
+
+    def test_cooldown_shortfall_is_not_mislabeled_active_duplication(self) -> None:
+        self._seed_tracking(MINT_A, POOL_A, "COOLDOWN")
+        self._seed_tracking(MINT_B, POOL_B, "COOLDOWN")
+        result = self._execute()
+        self.assertEqual(result.terminal_status, "FAILED")
+        self.assertEqual(result.first_terminal_cause, "COOLDOWN_REOPEN_REQUIRED")
+        connection = self._reopen()
+        try:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM printer_tracking_queue"
+                ).fetchone()[0],
+                2,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM printer_scheduler_jobs "
+                    "WHERE job_kind='TRACK_NORMAL_FIRST_15M'"
+                ).fetchone()[0],
+                0,
+            )
         finally:
             connection.close()
 
