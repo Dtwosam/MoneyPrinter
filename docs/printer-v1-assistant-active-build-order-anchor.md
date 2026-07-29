@@ -226,13 +226,15 @@ V2-9.8A is closed PASS. V2-9.8B is allowed only through a separate explicit
 operator run under the active build order. It does not unlock retrieval, paper
 decisions, BUY/SELL/HOLD, positions, trades, audits, or PnL.
 
-Within that active lane, the post-mint-repair live N2 proof is closed BLOCKED
-(`CURSOR_START_MISMATCH` before foundation admission; N7 `NOT_RUN`). The
-subsequent durable cursor-to-live-range repair is closed PASS after offline-only
-proofs. The next permitted work is a separately explicit, operator-authorized
-bounded live `ACQUISITION_ONLY_N2` proof on the repaired public CLI path. Do not
-reset cursors, run N7, or run the operational Memory Factory campaign without a
-new explicit authorization.
+Within that active lane, the durable cursor-to-live-range repair is closed PASS.
+The subsequent post-cursor-repair live N2 proof is closed
+`V2_9_8B_POST_CURSOR_REPAIR_LIVE_N2_PROOF_BLOCKED` after exactly one execution.
+It passed explicit `FORWARD` bootstrap and historical `BACKWARD` isolation, then
+blocked at foundation on `IDENTITY_MERGE_FAILURE` because exact quote identity
+was absent for all four candidates. N7 is `NOT_RUN`. The next permitted work is
+operator review and, only if separately explicitly authorized, a read-only
+source-grounded exact pool/quote-identity evidence investigation. Do not retry,
+reset cursors, run N7, or run the operational Memory Factory campaign.
 
 ## 7. Automation Boundary Reminder
 
@@ -271,7 +273,9 @@ Preserve V2-9.7F and V2-9.8A PASS, require a separate explicit operator action
 for V2-9.8B, and preserve all retrieval and financial locks.
 
 Inside V2-9.8B, follow the adopted candidate-acquisition sub-lane sequence. The
-post-mint-repair live N2 proof is closed BLOCKED, and the subsequent durable
-cursor-to-live-range repair is closed PASS after offline-only proofs. The
-current exact next task is a separately explicit, operator-authorized bounded
-live `ACQUISITION_ONLY_N2` proof using the repaired public CLI path.
+durable cursor-to-live-range repair is closed PASS, and the subsequent
+post-cursor-repair live N2 proof is closed BLOCKED on
+`IDENTITY_MERGE_FAILURE` after a correct forward bootstrap. The current exact
+next task is operator review and, only if separately explicitly authorized, a
+read-only source-grounded exact pool/quote-identity evidence investigation. No
+retry or successor is active.

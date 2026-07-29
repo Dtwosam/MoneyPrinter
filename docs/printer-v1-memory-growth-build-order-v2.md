@@ -1043,14 +1043,15 @@ The foundation and post-foundation integration are capacity-neutral through
 N=16 and transport-free offline-proven. Active Memory Factory capacity remains
 exactly two. No operational campaign, selective-1h proof, retrieval, or
 financial feature is authorized. The foundation mint-identity admission repair
-is closed PASS. The separately authorized post-mint-repair live N2 proof is
-closed `V2_9_8B_POST_MINT_ADMISSION_REPAIR_LIVE_N2_PROOF_BLOCKED` after exactly
-one run on `CURSOR_START_MISMATCH` before foundation admission; N7 is
-`NOT_RUN`. The subsequent durable cursor-to-live-range continuity audit and
-repair is closed `V2_9_8B_DURABLE_CURSOR_LIVE_RANGE_REPAIR_PASS` after
-offline-only sequential persistent-state proofs. The next permitted task is a
-separately explicit, operator-authorized bounded live `ACQUISITION_ONLY_N2`
-proof using the repaired public CLI path.
+and durable cursor-to-live-range repair are closed PASS. The subsequent
+post-cursor-repair live N2 proof is closed
+`V2_9_8B_POST_CURSOR_REPAIR_LIVE_N2_PROOF_BLOCKED` after exactly one execution.
+It passed explicit `FORWARD` bootstrap and preserved historical `BACKWARD`
+heads, then blocked at foundation on `IDENTITY_MERGE_FAILURE` because exact
+quote identity was absent for all four candidates; N7 is `NOT_RUN`. The next
+permitted task is operator review and, only if separately explicitly authorized,
+a read-only source-grounded exact pool/quote-identity evidence investigation.
+No retry, successor, cursor reset, N7, or operational campaign is authorized.
 
 Campaign rules:
 
