@@ -78,19 +78,21 @@ candidate-acquisition proof is closed
 `V2_9_8B_FINAL_POST_REPAIR_BOUNDED_LIVE_CANDIDATE_ACQUISITION_PROOF_BLOCKED`
 (closeout:
 `docs/printer-v1-v2-9-8b-final-post-repair-bounded-live-candidate-acquisition-proof-closeout.md`).
-Stage A N2 blocked once on `IDENTITY_MERGE_FAILURE` after cohort thinning;
-Stage B N7 is `NOT_RUN`. The exact next permitted sub-lane is:
+The foundation mint-identity admission repair is closed PASS. The separately
+authorized post-mint-repair N2 proof is closed
+`V2_9_8B_POST_MINT_ADMISSION_REPAIR_LIVE_N2_PROOF_BLOCKED` after exactly one
+run; it blocked before foundation admission on `CURSOR_START_MISMATCH`. N7 is
+`NOT_RUN`. The exact next permitted sub-lane is:
 
 ```text
-Operator decision: source-grounded investigation/repair for foundation
-IDENTITY_MERGE_FAILURE / MINT_STATUS_FAILED (CHAIN_MINT_VALID)
-on the repaired live cohort path
-(before any new explicit live acquisition proof)
+Operator decision: source-grounded investigation of durable cursor-head to
+live proposed-start propagation after CURSOR_START_MISMATCH
+(before any repair or new explicit live acquisition proof)
 ```
 
-This does not authorize N2 retry, N7, the published operational Memory Factory
-campaign command, lifecycle work, runtime capacity above two, or another
-selective-1h proof.
+This does not authorize cursor reset, N2 retry, N7, the published operational
+Memory Factory campaign command, lifecycle work, runtime capacity above two,
+or another selective-1h proof.
 
 ## Candidate-Acquisition Foundation Superseding Clarification (2026-07-29)
 
@@ -107,10 +109,11 @@ foundation use is prohibited under its current API-key/wallet contract.
 No source quota, preference, score, rank, confidence, or weighting is allowed.
 The integrated implementation is runtime-neutral through N=16 and its
 transport-free proof is complete; active Memory Factory capacity remains exactly
-two. The final post-repair bounded live acquisition proof is closed BLOCKED on
-Stage A `IDENTITY_MERGE_FAILURE` with Stage B `NOT_RUN`. The exact next
-permitted task is the operator investigation/repair decision above. It does not
-authorize the operational campaign, N2 retry, or N7.
+two. The post-mint-repair live N2 proof is closed BLOCKED on
+`CURSOR_START_MISMATCH` before foundation admission, with N7 `NOT_RUN`. The
+exact next permitted task is the source-grounded cursor propagation
+investigation decision above. It does not authorize repair, cursor reset, the
+operational campaign, N2 retry, or N7.
 
 ## 4. Assistant Behavior Rules
 
@@ -221,12 +224,13 @@ V2-9.8A is closed PASS. V2-9.8B is allowed only through a separate explicit
 operator run under the active build order. It does not unlock retrieval, paper
 decisions, BUY/SELL/HOLD, positions, trades, audits, or PnL.
 
-Within that active lane, the final post-repair bounded live proof is closed
-BLOCKED (`IDENTITY_MERGE_FAILURE` on Stage A; Stage B `NOT_RUN`). The next
+Within that active lane, the post-mint-repair live N2 proof is closed BLOCKED
+(`CURSOR_START_MISMATCH` before foundation admission; N7 `NOT_RUN`). The next
 permitted work is an operator decision on a separate source-grounded
-investigation/repair lane for that foundation admission blocker before any new
-explicit live proof. Do not retry N2, run N7, or run the operational Memory
-Factory campaign without a new explicit authorization.
+investigation lane for durable cursor-head to live proposed-start propagation
+before any repair or new explicit live proof. Do not reset cursors, retry N2,
+run N7, or run the operational Memory Factory campaign without a new explicit
+authorization.
 
 ## 7. Automation Boundary Reminder
 
@@ -265,7 +269,7 @@ Preserve V2-9.7F and V2-9.8A PASS, require a separate explicit operator action
 for V2-9.8B, and preserve all retrieval and financial locks.
 
 Inside V2-9.8B, follow the adopted candidate-acquisition sub-lane sequence. The
-final post-repair bounded live proof is closed BLOCKED. The current exact next
-sub-lane is an operator decision on source-grounded investigation/repair for
-foundation `IDENTITY_MERGE_FAILURE` / `MINT_STATUS_FAILED` on the repaired live
-cohort path, before any new explicit live acquisition proof.
+post-mint-repair live N2 proof is closed BLOCKED. The current exact next
+sub-lane is an operator decision on a source-grounded investigation of durable
+cursor-head to live proposed-start propagation after `CURSOR_START_MISMATCH`,
+before any repair or new explicit live acquisition proof.

@@ -786,13 +786,16 @@ bounded live candidate-acquisition proof is closed
 `V2_9_8B_FINAL_POST_REPAIR_BOUNDED_LIVE_CANDIDATE_ACQUISITION_PROOF_BLOCKED`
 (closeout:
 `docs/printer-v1-v2-9-8b-final-post-repair-bounded-live-candidate-acquisition-proof-closeout.md`).
-Stage A `ACQUISITION_ONLY_N2` blocked once on `IDENTITY_MERGE_FAILURE` after the
-repaired cohort boundary thinned raw density; Stage B `ACQUISITION_ONLY_N7` is
-`NOT_RUN`. The exact next permitted task is an operator decision on a separate
-source-grounded investigation/repair lane for foundation
-`IDENTITY_MERGE_FAILURE` / `MINT_STATUS_FAILED` (`CHAIN_MINT_VALID`) on the
-repaired live cohort path, before any new explicit live acquisition proof. It
-is not an operational Memory Factory campaign, N2 retry, or N7 run.
+The foundation mint-identity admission repair is closed PASS. The separately
+authorized post-mint-repair `ACQUISITION_ONLY_N2` proof is closed
+`V2_9_8B_POST_MINT_ADMISSION_REPAIR_LIVE_N2_PROOF_BLOCKED` (closeout:
+`docs/printer-v1-v2-9-8b-post-mint-admission-repair-live-n2-proof-closeout.md`).
+It ran exactly once and blocked before foundation admission on
+`CURSOR_START_MISMATCH`; N7 is `NOT_RUN`. The exact next permitted task is an
+operator decision on a separate source-grounded investigation lane for the
+durable cursor-head to live proposed-start propagation boundary before any
+repair or new live proof. It is not an operational Memory Factory campaign,
+N2 retry, cursor reset, or N7 run.
 
 Factory-wide candidate-acquisition authority is:
 
@@ -843,12 +846,13 @@ Memory Factory capacity remains exactly two and the legacy projection rejects
 manifests above two. This clarification authorizes no live source, RPC,
 WebSocket, backfill, operational campaign, selective-1h proof, retrieval, or
 financial capability. Post-foundation integration, transport-free proof, and
-pipeline repair are complete. The final post-repair bounded live acquisition
-proof is closed BLOCKED on Stage A `IDENTITY_MERGE_FAILURE` with Stage B
-`NOT_RUN`. The next permitted task is only an operator-authorized
-source-grounded investigation/repair decision for that foundation admission
-blocker before any new live proof; no operational campaign, N2 retry, or N7 run
-is authorized.
+pipeline repair and mint-identity admission repair are complete. The
+post-mint-repair bounded live N2 proof is closed BLOCKED on
+`CURSOR_START_MISMATCH` before foundation admission; N7 is `NOT_RUN`. The next
+permitted task is only an operator-authorized source-grounded investigation
+decision for the durable cursor-head to live proposed-start propagation
+boundary before any repair or new live proof; no operational campaign, cursor
+reset, N2 retry, or N7 run is authorized.
 
 V2-9 is closed PASS at commit 51bcfdb (`Close V2-9 four-hour proof lane`).
 V2-9.7A through V2-9.7F are closed. V2-9.7F activation readiness is
@@ -955,13 +959,14 @@ persistent 15m campaign lane. It does not unlock retrieval, paper decisions,
 BUY/SELL/HOLD, positions, trades, audits, or PnL.
 
 Within V2-9.8B, the candidate-acquisition foundation, post-foundation
-integration, transport-owner repair, and pipeline repair are implemented and
-offline-proven. The final post-repair bounded live proof is closed BLOCKED:
-Stage A N2 once with `IDENTITY_MERGE_FAILURE`, Stage B N7 `NOT_RUN`. The next
-permitted work is an operator decision on a separate source-grounded
-investigation/repair lane for foundation `IDENTITY_MERGE_FAILURE` /
-`MINT_STATUS_FAILED` before any new explicit live proof. It does not authorize
-N2 retry, N7, or the published operational Memory Factory campaign command.
+integration, transport-owner repair, pipeline repair, and mint-identity
+admission repair are implemented and offline-proven. The post-mint-repair live
+N2 proof is closed BLOCKED after exactly one run on `CURSOR_START_MISMATCH`
+before foundation admission; N7 is `NOT_RUN`. The next permitted work is an
+operator decision on a separate source-grounded investigation lane for the
+durable cursor-head to live proposed-start propagation boundary before any
+repair or new explicit live proof. It does not authorize cursor reset, N2
+retry, N7, or the published operational Memory Factory campaign command.
 ## Printer V1 Python Builder Guide
 
 For every Printer V1 Python implementation, repair, migration, runner,
