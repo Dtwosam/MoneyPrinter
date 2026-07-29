@@ -115,6 +115,15 @@ class LiveAcquisitionTransportError(RuntimeError):
         super().__init__(f"{code}:{endpoint_role}")
 
 
+class LiveAcquisitionValidationError(RuntimeError):
+    """Post-response parsing/contract failure with no new transport attempt."""
+
+    def __init__(self, code: str, endpoint_role: str) -> None:
+        self.code = code
+        self.endpoint_role = endpoint_role
+        super().__init__(f"{code}:{endpoint_role}")
+
+
 @dataclass(frozen=True)
 class LiveAcquisitionConfiguration:
     rpc_url: str = field(repr=False)
@@ -423,7 +432,13 @@ class _OperationAdapter:
 
 def _failure(source: str, kind: str, exc: Exception,
              details: Sequence[Mapping[str, Any]] = ()) -> NormalizedSourceResult:
-    code = exc.code if isinstance(exc, LiveAcquisitionTransportError) else "SOURCE_TRANSPORT_FAILURE"
+    code = (
+        exc.code
+        if isinstance(
+            exc, (LiveAcquisitionTransportError, LiveAcquisitionValidationError)
+        )
+        else "SOURCE_TRANSPORT_FAILURE"
+    )
     operation_details = [dict(item) for item in details]
     if isinstance(exc, LiveAcquisitionTransportError):
         operation_details.append({"operation_kind": exc.operation_kind,
@@ -677,7 +692,9 @@ class LiveCandidateAcquisitionTransportOwner:
                     byte_ceiling=byte_cap, endpoint_role="DEXSCREENER_PROFILES")
                 responses.append(profiles)
                 if not isinstance(profiles.payload, list):
-                    raise LiveAcquisitionTransportError("SOURCE_MALFORMED", "DEXSCREENER_PROFILES")
+                    raise LiveAcquisitionValidationError(
+                        "SOURCE_MALFORMED", "DEXSCREENER_PROFILES"
+                    )
                 mints: list[str] = []
                 for item in profiles.payload:
                     if isinstance(item, Mapping) and item.get("chainId") == "solana":
@@ -834,10 +851,9 @@ class LiveCandidateAcquisitionTransportOwner:
                     )
                     responses.append(verification)
                     if not isinstance(verification.payload, Mapping):
-                        raise LiveAcquisitionTransportError(
+                        raise LiveAcquisitionValidationError(
                             "CURSOR_PRIOR_BOUNDARY_UNREACHABLE",
                             f"{role_prefix}_PRIOR_BOUNDARY",
-                            operation_kind="getTransaction",
                         )
                     cursor["prior_boundary_verified"] = True
                 remaining = max(transaction_limit - len(rows), 1)
@@ -862,7 +878,9 @@ class LiveCandidateAcquisitionTransportOwner:
                 if not isinstance(response.payload, list) or any(
                     not isinstance(item, Mapping) for item in response.payload
                 ):
-                    raise LiveAcquisitionTransportError("SOURCE_MALFORMED", response.endpoint_role)
+                    raise LiveAcquisitionValidationError(
+                        "SOURCE_MALFORMED", response.endpoint_role
+                    )
                 page_rows = list(response.payload)
                 prior_signatures = {
                     str(row.get("signature")) for row in rows
@@ -880,22 +898,21 @@ class LiveCandidateAcquisitionTransportOwner:
                         or type(slot) is not int
                         or slot < 0
                     ):
-                        raise LiveAcquisitionTransportError(
+                        raise LiveAcquisitionValidationError(
                             "SOURCE_MALFORMED", response.endpoint_role
                         )
                     if signature in prior_signatures:
-                        raise LiveAcquisitionTransportError(
+                        raise LiveAcquisitionValidationError(
                             "CURSOR_DUPLICATE_SIGNATURE", response.endpoint_role
                         )
                     if previous_slot is not None and slot > previous_slot:
-                        raise LiveAcquisitionTransportError(
+                        raise LiveAcquisitionValidationError(
                             "CURSOR_PAGE_ORDER_INVALID", response.endpoint_role
                         )
                     if established and slot < int(cursor["start_slot"]):
-                        raise LiveAcquisitionTransportError(
+                        raise LiveAcquisitionValidationError(
                             "CURSOR_PRIOR_BOUNDARY_UNREACHABLE",
                             response.endpoint_role,
-                            operation_kind="getSignaturesForAddress",
                         )
                     prior_signatures.add(signature)
                     previous_slot = slot
@@ -1032,11 +1049,16 @@ class LiveCandidateAcquisitionTransportOwner:
                     f"{role_prefix}_TRANSACTION_{transaction_index + 1}",
                 )
                 responses.append(response)
+                if not isinstance(response.payload, Mapping):
+                    raise LiveAcquisitionValidationError(
+                        "PUMP_TRANSACTION_NULL_OR_PRUNED",
+                        response.endpoint_role,
+                    )
                 decoded = dict(decoder(
-                    response.payload if isinstance(response.payload, Mapping) else None
+                    response.payload
                 ))
                 if not decoded.get("supported"):
-                    raise LiveAcquisitionTransportError(
+                    raise LiveAcquisitionValidationError(
                         "UNSUPPORTED_PUMP_CONTRACT", response.endpoint_role
                     )
                 mint = str(decoded["mint"])
@@ -1087,7 +1109,9 @@ class LiveCandidateAcquisitionTransportOwner:
                 responses.append(response)
                 values = (response.payload or {}).get("value") if isinstance(response.payload, Mapping) else None
                 if not isinstance(values, list) or len(values) != len(mints):
-                    raise LiveAcquisitionTransportError("SOURCE_MALFORMED", response.endpoint_role)
+                    raise LiveAcquisitionValidationError(
+                        "SOURCE_MALFORMED", response.endpoint_role
+                    )
                 observations = [
                     _mint_account_observation(
                         requested_mint=mint,
@@ -1151,7 +1175,9 @@ class LiveCandidateAcquisitionTransportOwner:
                 responses.append(response)
                 values = (response.payload or {}).get("value") if isinstance(response.payload, Mapping) else None
                 if not isinstance(values, list) or len(values) != len(pools):
-                    raise LiveAcquisitionTransportError("SOURCE_MALFORMED", response.endpoint_role)
+                    raise LiveAcquisitionValidationError(
+                        "SOURCE_MALFORMED", response.endpoint_role
+                    )
                 associations = _batch_pool_account_associations(pools, values)
                 account_infos = {
                     pool: associations[pool][2]
@@ -1187,7 +1213,7 @@ class LiveCandidateAcquisitionTransportOwner:
                         if isinstance(owner_response.payload, Mapping) else None
                     )
                     if not isinstance(owner_values, list) or len(owner_values) != len(generic_owner_ids):
-                        raise LiveAcquisitionTransportError(
+                        raise LiveAcquisitionValidationError(
                             "SOURCE_MALFORMED", owner_response.endpoint_role
                         )
                     owner_programs = dict(zip(generic_owner_ids, owner_values, strict=True))
@@ -1565,7 +1591,7 @@ class LiveCandidateAcquisitionTransportOwner:
                 if not isinstance(page, list) or any(
                     not isinstance(row, Mapping) for row in page
                 ):
-                    raise LiveAcquisitionTransportError(
+                    raise LiveAcquisitionValidationError(
                         "SOURCE_MALFORMED", response.endpoint_role
                     )
                 page_hash = hashlib.sha256(
@@ -1800,7 +1826,7 @@ class LiveCandidateAcquisitionTransportOwner:
                     if isinstance(response.payload, Mapping) else None
                 )
                 if not isinstance(values, list) or len(values) != len(pools):
-                    raise LiveAcquisitionTransportError(
+                    raise LiveAcquisitionValidationError(
                         "SOURCE_MALFORMED", response.endpoint_role
                     )
                 associations = _batch_pool_account_associations(pools, values)

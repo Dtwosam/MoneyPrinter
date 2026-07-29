@@ -2945,6 +2945,71 @@ def test_live_tail_page_ceiling_fails_without_skip_or_rewind(capsys) -> None:
         temp.cleanup()
 
 
+def test_optional_global_bounded_coverage_gap_persists_and_continues(capsys) -> None:
+    temp, path = _db()
+    create_head = _failed_signature("optional-create-head", 420_006_000)
+    migration_head = _failed_signature("optional-migration-head", 420_006_001)
+    try:
+        first = _public_cursor_run(
+            path=path, execution_id="optional-gap-bootstrap",
+            network=_CursorContinuityNetwork(4, {
+                PUMP_CREATE_INDEX_ADDRESS: [create_head],
+                PUMP_PROGRAM_ID: [migration_head],
+            }),
+            capsys=capsys,
+        )
+        assert first["status"] == "COMPLETED"
+        before = _durable_cursor_rows(path)
+        report = _public_cursor_run(
+            path=path, execution_id="optional-global-gap",
+            network=_CursorContinuityNetwork(4, {
+                PUMP_CREATE_INDEX_ADDRESS: [
+                    _failed_signature("optional-create-new", 420_006_010),
+                    create_head,
+                ],
+                PUMP_PROGRAM_ID: [
+                    _failed_signature("optional-migration-newest", 420_006_020),
+                    _failed_signature("optional-migration-second", 420_006_019),
+                    migration_head,
+                ],
+            }),
+            capsys=capsys, now="2026-07-29T12:10:00+00:00",
+        )
+        assert report["status"] == "COMPLETED"
+        assert report["selected_count"] == 2
+        assert report["projection_count"] == 2
+        assert report["runtime_handoff_count"] == 0
+        assert report["optional_global_pump_observer"][
+            "observer_status"
+        ] == "GLOBAL_PUMP_OBSERVER_GAPPED"
+        assert report["optional_global_pump_observer"][
+            "universal_failure_contribution"
+        ] is False
+        assert report["operation_accounting"]["identity_mismatch_work_items"] == 0
+        after = _durable_cursor_rows(path)
+        # Required create continuity may advance; optional gapped migration
+        # continuity remains on its exact established head.
+        assert after[PUMP_PROGRAM_ID]["boundary_signature"] == (
+            before[PUMP_PROGRAM_ID]["boundary_signature"]
+        )
+        assert int(after[PUMP_PROGRAM_ID]["cursor_version"]) == int(
+            before[PUMP_PROGRAM_ID]["cursor_version"]
+        )
+        with sqlite3.connect(path) as connection:
+            gap_work = connection.execute(
+                """SELECT work_state,transport_operations_used
+                     FROM printer_candidate_acquisition_work
+                    WHERE execution_id='optional-global-gap'
+                      AND request_kind='pumpfun_migration_signature_page'"""
+            ).fetchone()
+        assert gap_work == ("SUCCEEDED", 2)
+        assert replay_candidate_acquisition_integration_report(
+            path, execution_id="optional-global-gap"
+        ) == report
+    finally:
+        temp.cleanup()
+
+
 def test_decoupled_branch_classification_is_pure_and_presence_is_not_graduation() -> None:
     mint = FIXTURE["candidates"][0][0]
     curve = derive_program_address(
@@ -3145,6 +3210,379 @@ def _optional_observer_owner(
             observation_scope="GLOBAL_OPTIONAL",
         )
     return FrozenAcquisitionTransportOwner(tuple(operations))
+
+
+class _OptionalGlobalFailureNetwork(_LiveShapedAdmissionNetwork):
+    """Live-shaped optional-global outcomes with exactly one real RPC attempt."""
+
+    def __init__(self, outcome: str) -> None:
+        super().__init__(4)
+        self.outcome = outcome
+        migrated_mint = self.rows[self.migrated_ordinal]["mint"]
+        curve, account = _pump_bonding_curve_account(
+            mint=migrated_mint, creator=self.migration_creator, complete=True
+        )
+        self.pool_accounts[curve] = account
+
+    def rpc_json(self, *, rpc_url, method, params, timeout_seconds, byte_ceiling,
+                 endpoint_role):
+        if (
+            endpoint_role.startswith("CANDIDATE_MIGRATION_")
+            and method == "getSignaturesForAddress"
+        ):
+            return self._result([], method, endpoint_role)
+        if endpoint_role == "PUMP_MIGRATION_SIGNATURE_PAGE_1":
+            if self.outcome == "malformed_response":
+                return self._result({}, method, endpoint_role)
+        if endpoint_role == "PUMP_MIGRATION_TRANSACTION_1":
+            if self.outcome == "provider_failure":
+                self.calls.append((method, endpoint_role))
+                raise LiveAcquisitionTransportError(
+                    "SOURCE_TRANSPORT_FAILURE", endpoint_role,
+                    operation_kind=method,
+                )
+            if self.outcome == "null_pruned_transaction":
+                return self._result(None, method, endpoint_role)
+            response = super().rpc_json(
+                rpc_url=rpc_url, method=method, params=params,
+                timeout_seconds=timeout_seconds, byte_ceiling=byte_ceiling,
+                endpoint_role=endpoint_role,
+            )
+            if self.outcome == "unsupported_contract":
+                payload = deepcopy(response.payload)
+                payload["version"] = 1
+                size = len(json.dumps(
+                    payload, sort_keys=True, separators=(",", ":")
+                ).encode())
+                return TransportResponse(
+                    payload, size, response.operation_kind,
+                    response.endpoint_role,
+                )
+            return response
+        return super().rpc_json(
+            rpc_url=rpc_url, method=method, params=params,
+            timeout_seconds=timeout_seconds, byte_ceiling=byte_ceiling,
+            endpoint_role=endpoint_role,
+        )
+
+
+@pytest.mark.parametrize(
+    ("outcome", "request_kind", "failure_type", "operation_state"),
+    (
+        (
+            "provider_failure", "pumpfun_migration_transaction",
+            "SOURCE_TRANSPORT_FAILURE", "FAILED",
+        ),
+        (
+            "unsupported_contract", "pumpfun_migration_transaction",
+            "UNSUPPORTED_PUMP_CONTRACT", "COMPLETE",
+        ),
+        (
+            "malformed_response", "pumpfun_migration_signature_page",
+            "SOURCE_MALFORMED", "COMPLETE",
+        ),
+        (
+            "null_pruned_transaction", "pumpfun_migration_transaction",
+            "PUMP_TRANSACTION_NULL_OR_PRUNED", "COMPLETE",
+        ),
+    ),
+)
+def test_live_shaped_optional_global_failures_persist_reconcile_and_continue(
+    outcome: str,
+    request_kind: str,
+    failure_type: str,
+    operation_state: str,
+) -> None:
+    temp, path = _db()
+    try:
+        network = _OptionalGlobalFailureNetwork(outcome)
+        owner = LiveCandidateAcquisitionTransportOwner(
+            LiveAcquisitionConfiguration(
+                rpc_url="https://rpc.example.invalid",
+                redacted_rpc_host="rpc.example.invalid",
+            ),
+            transport=network,
+        )
+        execution_id = f"optional-global-{outcome}"
+        report = _run(
+            path, mode=MODE_N2, execution_id=execution_id, owner=owner,
+        )
+        assert report["status"] == "COMPLETED"
+        assert report["first_terminal_cause"] == "ACQUISITION_ONLY_COMPLETE"
+        assert report["pre_foundation_funnel"]["raw_unique_nominations"] == 4
+        assert report["pre_foundation_funnel"]["candidate_cohort_size"] == 4
+        assert report["pre_foundation_funnel"]["enrichment_identities"] == 4
+        assert report["selected_count"] == 2
+        assert report["projection_count"] == 2
+        assert report["runtime_handoff_count"] == 0
+        observer = report["optional_global_pump_observer"]
+        assert observer["required"] is False
+        assert observer["admission_authority"] == "NONE"
+        assert observer["universal_failure_contribution"] is False
+        assert report["operation_accounting"]["identity_mismatch_work_items"] == 0
+        assert report["operation_accounting"][
+            "frozen_synthesized_detail_work_items"
+        ] == 0
+        with sqlite3.connect(path) as connection:
+            scheduler = connection.execute(
+                """SELECT COUNT(*),
+                          SUM(status='FAILED'),
+                          SUM(status='SUCCEEDED')
+                     FROM printer_scheduler_jobs
+                    WHERE job_name LIKE ?""",
+                (f"candidate-acquisition:{execution_id}:%",),
+            ).fetchone()
+            governed = connection.execute(
+                """SELECT
+                       (SELECT COUNT(*) FROM printer_source_requests
+                         WHERE request_key LIKE ?),
+                       (SELECT COUNT(*) FROM printer_source_responses r
+                          JOIN printer_source_requests q ON q.id=r.source_request_id
+                         WHERE q.request_key LIKE ?),
+                       (SELECT COUNT(*) FROM printer_source_failures f
+                          JOIN printer_source_requests q ON q.id=f.source_request_id
+                         WHERE q.request_key LIKE ?)""",
+                (f"{execution_id}:%",) * 3,
+            ).fetchone()
+            work = connection.execute(
+                """SELECT COUNT(*),SUM(work_state='FAILED'),SUM(rows_used),
+                          SUM(bytes_used),SUM(transport_operations_used)
+                     FROM printer_candidate_acquisition_work
+                    WHERE execution_id=?""",
+                (execution_id,),
+            ).fetchone()
+            failed = connection.execute(
+                """SELECT w.first_terminal_cause,o.operation_kind,
+                          o.operation_state,o.bytes_used
+                     FROM printer_candidate_acquisition_work w
+                     JOIN printer_candidate_acquisition_transport_operations o
+                       ON o.work_id=w.work_id
+                    WHERE w.execution_id=? AND w.request_kind=?
+                      AND w.work_state='FAILED'
+                    ORDER BY o.operation_ordinal""",
+                (execution_id, request_kind),
+            ).fetchall()
+            failure_row = connection.execute(
+                """SELECT f.failure_type
+                     FROM printer_source_failures f
+                     JOIN printer_source_requests q ON q.id=f.source_request_id
+                    WHERE q.request_key LIKE ? AND q.request_kind=?""",
+                (f"{execution_id}:%", request_kind),
+            ).fetchone()
+            failed_ordinal = connection.execute(
+                """SELECT work_ordinal
+                     FROM printer_candidate_acquisition_work
+                    WHERE execution_id=? AND request_kind=?
+                      AND work_state='FAILED'""",
+                (execution_id, request_kind),
+            ).fetchone()[0]
+            operation_count, operation_bytes = connection.execute(
+                """SELECT COUNT(*),COALESCE(SUM(o.bytes_used),0)
+                     FROM printer_candidate_acquisition_transport_operations o
+                     JOIN printer_candidate_acquisition_work w
+                       ON w.work_id=o.work_id
+                    WHERE w.execution_id=?""",
+                (execution_id,),
+            ).fetchone()
+        assert scheduler[0] == report["scheduler_jobs_created"]
+        assert scheduler[1] == 1
+        assert governed == (
+            report["governed_requests_used"],
+            report["governed_responses"],
+            report["governed_failures"],
+        )
+        assert work[0] == report["governed_requests_used"]
+        assert work[1] == 1
+        assert work[2] == report["rows_used"]
+        assert work[3] == report["bytes_used"]
+        assert work[4] == report["transport_operations_used"]
+        assert operation_count == report["transport_operations_used"]
+        assert operation_bytes == report["bytes_used"]
+        assert failure_row == (failure_type,)
+        assert len(failed) == 1
+        assert failed[0][0] == failure_type
+        assert failed[0][1] in {
+            "getTransaction", "getSignaturesForAddress",
+        }
+        assert failed[0][2] == operation_state
+        declared_plan = next(
+            item for item in report["operation_accounting"]["predeclared_plans"]
+            if item["work_ordinal"] == failed_ordinal
+        )
+        assert declared_plan["declared_operation_ceiling"] == 1
+        assert declared_plan["operation_kinds"] in (
+            ["getTransaction"], ["getSignaturesForAddress"],
+        )
+        assert replay_candidate_acquisition_integration_report(
+            path, execution_id=execution_id
+        ) == report
+    finally:
+        temp.cleanup()
+
+
+def test_optional_accounting_mismatch_persists_all_evidence_and_stops() -> None:
+    temp, path = _db()
+    try:
+        operations = list(_owner(4).frozen_operations)
+        global_index = next(
+            index for index, operation in enumerate(operations)
+            if operation.request_kind == "pumpfun_migration_signature_page"
+        )
+        operations.insert(
+            global_index + 1,
+            AcquisitionSourceOperation(
+                source_name="solana_rpc",
+                request_kind="pumpfun_migration_transaction",
+                adapter=_adapter("solana_rpc", {
+                    "candidate_observations": [{
+                        "mint": _candidate_rows(1)[0]["mint"],
+                        "base_mint": _candidate_rows(1)[0]["mint"],
+                        "facts": {},
+                    }],
+                    "underlying_operation_count": 2,
+                    "underlying_operations": [
+                        {
+                            "operation_kind": "getTransaction",
+                            "operation_state": "COMPLETE",
+                            "redacted_endpoint_role": "OPTIONAL_GLOBAL_PRIMARY",
+                            "bytes_used": 7,
+                        },
+                        {
+                            "operation_kind": "getTransaction",
+                            "operation_state": "COMPLETE",
+                            "redacted_endpoint_role": "UNDECLARED_SECOND_CALL",
+                            "bytes_used": 11,
+                        },
+                    ],
+                    "response_bytes": 18,
+                    "declared_operation_ceiling": True,
+                }),
+                required=False,
+                expected_transport_operations=1,
+                observation_scope="GLOBAL_OPTIONAL",
+            ),
+        )
+        execution_id = "optional-accounting-mismatch"
+        report = _run(
+            path, mode=MODE_N2, execution_id=execution_id,
+            owner=FrozenAcquisitionTransportOwner(tuple(operations)),
+        )
+        assert report["status"] == "BLOCKED"
+        assert report["first_terminal_cause"] == "OPERATION_ACCOUNTING_MISMATCH"
+        assert report["manifest_id"] is None
+        assert report["operation_accounting"]["identity_mismatch_work_items"] == 1
+        with sqlite3.connect(path) as connection:
+            work = connection.execute(
+                """SELECT work_state,first_terminal_cause,
+                          transport_operations_used,bytes_used,rows_used
+                     FROM printer_candidate_acquisition_work
+                    WHERE execution_id=? AND request_kind=
+                          'pumpfun_migration_transaction'""",
+                (execution_id,),
+            ).fetchone()
+            operations_persisted = connection.execute(
+                    """SELECT o.operation_kind,o.operation_state,o.bytes_used
+                     FROM printer_candidate_acquisition_transport_operations o
+                     JOIN printer_candidate_acquisition_work w
+                       ON w.work_id=o.work_id
+                    WHERE w.execution_id=? AND
+                          w.request_kind='pumpfun_migration_transaction'
+                    ORDER BY operation_ordinal""",
+                (execution_id,),
+            ).fetchall()
+        assert work == (
+            "FAILED", "OPERATION_ACCOUNTING_MISMATCH", 2, 18, 1,
+        )
+        assert operations_persisted == [
+            ("getTransaction", "COMPLETE", 7),
+            ("getTransaction", "COMPLETE", 11),
+        ]
+        assert replay_candidate_acquisition_integration_report(
+            path, execution_id=execution_id
+        ) == report
+    finally:
+        temp.cleanup()
+
+
+def test_equal_count_wrong_operation_identity_persists_and_stops() -> None:
+    temp, path = _db()
+    try:
+        operations = list(_owner(4).frozen_operations)
+        global_index = next(
+            index for index, operation in enumerate(operations)
+            if operation.request_kind == "pumpfun_migration_signature_page"
+        )
+        operations.insert(
+            global_index + 1,
+            AcquisitionSourceOperation(
+                source_name="solana_rpc",
+                request_kind="pumpfun_migration_transaction",
+                adapter=_adapter("solana_rpc", {
+                    "candidate_observations": [],
+                    "underlying_operation_count": 1,
+                    "underlying_operations": [{
+                        "operation_kind": "getMultipleAccounts",
+                        "operation_state": "COMPLETE",
+                        "redacted_endpoint_role": "WRONG_METHOD",
+                        "bytes_used": 13,
+                    }],
+                    "response_bytes": 13,
+                    "declared_operation_ceiling": True,
+                }),
+                required=False,
+                expected_transport_operations=1,
+                observation_scope="GLOBAL_OPTIONAL",
+            ),
+        )
+        execution_id = "optional-operation-identity-mismatch"
+        report = _run(
+            path, mode=MODE_N2, execution_id=execution_id,
+            owner=FrozenAcquisitionTransportOwner(tuple(operations)),
+        )
+        assert report["status"] == "BLOCKED"
+        assert report["first_terminal_cause"] == "OPERATION_ACCOUNTING_MISMATCH"
+        with sqlite3.connect(path) as connection:
+            persisted = connection.execute(
+                """SELECT w.work_state,w.first_terminal_cause,
+                          o.operation_kind,o.bytes_used
+                     FROM printer_candidate_acquisition_work w
+                     JOIN printer_candidate_acquisition_transport_operations o
+                       ON o.work_id=w.work_id
+                    WHERE w.execution_id=?
+                      AND w.request_kind='pumpfun_migration_transaction'""",
+                (execution_id,),
+            ).fetchone()
+        assert persisted == (
+            "FAILED", "OPERATION_ACCOUNTING_MISMATCH",
+            "getMultipleAccounts", 13,
+        )
+    finally:
+        temp.cleanup()
+
+
+def test_predeclared_transport_ceiling_remains_universally_fail_closed() -> None:
+    temp, path = _db()
+    try:
+        operations = list(_owner(4).frozen_operations)
+        operations[0] = AcquisitionSourceOperation(
+            source_name="dexscreener",
+            request_kind="candidate_nomination",
+            adapter=_adapter("dexscreener", {}),
+            required=False,
+            expected_transport_operations=33,
+        )
+        report = _run(
+            path, mode=MODE_N2, execution_id="transport-ceiling",
+            owner=FrozenAcquisitionTransportOwner(tuple(operations)),
+        )
+        assert report["status"] == "BLOCKED"
+        assert report["first_terminal_cause"] == "TRANSPORT_OPERATION_CEILING"
+        assert report["scheduler_jobs_created"] == 0
+        assert report["governed_requests_used"] == 0
+        assert report["transport_operations_used"] == 0
+        assert report["manifest_id"] is None
+    finally:
+        temp.cleanup()
 
 
 @pytest.mark.parametrize(

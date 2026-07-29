@@ -155,6 +155,44 @@ class CandidateAcquisitionIntegrationError(RuntimeError):
         super().__init__(code if not detail else f"{code}: {detail}")
 
 
+def _default_operation_kinds(
+    source_name: str, request_kind: str, count: int
+) -> tuple[str, ...]:
+    """Return the ordered predeclared low-level operation-kind plan."""
+    if count < 0:
+        return ()
+    if request_kind == "candidate_nomination":
+        return ("HTTP_GET",) * count
+    if request_kind in {
+        "candidate_market_batch",
+    }:
+        return ()
+    if request_kind in {
+        "pumpfun_create_index_signature_page",
+        "pumpfun_migration_signature_page",
+    }:
+        return (
+            ("getTransaction", "getSignaturesForAddress")
+            if count == 2
+            else ("getSignaturesForAddress",)[:count]
+        )
+    fixed_kind = {
+        "pumpfun_create_index_transaction": "getTransaction",
+        "pumpfun_migration_transaction": "getTransaction",
+        "candidate_mint_account_batch": "getMultipleAccounts",
+        "pumpswap_pool_account_batch": "getMultipleAccounts",
+        "candidate_pump_migration_signature_lookup": "getSignaturesForAddress",
+        "candidate_pump_migration_transaction": "getTransaction",
+        "candidate_pumpswap_pool_verification": "getMultipleAccounts",
+        "safety_reference": "HTTP_GET",
+    }.get(request_kind)
+    if fixed_kind is not None:
+        return (fixed_kind,) * count
+    if request_kind == "holder_concentration_reference":
+        return ("getTokenLargestAccounts", "getTokenSupply")[:count]
+    return tuple(f"UNDERLYING_OPERATION_{ordinal}" for ordinal in range(1, count + 1))
+
+
 @dataclass(frozen=True)
 class AcquisitionSourceOperation:
     source_name: str
@@ -164,6 +202,7 @@ class AcquisitionSourceOperation:
     round_mode: str = "FROZEN_OFFLINE"
     request_payload: Mapping[str, Any] | None = None
     expected_transport_operations: int = 1
+    expected_operation_kinds: tuple[str, ...] | None = None
     cursor_range: Mapping[str, Any] | None = None
     # Optional global coverage work persists through governed work/response
     # rows but contributes no empty failure placeholder to candidate admission.
@@ -174,6 +213,19 @@ class AcquisitionSourceOperation:
     # candidate-specific and may only touch cohort identities; the owner fails
     # closed if it observes an enrichment identity outside the selected cohort.
     phase: str = "NOMINATION"
+
+    def __post_init__(self) -> None:
+        count = int(self.expected_transport_operations)
+        if count < 0:
+            raise ValueError("expected_transport_operations must be non-negative")
+        plan = (
+            _default_operation_kinds(self.source_name, self.request_kind, count)
+            if self.expected_operation_kinds is None
+            else tuple(str(item) for item in self.expected_operation_kinds)
+        )
+        if len(plan) != count or any(not item for item in plan):
+            raise ValueError("expected_operation_kinds must exactly match the declared count")
+        object.__setattr__(self, "expected_operation_kinds", plan)
 
 
 class AcquisitionTransportOwner(Protocol):
@@ -713,6 +765,121 @@ def _persist_work(
         connection.close()
 
 
+def _measure_operation_accounting(
+    *,
+    operation: AcquisitionSourceOperation,
+    payload: Mapping[str, Any],
+    source_complete: bool,
+) -> dict[str, Any]:
+    """Measure and identity-check one governed result without losing evidence."""
+    plan = tuple(operation.expected_operation_kinds or ())
+    expected = int(operation.expected_transport_operations)
+    mismatch: str | None = None
+    try:
+        reported_count = int(
+            payload["underlying_operation_count"]
+            if "underlying_operation_count" in payload
+            else expected
+        )
+    except (TypeError, ValueError):
+        reported_count = -1
+        mismatch = "OPERATION_ACCOUNTING_MISMATCH"
+
+    raw_details = payload.get("underlying_operations")
+    synthesized = raw_details is None
+    details: list[dict[str, Any]] = []
+    if raw_details is None:
+        safe_count = max(reported_count, 0)
+        for ordinal in range(safe_count):
+            details.append({
+                "operation_kind": (
+                    plan[ordinal]
+                    if ordinal < len(plan)
+                    else f"UNDECLARED_OPERATION_{ordinal + 1}"
+                ),
+                "operation_state": "COMPLETE" if source_complete else "FAILED",
+                "redacted_endpoint_role": "FROZEN_PREDECLARED_PLAN",
+                "bytes_used": 0,
+            })
+    elif not isinstance(raw_details, list) or any(
+        not isinstance(item, Mapping) for item in raw_details
+    ):
+        mismatch = "OPERATION_ACCOUNTING_MISMATCH"
+    else:
+        details = [dict(item) for item in raw_details]
+
+    actual = len(details)
+    if reported_count < 0 or reported_count != actual:
+        mismatch = "OPERATION_ACCOUNTING_MISMATCH"
+    declared_ceiling = bool(payload.get("declared_operation_ceiling"))
+    if (
+        actual > expected
+        or (not declared_ceiling and actual != expected)
+    ):
+        mismatch = "OPERATION_ACCOUNTING_MISMATCH"
+
+    actual_kinds: list[str] = []
+    for detail in details:
+        operation_kind = str(detail.get("operation_kind") or "")
+        operation_state = str(detail.get("operation_state") or "")
+        endpoint_role = str(detail.get("redacted_endpoint_role") or "")
+        if (
+            not operation_kind
+            or operation_state not in {"COMPLETE", "FAILED"}
+            or not endpoint_role
+        ):
+            mismatch = "OPERATION_ACCOUNTING_MISMATCH"
+        actual_kinds.append(operation_kind)
+    if tuple(actual_kinds) != plan[:actual]:
+        mismatch = "OPERATION_ACCOUNTING_MISMATCH"
+
+    try:
+        encoded_size = int(
+            payload["response_bytes"]
+            if "response_bytes" in payload
+            else sum(int(item.get("bytes_used") or 0) for item in details)
+        )
+    except (TypeError, ValueError):
+        encoded_size = sum(
+            max(0, int(item.get("bytes_used") or 0))
+            for item in details
+            if isinstance(item.get("bytes_used") or 0, (int, float, str))
+            and str(item.get("bytes_used") or 0).lstrip("-").isdigit()
+        )
+        mismatch = mismatch or "OPERATION_BYTE_ACCOUNTING_MISMATCH"
+    if synthesized and details and encoded_size >= 0:
+        per_operation_bytes = encoded_size // actual
+        residual_bytes = encoded_size % actual
+        for ordinal, detail in enumerate(details, 1):
+            detail["bytes_used"] = per_operation_bytes + (
+                residual_bytes if ordinal == actual else 0
+            )
+    detail_bytes: list[int] = []
+    for detail in details:
+        try:
+            detail_bytes.append(int(detail.get("bytes_used") or 0))
+        except (TypeError, ValueError):
+            detail_bytes.append(-1)
+    if (
+        encoded_size < 0
+        or any(value < 0 for value in detail_bytes)
+        or sum(detail_bytes) != encoded_size
+    ):
+        mismatch = mismatch or "OPERATION_BYTE_ACCOUNTING_MISMATCH"
+
+    return {
+        "reported_count": reported_count,
+        "actual_count": actual,
+        "encoded_size": max(encoded_size, 0),
+        "details": details,
+        "details_synthesized": synthesized,
+        "declared_ceiling": declared_ceiling,
+        "expected_kinds": plan,
+        "actual_kinds": tuple(actual_kinds),
+        "failure": mismatch,
+    }
+
+
 def _terminalize_scheduler_residue(
     db_path: str | Path, *, execution_id: str, cause: str, now: str
 ) -> int:
@@ -949,7 +1116,11 @@ def run_candidate_acquisition_integration(
 
     lease_id: str | None = None
     observations: list[dict[str, Any]] = []
-    scheduler_jobs = governed_requests = transport_operations = bytes_used = rows_used = 0
+    scheduler_jobs = governed_requests = governed_responses = governed_failures = 0
+    transport_operations = bytes_used = rows_used = duration_milliseconds = 0
+    operation_identity_reconciled_work_items = 0
+    operation_identity_mismatch_work_items = 0
+    synthesized_operation_detail_work_items = 0
     foundation: dict[str, Any] | None = None
     projection: tuple[dict[str, Any], dict[str, Any]] | None = None
     terminal_status = "FAILED"
@@ -968,6 +1139,7 @@ def run_candidate_acquisition_integration(
     proposed_cursor_namespaces: set[CursorNamespace] = set()
     cursor_heads: dict[CursorNamespace, dict[str, Any] | None] = {}
     global_observer_states: list[str] = []
+    operations: tuple[AcquisitionSourceOperation, ...] = ()
     try:
         lease_id = _acquire_lease(
             db_path, integration_id=integration_id, execution_id=execution_id,
@@ -1102,67 +1274,75 @@ def run_candidate_acquisition_integration(
             elapsed_ms = int((time.monotonic() - op_started) * 1000)
             normalized = source_execution.normalized_result
             payload = dict(normalized.normalized_payload or {})
-            actual_operations = int(
-                payload["underlying_operation_count"]
-                if "underlying_operation_count" in payload
-                else operation.expected_transport_operations
+            healthy = _source_status(normalized) == "COMPLETE"
+            governed_requests += 1
+            if getattr(source_execution, "response_record", None) is not None:
+                governed_responses += 1
+            if getattr(source_execution, "failure_record", None) is not None:
+                governed_failures += 1
+            accounting = _measure_operation_accounting(
+                operation=operation,
+                payload=payload,
+                source_complete=healthy,
             )
-            declared_ceiling = bool(payload.get("declared_operation_ceiling"))
-            if (
-                actual_operations < 0
-                or (declared_ceiling and actual_operations > int(operation.expected_transport_operations))
-                or (not declared_ceiling and actual_operations != int(operation.expected_transport_operations))
-            ):
-                fail_job(
-                    db_path, job_id=job_id, error="OPERATION_ACCOUNTING_MISMATCH",
-                    now=_parse(now), max_retries=0,
-                )
-                raise CandidateAcquisitionIntegrationError("OPERATION_ACCOUNTING_MISMATCH")
-            encoded_size = int(
-                payload["response_bytes"]
-                if "response_bytes" in payload
-                else len(_canonical(payload).encode("utf-8"))
-            )
-            if encoded_size < 0:
-                fail_job(db_path, job_id=job_id, error="OPERATION_BYTE_ACCOUNTING_MISMATCH",
-                         now=_parse(now), max_retries=0)
-                raise CandidateAcquisitionIntegrationError(
-                    "OPERATION_BYTE_ACCOUNTING_MISMATCH"
-                )
-            underlying_details = payload.get("underlying_operations")
-            if underlying_details is not None:
-                if (
-                    not isinstance(underlying_details, list)
-                    or len(underlying_details) != actual_operations
-                    or any(not isinstance(item, Mapping) for item in underlying_details)
-                ):
-                    fail_job(db_path, job_id=job_id, error="OPERATION_ACCOUNTING_MISMATCH",
-                             now=_parse(now), max_retries=0)
-                    raise CandidateAcquisitionIntegrationError("OPERATION_ACCOUNTING_MISMATCH")
-                detail_bytes = [int(item.get("bytes_used") or 0) for item in underlying_details]
-                if any(value < 0 for value in detail_bytes) or sum(detail_bytes) != encoded_size:
-                    fail_job(db_path, job_id=job_id, error="OPERATION_BYTE_ACCOUNTING_MISMATCH",
-                             now=_parse(now), max_retries=0)
-                    raise CandidateAcquisitionIntegrationError("OPERATION_BYTE_ACCOUNTING_MISMATCH")
+            actual_operations = int(accounting["actual_count"])
+            encoded_size = int(accounting["encoded_size"])
+            underlying_details = list(accounting["details"])
+            if bool(accounting["details_synthesized"]):
+                synthesized_operation_detail_work_items += 1
             candidate_rows = _provider_observations(
                 operation=operation, normalized_result=normalized,
                 round_ordinal=ordinal, observed_at=now, expires_at=expires_at,
                 transport_operations=actual_operations, bytes_used=encoded_size,
                 duration_milliseconds=elapsed_ms,
             )
-            if rows_used + len(candidate_rows) > int(policy["row_ceiling"]):
+            boundary_failure = accounting["failure"]
+            if (
+                boundary_failure is None
+                and transport_operations + actual_operations
+                > int(policy["transport_operation_ceiling"])
+            ):
+                boundary_failure = "TRANSPORT_OPERATION_CEILING"
+            if (
+                boundary_failure is None
+                and rows_used + len(candidate_rows) > int(policy["row_ceiling"])
+            ):
+                boundary_failure = "OBSERVATION_ROW_CEILING"
+            if (
+                boundary_failure is None
+                and bytes_used + encoded_size > int(policy["byte_ceiling"])
+            ):
+                boundary_failure = "RESPONSE_BYTE_CEILING"
+            if boundary_failure is not None:
+                boundary_failure = str(boundary_failure)
                 fail_job(
-                    db_path, job_id=job_id, error="OBSERVATION_ROW_CEILING",
+                    db_path, job_id=job_id, error=boundary_failure,
                     now=_parse(now), max_retries=0,
                 )
-                raise CandidateAcquisitionIntegrationError("OBSERVATION_ROW_CEILING")
-            if bytes_used + encoded_size > int(policy["byte_ceiling"]):
-                fail_job(
-                    db_path, job_id=job_id, error="RESPONSE_BYTE_CEILING",
-                    now=_parse(now), max_retries=0,
+                _persist_work(
+                    db_path, integration_id=integration_id,
+                    execution_id=execution_id, ordinal=ordinal,
+                    operation=operation, job_id=job_id,
+                    source_execution=source_execution, state="FAILED",
+                    transport_operations=actual_operations,
+                    bytes_used=encoded_size, rows_used=len(candidate_rows),
+                    duration_milliseconds=elapsed_ms,
+                    cause=boundary_failure, now=now,
+                    underlying_operations=underlying_details,
                 )
-                raise CandidateAcquisitionIntegrationError("RESPONSE_BYTE_CEILING")
-            healthy = _source_status(normalized) == "COMPLETE"
+                transport_operations += actual_operations
+                bytes_used += encoded_size
+                rows_used += len(candidate_rows)
+                duration_milliseconds += elapsed_ms
+                if boundary_failure in {
+                    "OPERATION_ACCOUNTING_MISMATCH",
+                    "OPERATION_BYTE_ACCOUNTING_MISMATCH",
+                }:
+                    operation_identity_mismatch_work_items += 1
+                else:
+                    operation_identity_reconciled_work_items += 1
+                raise CandidateAcquisitionIntegrationError(boundary_failure)
+            operation_identity_reconciled_work_items += 1
             if operation.request_kind in {
                 "pumpfun_migration_signature_page",
                 "pumpfun_migration_transaction",
@@ -1175,6 +1355,9 @@ def run_candidate_acquisition_integration(
                         "GLOBAL_PUMP_OBSERVER_BLOCKED_CONTRACT"
                         if "contract" in observer_failure
                         or "unsupported" in observer_failure
+                        else "GLOBAL_PUMP_OBSERVER_GAPPED"
+                        if "null_or_pruned" in observer_failure
+                        or "coverage" in observer_failure
                         else "GLOBAL_PUMP_OBSERVER_PROVIDER_UNAVAILABLE"
                     )
                 else:
@@ -1238,14 +1421,12 @@ def run_candidate_acquisition_integration(
                 transport_operations=actual_operations, bytes_used=encoded_size,
                 rows_used=len(candidate_rows), duration_milliseconds=elapsed_ms,
                 cause=work_cause, now=now,
-                underlying_operations=(
-                    underlying_details if isinstance(underlying_details, list) else None
-                ),
+                underlying_operations=underlying_details,
             )
-            governed_requests += 1
             transport_operations += actual_operations
             bytes_used += encoded_size
             rows_used += len(candidate_rows)
+            duration_milliseconds += elapsed_ms
             observations.extend(candidate_rows)
             is_enrichment = operation.phase == PHASE_ENRICHMENT
             for row in candidate_rows:
@@ -1509,9 +1690,42 @@ def run_candidate_acquisition_integration(
         "scheduler_residue_terminalized": scheduler_residue_terminalized,
         "source_governor_owner": "Source Governor",
         "governed_requests_used": governed_requests,
+        "governed_responses": governed_responses,
+        "governed_failures": governed_failures,
         "transport_operations_used": transport_operations,
         "bytes_used": bytes_used,
         "rows_used": rows_used,
+        "duration_milliseconds": duration_milliseconds,
+        "operation_accounting": {
+            "identity_key": (
+                "source_name/request_kind/work_ordinal/"
+                "transport_ordinal/operation_kind"
+            ),
+            "predeclared_work_items": scheduler_jobs,
+            "identity_reconciled_work_items": (
+                operation_identity_reconciled_work_items
+            ),
+            "identity_mismatch_work_items": (
+                operation_identity_mismatch_work_items
+            ),
+            "frozen_synthesized_detail_work_items": (
+                synthesized_operation_detail_work_items
+            ),
+            "predeclared_plans": [
+                {
+                    "work_ordinal": ordinal,
+                    "source_name": operation.source_name,
+                    "request_kind": operation.request_kind,
+                    "declared_operation_ceiling": int(
+                        operation.expected_transport_operations
+                    ),
+                    "operation_kinds": list(
+                        operation.expected_operation_kinds or ()
+                    ),
+                }
+                for ordinal, operation in enumerate(operations, 1)
+            ],
+        },
         "pre_foundation_funnel": pre_foundation_funnel,
         "cursor_namespaces_declared": len(cursor_heads),
         "cursor_heads_loaded": sum(

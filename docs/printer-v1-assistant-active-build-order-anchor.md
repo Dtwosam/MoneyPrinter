@@ -90,16 +90,19 @@ implementation/offline proof is now closed
 `V2_9_8B_PUMP_MIGRATION_OBSERVATION_DECOUPLING_IMPLEMENTATION_PASS`. The exact
 bounded live N2 proof is closed
 `V2_9_8B_BOUNDED_LIVE_N2_PUMP_MIGRATION_DECOUPLING_PROOF_BLOCKED` on
-`OPERATION_ACCOUNTING_MISMATCH`. The exact next permitted task is operator
-review and, only if separately explicitly authorized:
+`OPERATION_ACCOUNTING_MISMATCH`. The optional-global operation-accounting
+repair and offline proof is closed
+`V2_9_8B_OPTIONAL_GLOBAL_OPERATION_ACCOUNTING_REPAIR_PASS`. The exact next
+permitted task is operator review and, only if separately explicitly
+authorized:
 
 ```text
-V2-9.8B documentation-only audit and design of optional-global
-pumpfun_migration_transaction operation accounting
+one future bounded live N2 proof of the repaired optional-global
+operation-accounting boundary
 ```
 
-This does not authorize a patch, automatic run, retry, recovery, cursor reset,
-N7, the published operational
+This does not authorize an automatic run, retry, recovery, cursor reset, N7,
+the published operational
 Memory Factory campaign command, lifecycle work, runtime capacity above two,
 or another selective-1h proof.
 
@@ -244,10 +247,11 @@ blocked at foundation on `IDENTITY_MERGE_FAILURE` because exact quote identity
 was absent for all four candidates. N7 is `NOT_RUN`. The Pump migration
 observation decoupling implementation/offline proof is closed PASS. The next
 bounded live N2 proof is closed BLOCKED on `OPERATION_ACCOUNTING_MISMATCH`. The
-next permitted work is operator review and, only if separately explicitly
-authorized, a documentation-only audit/design of optional-global migration-
-transaction operation accounting. Do not patch, retry, recover, reset cursors,
-run N7, or run the operational Memory Factory campaign.
+optional-global operation-accounting repair and offline proof is closed PASS.
+The next permitted work is operator review and, only if separately explicitly
+authorized, one future bounded live N2 proof of the repaired boundary. Do not
+run automatically, retry, recover, reset cursors, run N7, or run the
+operational Memory Factory campaign.
 
 ## 7. Automation Boundary Reminder
 
@@ -291,6 +295,7 @@ post-cursor-repair live N2 proof is closed BLOCKED on
 `IDENTITY_MERGE_FAILURE` after a correct forward bootstrap. The current exact
 next task follows the closed PASS Pump migration observation decoupling
 implementation/offline proof and its terminal BLOCKED live N2 proof: operator
-review and only a separately explicitly authorized documentation-only
-operation-accounting audit/design. No patch, automatic run, retry, recovery,
-N7, campaign, or successor is active.
+review after the closed PASS optional-global operation-accounting repair and
+offline proof, and only a separately explicitly authorized future bounded live
+N2 proof. No automatic run, retry, recovery, N7, campaign, or successor is
+active.
