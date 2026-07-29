@@ -225,6 +225,97 @@ def decode_supported_pump_creation_transaction(
             "block_time": int(tx_result["blockTime"])}
 
 
+def decode_pump_bonding_curve_account(
+    account_value: Mapping[str, Any] | None,
+    *,
+    bonding_curve_address: str,
+    expected_mint: str,
+) -> dict[str, Any]:
+    """Decode the complete pinned Pump BondingCurve prefix.
+
+    The account does not store the base mint.  The exact mint relationship is
+    instead proved by the pinned PDA derivation ``[b"bonding-curve", mint]``;
+    quote identity is read from the adopted account prefix.  Longer accounts
+    are accepted only after that complete prefix decodes.
+    """
+    failed: dict[str, Any] = {
+        "decoded": False,
+        "reason": "bonding_curve_account_missing",
+        "bonding_curve_address": bonding_curve_address,
+    }
+    if not isinstance(account_value, Mapping):
+        return failed
+    if account_value.get("owner") != PUMP_PROGRAM_ID:
+        return {**failed, "reason": "bonding_curve_owner_mismatch"}
+    mint_raw = _b58decode(expected_mint)
+    if mint_raw is None or len(mint_raw) != 32:
+        return {**failed, "reason": "bonding_curve_expected_mint_invalid"}
+    expected_curve = derive_program_address(
+        (b"bonding-curve", mint_raw), PUMP_PROGRAM_ID
+    )[0]
+    if bonding_curve_address != expected_curve:
+        return {**failed, "reason": "bonding_curve_pda_mismatch"}
+    data = account_value.get("data")
+    if (
+        not isinstance(data, (list, tuple))
+        or len(data) < 2
+        or not isinstance(data[0], str)
+        or data[1] != "base64"
+    ):
+        return {**failed, "reason": "bonding_curve_data_encoding_unsupported"}
+    try:
+        raw = base64.b64decode(data[0], validate=True)
+    except (TypeError, ValueError):
+        return {**failed, "reason": "bonding_curve_data_undecodable"}
+    prefix_length = 8 + (5 * 8) + 1 + 32 + 1 + 1 + 32
+    if len(raw) < prefix_length:
+        return {
+            **failed,
+            "reason": "unsupported_bonding_curve_account_length",
+            "data_length": len(raw),
+        }
+    if raw[:8] != PUMP_BONDING_CURVE_DISCRIMINATOR:
+        return {**failed, "reason": "bonding_curve_discriminator_mismatch"}
+    offset = 8
+    reserve_names = (
+        "virtual_token_reserves",
+        "virtual_quote_reserves",
+        "real_token_reserves",
+        "real_quote_reserves",
+        "token_total_supply",
+    )
+    decoded: dict[str, Any] = {}
+    for name in reserve_names:
+        decoded[name] = int.from_bytes(raw[offset:offset + 8], "little")
+        offset += 8
+    complete_byte = raw[offset]
+    offset += 1
+    if complete_byte not in {0, 1}:
+        return {**failed, "reason": "bonding_curve_complete_flag_invalid"}
+    creator = _b58encode(raw[offset:offset + 32])
+    offset += 32
+    mayhem_byte, cashback_byte = raw[offset], raw[offset + 1]
+    offset += 2
+    if mayhem_byte not in {0, 1} or cashback_byte not in {0, 1}:
+        return {**failed, "reason": "bonding_curve_flag_invalid"}
+    quote_mint = _b58encode(raw[offset:offset + 32])
+    return {
+        "decoded": True,
+        "reason": "pinned_bonding_curve_layout_decoded",
+        "bonding_curve_address": bonding_curve_address,
+        "base_mint": expected_mint,
+        "quote_mint": quote_mint,
+        "complete": bool(complete_byte),
+        "creator": creator,
+        "is_mayhem_mode": bool(mayhem_byte),
+        "is_cashback_coin": bool(cashback_byte),
+        "account_hash": hashlib.sha256(raw).hexdigest(),
+        "contract_hash": PUMP_IDL_SHA256,
+        "append_only_extension": len(raw) > prefix_length,
+        **decoded,
+    }
+
+
 def decode_supported_pump_migration_transaction(
     tx_result: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
@@ -405,5 +496,6 @@ __all__ = [
     "CANONICAL_POOL_INDEX", "derive_program_address",
     "derive_canonical_pumpswap_pool", "decode_supported_pump_creation_instruction",
     "decode_supported_pump_creation_transaction", "decode_supported_pump_migration_transaction",
-    "decode_pumpswap_pool_account", "verify_pinned_pump_migration",
+    "decode_pump_bonding_curve_account", "decode_pumpswap_pool_account",
+    "verify_pinned_pump_migration",
 ]

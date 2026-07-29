@@ -45,9 +45,11 @@ from printer_v1.sources.pump_contracts import (
     OFFICIAL_REPOSITORY_COMMIT,
     PUMP_IDL_SHA256,
     PUMPSWAP_IDL_SHA256,
+    SYSTEM_PROGRAM_ID,
     TOKEN_2022_PROGRAM_ID,
     TOKEN_PROGRAM_ID,
     WSOL_MINT,
+    decode_pump_bonding_curve_account,
     decode_pumpswap_pool_account,
     decode_supported_pump_creation_transaction,
     decode_supported_pump_migration_transaction,
@@ -164,6 +166,22 @@ def _batch_account_associations(
             continue
         slot, account = matched
         output.append((mint, slot, mint, account, "EXPLICIT_RESPONSE_ADDRESS", None))
+    return output
+
+
+def _batch_pool_account_associations(
+    requested_pools: Sequence[str], values: Sequence[Any]
+) -> dict[str, tuple[int | None, str | None, Any, str, str | None]]:
+    """Bind exact pool targets using the RPC positional contract or fixtures."""
+    associated = _batch_account_associations(requested_pools, values)
+    output: dict[str, tuple[int | None, str | None, Any, str, str | None]] = {}
+    for target, slot, response_address, account, mode, failure in associated:
+        translated = (
+            "POOL_TARGET_MISMATCH" if failure == "MINT_TARGET_MISMATCH"
+            else "POOL_ACCOUNT_MISSING" if failure == "MINT_ACCOUNT_MISSING"
+            else failure
+        )
+        output[target] = (slot, response_address, account, mode, translated)
     return output
 
 
@@ -527,12 +545,32 @@ class LiveCandidateAcquisitionTransportOwner:
             # Aggregator normalizers differ: DexScreener emits token_mint/
             # pair_address; GeckoTerminal emits baseToken.address/pairAddress.
             mint = str(
-                pair.get("token_mint")
+                pair.get("candidate_mint")
+                or pair.get("token_mint")
                 or (pair.get("baseToken") or {}).get("address")
                 or ""
             )
             pool = str(pair.get("pair_address") or pair.get("pairAddress") or "")
             return mint, pool
+
+        def _pair_orientation(pair: Mapping[str, Any]) -> tuple[str, str, str]:
+            base = str(
+                pair.get("base_mint")
+                or pair.get("baseMint")
+                or (pair.get("baseToken") or {}).get("address")
+                or pair.get("token_mint")
+                or ""
+            )
+            quote = str(
+                pair.get("quote_mint")
+                or pair.get("quoteMint")
+                or (pair.get("quoteToken") or {}).get("address")
+                or ""
+            )
+            venue = str(
+                pair.get("dex_id") or pair.get("dexId") or pair.get("dex") or ""
+            )
+            return base, quote, venue
 
         def source_best_pairs(source: str) -> dict[str, dict[str, Any]]:
             """One best (deterministic) pair per mint that a single source nominated."""
@@ -636,7 +674,45 @@ class LiveCandidateAcquisitionTransportOwner:
                         headers=DEXSCREENER_HEADERS, timeout_seconds=timeout,
                         byte_ceiling=byte_cap, endpoint_role="DEXSCREENER_MARKET_BATCH")
                     responses.append(batch); raw = batch.payload
-                result = normalize_dexscreener_fixture_result({"pairs": raw}, request_kind="candidate_nomination")
+                result = normalize_dexscreener_fixture_result(
+                    {"pairs": raw}, request_kind="candidate_nomination",
+                    requested_token_mints=mints,
+                )
+                # Bind each returned pair back to the explicitly requested
+                # profile mint.  DexScreener's token batch may return a target
+                # on either side of the pair; retaining that target is what
+                # lets the pool gate reject a quote-side reversal precisely
+                # instead of silently nominating the unrelated base asset.
+                bound_pairs: list[dict[str, Any]] = []
+                requested = set(mints)
+                for pair in (result.normalized_payload or {}).get("pairs") or []:
+                    if not isinstance(pair, Mapping):
+                        continue
+                    item = dict(pair)
+                    base, quote, _venue = _pair_orientation(item)
+                    target = base if base in requested else quote if quote in requested else ""
+                    if not target:
+                        continue
+                    item["candidate_mint"] = target
+                    item["candidate_pair_orientation_status"] = (
+                        "PASS" if target == base else "FAIL"
+                    )
+                    item["candidate_pair_orientation_reason"] = (
+                        None if target == base else "BASE_QUOTE_ORIENTATION_MISMATCH"
+                    )
+                    bound_pairs.append(item)
+                result = NormalizedSourceResult(
+                    source_name=result.source_name,
+                    request_kind=result.request_kind,
+                    source_status=result.source_status,
+                    data_quality_label=result.data_quality_label,
+                    normalized_payload=MappingProxyType({"pairs": bound_pairs}),
+                    status_code=result.status_code,
+                    failure_type=result.failure_type,
+                    failure_message=result.failure_message,
+                    retry_after_at=result.retry_after_at,
+                    received_at=result.received_at,
+                )
                 remember_pairs("dexscreener", result)
                 return nomination_result(result, responses)
             except Exception as exc:
@@ -951,14 +1027,41 @@ class LiveCandidateAcquisitionTransportOwner:
                     for mint in sorted(state["migrations"]) if mint in cohort
                 ]
                 aggregated = aggregator_pairs()
-                target_mints = {
-                    _pair_identity(aggregated[mint])[1]: mint
-                    for mint in cohort
-                    if mint in aggregated and _pair_identity(aggregated[mint])[1]
-                }
-                target_mints.update({str(item["pool_address"]): str(item["mint"])
-                                     for item in migrations})
-                pools = sorted(target_mints)[: cap * 2]
+                target_contexts: dict[str, list[dict[str, Any]]] = {}
+
+                def add_target(pool: str, context: Mapping[str, Any]) -> None:
+                    if pool:
+                        target_contexts.setdefault(pool, []).append(dict(context))
+
+                for mint in sorted(cohort):
+                    pair = aggregated.get(mint)
+                    if pair is not None:
+                        _base, _quote, _venue = _pair_orientation(pair)
+                        add_target(_pair_identity(pair)[1], {
+                            "mint": mint,
+                            "kind": "AGGREGATOR_PRESENT_POOL",
+                            "base_mint": _base,
+                            "quote_mint": _quote,
+                            "venue": _venue,
+                        })
+                    origin = state["origins"].get(mint)
+                    # A migrated mint's current pool is the exact joined
+                    # PumpSwap pool.  Its historical bonding curve remains
+                    # lineage evidence and must not compete as a second
+                    # present-pool identity.
+                    if origin is not None and mint not in state["migrations"]:
+                        add_target(str(origin.get("bonding_curve") or ""), {
+                            "mint": mint,
+                            "kind": "PUMP_BONDING_CURVE",
+                            "origin": origin,
+                        })
+                for item in migrations:
+                    add_target(str(item["pool_address"]), {
+                        "mint": str(item["mint"]),
+                        "kind": "PUMP_MIGRATION_POOL",
+                        "migration": item,
+                    })
+                pools = sorted(target_contexts)[: cap * 2]
                 if not pools:
                     return complete(
                         "pumpswap_pool_account_batch", (), (), cursor_range=migration_cursor
@@ -969,48 +1072,234 @@ class LiveCandidateAcquisitionTransportOwner:
                 values = (response.payload or {}).get("value") if isinstance(response.payload, Mapping) else None
                 if not isinstance(values, list) or len(values) != len(pools):
                     raise LiveAcquisitionTransportError("SOURCE_MALFORMED", response.endpoint_role)
-                account_infos = dict(zip(pools, values, strict=True)); observations = []
-                migration_pools = {str(item["pool_address"]) for item in migrations}
+                associations = _batch_pool_account_associations(pools, values)
+                account_infos = {
+                    pool: associations[pool][2]
+                    for pool in pools
+                }
+
+                # A generic present-pool relationship is accepted only when the
+                # provider supplied exact base/quote orientation and the exact
+                # on-chain owner is itself an executable program.  This proves a
+                # present program-owned pool role without guessing a program
+                # layout or promoting the provider venue label to authority.
+                generic_owner_ids = sorted({
+                    str(account.get("owner") or "")
+                    for pool, account in account_infos.items()
+                    if isinstance(account, Mapping)
+                    and str(account.get("owner") or "")
+                    not in {
+                        "", PUMP_PROGRAM_ID, PUMPSWAP_AMM_PROGRAM_ID,
+                        TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID,
+                        SYSTEM_PROGRAM_ID,
+                    }
+                })
+                owner_programs: dict[str, Any] = {}
+                if generic_owner_ids:
+                    owner_response = rpc_call(
+                        "getMultipleAccounts",
+                        [generic_owner_ids, {"encoding": "base64", "commitment": "finalized"}],
+                        "POOL_OWNER_PROGRAM_ACCOUNT_BATCH",
+                    )
+                    responses.append(owner_response)
+                    owner_values = (
+                        (owner_response.payload or {}).get("value")
+                        if isinstance(owner_response.payload, Mapping) else None
+                    )
+                    if not isinstance(owner_values, list) or len(owner_values) != len(generic_owner_ids):
+                        raise LiveAcquisitionTransportError(
+                            "SOURCE_MALFORMED", owner_response.endpoint_role
+                        )
+                    owner_programs = dict(zip(generic_owner_ids, owner_values, strict=True))
+
+                observations: list[dict[str, Any]] = []
                 for pool in pools:
-                    if pool in migration_pools:
+                    response_slot, response_address, account, association_mode, association_failure = (
+                        associations[pool]
+                    )
+                    owner = (
+                        str(account.get("owner") or "")
+                        if isinstance(account, Mapping) else ""
+                    )
+                    association_facts = {
+                        "pool_evidence_target": pool,
+                        "pool_response_slot": response_slot,
+                        "pool_response_address": response_address,
+                        "pool_response_association": association_mode,
+                    }
+                    contexts = target_contexts[pool]
+                    if association_failure is not None:
+                        for context in contexts:
+                            observations.append({
+                                "mint": str(context["mint"]),
+                                "lineage_claim": "UNKNOWN_ORIGIN",
+                                "facts": {
+                                    "pool_status": "FAIL",
+                                    "pool_failure_reason": association_failure,
+                                    "pool_evidence_target": pool,
+                                    "pool_response_slot": response_slot,
+                                    "pool_response_address": response_address,
+                                    "pool_response_association": association_mode,
+                                },
+                            })
                         continue
-                    account = account_infos.get(pool)
+                    if len({str(item["mint"]) for item in contexts}) > 1:
+                        for context in contexts:
+                            observations.append({
+                                "mint": str(context["mint"]),
+                                "lineage_claim": "UNKNOWN_ORIGIN",
+                                "facts": {
+                                    "pool_status": "FAIL",
+                                    "pool_failure_reason": "POOL_TARGET_MINT_CONFLICT",
+                                    **association_facts,
+                                },
+                            })
+                        continue
+                    mint = str(contexts[0]["mint"])
+                    migration_context = next(
+                        (item for item in contexts if item["kind"] == "PUMP_MIGRATION_POOL"),
+                        None,
+                    )
+                    bonding_context = next(
+                        (item for item in contexts if item["kind"] == "PUMP_BONDING_CURVE"),
+                        None,
+                    )
+                    aggregator_context = next(
+                        (item for item in contexts if item["kind"] == "AGGREGATOR_PRESENT_POOL"),
+                        None,
+                    )
+
+                    if migration_context is not None:
+                        item = migration_context["migration"]
+                        verified = verify_pinned_pump_migration(
+                            item["tx_result"], account_infos,
+                            expected_mint=mint, finalized=True,
+                        )
+                        if verified.get("verified"):
+                            origin = state["origins"].get(mint)
+                            observations.append({
+                                "mint": mint, "pool": pool,
+                                "pool_program_id": PUMPSWAP_AMM_PROGRAM_ID,
+                                "base_mint": mint, "quote_mint": WSOL_MINT,
+                                "token_program_id": TOKEN_PROGRAM_ID,
+                                "venue_label": "PUMPSWAP",
+                                "lineage_claim": "PUMP_GRADUATION_CONFIRMED",
+                                "facts": {
+                                    "pool_status": "PASS",
+                                    "pool_role": "PUMPSWAP_AMM_POOL",
+                                    "pool_role_status": "PASS",
+                                    **association_facts,
+                                    "pump_origin_signature": (origin or {}).get("signature"),
+                                    "pump_origin_contract_hash": PUMP_IDL_SHA256,
+                                    "pump_migration_signature": item["signature"],
+                                    "pump_migration_contract_hash": PUMP_IDL_SHA256,
+                                    "pumpswap_account_hash": str(verified["pool"].get("contract_hash")),
+                                    "pumpswap_contract_hash": PUMPSWAP_IDL_SHA256,
+                                    "pumpswap_index": int(verified["pool"]["index"]),
+                                },
+                            })
+                            continue
+
+                    if bonding_context is not None:
+                        origin = bonding_context["origin"]
+                        decoded_curve = decode_pump_bonding_curve_account(
+                            account if isinstance(account, Mapping) else None,
+                            bonding_curve_address=pool,
+                            expected_mint=mint,
+                        )
+                        if decoded_curve.get("decoded"):
+                            observations.append({
+                                "mint": mint, "pool": pool,
+                                "pool_program_id": PUMP_PROGRAM_ID,
+                                "base_mint": mint,
+                                "quote_mint": decoded_curve.get("quote_mint"),
+                                "venue_label": "PUMP_BONDING_CURVE",
+                                "lineage_claim": "PUMP_ORIGIN_CONFIRMED",
+                                "facts": {
+                                    "pool_status": "PASS",
+                                    "pool_role": "PUMP_BONDING_CURVE",
+                                    "pool_role_status": "PASS",
+                                    **association_facts,
+                                    "pump_origin_signature": origin.get("signature"),
+                                    "pump_origin_contract_hash": PUMP_IDL_SHA256,
+                                    "pump_bonding_curve_address": pool,
+                                    "pump_bonding_curve_account_hash": decoded_curve.get("account_hash"),
+                                    "pump_bonding_curve_contract_hash": decoded_curve.get("contract_hash"),
+                                    "pump_bonding_curve_complete": decoded_curve.get("complete"),
+                                },
+                            })
+                            continue
+
                     decoded_pool = decode_pumpswap_pool_account(
                         account if isinstance(account, Mapping) else None,
                         pool_address=pool,
                     )
-                    facts = {
-                        "pool_status": "PASS"
-                    } if (
+                    if (
                         decoded_pool.get("decoded")
-                        and decoded_pool.get("base_mint") == target_mints[pool]
+                        and decoded_pool.get("base_mint") == mint
                         and decoded_pool.get("quote_mint") == WSOL_MINT
-                    ) else {}
-                    observations.append({"mint": target_mints[pool], "pool": pool,
-                        "pool_program_id": (
-                            str(account.get("owner") or "") if isinstance(account, Mapping) else None
-                        ), "base_mint": target_mints[pool],
-                        "quote_mint": decoded_pool.get("quote_mint"),
-                        "lineage_claim": "UNKNOWN_ORIGIN", "facts": facts})
-                for item in migrations:
-                    mint = str(item["mint"]); pool = str(item["pool_address"])
-                    verified = verify_pinned_pump_migration(item["tx_result"], account_infos,
-                                                            expected_mint=mint, finalized=True)
-                    if not verified.get("verified"):
+                    ):
+                        observations.append({
+                            "mint": mint, "pool": pool,
+                            "pool_program_id": PUMPSWAP_AMM_PROGRAM_ID,
+                            "base_mint": str(decoded_pool["base_mint"]),
+                            "quote_mint": str(decoded_pool["quote_mint"]),
+                            "venue_label": "PUMPSWAP",
+                            "lineage_claim": "UNKNOWN_ORIGIN",
+                            "facts": {
+                                "pool_status": "PASS",
+                                "pool_role": "PUMPSWAP_AMM_POOL",
+                                "pool_role_status": "PASS",
+                                **association_facts,
+                            },
+                        })
                         continue
-                    origin = state["origins"].get(mint)
-                    observations.append({"mint": mint, "pool": pool,
-                        "pool_program_id": PUMPSWAP_AMM_PROGRAM_ID, "base_mint": mint,
-                        "quote_mint": WSOL_MINT, "token_program_id": TOKEN_PROGRAM_ID,
-                        "venue_label": "PUMPSWAP", "lineage_claim": "PUMP_GRADUATION_CONFIRMED",
-                        "facts": {"pool_status": "PASS",
-                            "pump_origin_signature": (origin or {}).get("signature"),
-                            "pump_origin_contract_hash": PUMP_IDL_SHA256,
-                            "pump_migration_signature": item["signature"],
-                            "pump_migration_contract_hash": PUMP_IDL_SHA256,
-                            "pumpswap_account_hash": str(verified["pool"].get("contract_hash")),
-                            "pumpswap_contract_hash": PUMPSWAP_IDL_SHA256,
-                            "pumpswap_index": int(verified["pool"]["index"])}})
+
+                    base = str((aggregator_context or {}).get("base_mint") or "")
+                    quote = str((aggregator_context or {}).get("quote_mint") or "")
+                    owner_account = owner_programs.get(owner)
+                    owner_executable = bool(
+                        isinstance(owner_account, Mapping)
+                        and owner_account.get("executable") is True
+                    )
+                    generic_pass = bool(
+                        aggregator_context is not None
+                        and base == mint
+                        and quote in {WSOL_MINT, "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"}
+                        and owner_executable
+                    )
+                    failure_reason = (
+                        None if generic_pass
+                        else "BASE_QUOTE_ORIENTATION_MISMATCH"
+                        if aggregator_context is not None and (base != mint or not quote)
+                        else "POOL_PROGRAM_NOT_EXECUTABLE"
+                        if owner and not owner_executable
+                        else "UNSUPPORTED_POOL_ROLE_OR_PROGRAM"
+                    )
+                    observations.append({
+                        "mint": mint,
+                        **({
+                            "pool": pool,
+                            "pool_program_id": owner,
+                            "base_mint": base,
+                            "quote_mint": quote,
+                            "venue_label": str((aggregator_context or {}).get("venue") or "GENERIC_POOL"),
+                        } if generic_pass else {}),
+                        "lineage_claim": (
+                            "NON_PUMP_POOL_CONFIRMED" if generic_pass else "UNKNOWN_ORIGIN"
+                        ),
+                        "facts": {
+                            "pool_status": "PASS" if generic_pass else "FAIL",
+                            "pool_role": "GENERIC_AMM_POOL" if generic_pass else "UNSUPPORTED_POOL_ROLE",
+                            "pool_role_status": "PASS" if generic_pass else "FAIL",
+                            **association_facts,
+                            "pool_owner_program": owner or None,
+                            "pool_owner_program_executable": owner_executable,
+                            "pool_observed_base_mint": base or None,
+                            "pool_observed_quote_mint": quote or None,
+                            "pool_failure_reason": failure_reason,
+                        },
+                    })
                 return complete("pumpswap_pool_account_batch", observations, responses)
             except Exception as exc:
                 return rpc_failure("pumpswap_pool_account_batch", exc, responses)
@@ -1249,7 +1538,7 @@ class LiveCandidateAcquisitionTransportOwner:
                 "solana_rpc", "pumpswap_pool_account_batch",
                 _OperationAdapter("solana_rpc", "pumpswap_pool_account_batch", pool_batch),
                 round_mode="LIVE_TAIL", cursor_range=migration_cursor,
-                phase=PHASE_ENRICHMENT,
+                phase=PHASE_ENRICHMENT, expected_transport_operations=2,
             ),
         ))
         operations.extend(

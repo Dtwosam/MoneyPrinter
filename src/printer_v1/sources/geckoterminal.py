@@ -638,6 +638,23 @@ def _normalize_geckoterminal_pool(pool: Mapping[str, Any]) -> dict[str, Any] | N
         # Skip this pool rather than recording a quote asset as a discovery target.
         return None
 
+    quote_mint = (
+        attrs.get("quote_token_address")
+        or attrs.get("quoteTokenAddress")
+        or attrs.get("quote_mint")
+    )
+    if not quote_mint:
+        quote_rel = rels.get("quote_token") or {}
+        quote_data = (quote_rel.get("data") or {}) if isinstance(quote_rel, Mapping) else {}
+        raw_quote_id = quote_data.get("id") if isinstance(quote_data, Mapping) else None
+        if raw_quote_id:
+            quote_mint = _strip_network_prefix(str(raw_quote_id), "solana")
+    dex_id = attrs.get("dex") or attrs.get("dex_id")
+    if not dex_id:
+        dex_rel = rels.get("dex") or {}
+        dex_data = (dex_rel.get("data") or {}) if isinstance(dex_rel, Mapping) else {}
+        dex_id = dex_data.get("id") if isinstance(dex_data, Mapping) else None
+
     price = (
         attrs.get("base_token_price_usd")
         or attrs.get("price_usd")
@@ -668,9 +685,13 @@ def _normalize_geckoterminal_pool(pool: Mapping[str, Any]) -> dict[str, Any] | N
         "chainId": "solana",
         "pairAddress": pool_address,
         "baseToken": {"address": base_mint},
+        "quoteToken": {"address": quote_mint} if quote_mint else {},
+        "base_mint": base_mint,
+        "quote_mint": quote_mint,
+        "dex_id": dex_id,
         "name": attrs.get("name"),
         "symbol": attrs.get("symbol"),
-        "dex": attrs.get("dex"),
+        "dex": dex_id,
         "pool_source": GECKOTERMINAL_SOURCE_NAME,
         "priceUsd": str(price) if price is not None else None,
         "liquidity": {"usd": _to_float(liquidity)},

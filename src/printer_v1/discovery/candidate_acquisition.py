@@ -402,7 +402,9 @@ def _normalize_observations(
                 raise CandidateAcquisitionError("NEGATIVE_OPERATION_ACCOUNTING", key)
         content_payload = {key: value for key, value in item.items() if key != "source_governor_allowed"}
         item["content_hash"] = _sha(content_payload)
-        item["observation_id"] = _identifier("caobs", content_payload)
+        item["observation_id"] = _identifier(
+            "caobs", (plan["execution_id"], content_payload)
+        )
         normalized.append(item)
     normalized.sort(key=lambda item: (item["round_ordinal"], item["source_name"], item["content_hash"]))
     round_usage: dict[int, tuple[str, str, int]] = {}
@@ -471,11 +473,36 @@ def _mint_categorical_status(
     return outcome, generic_reason
 
 
+def _pool_categorical_status(
+    facts: Iterable[Mapping[str, Any]], *, candidate_pool: str | None
+) -> tuple[str, str]:
+    """Preserve the earliest exact pool-target/role/program failure."""
+    materialized = [dict(fact) for fact in facts]
+    for fact in materialized:
+        target = fact.get("pool_evidence_target")
+        if target is not None and candidate_pool is not None and str(target) != candidate_pool:
+            return "FAIL", "POOL_TARGET_MISMATCH"
+    outcome, generic_reason = _categorical_status(materialized, "pool_status")
+    if outcome == "PASS":
+        return outcome, generic_reason
+    precise = {
+        str(fact["pool_failure_reason"])
+        for fact in materialized
+        if fact.get("pool_status") == "FAIL" and fact.get("pool_failure_reason")
+    }
+    if len(precise) == 1:
+        return "FAIL", next(iter(precise))
+    if len(precise) > 1:
+        return "FAIL", "POOL_EVIDENCE_REASON_CONFLICT"
+    return outcome, generic_reason
+
+
 def _atomic_tracking_and_cooldown_recheck(
     connection: sqlite3.Connection,
     observations: Sequence[Mapping[str, Any]],
     *,
     assessed_at: str,
+    execution_id: str,
 ) -> list[dict[str, Any]]:
     """Bind the tracking gate to current authoritative state under one write lock."""
     instant = _iso(assessed_at)
@@ -533,7 +560,9 @@ def _atomic_tracking_and_cooldown_recheck(
                 if key_name not in {"source_governor_allowed", "content_hash", "observation_id"}
             }
             item["content_hash"] = _sha(content_payload)
-            item["observation_id"] = _identifier("caobs", content_payload)
+            item["observation_id"] = _identifier(
+                "caobs", (execution_id, content_payload)
+            )
         result.append(item)
     result.sort(
         key=lambda value: (
@@ -712,7 +741,24 @@ def _lineage_gate(lineage: str, facts: Sequence[Mapping[str, Any]]) -> tuple[str
             return "FAIL", "PUMP_CANONICAL_POOL_INDEX_REQUIRED"
         return "PASS", "PUMP_EXACT_LINEAGE_PASS"
     if lineage == "PUMP_ORIGIN_CONFIRMED":
-        return "FAIL", "PUMP_GRADUATION_REQUIRED"
+        required = {
+            "pump_origin_signature",
+            "pump_origin_contract_hash",
+            "pump_bonding_curve_address",
+            "pump_bonding_curve_account_hash",
+            "pump_bonding_curve_contract_hash",
+            "pump_bonding_curve_complete",
+        }
+        if required - set(merged):
+            return "FAIL", "PUMP_BONDING_CURVE_PROOF_INCOMPLETE"
+        if (
+            merged.get("pump_origin_contract_hash") != PUMP_IDL_SHA256
+            or merged.get("pump_bonding_curve_contract_hash") != PUMP_IDL_SHA256
+        ):
+            return "FAIL", "PUMP_BONDING_CURVE_CONTRACT_MISMATCH"
+        if merged.get("pump_bonding_curve_complete") is not False:
+            return "FAIL", "PUMP_BONDING_CURVE_COMPLETE_REQUIRES_GRADUATION"
+        return "PASS", "PUMP_EXACT_BONDING_CURVE_LINEAGE_PASS"
     if lineage in {"NON_PUMP_POOL_CONFIRMED", "UNKNOWN_ORIGIN"}:
         return "PASS", f"{lineage}_PRESENT_POOL_PASS"
     return "FAIL", f"{lineage}_REJECTED"
@@ -738,9 +784,22 @@ def _build_candidates(plan: Mapping[str, Any], observations: Sequence[Mapping[st
     for mint in mints:
         group = groups[mint]
         pools = {str(item["pool"]) for item in group if item.get("pool")}
-        programs = {str(item["pool_program_id"]) for item in group if item.get("pool_program_id")}
-        bases = {str(item["base_mint"]) for item in group if item.get("base_mint")}
-        quotes = {str(item["quote_mint"]) for item in group if item.get("quote_mint")}
+        # Base/quote/program identity belongs to an exact pool relationship.
+        # Mint, holder, and safety observations may repeat the candidate mint
+        # as a convenience field but cannot create or conflict a pool role.
+        pool_identity_observations = [item for item in group if item.get("pool")]
+        programs = {
+            str(item["pool_program_id"])
+            for item in pool_identity_observations if item.get("pool_program_id")
+        }
+        bases = {
+            str(item["base_mint"])
+            for item in pool_identity_observations if item.get("base_mint")
+        }
+        quotes = {
+            str(item["quote_mint"])
+            for item in pool_identity_observations if item.get("quote_mint")
+        }
         token_programs = {str(item["token_program_id"]) for item in group if item.get("token_program_id")}
         identity_conflict = (
             len(pools) > 1 or len(programs) > 1 or len(bases) > 1 or len(quotes) > 1
@@ -757,17 +816,21 @@ def _build_candidates(plan: Mapping[str, Any], observations: Sequence[Mapping[st
             # mints claiming one pool cannot violate the canonical uniqueness
             # constraint before the structured identity rejection is stored.
             pool = None
-        identity_complete = bool(
+        identity_available = bool(
             pool
+            and base_mint
+            and token_program in SUPPORTED_TOKEN_PROGRAMS
+        )
+        pool_quote_complete = bool(
+            identity_available
             and pool_program
             and base_mint == mint
             and quote_mint in ALLOWED_QUOTE_MINTS
-            and token_program in SUPPORTED_TOKEN_PROGRAMS
         )
         identity_status = (
             "IDENTITY_CONFLICT"
             if identity_conflict
-            else "IDENTITY_MERGED" if identity_complete else "IDENTITY_INCOMPLETE"
+            else "IDENTITY_MERGED" if identity_available else "IDENTITY_INCOMPLETE"
         )
         lineage = _lineage_state(group)
         facts = [dict(item["facts"]) for item in group]
@@ -782,8 +845,14 @@ def _build_candidates(plan: Mapping[str, Any], observations: Sequence[Mapping[st
                 outcome, reason = "FAIL", identity_status
             elif stage_name == "TOKEN_PROGRAM_VALID" and token_program not in SUPPORTED_TOKEN_PROGRAMS:
                 outcome, reason = "FAIL", "UNSUPPORTED_TOKEN_PROGRAM"
-            elif stage_name == "POOL_QUOTE_VALID" and not identity_complete:
-                outcome, reason = "FAIL", "EXACT_POOL_QUOTE_IDENTITY_REQUIRED"
+            elif stage_name == "POOL_QUOTE_VALID":
+                outcome, reason = _pool_categorical_status(
+                    facts, candidate_pool=pool
+                )
+                if outcome == "PASS" and base_mint != mint:
+                    outcome, reason = "FAIL", "BASE_QUOTE_ORIENTATION_MISMATCH"
+                elif outcome == "PASS" and not pool_quote_complete:
+                    outcome, reason = "FAIL", "EXACT_POOL_QUOTE_IDENTITY_REQUIRED"
             elif stage_name == "MARKET_FRESH" and stale:
                 outcome, reason = "FAIL", "STALE_OR_EXPIRED_EVIDENCE"
             elif stage_name == "LINEAGE_VALID":
@@ -955,10 +1024,37 @@ def _failure_family(observations: Sequence[Mapping[str, Any]], candidates: Seque
             if len(mint_reasons) == 1
             else "CHAIN_MINT_VALID_MULTIPLE_REASONS",
         )
-    if any(item["identity_status"] != "IDENTITY_MERGED" for item in candidates):
-        return "IDENTITY_MERGE_FAILURE", "IDENTITY_NOT_MERGED"
+    if any(item["identity_status"] == "IDENTITY_CONFLICT" for item in candidates):
+        return "IDENTITY_MERGE_FAILURE", "IDENTITY_CONFLICT"
     if candidates and any(not item["admitted"] for item in candidates):
-        return "ADMISSION_FAILURE", "CATEGORICAL_ADMISSION_REJECTIONS"
+        first_reasons = {
+            str(stage["reason_code"])
+            for candidate in candidates
+            for stage in candidate["stages"]
+            if stage["stage_outcome"] == "FAIL"
+        }
+        if first_reasons and all(
+            reason.endswith("_MISSING")
+            or reason in {
+                "IDENTITY_INCOMPLETE",
+                "EXACT_POOL_QUOTE_IDENTITY_REQUIRED",
+                "PUMP_BONDING_CURVE_PROOF_INCOMPLETE",
+                "PUMP_PROOF_INCOMPLETE",
+            }
+            for reason in first_reasons
+        ):
+            return (
+                "STALE_OR_INCOMPLETE_EVIDENCE",
+                next(iter(first_reasons))
+                if len(first_reasons) == 1
+                else "MULTIPLE_REQUIRED_EVIDENCE_GAPS",
+            )
+        return (
+            "ADMISSION_FAILURE",
+            next(iter(first_reasons))
+            if len(first_reasons) == 1
+            else "CATEGORICAL_ADMISSION_REJECTIONS",
+        )
     return "INSUFFICIENT_ELIGIBLE_POOL", "COMPLETE_COVERAGE_FEWER_THAN_N"
 
 
@@ -1021,7 +1117,8 @@ def run_candidate_acquisition(
     try:
         connection.execute("BEGIN IMMEDIATE")
         normalized = _atomic_tracking_and_cooldown_recheck(
-            connection, normalized, assessed_at=str(frozen_plan["cutoff_at"])
+            connection, normalized, assessed_at=str(frozen_plan["cutoff_at"]),
+            execution_id=str(frozen_plan["execution_id"]),
         )
         input_payload = {"plan": frozen_plan, "observations": normalized}
         input_hash = _sha(input_payload)

@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 from urllib import error as url_error
 from urllib import request as url_request
 
@@ -371,6 +371,7 @@ def normalize_dexscreener_fixture_result(
     payload: Mapping[str, Any],
     *,
     request_kind: str,
+    requested_token_mints: Sequence[str] | None = None,
 ) -> NormalizedSourceResult:
     fixture_status = payload.get("fixture_status")
     if fixture_status == "failure":
@@ -419,15 +420,40 @@ def normalize_dexscreener_fixture_result(
         )
 
     normalized_pairs = []
+    requested = {str(item) for item in (requested_token_mints or ()) if item}
     for pair in pairs:
         if not isinstance(pair, Mapping):
             continue
         base = pair.get("baseToken") if isinstance(pair.get("baseToken"), Mapping) else {}
+        quote = pair.get("quoteToken") if isinstance(pair.get("quoteToken"), Mapping) else {}
+        base_mint = str(base.get("address") or "")
+        quote_mint = str(quote.get("address") or "")
+        candidate_mint = base_mint
+        if requested:
+            candidate_mint = (
+                base_mint if base_mint in requested
+                else quote_mint if quote_mint in requested
+                else ""
+            )
         normalized_pairs.append(
             {
                 "chain": pair.get("chainId"),
                 "pair_address": pair.get("pairAddress"),
                 "token_mint": base.get("address"),
+                "candidate_mint": candidate_mint or None,
+                "candidate_pair_orientation_status": (
+                    "PASS" if candidate_mint and candidate_mint == base_mint else "FAIL"
+                ),
+                "candidate_pair_orientation_reason": (
+                    None if candidate_mint and candidate_mint == base_mint
+                    else "BASE_QUOTE_ORIENTATION_MISMATCH"
+                ),
+                # Preserve the provider's exact orientation.  Candidate
+                # admission must never reconstruct quote identity from venue,
+                # symbol, or a default native mint.
+                "base_mint": base.get("address"),
+                "quote_mint": quote.get("address"),
+                "dex_id": pair.get("dexId"),
                 "symbol": base.get("symbol"),
                 "name": base.get("name"),
                 "price_usd": _to_float(pair.get("priceUsd")),
@@ -464,15 +490,19 @@ def normalize_dexscreener_fixture_result(
         exclusion_reason: str | None = None
         if item.get("chain") != "solana":
             exclusion_reason = "non_solana_pair"
-        elif not item.get("pair_address") or not item.get("token_mint"):
+        elif not item.get("pair_address") or not (
+            item.get("candidate_mint") or item.get("token_mint")
+        ):
             exclusion_reason = "missing_pair_or_mint_identity"
-        elif item.get("token_mint") in _SOLANA_INFRASTRUCTURE_MINTS:
+        elif (
+            item.get("candidate_mint") or item.get("token_mint")
+        ) in _SOLANA_INFRASTRUCTURE_MINTS:
             exclusion_reason = "infrastructure_quote_mint"
         if exclusion_reason:
             excluded_pairs.append({
                 "chain": item.get("chain"),
                 "pair_address": item.get("pair_address"),
-                "token_mint": item.get("token_mint"),
+                "token_mint": item.get("candidate_mint") or item.get("token_mint"),
                 "symbol": item.get("symbol"),
                 "exclusion_reason": exclusion_reason,
             })

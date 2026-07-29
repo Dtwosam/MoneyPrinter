@@ -506,8 +506,22 @@ def _provider_observations(
         for pair in payload["pairs"]:
             if not isinstance(pair, Mapping):
                 continue
-            mint = pair.get("token_mint") or (pair.get("baseToken") or {}).get("address")
+            mint = (
+                pair.get("candidate_mint")
+                or pair.get("token_mint")
+                or (pair.get("baseToken") or {}).get("address")
+            )
             pool = pair.get("pair_address") or pair.get("pairAddress")
+            base_mint = (
+                pair.get("base_mint")
+                or pair.get("baseMint")
+                or (pair.get("baseToken") or {}).get("address")
+            )
+            quote_mint = (
+                pair.get("quote_mint")
+                or pair.get("quoteMint")
+                or (pair.get("quoteToken") or {}).get("address")
+            )
             liquidity = pair.get("liquidity_usd")
             if liquidity is None and isinstance(pair.get("liquidity"), Mapping):
                 liquidity = pair["liquidity"].get("usd")
@@ -551,10 +565,25 @@ def _provider_observations(
             rows.append({
                 "mint": mint,
                 "pool": pool,
-                "base_mint": mint,
-                "venue_label": operation.source_name,
+                "base_mint": base_mint,
+                "quote_mint": quote_mint,
+                "venue_label": (
+                    pair.get("dex_id") or pair.get("dexId") or pair.get("dex")
+                    or operation.source_name
+                ),
                 "lineage_claim": "UNKNOWN_ORIGIN",
-                "facts": facts,
+                "facts": {
+                    **facts,
+                    "market_pair_identity_status": (
+                        "PASS" if mint and pool and base_mint == mint and quote_mint
+                        else "FAIL"
+                    ),
+                    "market_observed_base_mint": base_mint,
+                    "market_observed_quote_mint": quote_mint,
+                    "market_pair_orientation_reason": pair.get(
+                        "candidate_pair_orientation_reason"
+                    ),
+                },
             })
     if not rows:
         rows = [{"facts": {}}]

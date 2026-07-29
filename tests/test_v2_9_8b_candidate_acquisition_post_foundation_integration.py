@@ -56,11 +56,23 @@ from printer_v1.sources.geckoterminal import (
     fixture_success_transport as geckoterminal_fixture_success_transport,
 )
 from printer_v1.sources.pump_contracts import (
+    ASSOCIATED_TOKEN_PROGRAM_ID,
+    METADATA_PROGRAM_ID,
     OFFICIAL_REPOSITORY_COMMIT,
+    PUMP_BONDING_CURVE_DISCRIMINATOR,
+    PUMP_CREATE_DISCRIMINATOR,
+    PUMP_IDL_SHA256,
+    PUMP_MIGRATE_DISCRIMINATOR,
     PUMPSWAP_POOL_DISCRIMINATOR,
+    RENT_SYSVAR_ID,
+    SYSTEM_PROGRAM_ID,
     TOKEN_2022_PROGRAM_ID,
     TOKEN_PROGRAM_ID,
     WSOL_MINT,
+    _b58encode,
+    _derive_ata,
+    derive_canonical_pumpswap_pool,
+    derive_program_address,
 )
 from printer_v1.sources.pumpfun_direct import PUMP_PROGRAM_ID
 from printer_v1.sources.pumpfun_origin import PUMP_CREATE_INDEX_ADDRESS
@@ -94,6 +106,64 @@ def _pumpswap_account(mint: str, ordinal: int) -> dict:
     )
     return {
         "owner": PUMPSWAP_AMM_PROGRAM_ID,
+        "data": [base64.b64encode(raw).decode(), "base64"],
+    }
+
+
+def _pinned_pumpswap_account(
+    *, creator: str, mint: str, pool: str
+) -> dict:
+    lp_mint = derive_program_address(
+        (b"pool_lp_mint", _b58decode(pool)), PUMPSWAP_AMM_PROGRAM_ID
+    )[0]
+    base_vault = _derive_ata(
+        owner=pool, token_program=TOKEN_PROGRAM_ID, mint=mint
+    )
+    quote_vault = _derive_ata(
+        owner=pool, token_program=TOKEN_PROGRAM_ID, mint=WSOL_MINT
+    )
+    _pool, bump = derive_canonical_pumpswap_pool(
+        creator=creator, base_mint=mint, quote_mint=WSOL_MINT
+    )
+    assert _pool == pool
+    raw = (
+        PUMPSWAP_POOL_DISCRIMINATOR
+        + bytes([bump])
+        + (0).to_bytes(2, "little")
+        + b"".join(_b58decode(item) for item in (
+            creator, mint, WSOL_MINT, lp_mint, base_vault, quote_vault
+        ))
+        + (1_000_000).to_bytes(8, "little")
+        + _b58decode(creator)
+        + b"\0\0"
+        + (0).to_bytes(16, "little", signed=True)
+    )
+    return {
+        "owner": PUMPSWAP_AMM_PROGRAM_ID,
+        "data": [base64.b64encode(raw).decode(), "base64"],
+    }
+
+
+def _pump_bonding_curve_account(
+    *, mint: str, creator: str, complete: bool = False
+) -> tuple[str, dict]:
+    curve = derive_program_address(
+        (b"bonding-curve", _b58decode(mint)), PUMP_PROGRAM_ID
+    )[0]
+    raw = (
+        PUMP_BONDING_CURVE_DISCRIMINATOR
+        + (1_000_000).to_bytes(8, "little")
+        + (1_000).to_bytes(8, "little")
+        + (900_000).to_bytes(8, "little")
+        + (900).to_bytes(8, "little")
+        + (1_000_000).to_bytes(8, "little")
+        + bytes([int(complete)])
+        + _b58decode(creator)
+        + b"\0\0"
+        + _b58decode(WSOL_MINT)
+    )
+    return curve, {
+        "owner": PUMP_PROGRAM_ID,
         "data": [base64.b64encode(raw).decode(), "base64"],
     }
 
@@ -210,6 +280,313 @@ class _CanonicalMockNetworkTransport:
         else:
             raise AssertionError(f"unexpected RPC method: {method}")
         return self._result(payload, method, endpoint_role)
+
+
+class _LiveShapedAdmissionNetwork(_CanonicalMockNetworkTransport):
+    """Exact Pump-curve, PumpSwap, and generic-pool admission fixture."""
+
+    CREATE_SIGNATURES = ("create-live-shaped-1", "create-live-shaped-2")
+    MIGRATION_SIGNATURE = "migration-live-shaped-1"
+
+    def __init__(self, count: int) -> None:
+        super().__init__(count)
+        self.rows = sorted(self.rows, key=lambda row: row["mint"])
+        self.mints = {row["mint"] for row in self.rows}
+        self.mint_ordinals = {
+            row["mint"]: ordinal for ordinal, row in enumerate(self.rows)
+        }
+        key_material = [item for row in FIXTURE["candidates"] for item in row]
+        curve, curve_account = _pump_bonding_curve_account(
+            mint=self.rows[0]["mint"], creator=key_material[-1]
+        )
+        self.rows[0]["pool"] = curve
+        # The pinned Pump migration/PumpSwap contract uses the classic SPL
+        # token program for its base mint. Keep the migrated fixture on an
+        # even ordinal; odd ordinals deliberately exercise Token-2022 through
+        # the generic exact-present-pool branch.
+        self.migrated_ordinal = 2
+        migrated_mint = self.rows[self.migrated_ordinal]["mint"]
+        self.migration_creator = derive_program_address(
+            (b"pool-authority", _b58decode(migrated_mint)), PUMP_PROGRAM_ID
+        )[0]
+        migration_pool = derive_canonical_pumpswap_pool(
+            creator=self.migration_creator,
+            base_mint=migrated_mint,
+            quote_mint=WSOL_MINT,
+        )[0]
+        self.rows[self.migrated_ordinal]["pool"] = migration_pool
+        self.pool_accounts = {
+            curve: curve_account,
+            migration_pool: _pinned_pumpswap_account(
+                creator=self.migration_creator,
+                mint=migrated_mint,
+                pool=migration_pool,
+            ),
+        }
+        self.pool_accounts.update({
+            row["pool"]: {
+                "owner": POOL_PROGRAM,
+                "data": [base64.b64encode(b"generic-present-pool").decode(), "base64"],
+            }
+            for ordinal, row in enumerate(self.rows)
+            if ordinal not in {0, self.migrated_ordinal}
+        })
+        self.create_transactions = [
+            self._create_transaction(self.rows[0]["mint"], key_material, slot=500),
+            self._create_transaction(
+                self.rows[self.migrated_ordinal]["mint"], key_material, slot=499
+            ),
+        ]
+        self.migration_transaction = self._migration_transaction(
+            self.rows[self.migrated_ordinal]["mint"], migration_pool, key_material
+        )
+
+    @staticmethod
+    def _create_transaction(mint: str, keys: list[str], *, slot: int) -> dict:
+        account_keys = list(keys[:14])
+        account_keys[0] = mint
+        account_keys[1] = derive_program_address((b"mint-authority",), PUMP_PROGRAM_ID)[0]
+        account_keys[2] = derive_program_address(
+            (b"bonding-curve", _b58decode(mint)), PUMP_PROGRAM_ID
+        )[0]
+        account_keys[5] = METADATA_PROGRAM_ID
+        account_keys[8] = SYSTEM_PROGRAM_ID
+        account_keys[9] = TOKEN_PROGRAM_ID
+        account_keys[10] = ASSOCIATED_TOKEN_PROGRAM_ID
+        account_keys[11] = RENT_SYSVAR_ID
+        account_keys[13] = PUMP_PROGRAM_ID
+        return {
+            "version": "legacy",
+            "slot": slot,
+            "blockTime": 1_785_326_000 + slot,
+            "meta": {"err": None, "innerInstructions": []},
+            "transaction": {"message": {
+                "accountKeys": account_keys,
+                "instructions": [{
+                    "programIdIndex": 13,
+                    "accounts": list(range(14)),
+                    "data": _b58encode(PUMP_CREATE_DISCRIMINATOR),
+                }],
+            }},
+        }
+
+    def _migration_transaction(self, mint: str, pool: str, keys: list[str]) -> dict:
+        accounts = list((keys * 3)[:25])
+        bonding_curve = derive_program_address(
+            (b"bonding-curve", _b58decode(mint)), PUMP_PROGRAM_ID
+        )[0]
+        lp_mint = derive_program_address(
+            (b"pool_lp_mint", _b58decode(pool)), PUMPSWAP_AMM_PROGRAM_ID
+        )[0]
+        base_vault = _derive_ata(
+            owner=pool, token_program=TOKEN_PROGRAM_ID, mint=mint
+        )
+        quote_vault = _derive_ata(
+            owner=pool, token_program=TOKEN_PROGRAM_ID, mint=WSOL_MINT
+        )
+        fixed = {
+            2: mint, 3: bonding_curve, 6: SYSTEM_PROGRAM_ID,
+            7: TOKEN_PROGRAM_ID, 8: PUMPSWAP_AMM_PROGRAM_ID,
+            9: pool, 10: self.migration_creator, 14: WSOL_MINT,
+            15: lp_mint, 17: base_vault, 18: quote_vault,
+            19: TOKEN_2022_PROGRAM_ID, 20: ASSOCIATED_TOKEN_PROGRAM_ID,
+            23: PUMP_PROGRAM_ID, 24: RENT_SYSVAR_ID,
+        }
+        for index, value in fixed.items():
+            accounts[index] = value
+        return {
+            "version": "legacy",
+            "slot": 498,
+            "blockTime": 1_785_326_498,
+            "meta": {"err": None, "innerInstructions": []},
+            "transaction": {"message": {
+                "accountKeys": accounts,
+                "instructions": [{
+                    "programIdIndex": 23,
+                    "accounts": list(range(25)),
+                    "data": _b58encode(PUMP_MIGRATE_DISCRIMINATOR),
+                }],
+            }},
+        }
+
+    def http_json(self, *, url, headers, timeout_seconds, byte_ceiling, endpoint_role):
+        del url, headers, timeout_seconds, byte_ceiling
+        if endpoint_role == "DEXSCREENER_PROFILES":
+            payload = [
+                {"chainId": "solana", "tokenAddress": row["mint"]}
+                for row in self.rows
+            ]
+        elif endpoint_role == "DEXSCREENER_MARKET_BATCH":
+            payload = [
+                {
+                    "chainId": "solana", "pairAddress": row["pool"],
+                    "baseToken": {"address": row["mint"], "symbol": "MEME"},
+                    "quoteToken": {"address": WSOL_MINT, "symbol": "SOL"},
+                    "dexId": (
+                        "pumpfun" if ordinal == 0
+                        else "pumpswap" if ordinal == self.migrated_ordinal else "raydium"
+                    ),
+                    "liquidity": {"usd": 10_000.0},
+                    "volume": {"m5": 1_000.0, "h1": 4_000.0},
+                    "txns": {"m5": {"buys": 2, "sells": 1}},
+                    "pairCreatedAt": 1_785_326_000_000,
+                }
+                for ordinal, row in enumerate(self.rows)
+            ]
+        elif endpoint_role == "GECKOTERMINAL_NEW_POOLS":
+            row = self.rows[0]
+            payload = {"data": [{
+                "id": f"solana_{row['pool']}", "type": "pool",
+                "attributes": {
+                    "chain": "solana", "address": row["pool"],
+                    "reserve_in_usd": 10_000.0,
+                    "volume_usd": {"m5": 1_000.0, "h1": 4_000.0},
+                    "transactions": {"m5": {"buys": 2, "sells": 1}},
+                    "pool_created_at": "2026-07-29T10:00:00+00:00",
+                },
+                "relationships": {
+                    "base_token": {"data": {"id": f"solana_{row['mint']}"}},
+                    "quote_token": {"data": {"id": f"solana_{WSOL_MINT}"}},
+                    "dex": {"data": {"id": "pumpfun"}},
+                },
+            }]}
+        elif endpoint_role.startswith("GOPLUS_SAFETY_REFERENCE_"):
+            payload = {"result": {}}
+        else:
+            raise AssertionError(f"unexpected HTTP role: {endpoint_role}")
+        return self._result(payload, "HTTP_GET", endpoint_role)
+
+    def rpc_json(self, *, rpc_url, method, params, timeout_seconds, byte_ceiling,
+                 endpoint_role):
+        del rpc_url, timeout_seconds, byte_ceiling
+        if method == "getSignaturesForAddress":
+            indexed = str(params[0])
+            options = dict(params[1]) if len(params) > 1 else {}
+            if options.get("until"):
+                payload = []
+            elif indexed == PUMP_CREATE_INDEX_ADDRESS:
+                payload = [
+                    {"signature": signature, "slot": 500 - ordinal, "err": None,
+                     "confirmationStatus": "finalized"}
+                    for ordinal, signature in enumerate(self.CREATE_SIGNATURES)
+                ]
+            elif indexed == PUMP_PROGRAM_ID:
+                payload = [{
+                    "signature": self.MIGRATION_SIGNATURE, "slot": 498,
+                    "err": None, "confirmationStatus": "finalized",
+                }]
+            else:
+                raise AssertionError(f"unexpected signature target: {indexed}")
+        elif method == "getTransaction":
+            signature = str(params[0])
+            if signature in self.CREATE_SIGNATURES:
+                payload = self.create_transactions[self.CREATE_SIGNATURES.index(signature)]
+            elif signature == self.MIGRATION_SIGNATURE:
+                payload = self.migration_transaction
+            else:
+                raise AssertionError(f"unexpected transaction signature: {signature}")
+        elif method == "getMultipleAccounts":
+            addresses = list(params[0])
+            if all(address in self.mints for address in addresses):
+                values = [
+                    _spl_mint_account()
+                    if self.mint_ordinals[address] % 2 == 0
+                    else _token_2022_mint_account(with_extension=True)
+                    for address in addresses
+                ]
+            elif addresses == [POOL_PROGRAM]:
+                values = [{
+                    "owner": "BPFLoaderUpgradeab1e11111111111111111111111",
+                    "executable": True,
+                    "data": [base64.b64encode(b"program-data").decode(), "base64"],
+                }]
+            else:
+                values = [self.pool_accounts[address] for address in addresses]
+            payload = {"context": {"slot": 500}, "value": values}
+        elif method == "getTokenLargestAccounts":
+            payload = {"context": {"slot": 500}, "value": [
+                {"address": self.rows[0]["pool"], "amount": "1", "decimals": 0}
+            ]}
+        elif method == "getTokenSupply":
+            payload = {"context": {"slot": 500}, "value": {
+                "amount": "1000", "decimals": 0,
+                "uiAmount": 1000, "uiAmountString": "1000",
+            }}
+        else:
+            raise AssertionError(f"unexpected RPC method: {method}")
+        return self._result(payload, method, endpoint_role)
+
+
+class _LiveShapedFailureNetwork(_LiveShapedAdmissionNetwork):
+    """One-defect-at-a-time low-level evidence mutations for exact taxonomy."""
+
+    def __init__(self, failure: str) -> None:
+        super().__init__(7)
+        self.failure = failure
+        self.target_mint = self.rows[1]["mint"]
+        self.target_pool = self.rows[1]["pool"]
+
+    def http_json(self, *, url, headers, timeout_seconds, byte_ceiling, endpoint_role):
+        response = super().http_json(
+            url=url, headers=headers, timeout_seconds=timeout_seconds,
+            byte_ceiling=byte_ceiling, endpoint_role=endpoint_role,
+        )
+        payload = deepcopy(response.payload)
+        if endpoint_role == "DEXSCREENER_MARKET_BATCH":
+            pair = next(
+                item for item in payload
+                if item.get("baseToken", {}).get("address") == self.target_mint
+            )
+            if self.failure == "missing_quote_identity":
+                pair.pop("quoteToken", None)
+            elif self.failure == "base_quote_reversal":
+                pair["baseToken"] = {"address": WSOL_MINT, "symbol": "SOL"}
+                pair["quoteToken"] = {
+                    "address": self.target_mint, "symbol": "MEME"
+                }
+            elif self.failure == "liquidity_failure":
+                pair["liquidity"] = {"usd": 1.0}
+            elif self.failure == "tradeability_failure":
+                pair["volume"] = {"m5": 0.0, "h1": 0.0}
+                pair["txns"] = {"m5": {"buys": 0, "sells": 0}}
+        return TransportResponse(
+            payload, response.bytes_used, response.operation_kind,
+            response.endpoint_role,
+        )
+
+    def rpc_json(self, *, rpc_url, method, params, timeout_seconds, byte_ceiling,
+                 endpoint_role):
+        response = super().rpc_json(
+            rpc_url=rpc_url, method=method, params=params,
+            timeout_seconds=timeout_seconds, byte_ceiling=byte_ceiling,
+            endpoint_role=endpoint_role,
+        )
+        payload = deepcopy(response.payload)
+        if endpoint_role == "PUMPSWAP_POOL_ACCOUNT_BATCH":
+            addresses = list(params[0])
+            values = list(payload["value"])
+            target_index = addresses.index(self.target_pool)
+            if self.failure == "wrong_pool_role_program":
+                values[target_index]["owner"] = PUMP_PROGRAM_ID
+            elif self.failure == "pool_target_mismatch":
+                values = [
+                    {"address": address, "account": account}
+                    for address, account in zip(addresses, values, strict=True)
+                ]
+                values[target_index]["address"] = FIXTURE["candidates"][-1][0]
+            payload["value"] = values
+        elif (
+            self.failure == "holder_failure"
+            and method == "getTokenLargestAccounts"
+            and str(params[0]) == self.target_mint
+        ):
+            payload["value"] = [{
+                "address": self.target_pool, "amount": "900", "decimals": 0
+            }]
+        return TransportResponse(
+            payload, response.bytes_used, response.operation_kind,
+            response.endpoint_role,
+        )
 
 
 class _MintBatchScenarioNetwork(_CanonicalMockNetworkTransport):
@@ -1175,6 +1552,159 @@ def _dispatch(capsys, path, cli_mode: str, network, execution_id: str) -> dict:
     )
     assert rc == 0
     return json.loads(capsys.readouterr().out)
+
+
+@pytest.mark.parametrize(
+    ("cli_mode", "count", "expected"),
+    ((CLI_MODE_N2, 4, 2), (CLI_MODE_N7, 7, 7)),
+)
+def test_live_shaped_end_to_end_roles_admit_exact_n(
+    capsys, cli_mode: str, count: int, expected: int
+) -> None:
+    """Public CLI proves every exact-present-pool role without synthesis."""
+    temp, path = _db()
+    try:
+        network = _LiveShapedAdmissionNetwork(count)
+        payload = _dispatch(
+            capsys, path, cli_mode, network, f"live-shaped-roles-{expected}"
+        )
+        assert payload["status"] == "COMPLETED"
+        assert payload["foundation_report"]["certificates_admitted"] >= expected
+        assert payload["selected_count"] == expected
+        assert payload["projection_count"] == (2 if expected == 2 else 0)
+        assert payload["runtime_handoff_count"] == 0
+        assert payload["scheduler_jobs_created"] == payload["governed_requests_used"]
+        assert payload["transport_operations_used"] == len(network.calls)
+        assert not any(payload["forbidden_table_deltas"].values())
+        with sqlite3.connect(path) as connection:
+            roles = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT json_extract(facts_json,'$.pool_role') "
+                    "FROM printer_candidate_source_observations "
+                    "WHERE json_extract(facts_json,'$.pool_status')='PASS'"
+                )
+                if row[0] is not None
+            }
+            lineages = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT lineage_state FROM printer_candidate_identities"
+                )
+            }
+            quote_count = connection.execute(
+                "SELECT COUNT(*) FROM printer_candidate_identities "
+                "WHERE quote_mint=?",
+                (WSOL_MINT,),
+            ).fetchone()[0]
+            token_programs = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT token_program_id FROM printer_candidate_identities"
+                )
+            }
+            source_quote_counts = dict(connection.execute(
+                """SELECT source_name,COUNT(*)
+                     FROM printer_candidate_source_observations
+                    WHERE source_name IN ('dexscreener','geckoterminal')
+                      AND quote_mint=?
+                    GROUP BY source_name""",
+                (WSOL_MINT,),
+            ))
+        assert {
+            "PUMP_BONDING_CURVE", "PUMPSWAP_AMM_POOL", "GENERIC_AMM_POOL"
+        } <= roles
+        assert {
+            "PUMP_ORIGIN_CONFIRMED", "PUMP_GRADUATION_CONFIRMED",
+            "NON_PUMP_POOL_CONFIRMED",
+        } <= lineages
+        assert quote_count >= expected
+        assert source_quote_counts["dexscreener"] >= expected
+        assert source_quote_counts["geckoterminal"] >= 1
+        assert payload["pre_foundation_funnel"]["cross_source_overlap_count"] >= 2
+        assert {TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID} <= token_programs
+        calls = len(network.calls)
+        assert replay_candidate_acquisition_integration_report(
+            path, execution_id=f"live-shaped-roles-{expected}"
+        ) == payload
+        assert len(network.calls) == calls
+        if expected == 7:
+            with pytest.raises(
+                CandidateAcquisitionError,
+                match="LEGACY_RUNTIME_REQUIRES_EXACTLY_TWO",
+            ):
+                legacy_two_token_runtime_projection(path, payload["manifest_id"])
+    finally:
+        temp.cleanup()
+
+
+def test_live_shaped_sequential_established_cursor_state_completes_n2(capsys) -> None:
+    temp, path = _db()
+    try:
+        first = _dispatch(
+            capsys, path, CLI_MODE_N2, _LiveShapedAdmissionNetwork(4),
+            "live-shaped-sequential-1",
+        )
+        second_network = _LiveShapedAdmissionNetwork(4)
+        second = _dispatch(
+            capsys, path, CLI_MODE_N2, second_network,
+            "live-shaped-sequential-2",
+        )
+        assert first["status"] == second["status"] == "COMPLETED"
+        assert first["cursor_bootstrap_namespaces"] == 2
+        assert second["cursor_heads_loaded"] == 2
+        assert second["cursor_bootstrap_namespaces"] == 0
+        assert second["cursor_advances_proposed"] == 0
+        assert second["cursor_advances_committed"] == 0
+        assert second["selected_count"] == 2
+        assert second["projection_count"] == 2
+        assert second["runtime_handoff_count"] == 0
+        assert not any(second["forbidden_table_deltas"].values())
+    finally:
+        temp.cleanup()
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_stage", "expected_reason"),
+    (
+        ("missing_quote_identity", "POOL_QUOTE_VALID", "BASE_QUOTE_ORIENTATION_MISMATCH"),
+        ("wrong_pool_role_program", "POOL_QUOTE_VALID", "POOL_PROGRAM_NOT_EXECUTABLE"),
+        ("base_quote_reversal", "POOL_QUOTE_VALID", "BASE_QUOTE_ORIENTATION_MISMATCH"),
+        ("pool_target_mismatch", "POOL_QUOTE_VALID", "POOL_TARGET_MISMATCH"),
+        ("holder_failure", "HOLDER_ACCEPTABLE", "HOLDER_STATUS_FAILED"),
+        ("liquidity_failure", "LIQUIDITY_TRADEABILITY_VALID", "LIQUIDITY_STATUS_FAILED"),
+        ("tradeability_failure", "ROUTE_TRADEABILITY_VALID", "TRADEABILITY_STATUS_FAILED"),
+    ),
+)
+def test_live_shaped_failure_taxonomy_preserves_first_precise_cause(
+    capsys, failure: str, expected_stage: str, expected_reason: str
+) -> None:
+    temp, path = _db()
+    try:
+        network = _LiveShapedFailureNetwork(failure)
+        payload = _dispatch(
+            capsys, path, CLI_MODE_N7, network, f"live-shaped-failure-{failure}"
+        )
+        assert payload["status"] == "BLOCKED"
+        assert payload["manifest_id"] is None
+        with sqlite3.connect(path) as connection:
+            row = connection.execute(
+                """SELECT evidence.stage_name,evidence.reason_code
+                   FROM printer_candidate_evidence AS evidence
+                   JOIN printer_candidate_identities AS identity
+                     ON identity.candidate_id=evidence.candidate_id
+                  WHERE identity.mint_identity=?
+                    AND evidence.stage_outcome='FAIL'
+                  ORDER BY evidence.stage_ordinal
+                  LIMIT 1""",
+                (network.target_mint,),
+            ).fetchone()
+        assert row == (expected_stage, expected_reason)
+        assert payload["active_lease_count"] == 0
+        assert payload["scheduler_residue_terminalized"] == 0
+        assert not any(payload["forbidden_table_deltas"].values())
+    finally:
+        temp.cleanup()
 
 
 @pytest.mark.parametrize(
