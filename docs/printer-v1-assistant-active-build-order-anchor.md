@@ -88,14 +88,18 @@ offline-only sequential persistent-state proofs. The subsequent live N2 proof
 blocked on `IDENTITY_MERGE_FAILURE`; the Pump migration observation decoupling
 implementation/offline proof is now closed
 `V2_9_8B_PUMP_MIGRATION_OBSERVATION_DECOUPLING_IMPLEMENTATION_PASS`. The exact
-next permitted task, only if separately explicitly authorized, is:
+bounded live N2 proof is closed
+`V2_9_8B_BOUNDED_LIVE_N2_PUMP_MIGRATION_DECOUPLING_PROOF_BLOCKED` on
+`OPERATION_ACCOUNTING_MISMATCH`. The exact next permitted task is operator
+review and, only if separately explicitly authorized:
 
 ```text
-V2-9.8B bounded live N2 Pump migration observation decoupling proof
+V2-9.8B documentation-only audit and design of optional-global
+pumpfun_migration_transaction operation accounting
 ```
 
-This does not authorize an automatic run, retry, recovery, cursor reset, N7,
-the published operational
+This does not authorize a patch, automatic run, retry, recovery, cursor reset,
+N7, the published operational
 Memory Factory campaign command, lifecycle work, runtime capacity above two,
 or another selective-1h proof.
 
@@ -118,9 +122,10 @@ two. The post-mint-repair live N2 proof is closed BLOCKED on
 `CURSOR_START_MISMATCH` before foundation admission, with N7 `NOT_RUN`. The
 durable cursor-to-live-range repair is closed PASS after offline-only proofs.
 The Pump migration observation decoupling implementation/offline proof is also
-closed PASS. The exact next permitted task is the separately explicit bounded
-live N2 decoupling proof above. It does not authorize an automatic run, retry,
-recovery, cursor reset, the operational campaign, or N7.
+closed PASS, and its bounded live N2 proof is closed BLOCKED on operation
+accounting. The exact next permitted task is operator review and the separately
+explicit documentation-only audit/design above. It does not authorize a patch,
+automatic run, retry, recovery, cursor reset, the operational campaign, or N7.
 
 ## 4. Assistant Behavior Rules
 
@@ -238,9 +243,11 @@ It passed explicit `FORWARD` bootstrap and historical `BACKWARD` isolation, then
 blocked at foundation on `IDENTITY_MERGE_FAILURE` because exact quote identity
 was absent for all four candidates. N7 is `NOT_RUN`. The Pump migration
 observation decoupling implementation/offline proof is closed PASS. The next
-permitted work, only if separately explicitly authorized, is its bounded live
-N2 proof. Do not run it automatically, retry, recover, reset cursors, run N7,
-or run the operational Memory Factory campaign.
+bounded live N2 proof is closed BLOCKED on `OPERATION_ACCOUNTING_MISMATCH`. The
+next permitted work is operator review and, only if separately explicitly
+authorized, a documentation-only audit/design of optional-global migration-
+transaction operation accounting. Do not patch, retry, recover, reset cursors,
+run N7, or run the operational Memory Factory campaign.
 
 ## 7. Automation Boundary Reminder
 
@@ -283,6 +290,7 @@ durable cursor-to-live-range repair is closed PASS, and the subsequent
 post-cursor-repair live N2 proof is closed BLOCKED on
 `IDENTITY_MERGE_FAILURE` after a correct forward bootstrap. The current exact
 next task follows the closed PASS Pump migration observation decoupling
-implementation/offline proof: only a separately explicitly authorized bounded
-live N2 decoupling proof. No automatic run, retry, recovery, N7, campaign, or
-successor is active.
+implementation/offline proof and its terminal BLOCKED live N2 proof: operator
+review and only a separately explicitly authorized documentation-only
+operation-accounting audit/design. No patch, automatic run, retry, recovery,
+N7, campaign, or successor is active.

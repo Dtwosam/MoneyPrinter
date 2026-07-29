@@ -1050,10 +1050,14 @@ It passed explicit `FORWARD` bootstrap and preserved historical `BACKWARD`
 heads, then blocked at foundation on `IDENTITY_MERGE_FAILURE` because exact
 quote identity was absent for all four candidates; N7 is `NOT_RUN`. The next
 Pump migration observation decoupling implementation/offline proof is closed
-`V2_9_8B_PUMP_MIGRATION_OBSERVATION_DECOUPLING_IMPLEMENTATION_PASS`. The exact
-next permitted task, only if separately explicitly authorized, is a bounded live
-N2 decoupling proof. No automatic run, retry, recovery, successor, cursor reset,
-N7, or operational campaign is authorized.
+`V2_9_8B_PUMP_MIGRATION_OBSERVATION_DECOUPLING_IMPLEMENTATION_PASS`. Its
+bounded live N2 proof is closed
+`V2_9_8B_BOUNDED_LIVE_N2_PUMP_MIGRATION_DECOUPLING_PROOF_BLOCKED` on
+`OPERATION_ACCOUNTING_MISMATCH`. The next permitted task is operator review
+and, only if separately explicitly authorized, a documentation-only audit and
+design of optional-global `pumpfun_migration_transaction` operation accounting.
+No patch, automatic run, retry, recovery, successor, cursor reset, N7, or
+operational campaign is authorized.
 
 Campaign rules:
 
@@ -1755,15 +1759,18 @@ live N2 proof is closed
 It ran exactly once and blocked before foundation admission on
 `CURSOR_START_MISMATCH`; N7 is `NOT_RUN`. The later post-cursor-repair N2 proof
 blocked on `IDENTITY_MERGE_FAILURE`, and the Pump migration observation
-decoupling implementation/offline proof is now closed PASS. The exact next
-permitted sub-lane, only if separately explicitly authorized, is:
+decoupling implementation/offline proof is closed PASS. Its bounded live N2
+proof is closed BLOCKED on `OPERATION_ACCOUNTING_MISMATCH`. The exact next
+permitted sub-lane is operator review and, only if separately explicitly
+authorized:
 
 ```text
-V2-9.8B bounded live N2 Pump migration observation decoupling proof
+V2-9.8B documentation-only audit and design of optional-global
+pumpfun_migration_transaction operation accounting
 ```
 
-No automatic run, retry, recovery, cursor reset, N7, or operational campaign is
-authorized.
+No patch, automatic run, retry, recovery, cursor reset, N7, or operational
+campaign is authorized.
 
 The durable cursor-to-live-range continuity audit and repair that followed this
 block is closed `V2_9_8B_DURABLE_CURSOR_LIVE_RANGE_REPAIR_PASS` after
