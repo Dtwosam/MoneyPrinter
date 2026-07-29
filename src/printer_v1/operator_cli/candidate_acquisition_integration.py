@@ -9,6 +9,7 @@ work.
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -45,6 +46,10 @@ CLI_MODE_N7 = "acquisition-only-n7"
 RELIABILITY_STATUS = "UNPROVEN_NO_INDEPENDENT_SAMPLE"
 LEASE_SECONDS = 90
 ACTIVE_CAPACITY = 2
+
+# Candidate-acquisition operation phases. See AcquisitionSourceOperation.phase.
+PHASE_NOMINATION = "NOMINATION"
+PHASE_ENRICHMENT = "ENRICHMENT"
 
 MODE_POLICIES: dict[str, dict[str, Any]] = {
     MODE_N2: {
@@ -147,6 +152,12 @@ class AcquisitionSourceOperation:
     request_payload: Mapping[str, Any] | None = None
     expected_transport_operations: int = 1
     cursor_range: Mapping[str, Any] | None = None
+    # Phase separates the two candidate-acquisition stages. NOMINATION work
+    # contributes identities to the source-neutral nomination universe from which
+    # the integration owner selects the M-bounded cohort. ENRICHMENT work is
+    # candidate-specific and may only touch cohort identities; the owner fails
+    # closed if it observes an enrichment identity outside the selected cohort.
+    phase: str = "NOMINATION"
 
 
 class AcquisitionTransportOwner(Protocol):
@@ -783,6 +794,16 @@ def run_candidate_acquisition_integration(
     first_cause = "INTEGRATION_FAILED"
     failure_detail: str | None = None
     started = time.monotonic()
+    candidate_limit = int(policy["candidate_limit"])
+    # Source-neutral nomination universe and cohort accounting. NOMINATION-phase
+    # identities compete for the M-bounded cohort; ENRICHMENT-phase identities
+    # must be a subset of the selected cohort or the owner fails closed.
+    nomination_source_by_mint: dict[str, set[str]] = {}
+    nomination_rows_by_source: Counter[str] = Counter()
+    enrichment_mints: set[str] = set()
+    cohort_mints: list[str] = []
+    thinned_beyond_cohort = 0
+    cursor_advances_proposed = 0
     try:
         lease_id = _acquire_lease(
             db_path, integration_id=integration_id, execution_id=execution_id,
@@ -1007,6 +1028,23 @@ def run_candidate_acquisition_integration(
             bytes_used += encoded_size
             rows_used += len(candidate_rows)
             observations.extend(candidate_rows)
+            is_enrichment = operation.phase == PHASE_ENRICHMENT
+            for row in candidate_rows:
+                mint = row.get("mint")
+                if not mint:
+                    continue
+                if is_enrichment:
+                    enrichment_mints.add(str(mint))
+                else:
+                    nomination_source_by_mint.setdefault(str(mint), set()).add(
+                        operation.source_name
+                    )
+                    nomination_rows_by_source[operation.source_name] += 1
+            proposed_cursor = payload.get("cursor_range") or operation.cursor_range
+            if isinstance(proposed_cursor, Mapping) and bool(
+                proposed_cursor.get("cursor_advanced")
+            ):
+                cursor_advances_proposed += 1
 
         if nomination_successes < 1:
             raise CandidateAcquisitionIntegrationError(
@@ -1021,9 +1059,38 @@ def run_candidate_acquisition_integration(
                 item for item in precedence if item in set(required_failures)
             )
             raise CandidateAcquisitionIntegrationError(cause)
-        unique_mints = {str(row.get("mint")) for row in observations if row.get("mint")}
-        if len(unique_mints) > int(policy["candidate_limit"]):
-            raise CandidateAcquisitionIntegrationError("CANDIDATE_LIMIT")
+        # Source-neutral, provider-order-independent cohort selection. The raw
+        # nomination universe may legitimately exceed M; that is thinned to an
+        # M-bounded cohort by a deterministic identity order (never a source
+        # quota, preference, score, rank, confidence, or weighting), NOT a
+        # terminal failure. M bounds the candidates that enter the expensive
+        # admission funnel and receive candidate-specific enrichment.
+        nomination_universe = sorted(nomination_source_by_mint)
+        cohort_mints = nomination_universe[:candidate_limit]
+        cohort_set = set(cohort_mints)
+        thinned_beyond_cohort = len(nomination_universe) - len(cohort_mints)
+        # Candidate-specific enrichment may only touch cohort identities; an
+        # enrichment observation for an out-of-cohort identity means the plan
+        # bound expensive work before or beyond the cohort — fail closed.
+        out_of_cohort = sorted(enrichment_mints - cohort_set)
+        if out_of_cohort:
+            raise CandidateAcquisitionIntegrationError(
+                "OUT_OF_COHORT_ENRICHMENT", ",".join(out_of_cohort)[:200]
+            )
+        observations = [
+            row for row in observations
+            if not row.get("mint") or str(row.get("mint")) in cohort_set
+        ]
+        post_cohort_unique = {
+            str(row.get("mint")) for row in observations if row.get("mint")
+        }
+        # Defensive: the deterministic bound must hold post-filter. Actual
+        # overflow past M through the admission funnel fails closed.
+        if len(post_cohort_unique) > candidate_limit:
+            raise CandidateAcquisitionIntegrationError(
+                "CANDIDATE_COHORT_OVERFLOW",
+                f"{len(post_cohort_unique)}>{candidate_limit}",
+            )
         allowed_sources = tuple(sorted({op.source_name for op in operations}))
         if not allowed_sources:
             raise CandidateAcquisitionIntegrationError("EMPTY_SOURCE_PLAN")
@@ -1127,8 +1194,37 @@ def run_candidate_acquisition_integration(
             "SELECT COUNT(*) FROM printer_candidate_acquisition_leases "
             "WHERE lease_state IN ('ACTIVE','STOPPING')"
         ).fetchone()[0])
+        # Committed cursor movement is distinct from proposed movement: a durable
+        # head only advances inside the foundation transaction, so a pre-foundation
+        # stop can carry proposed advances with zero committed advances.
+        cursor_advances_committed = (
+            int(connection.execute(
+                "SELECT COUNT(*) FROM printer_candidate_acquisition_cursors "
+                "WHERE last_execution_id=?",
+                (execution_id,),
+            ).fetchone()[0])
+            if foundation is not None else 0
+        )
     finally:
         connection.close()
+    cross_source_overlap_count = sum(
+        1 for sources in nomination_source_by_mint.values() if len(sources) > 1
+    )
+    pre_foundation_funnel = {
+        "raw_observation_rows": rows_used,
+        "raw_unique_nominations": len(nomination_source_by_mint),
+        "nomination_rows_by_source": dict(sorted(nomination_rows_by_source.items())),
+        "nominating_source_count_by_identity": {
+            mint: len(sources)
+            for mint, sources in sorted(nomination_source_by_mint.items())
+        },
+        "cross_source_overlap_count": cross_source_overlap_count,
+        "candidate_cohort_bound_m": candidate_limit,
+        "candidate_cohort_size": len(cohort_mints),
+        "thinned_beyond_cohort": thinned_beyond_cohort,
+        "enrichment_identities": len(enrichment_mints),
+        "out_of_cohort_enrichment": len(enrichment_mints - set(cohort_mints)),
+    }
     report = {
         "mode": mode,
         "integration_id": integration_id,
@@ -1147,6 +1243,9 @@ def run_candidate_acquisition_integration(
         "transport_operations_used": transport_operations,
         "bytes_used": bytes_used,
         "rows_used": rows_used,
+        "pre_foundation_funnel": pre_foundation_funnel,
+        "cursor_advances_proposed": cursor_advances_proposed,
+        "cursor_advances_committed": cursor_advances_committed,
         "foundation_execution_id": execution_id if foundation is not None else None,
         "foundation_report": foundation,
         "manifest_id": manifest_id,

@@ -21,6 +21,7 @@ from urllib import request as url_request
 
 from printer_v1.contracts.enums import DataQualityLabel, SourceStatus
 from printer_v1.operator_cli.candidate_acquisition_integration import (
+    PHASE_ENRICHMENT,
     AcquisitionSourceOperation,
 )
 from printer_v1.sources.contracts import NormalizedSourceResult, SourceAdapterContext
@@ -50,6 +51,7 @@ from printer_v1.sources.pump_contracts import (
     verify_pinned_pump_migration,
 )
 from printer_v1.sources.pumpfun_direct import PUMP_PROGRAM_ID
+from printer_v1.sources.registry import SOURCE_REGISTRY
 from printer_v1.sources.pumpfun_origin import PUMP_CREATE_INDEX_ADDRESS
 from printer_v1.sources.pumpswap import PUMPSWAP_AMM_PROGRAM_ID
 from printer_v1.sources.solana_rpc_holder import normalize_solana_rpc_holder_response
@@ -62,6 +64,11 @@ from printer_v1.sources.solana_rpc_token_age import (
 RPC_ENVIRONMENT_NAME = "PRINTER_SOLANA_RPC_URL"
 DEFAULT_TIMEOUT_SECONDS = 10.0
 PER_RESPONSE_BYTE_CEILING = 1 * 1024 * 1024
+# DexScreener's public tokens endpoint resolves up to 30 comma-separated
+# addresses in one request. Nomination is bounded by this real transport limit
+# (and by the owner's row/byte ceilings), never pre-truncated to the cohort M,
+# so no aggregator freezes a partial cohort ahead of the Pump nominations.
+DEXSCREENER_BATCH_ADDRESS_LIMIT = 30
 DEXSCREENER_HEADERS = MappingProxyType({"Accept": "application/json", "User-Agent": "PrinterV1/0.1"})
 GECKOTERMINAL_HEADERS = MappingProxyType({"Accept": "application/json;version=20230203", "User-Agent": "PrinterV1/0.1"})
 PUBLIC_HEADERS = MappingProxyType({"Accept": "application/json", "User-Agent": "PrinterV1/0.1"})
@@ -284,7 +291,7 @@ class LiveCandidateAcquisitionTransportOwner:
         byte_cap = self.configuration.per_response_byte_ceiling
         transport = self.transport
         state: dict[str, Any] = {
-            "pairs": {}, "origins": {}, "migrations": {}, "mint_safety": {},
+            "origins": {}, "migrations": {}, "mint_safety": {},
             "pair_results": {},
             "create_rows": [], "migration_rows": [],
             "create_exhausted": False, "migration_exhausted": False,
@@ -293,21 +300,55 @@ class LiveCandidateAcquisitionTransportOwner:
         def remember_pairs(source: str, result: NormalizedSourceResult) -> None:
             state["pair_results"][source] = result
 
-        def refresh_selected_pairs() -> None:
-            candidates: dict[str, list[dict[str, Any]]] = {}
-            for result in state["pair_results"].values():
-                for pair in (result.normalized_payload or {}).get("pairs") or []:
-                    if not isinstance(pair, Mapping):
-                        continue
-                    mint = str(pair.get("token_mint") or "")
-                    pool = str(pair.get("pair_address") or "")
-                    if mint and pool:
-                        candidates.setdefault(mint, []).append(dict(pair))
-            selected_mints = sorted(candidates)[:cap]
-            state["pairs"] = {
-                mint: sorted(candidates[mint], key=lambda item: str(item["pair_address"]))[0]
-                for mint in selected_mints
-            }
+        def _pair_identity(pair: Mapping[str, Any]) -> tuple[str, str]:
+            # Aggregator normalizers differ: DexScreener emits token_mint/
+            # pair_address; GeckoTerminal emits baseToken.address/pairAddress.
+            mint = str(
+                pair.get("token_mint")
+                or (pair.get("baseToken") or {}).get("address")
+                or ""
+            )
+            pool = str(pair.get("pair_address") or pair.get("pairAddress") or "")
+            return mint, pool
+
+        def source_best_pairs(source: str) -> dict[str, dict[str, Any]]:
+            """One best (deterministic) pair per mint that a single source nominated."""
+            result = state["pair_results"].get(source)
+            best: dict[str, dict[str, Any]] = {}
+            for pair in (getattr(result, "normalized_payload", None) or {}).get("pairs") or []:
+                if not isinstance(pair, Mapping):
+                    continue
+                mint, pool = _pair_identity(pair)
+                if not (mint and pool):
+                    continue
+                if mint not in best or pool < _pair_identity(best[mint])[1]:
+                    best[mint] = dict(pair)
+            return best
+
+        def aggregator_pairs() -> dict[str, dict[str, Any]]:
+            """Deduplicated best pair per mint across every aggregator nomination."""
+            merged: dict[str, dict[str, Any]] = {}
+            for source in sorted(state["pair_results"]):
+                for mint, pair in source_best_pairs(source).items():
+                    if mint not in merged or _pair_identity(pair)[1] < _pair_identity(merged[mint])[1]:
+                        merged[mint] = pair
+            return merged
+
+        def cohort_mints() -> list[str]:
+            """The deterministic source-neutral cohort bounded by acquisition capacity M.
+
+            The cohort is the M lexicographically-smallest identities of the
+            complete nomination union (aggregator pairs plus direct Pump create
+            and migration identities). It is a pure function of the nominated
+            identity set, so provider execution order cannot change membership,
+            and it is never a source quota, preference, score, or rank.
+            """
+            universe = (
+                set(aggregator_pairs())
+                | set(state["origins"])
+                | set(state["migrations"])
+            )
+            return sorted(universe)[:cap]
 
         def nomination_result(
             result: NormalizedSourceResult, responses: Sequence[TransportResponse],
@@ -328,14 +369,11 @@ class LiveCandidateAcquisitionTransportOwner:
             result = state["pair_results"].get(source)
             if not isinstance(result, NormalizedSourceResult):
                 return _failure(source, "candidate_market_batch", RuntimeError("SOURCE_UNAVAILABLE"))
-            refresh_selected_pairs()
-            selected = set(state["pairs"])
-            pairs = [
-                dict(pair)
-                for pair in (result.normalized_payload or {}).get("pairs") or []
-                if isinstance(pair, Mapping)
-                and str(pair.get("token_mint") or "") in selected
-            ]
+            # Nomination emission: every mint this aggregator nominated, one best
+            # pair each, uncapped. The integration owner selects the M-bounded
+            # cohort from the complete cross-source nomination union; the transport
+            # never pre-truncates one aggregator ahead of the Pump nominations.
+            pairs = [source_best_pairs(source)[mint] for mint in sorted(source_best_pairs(source))]
             materialized = NormalizedSourceResult(
                 source_name=source,
                 request_kind="candidate_market_batch",
@@ -365,7 +403,7 @@ class LiveCandidateAcquisitionTransportOwner:
                         mint = str(item.get("tokenAddress") or "")
                         if mint and mint not in mints:
                             mints.append(mint)
-                        if len(mints) >= cap:
+                        if len(mints) >= DEXSCREENER_BATCH_ADDRESS_LIMIT:
                             break
                 if not mints:
                     raw: Any = []
@@ -546,7 +584,7 @@ class LiveCandidateAcquisitionTransportOwner:
         def mint_batch(_context: SourceAdapterContext) -> NormalizedSourceResult:
             responses: list[TransportResponse] = []
             try:
-                mints = sorted(set(state["pairs"]) | set(state["origins"]) | set(state["migrations"]))[:cap]
+                mints = cohort_mints()
                 if not mints:
                     return complete("candidate_mint_account_batch", (), ())
                 response = rpc_call("getMultipleAccounts", [mints, {"encoding": "base64",
@@ -593,11 +631,16 @@ class LiveCandidateAcquisitionTransportOwner:
         def pool_batch(_context: SourceAdapterContext) -> NormalizedSourceResult:
             responses: list[TransportResponse] = []
             try:
-                migrations = [state["migrations"][mint] for mint in sorted(state["migrations"])[:cap]]
+                cohort = set(cohort_mints())
+                migrations = [
+                    state["migrations"][mint]
+                    for mint in sorted(state["migrations"]) if mint in cohort
+                ]
+                aggregated = aggregator_pairs()
                 target_mints = {
-                    str(pair.get("pair_address")): mint
-                    for mint, pair in state["pairs"].items()
-                    if pair.get("pair_address")
+                    _pair_identity(aggregated[mint])[1]: mint
+                    for mint in cohort
+                    if mint in aggregated and _pair_identity(aggregated[mint])[1]
                 }
                 target_mints.update({str(item["pool_address"]): str(item["mint"])
                                      for item in migrations})
@@ -659,7 +702,8 @@ class LiveCandidateAcquisitionTransportOwner:
                 return rpc_failure("pumpswap_pool_account_batch", exc, responses)
 
         def target_mints() -> list[str]:
-            return sorted(set(state["pairs"]) | set(state["migrations"]))[:cap]
+            # Candidate-specific enrichment addresses only cohort identities.
+            return cohort_mints()
 
         def holder_reference(
             _context: SourceAdapterContext, *, candidate_index: int,
@@ -752,12 +796,30 @@ class LiveCandidateAcquisitionTransportOwner:
         migration_page_count = int(source_budgets["pumpfun_migration_signature_page"])
         # The operation plan never exceeds either per-kind policy budgets or
         # the Source Governor's 30 Solana requests/minute. It resolves at most
-        # N create and N migrate transactions and N holder candidates.
+        # N create and N migrate transactions.
         transaction_count = min(
             int(source_budgets["pumpfun_create_index_transaction"]),
             int(source_budgets["pumpfun_migration_transaction"]),
             int(policy["selection_capacity"]),
         )
+        # Candidate-specific holder enrichment is a Solana request per cohort
+        # candidate. It covers the acquisition cohort M (never the smaller
+        # selection capacity N), but the whole Solana plan must still fit one
+        # governed minute (30 requests). When M plus the fixed create/migration/
+        # mint/pool Solana cost would exceed the minute, the holder fan-out is
+        # bounded to the exact governed headroom, never above M and never
+        # silently below what a distinct N-item manifest needs.
+        fixed_solana_requests = (
+            create_page_count + migration_page_count + 2 * transaction_count + 2
+        )
+        solana_minute = int(
+            SOURCE_REGISTRY["solana_rpc"].default_rate_limit_per_minute
+        )
+        enrichment_count = min(cap, max(0, solana_minute - fixed_solana_requests))
+        if enrichment_count < int(policy["selection_capacity"]):
+            raise LiveAcquisitionConfigurationError(
+                "ACQUISITION_ENRICHMENT_HEADROOM_BELOW_SELECTION"
+            )
         operations = [
             AcquisitionSourceOperation("dexscreener", "candidate_nomination",
                 _OperationAdapter("dexscreener", "candidate_nomination", dex), required=False,
@@ -859,11 +921,12 @@ class LiveCandidateAcquisitionTransportOwner:
             AcquisitionSourceOperation(
                 "solana_rpc", "candidate_mint_account_batch",
                 _OperationAdapter("solana_rpc", "candidate_mint_account_batch", mint_batch),
+                phase=PHASE_ENRICHMENT,
             ),
             AcquisitionSourceOperation(
                 "solana_rpc", "pumpswap_pool_account_batch",
                 _OperationAdapter("solana_rpc", "pumpswap_pool_account_batch", pool_batch),
-                cursor_range=migration_cursor,
+                cursor_range=migration_cursor, phase=PHASE_ENRICHMENT,
             ),
         ))
         operations.extend(
@@ -875,9 +938,13 @@ class LiveCandidateAcquisitionTransportOwner:
                         c, candidate_index=candidate_index
                     ),
                 ),
-                expected_transport_operations=2,
+                expected_transport_operations=2, phase=PHASE_ENRICHMENT,
             )
-            for candidate_index in range(int(policy["selection_capacity"]))
+            # Candidate-specific enrichment covers the acquisition cohort (bounded
+            # by M and the governed Solana minute), not the selection capacity N,
+            # so more than N cohort candidates can be admitted and the
+            # capacity-neutral reserve can exceed N.
+            for candidate_index in range(enrichment_count)
         )
         if self.configuration.goplus_enabled:
             operations.extend(
@@ -889,9 +956,9 @@ class LiveCandidateAcquisitionTransportOwner:
                             c, candidate_index=candidate_index
                         ),
                     ),
-                    required=False,
+                    required=False, phase=PHASE_ENRICHMENT,
                 )
-                for candidate_index in range(int(policy["selection_capacity"]))
+                for candidate_index in range(enrichment_count)
             )
         return tuple(operations)
 

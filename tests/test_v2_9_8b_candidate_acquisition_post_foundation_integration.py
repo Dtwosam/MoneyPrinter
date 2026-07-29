@@ -523,8 +523,8 @@ def test_offline_end_to_end_exact_modes(mode: str, count: int, expected: int) ->
 @pytest.mark.parametrize(
     ("cli_mode", "mode", "count", "expected", "expected_jobs", "expected_calls"),
     (
-        (CLI_MODE_N2, MODE_N2, 4, 2, 16, 13),
-        (CLI_MODE_N7, MODE_N7, 14, 7, 38, 28),
+        (CLI_MODE_N2, MODE_N2, 4, 2, 20, 19),
+        (CLI_MODE_N7, MODE_N7, 14, 7, 44, 37),
     ),
 )
 def test_public_command_dispatches_canonical_offline_path(
@@ -752,9 +752,9 @@ def test_live_owner_declares_same_approved_source_plan(mode: str, expected_cap: 
     }.issubset(declared)
     assert all(source not in {"dextools", "pumpportal", "birdeye"} for source, _ in declared)
     holders = [item for item in operations if item.request_kind == "holder_concentration_reference"]
+    goplus_ops = [item for item in operations if item.request_kind == "safety_reference"]
     expected_selection = MODE_POLICIES[mode]["selection_capacity"]
-    assert len(holders) == expected_selection
-    assert all(item.expected_transport_operations == 2 for item in holders)
+    candidate_limit = MODE_POLICIES[mode]["candidate_limit"]
     create_transactions = [
         item for item in operations if item.request_kind == "pumpfun_create_index_transaction"
     ]
@@ -764,7 +764,22 @@ def test_live_owner_declares_same_approved_source_plan(mode: str, expected_cap: 
     expected_transactions = expected_selection
     assert len(create_transactions) == expected_transactions
     assert len(migration_transactions) == expected_transactions
+    # Candidate-specific enrichment covers the acquisition cohort M, bounded by
+    # the governed Solana minute, never the smaller selection capacity N.
     solana_operations = [item for item in operations if item.source_name == "solana_rpc"]
+    solana_budget = MODE_POLICIES[mode]["source_budgets"]["solana_rpc"]
+    fixed_solana = (
+        2 * expected_transactions
+        + int(solana_budget["pumpfun_create_index_signature_page"])
+        + int(solana_budget["pumpfun_migration_signature_page"])
+        + 2
+    )
+    expected_enrichment = min(candidate_limit, 30 - fixed_solana)
+    assert expected_selection < expected_enrichment <= candidate_limit
+    assert len(holders) == expected_enrichment
+    assert len(goplus_ops) == expected_enrichment
+    assert all(item.expected_transport_operations == 2 for item in holders)
+    assert all(item.phase == "ENRICHMENT" for item in holders + goplus_ops)
     assert len(solana_operations) <= 30
     assert len(operations) <= MODE_POLICIES[mode]["scheduler_job_ceiling"]
     assert sum(item.expected_transport_operations for item in operations) <= (
@@ -1084,3 +1099,246 @@ def test_atomic_active_tracking_recheck_blocks_manifest() -> None:
         ] >= 1
     finally:
         temp.cleanup()
+
+
+def _dispatch(capsys, path, cli_mode: str, network, execution_id: str) -> dict:
+    rc = command.main(
+        [cli_mode, "--operator-approved"],
+        acquisition_environment={
+            "PRINTER_SOLANA_RPC_URL": "https://rpc.example.invalid/path?key=secret"
+        },
+        acquisition_one_shot_transport=network,
+        acquisition_preflight=_preflight(path),
+        acquisition_execution_id=execution_id,
+        acquisition_now=NOW,
+        acquisition_db_path=path,
+    )
+    assert rc == 0
+    return json.loads(capsys.readouterr().out)
+
+
+@pytest.mark.parametrize(
+    ("cli_mode", "count", "cohort_m", "selection_n"),
+    ((CLI_MODE_N2, 6, 4, 2), (CLI_MODE_N7, 16, 14, 7)),
+)
+def test_high_density_raw_nominations_thin_to_cohort_and_admit_exact_n(
+    capsys, cli_mode: str, count: int, cohort_m: int, selection_n: int
+) -> None:
+    """Raw unique nominations above M thin to an M-bounded cohort, not a stop."""
+    temp, path = _db()
+    try:
+        network = _CanonicalMockNetworkTransport(count)
+        payload = _dispatch(capsys, path, cli_mode, network, f"hd-{count}")
+        funnel = payload["pre_foundation_funnel"]
+        assert funnel["raw_unique_nominations"] == count > cohort_m
+        assert funnel["candidate_cohort_bound_m"] == cohort_m
+        assert funnel["candidate_cohort_size"] == cohort_m
+        assert funnel["thinned_beyond_cohort"] == count - cohort_m
+        # DexScreener and GeckoTerminal overlap on the shared first identity and
+        # participate under one authority-consistent nomination boundary.
+        assert funnel["cross_source_overlap_count"] >= 1
+        # Candidate-specific enrichment addressed only cohort identities.
+        assert funnel["enrichment_identities"] <= cohort_m
+        assert funnel["out_of_cohort_enrichment"] == 0
+        assert payload["status"] == "COMPLETED"
+        assert payload["selected_count"] == selection_n
+        assert payload["projection_count"] == (2 if selection_n == 2 else 0)
+        assert payload["runtime_handoff_count"] == 0
+        assert payload["lifecycle_started"] is False
+        assert payload["foundation_report"]["certificates_admitted"] <= cohort_m
+        # No cohort candidate identity was evaluated outside the M bound.
+        with sqlite3.connect(path) as connection:
+            identities = connection.execute(
+                "SELECT COUNT(DISTINCT mint_identity) FROM printer_candidate_identities"
+            ).fetchone()[0]
+        assert identities <= cohort_m
+        calls = len(network.calls)
+        assert replay_candidate_acquisition_integration_report(
+            path, execution_id=f"hd-{count}"
+        ) == payload
+        assert len(network.calls) == calls
+        if selection_n == 7:
+            with pytest.raises(
+                CandidateAcquisitionError, match="LEGACY_RUNTIME_REQUIRES_EXACTLY_TWO"
+            ):
+                legacy_two_token_runtime_projection(path, payload["manifest_id"])
+    finally:
+        temp.cleanup()
+
+
+def _density_frozen_owner(rows: list[dict], *, order: tuple[int, ...]) -> FrozenAcquisitionTransportOwner:
+    base = [
+        _dex_nomination_operation(rows),
+        _gecko_nomination_operation(rows[:2]),
+        _operation(
+            "solana_rpc", "pumpfun_create_index_signature_page", [], {},
+            cursor=_cursor("pump-create-index"),
+        ),
+        _operation(
+            "solana_rpc", "pumpfun_migration_signature_page", [], {},
+            cursor=_cursor("pump-program"),
+        ),
+        _operation(
+            "solana_rpc", "candidate_mint_account_batch", rows,
+            {"mint_status": "PASS", "token_program_status": "PASS"},
+        ),
+        _operation(
+            "solana_rpc", "pumpswap_pool_account_batch", rows, {"pool_status": "PASS"},
+        ),
+    ]
+    return FrozenAcquisitionTransportOwner(tuple(base[index] for index in order))
+
+
+def _cohort_identities(path: Path) -> set[str]:
+    with sqlite3.connect(path) as connection:
+        return {
+            row[0] for row in connection.execute(
+                "SELECT mint_identity FROM printer_candidate_identities"
+            )
+        }
+
+
+def test_cohort_membership_is_provider_order_independent() -> None:
+    """Provider execution order cannot change source-neutral cohort membership."""
+    rows = _candidate_rows(6)
+    forward = (0, 1, 2, 3, 4, 5)
+    permuted = (5, 4, 1, 0, 3, 2)
+    temp_f, path_f = _db()
+    temp_p, path_p = _db()
+    try:
+        report_f = _run(
+            path_f, mode=MODE_N2, execution_id="order-f",
+            owner=_density_frozen_owner(rows, order=forward),
+        )
+        report_p = _run(
+            path_p, mode=MODE_N2, execution_id="order-p",
+            owner=_density_frozen_owner(rows, order=permuted),
+        )
+        # Six unique nominations thin to the same four lexicographically-smallest
+        # cohort identities regardless of the order providers were executed in.
+        expected = set(sorted(row["mint"] for row in rows)[:4])
+        assert _cohort_identities(path_f) == expected
+        assert _cohort_identities(path_p) == expected
+        assert report_f["pre_foundation_funnel"]["candidate_cohort_size"] == 4
+        assert report_p["pre_foundation_funnel"]["candidate_cohort_size"] == 4
+        assert report_f["pre_foundation_funnel"]["thinned_beyond_cohort"] == 2
+        assert report_p["pre_foundation_funnel"]["thinned_beyond_cohort"] == 2
+    finally:
+        temp_f.cleanup()
+        temp_p.cleanup()
+
+
+def test_pump_dex_gecko_overlap_participates_in_one_cohort_boundary() -> None:
+    """A Pump-lineage identity competes for the cohort alongside aggregators."""
+    temp, path = _db()
+    try:
+        # Five aggregator nominations (> N2 M=4) plus one Pump-origin nomination
+        # that overlaps the first aggregator identity.
+        rows = _candidate_rows(5)
+        shared_mint = rows[0]["mint"]
+        ops = [
+            _dex_nomination_operation(rows),
+            _gecko_nomination_operation(rows[:1]),
+            _operation(
+                "solana_rpc", "pumpfun_create_index_signature_page", [], {},
+                cursor=_cursor("pump-create-index"),
+            ),
+            _operation(
+                "solana_rpc", "pumpfun_create_index_transaction",
+                [{"mint": shared_mint, "base_mint": shared_mint}],
+                {}, cursor=_cursor("pump-create-index"),
+            ),
+            _operation(
+                "solana_rpc", "pumpfun_migration_signature_page", [], {},
+                cursor=_cursor("pump-program"),
+            ),
+            _operation(
+                "solana_rpc", "candidate_mint_account_batch", rows,
+                {"mint_status": "PASS", "token_program_status": "PASS"},
+            ),
+            _operation(
+                "solana_rpc", "pumpswap_pool_account_batch", rows,
+                {"pool_status": "PASS"},
+            ),
+        ]
+        report = _run(
+            path, mode=MODE_N2, execution_id="overlap",
+            owner=FrozenAcquisitionTransportOwner(tuple(ops)),
+        )
+        funnel = report["pre_foundation_funnel"]
+        assert funnel["raw_unique_nominations"] == 5 > 4
+        assert funnel["candidate_cohort_size"] == 4
+        assert funnel["thinned_beyond_cohort"] == 1
+        # dex + gecko + pump all nominate the shared identity: overlap counted.
+        assert funnel["nominating_source_count_by_identity"][shared_mint] >= 3
+        assert funnel["cross_source_overlap_count"] >= 1
+    finally:
+        temp.cleanup()
+
+
+def test_out_of_cohort_enrichment_fails_closed() -> None:
+    """An enrichment observation for a non-cohort identity is a fail-closed fault."""
+    temp, path = _db()
+    try:
+        ops = list(_owner(2).frozen_operations)
+        rogue = AcquisitionSourceOperation(
+            source_name="goplus",
+            request_kind="safety_reference",
+            adapter=_adapter("goplus", {
+                "candidate_observations": [{
+                    "mint": "R0GUEmintNeverNominated111111111111111111111",
+                    "base_mint": "R0GUEmintNeverNominated111111111111111111111",
+                    "facts": {"safety_status": "PASS"},
+                    "observed_at": NOW, "expires_at": EXPIRES,
+                }],
+                "underlying_operation_count": 1,
+            }),
+            required=False,
+            expected_transport_operations=1,
+            phase="ENRICHMENT",
+        )
+        ops.append(rogue)
+        report = _run(
+            path, mode=MODE_N2, execution_id="ooce",
+            owner=FrozenAcquisitionTransportOwner(tuple(ops)),
+        )
+        assert report["status"] == "BLOCKED"
+        assert report["first_terminal_cause"] == "OUT_OF_COHORT_ENRICHMENT"
+        assert report["manifest_id"] is None
+        assert report["pre_foundation_funnel"]["out_of_cohort_enrichment"] >= 1
+    finally:
+        temp.cleanup()
+
+
+def test_cursor_proposed_and_committed_movement_are_distinct() -> None:
+    """Proposed cursor advances only become committed inside the foundation."""
+    temp_ok, path_ok = _db()
+    temp_stop, path_stop = _db()
+    try:
+        success = _run(path_ok, mode=MODE_N2, execution_id="cursor-ok", owner=_owner(4))
+        assert success["status"] == "COMPLETED"
+        assert success["cursor_advances_proposed"] == 2
+        assert success["cursor_advances_committed"] == 2
+        with sqlite3.connect(path_ok) as connection:
+            assert connection.execute(
+                "SELECT COUNT(*) FROM printer_candidate_acquisition_cursors "
+                "WHERE last_execution_id='cursor-ok'"
+            ).fetchone()[0] == 2
+
+        stopped = _run(
+            path_stop, mode=MODE_N2, execution_id="cursor-stop",
+            owner=_owner(4, required_pool_failure="rpc_transport_failure"),
+        )
+        assert stopped["status"] == "BLOCKED"
+        assert stopped["first_terminal_cause"] == "REQUIRED_SOURCE_FAILURE"
+        # The signature pages proposed advances, but the foundation never ran, so
+        # no durable cursor head committed and no rollback residue remains.
+        assert stopped["cursor_advances_proposed"] == 2
+        assert stopped["cursor_advances_committed"] == 0
+        with sqlite3.connect(path_stop) as connection:
+            assert connection.execute(
+                "SELECT COUNT(*) FROM printer_candidate_acquisition_cursors"
+            ).fetchone()[0] == 0
+    finally:
+        temp_ok.cleanup()
+        temp_stop.cleanup()
