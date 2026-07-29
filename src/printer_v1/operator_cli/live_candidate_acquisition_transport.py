@@ -28,6 +28,7 @@ from printer_v1.sources.contracts import NormalizedSourceResult, SourceAdapterCo
 from printer_v1.sources.dexscreener import (
     DEXSCREENER_TOKEN_PROFILES_URL,
     DEXSCREENER_TOKENS_BATCH_URL_TEMPLATE,
+    _SOLANA_INFRASTRUCTURE_MINTS,
     normalize_dexscreener_fixture_result,
 )
 from printer_v1.sources.geckoterminal import (
@@ -73,6 +74,8 @@ DEXSCREENER_HEADERS = MappingProxyType({"Accept": "application/json", "User-Agen
 GECKOTERMINAL_HEADERS = MappingProxyType({"Accept": "application/json;version=20230203", "User-Agent": "PrinterV1/0.1"})
 PUBLIC_HEADERS = MappingProxyType({"Accept": "application/json", "User-Agent": "PrinterV1/0.1"})
 RPC_HEADERS = MappingProxyType({"Accept": "application/json", "Content-Type": "application/json", "User-Agent": "PrinterV1/0.1"})
+MINT_ACCOUNT_EVIDENCE_VERSION = "candidate-mint-account-v2"
+INFRASTRUCTURE_MINTS = _SOLANA_INFRASTRUCTURE_MINTS
 
 
 class LiveAcquisitionConfigurationError(RuntimeError):
@@ -106,6 +109,158 @@ class TransportResponse:
     bytes_used: int
     operation_kind: str
     endpoint_role: str
+
+
+def _batch_account_associations(
+    requested_mints: Sequence[str], values: Sequence[Any]
+) -> list[tuple[str, int | None, str | None, Any, str, str | None]]:
+    """Bind every requested mint to one exact response slot.
+
+    Solana's getMultipleAccounts result is positional. Frozen transports may
+    additionally wrap entries as {"address": ..., "account": ...}; in that
+    test-only/address-asserted shape, response order may differ and association
+    is recovered by exact address while retaining the returned slot.
+    """
+    addressed = any(
+        isinstance(value, Mapping) and "address" in value and "account" in value
+        for value in values
+    )
+    if not addressed:
+        return [
+            (
+                mint,
+                slot if slot < len(values) else None,
+                None,
+                values[slot] if slot < len(values) else None,
+                "POSITIONAL_RPC_CONTRACT",
+                None if slot < len(values) else "MINT_ACCOUNT_MISSING",
+            )
+            for slot, mint in enumerate(requested_mints)
+        ]
+
+    by_address: dict[str, tuple[int, Any]] = {}
+    duplicate_addresses: set[str] = set()
+    for slot, value in enumerate(values):
+        if not isinstance(value, Mapping) or "address" not in value or "account" not in value:
+            continue
+        address = str(value.get("address") or "")
+        if not address or address in by_address:
+            duplicate_addresses.add(address)
+            continue
+        by_address[address] = (slot, value.get("account"))
+    output: list[tuple[str, int | None, str | None, Any, str, str | None]] = []
+    for mint in requested_mints:
+        matched = by_address.get(mint)
+        if matched is None or mint in duplicate_addresses:
+            output.append((
+                mint, None, None, None, "EXPLICIT_RESPONSE_ADDRESS",
+                "MINT_TARGET_MISMATCH",
+            ))
+            continue
+        slot, account = matched
+        output.append((mint, slot, mint, account, "EXPLICIT_RESPONSE_ADDRESS", None))
+    return output
+
+
+def _strict_base64_account_data(account: Any) -> bytes | None:
+    if not isinstance(account, Mapping):
+        return None
+    data = account.get("data")
+    if (
+        not isinstance(data, (list, tuple))
+        or len(data) < 2
+        or not isinstance(data[0], str)
+        or data[1] != "base64"
+    ):
+        return None
+    try:
+        return base64.b64decode(data[0], validate=True)
+    except (ValueError, TypeError):
+        return None
+
+
+def _mint_account_observation(
+    *,
+    requested_mint: str,
+    response_slot: int | None,
+    response_address: str | None,
+    account: Any,
+    association_mode: str,
+    association_failure: str | None,
+) -> dict[str, Any]:
+    """Create one exact-target, categorical chain-mint observation."""
+    owner = str(account.get("owner") or "") if isinstance(account, Mapping) else ""
+    raw = _strict_base64_account_data(account)
+    reason = association_failure
+    account_presence = "PRESENT" if isinstance(account, Mapping) else "MISSING"
+    owner_status = "NOT_REACHED"
+    layout_status = "NOT_REACHED"
+    program_status = "FAIL"
+    mint_valid = False
+
+    if reason is None and requested_mint in INFRASTRUCTURE_MINTS:
+        reason = "INFRASTRUCTURE_MINT_EXCLUDED"
+    elif reason is None and not isinstance(account, Mapping):
+        reason = "MINT_ACCOUNT_MISSING"
+    elif reason is None and raw is None:
+        owner_status = "PASS" if owner in {TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID} else "FAIL"
+        program_status = "PASS" if owner_status == "PASS" else "FAIL"
+        layout_status = "FAIL"
+        reason = "MINT_ACCOUNT_DATA_MALFORMED"
+    elif reason is None and owner == TOKEN_PROGRAM_ID:
+        owner_status = "PASS"
+        program_status = "PASS"
+        mint_valid = len(raw) == 82 and _decode_spl_token_base_mint_state(raw)[0]
+        layout_status = "PASS" if mint_valid else "FAIL"
+        if not mint_valid:
+            reason = "MINT_ACCOUNT_DATA_MALFORMED"
+    elif reason is None and owner == TOKEN_2022_PROGRAM_ID:
+        owner_status = "PASS"
+        program_status = "PASS"
+        # The adopted Token-2022 contract is a 166-byte minimum followed by a
+        # structurally valid TLV walk. Extensions do not make a mint invalid.
+        mint_valid = len(raw) >= 166 and _decode_token_2022_mint_state(raw)[0]
+        layout_status = "PASS" if mint_valid else "FAIL"
+        if not mint_valid:
+            reason = "MINT_ACCOUNT_DATA_MALFORMED"
+    elif reason is None:
+        owner_status = "FAIL"
+        layout_status = "NOT_ADOPTED"
+        looks_like_mint = (
+            (len(raw) == 82 and _decode_spl_token_base_mint_state(raw)[0])
+            or (len(raw) >= 166 and _decode_token_2022_mint_state(raw)[0])
+        )
+        reason = (
+            "MINT_UNSUPPORTED_TOKEN_PROGRAM"
+            if looks_like_mint else "MINT_WRONG_PROGRAM_OWNER"
+        )
+
+    authority_safe = bool(
+        mint_valid
+        and raw is not None
+        and raw[0:4] == b"\0" * 4
+        and raw[46:50] == b"\0" * 4
+    )
+    return {
+        "mint": requested_mint,
+        "base_mint": requested_mint,
+        "token_program_id": owner or None,
+        "lineage_claim": "UNKNOWN_ORIGIN",
+        "facts": {
+            "mint_account_evidence_version": MINT_ACCOUNT_EVIDENCE_VERSION,
+            "mint_request_target": requested_mint,
+            "mint_response_slot": response_slot,
+            "mint_response_address": response_address,
+            "mint_response_association": association_mode,
+            "mint_account_presence": account_presence,
+            "mint_owner_status": owner_status,
+            "mint_layout_status": layout_status,
+            "mint_failure_reason": reason,
+            "mint_status": "PASS" if reason is None and mint_valid else "FAIL",
+            "token_program_status": program_status,
+            "safety_status": "PASS" if authority_safe else "FAIL",
+        },
+    }
 
 
 class CandidateAcquisitionOneShotTransport(Protocol):
@@ -593,37 +748,24 @@ class LiveCandidateAcquisitionTransportOwner:
                 values = (response.payload or {}).get("value") if isinstance(response.payload, Mapping) else None
                 if not isinstance(values, list) or len(values) != len(mints):
                     raise LiveAcquisitionTransportError("SOURCE_MALFORMED", response.endpoint_role)
-                observations = []
-                for mint, account in zip(mints, values, strict=True):
-                    owner = str((account or {}).get("owner") or "") if isinstance(account, Mapping) else ""
-                    supported_owner = owner in {TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID}
-                    authority_safe = False
-                    mint_state_valid = False
-                    data = (account or {}).get("data") if isinstance(account, Mapping) else None
-                    try:
-                        raw = base64.b64decode(data[0], validate=True) if (
-                            isinstance(data, (list, tuple)) and data and isinstance(data[0], str)
-                        ) else b""
-                        if owner == TOKEN_PROGRAM_ID and len(raw) == 82:
-                            mint_state_valid = _decode_spl_token_base_mint_state(raw)[0]
-                        elif owner == TOKEN_2022_PROGRAM_ID and len(raw) == 166:
-                            # The adopted set is deliberately empty for this
-                            # first live owner: valid extensionless Token-2022
-                            # mints only; every TLV extension fails closed.
-                            mint_state_valid = _decode_token_2022_mint_state(raw)[0]
-                        authority_safe = (
-                            mint_state_valid
-                            and raw[0:4] == b"\0" * 4
-                            and raw[46:50] == b"\0" * 4
-                        )
-                    except (ValueError, TypeError):
-                        authority_safe = False
-                    status = "PASS" if supported_owner and mint_state_valid else "FAIL"
-                    state["mint_safety"][mint] = authority_safe
-                    observations.append({"mint": mint, "base_mint": mint,
-                        "token_program_id": owner or None, "lineage_claim": "UNKNOWN_ORIGIN",
-                        "facts": {"mint_status": status, "token_program_status": status,
-                                  "safety_status": "PASS" if authority_safe else "FAIL"}})
+                observations = [
+                    _mint_account_observation(
+                        requested_mint=mint,
+                        response_slot=slot,
+                        response_address=response_address,
+                        account=account,
+                        association_mode=association_mode,
+                        association_failure=association_failure,
+                    )
+                    for (
+                        mint, slot, response_address, account, association_mode,
+                        association_failure,
+                    ) in _batch_account_associations(mints, values)
+                ]
+                for observation in observations:
+                    state["mint_safety"][str(observation["mint"])] = (
+                        observation["facts"]["safety_status"] == "PASS"
+                    )
                 return complete("candidate_mint_account_batch", observations, responses)
             except Exception as exc:
                 return rpc_failure("candidate_mint_account_batch", exc, responses)

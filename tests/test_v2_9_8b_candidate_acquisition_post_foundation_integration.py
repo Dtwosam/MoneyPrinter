@@ -55,6 +55,7 @@ from printer_v1.sources.geckoterminal import (
 )
 from printer_v1.sources.pump_contracts import (
     PUMPSWAP_POOL_DISCRIMINATOR,
+    TOKEN_2022_PROGRAM_ID,
     TOKEN_PROGRAM_ID,
     WSOL_MINT,
 )
@@ -92,12 +93,36 @@ def _pumpswap_account(mint: str, ordinal: int) -> dict:
     }
 
 
+def _spl_mint_account(*, owner: str = TOKEN_PROGRAM_ID) -> dict:
+    raw = bytearray(82)
+    raw[45] = 1
+    return {"owner": owner, "data": [base64.b64encode(raw).decode(), "base64"]}
+
+
+def _token_2022_mint_account(*, with_extension: bool = True) -> dict:
+    raw = bytearray(166)
+    raw[45] = 1
+    raw[165] = 1
+    if with_extension:
+        # Structurally valid synthetic TLV: type=7, length=3, body=3 bytes.
+        raw.extend((7).to_bytes(2, "little"))
+        raw.extend((3).to_bytes(2, "little"))
+        raw.extend(b"xyz")
+    return {
+        "owner": TOKEN_2022_PROGRAM_ID,
+        "data": [base64.b64encode(raw).decode(), "base64"],
+    }
+
+
 class _CanonicalMockNetworkTransport:
     """Frozen responses at the live owner's one-shot HTTP/RPC boundary."""
 
     def __init__(self, count: int) -> None:
         self.rows = _candidate_rows(count)
         self.mints = {row["mint"] for row in self.rows}
+        self.mint_ordinals = {
+            row["mint"]: ordinal for ordinal, row in enumerate(self.rows)
+        }
         self.pools = {
             row["pool"]: _pumpswap_account(row["mint"], ordinal)
             for ordinal, row in enumerate(self.rows)
@@ -157,12 +182,14 @@ class _CanonicalMockNetworkTransport:
             values = []
             for address in addresses:
                 if address in self.mints:
-                    mint_data = bytearray(82)
-                    mint_data[45] = 1
-                    values.append({
-                        "owner": TOKEN_PROGRAM_ID,
-                        "data": [base64.b64encode(mint_data).decode(), "base64"],
-                    })
+                    # Exercise both adopted mint programs through the normal
+                    # public CLI path. Token-2022 rows include a valid TLV and
+                    # reproduce the live-shaped extended-account boundary.
+                    values.append(
+                        _spl_mint_account()
+                        if self.mint_ordinals[address] % 2 == 0
+                        else _token_2022_mint_account(with_extension=True)
+                    )
                 else:
                     values.append(self.pools[address])
             payload = {"context": {"slot": 420_000_000}, "value": values}
@@ -178,6 +205,33 @@ class _CanonicalMockNetworkTransport:
         else:
             raise AssertionError(f"unexpected RPC method: {method}")
         return self._result(payload, method, endpoint_role)
+
+
+class _MintBatchScenarioNetwork(_CanonicalMockNetworkTransport):
+    def __init__(self, count: int, transform) -> None:
+        super().__init__(count)
+        self.transform = transform
+
+    def rpc_json(self, *, rpc_url, method, params, timeout_seconds, byte_ceiling,
+                 endpoint_role):
+        if endpoint_role != "CANDIDATE_MINT_ACCOUNT_BATCH":
+            return super().rpc_json(
+                rpc_url=rpc_url, method=method, params=params,
+                timeout_seconds=timeout_seconds, byte_ceiling=byte_ceiling,
+                endpoint_role=endpoint_role,
+            )
+        addresses = list(params[0])
+        defaults = [
+            _spl_mint_account()
+            if self.mint_ordinals[address] % 2 == 0
+            else _token_2022_mint_account(with_extension=True)
+            for address in addresses
+        ]
+        values = self.transform(addresses, defaults)
+        return self._result(
+            {"context": {"slot": 420_000_000}, "value": values},
+            method, endpoint_role,
+        )
 
 
 class _StaticFailureAdapter:
@@ -1342,3 +1396,311 @@ def test_cursor_proposed_and_committed_movement_are_distinct() -> None:
     finally:
         temp_ok.cleanup()
         temp_stop.cleanup()
+
+
+def _chain_mint_reasons(path: Path) -> list[str]:
+    with sqlite3.connect(path) as connection:
+        return [
+            str(row[0])
+            for row in connection.execute(
+                "SELECT reason_code FROM printer_candidate_evidence "
+                "WHERE stage_name='CHAIN_MINT_VALID' ORDER BY candidate_id"
+            )
+        ]
+
+
+@pytest.mark.parametrize(
+    ("account", "expected"),
+    (
+        (None, "MINT_ACCOUNT_MISSING"),
+        (
+            {"owner": TOKEN_PROGRAM_ID, "data": ["%%%", "base64"]},
+            "MINT_ACCOUNT_DATA_MALFORMED",
+        ),
+        (
+            _spl_mint_account(owner="11111111111111111111111111111111"),
+            "MINT_UNSUPPORTED_TOKEN_PROGRAM",
+        ),
+        (
+            {
+                "owner": PUMPSWAP_AMM_PROGRAM_ID,
+                "data": [base64.b64encode(b"pool").decode(), "base64"],
+            },
+            "MINT_WRONG_PROGRAM_OWNER",
+        ),
+    ),
+)
+def test_mint_account_failure_taxonomy_is_precise(account, expected: str) -> None:
+    mint = _candidate_rows(1)[0]["mint"]
+    observation = live_transport._mint_account_observation(
+        requested_mint=mint,
+        response_slot=0,
+        response_address=None,
+        account=account,
+        association_mode="POSITIONAL_RPC_CONTRACT",
+        association_failure=None,
+    )
+    assert observation["facts"]["mint_status"] == "FAIL"
+    assert observation["facts"]["mint_failure_reason"] == expected
+
+
+def test_valid_spl_token_and_extended_token_2022_mints_pass() -> None:
+    mints = [row["mint"] for row in _candidate_rows(2)]
+    observations = [
+        live_transport._mint_account_observation(
+            requested_mint=mints[0], response_slot=0, response_address=None,
+            account=_spl_mint_account(), association_mode="POSITIONAL_RPC_CONTRACT",
+            association_failure=None,
+        ),
+        live_transport._mint_account_observation(
+            requested_mint=mints[1], response_slot=1, response_address=None,
+            account=_token_2022_mint_account(with_extension=True),
+            association_mode="POSITIONAL_RPC_CONTRACT", association_failure=None,
+        ),
+    ]
+    assert [item["facts"]["mint_status"] for item in observations] == ["PASS", "PASS"]
+    assert observations[1]["facts"]["mint_layout_status"] == "PASS"
+
+
+def test_pair_pool_and_infrastructure_targets_cannot_pass_as_memecoin_mints() -> None:
+    row = _candidate_rows(1)[0]
+    pair_observation = live_transport._mint_account_observation(
+        requested_mint=row["pool"], response_slot=0, response_address=None,
+        account={
+            "owner": POOL_PROGRAM,
+            "data": [base64.b64encode(b"pair-account").decode(), "base64"],
+        },
+        association_mode="POSITIONAL_RPC_CONTRACT", association_failure=None,
+    )
+    pool_observation = live_transport._mint_account_observation(
+        requested_mint=row["pool"], response_slot=0, response_address=None,
+        account=_pumpswap_account(row["mint"], 0),
+        association_mode="POSITIONAL_RPC_CONTRACT", association_failure=None,
+    )
+    infrastructure_observation = live_transport._mint_account_observation(
+        requested_mint=WSOL_MINT, response_slot=0, response_address=None,
+        account=_spl_mint_account(), association_mode="POSITIONAL_RPC_CONTRACT",
+        association_failure=None,
+    )
+    assert pair_observation["facts"]["mint_failure_reason"] == "MINT_WRONG_PROGRAM_OWNER"
+    assert pool_observation["facts"]["mint_failure_reason"] == "MINT_WRONG_PROGRAM_OWNER"
+    assert infrastructure_observation["facts"]["mint_failure_reason"] == "INFRASTRUCTURE_MINT_EXCLUDED"
+
+
+def test_reordered_addressed_and_partially_null_batch_association_is_exact() -> None:
+    mints = [row["mint"] for row in _candidate_rows(3)]
+    values = [
+        {"address": mints[2], "account": _token_2022_mint_account()},
+        {"address": mints[0], "account": None},
+        {"address": mints[1], "account": _spl_mint_account()},
+    ]
+    associated = live_transport._batch_account_associations(mints, values)
+    assert [(item[0], item[1]) for item in associated] == [
+        (mints[0], 1), (mints[1], 2), (mints[2], 0)
+    ]
+    observations = [
+        live_transport._mint_account_observation(
+            requested_mint=mint, response_slot=slot,
+            response_address=response_address, account=account,
+            association_mode=mode, association_failure=failure,
+        )
+        for mint, slot, response_address, account, mode, failure in associated
+    ]
+    assert observations[0]["facts"]["mint_failure_reason"] == "MINT_ACCOUNT_MISSING"
+    assert observations[1]["facts"]["mint_status"] == "PASS"
+    assert observations[2]["facts"]["mint_status"] == "PASS"
+
+
+def test_address_assertion_target_mismatch_does_not_slide_adjacent_account() -> None:
+    mints = [row["mint"] for row in _candidate_rows(2)]
+    unknown = _candidate_rows(3)[2]["mint"]
+    associated = live_transport._batch_account_associations(
+        mints,
+        [
+            {"address": mints[0], "account": _spl_mint_account()},
+            {"address": unknown, "account": _token_2022_mint_account()},
+        ],
+    )
+    assert associated[0][1] == 0
+    assert associated[0][5] is None
+    assert associated[1][1] is None
+    assert associated[1][5] == "MINT_TARGET_MISMATCH"
+    observation = live_transport._mint_account_observation(
+        requested_mint=associated[1][0], response_slot=associated[1][1],
+        response_address=associated[1][2], account=associated[1][3],
+        association_mode=associated[1][4], association_failure=associated[1][5],
+    )
+    assert observation["facts"]["mint_failure_reason"] == "MINT_TARGET_MISMATCH"
+
+
+@pytest.mark.parametrize(
+    ("cli_mode", "count", "expected"),
+    ((CLI_MODE_N2, 2, 2), (CLI_MODE_N7, 7, 7)),
+)
+def test_public_cli_exact_n_mixed_mint_program_proof(
+    capsys, cli_mode: str, count: int, expected: int
+) -> None:
+    temp, path = _db()
+    try:
+        network = _CanonicalMockNetworkTransport(count)
+        payload = _dispatch(capsys, path, cli_mode, network, f"mint-exact-{expected}")
+        assert payload["status"] == "COMPLETED"
+        assert payload["foundation_report"]["certificates_issued"] == expected
+        assert payload["foundation_report"]["certificates_admitted"] == expected
+        assert payload["selected_count"] == expected
+        assert payload["projection_count"] == (2 if expected == 2 else 0)
+        assert payload["runtime_handoff_count"] == 0
+        assert payload["lifecycle_started"] is False
+        assert payload["scheduler_jobs_created"] == payload["governed_requests_used"]
+        with sqlite3.connect(path) as connection:
+            assert connection.execute(
+                "SELECT COUNT(*) FROM printer_candidate_manifest_items"
+            ).fetchone()[0] == expected
+            assert connection.execute(
+                "SELECT COUNT(*) FROM printer_candidate_acquisition_leases "
+                "WHERE lease_state <> 'TERMINAL' OR released_at IS NULL"
+            ).fetchone()[0] == 0
+            assert connection.execute(
+                "SELECT COUNT(*) FROM printer_scheduler_jobs "
+                "WHERE status IN ('PENDING','RUNNING','COOLDOWN')"
+            ).fetchone()[0] == 0
+            operation_count = connection.execute(
+                "SELECT COUNT(*) FROM printer_candidate_acquisition_transport_operations"
+            ).fetchone()[0]
+        assert operation_count == payload["transport_operations_used"]
+        assert not any(payload["forbidden_table_deltas"].values())
+        calls = len(network.calls)
+        assert replay_candidate_acquisition_integration_report(
+            path, execution_id=f"mint-exact-{expected}"
+        ) == payload
+        assert len(network.calls) == calls
+        if expected == 7:
+            with pytest.raises(
+                CandidateAcquisitionError,
+                match="LEGACY_RUNTIME_REQUIRES_EXACTLY_TWO",
+            ):
+                legacy_two_token_runtime_projection(path, payload["manifest_id"])
+    finally:
+        temp.cleanup()
+
+
+def test_sanitized_blocked_stage_a_shape_admits_extended_token_2022_cohort(
+    capsys,
+) -> None:
+    fixture = json.loads(
+        (ROOT / "tests/fixtures/candidate_mint_admission_blocked_stage_a_sanitized_v1.json").read_text()
+    )
+    assert fixture["contains_real_mint_addresses"] is False
+    assert fixture["contains_raw_provider_payloads"] is False
+    temp, path = _db()
+    try:
+        network = _MintBatchScenarioNetwork(
+            4, lambda addresses, defaults: [
+                _token_2022_mint_account(with_extension=True) for _ in addresses
+            ]
+        )
+        payload = _dispatch(capsys, path, CLI_MODE_N2, network, "sanitized-live-shaped")
+        assert payload["status"] == "COMPLETED"
+        assert payload["foundation_report"]["certificates_issued"] == 4
+        assert payload["foundation_report"]["certificates_admitted"] == 4
+        assert _chain_mint_reasons(path) == ["MINT_STATUS_PASS"] * 4
+    finally:
+        temp.cleanup()
+
+
+@pytest.mark.parametrize(
+    ("transform", "reason"),
+    (
+        (lambda addresses, values: [None, values[1]], "MINT_ACCOUNT_MISSING"),
+        (
+            lambda addresses, values: [
+                _spl_mint_account(owner="11111111111111111111111111111111"), values[1]
+            ],
+            "MINT_UNSUPPORTED_TOKEN_PROGRAM",
+        ),
+        (
+            lambda addresses, values: [
+                {"owner": TOKEN_2022_PROGRAM_ID, "data": ["%%%", "base64"]}, values[1]
+            ],
+            "MINT_ACCOUNT_DATA_MALFORMED",
+        ),
+    ),
+)
+def test_public_cli_mint_negatives_reach_precise_chain_reason(
+    capsys, transform, reason: str
+) -> None:
+    temp, path = _db()
+    try:
+        payload = _dispatch(
+            capsys, path, CLI_MODE_N2,
+            _MintBatchScenarioNetwork(2, transform), f"mint-negative-{reason}",
+        )
+        assert payload["status"] == "BLOCKED"
+        assert reason in _chain_mint_reasons(path)
+        assert payload["first_terminal_cause"] == "ADMISSION_FAILURE"
+        assert payload["active_lease_count"] == 0
+        assert payload["scheduler_residue_terminalized"] == 0
+        assert not any(payload["forbidden_table_deltas"].values())
+    finally:
+        temp.cleanup()
+
+
+def test_public_cli_reordered_address_asserted_batch_preserves_targets(capsys) -> None:
+    temp, path = _db()
+    try:
+        def reordered(addresses, values):
+            return [
+                {"address": address, "account": account}
+                for address, account in reversed(list(zip(addresses, values, strict=True)))
+            ]
+        payload = _dispatch(
+            capsys, path, CLI_MODE_N2,
+            _MintBatchScenarioNetwork(2, reordered), "mint-reordered",
+        )
+        assert payload["status"] == "COMPLETED"
+        assert payload["selected_count"] == 2
+        with sqlite3.connect(path) as connection:
+            rows = connection.execute(
+                "SELECT facts_json FROM printer_candidate_source_observations "
+                "WHERE request_kind='candidate_mint_account_batch' ORDER BY mint_identity"
+            ).fetchall()
+        slots = sorted(json.loads(row[0])["mint_response_slot"] for row in rows)
+        assert slots == [0, 1]
+        assert all(
+            json.loads(row[0])["mint_response_association"] == "EXPLICIT_RESPONSE_ADDRESS"
+            for row in rows
+        )
+    finally:
+        temp.cleanup()
+
+
+def test_mint_evidence_merge_key_mismatch_fails_with_exact_reason() -> None:
+    temp, path = _db()
+    try:
+        rows = _candidate_rows(2)
+        operations = list(_owner(2).frozen_operations)
+        operations[4] = _operation(
+            "solana_rpc", "candidate_mint_account_batch", rows,
+            {
+                "mint_account_evidence_version": live_transport.MINT_ACCOUNT_EVIDENCE_VERSION,
+                "mint_request_target": rows[1]["mint"],
+                "mint_response_slot": 0,
+                "mint_response_address": None,
+                "mint_response_association": "POSITIONAL_RPC_CONTRACT",
+                "mint_account_presence": "PRESENT",
+                "mint_owner_status": "PASS",
+                "mint_layout_status": "PASS",
+                "mint_failure_reason": None,
+                "mint_status": "PASS",
+                "token_program_status": "PASS",
+            },
+        )
+        report = _run(
+            path, mode=MODE_N2, execution_id="mint-merge-mismatch",
+            owner=FrozenAcquisitionTransportOwner(tuple(operations)),
+        )
+        assert report["status"] == "BLOCKED"
+        assert report["first_terminal_cause"] == "IDENTITY_MERGE_FAILURE"
+        assert "MINT_EVIDENCE_MERGE_KEY_MISMATCH" in _chain_mint_reasons(path)
+    finally:
+        temp.cleanup()

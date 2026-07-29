@@ -442,6 +442,35 @@ def _categorical_status(facts: Iterable[Mapping[str, Any]], key: str) -> tuple[s
     return "FAIL", f"{key.upper()}_UNSUPPORTED"
 
 
+def _mint_categorical_status(
+    facts: Iterable[Mapping[str, Any]], *, candidate_mint: str
+) -> tuple[str, str]:
+    """Validate exact mint-evidence merge before evaluating chain-mint status."""
+    materialized = [dict(fact) for fact in facts]
+    for fact in materialized:
+        if fact.get("mint_account_evidence_version") is None:
+            continue
+        request_target = str(fact.get("mint_request_target") or "")
+        response_address = fact.get("mint_response_address")
+        if request_target != candidate_mint:
+            return "FAIL", "MINT_EVIDENCE_MERGE_KEY_MISMATCH"
+        if response_address is not None and str(response_address) != request_target:
+            return "FAIL", "MINT_TARGET_MISMATCH"
+    outcome, generic_reason = _categorical_status(materialized, "mint_status")
+    if outcome == "PASS":
+        return outcome, generic_reason
+    precise = {
+        str(fact["mint_failure_reason"])
+        for fact in materialized
+        if fact.get("mint_status") == "FAIL" and fact.get("mint_failure_reason")
+    }
+    if len(precise) == 1:
+        return "FAIL", next(iter(precise))
+    if len(precise) > 1:
+        return "FAIL", "MINT_EVIDENCE_REASON_CONFLICT"
+    return outcome, generic_reason
+
+
 def _atomic_tracking_and_cooldown_recheck(
     connection: sqlite3.Connection,
     observations: Sequence[Mapping[str, Any]],
@@ -746,6 +775,10 @@ def _build_candidates(plan: Mapping[str, Any], observations: Sequence[Mapping[st
                 outcome, reason = "FAIL", "STALE_OR_EXPIRED_EVIDENCE"
             elif stage_name == "LINEAGE_VALID":
                 outcome, reason = _lineage_gate(lineage, facts)
+            elif stage_name == "CHAIN_MINT_VALID":
+                outcome, reason = _mint_categorical_status(
+                    facts, candidate_mint=mint
+                )
             else:
                 outcome, reason = _categorical_status(facts, fact_key)
             if outcome == "FAIL" and first_failure is None:
@@ -891,6 +924,24 @@ def _failure_family(observations: Sequence[Mapping[str, Any]], candidates: Seque
     for status, family in FAILURE_PRECEDENCE:
         if status in statuses:
             return family, status
+    mint_reasons = {
+        str(stage["reason_code"])
+        for candidate in candidates
+        for stage in candidate["stages"]
+        if stage["stage_name"] == "CHAIN_MINT_VALID"
+        and stage["stage_outcome"] == "FAIL"
+    }
+    if mint_reasons:
+        if mint_reasons & {
+            "MINT_EVIDENCE_MERGE_KEY_MISMATCH", "MINT_TARGET_MISMATCH"
+        }:
+            return "IDENTITY_MERGE_FAILURE", sorted(mint_reasons)[0]
+        return (
+            "ADMISSION_FAILURE",
+            next(iter(mint_reasons))
+            if len(mint_reasons) == 1
+            else "CHAIN_MINT_VALID_MULTIPLE_REASONS",
+        )
     if any(item["identity_status"] != "IDENTITY_MERGED" for item in candidates):
         return "IDENTITY_MERGE_FAILURE", "IDENTITY_NOT_MERGED"
     if candidates and any(not item["admitted"] for item in candidates):

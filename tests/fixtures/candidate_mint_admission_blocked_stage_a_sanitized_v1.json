@@ -1,0 +1,21 @@
+{
+  "fixture_version": "candidate-mint-admission-blocked-stage-a-sanitized-v1",
+  "derived_shape_only": true,
+  "contains_real_mint_addresses": false,
+  "contains_raw_provider_payloads": false,
+  "blocked_execution_shape": {
+    "raw_unique_nominations": 39,
+    "cohort_size": 4,
+    "mint_batch_slots": 4,
+    "source_failure_rows": 0,
+    "returned_owner_family": "TOKEN_2022",
+    "historical_chain_mint_failures": 4
+  },
+  "synthetic_regression": {
+    "candidate_fixture_source": "candidate_acquisition_capacity_v1.json",
+    "mint_accounts": 4,
+    "all_accounts_use_adopted_token_2022_owner": true,
+    "all_accounts_have_structurally_valid_synthetic_tlv": true,
+    "expected_chain_mint_passes_after_repair": 4
+  }
+}
