@@ -102,6 +102,12 @@ from printer_v1.operator_cli.live_candidate_acquisition_transport import (
     CandidateAcquisitionOneShotTransport,
     build_live_candidate_acquisition_transport_owner,
 )
+from printer_v1.operator_cli.cursor_continuity_recovery import (
+    CLI_MODE_CURSOR_RECOVERY_N2,
+    CursorRecoveryTransportOwner,
+    build_live_cursor_recovery_transport_owner,
+    run_cursor_continuity_recovery,
+)
 
 
 POLICY_VERSION = "V2-9.8-15M-OPERATIONAL-V1"
@@ -2070,6 +2076,42 @@ def run_candidate_acquisition_only(
     )
 
 
+def run_cursor_recovery_only(
+    *,
+    operator_approved: bool,
+    transport_owner: CursorRecoveryTransportOwner | None = None,
+    preflight_override: Mapping[str, Any] | None = None,
+    execution_id: str | None = None,
+    owner_id: str | None = None,
+    now: str | None = None,
+    db_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Run one explicit finite cursor-recovery execution."""
+    if transport_owner is None:
+        raise CandidateAcquisitionIntegrationError(
+            "APPROVED_CURSOR_RECOVERY_TRANSPORT_OWNER_REQUIRED"
+        )
+    target = Path(db_path or AUTHORITATIVE_DB).resolve()
+    preflight = dict(preflight_override or build_activation_preflight(db_path=target))
+    instant = now or _iso()
+    action_execution_id = execution_id or (
+        datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        + "-recovery-"
+        + uuid.uuid4().hex[:12]
+    )
+    action_owner_id = owner_id or f"cursor-recovery-owner:{action_execution_id}"
+    _ACTION_RUN_CONTEXT["run_id"] = action_execution_id
+    return run_cursor_continuity_recovery(
+        target,
+        operator_approved=operator_approved,
+        transport_owner=transport_owner,
+        preflight=preflight,
+        execution_id=action_execution_id,
+        owner_id=action_owner_id,
+        now=instant,
+    )
+
+
 def operational_status() -> dict[str, Any]:
     discovery_only = _load_latest_discovery_only_report()
     discovery_summary = None
@@ -2318,13 +2360,15 @@ def main(
     acquisition_db_path: str | Path | None = None,
     acquisition_environment: Mapping[str, str] | None = None,
     acquisition_one_shot_transport: CandidateAcquisitionOneShotTransport | None = None,
+    cursor_recovery_transport_owner: CursorRecoveryTransportOwner | None = None,
 ) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Printer V1 bounded persistent 15m Memory Factory command. "
             "Modes: preflight-only, run, selective-1h-preflight, "
             "selective-1h-proof, status, cooperative-stop, recover-orphan, "
-            "report-only, discovery-only, acquisition-only-n2, acquisition-only-n7."
+            "report-only, discovery-only, acquisition-only-n2, acquisition-only-n7, "
+            "cursor-recovery-n2."
         )
     )
     parser.add_argument(
@@ -2333,7 +2377,7 @@ def main(
             "preflight-only", "run", SELECTIVE_1H_PREFLIGHT_MODE,
             SELECTIVE_1H_MODE, "status", "cooperative-stop", "recover-orphan",
             "report-only", "discovery-only",
-            CLI_MODE_N2, CLI_MODE_N7,
+            CLI_MODE_N2, CLI_MODE_N7, CLI_MODE_CURSOR_RECOVERY_N2,
         ),
     )
     parser.add_argument("--operator-approved", action="store_true")
@@ -2376,6 +2420,25 @@ def main(
                 now=acquisition_now,
                 db_path=acquisition_db_path,
             )
+        elif args.mode == CLI_MODE_CURSOR_RECOVERY_N2:
+            resolved_recovery_owner = cursor_recovery_transport_owner
+            if resolved_recovery_owner is None:
+                if not args.operator_approved:
+                    raise CandidateAcquisitionIntegrationError(
+                        "EXPLICIT_OPERATOR_APPROVAL_REQUIRED"
+                    )
+                resolved_recovery_owner = build_live_cursor_recovery_transport_owner(
+                    environment=acquisition_environment,
+                    transport=acquisition_one_shot_transport,
+                )
+            result = run_cursor_recovery_only(
+                operator_approved=args.operator_approved,
+                transport_owner=resolved_recovery_owner,
+                preflight_override=acquisition_preflight,
+                execution_id=acquisition_execution_id,
+                now=acquisition_now,
+                db_path=acquisition_db_path,
+            )
         elif args.mode == "status":
             result = operational_status()
         elif args.mode == "cooperative-stop":
@@ -2399,7 +2462,10 @@ def main(
             # Run failed before campaign creation (e.g. preflight). Action-local
             # total remains zero; do not inherit historical ledgers.
             campaign_source_calls = None
-        elif args.mode in {"discovery-only", CLI_MODE_N2, CLI_MODE_N7}:
+        elif args.mode in {
+            "discovery-only", CLI_MODE_N2, CLI_MODE_N7,
+            CLI_MODE_CURSOR_RECOVERY_N2,
+        }:
             # Discovery-only never inherits campaign holder ledgers.
             campaign_source_calls = None
         source_calls = (
