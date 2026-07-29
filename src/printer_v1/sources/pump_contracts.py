@@ -199,6 +199,73 @@ def decode_supported_pump_creation_instruction(
     }
 
 
+def decode_supported_pump_creation_transaction(
+    tx_result: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Locate exactly one pinned Pump create instruction in a finalized tx body."""
+    failed: dict[str, Any] = {"supported": False, "reason": "transaction_missing"}
+    if not tx_result:
+        return failed
+    if tx_result.get("version") not in (None, "legacy", 0):
+        return {**failed, "reason": "unsupported_transaction_version"}
+    meta = tx_result.get("meta")
+    if not isinstance(meta, Mapping) or meta.get("err") is not None:
+        return {**failed, "reason": "transaction_failed_or_meta_missing"}
+    keys = _account_keys(tx_result)
+    matches = [
+        decoded
+        for item in _instructions(tx_result)
+        if (decoded := decode_supported_pump_creation_instruction(item, keys)).get("supported")
+    ]
+    if len(matches) != 1:
+        return {**failed, "reason": "exactly_one_supported_create_required"}
+    if not isinstance(tx_result.get("slot"), int) or not isinstance(tx_result.get("blockTime"), (int, float)):
+        return {**failed, "reason": "finalized_slot_or_block_time_missing"}
+    return {**matches[0], "slot": int(tx_result["slot"]),
+            "block_time": int(tx_result["blockTime"])}
+
+
+def decode_supported_pump_migration_transaction(
+    tx_result: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Extract the exact pinned migrate identity before Pool account verification."""
+    failed: dict[str, Any] = {"supported": False, "reason": "transaction_missing"}
+    if not tx_result:
+        return failed
+    if tx_result.get("version") not in (None, "legacy", 0):
+        return {**failed, "reason": "unsupported_transaction_version"}
+    meta = tx_result.get("meta")
+    if not isinstance(meta, Mapping) or meta.get("err") is not None:
+        return {**failed, "reason": "transaction_failed_or_meta_missing"}
+    keys = _account_keys(tx_result)
+    matches: list[list[str]] = []
+    for instruction in _instructions(tx_result):
+        try:
+            program = keys[int(instruction["programIdIndex"])]
+            accounts = [keys[int(index)] for index in instruction.get("accounts") or []]
+        except (KeyError, TypeError, ValueError, IndexError):
+            continue
+        data = _instruction_data(instruction)
+        if program == PUMP_PROGRAM_ID and data is not None and data[:8] == PUMP_MIGRATE_DISCRIMINATOR:
+            if len(accounts) != 25:
+                return {**failed, "reason": "migrate_account_layout_mismatch"}
+            matches.append(accounts)
+    if len(matches) != 1:
+        return {**failed, "reason": "exactly_one_migrate_instruction_required"}
+    accounts = matches[0]
+    fixed = {6: SYSTEM_PROGRAM_ID, 7: TOKEN_PROGRAM_ID, 8: PUMPSWAP_AMM_PROGRAM_ID,
+             14: WSOL_MINT, 19: TOKEN_2022_PROGRAM_ID,
+             20: ASSOCIATED_TOKEN_PROGRAM_ID, 23: PUMP_PROGRAM_ID, 24: RENT_SYSVAR_ID}
+    if any(accounts[index] != value for index, value in fixed.items()):
+        return {**failed, "reason": "migrate_fixed_account_mismatch"}
+    if not isinstance(tx_result.get("slot"), int) or not isinstance(tx_result.get("blockTime"), (int, float)):
+        return {**failed, "reason": "finalized_slot_or_block_time_missing"}
+    return {"supported": True, "reason": "supported_pump_migration",
+            "mint": accounts[2], "pool_address": accounts[9],
+            "creator": accounts[10], "slot": int(tx_result["slot"]),
+            "block_time": int(tx_result["blockTime"]), "accounts": accounts}
+
+
 def decode_pumpswap_pool_account(
     account_value: Mapping[str, Any] | None, *, pool_address: str
 ) -> dict[str, Any]:
@@ -266,43 +333,12 @@ def verify_pinned_pump_migration(
         return result
     if not finalized:
         return {**result, "reason": "finalized_commitment_required"}
-    if tx_result.get("version") not in (None, "legacy", 0):
-        return {**result, "reason": "unsupported_transaction_version"}
-    meta = tx_result.get("meta")
-    if not isinstance(meta, Mapping) or meta.get("err") is not None:
-        return {**result, "reason": "transaction_failed_or_meta_missing"}
-    if not isinstance(tx_result.get("blockTime"), (int, float)) or not isinstance(tx_result.get("slot"), int):
-        return {**result, "reason": "finalized_slot_or_block_time_missing"}
-    keys = _account_keys(tx_result)
-    matches: list[list[str]] = []
-    for instruction in _instructions(tx_result):
-        try:
-            program = keys[int(instruction["programIdIndex"])]
-            accounts = [keys[int(index)] for index in instruction.get("accounts") or []]
-        except (KeyError, TypeError, ValueError, IndexError):
-            continue
-        data = _instruction_data(instruction)
-        if program == PUMP_PROGRAM_ID and data is not None and data[:8] == PUMP_MIGRATE_DISCRIMINATOR:
-            if len(accounts) != 25:
-                return {**result, "reason": "migrate_account_layout_mismatch"}
-            matches.append(accounts)
-    if len(matches) != 1:
-        return {**result, "reason": "exactly_one_migrate_instruction_required"}
-    accounts = matches[0]
-    fixed = {
-        2: expected_mint,
-        6: SYSTEM_PROGRAM_ID,
-        7: TOKEN_PROGRAM_ID,
-        8: PUMPSWAP_AMM_PROGRAM_ID,
-        14: WSOL_MINT,
-        19: TOKEN_2022_PROGRAM_ID,
-        20: ASSOCIATED_TOKEN_PROGRAM_ID,
-        23: PUMP_PROGRAM_ID,
-        24: RENT_SYSVAR_ID,
-    }
-    for ordinal, expected in fixed.items():
-        if accounts[ordinal] != expected:
-            return {**result, "reason": f"migrate_account_{ordinal}_mismatch"}
+    migration = decode_supported_pump_migration_transaction(tx_result)
+    if not migration.get("supported"):
+        return {**result, "reason": str(migration["reason"])}
+    accounts = list(migration["accounts"])
+    if migration["mint"] != expected_mint:
+        return {**result, "reason": "migrate_account_2_mismatch"}
     pool_address, creator = accounts[9], accounts[10]
     decoded = decode_pumpswap_pool_account(account_infos.get(pool_address), pool_address=pool_address)
     if not decoded.get("decoded"):
@@ -368,5 +404,6 @@ __all__ = [
     "METADATA_PROGRAM_ID", "MAYHEM_PROGRAM_ID", "WSOL_MINT", "USDC_MINT",
     "CANONICAL_POOL_INDEX", "derive_program_address",
     "derive_canonical_pumpswap_pool", "decode_supported_pump_creation_instruction",
+    "decode_supported_pump_creation_transaction", "decode_supported_pump_migration_transaction",
     "decode_pumpswap_pool_account", "verify_pinned_pump_migration",
 ]

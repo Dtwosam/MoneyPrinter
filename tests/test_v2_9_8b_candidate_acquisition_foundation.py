@@ -38,6 +38,8 @@ from printer_v1.sources.pump_contracts import (
     _b58encode,
     decode_pumpswap_pool_account,
     decode_supported_pump_creation_instruction,
+    decode_supported_pump_creation_transaction,
+    decode_supported_pump_migration_transaction,
     derive_canonical_pumpswap_pool,
     derive_program_address,
     verify_pinned_pump_migration,
@@ -553,3 +555,15 @@ def test_pinned_pump_creation_migration_pool_and_contract_failures() -> None:
     )
     assert creation["supported"] is True
     assert creation["variant"] == "create"
+    creation_tx = {
+        "version": 0, "slot": 420_000_001, "blockTime": 1_785_326_401,
+        "transaction": {"message": {"accountKeys": create_keys,
+            "instructions": [{"programIdIndex": 13, "accounts": list(range(14)),
+                              "data": _b58encode(PUMP_CREATE_DISCRIMINATOR)}]}},
+        "meta": {"err": None, "loadedAddresses": {"writable": [], "readonly": []}},
+    }
+    assert decode_supported_pump_creation_transaction(creation_tx)["mint"] == mint
+    migration = decode_supported_pump_migration_transaction(tx)
+    assert migration["supported"] is True
+    assert migration["mint"] == mint
+    assert migration["pool_address"] == pool

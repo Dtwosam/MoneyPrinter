@@ -1,0 +1,913 @@
+"""Canonical bounded live transport owner for acquisition-only N2/N7 modes.
+
+This module constructs source operations only.  The acquisition integration
+owner remains responsible for Scheduler jobs, Source Governor admission,
+persistence, budgets, leases, cancellation, and terminal cleanup.  Network
+transports are one-shot, finite, close their response, and never retry, rotate,
+reconnect, or create successor work.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+import base64
+import json
+import os
+from types import MappingProxyType
+from typing import Any, Callable, Mapping, Protocol, Sequence
+from urllib import error as url_error
+from urllib import parse as url_parse
+from urllib import request as url_request
+
+from printer_v1.contracts.enums import DataQualityLabel, SourceStatus
+from printer_v1.operator_cli.candidate_acquisition_integration import (
+    AcquisitionSourceOperation,
+)
+from printer_v1.sources.contracts import NormalizedSourceResult, SourceAdapterContext
+from printer_v1.sources.dexscreener import (
+    DEXSCREENER_TOKEN_PROFILES_URL,
+    DEXSCREENER_TOKENS_BATCH_URL_TEMPLATE,
+    normalize_dexscreener_fixture_result,
+)
+from printer_v1.sources.geckoterminal import (
+    GECKOTERMINAL_NEW_POOLS_URL,
+    normalize_geckoterminal_payload,
+)
+from printer_v1.sources.goplus import (
+    GOPLUS_SOLANA_TOKEN_SECURITY_URL,
+    normalize_goplus_payload,
+)
+from printer_v1.sources.pump_contracts import (
+    OFFICIAL_REPOSITORY_COMMIT,
+    PUMP_IDL_SHA256,
+    PUMPSWAP_IDL_SHA256,
+    TOKEN_2022_PROGRAM_ID,
+    TOKEN_PROGRAM_ID,
+    WSOL_MINT,
+    decode_pumpswap_pool_account,
+    decode_supported_pump_creation_transaction,
+    decode_supported_pump_migration_transaction,
+    verify_pinned_pump_migration,
+)
+from printer_v1.sources.pumpfun_direct import PUMP_PROGRAM_ID
+from printer_v1.sources.pumpfun_origin import PUMP_CREATE_INDEX_ADDRESS
+from printer_v1.sources.pumpswap import PUMPSWAP_AMM_PROGRAM_ID
+from printer_v1.sources.solana_rpc_holder import normalize_solana_rpc_holder_response
+from printer_v1.sources.solana_rpc_token_age import (
+    _decode_spl_token_base_mint_state,
+    _decode_token_2022_mint_state,
+)
+
+
+RPC_ENVIRONMENT_NAME = "PRINTER_SOLANA_RPC_URL"
+DEFAULT_TIMEOUT_SECONDS = 10.0
+PER_RESPONSE_BYTE_CEILING = 1 * 1024 * 1024
+DEXSCREENER_HEADERS = MappingProxyType({"Accept": "application/json", "User-Agent": "PrinterV1/0.1"})
+GECKOTERMINAL_HEADERS = MappingProxyType({"Accept": "application/json;version=20230203", "User-Agent": "PrinterV1/0.1"})
+PUBLIC_HEADERS = MappingProxyType({"Accept": "application/json", "User-Agent": "PrinterV1/0.1"})
+RPC_HEADERS = MappingProxyType({"Accept": "application/json", "Content-Type": "application/json", "User-Agent": "PrinterV1/0.1"})
+
+
+class LiveAcquisitionConfigurationError(RuntimeError):
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
+class LiveAcquisitionTransportError(RuntimeError):
+    def __init__(self, code: str, endpoint_role: str, *, bytes_used: int = 0,
+                 operation_kind: str = "ATTEMPTED_TRANSPORT") -> None:
+        self.code = code
+        self.endpoint_role = endpoint_role
+        self.bytes_used = int(bytes_used)
+        self.operation_kind = operation_kind
+        super().__init__(f"{code}:{endpoint_role}")
+
+
+@dataclass(frozen=True)
+class LiveAcquisitionConfiguration:
+    rpc_url: str = field(repr=False)
+    redacted_rpc_host: str
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
+    per_response_byte_ceiling: int = PER_RESPONSE_BYTE_CEILING
+    goplus_enabled: bool = True
+
+
+@dataclass(frozen=True)
+class TransportResponse:
+    payload: Any
+    bytes_used: int
+    operation_kind: str
+    endpoint_role: str
+
+
+class CandidateAcquisitionOneShotTransport(Protocol):
+    def http_json(self, *, url: str, headers: Mapping[str, str], timeout_seconds: float,
+                  byte_ceiling: int, endpoint_role: str) -> TransportResponse: ...
+    def rpc_json(self, *, rpc_url: str, method: str, params: Sequence[Any],
+                 timeout_seconds: float, byte_ceiling: int,
+                 endpoint_role: str) -> TransportResponse: ...
+
+
+class UrllibCandidateAcquisitionOneShotTransport:
+    """One socket/response per call, finite read, no retry or endpoint rotation."""
+
+    @staticmethod
+    def _read(request: url_request.Request, *, timeout_seconds: float,
+              byte_ceiling: int, endpoint_role: str,
+              operation_kind: str) -> tuple[Any, int]:
+        try:
+            with url_request.urlopen(request, timeout=timeout_seconds) as response:
+                raw = response.read(byte_ceiling + 1)
+        except url_error.HTTPError as exc:
+            code = int(exc.code)
+            try:
+                raw = exc.read(byte_ceiling + 1)
+            except OSError:
+                raw = b""
+            finally:
+                exc.close()
+            category = "SOURCE_AUTH_UNAVAILABLE" if code in {401, 403} else (
+                "SOURCE_BUDGET_OR_RATE_LIMIT" if code == 429 else "SOURCE_PROVIDER_FAILURE"
+            )
+            if len(raw) > byte_ceiling:
+                category = "RESPONSE_BYTE_CEILING"
+            raise LiveAcquisitionTransportError(
+                category, endpoint_role, bytes_used=len(raw),
+                operation_kind=operation_kind,
+            ) from None
+        except (url_error.URLError, TimeoutError, OSError) as exc:
+            reason = getattr(exc, "reason", None)
+            category = "SOURCE_TIMEOUT" if (
+                isinstance(exc, TimeoutError) or isinstance(reason, TimeoutError)
+            ) else "SOURCE_TRANSPORT_FAILURE"
+            raise LiveAcquisitionTransportError(
+                category, endpoint_role, operation_kind=operation_kind
+            ) from None
+        if len(raw) > byte_ceiling:
+            raise LiveAcquisitionTransportError(
+                "RESPONSE_BYTE_CEILING", endpoint_role, bytes_used=len(raw),
+                operation_kind=operation_kind,
+            )
+        try:
+            return json.loads(raw.decode("utf-8")), len(raw)
+        except (ValueError, UnicodeDecodeError):
+            raise LiveAcquisitionTransportError(
+                "SOURCE_MALFORMED", endpoint_role, bytes_used=len(raw),
+                operation_kind=operation_kind,
+            ) from None
+
+    def http_json(self, *, url: str, headers: Mapping[str, str], timeout_seconds: float,
+                  byte_ceiling: int, endpoint_role: str) -> TransportResponse:
+        request = url_request.Request(url, headers=dict(headers), method="GET")
+        payload, size = self._read(request, timeout_seconds=timeout_seconds,
+                                   byte_ceiling=byte_ceiling, endpoint_role=endpoint_role,
+                                   operation_kind="HTTP_GET")
+        return TransportResponse(payload, size, "HTTP_GET", endpoint_role)
+
+    def rpc_json(self, *, rpc_url: str, method: str, params: Sequence[Any],
+                 timeout_seconds: float, byte_ceiling: int,
+                 endpoint_role: str) -> TransportResponse:
+        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method,
+                           "params": list(params)}, separators=(",", ":")).encode()
+        request = url_request.Request(rpc_url, data=body, headers=dict(RPC_HEADERS), method="POST")
+        envelope, size = self._read(request, timeout_seconds=timeout_seconds,
+                                    byte_ceiling=byte_ceiling, endpoint_role=endpoint_role,
+                                    operation_kind=method)
+        if not isinstance(envelope, Mapping) or envelope.get("error") is not None or "result" not in envelope:
+            raise LiveAcquisitionTransportError(
+                "SOURCE_RPC_ERROR", endpoint_role, bytes_used=size,
+                operation_kind=method,
+            )
+        return TransportResponse(envelope["result"], size, method, endpoint_role)
+
+
+def load_live_acquisition_configuration(
+    environment: Mapping[str, str] | None = None,
+) -> LiveAcquisitionConfiguration:
+    env = os.environ if environment is None else environment
+    raw = str(env.get(RPC_ENVIRONMENT_NAME) or "").strip()
+    if not raw:
+        raise LiveAcquisitionConfigurationError("ACQUISITION_SOLANA_RPC_URL_REQUIRED")
+    try:
+        parsed = url_parse.urlsplit(raw)
+        port = parsed.port
+    except ValueError:
+        raise LiveAcquisitionConfigurationError("ACQUISITION_SOLANA_RPC_URL_MALFORMED") from None
+    if not parsed.scheme or not parsed.hostname:
+        raise LiveAcquisitionConfigurationError("ACQUISITION_SOLANA_RPC_URL_MALFORMED")
+    if parsed.scheme.lower() != "https":
+        raise LiveAcquisitionConfigurationError("ACQUISITION_SOLANA_RPC_HTTPS_REQUIRED")
+    if parsed.username is not None or parsed.password is not None:
+        raise LiveAcquisitionConfigurationError("ACQUISITION_SOLANA_RPC_URL_MALFORMED")
+    if parsed.fragment or (port is not None and port != 443):
+        raise LiveAcquisitionConfigurationError("ACQUISITION_SOLANA_RPC_URL_UNSUPPORTED")
+    return LiveAcquisitionConfiguration(rpc_url=raw, redacted_rpc_host=parsed.hostname)
+
+
+class _OperationAdapter:
+    def __init__(self, source_name: str, request_kind: str,
+                 execute: Callable[[SourceAdapterContext], NormalizedSourceResult]) -> None:
+        self.source_name = source_name
+        self.request_kind = request_kind
+        self._execute = execute
+        self.call_count = 0
+
+    def execute(self, context: SourceAdapterContext) -> NormalizedSourceResult:
+        if not context.governor_approved or context.request.source_name != self.source_name \
+                or context.request.request_kind != self.request_kind:
+            raise PermissionError("LIVE_ACQUISITION_GOVERNOR_CONTEXT_REQUIRED")
+        self.call_count += 1
+        return self._execute(context)
+
+
+def _failure(source: str, kind: str, exc: Exception,
+             details: Sequence[Mapping[str, Any]] = ()) -> NormalizedSourceResult:
+    code = exc.code if isinstance(exc, LiveAcquisitionTransportError) else "SOURCE_TRANSPORT_FAILURE"
+    operation_details = [dict(item) for item in details]
+    if isinstance(exc, LiveAcquisitionTransportError):
+        operation_details.append({"operation_kind": exc.operation_kind,
+            "operation_state": "FAILED", "redacted_endpoint_role": exc.endpoint_role,
+            "bytes_used": exc.bytes_used})
+    return NormalizedSourceResult(
+        source_name=source, request_kind=kind, source_status=SourceStatus.FAILED,
+        data_quality_label=DataQualityLabel.MISSING_CRITICAL_DATA,
+        failure_type=code, failure_message=code,
+        normalized_payload=MappingProxyType({
+            "underlying_operation_count": len(operation_details),
+            "underlying_operations": operation_details,
+            "response_bytes": sum(int(item["bytes_used"]) for item in operation_details),
+            "declared_operation_ceiling": True,
+        }),
+    )
+
+
+def _operation_detail(response: TransportResponse) -> dict[str, Any]:
+    return {"operation_kind": response.operation_kind, "operation_state": "COMPLETE",
+            "redacted_endpoint_role": response.endpoint_role,
+            "bytes_used": response.bytes_used}
+
+
+def _decorate(result: NormalizedSourceResult, responses: Sequence[TransportResponse],
+              extra: Mapping[str, Any] | None = None) -> NormalizedSourceResult:
+    payload = dict(result.normalized_payload or {})
+    payload.update(extra or {})
+    payload["underlying_operation_count"] = len(responses)
+    payload["underlying_operations"] = [_operation_detail(item) for item in responses]
+    payload["response_bytes"] = sum(item.bytes_used for item in responses)
+    return NormalizedSourceResult(
+        source_name=result.source_name, request_kind=result.request_kind,
+        source_status=result.source_status, data_quality_label=result.data_quality_label,
+        normalized_payload=MappingProxyType(payload), status_code=result.status_code,
+        failure_type=result.failure_type, failure_message=result.failure_message,
+        retry_after_at=result.retry_after_at, received_at=result.received_at,
+    )
+
+
+class LiveCandidateAcquisitionTransportOwner:
+    """Repository-owned finite operation plan shared by N2 and N7."""
+
+    def __init__(self, configuration: LiveAcquisitionConfiguration, *,
+                 transport: CandidateAcquisitionOneShotTransport | None = None) -> None:
+        self.configuration = configuration
+        self.transport = transport or UrllibCandidateAcquisitionOneShotTransport()
+        if not callable(getattr(self.transport, "http_json", None)) or not callable(
+            getattr(self.transport, "rpc_json", None)
+        ):
+            raise LiveAcquisitionConfigurationError("ACQUISITION_REQUIRED_TRANSPORT_UNRESOLVED")
+
+    def operations(self, *, mode: str, policy: Mapping[str, Any],
+                   execution_id: str) -> Sequence[AcquisitionSourceOperation]:
+        del mode, execution_id
+        cap = int(policy["candidate_limit"])
+        timeout = self.configuration.timeout_seconds
+        byte_cap = self.configuration.per_response_byte_ceiling
+        transport = self.transport
+        state: dict[str, Any] = {
+            "pairs": {}, "origins": {}, "migrations": {}, "mint_safety": {},
+            "pair_results": {},
+            "create_rows": [], "migration_rows": [],
+            "create_exhausted": False, "migration_exhausted": False,
+        }
+
+        def remember_pairs(source: str, result: NormalizedSourceResult) -> None:
+            state["pair_results"][source] = result
+
+        def refresh_selected_pairs() -> None:
+            candidates: dict[str, list[dict[str, Any]]] = {}
+            for result in state["pair_results"].values():
+                for pair in (result.normalized_payload or {}).get("pairs") or []:
+                    if not isinstance(pair, Mapping):
+                        continue
+                    mint = str(pair.get("token_mint") or "")
+                    pool = str(pair.get("pair_address") or "")
+                    if mint and pool:
+                        candidates.setdefault(mint, []).append(dict(pair))
+            selected_mints = sorted(candidates)[:cap]
+            state["pairs"] = {
+                mint: sorted(candidates[mint], key=lambda item: str(item["pair_address"]))[0]
+                for mint in selected_mints
+            }
+
+        def nomination_result(
+            result: NormalizedSourceResult, responses: Sequence[TransportResponse],
+        ) -> NormalizedSourceResult:
+            if result.source_status != SourceStatus.COMPLETE:
+                return _decorate(result, responses, {"declared_operation_ceiling": True})
+            empty = NormalizedSourceResult(
+                source_name=result.source_name,
+                request_kind="candidate_nomination",
+                source_status=result.source_status,
+                data_quality_label=result.data_quality_label,
+                normalized_payload=MappingProxyType({"candidate_observations": []}),
+                status_code=result.status_code,
+            )
+            return _decorate(empty, responses, {"declared_operation_ceiling": True})
+
+        def market_materialization(source: str) -> NormalizedSourceResult:
+            result = state["pair_results"].get(source)
+            if not isinstance(result, NormalizedSourceResult):
+                return _failure(source, "candidate_market_batch", RuntimeError("SOURCE_UNAVAILABLE"))
+            refresh_selected_pairs()
+            selected = set(state["pairs"])
+            pairs = [
+                dict(pair)
+                for pair in (result.normalized_payload or {}).get("pairs") or []
+                if isinstance(pair, Mapping)
+                and str(pair.get("token_mint") or "") in selected
+            ]
+            materialized = NormalizedSourceResult(
+                source_name=source,
+                request_kind="candidate_market_batch",
+                source_status=result.source_status,
+                data_quality_label=result.data_quality_label,
+                normalized_payload=MappingProxyType({"pairs": pairs}),
+                status_code=result.status_code,
+                failure_type=result.failure_type,
+                failure_message=result.failure_message,
+                retry_after_at=result.retry_after_at,
+                received_at=result.received_at,
+            )
+            return _decorate(materialized, ())
+
+        def dex(_context: SourceAdapterContext) -> NormalizedSourceResult:
+            responses: list[TransportResponse] = []
+            try:
+                profiles = transport.http_json(url=DEXSCREENER_TOKEN_PROFILES_URL,
+                    headers=DEXSCREENER_HEADERS, timeout_seconds=timeout,
+                    byte_ceiling=byte_cap, endpoint_role="DEXSCREENER_PROFILES")
+                responses.append(profiles)
+                if not isinstance(profiles.payload, list):
+                    raise LiveAcquisitionTransportError("SOURCE_MALFORMED", "DEXSCREENER_PROFILES")
+                mints: list[str] = []
+                for item in profiles.payload:
+                    if isinstance(item, Mapping) and item.get("chainId") == "solana":
+                        mint = str(item.get("tokenAddress") or "")
+                        if mint and mint not in mints:
+                            mints.append(mint)
+                        if len(mints) >= cap:
+                            break
+                if not mints:
+                    raw: Any = []
+                else:
+                    batch = transport.http_json(
+                        url=DEXSCREENER_TOKENS_BATCH_URL_TEMPLATE.format(addresses=",".join(mints)),
+                        headers=DEXSCREENER_HEADERS, timeout_seconds=timeout,
+                        byte_ceiling=byte_cap, endpoint_role="DEXSCREENER_MARKET_BATCH")
+                    responses.append(batch); raw = batch.payload
+                result = normalize_dexscreener_fixture_result({"pairs": raw}, request_kind="candidate_nomination")
+                remember_pairs("dexscreener", result)
+                return nomination_result(result, responses)
+            except Exception as exc:
+                return _failure("dexscreener", "candidate_nomination", exc, [_operation_detail(x) for x in responses])
+
+        def gecko(_context: SourceAdapterContext) -> NormalizedSourceResult:
+            responses: list[TransportResponse] = []
+            try:
+                response = transport.http_json(url=GECKOTERMINAL_NEW_POOLS_URL,
+                    headers=GECKOTERMINAL_HEADERS, timeout_seconds=timeout,
+                    byte_ceiling=byte_cap, endpoint_role="GECKOTERMINAL_NEW_POOLS")
+                responses.append(response)
+                result = normalize_geckoterminal_payload(
+                    response.payload if isinstance(response.payload, Mapping) else {},
+                    request_kind="candidate_nomination")
+                remember_pairs("geckoterminal", result)
+                return nomination_result(result, responses)
+            except Exception as exc:
+                return _failure("geckoterminal", "candidate_nomination", exc, [_operation_detail(x) for x in responses])
+
+        def complete(kind: str, observations: Sequence[Mapping[str, Any]],
+                     responses: Sequence[TransportResponse], *,
+                     cursor_range: Mapping[str, Any] | None = None) -> NormalizedSourceResult:
+            result = NormalizedSourceResult(
+                source_name="solana_rpc", request_kind=kind,
+                source_status=SourceStatus.COMPLETE,
+                data_quality_label=DataQualityLabel.CLEAN_DATA,
+                normalized_payload=MappingProxyType({"candidate_observations": list(observations)}),
+            )
+            return _decorate(result, responses, {
+                "declared_operation_ceiling": True,
+                **({"cursor_range": dict(cursor_range)} if cursor_range else {}),
+            })
+
+        def rpc_call(method: str, params: Sequence[Any], role: str) -> TransportResponse:
+            return transport.rpc_json(rpc_url=self.configuration.rpc_url, method=method,
+                params=params, timeout_seconds=timeout, byte_ceiling=byte_cap,
+                endpoint_role=role)
+
+        def rpc_failure(kind: str, exc: Exception,
+                        responses: Sequence[TransportResponse]) -> NormalizedSourceResult:
+            return _failure("solana_rpc", kind, exc, [_operation_detail(x) for x in responses])
+
+        create_cursor = {"indexed_address": PUMP_CREATE_INDEX_ADDRESS,
+            "contract_pin": OFFICIAL_REPOSITORY_COMMIT,
+            "decoder_version": "canonical-live-acquisition-v1", "direction": "BACKWARD",
+            "start_slot": None, "start_signature": None, "end_slot": None,
+            "end_signature": None, "continuity_state": "UNKNOWN",
+            "cursor_advanced": False, "unresolved_reason": "NOT_EXECUTED"}
+        migration_cursor = {**create_cursor, "indexed_address": PUMP_PROGRAM_ID}
+
+        def signature_page(
+            kind: str, *, indexed_address: str, page_index: int, page_limit: int,
+            transaction_limit: int, cursor: dict[str, Any], role_prefix: str,
+            rows_key: str, exhausted_key: str,
+        ) -> NormalizedSourceResult:
+            responses: list[TransportResponse] = []
+            try:
+                rows: list[Mapping[str, Any]] = state[rows_key]
+                if state[exhausted_key]:
+                    return complete(kind, (), (), cursor_range=cursor)
+                remaining = max(transaction_limit - len(rows), 1)
+                pages_remaining = max(page_limit - page_index, 1)
+                page_size = max(1, (remaining + pages_remaining - 1) // pages_remaining)
+                options: dict[str, Any] = {
+                    "limit": page_size, "commitment": "finalized"
+                }
+                if rows:
+                    before = str(rows[-1].get("signature") or "")
+                    if not before:
+                        raise LiveAcquisitionTransportError(
+                            "SOURCE_MALFORMED", f"{role_prefix}_SIGNATURE_PAGE_{page_index + 1}"
+                        )
+                    options["before"] = before
+                response = rpc_call(
+                    "getSignaturesForAddress", [indexed_address, options],
+                    f"{role_prefix}_SIGNATURE_PAGE_{page_index + 1}",
+                )
+                responses.append(response)
+                if not isinstance(response.payload, list) or any(
+                    not isinstance(item, Mapping) for item in response.payload
+                ):
+                    raise LiveAcquisitionTransportError("SOURCE_MALFORMED", response.endpoint_role)
+                page_rows = list(response.payload)
+                rows.extend(page_rows)
+                state[exhausted_key] = len(page_rows) < page_size
+                eligible_rows = [
+                    row for row in rows
+                    if row.get("err") is None
+                    and str(row.get("confirmationStatus") or "") == "finalized"
+                    and row.get("signature")
+                ]
+                terminal_page = state[exhausted_key] or page_index + 1 == page_limit
+                hidden_rows = terminal_page and len(eligible_rows) > transaction_limit
+                continuity = (
+                    "GAPPED" if hidden_rows else "CONTIGUOUS" if terminal_page else "UNKNOWN"
+                )
+                terminal = rows[-1] if rows else None
+                cursor.update({
+                    "end_slot": int(terminal.get("slot") or 0) if terminal else 0,
+                    "end_signature": (
+                        str(terminal.get("signature") or "")
+                        if terminal else "EMPTY_BOUNDED_RANGE"
+                    ),
+                    "continuity_state": continuity,
+                    "cursor_advanced": continuity == "CONTIGUOUS",
+                    "unresolved_reason": (
+                        None if continuity == "CONTIGUOUS"
+                        else "BOUNDED_COVERAGE_INCOMPLETE" if continuity == "GAPPED"
+                        else "NEXT_DECLARED_PAGE_PENDING"
+                    ),
+                })
+                return complete(kind, (), responses, cursor_range=cursor)
+            except Exception as exc:
+                cursor.update({"continuity_state": "GAPPED", "cursor_advanced": False,
+                               "unresolved_reason": getattr(exc, "code", "SOURCE_FAILURE")})
+                return rpc_failure(kind, exc, responses)
+
+        def indexed_transaction(
+            kind: str, *, transaction_index: int, rows_key: str,
+            cursor: dict[str, Any],
+            decoder: Callable[[Mapping[str, Any] | None], Mapping[str, Any]],
+            role_prefix: str,
+        ) -> NormalizedSourceResult:
+            responses: list[TransportResponse] = []
+            try:
+                eligible_rows = [
+                    row for row in state[rows_key]
+                    if row.get("err") is None
+                    and str(row.get("confirmationStatus") or "") == "finalized"
+                    and row.get("signature")
+                ]
+                if transaction_index >= len(eligible_rows):
+                    return complete(kind, (), (), cursor_range=cursor)
+                signature = str(eligible_rows[transaction_index]["signature"])
+                response = rpc_call(
+                    "getTransaction",
+                    [signature, {"encoding": "json", "commitment": "finalized",
+                                 "maxSupportedTransactionVersion": 0}],
+                    f"{role_prefix}_TRANSACTION_{transaction_index + 1}",
+                )
+                responses.append(response)
+                decoded = dict(decoder(
+                    response.payload if isinstance(response.payload, Mapping) else None
+                ))
+                if not decoded.get("supported"):
+                    raise LiveAcquisitionTransportError(
+                        "UNSUPPORTED_PUMP_CONTRACT", response.endpoint_role
+                    )
+                mint = str(decoded["mint"])
+                observations: list[dict[str, Any]] = []
+                if kind == "pumpfun_create_index_transaction":
+                    state["origins"][mint] = {**decoded, "signature": signature}
+                    observations.append({
+                        "mint": mint, "base_mint": mint,
+                        "lineage_claim": "PUMP_ORIGIN_CONFIRMED",
+                        "facts": {"pump_origin_signature": signature,
+                                  "pump_origin_contract_hash": PUMP_IDL_SHA256},
+                    })
+                else:
+                    state["migrations"][mint] = {
+                        **decoded, "signature": signature, "tx_result": response.payload,
+                    }
+                return complete(kind, observations, responses, cursor_range=cursor)
+            except Exception as exc:
+                return rpc_failure(kind, exc, responses)
+
+        def mint_batch(_context: SourceAdapterContext) -> NormalizedSourceResult:
+            responses: list[TransportResponse] = []
+            try:
+                mints = sorted(set(state["pairs"]) | set(state["origins"]) | set(state["migrations"]))[:cap]
+                if not mints:
+                    return complete("candidate_mint_account_batch", (), ())
+                response = rpc_call("getMultipleAccounts", [mints, {"encoding": "base64",
+                    "commitment": "finalized"}], "CANDIDATE_MINT_ACCOUNT_BATCH")
+                responses.append(response)
+                values = (response.payload or {}).get("value") if isinstance(response.payload, Mapping) else None
+                if not isinstance(values, list) or len(values) != len(mints):
+                    raise LiveAcquisitionTransportError("SOURCE_MALFORMED", response.endpoint_role)
+                observations = []
+                for mint, account in zip(mints, values, strict=True):
+                    owner = str((account or {}).get("owner") or "") if isinstance(account, Mapping) else ""
+                    supported_owner = owner in {TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID}
+                    authority_safe = False
+                    mint_state_valid = False
+                    data = (account or {}).get("data") if isinstance(account, Mapping) else None
+                    try:
+                        raw = base64.b64decode(data[0], validate=True) if (
+                            isinstance(data, (list, tuple)) and data and isinstance(data[0], str)
+                        ) else b""
+                        if owner == TOKEN_PROGRAM_ID and len(raw) == 82:
+                            mint_state_valid = _decode_spl_token_base_mint_state(raw)[0]
+                        elif owner == TOKEN_2022_PROGRAM_ID and len(raw) == 166:
+                            # The adopted set is deliberately empty for this
+                            # first live owner: valid extensionless Token-2022
+                            # mints only; every TLV extension fails closed.
+                            mint_state_valid = _decode_token_2022_mint_state(raw)[0]
+                        authority_safe = (
+                            mint_state_valid
+                            and raw[0:4] == b"\0" * 4
+                            and raw[46:50] == b"\0" * 4
+                        )
+                    except (ValueError, TypeError):
+                        authority_safe = False
+                    status = "PASS" if supported_owner and mint_state_valid else "FAIL"
+                    state["mint_safety"][mint] = authority_safe
+                    observations.append({"mint": mint, "base_mint": mint,
+                        "token_program_id": owner or None, "lineage_claim": "UNKNOWN_ORIGIN",
+                        "facts": {"mint_status": status, "token_program_status": status,
+                                  "safety_status": "PASS" if authority_safe else "FAIL"}})
+                return complete("candidate_mint_account_batch", observations, responses)
+            except Exception as exc:
+                return rpc_failure("candidate_mint_account_batch", exc, responses)
+
+        def pool_batch(_context: SourceAdapterContext) -> NormalizedSourceResult:
+            responses: list[TransportResponse] = []
+            try:
+                migrations = [state["migrations"][mint] for mint in sorted(state["migrations"])[:cap]]
+                target_mints = {
+                    str(pair.get("pair_address")): mint
+                    for mint, pair in state["pairs"].items()
+                    if pair.get("pair_address")
+                }
+                target_mints.update({str(item["pool_address"]): str(item["mint"])
+                                     for item in migrations})
+                pools = sorted(target_mints)[: cap * 2]
+                if not pools:
+                    return complete(
+                        "pumpswap_pool_account_batch", (), (), cursor_range=migration_cursor
+                    )
+                response = rpc_call("getMultipleAccounts", [pools, {"encoding": "base64",
+                    "commitment": "finalized"}], "PUMPSWAP_POOL_ACCOUNT_BATCH")
+                responses.append(response)
+                values = (response.payload or {}).get("value") if isinstance(response.payload, Mapping) else None
+                if not isinstance(values, list) or len(values) != len(pools):
+                    raise LiveAcquisitionTransportError("SOURCE_MALFORMED", response.endpoint_role)
+                account_infos = dict(zip(pools, values, strict=True)); observations = []
+                migration_pools = {str(item["pool_address"]) for item in migrations}
+                for pool in pools:
+                    if pool in migration_pools:
+                        continue
+                    account = account_infos.get(pool)
+                    decoded_pool = decode_pumpswap_pool_account(
+                        account if isinstance(account, Mapping) else None,
+                        pool_address=pool,
+                    )
+                    facts = {
+                        "pool_status": "PASS"
+                    } if (
+                        decoded_pool.get("decoded")
+                        and decoded_pool.get("base_mint") == target_mints[pool]
+                        and decoded_pool.get("quote_mint") == WSOL_MINT
+                    ) else {}
+                    observations.append({"mint": target_mints[pool], "pool": pool,
+                        "pool_program_id": (
+                            str(account.get("owner") or "") if isinstance(account, Mapping) else None
+                        ), "base_mint": target_mints[pool],
+                        "quote_mint": decoded_pool.get("quote_mint"),
+                        "lineage_claim": "UNKNOWN_ORIGIN", "facts": facts})
+                for item in migrations:
+                    mint = str(item["mint"]); pool = str(item["pool_address"])
+                    verified = verify_pinned_pump_migration(item["tx_result"], account_infos,
+                                                            expected_mint=mint, finalized=True)
+                    if not verified.get("verified"):
+                        continue
+                    origin = state["origins"].get(mint)
+                    observations.append({"mint": mint, "pool": pool,
+                        "pool_program_id": PUMPSWAP_AMM_PROGRAM_ID, "base_mint": mint,
+                        "quote_mint": WSOL_MINT, "token_program_id": TOKEN_PROGRAM_ID,
+                        "venue_label": "PUMPSWAP", "lineage_claim": "PUMP_GRADUATION_CONFIRMED",
+                        "facts": {"pool_status": "PASS",
+                            "pump_origin_signature": (origin or {}).get("signature"),
+                            "pump_origin_contract_hash": PUMP_IDL_SHA256,
+                            "pump_migration_signature": item["signature"],
+                            "pump_migration_contract_hash": PUMP_IDL_SHA256,
+                            "pumpswap_account_hash": str(verified["pool"].get("contract_hash")),
+                            "pumpswap_contract_hash": PUMPSWAP_IDL_SHA256,
+                            "pumpswap_index": int(verified["pool"]["index"])}})
+                return complete("pumpswap_pool_account_batch", observations, responses)
+            except Exception as exc:
+                return rpc_failure("pumpswap_pool_account_batch", exc, responses)
+
+        def target_mints() -> list[str]:
+            return sorted(set(state["pairs"]) | set(state["migrations"]))[:cap]
+
+        def holder_reference(
+            _context: SourceAdapterContext, *, candidate_index: int,
+        ) -> NormalizedSourceResult:
+            responses: list[TransportResponse] = []
+            try:
+                mints = target_mints()
+                if candidate_index >= len(mints):
+                    return complete("holder_concentration_reference", (), ())
+                mint = mints[candidate_index]
+                largest = rpc_call(
+                    "getTokenLargestAccounts", [mint, {"commitment": "finalized"}],
+                    f"HOLDER_LARGEST_ACCOUNTS_{candidate_index + 1}",
+                )
+                responses.append(largest)
+                supply = rpc_call(
+                    "getTokenSupply", [mint, {"commitment": "finalized"}],
+                    f"HOLDER_TOKEN_SUPPLY_{candidate_index + 1}",
+                )
+                responses.append(supply)
+                result = normalize_solana_rpc_holder_response({
+                    "token_mint": mint,
+                    # The one-shot RPC transport returns the JSON-RPC result;
+                    # the adopted holder normalizer consumes the full envelope.
+                    "largest_accounts_result": {"result": largest.payload},
+                    "token_supply_result": {"result": supply.payload},
+                    "underlying_operation_count": 2,
+                }, request_kind="holder_concentration_reference")
+                label = str(
+                    (result.normalized_payload or {}).get("holder_concentration_label") or ""
+                )
+                observation = {
+                    "mint": mint, "base_mint": mint,
+                    "lineage_claim": "UNKNOWN_ORIGIN",
+                    "facts": {"holder_status": (
+                        "PASS" if label == "HOLDER_CONCENTRATION_HEALTHY" else "FAIL"
+                    )},
+                }
+                return complete("holder_concentration_reference", (observation,), responses)
+            except Exception as exc:
+                return rpc_failure("holder_concentration_reference", exc, responses)
+
+        def goplus_reference(
+            _context: SourceAdapterContext, *, candidate_index: int,
+        ) -> NormalizedSourceResult:
+            responses: list[TransportResponse] = []
+            try:
+                mints = target_mints()
+                if candidate_index >= len(mints):
+                    result = NormalizedSourceResult(
+                        source_name="goplus", request_kind="safety_reference",
+                        source_status=SourceStatus.COMPLETE,
+                        data_quality_label=DataQualityLabel.CLEAN_DATA,
+                        normalized_payload=MappingProxyType({"candidate_observations": []}),
+                    )
+                    return _decorate(result, (), {"declared_operation_ceiling": True})
+                mint = mints[candidate_index]
+                response = transport.http_json(
+                    url=GOPLUS_SOLANA_TOKEN_SECURITY_URL.format(token_mint=mint),
+                    headers=PUBLIC_HEADERS, timeout_seconds=timeout,
+                    byte_ceiling=byte_cap,
+                    endpoint_role=f"GOPLUS_SAFETY_REFERENCE_{candidate_index + 1}",
+                )
+                responses.append(response)
+                payload = dict(response.payload) if isinstance(response.payload, Mapping) else {}
+                payload["_requested_token_mint"] = mint
+                result = normalize_goplus_payload(payload, request_kind="safety_reference")
+                data = dict(result.normalized_payload or {})
+                explicit_risk = any(
+                    str(data.get(key, "")) in {"1", "true", "True"}
+                    for key in ("mintable", "freezable")
+                )
+                observation = {
+                    "mint": mint, "base_mint": mint,
+                    "lineage_claim": "UNKNOWN_ORIGIN",
+                    # GoPlus absence is optional/unknown; only an explicit
+                    # adopted risk fact may turn the categorical gate FAIL.
+                    "facts": ({"safety_status": "FAIL"} if explicit_risk else {}),
+                }
+                result = NormalizedSourceResult(source_name="goplus", request_kind="safety_reference",
+                    source_status=SourceStatus.COMPLETE, data_quality_label=DataQualityLabel.CLEAN_DATA,
+                    normalized_payload=MappingProxyType({"candidate_observations": [observation]}))
+                return _decorate(result, responses, {"declared_operation_ceiling": True})
+            except Exception as exc:
+                return _failure("goplus", "safety_reference", exc,
+                                [_operation_detail(x) for x in responses])
+
+        source_budgets = policy["source_budgets"]["solana_rpc"]
+        create_page_count = int(source_budgets["pumpfun_create_index_signature_page"])
+        migration_page_count = int(source_budgets["pumpfun_migration_signature_page"])
+        # The operation plan never exceeds either per-kind policy budgets or
+        # the Source Governor's 30 Solana requests/minute. It resolves at most
+        # N create and N migrate transactions and N holder candidates.
+        transaction_count = min(
+            int(source_budgets["pumpfun_create_index_transaction"]),
+            int(source_budgets["pumpfun_migration_transaction"]),
+            int(policy["selection_capacity"]),
+        )
+        operations = [
+            AcquisitionSourceOperation("dexscreener", "candidate_nomination",
+                _OperationAdapter("dexscreener", "candidate_nomination", dex), required=False,
+                expected_transport_operations=2),
+            AcquisitionSourceOperation("geckoterminal", "candidate_nomination",
+                _OperationAdapter("geckoterminal", "candidate_nomination", gecko), required=False),
+            AcquisitionSourceOperation(
+                "dexscreener", "candidate_market_batch",
+                _OperationAdapter(
+                    "dexscreener", "candidate_market_batch",
+                    lambda c: market_materialization("dexscreener"),
+                ),
+                required=False, expected_transport_operations=0,
+            ),
+            AcquisitionSourceOperation(
+                "geckoterminal", "candidate_market_batch",
+                _OperationAdapter(
+                    "geckoterminal", "candidate_market_batch",
+                    lambda c: market_materialization("geckoterminal"),
+                ),
+                required=False, expected_transport_operations=0,
+            ),
+        ]
+        operations.extend(
+            AcquisitionSourceOperation(
+                "solana_rpc", "pumpfun_create_index_signature_page",
+                _OperationAdapter(
+                    "solana_rpc", "pumpfun_create_index_signature_page",
+                    lambda c, page_index=page_index: signature_page(
+                        "pumpfun_create_index_signature_page",
+                        indexed_address=PUMP_CREATE_INDEX_ADDRESS,
+                        page_index=page_index, page_limit=create_page_count,
+                        transaction_limit=transaction_count, cursor=create_cursor,
+                        role_prefix="PUMP_CREATE", rows_key="create_rows",
+                        exhausted_key="create_exhausted",
+                    ),
+                ),
+                required=page_index + 1 == create_page_count,
+                expected_transport_operations=1,
+                cursor_range=create_cursor,
+            )
+            for page_index in range(create_page_count)
+        )
+        operations.extend(
+            AcquisitionSourceOperation(
+                "solana_rpc", "pumpfun_create_index_transaction",
+                _OperationAdapter(
+                    "solana_rpc", "pumpfun_create_index_transaction",
+                    lambda c, transaction_index=transaction_index: indexed_transaction(
+                        "pumpfun_create_index_transaction",
+                        transaction_index=transaction_index, rows_key="create_rows",
+                        cursor=create_cursor,
+                        decoder=decode_supported_pump_creation_transaction,
+                        role_prefix="PUMP_CREATE",
+                    ),
+                ),
+                expected_transport_operations=1, cursor_range=create_cursor,
+            )
+            for transaction_index in range(transaction_count)
+        )
+        operations.extend(
+            AcquisitionSourceOperation(
+                "solana_rpc", "pumpfun_migration_signature_page",
+                _OperationAdapter(
+                    "solana_rpc", "pumpfun_migration_signature_page",
+                    lambda c, page_index=page_index: signature_page(
+                        "pumpfun_migration_signature_page",
+                        indexed_address=PUMP_PROGRAM_ID,
+                        page_index=page_index, page_limit=migration_page_count,
+                        transaction_limit=transaction_count, cursor=migration_cursor,
+                        role_prefix="PUMP_MIGRATION", rows_key="migration_rows",
+                        exhausted_key="migration_exhausted",
+                    ),
+                ),
+                required=page_index + 1 == migration_page_count,
+                expected_transport_operations=1,
+                cursor_range=migration_cursor,
+            )
+            for page_index in range(migration_page_count)
+        )
+        operations.extend(
+            AcquisitionSourceOperation(
+                "solana_rpc", "pumpfun_migration_transaction",
+                _OperationAdapter(
+                    "solana_rpc", "pumpfun_migration_transaction",
+                    lambda c, transaction_index=transaction_index: indexed_transaction(
+                        "pumpfun_migration_transaction",
+                        transaction_index=transaction_index, rows_key="migration_rows",
+                        cursor=migration_cursor,
+                        decoder=decode_supported_pump_migration_transaction,
+                        role_prefix="PUMP_MIGRATION",
+                    ),
+                ),
+                expected_transport_operations=1, cursor_range=migration_cursor,
+            )
+            for transaction_index in range(transaction_count)
+        )
+        operations.extend((
+            AcquisitionSourceOperation(
+                "solana_rpc", "candidate_mint_account_batch",
+                _OperationAdapter("solana_rpc", "candidate_mint_account_batch", mint_batch),
+            ),
+            AcquisitionSourceOperation(
+                "solana_rpc", "pumpswap_pool_account_batch",
+                _OperationAdapter("solana_rpc", "pumpswap_pool_account_batch", pool_batch),
+                cursor_range=migration_cursor,
+            ),
+        ))
+        operations.extend(
+            AcquisitionSourceOperation(
+                "solana_rpc", "holder_concentration_reference",
+                _OperationAdapter(
+                    "solana_rpc", "holder_concentration_reference",
+                    lambda c, candidate_index=candidate_index: holder_reference(
+                        c, candidate_index=candidate_index
+                    ),
+                ),
+                expected_transport_operations=2,
+            )
+            for candidate_index in range(int(policy["selection_capacity"]))
+        )
+        if self.configuration.goplus_enabled:
+            operations.extend(
+                AcquisitionSourceOperation(
+                    "goplus", "safety_reference",
+                    _OperationAdapter(
+                        "goplus", "safety_reference",
+                        lambda c, candidate_index=candidate_index: goplus_reference(
+                            c, candidate_index=candidate_index
+                        ),
+                    ),
+                    required=False,
+                )
+                for candidate_index in range(int(policy["selection_capacity"]))
+            )
+        return tuple(operations)
+
+
+def build_live_candidate_acquisition_transport_owner(
+    *, environment: Mapping[str, str] | None = None,
+    transport: CandidateAcquisitionOneShotTransport | None = None,
+) -> LiveCandidateAcquisitionTransportOwner:
+    return LiveCandidateAcquisitionTransportOwner(
+        load_live_acquisition_configuration(environment), transport=transport)
+
+
+__all__ = ["RPC_ENVIRONMENT_NAME", "LiveAcquisitionConfigurationError",
+           "LiveAcquisitionConfiguration", "TransportResponse",
+           "CandidateAcquisitionOneShotTransport",
+           "UrllibCandidateAcquisitionOneShotTransport",
+           "LiveCandidateAcquisitionTransportOwner",
+           "load_live_acquisition_configuration",
+           "build_live_candidate_acquisition_transport_owner"]

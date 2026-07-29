@@ -550,7 +550,8 @@ def _provider_observations(
             "bytes_used": bytes_used,
             "rows_used": len(rows),
             "duration_milliseconds": duration_milliseconds,
-            "cursor_range": dict(operation.cursor_range) if operation.cursor_range else None,
+            "cursor_range": dict(payload.get("cursor_range") or operation.cursor_range)
+                if (payload.get("cursor_range") or operation.cursor_range) else None,
             **row,
         }
         output.append(merged)
@@ -573,6 +574,7 @@ def _persist_work(
     duration_milliseconds: int,
     cause: str,
     now: str,
+    underlying_operations: Sequence[Mapping[str, Any]] | None = None,
 ) -> None:
     work_id = f"cawork-{_sha((integration_id, ordinal))[:32]}"
     connection = _connect(db_path)
@@ -603,9 +605,13 @@ def _persist_work(
                     cause, now, now, now,
                 ),
             )
+            details = [dict(item) for item in (underlying_operations or ())]
+            if details and len(details) != transport_operations:
+                raise CandidateAcquisitionIntegrationError("OPERATION_ACCOUNTING_MISMATCH")
             per_operation_bytes = bytes_used // max(transport_operations, 1)
             residual_bytes = bytes_used % max(transport_operations, 1)
             for operation_ordinal in range(1, transport_operations + 1):
+                detail = details[operation_ordinal - 1] if details else {}
                 connection.execute(
                     """INSERT INTO printer_candidate_acquisition_transport_operations(
                            operation_id,work_id,operation_ordinal,source_name,
@@ -615,12 +621,14 @@ def _persist_work(
                     (
                         f"catop-{_sha((work_id, operation_ordinal))[:32]}", work_id,
                         operation_ordinal, operation.source_name, operation.request_kind,
-                        f"UNDERLYING_OPERATION_{operation_ordinal}",
-                        "COMPLETE" if state == "SUCCEEDED" else "FAILED",
-                        "APPROVED_PRIMARY",
-                        per_operation_bytes + (
-                            residual_bytes if operation_ordinal == transport_operations else 0
-                        ),
+                        str(detail.get("operation_kind") or f"UNDERLYING_OPERATION_{operation_ordinal}"),
+                        str(detail.get("operation_state") or (
+                            "COMPLETE" if state == "SUCCEEDED" else "FAILED")),
+                        str(detail.get("redacted_endpoint_role") or "APPROVED_PRIMARY"),
+                        int(detail.get("bytes_used") if "bytes_used" in detail else (
+                            per_operation_bytes + (
+                                residual_bytes if operation_ordinal == transport_operations else 0
+                            ))),
                         now,
                     ),
                 )
@@ -877,20 +885,58 @@ def run_candidate_acquisition_integration(
                 ),
                 now=_parse(now),
             )
+            # Re-read cancellation/lease state immediately after the transport
+            # and before accepting, recording, or composing its evidence.
+            renew_candidate_acquisition_lease(
+                db_path, lease_id=lease_id, integration_id=integration_id,
+                execution_id=execution_id, owner_id=owner_id, now=now,
+                lease_seconds=lease_seconds,
+            )
             elapsed_ms = int((time.monotonic() - op_started) * 1000)
             normalized = source_execution.normalized_result
             payload = dict(normalized.normalized_payload or {})
             actual_operations = int(
-                payload.get("underlying_operation_count")
-                or operation.expected_transport_operations
+                payload["underlying_operation_count"]
+                if "underlying_operation_count" in payload
+                else operation.expected_transport_operations
             )
-            if actual_operations != int(operation.expected_transport_operations):
+            declared_ceiling = bool(payload.get("declared_operation_ceiling"))
+            if (
+                actual_operations < 0
+                or (declared_ceiling and actual_operations > int(operation.expected_transport_operations))
+                or (not declared_ceiling and actual_operations != int(operation.expected_transport_operations))
+            ):
                 fail_job(
                     db_path, job_id=job_id, error="OPERATION_ACCOUNTING_MISMATCH",
                     now=_parse(now), max_retries=0,
                 )
                 raise CandidateAcquisitionIntegrationError("OPERATION_ACCOUNTING_MISMATCH")
-            encoded_size = len(_canonical(payload).encode("utf-8"))
+            encoded_size = int(
+                payload["response_bytes"]
+                if "response_bytes" in payload
+                else len(_canonical(payload).encode("utf-8"))
+            )
+            if encoded_size < 0:
+                fail_job(db_path, job_id=job_id, error="OPERATION_BYTE_ACCOUNTING_MISMATCH",
+                         now=_parse(now), max_retries=0)
+                raise CandidateAcquisitionIntegrationError(
+                    "OPERATION_BYTE_ACCOUNTING_MISMATCH"
+                )
+            underlying_details = payload.get("underlying_operations")
+            if underlying_details is not None:
+                if (
+                    not isinstance(underlying_details, list)
+                    or len(underlying_details) != actual_operations
+                    or any(not isinstance(item, Mapping) for item in underlying_details)
+                ):
+                    fail_job(db_path, job_id=job_id, error="OPERATION_ACCOUNTING_MISMATCH",
+                             now=_parse(now), max_retries=0)
+                    raise CandidateAcquisitionIntegrationError("OPERATION_ACCOUNTING_MISMATCH")
+                detail_bytes = [int(item.get("bytes_used") or 0) for item in underlying_details]
+                if any(value < 0 for value in detail_bytes) or sum(detail_bytes) != encoded_size:
+                    fail_job(db_path, job_id=job_id, error="OPERATION_BYTE_ACCOUNTING_MISMATCH",
+                             now=_parse(now), max_retries=0)
+                    raise CandidateAcquisitionIntegrationError("OPERATION_BYTE_ACCOUNTING_MISMATCH")
             candidate_rows = _provider_observations(
                 operation=operation, normalized_result=normalized,
                 round_ordinal=ordinal, observed_at=now, expires_at=expires_at,
@@ -952,6 +998,9 @@ def run_candidate_acquisition_integration(
                 transport_operations=actual_operations, bytes_used=encoded_size,
                 rows_used=len(candidate_rows), duration_milliseconds=elapsed_ms,
                 cause=work_cause, now=now,
+                underlying_operations=(
+                    underlying_details if isinstance(underlying_details, list) else None
+                ),
             )
             governed_requests += 1
             transport_operations += actual_operations

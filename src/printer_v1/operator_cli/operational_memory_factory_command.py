@@ -98,6 +98,10 @@ from printer_v1.operator_cli.candidate_acquisition_integration import (
     replay_candidate_acquisition_integration_report,
     run_candidate_acquisition_integration,
 )
+from printer_v1.operator_cli.live_candidate_acquisition_transport import (
+    CandidateAcquisitionOneShotTransport,
+    build_live_candidate_acquisition_transport_owner,
+)
 
 
 POLICY_VERSION = "V2-9.8-15M-OPERATIONAL-V1"
@@ -2312,6 +2316,8 @@ def main(
     acquisition_execution_id: str | None = None,
     acquisition_now: str | None = None,
     acquisition_db_path: str | Path | None = None,
+    acquisition_environment: Mapping[str, str] | None = None,
+    acquisition_one_shot_transport: CandidateAcquisitionOneShotTransport | None = None,
 ) -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -2351,10 +2357,20 @@ def main(
                 operator_approved=args.operator_approved
             )
         elif args.mode in {CLI_MODE_N2, CLI_MODE_N7}:
+            resolved_transport_owner = acquisition_transport_owner
+            if resolved_transport_owner is None:
+                if not args.operator_approved:
+                    raise CandidateAcquisitionIntegrationError(
+                        "EXPLICIT_OPERATOR_APPROVAL_REQUIRED"
+                    )
+                resolved_transport_owner = build_live_candidate_acquisition_transport_owner(
+                    environment=acquisition_environment,
+                    transport=acquisition_one_shot_transport,
+                )
             result = run_candidate_acquisition_only(
                 mode=MODE_N2 if args.mode == CLI_MODE_N2 else MODE_N7,
                 operator_approved=args.operator_approved,
-                transport_owner=acquisition_transport_owner,
+                transport_owner=resolved_transport_owner,
                 preflight_override=acquisition_preflight,
                 execution_id=acquisition_execution_id,
                 now=acquisition_now,

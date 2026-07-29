@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 from copy import deepcopy
 import hashlib
+import io
 import json
 from pathlib import Path
 import sqlite3
@@ -16,16 +18,26 @@ from printer_v1.discovery.candidate_acquisition import (
     legacy_two_token_runtime_projection,
 )
 from printer_v1.operator_cli import operational_memory_factory_command as command
+from printer_v1.operator_cli import live_candidate_acquisition_transport as live_transport
 from printer_v1.operator_cli.candidate_acquisition_integration import (
     CLI_MODE_N2,
     CLI_MODE_N7,
     MODE_N2,
     MODE_N7,
+    MODE_POLICIES,
     AcquisitionSourceOperation,
     CandidateAcquisitionIntegrationError,
     FrozenAcquisitionTransportOwner,
     replay_candidate_acquisition_integration_report,
     run_candidate_acquisition_integration,
+)
+from printer_v1.operator_cli.live_candidate_acquisition_transport import (
+    LiveAcquisitionConfigurationError,
+    LiveAcquisitionTransportError,
+    LiveCandidateAcquisitionTransportOwner,
+    TransportResponse,
+    UrllibCandidateAcquisitionOneShotTransport,
+    build_live_candidate_acquisition_transport_owner,
 )
 from printer_v1.sources.contracts import NormalizedSourceResult
 from printer_v1.sources.dexscreener import (
@@ -41,7 +53,12 @@ from printer_v1.sources.geckoterminal import (
     fixture_failure_transport as geckoterminal_fixture_failure_transport,
     fixture_success_transport as geckoterminal_fixture_success_transport,
 )
-from printer_v1.sources.pump_contracts import TOKEN_PROGRAM_ID, WSOL_MINT
+from printer_v1.sources.pump_contracts import (
+    PUMPSWAP_POOL_DISCRIMINATOR,
+    TOKEN_PROGRAM_ID,
+    WSOL_MINT,
+)
+from printer_v1.sources.pumpswap import PUMPSWAP_AMM_PROGRAM_ID, _b58decode
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,6 +68,116 @@ FIXTURE = json.loads(
 NOW = "2026-07-29T12:00:00+00:00"
 EXPIRES = "2026-07-29T14:00:00+00:00"
 POOL_PROGRAM = "675kPX9MHTjS2zt1qfr1NYHuzeuycG6t58pk8Rai7Lb"
+
+
+def _pumpswap_account(mint: str, ordinal: int) -> dict:
+    keys = [item for row in FIXTURE["candidates"] for item in row]
+    creator = keys[(ordinal * 5) % len(keys)]
+    remaining = [keys[(ordinal * 5 + offset) % len(keys)] for offset in range(1, 4)]
+    raw = (
+        PUMPSWAP_POOL_DISCRIMINATOR
+        + b"\1"
+        + (ordinal + 1).to_bytes(2, "little")
+        + b"".join(_b58decode(item) for item in (
+            creator, mint, WSOL_MINT, remaining[0], remaining[1], remaining[2]
+        ))
+        + (1_000_000).to_bytes(8, "little")
+        + _b58decode(creator)
+        + b"\0\0"
+        + (0).to_bytes(16, "little", signed=True)
+    )
+    return {
+        "owner": PUMPSWAP_AMM_PROGRAM_ID,
+        "data": [base64.b64encode(raw).decode(), "base64"],
+    }
+
+
+class _CanonicalMockNetworkTransport:
+    """Frozen responses at the live owner's one-shot HTTP/RPC boundary."""
+
+    def __init__(self, count: int) -> None:
+        self.rows = _candidate_rows(count)
+        self.mints = {row["mint"] for row in self.rows}
+        self.pools = {
+            row["pool"]: _pumpswap_account(row["mint"], ordinal)
+            for ordinal, row in enumerate(self.rows)
+        }
+        self.calls: list[tuple[str, str]] = []
+
+    def _result(self, payload, operation_kind: str, endpoint_role: str) -> TransportResponse:
+        self.calls.append((operation_kind, endpoint_role))
+        size = len(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
+        return TransportResponse(payload, size, operation_kind, endpoint_role)
+
+    def http_json(self, *, url, headers, timeout_seconds, byte_ceiling, endpoint_role):
+        del url, headers, timeout_seconds, byte_ceiling
+        if endpoint_role == "DEXSCREENER_PROFILES":
+            payload = [
+                {"chainId": "solana", "tokenAddress": row["mint"]}
+                for row in self.rows
+            ]
+        elif endpoint_role == "DEXSCREENER_MARKET_BATCH":
+            payload = [
+                {
+                    "chainId": "solana", "pairAddress": row["pool"],
+                    "baseToken": {"address": row["mint"], "symbol": "MEME"},
+                    "liquidity": {"usd": 10_000.0},
+                    "volume": {"m5": 1_000.0, "h1": 4_000.0},
+                    "txns": {"m5": {"buys": 2, "sells": 1}},
+                    "pairCreatedAt": 1_785_326_000_000,
+                }
+                for row in self.rows
+            ]
+        elif endpoint_role == "GECKOTERMINAL_NEW_POOLS":
+            row = self.rows[0]
+            payload = {"data": [{
+                "id": f"solana_{row['pool']}",
+                "attributes": {
+                    "chain": "solana", "address": row["pool"],
+                    "base_token_address": row["mint"],
+                    "reserve_in_usd": 10_000.0,
+                    "volume_usd": {"m5": 1_000.0, "h1": 4_000.0},
+                    "transactions": {"m5": {"buys": 2, "sells": 1}},
+                    "pool_created_at": "2026-07-29T10:00:00+00:00",
+                },
+            }]}
+        elif endpoint_role.startswith("GOPLUS_SAFETY_REFERENCE_"):
+            payload = {"result": {}}
+        else:
+            raise AssertionError(f"unexpected HTTP role: {endpoint_role}")
+        return self._result(payload, "HTTP_GET", endpoint_role)
+
+    def rpc_json(self, *, rpc_url, method, params, timeout_seconds, byte_ceiling,
+                 endpoint_role):
+        del rpc_url, timeout_seconds, byte_ceiling
+        if method == "getSignaturesForAddress":
+            payload = []
+        elif method == "getMultipleAccounts":
+            addresses = list(params[0])
+            values = []
+            for address in addresses:
+                if address in self.mints:
+                    mint_data = bytearray(82)
+                    mint_data[45] = 1
+                    values.append({
+                        "owner": TOKEN_PROGRAM_ID,
+                        "data": [base64.b64encode(mint_data).decode(), "base64"],
+                    })
+                else:
+                    values.append(self.pools[address])
+            payload = {"context": {"slot": 420_000_000}, "value": values}
+        elif method == "getTokenLargestAccounts":
+            payload = {"context": {"slot": 420_000_000}, "value": [
+                {"address": self.rows[0]["pool"], "amount": "1", "decimals": 0}
+            ]}
+        elif method == "getTokenSupply":
+            payload = {"context": {"slot": 420_000_000}, "value": {
+                "amount": "1000", "decimals": 0, "uiAmount": 1000,
+                "uiAmountString": "1000",
+            }}
+        else:
+            raise AssertionError(f"unexpected RPC method: {method}")
+        return self._result(payload, method, endpoint_role)
 
 
 class _StaticFailureAdapter:
@@ -394,17 +521,29 @@ def test_offline_end_to_end_exact_modes(mode: str, count: int, expected: int) ->
 
 
 @pytest.mark.parametrize(
-    ("cli_mode", "mode", "count", "expected"),
-    ((CLI_MODE_N2, MODE_N2, 4, 2), (CLI_MODE_N7, MODE_N7, 14, 7)),
+    ("cli_mode", "mode", "count", "expected", "expected_jobs", "expected_calls"),
+    (
+        (CLI_MODE_N2, MODE_N2, 4, 2, 16, 13),
+        (CLI_MODE_N7, MODE_N7, 14, 7, 38, 28),
+    ),
 )
 def test_public_command_dispatches_canonical_offline_path(
-    capsys, cli_mode: str, mode: str, count: int, expected: int
+    capsys, monkeypatch, cli_mode: str, mode: str, count: int, expected: int,
+    expected_jobs: int, expected_calls: int,
 ) -> None:
     temp, path = _db()
     try:
+        seen = {}
+        network = _CanonicalMockNetworkTransport(count)
+        real_run = command.run_candidate_acquisition_only
+        def capture_owner(**kwargs):
+            seen["owner"] = kwargs["transport_owner"]
+            return real_run(**kwargs)
+        monkeypatch.setattr(command, "run_candidate_acquisition_only", capture_owner)
         rc = command.main(
             [cli_mode, "--operator-approved"],
-            acquisition_transport_owner=_owner(count),
+            acquisition_environment={"PRINTER_SOLANA_RPC_URL": "https://rpc.example.invalid/path?key=secret"},
+            acquisition_one_shot_transport=network,
             acquisition_preflight=_preflight(path),
             acquisition_execution_id=f"cli-{expected}",
             acquisition_now=NOW,
@@ -413,8 +552,274 @@ def test_public_command_dispatches_canonical_offline_path(
         assert rc == 0
         payload = json.loads(capsys.readouterr().out)
         assert payload["mode"] == mode
-        assert payload["selected_count"] == expected
+        assert payload["selected_count"] == expected, json.dumps(payload, indent=2)
+        assert payload["projection_count"] == (2 if expected == 2 else 0)
+        assert payload["runtime_handoff_count"] == 0
         assert payload["lifecycle_started"] is False
+        assert payload["scheduler_jobs_created"] == expected_jobs
+        assert payload["scheduler_jobs_created"] == payload["governed_requests_used"]
+        assert payload["transport_operations_used"] == expected_calls
+        assert payload["transport_operations_used"] == len(network.calls)
+        assert payload["active_lease_count"] == 0
+        assert payload["scheduler_residue_terminalized"] == 0
+        assert not any(payload["forbidden_table_deltas"].values())
+        assert isinstance(seen["owner"], LiveCandidateAcquisitionTransportOwner)
+        assert "secret" not in json.dumps(payload)
+        assert replay_candidate_acquisition_integration_report(
+            path, execution_id=f"cli-{expected}"
+        ) == payload
+        call_count = len(network.calls)
+        assert command.main(
+            [cli_mode, "--operator-approved"],
+            acquisition_environment={
+                "PRINTER_SOLANA_RPC_URL": "https://rpc.example.invalid/path?key=secret"
+            },
+            acquisition_one_shot_transport=network,
+            acquisition_preflight=_preflight(path),
+            acquisition_execution_id=f"cli-{expected}",
+            acquisition_now=NOW,
+            acquisition_db_path=path,
+        ) == 0
+        assert json.loads(capsys.readouterr().out) == payload
+        assert len(network.calls) == call_count
+        if expected == 7:
+            with pytest.raises(
+                CandidateAcquisitionError,
+                match="LEGACY_RUNTIME_REQUIRES_EXACTLY_TWO",
+            ):
+                legacy_two_token_runtime_projection(path, payload["manifest_id"])
+    finally:
+        temp.cleanup()
+
+
+@pytest.mark.parametrize(
+    ("environment", "reason"),
+    (
+        ({}, "ACQUISITION_SOLANA_RPC_URL_REQUIRED"),
+        ({"PRINTER_SOLANA_RPC_URL": "not a url"}, "ACQUISITION_SOLANA_RPC_URL_MALFORMED"),
+        ({"PRINTER_SOLANA_RPC_URL": "http://rpc.example.invalid"}, "ACQUISITION_SOLANA_RPC_HTTPS_REQUIRED"),
+        ({"PRINTER_SOLANA_RPC_URL": "https://user:secret@rpc.example.invalid"}, "ACQUISITION_SOLANA_RPC_URL_MALFORMED"),
+    ),
+)
+def test_public_command_blocks_invalid_live_configuration_before_preflight(
+    capsys, monkeypatch, environment: dict[str, str], reason: str
+) -> None:
+    monkeypatch.setattr(
+        command, "build_activation_preflight",
+        lambda **_kwargs: pytest.fail("preflight must not run for invalid transport configuration"),
+    )
+    rc = command.main(
+        [CLI_MODE_N2, "--operator-approved"], acquisition_environment=environment
+    )
+    assert rc == 1
+    payload = json.loads(capsys.readouterr().err)
+    assert payload["error_message"] == reason
+    assert payload["action_run_id"] is None
+    assert payload["source_calls"] == 0
+    assert payload["scheduler_runtime_calls"] == 0
+    assert "secret" not in json.dumps(payload)
+
+
+def test_public_command_requires_approval_before_configuration(capsys, monkeypatch) -> None:
+    monkeypatch.setattr(
+        command, "build_live_candidate_acquisition_transport_owner",
+        lambda **_kwargs: pytest.fail("configuration must not load before approval"),
+    )
+    assert command.main([CLI_MODE_N2]) == 1
+    assert json.loads(capsys.readouterr().err)["error_message"] == (
+        "EXPLICIT_OPERATOR_APPROVAL_REQUIRED"
+    )
+
+
+def test_unresolved_required_transport_blocks_during_construction() -> None:
+    with pytest.raises(
+        LiveAcquisitionConfigurationError,
+        match="ACQUISITION_REQUIRED_TRANSPORT_UNRESOLVED",
+    ):
+        build_live_candidate_acquisition_transport_owner(
+            environment={"PRINTER_SOLANA_RPC_URL": "https://rpc.example.invalid"},
+            transport=object(),
+        )
+
+
+def test_one_shot_transport_closes_response_and_reports_exact_bytes(monkeypatch) -> None:
+    class Response:
+        closed = False
+        def __enter__(self): return self
+        def __exit__(self, *_args): self.closed = True
+        def read(self, _limit): return b'{"ok":true}'
+    response = Response(); calls = []
+    monkeypatch.setattr(
+        live_transport.url_request, "urlopen",
+        lambda _request, timeout: calls.append(timeout) or response,
+    )
+    result = UrllibCandidateAcquisitionOneShotTransport().http_json(
+        url="https://provider.example.invalid/path", headers={}, timeout_seconds=3.0,
+        byte_ceiling=100, endpoint_role="FIXED_PROVIDER_ROLE",
+    )
+    assert result.payload == {"ok": True}
+    assert result.bytes_used == len(b'{"ok":true}')
+    assert response.closed is True
+    assert calls == [3.0]
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    ((b"{", "SOURCE_MALFORMED"), (b"x" * 11, "RESPONSE_BYTE_CEILING")),
+)
+def test_one_shot_transport_malformed_and_byte_failure_are_redacted(
+    monkeypatch, body: bytes, expected: str
+) -> None:
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return None
+        def read(self, _limit): return body
+    monkeypatch.setattr(live_transport.url_request, "urlopen", lambda *_args, **_kwargs: Response())
+    with pytest.raises(LiveAcquisitionTransportError) as caught:
+        UrllibCandidateAcquisitionOneShotTransport().http_json(
+            url="https://provider.example.invalid/path?api-key=secret", headers={},
+            timeout_seconds=1.0, byte_ceiling=10, endpoint_role="REDACTED_ROLE",
+        )
+    assert caught.value.code == expected
+    assert "secret" not in str(caught.value)
+    assert "provider.example" not in str(caught.value)
+
+
+def test_one_shot_transport_timeout_has_one_attempt_and_no_url_secret(monkeypatch) -> None:
+    calls = []
+    def timeout(*_args, **_kwargs):
+        calls.append(1)
+        raise TimeoutError("api-key=secret")
+    monkeypatch.setattr(live_transport.url_request, "urlopen", timeout)
+    with pytest.raises(LiveAcquisitionTransportError) as caught:
+        UrllibCandidateAcquisitionOneShotTransport().rpc_json(
+            rpc_url="https://rpc.example.invalid/path?api-key=secret",
+            method="getMultipleAccounts", params=[[]], timeout_seconds=1.0,
+            byte_ceiling=100, endpoint_role="RPC_BATCH",
+        )
+    assert caught.value.code == "SOURCE_TIMEOUT"
+    assert calls == [1]
+    assert "secret" not in str(caught.value)
+
+
+def test_one_shot_transport_auth_failure_closes_and_accounts_redacted_body(
+    monkeypatch,
+) -> None:
+    body = b"credential=secret"
+    failure = live_transport.url_error.HTTPError(
+        "https://rpc.example.invalid/path?api-key=secret", 401, "unauthorized", {},
+        io.BytesIO(body),
+    )
+    monkeypatch.setattr(
+        live_transport.url_request, "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
+    )
+    with pytest.raises(LiveAcquisitionTransportError) as caught:
+        UrllibCandidateAcquisitionOneShotTransport().rpc_json(
+            rpc_url="https://rpc.example.invalid/path?api-key=secret",
+            method="getMultipleAccounts", params=[[]], timeout_seconds=1.0,
+            byte_ceiling=100, endpoint_role="RPC_BATCH",
+        )
+    assert caught.value.code == "SOURCE_AUTH_UNAVAILABLE"
+    assert caught.value.bytes_used == len(body)
+    assert caught.value.operation_kind == "getMultipleAccounts"
+    assert failure.fp is None or failure.fp.closed
+    assert "secret" not in str(caught.value)
+    assert caught.value.__cause__ is None
+
+
+@pytest.mark.parametrize(("mode", "expected_cap"), ((MODE_N2, 4), (MODE_N7, 14)))
+def test_live_owner_declares_same_approved_source_plan(mode: str, expected_cap: int) -> None:
+    owner = build_live_candidate_acquisition_transport_owner(
+        environment={"PRINTER_SOLANA_RPC_URL": "https://rpc.example.invalid/path?api-key=secret"}
+    )
+    operations = owner.operations(mode=mode, policy=MODE_POLICIES[mode], execution_id="plan")
+    assert [item.request_kind for item in operations[:4]] == [
+        "candidate_nomination", "candidate_nomination",
+        "candidate_market_batch", "candidate_market_batch",
+    ]
+    assert all(item.expected_transport_operations == 0 for item in operations[2:4])
+    declared = {(item.source_name, item.request_kind) for item in operations}
+    assert {
+        ("dexscreener", "candidate_nomination"),
+        ("geckoterminal", "candidate_nomination"),
+        ("solana_rpc", "pumpfun_create_index_signature_page"),
+        ("solana_rpc", "pumpfun_migration_signature_page"),
+        ("solana_rpc", "candidate_mint_account_batch"),
+        ("solana_rpc", "pumpswap_pool_account_batch"),
+        ("solana_rpc", "holder_concentration_reference"),
+        ("goplus", "safety_reference"),
+    }.issubset(declared)
+    assert all(source not in {"dextools", "pumpportal", "birdeye"} for source, _ in declared)
+    holders = [item for item in operations if item.request_kind == "holder_concentration_reference"]
+    expected_selection = MODE_POLICIES[mode]["selection_capacity"]
+    assert len(holders) == expected_selection
+    assert all(item.expected_transport_operations == 2 for item in holders)
+    create_transactions = [
+        item for item in operations if item.request_kind == "pumpfun_create_index_transaction"
+    ]
+    migration_transactions = [
+        item for item in operations if item.request_kind == "pumpfun_migration_transaction"
+    ]
+    expected_transactions = expected_selection
+    assert len(create_transactions) == expected_transactions
+    assert len(migration_transactions) == expected_transactions
+    solana_operations = [item for item in operations if item.source_name == "solana_rpc"]
+    assert len(solana_operations) <= 30
+    assert len(operations) <= MODE_POLICIES[mode]["scheduler_job_ceiling"]
+    assert sum(item.expected_transport_operations for item in operations) <= (
+        MODE_POLICIES[mode]["transport_operation_ceiling"]
+    )
+    # No operation owns a provider loop. The only two-call composites are the
+    # fixed Dex nomination/market pair and fixed holder largest/supply pair.
+    assert max(item.expected_transport_operations for item in operations) == 2
+    assert owner.configuration.redacted_rpc_host == "rpc.example.invalid"
+    assert "secret" not in repr(owner.configuration)
+
+
+def test_response_byte_and_row_ceilings_fail_closed() -> None:
+    temp_b, path_b = _db(); temp_r, path_r = _db()
+    try:
+        byte_ops = list(_owner(4).frozen_operations)
+        byte_ops[0] = AcquisitionSourceOperation(
+            source_name="dexscreener", request_kind="candidate_nomination",
+            required=False, expected_transport_operations=1,
+            adapter=_adapter("dexscreener", {
+                "candidate_observations": [], "underlying_operation_count": 1,
+                "response_bytes": 16 * 1024 * 1024 + 1,
+            }),
+        )
+        byte_report = _run(path_b, mode=MODE_N2, execution_id="byte-ceiling",
+                           owner=FrozenAcquisitionTransportOwner(tuple(byte_ops)))
+        assert byte_report["first_terminal_cause"] == "RESPONSE_BYTE_CEILING"
+
+        row_ops = list(_owner(4).frozen_operations)
+        row_ops[0] = _operation(
+            "dexscreener", "candidate_nomination",
+            [{"mint": f"mint-{index}", "pool": f"pool-{index}"} for index in range(65)],
+            {"market_status": "PASS"}, required=False,
+        )
+        row_report = _run(path_r, mode=MODE_N2, execution_id="row-ceiling",
+                          owner=FrozenAcquisitionTransportOwner(tuple(row_ops)))
+        assert row_report["first_terminal_cause"] == "OBSERVATION_ROW_CEILING"
+    finally:
+        temp_b.cleanup(); temp_r.cleanup()
+
+
+@pytest.mark.parametrize(
+    "failure_type",
+    ("SOURCE_AUTH_UNAVAILABLE", "SOURCE_TIMEOUT", "SOURCE_MALFORMED"),
+)
+def test_required_source_failure_categories_do_not_retry(failure_type: str) -> None:
+    temp, path = _db()
+    try:
+        report = _run(path, mode=MODE_N2, execution_id=f"failure-{failure_type}",
+                      owner=_owner(4, required_pool_failure=failure_type))
+        assert report["status"] == "BLOCKED"
+        assert report["first_terminal_cause"] == "REQUIRED_SOURCE_FAILURE"
+        assert report["automatic_retry_created"] is False
+        assert report["successor_created"] is False
+        assert report["restart_created"] is False
     finally:
         temp.cleanup()
 
