@@ -1027,6 +1027,24 @@ backfill, implementation, migration, capacity above two, or another selective-1h
 proof. The next permitted sub-lane is the read-only **V2-9.8B Direct
 Pump/PumpSwap Contract Refresh and Pin Readiness Audit**.
 
+##### Candidate-Acquisition Foundation Superseding Clarification (2026-07-29)
+
+The combined audit/design/implementation/offline-proof lane is complete and
+supersedes the prior exclusive-source interpretation. Candidate discovery is
+multi-source: direct Pump/PumpSwap, DexScreener, GeckoTerminal, and optional
+free Birdeye Standard new-listing nomination. Pump/PumpSwap proof is mandatory
+for Pump-specific origin/graduation/canonical-pool claims, not for every token.
+Non-Pump and unknown-origin candidates may use the exact-present-pool branch.
+DEXTools remains deferred; PumpPortal foundation implementation is prohibited
+under its current API-key/wallet contract. No source preference, quota, score,
+rank, confidence, or weighting exists.
+
+The implementation is transport-free, capacity-neutral through N=16, and
+offline-only. Active Memory Factory capacity remains exactly two. No operational
+command, live source, RPC, WebSocket, backfill, selective-1h proof, retrieval, or
+financial feature is authorized. The next permitted task is the read-only
+**V2-9.8B post-foundation integration and activation-readiness audit**.
+
 Campaign rules:
 
 - begin with 2 active tokens;
@@ -1718,17 +1736,15 @@ learning quality, evidence quality, report clarity, or lock safety is not done.
 
 V2-9.7A through V2-9.7F and V2-9.8A are closed. V2-9.8A verdict is
 `V2_9_8A_OPERATOR_ACTIVATION_GATE_PASS`. V2-9.8B remains the active
-memory-growth lane. Inside it, the candidate-acquisition foundation roadmap
-adoption is closed PASS and the exact next permitted sub-lane is:
+memory-growth lane. Inside it, the candidate-acquisition foundation is
+implemented and offline-proven and the exact next permitted sub-lane is:
 
 ```text
-V2-9.8B Direct Pump/PumpSwap Contract Refresh and Pin Readiness Audit
+V2-9.8B Post-Foundation Integration and Activation-Readiness Audit
 ```
 
-Reason: direct Pump origin and joined direct Pump-migration/PumpSwap graduation
-are now required authority, but the current migration path is PumpPortal-led and
-the official dual-program contract has not been freshly pinned for that
-foundation. This next sub-lane is read-only. It does not authorize the published
-operational command, implementation, source execution, live observation,
-backfill, runtime capacity above two, or another selective-1h proof. Retrieval,
+Reason: the foundation mechanics are complete but no live integration or
+operational adoption was authorized or proven. This next sub-lane is read-only.
+It does not authorize the published operational command, source execution, live
+observation, backfill, runtime capacity above two, or another selective-1h proof. Retrieval,
 paper decisions, BUY/SELL/HOLD, positions, trades, audits, and PnL remain locked.

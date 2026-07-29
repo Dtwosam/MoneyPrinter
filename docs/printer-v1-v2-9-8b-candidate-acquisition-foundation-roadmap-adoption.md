@@ -1,5 +1,18 @@
 # Printer V1 V2-9.8B Candidate-Acquisition Foundation Roadmap Adoption
 
+> **Superseding clarification — 2026-07-29:** Candidate discovery is
+> multi-source. Pump/PumpSwap remains a required, first-class lane and the only
+> authority for Pump-specific origin/migration/canonical-pool claims, but it is
+> not the exclusive candidate universe. DexScreener and GeckoTerminal may
+> directly nominate candidates and contribute their supported market facts.
+> Birdeye may be used only through an adopted no-cost programmatic contract.
+> Non-Pump and honest unknown-origin candidates are not forced to possess Pump
+> lineage when exact Solana mint/token-program/current-pool, supported pool
+> owner/program, quote, market, age where required, safety, holder, liquidity,
+> tradeability, and freshness gates pass. No source quota, preference, score,
+> rank, confidence or weighting is introduced. This clarification is normative
+> for later work; the historical facts and verdict below remain preserved.
+
 Date: 2026-07-28
 
 Starting HEAD: `7416bc762744a56907d59f30d842d5fced0c9260`

@@ -26,6 +26,7 @@ from printer_v1.sources.registry import ALLOWED_SOURCE_NAMES, SOURCE_REGISTRY, S
 
 
 EXPECTED_SOURCES = {
+    "birdeye",
     "dexscreener",
     "geckoterminal",
     "solana_tracker",

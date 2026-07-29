@@ -84,6 +84,24 @@ This does not authorize the published operational command, implementation,
 source execution, live observation, historical backfill, migration, capacity
 above two, or another selective-1h proof.
 
+## Candidate-Acquisition Foundation Superseding Clarification (2026-07-29)
+
+The combined foundation audit, complete design, implementation, disposable
+migration proof, and frozen offline capacity proof supersede the prior
+exclusive-source interpretation. Candidate discovery is multi-source.
+DexScreener and GeckoTerminal may nominate directly; optional free Birdeye
+Standard new-listing nomination requires an operator-supplied account API key.
+Direct Pump/PumpSwap is mandatory for exact Pump-specific claims but is not the
+exclusive candidate universe. Non-Pump and unknown-origin candidates may remain
+eligible through exact present-pool proof. DEXTools is deferred and PumpPortal
+foundation use is prohibited under its current API-key/wallet contract.
+
+No source quota, preference, score, rank, confidence, or weighting is allowed.
+The implementation is transport-free and runtime-neutral through N=16; active
+Memory Factory capacity remains exactly two. The exact next permitted task is
+the read-only `V2-9.8B Post-Foundation Integration and Activation-Readiness
+Audit`. It does not authorize the operational command or any live source.
+
 ## 4. Assistant Behavior Rules
 
 Claude, ChatGPT, Codex, and future assistants must read the active source stack

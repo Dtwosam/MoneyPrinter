@@ -166,9 +166,9 @@ class CanonicalMigrationLedgerTests(unittest.TestCase):
         count = canonical_migration_count()
         self.assertEqual(count, len(names))
         self.assertEqual(count, command.EXPECTED_MIGRATION_COUNT)
-        self.assertEqual(count, 47)
-        self.assertTrue(names[-1].startswith("047"))
-        self.assertEqual(names[-1], "047_campaign_oneshot_linkage_binds.sql")
+        self.assertEqual(count, 48)
+        self.assertTrue(names[-1].startswith("048"))
+        self.assertEqual(names[-1], "048_candidate_acquisition_foundation.sql")
         # Stale hard-code must not reappear as the sole authority.
         self.assertNotEqual(command.EXPECTED_MIGRATION_COUNT, 44)
         self.assertNotEqual(command.EXPECTED_MIGRATION_COUNT, 45)
@@ -177,7 +177,7 @@ class CanonicalMigrationLedgerTests(unittest.TestCase):
         expected = list(canonical_migration_names())
         ok = validate_migration_ledger(expected)
         self.assertTrue(ok["matches"])
-        self.assertEqual(ok["canonical_count"], 47)
+        self.assertEqual(ok["canonical_count"], 48)
         self.assertEqual(ok["latest_canonical"], expected[-1])
 
         missing = validate_migration_ledger(expected[:-1])
@@ -219,7 +219,7 @@ class CanonicalMigrationLedgerTests(unittest.TestCase):
             finally:
                 connection.close()
             self.assertEqual(applied, list(canonical_migration_names()))
-            self.assertEqual(len(applied), 47)
+            self.assertEqual(len(applied), 48)
 
 
 class ActionLocalBlockedCountersTests(unittest.TestCase):
@@ -315,9 +315,9 @@ class PreflightStatusReportZeroSurfaceTests(unittest.TestCase):
                 db_path=self.db, repository_root=ROOT
             )
         self.assertEqual(report["status"], "V2_9_8_OPERATIONAL_PREFLIGHT_READY")
-        self.assertEqual(report["migration_count"], 47)
-        self.assertEqual(report["canonical_migration_count"], 47)
-        self.assertTrue(str(report["latest_migration"]).startswith("047"))
+        self.assertEqual(report["migration_count"], 48)
+        self.assertEqual(report["canonical_migration_count"], 48)
+        self.assertTrue(str(report["latest_migration"]).startswith("048"))
         self.assertEqual(report["source_calls"], 0)
         self.assertEqual(report["scheduler_runtime_calls"], 0)
         self.assertEqual(report["database_writes"], 0)
@@ -400,7 +400,7 @@ class BackupRestoreAndCorpusShapeTests(unittest.TestCase):
                 result["status"], "OPERATIONAL_BACKUP_RESTORE_PREFLIGHT_READY"
             )
             self.assertTrue(result["backup_byte_identical"])
-            self.assertTrue(str(result["latest_rehearsed_migration"]).startswith("047"))
+            self.assertTrue(str(result["latest_rehearsed_migration"]).startswith("048"))
             self.assertEqual(result["sources_run"], False)
             self.assertEqual(result["scheduler_runtime_run"], False)
 

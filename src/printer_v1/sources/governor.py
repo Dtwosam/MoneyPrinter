@@ -22,6 +22,13 @@ TOKEN_LEVEL_REQUEST_KINDS = frozenset(
         "mint_account_reference",
         "pool_reference",
         "paper_quote_realism",
+        "candidate_nomination",
+        "candidate_market_batch",
+        "birdeye_new_listing_nomination",
+        "candidate_mint_account_batch",
+        "pumpfun_migration_signature_page",
+        "pumpfun_migration_transaction",
+        "pumpswap_pool_account_batch",
     }
 )
 

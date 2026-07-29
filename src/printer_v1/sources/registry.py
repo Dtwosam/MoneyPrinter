@@ -29,6 +29,8 @@ SOURCE_REGISTRY: dict[str, SourceDefinition] = {
         supports_solana=True,
         allowed_request_kinds=(
             "token_discovery",
+            "candidate_nomination",
+            "candidate_market_batch",
             "dexscreener_fresh_profiles",
             "pair_market_snapshot",
             "token_market_snapshot",
@@ -48,6 +50,8 @@ SOURCE_REGISTRY: dict[str, SourceDefinition] = {
         requires_paid_plan=False,
         supports_solana=True,
         allowed_request_kinds=(
+            "candidate_nomination",
+            "candidate_market_batch",
             "geckoterminal_new_pool_discovery",
             "geckoterminal_trending_pool_reference",
             # V2-9.7D.7B.4B: exact active-pool m5 enrichment (fixture-only).
@@ -66,7 +70,25 @@ SOURCE_REGISTRY: dict[str, SourceDefinition] = {
         retry_after_seconds=60,
         max_retries=0,
         priority_class="discovery",
-        notes="Keyless Public API v2; 10/min; fixed readiness endpoints make one attempt with no retry/rotation.",
+        notes="Keyless Public API v2; local 10/min ceiling is conservative below the documented public 30/min limit; fixed readiness endpoints make one attempt with no retry/rotation.",
+    ),
+    "birdeye": SourceDefinition(
+        source_name="birdeye",
+        purpose="optional free Standard-plan Solana new-listing nomination",
+        dependency_type="free_account_api_key_optional",
+        requires_paid_plan=False,
+        supports_solana=True,
+        allowed_request_kinds=("birdeye_new_listing_nomination",),
+        default_rate_limit_per_minute=30,
+        stale_after_seconds=90,
+        retry_after_seconds=60,
+        max_retries=0,
+        priority_class="discovery",
+        restriction="free_standard_plan_nomination_only",
+        notes=(
+            "Optional Birdeye Standard ($0) route; account API-key secret-ref "
+            "required, no wallet, no paid fallback, new-listing nomination only."
+        ),
     ),
     "solana_tracker": SourceDefinition(
         source_name="solana_tracker",
@@ -92,17 +114,21 @@ SOURCE_REGISTRY: dict[str, SourceDefinition] = {
     ),
     "pumpportal": SourceDefinition(
         source_name="pumpportal",
-        purpose="Pump.fun launches and migration stream reference",
-        dependency_type="free_public",
+        purpose="historical Pump.fun locator contract; unavailable to the new foundation",
+        dependency_type="unavailable_current_contract",
         requires_paid_plan=False,
         supports_solana=True,
         allowed_request_kinds=("pumpfun_launch_stream", "pumpfun_migration_stream"),
         default_rate_limit_per_minute=30,
         stale_after_seconds=60,
         retry_after_seconds=30,
-        max_retries=3,
+        max_retries=0,
         priority_class="discovery",
-        notes="Only free launch and migration stream references are allowed.",
+        restriction="candidate_foundation_prohibited_current_contract",
+        notes=(
+            "Historical request kinds remain reproducible. New foundation use is "
+            "prohibited under the current API-key/wallet product contract."
+        ),
     ),
     "alternative_me": SourceDefinition(
         source_name="alternative_me",
@@ -188,6 +214,11 @@ SOURCE_REGISTRY: dict[str, SourceDefinition] = {
             "pumpfun_create_transaction_reference",
             "pumpfun_origin_signature_reference",
             "pumpfun_origin_transaction_reference",
+            # V2-9.8B capacity-neutral candidate-acquisition foundation.
+            "candidate_mint_account_batch",
+            "pumpfun_migration_signature_page",
+            "pumpfun_migration_transaction",
+            "pumpswap_pool_account_batch",
         ),
         default_rate_limit_per_minute=30,
         stale_after_seconds=120,

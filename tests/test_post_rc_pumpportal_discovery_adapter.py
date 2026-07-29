@@ -154,10 +154,14 @@ class PumpPortalRegistryContractTests(unittest.TestCase):
     def test_pumpportal_is_registered(self):
         self.assertIn("pumpportal", SOURCE_REGISTRY)
 
-    def test_pumpportal_is_free_public_no_paid_plan(self):
+    def test_pumpportal_historical_contract_is_unavailable_to_new_foundation(self):
         defn = SOURCE_REGISTRY["pumpportal"]
         self.assertFalse(defn.requires_paid_plan)
-        self.assertEqual(defn.dependency_type, "free_public")
+        self.assertEqual(defn.dependency_type, "unavailable_current_contract")
+        self.assertEqual(
+            defn.restriction, "candidate_foundation_prohibited_current_contract"
+        )
+        self.assertEqual(defn.max_retries, 0)
 
     def test_pumpportal_supports_solana(self):
         self.assertEqual(SOURCE_REGISTRY["pumpportal"].supports_solana, True)

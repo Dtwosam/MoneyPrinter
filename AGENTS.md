@@ -762,6 +762,9 @@ Required supporting audit/readiness/source-stack documents:
 - docs/printer-v1-v2-9-final-closeout.md
 - docs/printer-v1-v2-9-8b-candidate-acquisition-capacity-feasibility-audit.md
 - docs/printer-v1-v2-9-8b-candidate-acquisition-foundation-roadmap-adoption.md
+- docs/printer-v1-v2-9-8b-candidate-acquisition-foundation-combined-audit.md
+- docs/printer-v1-v2-9-8b-candidate-acquisition-foundation-complete-design.md
+- docs/printer-v1-v2-9-8b-candidate-acquisition-foundation-implementation-closeout.md
 
 Historical previous active roadmap:
 
@@ -801,6 +804,37 @@ account, layout, quote-mint, extension, or PDA contracts fail closed. Refresh
 and pin both official Pump and PumpSwap program contracts before implementation.
 This adoption does not authorize source execution, implementation, migration,
 capacity above two, or another selective-1h proof.
+
+### Candidate-Acquisition Foundation Superseding Clarification (2026-07-29)
+
+The combined foundation audit, design, implementation, disposable migration
+proof, and frozen offline capacity proof supersede the earlier exclusive-source
+interpretation without rewriting its historical facts. Candidate discovery is
+multi-source. Direct Pump/PumpSwap is first-class and mandatory for exact Pump
+origin/graduation claims, but it is not the exclusive candidate universe.
+DexScreener and GeckoTerminal may nominate candidates directly. The optional
+free Birdeye Standard new-listing route may nominate only when an operator
+supplies an account API-key secret reference; no paid fallback is allowed.
+DEXTools remains deferred because a current exact free programmatic contract was
+not established. PumpPortal foundation use is prohibited under its current
+API-key/wallet contract. Aggregators cannot prove unsupported lineage or
+canonical PumpSwap identity.
+
+Non-Pump and unknown-origin candidates are not forced into Pump lineage. They
+may remain eligible only with exact mint, supported token program, exact current
+pool/pair and owner/program relationship, supported quote mint, fresh market,
+age, holder, safety, liquidity, and tradeability evidence. Unknown origin stays
+categorical. No source quota, preference, score, rank, confidence, or weighting
+is permitted; source contribution is diagnostic only.
+
+The implemented foundation is transport-free and runtime-neutral. Generic N is
+bounded to 16 for acquisition/reserve/selection mechanics, while approved active
+Memory Factory capacity remains exactly two and the legacy projection rejects
+manifests above two. This clarification authorizes no live source, RPC,
+WebSocket, backfill, operational campaign, selective-1h proof, retrieval, or
+financial capability. The next permitted task is a read-only V2-9.8B
+post-foundation integration and activation-readiness audit; it must not run the
+published operational command.
 
 V2-9 is closed PASS at commit 51bcfdb (`Close V2-9 four-hour proof lane`).
 V2-9.7A through V2-9.7F are closed. V2-9.7F activation readiness is
@@ -907,8 +941,9 @@ persistent 15m campaign lane. It does not unlock retrieval, paper decisions,
 BUY/SELL/HOLD, positions, trades, audits, or PnL.
 
 Within V2-9.8B, the candidate-acquisition foundation adoption is closed PASS.
-The next permitted work is the read-only `V2-9.8B Direct Pump/PumpSwap Contract
-Refresh and Pin Readiness Audit`; it does not authorize running the published
+The combined candidate-acquisition foundation is implemented and offline-proven.
+The next permitted work is the read-only `V2-9.8B post-foundation integration and
+activation-readiness audit`; it does not authorize running the published
 operational command.
 ## Printer V1 Python Builder Guide
 

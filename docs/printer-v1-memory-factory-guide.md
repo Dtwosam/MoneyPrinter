@@ -557,9 +557,19 @@ program IDs, supported instruction/account/event contracts, discriminators,
 canonical-pool rules, and fixtures. Cursor advancement must stop before any
 unresolved observation.
 
-The next permitted sub-lane is the read-only **V2-9.8B Direct Pump/PumpSwap
-Contract Refresh and Pin Readiness Audit**. This guide update does not authorize
-source execution, implementation, backfill, runtime capacity above two, or
+The combined audit/design/implementation/offline-proof lane supersedes the
+earlier exclusive-source interpretation. Discovery is multi-source:
+DexScreener and GeckoTerminal may nominate directly, optional free Birdeye
+Standard new listings may nominate with an operator-supplied account API key,
+and direct Pump/PumpSwap remains mandatory only for exact Pump-specific claims.
+Non-Pump and unknown-origin candidates may use the exact-present-pool branch.
+DEXTools is deferred and PumpPortal foundation use is prohibited under the
+current contract. No source weighting or quota exists.
+
+The implemented owner is transport-free and runtime-neutral. The next permitted
+sub-lane is a read-only **V2-9.8B post-foundation integration and
+activation-readiness audit**. This guide does not authorize source execution,
+live-tail, backfill, the operational command, runtime capacity above two, or
 another selective-1h proof.
 
 ### Pump.fun / Pump Program
@@ -1121,9 +1131,9 @@ V2-9 closed PASS at commit 51bcfdb
 ```
 
 V2-9.7A through V2-9.7F and V2-9.8A are closed PASS. V2-9.8B remains the active
-memory-growth lane, but the candidate-acquisition adoption now makes its exact
-next permitted sub-lane the read-only `V2-9.8B Direct Pump/PumpSwap Contract
-Refresh and Pin Readiness Audit`.
+memory-growth lane. The candidate-acquisition foundation is now implemented and
+offline-proven; its exact next permitted sub-lane is the read-only `V2-9.8B
+post-foundation integration and activation-readiness audit`.
 
 Do not start the operational campaign, run the published PowerShell command,
 implement source work, start live observation or backfill, start V2-10, exceed

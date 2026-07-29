@@ -51,6 +51,9 @@ full-window outcome must remain separate from internal opportunity outcome.
 
 - GeckoTerminal - backup pool/OHLC/liquidity/volume confirmation, used carefully because public limits are limited.
 
+- Birdeye Standard ($0) - optional account/API-key Solana new-listing
+  nomination only. No paid fallback and no wallet requirement may be introduced.
+
 - PumpPortal - optional governed creation/migration locator only after its
   authentication, wallet, free-versus-metered, and cost contract is formally
   adopted. It is not origin or graduation authority. Metered trade/account
@@ -803,6 +806,19 @@ quote mints, extensions, or PDA relationships fail closed. The exact official
 Pump and PumpSwap program contracts must be refreshed and pinned before
 implementation. Aggregator observations never replace exact Pump origin or
 exact joined Pump-migration/PumpSwap graduation evidence.
+
+The 2026-07-29 combined foundation clarification supersedes any exclusive-source
+reading of the prior adoption. Candidate discovery is multi-source.
+DexScreener and GeckoTerminal may nominate directly, and optional free Birdeye
+Standard new-listing observations may nominate directly with an
+operator-supplied account API key. These sources prove only their supported
+present market facts. Pump/PumpSwap proof is mandatory for Pump origin,
+migration, graduation, and canonical-pool claims, not for every token. Non-Pump
+and unknown-origin candidates are not forced into Pump lineage when exact
+present-pool and all other categorical admission facts pass. DEXTools is
+deferred and PumpPortal foundation use is prohibited under the current
+contract. Source contribution is diagnostic only; no source quota, preference,
+score, rank, confidence, or weighting is allowed.
 
 ## 4.12 Promotion and Demotion
 
