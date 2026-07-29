@@ -1046,9 +1046,11 @@ financial feature is authorized. The foundation mint-identity admission repair
 is closed PASS. The separately authorized post-mint-repair live N2 proof is
 closed `V2_9_8B_POST_MINT_ADMISSION_REPAIR_LIVE_N2_PROOF_BLOCKED` after exactly
 one run on `CURSOR_START_MISMATCH` before foundation admission; N7 is
-`NOT_RUN`. The next permitted task is an operator decision on a source-grounded
-investigation of durable cursor-head to live proposed-start propagation before
-any repair or new explicit live proof.
+`NOT_RUN`. The subsequent durable cursor-to-live-range continuity audit and
+repair is closed `V2_9_8B_DURABLE_CURSOR_LIVE_RANGE_REPAIR_PASS` after
+offline-only sequential persistent-state proofs. The next permitted task is a
+separately explicit, operator-authorized bounded live `ACQUISITION_ONLY_N2`
+proof using the repaired public CLI path.
 
 Campaign rules:
 
@@ -1751,15 +1753,14 @@ It ran exactly once and blocked before foundation admission on
 `CURSOR_START_MISMATCH`; N7 is `NOT_RUN`. The exact next permitted sub-lane is:
 
 ```text
-Operator decision: source-grounded investigation of durable cursor-head to
-live proposed-start propagation after CURSOR_START_MISMATCH
-(before any repair or new explicit live acquisition proof)
+Separately explicit, operator-authorized bounded live ACQUISITION_ONLY_N2 proof
+using the repaired public CLI path
 ```
 
-Reason: the mint-account repair passed its raw live target/slot/Token-2022
-boundary, but the single post-mint-repair N2 sample proposed null cursor starts
-against two existing durable heads and stopped before foundation admission. Do
-not reset cursors, retry N2, run N7, raise ceilings to force success, or start
-the operational Memory Factory campaign without a new explicit authorization.
+The durable cursor-to-live-range continuity audit and repair that followed this
+block is closed `V2_9_8B_DURABLE_CURSOR_LIVE_RANGE_REPAIR_PASS` after
+offline-only sequential persistent-state proofs. Do not reset cursors, run N7,
+raise ceilings to force success, or start the operational Memory Factory
+campaign without a new explicit authorization.
 Retrieval, paper decisions, BUY/SELL/HOLD, positions, trades, audits, and PnL
 remain locked.

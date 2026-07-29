@@ -28,6 +28,7 @@ from printer_v1.operator_cli.candidate_acquisition_integration import (
     AcquisitionSourceOperation,
     CandidateAcquisitionIntegrationError,
     FrozenAcquisitionTransportOwner,
+    _load_exact_cursor_heads,
     replay_candidate_acquisition_integration_report,
     run_candidate_acquisition_integration,
 )
@@ -37,6 +38,7 @@ from printer_v1.operator_cli.live_candidate_acquisition_transport import (
     LiveCandidateAcquisitionTransportOwner,
     TransportResponse,
     UrllibCandidateAcquisitionOneShotTransport,
+    _signature_page_request_options,
     build_live_candidate_acquisition_transport_owner,
 )
 from printer_v1.sources.contracts import NormalizedSourceResult
@@ -54,11 +56,14 @@ from printer_v1.sources.geckoterminal import (
     fixture_success_transport as geckoterminal_fixture_success_transport,
 )
 from printer_v1.sources.pump_contracts import (
+    OFFICIAL_REPOSITORY_COMMIT,
     PUMPSWAP_POOL_DISCRIMINATOR,
     TOKEN_2022_PROGRAM_ID,
     TOKEN_PROGRAM_ID,
     WSOL_MINT,
 )
+from printer_v1.sources.pumpfun_direct import PUMP_PROGRAM_ID
+from printer_v1.sources.pumpfun_origin import PUMP_CREATE_INDEX_ADDRESS
 from printer_v1.sources.pumpswap import PUMPSWAP_AMM_PROGRAM_ID, _b58decode
 
 
@@ -481,6 +486,7 @@ def _run(
     owner: FrozenAcquisitionTransportOwner,
     renewal_hook=None,
     cancellation_probe=None,
+    now: str = NOW,
 ) -> dict:
     return run_candidate_acquisition_integration(
         path,
@@ -490,7 +496,7 @@ def _run(
         preflight=_preflight(path),
         execution_id=execution_id,
         owner_id=f"owner:{execution_id}",
-        now=NOW,
+        now=now,
         renewal_hook=renewal_hook,
         cancellation_probe=cancellation_probe,
     )
@@ -1702,5 +1708,633 @@ def test_mint_evidence_merge_key_mismatch_fails_with_exact_reason() -> None:
         assert report["status"] == "BLOCKED"
         assert report["first_terminal_cause"] == "IDENTITY_MERGE_FAILURE"
         assert "MINT_EVIDENCE_MERGE_KEY_MISMATCH" in _chain_mint_reasons(path)
+    finally:
+        temp.cleanup()
+
+
+def _failed_signature(signature: str, slot: int) -> dict:
+    return {
+        "signature": signature,
+        "slot": slot,
+        "err": {"InstructionError": [0, "Custom"]},
+        "memo": None,
+        "blockTime": 1_785_326_400,
+        "confirmationStatus": "finalized",
+    }
+
+
+class _CursorContinuityNetwork(_CanonicalMockNetworkTransport):
+    """Frozen newest-first Solana history with official exclusive bounds."""
+
+    def __init__(
+        self,
+        count: int,
+        histories: dict[str, list[dict]],
+        *,
+        unreachable_boundaries: set[str] | None = None,
+        fail_pool_batch: bool = False,
+    ) -> None:
+        super().__init__(count)
+        self.histories = deepcopy(histories)
+        self.unreachable_boundaries = set(unreachable_boundaries or ())
+        self.fail_pool_batch = fail_pool_batch
+        self.rpc_requests: list[tuple[str, list, str]] = []
+
+    def rpc_json(
+        self, *, rpc_url, method, params, timeout_seconds, byte_ceiling,
+        endpoint_role,
+    ):
+        del rpc_url, timeout_seconds, byte_ceiling
+        self.rpc_requests.append((method, deepcopy(list(params)), endpoint_role))
+        if method == "getSignaturesForAddress":
+            address, options = str(params[0]), dict(params[1])
+            history = self.histories.get(address, [])
+            signatures = [str(row["signature"]) for row in history]
+            start = 0
+            if options.get("before") in signatures:
+                start = signatures.index(str(options["before"])) + 1
+            end = len(history)
+            if options.get("until") in signatures:
+                end = signatures.index(str(options["until"]))
+            payload = history[start:end][: int(options["limit"])]
+            return self._result(payload, method, endpoint_role)
+        if method == "getTransaction" and endpoint_role.endswith("_PRIOR_BOUNDARY"):
+            signature = str(params[0])
+            known = any(
+                signature == str(row["signature"])
+                for history in self.histories.values() for row in history
+            )
+            payload = None if (
+                not known or signature in self.unreachable_boundaries
+            ) else {
+                "slot": next(
+                    int(row["slot"])
+                    for history in self.histories.values() for row in history
+                    if signature == str(row["signature"])
+                ),
+                "transaction": {"message": {"accountKeys": [], "instructions": []}},
+                "meta": {"err": {"InstructionError": [0, "Custom"]}},
+            }
+            return self._result(payload, method, endpoint_role)
+        if self.fail_pool_batch and endpoint_role == "PUMPSWAP_POOL_ACCOUNT_BATCH":
+            raise LiveAcquisitionTransportError(
+                "SOURCE_TRANSPORT_FAILURE", endpoint_role,
+                operation_kind=method,
+            )
+        return super().rpc_json(
+            rpc_url="https://rpc.example.invalid", method=method, params=params,
+            timeout_seconds=1.0, byte_ceiling=1_048_576,
+            endpoint_role=endpoint_role,
+        )
+
+
+def _public_cursor_run(
+    *,
+    path: Path,
+    execution_id: str,
+    network: _CursorContinuityNetwork,
+    capsys,
+    cli_mode: str = CLI_MODE_N2,
+    now: str = NOW,
+) -> dict:
+    assert command.main(
+        [cli_mode, "--operator-approved"],
+        acquisition_environment={
+            "PRINTER_SOLANA_RPC_URL": "https://rpc.example.invalid"
+        },
+        acquisition_one_shot_transport=network,
+        acquisition_preflight=_preflight(path),
+        acquisition_execution_id=execution_id,
+        acquisition_now=now,
+        acquisition_db_path=path,
+    ) == 0
+    return json.loads(capsys.readouterr().out)
+
+
+def _durable_cursor_rows(path: Path) -> dict[str, sqlite3.Row]:
+    connection = sqlite3.connect(path)
+    connection.row_factory = sqlite3.Row
+    try:
+        return {
+            str(row["indexed_address"]): row
+            for row in connection.execute(
+                "SELECT * FROM printer_candidate_acquisition_cursors "
+                "WHERE direction='FORWARD' ORDER BY indexed_address"
+            )
+        }
+    finally:
+        connection.close()
+
+
+def test_public_live_cursor_bootstrap_resume_no_new_and_replay(capsys) -> None:
+    temp, path = _db()
+    create_head = _failed_signature("create-bootstrap-head", 420_000_010)
+    migration_head = _failed_signature("migration-bootstrap-head", 420_000_011)
+    try:
+        first_network = _CursorContinuityNetwork(4, {
+            PUMP_CREATE_INDEX_ADDRESS: [create_head],
+            PUMP_PROGRAM_ID: [migration_head],
+        })
+        first = _public_cursor_run(
+            path=path, execution_id="cursor-bootstrap", network=first_network,
+            capsys=capsys,
+        )
+        assert first["status"] == "COMPLETED"
+        assert first["cursor_namespaces_declared"] == 2
+        assert first["cursor_heads_loaded"] == 0
+        assert first["cursor_bootstrap_namespaces"] == 2
+        assert first["cursor_advances_proposed"] == 2
+        assert first["cursor_advances_committed"] == 2
+        assert first["selected_count"] == 2
+        assert first["projection_count"] == 2
+        rows = _durable_cursor_rows(path)
+        assert set(rows) == {PUMP_CREATE_INDEX_ADDRESS, PUMP_PROGRAM_ID}
+        assert rows[PUMP_CREATE_INDEX_ADDRESS]["boundary_signature"] == create_head["signature"]
+        assert rows[PUMP_PROGRAM_ID]["boundary_signature"] == migration_head["signature"]
+        assert {int(row["cursor_version"]) for row in rows.values()} == {1}
+
+        create_new = _failed_signature("create-live-new", 420_000_020)
+        migration_new = _failed_signature("migration-live-new", 420_000_021)
+        second_network = _CursorContinuityNetwork(4, {
+            PUMP_CREATE_INDEX_ADDRESS: [create_new, create_head],
+            PUMP_PROGRAM_ID: [migration_new, migration_head],
+        })
+        second = _public_cursor_run(
+            path=path, execution_id="cursor-resume", network=second_network,
+            capsys=capsys, now="2026-07-29T12:10:00+00:00",
+        )
+        assert second["status"] == "COMPLETED", json.dumps(second, indent=2)
+        assert second["cursor_heads_loaded"] == 2
+        assert second["cursor_bootstrap_namespaces"] == 0
+        assert second["cursor_advances_proposed"] == 2
+        assert second["cursor_advances_committed"] == 2
+        signature_requests = [
+            params for method, params, _role in second_network.rpc_requests
+            if method == "getSignaturesForAddress"
+        ]
+        assert {params[1]["until"] for params in signature_requests} == {
+            create_head["signature"], migration_head["signature"],
+        }
+        assert all("before" not in params[1] for params in signature_requests)
+        rows = _durable_cursor_rows(path)
+        assert rows[PUMP_CREATE_INDEX_ADDRESS]["boundary_signature"] == create_new["signature"]
+        assert rows[PUMP_PROGRAM_ID]["boundary_signature"] == migration_new["signature"]
+        assert {int(row["cursor_version"]) for row in rows.values()} == {2}
+        connection = sqlite3.connect(path)
+        try:
+            starts = {
+                json.loads(row[0])["indexed_address"]: (
+                    json.loads(row[0])["start_slot"],
+                    json.loads(row[0])["start_signature"],
+                )
+                for row in connection.execute(
+                    "SELECT cursor_range_json FROM printer_candidate_acquisition_work "
+                    "WHERE execution_id='cursor-resume' AND cursor_range_json IS NOT NULL"
+                )
+            }
+        finally:
+            connection.close()
+        assert starts[PUMP_CREATE_INDEX_ADDRESS] == (
+            create_head["slot"], create_head["signature"]
+        )
+        assert starts[PUMP_PROGRAM_ID] == (
+            migration_head["slot"], migration_head["signature"]
+        )
+
+        stable_network = _CursorContinuityNetwork(4, {
+            PUMP_CREATE_INDEX_ADDRESS: [create_new, create_head],
+            PUMP_PROGRAM_ID: [migration_new, migration_head],
+        })
+        stable = _public_cursor_run(
+            path=path, execution_id="cursor-no-new", network=stable_network,
+            capsys=capsys, now="2026-07-29T12:20:00+00:00",
+        )
+        assert stable["status"] == "COMPLETED"
+        assert stable["cursor_heads_loaded"] == 2
+        assert stable["cursor_advances_proposed"] == 0
+        assert stable["cursor_advances_committed"] == 0
+        rows_after_stable = _durable_cursor_rows(path)
+        assert {int(row["cursor_version"]) for row in rows_after_stable.values()} == {2}
+        assert all(not any(value for value in report["forbidden_table_deltas"].values())
+                   for report in (first, second, stable))
+        assert all(report["active_lease_count"] == 0 for report in (first, second, stable))
+        assert all(report["scheduler_residue_terminalized"] == 0
+                   for report in (first, second, stable))
+
+        before_replay_calls = len(stable_network.calls)
+        replay = _public_cursor_run(
+            path=path, execution_id="cursor-no-new", network=stable_network,
+            capsys=capsys, now="2026-07-29T12:20:00+00:00",
+        )
+        assert replay == stable
+        assert len(stable_network.calls) == before_replay_calls
+        assert replay_candidate_acquisition_integration_report(
+            path, execution_id="cursor-no-new"
+        ) == stable
+    finally:
+        temp.cleanup()
+
+
+def test_empty_bootstrap_is_repeatable_without_synthetic_head(capsys) -> None:
+    temp, path = _db()
+    try:
+        first = _public_cursor_run(
+            path=path, execution_id="cursor-empty-bootstrap-1",
+            network=_CanonicalMockNetworkTransport(4), capsys=capsys,
+        )
+        assert first["status"] == "COMPLETED"
+        assert first["cursor_bootstrap_namespaces"] == 2
+        assert first["cursor_advances_proposed"] == 0
+        assert first["cursor_advances_committed"] == 0
+        assert _durable_cursor_rows(path) == {}
+        connection = sqlite3.connect(path)
+        try:
+            empty_ranges = connection.execute(
+                "SELECT COUNT(*) FROM printer_candidate_cursor_ranges "
+                "WHERE cursor_advanced=0 AND end_signature IS NULL AND end_slot IS NULL"
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        assert empty_ranges >= 2
+
+        second = _public_cursor_run(
+            path=path, execution_id="cursor-empty-bootstrap-2",
+            network=_CanonicalMockNetworkTransport(4), capsys=capsys,
+            now="2026-07-29T12:10:00+00:00",
+        )
+        assert second["status"] == "COMPLETED"
+        assert second["cursor_bootstrap_namespaces"] == 2
+        assert second["cursor_advances_proposed"] == 0
+        assert second["cursor_advances_committed"] == 0
+        assert _durable_cursor_rows(path) == {}
+    finally:
+        temp.cleanup()
+
+
+def test_live_cursor_multi_page_preserves_until_and_before(capsys) -> None:
+    temp, path = _db()
+    create_head = _failed_signature("create-n7-head", 420_001_000)
+    migration_head = _failed_signature("migration-n7-head", 420_001_001)
+    try:
+        first = _public_cursor_run(
+            path=path, execution_id="cursor-n7-bootstrap",
+            network=_CursorContinuityNetwork(14, {
+                PUMP_CREATE_INDEX_ADDRESS: [create_head],
+                PUMP_PROGRAM_ID: [migration_head],
+            }),
+            capsys=capsys, cli_mode=CLI_MODE_N7,
+        )
+        assert first["status"] == "COMPLETED"
+        assert first["selected_count"] == 7
+        assert first["projection_count"] == 0
+
+        create_new = [
+            _failed_signature(f"create-n7-new-{index}", 420_001_020 - index)
+            for index in range(5)
+        ]
+        migration_new = [
+            _failed_signature(f"migration-n7-new-{index}", 420_001_030 - index)
+            for index in range(5)
+        ]
+        network = _CursorContinuityNetwork(14, {
+            PUMP_CREATE_INDEX_ADDRESS: [*create_new, create_head],
+            PUMP_PROGRAM_ID: [*migration_new, migration_head],
+        })
+        second = _public_cursor_run(
+            path=path, execution_id="cursor-n7-resume", network=network,
+            capsys=capsys, cli_mode=CLI_MODE_N7,
+            now="2026-07-29T13:00:00+00:00",
+        )
+        assert second["status"] == "COMPLETED", json.dumps(second, indent=2)
+        assert second["cursor_advances_proposed"] == 2
+        assert second["cursor_advances_committed"] == 2
+        requests_by_address: dict[str, list[dict]] = {}
+        for method, params, _role in network.rpc_requests:
+            if method == "getSignaturesForAddress":
+                requests_by_address.setdefault(str(params[0]), []).append(dict(params[1]))
+        for address, prior in (
+            (PUMP_CREATE_INDEX_ADDRESS, create_head),
+            (PUMP_PROGRAM_ID, migration_head),
+        ):
+            options = requests_by_address[address]
+            assert len(options) == 2
+            assert options[0]["until"] == prior["signature"]
+            assert "before" not in options[0]
+            assert options[1]["until"] == prior["signature"]
+            assert options[1]["before"].endswith("-3")
+        rows = _durable_cursor_rows(path)
+        assert rows[PUMP_CREATE_INDEX_ADDRESS]["boundary_signature"] == create_new[0]["signature"]
+        assert rows[PUMP_PROGRAM_ID]["boundary_signature"] == migration_new[0]["signature"]
+        assert {int(row["cursor_version"]) for row in rows.values()} == {2}
+        with pytest.raises(
+            CandidateAcquisitionError,
+            match="LEGACY_RUNTIME_REQUIRES_EXACTLY_TWO",
+        ):
+            legacy_two_token_runtime_projection(path, second["manifest_id"])
+    finally:
+        temp.cleanup()
+
+
+def test_cursor_namespace_identity_missing_head_and_unreachable_fail_closed(capsys) -> None:
+    temp, path = _db()
+    create_head = _failed_signature("create-negative-head", 420_002_000)
+    migration_head = _failed_signature("migration-negative-head", 420_002_001)
+    try:
+        first = _public_cursor_run(
+            path=path, execution_id="cursor-negative-bootstrap",
+            network=_CursorContinuityNetwork(4, {
+                PUMP_CREATE_INDEX_ADDRESS: [create_head],
+                PUMP_PROGRAM_ID: [migration_head],
+            }),
+            capsys=capsys,
+        )
+        assert first["status"] == "COMPLETED"
+        namespace = (
+            "solana-mainnet", PUMP_CREATE_INDEX_ADDRESS,
+            OFFICIAL_REPOSITORY_COMMIT, "canonical-live-acquisition-v1", "FORWARD",
+        )
+        loaded = _load_exact_cursor_heads(path, namespaces=(namespace,))
+        assert loaded[namespace]["boundary_slot"] == create_head["slot"]
+        for changed in (
+            ("wrong-network", namespace[1], namespace[2], namespace[3], namespace[4]),
+            (namespace[0], namespace[1], "wrong-pin", namespace[3], namespace[4]),
+            (namespace[0], namespace[1], namespace[2], "wrong-decoder", namespace[4]),
+        ):
+            with pytest.raises(
+                CandidateAcquisitionIntegrationError,
+                match="CURSOR_NAMESPACE_MISMATCH",
+            ):
+                _load_exact_cursor_heads(path, namespaces=(changed,))
+
+        backward = (*namespace[:4], "BACKWARD")
+        assert _load_exact_cursor_heads(path, namespaces=(backward,))[backward] is None
+        wrong_direction_head = dict(loaded[namespace])
+        wrong_direction_head["direction"] = "BACKWARD"
+        owner = build_live_candidate_acquisition_transport_owner(
+            environment={"PRINTER_SOLANA_RPC_URL": "https://rpc.example.invalid"}
+        )
+        with pytest.raises(
+            LiveAcquisitionConfigurationError,
+            match="CURSOR_NAMESPACE_MISMATCH",
+        ):
+            owner.operations(
+                mode=MODE_N2, policy=MODE_POLICIES[MODE_N2], execution_id="wrong",
+                cursor_heads={namespace: wrong_direction_head},
+            )
+
+        connection = sqlite3.connect(path)
+        try:
+            connection.execute(
+                "DELETE FROM printer_candidate_acquisition_cursors "
+                "WHERE indexed_address=? AND direction='FORWARD'",
+                (PUMP_CREATE_INDEX_ADDRESS,),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        no_call_network = _CursorContinuityNetwork(4, {
+            PUMP_CREATE_INDEX_ADDRESS: [create_head],
+            PUMP_PROGRAM_ID: [migration_head],
+        })
+        missing = _public_cursor_run(
+            path=path, execution_id="cursor-missing-head", network=no_call_network,
+            capsys=capsys,
+        )
+        assert missing["status"] == "BLOCKED"
+        assert missing["first_terminal_cause"] == "CURSOR_DURABLE_HEAD_MISSING"
+        assert no_call_network.calls == []
+    finally:
+        temp.cleanup()
+
+    temp, path = _db()
+    try:
+        first = _public_cursor_run(
+            path=path, execution_id="cursor-unreachable-bootstrap",
+            network=_CursorContinuityNetwork(4, {
+                PUMP_CREATE_INDEX_ADDRESS: [create_head],
+                PUMP_PROGRAM_ID: [migration_head],
+            }),
+            capsys=capsys,
+        )
+        assert first["status"] == "COMPLETED"
+        blocked = _public_cursor_run(
+            path=path, execution_id="cursor-unreachable",
+            network=_CursorContinuityNetwork(
+                4,
+                {
+                    PUMP_CREATE_INDEX_ADDRESS: [create_head],
+                    PUMP_PROGRAM_ID: [migration_head],
+                },
+                unreachable_boundaries={create_head["signature"]},
+            ),
+            capsys=capsys, now="2026-07-29T12:10:00+00:00",
+        )
+        assert blocked["status"] == "BLOCKED"
+        assert blocked["first_terminal_cause"] == "CURSOR_PRIOR_BOUNDARY_UNREACHABLE"
+        assert blocked["foundation_execution_id"] is None
+        assert blocked["cursor_advances_committed"] == 0
+        rows = _durable_cursor_rows(path)
+        assert rows[PUMP_CREATE_INDEX_ADDRESS]["boundary_signature"] == create_head["signature"]
+        assert rows[PUMP_PROGRAM_ID]["boundary_signature"] == migration_head["signature"]
+    finally:
+        temp.cleanup()
+
+
+def test_cursor_rollback_reconciles_and_backfill_query_is_explicit(capsys) -> None:
+    assert _signature_page_request_options(
+        range_mode="LIVE_TAIL", head_signature="head",
+        previous_page_signature=None, limit=4,
+    ) == {"limit": 4, "commitment": "finalized", "until": "head"}
+    assert _signature_page_request_options(
+        range_mode="LIVE_TAIL", head_signature="head",
+        previous_page_signature="page-end", limit=3,
+    ) == {
+        "limit": 3, "commitment": "finalized", "until": "head",
+        "before": "page-end",
+    }
+    assert _signature_page_request_options(
+        range_mode="BACKFILL", head_signature="head",
+        previous_page_signature=None, limit=4,
+    ) == {"limit": 4, "commitment": "finalized", "before": "head"}
+    with pytest.raises(
+        LiveAcquisitionConfigurationError,
+        match="CURSOR_BACKFILL_HEAD_REQUIRED",
+    ):
+        _signature_page_request_options(
+            range_mode="BACKFILL", head_signature=None,
+            previous_page_signature=None, limit=4,
+        )
+
+    temp, path = _db()
+    create_head = _failed_signature("create-rollback-head", 420_003_000)
+    migration_head = _failed_signature("migration-rollback-head", 420_003_001)
+    try:
+        first = _public_cursor_run(
+            path=path, execution_id="cursor-rollback-bootstrap",
+            network=_CursorContinuityNetwork(4, {
+                PUMP_CREATE_INDEX_ADDRESS: [create_head],
+                PUMP_PROGRAM_ID: [migration_head],
+            }),
+            capsys=capsys,
+        )
+        assert first["status"] == "COMPLETED"
+        before = _durable_cursor_rows(path)
+        create_new = _failed_signature("create-rollback-new", 420_003_010)
+        migration_new = _failed_signature("migration-rollback-new", 420_003_011)
+        blocked = _public_cursor_run(
+            path=path, execution_id="cursor-rollback",
+            network=_CursorContinuityNetwork(
+                4,
+                {
+                    PUMP_CREATE_INDEX_ADDRESS: [create_new, create_head],
+                    PUMP_PROGRAM_ID: [migration_new, migration_head],
+                },
+                fail_pool_batch=True,
+            ),
+            capsys=capsys, now="2026-07-29T12:10:00+00:00",
+        )
+        assert blocked["status"] == "BLOCKED"
+        assert blocked["first_terminal_cause"] == "REQUIRED_SOURCE_FAILURE"
+        assert blocked["cursor_advances_proposed"] == 2
+        assert blocked["cursor_advances_committed"] == 0
+        assert blocked["foundation_execution_id"] is None
+        after = _durable_cursor_rows(path)
+        assert {
+            address: (row["boundary_slot"], row["boundary_signature"], row["cursor_version"])
+            for address, row in before.items()
+        } == {
+            address: (row["boundary_slot"], row["boundary_signature"], row["cursor_version"])
+            for address, row in after.items()
+        }
+        assert blocked["active_lease_count"] == 0
+        assert blocked["scheduler_residue_terminalized"] == 0
+        assert not any(blocked["forbidden_table_deltas"].values())
+    finally:
+        temp.cleanup()
+
+
+def test_foundation_rejects_wrong_durable_slot_and_signature(capsys) -> None:
+    temp, path = _db()
+    create_head = _failed_signature("create-exact-head", 420_004_000)
+    migration_head = _failed_signature("migration-exact-head", 420_004_001)
+    try:
+        first = _public_cursor_run(
+            path=path, execution_id="cursor-exact-bootstrap",
+            network=_CursorContinuityNetwork(4, {
+                PUMP_CREATE_INDEX_ADDRESS: [create_head],
+                PUMP_PROGRAM_ID: [migration_head],
+            }),
+            capsys=capsys,
+        )
+        assert first["status"] == "COMPLETED"
+        durable = _durable_cursor_rows(path)
+
+        def owner_with_start_error(*, wrong_field: str) -> FrozenAcquisitionTransportOwner:
+            owner = _owner(4)
+            seen: set[int] = set()
+            for operation in owner.frozen_operations:
+                cursor = operation.cursor_range
+                if not isinstance(cursor, dict) or id(cursor) in seen:
+                    continue
+                seen.add(id(cursor))
+                address = (
+                    PUMP_CREATE_INDEX_ADDRESS
+                    if "create" in str(cursor["indexed_address"])
+                    else PUMP_PROGRAM_ID
+                )
+                row = durable[address]
+                cursor.update({
+                    "indexed_address": address,
+                    "contract_pin": str(row["contract_pin"]),
+                    "decoder_version": str(row["decoder_version"]),
+                    "direction": str(row["direction"]),
+                    "start_slot": int(row["boundary_slot"]),
+                    "start_signature": str(row["boundary_signature"]),
+                    "end_slot": int(row["boundary_slot"]) + 1,
+                    "end_signature": f"new-{cursor['indexed_address']}",
+                })
+            target = next(
+                operation.cursor_range for operation in owner.frozen_operations
+                if operation.cursor_range
+                and operation.cursor_range["indexed_address"] == PUMP_CREATE_INDEX_ADDRESS
+            )
+            if wrong_field == "slot":
+                target["start_slot"] = int(target["start_slot"]) + 1
+            else:
+                target["start_signature"] = "wrong-prior-signature"
+            return owner
+
+        wrong_slot = _run(
+            path, mode=MODE_N2, execution_id="cursor-wrong-slot",
+            owner=owner_with_start_error(wrong_field="slot"),
+            now="2026-07-29T12:10:00+00:00",
+        )
+        assert wrong_slot["status"] == "BLOCKED"
+        assert wrong_slot["first_terminal_cause"] == "CURSOR_START_MISMATCH"
+        assert wrong_slot["cursor_advances_committed"] == 0
+
+        wrong_signature = _run(
+            path, mode=MODE_N2, execution_id="cursor-wrong-signature",
+            owner=owner_with_start_error(wrong_field="signature"),
+            now="2026-07-29T12:20:00+00:00",
+        )
+        assert wrong_signature["status"] == "BLOCKED"
+        assert wrong_signature["first_terminal_cause"] == "CURSOR_START_MISMATCH"
+        assert wrong_signature["cursor_advances_committed"] == 0
+        after = _durable_cursor_rows(path)
+        assert {
+            address: (row["boundary_slot"], row["boundary_signature"], row["cursor_version"])
+            for address, row in durable.items()
+        } == {
+            address: (row["boundary_slot"], row["boundary_signature"], row["cursor_version"])
+            for address, row in after.items()
+        }
+    finally:
+        temp.cleanup()
+
+
+def test_live_tail_page_ceiling_fails_without_skip_or_rewind(capsys) -> None:
+    temp, path = _db()
+    create_head = _failed_signature("create-gap-head", 420_005_000)
+    migration_head = _failed_signature("migration-gap-head", 420_005_001)
+    try:
+        first = _public_cursor_run(
+            path=path, execution_id="cursor-gap-bootstrap",
+            network=_CursorContinuityNetwork(4, {
+                PUMP_CREATE_INDEX_ADDRESS: [create_head],
+                PUMP_PROGRAM_ID: [migration_head],
+            }),
+            capsys=capsys,
+        )
+        assert first["status"] == "COMPLETED"
+        before = _durable_cursor_rows(path)
+        blocked = _public_cursor_run(
+            path=path, execution_id="cursor-gap",
+            network=_CursorContinuityNetwork(4, {
+                PUMP_CREATE_INDEX_ADDRESS: [
+                    _failed_signature("create-gap-newest", 420_005_020),
+                    _failed_signature("create-gap-second", 420_005_019),
+                    create_head,
+                ],
+                PUMP_PROGRAM_ID: [
+                    _failed_signature("migration-gap-newest", 420_005_030),
+                    _failed_signature("migration-gap-second", 420_005_029),
+                    migration_head,
+                ],
+            }),
+            capsys=capsys, now="2026-07-29T12:10:00+00:00",
+        )
+        assert blocked["status"] == "BLOCKED"
+        assert blocked["first_terminal_cause"] == "CURSOR_CONTINUITY_GAPPED"
+        assert blocked["cursor_advances_proposed"] == 0
+        assert blocked["cursor_advances_committed"] == 0
+        after = _durable_cursor_rows(path)
+        assert {
+            address: (row["boundary_slot"], row["boundary_signature"], row["cursor_version"])
+            for address, row in before.items()
+        } == {
+            address: (row["boundary_slot"], row["boundary_signature"], row["cursor_version"])
+            for address, row in after.items()
+        }
     finally:
         temp.cleanup()

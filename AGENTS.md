@@ -791,11 +791,14 @@ authorized post-mint-repair `ACQUISITION_ONLY_N2` proof is closed
 `V2_9_8B_POST_MINT_ADMISSION_REPAIR_LIVE_N2_PROOF_BLOCKED` (closeout:
 `docs/printer-v1-v2-9-8b-post-mint-admission-repair-live-n2-proof-closeout.md`).
 It ran exactly once and blocked before foundation admission on
-`CURSOR_START_MISMATCH`; N7 is `NOT_RUN`. The exact next permitted task is an
-operator decision on a separate source-grounded investigation lane for the
-durable cursor-head to live proposed-start propagation boundary before any
-repair or new live proof. It is not an operational Memory Factory campaign,
-N2 retry, cursor reset, or N7 run.
+`CURSOR_START_MISMATCH`; N7 is `NOT_RUN`. The separate durable
+cursor-to-live-range continuity audit and repair is closed
+`V2_9_8B_DURABLE_CURSOR_LIVE_RANGE_REPAIR_PASS` (closeout:
+`docs/printer-v1-v2-9-8b-durable-cursor-live-range-repair-closeout.md`). It ran
+offline only. The exact next permitted task is a separately explicit,
+operator-authorized bounded live `ACQUISITION_ONLY_N2` proof using the repaired
+public CLI path. It is not an operational Memory Factory campaign, cursor
+reset, N7 run, or authorization for any later runtime lane.
 
 Factory-wide candidate-acquisition authority is:
 
@@ -848,11 +851,12 @@ WebSocket, backfill, operational campaign, selective-1h proof, retrieval, or
 financial capability. Post-foundation integration, transport-free proof, and
 pipeline repair and mint-identity admission repair are complete. The
 post-mint-repair bounded live N2 proof is closed BLOCKED on
-`CURSOR_START_MISMATCH` before foundation admission; N7 is `NOT_RUN`. The next
-permitted task is only an operator-authorized source-grounded investigation
-decision for the durable cursor-head to live proposed-start propagation
-boundary before any repair or new live proof; no operational campaign, cursor
-reset, N2 retry, or N7 run is authorized.
+`CURSOR_START_MISMATCH` before foundation admission; N7 is `NOT_RUN`. The
+subsequent durable cursor-to-live-range audit and repair is closed PASS after
+offline-only sequential persistent-state proofs. The next permitted task is
+only a separately explicit, operator-authorized bounded live
+`ACQUISITION_ONLY_N2` proof on the repaired public CLI path; no operational
+campaign, cursor reset, N7 run, or later runtime lane is authorized.
 
 V2-9 is closed PASS at commit 51bcfdb (`Close V2-9 four-hour proof lane`).
 V2-9.7A through V2-9.7F are closed. V2-9.7F activation readiness is
@@ -962,11 +966,13 @@ Within V2-9.8B, the candidate-acquisition foundation, post-foundation
 integration, transport-owner repair, pipeline repair, and mint-identity
 admission repair are implemented and offline-proven. The post-mint-repair live
 N2 proof is closed BLOCKED after exactly one run on `CURSOR_START_MISMATCH`
-before foundation admission; N7 is `NOT_RUN`. The next permitted work is an
-operator decision on a separate source-grounded investigation lane for the
-durable cursor-head to live proposed-start propagation boundary before any
-repair or new explicit live proof. It does not authorize cursor reset, N2
-retry, N7, or the published operational Memory Factory campaign command.
+before foundation admission; N7 is `NOT_RUN`. The subsequent durable
+cursor-to-live-range continuity audit and repair is closed
+`V2_9_8B_DURABLE_CURSOR_LIVE_RANGE_REPAIR_PASS` after offline-only proofs. The
+next permitted work is a separately explicit, operator-authorized bounded live
+`ACQUISITION_ONLY_N2` proof on the repaired public CLI path. It does not
+authorize cursor reset, N7, or the published operational Memory Factory
+campaign command.
 ## Printer V1 Python Builder Guide
 
 For every Printer V1 Python implementation, repair, migration, runner,

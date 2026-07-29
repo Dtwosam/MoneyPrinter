@@ -51,6 +51,9 @@ ACTIVE_CAPACITY = 2
 PHASE_NOMINATION = "NOMINATION"
 PHASE_ENRICHMENT = "ENRICHMENT"
 
+CursorNamespace = tuple[str, str, str, str, str]
+CursorHead = Mapping[str, Any]
+
 MODE_POLICIES: dict[str, dict[str, Any]] = {
     MODE_N2: {
         "selection_capacity": 2,
@@ -161,8 +164,13 @@ class AcquisitionSourceOperation:
 
 
 class AcquisitionTransportOwner(Protocol):
-    def operations(
+    def cursor_namespaces(
         self, *, mode: str, policy: Mapping[str, Any], execution_id: str
+    ) -> Sequence[CursorNamespace]: ...
+
+    def operations(
+        self, *, mode: str, policy: Mapping[str, Any], execution_id: str,
+        cursor_heads: Mapping[CursorNamespace, CursorHead | None] | None = None,
     ) -> Sequence[AcquisitionSourceOperation]: ...
 
 
@@ -170,10 +178,17 @@ class AcquisitionTransportOwner(Protocol):
 class FrozenAcquisitionTransportOwner:
     frozen_operations: tuple[AcquisitionSourceOperation, ...]
 
-    def operations(
+    def cursor_namespaces(
         self, *, mode: str, policy: Mapping[str, Any], execution_id: str
-    ) -> Sequence[AcquisitionSourceOperation]:
+    ) -> Sequence[CursorNamespace]:
         del mode, policy, execution_id
+        return ()
+
+    def operations(
+        self, *, mode: str, policy: Mapping[str, Any], execution_id: str,
+        cursor_heads: Mapping[CursorNamespace, CursorHead | None] | None = None,
+    ) -> Sequence[AcquisitionSourceOperation]:
+        del mode, policy, execution_id, cursor_heads
         return self.frozen_operations
 
 
@@ -736,6 +751,102 @@ def replay_candidate_acquisition_integration_report(
     return payload
 
 
+def _load_exact_cursor_heads(
+    db_path: str | Path,
+    *,
+    namespaces: Sequence[CursorNamespace],
+) -> dict[CursorNamespace, dict[str, Any] | None]:
+    """Hydrate exact heads under the acquisition lease before transport work.
+
+    BEGIN IMMEDIATE gives the read a stable short transaction. The separately
+    held acquisition lease is the logical lock across later source I/O; the
+    foundation performs the authoritative exact-head recheck before committing.
+    """
+    unique = tuple(dict.fromkeys(namespaces))
+    heads: dict[CursorNamespace, dict[str, Any] | None] = {}
+    connection = _connect(db_path)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        for namespace in unique:
+            if (
+                len(namespace) != 5
+                or any(not isinstance(value, str) or not value for value in namespace)
+                or namespace[4] not in {"FORWARD", "BACKWARD"}
+            ):
+                raise CandidateAcquisitionIntegrationError(
+                    "CURSOR_NAMESPACE_MALFORMED"
+                )
+            row = connection.execute(
+                """SELECT boundary_slot,boundary_signature,last_range_id,
+                          last_execution_id,cursor_version,updated_at
+                   FROM printer_candidate_acquisition_cursors
+                   WHERE network=? AND indexed_address=? AND contract_pin=?
+                     AND decoder_version=? AND direction=?""",
+                namespace,
+            ).fetchone()
+            if row is None:
+                exact_range = connection.execute(
+                    """SELECT 1 FROM printer_candidate_cursor_ranges
+                       WHERE network=? AND indexed_address=? AND contract_pin=?
+                         AND decoder_version=? AND direction=?
+                         AND cursor_advanced=1 LIMIT 1""",
+                    namespace,
+                ).fetchone()
+                mismatched_identity = connection.execute(
+                    """SELECT 1 FROM printer_candidate_acquisition_cursors
+                       WHERE indexed_address=? AND direction=?
+                         AND (network<>? OR contract_pin<>? OR decoder_version<>?)
+                       LIMIT 1""",
+                    (
+                        namespace[1], namespace[4], namespace[0], namespace[2],
+                        namespace[3],
+                    ),
+                ).fetchone()
+                if mismatched_identity is not None:
+                    raise CandidateAcquisitionIntegrationError(
+                        "CURSOR_NAMESPACE_MISMATCH", namespace[1]
+                    )
+                if exact_range is not None:
+                    raise CandidateAcquisitionIntegrationError(
+                        "CURSOR_DURABLE_HEAD_MISSING", namespace[1]
+                    )
+                heads[namespace] = None
+                continue
+            slot, signature = row["boundary_slot"], row["boundary_signature"]
+            if (
+                type(slot) is not int
+                or slot < 0
+                or not isinstance(signature, str)
+                or not signature
+            ):
+                raise CandidateAcquisitionIntegrationError(
+                    "CURSOR_DURABLE_HEAD_INCOMPLETE", namespace[1]
+                )
+            heads[namespace] = {
+                "network": namespace[0],
+                "indexed_address": namespace[1],
+                "contract_pin": namespace[2],
+                "decoder_version": namespace[3],
+                "direction": namespace[4],
+                "boundary_slot": slot,
+                "boundary_signature": signature,
+                "last_range_id": str(row["last_range_id"]),
+                "last_execution_id": str(row["last_execution_id"]),
+                "cursor_version": int(row["cursor_version"]),
+                "updated_at": str(row["updated_at"]),
+            }
+        present = [namespace for namespace, head in heads.items() if head is not None]
+        missing = [namespace for namespace, head in heads.items() if head is None]
+        if present and missing:
+            raise CandidateAcquisitionIntegrationError(
+                "CURSOR_DURABLE_HEAD_MISSING", missing[0][1]
+            )
+        connection.commit()
+    finally:
+        connection.close()
+    return heads
+
+
 def run_candidate_acquisition_integration(
     db_path: str | Path,
     *,
@@ -803,14 +914,26 @@ def run_candidate_acquisition_integration(
     enrichment_mints: set[str] = set()
     cohort_mints: list[str] = []
     thinned_beyond_cohort = 0
-    cursor_advances_proposed = 0
+    proposed_cursor_namespaces: set[CursorNamespace] = set()
+    cursor_heads: dict[CursorNamespace, dict[str, Any] | None] = {}
     try:
         lease_id = _acquire_lease(
             db_path, integration_id=integration_id, execution_id=execution_id,
             owner_id=owner_id, mode=mode, now=now, lease_seconds=lease_seconds,
         )
+        namespaces = tuple(
+            transport_owner.cursor_namespaces(
+                mode=mode, policy=policy, execution_id=execution_id
+            )
+        )
+        cursor_heads = _load_exact_cursor_heads(
+            db_path, namespaces=namespaces
+        )
         operations = tuple(
-            transport_owner.operations(mode=mode, policy=policy, execution_id=execution_id)
+            transport_owner.operations(
+                mode=mode, policy=policy, execution_id=execution_id,
+                cursor_heads=cursor_heads,
+            )
         )
         declared = {(item.source_name, item.request_kind) for item in operations}
         if not any(
@@ -985,9 +1108,14 @@ def run_candidate_acquisition_integration(
             if operation.required and cursor_state in {
                 "GAPPED", "UNKNOWN", "BLOCKED_CONTRACT",
             }:
+                cursor_reason = str(
+                    (operation.cursor_range or {}).get("unresolved_reason") or ""
+                )
                 required_failures.append(
                     "UNSUPPORTED_CONTRACT"
                     if cursor_state == "BLOCKED_CONTRACT"
+                    else "CURSOR_PRIOR_BOUNDARY_UNREACHABLE"
+                    if cursor_reason == "CURSOR_PRIOR_BOUNDARY_UNREACHABLE"
                     else "CURSOR_CONTINUITY_GAPPED"
                 )
             if operation.required and not healthy:
@@ -1044,7 +1172,42 @@ def run_candidate_acquisition_integration(
             if isinstance(proposed_cursor, Mapping) and bool(
                 proposed_cursor.get("cursor_advanced")
             ):
-                cursor_advances_proposed += 1
+                proposed_cursor_namespaces.add((
+                    "solana-mainnet",
+                    str(proposed_cursor.get("indexed_address") or ""),
+                    str(proposed_cursor.get("contract_pin") or ""),
+                    str(proposed_cursor.get("decoder_version") or ""),
+                    str(proposed_cursor.get("direction") or ""),
+                ))
+
+        # Work rows retain each page's immutable intermediate cursor evidence.
+        # Foundation input, however, receives exactly one terminal range per
+        # namespace so UNKNOWN page snapshots cannot conflict with the final
+        # bounded range or advance one head more than once.
+        terminal_cursor_ranges: dict[CursorNamespace, dict[str, Any]] = {}
+        for operation in operations:
+            cursor = operation.cursor_range
+            if not isinstance(cursor, Mapping):
+                continue
+            namespace = (
+                "solana-mainnet", str(cursor.get("indexed_address") or ""),
+                str(cursor.get("contract_pin") or ""),
+                str(cursor.get("decoder_version") or ""),
+                str(cursor.get("direction") or ""),
+            )
+            terminal_cursor_ranges[namespace] = dict(cursor)
+        for row in observations:
+            cursor = row.get("cursor_range")
+            if not isinstance(cursor, Mapping):
+                continue
+            namespace = (
+                "solana-mainnet", str(cursor.get("indexed_address") or ""),
+                str(cursor.get("contract_pin") or ""),
+                str(cursor.get("decoder_version") or ""),
+                str(cursor.get("direction") or ""),
+            )
+            if namespace in terminal_cursor_ranges:
+                row["cursor_range"] = dict(terminal_cursor_ranges[namespace])
 
         if nomination_successes < 1:
             raise CandidateAcquisitionIntegrationError(
@@ -1052,7 +1215,8 @@ def run_candidate_acquisition_integration(
             )
         if required_failures:
             precedence = (
-                "UNSUPPORTED_CONTRACT", "REQUIRED_SOURCE_FAILURE",
+                "UNSUPPORTED_CONTRACT", "CURSOR_PRIOR_BOUNDARY_UNREACHABLE",
+                "REQUIRED_SOURCE_FAILURE",
                 "CURSOR_CONTINUITY_GAPPED", "STALE_OR_INCOMPLETE_EVIDENCE",
             )
             cause = next(
@@ -1244,7 +1408,14 @@ def run_candidate_acquisition_integration(
         "bytes_used": bytes_used,
         "rows_used": rows_used,
         "pre_foundation_funnel": pre_foundation_funnel,
-        "cursor_advances_proposed": cursor_advances_proposed,
+        "cursor_namespaces_declared": len(cursor_heads),
+        "cursor_heads_loaded": sum(
+            1 for head in cursor_heads.values() if head is not None
+        ),
+        "cursor_bootstrap_namespaces": sum(
+            1 for head in cursor_heads.values() if head is None
+        ),
+        "cursor_advances_proposed": len(proposed_cursor_namespaces),
         "cursor_advances_committed": cursor_advances_committed,
         "foundation_execution_id": execution_id if foundation is not None else None,
         "foundation_report": foundation,

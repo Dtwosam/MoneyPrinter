@@ -555,7 +555,7 @@ def _validate_current_cursor_heads(
 ) -> None:
     if not _cursor_table_exists(connection):
         return
-    seen: set[tuple[str, str, str, str, str]] = set()
+    seen: dict[tuple[str, str, str, str, str], tuple[Any, ...]] = {}
     for item in observations:
         cursor = item.get("cursor_range")
         if not cursor:
@@ -567,9 +567,19 @@ def _validate_current_cursor_heads(
             str(cursor["decoder_version"]),
             str(cursor["direction"]),
         )
+        range_identity = (
+            cursor.get("start_slot"), cursor.get("start_signature"),
+            cursor.get("end_slot"), cursor.get("end_signature"),
+            cursor.get("continuity_state"), bool(cursor.get("cursor_advanced")),
+            cursor.get("unresolved_reason"), cursor.get("range_mode"),
+        )
+        if namespace in seen and seen[namespace] != range_identity:
+            raise CandidateAcquisitionError(
+                "CURSOR_NAMESPACE_RANGE_CONFLICT", str(cursor["indexed_address"])
+            )
         if namespace in seen:
             continue
-        seen.add(namespace)
+        seen[namespace] = range_identity
         prior = connection.execute(
             """SELECT boundary_slot,boundary_signature
                FROM printer_candidate_acquisition_cursors
@@ -596,13 +606,20 @@ def _advance_current_cursor_heads(
 ) -> None:
     if not _cursor_table_exists(connection):
         return
-    seen: set[int] = set()
+    seen: set[tuple[str, str, str, str, str]] = set()
     for item in observations:
         ordinal = int(item["round_ordinal"])
         cursor = item.get("cursor_range")
-        if not cursor or ordinal in seen:
+        if not cursor:
             continue
-        seen.add(ordinal)
+        namespace = (
+            str(plan["network"]), str(cursor["indexed_address"]),
+            str(cursor["contract_pin"]), str(cursor["decoder_version"]),
+            str(cursor["direction"]),
+        )
+        if namespace in seen:
+            continue
+        seen.add(namespace)
         if not bool(cursor.get("cursor_advanced")):
             continue
         if cursor.get("continuity_state") != "CONTIGUOUS":
@@ -619,10 +636,7 @@ def _advance_current_cursor_heads(
             """SELECT cursor_version FROM printer_candidate_acquisition_cursors
                WHERE network=? AND indexed_address=? AND contract_pin=?
                  AND decoder_version=? AND direction=?""",
-            (
-                plan["network"], cursor["indexed_address"], cursor["contract_pin"],
-                cursor["decoder_version"], cursor["direction"],
-            ),
+            namespace,
         ).fetchone()
         version = 1 if prior is None else int(prior[0]) + 1
         connection.execute(
@@ -639,8 +653,7 @@ def _advance_current_cursor_heads(
                    cursor_version=excluded.cursor_version,
                    updated_at=excluded.updated_at""",
             (
-                plan["network"], cursor["indexed_address"], cursor["contract_pin"],
-                cursor["decoder_version"], cursor["direction"], cursor.get("end_slot"),
+                *namespace, cursor.get("end_slot"),
                 cursor.get("end_signature"), range_id, plan["execution_id"], version,
                 plan["cutoff_at"],
             ),

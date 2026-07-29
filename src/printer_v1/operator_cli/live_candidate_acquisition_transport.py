@@ -23,6 +23,8 @@ from printer_v1.contracts.enums import DataQualityLabel, SourceStatus
 from printer_v1.operator_cli.candidate_acquisition_integration import (
     PHASE_ENRICHMENT,
     AcquisitionSourceOperation,
+    CursorHead,
+    CursorNamespace,
 )
 from printer_v1.sources.contracts import NormalizedSourceResult, SourceAdapterContext
 from printer_v1.sources.dexscreener import (
@@ -76,6 +78,9 @@ PUBLIC_HEADERS = MappingProxyType({"Accept": "application/json", "User-Agent": "
 RPC_HEADERS = MappingProxyType({"Accept": "application/json", "Content-Type": "application/json", "User-Agent": "PrinterV1/0.1"})
 MINT_ACCOUNT_EVIDENCE_VERSION = "candidate-mint-account-v2"
 INFRASTRUCTURE_MINTS = _SOLANA_INFRASTRUCTURE_MINTS
+CURSOR_NETWORK = "solana-mainnet"
+CURSOR_DECODER_VERSION = "canonical-live-acquisition-v1"
+LIVE_TAIL_DIRECTION = "FORWARD"
 
 
 class LiveAcquisitionConfigurationError(RuntimeError):
@@ -426,6 +431,35 @@ def _decorate(result: NormalizedSourceResult, responses: Sequence[TransportRespo
     )
 
 
+def _signature_page_request_options(
+    *,
+    range_mode: str,
+    head_signature: str | None,
+    previous_page_signature: str | None,
+    limit: int,
+) -> dict[str, Any]:
+    """Build exclusive Solana signature bounds without changing owner identity."""
+    options: dict[str, Any] = {
+        "limit": int(limit),
+        "commitment": "finalized",
+    }
+    if range_mode == "LIVE_TAIL":
+        if head_signature:
+            options["until"] = head_signature
+        if previous_page_signature:
+            options["before"] = previous_page_signature
+        return options
+    if range_mode == "BACKFILL":
+        boundary = previous_page_signature or head_signature
+        if not boundary:
+            raise LiveAcquisitionConfigurationError(
+                "CURSOR_BACKFILL_HEAD_REQUIRED"
+            )
+        options["before"] = boundary
+        return options
+    raise LiveAcquisitionConfigurationError("CURSOR_RANGE_MODE_UNSUPPORTED")
+
+
 class LiveCandidateAcquisitionTransportOwner:
     """Repository-owned finite operation plan shared by N2 and N7."""
 
@@ -438,9 +472,43 @@ class LiveCandidateAcquisitionTransportOwner:
         ):
             raise LiveAcquisitionConfigurationError("ACQUISITION_REQUIRED_TRANSPORT_UNRESOLVED")
 
-    def operations(self, *, mode: str, policy: Mapping[str, Any],
-                   execution_id: str) -> Sequence[AcquisitionSourceOperation]:
+    def cursor_namespaces(
+        self, *, mode: str, policy: Mapping[str, Any], execution_id: str
+    ) -> Sequence[CursorNamespace]:
+        del mode, policy, execution_id
+        return (
+            (
+                CURSOR_NETWORK, PUMP_CREATE_INDEX_ADDRESS,
+                OFFICIAL_REPOSITORY_COMMIT, CURSOR_DECODER_VERSION,
+                LIVE_TAIL_DIRECTION,
+            ),
+            (
+                CURSOR_NETWORK, PUMP_PROGRAM_ID,
+                OFFICIAL_REPOSITORY_COMMIT, CURSOR_DECODER_VERSION,
+                LIVE_TAIL_DIRECTION,
+            ),
+        )
+
+    def operations(
+        self, *, mode: str, policy: Mapping[str, Any], execution_id: str,
+        cursor_heads: Mapping[CursorNamespace, CursorHead | None] | None = None,
+    ) -> Sequence[AcquisitionSourceOperation]:
         del mode, execution_id
+        namespaces = tuple(
+            self.cursor_namespaces(mode="", policy=policy, execution_id="")
+        )
+        supplied_heads = dict(cursor_heads or {})
+        for namespace, head in supplied_heads.items():
+            if head is None:
+                continue
+            if tuple(str(head.get(key) or "") for key in (
+                "network", "indexed_address", "contract_pin", "decoder_version",
+                "direction",
+            )) != namespace:
+                raise LiveAcquisitionConfigurationError(
+                    "CURSOR_NAMESPACE_MISMATCH"
+                )
+        heads = {namespace: supplied_heads.get(namespace) for namespace in namespaces}
         cap = int(policy["candidate_limit"])
         timeout = self.configuration.timeout_seconds
         byte_cap = self.configuration.per_response_byte_ceiling
@@ -612,13 +680,36 @@ class LiveCandidateAcquisitionTransportOwner:
                         responses: Sequence[TransportResponse]) -> NormalizedSourceResult:
             return _failure("solana_rpc", kind, exc, [_operation_detail(x) for x in responses])
 
-        create_cursor = {"indexed_address": PUMP_CREATE_INDEX_ADDRESS,
-            "contract_pin": OFFICIAL_REPOSITORY_COMMIT,
-            "decoder_version": "canonical-live-acquisition-v1", "direction": "BACKWARD",
-            "start_slot": None, "start_signature": None, "end_slot": None,
-            "end_signature": None, "continuity_state": "UNKNOWN",
-            "cursor_advanced": False, "unresolved_reason": "NOT_EXECUTED"}
-        migration_cursor = {**create_cursor, "indexed_address": PUMP_PROGRAM_ID}
+        def live_cursor(namespace: CursorNamespace) -> dict[str, Any]:
+            head = heads[namespace]
+            start_slot = None if head is None else int(head["boundary_slot"])
+            start_signature = (
+                None if head is None else str(head["boundary_signature"])
+            )
+            return {
+                "indexed_address": namespace[1],
+                "contract_pin": namespace[2],
+                "decoder_version": namespace[3],
+                "direction": namespace[4],
+                "range_mode": "LIVE_TAIL",
+                "rpc_order": "NEWEST_TO_OLDEST",
+                "rpc_before_exclusive": True,
+                "rpc_until_exclusive": True,
+                "bootstrap_contract": (
+                    "EXPLICIT_TIP_BOOTSTRAP" if head is None else "ESTABLISHED_HEAD"
+                ),
+                "start_slot": start_slot,
+                "start_signature": start_signature,
+                "end_slot": start_slot,
+                "end_signature": start_signature,
+                "continuity_state": "UNKNOWN",
+                "cursor_advanced": False,
+                "unresolved_reason": "NOT_EXECUTED",
+                "prior_boundary_verified": False,
+            }
+
+        create_cursor = live_cursor(namespaces[0])
+        migration_cursor = live_cursor(namespaces[1])
 
         def signature_page(
             kind: str, *, indexed_address: str, page_index: int, page_limit: int,
@@ -630,19 +721,39 @@ class LiveCandidateAcquisitionTransportOwner:
                 rows: list[Mapping[str, Any]] = state[rows_key]
                 if state[exhausted_key]:
                     return complete(kind, (), (), cursor_range=cursor)
+                established = cursor.get("bootstrap_contract") == "ESTABLISHED_HEAD"
+                if page_index == 0 and established:
+                    prior_signature = str(cursor["start_signature"])
+                    verification = rpc_call(
+                        "getTransaction",
+                        [prior_signature, {
+                            "encoding": "json", "commitment": "finalized",
+                            "maxSupportedTransactionVersion": 0,
+                        }],
+                        f"{role_prefix}_PRIOR_BOUNDARY",
+                    )
+                    responses.append(verification)
+                    if not isinstance(verification.payload, Mapping):
+                        raise LiveAcquisitionTransportError(
+                            "CURSOR_PRIOR_BOUNDARY_UNREACHABLE",
+                            f"{role_prefix}_PRIOR_BOUNDARY",
+                            operation_kind="getTransaction",
+                        )
+                    cursor["prior_boundary_verified"] = True
                 remaining = max(transaction_limit - len(rows), 1)
                 pages_remaining = max(page_limit - page_index, 1)
                 page_size = max(1, (remaining + pages_remaining - 1) // pages_remaining)
-                options: dict[str, Any] = {
-                    "limit": page_size, "commitment": "finalized"
-                }
-                if rows:
-                    before = str(rows[-1].get("signature") or "")
-                    if not before:
-                        raise LiveAcquisitionTransportError(
-                            "SOURCE_MALFORMED", f"{role_prefix}_SIGNATURE_PAGE_{page_index + 1}"
-                        )
-                    options["before"] = before
+                previous_signature = (
+                    str(rows[-1].get("signature") or "") if rows else None
+                )
+                options = _signature_page_request_options(
+                    range_mode="LIVE_TAIL",
+                    head_signature=(
+                        str(cursor["start_signature"]) if established else None
+                    ),
+                    previous_page_signature=previous_signature,
+                    limit=page_size,
+                )
                 response = rpc_call(
                     "getSignaturesForAddress", [indexed_address, options],
                     f"{role_prefix}_SIGNATURE_PAGE_{page_index + 1}",
@@ -653,8 +764,48 @@ class LiveCandidateAcquisitionTransportOwner:
                 ):
                     raise LiveAcquisitionTransportError("SOURCE_MALFORMED", response.endpoint_role)
                 page_rows = list(response.payload)
+                prior_signatures = {
+                    str(row.get("signature")) for row in rows
+                    if row.get("signature")
+                }
+                previous_slot = (
+                    int(rows[-1]["slot"]) if rows else None
+                )
+                for row in page_rows:
+                    signature = row.get("signature")
+                    slot = row.get("slot")
+                    if (
+                        not isinstance(signature, str)
+                        or not signature
+                        or type(slot) is not int
+                        or slot < 0
+                    ):
+                        raise LiveAcquisitionTransportError(
+                            "SOURCE_MALFORMED", response.endpoint_role
+                        )
+                    if signature in prior_signatures:
+                        raise LiveAcquisitionTransportError(
+                            "CURSOR_DUPLICATE_SIGNATURE", response.endpoint_role
+                        )
+                    if previous_slot is not None and slot > previous_slot:
+                        raise LiveAcquisitionTransportError(
+                            "CURSOR_PAGE_ORDER_INVALID", response.endpoint_role
+                        )
+                    if established and slot < int(cursor["start_slot"]):
+                        raise LiveAcquisitionTransportError(
+                            "CURSOR_PRIOR_BOUNDARY_UNREACHABLE",
+                            response.endpoint_role,
+                            operation_kind="getSignaturesForAddress",
+                        )
+                    prior_signatures.add(signature)
+                    previous_slot = slot
                 rows.extend(page_rows)
-                state[exhausted_key] = len(page_rows) < page_size
+                if not established:
+                    # Bootstrap anchors the current tip only. It makes no claim
+                    # that older history was consumed; BACKFILL owns that range.
+                    state[exhausted_key] = True
+                else:
+                    state[exhausted_key] = len(page_rows) < page_size
                 eligible_rows = [
                     row for row in rows
                     if row.get("err") is None
@@ -662,22 +813,43 @@ class LiveCandidateAcquisitionTransportOwner:
                     and row.get("signature")
                 ]
                 terminal_page = state[exhausted_key] or page_index + 1 == page_limit
-                hidden_rows = terminal_page and len(eligible_rows) > transaction_limit
-                continuity = (
-                    "GAPPED" if hidden_rows else "CONTIGUOUS" if terminal_page else "UNKNOWN"
+                page_ceiling_gap = (
+                    established
+                    and page_index + 1 == page_limit
+                    and not state[exhausted_key]
                 )
-                terminal = rows[-1] if rows else None
+                continuity = (
+                    "GAPPED" if page_ceiling_gap
+                    else "CONTIGUOUS" if terminal_page else "UNKNOWN"
+                )
+                newest = rows[0] if rows else None
+                end_slot = (
+                    int(newest["slot"]) if newest is not None
+                    else cursor.get("start_slot")
+                )
+                end_signature = (
+                    str(newest["signature"]) if newest is not None
+                    else cursor.get("start_signature")
+                )
+                advanced = bool(
+                    continuity == "CONTIGUOUS"
+                    and end_signature
+                    and (
+                        cursor.get("start_signature") is None
+                        or end_signature != cursor.get("start_signature")
+                    )
+                )
                 cursor.update({
-                    "end_slot": int(terminal.get("slot") or 0) if terminal else 0,
-                    "end_signature": (
-                        str(terminal.get("signature") or "")
-                        if terminal else "EMPTY_BOUNDED_RANGE"
-                    ),
+                    "end_slot": end_slot,
+                    "end_signature": end_signature,
                     "continuity_state": continuity,
-                    "cursor_advanced": continuity == "CONTIGUOUS",
+                    "cursor_advanced": advanced,
                     "unresolved_reason": (
-                        None if continuity == "CONTIGUOUS"
-                        else "BOUNDED_COVERAGE_INCOMPLETE" if continuity == "GAPPED"
+                        "BOOTSTRAP_EMPTY_NO_HEAD"
+                        if continuity == "CONTIGUOUS" and end_signature is None
+                        else None if continuity == "CONTIGUOUS"
+                        else "LIVE_TAIL_PAGE_CEILING_BEFORE_BOUNDARY"
+                        if continuity == "GAPPED"
                         else "NEXT_DECLARED_PAGE_PENDING"
                     ),
                 })
@@ -1000,7 +1172,10 @@ class LiveCandidateAcquisitionTransportOwner:
                     ),
                 ),
                 required=page_index + 1 == create_page_count,
-                expected_transport_operations=1,
+                round_mode="LIVE_TAIL",
+                expected_transport_operations=(
+                    2 if page_index == 0 and heads[namespaces[0]] is not None else 1
+                ),
                 cursor_range=create_cursor,
             )
             for page_index in range(create_page_count)
@@ -1018,7 +1193,8 @@ class LiveCandidateAcquisitionTransportOwner:
                         role_prefix="PUMP_CREATE",
                     ),
                 ),
-                expected_transport_operations=1, cursor_range=create_cursor,
+                round_mode="LIVE_TAIL", expected_transport_operations=1,
+                cursor_range=create_cursor,
             )
             for transaction_index in range(transaction_count)
         )
@@ -1037,7 +1213,10 @@ class LiveCandidateAcquisitionTransportOwner:
                     ),
                 ),
                 required=page_index + 1 == migration_page_count,
-                expected_transport_operations=1,
+                round_mode="LIVE_TAIL",
+                expected_transport_operations=(
+                    2 if page_index == 0 and heads[namespaces[1]] is not None else 1
+                ),
                 cursor_range=migration_cursor,
             )
             for page_index in range(migration_page_count)
@@ -1055,7 +1234,8 @@ class LiveCandidateAcquisitionTransportOwner:
                         role_prefix="PUMP_MIGRATION",
                     ),
                 ),
-                expected_transport_operations=1, cursor_range=migration_cursor,
+                round_mode="LIVE_TAIL", expected_transport_operations=1,
+                cursor_range=migration_cursor,
             )
             for transaction_index in range(transaction_count)
         )
@@ -1068,7 +1248,8 @@ class LiveCandidateAcquisitionTransportOwner:
             AcquisitionSourceOperation(
                 "solana_rpc", "pumpswap_pool_account_batch",
                 _OperationAdapter("solana_rpc", "pumpswap_pool_account_batch", pool_batch),
-                cursor_range=migration_cursor, phase=PHASE_ENRICHMENT,
+                round_mode="LIVE_TAIL", cursor_range=migration_cursor,
+                phase=PHASE_ENRICHMENT,
             ),
         ))
         operations.extend(

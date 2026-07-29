@@ -82,15 +82,17 @@ The foundation mint-identity admission repair is closed PASS. The separately
 authorized post-mint-repair N2 proof is closed
 `V2_9_8B_POST_MINT_ADMISSION_REPAIR_LIVE_N2_PROOF_BLOCKED` after exactly one
 run; it blocked before foundation admission on `CURSOR_START_MISMATCH`. N7 is
-`NOT_RUN`. The exact next permitted sub-lane is:
+`NOT_RUN`. The subsequent durable cursor-to-live-range continuity audit and
+repair is closed `V2_9_8B_DURABLE_CURSOR_LIVE_RANGE_REPAIR_PASS` after
+offline-only sequential persistent-state proofs. The exact next permitted
+task is:
 
 ```text
-Operator decision: source-grounded investigation of durable cursor-head to
-live proposed-start propagation after CURSOR_START_MISMATCH
-(before any repair or new explicit live acquisition proof)
+Separately explicit, operator-authorized bounded live ACQUISITION_ONLY_N2 proof
+using the repaired public CLI path
 ```
 
-This does not authorize cursor reset, N2 retry, N7, the published operational
+This does not authorize cursor reset, N7, the published operational
 Memory Factory campaign command, lifecycle work, runtime capacity above two,
 or another selective-1h proof.
 
@@ -111,9 +113,9 @@ The integrated implementation is runtime-neutral through N=16 and its
 transport-free proof is complete; active Memory Factory capacity remains exactly
 two. The post-mint-repair live N2 proof is closed BLOCKED on
 `CURSOR_START_MISMATCH` before foundation admission, with N7 `NOT_RUN`. The
-exact next permitted task is the source-grounded cursor propagation
-investigation decision above. It does not authorize repair, cursor reset, the
-operational campaign, N2 retry, or N7.
+durable cursor-to-live-range repair is closed PASS after offline-only proofs.
+The exact next permitted task is the separately explicit bounded live N2 proof
+above. It does not authorize cursor reset, the operational campaign, or N7.
 
 ## 4. Assistant Behavior Rules
 
@@ -225,12 +227,12 @@ operator run under the active build order. It does not unlock retrieval, paper
 decisions, BUY/SELL/HOLD, positions, trades, audits, or PnL.
 
 Within that active lane, the post-mint-repair live N2 proof is closed BLOCKED
-(`CURSOR_START_MISMATCH` before foundation admission; N7 `NOT_RUN`). The next
-permitted work is an operator decision on a separate source-grounded
-investigation lane for durable cursor-head to live proposed-start propagation
-before any repair or new explicit live proof. Do not reset cursors, retry N2,
-run N7, or run the operational Memory Factory campaign without a new explicit
-authorization.
+(`CURSOR_START_MISMATCH` before foundation admission; N7 `NOT_RUN`). The
+subsequent durable cursor-to-live-range repair is closed PASS after offline-only
+proofs. The next permitted work is a separately explicit, operator-authorized
+bounded live `ACQUISITION_ONLY_N2` proof on the repaired public CLI path. Do not
+reset cursors, run N7, or run the operational Memory Factory campaign without a
+new explicit authorization.
 
 ## 7. Automation Boundary Reminder
 
@@ -269,7 +271,7 @@ Preserve V2-9.7F and V2-9.8A PASS, require a separate explicit operator action
 for V2-9.8B, and preserve all retrieval and financial locks.
 
 Inside V2-9.8B, follow the adopted candidate-acquisition sub-lane sequence. The
-post-mint-repair live N2 proof is closed BLOCKED. The current exact next
-sub-lane is an operator decision on a source-grounded investigation of durable
-cursor-head to live proposed-start propagation after `CURSOR_START_MISMATCH`,
-before any repair or new explicit live acquisition proof.
+post-mint-repair live N2 proof is closed BLOCKED, and the subsequent durable
+cursor-to-live-range repair is closed PASS after offline-only proofs. The
+current exact next task is a separately explicit, operator-authorized bounded
+live `ACQUISITION_ONLY_N2` proof using the repaired public CLI path.
