@@ -38,11 +38,23 @@ full-window outcome must remain separate from internal opportunity outcome.
 
 ## 0.4 Allowed Free-First Data Sources
 
-- DexScreener - main free source for Solana pair discovery, liquidity, volume, FDV, price changes, boosted tokens, and token profiles.
+- Direct Pump on-chain activity - required exact launch-origin authority for
+  Pump candidates, through approved free/public Solana RPC only.
+
+- Direct Pump migration plus PumpSwap state - required exact graduation and
+  canonical-pool authority for Pump candidates, through approved free/public
+  Solana RPC only.
+
+- DexScreener - current market visibility and enrichment for Solana pairs,
+  liquidity, volume, FDV, price changes, boosted tokens, and token profiles. It
+  does not establish Pump origin or PumpSwap graduation.
 
 - GeckoTerminal - backup pool/OHLC/liquidity/volume confirmation, used carefully because public limits are limited.
 
-- PumpPortal free streams - subscribeNewToken and subscribeMigration only. Metered trade/account streams are not required in V1.
+- PumpPortal - optional governed creation/migration locator only after its
+  authentication, wallet, free-versus-metered, and cost contract is formally
+  adopted. It is not origin or graduation authority. Metered trade/account
+  streams are excluded from V1.
 
 - Alternative.me Fear & Greed - broad crypto sentiment backdrop.
 
@@ -773,17 +785,24 @@ Printer must not automatically label every fake-looking pump as useless. Some fa
 
 ## 4.11 Polling and Enrichment Frequencies
 
-| **Item**                                   | **Frequency / Rule**                                                                  |
-|--------------------------------------------|---------------------------------------------------------------------------------------|
-| PumpPortal new token and migration streams | One stable websocket connection. Event-based. No metered trade/account streams in V1. |
-| DexScreener latest token profiles          | Every 10-15 minutes.                                                                  |
-| DexScreener latest boosted tokens          | Every 10-15 minutes.                                                                  |
-| DexScreener top boosted tokens             | Every 15-20 minutes.                                                                  |
-| DexScreener new pair / token pair checks   | Every 5-10 minutes.                                                                   |
-| WATCH_ONLY refresh                         | Every 20-30 minutes unless activity appears.                                          |
-| IGNORE / INSTANT_REJECT                    | No regular refresh unless strong revival or valid new source appears.                 |
-| GeckoTerminal backup                       | Every 20-30 minutes only when needed.                                                 |
-| RPC / Helius confirmation                  | Only after initial discovery filters or for suspicious/high-priority tokens.          |
+| **Item** | **Frequency / Rule** |
+|---|---|
+| Direct Pump/PumpSwap observation | Bounded finalized live-tail plus bounded restart-safe cursor backfill under one Source-Governed, Scheduler-led owner; exact budgets require a later adopted design. |
+| PumpPortal new token and migration locator | Unavailable until its auth/wallet/cost contract is adopted; if later allowed, bounded locator only and every fact requires direct on-chain verification. |
+| DexScreener latest token profiles | Every 10-15 minutes. |
+| DexScreener latest boosted tokens | Every 10-15 minutes. |
+| DexScreener top boosted tokens | Every 15-20 minutes. |
+| DexScreener new pair / token pair checks | Every 5-10 minutes. |
+| WATCH_ONLY refresh | Every 20-30 minutes unless activity appears. |
+| IGNORE / INSTANT_REJECT | No regular refresh unless strong revival or valid new source appears. |
+| GeckoTerminal backup | Every 20-30 minutes only when needed. |
+| RPC / Helius confirmation | Exact direct Pump/PumpSwap verification and limited mint/account/pool/safety checks, always under governed budgets. |
+
+Unknown or unsupported Pump/PumpSwap instructions, events, accounts, layouts,
+quote mints, extensions, or PDA relationships fail closed. The exact official
+Pump and PumpSwap program contracts must be refreshed and pinned before
+implementation. Aggregator observations never replace exact Pump origin or
+exact joined Pump-migration/PumpSwap graduation evidence.
 
 ## 4.12 Promotion and Demotion
 

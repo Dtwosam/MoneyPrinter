@@ -394,11 +394,15 @@ Printer V1 may only use free/public data sources.
 
 Allowed free-first sources:
 
+- Direct Pump.fun on-chain activity through approved free/public Solana RPC
+
+- Direct Pump.fun migration and PumpSwap state through approved free/public Solana RPC
+
 - DexScreener
 
 - GeckoTerminal
 
-- PumpPortal free launch/migration streams
+- PumpPortal optional governed launch/migration locator only after its authentication, wallet, free-versus-metered, and cost contract is resolved
 
 - Alternative.me Fear \& Greed
 
@@ -756,6 +760,8 @@ Required supporting audit/readiness/source-stack documents:
 - docs/printer-v1-memory-growth-automation-audit.md
 - docs/printer-v1-current-state-memory-growth-audit.md
 - docs/printer-v1-v2-9-final-closeout.md
+- docs/printer-v1-v2-9-8b-candidate-acquisition-capacity-feasibility-audit.md
+- docs/printer-v1-v2-9-8b-candidate-acquisition-foundation-roadmap-adoption.md
 
 Historical previous active roadmap:
 
@@ -768,6 +774,33 @@ Historical proposal:
 Current active memory-growth lane after V2-9.8A operator activation PASS:
 
 - V2-9.8B — Active Bounded Memory Growth Operations
+
+Inside V2-9.8B, the candidate-acquisition foundation roadmap adoption is closed
+`V2_9_8B_CANDIDATE_ACQUISITION_FOUNDATION_ROADMAP_ADOPTION_PASS`. The next
+permitted sub-lane is read-only:
+
+- V2-9.8B Direct Pump/PumpSwap Contract Refresh and Pin Readiness Audit
+
+Factory-wide candidate-acquisition authority is:
+
+1. direct Pump.fun on-chain activity for exact launch origin;
+2. direct Pump.fun migration plus PumpSwap evidence for exact graduation and
+   canonical pool identity;
+3. DexScreener and GeckoTerminal for current market visibility, liquidity,
+   activity, age, and coverage enrichment only;
+4. approved Solana RPC providers for exact on-chain verification; and
+5. PumpPortal only as an optional governed locator after its authentication,
+   wallet, free-versus-metered, and cost contract is resolved.
+
+Aggregator observations never replace exact Pump origin or exact joined
+Pump-migration/PumpSwap graduation evidence. The future foundation must have
+bounded live observation and restart-safe cursor-based historical backfill for
+missed Pump creation and migration events under one Source-Governed,
+Scheduler-led owner. Unknown or unsupported Pump/PumpSwap instruction, event,
+account, layout, quote-mint, extension, or PDA contracts fail closed. Refresh
+and pin both official Pump and PumpSwap program contracts before implementation.
+This adoption does not authorize source execution, implementation, migration,
+capacity above two, or another selective-1h proof.
 
 V2-9 is closed PASS at commit 51bcfdb (`Close V2-9 four-hour proof lane`).
 V2-9.7A through V2-9.7F are closed. V2-9.7F activation readiness is
@@ -872,6 +905,11 @@ The next active memory-growth lane is:
 V2-9.8A is closed PASS. V2-9.8B is the separately operator-run bounded
 persistent 15m campaign lane. It does not unlock retrieval, paper decisions,
 BUY/SELL/HOLD, positions, trades, audits, or PnL.
+
+Within V2-9.8B, the candidate-acquisition foundation adoption is closed PASS.
+The next permitted work is the read-only `V2-9.8B Direct Pump/PumpSwap Contract
+Refresh and Pin Readiness Audit`; it does not authorize running the published
+operational command.
 ## Printer V1 Python Builder Guide
 
 For every Printer V1 Python implementation, repair, migration, runner,

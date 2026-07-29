@@ -990,6 +990,43 @@ and preserve all retrieval and financial locks.
 
 #### V2-9.8B - Active Bounded Memory Growth Operations
 
+##### Candidate-Acquisition Foundation Adoption (2026-07-28)
+
+The documentation-only adoption verdict is
+`V2_9_8B_CANDIDATE_ACQUISITION_FOUNDATION_ROADMAP_ADOPTION_PASS` at
+`docs/printer-v1-v2-9-8b-candidate-acquisition-foundation-roadmap-adoption.md`.
+It adopts this factory-wide authority order:
+
+1. direct Pump on-chain activity for exact launch origin;
+2. direct Pump migration plus exact PumpSwap evidence for graduation and
+   canonical pool identity;
+3. DexScreener and GeckoTerminal for current market visibility, liquidity,
+   activity, age, and coverage enrichment only;
+4. approved Solana RPC providers for exact on-chain transport/verification; and
+5. PumpPortal only as an optional governed locator after its authentication,
+   wallet, free-versus-metered, and cost contract is resolved.
+
+Aggregator observations never replace exact Pump origin or exact joined
+Pump-migration/PumpSwap graduation evidence. Candidate acquisition must be one
+Source-Governed, Scheduler-led owner with bounded finalized live-tail and
+restart-safe cursor-based historical-backfill modes for missed Pump creation and
+migration activity. Unknown or unsupported Pump/PumpSwap instructions, events,
+accounts, layouts, quote mints, or PDA relationships fail closed and prevent
+cursor advancement past the unresolved observation.
+
+The current PumpPortal-led migration locator and lack of an equivalent direct
+on-chain migration cursor are a confirmed design gap. Before implementation,
+Printer must refresh and pin the official Pump and PumpSwap program contracts,
+including exact repository commit, raw-file hashes, program IDs, supported
+instruction/event/account layouts, discriminators, account order, Pool account
+discriminator and extension policy, PDA/canonical-index rules, quote-mint rules,
+indexing strategy, and immutable fixtures.
+
+This adoption does not activate the operational command, live observation,
+backfill, implementation, migration, capacity above two, or another selective-1h
+proof. The next permitted sub-lane is the read-only **V2-9.8B Direct
+Pump/PumpSwap Contract Refresh and Pin Readiness Audit**.
+
 Campaign rules:
 
 - begin with 2 active tokens;
@@ -1680,14 +1717,18 @@ learning quality, evidence quality, report clarity, or lock safety is not done.
 ## 12. Next Recommended Lane
 
 V2-9.7A through V2-9.7F and V2-9.8A are closed. V2-9.8A verdict is
-`V2_9_8A_OPERATOR_ACTIVATION_GATE_PASS`. The next active memory-growth lane is:
+`V2_9_8A_OPERATOR_ACTIVATION_GATE_PASS`. V2-9.8B remains the active
+memory-growth lane. Inside it, the candidate-acquisition foundation roadmap
+adoption is closed PASS and the exact next permitted sub-lane is:
 
 ```text
-V2-9.8B — Active Bounded Memory Growth Operations
+V2-9.8B Direct Pump/PumpSwap Contract Refresh and Pin Readiness Audit
 ```
 
-Reason: the exact bounded command, authoritative backup, Scheduler residue
-reconciliation, supervision, safe stop, reporting, replay, two-token policy,
-and 15m-only boundary passed the operator activation gate. V2-9.8B may run only
-through a separate explicit operator action. Retrieval, paper decisions,
-BUY/SELL/HOLD, positions, trades, audits, and PnL remain locked.
+Reason: direct Pump origin and joined direct Pump-migration/PumpSwap graduation
+are now required authority, but the current migration path is PumpPortal-led and
+the official dual-program contract has not been freshly pinned for that
+foundation. This next sub-lane is read-only. It does not authorize the published
+operational command, implementation, source execution, live observation,
+backfill, runtime capacity above two, or another selective-1h proof. Retrieval,
+paper decisions, BUY/SELL/HOLD, positions, trades, audits, and PnL remain locked.

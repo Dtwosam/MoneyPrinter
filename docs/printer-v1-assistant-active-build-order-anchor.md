@@ -71,6 +71,19 @@ PowerShell command is published but has not run. V2-9.8B remains a separate
 operator-run lane. Retrieval, paper decisions, BUY/SELL/HOLD, positions,
 trades, audits, and PnL remain locked.
 
+The V2-9.8B candidate-acquisition foundation roadmap adoption is closed
+`V2_9_8B_CANDIDATE_ACQUISITION_FOUNDATION_ROADMAP_ADOPTION_PASS` at
+`docs/printer-v1-v2-9-8b-candidate-acquisition-foundation-roadmap-adoption.md`.
+The exact next permitted sub-lane is the read-only:
+
+```text
+V2-9.8B Direct Pump/PumpSwap Contract Refresh and Pin Readiness Audit
+```
+
+This does not authorize the published operational command, implementation,
+source execution, live observation, historical backfill, migration, capacity
+above two, or another selective-1h proof.
+
 ## 4. Assistant Behavior Rules
 
 Claude, ChatGPT, Codex, and future assistants must read the active source stack
@@ -93,6 +106,22 @@ Assistants must push back if a suggestion:
 - publishes the operational command before V2-9.8A
 
 Assistants must keep V2-9.8A as an explicit operator gate until completed.
+
+For candidate acquisition, assistants must preserve this authority order:
+
+1. direct Pump on-chain evidence for exact launch origin;
+2. direct Pump migration plus exact PumpSwap evidence for graduation and
+   canonical pool identity;
+3. DexScreener and GeckoTerminal for market enrichment only;
+4. approved Solana RPC providers for exact on-chain transport/verification; and
+5. PumpPortal only as an optional governed locator after its auth, wallet, free
+   versus metered, and cost contract is adopted.
+
+Aggregators must never replace exact Pump/PumpSwap facts. A future foundation
+must provide bounded live observation and restart-safe cursor-based creation and
+migration backfill under one Source-Governed, Scheduler-led owner. Unsupported
+Pump/PumpSwap instructions or account layouts fail closed. Both official
+program contracts must be refreshed and pinned before implementation.
 
 Assistants must not move early into:
 
@@ -163,6 +192,10 @@ V2-9.8A is closed PASS. V2-9.8B is allowed only through a separate explicit
 operator run under the active build order. It does not unlock retrieval, paper
 decisions, BUY/SELL/HOLD, positions, trades, audits, or PnL.
 
+Within that active lane, the next permitted work after the candidate-acquisition
+adoption is the read-only `V2-9.8B Direct Pump/PumpSwap Contract Refresh and Pin
+Readiness Audit`. Do not run the operational command as part of that audit.
+
 ## 7. Automation Boundary Reminder
 
 The first automation implementation target remains:
@@ -198,3 +231,7 @@ source-of-truth update. Do not restart V2-2A, V2-9.7A–F, or any closed
 historical lane as "next" without an explicit historical-audit request.
 Preserve V2-9.7F and V2-9.8A PASS, require a separate explicit operator action
 for V2-9.8B, and preserve all retrieval and financial locks.
+
+Inside V2-9.8B, follow the adopted candidate-acquisition sub-lane sequence. The
+current exact next sub-lane is the read-only Direct Pump/PumpSwap Contract
+Refresh and Pin Readiness Audit.

@@ -101,7 +101,8 @@ It is an operator-approved, bounded workflow that coordinates existing Printer c
 
 ```text
 operator starts bounded cycle
--> discovery
+-> direct Pump/PumpSwap candidate acquisition
+-> market enrichment and categorical admission
 -> selection
 -> tracking
 -> governed collection
@@ -526,11 +527,67 @@ No engine may create its own API loop.
 
 Source limits and API behavior may change. Before implementation, re-check official source docs and keep budgets configurable.
 
+### Candidate-acquisition authority
+
+The active candidate-acquisition foundation adoption is
+`docs/printer-v1-v2-9-8b-candidate-acquisition-foundation-roadmap-adoption.md`.
+Candidate authority is:
+
+1. direct Pump on-chain evidence for exact launch origin;
+2. direct Pump migration plus exact PumpSwap evidence for graduation and
+   canonical pool identity;
+3. DexScreener and GeckoTerminal for current market visibility, liquidity,
+   activity, age, and coverage enrichment only;
+4. approved Solana RPC providers for exact on-chain transport and verification;
+   and
+5. PumpPortal only as an optional governed locator after its authentication,
+   wallet, free-versus-metered, and cost contract is resolved.
+
+Aggregator observations must never replace exact Pump origin or exact joined
+Pump-migration/PumpSwap graduation evidence. The future acquisition owner must
+be Source-Governed and Scheduler-led and must provide both bounded finalized
+live observation and restart-safe, cursor-based historical backfill for missed
+Pump creation and migration events. Live and backfill are two modes of one owner,
+not independent source loops.
+
+Unknown or unsupported Pump/PumpSwap instruction, event, account, quote-mint,
+extension, PDA, or pool layouts fail closed. Before implementation, refresh and
+pin the exact official Pump and PumpSwap repository commit, raw artifact hashes,
+program IDs, supported instruction/account/event contracts, discriminators,
+canonical-pool rules, and fixtures. Cursor advancement must stop before any
+unresolved observation.
+
+The next permitted sub-lane is the read-only **V2-9.8B Direct Pump/PumpSwap
+Contract Refresh and Pin Readiness Audit**. This guide update does not authorize
+source execution, implementation, backfill, runtime capacity above two, or
+another selective-1h proof.
+
+### Pump.fun / Pump Program
+
+Role:
+
+- required exact launch-origin authority;
+- required exact migration-instruction authority;
+- bounded finalized live-tail and cursor-backfill observation only through the
+  future adopted shared owner; and
+- no wallet, signing, transaction submission, trade stream, or execution.
+
+### PumpSwap / Pump AMM
+
+Role:
+
+- required exact graduation and canonical-pool authority when joined to exact
+  Pump migration evidence;
+- exact program ownership, Pool account, mint, quote mint, canonical index,
+  PDA, and adopted layout verification; and
+- never a substitute for the Pump migration transaction by account presence
+  alone.
+
 ### DexScreener
 
 Role:
 
-- primary free discovery source
+- current market visibility and coverage enrichment
 - primary pair snapshot source
 - token profiles
 - boosted/latest token context
@@ -542,7 +599,8 @@ Use carefully with per-endpoint budgets.
 
 Role:
 
-- backup confirmation
+- current market visibility and coverage enrichment
+- backup market confirmation
 - OHLC/liquidity/volume confirmation
 - lower-frequency only
 
@@ -552,10 +610,14 @@ Do not use GeckoTerminal as a high-frequency primary source unless source limits
 
 Role:
 
-- free new token stream
-- free migration stream
+- unavailable as candidate authority under the current unresolved contract;
+- optional future governed locator for new-token and migration observations
+  only after a separate official contract adoption passes.
 
-V1 must not depend on metered trade/account streams if they require wallet-linked funding or paid usage.
+V1 must not depend on metered trade/account streams, wallet-linked funding, or
+paid usage. PumpPortal observations, if later adopted, must be independently
+verified through direct Pump/PumpSwap evidence and cannot satisfy a mandatory
+origin or graduation fact.
 
 ### Jupiter Quote
 
@@ -1058,9 +1120,15 @@ V2-9 closed PASS at commit 51bcfdb
 -> V2-15 Paper BUY Readiness Review
 ```
 
-The next active lane is `V2-9.7A - Operational Memory Factory Readiness Audit`.
-Do not start operational campaigns, provide the operational PowerShell command,
-start V2-10, or unlock retrieval/paper/financial capabilities from this guide.
+V2-9.7A through V2-9.7F and V2-9.8A are closed PASS. V2-9.8B remains the active
+memory-growth lane, but the candidate-acquisition adoption now makes its exact
+next permitted sub-lane the read-only `V2-9.8B Direct Pump/PumpSwap Contract
+Refresh and Pin Readiness Audit`.
+
+Do not start the operational campaign, run the published PowerShell command,
+implement source work, start live observation or backfill, start V2-10, exceed
+runtime capacity two, run another selective-1h proof, or unlock
+retrieval/paper/financial capabilities from this guide.
 
 Do not use this guide to skip V2-9.7, V2-9.8A, corpus-quality reviews, Lane 9
 BUY policy, or Lane 10 paper-position policy.
