@@ -409,6 +409,7 @@ def decode_pumpswap_pool_account(
         "is_cashback_coin": is_cashback_coin,
         "virtual_quote_reserves": virtual_quote_reserves,
         "append_only_extension": len(raw) == current_length,
+        "account_hash": hashlib.sha256(raw).hexdigest(),
         "contract_hash": PUMPSWAP_IDL_SHA256,
     }
 

@@ -187,6 +187,11 @@ decisions, positions, trades, audits, or PnL.
 |---|---|---|
 | `mint_creation_time_reference` | YES | `token_created_at` from on-chain block time (T3) |
 | `holder_concentration_reference` | `ALLOWED_SEPARATELY_AUTHORIZED_READINESS_PROOF` | Two finalized read-only methods for one exact mint; one attempt, no retry |
+| `candidate_pump_migration_signature_lookup` | `ALLOWED_SEPARATELY_AUTHORIZED_BOUNDED_ACQUISITION` | Exact candidate signature locator only; no absence or graduation claim |
+| `candidate_pump_migration_transaction` | `ALLOWED_SEPARATELY_AUTHORIZED_BOUNDED_ACQUISITION` | Finalized exact Pump `migrate` evidence for that candidate only |
+| `candidate_pumpswap_pool_verification` | `ALLOWED_SEPARATELY_AUTHORIZED_BOUNDED_ACQUISITION` | Exact canonical PumpSwap Pool join for that candidate only |
+| `pumpfun_migration_signature_page` | `OPTIONAL_COVERAGE_ONLY` | Bounded global coverage/locator evidence; no candidate-gating authority |
+| `pumpfun_migration_transaction` | `OPTIONAL_LOCATOR_ONLY` | Exact decoded locator that must re-enter candidate-specific verification |
 
 ### Evidence contribution rules
 
@@ -200,6 +205,12 @@ For A3 enrichment, the market-source request/response and the Solana RPC T3
 request/response remain separate governed traces. Printer may overlay them only
 on an exact mint match. A failed, missing, non-finalized, or mismatched T3 trace
 must leave token age unknown and cannot produce A3.
+
+Candidate-specific Pump graduation requires the exact finalized transaction and
+canonical PumpSwap Pool join under their pinned contracts. Global Pump observer
+continuity is optional coverage and cannot block active-curve, generic,
+non-Pump, or unknown-origin exact-present-pool admission. PumpSwap presence
+without the exact joined `migrate` transaction remains non-graduation evidence.
 
 
 ## Helius Free RPC

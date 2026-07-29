@@ -691,7 +691,13 @@ def _advance_current_cursor_heads(
 
 def _lineage_state(group: Sequence[Mapping[str, Any]]) -> str:
     claims = {str(item["lineage_claim"]) for item in group if item.get("lineage_claim")}
+    branch_facts = {
+        str((item.get("facts") or {}).get("pump_migration_branch") or "")
+        for item in group
+    }
     if "CONFLICTING_LINEAGE" in claims:
+        return "CONFLICTING_LINEAGE"
+    if "PUMP_LINEAGE_CONFLICT" in branch_facts:
         return "CONFLICTING_LINEAGE"
     pump = "PUMP_GRADUATION_CONFIRMED" in claims or "PUMP_ORIGIN_CONFIRMED" in claims
     non_pump = "NON_PUMP_POOL_CONFIRMED" in claims
@@ -699,6 +705,11 @@ def _lineage_state(group: Sequence[Mapping[str, Any]]) -> str:
         return "CONFLICTING_LINEAGE"
     if "PUMP_GRADUATION_CONFIRMED" in claims:
         return "PUMP_GRADUATION_CONFIRMED"
+    # A categorical Pump graduation claim with incomplete/failed exact proof
+    # must remain a rejected Pump branch. It cannot downgrade to a generic or
+    # unknown-origin lineage merely because current-pool evidence also exists.
+    if "PUMP_GRADUATION_CLAIMED" in branch_facts:
+        return "UNSUPPORTED_LINEAGE"
     if "PUMP_ORIGIN_CONFIRMED" in claims:
         return "PUMP_ORIGIN_CONFIRMED"
     if non_pump:
@@ -761,6 +772,16 @@ def _lineage_gate(lineage: str, facts: Sequence[Mapping[str, Any]]) -> tuple[str
         return "PASS", "PUMP_EXACT_BONDING_CURVE_LINEAGE_PASS"
     if lineage in {"NON_PUMP_POOL_CONFIRMED", "UNKNOWN_ORIGIN"}:
         return "PASS", f"{lineage}_PRESENT_POOL_PASS"
+    if lineage in {"UNSUPPORTED_LINEAGE", "CONFLICTING_LINEAGE"}:
+        reasons = {
+            str(fact.get("pump_migration_failure_reason") or "")
+            for fact in facts
+            if fact.get("pump_migration_failure_reason")
+        }
+        if len(reasons) == 1:
+            return "FAIL", next(iter(reasons))
+        if reasons:
+            return "FAIL", "PUMP_MIGRATION_MULTIPLE_FAILURE_REASONS"
     return "FAIL", f"{lineage}_REJECTED"
 
 
@@ -1006,6 +1027,32 @@ def _failure_family(observations: Sequence[Mapping[str, Any]], candidates: Seque
     for status, family in FAILURE_PRECEDENCE:
         if status in statuses:
             return family, status
+    pump_failures = [
+        (
+            str(fact.get("pump_migration_failure_family") or ""),
+            str(fact.get("pump_migration_failure_reason") or ""),
+        )
+        for candidate in candidates
+        for observation in candidate["observations"]
+        for fact in (observation.get("facts") or {},)
+        if fact.get("pump_migration_failure_family")
+    ]
+    pump_family_precedence = (
+        "UNSUPPORTED_CONTRACT",
+        "SOURCE_PROVIDER_FAILURE",
+        "BUDGET_EXHAUSTION",
+        "COVERAGE_FAILURE",
+        "STALE_OR_INCOMPLETE_EVIDENCE",
+        "IDENTITY_MERGE_FAILURE",
+        "ADMISSION_FAILURE",
+    )
+    for family in pump_family_precedence:
+        reasons = sorted({
+            reason for failure_family, reason in pump_failures
+            if failure_family == family and reason
+        })
+        if reasons:
+            return family, reasons[0] if len(reasons) == 1 else "MULTIPLE_PUMP_MIGRATION_FAILURES"
     mint_reasons = {
         str(stage["reason_code"])
         for candidate in candidates

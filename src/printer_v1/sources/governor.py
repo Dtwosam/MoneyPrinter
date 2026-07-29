@@ -29,6 +29,9 @@ TOKEN_LEVEL_REQUEST_KINDS = frozenset(
         "pumpfun_migration_signature_page",
         "pumpfun_migration_transaction",
         "pumpswap_pool_account_batch",
+        "candidate_pump_migration_signature_lookup",
+        "candidate_pump_migration_transaction",
+        "candidate_pumpswap_pool_verification",
     }
 )
 

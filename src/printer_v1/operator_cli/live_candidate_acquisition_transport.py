@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import base64
+import hashlib
 import json
 import os
 from types import MappingProxyType
@@ -20,6 +21,19 @@ from urllib import parse as url_parse
 from urllib import request as url_request
 
 from printer_v1.contracts.enums import DataQualityLabel, SourceStatus
+from printer_v1.discovery.pump_migration_observation import (
+    CANDIDATE_MINT,
+    MIGRATION_SIGNATURE,
+    NO_PUMP_GRADUATION_CLAIM,
+    PUMP_ACTIVE_BONDING_CURVE,
+    PUMP_BONDING_CURVE,
+    PUMP_GRADUATION_CLAIMED,
+    PUMP_LINEAGE_CONFLICT,
+    PUMPSWAP_POOL,
+    classify_candidate_lineage_branch,
+    plan_candidate_migration_locator,
+    validate_candidate_migration_locator,
+)
 from printer_v1.operator_cli.candidate_acquisition_integration import (
     PHASE_ENRICHMENT,
     AcquisitionSourceOperation,
@@ -108,6 +122,7 @@ class LiveAcquisitionConfiguration:
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
     per_response_byte_ceiling: int = PER_RESPONSE_BYTE_CEILING
     goplus_enabled: bool = True
+    global_pump_observer_enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -481,6 +496,8 @@ def _signature_page_request_options(
 class LiveCandidateAcquisitionTransportOwner:
     """Repository-owned finite operation plan shared by N2 and N7."""
 
+    decoupled_candidate_migration_plan = True
+
     def __init__(self, configuration: LiveAcquisitionConfiguration, *,
                  transport: CandidateAcquisitionOneShotTransport | None = None) -> None:
         self.configuration = configuration
@@ -494,18 +511,18 @@ class LiveCandidateAcquisitionTransportOwner:
         self, *, mode: str, policy: Mapping[str, Any], execution_id: str
     ) -> Sequence[CursorNamespace]:
         del mode, policy, execution_id
-        return (
-            (
-                CURSOR_NETWORK, PUMP_CREATE_INDEX_ADDRESS,
-                OFFICIAL_REPOSITORY_COMMIT, CURSOR_DECODER_VERSION,
-                LIVE_TAIL_DIRECTION,
-            ),
-            (
+        namespaces: tuple[CursorNamespace, ...] = ((
+            CURSOR_NETWORK, PUMP_CREATE_INDEX_ADDRESS,
+            OFFICIAL_REPOSITORY_COMMIT, CURSOR_DECODER_VERSION,
+            LIVE_TAIL_DIRECTION,
+        ),)
+        if self.configuration.global_pump_observer_enabled:
+            namespaces += ((
                 CURSOR_NETWORK, PUMP_PROGRAM_ID,
                 OFFICIAL_REPOSITORY_COMMIT, CURSOR_DECODER_VERSION,
                 LIVE_TAIL_DIRECTION,
-            ),
-        )
+            ),)
+        return namespaces
 
     def operations(
         self, *, mode: str, policy: Mapping[str, Any], execution_id: str,
@@ -534,6 +551,9 @@ class LiveCandidateAcquisitionTransportOwner:
         state: dict[str, Any] = {
             "origins": {}, "migrations": {}, "mint_safety": {},
             "pair_results": {},
+            "curve_accounts": {}, "pumpswap_present_pools": {},
+            "generic_present_pools": {}, "branch_decisions": {},
+            "migration_locators": {}, "candidate_migration_failures": {},
             "create_rows": [], "migration_rows": [],
             "create_exhausted": False, "migration_exhausted": False,
         }
@@ -735,7 +755,8 @@ class LiveCandidateAcquisitionTransportOwner:
 
         def complete(kind: str, observations: Sequence[Mapping[str, Any]],
                      responses: Sequence[TransportResponse], *,
-                     cursor_range: Mapping[str, Any] | None = None) -> NormalizedSourceResult:
+                     cursor_range: Mapping[str, Any] | None = None,
+                     extra: Mapping[str, Any] | None = None) -> NormalizedSourceResult:
             result = NormalizedSourceResult(
                 source_name="solana_rpc", request_kind=kind,
                 source_status=SourceStatus.COMPLETE,
@@ -745,6 +766,7 @@ class LiveCandidateAcquisitionTransportOwner:
             return _decorate(result, responses, {
                 "declared_operation_ceiling": True,
                 **({"cursor_range": dict(cursor_range)} if cursor_range else {}),
+                **dict(extra or {}),
             })
 
         def rpc_call(method: str, params: Sequence[Any], role: str) -> TransportResponse:
@@ -785,7 +807,9 @@ class LiveCandidateAcquisitionTransportOwner:
             }
 
         create_cursor = live_cursor(namespaces[0])
-        migration_cursor = live_cursor(namespaces[1])
+        migration_cursor = (
+            live_cursor(namespaces[1]) if len(namespaces) > 1 else None
+        )
 
         def signature_page(
             kind: str, *, indexed_address: str, page_index: int, page_limit: int,
@@ -929,7 +953,56 @@ class LiveCandidateAcquisitionTransportOwner:
                         else "NEXT_DECLARED_PAGE_PENDING"
                     ),
                 })
-                return complete(kind, (), responses, cursor_range=cursor)
+                page_summary = {
+                    "summary_version": "candidate-signature-page-summary-v1",
+                    "network": CURSOR_NETWORK,
+                    "indexed_address": indexed_address,
+                    "locator_kind": (
+                        "GLOBAL_PUMP_PROGRAM"
+                        if indexed_address == PUMP_PROGRAM_ID
+                        else "PUMP_CREATE_INDEX"
+                    ),
+                    "contract_pin": OFFICIAL_REPOSITORY_COMMIT,
+                    "decoder_version": CURSOR_DECODER_VERSION,
+                    "commitment": "finalized",
+                    "page_ordinal": page_index + 1,
+                    "requested_limit": page_size,
+                    "returned_count": len(page_rows),
+                    "eligible_count": len([
+                        row for row in page_rows
+                        if row.get("err") is None
+                        and str(row.get("confirmationStatus") or "") == "finalized"
+                    ]),
+                    "failed_or_unfinalized_count": len(page_rows) - len([
+                        row for row in page_rows
+                        if row.get("err") is None
+                        and str(row.get("confirmationStatus") or "") == "finalized"
+                    ]),
+                    "first_slot": (
+                        int(page_rows[0]["slot"]) if page_rows else None
+                    ),
+                    "last_slot": (
+                        int(page_rows[-1]["slot"]) if page_rows else None
+                    ),
+                    "first_signature": (
+                        str(page_rows[0]["signature"]) if page_rows else None
+                    ),
+                    "last_signature": (
+                        str(page_rows[-1]["signature"]) if page_rows else None
+                    ),
+                    "page_hash": hashlib.sha256(
+                        json.dumps(
+                            page_rows, sort_keys=True, separators=(",", ":")
+                        ).encode("utf-8")
+                    ).hexdigest(),
+                    "continuity_state": continuity,
+                    "positive_matching_signatures": [],
+                    "raw_signature_rows_persisted": False,
+                }
+                return complete(
+                    kind, (), responses, cursor_range=cursor,
+                    extra={"page_summary": page_summary},
+                )
             except Exception as exc:
                 cursor.update({"continuity_state": "GAPPED", "cursor_advanced": False,
                                "unresolved_reason": getattr(exc, "code", "SOURCE_FAILURE")})
@@ -980,6 +1053,25 @@ class LiveCandidateAcquisitionTransportOwner:
                     state["migrations"][mint] = {
                         **decoded, "signature": signature, "tx_result": response.payload,
                     }
+                    observations.append({
+                        "mint": mint,
+                        "base_mint": mint,
+                        "lineage_claim": "UNKNOWN_ORIGIN",
+                        "facts": {
+                            "pump_migration_branch": PUMP_GRADUATION_CLAIMED,
+                            "pump_migration_branch_reason": (
+                                "OPTIONAL_GLOBAL_EXACT_MIGRATE_LOCATOR"
+                            ),
+                            "global_pump_observer_locator_only": True,
+                            "global_pump_observer_admission_authority": "NONE",
+                            "candidate_migration_locator_kind": MIGRATION_SIGNATURE,
+                            "candidate_migration_locator_target": signature,
+                            "candidate_migration_locator_mint": mint,
+                            "candidate_migration_locator_pool": decoded["pool_address"],
+                            "candidate_migration_locator_curve": decoded["accounts"][3],
+                            "candidate_migration_raw_transaction_persisted": False,
+                        },
+                    })
                 return complete(kind, observations, responses, cursor_range=cursor)
             except Exception as exc:
                 return rpc_failure(kind, exc, responses)
@@ -1022,10 +1114,6 @@ class LiveCandidateAcquisitionTransportOwner:
             responses: list[TransportResponse] = []
             try:
                 cohort = set(cohort_mints())
-                migrations = [
-                    state["migrations"][mint]
-                    for mint in sorted(state["migrations"]) if mint in cohort
-                ]
                 aggregated = aggregator_pairs()
                 target_contexts: dict[str, list[dict[str, Any]]] = {}
 
@@ -1055,17 +1143,9 @@ class LiveCandidateAcquisitionTransportOwner:
                             "kind": "PUMP_BONDING_CURVE",
                             "origin": origin,
                         })
-                for item in migrations:
-                    add_target(str(item["pool_address"]), {
-                        "mint": str(item["mint"]),
-                        "kind": "PUMP_MIGRATION_POOL",
-                        "migration": item,
-                    })
                 pools = sorted(target_contexts)[: cap * 2]
                 if not pools:
-                    return complete(
-                        "pumpswap_pool_account_batch", (), (), cursor_range=migration_cursor
-                    )
+                    return complete("pumpswap_pool_account_batch", (), ())
                 response = rpc_call("getMultipleAccounts", [pools, {"encoding": "base64",
                     "commitment": "finalized"}], "PUMPSWAP_POOL_ACCOUNT_BATCH")
                 responses.append(response)
@@ -1156,10 +1236,6 @@ class LiveCandidateAcquisitionTransportOwner:
                             })
                         continue
                     mint = str(contexts[0]["mint"])
-                    migration_context = next(
-                        (item for item in contexts if item["kind"] == "PUMP_MIGRATION_POOL"),
-                        None,
-                    )
                     bonding_context = next(
                         (item for item in contexts if item["kind"] == "PUMP_BONDING_CURVE"),
                         None,
@@ -1169,37 +1245,6 @@ class LiveCandidateAcquisitionTransportOwner:
                         None,
                     )
 
-                    if migration_context is not None:
-                        item = migration_context["migration"]
-                        verified = verify_pinned_pump_migration(
-                            item["tx_result"], account_infos,
-                            expected_mint=mint, finalized=True,
-                        )
-                        if verified.get("verified"):
-                            origin = state["origins"].get(mint)
-                            observations.append({
-                                "mint": mint, "pool": pool,
-                                "pool_program_id": PUMPSWAP_AMM_PROGRAM_ID,
-                                "base_mint": mint, "quote_mint": WSOL_MINT,
-                                "token_program_id": TOKEN_PROGRAM_ID,
-                                "venue_label": "PUMPSWAP",
-                                "lineage_claim": "PUMP_GRADUATION_CONFIRMED",
-                                "facts": {
-                                    "pool_status": "PASS",
-                                    "pool_role": "PUMPSWAP_AMM_POOL",
-                                    "pool_role_status": "PASS",
-                                    **association_facts,
-                                    "pump_origin_signature": (origin or {}).get("signature"),
-                                    "pump_origin_contract_hash": PUMP_IDL_SHA256,
-                                    "pump_migration_signature": item["signature"],
-                                    "pump_migration_contract_hash": PUMP_IDL_SHA256,
-                                    "pumpswap_account_hash": str(verified["pool"].get("contract_hash")),
-                                    "pumpswap_contract_hash": PUMPSWAP_IDL_SHA256,
-                                    "pumpswap_index": int(verified["pool"]["index"]),
-                                },
-                            })
-                            continue
-
                     if bonding_context is not None:
                         origin = bonding_context["origin"]
                         decoded_curve = decode_pump_bonding_curve_account(
@@ -1208,6 +1253,9 @@ class LiveCandidateAcquisitionTransportOwner:
                             expected_mint=mint,
                         )
                         if decoded_curve.get("decoded"):
+                            state["curve_accounts"][mint] = dict(decoded_curve)
+                            if decoded_curve.get("complete") is True:
+                                continue
                             observations.append({
                                 "mint": mint, "pool": pool,
                                 "pool_program_id": PUMP_PROGRAM_ID,
@@ -1239,6 +1287,10 @@ class LiveCandidateAcquisitionTransportOwner:
                         and decoded_pool.get("base_mint") == mint
                         and decoded_pool.get("quote_mint") == WSOL_MINT
                     ):
+                        state["pumpswap_present_pools"][mint] = {
+                            "pool": pool,
+                            "decoded": dict(decoded_pool),
+                        }
                         observations.append({
                             "mint": mint, "pool": pool,
                             "pool_program_id": PUMPSWAP_AMM_PROGRAM_ID,
@@ -1276,6 +1328,13 @@ class LiveCandidateAcquisitionTransportOwner:
                         if owner and not owner_executable
                         else "UNSUPPORTED_POOL_ROLE_OR_PROGRAM"
                     )
+                    if generic_pass:
+                        state["generic_present_pools"][mint] = {
+                            "pool": pool,
+                            "pool_program_id": owner,
+                            "base_mint": base,
+                            "quote_mint": quote,
+                        }
                     observations.append({
                         "mint": mint,
                         **({
@@ -1303,6 +1362,598 @@ class LiveCandidateAcquisitionTransportOwner:
                 return complete("pumpswap_pool_account_batch", observations, responses)
             except Exception as exc:
                 return rpc_failure("pumpswap_pool_account_batch", exc, responses)
+
+        def branch_for_mint(mint: str) -> dict[str, Any]:
+            prior = state["branch_decisions"].get(mint)
+            if isinstance(prior, Mapping):
+                return dict(prior)
+            origin = state["origins"].get(mint)
+            curve = state["curve_accounts"].get(mint)
+            migration = state["migrations"].get(mint)
+            pumpswap = state["pumpswap_present_pools"].get(mint)
+            generic = state["generic_present_pools"].get(mint)
+            decision = classify_candidate_lineage_branch(
+                candidate_mint=mint,
+                exact_pump_origin=origin,
+                verified_bonding_curve=curve,
+                exact_migration_signature=(
+                    str(migration.get("signature") or "") if migration else None
+                ),
+                proposed_pumpswap_pool=(
+                    str(pumpswap.get("pool") or "") if pumpswap else None
+                ),
+                current_pool_conflict=bool(
+                    pumpswap
+                    and generic
+                    and str(pumpswap.get("pool")) != str(generic.get("pool"))
+                ),
+            )
+            state["branch_decisions"][mint] = dict(decision)
+            return dict(decision)
+
+        def graduation_claim_mints() -> list[str]:
+            return [
+                mint for mint in cohort_mints()
+                if branch_for_mint(mint)["branch"] in {
+                    PUMP_GRADUATION_CLAIMED, PUMP_LINEAGE_CONFLICT,
+                }
+            ]
+
+        def candidate_failure_observation(
+            *,
+            mint: str,
+            branch: str,
+            family: str,
+            reason: str,
+            locator: Mapping[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            state["candidate_migration_failures"][mint] = {
+                "family": family, "reason": reason,
+            }
+            return {
+                "mint": mint,
+                "base_mint": mint,
+                "lineage_claim": "UNKNOWN_ORIGIN",
+                "facts": {
+                    "pump_migration_branch": branch,
+                    "pump_migration_failure_family": family,
+                    "pump_migration_failure_reason": reason,
+                    "candidate_migration_fallback_allowed": False,
+                    **({
+                        "candidate_migration_locator_kind": locator["locator_kind"],
+                        "candidate_migration_locator_target": locator["locator_target"],
+                        "candidate_migration_finalized_cutoff_slot": (
+                            locator["finalized_cutoff_slot"]
+                        ),
+                    } if locator else {}),
+                },
+            }
+
+        def candidate_failure_result(
+            kind: str,
+            *,
+            mint: str,
+            branch: str,
+            family: str,
+            reason: str,
+            responses: Sequence[TransportResponse],
+            locator: Mapping[str, Any] | None = None,
+            source_failed: bool = False,
+            extra: Mapping[str, Any] | None = None,
+            failure_exception: Exception | None = None,
+        ) -> NormalizedSourceResult:
+            observation = candidate_failure_observation(
+                mint=mint, branch=branch, family=family, reason=reason,
+                locator=locator,
+            )
+            if not source_failed:
+                return complete(
+                    kind, (observation,), responses, extra=extra,
+                )
+            details = [_operation_detail(item) for item in responses]
+            if (
+                isinstance(failure_exception, LiveAcquisitionTransportError)
+                and not responses
+            ):
+                details.append({
+                    "operation_kind": failure_exception.operation_kind,
+                    "operation_state": "FAILED",
+                    "redacted_endpoint_role": failure_exception.endpoint_role,
+                    "bytes_used": failure_exception.bytes_used,
+                })
+            result = NormalizedSourceResult(
+                source_name="solana_rpc",
+                request_kind=kind,
+                source_status=SourceStatus.FAILED,
+                data_quality_label=DataQualityLabel.MISSING_CRITICAL_DATA,
+                failure_type=reason,
+                failure_message=reason,
+                normalized_payload=MappingProxyType({
+                    "candidate_observations": [observation],
+                    "underlying_operation_count": len(details),
+                    "underlying_operations": details,
+                    "response_bytes": sum(
+                        int(item["bytes_used"]) for item in details
+                    ),
+                    "declared_operation_ceiling": True,
+                    **dict(extra or {}),
+                }),
+            )
+            return result
+
+        def _candidate_provider_reason(exc: Exception, *, pool: bool = False) -> str:
+            code = str(getattr(exc, "code", "") or "")
+            if code in {"SOURCE_MALFORMED"}:
+                return (
+                    "CANDIDATE_POOL_RESPONSE_MALFORMED"
+                    if pool else "CANDIDATE_MIGRATION_PAGE_MALFORMED"
+                )
+            return (
+                "CANDIDATE_POOL_PROVIDER_UNAVAILABLE"
+                if pool else "CANDIDATE_MIGRATION_PROVIDER_UNAVAILABLE"
+            )
+
+        def candidate_migration_lookup(
+            _context: SourceAdapterContext, *, candidate_index: int,
+        ) -> NormalizedSourceResult:
+            kind = "candidate_pump_migration_signature_lookup"
+            responses: list[TransportResponse] = []
+            mints = graduation_claim_mints()
+            if candidate_index >= len(mints):
+                return complete(kind, (), ())
+            mint = mints[candidate_index]
+            decision = branch_for_mint(mint)
+            branch = str(decision["branch"])
+            if branch in {
+                NO_PUMP_GRADUATION_CLAIM, PUMP_ACTIVE_BONDING_CURVE,
+            }:
+                return complete(kind, (), (), extra={
+                    "candidate_branch": decision,
+                    "candidate_mint": mint,
+                    "underlying_operation_count": 0,
+                })
+            if branch == PUMP_LINEAGE_CONFLICT:
+                return candidate_failure_result(
+                    kind, mint=mint, branch=branch,
+                    family="IDENTITY_MERGE_FAILURE",
+                    reason=str(decision["reason"]), responses=(),
+                )
+            origin = state["origins"].get(mint) or {}
+            migration = state["migrations"].get(mint) or {}
+            pumpswap = state["pumpswap_present_pools"].get(mint) or {}
+            curve = state["curve_accounts"].get(mint) or {}
+            locator = plan_candidate_migration_locator(
+                candidate_mint=mint,
+                branch=branch,
+                finalized_cutoff_slot=0,
+                exact_migration_signature=str(
+                    migration.get("signature") or ""
+                ) or None,
+                exact_pumpswap_pool=str(pumpswap.get("pool") or "") or None,
+                exact_verified_bonding_curve=str(
+                    curve.get("bonding_curve_address")
+                    or origin.get("bonding_curve")
+                    or ""
+                ) or None,
+            )
+            assert locator is not None
+            state["migration_locators"][mint] = dict(locator)
+            if locator["locator_kind"] == MIGRATION_SIGNATURE:
+                state["migration_locators"][mint]["selected_signature"] = str(
+                    locator["locator_target"]
+                )
+                return complete(kind, (), (), extra={
+                    "candidate_branch": decision,
+                    "locator_summary": {
+                        **locator,
+                        "selected_matching_signatures": [
+                            str(locator["locator_target"])
+                        ],
+                        "raw_signature_rows_persisted": False,
+                    },
+                })
+            try:
+                response = rpc_call(
+                    "getSignaturesForAddress",
+                    [str(locator["locator_target"]), {
+                        "limit": 1, "commitment": "finalized",
+                    }],
+                    f"CANDIDATE_MIGRATION_{locator['locator_kind']}_{candidate_index + 1}",
+                )
+                responses.append(response)
+                page = response.payload
+                if not isinstance(page, list) or any(
+                    not isinstance(row, Mapping) for row in page
+                ):
+                    raise LiveAcquisitionTransportError(
+                        "SOURCE_MALFORMED", response.endpoint_role
+                    )
+                page_hash = hashlib.sha256(
+                    json.dumps(page, sort_keys=True, separators=(",", ":")).encode(
+                        "utf-8"
+                    )
+                ).hexdigest()
+                summary = {
+                    **locator,
+                    "summary_version": "candidate-migration-page-summary-v1",
+                    "commitment": "finalized",
+                    "requested_limit": 1,
+                    "returned_count": len(page),
+                    "page_hash": page_hash,
+                    "first_slot": (
+                        int(page[0]["slot"])
+                        if page and type(page[0].get("slot")) is int else None
+                    ),
+                    "last_slot": (
+                        int(page[-1]["slot"])
+                        if page and type(page[-1].get("slot")) is int else None
+                    ),
+                    "raw_signature_rows_persisted": False,
+                }
+                if not page:
+                    return candidate_failure_result(
+                        kind, mint=mint, branch=branch,
+                        family="COVERAGE_FAILURE",
+                        reason="CANDIDATE_MIGRATION_HISTORY_UNAVAILABLE",
+                        responses=responses, locator=locator,
+                        extra={"page_summary": summary},
+                    )
+                eligible = [
+                    row for row in page
+                    if isinstance(row.get("signature"), str)
+                    and row.get("signature")
+                    and row.get("err") is None
+                    and str(row.get("confirmationStatus") or "") == "finalized"
+                ]
+                if len(eligible) != 1:
+                    return candidate_failure_result(
+                        kind, mint=mint, branch=branch,
+                        family="COVERAGE_FAILURE",
+                        reason="CANDIDATE_MIGRATION_NOT_FOUND_WITHIN_BOUND",
+                        responses=responses, locator=locator,
+                        extra={"page_summary": summary},
+                    )
+                signature = str(eligible[0]["signature"])
+                state["migration_locators"][mint]["selected_signature"] = signature
+                summary["selected_matching_signatures"] = [signature]
+                return complete(
+                    kind, (), responses,
+                    extra={"candidate_branch": decision, "page_summary": summary},
+                )
+            except Exception as exc:
+                reason = _candidate_provider_reason(exc)
+                family = (
+                    "STALE_OR_INCOMPLETE_EVIDENCE"
+                    if reason == "CANDIDATE_MIGRATION_PAGE_MALFORMED"
+                    else "SOURCE_PROVIDER_FAILURE"
+                )
+                return candidate_failure_result(
+                    kind, mint=mint, branch=branch, family=family,
+                    reason=reason, responses=responses, locator=locator,
+                    source_failed=True, failure_exception=exc,
+                )
+
+        def candidate_migration_transaction(
+            _context: SourceAdapterContext, *, candidate_index: int,
+        ) -> NormalizedSourceResult:
+            kind = "candidate_pump_migration_transaction"
+            responses: list[TransportResponse] = []
+            mints = graduation_claim_mints()
+            if candidate_index >= len(mints):
+                return complete(kind, (), ())
+            mint = mints[candidate_index]
+            decision = branch_for_mint(mint)
+            branch = str(decision["branch"])
+            locator = state["migration_locators"].get(mint)
+            if branch != PUMP_GRADUATION_CLAIMED or not isinstance(locator, Mapping):
+                return complete(kind, (), ())
+            if mint in state["candidate_migration_failures"]:
+                return complete(kind, (), ())
+            signature = str(locator.get("selected_signature") or "")
+            if not signature:
+                return candidate_failure_result(
+                    kind, mint=mint, branch=branch,
+                    family="STALE_OR_INCOMPLETE_EVIDENCE",
+                    reason="CANDIDATE_MIGRATION_SIGNATURE_MISSING",
+                    responses=(), locator=locator,
+                )
+            try:
+                response = rpc_call(
+                    "getTransaction",
+                    [signature, {
+                        "encoding": "json", "commitment": "finalized",
+                        "maxSupportedTransactionVersion": 0,
+                    }],
+                    f"CANDIDATE_MIGRATION_TRANSACTION_{candidate_index + 1}",
+                )
+                responses.append(response)
+                if not isinstance(response.payload, Mapping):
+                    return candidate_failure_result(
+                        kind, mint=mint, branch=branch,
+                        family="STALE_OR_INCOMPLETE_EVIDENCE",
+                        reason="CANDIDATE_MIGRATION_TRANSACTION_NULL_OR_PRUNED",
+                        responses=responses, locator=locator,
+                    )
+                decoded = dict(
+                    decode_supported_pump_migration_transaction(response.payload)
+                )
+                if not decoded.get("supported"):
+                    raw_reason = str(decoded.get("reason") or "")
+                    family = (
+                        "UNSUPPORTED_CONTRACT"
+                        if raw_reason in {
+                            "unsupported_transaction_version",
+                            "migrate_account_layout_mismatch",
+                            "migrate_fixed_account_mismatch",
+                        }
+                        else "ADMISSION_FAILURE"
+                    )
+                    reason = {
+                        "unsupported_transaction_version": (
+                            "CANDIDATE_MIGRATION_UNSUPPORTED_VERSION"
+                        ),
+                        "migrate_account_layout_mismatch": (
+                            "CANDIDATE_MIGRATION_LAYOUT_UNSUPPORTED"
+                        ),
+                        "migrate_fixed_account_mismatch": (
+                            "CANDIDATE_MIGRATION_FIXED_ACCOUNT_MISMATCH"
+                        ),
+                        "exactly_one_migrate_instruction_required": (
+                            "CANDIDATE_MIGRATION_AMBIGUOUS"
+                        ),
+                        "transaction_failed_or_meta_missing": (
+                            "CANDIDATE_MIGRATION_TRANSACTION_FAILED"
+                        ),
+                        "finalized_slot_or_block_time_missing": (
+                            "CANDIDATE_MIGRATION_FINALITY_EVIDENCE_MISSING"
+                        ),
+                    }.get(raw_reason, "CANDIDATE_MIGRATION_CONTRACT_UNSUPPORTED")
+                    return candidate_failure_result(
+                        kind, mint=mint, branch=branch, family=family,
+                        reason=reason, responses=responses, locator=locator,
+                    )
+                locator_valid, locator_reason = validate_candidate_migration_locator(
+                    locator=locator, decoded_migration=decoded
+                )
+                if not locator_valid:
+                    return candidate_failure_result(
+                        kind, mint=mint, branch=branch,
+                        family="ADMISSION_FAILURE", reason=locator_reason,
+                        responses=responses, locator=locator,
+                    )
+                state["migrations"][mint] = {
+                    **decoded,
+                    "signature": signature,
+                    "tx_result": response.payload,
+                    "locator": dict(locator),
+                    "candidate_verified": True,
+                }
+                return complete(kind, (), responses, extra={
+                    "positive_migration_match": {
+                        "candidate_mint": mint,
+                        "signature": signature,
+                        "slot": int(decoded["slot"]),
+                        "block_time": int(decoded["block_time"]),
+                        "bonding_curve": str(decoded["accounts"][3]),
+                        "pool": str(decoded["pool_address"]),
+                        "creator": str(decoded["creator"]),
+                        "locator_kind": locator["locator_kind"],
+                        "locator_target": locator["locator_target"],
+                        "pump_contract_hash": PUMP_IDL_SHA256,
+                        "raw_transaction_persisted": False,
+                    },
+                })
+            except Exception as exc:
+                return candidate_failure_result(
+                    kind, mint=mint, branch=branch,
+                    family="SOURCE_PROVIDER_FAILURE",
+                    reason="CANDIDATE_MIGRATION_PROVIDER_UNAVAILABLE",
+                    responses=responses, locator=locator, source_failed=True,
+                    failure_exception=exc,
+                )
+
+        def candidate_pumpswap_pool_verification(
+            _context: SourceAdapterContext,
+        ) -> NormalizedSourceResult:
+            kind = "candidate_pumpswap_pool_verification"
+            responses: list[TransportResponse] = []
+            overflow_observations = [
+                candidate_failure_observation(
+                    mint=mint, branch=PUMP_GRADUATION_CLAIMED,
+                    family="BUDGET_EXHAUSTION",
+                    reason="CANDIDATE_MIGRATION_PREDECLARED_BUDGET_EXHAUSTED",
+                )
+                for mint in graduation_claim_mints()
+                if mint not in state["migration_locators"]
+                and mint not in state["candidate_migration_failures"]
+            ]
+            candidates = [
+                (mint, item)
+                for mint, item in sorted(state["migrations"].items())
+                if mint in set(cohort_mints())
+                and item.get("candidate_verified") is True
+                and mint not in state["candidate_migration_failures"]
+            ]
+            if not candidates:
+                return complete(kind, overflow_observations, ())
+            pools = [str(item["pool_address"]) for _mint, item in candidates]
+            if len(set(pools)) != len(pools):
+                observations = [
+                    candidate_failure_observation(
+                        mint=mint, branch=PUMP_GRADUATION_CLAIMED,
+                        family="IDENTITY_MERGE_FAILURE",
+                        reason="CANDIDATE_MIGRATION_POOL_IDENTITY_CONFLICT",
+                        locator=item.get("locator"),
+                    )
+                    for mint, item in candidates
+                ]
+                return complete(kind, observations, ())
+            try:
+                response = rpc_call(
+                    "getMultipleAccounts",
+                    [pools, {"encoding": "base64", "commitment": "finalized"}],
+                    "CANDIDATE_PUMPSWAP_POOL_VERIFICATION",
+                )
+                responses.append(response)
+                values = (
+                    (response.payload or {}).get("value")
+                    if isinstance(response.payload, Mapping) else None
+                )
+                if not isinstance(values, list) or len(values) != len(pools):
+                    raise LiveAcquisitionTransportError(
+                        "SOURCE_MALFORMED", response.endpoint_role
+                    )
+                associations = _batch_pool_account_associations(pools, values)
+                account_infos = {
+                    pool: associations[pool][2] for pool in pools
+                }
+                observations: list[dict[str, Any]] = list(overflow_observations)
+                positives: list[dict[str, Any]] = []
+                for mint, item in candidates:
+                    pool = str(item["pool_address"])
+                    _slot, response_address, account, association, failure = (
+                        associations[pool]
+                    )
+                    if failure is not None:
+                        observations.append(candidate_failure_observation(
+                            mint=mint, branch=PUMP_GRADUATION_CLAIMED,
+                            family="STALE_OR_INCOMPLETE_EVIDENCE",
+                            reason=failure, locator=item.get("locator"),
+                        ))
+                        continue
+                    verified = verify_pinned_pump_migration(
+                        item["tx_result"], account_infos,
+                        expected_mint=mint, finalized=True,
+                    )
+                    if not verified.get("verified"):
+                        raw_reason = str(verified.get("reason") or "")
+                        family = (
+                            "UNSUPPORTED_CONTRACT"
+                            if raw_reason in {
+                                "unsupported_pool_account_length",
+                                "pool_data_encoding_unsupported",
+                                "pool_data_undecodable",
+                            }
+                            else "ADMISSION_FAILURE"
+                        )
+                        reason = (
+                            "PUMPSWAP_LAYOUT_UNSUPPORTED"
+                            if family == "UNSUPPORTED_CONTRACT"
+                            else f"CANDIDATE_PUMPSWAP_JOIN_{raw_reason.upper()}"
+                        )
+                        observations.append(candidate_failure_observation(
+                            mint=mint, branch=PUMP_GRADUATION_CLAIMED,
+                            family=family, reason=reason,
+                            locator=item.get("locator"),
+                        ))
+                        continue
+                    pool_facts = dict(verified["pool"])
+                    origin = state["origins"].get(mint) or {}
+                    facts = {
+                        "pool_status": "PASS",
+                        "pool_role": "PUMPSWAP_AMM_POOL",
+                        "pool_role_status": "PASS",
+                        "pool_evidence_target": pool,
+                        "pool_response_address": response_address,
+                        "pool_response_association": association,
+                        "pump_migration_branch": PUMP_GRADUATION_CLAIMED,
+                        "pump_origin_signature": origin.get("signature"),
+                        "pump_origin_contract_hash": PUMP_IDL_SHA256,
+                        "pump_migration_signature": item["signature"],
+                        "pump_migration_contract_hash": PUMP_IDL_SHA256,
+                        "pump_migration_slot": verified["migration_slot"],
+                        "pump_migration_block_time": verified["migration_block_time"],
+                        "pump_migration_bonding_curve": item["accounts"][3],
+                        "pump_migration_pool": pool,
+                        "pump_migration_creator": verified["creator"],
+                        "pumpswap_account_hash": pool_facts["account_hash"],
+                        "pumpswap_contract_hash": PUMPSWAP_IDL_SHA256,
+                        "pumpswap_index": int(pool_facts["index"]),
+                        "pumpswap_base_mint": pool_facts["base_mint"],
+                        "pumpswap_quote_mint": pool_facts["quote_mint"],
+                        "pumpswap_lp_mint": pool_facts["lp_mint"],
+                        "pumpswap_base_vault": pool_facts["pool_base_token_account"],
+                        "pumpswap_quote_vault": pool_facts["pool_quote_token_account"],
+                        "candidate_migration_locator_kind": item["locator"]["locator_kind"],
+                        "candidate_migration_locator_target": item["locator"]["locator_target"],
+                        "candidate_migration_fallback_allowed": False,
+                    }
+                    observations.append({
+                        "mint": mint,
+                        "pool": pool,
+                        "pool_program_id": PUMPSWAP_AMM_PROGRAM_ID,
+                        "base_mint": mint,
+                        "quote_mint": WSOL_MINT,
+                        "token_program_id": TOKEN_PROGRAM_ID,
+                        "venue_label": "PUMPSWAP",
+                        "lineage_claim": "PUMP_GRADUATION_CONFIRMED",
+                        "facts": facts,
+                    })
+                    positives.append({
+                        "candidate_mint": mint,
+                        "signature": item["signature"],
+                        "pool": pool,
+                        "pool_account_hash": pool_facts["account_hash"],
+                        "evidence_hash": hashlib.sha256(
+                            json.dumps(
+                                facts, sort_keys=True, separators=(",", ":")
+                            ).encode("utf-8")
+                        ).hexdigest(),
+                    })
+                return complete(
+                    kind, observations, responses,
+                    extra={"positive_joined_evidence": positives},
+                )
+            except Exception as exc:
+                reason = _candidate_provider_reason(exc, pool=True)
+                family = (
+                    "STALE_OR_INCOMPLETE_EVIDENCE"
+                    if reason == "CANDIDATE_POOL_RESPONSE_MALFORMED"
+                    else "SOURCE_PROVIDER_FAILURE"
+                )
+                observations = [
+                    candidate_failure_observation(
+                        mint=mint, branch=PUMP_GRADUATION_CLAIMED,
+                        family=family, reason=reason,
+                        locator=item.get("locator"),
+                    )
+                    for mint, item in candidates
+                ]
+                result = NormalizedSourceResult(
+                    source_name="solana_rpc", request_kind=kind,
+                    source_status=SourceStatus.FAILED,
+                    data_quality_label=DataQualityLabel.MISSING_CRITICAL_DATA,
+                    failure_type=reason, failure_message=reason,
+                    normalized_payload=MappingProxyType({
+                        "candidate_observations": observations,
+                        "underlying_operation_count": (
+                            len(responses)
+                            + int(isinstance(exc, LiveAcquisitionTransportError))
+                        ),
+                        "underlying_operations": [
+                            *[_operation_detail(item) for item in responses],
+                            *([{
+                                "operation_kind": exc.operation_kind,
+                                "operation_state": "FAILED",
+                                "redacted_endpoint_role": exc.endpoint_role,
+                                "bytes_used": exc.bytes_used,
+                            }] if isinstance(
+                                exc, LiveAcquisitionTransportError
+                            ) else []),
+                        ],
+                        "response_bytes": (
+                            sum(item.bytes_used for item in responses)
+                            + (
+                                exc.bytes_used
+                                if isinstance(
+                                    exc, LiveAcquisitionTransportError
+                                ) else 0
+                            )
+                        ),
+                        "declared_operation_ceiling": True,
+                    }),
+                )
+                return result
 
         def target_mints() -> list[str]:
             # Candidate-specific enrichment addresses only cohort identities.
@@ -1396,32 +2047,44 @@ class LiveCandidateAcquisitionTransportOwner:
 
         source_budgets = policy["source_budgets"]["solana_rpc"]
         create_page_count = int(source_budgets["pumpfun_create_index_signature_page"])
-        migration_page_count = int(source_budgets["pumpfun_migration_signature_page"])
-        # The operation plan never exceeds either per-kind policy budgets or
-        # the Source Governor's 30 Solana requests/minute. It resolves at most
-        # N create and N migrate transactions.
-        transaction_count = min(
+        migration_page_count = (
+            int(source_budgets["pumpfun_migration_signature_page"])
+            if self.configuration.global_pump_observer_enabled else 0
+        )
+        selection_capacity = int(policy["selection_capacity"])
+        # Create discovery remains bounded to N. The optional global observer
+        # decodes at most one locator and has no candidate-gating authority.
+        create_transaction_count = min(
             int(source_budgets["pumpfun_create_index_transaction"]),
-            int(source_budgets["pumpfun_migration_transaction"]),
             int(policy["selection_capacity"]),
         )
-        # Candidate-specific holder enrichment is a Solana request per cohort
-        # candidate. It covers the acquisition cohort M (never the smaller
-        # selection capacity N), but the whole Solana plan must still fit one
-        # governed minute (30 requests). When M plus the fixed create/migration/
-        # mint/pool Solana cost would exceed the minute, the holder fan-out is
-        # bounded to the exact governed headroom, never above M and never
-        # silently below what a distinct N-item manifest needs.
-        fixed_solana_requests = (
-            create_page_count + migration_page_count + 2 * transaction_count + 2
+        global_transaction_count = (
+            min(
+                int(source_budgets["pumpfun_migration_transaction"]),
+                selection_capacity,
+            )
+            if migration_page_count else 0
         )
         solana_minute = int(
             SOURCE_REGISTRY["solana_rpc"].default_rate_limit_per_minute
         )
-        enrichment_count = min(cap, max(0, solana_minute - fixed_solana_requests))
-        if enrichment_count < int(policy["selection_capacity"]):
+        holder_count = cap if selection_capacity == 2 else selection_capacity
+        fixed_without_candidate_slots = (
+            create_page_count
+            + create_transaction_count
+            + migration_page_count
+            + global_transaction_count
+            + 3  # mint batch, present-pool probe, exact PumpSwap verification
+            + holder_count
+        )
+        candidate_verification_count = min(
+            cap,
+            max(1, selection_capacity - 1),
+            max(0, (solana_minute - fixed_without_candidate_slots) // 2),
+        )
+        if candidate_verification_count < 1:
             raise LiveAcquisitionConfigurationError(
-                "ACQUISITION_ENRICHMENT_HEADROOM_BELOW_SELECTION"
+                "CANDIDATE_MIGRATION_VERIFICATION_HEADROOM_UNAVAILABLE"
             )
         operations = [
             AcquisitionSourceOperation("dexscreener", "candidate_nomination",
@@ -1455,7 +2118,7 @@ class LiveCandidateAcquisitionTransportOwner:
                         "pumpfun_create_index_signature_page",
                         indexed_address=PUMP_CREATE_INDEX_ADDRESS,
                         page_index=page_index, page_limit=create_page_count,
-                        transaction_limit=transaction_count, cursor=create_cursor,
+                        transaction_limit=create_transaction_count, cursor=create_cursor,
                         role_prefix="PUMP_CREATE", rows_key="create_rows",
                         exhausted_key="create_exhausted",
                     ),
@@ -1485,49 +2148,54 @@ class LiveCandidateAcquisitionTransportOwner:
                 round_mode="LIVE_TAIL", expected_transport_operations=1,
                 cursor_range=create_cursor,
             )
-            for transaction_index in range(transaction_count)
+            for transaction_index in range(create_transaction_count)
         )
-        operations.extend(
-            AcquisitionSourceOperation(
-                "solana_rpc", "pumpfun_migration_signature_page",
-                _OperationAdapter(
+        if migration_page_count:
+            operations.extend(
+                AcquisitionSourceOperation(
                     "solana_rpc", "pumpfun_migration_signature_page",
-                    lambda c, page_index=page_index: signature_page(
-                        "pumpfun_migration_signature_page",
-                        indexed_address=PUMP_PROGRAM_ID,
-                        page_index=page_index, page_limit=migration_page_count,
-                        transaction_limit=transaction_count, cursor=migration_cursor,
-                        role_prefix="PUMP_MIGRATION", rows_key="migration_rows",
-                        exhausted_key="migration_exhausted",
+                    _OperationAdapter(
+                        "solana_rpc", "pumpfun_migration_signature_page",
+                        lambda c, page_index=page_index: signature_page(
+                            "pumpfun_migration_signature_page",
+                            indexed_address=PUMP_PROGRAM_ID,
+                            page_index=page_index, page_limit=migration_page_count,
+                            transaction_limit=global_transaction_count,
+                            cursor=migration_cursor,
+                            role_prefix="PUMP_MIGRATION", rows_key="migration_rows",
+                            exhausted_key="migration_exhausted",
+                        ),
                     ),
-                ),
-                required=page_index + 1 == migration_page_count,
-                round_mode="LIVE_TAIL",
-                expected_transport_operations=(
-                    2 if page_index == 0 and heads[namespaces[1]] is not None else 1
-                ),
-                cursor_range=migration_cursor,
+                    required=False,
+                    round_mode="LIVE_TAIL",
+                    expected_transport_operations=(
+                        2 if page_index == 0 and heads[namespaces[1]] is not None else 1
+                    ),
+                    cursor_range=migration_cursor,
+                    observation_scope="GLOBAL_OPTIONAL",
+                )
+                for page_index in range(migration_page_count)
             )
-            for page_index in range(migration_page_count)
-        )
-        operations.extend(
-            AcquisitionSourceOperation(
-                "solana_rpc", "pumpfun_migration_transaction",
-                _OperationAdapter(
+            operations.extend(
+                AcquisitionSourceOperation(
                     "solana_rpc", "pumpfun_migration_transaction",
-                    lambda c, transaction_index=transaction_index: indexed_transaction(
-                        "pumpfun_migration_transaction",
-                        transaction_index=transaction_index, rows_key="migration_rows",
-                        cursor=migration_cursor,
-                        decoder=decode_supported_pump_migration_transaction,
-                        role_prefix="PUMP_MIGRATION",
+                    _OperationAdapter(
+                        "solana_rpc", "pumpfun_migration_transaction",
+                        lambda c, transaction_index=transaction_index: indexed_transaction(
+                            "pumpfun_migration_transaction",
+                            transaction_index=transaction_index, rows_key="migration_rows",
+                            cursor=migration_cursor,
+                            decoder=decode_supported_pump_migration_transaction,
+                            role_prefix="PUMP_MIGRATION",
+                        ),
                     ),
-                ),
-                round_mode="LIVE_TAIL", expected_transport_operations=1,
-                cursor_range=migration_cursor,
+                    required=False,
+                    round_mode="LIVE_TAIL", expected_transport_operations=1,
+                    cursor_range=migration_cursor,
+                    observation_scope="GLOBAL_OPTIONAL",
+                )
+                for transaction_index in range(global_transaction_count)
             )
-            for transaction_index in range(transaction_count)
-        )
         operations.extend((
             AcquisitionSourceOperation(
                 "solana_rpc", "candidate_mint_account_batch",
@@ -1537,10 +2205,48 @@ class LiveCandidateAcquisitionTransportOwner:
             AcquisitionSourceOperation(
                 "solana_rpc", "pumpswap_pool_account_batch",
                 _OperationAdapter("solana_rpc", "pumpswap_pool_account_batch", pool_batch),
-                round_mode="LIVE_TAIL", cursor_range=migration_cursor,
                 phase=PHASE_ENRICHMENT, expected_transport_operations=2,
             ),
         ))
+        operations.extend(
+            AcquisitionSourceOperation(
+                "solana_rpc", "candidate_pump_migration_signature_lookup",
+                _OperationAdapter(
+                    "solana_rpc", "candidate_pump_migration_signature_lookup",
+                    lambda c, candidate_index=candidate_index: candidate_migration_lookup(
+                        c, candidate_index=candidate_index
+                    ),
+                ),
+                required=False, phase=PHASE_ENRICHMENT,
+                expected_transport_operations=1,
+            )
+            for candidate_index in range(candidate_verification_count)
+        )
+        operations.extend(
+            AcquisitionSourceOperation(
+                "solana_rpc", "candidate_pump_migration_transaction",
+                _OperationAdapter(
+                    "solana_rpc", "candidate_pump_migration_transaction",
+                    lambda c, candidate_index=candidate_index: candidate_migration_transaction(
+                        c, candidate_index=candidate_index
+                    ),
+                ),
+                required=False, phase=PHASE_ENRICHMENT,
+                expected_transport_operations=1,
+            )
+            for candidate_index in range(candidate_verification_count)
+        )
+        operations.append(
+            AcquisitionSourceOperation(
+                "solana_rpc", "candidate_pumpswap_pool_verification",
+                _OperationAdapter(
+                    "solana_rpc", "candidate_pumpswap_pool_verification",
+                    candidate_pumpswap_pool_verification,
+                ),
+                required=False, phase=PHASE_ENRICHMENT,
+                expected_transport_operations=1,
+            )
+        )
         operations.extend(
             AcquisitionSourceOperation(
                 "solana_rpc", "holder_concentration_reference",
@@ -1556,9 +2262,13 @@ class LiveCandidateAcquisitionTransportOwner:
             # by M and the governed Solana minute), not the selection capacity N,
             # so more than N cohort candidates can be admitted and the
             # capacity-neutral reserve can exceed N.
-            for candidate_index in range(enrichment_count)
+            for candidate_index in range(holder_count)
         )
         if self.configuration.goplus_enabled:
+            remaining_jobs = max(
+                0, int(policy["scheduler_job_ceiling"]) - len(operations)
+            )
+            goplus_count = min(cap, remaining_jobs)
             operations.extend(
                 AcquisitionSourceOperation(
                     "goplus", "safety_reference",
@@ -1570,7 +2280,7 @@ class LiveCandidateAcquisitionTransportOwner:
                     ),
                     required=False, phase=PHASE_ENRICHMENT,
                 )
-                for candidate_index in range(enrichment_count)
+                for candidate_index in range(goplus_count)
             )
         return tuple(operations)
 

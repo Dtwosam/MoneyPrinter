@@ -1049,9 +1049,11 @@ post-cursor-repair live N2 proof is closed
 It passed explicit `FORWARD` bootstrap and preserved historical `BACKWARD`
 heads, then blocked at foundation on `IDENTITY_MERGE_FAILURE` because exact
 quote identity was absent for all four candidates; N7 is `NOT_RUN`. The next
-permitted task is operator review and, only if separately explicitly authorized,
-a read-only source-grounded exact pool/quote-identity evidence investigation.
-No retry, successor, cursor reset, N7, or operational campaign is authorized.
+Pump migration observation decoupling implementation/offline proof is closed
+`V2_9_8B_PUMP_MIGRATION_OBSERVATION_DECOUPLING_IMPLEMENTATION_PASS`. The exact
+next permitted task, only if separately explicitly authorized, is a bounded live
+N2 decoupling proof. No automatic run, retry, recovery, successor, cursor reset,
+N7, or operational campaign is authorized.
 
 Campaign rules:
 
@@ -1751,12 +1753,17 @@ live N2 proof is closed
 `V2_9_8B_POST_MINT_ADMISSION_REPAIR_LIVE_N2_PROOF_BLOCKED` (closeout:
 `docs/printer-v1-v2-9-8b-post-mint-admission-repair-live-n2-proof-closeout.md`).
 It ran exactly once and blocked before foundation admission on
-`CURSOR_START_MISMATCH`; N7 is `NOT_RUN`. The exact next permitted sub-lane is:
+`CURSOR_START_MISMATCH`; N7 is `NOT_RUN`. The later post-cursor-repair N2 proof
+blocked on `IDENTITY_MERGE_FAILURE`, and the Pump migration observation
+decoupling implementation/offline proof is now closed PASS. The exact next
+permitted sub-lane, only if separately explicitly authorized, is:
 
 ```text
-Separately explicit, operator-authorized bounded live ACQUISITION_ONLY_N2 proof
-using the repaired public CLI path
+V2-9.8B bounded live N2 Pump migration observation decoupling proof
 ```
+
+No automatic run, retry, recovery, cursor reset, N7, or operational campaign is
+authorized.
 
 The durable cursor-to-live-range continuity audit and repair that followed this
 block is closed `V2_9_8B_DURABLE_CURSOR_LIVE_RANGE_REPAIR_PASS` after

@@ -17,6 +17,19 @@ from printer_v1.discovery.candidate_acquisition import (
     CandidateAcquisitionError,
     legacy_two_token_runtime_projection,
 )
+from printer_v1.discovery.pump_migration_observation import (
+    CANDIDATE_MINT,
+    MIGRATION_SIGNATURE,
+    NO_PUMP_GRADUATION_CLAIM,
+    PUMP_ACTIVE_BONDING_CURVE,
+    PUMP_BONDING_CURVE,
+    PUMP_GRADUATION_CLAIMED,
+    PUMP_LINEAGE_CONFLICT,
+    PUMPSWAP_POOL,
+    classify_candidate_lineage_branch,
+    plan_candidate_migration_locator,
+    validate_candidate_migration_locator,
+)
 from printer_v1.operator_cli import operational_memory_factory_command as command
 from printer_v1.operator_cli import live_candidate_acquisition_transport as live_transport
 from printer_v1.operator_cli.candidate_acquisition_integration import (
@@ -33,6 +46,7 @@ from printer_v1.operator_cli.candidate_acquisition_integration import (
     run_candidate_acquisition_integration,
 )
 from printer_v1.operator_cli.live_candidate_acquisition_transport import (
+    LiveAcquisitionConfiguration,
     LiveAcquisitionConfigurationError,
     LiveAcquisitionTransportError,
     LiveCandidateAcquisitionTransportOwner,
@@ -73,6 +87,8 @@ from printer_v1.sources.pump_contracts import (
     _derive_ata,
     derive_canonical_pumpswap_pool,
     derive_program_address,
+    decode_supported_pump_migration_transaction,
+    verify_pinned_pump_migration,
 )
 from printer_v1.sources.pumpfun_direct import PUMP_PROGRAM_ID
 from printer_v1.sources.pumpfun_origin import PUMP_CREATE_INDEX_ADDRESS
@@ -692,6 +708,8 @@ def _operation(
     fixture_kind: str = FIXTURE_SUCCESS,
     expires_at: str = EXPIRES,
     observed_at: str = NOW,
+    observation_scope: str = "CANDIDATE",
+    phase: str = "NOMINATION",
 ) -> AcquisitionSourceOperation:
     observations = []
     for row in rows:
@@ -704,6 +722,7 @@ def _operation(
     payload = {
         "candidate_observations": observations,
         "underlying_operation_count": transport_operations,
+        **({"response_bytes": 0} if transport_operations == 0 else {}),
     }
     return AcquisitionSourceOperation(
         source_name=source,
@@ -712,6 +731,8 @@ def _operation(
         required=required,
         expected_transport_operations=transport_operations,
         cursor_range=cursor,
+        observation_scope=observation_scope,
+        phase=phase,
     )
 
 
@@ -823,6 +844,7 @@ def _owner(
         _operation(
             "solana_rpc", "pumpfun_migration_signature_page", [], {},
             cursor=_cursor("pump-program", continuity=cursor_continuity),
+            required=False, observation_scope="GLOBAL_OPTIONAL",
         ),
         _operation(
             "solana_rpc", "candidate_mint_account_batch", rows,
@@ -843,6 +865,20 @@ def _owner(
             required=True,
         )
     operations.append(pool_op)
+    operations.extend((
+        _operation(
+            "solana_rpc", "candidate_pump_migration_signature_lookup", [], {},
+            required=False, transport_operations=0, phase="ENRICHMENT",
+        ),
+        _operation(
+            "solana_rpc", "candidate_pump_migration_transaction", [], {},
+            required=False, transport_operations=0, phase="ENRICHMENT",
+        ),
+        _operation(
+            "solana_rpc", "candidate_pumpswap_pool_verification", [], {},
+            required=False, transport_operations=0, phase="ENRICHMENT",
+        ),
+    ))
     for row in rows:
         operations.append(_operation(
             "solana_rpc", "holder_concentration_reference", [row],
@@ -960,8 +996,8 @@ def test_offline_end_to_end_exact_modes(mode: str, count: int, expected: int) ->
 @pytest.mark.parametrize(
     ("cli_mode", "mode", "count", "expected", "expected_jobs", "expected_calls"),
     (
-        (CLI_MODE_N2, MODE_N2, 4, 2, 20, 19),
-        (CLI_MODE_N7, MODE_N7, 14, 7, 44, 37),
+        (CLI_MODE_N2, MODE_N2, 4, 2, 23, 19),
+        (CLI_MODE_N7, MODE_N7, 14, 7, 48, 35),
     ),
 )
 def test_public_command_dispatches_canonical_offline_path(
@@ -1184,6 +1220,9 @@ def test_live_owner_declares_same_approved_source_plan(mode: str, expected_cap: 
         ("solana_rpc", "pumpfun_migration_signature_page"),
         ("solana_rpc", "candidate_mint_account_batch"),
         ("solana_rpc", "pumpswap_pool_account_batch"),
+        ("solana_rpc", "candidate_pump_migration_signature_lookup"),
+        ("solana_rpc", "candidate_pump_migration_transaction"),
+        ("solana_rpc", "candidate_pumpswap_pool_verification"),
         ("solana_rpc", "holder_concentration_reference"),
         ("goplus", "safety_reference"),
     }.issubset(declared)
@@ -1198,23 +1237,35 @@ def test_live_owner_declares_same_approved_source_plan(mode: str, expected_cap: 
     migration_transactions = [
         item for item in operations if item.request_kind == "pumpfun_migration_transaction"
     ]
-    expected_transactions = expected_selection
-    assert len(create_transactions) == expected_transactions
-    assert len(migration_transactions) == expected_transactions
-    # Candidate-specific enrichment covers the acquisition cohort M, bounded by
-    # the governed Solana minute, never the smaller selection capacity N.
-    solana_operations = [item for item in operations if item.source_name == "solana_rpc"]
-    solana_budget = MODE_POLICIES[mode]["source_budgets"]["solana_rpc"]
-    fixed_solana = (
-        2 * expected_transactions
-        + int(solana_budget["pumpfun_create_index_signature_page"])
-        + int(solana_budget["pumpfun_migration_signature_page"])
-        + 2
+    assert len(create_transactions) == expected_selection
+    assert len(migration_transactions) == expected_selection
+    assert all(not item.required for item in migration_transactions)
+    assert all(
+        not item.required
+        for item in operations
+        if item.request_kind == "pumpfun_migration_signature_page"
     )
-    expected_enrichment = min(candidate_limit, 30 - fixed_solana)
-    assert expected_selection < expected_enrichment <= candidate_limit
-    assert len(holders) == expected_enrichment
-    assert len(goplus_ops) == expected_enrichment
+    candidate_lookups = [
+        item for item in operations
+        if item.request_kind == "candidate_pump_migration_signature_lookup"
+    ]
+    candidate_transactions = [
+        item for item in operations
+        if item.request_kind == "candidate_pump_migration_transaction"
+    ]
+    expected_candidate_verifications = 1
+    assert (
+        len(candidate_lookups)
+        == len(candidate_transactions)
+        == expected_candidate_verifications
+    )
+    assert all(item.phase == "ENRICHMENT" for item in candidate_lookups)
+    # Fixed source and Scheduler ceilings remain unchanged. N7 uses exactly the
+    # 30-request Solana minute; N2 remains inside it.
+    solana_operations = [item for item in operations if item.source_name == "solana_rpc"]
+    expected_holders = candidate_limit if expected_selection == 2 else expected_selection
+    assert len(holders) == expected_holders
+    assert len(goplus_ops) <= candidate_limit
     assert all(item.expected_transport_operations == 2 for item in holders)
     assert all(item.phase == "ENRICHMENT" for item in holders + goplus_ops)
     assert len(solana_operations) <= 30
@@ -1225,6 +1276,11 @@ def test_live_owner_declares_same_approved_source_plan(mode: str, expected_cap: 
     # No operation owns a provider loop. The only two-call composites are the
     # fixed Dex nomination/market pair and fixed holder largest/supply pair.
     assert max(item.expected_transport_operations for item in operations) == 2
+    pool_work = next(
+        item for item in operations
+        if item.request_kind == "pumpswap_pool_account_batch"
+    )
+    assert pool_work.cursor_range is None
     assert owner.configuration.redacted_rpc_host == "rpc.example.invalid"
     assert "secret" not in repr(owner.configuration)
 
@@ -1650,7 +1706,9 @@ def test_live_shaped_sequential_established_cursor_state_completes_n2(capsys) ->
             capsys, path, CLI_MODE_N2, second_network,
             "live-shaped-sequential-2",
         )
-        assert first["status"] == second["status"] == "COMPLETED"
+        assert first["status"] == second["status"] == "COMPLETED", json.dumps(
+            second, indent=2
+        )
         assert first["cursor_bootstrap_namespaces"] == 2
         assert second["cursor_heads_loaded"] == 2
         assert second["cursor_bootstrap_namespaces"] == 0
@@ -1767,6 +1825,7 @@ def _density_frozen_owner(rows: list[dict], *, order: tuple[int, ...]) -> Frozen
         _operation(
             "solana_rpc", "pumpfun_migration_signature_page", [], {},
             cursor=_cursor("pump-program"),
+            required=False, observation_scope="GLOBAL_OPTIONAL",
         ),
         _operation(
             "solana_rpc", "candidate_mint_account_batch", rows,
@@ -1776,7 +1835,23 @@ def _density_frozen_owner(rows: list[dict], *, order: tuple[int, ...]) -> Frozen
             "solana_rpc", "pumpswap_pool_account_batch", rows, {"pool_status": "PASS"},
         ),
     ]
-    return FrozenAcquisitionTransportOwner(tuple(base[index] for index in order))
+    required_decoupled = (
+        _operation(
+            "solana_rpc", "candidate_pump_migration_signature_lookup", [], {},
+            required=False, transport_operations=0, phase="ENRICHMENT",
+        ),
+        _operation(
+            "solana_rpc", "candidate_pump_migration_transaction", [], {},
+            required=False, transport_operations=0, phase="ENRICHMENT",
+        ),
+        _operation(
+            "solana_rpc", "candidate_pumpswap_pool_verification", [], {},
+            required=False, transport_operations=0, phase="ENRICHMENT",
+        ),
+    )
+    return FrozenAcquisitionTransportOwner(
+        tuple(base[index] for index in order) + required_decoupled
+    )
 
 
 def _cohort_identities(path: Path) -> set[str]:
@@ -2868,3 +2943,534 @@ def test_live_tail_page_ceiling_fails_without_skip_or_rewind(capsys) -> None:
         }
     finally:
         temp.cleanup()
+
+
+def test_decoupled_branch_classification_is_pure_and_presence_is_not_graduation() -> None:
+    mint = FIXTURE["candidates"][0][0]
+    curve = derive_program_address(
+        (b"bonding-curve", _b58decode(mint)), PUMP_PROGRAM_ID
+    )[0]
+    origin = {"mint": mint, "bonding_curve": curve}
+    active = {
+        "base_mint": mint, "bonding_curve_address": curve, "complete": False,
+    }
+    assert classify_candidate_lineage_branch(
+        candidate_mint=mint, exact_pump_origin=origin,
+        verified_bonding_curve=active,
+    )["branch"] == PUMP_ACTIVE_BONDING_CURVE
+    assert classify_candidate_lineage_branch(
+        candidate_mint=mint,
+    )["branch"] == NO_PUMP_GRADUATION_CLAIM
+    # A Pool address/presence without exact Pump origin is deliberately not a
+    # Pump graduation claim.
+    assert classify_candidate_lineage_branch(
+        candidate_mint=mint,
+        proposed_pumpswap_pool=FIXTURE["candidates"][0][1],
+    )["branch"] == NO_PUMP_GRADUATION_CLAIM
+    assert classify_candidate_lineage_branch(
+        candidate_mint=mint, exact_pump_origin=origin,
+        exact_migration_signature="sig",
+    )["branch"] == PUMP_GRADUATION_CLAIMED
+    conflict = classify_candidate_lineage_branch(
+        candidate_mint=mint, exact_pump_origin=origin,
+        verified_bonding_curve=active, independently_known_non_pump=True,
+    )
+    assert conflict == {
+        "branch": PUMP_LINEAGE_CONFLICT,
+        "reason": "PUMP_AND_NON_PUMP_LINEAGE_CONFLICT",
+    }
+
+
+@pytest.mark.parametrize(
+    ("locator_kind", "kwargs"),
+    (
+        (MIGRATION_SIGNATURE, {"exact_migration_signature": "exact-signature"}),
+        (PUMPSWAP_POOL, {"exact_pumpswap_pool": "POOL"}),
+        (PUMP_BONDING_CURVE, {"exact_verified_bonding_curve": "CURVE"}),
+        (CANDIDATE_MINT, {}),
+    ),
+)
+def test_candidate_locator_precedence_and_exact_join_pass_each_locator(
+    locator_kind: str, kwargs: dict,
+) -> None:
+    network = _LiveShapedAdmissionNetwork(4)
+    tx = network.migration_transaction
+    decoded = decode_supported_pump_migration_transaction(tx)
+    assert decoded["supported"] is True
+    mint = str(decoded["mint"])
+    pool = str(decoded["pool_address"])
+    concrete = dict(kwargs)
+    if concrete.get("exact_pumpswap_pool") == "POOL":
+        concrete["exact_pumpswap_pool"] = pool
+    if concrete.get("exact_verified_bonding_curve") == "CURVE":
+        concrete["exact_verified_bonding_curve"] = str(decoded["accounts"][3])
+    locator = plan_candidate_migration_locator(
+        candidate_mint=mint,
+        branch=PUMP_GRADUATION_CLAIMED,
+        finalized_cutoff_slot=int(tx["slot"]),
+        **concrete,
+    )
+    assert locator is not None
+    assert locator["locator_kind"] == locator_kind
+    assert locator["fallback_allowed"] is False
+    assert validate_candidate_migration_locator(
+        locator=locator, decoded_migration=decoded
+    )[0] is True
+    verified = verify_pinned_pump_migration(
+        tx, {pool: network.pool_accounts[pool]},
+        expected_mint=mint, finalized=True,
+    )
+    assert verified["verified"] is True
+
+
+def _mutate_pool_account(account: dict, *, offset: int, raw: bytes) -> dict:
+    changed = deepcopy(account)
+    data = bytearray(base64.b64decode(changed["data"][0]))
+    data[offset:offset + len(raw)] = raw
+    changed["data"][0] = base64.b64encode(data).decode()
+    return changed
+
+
+@pytest.mark.parametrize(
+    "failure",
+    (
+        "mint", "curve", "pool", "creator", "index", "quote", "pda",
+        "lp", "vault", "fixed", "transaction_failed", "finality",
+        "version", "layout", "ambiguity",
+    ),
+)
+def test_exact_migrate_and_pumpswap_join_fail_one_field_at_a_time(
+    failure: str,
+) -> None:
+    network = _LiveShapedAdmissionNetwork(4)
+    tx = deepcopy(network.migration_transaction)
+    decoded = decode_supported_pump_migration_transaction(tx)
+    mint = str(decoded["mint"])
+    pool = str(decoded["pool_address"])
+    infos = {pool: deepcopy(network.pool_accounts[pool])}
+    alternate = _b58decode(FIXTURE["candidates"][-1][0])
+    finalized = True
+    keys = tx["transaction"]["message"]["accountKeys"]
+    instruction = tx["transaction"]["message"]["instructions"][0]
+    if failure == "mint":
+        keys[2] = FIXTURE["candidates"][-1][0]
+    elif failure == "curve":
+        keys[3] = FIXTURE["candidates"][-1][0]
+    elif failure == "pool":
+        keys[9] = FIXTURE["candidates"][-1][1]
+    elif failure == "creator":
+        keys[10] = FIXTURE["candidates"][-1][0]
+    elif failure == "index":
+        infos[pool] = _mutate_pool_account(
+            infos[pool], offset=9, raw=(1).to_bytes(2, "little")
+        )
+    elif failure == "quote":
+        infos[pool] = _mutate_pool_account(
+            infos[pool], offset=75, raw=alternate
+        )
+    elif failure == "pda":
+        infos[pool] = _mutate_pool_account(
+            infos[pool], offset=8, raw=bytes([0])
+        )
+    elif failure == "lp":
+        infos[pool] = _mutate_pool_account(
+            infos[pool], offset=107, raw=alternate
+        )
+    elif failure == "vault":
+        infos[pool] = _mutate_pool_account(
+            infos[pool], offset=139, raw=alternate
+        )
+    elif failure == "fixed":
+        keys[6] = FIXTURE["candidates"][-1][0]
+    elif failure == "transaction_failed":
+        tx["meta"]["err"] = {"InstructionError": [0, "Custom"]}
+    elif failure == "finality":
+        finalized = False
+    elif failure == "version":
+        tx["version"] = 1
+    elif failure == "layout":
+        instruction["accounts"] = list(range(24))
+    elif failure == "ambiguity":
+        tx["transaction"]["message"]["instructions"].append(deepcopy(instruction))
+    assert verify_pinned_pump_migration(
+        tx, infos, expected_mint=mint, finalized=finalized
+    )["verified"] is False
+
+
+def _optional_observer_owner(
+    *,
+    observer_status: str,
+    non_pump: bool,
+) -> FrozenAcquisitionTransportOwner:
+    rows = _candidate_rows(2)
+    if non_pump:
+        rows = [{**row, "lineage_claim": "NON_PUMP_POOL_CONFIRMED"} for row in rows]
+    owner = _owner(2)
+    operations = list(owner.frozen_operations)
+    pool_index = next(
+        index for index, operation in enumerate(operations)
+        if operation.request_kind == "pumpswap_pool_account_batch"
+    )
+    operations[pool_index] = _operation(
+        "solana_rpc", "pumpswap_pool_account_batch", rows,
+        {"pool_status": "PASS"}, phase="ENRICHMENT",
+    )
+    global_index = next(
+        index for index, operation in enumerate(operations)
+        if operation.request_kind == "pumpfun_migration_signature_page"
+    )
+    if observer_status == "NOT_RUN":
+        operations.pop(global_index)
+    elif observer_status == "UNAVAILABLE":
+        operations[global_index] = AcquisitionSourceOperation(
+            source_name="solana_rpc",
+            request_kind="pumpfun_migration_signature_page",
+            adapter=_StaticFailureAdapter(
+                "solana_rpc", "pumpfun_migration_signature_page",
+                "SOURCE_TRANSPORT_FAILURE",
+            ),
+            required=False,
+            observation_scope="GLOBAL_OPTIONAL",
+        )
+    else:
+        continuity = {
+            "GAPPED": "GAPPED",
+            "UNKNOWN": "UNKNOWN",
+            "BLOCKED_CONTRACT": "BLOCKED_CONTRACT",
+        }[observer_status]
+        operations[global_index] = _operation(
+            "solana_rpc", "pumpfun_migration_signature_page", [], {},
+            required=False,
+            cursor=_cursor("pump-program", continuity=continuity),
+            observation_scope="GLOBAL_OPTIONAL",
+        )
+    return FrozenAcquisitionTransportOwner(tuple(operations))
+
+
+@pytest.mark.parametrize(
+    "observer_status",
+    ("GAPPED", "UNKNOWN", "UNAVAILABLE", "BLOCKED_CONTRACT", "NOT_RUN"),
+)
+@pytest.mark.parametrize(
+    ("non_pump", "expected_lineage"),
+    ((False, "UNKNOWN_ORIGIN"), (True, "NON_PUMP_POOL_CONFIRMED")),
+)
+def test_generic_and_non_pump_admission_ignore_optional_global_outcomes(
+    observer_status: str, non_pump: bool, expected_lineage: str,
+) -> None:
+    temp, path = _db()
+    try:
+        report = _run(
+            path, mode=MODE_N2,
+            execution_id=f"optional-{observer_status}-{int(non_pump)}",
+            owner=_optional_observer_owner(
+                observer_status=observer_status, non_pump=non_pump
+            ),
+        )
+        assert report["status"] == "COMPLETED"
+        assert report["selected_count"] == 2
+        assert report["optional_global_pump_observer"][
+            "universal_failure_contribution"
+        ] is False
+        with sqlite3.connect(path) as connection:
+            assert {
+                str(row[0]) for row in connection.execute(
+                    "SELECT lineage_state FROM printer_candidate_identities"
+                )
+            } == {expected_lineage}
+    finally:
+        temp.cleanup()
+
+
+class _CandidateLookupFailureNetwork(_LiveShapedAdmissionNetwork):
+    def __init__(self, outcome: str) -> None:
+        super().__init__(4)
+        self.outcome = outcome
+        migrated_mint = self.rows[self.migrated_ordinal]["mint"]
+        curve, account = _pump_bonding_curve_account(
+            mint=migrated_mint, creator=self.migration_creator, complete=True
+        )
+        self.pool_accounts[curve] = account
+
+    def rpc_json(self, *, rpc_url, method, params, timeout_seconds, byte_ceiling,
+                 endpoint_role):
+        if endpoint_role.startswith("CANDIDATE_MIGRATION_PUMPSWAP_POOL_"):
+            if self.outcome == "provider":
+                raise LiveAcquisitionTransportError(
+                    "SOURCE_TRANSPORT_FAILURE", endpoint_role,
+                    operation_kind=method,
+                )
+            payload = (
+                {}
+                if self.outcome == "malformed"
+                else []
+                if self.outcome == "empty"
+                else [{
+                    "signature": self.MIGRATION_SIGNATURE,
+                    "slot": 498,
+                    "err": {"InstructionError": [0, "Custom"]},
+                    "confirmationStatus": "finalized",
+                }]
+                if self.outcome == "no_match"
+                else [{
+                    "signature": self.MIGRATION_SIGNATURE,
+                    "slot": 498, "err": None,
+                    "confirmationStatus": "finalized",
+                }]
+            )
+            return self._result(payload, method, endpoint_role)
+        if endpoint_role.startswith("CANDIDATE_MIGRATION_TRANSACTION_"):
+            if self.outcome == "null_transaction":
+                return self._result(None, method, endpoint_role)
+            response = super().rpc_json(
+                rpc_url=rpc_url, method=method, params=params,
+                timeout_seconds=timeout_seconds, byte_ceiling=byte_ceiling,
+                endpoint_role=endpoint_role,
+            )
+            payload = deepcopy(response.payload)
+            if self.outcome == "unsupported":
+                payload["version"] = 1
+            elif self.outcome == "ambiguity":
+                payload["transaction"]["message"]["instructions"].append(
+                    deepcopy(payload["transaction"]["message"]["instructions"][0])
+                )
+            return TransportResponse(
+                payload, response.bytes_used, response.operation_kind,
+                response.endpoint_role,
+            )
+        return super().rpc_json(
+            rpc_url=rpc_url, method=method, params=params,
+            timeout_seconds=timeout_seconds, byte_ceiling=byte_ceiling,
+            endpoint_role=endpoint_role,
+        )
+
+
+@pytest.mark.parametrize(
+    ("outcome", "reason"),
+    (
+        ("empty", "CANDIDATE_MIGRATION_HISTORY_UNAVAILABLE"),
+        ("no_match", "CANDIDATE_MIGRATION_NOT_FOUND_WITHIN_BOUND"),
+        ("provider", "CANDIDATE_MIGRATION_PROVIDER_UNAVAILABLE"),
+        ("malformed", "CANDIDATE_MIGRATION_PAGE_MALFORMED"),
+        ("null_transaction", "CANDIDATE_MIGRATION_TRANSACTION_NULL_OR_PRUNED"),
+        ("unsupported", "CANDIDATE_MIGRATION_UNSUPPORTED_VERSION"),
+        ("ambiguity", "CANDIDATE_MIGRATION_AMBIGUOUS"),
+    ),
+)
+def test_candidate_migration_failures_are_precise_and_never_downgrade(
+    outcome: str, reason: str,
+) -> None:
+    temp, path = _db()
+    try:
+        network = _CandidateLookupFailureNetwork(outcome)
+        owner = LiveCandidateAcquisitionTransportOwner(
+            LiveAcquisitionConfiguration(
+                rpc_url="https://rpc.example.invalid",
+                redacted_rpc_host="rpc.example.invalid",
+                global_pump_observer_enabled=False,
+            ),
+            transport=network,
+        )
+        report = _run(
+            path, mode=MODE_N2, execution_id=f"candidate-failure-{outcome}",
+            owner=owner,
+        )
+        # Unrelated active-Pump/generic candidates remain independently
+        # admissible even though this explicit graduation branch is rejected.
+        assert report["status"] == "COMPLETED"
+        with sqlite3.connect(path) as connection:
+            failure_rows = connection.execute(
+                """SELECT mint_identity,lineage_state
+                     FROM printer_candidate_identities
+                    WHERE lineage_state='UNSUPPORTED_LINEAGE'"""
+            ).fetchall()
+            assert len(failure_rows) == 1
+            facts = [
+                json.loads(str(row[0]))
+                for row in connection.execute(
+                    """SELECT facts_json
+                         FROM printer_candidate_source_observations
+                        WHERE json_extract(
+                            facts_json,'$.pump_migration_failure_reason'
+                        )=?""",
+                    (reason,),
+                )
+            ]
+            assert facts
+            assert all(
+                fact["pump_migration_branch"] == PUMP_GRADUATION_CLAIMED
+                and fact["candidate_migration_fallback_allowed"] is False
+                for fact in facts
+            )
+    finally:
+        temp.cleanup()
+
+
+def test_compact_storage_positive_global_locator_and_zero_source_replay(capsys) -> None:
+    temp, path = _db()
+    try:
+        network = _LiveShapedAdmissionNetwork(4)
+        report = _dispatch(
+            capsys, path, CLI_MODE_N2, network, "compact-decoupled-storage"
+        )
+        assert report["status"] == "COMPLETED"
+        assert report["optional_global_pump_observer"]["required"] is False
+        calls = len(network.calls)
+        replay = replay_candidate_acquisition_integration_report(
+            path, execution_id="compact-decoupled-storage"
+        )
+        assert replay == report
+        assert len(network.calls) == calls
+        with sqlite3.connect(path) as connection:
+            payloads = [
+                json.loads(str(row[0]))
+                for row in connection.execute(
+                    """SELECT normalized_payload_json
+                         FROM printer_source_responses
+                        WHERE source_name='solana_rpc'"""
+                )
+                if row[0]
+            ]
+            global_pages = [
+                payload["page_summary"] for payload in payloads
+                if isinstance(payload.get("page_summary"), dict)
+                and payload["page_summary"].get("locator_kind")
+                    == "GLOBAL_PUMP_PROGRAM"
+            ]
+            assert global_pages
+            assert all(
+                len(page["page_hash"]) == 64
+                and page["raw_signature_rows_persisted"] is False
+                for page in global_pages
+            )
+            assert any(
+                payload.get("positive_migration_match")
+                for payload in payloads
+            )
+            assert any(
+                payload.get("positive_joined_evidence")
+                for payload in payloads
+            )
+            assert connection.execute(
+                """SELECT required_source,cursor_range_json
+                     FROM printer_candidate_acquisition_work
+                    WHERE request_kind='pumpfun_migration_signature_page'
+                    ORDER BY work_ordinal LIMIT 1"""
+            ).fetchone()[0] == 0
+            assert connection.execute(
+                """SELECT cursor_range_json
+                     FROM printer_candidate_acquisition_work
+                    WHERE request_kind='pumpswap_pool_account_batch'"""
+            ).fetchone()[0] is None
+        encoded = json.dumps(payloads, sort_keys=True)
+        assert '"signatures":[' not in encoded
+        assert '"raw_signature_rows"' not in encoded
+        assert report["automatic_retry_created"] is False
+        assert report["restart_created"] is False
+        assert report["successor_created"] is False
+    finally:
+        temp.cleanup()
+
+
+def test_pumpswap_presence_only_stays_unknown_and_active_curve_skips_migration(
+    capsys,
+) -> None:
+    temp_u, path_u = _db()
+    temp_a, path_a = _db()
+    try:
+        unknown_network = _CanonicalMockNetworkTransport(4)
+        unknown = _dispatch(
+            capsys, path_u, CLI_MODE_N2, unknown_network,
+            "pumpswap-presence-only",
+        )
+        assert unknown["status"] == "COMPLETED"
+        with sqlite3.connect(path_u) as connection:
+            assert {
+                str(row[0]) for row in connection.execute(
+                    "SELECT lineage_state FROM printer_candidate_identities"
+                )
+            } == {"UNKNOWN_ORIGIN"}
+        assert not any(
+            role.startswith("CANDIDATE_MIGRATION_TRANSACTION_")
+            for _method, role in unknown_network.calls
+        )
+
+        active_network = _LiveShapedAdmissionNetwork(4)
+        active = _dispatch(
+            capsys, path_a, CLI_MODE_N2, active_network,
+            "active-curve-no-migration",
+        )
+        assert active["status"] == "COMPLETED"
+        with sqlite3.connect(path_a) as connection:
+            active_rows = connection.execute(
+                """SELECT mint_identity
+                     FROM printer_candidate_identities
+                    WHERE lineage_state='PUMP_ORIGIN_CONFIRMED'"""
+            ).fetchall()
+            assert len(active_rows) == 1
+        # Exactly the separately claimed graduated candidate is verified; the
+        # active curve never enters migration work.
+        assert sum(
+            role.startswith("CANDIDATE_MIGRATION_TRANSACTION_")
+            for _method, role in active_network.calls
+        ) == 1
+    finally:
+        temp_u.cleanup()
+        temp_a.cleanup()
+
+
+def test_candidate_budget_and_identity_failures_keep_exact_families() -> None:
+    rows = _candidate_rows(2)
+    budget_row = {
+        "mint": rows[0]["mint"],
+        "base_mint": rows[0]["mint"],
+        "lineage_claim": "UNKNOWN_ORIGIN",
+    }
+    owner = _owner(2)
+    operations = list(owner.frozen_operations)
+    pool_index = next(
+        index for index, operation in enumerate(operations)
+        if operation.request_kind == "pumpswap_pool_account_batch"
+    )
+    operations[pool_index] = _operation(
+        "solana_rpc", "pumpswap_pool_account_batch",
+        [budget_row, rows[1]],
+        {"pool_status": "PASS"},
+        phase="ENRICHMENT",
+    )
+    failure_index = next(
+        index for index, operation in enumerate(operations)
+        if operation.request_kind == "candidate_pumpswap_pool_verification"
+    )
+    operations[failure_index] = _operation(
+        "solana_rpc", "candidate_pumpswap_pool_verification",
+        [budget_row],
+        {
+            "pump_migration_branch": PUMP_GRADUATION_CLAIMED,
+            "pump_migration_failure_family": "BUDGET_EXHAUSTION",
+            "pump_migration_failure_reason": (
+                "CANDIDATE_MIGRATION_PREDECLARED_BUDGET_EXHAUSTED"
+            ),
+            "candidate_migration_fallback_allowed": False,
+        },
+        required=False, transport_operations=0, phase="ENRICHMENT",
+    )
+    temp_b, path_b = _db()
+    temp_i, path_i = _db()
+    try:
+        budget = _run(
+            path_b, mode=MODE_N2, execution_id="candidate-budget-family",
+            owner=FrozenAcquisitionTransportOwner(tuple(operations)),
+        )
+        assert budget["status"] == "BLOCKED"
+        assert budget["first_terminal_cause"] == "BUDGET_EXHAUSTION"
+
+        identity = _run(
+            path_i, mode=MODE_N2, execution_id="candidate-identity-family",
+            owner=_owner(2, identity_conflict=True),
+        )
+        assert identity["status"] == "BLOCKED"
+        assert identity["first_terminal_cause"] == "IDENTITY_MERGE_FAILURE"
+    finally:
+        temp_b.cleanup()
+        temp_i.cleanup()

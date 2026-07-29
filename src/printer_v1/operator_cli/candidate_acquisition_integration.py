@@ -74,6 +74,9 @@ MODE_POLICIES: dict[str, dict[str, Any]] = {
                 "pumpfun_migration_signature_page": 1,
                 "pumpfun_migration_transaction": 4,
                 "pumpswap_pool_account_batch": 1,
+                "candidate_pump_migration_signature_lookup": 4,
+                "candidate_pump_migration_transaction": 4,
+                "candidate_pumpswap_pool_verification": 1,
                 "holder_concentration_reference": 4,
             },
             "goplus": {"safety_reference": 4},
@@ -98,6 +101,9 @@ MODE_POLICIES: dict[str, dict[str, Any]] = {
                 "pumpfun_migration_signature_page": 2,
                 "pumpfun_migration_transaction": 10,
                 "pumpswap_pool_account_batch": 1,
+                "candidate_pump_migration_signature_lookup": 14,
+                "candidate_pump_migration_transaction": 14,
+                "candidate_pumpswap_pool_verification": 1,
                 "holder_concentration_reference": 14,
             },
             "goplus": {"safety_reference": 14},
@@ -133,8 +139,12 @@ PROTECTED_ZERO_DELTA_TABLES = (
 REQUIRED_SOLANA_OPERATION_KINDS = frozenset({
     "candidate_mint_account_batch",
     "pumpfun_create_index_signature_page",
-    "pumpfun_migration_signature_page",
     "pumpswap_pool_account_batch",
+})
+DECOUPLED_CANDIDATE_OPERATION_KINDS = frozenset({
+    "candidate_pump_migration_signature_lookup",
+    "candidate_pump_migration_transaction",
+    "candidate_pumpswap_pool_verification",
 })
 
 
@@ -155,6 +165,9 @@ class AcquisitionSourceOperation:
     request_payload: Mapping[str, Any] | None = None
     expected_transport_operations: int = 1
     cursor_range: Mapping[str, Any] | None = None
+    # Optional global coverage work persists through governed work/response
+    # rows but contributes no empty failure placeholder to candidate admission.
+    observation_scope: str = "CANDIDATE"
     # Phase separates the two candidate-acquisition stages. NOMINATION work
     # contributes identities to the source-neutral nomination universe from which
     # the integration owner selects the M-bounded cohort. ENRICHMENT work is
@@ -585,6 +598,15 @@ def _provider_observations(
                     ),
                 },
             })
+    if not rows and operation.observation_scope == "GLOBAL_OPTIONAL":
+        if status != "COMPLETE":
+            return []
+        rows = [{
+            "facts": {
+                "global_pump_observer_coverage_only": True,
+                "global_pump_observer_admission_authority": "NONE",
+            },
+        }]
     if not rows:
         rows = [{"facts": {}}]
     output: list[dict[str, Any]] = []
@@ -945,6 +967,7 @@ def run_candidate_acquisition_integration(
     thinned_beyond_cohort = 0
     proposed_cursor_namespaces: set[CursorNamespace] = set()
     cursor_heads: dict[CursorNamespace, dict[str, Any] | None] = {}
+    global_observer_states: list[str] = []
     try:
         lease_id = _acquire_lease(
             db_path, integration_id=integration_id, execution_id=execution_id,
@@ -971,7 +994,18 @@ def run_candidate_acquisition_integration(
         ):
             raise CandidateAcquisitionIntegrationError("NOMINATION_SOURCE_GROUP_MISSING")
         missing_solana = sorted(
-            kind for kind in REQUIRED_SOLANA_OPERATION_KINDS
+            kind for kind in (
+                REQUIRED_SOLANA_OPERATION_KINDS
+                | (
+                    DECOUPLED_CANDIDATE_OPERATION_KINDS
+                    if bool(getattr(
+                        transport_owner,
+                        "decoupled_candidate_migration_plan",
+                        False,
+                    ))
+                    else frozenset()
+                )
+            )
             if ("solana_rpc", kind) not in declared
         )
         if missing_solana:
@@ -1129,6 +1163,34 @@ def run_candidate_acquisition_integration(
                 )
                 raise CandidateAcquisitionIntegrationError("RESPONSE_BYTE_CEILING")
             healthy = _source_status(normalized) == "COMPLETE"
+            if operation.request_kind in {
+                "pumpfun_migration_signature_page",
+                "pumpfun_migration_transaction",
+            }:
+                if not healthy:
+                    observer_failure = str(
+                        normalized.failure_type or ""
+                    ).lower()
+                    global_observer_states.append(
+                        "GLOBAL_PUMP_OBSERVER_BLOCKED_CONTRACT"
+                        if "contract" in observer_failure
+                        or "unsupported" in observer_failure
+                        else "GLOBAL_PUMP_OBSERVER_PROVIDER_UNAVAILABLE"
+                    )
+                else:
+                    observer_cursor_state = str(
+                        (payload.get("cursor_range") or operation.cursor_range or {}).get(
+                            "continuity_state"
+                        ) or "UNKNOWN"
+                    )
+                    global_observer_states.append({
+                        "CONTIGUOUS": "GLOBAL_PUMP_OBSERVER_CONTIGUOUS",
+                        "GAPPED": "GLOBAL_PUMP_OBSERVER_GAPPED",
+                        "BLOCKED_CONTRACT": "GLOBAL_PUMP_OBSERVER_BLOCKED_CONTRACT",
+                    }.get(
+                        observer_cursor_state,
+                        "GLOBAL_PUMP_OBSERVER_UNKNOWN",
+                    ))
             if healthy and operation.request_kind == "candidate_nomination":
                 nomination_successes += 1
             cursor_state = str(
@@ -1418,6 +1480,20 @@ def run_candidate_acquisition_integration(
         "enrichment_identities": len(enrichment_mints),
         "out_of_cohort_enrichment": len(enrichment_mints - set(cohort_mints)),
     }
+    observer_precedence = (
+        "GLOBAL_PUMP_OBSERVER_BLOCKED_CONTRACT",
+        "GLOBAL_PUMP_OBSERVER_PROVIDER_UNAVAILABLE",
+        "GLOBAL_PUMP_OBSERVER_GAPPED",
+        "GLOBAL_PUMP_OBSERVER_UNKNOWN",
+        "GLOBAL_PUMP_OBSERVER_CONTIGUOUS",
+    )
+    global_observer_status = next(
+        (
+            status for status in observer_precedence
+            if status in set(global_observer_states)
+        ),
+        "GLOBAL_PUMP_OBSERVER_NOT_RUN",
+    )
     report = {
         "mode": mode,
         "integration_id": integration_id,
@@ -1446,6 +1522,24 @@ def run_candidate_acquisition_integration(
         ),
         "cursor_advances_proposed": len(proposed_cursor_namespaces),
         "cursor_advances_committed": cursor_advances_committed,
+        "optional_global_pump_observer": {
+            "observer_status": global_observer_status,
+            "required": False,
+            "admission_authority": "NONE",
+            "universal_failure_contribution": False,
+            "historical_gap": {
+                "observer_status": "OPTIONAL_OBSERVER_GAPPED",
+                "authoritative_head_slot": 435985595,
+                "frozen_tip_slot": 435999023,
+                "last_recovery_continuation_slot": 435998983,
+                "signatures_inspected": 11000,
+                "pages_inspected": 44,
+                "exact_prior_boundary_reached": False,
+                "terminal_reason": "CURSOR_RECOVERY_LANE_BOUND_EXHAUSTED",
+                "admission_authority": "NONE",
+                "cursor_mutation_performed": False,
+            },
+        },
         "foundation_execution_id": execution_id if foundation is not None else None,
         "foundation_report": foundation,
         "manifest_id": manifest_id,
