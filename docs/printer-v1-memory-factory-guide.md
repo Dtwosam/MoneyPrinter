@@ -567,10 +567,13 @@ DEXTools is deferred and PumpPortal foundation use is prohibited under the
 current contract. No source weighting or quota exists.
 
 The integrated owner is runtime-neutral and transport-free proof is complete.
-The next permitted sub-lane is the separately explicit bounded live acquisition
-proof: `ACQUISITION_ONLY_N2`, then `ACQUISITION_ONLY_N7` only after N=2 passes.
-This guide does not authorize the operational Memory Factory campaign, runtime
-capacity above two, or another selective-1h proof.
+The post-repair final bounded live acquisition proof is closed BLOCKED: Stage A
+`ACQUISITION_ONLY_N2` once with `CANDIDATE_LIMIT`, Stage B
+`ACQUISITION_ONLY_N7` `NOT_RUN`. The next permitted sub-lane is an operator
+decision on source-grounded investigation/repair for live unique-observation
+density versus frozen N2 `candidate_limit` before any new explicit live proof.
+This guide does not authorize N2 retry, N7, the operational Memory Factory
+campaign, runtime capacity above two, or another selective-1h proof.
 
 ### Pump.fun / Pump Program
 
@@ -1131,10 +1134,12 @@ V2-9 closed PASS at commit 51bcfdb
 ```
 
 V2-9.7A through V2-9.7F and V2-9.8A are closed PASS. V2-9.8B remains the active
-memory-growth lane. The candidate-acquisition foundation and post-foundation
-integration are implemented and offline-proven. The exact next permitted
-sub-lane is the separately explicit bounded live acquisition proof, N=2 before
-N=7.
+memory-growth lane. The candidate-acquisition foundation, post-foundation
+integration, and transport-owner repair are implemented and offline-proven. The
+post-repair final bounded live proof is closed BLOCKED (`CANDIDATE_LIMIT` on
+Stage A; Stage B `NOT_RUN`). The exact next permitted sub-lane is an operator
+decision on source-grounded investigation/repair for that blocker before any
+new explicit live proof.
 
 Do not start the operational campaign, run the published PowerShell command,
 start an operational campaign, start V2-10, exceed

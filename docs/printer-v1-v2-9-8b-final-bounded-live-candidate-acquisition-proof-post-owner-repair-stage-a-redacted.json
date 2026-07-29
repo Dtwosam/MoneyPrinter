@@ -1,0 +1,733 @@
+{
+  "lane": "V2-9.8B Final Bounded Live Candidate-Acquisition Proof \u2014 Post Transport-Owner Repair",
+  "starting_head": "34100c97f7cc21488591fe7567ba5a3211b62ebf",
+  "verdict": "V2_9_8B_FINAL_BOUNDED_LIVE_CANDIDATE_ACQUISITION_PROOF_BLOCKED",
+  "stage_a": {
+    "status": "BLOCKED",
+    "first_terminal_cause": "CANDIDATE_LIMIT",
+    "execution_id": "20260729T124405Z-acq-2f658ff333d7",
+    "integration_id": "cain-fdc50b90b7e8c3bbdbf32022bdea7c03",
+    "mode": "ACQUISITION_ONLY_N2",
+    "selected_count": 0,
+    "projection_count": 0,
+    "runtime_handoff_count": 0,
+    "lifecycle_started": false,
+    "scheduler_jobs_created": 16,
+    "governed_requests_used": 16,
+    "transport_operations_used": 15,
+    "bytes_used": 105805,
+    "rows_used": 25,
+    "active_lease_count": 0,
+    "scheduler_residue_terminalized": 0,
+    "automatic_retry_created": false,
+    "restart_created": false,
+    "successor_created": false,
+    "manifest_id": null,
+    "foundation_execution_id": null,
+    "reliability_claim_status": "UNPROVEN_NO_INDEPENDENT_SAMPLE",
+    "policy": {
+      "byte_ceiling": 16777216,
+      "candidate_limit": 4,
+      "duration_seconds": 180,
+      "governed_request_ceiling": 24,
+      "row_ceiling": 64,
+      "scheduler_job_ceiling": 24,
+      "selection_capacity": 2,
+      "source_budgets": {
+        "dexscreener": {
+          "candidate_market_batch": 1,
+          "candidate_nomination": 1
+        },
+        "geckoterminal": {
+          "candidate_market_batch": 4,
+          "candidate_nomination": 1
+        },
+        "goplus": {
+          "safety_reference": 4
+        },
+        "solana_rpc": {
+          "candidate_mint_account_batch": 1,
+          "holder_concentration_reference": 4,
+          "pumpfun_create_index_signature_page": 1,
+          "pumpfun_create_index_transaction": 4,
+          "pumpfun_migration_signature_page": 1,
+          "pumpfun_migration_transaction": 4,
+          "pumpswap_pool_account_batch": 1
+        }
+      },
+      "transport_operation_ceiling": 32
+    },
+    "forbidden_table_deltas": {
+      "printer_episode_outcomes": 0,
+      "printer_episode_snapshots": 0,
+      "printer_episodes": 0,
+      "printer_memory_audit_reports": 0,
+      "printer_memory_factory_campaign_cycles": 0,
+      "printer_memory_factory_campaign_runs": 0,
+      "printer_memory_factory_campaign_token_slots": 0,
+      "printer_memory_factory_campaign_windows": 0,
+      "printer_memory_factory_campaigns": 0,
+      "printer_memory_factory_run_steps": 0,
+      "printer_memory_factory_runs": 0,
+      "printer_memory_fingerprints": 0,
+      "printer_memory_retrieval_matches": 0,
+      "printer_memory_retrieval_queries": 0,
+      "printer_memory_windows": 0,
+      "printer_paper_audit_reports": 0,
+      "printer_paper_decisions": 0,
+      "printer_paper_positions": 0,
+      "printer_paper_trade_audits": 0,
+      "printer_paper_trade_events": 0,
+      "printer_token_snapshots": 0,
+      "printer_tracking_queue": 0
+    },
+    "integrity": "ok",
+    "foreign_key_violations": 0
+  },
+  "stage_b": "NOT_RUN",
+  "db": {
+    "pre_sha256": "e6748de305800fc65ce287ef00e72be0ba7910ae7766f8331280f35da4aa07df",
+    "backup_sha256": "e6748de305800fc65ce287ef00e72be0ba7910ae7766f8331280f35da4aa07df",
+    "post_stage_a_sha256": "516e2b000eb8f2bd10341a5464bb2bcfb19ecf7986f7a011864ce7390b124d1a",
+    "latest_migration": "049_candidate_acquisition_integration.sql",
+    "integrity": "ok",
+    "fk_violations": 0
+  },
+  "accounting": {
+    "work_rows": 16,
+    "scheduler_jobs_linked": 16,
+    "distinct_scheduler_jobs": 16,
+    "source_requests_linked": 16,
+    "distinct_source_requests": 16,
+    "source_responses_linked": 16,
+    "source_failures_linked": 0,
+    "transport_ops": 15,
+    "stdout_scheduler_jobs_created": 16,
+    "stdout_governed_requests_used": 16,
+    "stdout_transport_operations_used": 15,
+    "every_work_has_one_job": true,
+    "every_work_has_one_request": true,
+    "jobs_unique_per_work": true,
+    "requests_unique_per_work": true
+  },
+  "work_by_state": {
+    "SUCCEEDED": 16
+  },
+  "transport_ops_by_kind": {
+    "HTTP_GET": 5,
+    "getTransaction": 2,
+    "getSignaturesForAddress": 2,
+    "getMultipleAccounts": 2,
+    "getTokenLargestAccounts": 2,
+    "getTokenSupply": 2
+  },
+  "transport_ops_by_state": {
+    "COMPLETE": 15
+  },
+  "source_request_status": {
+    "COMPLETE": 16
+  },
+  "source_response_codes": {
+    "200": 4,
+    "None": 12
+  },
+  "source_totals": {
+    "requests": 1472,
+    "responses": 1359,
+    "failures": 113,
+    "requests_delta": 16,
+    "responses_delta": 16,
+    "failures_delta": 0
+  },
+  "funnel": {
+    "foundation_executions": 0,
+    "certificates": 0,
+    "manifests": 0,
+    "manifest_items": 0,
+    "identities": 0,
+    "reserve": 0,
+    "source_observations": 0,
+    "cursors": 0,
+    "cursor_ranges": 0,
+    "observation_rows_used": 25,
+    "approx_unique_mint_like_in_response_payloads": 6,
+    "policy_candidate_limit": 4
+  },
+  "acceptance_gates": {
+    "canonical_terminal_success": false,
+    "exactly_one_n2_execution": true,
+    "no_retry_restart_successor": true,
+    "exactly_two_distinct_admitted_certificates": false,
+    "one_exact_two_item_immutable_manifest": false,
+    "manifest_and_certificate_hashes_verify": false,
+    "legacy_projection_count_exactly_two": false,
+    "runtime_handoff_count_zero": true,
+    "no_tracking_or_lifecycle": true,
+    "scheduler_jobs_eq_governed": true,
+    "every_work_has_scheduler_and_request": true,
+    "budgets_unbreached": true,
+    "no_invalid_cursor_advance": true,
+    "zero_active_acquisition_lease": true,
+    "zero_active_scheduler_work": true,
+    "integrity_ok": true,
+    "fk_zero": true,
+    "all_protected_deltas_zero": true,
+    "selected_count_two": false,
+    "deterministic_zero_source_replay": true
+  },
+  "protected_deltas": {
+    "printer_tracking_queue": {
+      "before": 29,
+      "after": 29,
+      "delta": 0
+    },
+    "printer_token_snapshots": {
+      "before": 1054,
+      "after": 1054,
+      "delta": 0
+    },
+    "printer_memory_windows": {
+      "before": 160,
+      "after": 160,
+      "delta": 0
+    },
+    "printer_episodes": {
+      "before": 57,
+      "after": 57,
+      "delta": 0
+    },
+    "printer_episode_outcomes": {
+      "before": 23,
+      "after": 23,
+      "delta": 0
+    },
+    "printer_episode_snapshots": {
+      "before": 107,
+      "after": 107,
+      "delta": 0
+    },
+    "printer_memory_fingerprints": {
+      "before": 23,
+      "after": 23,
+      "delta": 0
+    },
+    "printer_memory_audit_reports": {
+      "before": 5,
+      "after": 5,
+      "delta": 0
+    },
+    "printer_memory_retrieval_queries": {
+      "before": 10,
+      "after": 10,
+      "delta": 0
+    },
+    "printer_memory_retrieval_matches": {
+      "before": 0,
+      "after": 0,
+      "delta": 0
+    },
+    "printer_paper_decisions": {
+      "before": 2,
+      "after": 2,
+      "delta": 0
+    },
+    "printer_paper_positions": {
+      "before": 0,
+      "after": 0,
+      "delta": 0
+    },
+    "printer_paper_trade_events": {
+      "before": 0,
+      "after": 0,
+      "delta": 0
+    },
+    "printer_paper_trade_audits": {
+      "before": 0,
+      "after": 0,
+      "delta": 0
+    },
+    "printer_paper_audit_reports": {
+      "before": 1,
+      "after": 1,
+      "delta": 0
+    },
+    "printer_memory_factory_campaigns": {
+      "before": 17,
+      "after": 17,
+      "delta": 0
+    },
+    "printer_memory_factory_campaign_runs": {
+      "before": 17,
+      "after": 17,
+      "delta": 0
+    },
+    "printer_memory_factory_campaign_cycles": {
+      "before": 17,
+      "after": 17,
+      "delta": 0
+    },
+    "printer_memory_factory_campaign_token_slots": {
+      "before": 14,
+      "after": 14,
+      "delta": 0
+    },
+    "printer_memory_factory_campaign_windows": {
+      "before": 2,
+      "after": 2,
+      "delta": 0
+    },
+    "printer_memory_factory_runs": {
+      "before": 6,
+      "after": 6,
+      "delta": 0
+    },
+    "printer_memory_factory_run_steps": {
+      "before": 54,
+      "after": 54,
+      "delta": 0
+    }
+  },
+  "replay": {
+    "equals_stdout": true,
+    "canonical_equal": true,
+    "new_source_requests": 0,
+    "new_scheduler_jobs": 0,
+    "new_transport_ops": 0
+  },
+  "work_reconciliation": [
+    {
+      "work_ordinal": 1,
+      "source_name": "dexscreener",
+      "request_kind": "candidate_nomination",
+      "required_source": false,
+      "work_state": "SUCCEEDED",
+      "scheduler_job_id": 1122,
+      "source_request_id": 1457,
+      "source_response_id": 1344,
+      "source_failure_id": null,
+      "governed_requests_used": 1,
+      "transport_operations_used": 2,
+      "bytes_used": 30275,
+      "rows_used": 1,
+      "first_terminal_cause": "SOURCE_OPERATION_COMPLETE",
+      "ops_count": 2,
+      "ops_kinds": [
+        "HTTP_GET",
+        "HTTP_GET"
+      ],
+      "ops_states": [
+        "COMPLETE",
+        "COMPLETE"
+      ],
+      "ops_bytes": 30275,
+      "cursor_range_json": null,
+      "endpoint_roles": [
+        "DEXSCREENER_PROFILES",
+        "DEXSCREENER_MARKET_BATCH"
+      ]
+    },
+    {
+      "work_ordinal": 2,
+      "source_name": "geckoterminal",
+      "request_kind": "candidate_nomination",
+      "required_source": false,
+      "work_state": "SUCCEEDED",
+      "scheduler_job_id": 1123,
+      "source_request_id": 1458,
+      "source_response_id": 1345,
+      "source_failure_id": null,
+      "governed_requests_used": 1,
+      "transport_operations_used": 1,
+      "bytes_used": 30047,
+      "rows_used": 1,
+      "first_terminal_cause": "SOURCE_OPERATION_COMPLETE",
+      "ops_count": 1,
+      "ops_kinds": [
+        "HTTP_GET"
+      ],
+      "ops_states": [
+        "COMPLETE"
+      ],
+      "ops_bytes": 30047,
+      "cursor_range_json": null,
+      "endpoint_roles": [
+        "GECKOTERMINAL_NEW_POOLS"
+      ]
+    },
+    {
+      "work_ordinal": 3,
+      "source_name": "dexscreener",
+      "request_kind": "candidate_market_batch",
+      "required_source": false,
+      "work_state": "SUCCEEDED",
+      "scheduler_job_id": 1124,
+      "source_request_id": 1459,
+      "source_response_id": 1346,
+      "source_failure_id": null,
+      "governed_requests_used": 1,
+      "transport_operations_used": 0,
+      "bytes_used": 0,
+      "rows_used": 4,
+      "first_terminal_cause": "SOURCE_OPERATION_COMPLETE",
+      "ops_count": 0,
+      "ops_kinds": [],
+      "ops_states": [],
+      "ops_bytes": 0,
+      "cursor_range_json": null,
+      "endpoint_roles": []
+    },
+    {
+      "work_ordinal": 4,
+      "source_name": "geckoterminal",
+      "request_kind": "candidate_market_batch",
+      "required_source": false,
+      "work_state": "SUCCEEDED",
+      "scheduler_job_id": 1125,
+      "source_request_id": 1460,
+      "source_response_id": 1347,
+      "source_failure_id": null,
+      "governed_requests_used": 1,
+      "transport_operations_used": 0,
+      "bytes_used": 0,
+      "rows_used": 1,
+      "first_terminal_cause": "SOURCE_OPERATION_COMPLETE",
+      "ops_count": 0,
+      "ops_kinds": [],
+      "ops_states": [],
+      "ops_bytes": 0,
+      "cursor_range_json": null,
+      "endpoint_roles": []
+    },
+    {
+      "work_ordinal": 5,
+      "source_name": "solana_rpc",
+      "request_kind": "pumpfun_create_index_signature_page",
+      "required_source": true,
+      "work_state": "SUCCEEDED",
+      "scheduler_job_id": 1126,
+      "source_request_id": 1461,
+      "source_response_id": 1348,
+      "source_failure_id": null,
+      "governed_requests_used": 1,
+      "transport_operations_used": 1,
+      "bytes_used": 482,
+      "rows_used": 1,
+      "first_terminal_cause": "SOURCE_OPERATION_COMPLETE",
+      "ops_count": 1,
+      "ops_kinds": [
+        "getSignaturesForAddress"
+      ],
+      "ops_states": [
+        "COMPLETE"
+      ],
+      "ops_bytes": 482,
+      "cursor_range_json": "{\"continuity_state\":\"CONTIGUOUS\",\"contract_pin\":\"9c82f61cb711b044a17f770ab8ce9f9bdf78f333\",\"cursor_advanced\":true,\"decoder_version\":\"canonical-live-acquisition-v1\",\"direction\":\"BACKWARD\",\"end_signature\":\"3HfYGaVJnATycK76bXVNTiA9VFkm4cPyU4vz4E7ZmTpaUGQoGnUHbUHFL35VwGh41RTUSjSFWy3R9y9zrhKJQLT9\",\"end_slot\":435949585,\"indexed_address\":\"TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM\",\"start_signature\":null,\"start_slot\":null,\"unresolved_reason\":null}",
+      "endpoint_roles": [
+        "PUMP_CREATE_SIGNATURE_PAGE_1"
+      ]
+    },
+    {
+      "work_ordinal": 6,
+      "source_name": "solana_rpc",
+      "request_kind": "pumpfun_create_index_transaction",
+      "required_source": true,
+      "work_state": "SUCCEEDED",
+      "scheduler_job_id": 1127,
+      "source_request_id": 1462,
+      "source_response_id": 1349,
+      "source_failure_id": null,
+      "governed_requests_used": 1,
+      "transport_operations_used": 1,
+      "bytes_used": 16674,
+      "rows_used": 1,
+      "first_terminal_cause": "SOURCE_OPERATION_COMPLETE",
+      "ops_count": 1,
+      "ops_kinds": [
+        "getTransaction"
+      ],
+      "ops_states": [
+        "COMPLETE"
+      ],
+      "ops_bytes": 16674,
+      "cursor_range_json": "{\"continuity_state\":\"CONTIGUOUS\",\"contract_pin\":\"9c82f61cb711b044a17f770ab8ce9f9bdf78f333\",\"cursor_advanced\":true,\"decoder_version\":\"canonical-live-acquisition-v1\",\"direction\":\"BACKWARD\",\"end_signature\":\"3HfYGaVJnATycK76bXVNTiA9VFkm4cPyU4vz4E7ZmTpaUGQoGnUHbUHFL35VwGh41RTUSjSFWy3R9y9zrhKJQLT9\",\"end_slot\":435949585,\"indexed_address\":\"TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM\",\"start_signature\":null,\"start_slot\":null,\"unresolved_reason\":null}",
+      "endpoint_roles": [
+        "PUMP_CREATE_TRANSACTION_1"
+      ]
+    },
+    {
+      "work_ordinal": 7,
+      "source_name": "solana_rpc",
+      "request_kind": "pumpfun_create_index_transaction",
+      "required_source": true,
+      "work_state": "SUCCEEDED",
+      "scheduler_job_id": 1128,
+      "source_request_id": 1463,
+      "source_response_id": 1350,
+      "source_failure_id": null,
+      "governed_requests_used": 1,
+      "transport_operations_used": 1,
+      "bytes_used": 16667,
+      "rows_used": 1,
+      "first_terminal_cause": "SOURCE_OPERATION_COMPLETE",
+      "ops_count": 1,
+      "ops_kinds": [
+        "getTransaction"
+      ],
+      "ops_states": [
+        "COMPLETE"
+      ],
+      "ops_bytes": 16667,
+      "cursor_range_json": "{\"continuity_state\":\"CONTIGUOUS\",\"contract_pin\":\"9c82f61cb711b044a17f770ab8ce9f9bdf78f333\",\"cursor_advanced\":true,\"decoder_version\":\"canonical-live-acquisition-v1\",\"direction\":\"BACKWARD\",\"end_signature\":\"3HfYGaVJnATycK76bXVNTiA9VFkm4cPyU4vz4E7ZmTpaUGQoGnUHbUHFL35VwGh41RTUSjSFWy3R9y9zrhKJQLT9\",\"end_slot\":435949585,\"indexed_address\":\"TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM\",\"start_signature\":null,\"start_slot\":null,\"unresolved_reason\":null}",
+      "endpoint_roles": [
+        "PUMP_CREATE_TRANSACTION_2"
+      ]
+    },
+    {
+      "work_ordinal": 8,
+      "source_name": "solana_rpc",
+      "request_kind": "pumpfun_migration_signature_page",
+      "required_source": true,
+      "work_state": "SUCCEEDED",
+      "scheduler_job_id": 1129,
+      "source_request_id": 1464,
+      "source_response_id": 1351,
+      "source_failure_id": null,
+      "governed_requests_used": 1,
+      "transport_operations_used": 1,
+      "bytes_used": 554,
+      "rows_used": 1,
+      "first_terminal_cause": "SOURCE_OPERATION_COMPLETE",
+      "ops_count": 1,
+      "ops_kinds": [
+        "getSignaturesForAddress"
+      ],
+      "ops_states": [
+        "COMPLETE"
+      ],
+      "ops_bytes": 554,
+      "cursor_range_json": "{\"continuity_state\":\"CONTIGUOUS\",\"contract_pin\":\"9c82f61cb711b044a17f770ab8ce9f9bdf78f333\",\"cursor_advanced\":true,\"decoder_version\":\"canonical-live-acquisition-v1\",\"direction\":\"BACKWARD\",\"end_signature\":\"3Msz4eckcack9p9PaNt1HAaWWbrBtnCzspfLdo1ADh4ZKZTpPsdQcVMvE5pEkzYUZTWTHunWWNKSeRo8tiL78XCw\",\"end_slot\":435949595,\"indexed_address\":\"6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P\",\"start_signature\":null,\"start_slot\":null,\"unresolved_reason\":null}",
+      "endpoint_roles": [
+        "PUMP_MIGRATION_SIGNATURE_PAGE_1"
+      ]
+    },
+    {
+      "work_ordinal": 9,
+      "source_name": "solana_rpc",
+      "request_kind": "pumpfun_migration_transaction",
+      "required_source": true,
+      "work_state": "SUCCEEDED",
+      "scheduler_job_id": 1130,
+      "source_request_id": 1465,
+      "source_response_id": 1352,
+      "source_failure_id": null,
+      "governed_requests_used": 1,
+      "transport_operations_used": 0,
+      "bytes_used": 0,
+      "rows_used": 1,
+      "first_terminal_cause": "SOURCE_OPERATION_COMPLETE",
+      "ops_count": 0,
+      "ops_kinds": [],
+      "ops_states": [],
+      "ops_bytes": 0,
+      "cursor_range_json": "{\"continuity_state\":\"CONTIGUOUS\",\"contract_pin\":\"9c82f61cb711b044a17f770ab8ce9f9bdf78f333\",\"cursor_advanced\":true,\"decoder_version\":\"canonical-live-acquisition-v1\",\"direction\":\"BACKWARD\",\"end_signature\":\"3Msz4eckcack9p9PaNt1HAaWWbrBtnCzspfLdo1ADh4ZKZTpPsdQcVMvE5pEkzYUZTWTHunWWNKSeRo8tiL78XCw\",\"end_slot\":435949595,\"indexed_address\":\"6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P\",\"start_signature\":null,\"start_slot\":null,\"unresolved_reason\":null}",
+      "endpoint_roles": []
+    },
+    {
+      "work_ordinal": 10,
+      "source_name": "solana_rpc",
+      "request_kind": "pumpfun_migration_transaction",
+      "required_source": true,
+      "work_state": "SUCCEEDED",
+      "scheduler_job_id": 1131,
+      "source_request_id": 1466,
+      "source_response_id": 1353,
+      "source_failure_id": null,
+      "governed_requests_used": 1,
+      "transport_operations_used": 0,
+      "bytes_used": 0,
+      "rows_used": 1,
+      "first_terminal_cause": "SOURCE_OPERATION_COMPLETE",
+      "ops_count": 0,
+      "ops_kinds": [],
+      "ops_states": [],
+      "ops_bytes": 0,
+      "cursor_range_json": "{\"continuity_state\":\"CONTIGUOUS\",\"contract_pin\":\"9c82f61cb711b044a17f770ab8ce9f9bdf78f333\",\"cursor_advanced\":true,\"decoder_version\":\"canonical-live-acquisition-v1\",\"direction\":\"BACKWARD\",\"end_signature\":\"3Msz4eckcack9p9PaNt1HAaWWbrBtnCzspfLdo1ADh4ZKZTpPsdQcVMvE5pEkzYUZTWTHunWWNKSeRo8tiL78XCw\",\"end_slot\":435949595,\"indexed_address\":\"6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P\",\"start_signature\":null,\"start_slot\":null,\"unresolved_reason\":null}",
+      "endpoint_roles": []
+    },
+    {
+      "work_ordinal": 11,
+      "source_name": "solana_rpc",
+      "request_kind": "candidate_mint_account_batch",
+      "required_source": true,
+      "work_state": "SUCCEEDED",
+      "scheduler_job_id": 1132,
+      "source_request_id": 1467,
+      "source_response_id": 1354,
+      "source_failure_id": null,
+      "governed_requests_used": 1,
+      "transport_operations_used": 1,
+      "bytes_used": 1073,
+      "rows_used": 4,
+      "first_terminal_cause": "SOURCE_OPERATION_COMPLETE",
+      "ops_count": 1,
+      "ops_kinds": [
+        "getMultipleAccounts"
+      ],
+      "ops_states": [
+        "COMPLETE"
+      ],
+      "ops_bytes": 1073,
+      "cursor_range_json": null,
+      "endpoint_roles": [
+        "CANDIDATE_MINT_ACCOUNT_BATCH"
+      ]
+    },
+    {
+      "work_ordinal": 12,
+      "source_name": "solana_rpc",
+      "request_kind": "pumpswap_pool_account_batch",
+      "required_source": true,
+      "work_state": "SUCCEEDED",
+      "scheduler_job_id": 1133,
+      "source_request_id": 1468,
+      "source_response_id": 1355,
+      "source_failure_id": null,
+      "governed_requests_used": 1,
+      "transport_operations_used": 1,
+      "bytes_used": 1927,
+      "rows_used": 4,
+      "first_terminal_cause": "SOURCE_OPERATION_COMPLETE",
+      "ops_count": 1,
+      "ops_kinds": [
+        "getMultipleAccounts"
+      ],
+      "ops_states": [
+        "COMPLETE"
+      ],
+      "ops_bytes": 1927,
+      "cursor_range_json": "{\"continuity_state\":\"CONTIGUOUS\",\"contract_pin\":\"9c82f61cb711b044a17f770ab8ce9f9bdf78f333\",\"cursor_advanced\":true,\"decoder_version\":\"canonical-live-acquisition-v1\",\"direction\":\"BACKWARD\",\"end_signature\":\"3Msz4eckcack9p9PaNt1HAaWWbrBtnCzspfLdo1ADh4ZKZTpPsdQcVMvE5pEkzYUZTWTHunWWNKSeRo8tiL78XCw\",\"end_slot\":435949595,\"indexed_address\":\"6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P\",\"start_signature\":null,\"start_slot\":null,\"unresolved_reason\":null}",
+      "endpoint_roles": [
+        "PUMPSWAP_POOL_ACCOUNT_BATCH"
+      ]
+    },
+    {
+      "work_ordinal": 13,
+      "source_name": "solana_rpc",
+      "request_kind": "holder_concentration_reference",
+      "required_source": true,
+      "work_state": "SUCCEEDED",
+      "scheduler_job_id": 1134,
+      "source_request_id": 1469,
+      "source_response_id": 1356,
+      "source_failure_id": null,
+      "governed_requests_used": 1,
+      "transport_operations_used": 2,
+      "bytes_used": 3250,
+      "rows_used": 1,
+      "first_terminal_cause": "SOURCE_OPERATION_COMPLETE",
+      "ops_count": 2,
+      "ops_kinds": [
+        "getTokenLargestAccounts",
+        "getTokenSupply"
+      ],
+      "ops_states": [
+        "COMPLETE",
+        "COMPLETE"
+      ],
+      "ops_bytes": 3250,
+      "cursor_range_json": null,
+      "endpoint_roles": [
+        "HOLDER_LARGEST_ACCOUNTS_1",
+        "HOLDER_TOKEN_SUPPLY_1"
+      ]
+    },
+    {
+      "work_ordinal": 14,
+      "source_name": "solana_rpc",
+      "request_kind": "holder_concentration_reference",
+      "required_source": true,
+      "work_state": "SUCCEEDED",
+      "scheduler_job_id": 1135,
+      "source_request_id": 1470,
+      "source_response_id": 1357,
+      "source_failure_id": null,
+      "governed_requests_used": 1,
+      "transport_operations_used": 2,
+      "bytes_used": 3062,
+      "rows_used": 1,
+      "first_terminal_cause": "SOURCE_OPERATION_COMPLETE",
+      "ops_count": 2,
+      "ops_kinds": [
+        "getTokenLargestAccounts",
+        "getTokenSupply"
+      ],
+      "ops_states": [
+        "COMPLETE",
+        "COMPLETE"
+      ],
+      "ops_bytes": 3062,
+      "cursor_range_json": null,
+      "endpoint_roles": [
+        "HOLDER_LARGEST_ACCOUNTS_2",
+        "HOLDER_TOKEN_SUPPLY_2"
+      ]
+    },
+    {
+      "work_ordinal": 15,
+      "source_name": "goplus",
+      "request_kind": "safety_reference",
+      "required_source": false,
+      "work_state": "SUCCEEDED",
+      "scheduler_job_id": 1136,
+      "source_request_id": 1471,
+      "source_response_id": 1358,
+      "source_failure_id": null,
+      "governed_requests_used": 1,
+      "transport_operations_used": 1,
+      "bytes_used": 963,
+      "rows_used": 1,
+      "first_terminal_cause": "SOURCE_OPERATION_COMPLETE",
+      "ops_count": 1,
+      "ops_kinds": [
+        "HTTP_GET"
+      ],
+      "ops_states": [
+        "COMPLETE"
+      ],
+      "ops_bytes": 963,
+      "cursor_range_json": null,
+      "endpoint_roles": [
+        "GOPLUS_SAFETY_REFERENCE_1"
+      ]
+    },
+    {
+      "work_ordinal": 16,
+      "source_name": "goplus",
+      "request_kind": "safety_reference",
+      "required_source": false,
+      "work_state": "SUCCEEDED",
+      "scheduler_job_id": 1137,
+      "source_request_id": 1472,
+      "source_response_id": 1359,
+      "source_failure_id": null,
+      "governed_requests_used": 1,
+      "transport_operations_used": 1,
+      "bytes_used": 831,
+      "rows_used": 1,
+      "first_terminal_cause": "SOURCE_OPERATION_COMPLETE",
+      "ops_count": 1,
+      "ops_kinds": [
+        "HTTP_GET"
+      ],
+      "ops_states": [
+        "COMPLETE"
+      ],
+      "ops_bytes": 831,
+      "cursor_range_json": null,
+      "endpoint_roles": [
+        "GOPLUS_SAFETY_REFERENCE_2"
+      ]
+    }
+  ],
+  "artifact_dir_host_only": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260729T124351Z-05896a69446d"
+}

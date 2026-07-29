@@ -71,17 +71,23 @@ PowerShell command is published but has not run. V2-9.8B remains a separate
 operator-run lane. Retrieval, paper decisions, BUY/SELL/HOLD, positions,
 trades, audits, and PnL remain locked.
 
-The V2-9.8B candidate-acquisition foundation and post-foundation integration are
-closed PASS and offline-proven. The exact next permitted sub-lane is:
+The V2-9.8B candidate-acquisition foundation, post-foundation integration, and
+canonical live transport-owner repair are closed PASS and offline-proven. The
+post-repair final bounded live candidate-acquisition proof is closed
+`V2_9_8B_FINAL_BOUNDED_LIVE_CANDIDATE_ACQUISITION_PROOF_BLOCKED` (closeout:
+`docs/printer-v1-v2-9-8b-final-bounded-live-candidate-acquisition-proof-post-owner-repair-closeout.md`).
+Stage A N2 blocked once on `CANDIDATE_LIMIT`; Stage B N7 is `NOT_RUN`. The exact
+next permitted sub-lane is:
 
 ```text
-V2-9.8B Final Bounded Live Candidate-Acquisition Proof
-Stage A N=2; Stage B N=7 only after Stage A passes
+Operator decision: source-grounded investigation/repair for live
+unique-observation density vs frozen N2 candidate_limit
+(before any new explicit live acquisition proof)
 ```
 
-This requires separate explicit authorization and does not authorize the
-published operational Memory Factory campaign command, lifecycle work, runtime
-capacity above two, or another selective-1h proof.
+This does not authorize N2 retry, N7, the published operational Memory Factory
+campaign command, lifecycle work, runtime capacity above two, or another
+selective-1h proof.
 
 ## Candidate-Acquisition Foundation Superseding Clarification (2026-07-29)
 
@@ -98,8 +104,10 @@ foundation use is prohibited under its current API-key/wallet contract.
 No source quota, preference, score, rank, confidence, or weighting is allowed.
 The integrated implementation is runtime-neutral through N=16 and its
 transport-free proof is complete; active Memory Factory capacity remains exactly
-two. The exact next permitted task is the separately explicit bounded live
-acquisition proof above. It does not authorize the operational campaign.
+two. The post-repair bounded live acquisition proof is closed BLOCKED on Stage A
+`CANDIDATE_LIMIT` with Stage B `NOT_RUN`. The exact next permitted task is the
+operator investigation/repair decision above. It does not authorize the
+operational campaign, N2 retry, or N7.
 
 ## 4. Assistant Behavior Rules
 
@@ -210,9 +218,12 @@ V2-9.8A is closed PASS. V2-9.8B is allowed only through a separate explicit
 operator run under the active build order. It does not unlock retrieval, paper
 decisions, BUY/SELL/HOLD, positions, trades, audits, or PnL.
 
-Within that active lane, the next permitted work is the separately explicit
-bounded live candidate-acquisition proof, N=2 before conditional N=7. Do not run
-the operational Memory Factory campaign as part of that proof.
+Within that active lane, the post-repair final bounded live proof is closed
+BLOCKED (`CANDIDATE_LIMIT` on Stage A; Stage B `NOT_RUN`). The next permitted
+work is an operator decision on a separate source-grounded
+investigation/repair lane for that blocker before any new explicit live proof.
+Do not retry N2, run N7, or run the operational Memory Factory campaign without
+a new explicit authorization.
 
 ## 7. Automation Boundary Reminder
 
@@ -251,5 +262,7 @@ Preserve V2-9.7F and V2-9.8A PASS, require a separate explicit operator action
 for V2-9.8B, and preserve all retrieval and financial locks.
 
 Inside V2-9.8B, follow the adopted candidate-acquisition sub-lane sequence. The
-current exact next sub-lane is the separately explicit final bounded live
-candidate-acquisition proof, N=2 before conditional N=7.
+post-repair final bounded live proof is closed BLOCKED. The current exact next
+sub-lane is an operator decision on source-grounded investigation/repair for
+live unique-observation density versus frozen N2 `candidate_limit`, before any
+new explicit live acquisition proof.

@@ -1042,9 +1042,11 @@ rank, confidence, or weighting exists.
 The foundation and post-foundation integration are capacity-neutral through
 N=16 and transport-free offline-proven. Active Memory Factory capacity remains
 exactly two. No operational campaign, selective-1h proof, retrieval, or
-financial feature is authorized. The next permitted task is the separately
-explicit bounded live acquisition proof: Stage A N=2, then Stage B N=7 only
-after Stage A passes.
+financial feature is authorized. The post-repair final bounded live acquisition
+proof is closed BLOCKED on Stage A `CANDIDATE_LIMIT` with Stage B `NOT_RUN`. The
+next permitted task is an operator decision on source-grounded
+investigation/repair for live unique-observation density versus frozen N2
+`candidate_limit` before any new explicit live proof.
 
 Campaign rules:
 
@@ -1737,17 +1739,23 @@ learning quality, evidence quality, report clarity, or lock safety is not done.
 
 V2-9.7A through V2-9.7F and V2-9.8A are closed. V2-9.8A verdict is
 `V2_9_8A_OPERATOR_ACTIVATION_GATE_PASS`. V2-9.8B remains the active
-memory-growth lane. Inside it, the candidate-acquisition foundation is
-implemented and post-foundation integration is offline-proven. The exact next
-permitted sub-lane is:
+memory-growth lane. Inside it, the candidate-acquisition foundation,
+post-foundation integration, and canonical live transport-owner repair are
+complete. The post-repair final bounded live candidate-acquisition proof is
+closed `V2_9_8B_FINAL_BOUNDED_LIVE_CANDIDATE_ACQUISITION_PROOF_BLOCKED`
+(closeout:
+`docs/printer-v1-v2-9-8b-final-bounded-live-candidate-acquisition-proof-post-owner-repair-closeout.md`).
+Stage A N2 blocked once on `CANDIDATE_LIMIT`; Stage B N7 is `NOT_RUN`. The exact
+next permitted sub-lane is:
 
 ```text
-V2-9.8B Final Bounded Live Candidate-Acquisition Proof (N=2, then conditional N=7)
+Operator decision: source-grounded investigation/repair for live
+unique-observation density vs frozen N2 candidate_limit
+(before any new explicit live acquisition proof)
 ```
 
-Reason: integration mechanics are complete but real-source behavior and
-real-market reliability remain unproven. This next sub-lane requires separate
-explicit authorization, must be acquisition-only, and must stop after each
-terminal stage. It does not authorize the operational Memory Factory campaign,
-runtime capacity above two, or another selective-1h proof. Retrieval,
-paper decisions, BUY/SELL/HOLD, positions, trades, audits, and PnL remain locked.
+Reason: the public live transport owner path now runs, but the single N2 live
+sample stopped on unique-mint ceiling before foundation admission. Do not retry
+N2, run N7, raise ceilings to force success, or start the operational Memory
+Factory campaign without a new explicit authorization. Retrieval, paper
+decisions, BUY/SELL/HOLD, positions, trades, audits, and PnL remain locked.
