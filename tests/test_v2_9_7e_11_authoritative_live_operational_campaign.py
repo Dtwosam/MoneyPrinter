@@ -442,7 +442,7 @@ class _OperationalBase(e8._IntegrationBase):
         return build
 
     def _run(self, *, pump_transport, secondary_transport=None, fail_mint=None,
-             pump_is_a=False):
+             pump_is_a=False, fifteen_minute_only=False):
         continue_mint, stop_mint, pools = None, None, None
         # Discover which activated mint will be the pump (continuation) target.
         _a, _b, pools = self._origins_and_pools()
@@ -494,6 +494,7 @@ class _OperationalBase(e8._IntegrationBase):
                 backup_path=self.backup,
                 lifecycle_kwargs=kwargs,
                 graduation_proofs=graduation_proofs,
+                fifteen_minute_only=fifteen_minute_only,
             )
         return result, continue_mint, stop_mint
 

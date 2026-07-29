@@ -38,12 +38,14 @@ full-window outcome must remain separate from internal opportunity outcome.
 
 ## 0.4 Allowed Free-First Data Sources
 
-- Direct Pump on-chain activity - required exact launch-origin authority for
-  Pump candidates, through approved free/public Solana RPC only.
+- Direct Pump on-chain activity - retained by the deferred candidate-acquisition
+  subsystem for exact launch-origin claims through approved free/public Solana
+  RPC. It is not an active operational prerequisite.
 
-- Direct Pump migration plus PumpSwap state - required exact graduation and
-  canonical-pool authority for Pump candidates, through approved free/public
-  Solana RPC only.
+- Direct Pump migration plus PumpSwap state - retained by the deferred
+  candidate-acquisition subsystem for exact graduation/canonical-pool claims
+  through approved free/public Solana RPC. It is not an active operational
+  prerequisite.
 
 - DexScreener - direct candidate nomination plus current market visibility for Solana pairs,
   liquidity, volume, FDV, price changes, boosted tokens, and token profiles. It
@@ -54,10 +56,10 @@ full-window outcome must remain separate from internal opportunity outcome.
 - Birdeye Standard ($0) - optional account/API-key Solana new-listing
   nomination only. No paid fallback and no wallet requirement may be introduced.
 
-- PumpPortal - optional governed creation/migration locator only after its
-  authentication, wallet, free-versus-metered, and cost contract is formally
-  adopted. It is not origin or graduation authority. Metered trade/account
-  streams are excluded from V1.
+- PumpPortal - free/keyless creation/migration locator on the restored proven
+  operational intake only, through Source Governor and Central Scheduler. It is
+  not independent pair authority. Metered trade/account streams, wallet
+  linkage, funding and paid fallback are excluded from V1.
 
 - Alternative.me Fear & Greed - broad crypto sentiment backdrop.
 
@@ -790,8 +792,8 @@ Printer must not automatically label every fake-looking pump as useless. Some fa
 
 | **Item** | **Frequency / Rule** |
 |---|---|
-| Direct Pump/PumpSwap observation | Bounded finalized live-tail plus bounded restart-safe cursor backfill under one Source-Governed, Scheduler-led owner; exact budgets require a later adopted design. |
-| PumpPortal new token and migration locator | Unavailable until its auth/wallet/cost contract is adopted; if later allowed, bounded locator only and every fact requires direct on-chain verification. |
+| Direct Pump/PumpSwap observation | Deferred/experimental candidate-acquisition subsystem only; no active factory prerequisite, cursor authority or backfill. |
+| PumpPortal new token and migration locator | Proven operational intake locator only through Source Governor and Central Scheduler; free/keyless contract, bounded use, no wallet/metered streams, and exact current pair/market verification. |
 | DexScreener latest token profiles | Every 10-15 minutes. |
 | DexScreener latest boosted tokens | Every 10-15 minutes. |
 | DexScreener top boosted tokens | Every 15-20 minutes. |
@@ -802,13 +804,12 @@ Printer must not automatically label every fake-looking pump as useless. Some fa
 | RPC / Helius confirmation | Exact direct Pump/PumpSwap verification and limited mint/account/pool/safety checks, always under governed budgets. |
 
 Unknown or unsupported Pump/PumpSwap instructions, events, accounts, layouts,
-quote mints, extensions, or PDA relationships fail closed. The exact official
-Pump and PumpSwap program contracts must be refreshed and pinned before
-implementation. Aggregator observations never replace exact Pump origin or
-exact joined Pump-migration/PumpSwap graduation evidence.
+quote mints, extensions, or PDA relationships fail closed inside the deferred
+candidate-acquisition subsystem. Those facts and its cursors do not control the
+restored operational factory.
 
-The 2026-07-29 combined foundation clarification supersedes any exclusive-source
-reading of the prior adoption. Candidate discovery is multi-source.
+The 2026-07-29 foundation implementation and clarification remain historical
+and deferred. Candidate discovery is multi-source.
 DexScreener and GeckoTerminal may nominate directly, and optional free Birdeye
 Standard new-listing observations may nominate directly with an
 operator-supplied account API key. These sources prove only their supported
@@ -817,8 +818,15 @@ migration, graduation, and canonical-pool claims, not for every token. Non-Pump
 and unknown-origin candidates are not forced into Pump lineage when exact
 present-pool and all other categorical admission facts pass. DEXTools is
 deferred and PumpPortal foundation use is prohibited under the current
-contract. Source contribution is diagnostic only; no source quota, preference,
-score, rank, confidence, or weighting is allowed.
+contract in that deferred subsystem. Source contribution is diagnostic only; no
+source quota, preference, score, rank, confidence, or weighting is allowed.
+
+The active V2-9.8B factory route is the proven two-token operational
+discovery/selection/tracking handoff selected at
+`7c38f13816169c69697ed19893b7e12802d9b1b7`. It keeps exact mint/pair identity,
+freshness, liquidity, holder, tradeability, clean/dirty and safe-stop gates.
+Candidate-acquisition N2/N7, global Pump cursor, recovery and
+migration-observation admission are not prerequisites or operational authority.
 
 ## 4.12 Promotion and Demotion
 

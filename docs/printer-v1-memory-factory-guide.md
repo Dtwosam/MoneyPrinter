@@ -527,11 +527,11 @@ No engine may create its own API loop.
 
 Source limits and API behavior may change. Before implementation, re-check official source docs and keep budgets configurable.
 
-### Candidate-acquisition authority
+### Historical deferred candidate-acquisition authority
 
-The active candidate-acquisition foundation adoption is
+The preserved but deferred candidate-acquisition foundation adoption is
 `docs/printer-v1-v2-9-8b-candidate-acquisition-foundation-roadmap-adoption.md`.
-Candidate authority is:
+Its subsystem-local historical authority is:
 
 1. direct Pump on-chain evidence for exact launch origin;
 2. direct Pump migration plus exact PumpSwap evidence for graduation and
@@ -569,12 +569,14 @@ current contract. No source weighting or quota exists.
 The integrated owner is runtime-neutral and transport-free proof is complete.
 The final post-repair bounded live acquisition proof is closed BLOCKED: Stage A
 `ACQUISITION_ONLY_N2` once with `IDENTITY_MERGE_FAILURE`, Stage B
-`ACQUISITION_ONLY_N7` `NOT_RUN`. The next permitted sub-lane is an operator
-decision on source-grounded investigation/repair for foundation
-`IDENTITY_MERGE_FAILURE` / `MINT_STATUS_FAILED` on the repaired live cohort path
-before any new explicit live proof. This guide does not authorize N2 retry, N7,
-the operational Memory Factory campaign, runtime capacity above two, or another
-selective-1h proof.
+`ACQUISITION_ONLY_N7` `NOT_RUN`. That former next-lane pointer is superseded by
+the operational factory active-path restoration. This guide does not authorize
+N2 retry, N7, the operational Memory Factory campaign, runtime capacity above
+two, or another selective-1h proof.
+
+The following Direct Pump/PumpSwap foundation role descriptions apply only to
+the deferred subsystem. They are not an active factory prerequisite, cursor
+authority, recovery authority or migration-observation admission gate.
 
 ### Pump.fun / Pump Program
 
@@ -1135,18 +1137,23 @@ V2-9 closed PASS at commit 51bcfdb
 ```
 
 V2-9.7A through V2-9.7F and V2-9.8A are closed PASS. V2-9.8B remains the active
-memory-growth lane. The candidate-acquisition foundation, post-foundation
-integration, transport-owner repair, and pipeline repair are implemented and
-offline-proven. The final post-repair bounded live proof is closed BLOCKED
-(`IDENTITY_MERGE_FAILURE` on Stage A; Stage B `NOT_RUN`). The exact next
-permitted sub-lane is an operator decision on source-grounded
-investigation/repair for that foundation admission blocker before any new
-explicit live proof.
+memory-growth lane. The operational factory active-path restoration supersedes
+the candidate-acquisition prerequisite chain. Its selected implementation
+checkpoint is `7c38f13816169c69697ed19893b7e12802d9b1b7`; candidate-foundation
+adoption first entered the critical path at
+`219ad8125a75f52686bfbf5953be0fa4cdca4712`.
 
-Do not start the operational campaign, run the published PowerShell command,
-start an operational campaign, start V2-10, exceed
-runtime capacity two, run another selective-1h proof, or unlock
-retrieval/paper/financial capabilities from this guide.
+The proven two-token discovery/selection/tracking route is active in the
+restoration design. Candidate-acquisition N2/N7, global Pump cursor, recovery
+and migration-observation admission remain implemented and historically
+evidenced but are deferred/experimental, not operational prerequisites.
+Migration 049 remains supported.
+
+On restoration PASS, the exact next task is operator review of the restoration
+branch and closeout only. Do not start the operational campaign, run the
+published PowerShell command, invoke providers/RPC, run N2/N7 or recovery,
+start V2-10, exceed runtime capacity two, run another selective-1h proof, or
+unlock retrieval/paper/financial capabilities from this guide.
 
 Do not use this guide to skip V2-9.7, V2-9.8A, corpus-quality reviews, Lane 9
 BUY policy, or Lane 10 paper-position policy.
@@ -1162,11 +1169,14 @@ Policy requirements for the first active bounded campaign:
 
 ```text
 active_tokens: 2 first
-increase_to_3: only after the two-token pilot passes
+increase_to_3: locked
+active_intake: proven two-token operational discovery/selection/tracking
+candidate_acquisition_n2_n7: deferred_not_prerequisite
+candidate_cursor_recovery_authority: off
 WINDOW_5M_MICRO_EVENT: conditional support-only
 WINDOW_15M: main closeout for active tokens
-WINDOW_1H: selective continuation only
-WINDOW_4H: conditional continuation only
+WINDOW_1H: locked for the restoration proof
+WINDOW_4H: locked for the restoration proof
 WINDOW_12H: locked until V2-11.7
 WINDOW_24H: locked until V2-11.7
 paper_decisions: off

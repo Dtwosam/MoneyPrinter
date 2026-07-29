@@ -395,14 +395,20 @@ Printer V1 may only use free/public data sources.
 Allowed free-first sources:
 
 - Direct Pump.fun on-chain activity through approved free/public Solana RPC
+  remains available to the deferred candidate-acquisition subsystem; it is not
+  an active operational prerequisite
 
-- Direct Pump.fun migration and PumpSwap state through approved free/public Solana RPC
+- Direct Pump.fun migration and PumpSwap state through approved free/public
+  Solana RPC remains available to the deferred candidate-acquisition subsystem;
+  it is not an active operational prerequisite
 
 - DexScreener
 
 - GeckoTerminal
 
-- PumpPortal optional governed launch/migration locator only after its authentication, wallet, free-versus-metered, and cost contract is resolved
+- PumpPortal free/keyless launch and migration locator through the proven
+  Source-Governed operational intake only; no metered trade/account stream,
+  wallet, funding, paid fallback, or independent pair authority
 
 - Alternative.me Fear \& Greed
 
@@ -760,6 +766,8 @@ Required supporting audit/readiness/source-stack documents:
 - docs/printer-v1-memory-growth-automation-audit.md
 - docs/printer-v1-current-state-memory-growth-audit.md
 - docs/printer-v1-v2-9-final-closeout.md
+- docs/printer-v1-v2-9-8b-operational-factory-active-path-restoration.md
+- docs/printer-v1-v2-9-8b-operational-factory-active-path-restoration-closeout.md
 - docs/printer-v1-v2-9-8b-candidate-acquisition-capacity-feasibility-audit.md
 - docs/printer-v1-v2-9-8b-candidate-acquisition-foundation-roadmap-adoption.md
 - docs/printer-v1-v2-9-8b-candidate-acquisition-foundation-combined-audit.md
@@ -782,7 +790,38 @@ Current active memory-growth lane after V2-9.8A operator activation PASS:
 
 - V2-9.8B — Active Bounded Memory Growth Operations
 
-Inside V2-9.8B, the candidate-acquisition foundation roadmap adoption and the
+### Operational Factory Active-Path Restoration (2026-07-29)
+
+The active-path restoration design is:
+
+- `docs/printer-v1-v2-9-8b-operational-factory-active-path-restoration.md`
+
+The selected last-good operational implementation checkpoint is
+`7c38f13816169c69697ed19893b7e12802d9b1b7`. The first commit that placed the
+candidate-acquisition overhaul in the active operational critical path is
+`219ad8125a75f52686bfbf5953be0fa4cdca4712`.
+
+The restored active path is the proven two-token operational
+discovery/selection/tracking route with later independent supervision,
+provenance, reporting, replay, database-mode, holder/evidence-quality and lock
+protections preserved. It supports the current migration ledger through 049.
+
+Candidate-acquisition foundation, N2/N7, global Pump cursors, cursor recovery
+and migration-observation admission are now deferred/experimental. Their code,
+migrations, tables and historical evidence remain intact but are not an
+operational prerequisite or authority for the active factory. The active
+operational command must not read, reset, advance or interpret their cursors or
+recovery rows.
+
+On restoration PASS, the exact next permitted task is operator review of the
+restoration branch and closeout only. PASS does not authorize the published
+operational command, a campaign, N2, N7, recovery, cursor reset, provider/RPC
+work, retrieval or any financial capability.
+
+The candidate-acquisition history below is preserved as a historical/deferred
+record. It does not override this restoration anchor.
+
+Historically inside V2-9.8B, the candidate-acquisition foundation roadmap adoption and the
 combined foundation implementation are closed PASS. The Direct Pump/PumpSwap
 contract audit, post-foundation integration, canonical live transport-owner
 repair, and comprehensive pipeline repair are complete. The final post-repair
@@ -815,12 +854,12 @@ repair and offline proof is closed
 authorized repaired-boundary live N2 proof is closed
 `V2_9_8B_BOUNDED_LIVE_N2_OPTIONAL_GLOBAL_ACCOUNTING_REPAIR_PROOF_BLOCKED`
 on honest `OBSERVATION_ROW_CEILING` budget exhaustion after the optional-global
-operation accounting reconciled exactly. The exact next permitted task is
-operator review of that terminal closeout and redacted evidence. No automatic
-run, retry, recovery, campaign, cursor reset, N7, or later runtime lane is
-authorized.
+operation accounting reconciled exactly. The historical next task at that
+checkpoint was operator review of that terminal closeout and redacted evidence;
+the restoration anchor above now supersedes it. No automatic run, retry,
+recovery, campaign, cursor reset, N7, or later runtime lane is authorized.
 
-Factory-wide candidate-acquisition authority is:
+The deferred candidate-acquisition subsystem's historical authority model is:
 
 1. direct Pump.fun on-chain activity for exact launch origin;
 2. direct Pump.fun migration plus PumpSwap evidence for exact graduation and
@@ -841,7 +880,7 @@ and pin both official Pump and PumpSwap program contracts before any live proof.
 This integration does not authorize a campaign, capacity above two in runtime,
 or another selective-1h proof.
 
-### Candidate-Acquisition Foundation Superseding Clarification (2026-07-29)
+### Historical Candidate-Acquisition Foundation Clarification (Deferred)
 
 The combined foundation audit, design, implementation, disposable migration
 proof, and frozen offline capacity proof supersede the earlier exclusive-source
@@ -879,9 +918,10 @@ closed BLOCKED on `OPERATION_ACCOUNTING_MISMATCH`. The optional-global
 operation-accounting repair and offline proof is closed PASS. The next
 repaired-boundary live N2 proof is closed BLOCKED on honest
 `OBSERVATION_ROW_CEILING` budget exhaustion after exact optional-global
-accounting. The next permitted task is operator review of that terminal
-closeout and redacted evidence. No automatic run, retry, successor, recovery,
-campaign, cursor reset, N7, or later runtime lane is authorized.
+accounting. The historical next task at that checkpoint was operator review of
+that terminal closeout and redacted evidence; the restoration anchor above now
+supersedes it. No automatic run, retry, successor, recovery, campaign, cursor
+reset, N7, or later runtime lane is authorized.
 
 V2-9 is closed PASS at commit 51bcfdb (`Close V2-9 four-hour proof lane`).
 V2-9.7A through V2-9.7F are closed. V2-9.7F activation readiness is
@@ -979,7 +1019,7 @@ It confirms that the active memory-growth build order is:
 
 This build order is active inside the required source stack for Printer V1 memory-growth work.
 
-The next active memory-growth lane is:
+The active memory-growth lane remains:
 
 - `V2-9.8B — Active Bounded Memory Growth Operations`
 
@@ -987,27 +1027,13 @@ V2-9.8A is closed PASS. V2-9.8B is the separately operator-run bounded
 persistent 15m campaign lane. It does not unlock retrieval, paper decisions,
 BUY/SELL/HOLD, positions, trades, audits, or PnL.
 
-Within V2-9.8B, the candidate-acquisition foundation, post-foundation
-integration, transport-owner repair, pipeline repair, mint-identity admission
-repair, and durable cursor-to-live-range repair are complete. The subsequent
-post-cursor-repair live N2 proof is closed
-`V2_9_8B_POST_CURSOR_REPAIR_LIVE_N2_PROOF_BLOCKED` after exactly one run. It
-passed explicit `FORWARD` bootstrap and preserved historical `BACKWARD` heads,
-then blocked at foundation on `IDENTITY_MERGE_FAILURE` because exact quote
-identity was absent for all four cohort candidates. N7 is `NOT_RUN`. The Pump
-migration observation decoupling implementation/offline proof is closed
-`V2_9_8B_PUMP_MIGRATION_OBSERVATION_DECOUPLING_IMPLEMENTATION_PASS`. The
-subsequent bounded live N2 decoupling proof is closed
-`V2_9_8B_BOUNDED_LIVE_N2_PUMP_MIGRATION_DECOUPLING_PROOF_BLOCKED`. The
-optional-global operation-accounting repair and offline proof is closed
-`V2_9_8B_OPTIONAL_GLOBAL_OPERATION_ACCOUNTING_REPAIR_PASS`. The separately
-authorized repaired-boundary live N2 proof is closed
-`V2_9_8B_BOUNDED_LIVE_N2_OPTIONAL_GLOBAL_ACCOUNTING_REPAIR_PROOF_BLOCKED`
-on honest `OBSERVATION_ROW_CEILING` budget exhaustion after exact optional
-operation accounting. The next permitted work is operator review of the
-terminal closeout and redacted evidence. It does not authorize an automatic
-run, retry, recovery, successor, cursor reset, N7, or the published operational
-Memory Factory campaign command.
+Within V2-9.8B, the operational factory active-path restoration supersedes the
+candidate-acquisition prerequisite chain. Candidate foundation, N2/N7, global
+Pump cursor, recovery and migration-observation admission code and evidence are
+deferred, not deleted. The exact next permitted work after restoration PASS is
+operator review of the restoration branch and closeout only. No automatic run,
+retry, recovery, successor, cursor reset, N7, provider/RPC work or operational
+campaign is authorized.
 
 ## Printer V1 Python Builder Guide
 

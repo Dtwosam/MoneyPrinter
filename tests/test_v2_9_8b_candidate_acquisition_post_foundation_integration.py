@@ -1013,7 +1013,7 @@ def test_public_command_dispatches_canonical_offline_path(
             seen["owner"] = kwargs["transport_owner"]
             return real_run(**kwargs)
         monkeypatch.setattr(command, "run_candidate_acquisition_only", capture_owner)
-        rc = command.main(
+        rc = command.run_deferred_candidate_acquisition_command(
             [cli_mode, "--operator-approved"],
             acquisition_environment={"PRINTER_SOLANA_RPC_URL": "https://rpc.example.invalid/path?key=secret"},
             acquisition_one_shot_transport=network,
@@ -1042,7 +1042,7 @@ def test_public_command_dispatches_canonical_offline_path(
             path, execution_id=f"cli-{expected}"
         ) == payload
         call_count = len(network.calls)
-        assert command.main(
+        assert command.run_deferred_candidate_acquisition_command(
             [cli_mode, "--operator-approved"],
             acquisition_environment={
                 "PRINTER_SOLANA_RPC_URL": "https://rpc.example.invalid/path?key=secret"
@@ -1081,7 +1081,7 @@ def test_public_command_blocks_invalid_live_configuration_before_preflight(
         command, "build_activation_preflight",
         lambda **_kwargs: pytest.fail("preflight must not run for invalid transport configuration"),
     )
-    rc = command.main(
+    rc = command.run_deferred_candidate_acquisition_command(
         [CLI_MODE_N2, "--operator-approved"], acquisition_environment=environment
     )
     assert rc == 1
@@ -1095,10 +1095,10 @@ def test_public_command_blocks_invalid_live_configuration_before_preflight(
 
 def test_public_command_requires_approval_before_configuration(capsys, monkeypatch) -> None:
     monkeypatch.setattr(
-        command, "build_live_candidate_acquisition_transport_owner",
+        live_transport, "build_live_candidate_acquisition_transport_owner",
         lambda **_kwargs: pytest.fail("configuration must not load before approval"),
     )
-    assert command.main([CLI_MODE_N2]) == 1
+    assert command.run_deferred_candidate_acquisition_command([CLI_MODE_N2]) == 1
     assert json.loads(capsys.readouterr().err)["error_message"] == (
         "EXPLICIT_OPERATOR_APPROVAL_REQUIRED"
     )
@@ -1595,7 +1595,7 @@ def test_atomic_active_tracking_recheck_blocks_manifest() -> None:
 
 
 def _dispatch(capsys, path, cli_mode: str, network, execution_id: str) -> dict:
-    rc = command.main(
+    rc = command.run_deferred_candidate_acquisition_command(
         [cli_mode, "--operator-approved"],
         acquisition_environment={
             "PRINTER_SOLANA_RPC_URL": "https://rpc.example.invalid/path?key=secret"
@@ -2402,7 +2402,7 @@ def _public_cursor_run(
     cli_mode: str = CLI_MODE_N2,
     now: str = NOW,
 ) -> dict:
-    assert command.main(
+    assert command.run_deferred_candidate_acquisition_command(
         [cli_mode, "--operator-approved"],
         acquisition_environment={
             "PRINTER_SOLANA_RPC_URL": "https://rpc.example.invalid"

@@ -990,7 +990,35 @@ and preserve all retrieval and financial locks.
 
 #### V2-9.8B - Active Bounded Memory Growth Operations
 
-##### Candidate-Acquisition Foundation Adoption (2026-07-28)
+##### Operational Factory Active-Path Restoration (2026-07-29)
+
+The active restoration design is:
+
+`docs/printer-v1-v2-9-8b-operational-factory-active-path-restoration.md`.
+
+The exact selected implementation checkpoint is
+`7c38f13816169c69697ed19893b7e12802d9b1b7`. It is the latest code checkpoint
+before the candidate-acquisition overhaul entered the active operational
+critical path at `219ad8125a75f52686bfbf5953be0fa4cdca4712`.
+
+The active route is the proven two-token operational
+discovery/selection/tracking handoff plus the independent later supervision,
+provenance, replay, reporting, holder/evidence-quality, persistence,
+database-mode, heartbeat and lock repairs. Ordinary `run` remains
+`WINDOW_15M` only and supports the current migration ledger through 049.
+
+Candidate-acquisition foundation, N2/N7, live acquisition transport, global
+Pump cursor, cursor recovery and migration-observation admission are
+deferred/experimental. Their implementation, tables, migrations and evidence
+remain preserved and importable, but they are not an operational prerequisite
+and their cursors/recovery rows are not active factory authority.
+
+This restoration is offline-only. On PASS, the exact next permitted task is
+operator review of the restoration branch and closeout. It does not authorize
+the published operational command, a live campaign, provider/RPC work, N2, N7,
+recovery, cursor reset, a retry, retrieval or any financial capability.
+
+##### Historical Candidate-Acquisition Foundation Adoption (Deferred)
 
 The documentation-only adoption verdict is
 `V2_9_8B_CANDIDATE_ACQUISITION_FOUNDATION_ROADMAP_ADOPTION_PASS` at
@@ -1027,7 +1055,7 @@ backfill, implementation, migration, capacity above two, or another selective-1h
 proof. The next permitted sub-lane is the read-only **V2-9.8B Direct
 Pump/PumpSwap Contract Refresh and Pin Readiness Audit**.
 
-##### Candidate-Acquisition Foundation Superseding Clarification (2026-07-29)
+##### Historical Candidate-Acquisition Foundation Clarification (Deferred)
 
 The combined audit/design/implementation/offline-proof lane is complete and
 supersedes the prior exclusive-source interpretation. Candidate discovery is
@@ -1063,10 +1091,12 @@ optional-global accounting. The next permitted task is operator review of that
 terminal closeout and redacted evidence. No automatic run, retry, recovery,
 successor, cursor reset, N7, or operational campaign is authorized.
 
-Campaign rules:
+Restored active-path rules:
 
 - begin with 2 active tokens;
-- increase to 3 only after the two-token pilot passes;
+- active capacity remains exactly 2; no increase to 3 is authorized;
+- use the proven governed discovery/selection/tracking handoff;
+- do not require or consume candidate-acquisition N2, N7, cursor or recovery state;
 - retain trustworthy positive and negative outcomes as clean when evidence is
   complete;
 - keep incomplete, stale, mismatched, or unsupported evidence dirty or blocked;
@@ -1074,11 +1104,12 @@ Campaign rules:
   concentration, continuation yield, rotation, and safe shutdown;
 - continue through formal corpus-quality reviews, not raw row-count targets.
 
-Allowed: bounded persistent corpus production using the verified operational
-command after the activation gate.
+Allowed by this restoration lane: offline implementation, frozen-transport
+proof and operator review of a PASS branch.
 
-Not allowed: proof DB runs as a substitute for production, V2-9 proof launcher,
-placeholder commands, auto-restart after terminal failure, unbounded campaigns,
+Not allowed: authoritative campaign execution, providers, RPC, N2, N7, cursor
+recovery, automatic retry or restart, proof DB runs as a substitute for
+production, V2-9 proof launcher, placeholder commands, unbounded campaigns,
 retrieval activation, paper decisions, BUY/SELL/HOLD, positions, trades, paper
 trade audits, PnL, live execution, wallet/private-key/signing logic, paid APIs,
 scoring, ranking, confidence percentages, weighted logic, embeddings, vectors,
@@ -1086,7 +1117,8 @@ or treating row counts as quality.
 
 Likely files/docs: operational run reports and corpus quality closeouts.
 
-Likely DB/tables: authoritative persistent corpus DB only after gate approval.
+Likely DB/tables: disposable current-schema databases only for this restoration;
+the authoritative database remains read-only and byte-identical.
 
 Tests/checks: command verification, preflight DB target check, source/scheduler
 trace checks, corpus reports, safe-stop report, no-unlock deltas.
@@ -1094,8 +1126,10 @@ trace checks, corpus reports, safe-stop report, no-unlock deltas.
 Proof artifacts: operational campaign report, corpus quality report, safe-stop
 report, lock-preservation report.
 
-Acceptance gate: bounded campaign grows or honestly blocks persistent corpus
-memory with clear evidence, safe shutdown, and zero retrieval/financial deltas.
+Acceptance gate: the current-schema frozen proof restores exactly two-token
+selection/handoff and 15m terminal mechanics with safe shutdown, deterministic
+replay, no candidate-acquisition cursor/recovery delta, and zero
+retrieval/financial deltas.
 
 Rollback/stop condition: wrong DB target, proof launcher use, placeholder
 command, Source Governor or Central Scheduler bypass, auto-restart, hidden dirty
@@ -1754,31 +1788,20 @@ learning quality, evidence quality, report clarity, or lock safety is not done.
 
 V2-9.7A through V2-9.7F and V2-9.8A are closed. V2-9.8A verdict is
 `V2_9_8A_OPERATOR_ACTIVATION_GATE_PASS`. V2-9.8B remains the active
-memory-growth lane. Inside it, the candidate-acquisition foundation,
-post-foundation integration, canonical live transport-owner repair, pipeline
-repair, and mint-identity admission repair are complete. The post-mint-repair
-live N2 proof is closed
-`V2_9_8B_POST_MINT_ADMISSION_REPAIR_LIVE_N2_PROOF_BLOCKED` (closeout:
-`docs/printer-v1-v2-9-8b-post-mint-admission-repair-live-n2-proof-closeout.md`).
-It ran exactly once and blocked before foundation admission on
-`CURSOR_START_MISMATCH`; N7 is `NOT_RUN`. The later post-cursor-repair N2 proof
-blocked on `IDENTITY_MERGE_FAILURE`, and the Pump migration observation
-decoupling implementation/offline proof is closed PASS. Its bounded live N2
-proof is closed BLOCKED on `OPERATION_ACCOUNTING_MISMATCH`. The optional-global
-operation-accounting repair and offline proof is closed PASS.
-The separately authorized repaired-boundary live N2 proof is closed
-`V2_9_8B_BOUNDED_LIVE_N2_OPTIONAL_GLOBAL_ACCOUNTING_REPAIR_PROOF_BLOCKED`
-on honest `OBSERVATION_ROW_CEILING` budget exhaustion after exact
-optional-global accounting. The exact next permitted sub-lane is operator
-review of that terminal closeout and redacted evidence.
+memory-growth lane. Inside it, the operational factory active-path restoration
+supersedes the candidate-acquisition prerequisite chain.
 
-No automatic run, retry, recovery, cursor reset, N7, or operational campaign is
-authorized.
+On restoration PASS, the exact next permitted task is operator review of:
 
-The durable cursor-to-live-range continuity audit and repair that followed this
-block is closed `V2_9_8B_DURABLE_CURSOR_LIVE_RANGE_REPAIR_PASS` after
-offline-only sequential persistent-state proofs. Do not reset cursors, run N7,
-raise ceilings to force success, or start the operational Memory Factory
-campaign without a new explicit authorization.
+- branch `restore/proven-operational-factory`;
+- the implementation diff;
+- `docs/printer-v1-v2-9-8b-operational-factory-active-path-restoration.md`; and
+- its closeout and offline proof evidence.
+
+The candidate foundation, N2/N7, global Pump cursor, recovery and
+migration-observation history remains preserved but deferred. No automatic
+run, retry, recovery, cursor reset, N7, provider/RPC execution, operational
+campaign or later runtime lane is authorized.
+
 Retrieval, paper decisions, BUY/SELL/HOLD, positions, trades, audits, and PnL
 remain locked.

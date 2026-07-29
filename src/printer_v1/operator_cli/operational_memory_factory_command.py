@@ -88,29 +88,16 @@ from printer_v1.operator_cli.unified_terminal_closure import (
     write_campaign_terminal_report,
 )
 from printer_v1.scheduler.scheduler import ACTIVE_STATUS_VALUES
-from printer_v1.operator_cli.candidate_acquisition_integration import (
-    CLI_MODE_N2,
-    CLI_MODE_N7,
-    MODE_N2,
-    MODE_N7,
-    AcquisitionTransportOwner,
-    CandidateAcquisitionIntegrationError,
-    replay_candidate_acquisition_integration_report,
-    run_candidate_acquisition_integration,
-)
-from printer_v1.operator_cli.live_candidate_acquisition_transport import (
-    CandidateAcquisitionOneShotTransport,
-    build_live_candidate_acquisition_transport_owner,
-)
-from printer_v1.operator_cli.cursor_continuity_recovery import (
-    CLI_MODE_CURSOR_RECOVERY_N2,
-    CursorRecoveryTransportOwner,
-    build_live_cursor_recovery_transport_owner,
-    run_cursor_continuity_recovery,
-)
 
 
 POLICY_VERSION = "V2-9.8-15M-OPERATIONAL-V1"
+ACTIVE_INTAKE_PATH = "PROVEN_TWO_TOKEN_OPERATIONAL_DISCOVERY_SELECTION"
+CANDIDATE_ACQUISITION_STATE = "DEFERRED_EXPERIMENTAL_NOT_OPERATIONAL_AUTHORITY"
+DEFERRED_CANDIDATE_ACQUISITION_MODES = (
+    "acquisition-only-n2",
+    "acquisition-only-n7",
+    "cursor-recovery-n2",
+)
 TOKEN_CAPACITY = 2
 MAIN_WINDOW = "WINDOW_15M"
 MAIN_WINDOW_SECONDS = 900
@@ -594,6 +581,7 @@ def build_activation_preflight(
         "dependency_preflight": dependency.to_dict(),
         "git_provenance": provenance,
         "policy": {
+            "active_intake_path": ACTIVE_INTAKE_PATH,
             "token_capacity": TOKEN_CAPACITY,
             "main_window": MAIN_WINDOW,
             "main_window_seconds": MAIN_WINDOW_SECONDS,
@@ -602,6 +590,13 @@ def build_activation_preflight(
             "automatic_retries": AUTOMATIC_RETRIES,
             "restart_created": False,
             "successor_created": False,
+            "candidate_acquisition": {
+                "state": CANDIDATE_ACQUISITION_STATE,
+                "operational_prerequisite": False,
+                "public_operational_modes": False,
+                "cursor_authority": False,
+                "deferred_modes": DEFERRED_CANDIDATE_ACQUISITION_MODES,
+            },
         },
         "ceilings": {
             "campaigns": 1,
@@ -2033,7 +2028,7 @@ def run_candidate_acquisition_only(
     *,
     mode: str,
     operator_approved: bool,
-    transport_owner: AcquisitionTransportOwner | None = None,
+    transport_owner: Any | None = None,
     preflight_override: Mapping[str, Any] | None = None,
     execution_id: str | None = None,
     owner_id: str | None = None,
@@ -2042,12 +2037,17 @@ def run_candidate_acquisition_only(
     renewal_hook: Any | None = None,
     cancellation_probe: Any | None = None,
 ) -> dict[str, Any]:
-    """Run one bounded foundation-backed acquisition-only command mode.
+    """Retained deferred helper for frozen candidate-acquisition regressions.
 
-    Live execution requires an explicitly constructed approved transport owner.
-    Offline integration proof injects frozen adapters through this same public
-    command seam; no alternate runner exists.
+    This helper is deliberately absent from the public operational CLI. Its
+    imports stay lazy so the active two-token factory does not depend on the
+    deferred candidate-acquisition subsystem.
     """
+    from printer_v1.operator_cli.candidate_acquisition_integration import (
+        CandidateAcquisitionIntegrationError,
+        run_candidate_acquisition_integration,
+    )
+
     if transport_owner is None:
         raise CandidateAcquisitionIntegrationError(
             "APPROVED_ACQUISITION_TRANSPORT_OWNER_REQUIRED"
@@ -2079,14 +2079,21 @@ def run_candidate_acquisition_only(
 def run_cursor_recovery_only(
     *,
     operator_approved: bool,
-    transport_owner: CursorRecoveryTransportOwner | None = None,
+    transport_owner: Any | None = None,
     preflight_override: Mapping[str, Any] | None = None,
     execution_id: str | None = None,
     owner_id: str | None = None,
     now: str | None = None,
     db_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Run one explicit finite cursor-recovery execution."""
+    """Retained deferred helper for frozen cursor-recovery regressions."""
+    from printer_v1.operator_cli.candidate_acquisition_integration import (
+        CandidateAcquisitionIntegrationError,
+    )
+    from printer_v1.operator_cli.cursor_continuity_recovery import (
+        run_cursor_continuity_recovery,
+    )
+
     if transport_owner is None:
         raise CandidateAcquisitionIntegrationError(
             "APPROVED_CURSOR_RECOVERY_TRANSPORT_OWNER_REQUIRED"
@@ -2110,6 +2117,87 @@ def run_cursor_recovery_only(
         owner_id=action_owner_id,
         now=instant,
     )
+
+
+def run_deferred_candidate_acquisition_command(
+    argv: Iterable[str] | None = None,
+    *,
+    acquisition_transport_owner: Any | None = None,
+    acquisition_preflight: Mapping[str, Any] | None = None,
+    acquisition_execution_id: str | None = None,
+    acquisition_now: str | None = None,
+    acquisition_db_path: str | Path | None = None,
+    acquisition_environment: Mapping[str, str] | None = None,
+    acquisition_one_shot_transport: Any | None = None,
+) -> int:
+    """Non-public command seam retained for frozen offline regression proofs.
+
+    This function is not registered in ``pyproject.toml``, not dispatched by
+    :func:`main`, and performs lazy imports only after a deferred test explicitly
+    invokes it. It preserves the complete historical integration proof surface
+    without making candidate acquisition an operational prerequisite.
+    """
+    from printer_v1.operator_cli.candidate_acquisition_integration import (
+        CLI_MODE_N2,
+        CLI_MODE_N7,
+        MODE_N2,
+        MODE_N7,
+        CandidateAcquisitionIntegrationError,
+    )
+    from printer_v1.operator_cli.live_candidate_acquisition_transport import (
+        build_live_candidate_acquisition_transport_owner,
+    )
+
+    parser = argparse.ArgumentParser(
+        description="Deferred candidate-acquisition offline regression seam."
+    )
+    parser.add_argument("mode", choices=(CLI_MODE_N2, CLI_MODE_N7))
+    parser.add_argument("--operator-approved", action="store_true")
+    args = parser.parse_args(list(argv) if argv is not None else None)
+    _ACTION_RUN_CONTEXT["run_id"] = None
+    try:
+        resolved_transport_owner = acquisition_transport_owner
+        if resolved_transport_owner is None:
+            if not args.operator_approved:
+                raise CandidateAcquisitionIntegrationError(
+                    "EXPLICIT_OPERATOR_APPROVAL_REQUIRED"
+                )
+            resolved_transport_owner = build_live_candidate_acquisition_transport_owner(
+                environment=acquisition_environment,
+                transport=acquisition_one_shot_transport,
+            )
+        result = run_candidate_acquisition_only(
+            mode=MODE_N2 if args.mode == CLI_MODE_N2 else MODE_N7,
+            operator_approved=args.operator_approved,
+            transport_owner=resolved_transport_owner,
+            preflight_override=acquisition_preflight,
+            execution_id=acquisition_execution_id,
+            now=acquisition_now,
+            db_path=acquisition_db_path,
+        )
+        print(json.dumps(result, indent=2, sort_keys=True, default=str))
+        return 0
+    except Exception as exc:
+        print(
+            json.dumps(
+                {
+                    "status": "DEFERRED_CANDIDATE_ACQUISITION_BLOCKED",
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc),
+                    "mode": args.mode,
+                    "action_run_id": _ACTION_RUN_CONTEXT.get("run_id"),
+                    "campaign_source_calls": None,
+                    "source_calls": 0,
+                    "scheduler_runtime_calls": 0,
+                    "database_writes": 0,
+                    "restart_created": False,
+                    "successor_created": False,
+                },
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
+        return 1
 
 
 def operational_status() -> dict[str, Any]:
@@ -2160,6 +2248,15 @@ def operational_status() -> dict[str, Any]:
         "mode": "STATUS",
         "status": campaign_status,
         "discovery_only_qualification": discovery_summary,
+        "active_intake_path": ACTIVE_INTAKE_PATH,
+        "active_token_capacity": TOKEN_CAPACITY,
+        "candidate_acquisition": {
+            "state": CANDIDATE_ACQUISITION_STATE,
+            "operational_prerequisite": False,
+            "public_operational_modes": False,
+            "cursor_authority": False,
+            "deferred_modes": DEFERRED_CANDIDATE_ACQUISITION_MODES,
+        },
         "source_calls": 0,
         "scheduler_runtime_calls": 0,
         "database_writes": 0,
@@ -2350,25 +2447,14 @@ def report_only() -> dict[str, Any]:
     }
 
 
-def main(
-    argv: Iterable[str] | None = None,
-    *,
-    acquisition_transport_owner: AcquisitionTransportOwner | None = None,
-    acquisition_preflight: Mapping[str, Any] | None = None,
-    acquisition_execution_id: str | None = None,
-    acquisition_now: str | None = None,
-    acquisition_db_path: str | Path | None = None,
-    acquisition_environment: Mapping[str, str] | None = None,
-    acquisition_one_shot_transport: CandidateAcquisitionOneShotTransport | None = None,
-    cursor_recovery_transport_owner: CursorRecoveryTransportOwner | None = None,
-) -> int:
+def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Printer V1 bounded persistent 15m Memory Factory command. "
             "Modes: preflight-only, run, selective-1h-preflight, "
             "selective-1h-proof, status, cooperative-stop, recover-orphan, "
-            "report-only, discovery-only, acquisition-only-n2, acquisition-only-n7, "
-            "cursor-recovery-n2."
+            "report-only, discovery-only. Candidate acquisition and cursor "
+            "recovery are deferred and are not operational prerequisites."
         )
     )
     parser.add_argument(
@@ -2377,7 +2463,6 @@ def main(
             "preflight-only", "run", SELECTIVE_1H_PREFLIGHT_MODE,
             SELECTIVE_1H_MODE, "status", "cooperative-stop", "recover-orphan",
             "report-only", "discovery-only",
-            CLI_MODE_N2, CLI_MODE_N7, CLI_MODE_CURSOR_RECOVERY_N2,
         ),
     )
     parser.add_argument("--operator-approved", action="store_true")
@@ -2399,45 +2484,6 @@ def main(
         elif args.mode == "discovery-only":
             result = run_discovery_only_qualification(
                 operator_approved=args.operator_approved
-            )
-        elif args.mode in {CLI_MODE_N2, CLI_MODE_N7}:
-            resolved_transport_owner = acquisition_transport_owner
-            if resolved_transport_owner is None:
-                if not args.operator_approved:
-                    raise CandidateAcquisitionIntegrationError(
-                        "EXPLICIT_OPERATOR_APPROVAL_REQUIRED"
-                    )
-                resolved_transport_owner = build_live_candidate_acquisition_transport_owner(
-                    environment=acquisition_environment,
-                    transport=acquisition_one_shot_transport,
-                )
-            result = run_candidate_acquisition_only(
-                mode=MODE_N2 if args.mode == CLI_MODE_N2 else MODE_N7,
-                operator_approved=args.operator_approved,
-                transport_owner=resolved_transport_owner,
-                preflight_override=acquisition_preflight,
-                execution_id=acquisition_execution_id,
-                now=acquisition_now,
-                db_path=acquisition_db_path,
-            )
-        elif args.mode == CLI_MODE_CURSOR_RECOVERY_N2:
-            resolved_recovery_owner = cursor_recovery_transport_owner
-            if resolved_recovery_owner is None:
-                if not args.operator_approved:
-                    raise CandidateAcquisitionIntegrationError(
-                        "EXPLICIT_OPERATOR_APPROVAL_REQUIRED"
-                    )
-                resolved_recovery_owner = build_live_cursor_recovery_transport_owner(
-                    environment=acquisition_environment,
-                    transport=acquisition_one_shot_transport,
-                )
-            result = run_cursor_recovery_only(
-                operator_approved=args.operator_approved,
-                transport_owner=resolved_recovery_owner,
-                preflight_override=acquisition_preflight,
-                execution_id=acquisition_execution_id,
-                now=acquisition_now,
-                db_path=acquisition_db_path,
             )
         elif args.mode == "status":
             result = operational_status()
@@ -2462,10 +2508,7 @@ def main(
             # Run failed before campaign creation (e.g. preflight). Action-local
             # total remains zero; do not inherit historical ledgers.
             campaign_source_calls = None
-        elif args.mode in {
-            "discovery-only", CLI_MODE_N2, CLI_MODE_N7,
-            CLI_MODE_CURSOR_RECOVERY_N2,
-        }:
+        elif args.mode == "discovery-only":
             # Discovery-only never inherits campaign holder ledgers.
             campaign_source_calls = None
         source_calls = (
@@ -2498,7 +2541,10 @@ if __name__ == "__main__":  # pragma: no cover
 
 
 __all__ = [
+    "ACTIVE_INTAKE_PATH",
     "AUTHORITATIVE_DB",
+    "CANDIDATE_ACQUISITION_STATE",
+    "DEFERRED_CANDIDATE_ACQUISITION_MODES",
     "DISCOVERY_ONLY_MODE",
     "DISCOVERY_ONLY_MUTATION_ALLOWLIST",
     "DISCOVERY_ONLY_PROTECTED_ZERO_DELTA_TABLES",
