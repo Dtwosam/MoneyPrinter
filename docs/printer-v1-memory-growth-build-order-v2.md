@@ -1000,8 +1000,8 @@ It adopts this factory-wide authority order:
 1. direct Pump on-chain activity for exact launch origin;
 2. direct Pump migration plus exact PumpSwap evidence for graduation and
    canonical pool identity;
-3. DexScreener and GeckoTerminal for current market visibility, liquidity,
-   activity, age, and coverage enrichment only;
+3. DexScreener and GeckoTerminal for direct candidate nomination and their
+   supported current market, liquidity, activity, age, and coverage facts;
 4. approved Solana RPC providers for exact on-chain transport/verification; and
 5. PumpPortal only as an optional governed locator after its authentication,
    wallet, free-versus-metered, and cost contract is resolved.
@@ -1039,11 +1039,12 @@ DEXTools remains deferred; PumpPortal foundation implementation is prohibited
 under its current API-key/wallet contract. No source preference, quota, score,
 rank, confidence, or weighting exists.
 
-The implementation is transport-free, capacity-neutral through N=16, and
-offline-only. Active Memory Factory capacity remains exactly two. No operational
-command, live source, RPC, WebSocket, backfill, selective-1h proof, retrieval, or
-financial feature is authorized. The next permitted task is the read-only
-**V2-9.8B post-foundation integration and activation-readiness audit**.
+The foundation and post-foundation integration are capacity-neutral through
+N=16 and transport-free offline-proven. Active Memory Factory capacity remains
+exactly two. No operational campaign, selective-1h proof, retrieval, or
+financial feature is authorized. The next permitted task is the separately
+explicit bounded live acquisition proof: Stage A N=2, then Stage B N=7 only
+after Stage A passes.
 
 Campaign rules:
 
@@ -1737,14 +1738,16 @@ learning quality, evidence quality, report clarity, or lock safety is not done.
 V2-9.7A through V2-9.7F and V2-9.8A are closed. V2-9.8A verdict is
 `V2_9_8A_OPERATOR_ACTIVATION_GATE_PASS`. V2-9.8B remains the active
 memory-growth lane. Inside it, the candidate-acquisition foundation is
-implemented and offline-proven and the exact next permitted sub-lane is:
+implemented and post-foundation integration is offline-proven. The exact next
+permitted sub-lane is:
 
 ```text
-V2-9.8B Post-Foundation Integration and Activation-Readiness Audit
+V2-9.8B Final Bounded Live Candidate-Acquisition Proof (N=2, then conditional N=7)
 ```
 
-Reason: the foundation mechanics are complete but no live integration or
-operational adoption was authorized or proven. This next sub-lane is read-only.
-It does not authorize the published operational command, source execution, live
-observation, backfill, runtime capacity above two, or another selective-1h proof. Retrieval,
+Reason: integration mechanics are complete but real-source behavior and
+real-market reliability remain unproven. This next sub-lane requires separate
+explicit authorization, must be acquisition-only, and must stop after each
+terminal stage. It does not authorize the operational Memory Factory campaign,
+runtime capacity above two, or another selective-1h proof. Retrieval,
 paper decisions, BUY/SELL/HOLD, positions, trades, audits, and PnL remain locked.

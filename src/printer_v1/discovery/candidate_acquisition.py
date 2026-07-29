@@ -19,6 +19,12 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from printer_v1.scheduler.contracts import JobKind
 from printer_v1.sources.governor import can_request_source
+from printer_v1.lifecycle.contracts import TokenLifecycleState
+from printer_v1.lifecycle.tracking_queue import assess_tracking_handoff_by_identity
+from printer_v1.discovery.selection_batch import (
+    check_pair_selection_cooldown,
+    check_token_selection_cooldown,
+)
 
 
 SCHEMA_VERSION = "V2_9_8B_CANDIDATE_ACQUISITION_V1"
@@ -436,6 +442,182 @@ def _categorical_status(facts: Iterable[Mapping[str, Any]], key: str) -> tuple[s
     return "FAIL", f"{key.upper()}_UNSUPPORTED"
 
 
+def _atomic_tracking_and_cooldown_recheck(
+    connection: sqlite3.Connection,
+    observations: Sequence[Mapping[str, Any]],
+    *,
+    assessed_at: str,
+) -> list[dict[str, Any]]:
+    """Bind the tracking gate to current authoritative state under one write lock."""
+    instant = _iso(assessed_at)
+    row = connection.execute(
+        "SELECT COALESCE(MAX(last_selected_batch_seq), 0) "
+        "FROM printer_selection_rotation_state"
+    ).fetchone()
+    next_batch_seq = int(row[0] or 0) + 1
+    decisions: dict[tuple[str, str], tuple[str, tuple[str, ...]]] = {}
+    result: list[dict[str, Any]] = []
+    for source_item in observations:
+        item = dict(source_item)
+        facts = dict(item.get("facts") or {})
+        mint = str(item.get("mint") or "")
+        pool = str(item.get("pool") or "")
+        if mint and pool:
+            key = (mint, pool)
+            decision = decisions.get(key)
+            if decision is None:
+                reasons: list[str] = []
+                for lane in (
+                    TokenLifecycleState.TRACK_FAST,
+                    TokenLifecycleState.TRACK_NORMAL,
+                ):
+                    assessment = assess_tracking_handoff_by_identity(
+                        connection,
+                        token_mint=mint,
+                        pair_address=pool,
+                        tracking_lane=lane,
+                        assessed_at=instant,
+                    )
+                    if not assessment.eligible:
+                        reasons.append(str(assessment.reason_code or "TRACKING_STATE_BLOCKED"))
+                token_ok, token_reason = check_token_selection_cooldown(
+                    connection, mint, next_batch_seq
+                )
+                pair_ok, pair_reason = check_pair_selection_cooldown(
+                    connection, pool, next_batch_seq
+                )
+                if not token_ok:
+                    reasons.append(token_reason)
+                if not pair_ok:
+                    reasons.append(pair_reason)
+                decision = ("PASS" if not reasons else "FAIL", tuple(sorted(set(reasons))))
+                decisions[key] = decision
+            facts["tracking_status"] = decision[0]
+            facts["tracking_atomic_recheck"] = decision[0]
+            facts["tracking_atomic_recheck_reasons"] = list(decision[1])
+            facts["tracking_atomic_recheck_at"] = assessed_at
+            facts["selection_cooldown_batch_seq"] = next_batch_seq
+            item["facts"] = facts
+            content_payload = {
+                key_name: value
+                for key_name, value in item.items()
+                if key_name not in {"source_governor_allowed", "content_hash", "observation_id"}
+            }
+            item["content_hash"] = _sha(content_payload)
+            item["observation_id"] = _identifier("caobs", content_payload)
+        result.append(item)
+    result.sort(
+        key=lambda value: (
+            value["round_ordinal"], value["source_name"], value["content_hash"]
+        )
+    )
+    return result
+
+
+def _cursor_table_exists(connection: sqlite3.Connection) -> bool:
+    return connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' "
+        "AND name='printer_candidate_acquisition_cursors'"
+    ).fetchone() is not None
+
+
+def _validate_current_cursor_heads(
+    connection: sqlite3.Connection, observations: Sequence[Mapping[str, Any]]
+) -> None:
+    if not _cursor_table_exists(connection):
+        return
+    seen: set[tuple[str, str, str, str, str]] = set()
+    for item in observations:
+        cursor = item.get("cursor_range")
+        if not cursor:
+            continue
+        namespace = (
+            "solana-mainnet",
+            str(cursor["indexed_address"]),
+            str(cursor["contract_pin"]),
+            str(cursor["decoder_version"]),
+            str(cursor["direction"]),
+        )
+        if namespace in seen:
+            continue
+        seen.add(namespace)
+        prior = connection.execute(
+            """SELECT boundary_slot,boundary_signature
+               FROM printer_candidate_acquisition_cursors
+               WHERE network=? AND indexed_address=? AND contract_pin=?
+                 AND decoder_version=? AND direction=?""",
+            namespace,
+        ).fetchone()
+        if prior is None:
+            continue
+        if (
+            cursor.get("start_slot") != prior["boundary_slot"]
+            or cursor.get("start_signature") != prior["boundary_signature"]
+        ):
+            raise CandidateAcquisitionError(
+                "CURSOR_START_MISMATCH", str(cursor["indexed_address"])
+            )
+
+
+def _advance_current_cursor_heads(
+    connection: sqlite3.Connection,
+    *,
+    plan: Mapping[str, Any],
+    observations: Sequence[Mapping[str, Any]],
+) -> None:
+    if not _cursor_table_exists(connection):
+        return
+    seen: set[int] = set()
+    for item in observations:
+        ordinal = int(item["round_ordinal"])
+        cursor = item.get("cursor_range")
+        if not cursor or ordinal in seen:
+            continue
+        seen.add(ordinal)
+        if not bool(cursor.get("cursor_advanced")):
+            continue
+        if cursor.get("continuity_state") != "CONTIGUOUS":
+            raise CandidateAcquisitionError("CURSOR_ADVANCED_PAST_UNRESOLVED_EVIDENCE")
+        if cursor.get("end_slot") is None and not cursor.get("end_signature"):
+            raise CandidateAcquisitionError("CURSOR_END_BOUNDARY_REQUIRED")
+        cursor_payload = {
+            "execution_id": plan["execution_id"],
+            "round_ordinal": ordinal,
+            **cursor,
+        }
+        range_id = _identifier("cange", cursor_payload)
+        prior = connection.execute(
+            """SELECT cursor_version FROM printer_candidate_acquisition_cursors
+               WHERE network=? AND indexed_address=? AND contract_pin=?
+                 AND decoder_version=? AND direction=?""",
+            (
+                plan["network"], cursor["indexed_address"], cursor["contract_pin"],
+                cursor["decoder_version"], cursor["direction"],
+            ),
+        ).fetchone()
+        version = 1 if prior is None else int(prior[0]) + 1
+        connection.execute(
+            """INSERT INTO printer_candidate_acquisition_cursors(
+                   network,indexed_address,contract_pin,decoder_version,direction,
+                   boundary_slot,boundary_signature,last_range_id,last_execution_id,
+                   cursor_version,updated_at
+               ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(network,indexed_address,contract_pin,decoder_version,direction)
+               DO UPDATE SET boundary_slot=excluded.boundary_slot,
+                   boundary_signature=excluded.boundary_signature,
+                   last_range_id=excluded.last_range_id,
+                   last_execution_id=excluded.last_execution_id,
+                   cursor_version=excluded.cursor_version,
+                   updated_at=excluded.updated_at""",
+            (
+                plan["network"], cursor["indexed_address"], cursor["contract_pin"],
+                cursor["decoder_version"], cursor["direction"], cursor.get("end_slot"),
+                cursor.get("end_signature"), range_id, plan["execution_id"], version,
+                plan["cutoff_at"],
+            ),
+        )
+
+
 def _lineage_state(group: Sequence[Mapping[str, Any]]) -> str:
     claims = {str(item["lineage_claim"]) for item in group if item.get("lineage_claim")}
     if "CONFLICTING_LINEAGE" in claims:
@@ -711,7 +893,7 @@ def _failure_family(observations: Sequence[Mapping[str, Any]], candidates: Seque
             return family, status
     if any(item["identity_status"] != "IDENTITY_MERGED" for item in candidates):
         return "IDENTITY_MERGE_FAILURE", "IDENTITY_NOT_MERGED"
-    if candidates:
+    if candidates and any(not item["admitted"] for item in candidates):
         return "ADMISSION_FAILURE", "CATEGORICAL_ADMISSION_REJECTIONS"
     return "INSUFFICIENT_ELIGIBLE_POOL", "COMPLETE_COVERAGE_FEWER_THAN_N"
 
@@ -768,16 +950,24 @@ def run_candidate_acquisition(
     """Run one atomic frozen acquisition execution, or replay it idempotently."""
     frozen_plan = _validate_plan(plan)
     normalized = _normalize_observations(frozen_plan, observations)
-    input_payload = {"plan": frozen_plan, "observations": normalized}
-    input_hash = _sha(input_payload)
-    replay_identity = _sha(
-        {"execution_id": frozen_plan["execution_id"], "policy_hash": frozen_plan["policy_hash"], "input_hash": input_hash}
-    )
     database = Path(db_path)
     connection = sqlite3.connect(database)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     try:
+        connection.execute("BEGIN IMMEDIATE")
+        normalized = _atomic_tracking_and_cooldown_recheck(
+            connection, normalized, assessed_at=str(frozen_plan["cutoff_at"])
+        )
+        input_payload = {"plan": frozen_plan, "observations": normalized}
+        input_hash = _sha(input_payload)
+        replay_identity = _sha(
+            {
+                "execution_id": frozen_plan["execution_id"],
+                "policy_hash": frozen_plan["policy_hash"],
+                "input_hash": input_hash,
+            }
+        )
         prior = connection.execute(
             "SELECT input_hash, report_json, report_hash FROM printer_candidate_acquisition_reports WHERE execution_id=?",
             (frozen_plan["execution_id"],),
@@ -787,6 +977,7 @@ def run_candidate_acquisition(
                 raise CandidateAcquisitionError("REPLAY_IDENTITY_CONFLICT")
             return json.loads(prior["report_json"])
 
+        _validate_current_cursor_heads(connection, normalized)
         before = _table_counts(connection)
         candidates = _build_candidates(frozen_plan, normalized)
         admitted = [item for item in candidates if item["admitted"]]
@@ -964,6 +1155,9 @@ def run_candidate_acquisition(
                         _sha(cursor_payload), frozen_plan["cutoff_at"],
                     ),
                 )
+            _advance_current_cursor_heads(
+                connection, plan=frozen_plan, observations=normalized
+            )
             for item in candidates:
                 connection.execute(
                     """INSERT INTO printer_candidate_identities(

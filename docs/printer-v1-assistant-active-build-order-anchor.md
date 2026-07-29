@@ -71,18 +71,17 @@ PowerShell command is published but has not run. V2-9.8B remains a separate
 operator-run lane. Retrieval, paper decisions, BUY/SELL/HOLD, positions,
 trades, audits, and PnL remain locked.
 
-The V2-9.8B candidate-acquisition foundation roadmap adoption is closed
-`V2_9_8B_CANDIDATE_ACQUISITION_FOUNDATION_ROADMAP_ADOPTION_PASS` at
-`docs/printer-v1-v2-9-8b-candidate-acquisition-foundation-roadmap-adoption.md`.
-The exact next permitted sub-lane is the read-only:
+The V2-9.8B candidate-acquisition foundation and post-foundation integration are
+closed PASS and offline-proven. The exact next permitted sub-lane is:
 
 ```text
-V2-9.8B Direct Pump/PumpSwap Contract Refresh and Pin Readiness Audit
+V2-9.8B Final Bounded Live Candidate-Acquisition Proof
+Stage A N=2; Stage B N=7 only after Stage A passes
 ```
 
-This does not authorize the published operational command, implementation,
-source execution, live observation, historical backfill, migration, capacity
-above two, or another selective-1h proof.
+This requires separate explicit authorization and does not authorize the
+published operational Memory Factory campaign command, lifecycle work, runtime
+capacity above two, or another selective-1h proof.
 
 ## Candidate-Acquisition Foundation Superseding Clarification (2026-07-29)
 
@@ -97,10 +96,10 @@ eligible through exact present-pool proof. DEXTools is deferred and PumpPortal
 foundation use is prohibited under its current API-key/wallet contract.
 
 No source quota, preference, score, rank, confidence, or weighting is allowed.
-The implementation is transport-free and runtime-neutral through N=16; active
-Memory Factory capacity remains exactly two. The exact next permitted task is
-the read-only `V2-9.8B Post-Foundation Integration and Activation-Readiness
-Audit`. It does not authorize the operational command or any live source.
+The integrated implementation is runtime-neutral through N=16 and its
+transport-free proof is complete; active Memory Factory capacity remains exactly
+two. The exact next permitted task is the separately explicit bounded live
+acquisition proof above. It does not authorize the operational campaign.
 
 ## 4. Assistant Behavior Rules
 
@@ -130,16 +129,17 @@ For candidate acquisition, assistants must preserve this authority order:
 1. direct Pump on-chain evidence for exact launch origin;
 2. direct Pump migration plus exact PumpSwap evidence for graduation and
    canonical pool identity;
-3. DexScreener and GeckoTerminal for market enrichment only;
+3. DexScreener and GeckoTerminal for direct candidate nomination and their
+   supported market facts;
 4. approved Solana RPC providers for exact on-chain transport/verification; and
 5. PumpPortal only as an optional governed locator after its auth, wallet, free
    versus metered, and cost contract is adopted.
 
-Aggregators must never replace exact Pump/PumpSwap facts. A future foundation
-must provide bounded live observation and restart-safe cursor-based creation and
+Aggregators must never replace exact Pump/PumpSwap facts. The integrated owner
+provides bounded live observation and restart-safe cursor-based creation and
 migration backfill under one Source-Governed, Scheduler-led owner. Unsupported
 Pump/PumpSwap instructions or account layouts fail closed. Both official
-program contracts must be refreshed and pinned before implementation.
+program contracts must retain their refreshed pins for any live proof.
 
 Assistants must not move early into:
 
@@ -210,9 +210,9 @@ V2-9.8A is closed PASS. V2-9.8B is allowed only through a separate explicit
 operator run under the active build order. It does not unlock retrieval, paper
 decisions, BUY/SELL/HOLD, positions, trades, audits, or PnL.
 
-Within that active lane, the next permitted work after the candidate-acquisition
-adoption is the read-only `V2-9.8B Direct Pump/PumpSwap Contract Refresh and Pin
-Readiness Audit`. Do not run the operational command as part of that audit.
+Within that active lane, the next permitted work is the separately explicit
+bounded live candidate-acquisition proof, N=2 before conditional N=7. Do not run
+the operational Memory Factory campaign as part of that proof.
 
 ## 7. Automation Boundary Reminder
 
@@ -251,5 +251,5 @@ Preserve V2-9.7F and V2-9.8A PASS, require a separate explicit operator action
 for V2-9.8B, and preserve all retrieval and financial locks.
 
 Inside V2-9.8B, follow the adopted candidate-acquisition sub-lane sequence. The
-current exact next sub-lane is the read-only Direct Pump/PumpSwap Contract
-Refresh and Pin Readiness Audit.
+current exact next sub-lane is the separately explicit final bounded live
+candidate-acquisition proof, N=2 before conditional N=7.

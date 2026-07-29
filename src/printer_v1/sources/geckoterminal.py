@@ -47,6 +47,8 @@ GECKOTERMINAL_POOL_URL_TEMPLATE = (
 )
 
 ALLOWED_REQUEST_KINDS = frozenset({
+    "candidate_nomination",
+    "candidate_market_batch",
     "geckoterminal_new_pool_discovery",
     "geckoterminal_trending_pool_reference",
     "geckoterminal_ohlcv_15m",

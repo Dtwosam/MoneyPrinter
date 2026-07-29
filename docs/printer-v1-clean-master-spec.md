@@ -45,11 +45,11 @@ full-window outcome must remain separate from internal opportunity outcome.
   canonical-pool authority for Pump candidates, through approved free/public
   Solana RPC only.
 
-- DexScreener - current market visibility and enrichment for Solana pairs,
+- DexScreener - direct candidate nomination plus current market visibility for Solana pairs,
   liquidity, volume, FDV, price changes, boosted tokens, and token profiles. It
   does not establish Pump origin or PumpSwap graduation.
 
-- GeckoTerminal - backup pool/OHLC/liquidity/volume confirmation, used carefully because public limits are limited.
+- GeckoTerminal - direct candidate nomination plus backup pool/OHLC/liquidity/volume confirmation, used carefully because public limits are limited.
 
 - Birdeye Standard ($0) - optional account/API-key Solana new-listing
   nomination only. No paid fallback and no wallet requirement may be introduced.

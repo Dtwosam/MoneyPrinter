@@ -403,7 +403,8 @@ def test_certificate_immutability_and_fresh_requalification_version_reserve() ->
 
 
 def test_migration_repair_registry_governor_and_birdeye_contract() -> None:
-    assert canonical_migration_names()[-1] == "048_candidate_acquisition_foundation.sql"
+    assert "048_candidate_acquisition_foundation.sql" in canonical_migration_names()
+    assert canonical_migration_names()[-1] == "049_candidate_acquisition_integration.sql"
     temp, path = _db()
     try:
         with sqlite3.connect(path) as connection:

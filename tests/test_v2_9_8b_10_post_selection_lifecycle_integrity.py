@@ -166,7 +166,7 @@ class MigrationAndFactoryInsertTests(unittest.TestCase):
         expected_names = canonical_migration_names()
         self.assertEqual(EXPECTED_MIGRATION_COUNT, expected_count)
         self.assertEqual(expected_count, len(expected_names))
-        self.assertEqual(expected_names[-1], "048_candidate_acquisition_foundation.sql")
+        self.assertEqual(expected_names[-1], "049_candidate_acquisition_integration.sql")
         with tempfile.TemporaryDirectory() as temporary:
             db = Path(temporary) / "mig.sqlite3"
             apply_migrations(db)

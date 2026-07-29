@@ -1,5 +1,13 @@
 # Printer V1 V2-9.8B Candidate-Acquisition Foundation Roadmap Adoption
 
+> **Current status — 2026-07-29:** This document is preserved as the historical
+> adoption record. Its former "next Direct Pump/PumpSwap audit" instruction and
+> enrichment-only description are superseded. DexScreener and GeckoTerminal may
+> nominate directly; Pump/PumpSwap remains authoritative only for Pump-specific
+> claims. The foundation and post-foundation integration are implemented and
+> offline-proven. The next permitted task is only the separately explicit final
+> bounded live candidate-acquisition proof: N=2, then N=7 only after N=2 passes.
+
 > **Superseding clarification — 2026-07-29:** Candidate discovery is
 > multi-source. Pump/PumpSwap remains a required, first-class lane and the only
 > authority for Pump-specific origin/migration/canonical-pool claims, but it is

@@ -536,23 +536,23 @@ Candidate authority is:
 1. direct Pump on-chain evidence for exact launch origin;
 2. direct Pump migration plus exact PumpSwap evidence for graduation and
    canonical pool identity;
-3. DexScreener and GeckoTerminal for current market visibility, liquidity,
-   activity, age, and coverage enrichment only;
+3. DexScreener and GeckoTerminal for direct candidate nomination and their
+   supported current market, liquidity, activity, age, and coverage facts;
 4. approved Solana RPC providers for exact on-chain transport and verification;
    and
 5. PumpPortal only as an optional governed locator after its authentication,
    wallet, free-versus-metered, and cost contract is resolved.
 
 Aggregator observations must never replace exact Pump origin or exact joined
-Pump-migration/PumpSwap graduation evidence. The future acquisition owner must
+Pump-migration/PumpSwap graduation evidence. The integrated acquisition owner must
 be Source-Governed and Scheduler-led and must provide both bounded finalized
 live observation and restart-safe, cursor-based historical backfill for missed
 Pump creation and migration events. Live and backfill are two modes of one owner,
 not independent source loops.
 
 Unknown or unsupported Pump/PumpSwap instruction, event, account, quote-mint,
-extension, PDA, or pool layouts fail closed. Before implementation, refresh and
-pin the exact official Pump and PumpSwap repository commit, raw artifact hashes,
+extension, PDA, or pool layouts fail closed. Before a live proof, retain the
+refreshed and pinned exact official Pump and PumpSwap repository commit, raw artifact hashes,
 program IDs, supported instruction/account/event contracts, discriminators,
 canonical-pool rules, and fixtures. Cursor advancement must stop before any
 unresolved observation.
@@ -566,11 +566,11 @@ Non-Pump and unknown-origin candidates may use the exact-present-pool branch.
 DEXTools is deferred and PumpPortal foundation use is prohibited under the
 current contract. No source weighting or quota exists.
 
-The implemented owner is transport-free and runtime-neutral. The next permitted
-sub-lane is a read-only **V2-9.8B post-foundation integration and
-activation-readiness audit**. This guide does not authorize source execution,
-live-tail, backfill, the operational command, runtime capacity above two, or
-another selective-1h proof.
+The integrated owner is runtime-neutral and transport-free proof is complete.
+The next permitted sub-lane is the separately explicit bounded live acquisition
+proof: `ACQUISITION_ONLY_N2`, then `ACQUISITION_ONLY_N7` only after N=2 passes.
+This guide does not authorize the operational Memory Factory campaign, runtime
+capacity above two, or another selective-1h proof.
 
 ### Pump.fun / Pump Program
 
@@ -1131,12 +1131,13 @@ V2-9 closed PASS at commit 51bcfdb
 ```
 
 V2-9.7A through V2-9.7F and V2-9.8A are closed PASS. V2-9.8B remains the active
-memory-growth lane. The candidate-acquisition foundation is now implemented and
-offline-proven; its exact next permitted sub-lane is the read-only `V2-9.8B
-post-foundation integration and activation-readiness audit`.
+memory-growth lane. The candidate-acquisition foundation and post-foundation
+integration are implemented and offline-proven. The exact next permitted
+sub-lane is the separately explicit bounded live acquisition proof, N=2 before
+N=7.
 
 Do not start the operational campaign, run the published PowerShell command,
-implement source work, start live observation or backfill, start V2-10, exceed
+start an operational campaign, start V2-10, exceed
 runtime capacity two, run another selective-1h proof, or unlock
 retrieval/paper/financial capabilities from this guide.
 

@@ -88,6 +88,16 @@ from printer_v1.operator_cli.unified_terminal_closure import (
     write_campaign_terminal_report,
 )
 from printer_v1.scheduler.scheduler import ACTIVE_STATUS_VALUES
+from printer_v1.operator_cli.candidate_acquisition_integration import (
+    CLI_MODE_N2,
+    CLI_MODE_N7,
+    MODE_N2,
+    MODE_N7,
+    AcquisitionTransportOwner,
+    CandidateAcquisitionIntegrationError,
+    replay_candidate_acquisition_integration_report,
+    run_candidate_acquisition_integration,
+)
 
 
 POLICY_VERSION = "V2-9.8-15M-OPERATIONAL-V1"
@@ -2009,6 +2019,53 @@ def run_discovery_only_qualification(
     return payload
 
 
+def run_candidate_acquisition_only(
+    *,
+    mode: str,
+    operator_approved: bool,
+    transport_owner: AcquisitionTransportOwner | None = None,
+    preflight_override: Mapping[str, Any] | None = None,
+    execution_id: str | None = None,
+    owner_id: str | None = None,
+    now: str | None = None,
+    db_path: str | Path | None = None,
+    renewal_hook: Any | None = None,
+    cancellation_probe: Any | None = None,
+) -> dict[str, Any]:
+    """Run one bounded foundation-backed acquisition-only command mode.
+
+    Live execution requires an explicitly constructed approved transport owner.
+    Offline integration proof injects frozen adapters through this same public
+    command seam; no alternate runner exists.
+    """
+    if transport_owner is None:
+        raise CandidateAcquisitionIntegrationError(
+            "APPROVED_ACQUISITION_TRANSPORT_OWNER_REQUIRED"
+        )
+    target = Path(db_path or AUTHORITATIVE_DB).resolve()
+    preflight = dict(preflight_override or build_activation_preflight(db_path=target))
+    instant = now or _iso()
+    action_execution_id = execution_id or (
+        datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        + "-acq-"
+        + uuid.uuid4().hex[:12]
+    )
+    action_owner_id = owner_id or f"candidate-acquisition-owner:{action_execution_id}"
+    _ACTION_RUN_CONTEXT["run_id"] = action_execution_id
+    return run_candidate_acquisition_integration(
+        target,
+        mode=mode,
+        operator_approved=operator_approved,
+        transport_owner=transport_owner,
+        preflight=preflight,
+        execution_id=action_execution_id,
+        owner_id=action_owner_id,
+        now=instant,
+        renewal_hook=renewal_hook,
+        cancellation_probe=cancellation_probe,
+    )
+
+
 def operational_status() -> dict[str, Any]:
     discovery_only = _load_latest_discovery_only_report()
     discovery_summary = None
@@ -2247,13 +2304,21 @@ def report_only() -> dict[str, Any]:
     }
 
 
-def main(argv: Iterable[str] | None = None) -> int:
+def main(
+    argv: Iterable[str] | None = None,
+    *,
+    acquisition_transport_owner: AcquisitionTransportOwner | None = None,
+    acquisition_preflight: Mapping[str, Any] | None = None,
+    acquisition_execution_id: str | None = None,
+    acquisition_now: str | None = None,
+    acquisition_db_path: str | Path | None = None,
+) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Printer V1 bounded persistent 15m Memory Factory command. "
             "Modes: preflight-only, run, selective-1h-preflight, "
             "selective-1h-proof, status, cooperative-stop, recover-orphan, "
-            "report-only, discovery-only."
+            "report-only, discovery-only, acquisition-only-n2, acquisition-only-n7."
         )
     )
     parser.add_argument(
@@ -2262,6 +2327,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             "preflight-only", "run", SELECTIVE_1H_PREFLIGHT_MODE,
             SELECTIVE_1H_MODE, "status", "cooperative-stop", "recover-orphan",
             "report-only", "discovery-only",
+            CLI_MODE_N2, CLI_MODE_N7,
         ),
     )
     parser.add_argument("--operator-approved", action="store_true")
@@ -2283,6 +2349,16 @@ def main(argv: Iterable[str] | None = None) -> int:
         elif args.mode == "discovery-only":
             result = run_discovery_only_qualification(
                 operator_approved=args.operator_approved
+            )
+        elif args.mode in {CLI_MODE_N2, CLI_MODE_N7}:
+            result = run_candidate_acquisition_only(
+                mode=MODE_N2 if args.mode == CLI_MODE_N2 else MODE_N7,
+                operator_approved=args.operator_approved,
+                transport_owner=acquisition_transport_owner,
+                preflight_override=acquisition_preflight,
+                execution_id=acquisition_execution_id,
+                now=acquisition_now,
+                db_path=acquisition_db_path,
             )
         elif args.mode == "status":
             result = operational_status()
@@ -2307,7 +2383,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             # Run failed before campaign creation (e.g. preflight). Action-local
             # total remains zero; do not inherit historical ledgers.
             campaign_source_calls = None
-        elif args.mode == "discovery-only":
+        elif args.mode in {"discovery-only", CLI_MODE_N2, CLI_MODE_N7}:
             # Discovery-only never inherits campaign holder ledgers.
             campaign_source_calls = None
         source_calls = (

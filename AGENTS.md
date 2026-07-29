@@ -778,32 +778,33 @@ Current active memory-growth lane after V2-9.8A operator activation PASS:
 
 - V2-9.8B — Active Bounded Memory Growth Operations
 
-Inside V2-9.8B, the candidate-acquisition foundation roadmap adoption is closed
-`V2_9_8B_CANDIDATE_ACQUISITION_FOUNDATION_ROADMAP_ADOPTION_PASS`. The next
-permitted sub-lane is read-only:
-
-- V2-9.8B Direct Pump/PumpSwap Contract Refresh and Pin Readiness Audit
+Inside V2-9.8B, the candidate-acquisition foundation roadmap adoption and the
+combined foundation implementation are closed PASS. The Direct Pump/PumpSwap
+contract audit and post-foundation integration are also complete. The exact
+next permitted task is the separately explicit bounded live acquisition proof:
+Stage A `ACQUISITION_ONLY_N2`, then Stage B `ACQUISITION_ONLY_N7` only if Stage A
+passes. It is not an operational Memory Factory campaign.
 
 Factory-wide candidate-acquisition authority is:
 
 1. direct Pump.fun on-chain activity for exact launch origin;
 2. direct Pump.fun migration plus PumpSwap evidence for exact graduation and
    canonical pool identity;
-3. DexScreener and GeckoTerminal for current market visibility, liquidity,
-   activity, age, and coverage enrichment only;
+3. DexScreener and GeckoTerminal for direct candidate nomination and their
+   supported current market, liquidity, activity, age, and coverage facts;
 4. approved Solana RPC providers for exact on-chain verification; and
 5. PumpPortal only as an optional governed locator after its authentication,
    wallet, free-versus-metered, and cost contract is resolved.
 
 Aggregator observations never replace exact Pump origin or exact joined
-Pump-migration/PumpSwap graduation evidence. The future foundation must have
+Pump-migration/PumpSwap graduation evidence. The integrated acquisition owner has
 bounded live observation and restart-safe cursor-based historical backfill for
 missed Pump creation and migration events under one Source-Governed,
 Scheduler-led owner. Unknown or unsupported Pump/PumpSwap instruction, event,
 account, layout, quote-mint, extension, or PDA contracts fail closed. Refresh
-and pin both official Pump and PumpSwap program contracts before implementation.
-This adoption does not authorize source execution, implementation, migration,
-capacity above two, or another selective-1h proof.
+and pin both official Pump and PumpSwap program contracts before any live proof.
+This integration does not authorize a campaign, capacity above two in runtime,
+or another selective-1h proof.
 
 ### Candidate-Acquisition Foundation Superseding Clarification (2026-07-29)
 
@@ -827,14 +828,14 @@ age, holder, safety, liquidity, and tradeability evidence. Unknown origin stays
 categorical. No source quota, preference, score, rank, confidence, or weighting
 is permitted; source contribution is diagnostic only.
 
-The implemented foundation is transport-free and runtime-neutral. Generic N is
+The implemented foundation is runtime-neutral. Generic N is
 bounded to 16 for acquisition/reserve/selection mechanics, while approved active
 Memory Factory capacity remains exactly two and the legacy projection rejects
 manifests above two. This clarification authorizes no live source, RPC,
 WebSocket, backfill, operational campaign, selective-1h proof, retrieval, or
-financial capability. The next permitted task is a read-only V2-9.8B
-post-foundation integration and activation-readiness audit; it must not run the
-published operational command.
+financial capability. Post-foundation integration and transport-free proof are
+complete. The next permitted task is only the separately explicit bounded live
+acquisition proof described above; no operational campaign is authorized.
 
 V2-9 is closed PASS at commit 51bcfdb (`Close V2-9 four-hour proof lane`).
 V2-9.7A through V2-9.7F are closed. V2-9.7F activation readiness is
@@ -940,11 +941,11 @@ V2-9.8A is closed PASS. V2-9.8B is the separately operator-run bounded
 persistent 15m campaign lane. It does not unlock retrieval, paper decisions,
 BUY/SELL/HOLD, positions, trades, audits, or PnL.
 
-Within V2-9.8B, the candidate-acquisition foundation adoption is closed PASS.
-The combined candidate-acquisition foundation is implemented and offline-proven.
-The next permitted work is the read-only `V2-9.8B post-foundation integration and
-activation-readiness audit`; it does not authorize running the published
-operational command.
+Within V2-9.8B, the candidate-acquisition foundation and post-foundation
+integration are implemented and offline-proven. The next permitted work is the
+separately explicit bounded live acquisition proof: N=2 first, then N=7 only
+after terminal N=2 PASS. It does not authorize the published operational
+Memory Factory campaign command.
 ## Printer V1 Python Builder Guide
 
 For every Printer V1 Python implementation, repair, migration, runner,
