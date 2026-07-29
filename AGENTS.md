@@ -780,18 +780,19 @@ Current active memory-growth lane after V2-9.8A operator activation PASS:
 
 Inside V2-9.8B, the candidate-acquisition foundation roadmap adoption and the
 combined foundation implementation are closed PASS. The Direct Pump/PumpSwap
-contract audit, post-foundation integration, and canonical live transport-owner
-repair are complete. The post-repair final bounded live candidate-acquisition
-proof is closed
-`V2_9_8B_FINAL_BOUNDED_LIVE_CANDIDATE_ACQUISITION_PROOF_BLOCKED`
+contract audit, post-foundation integration, canonical live transport-owner
+repair, and comprehensive pipeline repair are complete. The final post-repair
+bounded live candidate-acquisition proof is closed
+`V2_9_8B_FINAL_POST_REPAIR_BOUNDED_LIVE_CANDIDATE_ACQUISITION_PROOF_BLOCKED`
 (closeout:
-`docs/printer-v1-v2-9-8b-final-bounded-live-candidate-acquisition-proof-post-owner-repair-closeout.md`).
-Stage A `ACQUISITION_ONLY_N2` blocked once on `CANDIDATE_LIMIT`; Stage B
-`ACQUISITION_ONLY_N7` is `NOT_RUN`. The exact next permitted task is an operator
-decision on a separate source-grounded investigation/repair lane for live
-unique-observation density versus the frozen N2 `candidate_limit`, before any
-new explicit live acquisition proof. It is not an operational Memory Factory
-campaign, N2 retry, or N7 run.
+`docs/printer-v1-v2-9-8b-final-post-repair-bounded-live-candidate-acquisition-proof-closeout.md`).
+Stage A `ACQUISITION_ONLY_N2` blocked once on `IDENTITY_MERGE_FAILURE` after the
+repaired cohort boundary thinned raw density; Stage B `ACQUISITION_ONLY_N7` is
+`NOT_RUN`. The exact next permitted task is an operator decision on a separate
+source-grounded investigation/repair lane for foundation
+`IDENTITY_MERGE_FAILURE` / `MINT_STATUS_FAILED` (`CHAIN_MINT_VALID`) on the
+repaired live cohort path, before any new explicit live acquisition proof. It
+is not an operational Memory Factory campaign, N2 retry, or N7 run.
 
 Factory-wide candidate-acquisition authority is:
 
@@ -841,10 +842,11 @@ bounded to 16 for acquisition/reserve/selection mechanics, while approved active
 Memory Factory capacity remains exactly two and the legacy projection rejects
 manifests above two. This clarification authorizes no live source, RPC,
 WebSocket, backfill, operational campaign, selective-1h proof, retrieval, or
-financial capability. Post-foundation integration and transport-free proof are
-complete. The post-repair bounded live acquisition proof is closed BLOCKED on
-Stage A `CANDIDATE_LIMIT` with Stage B `NOT_RUN`. The next permitted task is only
-an operator-authorized source-grounded investigation/repair decision for that
+financial capability. Post-foundation integration, transport-free proof, and
+pipeline repair are complete. The final post-repair bounded live acquisition
+proof is closed BLOCKED on Stage A `IDENTITY_MERGE_FAILURE` with Stage B
+`NOT_RUN`. The next permitted task is only an operator-authorized
+source-grounded investigation/repair decision for that foundation admission
 blocker before any new live proof; no operational campaign, N2 retry, or N7 run
 is authorized.
 
@@ -953,13 +955,13 @@ persistent 15m campaign lane. It does not unlock retrieval, paper decisions,
 BUY/SELL/HOLD, positions, trades, audits, or PnL.
 
 Within V2-9.8B, the candidate-acquisition foundation, post-foundation
-integration, and transport-owner repair are implemented and offline-proven. The
-post-repair final bounded live proof is closed BLOCKED: Stage A N2 once with
-`CANDIDATE_LIMIT`, Stage B N7 `NOT_RUN`. The next permitted work is an operator
-decision on a separate source-grounded investigation/repair lane for live
-unique-observation density versus frozen N2 `candidate_limit` before any new
-explicit live proof. It does not authorize N2 retry, N7, or the published
-operational Memory Factory campaign command.
+integration, transport-owner repair, and pipeline repair are implemented and
+offline-proven. The final post-repair bounded live proof is closed BLOCKED:
+Stage A N2 once with `IDENTITY_MERGE_FAILURE`, Stage B N7 `NOT_RUN`. The next
+permitted work is an operator decision on a separate source-grounded
+investigation/repair lane for foundation `IDENTITY_MERGE_FAILURE` /
+`MINT_STATUS_FAILED` before any new explicit live proof. It does not authorize
+N2 retry, N7, or the published operational Memory Factory campaign command.
 ## Printer V1 Python Builder Guide
 
 For every Printer V1 Python implementation, repair, migration, runner,

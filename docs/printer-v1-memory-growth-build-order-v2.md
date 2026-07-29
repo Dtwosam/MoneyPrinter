@@ -1042,11 +1042,12 @@ rank, confidence, or weighting exists.
 The foundation and post-foundation integration are capacity-neutral through
 N=16 and transport-free offline-proven. Active Memory Factory capacity remains
 exactly two. No operational campaign, selective-1h proof, retrieval, or
-financial feature is authorized. The post-repair final bounded live acquisition
-proof is closed BLOCKED on Stage A `CANDIDATE_LIMIT` with Stage B `NOT_RUN`. The
-next permitted task is an operator decision on source-grounded
-investigation/repair for live unique-observation density versus frozen N2
-`candidate_limit` before any new explicit live proof.
+financial feature is authorized. The final post-repair bounded live acquisition
+proof is closed BLOCKED on Stage A `IDENTITY_MERGE_FAILURE` with Stage B
+`NOT_RUN`. The next permitted task is an operator decision on source-grounded
+investigation/repair for foundation `IDENTITY_MERGE_FAILURE` /
+`MINT_STATUS_FAILED` on the repaired live cohort path before any new explicit
+live proof.
 
 Campaign rules:
 
@@ -1741,21 +1742,24 @@ V2-9.7A through V2-9.7F and V2-9.8A are closed. V2-9.8A verdict is
 `V2_9_8A_OPERATOR_ACTIVATION_GATE_PASS`. V2-9.8B remains the active
 memory-growth lane. Inside it, the candidate-acquisition foundation,
 post-foundation integration, and canonical live transport-owner repair are
-complete. The post-repair final bounded live candidate-acquisition proof is
-closed `V2_9_8B_FINAL_BOUNDED_LIVE_CANDIDATE_ACQUISITION_PROOF_BLOCKED`
+complete. The final post-repair bounded live candidate-acquisition proof is
+closed
+`V2_9_8B_FINAL_POST_REPAIR_BOUNDED_LIVE_CANDIDATE_ACQUISITION_PROOF_BLOCKED`
 (closeout:
-`docs/printer-v1-v2-9-8b-final-bounded-live-candidate-acquisition-proof-post-owner-repair-closeout.md`).
-Stage A N2 blocked once on `CANDIDATE_LIMIT`; Stage B N7 is `NOT_RUN`. The exact
-next permitted sub-lane is:
+`docs/printer-v1-v2-9-8b-final-post-repair-bounded-live-candidate-acquisition-proof-closeout.md`).
+Stage A N2 blocked once on `IDENTITY_MERGE_FAILURE` after repaired cohort
+thinning; Stage B N7 is `NOT_RUN`. The exact next permitted sub-lane is:
 
 ```text
-Operator decision: source-grounded investigation/repair for live
-unique-observation density vs frozen N2 candidate_limit
+Operator decision: source-grounded investigation/repair for foundation
+IDENTITY_MERGE_FAILURE / MINT_STATUS_FAILED (CHAIN_MINT_VALID)
+on the repaired live cohort path
 (before any new explicit live acquisition proof)
 ```
 
-Reason: the public live transport owner path now runs, but the single N2 live
-sample stopped on unique-mint ceiling before foundation admission. Do not retry
-N2, run N7, raise ceilings to force success, or start the operational Memory
-Factory campaign without a new explicit authorization. Retrieval, paper
+Reason: the public live transport owner and repaired cohort boundary now run,
+but the single post-pipeline-repair N2 live sample stopped inside foundation
+admission with all cohort certificates rejected (`MINT_STATUS_FAILED`). Do not
+retry N2, run N7, raise ceilings to force success, or start the operational
+Memory Factory campaign without a new explicit authorization. Retrieval, paper
 decisions, BUY/SELL/HOLD, positions, trades, audits, and PnL remain locked.
