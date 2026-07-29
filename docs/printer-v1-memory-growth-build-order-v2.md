@@ -1055,10 +1055,13 @@ bounded live N2 proof is closed
 `V2_9_8B_BOUNDED_LIVE_N2_PUMP_MIGRATION_DECOUPLING_PROOF_BLOCKED` on
 `OPERATION_ACCOUNTING_MISMATCH`. The optional-global operation-accounting
 repair and offline proof is closed
-`V2_9_8B_OPTIONAL_GLOBAL_OPERATION_ACCOUNTING_REPAIR_PASS`. The next permitted
-task is operator review and, only if separately explicitly authorized, one
-future bounded live N2 proof of the repaired boundary. No automatic run, retry,
-recovery, successor, cursor reset, N7, or operational campaign is authorized.
+`V2_9_8B_OPTIONAL_GLOBAL_OPERATION_ACCOUNTING_REPAIR_PASS`. The separately
+authorized repaired-boundary live N2 proof is closed
+`V2_9_8B_BOUNDED_LIVE_N2_OPTIONAL_GLOBAL_ACCOUNTING_REPAIR_PROOF_BLOCKED`
+on honest `OBSERVATION_ROW_CEILING` budget exhaustion after exact
+optional-global accounting. The next permitted task is operator review of that
+terminal closeout and redacted evidence. No automatic run, retry, recovery,
+successor, cursor reset, N7, or operational campaign is authorized.
 
 Campaign rules:
 
@@ -1763,13 +1766,11 @@ blocked on `IDENTITY_MERGE_FAILURE`, and the Pump migration observation
 decoupling implementation/offline proof is closed PASS. Its bounded live N2
 proof is closed BLOCKED on `OPERATION_ACCOUNTING_MISMATCH`. The optional-global
 operation-accounting repair and offline proof is closed PASS.
-The exact next permitted sub-lane is operator review and, only if separately
-explicitly authorized:
-
-```text
-one future bounded live N2 proof of the repaired optional-global
-operation-accounting boundary
-```
+The separately authorized repaired-boundary live N2 proof is closed
+`V2_9_8B_BOUNDED_LIVE_N2_OPTIONAL_GLOBAL_ACCOUNTING_REPAIR_PROOF_BLOCKED`
+on honest `OBSERVATION_ROW_CEILING` budget exhaustion after exact
+optional-global accounting. The exact next permitted sub-lane is operator
+review of that terminal closeout and redacted evidence.
 
 No automatic run, retry, recovery, cursor reset, N7, or operational campaign is
 authorized.

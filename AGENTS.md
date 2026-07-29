@@ -811,11 +811,14 @@ closed `V2_9_8B_BOUNDED_LIVE_N2_PUMP_MIGRATION_DECOUPLING_PROOF_BLOCKED` on
 `OPERATION_ACCOUNTING_MISMATCH` in optional-global
 `pumpfun_migration_transaction` work. The optional-global operation-accounting
 repair and offline proof is closed
-`V2_9_8B_OPTIONAL_GLOBAL_OPERATION_ACCOUNTING_REPAIR_PASS`. The exact next
-permitted task is operator review and, only if separately explicitly
-authorized, one future bounded live N2 proof of the repaired boundary. No
-automatic run, retry, recovery, campaign, cursor reset, N7, or later runtime
-lane is authorized.
+`V2_9_8B_OPTIONAL_GLOBAL_OPERATION_ACCOUNTING_REPAIR_PASS`. The separately
+authorized repaired-boundary live N2 proof is closed
+`V2_9_8B_BOUNDED_LIVE_N2_OPTIONAL_GLOBAL_ACCOUNTING_REPAIR_PROOF_BLOCKED`
+on honest `OBSERVATION_ROW_CEILING` budget exhaustion after the optional-global
+operation accounting reconciled exactly. The exact next permitted task is
+operator review of that terminal closeout and redacted evidence. No automatic
+run, retry, recovery, campaign, cursor reset, N7, or later runtime lane is
+authorized.
 
 Factory-wide candidate-acquisition authority is:
 
@@ -874,10 +877,11 @@ candidates. N7 is `NOT_RUN`. The Pump migration observation decoupling
 implementation/offline proof is closed PASS. Its bounded live N2 proof is
 closed BLOCKED on `OPERATION_ACCOUNTING_MISMATCH`. The optional-global
 operation-accounting repair and offline proof is closed PASS. The next
-permitted task is operator review and, only if separately explicitly
-authorized, one future bounded live N2 proof of the repaired boundary. No
-automatic run, retry, successor, recovery, campaign, cursor reset, N7, or later
-runtime lane is authorized.
+repaired-boundary live N2 proof is closed BLOCKED on honest
+`OBSERVATION_ROW_CEILING` budget exhaustion after exact optional-global
+accounting. The next permitted task is operator review of that terminal
+closeout and redacted evidence. No automatic run, retry, successor, recovery,
+campaign, cursor reset, N7, or later runtime lane is authorized.
 
 V2-9 is closed PASS at commit 51bcfdb (`Close V2-9 four-hour proof lane`).
 V2-9.7A through V2-9.7F are closed. V2-9.7F activation readiness is
@@ -996,11 +1000,14 @@ migration observation decoupling implementation/offline proof is closed
 subsequent bounded live N2 decoupling proof is closed
 `V2_9_8B_BOUNDED_LIVE_N2_PUMP_MIGRATION_DECOUPLING_PROOF_BLOCKED`. The
 optional-global operation-accounting repair and offline proof is closed
-`V2_9_8B_OPTIONAL_GLOBAL_OPERATION_ACCOUNTING_REPAIR_PASS`. The next permitted
-work is operator review and, only if separately explicitly authorized, one
-future bounded live N2 proof of the repaired boundary. It does not authorize an
-automatic run, retry, recovery, successor, cursor reset, N7, or the published
-operational Memory Factory campaign command.
+`V2_9_8B_OPTIONAL_GLOBAL_OPERATION_ACCOUNTING_REPAIR_PASS`. The separately
+authorized repaired-boundary live N2 proof is closed
+`V2_9_8B_BOUNDED_LIVE_N2_OPTIONAL_GLOBAL_ACCOUNTING_REPAIR_PROOF_BLOCKED`
+on honest `OBSERVATION_ROW_CEILING` budget exhaustion after exact optional
+operation accounting. The next permitted work is operator review of the
+terminal closeout and redacted evidence. It does not authorize an automatic
+run, retry, recovery, successor, cursor reset, N7, or the published operational
+Memory Factory campaign command.
 
 ## Printer V1 Python Builder Guide
 
