@@ -167,4 +167,3 @@ sufficient once its recovery fields and validation are explicit.
 5. Source Governor minute limits may prevent closely spaced manual executions.
    That is provider/governor unavailability, not authority to sleep, retry, or
    bypass accounting.
-

@@ -180,4 +180,3 @@ is added. Active runtime capacity remains exactly two.
 3. A public provider can prune or temporarily fail during the finite sequence.
 4. Final N2 eligibility remains subject to all honest holder, liquidity,
    tradeability, freshness, identity, lineage, tracking, and cooldown gates.
-
