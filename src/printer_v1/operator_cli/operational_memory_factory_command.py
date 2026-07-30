@@ -1192,6 +1192,8 @@ def _terminalize_initialized_failure(
         ),
         pre_lifecycle_admission=reporting.get("pre_lifecycle_admission"),
         six_unit_totals=reporting.get("six_unit_totals"),
+        six_unit_evidence=reporting.get("six_unit_evidence"),
+        elapsed_seconds=reporting.get("elapsed_seconds"),
     )
     report: Mapping[str, Any] = {"report_written": False}
     try:
@@ -1495,6 +1497,11 @@ def _run_operational_campaign(
             pre_lifecycle_admission=reporting.get("pre_lifecycle_admission"),
             six_unit_totals=reporting.get("six_unit_totals")
             or lifecycle.get("six_unit_totals"),
+            six_unit_evidence=reporting.get("six_unit_evidence")
+            or lifecycle.get("six_unit_evidence"),
+            elapsed_seconds=reporting.get("elapsed_seconds")
+            if reporting.get("elapsed_seconds") is not None
+            else lifecycle.get("elapsed_seconds"),
         )
         report = write_campaign_terminal_report(
             command.db_path,

@@ -11,11 +11,7 @@ import time
 import pytest
 
 from printer_v1.db.migrate import apply_migrations, canonical_migration_names
-from printer_v1.discovery.combined_executor import (
-    CombinedDiscoveryError,
-    CombinedDiscoveryFixtures,
-    CombinedPumpfunCampaignExecutor,
-)
+
 from printer_v1.discovery.direct_migration_discovery import (
     run_direct_migration_discovery,
 )
@@ -371,18 +367,15 @@ def test_terminal_report_and_zero_source_replay_six_unit_equality(
 
 
 def test_activation_compensation_during_second_slot() -> None:
-    """Activation/lifecycle inject and savepoint compensation remain wired."""
-    fields = CombinedDiscoveryFixtures.__dataclass_fields__
-    assert "force_handoff_failure" in fields
-    source = inspect.getsource(
-        CombinedPumpfunCampaignExecutor._atomic_initial_two_slot_handoff
-    )
-    assert "SAVEPOINT initial_two_slot_handoff" in source
-    assert "ROLLBACK TO SAVEPOINT initial_two_slot_handoff" in source
-    assert "DURING_SECOND" in source
-    source_one = inspect.getsource(CombinedPumpfunCampaignExecutor._handoff_one_slot)
-    assert "FIRST_15M_JOB_FAILED" in source_one
-    assert CombinedDiscoveryError
+    """Real injected DURING_SECOND failure leaves zero active tracking/jobs."""
+    from test_v2_9_7d_7b_4d_1_atomic_two_slot_handoff import AtomicTwoSlotHandoffTests
+
+    suite = AtomicTwoSlotHandoffTests("test_failure_during_second_rolls_back_first")
+    suite.setUp()
+    try:
+        suite.test_failure_during_second_rolls_back_first()
+    finally:
+        suite.tearDown()
 
 
 def test_no_dormant_selected_latest_product_on_front_door() -> None:

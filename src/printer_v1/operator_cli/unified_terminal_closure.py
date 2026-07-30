@@ -853,14 +853,26 @@ def assemble_campaign_terminal_reporting(
         or lifecycle.get("six_unit_totals")
         or empty_six_unit_totals()
     )
+    six_evidence = (
+        reporting.get("six_unit_evidence")
+        or lifecycle.get("six_unit_evidence")
+        or {}
+    )
+    elapsed = reporting.get("elapsed_seconds")
+    if elapsed is None:
+        elapsed = lifecycle.get("elapsed_seconds")
     if not candidates_raw and reason is None:
         activity = dict(surface["campaign_activity"])
         activity["six_unit_totals"] = six_units
+        if six_evidence:
+            activity["six_unit_evidence"] = dict(six_evidence)
         result = {
             "campaign_activity": activity,
             "campaign_source_calls": surface["campaign_source_calls"],
             "campaign_scheduler_calls": surface["campaign_scheduler_calls"],
             "six_unit_totals": six_units,
+            "six_unit_evidence": dict(six_evidence) if six_evidence else {},
+            "elapsed_seconds": elapsed,
         }
         if isinstance(pre_lifecycle_admission, Mapping):
             result["pre_lifecycle_admission"] = dict(pre_lifecycle_admission)
@@ -869,8 +881,12 @@ def assemble_campaign_terminal_reporting(
         surface["pre_lifecycle_admission"] = dict(pre_lifecycle_admission)
     activity = dict(surface.get("campaign_activity") or {})
     activity["six_unit_totals"] = six_units
+    if six_evidence:
+        activity["six_unit_evidence"] = dict(six_evidence)
     surface["campaign_activity"] = activity
     surface["six_unit_totals"] = six_units
+    surface["six_unit_evidence"] = dict(six_evidence) if six_evidence else {}
+    surface["elapsed_seconds"] = elapsed
     return surface
 
 
@@ -903,21 +919,38 @@ def build_campaign_terminal_report(
     selective_1h: Mapping[str, Any] | None = None,
     pre_lifecycle_admission: Mapping[str, Any] | None = None,
     six_unit_totals: Mapping[str, int] | None = None,
+    six_unit_evidence: Mapping[str, Any] | None = None,
+    elapsed_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Assemble the canonical terminal report payload from stored facts only."""
+    from printer_v1.sources.campaign_six_unit_accounting import (
+        compare_report_totals_to_evidence,
+        empty_six_unit_evidence,
+        reconstruct_six_unit_totals_from_evidence,
+    )
     from printer_v1.sources.measured_transport import (
         empty_six_unit_totals,
         six_unit_totals_from_mapping,
     )
 
-    resolved_six = (
-        six_unit_totals_from_mapping(six_unit_totals)
-        if six_unit_totals is not None
-        else empty_six_unit_totals()
+    evidence = (
+        dict(six_unit_evidence)
+        if isinstance(six_unit_evidence, Mapping)
+        else empty_six_unit_evidence()
     )
+    if six_unit_totals is not None:
+        resolved_six = six_unit_totals_from_mapping(six_unit_totals)
+    elif evidence.get("transport_operations") is not None:
+        try:
+            resolved_six = reconstruct_six_unit_totals_from_evidence(evidence)
+        except Exception:
+            resolved_six = empty_six_unit_totals()
+    else:
+        resolved_six = empty_six_unit_totals()
+    evidence_compare = compare_report_totals_to_evidence(resolved_six, evidence)
     payload: dict[str, Any] = {
         "report_kind": "PILOT_CAMPAIGN_TERMINAL",
-        "policy_version": "V2_9_8B_FULL_SYSTEM_CONSOLIDATION_TERMINAL",
+        "policy_version": "V2_9_8B_VERIFIABLE_REAL_PATH_TERMINAL",
         "identity": {
             "campaign_id": campaign_id,
             "configuration_id": configuration_id,
@@ -937,6 +970,11 @@ def build_campaign_terminal_report(
         "forbidden_deltas": dict(forbidden_deltas or {}),
         "launch_git_provenance": dict(launch_git_provenance or {}),
         "six_unit_totals": resolved_six,
+        "six_unit_evidence": evidence,
+        "six_unit_evidence_match": bool(evidence_compare.get("equal")),
+        "elapsed_seconds": (
+            None if elapsed_seconds is None else float(elapsed_seconds)
+        ),
         "downstream_unlocks": {
             "retrieval": False,
             "paper_decisions": False,
@@ -1202,26 +1240,26 @@ def replay_campaign_terminal_report(
             else 0
         )
     )
-    from printer_v1.sources.measured_transport import (
-        empty_six_unit_totals,
-        reconcile_six_unit_totals,
-        six_unit_totals_from_mapping,
+    from printer_v1.sources.campaign_six_unit_accounting import (
+        compare_report_totals_to_evidence,
+        empty_six_unit_evidence,
+        reconstruct_six_unit_totals_from_evidence,
     )
+    from printer_v1.sources.measured_transport import six_unit_totals_from_mapping
 
     stored_six = six_unit_totals_from_mapping(
-        stored.get("six_unit_totals")
+        stored.get("six_unit_totals") if isinstance(stored, dict) else None
+    )
+    evidence = (
+        dict(stored.get("six_unit_evidence") or {})
         if isinstance(stored, dict)
-        else empty_six_unit_totals()
+        else empty_six_unit_evidence()
     )
-    activity_six = six_unit_totals_from_mapping(
-        (activity or {}).get("six_unit_totals") if isinstance(activity, Mapping) else None
-    )
-    # Prefer top-level six units; fall back to campaign_activity durable copy.
-    six_units = stored_six if any(stored_six.values()) else activity_six
-    equality = reconcile_six_unit_totals(
-        {"six_unit_totals": six_units},
-        {"six_unit_totals": six_units},
-    )
+    if not evidence:
+        evidence = empty_six_unit_evidence()
+    # Independent reconstruction from durable evidence — never self-compare totals.
+    reconstructed = reconstruct_six_unit_totals_from_evidence(evidence)
+    equality = compare_report_totals_to_evidence(stored_six, evidence)
     return {
         "mode": "REPORT_ONLY",
         "report_id": report_id,
@@ -1232,8 +1270,14 @@ def replay_campaign_terminal_report(
         "artifact_matches": artifact_matches,
         "campaign_source_calls": campaign_source_calls,
         "campaign_scheduler_calls": campaign_scheduler_calls,
-        "six_unit_totals": six_units,
+        "six_unit_totals": stored_six,
+        "six_unit_evidence": evidence,
+        "six_unit_totals_reconstructed": reconstructed,
         "six_unit_report_replay_equal": bool(equality.get("equal")),
+        "six_unit_self_comparison": False,
+        "elapsed_seconds": (
+            stored.get("elapsed_seconds") if isinstance(stored, dict) else None
+        ),
         "replay_new_source_calls": 0,
         "replay_new_scheduler_calls": 0,
         "replay_new_transport_operations": 0,

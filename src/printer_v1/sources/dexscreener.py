@@ -367,6 +367,64 @@ def build_dexscreener_fresh_profiles_transport(
         profiles_bytes = 0
         pairs_bytes = 0
 
+        def _fail(
+            *,
+            failure_type: str,
+            failure_message: str,
+            fixture_status: str = "failure",
+            extra: dict | None = None,
+            step1_result: str = "FAILED",
+            step1_rows: int = 0,
+            step1_bytes: int = 0,
+            include_step1: bool = True,
+            step2: bool = False,
+            step2_result: str = "FAILED",
+            step2_rows: int = 0,
+            step2_bytes: int = 0,
+        ) -> MappingProxyType:
+            local = list(identities)
+            if include_step1 and not local:
+                local.append(
+                    build_transport_identity(
+                        stage="DEXSCREENER_DISCOVERY",
+                        source_name="dexscreener_profiles",
+                        endpoint_owner="dexscreener",
+                        governed_request_kind="dexscreener_fresh_profiles",
+                        method_or_endpoint="GET /token-profiles/latest/v1",
+                        within_request_ordinal=1,
+                        target_category="fresh_profiles",
+                        response_bytes=int(step1_bytes),
+                        normalized_rows=int(step1_rows),
+                        result=step1_result,
+                    )
+                )
+            if step2:
+                local.append(
+                    build_transport_identity(
+                        stage="DEXSCREENER_DISCOVERY",
+                        source_name="dexscreener_pair",
+                        endpoint_owner="dexscreener",
+                        governed_request_kind="dexscreener_fresh_profiles",
+                        method_or_endpoint="GET /tokens/v1/solana/{mints}",
+                        within_request_ordinal=2,
+                        target_category="token_pairs",
+                        response_bytes=int(step2_bytes),
+                        normalized_rows=int(step2_rows),
+                        result=step2_result,
+                    )
+                )
+            payload: dict = {
+                "fixture_status": fixture_status,
+                "failure_type": failure_type,
+                "failure_message": failure_message,
+            }
+            if extra:
+                payload.update(extra)
+            if fixture_status == "rate_limited":
+                payload.setdefault("retry_after_seconds", 60)
+            payload.update(measured_payload_fields(local))
+            return MappingProxyType(payload)
+
         # Step 1 — latest profiles.
         try:
             profiles, profiles_bytes = _dexscreener_http_get_json(
@@ -375,32 +433,35 @@ def build_dexscreener_fresh_profiles_transport(
                 byte_ceiling=int(BYTE_CEILINGS.get("dexscreener_profiles", 2_000_000)),
             )
         except MeasuredTransportError as exc:
-            return MappingProxyType({
-                "fixture_status": "failure",
-                "failure_type": "dexscreener_profiles_byte_ceiling",
-                "failure_message": str(exc),
-            })
+            return _fail(
+                failure_type="dexscreener_profiles_byte_ceiling",
+                failure_message=str(exc),
+                step1_bytes=profiles_bytes,
+            )
         except url_error.HTTPError as exc:
             if exc.code == 429:
-                return MappingProxyType({"fixture_status": "rate_limited", "retry_after_seconds": 60})
-            return MappingProxyType({
-                "fixture_status": "failure",
-                "failure_type": "dexscreener_profiles_http_error",
-                "failure_message": f"DexScreener profiles HTTP error {exc.code}",
-            })
+                return _fail(
+                    failure_type="dexscreener_profiles_rate_limited",
+                    failure_message="DexScreener profiles rate limited",
+                    fixture_status="rate_limited",
+                    extra={"retry_after_seconds": 60},
+                )
+            return _fail(
+                failure_type="dexscreener_profiles_http_error",
+                failure_message=f"DexScreener profiles HTTP error {exc.code}",
+            )
         except (OSError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError) as exc:
-            return MappingProxyType({
-                "fixture_status": "failure",
-                "failure_type": "dexscreener_profiles_transport_failure",
-                "failure_message": str(exc),
-            })
+            return _fail(
+                failure_type="dexscreener_profiles_transport_failure",
+                failure_message=str(exc),
+            )
 
         if not isinstance(profiles, list):
-            return MappingProxyType({
-                "fixture_status": "failure",
-                "failure_type": "dexscreener_profiles_malformed",
-                "failure_message": "DexScreener token-profiles did not return a list",
-            })
+            return _fail(
+                failure_type="dexscreener_profiles_malformed",
+                failure_message="DexScreener token-profiles did not return a list",
+                step1_bytes=profiles_bytes,
+            )
 
         seen: set[str] = set()
         solana_addrs: list[str] = []
@@ -419,11 +480,12 @@ def build_dexscreener_fresh_profiles_transport(
                 "dexscreener_fresh_profile_mints", len(solana_addrs)
             )
         except MeasuredTransportError as exc:
-            return MappingProxyType({
-                "fixture_status": "failure",
-                "failure_type": "dexscreener_fresh_profile_row_ceiling",
-                "failure_message": str(exc),
-            })
+            return _fail(
+                failure_type="dexscreener_fresh_profile_row_ceiling",
+                failure_message=str(exc),
+                step1_bytes=profiles_bytes,
+                step1_rows=len(solana_addrs),
+            )
 
         identities.append(
             build_transport_identity(
@@ -441,13 +503,12 @@ def build_dexscreener_fresh_profiles_transport(
         )
 
         if not solana_addrs:
-            payload = {
-                "fixture_status": "failure",
-                "failure_type": "dexscreener_no_solana_profiles",
-                "failure_message": "DexScreener latest profiles contained no Solana tokens",
-            }
-            payload.update(measured_payload_fields(identities))
-            return MappingProxyType(payload)
+            return _fail(
+                failure_type="dexscreener_no_solana_profiles",
+                failure_message="DexScreener latest profiles contained no Solana tokens",
+                include_step1=False,  # already in identities
+                step1_bytes=profiles_bytes,
+            )
 
         # Step 2 — batch pair lookup for the fresh Solana mints.
         endpoint = tokens_endpoint_template.format(addresses=",".join(solana_addrs))
@@ -458,40 +519,45 @@ def build_dexscreener_fresh_profiles_transport(
                 byte_ceiling=int(BYTE_CEILINGS.get("dexscreener_pair", 512_000)),
             )
         except MeasuredTransportError as exc:
-            payload = {
-                "fixture_status": "failure",
-                "failure_type": "dexscreener_tokens_byte_ceiling",
-                "failure_message": str(exc),
-            }
-            payload.update(measured_payload_fields(identities))
-            return MappingProxyType(payload)
+            return _fail(
+                failure_type="dexscreener_tokens_byte_ceiling",
+                failure_message=str(exc),
+                include_step1=False,
+                step2=True,
+                step2_bytes=pairs_bytes,
+            )
         except url_error.HTTPError as exc:
             if exc.code == 429:
-                return MappingProxyType({"fixture_status": "rate_limited", "retry_after_seconds": 60})
-            payload = {
-                "fixture_status": "failure",
-                "failure_type": "dexscreener_tokens_http_error",
-                "failure_message": f"DexScreener tokens HTTP error {exc.code}",
-            }
-            payload.update(measured_payload_fields(identities))
-            return MappingProxyType(payload)
+                return _fail(
+                    failure_type="dexscreener_tokens_rate_limited",
+                    failure_message="DexScreener tokens rate limited",
+                    fixture_status="rate_limited",
+                    extra={"retry_after_seconds": 60},
+                    include_step1=False,
+                    step2=True,
+                )
+            return _fail(
+                failure_type="dexscreener_tokens_http_error",
+                failure_message=f"DexScreener tokens HTTP error {exc.code}",
+                include_step1=False,
+                step2=True,
+            )
         except (OSError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError) as exc:
-            payload = {
-                "fixture_status": "failure",
-                "failure_type": "dexscreener_tokens_transport_failure",
-                "failure_message": str(exc),
-            }
-            payload.update(measured_payload_fields(identities))
-            return MappingProxyType(payload)
+            return _fail(
+                failure_type="dexscreener_tokens_transport_failure",
+                failure_message=str(exc),
+                include_step1=False,
+                step2=True,
+            )
 
         if not isinstance(pairs, list):
-            payload = {
-                "fixture_status": "failure",
-                "failure_type": "dexscreener_tokens_malformed",
-                "failure_message": "DexScreener tokens batch did not return a list",
-            }
-            payload.update(measured_payload_fields(identities))
-            return MappingProxyType(payload)
+            return _fail(
+                failure_type="dexscreener_tokens_malformed",
+                failure_message="DexScreener tokens batch did not return a list",
+                include_step1=False,
+                step2=True,
+                step2_bytes=pairs_bytes,
+            )
 
         try:
             # Provider-controlled multi-row pair arrays fail closed above ceiling.
@@ -509,13 +575,14 @@ def build_dexscreener_fresh_profiles_transport(
                 },
             )
         except MeasuredTransportError as exc:
-            payload = {
-                "fixture_status": "failure",
-                "failure_type": "dexscreener_pair_row_ceiling",
-                "failure_message": str(exc),
-            }
-            payload.update(measured_payload_fields(identities))
-            return MappingProxyType(payload)
+            return _fail(
+                failure_type="dexscreener_pair_row_ceiling",
+                failure_message=str(exc),
+                include_step1=False,
+                step2=True,
+                step2_bytes=pairs_bytes,
+                step2_rows=len(pairs),
+            )
 
         identities.append(
             build_transport_identity(
@@ -548,7 +615,18 @@ def normalize_dexscreener_fixture_result(
     request_kind: str,
     requested_token_mints: Sequence[str] | None = None,
 ) -> NormalizedSourceResult:
+    from printer_v1.sources.measured_transport import merge_transport_payload_metadata
+
     fixture_status = payload.get("fixture_status")
+    measured_meta = merge_transport_payload_metadata(payload)
+    measured_payload = {
+        "transport_operations_used": measured_meta["transport_operations_used"],
+        "response_bytes": measured_meta["response_bytes"],
+        "normalized_rows": measured_meta["normalized_rows"],
+        "transport_operation_identities": measured_meta[
+            "transport_operation_identities"
+        ],
+    }
     if fixture_status == "failure":
         return NormalizedSourceResult(
             source_name=DEXSCREENER_SOURCE_NAME,
@@ -557,6 +635,7 @@ def normalize_dexscreener_fixture_result(
             data_quality_label=DataQualityLabel.MISSING_CRITICAL_DATA,
             failure_type=str(payload.get("failure_type") or "dexscreener_fixture_failure"),
             failure_message=str(payload.get("failure_message") or "DexScreener fixture failure"),
+            normalized_payload=MappingProxyType(measured_payload),
         )
     if fixture_status == "rate_limited":
         retry_after = int(payload.get("retry_after_seconds") or 60)
@@ -569,6 +648,7 @@ def normalize_dexscreener_fixture_result(
             failure_type="dexscreener_rate_limited_fixture",
             failure_message="DexScreener fixture rate limit",
             retry_after_at=retry_at,
+            normalized_payload=MappingProxyType(measured_payload),
         )
 
     pairs = payload.get("pairs")

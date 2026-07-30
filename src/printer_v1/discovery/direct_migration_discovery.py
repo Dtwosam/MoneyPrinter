@@ -46,9 +46,11 @@ from printer_v1.sources.pumpswap_graduated_registry import (
     export_graduated_candidates,
     record_graduated_candidate,
 )
+from printer_v1.sources.campaign_six_unit_accounting import (
+    CampaignSixUnitOwner,
+)
 from printer_v1.sources.measured_transport import (
     MeasuredTransportError,
-    MeasuredTransportLedger,
     empty_six_unit_totals,
     merge_transport_payload_metadata,
     record_payload_transports,
@@ -328,8 +330,20 @@ def run_direct_migration_discovery(
     migration_request_count = 0
     pumpswap_request_count = 0
     stage_request_ids: list[int] = []
-    measured_ledger = MeasuredTransportLedger()
+    campaign_units = CampaignSixUnitOwner(started_at=now)
+    measured_ledger = campaign_units.ledger
     local_validations = 0
+    started_mono = datetime.now(timezone.utc)
+    accounting_block_reason: str | None = None
+    elapsed_seconds = 0.0
+    confirmed_this_cycle: list[str] = []
+    verifications: list[dict[str, Any]] = []
+    mix: list[dict[str, Any]] = []
+    latest_count = 0
+    persisted_count = 0
+    ledger: dict[str, Any] = {}
+    forbidden: dict[str, int] = {}
+    intake: dict[str, Any] = {}
 
     def _execute_direct_request(
         *,
@@ -487,8 +501,11 @@ def run_direct_migration_discovery(
         intake = _merge_intakes(round_intakes)
 
         # --- Per-candidate governed on-chain verification -------------------
+        # Candidates are never persisted until full identity/totals reconcile.
         verifications: list[dict[str, Any]] = []
+        pending_persist: list[dict[str, Any]] = []
         confirmed_this_cycle: list[str] = []
+        accounting_block_reason: str | None = None
         for pair in intake["valid_pairs"][:max_candidates]:
             mint = pair["mint"]
             signature = pair["signature"]
@@ -525,13 +542,14 @@ def run_direct_migration_discovery(
                     # Claimed transports without identities fail closed.
                     raise MeasuredTransportError("TRANSPORT_IDENTITIES_MISSING")
             except MeasuredTransportError as exc:
+                accounting_block_reason = f"measured_transport:{exc}"
                 record = {
                     "mint": mint,
                     "signature": signature,
                     "verified": False,
                     "verify_attempts": attempts,
                     "transport_operations_used": 0,
-                    "failure_type": f"measured_transport:{exc}",
+                    "failure_type": accounting_block_reason,
                 }
                 verifications.append(record)
                 continue
@@ -596,25 +614,58 @@ def run_direct_migration_discovery(
                 verifications.append(record)
                 continue
 
-            newly = record_graduated_candidate(
-                connection,
-                mint=mint,
-                migration_signature=signature,
-                pumpswap_pool=str(pool),
-                graduation_block_time=int(block_time),
-                graduation_slot=None if slot is None else int(slot),
-                now=now,
-                discovery_channel=LATEST_GRADUATED_CHANNEL,
-                migration_provenance=MIGRATION_PROVENANCE,
-            )
-            confirmed_this_cycle.append(mint)
             record["pool"] = str(pool)
             record["graduation_block_time"] = int(block_time)
             record["graduation_slot"] = None if slot is None else int(slot)
             record["market_identity"] = f"solana-mainnet:pumpswap:{pool}"
-            record["newly_persisted"] = newly
             record["discovery_channel"] = LATEST_GRADUATED_CHANNEL
+            record["newly_persisted"] = False
             verifications.append(record)
+            pending_persist.append(record)
+
+        # --- Six-unit identity reconcile BEFORE any candidate persistence ---
+        measured_ledger.record_local_validation(local_validations + len(verifications))
+        pumpswap_transport_operations = sum(
+            int(record.get("transport_operations_used") or 0) for record in verifications
+        )
+        migration_transport_operations = int(
+            intake.get("transport_operation_count") or 0
+        )
+        expected_transport_operations = (
+            migration_transport_operations + pumpswap_transport_operations
+        )
+        identity_transport_count = len(measured_ledger.transports)
+        pre_persist_reconciled = (
+            identity_transport_count == expected_transport_operations
+            and migration_transport_operations == migration_request_count
+            and accounting_block_reason is None
+        )
+        if not pre_persist_reconciled:
+            accounting_block_reason = (
+                accounting_block_reason
+                or "TRANSPORT_IDENTITY_TOTALS_MISMATCH_BEFORE_PERSISTENCE"
+            )
+            pending_persist = []
+        else:
+            for record in pending_persist:
+                newly = record_graduated_candidate(
+                    connection,
+                    mint=str(record["mint"]),
+                    migration_signature=str(record["signature"]),
+                    pumpswap_pool=str(record["pool"]),
+                    graduation_block_time=int(record["graduation_block_time"]),
+                    graduation_slot=(
+                        None
+                        if record.get("graduation_slot") is None
+                        else int(record["graduation_slot"])
+                    ),
+                    now=now,
+                    discovery_channel=LATEST_GRADUATED_CHANNEL,
+                    migration_provenance=MIGRATION_PROVENANCE,
+                )
+                record["newly_persisted"] = newly
+                record["verified"] = True
+                confirmed_this_cycle.append(str(record["mint"]))
 
         connection.commit()
 
@@ -651,57 +702,59 @@ def run_direct_migration_discovery(
         expected_governed_requests = (
             migration_request_count + pumpswap_request_count
         )
-        # Measured transports: identities recorded for each real RPC when present.
-        # Migration stage: one identity per governed direct-Pump request when the
-        # normalizer declares them; otherwise fall back to request count only for
-        # the integer migration_transport_operations diagnostic.
-        pumpswap_transport_operations = 0
-        for record in verifications:
-            pumpswap_transport_operations += int(
-                record.get("transport_operations_used") or 0
-            )
+        # Recompute claimed ops for final ledger (already used pre-persist gate).
+        pumpswap_transport_operations = sum(
+            int(record.get("transport_operations_used") or 0) for record in verifications
+        )
         migration_transport_operations = int(
             intake.get("transport_operation_count") or 0
         )
         expected_transport_operations = (
             migration_transport_operations + pumpswap_transport_operations
         )
-        measured_ledger.record_local_validation(local_validations + len(verifications))
-        six_units = measured_ledger.six_unit_totals()
-        # Identity-backed transport count is authoritative for six units.
-        identity_transport_count = six_units[
-            "SOURCE_TRANSPORT_OPERATION"
-        ]
+        campaign_units.close()
+        six_units = campaign_units.six_unit_totals()
+        six_unit_evidence = campaign_units.durable_evidence()
+        identity_transport_count = six_units["SOURCE_TRANSPORT_OPERATION"]
         ledger["transport_operations"] = expected_transport_operations
         ledger["migration_transport_operations"] = migration_transport_operations
         ledger["pumpswap_transport_operations"] = pumpswap_transport_operations
         ledger["governed_requests"] = expected_governed_requests
         ledger["identity_transport_operations"] = identity_transport_count
         ledger["six_unit_totals"] = six_units
+        ledger["six_unit_evidence"] = six_unit_evidence
         ledger["measured_transport_ledger"] = measured_ledger.as_dict()
+        ledger["pre_persist_accounting_block_reason"] = accounting_block_reason
         ledger["operation_accounting_reconciled"] = (
             int(ledger["source_requests"]) == expected_governed_requests
             and ledger["transport_operations"] == expected_transport_operations
             and migration_transport_operations == migration_request_count
             and identity_transport_count == expected_transport_operations
+            and accounting_block_reason is None
             and six_units["SOURCE_RESPONSE_BYTES"] >= 0
             and six_units["NORMALIZED_SOURCE_ROWS"] >= 0
             and six_units["LOCAL_VALIDATION_STEP"] >= 0
         )
         forbidden = _forbidden_deltas(connection)
+        elapsed_seconds = max(
+            0.0,
+            (datetime.now(timezone.utc) - started_mono).total_seconds(),
+        )
     finally:
         connection.close()
 
+    status = "COMPLETE"
+    if accounting_block_reason is not None:
+        status = "ACCOUNTING_BLOCKED"
+    elif intake.get("direct_pump_live_tail_failures") or intake.get(
+        "transaction_source_failures"
+    ):
+        status = "PROVIDER_FAILURE"
+
     return {
-        "status": (
-            "PROVIDER_FAILURE"
-            if (
-                intake.get("direct_pump_live_tail_failures")
-                or intake.get("transaction_source_failures")
-            )
-            else "COMPLETE"
-        ),
+        "status": status,
         "generated_at": now,
+        "elapsed_seconds": round(elapsed_seconds, 6),
         "migration_intake": intake,
         "verifications": verifications,
         "confirmed_this_cycle": confirmed_this_cycle,
@@ -712,6 +765,8 @@ def run_direct_migration_discovery(
         "total_persisted_graduated": len(mix),
         "source_operation_ledger": ledger,
         "six_unit_totals": ledger.get("six_unit_totals") or empty_six_unit_totals(),
+        "six_unit_evidence": ledger.get("six_unit_evidence"),
+        "accounting_block_reason": accounting_block_reason,
         "forbidden_capability_deltas": forbidden,
         "forbidden_delta_total": sum(forbidden.values()),
     }
