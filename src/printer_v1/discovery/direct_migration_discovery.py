@@ -341,6 +341,7 @@ def run_direct_migration_discovery(
     mix: list[dict[str, Any]] = []
     latest_count = 0
     persisted_count = 0
+    registry_candidates_withheld = 0
     ledger: dict[str, Any] = {}
     forbidden: dict[str, int] = {}
     intake: dict[str, Any] = {}
@@ -670,11 +671,19 @@ def run_direct_migration_discovery(
         connection.commit()
 
         # --- Candidate mix (fresh vs previously confirmed) ------------------
+        # ACCOUNTING_BLOCKED is an immediate campaign safe stop: existing
+        # registry candidates must not continue toward selection during this
+        # attempt. Withhold the entire mix (registry rows are read-only and are
+        # left untouched) so a blocked attempt hands nothing forward.
         fresh = set(confirmed_this_cycle)
-        persisted = export_graduated_candidates(connection)
         mix: list[dict[str, Any]] = []
         latest_count = 0
         persisted_count = 0
+        if accounting_block_reason is not None:
+            registry_candidates_withheld = len(export_graduated_candidates(connection))
+            persisted = []
+        else:
+            persisted = export_graduated_candidates(connection)
         for row in persisted:
             mint = str(row["mint_identity"])
             if mint in fresh:
@@ -763,6 +772,8 @@ def run_direct_migration_discovery(
         "latest_graduated_count": latest_count,
         "persisted_graduated_count": persisted_count,
         "total_persisted_graduated": len(mix),
+        "campaign_safe_stop": accounting_block_reason is not None,
+        "registry_candidates_withheld": registry_candidates_withheld,
         "source_operation_ledger": ledger,
         "six_unit_totals": ledger.get("six_unit_totals") or empty_six_unit_totals(),
         "six_unit_evidence": ledger.get("six_unit_evidence"),

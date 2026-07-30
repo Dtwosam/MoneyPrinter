@@ -65,6 +65,52 @@ class CampaignSixUnitOwner:
     def reserve_lifecycle_transports(self, count: int) -> None:
         self.ledger.reserve_lifecycle_transports(count)
 
+    def ingest_stage_evidence(self, evidence: Mapping[str, Any] | None) -> None:
+        """Aggregate one active stage's durable evidence onto this owner.
+
+        The top-level owner is the single accounting authority: stage results
+        may *expose* evidence, but only the owner aggregates it. A missing,
+        malformed, duplicate, or negative stage evidence block fails closed
+        (raising) before it can contribute silently. Rehydrated transport
+        identities are recorded (the ledger enforces duplicate detection); the
+        three non-transport counters are summed.
+        """
+        if not isinstance(evidence, Mapping):
+            raise CampaignSixUnitError("SIX_UNIT_STAGE_EVIDENCE_MISSING")
+        # Structural validation (malformed / duplicate-within-stage / negative).
+        reconstruct_six_unit_totals_from_evidence(evidence)
+        transports = evidence.get("transport_operations") or ()
+        for raw in transports:
+            if not isinstance(raw, Mapping):
+                raise CampaignSixUnitError("SIX_UNIT_STAGE_IDENTITY_MALFORMED")
+            self.ledger.record_transport(
+                TransportOperationIdentity(
+                    stage=str(raw.get("stage") or ""),
+                    source_name=str(raw.get("source_name") or ""),
+                    endpoint_owner=str(raw.get("endpoint_owner") or ""),
+                    governed_request_kind=str(raw.get("governed_request_kind") or ""),
+                    method_or_endpoint=str(raw.get("method_or_endpoint") or ""),
+                    within_request_ordinal=int(raw.get("within_request_ordinal") or 0),
+                    target_category=str(raw.get("target_category") or ""),
+                    target_identity=(
+                        None
+                        if raw.get("target_identity") is None
+                        else str(raw.get("target_identity"))
+                    ),
+                    response_bytes=int(raw.get("response_bytes") or 0),
+                    normalized_rows=int(raw.get("normalized_rows") or 0),
+                    result=str(raw.get("result") or "ATTEMPTED"),
+                    reserved_from=(
+                        None
+                        if raw.get("reserved_from") is None
+                        else str(raw.get("reserved_from"))
+                    ),
+                )
+            )
+        self.record_local_validation(int(evidence.get("local_validations") or 0))
+        self.record_scheduler_work_item(int(evidence.get("scheduler_work_items") or 0))
+        self.reserve_lifecycle_transports(int(evidence.get("lifecycle_reservations") or 0))
+
     def close(self, *, ended_at: str | None = None) -> None:
         self.ended_at = ended_at or _utc_now_iso()
 
@@ -94,6 +140,35 @@ class CampaignSixUnitOwner:
 
     def six_unit_totals(self) -> dict[str, int]:
         return self.ledger.six_unit_totals()
+
+
+def aggregate_campaign_six_unit_owner(
+    *,
+    campaign_id: str | None = None,
+    run_id: str | None = None,
+    cycle_id: str | None = None,
+    started_at: str | None = None,
+    ended_at: str | None = None,
+    stage_evidences: Sequence[Mapping[str, Any] | None],
+) -> CampaignSixUnitOwner:
+    """Build one top-level owner that reconciles every active stage's evidence.
+
+    This is the single accounting authority for a campaign attempt. Each active
+    stage (direct Pump, PumpSwap, DexScreener, holder/safety, local validations,
+    Scheduler work, response bytes, normalized rows, lifecycle reservations)
+    contributes exactly one durable evidence block. An omitted or malformed
+    block fails closed via ``ingest_stage_evidence``.
+    """
+    owner = CampaignSixUnitOwner(
+        campaign_id=campaign_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
+        started_at=started_at or _utc_now_iso(),
+    )
+    for evidence in stage_evidences:
+        owner.ingest_stage_evidence(evidence)
+    owner.close(ended_at=ended_at)
+    return owner
 
 
 def reconstruct_six_unit_totals_from_evidence(
@@ -201,6 +276,7 @@ def empty_six_unit_evidence() -> dict[str, Any]:
 __all__ = [
     "CampaignSixUnitError",
     "CampaignSixUnitOwner",
+    "aggregate_campaign_six_unit_owner",
     "assert_identity_count_matches_claimed",
     "compare_report_totals_to_evidence",
     "empty_six_unit_evidence",

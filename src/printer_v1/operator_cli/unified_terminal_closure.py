@@ -921,9 +921,18 @@ def build_campaign_terminal_report(
     six_unit_totals: Mapping[str, int] | None = None,
     six_unit_evidence: Mapping[str, Any] | None = None,
     elapsed_seconds: float | None = None,
+    require_six_unit_evidence: bool = False,
 ) -> dict[str, Any]:
-    """Assemble the canonical terminal report payload from stored facts only."""
+    """Assemble the canonical terminal report payload from stored facts only.
+
+    When ``require_six_unit_evidence`` is True (the top-level coordinator path),
+    six-unit accounting is fail-closed before a report can be built: missing,
+    malformed, duplicate, partial, or mismatched evidence raises
+    ``TerminalClosureError`` and no synthetic empty evidence is substituted for
+    an attempted campaign.
+    """
     from printer_v1.sources.campaign_six_unit_accounting import (
+        CampaignSixUnitError,
         compare_report_totals_to_evidence,
         empty_six_unit_evidence,
         reconstruct_six_unit_totals_from_evidence,
@@ -933,12 +942,27 @@ def build_campaign_terminal_report(
         six_unit_totals_from_mapping,
     )
 
+    provided_evidence = isinstance(six_unit_evidence, Mapping)
+    if require_six_unit_evidence and not provided_evidence:
+        # Attempted-campaign evidence must never be synthesized (B7/B8).
+        raise TerminalClosureError("SIX_UNIT_EVIDENCE_MISSING")
     evidence = (
         dict(six_unit_evidence)
-        if isinstance(six_unit_evidence, Mapping)
+        if provided_evidence
         else empty_six_unit_evidence()
     )
-    if six_unit_totals is not None:
+    if require_six_unit_evidence:
+        # Structural fail-closed: malformed / duplicate / negative evidence.
+        try:
+            evidence_totals = reconstruct_six_unit_totals_from_evidence(evidence)
+        except CampaignSixUnitError as exc:
+            raise TerminalClosureError(f"SIX_UNIT_EVIDENCE_INVALID:{exc}") from exc
+        resolved_six = (
+            six_unit_totals_from_mapping(six_unit_totals)
+            if six_unit_totals is not None
+            else evidence_totals
+        )
+    elif six_unit_totals is not None:
         resolved_six = six_unit_totals_from_mapping(six_unit_totals)
     elif evidence.get("transport_operations") is not None:
         try:
@@ -948,6 +972,9 @@ def build_campaign_terminal_report(
     else:
         resolved_six = empty_six_unit_totals()
     evidence_compare = compare_report_totals_to_evidence(resolved_six, evidence)
+    if require_six_unit_evidence and not bool(evidence_compare.get("equal")):
+        # Report totals must equal the independent evidence reconstruction (B9).
+        raise TerminalClosureError("SIX_UNIT_EVIDENCE_MISMATCH")
     payload: dict[str, Any] = {
         "report_kind": "PILOT_CAMPAIGN_TERMINAL",
         "policy_version": "V2_9_8B_VERIFIABLE_REAL_PATH_TERMINAL",
@@ -1073,6 +1100,29 @@ def build_campaign_terminal_report(
     return payload
 
 
+def _assert_report_six_unit_evidence(report: Mapping[str, Any]) -> None:
+    """Fail closed unless the report carries valid, matched six-unit evidence."""
+    from printer_v1.sources.campaign_six_unit_accounting import (
+        CampaignSixUnitError,
+        compare_report_totals_to_evidence,
+    )
+
+    if not isinstance(report, Mapping):
+        raise TerminalClosureError("SIX_UNIT_EVIDENCE_MISSING")
+    evidence = report.get("six_unit_evidence")
+    if not isinstance(evidence, Mapping) or not evidence:
+        raise TerminalClosureError("SIX_UNIT_EVIDENCE_MISSING")
+    totals = report.get("six_unit_totals")
+    try:
+        comparison = compare_report_totals_to_evidence(totals, evidence)
+    except CampaignSixUnitError as exc:
+        raise TerminalClosureError(f"SIX_UNIT_EVIDENCE_INVALID:{exc}") from exc
+    if not bool(comparison.get("equal")):
+        raise TerminalClosureError("SIX_UNIT_EVIDENCE_MISMATCH")
+    if report.get("six_unit_evidence_match") is False:
+        raise TerminalClosureError("SIX_UNIT_EVIDENCE_MISMATCH")
+
+
 def write_campaign_terminal_report(
     db_path: str | Path,
     report_directory: str | Path,
@@ -1082,6 +1132,7 @@ def write_campaign_terminal_report(
     configuration_id: str,
     report: Mapping[str, Any],
     now: datetime | None = None,
+    require_six_unit_evidence: bool = False,
 ) -> dict[str, Any]:
     """Persist exactly one report row and one durable artifact, idempotently.
 
@@ -1093,7 +1144,14 @@ def write_campaign_terminal_report(
     ``campaign_source_calls`` / ``source_calls`` on the return surface are the
     original campaign totals embedded in the report payload. Report-write itself
     performs no Source Governor work; replay surfaces use ``replay_new_*``.
+
+    When ``require_six_unit_evidence`` is True, persistence is blocked
+    (``TerminalClosureError``) on missing, malformed, or mismatched six-unit
+    evidence — a final guard so an accounting-faulted report cannot be written
+    or reported as successful completion.
     """
+    if require_six_unit_evidence:
+        _assert_report_six_unit_evidence(report)
     canonical = _canonical_json(report)
     report_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     try:

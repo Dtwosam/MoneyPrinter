@@ -34,17 +34,60 @@ The active lane remains:
 V2-9.8B — Active Bounded Memory Growth Operations
 ```
 
-The current work inside V2-9.8B is discovery and selection **verifiable
-real-path completion** on the restored ordinary path:
+The current work inside V2-9.8B is the **post-handoff terminal compensation
+repair**, built on the completed campaign-accounting / terminal-enforcement
+readiness audit. Its verdict is:
 
-`docs/printer-v1-v2-9-8b-discovery-selection-verifiable-real-path-design.md`.
+`V2_9_8B_POST_HANDOFF_TERMINAL_COMPENSATION_PASS`.
+
+This repair resolves the prior lane's primary post-handoff blocker (D-1) under
+the accepted invariant — after a post-handoff failure, zero active, runnable,
+leased, reusable, or orphan work, while immutable terminal handoff audit evidence
+may remain. The surviving FK-pinned handoff rows (token slots, first-15m jobs)
+are now moved to a lawful non-runnable terminal state and their tracking is
+closed via the existing `reconcile_campaign_terminal` authority; only deletable
+lifecycle-materialization residue is removed; the immutable selected-item links
+are preserved unchanged. Proven across all five post-handoff injections on fresh
+disposable migration-049 databases, with idempotency and normal-success proofs.
+
+The prior campaign-accounting / terminal-enforcement lane's historical verdict
+remains as recorded evidence (unchanged):
+
+`V2_9_8B_CAMPAIGN_ACCOUNTING_TERMINAL_ENFORCEMENT_BLOCKED` — repairs 1–10 and 13
+closed and proven; repairs 11–12 (post-handoff zero-orphan) were BLOCKED under
+the earlier literal-row-zero reading. That reading is superseded (not rewritten)
+by this lane's terminalization invariant. The prior verifiable-real-path PASS
+(`V2_9_8B_DISCOVERY_SELECTION_VERIFIABLE_REAL_PATH_PASS`) stays superseded and
+operator-review blocked.
+
+Remaining blockers after this lane (unchanged, re-reported):
+
+- D-2: stages 4–5 injections are driver-level representative simulations, not
+  real-runner-internal faults;
+- the selective-1h provider-failure truthfulness defect (pre-existing baseline
+  failures in `test_v2_9_8b_selective_1h_liquidity_evidence_repair.py`).
 
 Prior closeouts treated as operator-review blocked / superseded for this surface:
 
 - authority consolidation closeout (operator-review BLOCKED)
-- full-system consolidation closeout (treated BLOCKED by this lane)
+- full-system consolidation closeout (treated BLOCKED)
+- verifiable real-path closeout (superseded; operator-review BLOCKED)
+- campaign-accounting / terminal-enforcement closeout (BLOCKED; post-handoff
+  portion superseded by this lane's PASS)
 
-Active verifiable real-path documents:
+Active post-handoff terminal-compensation documents:
+
+- `docs/printer-v1-v2-9-8b-post-handoff-terminal-compensation-readiness.md`
+- `docs/printer-v1-v2-9-8b-post-handoff-terminal-compensation-design.md`
+- `docs/printer-v1-v2-9-8b-post-handoff-terminal-compensation-closeout.md`
+
+Preceding campaign-accounting / terminal-enforcement documents (evidence):
+
+- `docs/printer-v1-v2-9-8b-campaign-accounting-terminal-enforcement-audit.md`
+- `docs/printer-v1-v2-9-8b-campaign-accounting-terminal-enforcement-design.md`
+- `docs/printer-v1-v2-9-8b-campaign-accounting-terminal-enforcement-closeout.md`
+
+Prior verifiable real-path documents (superseded, evidence only):
 
 - `docs/printer-v1-v2-9-8b-discovery-selection-verifiable-real-path-audit.md`
 - `docs/printer-v1-v2-9-8b-discovery-selection-verifiable-real-path-design.md`
@@ -180,17 +223,19 @@ liquidity, freshness, holder, safety or tradeability requirements.
 
 On:
 
-`V2_9_8B_DISCOVERY_SELECTION_VERIFIABLE_REAL_PATH_PASS`
+`V2_9_8B_POST_HANDOFF_TERMINAL_COMPENSATION_PASS`
 
 the exact next permitted task is:
 
 ```text
-independent read-only operator review of the verifiable real-path completion
+independent read-only review of the post-handoff terminal-compensation repair,
+and of the remaining blockers (D-2 real-runner-internal faults; the selective-1h
+provider-failure truthfulness defect)
 ```
 
-PASS does not authorize a live source-contract probe, Memory Factory campaign,
-providers/RPC, N2, N7, recovery, cursor reset, retry, memory operation,
-retrieval or any financial capability.
-
-If the verifiable real-path lane is BLOCKED, only operator review of the blocker
-evidence is permitted. There is no automatic repair, retry or successor.
+PASS authorizes only an independent read-only review. It does **not** authorize
+D-2 implementation, a live source-contract probe, a live probe, a Memory Factory
+campaign, providers/RPC, N2, N7, recovery, cursor reset, memory operation,
+retrieval, or any financial capability. There is no automatic repair, retry, or
+successor. The lane-owned campaign-accounting changes and this compensation
+repair are committed together on this PASS (no tag, no push).

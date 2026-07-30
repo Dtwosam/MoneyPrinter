@@ -163,6 +163,35 @@ def build_dexscreener_smoke_transport(
 ) -> Callable[[SourceAdapterContext], Mapping[str, Any]]:
     def transport(context: SourceAdapterContext) -> Mapping[str, Any]:
         del context
+        from printer_v1.sources.measured_transport import (
+            build_transport_identity,
+            enforce_normalized_row_ceiling,
+            measured_payload_fields,
+        )
+
+        def _pair_identity(
+            result: str, *, response_bytes: int = 0, normalized_rows: int = 0
+        ) -> Any:
+            # One outbound GET == exactly one measured transport identity,
+            # emitted on every outcome class (success, byte/row ceiling,
+            # malformed body, HTTP error, rate limit, decode failure, timeout).
+            return build_transport_identity(
+                stage="DEXSCREENER_DISCOVERY",
+                source_name="dexscreener_pair",
+                endpoint_owner="dexscreener",
+                governed_request_kind="dexscreener_pair_snapshot",
+                method_or_endpoint=f"GET {endpoint}",
+                within_request_ordinal=1,
+                target_category="exact_pair",
+                response_bytes=int(response_bytes),
+                normalized_rows=int(normalized_rows),
+                result=result,
+            )
+
+        def _measured(payload: dict, identity: Any) -> Mapping[str, Any]:
+            payload.update(measured_payload_fields([identity]))
+            return MappingProxyType(payload)
+
         request = url_request.Request(
             endpoint,
             headers=DEXSCREENER_PUBLIC_API_HEADERS,
@@ -170,23 +199,17 @@ def build_dexscreener_smoke_transport(
         )
         try:
             with url_request.urlopen(request, timeout=timeout_seconds) as response:
-                from printer_v1.sources.measured_transport import (
-                    build_transport_identity,
-                    enforce_normalized_row_ceiling,
-                    measured_payload_fields,
-                )
-
                 raw_body = response.read(512_001)
                 response_bytes = len(raw_body)
                 if response_bytes > 512_000:
-                    return MappingProxyType(
+                    return _measured(
                         {
                             "fixture_status": "failure",
                             "failure_type": "dexscreener_pair_byte_ceiling",
                             "failure_message": "DexScreener pair response exceeded byte ceiling",
                             "response_bytes": response_bytes,
-                            "transport_operations_used": 1,
-                        }
+                        },
+                        _pair_identity("BYTE_CEILING", response_bytes=response_bytes),
                     )
                 payload = json.loads(raw_body.decode("utf-8"))
                 if isinstance(payload, dict):
@@ -197,81 +220,86 @@ def build_dexscreener_smoke_transport(
                             "dexscreener_exact_pair_rows", pair_count
                         )
                     except Exception as exc:  # MeasuredTransportError
-                        return MappingProxyType(
+                        return _measured(
                             {
                                 "fixture_status": "failure",
                                 "failure_type": "dexscreener_exact_pair_row_ceiling",
                                 "failure_message": str(exc),
                                 "response_bytes": response_bytes,
-                                "transport_operations_used": 1,
-                            }
+                            },
+                            _pair_identity(
+                                "ROW_CEILING",
+                                response_bytes=response_bytes,
+                                normalized_rows=pair_count,
+                            ),
                         )
                     payload = dict(payload)
                     payload["_source_status_code"] = getattr(response, "status", None)
-                    identity = build_transport_identity(
-                        stage="DEXSCREENER_DISCOVERY",
-                        source_name="dexscreener_pair",
-                        endpoint_owner="dexscreener",
-                        governed_request_kind="dexscreener_pair_snapshot",
-                        method_or_endpoint=f"GET {endpoint}",
-                        within_request_ordinal=1,
-                        target_category="exact_pair",
-                        response_bytes=response_bytes,
-                        normalized_rows=pair_count,
-                        result="OK",
+                    return _measured(
+                        payload,
+                        _pair_identity(
+                            "OK",
+                            response_bytes=response_bytes,
+                            normalized_rows=pair_count,
+                        ),
                     )
-                    payload.update(measured_payload_fields([identity]))
-                    return MappingProxyType(payload)
                 # A non-object body is a payload/schema defect, not a transport
                 # failure: it must never trigger the V2-9.5 fallback.
-                return MappingProxyType(
+                return _measured(
                     {
                         "fixture_status": "failure",
                         "failure_type": "dexscreener_malformed_payload",
                         "failure_message": "DexScreener returned non-object payload",
                         "response_bytes": response_bytes,
-                        "transport_operations_used": 1,
-                    }
+                    },
+                    _pair_identity("MALFORMED", response_bytes=response_bytes),
                 )
         except url_error.HTTPError as exc:
             # V2-9.5 eligibility split: 429 and temporary 5xx are transient and
             # fallback-eligible; 4xx is a deterministic client error and is not.
             if exc.code == 429:
-                return MappingProxyType({"fixture_status": "rate_limited", "retry_after_seconds": 60})
+                return _measured(
+                    {"fixture_status": "rate_limited", "retry_after_seconds": 60},
+                    _pair_identity("RATE_LIMITED"),
+                )
             if 500 <= int(exc.code) <= 599:
-                return MappingProxyType(
+                return _measured(
                     {
                         "fixture_status": "failure",
                         "failure_type": "dexscreener_http_server_error",
                         "failure_message": f"DexScreener HTTP error {exc.code}",
-                    }
+                    },
+                    _pair_identity("HTTP_SERVER_ERROR"),
                 )
-            return MappingProxyType(
+            return _measured(
                 {
                     "fixture_status": "failure",
                     "failure_type": "dexscreener_http_client_error",
                     "failure_message": f"DexScreener HTTP error {exc.code}",
-                }
+                },
+                _pair_identity("HTTP_CLIENT_ERROR"),
             )
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             # Parser/decode defect — a payload problem, never fallback-eligible.
-            return MappingProxyType(
+            return _measured(
                 {
                     "fixture_status": "failure",
                     "failure_type": "dexscreener_malformed_payload",
                     "failure_message": str(exc),
-                }
+                },
+                _pair_identity("DECODE_FAILURE"),
             )
         except (OSError, TimeoutError) as exc:
             # TLS/connection interruption or connect/read timeout. ssl.SSLError
             # (e.g. SSLV3_ALERT_BAD_RECORD_MAC) is an OSError subclass and is
             # caught here. Transient and fallback-eligible.
-            return MappingProxyType(
+            return _measured(
                 {
                     "fixture_status": "failure",
                     "failure_type": "dexscreener_transport_failure",
                     "failure_message": str(exc),
-                }
+                },
+                _pair_identity("TRANSPORT_FAILURE"),
             )
 
     return transport

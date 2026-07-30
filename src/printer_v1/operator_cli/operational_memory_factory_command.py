@@ -1464,6 +1464,31 @@ def _run_operational_campaign(
             lifecycle=lifecycle,
             required_token_capacity=TOKEN_CAPACITY,
         )
+        # --- Top-level six-unit owner: the single accounting authority -------
+        # Stage results expose evidence; the coordinator's owner aggregates it.
+        # Optional lifecycle/reporting dicts are no longer the authority — a
+        # malformed stage block fails closed here (terminalizes FAILED).
+        from printer_v1.sources.campaign_six_unit_accounting import (
+            aggregate_campaign_six_unit_owner,
+        )
+
+        stage_evidence = (
+            reporting.get("six_unit_evidence")
+            or lifecycle.get("six_unit_evidence")
+        )
+        campaign_units = aggregate_campaign_six_unit_owner(
+            campaign_id=command.campaign_id,
+            run_id=command.run_id,
+            cycle_id=cycle_id,
+            started_at=now,
+            stage_evidences=(
+                [stage_evidence]
+                if isinstance(stage_evidence, Mapping) and stage_evidence
+                else []
+            ),
+        )
+        aggregated_six_unit_totals = campaign_units.six_unit_totals()
+        aggregated_six_unit_evidence = campaign_units.durable_evidence()
         payload = build_campaign_terminal_report(
             campaign_id=command.campaign_id,
             configuration_id=command.configuration_id,
@@ -1495,10 +1520,9 @@ def _run_operational_campaign(
                 run_id=command.run_id,
             ),
             pre_lifecycle_admission=reporting.get("pre_lifecycle_admission"),
-            six_unit_totals=reporting.get("six_unit_totals")
-            or lifecycle.get("six_unit_totals"),
-            six_unit_evidence=reporting.get("six_unit_evidence")
-            or lifecycle.get("six_unit_evidence"),
+            six_unit_totals=aggregated_six_unit_totals,
+            six_unit_evidence=aggregated_six_unit_evidence,
+            require_six_unit_evidence=True,
             elapsed_seconds=reporting.get("elapsed_seconds")
             if reporting.get("elapsed_seconds") is not None
             else lifecycle.get("elapsed_seconds"),
@@ -1510,6 +1534,7 @@ def _run_operational_campaign(
             campaign_id=command.campaign_id,
             configuration_id=command.configuration_id,
             report=payload,
+            require_six_unit_evidence=True,
         )
         terminal = {
             "status": "OPERATIONAL_CAMPAIGN_TERMINAL",
