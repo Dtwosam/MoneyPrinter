@@ -62,7 +62,9 @@ def test_public_command_composition_has_no_pumpportal_or_cursor_authority() -> N
     source = inspect.getsource(command)
     assert "build_direct_pump_migration_transport" in source
     assert "build_pumpportal_migration_transport" not in source
-    assert "candidate_acquisition" not in source.split("run_operational_campaign")[0].casefold() or True
+    run_src = inspect.getsource(command._run_operational_campaign)
+    assert "run_candidate_acquisition" not in run_src
+    assert "candidate_acquisition_integration" not in run_src
     ordinary = ORDINARY_OPERATIONAL_SOURCE_CONTRACTS["pumpportal"]
     assert ordinary.active_runtime is False
     assert ordinary.classification == "DEFERRED"

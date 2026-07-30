@@ -317,6 +317,164 @@ def empty_six_unit_totals() -> dict[str, int]:
     return {unit: 0 for unit in SIX_UNITS}
 
 
+def build_transport_identity(
+    *,
+    stage: str,
+    source_name: str,
+    endpoint_owner: str,
+    governed_request_kind: str,
+    method_or_endpoint: str,
+    within_request_ordinal: int,
+    target_category: str,
+    target_identity: str | None = None,
+    response_bytes: int = 0,
+    normalized_rows: int = 0,
+    result: str = "OK",
+    reserved_from: str | None = None,
+) -> TransportOperationIdentity:
+    """Construct one measured transport identity for an actual outbound call."""
+    return TransportOperationIdentity(
+        stage=stage,
+        source_name=source_name,
+        endpoint_owner=endpoint_owner,
+        governed_request_kind=governed_request_kind,
+        method_or_endpoint=method_or_endpoint,
+        within_request_ordinal=int(within_request_ordinal),
+        target_category=target_category,
+        target_identity=target_identity,
+        response_bytes=int(response_bytes),
+        normalized_rows=int(normalized_rows),
+        result=str(result),
+        reserved_from=reserved_from,
+    )
+
+
+def measured_payload_fields(
+    identities: Sequence[TransportOperationIdentity | Mapping[str, Any]],
+    *,
+    response_bytes: int | None = None,
+    normalized_rows: int | None = None,
+) -> dict[str, Any]:
+    """Serialize measured metadata attached to a transport/normalized payload."""
+    identity_dicts: list[dict[str, Any]] = []
+    for item in identities:
+        if isinstance(item, TransportOperationIdentity):
+            identity_dicts.append(item.as_dict())
+        elif isinstance(item, Mapping):
+            identity_dicts.append(dict(item))
+        else:
+            raise MeasuredTransportError("INVALID_TRANSPORT_IDENTITY_PAYLOAD")
+    bytes_total = (
+        int(response_bytes)
+        if response_bytes is not None
+        else sum(int(item.get("response_bytes") or 0) for item in identity_dicts)
+    )
+    rows_total = (
+        int(normalized_rows)
+        if normalized_rows is not None
+        else sum(int(item.get("normalized_rows") or 0) for item in identity_dicts)
+    )
+    return {
+        "transport_operations_used": len(identity_dicts),
+        "response_bytes": bytes_total,
+        "normalized_rows": rows_total,
+        "transport_operation_identities": identity_dicts,
+    }
+
+
+def identities_from_payload(
+    payload: Mapping[str, Any] | None,
+) -> list[TransportOperationIdentity]:
+    """Rehydrate transport identities declared on a payload."""
+    meta = merge_transport_payload_metadata(payload)
+    out: list[TransportOperationIdentity] = []
+    for raw in meta["transport_operation_identities"]:
+        if not isinstance(raw, Mapping):
+            raise MeasuredTransportError("MALFORMED_TRANSPORT_IDENTITY")
+        out.append(
+            TransportOperationIdentity(
+                stage=str(raw.get("stage") or ""),
+                source_name=str(raw.get("source_name") or ""),
+                endpoint_owner=str(raw.get("endpoint_owner") or ""),
+                governed_request_kind=str(raw.get("governed_request_kind") or ""),
+                method_or_endpoint=str(raw.get("method_or_endpoint") or ""),
+                within_request_ordinal=int(raw.get("within_request_ordinal") or 0),
+                target_category=str(raw.get("target_category") or ""),
+                target_identity=(
+                    None
+                    if raw.get("target_identity") is None
+                    else str(raw.get("target_identity"))
+                ),
+                response_bytes=int(raw.get("response_bytes") or 0),
+                normalized_rows=int(raw.get("normalized_rows") or 0),
+                result=str(raw.get("result") or "ATTEMPTED"),
+                reserved_from=(
+                    None
+                    if raw.get("reserved_from") is None
+                    else str(raw.get("reserved_from"))
+                ),
+            )
+        )
+    used = int(meta["transport_operations_used"] or 0)
+    if used and not out:
+        raise MeasuredTransportError("TRANSPORT_IDENTITIES_MISSING")
+    if out and used != len(out):
+        raise MeasuredTransportError("TRANSPORT_IDENTITY_COUNT_MISMATCH")
+    return out
+
+
+def record_payload_transports(
+    ledger: MeasuredTransportLedger,
+    payload: Mapping[str, Any] | None,
+    *,
+    default_stage: str | None = None,
+) -> int:
+    """Record every declared transport identity from a payload onto a ledger."""
+    identities = identities_from_payload(payload)
+    for identity in identities:
+        if default_stage and not identity.stage:
+            identity = TransportOperationIdentity(
+                stage=default_stage,
+                source_name=identity.source_name,
+                endpoint_owner=identity.endpoint_owner,
+                governed_request_kind=identity.governed_request_kind,
+                method_or_endpoint=identity.method_or_endpoint,
+                within_request_ordinal=identity.within_request_ordinal,
+                target_category=identity.target_category,
+                target_identity=identity.target_identity,
+                response_bytes=identity.response_bytes,
+                normalized_rows=identity.normalized_rows,
+                result=identity.result,
+                reserved_from=identity.reserved_from,
+            )
+        ledger.record_transport(identity)
+    return len(identities)
+
+
+def six_unit_totals_from_mapping(payload: Mapping[str, Any] | None) -> dict[str, int]:
+    """Normalize a six-unit totals mapping from report/activity payloads."""
+    if not isinstance(payload, Mapping):
+        return empty_six_unit_totals()
+    raw = payload.get("six_unit_totals") if "six_unit_totals" in payload else payload
+    if not isinstance(raw, Mapping):
+        return empty_six_unit_totals()
+    return {unit: int(raw.get(unit) or 0) for unit in SIX_UNITS}
+
+
+def enforce_response_byte_ceiling(
+    source_name: str, response_bytes: int, *, ceiling: int | None = None
+) -> None:
+    limit = (
+        BYTE_CEILINGS.get(source_name, BYTE_CEILINGS["default"])
+        if ceiling is None
+        else int(ceiling)
+    )
+    if int(response_bytes) > int(limit):
+        raise MeasuredTransportError(f"SOURCE_RESPONSE_BYTE_CEILING:{source_name}")
+    if int(response_bytes) < 0:
+        raise MeasuredTransportError("NEGATIVE_TRANSPORT_MEASURE")
+
+
 __all__ = [
     "BYTE_CEILINGS",
     "GET_MULTIPLE_ACCOUNTS_BATCH_SIZE",
@@ -333,10 +491,16 @@ __all__ = [
     "UNIT_SCHEDULER_WORK_ITEM",
     "UNIT_SOURCE_RESPONSE_BYTES",
     "UNIT_SOURCE_TRANSPORT_OPERATION",
+    "build_transport_identity",
     "empty_six_unit_totals",
     "enforce_normalized_row_ceiling",
+    "enforce_response_byte_ceiling",
+    "identities_from_payload",
+    "measured_payload_fields",
     "merge_transport_payload_metadata",
     "pumpswap_account_batch_count",
     "pumpswap_verification_transport_count",
+    "record_payload_transports",
     "reconcile_six_unit_totals",
+    "six_unit_totals_from_mapping",
 ]

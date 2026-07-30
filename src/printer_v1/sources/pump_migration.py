@@ -34,6 +34,8 @@ from printer_v1.sources.operational_source_contracts import (
 from printer_v1.sources.pump_contracts import verify_pinned_pump_migration
 from printer_v1.sources.pumpfun_direct import PUMP_PROGRAM_ID
 from printer_v1.sources.measured_transport import (
+    build_transport_identity,
+    measured_payload_fields,
     pumpswap_verification_transport_count,
 )
 from printer_v1.sources.pumpswap import (
@@ -227,8 +229,36 @@ def build_graduation_verifier_transport(
 
     def transport(context: SourceAdapterContext) -> Mapping[str, Any]:
         del context
-        transport_ops = 0
-        response_bytes = 0
+        identities = []
+        ordinal = 0
+
+        def _record(method: str, payload: Mapping[str, Any], *, rows: int = 0) -> None:
+            nonlocal ordinal
+            ordinal += 1
+            identities.append(
+                build_transport_identity(
+                    stage="PUMPSWAP_EXACT_VERIFICATION",
+                    source_name="solana_rpc",
+                    endpoint_owner="solana",
+                    governed_request_kind="pumpswap_signature_pool_resolution",
+                    method_or_endpoint=method,
+                    within_request_ordinal=ordinal,
+                    target_category="migration_signature"
+                    if method == "getTransaction"
+                    else "account_batch",
+                    target_identity=migration_signature
+                    if method == "getTransaction"
+                    else expected_mint,
+                    response_bytes=int(payload.get("response_bytes") or 0),
+                    normalized_rows=int(rows),
+                    result=(
+                        "FAILED"
+                        if payload.get("fixture_status") == "failure"
+                        else "OK"
+                    ),
+                )
+            )
+
         tx = _rpc_post(
             endpoint,
             "getTransaction",
@@ -242,34 +272,38 @@ def build_graduation_verifier_transport(
             ],
             timeout_seconds=timeout_seconds,
         )
-        transport_ops += 1
+        _record("getTransaction", tx, rows=1 if isinstance(tx.get("result"), Mapping) else 0)
         if tx.get("fixture_status") == "failure":
             failed = dict(tx)
-            failed["transport_operations_used"] = transport_ops
+            failed.update(measured_payload_fields(identities))
             return MappingProxyType(failed)
         tx_result = tx.get("result")
         if not isinstance(tx_result, Mapping):
-            return MappingProxyType({
+            payload = {
                 "fixture_status": "failure",
                 "failure_type": "pump_migration_transaction_not_found",
                 "failure_message": "getTransaction returned no result for migration signature",
-                "transport_operations_used": transport_ops,
-            })
+            }
+            payload.update(measured_payload_fields(identities))
+            return MappingProxyType(payload)
 
         keys = collect_transaction_account_keys(tx_result)
         account_infos: dict[str, Any] = {}
         for i in range(0, len(keys), 100):
-            chunk = keys[i:i + 100]
+            chunk = keys[i : i + 100]
             res = _rpc_post(
                 endpoint,
                 "getMultipleAccounts",
                 [chunk, {"encoding": "base64", "commitment": "finalized"}],
                 timeout_seconds=timeout_seconds,
             )
-            transport_ops += 1
+            _record("getMultipleAccounts", res, rows=len(chunk))
             if res.get("fixture_status") == "failure":
                 failed = dict(res)
-                failed["transport_operations_used"] = transport_ops
+                failed.update(measured_payload_fields(identities))
+                failed["expected_transport_operations"] = (
+                    pumpswap_verification_transport_count(len(keys))
+                )
                 return MappingProxyType(failed)
             values = (res.get("result") or {}).get("value") or []
             for k, v in zip(chunk, values):
@@ -278,13 +312,10 @@ def build_graduation_verifier_transport(
         verification = verify_graduation_from_transaction(
             tx_result, account_infos, expected_mint=expected_mint, now_epoch=now_epoch
         )
-        measured = {
-            "transport_operations_used": transport_ops,
-            "response_bytes": response_bytes,
-            "expected_transport_operations": pumpswap_verification_transport_count(
-                len(keys)
-            ),
-        }
+        measured = measured_payload_fields(identities)
+        measured["expected_transport_operations"] = pumpswap_verification_transport_count(
+            len(keys)
+        )
         if not verification["verified"]:
             return MappingProxyType({
                 "fixture_status": "failure",

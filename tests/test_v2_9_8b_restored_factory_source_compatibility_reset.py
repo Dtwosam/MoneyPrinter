@@ -105,7 +105,10 @@ def _quote(
 
 def _verifier_factory(tx: dict, infos: dict):
     from printer_v1.sources.measured_transport import (
+        build_transport_identity,
+        measured_payload_fields,
         pumpswap_verification_transport_count,
+        pumpswap_account_batch_count,
     )
     from printer_v1.sources.pumpswap import collect_transaction_account_keys
 
@@ -115,6 +118,40 @@ def _verifier_factory(tx: dict, infos: dict):
         )
         keys = collect_transaction_account_keys(tx)
         measured_ops = pumpswap_verification_transport_count(len(keys))
+        batches = pumpswap_account_batch_count(len(keys))
+        identities = [
+            build_transport_identity(
+                stage="PUMPSWAP_EXACT_VERIFICATION",
+                source_name="solana_rpc",
+                endpoint_owner="solana",
+                governed_request_kind="pumpswap_signature_pool_resolution",
+                method_or_endpoint="getTransaction",
+                within_request_ordinal=1,
+                target_category="migration_signature",
+                target_identity=signature,
+                response_bytes=256,
+                normalized_rows=1,
+                result="OK" if verification["verified"] else "FAILED",
+            )
+        ]
+        for batch_index in range(batches):
+            identities.append(
+                build_transport_identity(
+                    stage="PUMPSWAP_EXACT_VERIFICATION",
+                    source_name="solana_rpc",
+                    endpoint_owner="solana",
+                    governed_request_kind="pumpswap_signature_pool_resolution",
+                    method_or_endpoint="getMultipleAccounts",
+                    within_request_ordinal=2 + batch_index,
+                    target_category="account_batch",
+                    target_identity=mint,
+                    response_bytes=128,
+                    normalized_rows=min(100, max(0, len(keys) - batch_index * 100)),
+                    result="OK" if verification["verified"] else "FAILED",
+                )
+            )
+        measured = measured_payload_fields(identities)
+        assert measured["transport_operations_used"] == measured_ops
 
         def transport(_context):
             if not verification["verified"]:
@@ -122,7 +159,7 @@ def _verifier_factory(tx: dict, infos: dict):
                     "fixture_status": "failure",
                     "failure_type": "frozen_exact_verification_failed",
                     "failure_message": str(verification["reason"]),
-                    "transport_operations_used": measured_ops,
+                    **measured,
                 }
             return {
                 "pumpswap_confirmation": verification[
@@ -136,7 +173,7 @@ def _verifier_factory(tx: dict, infos: dict):
                     "migration_block_time"
                 ],
                 "migration_slot": verification["migration_slot"],
-                "transport_operations_used": measured_ops,
+                **measured,
             }
 
         return transport

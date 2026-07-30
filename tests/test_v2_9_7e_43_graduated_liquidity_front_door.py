@@ -391,11 +391,11 @@ class TestMixedTwoSlot:
         assert r["two_candidate_selection"]["ready"] is True
         provenances = {item["provenance"] for item in r["selected"]}
         assert provenances == {LATEST_GRADUATED_CHANNEL, PERSISTED_GRADUATED_CHANNEL}
-        # Diagnostic attributes only — not readiness columns.
-        assert r["selected_latest"] is not None
-        assert r["selected_persisted"] is not None
-        assert r["selected_latest"]["provenance"] == LATEST_GRADUATED_CHANNEL
-        assert r["selected_persisted"]["provenance"] == PERSISTED_GRADUATED_CHANNEL
+        # Neutral two-candidate product + provenance diagnostics only.
+        assert r["candidate_a"] is not None and r["candidate_b"] is not None
+        assert r["provenance_diagnostics"]["composition_label"] == "LATEST+PERSISTED"
+        assert r["provenance_diagnostics"]["provenance_summary"]["latest_count"] == 1
+        assert r["provenance_diagnostics"]["provenance_summary"]["persisted_count"] == 1
 
     def test_fd12_deterministic_replay(self):
         db = self._mixed_db()

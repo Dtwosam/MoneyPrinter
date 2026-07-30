@@ -46,6 +46,13 @@ from printer_v1.sources.pumpswap_graduated_registry import (
     export_graduated_candidates,
     record_graduated_candidate,
 )
+from printer_v1.sources.measured_transport import (
+    MeasuredTransportError,
+    MeasuredTransportLedger,
+    empty_six_unit_totals,
+    merge_transport_payload_metadata,
+    record_payload_transports,
+)
 
 MIGRATION_REQUEST_KIND = SIGNATURE_PAGE_REQUEST_KIND
 VERIFY_SOURCE = "pumpswap"
@@ -321,6 +328,8 @@ def run_direct_migration_discovery(
     migration_request_count = 0
     pumpswap_request_count = 0
     stage_request_ids: list[int] = []
+    measured_ledger = MeasuredTransportLedger()
+    local_validations = 0
 
     def _execute_direct_request(
         *,
@@ -363,8 +372,28 @@ def run_direct_migration_discovery(
             and not page.failure_type
         )
         if not page_ok:
+            try:
+                record_payload_transports(
+                    measured_ledger,
+                    page.normalized_payload or {},
+                    default_stage="DIRECT_PUMP_NOMINATION",
+                )
+            except MeasuredTransportError:
+                pass
             one = intake_migration_events(None)
             one["direct_pump_live_tail_failure"] = page.failure_type
+            one["transport_operation_count"] = 1
+            return one
+
+        try:
+            record_payload_transports(
+                measured_ledger,
+                page.normalized_payload or {},
+                default_stage="DIRECT_PUMP_NOMINATION",
+            )
+        except MeasuredTransportError as exc:
+            one = intake_migration_events(None)
+            one["direct_pump_live_tail_failure"] = f"measured_transport:{exc}"
             one["transport_operation_count"] = 1
             return one
 
@@ -392,6 +421,16 @@ def run_direct_migration_discovery(
                 },
             )
             operation_count += 1
+            try:
+                record_payload_transports(
+                    measured_ledger,
+                    tx.normalized_payload or {},
+                    default_stage="DIRECT_PUMP_NOMINATION",
+                )
+            except MeasuredTransportError as exc:
+                failures.append(f"measured_transport:{exc}")
+                source_failures.append(f"measured_transport:{exc}")
+                continue
             if (
                 tx.source_status not in {SourceStatus.COMPLETE, SourceStatus.PARTIAL}
                 or tx.failure_type
@@ -463,24 +502,47 @@ def run_direct_migration_discovery(
             if not isinstance(payload, Mapping):
                 payload = {}
             # Prefer explicit measured metadata; never invent a fixed batch count.
-            measured_ops = payload.get("transport_operations_used")
-            if measured_ops is None:
-                measured_ops = (payload.get("pumpswap_resolution") or {}).get(
-                    "transport_operations_used"
+            meta = merge_transport_payload_metadata(payload)
+            measured_ops = meta["transport_operations_used"]
+            if not measured_ops:
+                measured_ops = int(
+                    (payload.get("pumpswap_resolution") or {}).get(
+                        "transport_operations_used"
+                    )
+                    or (payload.get("pump_migration_proof") or {}).get(
+                        "transport_operations_used"
+                    )
+                    or 0
                 )
-            if measured_ops is None:
-                measured_ops = (payload.get("pump_migration_proof") or {}).get(
-                    "transport_operations_used"
-                )
-            if measured_ops is None:
-                # Offline pure-verifier factories perform zero network I/O.
-                measured_ops = 0
+            try:
+                if meta["transport_operation_identities"]:
+                    record_payload_transports(
+                        measured_ledger,
+                        payload,
+                        default_stage="PUMPSWAP_EXACT_VERIFICATION",
+                    )
+                elif measured_ops:
+                    # Claimed transports without identities fail closed.
+                    raise MeasuredTransportError("TRANSPORT_IDENTITIES_MISSING")
+            except MeasuredTransportError as exc:
+                record = {
+                    "mint": mint,
+                    "signature": signature,
+                    "verified": False,
+                    "verify_attempts": attempts,
+                    "transport_operations_used": 0,
+                    "failure_type": f"measured_transport:{exc}",
+                }
+                verifications.append(record)
+                continue
             record: dict[str, Any] = {
                 "mint": mint,
                 "signature": signature,
                 "verified": verified,
                 "verify_attempts": attempts,
                 "transport_operations_used": int(measured_ops),
+                "response_bytes": int(meta["response_bytes"] or 0),
+                "normalized_rows": int(meta["normalized_rows"] or 0),
             }
             if not verified:
                 record["failure_type"] = vres.failure_type
@@ -589,9 +651,10 @@ def run_direct_migration_discovery(
         expected_governed_requests = (
             migration_request_count + pumpswap_request_count
         )
-        # Measured transports: migration ops are exact one-RPC-per-governed-request;
-        # PumpSwap verification contributes the actual batch count recorded on each
-        # verification result (1 getTransaction + 1..3 getMultipleAccounts).
+        # Measured transports: identities recorded for each real RPC when present.
+        # Migration stage: one identity per governed direct-Pump request when the
+        # normalizer declares them; otherwise fall back to request count only for
+        # the integer migration_transport_operations diagnostic.
         pumpswap_transport_operations = 0
         for record in verifications:
             pumpswap_transport_operations += int(
@@ -603,14 +666,27 @@ def run_direct_migration_discovery(
         expected_transport_operations = (
             migration_transport_operations + pumpswap_transport_operations
         )
+        measured_ledger.record_local_validation(local_validations + len(verifications))
+        six_units = measured_ledger.six_unit_totals()
+        # Identity-backed transport count is authoritative for six units.
+        identity_transport_count = six_units[
+            "SOURCE_TRANSPORT_OPERATION"
+        ]
         ledger["transport_operations"] = expected_transport_operations
         ledger["migration_transport_operations"] = migration_transport_operations
         ledger["pumpswap_transport_operations"] = pumpswap_transport_operations
         ledger["governed_requests"] = expected_governed_requests
+        ledger["identity_transport_operations"] = identity_transport_count
+        ledger["six_unit_totals"] = six_units
+        ledger["measured_transport_ledger"] = measured_ledger.as_dict()
         ledger["operation_accounting_reconciled"] = (
             int(ledger["source_requests"]) == expected_governed_requests
             and ledger["transport_operations"] == expected_transport_operations
             and migration_transport_operations == migration_request_count
+            and identity_transport_count == expected_transport_operations
+            and six_units["SOURCE_RESPONSE_BYTES"] >= 0
+            and six_units["NORMALIZED_SOURCE_ROWS"] >= 0
+            and six_units["LOCAL_VALIDATION_STEP"] >= 0
         )
         forbidden = _forbidden_deltas(connection)
     finally:
@@ -635,6 +711,7 @@ def run_direct_migration_discovery(
         "persisted_graduated_count": persisted_count,
         "total_persisted_graduated": len(mix),
         "source_operation_ledger": ledger,
+        "six_unit_totals": ledger.get("six_unit_totals") or empty_six_unit_totals(),
         "forbidden_capability_deltas": forbidden,
         "forbidden_delta_total": sum(forbidden.values()),
     }

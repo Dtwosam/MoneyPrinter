@@ -41,6 +41,9 @@ CANONICAL_POOL_INDEX = 0
 
 # Fixed / PDA-derived migrate role constants (pinned IDL + official mainnet).
 PUMP_GLOBAL_ID = "4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf"
+# Mainnet Global.withdraw_authority used by the pinned Pump migrate contract.
+# A valid-but-wrong pubkey must not pass relationship validation.
+PUMP_WITHDRAW_AUTHORITY_ID = "27m9co5M6RLMFdHXzJz6ktUvN9Dm3GAmttmNrqvnEnjN"
 PUMP_EVENT_AUTHORITY_ID = "Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1"
 PUMPSWAP_GLOBAL_CONFIG_ID = "ADyA8hdefvWN2dbGGWFotbzWxrAvLW83WG6QCVXvJKqw"
 PUMPSWAP_EVENT_AUTHORITY_ID = "GS4CU59F31iL7aR2Q8zVS8DRrcRnXX1yjQ66TqNVQnaR"
@@ -360,13 +363,16 @@ def _valid_pubkey(value: str) -> bool:
     return raw is not None and len(raw) == 32
 
 
-def validate_migrate_account_roles(accounts: Sequence[str]) -> dict[str, Any]:
+def validate_migrate_account_roles(
+    accounts: Sequence[str],
+    *,
+    expected_mint: str | None = None,
+) -> dict[str, Any]:
     """Validate all 25 ordered migrate roles and known fixed/PDA relationships.
 
-    Does not invent undocumented Global-layout offsets for withdraw_authority.
-    withdraw_authority must be a present valid pubkey distinct from global and
-    fixed programs; full Global-field equality is applied only when a documented
-    Global decode is later pinned.
+    Fixed programs/sysvars, PDA/ATA relationships, the pinned mainnet
+    withdraw_authority, and optional expected_mint equality each fail closed
+    with a distinct reason. Valid-but-wrong substitutions must not pass.
     """
     if len(accounts) != 25:
         return {
@@ -393,6 +399,7 @@ def validate_migrate_account_roles(accounts: Sequence[str]) -> dict[str, Any]:
 
     fixed = {
         0: PUMP_GLOBAL_ID,
+        1: PUMP_WITHDRAW_AUTHORITY_ID,
         6: SYSTEM_PROGRAM_ID,
         7: TOKEN_PROGRAM_ID,
         8: PUMPSWAP_AMM_PROGRAM_ID,
@@ -421,14 +428,34 @@ def validate_migrate_account_roles(accounts: Sequence[str]) -> dict[str, Any]:
     user = accounts[5]
     pool = accounts[9]
     pool_authority = accounts[10]
-    if accounts[1] in {accounts[0], SYSTEM_PROGRAM_ID, PUMP_PROGRAM_ID, mint, pool}:
+    if expected_mint is not None and mint != expected_mint:
+        return {
+            "valid": False,
+            "reason": "migrate_role_2_mint_mismatch",
+            "role": "mint",
+            "position": 2,
+            "expected": expected_mint,
+            "actual": mint,
+        }
+    # withdraw_authority is fixed above; also reject aliasing other roles.
+    other_accounts = {accounts[i] for i in range(25) if i != 1}
+    if accounts[1] in other_accounts:
         return {
             "valid": False,
             "reason": "migrate_role_1_withdraw_authority_relation_invalid",
             "role": "withdraw_authority",
             "position": 1,
         }
-    if user in {accounts[0], SYSTEM_PROGRAM_ID, PUMP_PROGRAM_ID, PUMPSWAP_AMM_PROGRAM_ID}:
+    if user in {
+        accounts[0],
+        accounts[1],
+        SYSTEM_PROGRAM_ID,
+        PUMP_PROGRAM_ID,
+        PUMPSWAP_AMM_PROGRAM_ID,
+        mint,
+        pool,
+        pool_authority,
+    }:
         return {
             "valid": False,
             "reason": "migrate_role_5_user_invalid",
@@ -562,7 +589,7 @@ def decode_supported_pump_migration_transaction(
     if len(matches) != 1:
         return {**failed, "reason": "exactly_one_migrate_instruction_required"}
     accounts = matches[0]
-    role_check = validate_migrate_account_roles(accounts)
+    role_check = validate_migrate_account_roles(accounts, expected_mint=None)
     if not role_check.get("valid"):
         return {
             **failed,
@@ -723,7 +750,8 @@ __all__ = [
     "PUMPSWAP_POOL_DISCRIMINATOR", "TOKEN_PROGRAM_ID", "TOKEN_2022_PROGRAM_ID",
     "SYSTEM_PROGRAM_ID", "ASSOCIATED_TOKEN_PROGRAM_ID", "RENT_SYSVAR_ID",
     "METADATA_PROGRAM_ID", "MAYHEM_PROGRAM_ID", "WSOL_MINT", "USDC_MINT",
-    "CANONICAL_POOL_INDEX", "PUMP_GLOBAL_ID", "PUMP_EVENT_AUTHORITY_ID",
+    "CANONICAL_POOL_INDEX", "PUMP_GLOBAL_ID", "PUMP_WITHDRAW_AUTHORITY_ID",
+    "PUMP_EVENT_AUTHORITY_ID",
     "PUMPSWAP_GLOBAL_CONFIG_ID", "PUMPSWAP_EVENT_AUTHORITY_ID",
     "MIGRATE_ACCOUNT_ROLES", "derive_program_address",
     "derive_canonical_pumpswap_pool", "decode_supported_pump_creation_instruction",

@@ -233,6 +233,20 @@ def normalize_direct_pump_migration_response(
             rows.append({"signature": signature, "slot": slot})
             if len(rows) >= MAX_TRANSACTION_LOOKUPS:
                 break
+        response_bytes = int(payload.get("response_bytes") or 0)
+        identity = {
+            "stage": "DIRECT_PUMP_NOMINATION",
+            "source_name": "solana_rpc",
+            "endpoint_owner": "solana",
+            "governed_request_kind": request_kind,
+            "method_or_endpoint": "getSignaturesForAddress",
+            "within_request_ordinal": 1,
+            "target_category": "pump_program",
+            "target_identity": PUMP_PROGRAM_ID,
+            "response_bytes": response_bytes,
+            "normalized_rows": len(rows),
+            "result": "OK",
+        }
         return NormalizedSourceResult(
             source_name=SOURCE_NAME,
             request_kind=request_kind,
@@ -245,6 +259,10 @@ def normalize_direct_pump_migration_response(
                     "commitment": FINALIZED_COMMITMENT,
                     "cursor_used": False,
                     "transport_operation_count": 1,
+                    "transport_operations_used": 1,
+                    "response_bytes": response_bytes,
+                    "normalized_rows": len(rows),
+                    "transport_operation_identities": (identity,),
                 }
             ),
             status_code=200,
@@ -263,11 +281,14 @@ def normalize_direct_pump_migration_response(
             "getTransaction result is not an object",
         )
     decoded = decode_supported_pump_migration_transaction(result)
+    response_bytes = int(payload.get("response_bytes") or 0)
     if not decoded.get("supported"):
         return _failure(
             request_kind,
             f"direct_pump_migration_rejected_{decoded.get('reason') or 'unknown'}",
             "transaction is not the exact pinned Pump migrate instruction",
+            response_bytes=response_bytes,
+            target_identity=str(expected_signature) if expected_signature else None,
         )
     signature = expected_signature
     if not isinstance(signature, str) or not signature.strip():
@@ -275,6 +296,7 @@ def normalize_direct_pump_migration_response(
             request_kind,
             "direct_pump_signature_identity_missing",
             "transaction response lacks requested signature identity",
+            response_bytes=response_bytes,
         )
     token = {
         "mint": str(decoded["mint"]),
@@ -284,6 +306,19 @@ def normalize_direct_pump_migration_response(
         "block_time": int(decoded["block_time"]),
         "commitment": FINALIZED_COMMITMENT,
         "pump_instruction_verified": True,
+    }
+    identity = {
+        "stage": "DIRECT_PUMP_NOMINATION",
+        "source_name": "solana_rpc",
+        "endpoint_owner": "solana",
+        "governed_request_kind": request_kind,
+        "method_or_endpoint": "getTransaction",
+        "within_request_ordinal": 1,
+        "target_category": "migration_signature",
+        "target_identity": str(signature),
+        "response_bytes": response_bytes,
+        "normalized_rows": 1,
+        "result": "OK",
     }
     return NormalizedSourceResult(
         source_name=SOURCE_NAME,
@@ -295,6 +330,10 @@ def normalize_direct_pump_migration_response(
                 "tokens": [token],
                 "commitment": FINALIZED_COMMITMENT,
                 "transport_operation_count": 1,
+                "transport_operations_used": 1,
+                "response_bytes": response_bytes,
+                "normalized_rows": 1,
+                "transport_operation_identities": (identity,),
             }
         ),
         status_code=200,
@@ -321,7 +360,34 @@ def _failure(
     request_kind: str,
     failure_type: str,
     failure_message: str,
+    *,
+    response_bytes: int = 0,
+    target_identity: str | None = None,
 ) -> NormalizedSourceResult:
+    method = (
+        "getSignaturesForAddress"
+        if request_kind == SIGNATURE_PAGE_REQUEST_KIND
+        else "getTransaction"
+    )
+    identity = {
+        "stage": "DIRECT_PUMP_NOMINATION",
+        "source_name": "solana_rpc",
+        "endpoint_owner": "solana",
+        "governed_request_kind": request_kind,
+        "method_or_endpoint": method,
+        "within_request_ordinal": 1,
+        "target_category": (
+            "pump_program"
+            if request_kind == SIGNATURE_PAGE_REQUEST_KIND
+            else "migration_signature"
+        ),
+        "target_identity": target_identity or (
+            PUMP_PROGRAM_ID if request_kind == SIGNATURE_PAGE_REQUEST_KIND else None
+        ),
+        "response_bytes": int(response_bytes),
+        "normalized_rows": 0,
+        "result": "FAILED",
+    }
     return NormalizedSourceResult(
         source_name=SOURCE_NAME,
         request_kind=request_kind,
@@ -329,6 +395,14 @@ def _failure(
         data_quality_label=DataQualityLabel.MISSING_CRITICAL_DATA,
         failure_type=failure_type,
         failure_message=failure_message,
+        normalized_payload=MappingProxyType(
+            {
+                "transport_operations_used": 1,
+                "response_bytes": int(response_bytes),
+                "normalized_rows": 0,
+                "transport_operation_identities": (identity,),
+            }
+        ),
     )
 
 
@@ -351,18 +425,24 @@ def _rpc_post(
     try:
         with url_request.urlopen(request, timeout=timeout_seconds) as response:
             raw = response.read(RPC_BYTE_CEILING + 1)
-            if len(raw) > RPC_BYTE_CEILING:
+            response_bytes = len(raw)
+            if response_bytes > RPC_BYTE_CEILING:
                 return MappingProxyType(
                     {
                         "fixture_status": "failure",
                         "failure_type": "direct_pump_rpc_byte_ceiling",
                         "failure_message": "Solana RPC response exceeded byte ceiling",
+                        "response_bytes": response_bytes,
+                        "transport_operations_used": 1,
                     }
                 )
             decoded = json.loads(raw.decode("utf-8"))
             if not isinstance(decoded, Mapping):
                 raise ValueError("Solana RPC returned non-object")
-            return MappingProxyType(dict(decoded))
+            payload = dict(decoded)
+            payload["response_bytes"] = response_bytes
+            payload["transport_operations_used"] = 1
+            return MappingProxyType(payload)
     except url_error.HTTPError as exc:
         status = int(exc.code)
         exc.close()
@@ -375,6 +455,8 @@ def _rpc_post(
                     else "direct_pump_rpc_http_error"
                 ),
                 "failure_message": f"Solana RPC HTTP {status}",
+                "response_bytes": 0,
+                "transport_operations_used": 1,
             }
         )
     except (
@@ -391,6 +473,8 @@ def _rpc_post(
                 "failure_message": (
                     f"{type(exc).__name__}: Solana RPC transport/shape failure"
                 ),
+                "response_bytes": 0,
+                "transport_operations_used": 1,
             }
         )
 

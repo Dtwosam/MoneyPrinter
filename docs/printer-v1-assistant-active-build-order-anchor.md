@@ -34,10 +34,20 @@ The active lane remains:
 V2-9.8B — Active Bounded Memory Growth Operations
 ```
 
-The current work inside V2-9.8B is discovery and selection authority
+The current work inside V2-9.8B is discovery and selection **full-system**
 consolidation on the restored ordinary path:
 
-`docs/printer-v1-v2-9-8b-discovery-selection-authority-consolidation-design.md`.
+`docs/printer-v1-v2-9-8b-discovery-selection-final-consolidation-design.md`.
+
+The earlier consolidation closeout
+(`docs/printer-v1-v2-9-8b-discovery-selection-authority-consolidation-closeout.md`)
+was **blocked by operator review**
+(`V2_9_8B_DISCOVERY_SELECTION_AUTHORITY_CONSOLIDATION_OPERATOR_REVIEW_BLOCKED`)
+and is superseded by the full-system re-audit / final consolidation lane:
+
+- `docs/printer-v1-v2-9-8b-discovery-selection-full-system-reaudit.md`
+- `docs/printer-v1-v2-9-8b-discovery-selection-final-consolidation-design.md`
+- `docs/printer-v1-v2-9-8b-discovery-selection-final-consolidation-closeout.md`
 
 The operational factory active-path restoration remains the restored intake
 anchor:
@@ -169,17 +179,20 @@ liquidity, freshness, holder, safety or tradeability requirements.
 
 On:
 
-`V2_9_8B_OPERATIONAL_FACTORY_ACTIVE_PATH_RESTORATION_PASS`
+`V2_9_8B_DISCOVERY_SELECTION_FULL_SYSTEM_CONSOLIDATION_PASS`
 
 the exact next permitted task is:
 
 ```text
-operator review of the restoration branch and closeout
+independent read-only operator review of the full-system consolidation
 ```
 
-PASS does not authorize the published operational command, a live campaign,
+PASS does not authorize a live source-contract probe, Memory Factory campaign,
 providers/RPC, N2, N7, recovery, cursor reset, retry, memory operation,
 retrieval or any financial capability.
 
-If the restoration is BLOCKED, only operator review of the blocker evidence is
-permitted. There is no automatic repair, retry or successor.
+If the full-system consolidation is BLOCKED, only operator review of the blocker
+evidence is permitted. There is no automatic repair, retry or successor.
+
+Historical restoration PASS next-task language is superseded by this full-system
+consolidation next-task once that lane closes.

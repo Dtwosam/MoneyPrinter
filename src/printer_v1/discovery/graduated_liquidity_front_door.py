@@ -697,19 +697,11 @@ def select_holder_eligible_pair(
     holder_evaluator: "Callable[[FrontDoorCandidate], tuple[bool, str]]",
     candidate_cap: int,
 ) -> dict[str, Any]:
-    """V2-9.7E.45 Repair 4 — holder-aware reserve selection with lawful replacement.
+    """OFFLINE-ONLY historical helper — not ordinary-run selection authority.
 
-    Produces a deterministic seeded-uniform ordered queue per partition and runs the
-    injected holder gate in that order, round-robin across partitions, within a frozen
-    total holder-operation ``candidate_cap``. On a failure/unknown the funnel advances
-    to the next deterministic candidate **within the same partition only**; it stops as
-    soon as one holder-eligible candidate exists per partition or a partition is
-    exhausted. Once a partition is accepted no further holder ops are spent on it. A
-    rejected evidence identity gets no second chance. No holder result becomes a
-    score/rank/confidence/weight — ordering is seeded-uniform, never holder-derived.
-
-    Returns ``selected_latest`` / ``selected_persisted`` (``FrontDoorCandidate`` or
-    ``None``) and the per-candidate funnel evidence + exact operation accounting.
+    Ordinary selection uses ``selection_authority.select_two_candidates`` only.
+    This partitioned latest/persisted helper remains for historical offline tests
+    and must not be re-wired onto the ordinary public ``run`` path.
     """
     if candidate_cap < 0:
         raise GraduatedFrontDoorError("INVALID_CANDIDATE_CAP", str(candidate_cap))
@@ -1308,28 +1300,16 @@ def run_graduated_liquidity_front_door(
             }
             for c in selected
         ],
-        # Neutral two-candidate contract is the selection product.
+        # Neutral two-candidate contract is the only selection product.
         "two_candidate_selection": two_candidate,
         "candidate_a": two_candidate.get("candidate_a"),
         "candidate_b": two_candidate.get("candidate_b"),
-        # Diagnostic provenance attributes only — not readiness columns.
-        "selected_latest": next(
-            (
-                c.to_dict()
-                for c in selected
-                if c.provenance == LATEST_GRADUATED_CHANNEL
-            ),
-            None,
-        ),
-        "selected_persisted": next(
-            (
-                c.to_dict()
-                for c in selected
-                if c.provenance == PERSISTED_GRADUATED_CHANNEL
-            ),
-            None,
-        ),
         "selected_count": len(selected),
+        # Provenance diagnostics only (never readiness / authority columns).
+        "provenance_diagnostics": {
+            "composition_label": two_candidate.get("composition_label"),
+            "provenance_summary": two_candidate.get("provenance_summary"),
+        },
         "selected_pair_identity": selected_pair_identity,
         "holder_reserve_order": [
             candidate.to_dict()

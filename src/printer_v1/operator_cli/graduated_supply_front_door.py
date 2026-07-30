@@ -106,8 +106,9 @@ class GraduatedSupply:
     terminal: str
     graduated_supply: tuple[FixtureOriginProof, ...]
     graduation_proofs: Mapping[str, FixturePumpSwapProof]
-    selected_latest: Mapping[str, Any] | None
-    selected_persisted: Mapping[str, Any] | None
+    candidate_a: Mapping[str, Any] | None
+    candidate_b: Mapping[str, Any] | None
+    two_candidate_selection: Mapping[str, Any]
     handoff_readiness: Mapping[str, Any]
     discovery_report: Mapping[str, Any]
     front_door_report: Mapping[str, Any]
@@ -123,14 +124,9 @@ class GraduatedSupply:
             "holder_reserve_mints": [
                 proof.mint for proof in self.holder_reserve_supply
             ],
-            "selected_latest": (
-                None if self.selected_latest is None else dict(self.selected_latest)
-            ),
-            "selected_persisted": (
-                None
-                if self.selected_persisted is None
-                else dict(self.selected_persisted)
-            ),
+            "candidate_a": None if self.candidate_a is None else dict(self.candidate_a),
+            "candidate_b": None if self.candidate_b is None else dict(self.candidate_b),
+            "two_candidate_selection": dict(self.two_candidate_selection),
             "handoff_readiness": dict(self.handoff_readiness),
             "diagnostics": dict(self.diagnostics),
         }
@@ -404,23 +400,9 @@ def build_graduated_supply(
         cycle_seed=cycle_seed,
     )
     selected = [item.as_dict() for item in authority.selected]
-    # Diagnostic provenance attributes only — not readiness columns.
-    selected_latest = next(
-        (
-            item
-            for item in selected
-            if "LATEST" in str(item.get("provenance") or "").upper()
-        ),
-        None,
-    )
-    selected_persisted = next(
-        (
-            item
-            for item in selected
-            if "PERSISTED" in str(item.get("provenance") or "").upper()
-        ),
-        None,
-    )
+    authority_dict = authority.as_dict()
+    candidate_a = authority_dict.get("candidate_a")
+    candidate_b = authority_dict.get("candidate_b")
 
     connection = sqlite3.connect(str(db_path))
     connection.row_factory = sqlite3.Row
@@ -470,7 +452,11 @@ def build_graduated_supply(
             "locator_status": locator.get("status"),
             "locator_matched_count": int(locator.get("matched_count") or 0),
             "locator_source_requests": int(locator.get("source_requests") or 0),
-            "two_candidate_selection": authority.as_dict(),
+            "two_candidate_selection": authority_dict,
+            "provenance_diagnostics": {
+                "composition_label": authority_dict.get("composition_label"),
+                "provenance_summary": authority_dict.get("provenance_summary"),
+            },
             "exhaustion_certificate": (
                 None
                 if persistent.exhaustion_certificate is None
@@ -487,8 +473,9 @@ def build_graduated_supply(
         holder_reserve_supply=tuple(reserve_supply),
         holder_reserve_candidates=reserve_candidates,
         graduation_proofs=proofs,
-        selected_latest=selected_latest,
-        selected_persisted=selected_persisted,
+        candidate_a=None if candidate_a is None else dict(candidate_a),
+        candidate_b=None if candidate_b is None else dict(candidate_b),
+        two_candidate_selection=authority_dict,
         handoff_readiness=dict(front_door.get("handoff_readiness") or {}),
         discovery_report=discovery,
         front_door_report=front_door,

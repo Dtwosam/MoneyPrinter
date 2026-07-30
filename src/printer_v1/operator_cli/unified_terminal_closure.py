@@ -843,17 +843,34 @@ def assemble_campaign_terminal_reporting(
     )
     # If no candidates were packaged and the terminal is not a blocked-supply
     # close, keep activity totals without inventing a blocked-supply story.
+    from printer_v1.sources.measured_transport import (
+        empty_six_unit_totals,
+        six_unit_totals_from_mapping,
+    )
+
+    six_units = six_unit_totals_from_mapping(
+        reporting.get("six_unit_totals")
+        or lifecycle.get("six_unit_totals")
+        or empty_six_unit_totals()
+    )
     if not candidates_raw and reason is None:
+        activity = dict(surface["campaign_activity"])
+        activity["six_unit_totals"] = six_units
         result = {
-            "campaign_activity": surface["campaign_activity"],
+            "campaign_activity": activity,
             "campaign_source_calls": surface["campaign_source_calls"],
             "campaign_scheduler_calls": surface["campaign_scheduler_calls"],
+            "six_unit_totals": six_units,
         }
         if isinstance(pre_lifecycle_admission, Mapping):
             result["pre_lifecycle_admission"] = dict(pre_lifecycle_admission)
         return result
     if isinstance(pre_lifecycle_admission, Mapping):
         surface["pre_lifecycle_admission"] = dict(pre_lifecycle_admission)
+    activity = dict(surface.get("campaign_activity") or {})
+    activity["six_unit_totals"] = six_units
+    surface["campaign_activity"] = activity
+    surface["six_unit_totals"] = six_units
     return surface
 
 
@@ -885,11 +902,22 @@ def build_campaign_terminal_report(
     fault_details: Mapping[str, Any] | None = None,
     selective_1h: Mapping[str, Any] | None = None,
     pre_lifecycle_admission: Mapping[str, Any] | None = None,
+    six_unit_totals: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
     """Assemble the canonical terminal report payload from stored facts only."""
+    from printer_v1.sources.measured_transport import (
+        empty_six_unit_totals,
+        six_unit_totals_from_mapping,
+    )
+
+    resolved_six = (
+        six_unit_totals_from_mapping(six_unit_totals)
+        if six_unit_totals is not None
+        else empty_six_unit_totals()
+    )
     payload: dict[str, Any] = {
         "report_kind": "PILOT_CAMPAIGN_TERMINAL",
-        "policy_version": "V2_9_7E_47_UNIFIED_TERMINAL_CLOSURE",
+        "policy_version": "V2_9_8B_FULL_SYSTEM_CONSOLIDATION_TERMINAL",
         "identity": {
             "campaign_id": campaign_id,
             "configuration_id": configuration_id,
@@ -908,6 +936,7 @@ def build_campaign_terminal_report(
         "reconciliation": json.loads(_canonical_json(reconciliation)),
         "forbidden_deltas": dict(forbidden_deltas or {}),
         "launch_git_provenance": dict(launch_git_provenance or {}),
+        "six_unit_totals": resolved_six,
         "downstream_unlocks": {
             "retrieval": False,
             "paper_decisions": False,
@@ -933,7 +962,14 @@ def build_campaign_terminal_report(
             _canonical_json(dict(pre_lifecycle_admission))
         )
     if campaign_activity is not None:
-        payload["campaign_activity"] = dict(campaign_activity)
+        activity = dict(campaign_activity)
+        if "six_unit_totals" not in activity:
+            activity["six_unit_totals"] = resolved_six
+        elif six_unit_totals is None:
+            payload["six_unit_totals"] = six_unit_totals_from_mapping(
+                activity.get("six_unit_totals")
+            )
+        payload["campaign_activity"] = activity
         payload["campaign_source_calls"] = int(
             campaign_activity.get("campaign_source_calls")
             if campaign_source_calls is None
@@ -950,6 +986,7 @@ def build_campaign_terminal_report(
         payload["campaign_activity"] = {
             "campaign_source_calls": payload["campaign_source_calls"],
             "campaign_scheduler_calls": payload["campaign_scheduler_calls"],
+            "six_unit_totals": resolved_six,
         }
     if blocked_supply is not None:
         payload["blocked_supply"] = dict(blocked_supply)
@@ -1094,6 +1131,11 @@ def write_campaign_terminal_report(
         "blocked_supply": report.get("blocked_supply"),
         "shortage_classification": report.get("shortage_classification"),
         "exhaustion_certificate": report.get("exhaustion_certificate"),
+        "six_unit_totals": (
+            dict(report["six_unit_totals"])
+            if isinstance(report.get("six_unit_totals"), Mapping)
+            else {}
+        ),
     }
 
 
@@ -1160,6 +1202,26 @@ def replay_campaign_terminal_report(
             else 0
         )
     )
+    from printer_v1.sources.measured_transport import (
+        empty_six_unit_totals,
+        reconcile_six_unit_totals,
+        six_unit_totals_from_mapping,
+    )
+
+    stored_six = six_unit_totals_from_mapping(
+        stored.get("six_unit_totals")
+        if isinstance(stored, dict)
+        else empty_six_unit_totals()
+    )
+    activity_six = six_unit_totals_from_mapping(
+        (activity or {}).get("six_unit_totals") if isinstance(activity, Mapping) else None
+    )
+    # Prefer top-level six units; fall back to campaign_activity durable copy.
+    six_units = stored_six if any(stored_six.values()) else activity_six
+    equality = reconcile_six_unit_totals(
+        {"six_unit_totals": six_units},
+        {"six_unit_totals": six_units},
+    )
     return {
         "mode": "REPORT_ONLY",
         "report_id": report_id,
@@ -1170,8 +1232,11 @@ def replay_campaign_terminal_report(
         "artifact_matches": artifact_matches,
         "campaign_source_calls": campaign_source_calls,
         "campaign_scheduler_calls": campaign_scheduler_calls,
+        "six_unit_totals": six_units,
+        "six_unit_report_replay_equal": bool(equality.get("equal")),
         "replay_new_source_calls": 0,
         "replay_new_scheduler_calls": 0,
+        "replay_new_transport_operations": 0,
         # Compatibility aliases for earlier replay consumers.
         "new_source_calls": 0,
         "new_scheduler_work": 0,

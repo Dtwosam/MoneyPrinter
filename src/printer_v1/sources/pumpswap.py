@@ -487,6 +487,8 @@ def normalize_pumpswap_confirmation_payload(
         )
     if "response_bytes" in payload:
         normalized["response_bytes"] = int(payload.get("response_bytes") or 0)
+    if "normalized_rows" in payload:
+        normalized["normalized_rows"] = int(payload.get("normalized_rows") or 0)
     if "transport_operation_identities" in payload:
         normalized["transport_operation_identities"] = list(
             payload.get("transport_operation_identities") or ()
@@ -495,6 +497,10 @@ def normalize_pumpswap_confirmation_payload(
         payload.get("pump_migration_proof"), Mapping
     ):
         normalized["pump_migration_proof"] = dict(payload["pump_migration_proof"])
+    if "expected_transport_operations" in payload:
+        normalized["expected_transport_operations"] = int(
+            payload.get("expected_transport_operations") or 0
+        )
     return NormalizedSourceResult(
         source_name=PUMPSWAP_SOURCE_NAME,
         request_kind=request_kind,
@@ -706,14 +712,32 @@ def _rpc_post(
     *,
     timeout_seconds: float,
 ) -> Mapping[str, Any]:
+    from printer_v1.sources.measured_transport import BYTE_CEILINGS
+
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
     req = url_request.Request(rpc_url, data=body, headers=_RPC_HEADERS, method="POST")
+    byte_ceiling = int(BYTE_CEILINGS.get("solana_rpc", 1_048_576))
     try:
         with url_request.urlopen(req, timeout=timeout_seconds) as response:
-            raw = response.read(1_048_576)
+            raw = response.read(byte_ceiling + 1)
+            response_bytes = len(raw)
+            if response_bytes > byte_ceiling:
+                return {
+                    "fixture_status": "failure",
+                    "failure_type": "pumpswap_rpc_byte_ceiling",
+                    "failure_message": f"RPC {method} exceeded byte ceiling",
+                    "response_bytes": response_bytes,
+                    "transport_operations_used": 1,
+                }
             data = json.loads(raw.decode("utf-8"))
             if not isinstance(data, dict):
-                return {"fixture_status": "failure", "failure_type": "pumpswap_rpc_malformed", "failure_message": f"RPC {method} returned non-object"}
+                return {
+                    "fixture_status": "failure",
+                    "failure_type": "pumpswap_rpc_malformed",
+                    "failure_message": f"RPC {method} returned non-object",
+                    "response_bytes": response_bytes,
+                    "transport_operations_used": 1,
+                }
             if data.get("error") is not None or "result" not in data:
                 return {
                     "fixture_status": "failure",
@@ -721,12 +745,23 @@ def _rpc_post(
                     "failure_message": (
                         f"RPC {method} returned an error or omitted result"
                     ),
+                    "response_bytes": response_bytes,
+                    "transport_operations_used": 1,
                 }
+            data = dict(data)
+            data["response_bytes"] = response_bytes
+            data["transport_operations_used"] = 1
             return data
     except url_error.HTTPError as exc:
         code = exc.code
         exc.close()
-        return {"fixture_status": "failure", "failure_type": "pumpswap_rpc_http_error", "failure_message": f"Solana RPC HTTP error {code}"}
+        return {
+            "fixture_status": "failure",
+            "failure_type": "pumpswap_rpc_http_error",
+            "failure_message": f"Solana RPC HTTP error {code}",
+            "response_bytes": 0,
+            "transport_operations_used": 1,
+        }
     except (OSError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         return {
             "fixture_status": "failure",
@@ -734,6 +769,8 @@ def _rpc_post(
             "failure_message": (
                 f"{type(exc).__name__}: Solana RPC transport/shape failure"
             ),
+            "response_bytes": 0,
+            "transport_operations_used": 1,
         }
 
 
