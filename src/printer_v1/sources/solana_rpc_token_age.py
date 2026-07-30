@@ -46,11 +46,14 @@ from printer_v1.sources.contracts import (
     build_source_adapter_contract,
     validate_source_adapter_contract,
 )
+from printer_v1.sources.operational_source_contracts import (
+    OFFICIAL_SOLANA_PUBLIC_RPC_URL,
+)
 
 
 SOLANA_RPC_SOURCE_NAME = "solana_rpc"
 SOLANA_RPC_TOKEN_AGE_REQUEST_KIND = "mint_creation_time_reference"
-SOLANA_PUBLIC_RPC_URL = "https://api.mainnet-beta.solana.com"
+SOLANA_PUBLIC_RPC_URL = OFFICIAL_SOLANA_PUBLIC_RPC_URL
 
 _T3_MAX_REQUESTS_PER_TOKEN = 8
 _T3_MAX_SIGNATURE_PAGES = 3
@@ -378,7 +381,9 @@ def _rpc_post(
         return {
             "fixture_status": "failure",
             "failure_type": "solana_rpc_token_age_transport_error",
-            "failure_message": str(exc),
+            "failure_message": (
+                f"{type(exc).__name__}: Solana RPC transport/shape failure"
+            ),
         }
 
 

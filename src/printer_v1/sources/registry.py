@@ -222,6 +222,11 @@ SOURCE_REGISTRY: dict[str, SourceDefinition] = {
             "candidate_pump_migration_signature_lookup",
             "candidate_pump_migration_transaction",
             "candidate_pumpswap_pool_verification",
+            # V2-9.8B restored-factory narrow stateless live-tail locator.
+            # These are ordinary-run inputs only: no cursor, backfill, recovery
+            # or candidate-acquisition authority.
+            "restored_pump_migration_signature_page",
+            "restored_pump_migration_transaction",
         ),
         default_rate_limit_per_minute=30,
         stale_after_seconds=120,
@@ -280,10 +285,13 @@ SOURCE_REGISTRY: dict[str, SourceDefinition] = {
         default_rate_limit_per_minute=30,
         stale_after_seconds=30,
         retry_after_seconds=30,
-        max_retries=2,
+        max_retries=0,
         priority_class="paper_realism",
         restriction="paper_simulation_only",
-        notes="Quote realism only; never live execution.",
+        notes=(
+            "Keyless api.jup.ag quote realism only at 0.5 RPS; exact identity "
+            "validation, no retry, key, wallet, transaction build or execution."
+        ),
     ),
 }
 

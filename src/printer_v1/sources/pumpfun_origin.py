@@ -7,7 +7,7 @@ Two architecture defects motivated the reset (see
 ``docs/printer-v1-v2-9-7e-5-pump-origin-acquisition-architecture.md``):
 
 1. The retired path froze one ``getSlot(finalized)`` value and rejected any
-   signature row with ``slot > cutoff``. ``api.mainnet-beta.solana.com`` is a
+   signature row with ``slot > cutoff``. ``api.mainnet.solana.com`` is a
    multi-backend pool, so that cutoff came from a different node than the
    signature pages. A genuinely finalized row could — and repeatedly did —
    exceed it, emptying the entire usable sample (4D: 32/32, 4H: 32/32).

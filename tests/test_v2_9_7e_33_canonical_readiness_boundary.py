@@ -352,39 +352,40 @@ class HonestBlockerTests(_SnapshotReadinessBase):
 
 
 class PreflightBlocksBeforeAuthorizationTests(_SnapshotReadinessBase):
-    def test_missing_secret_blocks_before_any_transport(self) -> None:
-        # A raising pump transport would raise if reached; preflight stops first.
-        result = self._run(
-            pump_transport=_RaisingPumpTransport("TIMEOUT"),
-            secret_present=False,
-        )
-        self.assertEqual(result.status, "BLOCKED_PREFLIGHT")
-        self.assertEqual(result.preflight_status, "BLOCKED")
-        self.assertTrue(
-            any("secret_missing" in reason for reason in result.blocked_reasons)
-        )
-        self.assertEqual(result.complete_bundle_count, 0)
+    def test_missing_conditional_helius_secret_does_not_block(self) -> None:
+        transport, _ = _two_create_transport()
+        result = self._run(pump_transport=transport, secret_present=False)
+        self.assertEqual(result.status, "READY")
+        self.assertEqual(result.preflight_status, "READY")
 
     def test_contract_drift_blocks_before_any_transport(self) -> None:
         result = self._run(
             pump_transport=_RaisingPumpTransport("TIMEOUT"),
             secret_present=True,
-            preflight_runtime_overrides={"geckoterminal": {"api_version": "20230302"}},
+            preflight_runtime_overrides={
+                "source_contracts": {
+                    "direct_pump_migration_locator": {"contract_version": ""}
+                }
+            },
         )
         self.assertEqual(result.status, "BLOCKED_PREFLIGHT")
         self.assertTrue(
-            any("api_version" in reason for reason in result.blocked_reasons)
+            any("contract_version" in reason.casefold() for reason in result.blocked_reasons)
         )
 
     def test_runner_preflight_matches_committed_preflight(self) -> None:
         # The runner delegates to the same committed preflight owner.
         drift = build_readiness_source_contract_preflight(
             secret_present=True,
-            runtime_overrides={"geckoterminal": {"api_version": "20230302"}},
+            runtime_overrides={
+                "source_contracts": {
+                    "direct_pump_migration_locator": {"contract_version": ""}
+                }
+            },
         )
         self.assertEqual(drift["status"], "BLOCKED")
         missing = build_readiness_source_contract_preflight(secret_present=False)
-        self.assertEqual(missing["status"], "BLOCKED")
+        self.assertEqual(missing["status"], "READY")
 
 
 # ===========================================================================

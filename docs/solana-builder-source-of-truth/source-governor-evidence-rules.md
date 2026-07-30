@@ -2,6 +2,19 @@
 
 **Status:** ACTIVE — verified 2026-07-12
 
+## Restored Factory Compatibility Reset (2026-07-30)
+
+The ordinary restored graph uses the shared contracts in
+`src/printer_v1/sources/operational_source_contracts.py`. Runtime and zero-I/O
+preflight consume the same endpoints, classifications, request kinds, contract
+versions, pacing and failure effects.
+
+The direct Pump migration locator is a mandatory, Central-Scheduler-owned input
+whose individual finalized Solana page and transaction calls are separately
+Source-Governed. PumpPortal and the candidate-acquisition/cursor/recovery owners
+are deferred and have no ordinary runtime authority. A conditional source or
+fallback can never erase a mandatory contract failure.
+
 Defines what evidence each governed source may contribute to a candidate,
 what evidence it may NOT contribute, and what the Source Governor must
 enforce at the request boundary.

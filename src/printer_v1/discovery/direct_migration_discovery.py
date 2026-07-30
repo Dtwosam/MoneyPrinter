@@ -1,42 +1,44 @@
-"""V2-9.7E.42 direct Pump migration discovery orchestrator.
+"""V2-9.8B restored direct Pump migration discovery orchestrator.
 
-Turns the keyless PumpPortal ``subscribeMigration`` free stream into operational
-graduated Pump.fun candidate supply:
+Turns one bounded, cursor-free finalized Pump-program live-tail page into
+operational graduated Pump.fun candidate supply:
 
-    subscribeMigration -> (mint, migration signature)
-      -> governed finalized transaction verification (exact Pump migration proof)
+    governed getSignaturesForAddress(Pump program, finalized)
+      -> governed getTransaction(signature, finalized)
+      -> exact pinned Pump migrate instruction/account verification
       -> resolve unique PumpSwap pool from the signature
       -> confirm PumpSwap owner + exact base_mint
       -> persist PUMPSWAP_GRADUATED_CONFIRMED candidate
 
-PumpPortal is locator evidence only. Every candidate is verified on-chain through
-the Source Governor before it is persisted. No wallet, authentication, payment,
-trade subscription, execution, lifecycle, pilot authorization, or memory work is
-performed here. Migration block time is graduation evidence only and never becomes
-token creation time.
+The live tail owns no cursor, backfill, recovery or historical completeness
+claim. Every RPC operation is separately Source-Governed and recorded before any
+candidate is persisted. No wallet, authentication, payment, subscription,
+execution, lifecycle, pilot authorization or memory work is performed here.
 """
 
 from __future__ import annotations
 
 import sqlite3
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
 from printer_v1.contracts.enums import SourceStatus
-from printer_v1.db.sqlite_write_contracts import (
-    connect_operational,
-    release_write_transaction,
-)
+from printer_v1.db.sqlite_write_contracts import connect_operational
 from printer_v1.sources.contracts import build_governed_source_request
 from printer_v1.sources.governed_execution import execute_source_request_with_governor
 from printer_v1.sources.pump_migration import (
     MIGRATION_PROVENANCE,
     build_graduation_verifier_transport,
 )
-from printer_v1.sources.pumpportal import build_pumpportal_adapter
+from printer_v1.sources.direct_pump_migration import (
+    MAX_TRANSACTION_LOOKUPS,
+    SIGNATURE_PAGE_REQUEST_KIND,
+    SOURCE_NAME as MIGRATION_SOURCE,
+    TRANSACTION_REQUEST_KIND,
+    build_direct_pump_migration_adapter,
+)
 from printer_v1.sources.pumpswap import build_pumpswap_adapter
 from printer_v1.sources.pumpswap_graduated_registry import (
     LATEST_GRADUATED_CHANNEL,
@@ -45,8 +47,7 @@ from printer_v1.sources.pumpswap_graduated_registry import (
     record_graduated_candidate,
 )
 
-MIGRATION_SOURCE = "pumpportal"
-MIGRATION_REQUEST_KIND = "pumpfun_migration_stream"
+MIGRATION_REQUEST_KIND = SIGNATURE_PAGE_REQUEST_KIND
 VERIFY_SOURCE = "pumpswap"
 VERIFY_REQUEST_KIND = "pumpswap_signature_pool_resolution"
 
@@ -67,27 +68,6 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-# V2-9.7E.42 (BL-42-01): a migration NOTIFICATION arrives before its finalized
-# transaction is queryable on the public multi-backend RPC. A verification that
-# fails with one of these transient reasons is not a graduation failure — the
-# transaction is simply not yet retrievable — so it is eligible for exactly one
-# bounded governed re-verification after a settle window. Non-transient failures
-# (wrong owner, mint mismatch, zero/ambiguous pool, failed tx) are never retried.
-_TRANSIENT_VERIFY_MARKERS = (
-    "pumpswap_rpc_transport_error",
-    "pumpswap_rpc_http_error",
-    "pumpswap_rpc_malformed",
-    "migration_transaction_not_found",
-    "transaction_not_found",
-)
-
-
-def _is_transient_verify_failure(failure_type: str | None) -> bool:
-    if not failure_type:
-        return False
-    return any(marker in failure_type for marker in _TRANSIENT_VERIFY_MARKERS)
-
-
 def _merge_intakes(intakes: list[dict[str, Any]]) -> dict[str, Any]:
     """Merge per-round intakes into one deduplicated intake across the attempt."""
     merged_pairs: list[dict[str, str]] = []
@@ -98,11 +78,29 @@ def _merge_intakes(intakes: list[dict[str, Any]]) -> dict[str, Any]:
     missing_mint = 0
     missing_signature = 0
     duplicate = 0
+    transport_operation_count = 0
+    cursor_used = False
+    transaction_rejections: list[str] = []
+    transaction_source_failures: list[str] = []
+    live_tail_failures: list[str] = []
     for intake in intakes:
         events_received += intake["events_received"]
         missing_mint += intake["missing_mint"]
         missing_signature += intake["missing_signature"]
         duplicate += intake["duplicate"]
+        transport_operation_count += int(intake.get("transport_operation_count") or 0)
+        cursor_used = cursor_used or bool(intake.get("cursor_used"))
+        transaction_rejections.extend(
+            str(value) for value in intake.get("transaction_rejections") or ()
+        )
+        transaction_source_failures.extend(
+            str(value)
+            for value in intake.get("transaction_source_failures") or ()
+        )
+        if intake.get("direct_pump_live_tail_failure"):
+            live_tail_failures.append(
+                str(intake["direct_pump_live_tail_failure"])
+            )
         conflicting.extend(intake["conflicting"])
         for pair in intake["valid_pairs"]:
             mint, sig = pair["mint"], pair["signature"]
@@ -129,6 +127,11 @@ def _merge_intakes(intakes: list[dict[str, Any]]) -> dict[str, Any]:
         "conflicting": conflicting,
         "conflicting_count": len(conflicting),
         "collection_rounds": len(intakes),
+        "transport_operation_count": transport_operation_count,
+        "cursor_used": cursor_used,
+        "transaction_rejections": transaction_rejections,
+        "transaction_source_failures": transaction_source_failures,
+        "direct_pump_live_tail_failures": live_tail_failures,
     }
 
 
@@ -281,28 +284,37 @@ def run_direct_migration_discovery(
 ) -> dict[str, Any]:
     """Run one bounded direct-migration discovery cycle (governed, fail-closed).
 
-    ``migration_transport`` supplies the bounded PumpPortal ``subscribeMigration``
-    events (live or fixture). ``verifier_transport_factory(mint, signature)`` returns
+    ``migration_transport`` supplies exactly one Solana JSON-RPC response per
+    governed live-tail page/transaction request. ``verifier_transport_factory``
+    returns
     the governed PumpSwap graduation-verifier transport for one candidate; when
     omitted, the live ``build_graduation_verifier_transport`` is used. All source
     execution goes through the Source Governor and is recorded in the source ledger.
 
-    BL-42-01 robustness (live discovery): ``collection_rounds`` issues that many
-    bounded governed migration requests, accumulating deduplicated locator pairs;
-    ``settle_seconds`` is a single bounded wait before verification so freshly
-    migrated transactions finalize; ``reverify_on_transient`` allows exactly one
-    additional bounded governed verification per candidate whose first attempt
-    failed with a transient RPC/not-found reason (never a graduation failure).
-    Defaults preserve the original single-round, no-wait behaviour for fixtures.
+    The restored path requires one finalized stateless page, no settle wait and
+    no re-verification. The legacy arguments remain present for call-shape
+    compatibility but any non-restored value fails before a source request.
 
     Returns a full discovery report; raises nothing on ordinary market/verification
     failures (they are recorded honestly).
     """
     now = now or _utc_now_iso()
+    if collection_rounds != 1:
+        raise ValueError("DIRECT_PUMP_LIVE_TAIL_REQUIRES_ONE_COLLECTION_ROUND")
+    if settle_seconds != 0.0:
+        raise ValueError("FINALIZED_DIRECT_PUMP_LIVE_TAIL_FORBIDS_SETTLE_SLEEP")
+    if reverify_on_transient or reverify_settle_seconds != 0.0:
+        raise ValueError("DIRECT_PUMP_LIVE_TAIL_FORBIDS_AUTOMATIC_REVERIFY")
     if verifier_transport_factory is None:
+        verified_now_epoch = int(
+            datetime.fromisoformat(now.replace("Z", "+00:00")).timestamp()
+        )
+
         def verifier_transport_factory(mint: str, signature: str):  # type: ignore[misc]
             return build_graduation_verifier_transport(
-                migration_signature=signature, expected_mint=mint
+                migration_signature=signature,
+                expected_mint=mint,
+                now_epoch=verified_now_epoch,
             )
 
     connection = connect_operational(db_path)
@@ -310,29 +322,101 @@ def run_direct_migration_discovery(
     pumpswap_request_count = 0
     stage_request_ids: list[int] = []
 
-    def _governed_migration(round_index: int) -> dict[str, Any]:
+    def _execute_direct_request(
+        *,
+        request_kind: str,
+        request_key: str,
+        payload: Mapping[str, Any],
+    ):
         nonlocal migration_request_count
-        adapter = build_pumpportal_adapter(enabled=True, fixture_transport=migration_transport)
+        adapter = build_direct_pump_migration_adapter(
+            enabled=True,
+            transport=migration_transport,
+        )
         request = build_governed_source_request(
             MIGRATION_SOURCE,
-            MIGRATION_REQUEST_KIND,
-            request_key=f"{request_key_prefix}-migration-r{round_index}",
+            request_kind,
+            request_key=request_key,
             tracking_priority=0,
-            payload={"request_kind": MIGRATION_REQUEST_KIND, "chain": "solana"},
+            payload=payload,
         )
         execution = execute_source_request_with_governor(
             connection, request, adapter, recent_request_count=migration_request_count
         )
         stage_request_ids.append(int(execution.request_record.id))
         migration_request_count += 1
-        result = execution.normalized_result
-        ok = (
-            result.source_status in {SourceStatus.COMPLETE, SourceStatus.PARTIAL}
-            and not result.failure_type
+        return execution.normalized_result
+
+    def _governed_migration() -> dict[str, Any]:
+        page = _execute_direct_request(
+            request_kind=SIGNATURE_PAGE_REQUEST_KIND,
+            request_key=f"{request_key_prefix}-migration-page",
+            payload={
+                "request_kind": SIGNATURE_PAGE_REQUEST_KIND,
+                "chain": "solana",
+                "commitment": "finalized",
+                "cursor": None,
+            },
         )
-        one = intake_migration_events(result.normalized_payload if ok else None)
-        if not ok:
-            one["migration_stream_failure"] = result.failure_type
+        page_ok = (
+            page.source_status in {SourceStatus.COMPLETE, SourceStatus.PARTIAL}
+            and not page.failure_type
+        )
+        if not page_ok:
+            one = intake_migration_events(None)
+            one["direct_pump_live_tail_failure"] = page.failure_type
+            one["transport_operation_count"] = 1
+            return one
+
+        signatures = list((page.normalized_payload or {}).get("signatures") or ())
+        tokens: list[Mapping[str, Any]] = []
+        failures: list[str] = []
+        source_failures: list[str] = []
+        operation_count = 1
+        for index, row in enumerate(signatures[:MAX_TRANSACTION_LOOKUPS]):
+            if not isinstance(row, Mapping):
+                failures.append("direct_pump_signature_row_malformed")
+                continue
+            signature = row.get("signature")
+            if not isinstance(signature, str) or not signature:
+                failures.append("direct_pump_signature_identity_missing")
+                continue
+            tx = _execute_direct_request(
+                request_kind=TRANSACTION_REQUEST_KIND,
+                request_key=f"{request_key_prefix}-migration-tx-{index + 1}",
+                payload={
+                    "request_kind": TRANSACTION_REQUEST_KIND,
+                    "chain": "solana",
+                    "commitment": "finalized",
+                    "signature": signature,
+                },
+            )
+            operation_count += 1
+            if (
+                tx.source_status not in {SourceStatus.COMPLETE, SourceStatus.PARTIAL}
+                or tx.failure_type
+            ):
+                # Most finalized Pump-program transactions are not migrations.
+                # Rejections are recorded fail-closed and never admitted.
+                failure = str(
+                    tx.failure_type or "direct_pump_transaction_rejected"
+                )
+                failures.append(failure)
+                if not failure.startswith("direct_pump_migration_rejected_"):
+                    source_failures.append(failure)
+                continue
+            tokens.extend(
+                item
+                for item in (tx.normalized_payload or {}).get("tokens") or ()
+                if isinstance(item, Mapping)
+            )
+            if len(tokens) >= max_candidates:
+                break
+        one = intake_migration_events({"tokens": tokens})
+        one["transaction_rejections"] = failures
+        one["transaction_source_failures"] = source_failures
+        one["transport_operation_count"] = operation_count
+        one["cursor_used"] = False
         return one
 
     def _governed_verify(mint: str, signature: str, attempt: int):
@@ -359,15 +443,9 @@ def run_direct_migration_discovery(
         return execution.normalized_result
 
     try:
-        # --- Migration intake (governed, multi-round) -----------------------
-        round_intakes = [_governed_migration(r) for r in range(max(1, collection_rounds))]
+        # --- One stateless finalized migration live-tail page ---------------
+        round_intakes = [_governed_migration()]
         intake = _merge_intakes(round_intakes)
-
-        # --- Bounded settle so freshly migrated transactions finalize -------
-        # V2-9.8B.20: never sleep while holding a SQLite write transaction.
-        if settle_seconds > 0 and intake["valid_pair_count"] > 0:
-            release_write_transaction(connection)
-            time.sleep(settle_seconds)
 
         # --- Per-candidate governed on-chain verification -------------------
         verifications: list[dict[str, Any]] = []
@@ -381,20 +459,6 @@ def run_direct_migration_discovery(
                 and not vres.failure_type
             )
             attempts = 1
-            if (
-                not verified
-                and reverify_on_transient
-                and _is_transient_verify_failure(vres.failure_type)
-            ):
-                if reverify_settle_seconds > 0:
-                    release_write_transaction(connection)
-                    time.sleep(reverify_settle_seconds)
-                vres = _governed_verify(mint, signature, attempt=2)
-                verified = (
-                    vres.source_status in {SourceStatus.COMPLETE, SourceStatus.PARTIAL}
-                    and not vres.failure_type
-                )
-                attempts = 2
             record: dict[str, Any] = {
                 "mint": mint,
                 "signature": signature,
@@ -476,11 +540,34 @@ def run_direct_migration_discovery(
             )
 
         ledger = _ledger_counts(connection, request_ids=stage_request_ids)
+        expected_governed_requests = (
+            migration_request_count + pumpswap_request_count
+        )
+        expected_transport_operations = (
+            migration_request_count + (2 * pumpswap_request_count)
+        )
+        ledger["transport_operations"] = int(
+            intake.get("transport_operation_count") or 0
+        ) + (2 * pumpswap_request_count)
+        ledger["operation_accounting_reconciled"] = (
+            int(ledger["source_requests"]) == expected_governed_requests
+            and ledger["transport_operations"] == expected_transport_operations
+            and int(intake.get("transport_operation_count") or 0)
+            == migration_request_count
+        )
         forbidden = _forbidden_deltas(connection)
     finally:
         connection.close()
 
     return {
+        "status": (
+            "PROVIDER_FAILURE"
+            if (
+                intake.get("direct_pump_live_tail_failures")
+                or intake.get("transaction_source_failures")
+            )
+            else "COMPLETE"
+        ),
         "generated_at": now,
         "migration_intake": intake,
         "verifications": verifications,

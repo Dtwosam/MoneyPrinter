@@ -219,7 +219,12 @@ def decode_supported_pump_creation_transaction(
     ]
     if len(matches) != 1:
         return {**failed, "reason": "exactly_one_supported_create_required"}
-    if not isinstance(tx_result.get("slot"), int) or not isinstance(tx_result.get("blockTime"), (int, float)):
+    if (
+        not isinstance(tx_result.get("slot"), int)
+        or int(tx_result["slot"]) < 0
+        or not isinstance(tx_result.get("blockTime"), (int, float))
+        or int(tx_result["blockTime"]) <= 0
+    ):
         return {**failed, "reason": "finalized_slot_or_block_time_missing"}
     return {**matches[0], "slot": int(tx_result["slot"]),
             "block_time": int(tx_result["blockTime"])}

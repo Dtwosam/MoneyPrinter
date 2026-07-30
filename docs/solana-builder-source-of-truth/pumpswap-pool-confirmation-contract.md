@@ -10,6 +10,16 @@ the PumpSwap adapter is **read-only confirmation and provenance metadata only**.
 It confirms that an observed token/pool exists on the graduation venue; it never
 executes, signs, builds instructions, routes, or moves funds.
 
+## Restored Factory Contract Refresh (2026-07-30)
+
+The active join uses the pinned official Pump and PumpSwap IDLs in
+`pump_contracts.py`. A candidate is confirmed only when the exact finalized Pump
+`migrate` instruction joins to the canonical PumpSwap pool PDA and the account
+has the exact PumpSwap owner, Pool discriminator/layout, canonical index, base
+mint, wrapped-SOL quote mint, creator, LP mint and vault identities. Wrong
+program, pool, base mint, layout, PDA or ambiguous/missing data fails closed.
+Aggregator observations never substitute for this join.
+
 ## PumpSwap AMM Program ID (verified on-chain 2026-07-12)
 
 `pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA`

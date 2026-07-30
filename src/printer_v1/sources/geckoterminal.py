@@ -26,6 +26,9 @@ from printer_v1.sources.geckoterminal_15m import (
     build_gt15m_ohlcv_url,
     build_gt15m_trades_url,
 )
+from printer_v1.sources.operational_source_contracts import (
+    GECKOTERMINAL_EXACT_PAIR_URL,
+)
 
 
 GECKOTERMINAL_SOURCE_NAME = "geckoterminal"
@@ -41,10 +44,7 @@ GECKOTERMINAL_TIMEOUT_SECONDS = 8.0
 # kind as DexScreener's primary snapshot; source_name distinguishes the provider.
 GECKOTERMINAL_PAIR_SNAPSHOT_REQUEST_KIND = "pair_market_snapshot"
 GECKOTERMINAL_READINESS_BASE_REQUEST_KIND = "geckoterminal_readiness_base_snapshot"
-GECKOTERMINAL_POOL_URL_TEMPLATE = (
-    "https://api.geckoterminal.com/api/v2/networks/solana/pools/{pool_address}"
-    "?include=base_token,quote_token,dex"
-)
+GECKOTERMINAL_POOL_URL_TEMPLATE = GECKOTERMINAL_EXACT_PAIR_URL
 
 ALLOWED_REQUEST_KINDS = frozenset({
     "candidate_nomination",

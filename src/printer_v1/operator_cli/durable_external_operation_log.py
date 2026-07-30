@@ -23,7 +23,7 @@ class DurablePumpRpcTransport:
         db_path: str | Path,
         run_id: str,
         cycle_id: str,
-        redacted_host: str = "api.mainnet-beta.solana.com",
+        redacted_host: str = "api.mainnet.solana.com",
     ) -> None:
         self._delegate = delegate
         self._db_path = Path(db_path)

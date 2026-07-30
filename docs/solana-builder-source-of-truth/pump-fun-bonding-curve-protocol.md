@@ -1,10 +1,24 @@
 # Pump.fun Bonding-Curve Protocol
 
-**Status:** AUTHORED 2026-07-12
-**Authority:** A6 (Printer implementation `src/printer_v1/sources/pumpportal.py`,
-verified PumpPortal stream schema in `pumpportal-api-contract.md`); on-chain
-program details (A1 `github.com/pump-fun/pump-public-docs`) marked
-`UNKNOWN_REQUIRES_RESEARCH` where not independently pinned in this lane.
+**Status:** REFRESHED 2026-07-30 — DIRECT ON-CHAIN MIGRATION CONTRACT ACTIVE
+**Active authority:** A1 official `github.com/pump-fun/pump-public-docs` IDLs,
+pinned and verified by `src/printer_v1/sources/pump_contracts.py`. Older
+PumpPortal observations below are retained only as historical contract text and
+have no ordinary-runtime authority.
+
+## Restored Factory Contract Refresh (2026-07-30)
+
+The ordinary restored factory no longer consumes PumpPortal migration frames.
+The official Pump public repository and IDL are pinned by
+`src/printer_v1/sources/pump_contracts.py`, including the mainnet Pump program
+`6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P`, the exact `migrate`
+discriminator, its ordered 25-account contract, and the Pump/PumpSwap PDA
+relationships. `UNKNOWN_REQUIRES_RESEARCH` below is preserved as historical
+lane text and does not override that later pinned active contract.
+
+The live-tail locator accepts only a successful finalized transaction containing
+exactly one supported top-level Pump `migrate` instruction. Program presence
+without the exact discriminator and accounts is insufficient.
 
 Pump.fun launches tokens on a bonding curve. When a token's curve completes it
 **graduates/migrates** to a post-curve AMM (historically Raydium; PumpSwap for

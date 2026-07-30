@@ -39,6 +39,9 @@ from printer_v1.sources.contracts import (
     build_source_adapter_contract,
     validate_source_adapter_contract,
 )
+from printer_v1.sources.operational_source_contracts import (
+    OFFICIAL_SOLANA_PUBLIC_RPC_URL,
+)
 
 
 PUMPSWAP_SOURCE_NAME = "pumpswap"
@@ -73,7 +76,7 @@ _PUMPSWAP_POOL_BASE_MINT_OFFSET = 43
 _PUMPSWAP_POOL_QUOTE_MINT_OFFSET = 75
 _PUMPSWAP_PUBKEY_LEN = 32
 _RPC_HEADERS = {"Content-Type": "application/json", "Accept": "application/json"}
-_DEFAULT_RPC_URL = "https://api.mainnet-beta.solana.com"
+_DEFAULT_RPC_URL = OFFICIAL_SOLANA_PUBLIC_RPC_URL
 
 _BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
@@ -358,7 +361,12 @@ def build_pumpswap_confirmation_transport(
 
     def transport(context: SourceAdapterContext) -> Mapping[str, Any]:
         del context
-        acct = _rpc_post(rpc_url, "getAccountInfo", [pool_address, {"encoding": "base64"}], timeout_seconds=timeout_seconds)
+        acct = _rpc_post(
+            rpc_url,
+            "getAccountInfo",
+            [pool_address, {"encoding": "base64", "commitment": "finalized"}],
+            timeout_seconds=timeout_seconds,
+        )
         if acct.get("fixture_status") == "failure":
             return MappingProxyType(dict(acct))
         account_value = (acct.get("result") or {}).get("value")
@@ -372,7 +380,14 @@ def build_pumpswap_confirmation_transport(
             tx = _rpc_post(
                 rpc_url,
                 "getTransaction",
-                [migration_signature, {"maxSupportedTransactionVersion": 0, "encoding": "json"}],
+                [
+                    migration_signature,
+                    {
+                        "maxSupportedTransactionVersion": 0,
+                        "encoding": "json",
+                        "commitment": "finalized",
+                    },
+                ],
                 timeout_seconds=timeout_seconds,
             )
             tx_result = tx.get("result") if isinstance(tx, Mapping) else None
@@ -607,7 +622,14 @@ def build_pumpswap_signature_pool_resolver_transport(
         tx = _rpc_post(
             rpc_url,
             "getTransaction",
-            [migration_signature, {"maxSupportedTransactionVersion": 0, "encoding": "json"}],
+            [
+                migration_signature,
+                {
+                    "maxSupportedTransactionVersion": 0,
+                    "encoding": "json",
+                    "commitment": "finalized",
+                },
+            ],
             timeout_seconds=timeout_seconds,
         )
         if tx.get("fixture_status") == "failure":
@@ -624,7 +646,12 @@ def build_pumpswap_signature_pool_resolver_transport(
         account_infos: dict[str, Any] = {}
         for i in range(0, len(keys), 100):
             chunk = keys[i:i + 100]
-            res = _rpc_post(rpc_url, "getMultipleAccounts", [chunk, {"encoding": "base64"}], timeout_seconds=timeout_seconds)
+            res = _rpc_post(
+                rpc_url,
+                "getMultipleAccounts",
+                [chunk, {"encoding": "base64", "commitment": "finalized"}],
+                timeout_seconds=timeout_seconds,
+            )
             if res.get("fixture_status") == "failure":
                 return MappingProxyType(dict(res))
             values = (res.get("result") or {}).get("value") or []
@@ -672,13 +699,27 @@ def _rpc_post(
             data = json.loads(raw.decode("utf-8"))
             if not isinstance(data, dict):
                 return {"fixture_status": "failure", "failure_type": "pumpswap_rpc_malformed", "failure_message": f"RPC {method} returned non-object"}
+            if data.get("error") is not None or "result" not in data:
+                return {
+                    "fixture_status": "failure",
+                    "failure_type": "pumpswap_rpc_error_or_result_missing",
+                    "failure_message": (
+                        f"RPC {method} returned an error or omitted result"
+                    ),
+                }
             return data
     except url_error.HTTPError as exc:
         code = exc.code
         exc.close()
         return {"fixture_status": "failure", "failure_type": "pumpswap_rpc_http_error", "failure_message": f"Solana RPC HTTP error {code}"}
     except (OSError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError) as exc:
-        return {"fixture_status": "failure", "failure_type": "pumpswap_rpc_transport_error", "failure_message": str(exc)}
+        return {
+            "fixture_status": "failure",
+            "failure_type": "pumpswap_rpc_transport_error",
+            "failure_message": (
+                f"{type(exc).__name__}: Solana RPC transport/shape failure"
+            ),
+        }
 
 
 def _normalize_pumpswap_pool(pool: Mapping[str, Any]) -> dict[str, Any] | None:

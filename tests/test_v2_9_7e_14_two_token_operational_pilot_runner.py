@@ -370,7 +370,7 @@ class ProvenanceAndTimingTests(_PilotRunnerBase):
         self.assertTrue(callable(owner.received[0]["migration_transport"]))
         supply_kwargs = owner.received[0]["graduated_supply_kwargs"]
         self.assertTrue(supply_kwargs["run_locator"])
-        self.assertEqual(supply_kwargs["collection_rounds"], 3)
+        self.assertEqual(supply_kwargs["collection_rounds"], 1)
         # V2-9.7E.46B item 6: the candidate-search depth is the maximum safe depth
         # supported by the 45-operation ceiling (5 fully vetted candidates), with a
         # combined front-door pool of 6 to permit lawful replacement. No fixed tiny

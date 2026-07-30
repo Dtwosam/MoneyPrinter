@@ -25,11 +25,14 @@ from printer_v1.sources.solana_rpc_holder import (
     _fetch_holder_data,
     normalize_solana_rpc_holder_response,
 )
+from printer_v1.sources.operational_source_contracts import (
+    HELIUS_FIXED_MAINNET_URL as SHARED_HELIUS_FIXED_MAINNET_URL,
+)
 
 
 HELIUS_SOURCE_NAME = "helius_free"
 HELIUS_FIXED_MAINNET_HOST = "mainnet.helius-rpc.com"
-HELIUS_FIXED_MAINNET_URL = f"https://{HELIUS_FIXED_MAINNET_HOST}/"
+HELIUS_FIXED_MAINNET_URL = SHARED_HELIUS_FIXED_MAINNET_URL
 HELIUS_API_KEY_ENV = "PRINTER_HELIUS_API_KEY"
 HELIUS_FREE_RPC_RATE_LIMIT_PER_SECOND = 10
 HELIUS_STANDARD_RPC_CREDITS_PER_OPERATION = 1

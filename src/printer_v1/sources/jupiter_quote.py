@@ -12,6 +12,7 @@ realistic entry or exit was available at this price and liquidity level.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import MappingProxyType
@@ -28,13 +29,14 @@ from printer_v1.sources.contracts import (
     build_source_adapter_contract,
     validate_source_adapter_contract,
 )
+from printer_v1.sources.operational_source_contracts import (
+    JUPITER_KEYLESS_QUOTE_URL,
+)
 
 
 JUPITER_QUOTE_SOURCE_NAME = "jupiter_quote"
-# Primary free/no-key endpoint. lite-api.jup.ag is the current no-key quote path.
-JUPITER_QUOTE_API_URL = "https://lite-api.jup.ag/swap/v1/quote"
-# Legacy endpoint — kept only as a named constant so tests can assert it is NOT the default.
-JUPITER_QUOTE_LEGACY_V6_URL = "https://quote-api.jup.ag/v6/quote"
+# Current official keyless host, bounded locally to 0.5 RPS.
+JUPITER_QUOTE_API_URL = JUPITER_KEYLESS_QUOTE_URL
 JUPITER_QUOTE_TIMEOUT_SECONDS = 8.0
 JUPITER_QUOTE_PUBLIC_API_HEADERS = {
     "User-Agent": "PrinterV1/0.1 (+paper-only quote check)",
@@ -164,13 +166,18 @@ def build_jupiter_paper_quote_transport(
 
     def transport(context: SourceAdapterContext) -> Mapping[str, Any]:
         del context
-        return _load_public_json(endpoint, timeout_seconds=timeout_seconds)
+        response = dict(_load_public_json(endpoint, timeout_seconds=timeout_seconds))
+        response["_requested_input_mint"] = input_mint
+        response["_requested_output_mint"] = output_mint
+        response["_requested_amount"] = str(amount_lamports)
+        response["_requested_slippage_bps"] = int(slippage_bps)
+        return MappingProxyType(response)
 
     return transport
 
 
 def normalize_jupiter_quote_response(
-    payload: Mapping[str, Any],
+    payload: Mapping[str, Any] | None,
     *,
     request_kind: str,
 ) -> NormalizedSourceResult:
@@ -181,6 +188,12 @@ def normalize_jupiter_quote_response(
             "Jupiter Quote request kind is not allowed",
         )
 
+    if not isinstance(payload, Mapping):
+        return _failure_result(
+            request_kind,
+            "jupiter_quote_null_or_non_object",
+            "Jupiter Quote returned null or a non-object payload",
+        )
     fixture_status = payload.get("fixture_status")
     if fixture_status == "failure":
         return _failure_result(
@@ -194,77 +207,221 @@ def normalize_jupiter_quote_response(
             "jupiter_quote_rate_limited",
             "Jupiter Quote rate limited",
         )
-    if fixture_status == "no_route":
-        # Jupiter returned no route — valid paper evidence of route unavailability
-        normalized = {
-            "route_available": False,
-            "route_plan_present": False,
-            "quote_captured_at": datetime.now(timezone.utc).isoformat(),
-            "freshness_label": "QUOTE_FRESH",
-            "target_status": "TARGET_MATCH",
-            "paper_only_context": True,
-            "liquidity_context_label": "LIQUIDITY_CONTEXT_CAUTION",
-            "source_name": JUPITER_QUOTE_SOURCE_NAME,
-            "request_kind": request_kind,
-        }
-        return NormalizedSourceResult(
-            source_name=JUPITER_QUOTE_SOURCE_NAME,
-            request_kind=request_kind,
-            source_status=SourceStatus.COMPLETE,
-            data_quality_label=DataQualityLabel.ACCEPTABLE_PARTIAL_DATA,
-            normalized_payload=MappingProxyType(normalized),
-            status_code=200,
+    if fixture_status == "no_route" or payload.get("error") is not None:
+        return _failure_result(
+            request_kind,
+            "jupiter_quote_unsupported_or_no_route",
+            "Jupiter Quote returned no supported route",
         )
 
-    # Real Jupiter v6 quote response or a pre-normalized fixture
-    route_plan = payload.get("routePlan") or payload.get("route_plan") or []
-    has_route = isinstance(route_plan, list) and len(route_plan) > 0
-    price_impact_pct = payload.get("priceImpactPct") or payload.get("price_impact_pct") or "0"
-    slippage_bps = payload.get("slippageBps") or payload.get("slippage_bps") or 0
-
-    try:
-        price_impact_bps = float(price_impact_pct) * 100
-    except (TypeError, ValueError):
-        price_impact_bps = 0.0
-
-    # If the payload already has pre-normalized quote fields, pass through
+    # Pre-normalized frozen evidence remains supported only when it carries the
+    # exact identities and paper fields required by the current contract.
     if payload.get("route_available") is not None:
+        required = (
+            "input_mint",
+            "output_mint",
+            "input_amount",
+            "output_amount",
+            "slippage_bps",
+            "price_impact_bps",
+            "route_plan",
+        )
+        if any(payload.get(field) in (None, "") for field in required):
+            return _failure_result(
+                request_kind,
+                "jupiter_quote_prenormalized_contract_incomplete",
+                "pre-normalized quote omitted exact contract fields",
+            )
+        if not payload.get("route_available") or not isinstance(
+            payload.get("route_plan"), list
+        ) or not payload.get("route_plan"):
+            return _failure_result(
+                request_kind,
+                "jupiter_quote_prenormalized_route_missing",
+                "pre-normalized quote has no supported route",
+            )
         normalized = dict(payload)
         normalized.setdefault("source_name", JUPITER_QUOTE_SOURCE_NAME)
         normalized.setdefault("request_kind", request_kind)
-        normalized.setdefault(
-            "input_mint", payload.get("inputMint") or payload.get("input_mint")
-        )
-        normalized.setdefault(
-            "output_mint", payload.get("outputMint") or payload.get("output_mint")
-        )
+        normalized.setdefault("paper_only_context", True)
         stale = bool(payload.get("fixture_stale"))
         return NormalizedSourceResult(
             source_name=JUPITER_QUOTE_SOURCE_NAME,
             request_kind=request_kind,
             source_status=SourceStatus.STALE if stale else SourceStatus.COMPLETE,
-            data_quality_label=DataQualityLabel.STALE_DATA if stale else DataQualityLabel.CLEAN_DATA,
+            data_quality_label=(
+                DataQualityLabel.STALE_DATA
+                if stale
+                else DataQualityLabel.CLEAN_DATA
+            ),
             normalized_payload=MappingProxyType(normalized),
             status_code=int(payload.get("_source_status_code") or 200),
         )
 
-    # Normalize raw Jupiter v6 API response
+    route_plan = payload.get("routePlan") or payload.get("route_plan") or []
+    input_mint = payload.get("inputMint")
+    output_mint = payload.get("outputMint")
+    input_amount = payload.get("inAmount")
+    output_amount = payload.get("outAmount")
+    threshold = payload.get("otherAmountThreshold")
+    slippage_bps = payload.get("slippageBps")
+    price_impact_pct = payload.get("priceImpactPct")
+    expected_input = payload.get("_requested_input_mint")
+    expected_output = payload.get("_requested_output_mint")
+    expected_amount = payload.get("_requested_amount")
+    expected_slippage = payload.get("_requested_slippage_bps")
+    if (
+        not isinstance(input_mint, str)
+        or not isinstance(output_mint, str)
+        or not isinstance(route_plan, list)
+        or not route_plan
+        or not isinstance(slippage_bps, int)
+    ):
+        return _failure_result(
+            request_kind,
+            "jupiter_quote_required_fields_malformed",
+            "quote identity, slippage or route is malformed",
+        )
+    if (
+        (expected_input is not None and input_mint != expected_input)
+        or (expected_output is not None and output_mint != expected_output)
+        or (
+            expected_amount is not None
+            and str(input_amount) != str(expected_amount)
+        )
+        or (
+            expected_slippage is not None
+            and slippage_bps != int(expected_slippage)
+        )
+    ):
+        return _failure_result(
+            request_kind,
+            "jupiter_quote_request_identity_contradiction",
+            "quote response contradicts requested identity/amount/slippage",
+        )
+    try:
+        input_amount_int = int(str(input_amount))
+        output_amount_int = int(str(output_amount))
+        threshold_int = int(str(threshold))
+        price_impact_value = float(str(price_impact_pct))
+    except (TypeError, ValueError):
+        return _failure_result(
+            request_kind,
+            "jupiter_quote_amount_or_impact_malformed",
+            "quote amount or price impact is malformed",
+        )
+    if (
+        input_amount_int <= 0
+        or output_amount_int <= 0
+        or threshold_int <= 0
+        or threshold_int > output_amount_int
+        or slippage_bps < 0
+        or not math.isfinite(price_impact_value)
+        or price_impact_value < 0
+    ):
+        return _failure_result(
+            request_kind,
+            "jupiter_quote_amount_or_impact_contradiction",
+            "quote amount/threshold/price impact is contradictory",
+        )
+    if any(
+        not isinstance(item, Mapping)
+        or not isinstance(item.get("swapInfo"), Mapping)
+        for item in route_plan
+    ):
+        return _failure_result(
+            request_kind,
+            "jupiter_quote_route_item_malformed",
+            "route contains a malformed item",
+        )
+    route_items = [dict(item) for item in route_plan]
+    swaps = [item["swapInfo"] for item in route_items]
+    try:
+        swap_amounts = [
+            (int(str(swap.get("inAmount"))), int(str(swap.get("outAmount"))))
+            for swap in swaps
+        ]
+    except (TypeError, ValueError):
+        return _failure_result(
+            request_kind,
+            "jupiter_quote_route_amount_malformed",
+            "route contains a malformed hop amount",
+        )
+    first_swap = swaps[0]
+    last_swap = swaps[-1]
+    if (
+        first_swap.get("inputMint") != input_mint
+        or last_swap.get("outputMint") != output_mint
+        or str(first_swap.get("inAmount")) != str(input_amount_int)
+        or str(last_swap.get("outAmount")) != str(output_amount_int)
+        or any(in_amount <= 0 or out_amount <= 0 for in_amount, out_amount in swap_amounts)
+        or any(
+            swaps[index].get("outputMint")
+            != swaps[index + 1].get("inputMint")
+            for index in range(len(swaps) - 1)
+        )
+        or any(
+            swap_amounts[index][1] != swap_amounts[index + 1][0]
+            for index in range(len(swap_amounts) - 1)
+        )
+    ):
+        return _failure_result(
+            request_kind,
+            "jupiter_quote_route_identity_contradiction",
+            "route endpoints do not match quote identities",
+        )
+    allocations: list[int] = []
+    allocation_scale: int | None = None
+    for item in route_items:
+        if isinstance(item.get("bps"), int):
+            allocation = int(item["bps"])
+            scale = 10_000
+        elif isinstance(item.get("percent"), int):
+            allocation = int(item["percent"])
+            scale = 100
+        else:
+            return _failure_result(
+                request_kind,
+                "jupiter_quote_route_allocation_missing",
+                "route item lacks exact percent/bps allocation",
+            )
+        if allocation <= 0 or (
+            allocation_scale is not None and allocation_scale != scale
+        ):
+            return _failure_result(
+                request_kind,
+                "jupiter_quote_route_allocation_contradiction",
+                "route allocation is non-positive or mixes scales",
+            )
+        allocation_scale = scale
+        allocations.append(allocation)
+    # This adapter intentionally accepts only a single, fully allocated linear
+    # route. A split route is unsupported paper evidence and fails closed.
+    if any(allocation != allocation_scale for allocation in allocations):
+        return _failure_result(
+            request_kind,
+            "jupiter_quote_route_allocation_contradiction",
+            "linear route hops are not fully allocated",
+        )
+    price_impact_bps = price_impact_value * 100
     normalized = {
-        "route_available": has_route,
-        "route_plan_present": has_route,
-        "slippage_bps": int(slippage_bps),
+        "route_available": True,
+        "route_plan_present": True,
+        "route_plan": route_items,
+        "slippage_bps": slippage_bps,
         "price_impact_bps": round(price_impact_bps, 2),
         "quote_captured_at": datetime.now(timezone.utc).isoformat(),
         "freshness_label": "QUOTE_FRESH",
         "target_status": "TARGET_MATCH",
         "paper_only_context": True,
-        "liquidity_context_label": (
-            "LIQUIDITY_CONTEXT_ACCEPTABLE" if has_route else "LIQUIDITY_CONTEXT_CAUTION"
-        ),
+        "liquidity_context_label": "LIQUIDITY_CONTEXT_ACCEPTABLE",
         "source_name": JUPITER_QUOTE_SOURCE_NAME,
         "request_kind": request_kind,
-        "input_mint": payload.get("inputMint") or payload.get("input_mint"),
-        "output_mint": payload.get("outputMint") or payload.get("output_mint"),
+        "input_mint": input_mint,
+        "output_mint": output_mint,
+        "input_amount": str(input_amount_int),
+        "output_amount": str(output_amount_int),
+        "other_amount_threshold": str(threshold_int),
     }
 
     stale = bool(payload.get("fixture_stale"))

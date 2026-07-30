@@ -3,6 +3,16 @@
 **Status:** BLOCKED 2026-07-19 FOR AUTOMATIC PRINTER USE
 **Historical verification:** anonymous endpoint live probe on 2026-07-12
 
+## Restored Factory Compatibility Reset (2026-07-30)
+
+PumpPortal is `DEFERRED` and absent from the ordinary restored Memory Factory
+runtime graph. The current API-key/linked-wallet/funding contract is
+incompatible with Printer's wallet, private-key, funding and paid-dependency
+locks. Ordinary `run` has no PumpPortal endpoint, authentication request or
+silent fallback. Its former migration-locator role is owned by the bounded
+cursor-free, finalized direct Pump/Solana live-tail contract documented in the
+V2-9.8B source-compatibility-reset design.
+
 ## Current Access Recheck
 
 Current official PumpPortal documentation was rechecked on `2026-07-19`.

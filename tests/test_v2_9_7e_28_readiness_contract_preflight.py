@@ -7,26 +7,31 @@ from printer_v1.operator_cli.readiness_source_contract_preflight import (
     assert_readiness_source_contract_preflight,
     build_readiness_source_contract_preflight,
 )
-from printer_v1.sources.geckoterminal import GECKOTERMINAL_POOL_URL_TEMPLATE
-from printer_v1.sources.geckoterminal_15m import (
-    GECKOTERMINAL_PUBLIC_API_HEADERS,
-    GECKOTERMINAL_PUBLIC_API_VERSION,
-    GT15M_OHLCV_URL_TEMPLATE,
-    GT15M_TRADES_URL_TEMPLATE,
+from printer_v1.sources.operational_source_contracts import (
+    GECKOTERMINAL_EXACT_PAIR_URL,
+    GECKOTERMINAL_OHLCV_15M_URL,
+    GECKOTERMINAL_TRADES_15M_URL,
+    ORDINARY_OPERATIONAL_SOURCE_CONTRACTS,
+    ordinary_runtime_dependency_names,
 )
-from printer_v1.sources.pumpfun_origin import (
-    CREATE_INDEX_DECODE_CEILING,
-    CREATE_INDEX_PAGE_CEILING,
-)
-from printer_v1.sources.registry import SOURCE_REGISTRY
 
 
-def test_all_readiness_source_contracts_and_budget_are_ready_offline() -> None:
-    report = assert_readiness_source_contract_preflight(secret_present=True)
+def test_complete_ordinary_graph_and_budget_are_ready_offline() -> None:
+    report = assert_readiness_source_contract_preflight(environment={})
     assert report["status"] == "READY"
     assert report["issues"] == []
     assert report["external_requests"] == 0
     assert report["secret_material_recorded"] is False
+    assert set(report["ordinary_runtime_dependencies"]) == set(
+        ordinary_runtime_dependency_names()
+    )
+    assert len(
+        [
+            profile
+            for profile in report["sources"].values()
+            if profile["active_runtime"]
+        ]
+    ) == len(ordinary_runtime_dependency_names())
     assert report["budget"] == {
         "operation_ceiling": 45,
         "candidate_cap": 3,
@@ -38,75 +43,110 @@ def test_all_readiness_source_contracts_and_budget_are_ready_offline() -> None:
         "derived_candidate_cap": 3,
         "worst_case_total": 43,
     }
-    assert report["provenance"] == {
-        "primary_source": "geckoterminal",
-        "supplemental_15m_source": "geckoterminal",
-        "exact_window_seconds": 900,
-    }
-    assert CREATE_INDEX_PAGE_CEILING == 3
-    assert CREATE_INDEX_DECODE_CEILING == 10
 
 
-def test_geckoterminal_header_endpoints_limit_retry_and_pacing_are_exact() -> None:
-    report = build_readiness_source_contract_preflight(secret_present=True)
-    gt = report["sources"]["geckoterminal"]
-    assert GECKOTERMINAL_PUBLIC_API_VERSION == "20230203"
-    assert GECKOTERMINAL_PUBLIC_API_HEADERS["Accept"] == "application/json;version=20230203"
-    assert gt["endpoints"] == (GECKOTERMINAL_POOL_URL_TEMPLATE, GT15M_OHLCV_URL_TEMPLATE, GT15M_TRADES_URL_TEMPLATE)
-    assert gt["provider_rate_limit_per_minute"] == 10
+def test_geckoterminal_contract_is_conditional_exact_and_zero_retry() -> None:
+    report = build_readiness_source_contract_preflight(environment={})
+    gt = report["sources"]["geckoterminal_exact_pair_and_15m"]
+    assert gt["classification"] == "CONDITIONAL"
+    assert gt["endpoints"] == [
+        GECKOTERMINAL_EXACT_PAIR_URL,
+        GECKOTERMINAL_OHLCV_15M_URL,
+        GECKOTERMINAL_TRADES_15M_URL,
+    ]
     assert gt["printer_rate_limit_per_minute"] == 10
-    assert gt["minimum_spacing_seconds"] == 6
-    assert gt["registry_max_retries"] == 0
-    assert gt["attempts_per_request"] == 1
+    assert gt["automatic_retries"] == 0
     assert gt["endpoint_rotation"] is False
-    assert SOURCE_REGISTRY["geckoterminal"].default_rate_limit_per_minute == 10
 
 
 @pytest.mark.parametrize(
     ("overrides", "expected_issue"),
     [
-        ({"geckoterminal": {"endpoints": ("https://wrong.invalid",)}},
-         "SOURCE_CONTRACT_DRIFT:geckoterminal:endpoints"),
-        ({"geckoterminal": {"required_headers": {"Accept": "application/json"}}},
-         "SOURCE_CONTRACT_DRIFT:geckoterminal:required_headers"),
-        ({"helius_free": {"authentication": "KEYLESS_PUBLIC"}},
-         "SOURCE_CONTRACT_DRIFT:helius_free:authentication"),
-        ({"dexscreener": {"printer_rate_limit_per_minute": 301}},
-         "SOURCE_RATE_LIMIT_DRIFT:dexscreener"),
-        ({"geckoterminal": {"minimum_spacing_seconds": 5}},
-         "SOURCE_PACING_DRIFT:geckoterminal"),
-        ({"solana_rpc": {"registered_request_kinds": ()}},
-         "SOURCE_REQUEST_KIND_DRIFT:solana_rpc"),
-        ({"goplus": {"operation_costs": {"safety_reference": 0}}},
-         "SOURCE_CONTRACT_DRIFT:goplus:operation_costs"),
+        (
+            {
+                "source_contracts": {
+                    "direct_pump_migration_locator": {"contract_version": ""}
+                }
+            },
+            "MANDATORY_CONTRACT_VERSION_MISSING:direct_pump_migration_locator",
+        ),
+        (
+            {
+                "source_contracts": {
+                    "jupiter_entry_exit_quotes": {"wallet_or_private_key": True}
+                }
+            },
+            "PROHIBITED_WALLET_OR_PRIVATE_KEY_CONTRACT:jupiter_entry_exit_quotes",
+        ),
+        (
+            {
+                "source_contracts": {
+                    "dexscreener_exact_pair": {"source_owner": "DIRECT"}
+                }
+            },
+            "SOURCE_GOVERNOR_BYPASS:dexscreener_exact_pair",
+        ),
+        (
+            {
+                "source_contracts": {
+                    "coingecko_context": {"scheduler_owner": "DIRECT"}
+                }
+            },
+            "CENTRAL_SCHEDULER_BYPASS:coingecko_context",
+        ),
+        (
+            {
+                "runtime_constants": {
+                    "jupiter_quote": "https://stale.invalid/quote"
+                }
+            },
+            "RUNTIME_PREFLIGHT_CONSTANT_DRIFT:jupiter_quote",
+        ),
     ],
 )
-def test_consolidated_preflight_catches_source_drift(overrides, expected_issue) -> None:
+def test_complete_preflight_catches_contract_drift(
+    overrides, expected_issue
+) -> None:
     report = build_readiness_source_contract_preflight(
-        secret_present=True, runtime_overrides=overrides
+        environment={}, runtime_overrides=overrides
     )
     assert report["status"] == "BLOCKED"
     assert expected_issue in report["issues"]
 
 
-def test_consolidated_preflight_catches_auth_and_budget_drift() -> None:
-    missing_secret = build_readiness_source_contract_preflight(secret_present=False)
-    assert "SOURCE_AUTH_DRIFT:helius_free:secret_missing" in missing_secret["issues"]
-    bad_budget = build_readiness_source_contract_preflight(
-        secret_present=True, budget_overrides={"operation_ceiling": 41}
+def test_conditional_helius_absence_does_not_hide_mandatory_failure() -> None:
+    ready = build_readiness_source_contract_preflight(environment={})
+    assert ready["status"] == "READY"
+    assert ready["sources"]["helius_holder_backup"]["available"] is False
+    blocked = build_readiness_source_contract_preflight(
+        environment={},
+        runtime_overrides={
+            "source_contracts": {
+                "direct_pump_migration_locator": {
+                    "free_public_compatible": False
+                }
+            }
+        },
     )
-    assert "READINESS_BUDGET_CONTRACT_DRIFT" in bad_budget["issues"]
-    stale_pump = build_readiness_source_contract_preflight(
-        secret_present=True, budget_overrides={"pump_worst_case_operations": 12}
-    )
-    assert "READINESS_BUDGET_CONTRACT_DRIFT" in stale_pump["issues"]
+    assert blocked["status"] == "BLOCKED"
+    assert (
+        "MANDATORY_FREE_PUBLIC_CONTRACT_INVALID:"
+        "direct_pump_migration_locator"
+    ) in blocked["issues"]
     with pytest.raises(ReadinessSourceContractPreflightError):
-        assert_readiness_source_contract_preflight(secret_present=False)
+        assert_readiness_source_contract_preflight(
+            environment={},
+            runtime_overrides={
+                "source_contracts": {
+                    "direct_pump_migration_locator": {"endpoints": []}
+                }
+            },
+        )
 
 
-def test_all_printer_limits_are_at_or_below_provider_limits() -> None:
-    report = build_readiness_source_contract_preflight(secret_present=True)
-    for source in report["sources"].values():
-        assert source["printer_rate_limit_per_minute"] <= source["provider_rate_limit_per_minute"]
-        assert source["attempts_per_request"] == 1
-        assert source["endpoint_rotation"] is False
+def test_shared_registry_is_the_preflight_source() -> None:
+    report = build_readiness_source_contract_preflight(environment={})
+    for name, adopted in ORDINARY_OPERATIONAL_SOURCE_CONTRACTS.items():
+        observed = report["sources"][name]
+        assert observed["classification"] == adopted.classification
+        assert observed["contract_version"] == adopted.contract_version

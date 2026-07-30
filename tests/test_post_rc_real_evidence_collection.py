@@ -68,7 +68,6 @@ from printer_v1.sources.jupiter_quote import (
     DEFAULT_PAPER_AMOUNT_LAMPORTS,
     DEFAULT_SLIPPAGE_BPS,
     JUPITER_QUOTE_API_URL,
-    JUPITER_QUOTE_LEGACY_V6_URL,
     WSOL_MINT,
     build_jupiter_paper_quote_transport,
     build_jupiter_quote_adapter,
@@ -193,6 +192,22 @@ def _jupiter_clean_payload(route=True):
     return {
         "route_available": route,
         "route_plan_present": route,
+        "route_plan": (
+            [{
+                "swapInfo": {
+                    "inputMint": "fixture-input",
+                    "outputMint": "fixture-output",
+                    "inAmount": "1000000",
+                    "outAmount": "900000",
+                },
+                "percent": 100,
+            }]
+            if route else []
+        ),
+        "input_mint": "fixture-input",
+        "output_mint": "fixture-output",
+        "input_amount": "1000000",
+        "output_amount": "900000",
         "slippage_bps": 50,
         "price_impact_bps": 30.0,
         "quote_captured_at": "2026-06-25T12:00:00+00:00",
@@ -373,20 +388,20 @@ class JupiterQuoteRegistryAndContractTests(unittest.TestCase):
         self.assertTrue(meta.read_only)
         self.assertFalse(meta.supports_network_execution)
 
-    def test_jupiter_quote_default_endpoint_is_lite_api(self):
-        self.assertIn("lite-api.jup.ag", JUPITER_QUOTE_API_URL)
+    def test_jupiter_quote_default_endpoint_is_current_keyless_api(self):
+        self.assertIn("api.jup.ag", JUPITER_QUOTE_API_URL)
+        self.assertNotIn("lite-api.jup.ag", JUPITER_QUOTE_API_URL)
         self.assertIn("/swap/v1/quote", JUPITER_QUOTE_API_URL)
 
     def test_jupiter_quote_default_endpoint_is_not_legacy_v6(self):
-        self.assertNotEqual(JUPITER_QUOTE_API_URL, JUPITER_QUOTE_LEGACY_V6_URL)
+        self.assertNotIn("quote-api.jup.ag", JUPITER_QUOTE_API_URL)
         self.assertNotIn("quote-api.jup.ag", JUPITER_QUOTE_API_URL)
         self.assertNotIn("/v6/quote", JUPITER_QUOTE_API_URL)
 
-    def test_jupiter_quote_transport_url_uses_lite_api(self):
+    def test_jupiter_quote_transport_url_uses_shared_current_api(self):
         import inspect
         # The factory builds endpoint = JUPITER_QUOTE_API_URL + params.
-        # We verify the factory uses the constant (proven to be lite-api.jup.ag
-        # in test_jupiter_quote_default_endpoint_is_lite_api).
+        # We verify the factory uses the shared current-host constant.
         src = inspect.getsource(build_jupiter_paper_quote_transport)
         self.assertIn("JUPITER_QUOTE_API_URL", src)
 
@@ -592,9 +607,22 @@ class JupiterQuoteNormalizationTests(unittest.TestCase):
 
     def test_raw_jupiter_route_preserves_exact_input_and_output_mints(self):
         payload = {
-            **_jupiter_clean_payload(route=True),
             "inputMint": "input-exact",
             "outputMint": "output-exact",
+            "inAmount": "1000000",
+            "outAmount": "900000",
+            "otherAmountThreshold": "895000",
+            "slippageBps": 50,
+            "priceImpactPct": "0.001",
+            "routePlan": [{
+                "swapInfo": {
+                    "inputMint": "input-exact",
+                    "outputMint": "output-exact",
+                    "inAmount": "1000000",
+                    "outAmount": "900000",
+                },
+                "percent": 100,
+            }],
         }
         result = normalize_jupiter_quote_response(
             payload, request_kind="paper_quote_realism"
@@ -602,13 +630,14 @@ class JupiterQuoteNormalizationTests(unittest.TestCase):
         self.assertEqual(result.normalized_payload["input_mint"], "input-exact")
         self.assertEqual(result.normalized_payload["output_mint"], "output-exact")
 
-    def test_no_route_fixture_status_normalizes_route_unavailable(self):
+    def test_no_route_fixture_status_fails_closed(self):
         result = normalize_jupiter_quote_response(
             {"fixture_status": "no_route"}, request_kind="paper_quote_realism"
         )
-        self.assertEqual(result.source_status.value, "COMPLETE")
-        self.assertFalse(result.normalized_payload.get("route_available"))
-        self.assertFalse(result.normalized_payload.get("route_plan_present"))
+        self.assertEqual(result.source_status.value, "FAILED")
+        self.assertEqual(
+            result.failure_type, "jupiter_quote_unsupported_or_no_route"
+        )
 
     def test_failure_returns_failed(self):
         result = normalize_jupiter_quote_response(

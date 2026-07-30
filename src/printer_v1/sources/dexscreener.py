@@ -19,6 +19,11 @@ from printer_v1.sources.contracts import (
     build_source_adapter_contract,
     validate_source_adapter_contract,
 )
+from printer_v1.sources.operational_source_contracts import (
+    DEXSCREENER_EXACT_PAIR_URL,
+    DEXSCREENER_PROFILES_URL,
+    DEXSCREENER_TOKEN_BATCH_URL,
+)
 
 
 DEXSCREENER_SOURCE_NAME = "dexscreener"
@@ -37,15 +42,15 @@ _SOLANA_INFRASTRUCTURE_MINTS = frozenset({
 })
 
 DEXSCREENER_SMOKE_URL = "https://api.dexscreener.com/latest/dex/search?q=SOL"
-DEXSCREENER_PAIR_URL_TEMPLATE = "https://api.dexscreener.com/latest/dex/pairs/solana/{pair_address}"
+DEXSCREENER_PAIR_URL_TEMPLATE = DEXSCREENER_EXACT_PAIR_URL
 DEXSCREENER_TOKEN_URL_TEMPLATE = "https://api.dexscreener.com/latest/dex/tokens/{token_mint}"
 # Fresh-listing discovery vector (keyless, free — verified 2026-07-12):
 #   1. /token-profiles/latest/v1  -> recently profiled tokens (chainId, tokenAddress)
 #   2. /tokens/v1/solana/{addrs}  -> pair data for up to 30 comma-joined mints
 # token-profiles is documented at 60 req/min. This surfaces freshly listed
 # Solana memecoins rather than the popular-token repeats returned by search.
-DEXSCREENER_TOKEN_PROFILES_URL = "https://api.dexscreener.com/token-profiles/latest/v1"
-DEXSCREENER_TOKENS_BATCH_URL_TEMPLATE = "https://api.dexscreener.com/tokens/v1/solana/{addresses}"
+DEXSCREENER_TOKEN_PROFILES_URL = DEXSCREENER_PROFILES_URL
+DEXSCREENER_TOKENS_BATCH_URL_TEMPLATE = DEXSCREENER_TOKEN_BATCH_URL
 _DEXSCREENER_FRESH_PROFILES_MAX_TOKENS = 30
 DEXSCREENER_SMOKE_TIMEOUT_SECONDS = 5.0
 DEXSCREENER_PAIR_PROVIDER_RATE_LIMIT_PER_MINUTE = 300

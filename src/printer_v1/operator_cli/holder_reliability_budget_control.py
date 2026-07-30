@@ -481,7 +481,7 @@ def persist_bundle_attempts(
         source_name = str(getattr(normalized, "source_name", ""))
         host = str(payload.get("redacted_host") or (
             "mainnet.helius-rpc.com" if source_name == "helius_free"
-            else "api.mainnet-beta.solana.com" if is_rpc
+            else "api.mainnet.solana.com" if is_rpc
             else "api.gopluslabs.io"
         ))
         raw_operation_count = payload.get("underlying_operation_count")

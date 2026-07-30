@@ -79,7 +79,11 @@ from printer_v1.operator_cli.unified_terminal_closure import (
 from printer_v1.operator_cli import proof_supervision as _sup
 
 # Free-public source endpoints (read-only; no wallet, key, signing or funds).
-FREE_PUBLIC_SOLANA_RPC = "https://api.mainnet-beta.solana.com"
+from printer_v1.sources.operational_source_contracts import (
+    OFFICIAL_SOLANA_PUBLIC_RPC_URL,
+)
+
+FREE_PUBLIC_SOLANA_RPC = OFFICIAL_SOLANA_PUBLIC_RPC_URL
 
 # ---------------------------------------------------------------------------
 # Canonical REAL lifecycle timing (never compressible on the production path).

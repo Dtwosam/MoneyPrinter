@@ -21,16 +21,13 @@ from printer_v1.sources.contracts import (
     build_source_adapter_contract,
     validate_source_adapter_contract,
 )
+from printer_v1.sources.operational_source_contracts import (
+    COINGECKO_MARKET_CONTEXT_URL,
+)
 
 
 COINGECKO_SOURCE_NAME = "coingecko"
-COINGECKO_MARKET_URL = (
-    "https://api.coingecko.com/api/v3/simple/price"
-    "?ids=bitcoin,ethereum,solana"
-    "&vs_currencies=usd"
-    "&include_24hr_change=true"
-    "&include_24hr_vol=true"
-)
+COINGECKO_MARKET_URL = COINGECKO_MARKET_CONTEXT_URL
 COINGECKO_TIMEOUT_SECONDS = 8.0
 COINGECKO_PUBLIC_API_HEADERS = {
     "User-Agent": "PrinterV1/0.1 (+paper-only source check)",

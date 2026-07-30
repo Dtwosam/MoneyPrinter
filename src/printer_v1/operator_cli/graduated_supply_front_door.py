@@ -78,11 +78,11 @@ BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL = (
 # V2-9.7E.46B / V2-9.8B.6 shared production+pilot graduated-supply depth.
 # Admission ceiling remains 45. Do not raise ceilings or lower floors here.
 OPERATIONAL_GRADUATED_SUPPLY_KWARGS: dict[str, object] = {
-    "collection_rounds": 3,
+    "collection_rounds": 1,
     "max_candidates": 5,
-    "settle_seconds": 6.0,
-    "reverify_on_transient": True,
-    "reverify_settle_seconds": 6.0,
+    "settle_seconds": 0.0,
+    "reverify_on_transient": False,
+    "reverify_settle_seconds": 0.0,
     "front_door_max_candidates": 6,
     "run_locator": True,
 }
@@ -310,8 +310,9 @@ def build_graduated_supply(
     continues bounded batches inside this campaign until two distinct freshly
     eligible tokens are reserved or honest exhaustion is proven.
 
-    ``migration_transport`` supplies PumpPortal ``subscribeMigration`` events
-    (live or fixture). When fewer than two eligible ``$3K+`` candidates exist
+    ``migration_transport`` supplies one frozen/live Solana RPC response for
+    each separately governed direct Pump live-tail operation. When fewer than
+    two eligible ``$3K+`` candidates exist
     after governed exhaustion, ``ready`` is False and ``terminal`` is
     ``BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL`` with an exhaustion certificate.
     """

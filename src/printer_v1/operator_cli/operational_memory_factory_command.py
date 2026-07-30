@@ -88,6 +88,10 @@ from printer_v1.operator_cli.unified_terminal_closure import (
     write_campaign_terminal_report,
 )
 from printer_v1.scheduler.scheduler import ACTIVE_STATUS_VALUES
+from printer_v1.sources.operational_source_contracts import (
+    OFFICIAL_SOLANA_PUBLIC_RPC_URL,
+    resolve_solana_rpc_configuration,
+)
 
 
 POLICY_VERSION = "V2-9.8-15M-OPERATIONAL-V1"
@@ -120,7 +124,7 @@ SELECTIVE_1H_SCHEDULER_ROW_CEILING = 82
 SELECTIVE_1H_CONTINUATION_SECONDS = 2_700
 LEASE_SECONDS = 90
 HEARTBEAT_SECONDS = 30
-FREE_PUBLIC_SOLANA_RPC = "https://api.mainnet-beta.solana.com"
+FREE_PUBLIC_SOLANA_RPC = OFFICIAL_SOLANA_PUBLIC_RPC_URL
 ARTIFACT_ROOT = Path.home() / "PrinterOperations" / "v2-9-8"
 AUTHORITATIVE_DB = Path(CANONICAL_PERSISTENT_DB).resolve()
 # Live-derived from the single ordered migrations/*.sql source. Never hard-code.
@@ -1287,12 +1291,16 @@ def _run_operational_campaign(
         heartbeat = _CampaignHeartbeat(command)
         heartbeat.start()
         active_owner = owner or AuthoritativeLiveOperationalCampaignOwner()
-        active_pump = pump_transport or OneShotUrllibPumpTransport(FREE_PUBLIC_SOLANA_RPC)
+        active_pump = pump_transport or OneShotUrllibPumpTransport(
+            resolve_solana_rpc_configuration().url
+        )
         active_secondary = secondary_transport or OneShotUrllibSecondaryTransport()
         if migration_transport is None:
-            from printer_v1.sources.pumpportal import build_pumpportal_migration_transport
-            migration_transport = build_pumpportal_migration_transport(
-                max_events=4, duration_seconds=120.0, connect_timeout_seconds=10.0,
+            from printer_v1.sources.direct_pump_migration import (
+                build_direct_pump_migration_transport,
+            )
+            migration_transport = build_direct_pump_migration_transport(
+                rpc_url=resolve_solana_rpc_configuration().url,
             )
 
         def cancellation_probe() -> str | None:
@@ -1798,10 +1806,12 @@ def run_discovery_only_qualification(
         supply_kwargs["run_locator"] = bool(run_locator)
 
     if migration_transport is None:
-        from printer_v1.sources.pumpportal import build_pumpportal_migration_transport
+        from printer_v1.sources.direct_pump_migration import (
+            build_direct_pump_migration_transport,
+        )
 
-        migration_transport = build_pumpportal_migration_transport(
-            max_events=4, duration_seconds=120.0, connect_timeout_seconds=10.0,
+        migration_transport = build_direct_pump_migration_transport(
+            rpc_url=resolve_solana_rpc_configuration().url,
         )
 
     connection = sqlite3.connect(AUTHORITATIVE_DB)

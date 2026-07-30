@@ -1,8 +1,9 @@
-"""V2-9.7E.42 exact Pump migration proof + combined graduation verifier.
+"""Exact pinned Pump migration proof + combined graduation verifier.
 
-The authoritative graduation evidence is the finalized Solana transaction plus the
-PumpSwap account confirmation — a PumpPortal migration event is locator evidence
-only. This module adds the exact **Pump migration** proof layer on top of the
+The authoritative graduation evidence is the finalized Solana transaction plus
+the PumpSwap account confirmation. The active locator supplies only a bounded,
+stateless direct-Solana observation; it is not graduation authority. This
+module adds the exact **Pump migration** proof layer on top of the
 already-adopted PumpSwap signature→pool resolution and pool confirmation.
 
 `prove_pump_migration_transaction` is pure and deterministic: it proves the
@@ -16,10 +17,9 @@ using only **adopted** program identities:
     graduation pool is created/touched in this same transaction);
   * a finalized block time is present (graduation evidence only).
 
-The exact Pump migration instruction discriminator remains
-`UNKNOWN_REQUIRES_RESEARCH`; it is deliberately not invented. Program-presence plus
-the unique PumpSwap pool created in the same finalized transaction is the adopted
-graduation proof. Read-only. No execution, signing, or fund movement.
+The active verifier reuses the pinned official Pump/PumpSwap IDLs and exact
+instruction/account/PDA/pool-layout checks. Read-only. No execution, signing or
+fund movement.
 """
 
 from __future__ import annotations
@@ -28,17 +28,20 @@ from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
 from printer_v1.sources.contracts import SourceAdapterContext
+from printer_v1.sources.operational_source_contracts import (
+    resolve_solana_rpc_configuration,
+)
+from printer_v1.sources.pump_contracts import verify_pinned_pump_migration
 from printer_v1.sources.pumpfun_direct import PUMP_PROGRAM_ID
 from printer_v1.sources.pumpswap import (
     PUMPSWAP_AMM_PROGRAM_ID,
-    _DEFAULT_RPC_URL,
     _rpc_post,
     collect_transaction_account_keys,
     confirm_pumpswap_pool_from_account,
     resolve_pumpswap_pool_from_transaction,
 )
 
-MIGRATION_PROVENANCE = "PUMPPORTAL_SUBSCRIBE_MIGRATION"
+MIGRATION_PROVENANCE = "DIRECT_PUMP_FINALIZED_LIVE_TAIL"
 
 # Optional tolerance for a block time slightly ahead of the caller's clock.
 _FUTURE_BLOCK_TIME_TOLERANCE_SECONDS = 300
@@ -131,56 +134,69 @@ def verify_graduation_from_transaction(
     the first failing stage. Returns a dict with ``verified`` and the per-stage
     evidence.
     """
-    proof = prove_pump_migration_transaction(
-        tx_result, expected_mint=expected_mint, now_epoch=now_epoch
+    strict = verify_pinned_pump_migration(
+        tx_result,
+        account_infos,
+        expected_mint=expected_mint,
+        finalized=True,
     )
-    if not proof["proven"]:
+    if not strict["verified"]:
         return {
             "verified": False,
             "stage": "PUMP_MIGRATION_PROOF",
-            "reason": proof["reason"],
-            "pump_migration_proof": proof,
+            "reason": strict["reason"],
+            "pump_migration_proof": strict,
+            "pumpswap_resolution": None,
+            "pumpswap_confirmation": None,
+        }
+    if (
+        now_epoch is not None
+        and int(strict["migration_block_time"])
+        > int(now_epoch) + _FUTURE_BLOCK_TIME_TOLERANCE_SECONDS
+    ):
+        return {
+            "verified": False,
+            "stage": "PUMP_MIGRATION_PROOF",
+            "reason": "migration_block_time_in_future",
+            "pump_migration_proof": strict,
             "pumpswap_resolution": None,
             "pumpswap_confirmation": None,
         }
 
-    resolution = resolve_pumpswap_pool_from_transaction(
-        tx_result, account_infos, expected_mint=expected_mint
-    )
-    if not resolution.get("resolved"):
-        return {
-            "verified": False,
-            "stage": "POOL_RESOLUTION",
-            "reason": resolution.get("reason"),
-            "pump_migration_proof": proof,
-            "pumpswap_resolution": resolution,
-            "pumpswap_confirmation": None,
-        }
-
-    pool = resolution["pool_address"]
-    confirmation = confirm_pumpswap_pool_from_account(
-        account_infos.get(pool), expected_mint=expected_mint, pool_address=pool
-    )
-    if not confirmation.get("confirmed"):
-        return {
-            "verified": False,
-            "stage": "POOL_CONFIRMATION",
-            "reason": confirmation.get("reason"),
-            "pump_migration_proof": proof,
-            "pumpswap_resolution": resolution,
-            "pumpswap_confirmation": confirmation,
-        }
+    pool = str(strict["pool_address"])
+    decoded_pool = dict(strict["pool"])
+    resolution = {
+        "resolved": True,
+        "reason": "pinned_exact_pumpswap_pool_join",
+        "pool_address": pool,
+        "expected_mint": expected_mint,
+        "program_id": PUMPSWAP_AMM_PROGRAM_ID,
+        "mint_matched_count": 1,
+        "migration_block_time": strict["migration_block_time"],
+        "migration_slot": strict["migration_slot"],
+    }
+    confirmation = {
+        "confirmed": True,
+        "reason": "pinned_exact_pumpswap_pool_join",
+        "pool_address": pool,
+        "expected_mint": expected_mint,
+        "program_id": PUMPSWAP_AMM_PROGRAM_ID,
+        "owner": PUMPSWAP_AMM_PROGRAM_ID,
+        "base_mint": decoded_pool["base_mint"],
+        "quote_mint": decoded_pool["quote_mint"],
+        "pool_contract_hash": decoded_pool["contract_hash"],
+    }
 
     return {
         "verified": True,
         "stage": "CONFIRMED",
         "reason": "pumpswap_graduated_confirmed",
-        "pump_migration_proof": proof,
+        "pump_migration_proof": strict,
         "pumpswap_resolution": resolution,
         "pumpswap_confirmation": confirmation,
         "pool_address": pool,
-        "migration_block_time": proof["migration_block_time"],
-        "migration_slot": proof["migration_slot"],
+        "migration_block_time": strict["migration_block_time"],
+        "migration_slot": strict["migration_slot"],
     }
 
 
@@ -188,7 +204,7 @@ def build_graduation_verifier_transport(
     *,
     migration_signature: str,
     expected_mint: str,
-    rpc_url: str = _DEFAULT_RPC_URL,
+    rpc_url: str | None = None,
     timeout_seconds: float = 20.0,
     now_epoch: int | None = None,
 ) -> Callable[[SourceAdapterContext], Mapping[str, Any]]:
@@ -204,12 +220,21 @@ def build_graduation_verifier_transport(
     no execution, no signing. Migration block time is graduation evidence only.
     """
 
+    endpoint = rpc_url or resolve_solana_rpc_configuration().url
+
     def transport(context: SourceAdapterContext) -> Mapping[str, Any]:
         del context
         tx = _rpc_post(
-            rpc_url,
+            endpoint,
             "getTransaction",
-            [migration_signature, {"maxSupportedTransactionVersion": 0, "encoding": "json"}],
+            [
+                migration_signature,
+                {
+                    "maxSupportedTransactionVersion": 0,
+                    "encoding": "json",
+                    "commitment": "finalized",
+                },
+            ],
             timeout_seconds=timeout_seconds,
         )
         if tx.get("fixture_status") == "failure":
@@ -226,7 +251,12 @@ def build_graduation_verifier_transport(
         account_infos: dict[str, Any] = {}
         for i in range(0, len(keys), 100):
             chunk = keys[i:i + 100]
-            res = _rpc_post(rpc_url, "getMultipleAccounts", [chunk, {"encoding": "base64"}], timeout_seconds=timeout_seconds)
+            res = _rpc_post(
+                endpoint,
+                "getMultipleAccounts",
+                [chunk, {"encoding": "base64", "commitment": "finalized"}],
+                timeout_seconds=timeout_seconds,
+            )
             if res.get("fixture_status") == "failure":
                 return MappingProxyType(dict(res))
             values = (res.get("result") or {}).get("value") or []

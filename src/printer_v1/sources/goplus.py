@@ -27,12 +27,13 @@ from printer_v1.sources.contracts import (
     build_source_adapter_contract,
     validate_source_adapter_contract,
 )
+from printer_v1.sources.operational_source_contracts import (
+    GOPLUS_SOLANA_SECURITY_URL,
+)
 
 
 GOPLUS_SOURCE_NAME = "goplus"
-GOPLUS_SOLANA_TOKEN_SECURITY_URL = (
-    "https://api.gopluslabs.io/api/v1/solana/token_security?contract_addresses={token_mint}"
-)
+GOPLUS_SOLANA_TOKEN_SECURITY_URL = GOPLUS_SOLANA_SECURITY_URL
 GOPLUS_TIMEOUT_SECONDS = 10.0
 GOPLUS_PROVIDER_RATE_LIMIT_PER_MINUTE = 30
 GOPLUS_TRANSPORT_OPERATION_COST = 1

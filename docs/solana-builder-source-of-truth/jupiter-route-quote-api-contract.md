@@ -1,6 +1,20 @@
 # Jupiter Route-and-Quote API Contract
 
-**Status:** ADOPTED 2026-07-18 - CURRENT PRINTER IMPLEMENTATION PARTIAL WITH BLOCKER
+**Status:** REFRESHED 2026-07-30 — KEYLESS PAPER-QUOTE CONTRACT IMPLEMENTED
+
+## Restored Factory Contract Refresh (2026-07-30)
+
+The active keyless paper-quote endpoint is
+`https://api.jup.ag/swap/v1/quote`, paced locally at 0.5 RPS (30/minute)
+with zero automatic retry. No API key, paid plan, wallet, transaction build,
+swap, instruction or execution surface is allowed.
+
+Entry and exit evidence must exactly reconcile requested input/output mint,
+atomic input amount and slippage with the response, and must contain positive
+output/threshold amounts, a non-empty route whose endpoint identities agree,
+and a finite non-negative price impact. Null, malformed, throttled, unsupported,
+no-route, wrong-mint, wrong-amount, wrong-slippage or contradictory responses
+fail closed.
 
 This module defines the external Jupiter route-and-quote facts that Printer V1
 may use for paper-realism evidence. It is subordinate to the active Printer
@@ -210,18 +224,17 @@ secrets must never be stored.
 
 | Location | Current behavior | Contract result |
 |---|---|---|
-| `src/printer_v1/sources/jupiter_quote.py:JUPITER_QUOTE_API_URL` | Uses `https://lite-api.jup.ag/swap/v1/quote` | `LEGACY_OR_DEPRECATED`; current official host is `api.jup.ag` |
-| headers / `_load_public_json()` | Sends no API key | Blocked against current required auth |
-| `build_jupiter_paper_quote_transport()` | ExactIn-like query, 50 bps, direct routes false | Partial shape match; auth/lifecycle unresolved |
-| `_load_public_json()` | Maps every HTTP 400 to no route | Overbroad; explicit error parsing required |
-| `normalize_jupiter_quote_response()` | Missing/malformed impact can become `0.0` | Fail-open quantitative default |
-| same normalizer | Drops amounts, threshold, fees, slot, and timing | Insufficient quantitative evidence |
-| source registry | Free/public, 30/min, 30-second stale, two retries | Internal policy, not current provider proof |
+| `src/printer_v1/sources/jupiter_quote.py:JUPITER_QUOTE_API_URL` | Uses shared `https://api.jup.ag/swap/v1/quote` | Current keyless host |
+| headers / `_load_public_json()` | Sends no API key | Current keyless contract; 0.5 RPS locally |
+| `build_jupiter_paper_quote_transport()` | Exact input/output identity, atomic amount and slippage | Complete paper-only request shape |
+| `_load_public_json()` | 429 and unknown failures remain failures | Fail closed |
+| `normalize_jupiter_quote_response()` | Requires exact echo, positive amounts/threshold, route endpoints and finite non-negative impact | Fail closed |
+| source registry | Free/public, 30/min, 30-second stale, zero retries | Matches adopted keyless pacing |
 | migration 023 / evidence helper | Categorical labels and governed trace | Good isolation; incomplete quantitative retention |
-| focused quote tests | Fixture normalization/storage and locks | No current official live-contract proof |
+| focused quote tests | Entry/exit reconciliation, malformed/null/throttled/wrong-mint failures and locks | Frozen offline proof complete; live probe separate |
 
-The governor, paper-only, no-transaction, and downstream-lock boundaries remain
-valuable and unchanged. They do not cure provider drift.
+The Governor, paper-only, no-transaction and downstream-lock boundaries remain
+unchanged.
 
 ## 17. Adopted Fail-Closed Mapping
 
@@ -237,20 +250,17 @@ valuable and unchanged. They do not cure provider drift.
 | Missing/malformed quantitative field or provenance | Unknown or blocked |
 | Quote outside adopted freshness evidence | Stale/unknown; not clean |
 
-## 18. Required Later Repair and Proof
+## 18. Reset Proof Boundary
 
-Before governed Jupiter network use in V2-9.7D:
-
-1. Choose and document V1 Metis versus V2 quote-only semantics.
-2. Repair host/auth handling without persisting the key.
-3. Parse explicit errors and fail closed on unknown HTTP/schema outcomes.
-4. Preserve exact amounts, thresholds, impact, route, fees, version, slot,
-   timing, and provenance.
-5. Define a conservative freshness boundary.
-6. Keep quote-only operation free of taker, transaction, wallet, signing, and
-   execution behavior.
-7. Prove bounded Governor/Scheduler use in isolation.
-8. Prove zero retrieval and financial deltas.
+The 2026-07-30 compatibility reset completes the offline implementation and
+frozen proof. It does not authorize a live provider probe or campaign. A
+separately explicit bounded live source-contract probe remains required.
+The reset selected the still-documented read-only Metis V1 quote response
+instead of an execution-oriented V2 build/order surface; repaired host and
+keyless pacing; made unknown HTTP/schema outcomes fail closed; preserved exact
+identity, amounts, threshold, impact and route; retained the existing freshness
+boundary; and proved Governor/Scheduler ownership and zero locked-capability
+deltas offline.
 
 ## 19. UNKNOWN_REQUIRES_RESEARCH
 
@@ -273,3 +283,4 @@ PnL, wallet, private key, signing, transaction, or live execution.
 | Date | Change |
 |---|---|
 | 2026-07-18 | Audited current official Jupiter docs; adopted Metis V1 as `SUPERSEDED`, Printer `PARTIAL_WITH_BLOCKER`, network use locked pending repair/proof |
+| 2026-07-30 | Reset current keyless host/pacing and exact fail-closed paper-quote response contract; frozen offline proof PASS, live probe remains separately locked |

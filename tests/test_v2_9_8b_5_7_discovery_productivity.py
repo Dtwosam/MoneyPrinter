@@ -258,7 +258,7 @@ class DiscoveryProductivityRepairTests(unittest.TestCase):
 
     def test_shared_supply_kwargs_and_migration_count(self) -> None:
         self.assertEqual(PUBLIC_SUPPLY_KWARGS, OPERATIONAL_GRADUATED_SUPPLY_KWARGS)
-        self.assertEqual(OPERATIONAL_GRADUATED_SUPPLY_KWARGS["collection_rounds"], 3)
+        self.assertEqual(OPERATIONAL_GRADUATED_SUPPLY_KWARGS["collection_rounds"], 1)
         self.assertEqual(OPERATIONAL_GRADUATED_SUPPLY_KWARGS["max_candidates"], 5)
         self.assertEqual(
             OPERATIONAL_GRADUATED_SUPPLY_KWARGS["front_door_max_candidates"], 6

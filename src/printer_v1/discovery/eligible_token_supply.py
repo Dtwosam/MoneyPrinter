@@ -621,13 +621,13 @@ def run_persistent_eligible_token_supply(
             # Non-ok locator status with a request is treated as soft unavailability.
             if locator.get("status") not in (None, "ok", "OK"):
                 pass
-    channels_attempted.append("pumpportal_migration_stream")
-    channels_attempted.append("solana_rpc_graduation_verify")
+    channels_attempted.append("direct_pump_finalized_live_tail")
+    channels_attempted.append("exact_pump_pumpswap_graduation_verify")
     channels_attempted.append("dexscreener_exact_pool_market")
 
     if discovery.get("status") == "PROVIDER_FAILURE":
         provider_failures += 1
-        channels_unavailable.append("pumpportal_migration_stream")
+        channels_unavailable.append("direct_pump_finalized_live_tail")
 
     evaluated_mints: set[str] = set()
     campaign_eligible: dict[str, dict[str, Any]] = {}

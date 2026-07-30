@@ -40,6 +40,11 @@ from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
+from printer_v1.sources.operational_source_contracts import (
+    GECKOTERMINAL_OHLCV_15M_URL,
+    GECKOTERMINAL_TRADES_15M_URL,
+)
+
 PROVIDER_CANDLE_DERIVED = "PROVIDER_CANDLE_DERIVED"
 PROVIDER_TRADES_WINDOW = "PROVIDER_TRADES_WINDOW"
 TRADE_HISTORY_COMPLETE = "TRADE_HISTORY_COMPLETE"
@@ -60,14 +65,8 @@ GT15M_TRADES_MAX_RESPONSE = 300
 GECKOTERMINAL_OHLCV_REQUEST_KIND = "geckoterminal_ohlcv_15m"
 GECKOTERMINAL_POOL_TRADES_REQUEST_KIND = "geckoterminal_pool_trades_15m"
 
-GT15M_OHLCV_URL_TEMPLATE = (
-    "https://api.geckoterminal.com/api/v2/networks/{network}/pools/{pool_address}"
-    "/ohlcv/minute?aggregate=15&limit=2&currency=usd&token=base"
-)
-GT15M_TRADES_URL_TEMPLATE = (
-    "https://api.geckoterminal.com/api/v2/networks/{network}/pools/{pool_address}"
-    "/trades"
-)
+GT15M_OHLCV_URL_TEMPLATE = GECKOTERMINAL_OHLCV_15M_URL
+GT15M_TRADES_URL_TEMPLATE = GECKOTERMINAL_TRADES_15M_URL
 
 GECKOTERMINAL_PUBLIC_API_HEADERS = {
     "User-Agent": "PrinterV1/0.1 (+paper-only source check)",

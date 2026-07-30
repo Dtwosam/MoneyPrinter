@@ -3,6 +3,20 @@
 **Status:** SB-2 CORE MODULE. V2-9.7D.1D PUBLIC-RPC CONTRACT ADOPTED,
 DOCUMENTATION ONLY. NETWORK USE REMAINS GOVERNED AND LOCKED TO EXPLICIT LANES.
 
+## Restored Factory Compatibility Reset (2026-07-30)
+
+The current adopted public fallback is
+`https://api.mainnet.solana.com`. The legacy
+`api.mainnet-beta.solana.com` hostname is not an adopted official runtime
+literal. `PRINTER_SOLANA_RPC_URL`, when supplied by the operator, is preferred
+after absolute-HTTPS, hostname, no-userinfo, no-fragment and non-placeholder
+validation. Reports expose only a redacted endpoint identity. The public
+endpoint remains a bounded fallback, not a production-availability promise.
+
+Restored migration reads are one finalized `getSignaturesForAddress` page,
+bounded finalized `getTransaction` calls, and finalized account reads for the
+exact PumpSwap join. They have no cursor, backfill or recovery authority.
+
 ## 1. Purpose
 
 This module defines the read-only Solana JSON-RPC evidence contract available
@@ -389,7 +403,7 @@ fixed retention, consolidated IP-wide budgets, or operational activation.
 
 | Item | Status |
 |---|---|
-| Guaranteed equivalence of `api.mainnet.solana.com` and `api.mainnet-beta.solana.com` | `UNKNOWN_REQUIRES_RESEARCH` |
+| Guaranteed equivalence of `api.mainnet.solana.com` and `api.mainnet-beta.solana.com` | Not relied upon; legacy hostname is not an adopted runtime endpoint |
 | Fixed archival/history-retention window for shared public endpoint | `UNKNOWN_REQUIRES_RESEARCH` |
 | Current official maximum/default signature-query limit in reviewed primary page | `UNKNOWN_REQUIRES_RESEARCH` |
 | Exact `getBlockTime` null-versus-error mapping for every unavailable state | `UNKNOWN_REQUIRES_RESEARCH` |
@@ -403,3 +417,4 @@ fixed retention, consolidated IP-wide budgets, or operational activation.
 |---|---|---|
 | 2026-07-12 | SB-2 through SB-2.3 established the six-method reference, endpoint conflict, T3 provenance, and published shared limits | SB-2 series |
 | 2026-07-18 | Re-audited current official Solana docs; adopted endpoint, access, limits, commitment, transport, retention, per-method, provenance, and fail-closed boundaries; reconciled adapters, budgets, retries, and focused tests | V2-9.7D.1D |
+| 2026-07-30 | Adopted current official public fallback, validated/redacted operator HTTPS configuration, finalized direct Pump live-tail methods, and removed stale runtime hostname literals | V2-9.8B source compatibility reset |
