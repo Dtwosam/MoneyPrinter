@@ -35,9 +35,19 @@ V2-9.8B — Active Bounded Memory Growth Operations
 ```
 
 The current completed work inside V2-9.8B is **Terminal Safety, Accounting,
-Runner-Proof, and Supply-Truth Finalization**. Its verdict is:
+Runner-Proof, and Supply-Truth Finalization**. Its implementation verdict is:
 
 `V2_9_8B_TERMINAL_SAFETY_ACCOUNTING_FINALIZATION_PASS`.
+
+Its independent read-only operator-review verdict is:
+
+`V2_9_8B_TERMINAL_SAFETY_ACCOUNTING_FINALIZATION_OPERATOR_REVIEW_PASS`.
+
+The operator review inspected the exact pushed implementation commit
+`d285d2cdd7b3dd2232e14cbc378b45835a907755` and found no new blocking defect in
+the repaired surface. The review was static and read-only; it did not rerun the
+local test suite, inspect the local authoritative database, call providers/RPC,
+or execute a campaign.
 
 This finalization supersedes the post-handoff terminal-compensation PASS for the
 repaired surface. Compensation now deletes only exact recorded current-attempt
@@ -80,6 +90,7 @@ Active finalization documents:
 - `docs/printer-v1-v2-9-8b-terminal-safety-accounting-finalization-audit.md`
 - `docs/printer-v1-v2-9-8b-terminal-safety-accounting-finalization-design.md`
 - `docs/printer-v1-v2-9-8b-terminal-safety-accounting-finalization-closeout.md`
+- `docs/printer-v1-v2-9-8b-terminal-safety-accounting-finalization-operator-review.md`
 
 Prior post-handoff terminal-compensation documents (evidence):
 
@@ -229,17 +240,19 @@ liquidity, freshness, holder, safety or tradeability requirements.
 
 On:
 
-`V2_9_8B_TERMINAL_SAFETY_ACCOUNTING_FINALIZATION_PASS`
+`V2_9_8B_TERMINAL_SAFETY_ACCOUNTING_FINALIZATION_OPERATOR_REVIEW_PASS`
 
 the exact next permitted task is:
 
 ```text
-independent read-only operator review of the terminal-safety, accounting,
-real-runner proof, and shared eligible-supply finalization
+read-only active build-order reconciliation after the completed V2-9.8B
+terminal-safety/accounting finalization operator review
 ```
 
-PASS authorizes only an independent read-only review. It does **not** authorize
-a live source-contract probe, a live probe, a Memory Factory campaign,
-providers/RPC, N2, N7, recovery, cursor reset, memory operation, retrieval, or
-any financial capability. There is no automatic repair, retry, or successor.
-No tag or push is authorized.
+The reconciliation is documentation-only. It may inspect the active Printer V1
+source stack, completed V2-9.8B artifacts, and roadmap sequencing. It must not
+run providers/RPC, a live source-contract probe, a live probe, a Memory Factory
+campaign, N2, N7, recovery, cursor reset, memory generation, another 1h proof,
+4h/12h/24h activation, retrieval, paper decisions, BUY/SELL/HOLD, positions,
+trades, audits, PnL, or any financial capability. There is no automatic repair,
+retry, successor, tag, or runtime authorization.
