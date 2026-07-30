@@ -486,6 +486,7 @@ class _PostHandoffHarness(_IntegrationBase):
 
     def run_with_fault(self, stage):
         driver = OriginToLifecycleCampaignDriver()
+        snapshot_factory, _calls = self._snapshot_adapter_factory()
         return driver.run(
             command=self.command,
             fixtures=self._two_origin_fixtures(),
@@ -493,6 +494,9 @@ class _PostHandoffHarness(_IntegrationBase):
             selection_seed="seed",
             proof_mode=True,
             lifecycle_kwargs={
+                "snapshot_adapter_factory": snapshot_factory,
+                "context_adapter_factories": self._context_factories(),
+                "_window_seconds": 0.05,
                 "total_duration_seconds": 3.0,
                 "launch_provenance": {
                     "git_head": "f" * 40,

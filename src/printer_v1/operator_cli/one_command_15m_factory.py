@@ -537,6 +537,7 @@ def _insert_step_and_job(
 def _plan_opening_jobs(
     conn: sqlite3.Connection, run_id: str, targets: list[dict[str, Any]],
     scheduled_for: datetime,
+    first_commit_callback: Callable[[sqlite3.Connection, str], None] | None = None,
 ) -> None:
     for target_index, target in enumerate(targets):
         prefix = f"t{target_index + 1}"
@@ -545,6 +546,9 @@ def _plan_opening_jobs(
             step_key=f"{prefix}_snapshot_00", step_kind="SNAPSHOT",
             scheduled_for=scheduled_for,
         )
+        if target_index == 0 and first_commit_callback is not None:
+            conn.commit()
+            first_commit_callback(conn, run_id)
 
 
 def _plan_anchored_jobs(
@@ -3624,6 +3628,8 @@ def run_one_command_15m_factory(
     project_root: str | Path | None = None,
     launch_provenance: Mapping[str, Any] | None = None,
     operational_persistent_mode: bool = False,
+    _post_handoff_fault: str | None = None,
+    _post_handoff_scope_recorder: Any | None = None,
 ) -> dict[str, Any]:
     path = Path(db_path).resolve()
     backup = Path(backup_path).resolve()
@@ -3642,6 +3648,13 @@ def run_one_command_15m_factory(
         reasons.append("non-proof execution requires operational persistent mode")
     if proof_mode and operational_persistent_mode:
         reasons.append("proof and operational persistent modes are mutually exclusive")
+    if _post_handoff_fault is not None:
+        if not proof_mode or operational_persistent_mode:
+            reasons.append(
+                "post-handoff fault injection requires disposable proof mode"
+            )
+        if _post_handoff_scope_recorder is None:
+            reasons.append("post-handoff fault injection requires exact scope recorder")
     if window_kind != WINDOW_KIND: reasons.append(f"unsupported window_kind: {window_kind}")
     if not path.is_file(): reasons.append(f"proof DB missing: {path}")
     if not backup.is_file(): reasons.append(f"backup missing: {backup}")
@@ -3864,6 +3877,10 @@ def run_one_command_15m_factory(
     discovery: dict[str, Any] = {}
     stop_reason = STOP_COMPLETED
     start_mono = _monotonic()
+    first_snapshot_checkpointed = False
+    first_window_checkpointed = False
+    post_activation_checkpointed = False
+    proof_fault: BaseException | None = None
     try:
         if factory_run_initialized is not None:
             factory_run_initialized(run_id)
@@ -3916,7 +3933,27 @@ def run_one_command_15m_factory(
         if not targets:
             stop_reason = STOP_EMPTY
         else:
-            _plan_opening_jobs(conn, run_id, targets, _now())
+            def _first_opening_commit(
+                checkpoint_conn: sqlite3.Connection, checkpoint_run_id: str
+            ) -> None:
+                if _post_handoff_scope_recorder is not None:
+                    _post_handoff_scope_recorder.checkpoint(
+                        checkpoint_conn,
+                        checkpoint_run_id,
+                        "AFTER_FIRST_RUN_STEP_AND_SCHEDULER_COMMIT",
+                    )
+
+            _plan_opening_jobs(
+                conn,
+                run_id,
+                targets,
+                _now(),
+                first_commit_callback=(
+                    _first_opening_commit
+                    if _post_handoff_scope_recorder is not None
+                    else None
+                ),
+            )
         conn.commit()
 
         while stop_reason == STOP_COMPLETED:
@@ -3997,6 +4034,34 @@ def run_one_command_15m_factory(
                         timeout_seconds=timeout_seconds,
                         fallback_adapter_factory=fallback_factory,
                     )
+                if (
+                    _post_handoff_scope_recorder is not None
+                    and result.get("snapshot_id") is not None
+                    and not first_snapshot_checkpointed
+                ):
+                    conn.commit()
+                    _post_handoff_scope_recorder.record_token_snapshot(
+                        int(result["snapshot_id"])
+                    )
+                    _post_handoff_scope_recorder.checkpoint(
+                        conn,
+                        run_id,
+                        "AFTER_FIRST_TOKEN_SNAPSHOT_COMMIT",
+                    )
+                    first_snapshot_checkpointed = True
+                if (
+                    _post_handoff_scope_recorder is not None
+                    and pending["step_kind"] == "WINDOW_CLOSE"
+                    and result.get("memory_window_id") is not None
+                    and not first_window_checkpointed
+                ):
+                    conn.commit()
+                    _post_handoff_scope_recorder.checkpoint(
+                        conn,
+                        run_id,
+                        "AFTER_FIRST_LIFECYCLE_WINDOW_COMMIT",
+                    )
+                    first_window_checkpointed = True
                 _check_cancellation(cancellation_probe)
                 if result.get("ok"):
                     if pending["step_kind"] == "SNAPSHOT" and str(pending["step_key"]).endswith("_snapshot_00"):
@@ -4230,6 +4295,17 @@ def run_one_command_15m_factory(
                     complete_job(conn, job_id=job_id)
                     conn.commit()
                     if (
+                        _post_handoff_scope_recorder is not None
+                        and pending["step_kind"] == "WINDOW_CLOSE"
+                        and not post_activation_checkpointed
+                    ):
+                        _post_handoff_scope_recorder.checkpoint(
+                            conn,
+                            run_id,
+                            "AFTER_POST_ACTIVATION_15M_STATE_COMMIT",
+                        )
+                        post_activation_checkpointed = True
+                    if (
                         pending["step_kind"] == "WINDOW_CLOSE"
                         and bool(config.get("selective_1h_continuation"))
                     ):
@@ -4248,6 +4324,17 @@ def run_one_command_15m_factory(
                     fail_job(conn, job_id=job_id, error=error, max_retries=0)
                     _cancel_pending_for_token(conn, run_id, token_id, TOKEN_LOCAL_CANCELLED)
                     conn.commit()
+                    if (
+                        _post_handoff_scope_recorder is not None
+                        and pending["step_kind"] == "WINDOW_CLOSE"
+                        and not post_activation_checkpointed
+                    ):
+                        _post_handoff_scope_recorder.checkpoint(
+                            conn,
+                            run_id,
+                            "AFTER_POST_ACTIVATION_15M_STATE_COMMIT",
+                        )
+                        post_activation_checkpointed = True
             except _ExternalStop:
                 raise
             except _GlobalStop as gstop:
@@ -4265,21 +4352,56 @@ def run_one_command_15m_factory(
                 )
                 fail_job(conn, job_id=job_id, error=gstop.reason, max_retries=0)
                 conn.commit()
+                if (
+                    _post_handoff_scope_recorder is not None
+                    and pending["step_kind"] == "WINDOW_CLOSE"
+                    and not post_activation_checkpointed
+                ):
+                    _post_handoff_scope_recorder.checkpoint(
+                        conn,
+                        run_id,
+                        "AFTER_POST_ACTIVATION_15M_STATE_COMMIT",
+                    )
+                    post_activation_checkpointed = True
             except Exception as exc:
+                if getattr(exc, "post_handoff_proof_fault", False):
+                    raise
                 # Unexpected token-local failure: isolate this token, continue.
                 result = {"ok": False, "exception": f"{type(exc).__name__}: {exc}"}
                 _update_step(conn, int(pending["id"]), "FAILED", result, error=result["exception"])
                 fail_job(conn, job_id=job_id, error=result["exception"], max_retries=0)
                 _cancel_pending_for_token(conn, run_id, token_id, TOKEN_LOCAL_CANCELLED)
                 conn.commit()
+                if (
+                    _post_handoff_scope_recorder is not None
+                    and pending["step_kind"] == "WINDOW_CLOSE"
+                    and not post_activation_checkpointed
+                ):
+                    _post_handoff_scope_recorder.checkpoint(
+                        conn,
+                        run_id,
+                        "AFTER_POST_ACTIVATION_15M_STATE_COMMIT",
+                    )
+                    post_activation_checkpointed = True
     except _ExternalStop as external_stop:
         stop_reason = external_stop.reason
     except KeyboardInterrupt:
         stop_reason = STOP_INTERRUPTED
     except Exception as exc:
-        stop_reason = STOP_PREFLIGHT
-        discovery = {**discovery, "orchestration_error": f"{type(exc).__name__}: {exc}"}
+        if getattr(exc, "post_handoff_proof_fault", False):
+            proof_fault = exc
+        else:
+            stop_reason = STOP_PREFLIGHT
+            discovery = {
+                **discovery,
+                "orchestration_error": f"{type(exc).__name__}: {exc}",
+            }
     finally:
+        if proof_fault is not None:
+            if _post_handoff_scope_recorder is not None:
+                _post_handoff_scope_recorder.record_factory_rows(conn, run_id)
+            conn.close()
+            raise proof_fault
         _emit_supervision_event(
             bool(supervision_execution_id), "TERMINAL_CAUSE", reason=stop_reason,
         )
@@ -4310,6 +4432,27 @@ def run_one_command_15m_factory(
             archive_policy="cooldown",
         )
         conn.commit()
+        if (
+            _post_handoff_scope_recorder is not None
+            and not first_window_checkpointed
+        ):
+            _post_handoff_scope_recorder.record_lifecycle_event_ids(
+                tuple(
+                    int(item["lifecycle_event_id"])
+                    for item in lifecycle_reconciliation.get("transitions", ())
+                    if item.get("lifecycle_event_id") is not None
+                )
+            )
+            try:
+                _post_handoff_scope_recorder.checkpoint(
+                    conn,
+                    run_id,
+                    "AFTER_FIRST_LIFECYCLE_WINDOW_COMMIT",
+                )
+            except Exception:
+                conn.close()
+                raise
+            first_window_checkpointed = True
         report = _final_report(
             conn, run_id=run_id, config=config, discovery=discovery, before=before,
             stop_reason=stop_reason, started_at=started_at,

@@ -451,6 +451,13 @@ class TerminalizationAndHeartbeatTests(unittest.TestCase):
             self.assertTrue(terminal["cleanup"].get("lease_released"))
             self.assertFalse(terminal["restart_created"])
             self.assertFalse(terminal["successor_created"])
+            self.assertEqual(
+                terminal["accounting_status"], "SIX_UNIT_ACCOUNTING_BLOCKED"
+            )
+            self.assertFalse(terminal["report_written"])
+            self.assertEqual(
+                terminal["report_block_reason"], "SIX_UNIT_EVIDENCE_MISSING"
+            )
             self.assertEqual(terminal.get("campaign_source_calls"), 18)
 
             connection = sqlite3.connect(db)

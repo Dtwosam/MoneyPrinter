@@ -34,38 +34,38 @@ The active lane remains:
 V2-9.8B — Active Bounded Memory Growth Operations
 ```
 
-The current work inside V2-9.8B is the **post-handoff terminal compensation
-repair**, built on the completed campaign-accounting / terminal-enforcement
-readiness audit. Its verdict is:
+The current completed work inside V2-9.8B is **Terminal Safety, Accounting,
+Runner-Proof, and Supply-Truth Finalization**. Its verdict is:
 
-`V2_9_8B_POST_HANDOFF_TERMINAL_COMPENSATION_PASS`.
+`V2_9_8B_TERMINAL_SAFETY_ACCOUNTING_FINALIZATION_PASS`.
 
-This repair resolves the prior lane's primary post-handoff blocker (D-1) under
-the accepted invariant — after a post-handoff failure, zero active, runnable,
-leased, reusable, or orphan work, while immutable terminal handoff audit evidence
-may remain. The surviving FK-pinned handoff rows (token slots, first-15m jobs)
-are now moved to a lawful non-runnable terminal state and their tracking is
-closed via the existing `reconcile_campaign_terminal` authority; only deletable
-lifecycle-materialization residue is removed; the immutable selected-item links
-are preserved unchanged. Proven across all five post-handoff injections on fresh
-disposable migration-049 databases, with idempotency and normal-success proofs.
+This finalization supersedes the post-handoff terminal-compensation PASS for the
+repaired surface. Compensation now deletes only exact recorded current-attempt
+primary keys, never token-wide history; the ordinary 15m path owns and mutates no
+candidate-acquisition lease; SQLite/schema failures fail closed; the residual
+matrix includes snapshots, Scheduler jobs, locks, lifecycle state, preservation,
+and unrelated leases. Immutable selected-item links remain untouched and pinned
+slots/tracking still terminalize through `reconcile_campaign_terminal`.
 
-The prior campaign-accounting / terminal-enforcement lane's historical verdict
-remains as recorded evidence (unchanged):
+Campaign accounting rejects absent, empty, malformed, duplicate, negative, or
+identity-conflicting stage evidence. The public coordinator owns accounting
+before work, preserves partial evidence, and never persists a matched synthetic
+zero report for attempted work. Initialized failures require six-unit evidence
+or write only an accounting-blocked failure summary.
 
-`V2_9_8B_CAMPAIGN_ACCOUNTING_TERMINAL_ENFORCEMENT_BLOCKED` — repairs 1–10 and 13
-closed and proven; repairs 11–12 (post-handoff zero-orphan) were BLOCKED under
-the earlier literal-row-zero reading. That reading is superseded (not rewritten)
-by this lane's terminalization invariant. The prior verifiable-real-path PASS
-(`V2_9_8B_DISCOVERY_SELECTION_VERIFIABLE_REAL_PATH_PASS`) stays superseded and
-operator-review blocked.
+The four final post-handoff proof stages now fault inside the real
+`run_one_command_15m_factory` runner after committed real rows/transitions; the
+driver-level representative object shim is removed. Shared eligible-supply
+provider failures are counted once from exact governed failure identities, so a
+valid empty discovery result no longer overrides true market shortage.
 
-Remaining blockers after this lane (unchanged, re-reported):
+The historical verdicts remain preserved as evidence:
 
-- D-2: stages 4–5 injections are driver-level representative simulations, not
-  real-runner-internal faults;
-- the selective-1h provider-failure truthfulness defect (pre-existing baseline
-  failures in `test_v2_9_8b_selective_1h_liquidity_evidence_repair.py`).
+- `V2_9_8B_POST_HANDOFF_TERMINAL_COMPENSATION_PASS` (superseded for this surface)
+- `V2_9_8B_CAMPAIGN_ACCOUNTING_TERMINAL_ENFORCEMENT_BLOCKED` (superseded for
+  this surface)
+- `V2_9_8B_DISCOVERY_SELECTION_VERIFIABLE_REAL_PATH_PASS` (remains historical
+  and superseded)
 
 Prior closeouts treated as operator-review blocked / superseded for this surface:
 
@@ -75,7 +75,13 @@ Prior closeouts treated as operator-review blocked / superseded for this surface
 - campaign-accounting / terminal-enforcement closeout (BLOCKED; post-handoff
   portion superseded by this lane's PASS)
 
-Active post-handoff terminal-compensation documents:
+Active finalization documents:
+
+- `docs/printer-v1-v2-9-8b-terminal-safety-accounting-finalization-audit.md`
+- `docs/printer-v1-v2-9-8b-terminal-safety-accounting-finalization-design.md`
+- `docs/printer-v1-v2-9-8b-terminal-safety-accounting-finalization-closeout.md`
+
+Prior post-handoff terminal-compensation documents (evidence):
 
 - `docs/printer-v1-v2-9-8b-post-handoff-terminal-compensation-readiness.md`
 - `docs/printer-v1-v2-9-8b-post-handoff-terminal-compensation-design.md`
@@ -223,19 +229,17 @@ liquidity, freshness, holder, safety or tradeability requirements.
 
 On:
 
-`V2_9_8B_POST_HANDOFF_TERMINAL_COMPENSATION_PASS`
+`V2_9_8B_TERMINAL_SAFETY_ACCOUNTING_FINALIZATION_PASS`
 
 the exact next permitted task is:
 
 ```text
-independent read-only review of the post-handoff terminal-compensation repair,
-and of the remaining blockers (D-2 real-runner-internal faults; the selective-1h
-provider-failure truthfulness defect)
+independent read-only operator review of the terminal-safety, accounting,
+real-runner proof, and shared eligible-supply finalization
 ```
 
 PASS authorizes only an independent read-only review. It does **not** authorize
-D-2 implementation, a live source-contract probe, a live probe, a Memory Factory
-campaign, providers/RPC, N2, N7, recovery, cursor reset, memory operation,
-retrieval, or any financial capability. There is no automatic repair, retry, or
-successor. The lane-owned campaign-accounting changes and this compensation
-repair are committed together on this PASS (no tag, no push).
+a live source-contract probe, a live probe, a Memory Factory campaign,
+providers/RPC, N2, N7, recovery, cursor reset, memory operation, retrieval, or
+any financial capability. There is no automatic repair, retry, or successor.
+No tag or push is authorized.

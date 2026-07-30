@@ -122,9 +122,9 @@ def _pair(pool: str, mint: str, liquidity: float | None) -> dict:
 def _empty_migration_transport():
     def transport(_context):
         return {
-            "request_kind": "pumpfun_migration_stream",
-            "source_name": "pumpportal",
-            "tokens": [],
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": [],
         }
     return transport
 

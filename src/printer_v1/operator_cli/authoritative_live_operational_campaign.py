@@ -23,7 +23,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 import sqlite3
 from pathlib import Path
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from printer_v1.discovery.combined_executor import (
     GRADUATED_LIFECYCLE,
@@ -1382,6 +1382,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
         graduated_supply_kwargs: Mapping[str, Any] | None = None,
         stop_before_lifecycle: bool = False,
         fifteen_minute_only: bool = False,
+        accounting_stage_evidence_sink: (
+            Callable[[Mapping[str, Any]], None] | None
+        ) = None,
     ) -> Any:
         """Run one authoritative live two-token operational-natural campaign.
 
@@ -1475,6 +1478,17 @@ class AuthoritativeLiveOperationalCampaignOwner:
             )
         graduated_supply_proofs: tuple[Any, ...] = ()
         if supply is not None:
+            supply_evidence = (
+                (supply.discovery_report or {}).get("six_unit_evidence")
+                if isinstance(supply.discovery_report, Mapping)
+                else None
+            )
+            if (
+                accounting_stage_evidence_sink is not None
+                and isinstance(supply_evidence, Mapping)
+                and supply_evidence
+            ):
+                accounting_stage_evidence_sink(supply_evidence)
             merged_proofs = dict(graduation_proofs or {})
             merged_proofs.update(dict(supply.graduation_proofs))
             graduation_proofs = merged_proofs

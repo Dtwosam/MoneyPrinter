@@ -605,6 +605,11 @@ def run_persistent_eligible_token_supply(
     ops_used = int(locator.get("source_requests") or 0) + int(
         (discovery.get("source_operation_ledger") or {}).get("source_requests") or 0
     )
+    # A terminal status is not an attributable failure fact. Count only exact
+    # Source-Governor failure rows (or, where a stage has no durable row, a
+    # separately proven transport identity). This prevents a single governed
+    # failure from being counted again through the stage's summary label.
+    provider_failure_facts: set[tuple[str, str, int | str]] = set()
     provider_failures = 0
     liquidity_stage_provider_failures = 0
     liquidity_outcome_counts: dict[str, int] = {}
@@ -625,10 +630,6 @@ def run_persistent_eligible_token_supply(
     channels_attempted.append("exact_pump_pumpswap_graduation_verify")
     channels_attempted.append("dexscreener_exact_pool_market")
 
-    if discovery.get("status") == "PROVIDER_FAILURE":
-        provider_failures += 1
-        channels_unavailable.append("direct_pump_finalized_live_tail")
-
     evaluated_mints: set[str] = set()
     campaign_eligible: dict[str, dict[str, Any]] = {}
     all_candidates: list[dict[str, Any]] = []
@@ -645,6 +646,61 @@ def run_persistent_eligible_token_supply(
 
     connection = _connect(db_path)
     try:
+        # Count locator and direct migration/verification failures only through
+        # the exact Source-Governor request/failure lineage exposed by those
+        # stages. Their terminal labels are deliberately not failure identities.
+        locator_request_ids = (
+            [int(locator["request_id"])]
+            if locator.get("request_id") is not None
+            else []
+        )
+        discovery_request_ids = [
+            int(value)
+            for value in (
+                (discovery.get("source_operation_ledger") or {}).get(
+                    "request_ids"
+                )
+                or ()
+            )
+        ]
+        request_channels = {
+            **{
+                request_id: "dexscreener_fresh_profiles_locator"
+                for request_id in locator_request_ids
+            },
+            **{
+                request_id: "direct_pump_finalized_live_tail"
+                for request_id in discovery_request_ids
+            },
+        }
+        attributable_request_ids = sorted(request_channels)
+        if attributable_request_ids:
+            placeholders = ",".join("?" * len(attributable_request_ids))
+            governed_failures = connection.execute(
+                "SELECT f.id,r.id AS request_id,r.source_name,r.request_kind "
+                "FROM printer_source_failures AS f "
+                "JOIN printer_source_requests AS r ON r.id=f.source_request_id "
+                f"WHERE r.id IN ({placeholders}) ORDER BY f.id",
+                tuple(attributable_request_ids),
+            ).fetchall()
+            for failure in governed_failures:
+                provider_failure_facts.add(
+                    (
+                        str(failure["source_name"]),
+                        str(failure["request_kind"]),
+                        int(failure["id"]),
+                    )
+                )
+                channel = request_channels[int(failure["request_id"])]
+                if (
+                    str(failure["request_kind"])
+                    == "pumpswap_signature_pool_resolution"
+                ):
+                    channel = "exact_pump_pumpswap_graduation_verify"
+                if channel not in channels_unavailable:
+                    channels_unavailable.append(channel)
+        provider_failures = len(provider_failure_facts)
+
         inventory_rows = export_graduated_candidates(connection)
         inventory_known_at_start = len(inventory_rows)
         inventory_mints = {str(r["mint_identity"]) for r in inventory_rows}
@@ -844,12 +900,29 @@ def run_persistent_eligible_token_supply(
                 )
                 failure_id = liquidity.get("source_failure_id")
                 if failure_id is not None:
-                    liquidity_failure_ids.add(int(failure_id))
+                    exact_failure_id = int(failure_id)
+                    liquidity_failure_ids.add(exact_failure_id)
+                    failure_owner = connection.execute(
+                        "SELECT r.source_name,r.request_kind "
+                        "FROM printer_source_failures AS f "
+                        "JOIN printer_source_requests AS r "
+                        "ON r.id=f.source_request_id WHERE f.id=?",
+                        (exact_failure_id,),
+                    ).fetchone()
+                    if failure_owner is None:
+                        raise EligibleTokenSupplyError(
+                            "SOURCE_FAILURE_LINEAGE_MISSING:"
+                            f"{exact_failure_id}"
+                        )
+                    provider_failure_facts.add(
+                        (
+                            str(failure_owner["source_name"]),
+                            str(failure_owner["request_kind"]),
+                            exact_failure_id,
+                        )
+                    )
             liquidity_stage_provider_failures = len(liquidity_failure_ids)
-            provider_failures = (
-                (1 if discovery.get("status") == "PROVIDER_FAILURE" else 0)
-                + liquidity_stage_provider_failures
-            )
+            provider_failures = len(provider_failure_facts)
             if any(
                 liquidity_outcome_counts.get(category, 0) > 0
                 for category in (
@@ -1019,12 +1092,12 @@ def run_persistent_eligible_token_supply(
                 LIQUIDITY_RESPONSE_MALFORMED_OR_PARTIAL, 0
             ) > 0:
                 shortage = SOURCE_VISIBILITY_SHORTAGE
+            elif provider_failures > 0 and channels_unavailable:
+                shortage = SOURCE_AVAILABILITY_FAILURE
             elif last_stop_reason == "DISCOVERY_OPERATION_BUDGET_EXHAUSTED":
                 shortage = BUDGET_EXHAUSTION
             elif last_stop_reason == "CAMPAIGN_DURATION_EXHAUSTED":
                 shortage = DURATION_EXHAUSTION
-            elif provider_failures > 0 and channels_unavailable:
-                shortage = SOURCE_AVAILABILITY_FAILURE
             elif any(
                 not bool(item.get("eligible_for_evidence"))
                 for item in tracking_dispositions.values()

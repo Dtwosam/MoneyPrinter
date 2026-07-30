@@ -19,7 +19,7 @@ import sqlite3
 import sys
 import threading
 import time
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 import uuid
 
 from printer_v1.db.migrate import (
@@ -1076,6 +1076,8 @@ def _terminalize_initialized_failure(
     launch_git_provenance: Mapping[str, Any],
     factory_run_id: str | None = None,
     heartbeat_failure: Mapping[str, Any] | None = None,
+    accounting_owner: Any | None = None,
+    accounting_evidence: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Attempt every canonical terminal owner without replacing the first fault."""
     heartbeat_evidence = dict(
@@ -1157,6 +1159,96 @@ def _terminalize_initialized_failure(
         lifecycle={},
         required_token_capacity=TOKEN_CAPACITY,
     )
+    stage_evidence = accounting_evidence or reporting.get("six_unit_evidence")
+    owner_has_evidence = bool(
+        accounting_owner is not None
+        and int(getattr(accounting_owner, "stage_evidence_count", 0)) > 0
+    )
+    evidence_available = owner_has_evidence or (
+        isinstance(stage_evidence, Mapping) and bool(stage_evidence)
+    )
+    accounting_blocked_exception = (
+        "SIX_UNIT_ACCOUNTING_BLOCKED" in str(original_exception)
+        or bool(getattr(accounting_owner, "accounting_block_reason", None))
+    )
+    accounted_totals: Mapping[str, Any] | None = None
+    durable_evidence: Mapping[str, Any] | None = None
+    if evidence_available:
+        try:
+            if accounting_owner is not None:
+                if not owner_has_evidence:
+                    accounting_owner.ingest_stage_evidence(stage_evidence)
+                accounting_owner.close()
+                accounted_totals = accounting_owner.six_unit_totals()
+                durable_evidence = accounting_owner.durable_evidence()
+            else:
+                from printer_v1.sources.campaign_six_unit_accounting import (
+                    aggregate_campaign_six_unit_owner,
+                )
+                rebuilt_owner = aggregate_campaign_six_unit_owner(
+                    campaign_id=command.campaign_id,
+                    run_id=command.run_id,
+                    cycle_id=cycle_id,
+                    stage_evidences=[stage_evidence],
+                )
+                accounted_totals = rebuilt_owner.six_unit_totals()
+                durable_evidence = rebuilt_owner.durable_evidence()
+        except BaseException as exc:
+            closure_errors.append(
+                f"accounting:{type(exc).__name__}:{exc}"
+            )
+            evidence_available = False
+    if (
+        evidence_available
+        and isinstance(durable_evidence, Mapping)
+        and bool(durable_evidence.get("pre_operation_no_work"))
+        and (
+            factory_run_id is not None
+            or int(reporting.get("campaign_source_calls") or 0) != 0
+            or int(reporting.get("campaign_scheduler_calls") or 0) != 0
+            or any(int(value) for value in (accounted_totals or {}).values())
+            or not str(
+                durable_evidence.get("pre_operation_no_work_reason") or ""
+            ).strip()
+        )
+    ):
+        closure_errors.append("accounting:PRE_OPERATION_NO_WORK_NOT_PROVEN")
+        evidence_available = False
+
+    if not evidence_available or accounting_blocked_exception:
+        partial_evidence = None
+        if owner_has_evidence:
+            accounting_owner.close()
+            partial_evidence = accounting_owner.durable_evidence()
+        terminal = {
+            "status": "OPERATIONAL_CAMPAIGN_TERMINAL_FAILURE",
+            "execution_id": execution_id,
+            "campaign_id": command.campaign_id,
+            "first_terminal_cause": cause,
+            "original_exception_type": type(original_exception).__name__,
+            "reconciliation": dict(reconciliation),
+            "cleanup": dict(cleanup),
+            "accounting_status": "SIX_UNIT_ACCOUNTING_BLOCKED",
+            "report_written": False,
+            "report_block_reason": "SIX_UNIT_EVIDENCE_MISSING",
+            "partial_six_unit_evidence": partial_evidence,
+            "closure_errors": tuple(closure_errors),
+            "restart_created": False,
+            "successor_created": False,
+            "campaign_source_calls": reporting.get("campaign_source_calls"),
+            "campaign_scheduler_calls": reporting.get(
+                "campaign_scheduler_calls"
+            ),
+        }
+        try:
+            paths["summary"].write_text(
+                json.dumps(terminal, indent=2, sort_keys=True, default=str) + "\n",
+                encoding="utf-8",
+            )
+        except BaseException as exc:
+            closure_errors.append(f"summary:{type(exc).__name__}:{exc}")
+        return terminal
+
     payload = build_campaign_terminal_report(
         campaign_id=command.campaign_id,
         configuration_id=command.configuration_id,
@@ -1191,8 +1283,9 @@ def _terminalize_initialized_failure(
             run_id=command.run_id,
         ),
         pre_lifecycle_admission=reporting.get("pre_lifecycle_admission"),
-        six_unit_totals=reporting.get("six_unit_totals"),
-        six_unit_evidence=reporting.get("six_unit_evidence"),
+        six_unit_totals=accounted_totals,
+        six_unit_evidence=durable_evidence,
+        require_six_unit_evidence=True,
         elapsed_seconds=reporting.get("elapsed_seconds"),
     )
     report: Mapping[str, Any] = {"report_written": False}
@@ -1206,6 +1299,7 @@ def _terminalize_initialized_failure(
                 campaign_id=command.campaign_id,
                 configuration_id=command.configuration_id,
                 report=payload,
+                require_six_unit_evidence=True,
             ),
         )
     except BaseException as exc:
@@ -1237,6 +1331,31 @@ def _terminalize_initialized_failure(
             + " | ".join(closure_errors)
         )
     return terminal
+
+
+def _finalize_operational_six_unit_accounting(
+    accounting_owner: Any,
+    stage_evidences: Sequence[Mapping[str, Any] | None] | None,
+) -> Any:
+    """Coordinator boundary: ingest ordered stage evidence without zero fallback."""
+    if (
+        stage_evidences is None
+        or not isinstance(stage_evidences, Sequence)
+        or isinstance(stage_evidences, (str, bytes))
+        or len(stage_evidences) == 0
+    ):
+        raise OperationalMemoryFactoryError("SIX_UNIT_ACCOUNTING_BLOCKED")
+    for evidence in stage_evidences:
+        if not isinstance(evidence, Mapping) or not evidence:
+            raise OperationalMemoryFactoryError("SIX_UNIT_ACCOUNTING_BLOCKED")
+        try:
+            accounting_owner.ingest_stage_evidence(evidence)
+        except BaseException as exc:
+            raise OperationalMemoryFactoryError(
+                f"SIX_UNIT_ACCOUNTING_BLOCKED:{type(exc).__name__}:{exc}"
+            ) from exc
+    accounting_owner.close()
+    return accounting_owner
 
 
 def _run_operational_campaign(
@@ -1280,6 +1399,16 @@ def _run_operational_campaign(
     heartbeat: _CampaignHeartbeat | None = None
     initialized_factory_run_id: str | None = None
     observed_heartbeat_failure: Mapping[str, Any] | None = None
+    # The public coordinator owns accounting before the first accounted stage.
+    from printer_v1.sources.campaign_six_unit_accounting import (
+        CampaignSixUnitOwner,
+    )
+    campaign_units = CampaignSixUnitOwner(
+        campaign_id=command.campaign_id,
+        run_id=command.run_id,
+        cycle_id=cycle_id,
+        started_at=now,
+    )
     try:
         acquire_campaign_supervision(
             command.db_path,
@@ -1368,30 +1497,43 @@ def _run_operational_campaign(
                 # path is a redundant safety net and must not abort production.
                 pass
 
-        result = active_owner.run_operational(
-            command=command,
-            pump_transport=active_pump,
-            secondary_transport=active_secondary,
-            source_governor=OwnerPort(SOURCE_GOVERNOR_OWNER, True),
-            central_scheduler=OwnerPort(CENTRAL_SCHEDULER_OWNER, True),
-            selection_seed=execution_id,
-            cycle_id=cycle_id,
-            cycle_cutoff=now,
-            evaluated_at=now,
-            backup_path=paths["backup"],
-            lifecycle_kwargs={
-                "total_duration_seconds": policy.duration_seconds,
-                "launch_provenance": preflight["git_provenance"],
-                "cancellation_probe": cancellation_probe,
-                "factory_run_initialized": retain_factory_run_id,
-                # Fixed by the public mode; normal run can never opt into 1h.
-                "selective_1h_continuation": policy.selective_1h_continuation,
-                "configuration_id": command.configuration_id,
-            },
-            migration_transport=migration_transport,
-            graduated_supply_kwargs=dict(OPERATIONAL_GRADUATED_SUPPLY_KWARGS),
-            fifteen_minute_only=True,
-        )
+        try:
+            result = active_owner.run_operational(
+                command=command,
+                pump_transport=active_pump,
+                secondary_transport=active_secondary,
+                source_governor=OwnerPort(SOURCE_GOVERNOR_OWNER, True),
+                central_scheduler=OwnerPort(CENTRAL_SCHEDULER_OWNER, True),
+                selection_seed=execution_id,
+                cycle_id=cycle_id,
+                cycle_cutoff=now,
+                evaluated_at=now,
+                backup_path=paths["backup"],
+                lifecycle_kwargs={
+                    "total_duration_seconds": policy.duration_seconds,
+                    "launch_provenance": preflight["git_provenance"],
+                    "cancellation_probe": cancellation_probe,
+                    "factory_run_initialized": retain_factory_run_id,
+                    # Fixed by the public mode; normal run can never opt into 1h.
+                    "selective_1h_continuation": (
+                        policy.selective_1h_continuation
+                    ),
+                    "configuration_id": command.configuration_id,
+                },
+                migration_transport=migration_transport,
+                graduated_supply_kwargs=dict(
+                    OPERATIONAL_GRADUATED_SUPPLY_KWARGS
+                ),
+                fifteen_minute_only=True,
+                accounting_stage_evidence_sink=(
+                    campaign_units.ingest_stage_evidence
+                ),
+            )
+        except BaseException:
+            campaign_units.block(
+                "OPERATIONAL_STAGE_FAILED_BEFORE_ACCOUNTING_COMPLETION"
+            )
+            raise
         # Heartbeat never terminalizes. Main coordinator observes failure signal.
         heartbeat_failure = heartbeat.poll_failure() if heartbeat is not None else None
         observed_heartbeat_failure = heartbeat_failure
@@ -1468,24 +1610,15 @@ def _run_operational_campaign(
         # Stage results expose evidence; the coordinator's owner aggregates it.
         # Optional lifecycle/reporting dicts are no longer the authority — a
         # malformed stage block fails closed here (terminalizes FAILED).
-        from printer_v1.sources.campaign_six_unit_accounting import (
-            aggregate_campaign_six_unit_owner,
-        )
-
         stage_evidence = (
             reporting.get("six_unit_evidence")
             or lifecycle.get("six_unit_evidence")
         )
-        campaign_units = aggregate_campaign_six_unit_owner(
-            campaign_id=command.campaign_id,
-            run_id=command.run_id,
-            cycle_id=cycle_id,
-            started_at=now,
-            stage_evidences=(
-                [stage_evidence]
-                if isinstance(stage_evidence, Mapping) and stage_evidence
-                else []
-            ),
+        exposed_stage_evidences = lifecycle.get("six_unit_stage_evidences")
+        if exposed_stage_evidences is None:
+            exposed_stage_evidences = (stage_evidence,)
+        _finalize_operational_six_unit_accounting(
+            campaign_units, exposed_stage_evidences
         )
         aggregated_six_unit_totals = campaign_units.six_unit_totals()
         aggregated_six_unit_evidence = campaign_units.durable_evidence()
@@ -1581,6 +1714,7 @@ def _run_operational_campaign(
                     heartbeat.poll_failure()
                     if heartbeat is not None else observed_heartbeat_failure
                 ),
+                accounting_owner=campaign_units,
             )
         except BaseException as closure_exc:
             exc.add_note(

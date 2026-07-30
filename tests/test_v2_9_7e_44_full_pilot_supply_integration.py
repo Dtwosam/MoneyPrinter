@@ -59,6 +59,9 @@ from printer_v1.operator_cli.graduated_supply_front_door import (
 )
 from printer_v1.sources import pump_migration as pm
 from printer_v1.sources.dexscreener import fixture_success_transport
+from printer_v1.sources.campaign_six_unit_accounting import (
+    CampaignSixUnitOwner,
+)
 from printer_v1.sources.pumpfun_direct import (
     PUMP_PROGRAM_ID,
     _b58decode,
@@ -420,6 +423,42 @@ class WiringTests(e8._IntegrationBase):
             stop_before_lifecycle=True,
         )
         assert result.lifecycle["graduated_candidate_count"] == 2
+
+    def test_closed_supply_stage_flows_to_top_accounting_owner(self):
+        stage_owner = CampaignSixUnitOwner()
+        stage_owner.record_local_validation()
+        stage_owner.close()
+        supply = replace(
+            self._supply(),
+            discovery_report={
+                "six_unit_evidence": stage_owner.durable_evidence(),
+            },
+        )
+        top_owner = CampaignSixUnitOwner(
+            campaign_id=self.command.campaign_id,
+            run_id=self.command.run_id,
+            cycle_id="cyc",
+        )
+        result = AuthoritativeLiveOperationalCampaignOwner().run_operational(
+            command=self.command,
+            pump_transport=_FakePumpTransport([], {}),
+            secondary_transport=None,
+            source_governor=GOV,
+            central_scheduler=SCH,
+            selection_seed="e46-accounting-sink",
+            cycle_id="cyc",
+            cycle_cutoff=e8.CUTOFF,
+            evaluated_at=e8.NOW,
+            backup_path=self.backup,
+            lifecycle_kwargs={"context_adapter_factories": _clean_goplus_context()},
+            graduated_supply=supply,
+            stop_before_lifecycle=True,
+            accounting_stage_evidence_sink=top_owner.ingest_stage_evidence,
+        )
+        assert result.lifecycle_started is False
+        assert top_owner.stage_evidence_count == 1
+        assert top_owner.six_unit_totals()["LOCAL_VALIDATION_STEP"] == 1
+
     def test_e46_holder_reserve_writes_readiness_before_lifecycle(self):
         base = self._supply()
         candidates = {

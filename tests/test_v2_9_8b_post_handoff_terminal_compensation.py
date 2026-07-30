@@ -32,6 +32,7 @@ import pytest
 from printer_v1.operator_cli.origin_lifecycle_campaign import (
     POST_HANDOFF_STAGES,
     OriginToLifecycleCampaignDriver,
+    PostHandoffCompensationScope,
     _compensate_post_handoff_teardown,
 )
 
@@ -69,6 +70,7 @@ class _Harness(_IntegrationBase):
 
     def run_with_fault(self, stage):
         driver = OriginToLifecycleCampaignDriver()
+        snapshot_factory, _calls = self._snapshot_adapter_factory()
         return driver.run(
             command=self.command,
             fixtures=self._two_origin_fixtures(),
@@ -76,6 +78,9 @@ class _Harness(_IntegrationBase):
             selection_seed="seed",
             proof_mode=True,
             lifecycle_kwargs={
+                "snapshot_adapter_factory": snapshot_factory,
+                "context_adapter_factories": self._context_factories(),
+                "_window_seconds": 0.05,
                 "total_duration_seconds": 3.0,
                 "launch_provenance": {
                     "git_head": "f" * 40,
@@ -306,23 +311,22 @@ def test_second_compensation_pass_is_idempotent(stage) -> None:
     harness = _Harness()
     harness.setUp()
     try:
-        harness.run_with_fault(stage)
+        first_result = harness.run_with_fault(stage)
         cause = f"POST_HANDOFF_{stage}"
         connection = harness._conn()
         try:
             before = _content_snapshot(connection)
-            activated = _cycle_slot_token_ids(connection)
         finally:
             connection.close()
+        first_scope = first_result.lifecycle[
+            "post_handoff_compensation_report"
+        ]["scope"]
+        scope = PostHandoffCompensationScope(**first_scope)
 
         # Second, independent compensation pass over the already-terminal graph.
         report2 = _compensate_post_handoff_teardown(
             harness.db,
-            campaign_id="camp",
-            run_id="run",
-            cycle_id="cyc",
-            activated_slots=activated,
-            batch_id="origin-activated:cyc",
+            scope=scope,
             terminal_cause=cause,
         )
         # No duplicate transition, cancellation, or deletion.
