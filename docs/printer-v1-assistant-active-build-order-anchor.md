@@ -91,6 +91,7 @@ Active finalization documents:
 - `docs/printer-v1-v2-9-8b-terminal-safety-accounting-finalization-design.md`
 - `docs/printer-v1-v2-9-8b-terminal-safety-accounting-finalization-closeout.md`
 - `docs/printer-v1-v2-9-8b-terminal-safety-accounting-finalization-operator-review.md`
+- `docs/printer-v1-v2-9-8b-active-build-order-reconciliation.md`
 
 Prior post-handoff terminal-compensation documents (evidence):
 
@@ -240,19 +241,19 @@ liquidity, freshness, holder, safety or tradeability requirements.
 
 On:
 
-`V2_9_8B_TERMINAL_SAFETY_ACCOUNTING_FINALIZATION_OPERATOR_REVIEW_PASS`
+`V2_9_8B_ACTIVE_BUILD_ORDER_RECONCILIATION_PASS`
 
 the exact next permitted task is:
 
 ```text
-read-only active build-order reconciliation after the completed V2-9.8B
-terminal-safety/accounting finalization operator review
+V2-9.8B First Authoritative WINDOW_15M Campaign Readiness Audit
 ```
 
-The reconciliation is documentation-only. It may inspect the active Printer V1
-source stack, completed V2-9.8B artifacts, and roadmap sequencing. It must not
-run providers/RPC, a live source-contract probe, a live probe, a Memory Factory
-campaign, N2, N7, recovery, cursor reset, memory generation, another 1h proof,
-4h/12h/24h activation, retrieval, paper decisions, BUY/SELL/HOLD, positions,
-trades, audits, PnL, or any financial capability. There is no automatic repair,
-retry, successor, tag, or runtime authorization.
+This next task is audit/readiness only. It may statically inspect the committed
+ordinary command and route, read the authoritative database in read-only mode,
+verify the exact non-placeholder operator command and environment-variable names,
+and document a factual PASS/BLOCKED verdict. It must not run providers/RPC,
+fetch sources, mutate the database, execute a campaign, generate memory, rerun a
+1h proof, activate longer windows, start V2-10, enable retrieval, or create any
+paper/financial capability. A readiness PASS may authorize only the next approved
+design/specification step; it does not directly authorize campaign execution.
