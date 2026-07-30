@@ -33,6 +33,9 @@ from printer_v1.sources.operational_source_contracts import (
 )
 from printer_v1.sources.pump_contracts import verify_pinned_pump_migration
 from printer_v1.sources.pumpfun_direct import PUMP_PROGRAM_ID
+from printer_v1.sources.measured_transport import (
+    pumpswap_verification_transport_count,
+)
 from printer_v1.sources.pumpswap import (
     PUMPSWAP_AMM_PROGRAM_ID,
     _rpc_post,
@@ -224,6 +227,8 @@ def build_graduation_verifier_transport(
 
     def transport(context: SourceAdapterContext) -> Mapping[str, Any]:
         del context
+        transport_ops = 0
+        response_bytes = 0
         tx = _rpc_post(
             endpoint,
             "getTransaction",
@@ -237,14 +242,18 @@ def build_graduation_verifier_transport(
             ],
             timeout_seconds=timeout_seconds,
         )
+        transport_ops += 1
         if tx.get("fixture_status") == "failure":
-            return MappingProxyType(dict(tx))
+            failed = dict(tx)
+            failed["transport_operations_used"] = transport_ops
+            return MappingProxyType(failed)
         tx_result = tx.get("result")
         if not isinstance(tx_result, Mapping):
             return MappingProxyType({
                 "fixture_status": "failure",
                 "failure_type": "pump_migration_transaction_not_found",
                 "failure_message": "getTransaction returned no result for migration signature",
+                "transport_operations_used": transport_ops,
             })
 
         keys = collect_transaction_account_keys(tx_result)
@@ -257,8 +266,11 @@ def build_graduation_verifier_transport(
                 [chunk, {"encoding": "base64", "commitment": "finalized"}],
                 timeout_seconds=timeout_seconds,
             )
+            transport_ops += 1
             if res.get("fixture_status") == "failure":
-                return MappingProxyType(dict(res))
+                failed = dict(res)
+                failed["transport_operations_used"] = transport_ops
+                return MappingProxyType(failed)
             values = (res.get("result") or {}).get("value") or []
             for k, v in zip(chunk, values):
                 account_infos[k] = v
@@ -266,6 +278,13 @@ def build_graduation_verifier_transport(
         verification = verify_graduation_from_transaction(
             tx_result, account_infos, expected_mint=expected_mint, now_epoch=now_epoch
         )
+        measured = {
+            "transport_operations_used": transport_ops,
+            "response_bytes": response_bytes,
+            "expected_transport_operations": pumpswap_verification_transport_count(
+                len(keys)
+            ),
+        }
         if not verification["verified"]:
             return MappingProxyType({
                 "fixture_status": "failure",
@@ -279,6 +298,7 @@ def build_graduation_verifier_transport(
                 ),
                 "pump_migration_proof": verification["pump_migration_proof"],
                 "pumpswap_resolution": verification["pumpswap_resolution"],
+                **measured,
             })
 
         return MappingProxyType({
@@ -289,6 +309,7 @@ def build_graduation_verifier_transport(
             "migration_signature": migration_signature,
             "migration_block_time": verification["migration_block_time"],
             "migration_slot": verification["migration_slot"],
+            **measured,
         })
 
     return transport

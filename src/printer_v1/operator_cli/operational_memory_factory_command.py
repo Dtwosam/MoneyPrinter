@@ -1291,16 +1291,16 @@ def _run_operational_campaign(
         heartbeat = _CampaignHeartbeat(command)
         heartbeat.start()
         active_owner = owner or AuthoritativeLiveOperationalCampaignOwner()
-        active_pump = pump_transport or OneShotUrllibPumpTransport(
-            resolve_solana_rpc_configuration().url
-        )
+        # One immutable Solana endpoint owner for preflight parity and runtime.
+        solana_rpc = resolve_solana_rpc_configuration()
+        active_pump = pump_transport or OneShotUrllibPumpTransport(solana_rpc.url)
         active_secondary = secondary_transport or OneShotUrllibSecondaryTransport()
         if migration_transport is None:
             from printer_v1.sources.direct_pump_migration import (
                 build_direct_pump_migration_transport,
             )
             migration_transport = build_direct_pump_migration_transport(
-                rpc_url=resolve_solana_rpc_configuration().url,
+                rpc_url=solana_rpc.url,
             )
 
         def cancellation_probe() -> str | None:
@@ -1811,7 +1811,7 @@ def run_discovery_only_qualification(
         )
 
         migration_transport = build_direct_pump_migration_transport(
-            rpc_url=resolve_solana_rpc_configuration().url,
+            rpc_url=resolve_solana_rpc_configuration().url,  # same shared owner
         )
 
     connection = sqlite3.connect(AUTHORITATIVE_DB)

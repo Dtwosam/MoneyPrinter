@@ -104,10 +104,17 @@ def _quote(
 
 
 def _verifier_factory(tx: dict, infos: dict):
+    from printer_v1.sources.measured_transport import (
+        pumpswap_verification_transport_count,
+    )
+    from printer_v1.sources.pumpswap import collect_transaction_account_keys
+
     def factory(mint: str, signature: str):
         verification = verify_graduation_from_transaction(
             tx, infos, expected_mint=mint
         )
+        keys = collect_transaction_account_keys(tx)
+        measured_ops = pumpswap_verification_transport_count(len(keys))
 
         def transport(_context):
             if not verification["verified"]:
@@ -115,6 +122,7 @@ def _verifier_factory(tx: dict, infos: dict):
                     "fixture_status": "failure",
                     "failure_type": "frozen_exact_verification_failed",
                     "failure_message": str(verification["reason"]),
+                    "transport_operations_used": measured_ops,
                 }
             return {
                 "pumpswap_confirmation": verification[
@@ -128,6 +136,7 @@ def _verifier_factory(tx: dict, infos: dict):
                     "migration_block_time"
                 ],
                 "migration_slot": verification["migration_slot"],
+                "transport_operations_used": measured_ops,
             }
 
         return transport
@@ -197,7 +206,10 @@ def test_direct_pump_event_reaches_exact_verification_and_registry(tmp_path) -> 
     assert report["confirmed_count"] == 1
     assert report["migration_intake"]["cursor_used"] is False
     assert report["source_operation_ledger"]["source_requests"] == 3
+    # Measured: 1 signature page + 1 transaction + (1 getTransaction + 1 account batch).
     assert report["source_operation_ledger"]["transport_operations"] == 4
+    assert report["source_operation_ledger"]["migration_transport_operations"] == 2
+    assert report["source_operation_ledger"]["pumpswap_transport_operations"] == 2
     assert report["source_operation_ledger"][
         "operation_accounting_reconciled"
     ]

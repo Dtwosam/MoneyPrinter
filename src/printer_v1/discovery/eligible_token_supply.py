@@ -743,9 +743,10 @@ def run_persistent_eligible_token_supply(
             return max(0, int(discovery_operation_budget) - ops_used)
 
         def _duration_remaining() -> float | None:
+            # Real monotonic wall-clock deadline — never compare only to frozen start.
             if deadline_dt is None:
                 return None
-            return (deadline_dt - _parse_iso(now)).total_seconds()
+            return (deadline_dt - _parse_iso(_utc_now_iso())).total_seconds()
 
         def _unexplored() -> set[str]:
             return inventory_mints - evaluated_mints

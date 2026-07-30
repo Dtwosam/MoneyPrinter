@@ -164,12 +164,19 @@ def _dex_factory(payload_by_pool: dict):
 
 
 def _empty_migration_transport():
+    """Honest empty direct Pump live-tail page (no PumpPortal frames)."""
+    from printer_v1.sources.direct_pump_migration import (
+        SIGNATURE_PAGE_REQUEST_KIND,
+        TRANSACTION_REQUEST_KIND,
+    )
+
     def transport(context):
-        return {
-            "request_kind": "pumpfun_migration_stream",
-            "source_name": "pumpportal",
-            "tokens": [],
-        }
+        kind = context.request.request_kind
+        if kind == SIGNATURE_PAGE_REQUEST_KIND:
+            return {"result": []}
+        if kind == TRANSACTION_REQUEST_KIND:
+            return {"result": None}
+        raise AssertionError(kind)
 
     return transport
 

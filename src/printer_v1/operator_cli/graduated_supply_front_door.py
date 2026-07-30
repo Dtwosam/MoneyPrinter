@@ -76,7 +76,8 @@ BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL = (
 )
 
 # V2-9.7E.46B / V2-9.8B.6 shared production+pilot graduated-supply depth.
-# Admission ceiling remains 45. Do not raise ceilings or lower floors here.
+# Candidate-supply transport ceilings follow the measured budget architecture.
+# Do not raise ceilings or lower floors here.
 OPERATIONAL_GRADUATED_SUPPLY_KWARGS: dict[str, object] = {
     "collection_rounds": 1,
     "max_candidates": 5,
@@ -186,9 +187,9 @@ def _fresh_profile_mints(payload: Mapping[str, Any]) -> list[str]:
         if isinstance(addr, str) and addr and addr not in seen:
             seen.add(addr)
             mints.append(addr)
-    # Sort to canonical identity order so provider response order confers no
-    # advantage whatsoever (recency/rank/boost/popularity are never consulted).
-    return sorted(mints)
+    # Preserve first-seen order after within-response dedup only. Provider order
+    # never becomes a score; lexicographic mint preference is forbidden.
+    return mints
 
 
 def run_fresh_profile_locator(
@@ -392,11 +393,34 @@ def build_graduated_supply(
             for c in persistent.eligible_reserve
         ]
 
-    selected_latest = front_door.get("selected_latest")
-    selected_persisted = front_door.get("selected_persisted")
-    # Deterministic two from eligible reserve when ready (non-ranked identity order
-    # already applied by the supply service; take first two).
-    selected = list(reserve)[:required_token_capacity] if persistent.ready else []
+    from printer_v1.discovery.selection_authority import (
+        candidate_from_front_door_mapping,
+        select_two_candidates,
+    )
+
+    # Canonical neutral two-candidate contract over the eligible reserve.
+    authority = select_two_candidates(
+        [candidate_from_front_door_mapping(item) for item in reserve],
+        cycle_seed=cycle_seed,
+    )
+    selected = [item.as_dict() for item in authority.selected]
+    # Diagnostic provenance attributes only — not readiness columns.
+    selected_latest = next(
+        (
+            item
+            for item in selected
+            if "LATEST" in str(item.get("provenance") or "").upper()
+        ),
+        None,
+    )
+    selected_persisted = next(
+        (
+            item
+            for item in selected
+            if "PERSISTED" in str(item.get("provenance") or "").upper()
+        ),
+        None,
+    )
 
     connection = sqlite3.connect(str(db_path))
     connection.row_factory = sqlite3.Row
@@ -420,21 +444,20 @@ def build_graduated_supply(
             proof for proof in reserve_supply
             if proof.mint.lower() in selected_mints
         ]
-        if persistent.ready and len(supply) >= required_token_capacity:
-            # Ensure graduated_supply carries exactly the first two selected.
-            supply = list(supply)[:required_token_capacity]
-        # Backfill selected_latest / selected_persisted labels when missing.
-        if selected_latest is None or selected_persisted is None:
+        if authority.ready and len(supply) >= required_token_capacity:
+            # Preserve authority order for the two selected mints.
+            ordered: list[FixtureOriginProof] = []
             for item in selected:
-                prov = str(item.get("provenance") or "")
-                if "LATEST" in prov and selected_latest is None:
-                    selected_latest = dict(item)
-                elif selected_persisted is None:
-                    selected_persisted = dict(item)
+                mint = str(item["mint"]).lower()
+                for proof in supply:
+                    if proof.mint.lower() == mint and proof not in ordered:
+                        ordered.append(proof)
+                        break
+            supply = ordered[:required_token_capacity]
     finally:
         connection.close()
 
-    ready = bool(persistent.ready) and len(reserve_supply) >= required_token_capacity
+    ready = bool(authority.ready) and len(supply) == required_token_capacity
     terminal = (
         "GRADUATED_SUPPLY_READY"
         if ready
@@ -447,6 +470,7 @@ def build_graduated_supply(
             "locator_status": locator.get("status"),
             "locator_matched_count": int(locator.get("matched_count") or 0),
             "locator_source_requests": int(locator.get("source_requests") or 0),
+            "two_candidate_selection": authority.as_dict(),
             "exhaustion_certificate": (
                 None
                 if persistent.exhaustion_certificate is None

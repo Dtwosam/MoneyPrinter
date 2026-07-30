@@ -480,6 +480,21 @@ def normalize_pumpswap_confirmation_payload(
     }
     if isinstance(resolution, Mapping):
         normalized["pumpswap_resolution"] = dict(resolution)
+    # Preserve measured transport identities when a transport declares them.
+    if "transport_operations_used" in payload:
+        normalized["transport_operations_used"] = int(
+            payload.get("transport_operations_used") or 0
+        )
+    if "response_bytes" in payload:
+        normalized["response_bytes"] = int(payload.get("response_bytes") or 0)
+    if "transport_operation_identities" in payload:
+        normalized["transport_operation_identities"] = list(
+            payload.get("transport_operation_identities") or ()
+        )
+    if "pump_migration_proof" in payload and isinstance(
+        payload.get("pump_migration_proof"), Mapping
+    ):
+        normalized["pump_migration_proof"] = dict(payload["pump_migration_proof"])
     return NormalizedSourceResult(
         source_name=PUMPSWAP_SOURCE_NAME,
         request_kind=request_kind,

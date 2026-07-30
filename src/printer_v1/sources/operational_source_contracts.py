@@ -86,9 +86,49 @@ class OperationalSourceContract:
     active_runtime: bool = True
     wallet_or_private_key: bool = False
     paid_dependency: bool = False
+    # Typed prohibited-capability fields (ordinary active profiles must be false
+    # / NONE except documented free conditional credentials such as Helius).
+    wallet_required: bool = False
+    private_key_required: bool = False
+    signing_required: bool = False
+    funding_required: bool = False
+    metered_account_or_trade_stream: bool = False
+    transaction_submission: bool = False
+    execution_endpoint: bool = False
+    credential_requirement: str = "NONE"
+    allowed_credential_category: str = "NONE"
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
+
+    def prohibited_capability_violations(self) -> tuple[str, ...]:
+        """Return violation codes when this profile is active on ordinary run."""
+        violations: list[str] = []
+        if self.wallet_required or self.wallet_or_private_key:
+            violations.append("WALLET_REQUIRED")
+        if self.private_key_required or self.wallet_or_private_key:
+            violations.append("PRIVATE_KEY_REQUIRED")
+        if self.signing_required:
+            violations.append("SIGNING_REQUIRED")
+        if self.funding_required:
+            violations.append("FUNDING_REQUIRED")
+        if self.paid_dependency:
+            violations.append("PAID_DEPENDENCY")
+        if self.metered_account_or_trade_stream:
+            violations.append("METERED_ACCOUNT_OR_TRADE_STREAM")
+        if self.transaction_submission:
+            violations.append("TRANSACTION_SUBMISSION")
+        if self.execution_endpoint:
+            violations.append("EXECUTION_ENDPOINT")
+        category = str(self.allowed_credential_category or "NONE").upper()
+        requirement = str(self.credential_requirement or "NONE").upper()
+        if requirement not in {"NONE", "OPTIONAL_FREE_API_KEY"}:
+            violations.append(f"CREDENTIAL_REQUIREMENT:{requirement}")
+        if category not in {"NONE", "OPTIONAL_FREE_API_KEY"}:
+            violations.append(f"ALLOWED_CREDENTIAL_CATEGORY:{category}")
+        if requirement == "OPTIONAL_FREE_API_KEY" and category != "OPTIONAL_FREE_API_KEY":
+            violations.append("CREDENTIAL_CATEGORY_MISMATCH")
+        return tuple(violations)
 
 
 _PLACEHOLDER_MARKERS = (
@@ -220,7 +260,7 @@ _CONTRACTS = (
         ),
         "SOLANA_JSON_RPC_FINALIZED_V1",
         30,
-        "admission ceiling 45; no automatic retry",
+        "measured transport identities; no automatic retry",
         "BLOCKS_LOCATOR_OR_CANDIDATE",
     ),
     OperationalSourceContract(
@@ -329,6 +369,8 @@ _CONTRACTS = (
         30,
         "two methods; zero retry",
         "CANDIDATE_REMAINS_UNKNOWN_OR_BLOCKED",
+        credential_requirement="OPTIONAL_FREE_API_KEY",
+        allowed_credential_category="OPTIONAL_FREE_API_KEY",
     ),
     OperationalSourceContract(
         "coingecko_context",
@@ -418,6 +460,98 @@ def ordinary_runtime_dependency_names() -> tuple[str, ...]:
     )
 
 
+_PROHIBITED_TEXT_MARKERS = (
+    "private_key",
+    "private-key",
+    "wallet_secret",
+    "secret_key",
+    "sign_transaction",
+    "sendtransaction",
+    "submit_transaction",
+    "fund_wallet",
+    "paid_api",
+    "metered_stream",
+    "execution_endpoint",
+)
+
+
+def _scan_serialized_for_prohibitions(
+    value: object, *, path: str = "root"
+) -> list[str]:
+    """Scan serialized profiles for active prohibited capability values.
+
+    Field names that document a prohibition (for example
+    ``private_key_required: false``) are not violations. Only truthy capability
+    flags, required credential modes outside the free optional set, or string
+    values that embed prohibited secrets/endpoints are reported.
+    """
+    findings: list[str] = []
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            key_text = str(key)
+            lowered = key_text.casefold()
+            if any(marker in lowered for marker in _PROHIBITED_TEXT_MARKERS):
+                if item is True or (
+                    isinstance(item, str)
+                    and item.strip()
+                    and item.strip().upper()
+                    not in {"NONE", "FALSE", "0", "OPTIONAL_FREE_API_KEY"}
+                ):
+                    findings.append(f"PROHIBITED_FIELD_ACTIVE:{path}.{key_text}")
+            findings.extend(
+                _scan_serialized_for_prohibitions(item, path=f"{path}.{key_text}")
+            )
+        return findings
+    if isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            findings.extend(
+                _scan_serialized_for_prohibitions(item, path=f"{path}[{index}]")
+            )
+        return findings
+    if isinstance(value, str):
+        lowered = value.casefold()
+        # Only flag secret-like embedded strings, not documentation labels.
+        secret_markers = (
+            "private_key=",
+            "secret_key=",
+            "begin private",
+            "sign_transaction",
+            "sendtransaction",
+        )
+        for marker in secret_markers:
+            if marker in lowered:
+                findings.append(f"PROHIBITED_TEXT:{path}:{marker}")
+    return findings
+
+
+def validate_active_ordinary_source_contracts(
+    contracts: Mapping[str, OperationalSourceContract] | None = None,
+) -> dict[str, object]:
+    """Fail-closed ordinary active profile prohibition check."""
+    registry = (
+        ORDINARY_OPERATIONAL_SOURCE_CONTRACTS if contracts is None else contracts
+    )
+    violations: list[dict[str, object]] = []
+    for name, contract in registry.items():
+        if not contract.active_runtime:
+            continue
+        capability = list(contract.prohibited_capability_violations())
+        serialized = _scan_serialized_for_prohibitions(contract.as_dict())
+        if capability or serialized:
+            violations.append(
+                {
+                    "dependency_name": name,
+                    "capability_violations": capability,
+                    "serialized_violations": serialized,
+                }
+            )
+    return {
+        "ok": not violations,
+        "violations": violations,
+        "active_count": sum(1 for item in registry.values() if item.active_runtime),
+    }
+
+
 __all__ = [
     "CONTRACT_REGISTRY_VERSION",
     "SOLANA_RPC_ENVIRONMENT_NAME",
@@ -441,4 +575,5 @@ __all__ = [
     "resolve_solana_rpc_configuration",
     "ORDINARY_OPERATIONAL_SOURCE_CONTRACTS",
     "ordinary_runtime_dependency_names",
+    "validate_active_ordinary_source_contracts",
 ]

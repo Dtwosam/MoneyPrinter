@@ -39,6 +39,40 @@ WSOL_MINT = "So11111111111111111111111111111111111111112"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 CANONICAL_POOL_INDEX = 0
 
+# Fixed / PDA-derived migrate role constants (pinned IDL + official mainnet).
+PUMP_GLOBAL_ID = "4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf"
+PUMP_EVENT_AUTHORITY_ID = "Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1"
+PUMPSWAP_GLOBAL_CONFIG_ID = "ADyA8hdefvWN2dbGGWFotbzWxrAvLW83WG6QCVXvJKqw"
+PUMPSWAP_EVENT_AUTHORITY_ID = "GS4CU59F31iL7aR2Q8zVS8DRrcRnXX1yjQ66TqNVQnaR"
+
+MIGRATE_ACCOUNT_ROLES: tuple[str, ...] = (
+    "global",
+    "withdraw_authority",
+    "mint",
+    "bonding_curve",
+    "associated_bonding_curve",
+    "user",
+    "system_program",
+    "token_program",
+    "pump_amm",
+    "pool",
+    "pool_authority",
+    "pool_authority_mint_account",
+    "pool_authority_wsol_account",
+    "amm_global_config",
+    "wsol_mint",
+    "lp_mint",
+    "user_pool_token_account",
+    "pool_base_token_account",
+    "pool_quote_token_account",
+    "token_2022_program",
+    "associated_token_program",
+    "pump_amm_event_authority",
+    "event_authority",
+    "program",
+    "rent",
+)
+
 _BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 _PDA_MARKER = b"ProgramDerivedAddress"
 _ED25519_P = 2**255 - 19
@@ -321,6 +355,185 @@ def decode_pump_bonding_curve_account(
     }
 
 
+def _valid_pubkey(value: str) -> bool:
+    raw = _b58decode(value)
+    return raw is not None and len(raw) == 32
+
+
+def validate_migrate_account_roles(accounts: Sequence[str]) -> dict[str, Any]:
+    """Validate all 25 ordered migrate roles and known fixed/PDA relationships.
+
+    Does not invent undocumented Global-layout offsets for withdraw_authority.
+    withdraw_authority must be a present valid pubkey distinct from global and
+    fixed programs; full Global-field equality is applied only when a documented
+    Global decode is later pinned.
+    """
+    if len(accounts) != 25:
+        return {
+            "valid": False,
+            "reason": "migrate_account_layout_mismatch",
+            "role": None,
+            "position": None,
+        }
+    for index, role in enumerate(MIGRATE_ACCOUNT_ROLES):
+        if not isinstance(accounts[index], str) or not accounts[index]:
+            return {
+                "valid": False,
+                "reason": f"migrate_role_{index}_{role}_missing",
+                "role": role,
+                "position": index,
+            }
+        if not _valid_pubkey(accounts[index]):
+            return {
+                "valid": False,
+                "reason": f"migrate_role_{index}_{role}_invalid_pubkey",
+                "role": role,
+                "position": index,
+            }
+
+    fixed = {
+        0: PUMP_GLOBAL_ID,
+        6: SYSTEM_PROGRAM_ID,
+        7: TOKEN_PROGRAM_ID,
+        8: PUMPSWAP_AMM_PROGRAM_ID,
+        13: PUMPSWAP_GLOBAL_CONFIG_ID,
+        14: WSOL_MINT,
+        19: TOKEN_2022_PROGRAM_ID,
+        20: ASSOCIATED_TOKEN_PROGRAM_ID,
+        21: PUMPSWAP_EVENT_AUTHORITY_ID,
+        22: PUMP_EVENT_AUTHORITY_ID,
+        23: PUMP_PROGRAM_ID,
+        24: RENT_SYSVAR_ID,
+    }
+    for index, expected in fixed.items():
+        if accounts[index] != expected:
+            role = MIGRATE_ACCOUNT_ROLES[index]
+            return {
+                "valid": False,
+                "reason": f"migrate_role_{index}_{role}_mismatch",
+                "role": role,
+                "position": index,
+                "expected": expected,
+                "actual": accounts[index],
+            }
+
+    mint = accounts[2]
+    user = accounts[5]
+    pool = accounts[9]
+    pool_authority = accounts[10]
+    if accounts[1] in {accounts[0], SYSTEM_PROGRAM_ID, PUMP_PROGRAM_ID, mint, pool}:
+        return {
+            "valid": False,
+            "reason": "migrate_role_1_withdraw_authority_relation_invalid",
+            "role": "withdraw_authority",
+            "position": 1,
+        }
+    if user in {accounts[0], SYSTEM_PROGRAM_ID, PUMP_PROGRAM_ID, PUMPSWAP_AMM_PROGRAM_ID}:
+        return {
+            "valid": False,
+            "reason": "migrate_role_5_user_invalid",
+            "role": "user",
+            "position": 5,
+        }
+
+    try:
+        expected_bonding_curve = derive_program_address(
+            (b"bonding-curve", _b58decode(mint)), PUMP_PROGRAM_ID
+        )[0]
+        expected_associated_bonding = _derive_ata(
+            owner=expected_bonding_curve,
+            token_program=TOKEN_PROGRAM_ID,
+            mint=mint,
+        )
+        expected_pool_authority = derive_program_address(
+            (b"pool-authority", _b58decode(mint)), PUMP_PROGRAM_ID
+        )[0]
+        expected_pool, _expected_bump = derive_canonical_pumpswap_pool(
+            creator=expected_pool_authority, base_mint=mint, quote_mint=WSOL_MINT
+        )
+        expected_pool_authority_mint = _derive_ata(
+            owner=expected_pool_authority,
+            token_program=TOKEN_PROGRAM_ID,
+            mint=mint,
+        )
+        expected_pool_authority_wsol = _derive_ata(
+            owner=expected_pool_authority,
+            token_program=TOKEN_PROGRAM_ID,
+            mint=WSOL_MINT,
+        )
+        expected_lp_mint = derive_program_address(
+            (b"pool_lp_mint", _b58decode(pool)), PUMPSWAP_AMM_PROGRAM_ID
+        )[0]
+        expected_user_lp = _derive_ata(
+            owner=user, token_program=TOKEN_2022_PROGRAM_ID, mint=expected_lp_mint
+        )
+        expected_base_vault = _derive_ata(
+            owner=pool, token_program=TOKEN_PROGRAM_ID, mint=mint
+        )
+        expected_quote_vault = _derive_ata(
+            owner=pool, token_program=TOKEN_PROGRAM_ID, mint=WSOL_MINT
+        )
+        expected_global = derive_program_address((b"global",), PUMP_PROGRAM_ID)[0]
+        expected_event_authority = derive_program_address(
+            (b"__event_authority",), PUMP_PROGRAM_ID
+        )[0]
+        expected_amm_event_authority = derive_program_address(
+            (b"__event_authority",), PUMPSWAP_AMM_PROGRAM_ID
+        )[0]
+        expected_amm_global_config = derive_program_address(
+            (b"global_config",), PUMPSWAP_AMM_PROGRAM_ID
+        )[0]
+    except (TypeError, ValueError):
+        return {
+            "valid": False,
+            "reason": "migrate_role_pda_derivation_failed",
+            "role": None,
+            "position": None,
+        }
+
+    relations = {
+        0: expected_global,
+        3: expected_bonding_curve,
+        4: expected_associated_bonding,
+        9: expected_pool,
+        10: expected_pool_authority,
+        11: expected_pool_authority_mint,
+        12: expected_pool_authority_wsol,
+        13: expected_amm_global_config,
+        15: expected_lp_mint,
+        16: expected_user_lp,
+        17: expected_base_vault,
+        18: expected_quote_vault,
+        21: expected_amm_event_authority,
+        22: expected_event_authority,
+    }
+    for index, expected in relations.items():
+        if accounts[index] != expected:
+            role = MIGRATE_ACCOUNT_ROLES[index]
+            return {
+                "valid": False,
+                "reason": f"migrate_role_{index}_{role}_relationship_mismatch",
+                "role": role,
+                "position": index,
+                "expected": expected,
+                "actual": accounts[index],
+            }
+
+    return {
+        "valid": True,
+        "reason": "migrate_25_roles_validated",
+        "roles": {
+            MIGRATE_ACCOUNT_ROLES[index]: accounts[index] for index in range(25)
+        },
+        "mint": mint,
+        "pool_address": pool,
+        "creator": pool_authority,
+        "user": user,
+        "bonding_curve": expected_bonding_curve,
+        "lp_mint": expected_lp_mint,
+    }
+
+
 def decode_supported_pump_migration_transaction(
     tx_result: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
@@ -349,17 +562,28 @@ def decode_supported_pump_migration_transaction(
     if len(matches) != 1:
         return {**failed, "reason": "exactly_one_migrate_instruction_required"}
     accounts = matches[0]
-    fixed = {6: SYSTEM_PROGRAM_ID, 7: TOKEN_PROGRAM_ID, 8: PUMPSWAP_AMM_PROGRAM_ID,
-             14: WSOL_MINT, 19: TOKEN_2022_PROGRAM_ID,
-             20: ASSOCIATED_TOKEN_PROGRAM_ID, 23: PUMP_PROGRAM_ID, 24: RENT_SYSVAR_ID}
-    if any(accounts[index] != value for index, value in fixed.items()):
-        return {**failed, "reason": "migrate_fixed_account_mismatch"}
+    role_check = validate_migrate_account_roles(accounts)
+    if not role_check.get("valid"):
+        return {
+            **failed,
+            "reason": str(role_check.get("reason") or "migrate_role_validation_failed"),
+            "role": role_check.get("role"),
+            "position": role_check.get("position"),
+            "accounts": list(accounts),
+        }
     if not isinstance(tx_result.get("slot"), int) or not isinstance(tx_result.get("blockTime"), (int, float)):
         return {**failed, "reason": "finalized_slot_or_block_time_missing"}
-    return {"supported": True, "reason": "supported_pump_migration",
-            "mint": accounts[2], "pool_address": accounts[9],
-            "creator": accounts[10], "slot": int(tx_result["slot"]),
-            "block_time": int(tx_result["blockTime"]), "accounts": accounts}
+    return {
+        "supported": True,
+        "reason": "supported_pump_migration",
+        "mint": accounts[2],
+        "pool_address": accounts[9],
+        "creator": accounts[10],
+        "slot": int(tx_result["slot"]),
+        "block_time": int(tx_result["blockTime"]),
+        "accounts": accounts,
+        "roles": role_check["roles"],
+    }
 
 
 def decode_pumpswap_pool_account(
@@ -499,9 +723,11 @@ __all__ = [
     "PUMPSWAP_POOL_DISCRIMINATOR", "TOKEN_PROGRAM_ID", "TOKEN_2022_PROGRAM_ID",
     "SYSTEM_PROGRAM_ID", "ASSOCIATED_TOKEN_PROGRAM_ID", "RENT_SYSVAR_ID",
     "METADATA_PROGRAM_ID", "MAYHEM_PROGRAM_ID", "WSOL_MINT", "USDC_MINT",
-    "CANONICAL_POOL_INDEX", "derive_program_address",
+    "CANONICAL_POOL_INDEX", "PUMP_GLOBAL_ID", "PUMP_EVENT_AUTHORITY_ID",
+    "PUMPSWAP_GLOBAL_CONFIG_ID", "PUMPSWAP_EVENT_AUTHORITY_ID",
+    "MIGRATE_ACCOUNT_ROLES", "derive_program_address",
     "derive_canonical_pumpswap_pool", "decode_supported_pump_creation_instruction",
     "decode_supported_pump_creation_transaction", "decode_supported_pump_migration_transaction",
     "decode_pump_bonding_curve_account", "decode_pumpswap_pool_account",
-    "verify_pinned_pump_migration",
+    "validate_migrate_account_roles", "verify_pinned_pump_migration",
 ]

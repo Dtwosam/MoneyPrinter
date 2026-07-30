@@ -34,8 +34,13 @@ The active lane remains:
 V2-9.8B — Active Bounded Memory Growth Operations
 ```
 
-The current work inside V2-9.8B is the operational factory active-path
-restoration:
+The current work inside V2-9.8B is discovery and selection authority
+consolidation on the restored ordinary path:
+
+`docs/printer-v1-v2-9-8b-discovery-selection-authority-consolidation-design.md`.
+
+The operational factory active-path restoration remains the restored intake
+anchor:
 
 `docs/printer-v1-v2-9-8b-operational-factory-active-path-restoration.md`.
 
@@ -138,16 +143,23 @@ Assistants must not:
 
 ## 6. Source boundary
 
-The restored active factory uses the last proven governed multi-source intake.
-PumpPortal use is limited to the free/keyless launch/migration locator contract
-already used by that proven path. It remains Source-Governed and
-Scheduler-led, does not authorize metered trade/account streams, a wallet,
-funding or paid fallback, and does not independently establish pair identity.
+The restored active factory ordinary locator is the direct, stateless, one-page
+finalized Pump-program live tail with exact pinned Pump migrate (25 roles) and
+PumpSwap pool join under Source Governor and Central Scheduler. PumpPortal has
+no ordinary-run authority, import, secret, wallet, funding, metered stream or
+fallback path.
 
-Direct Pump/PumpSwap candidate-foundation code remains available for its
-deferred experimental subsystem. Its exact-claim rules remain valid inside that
-subsystem but do not make N2, a global cursor, recovery or migration-observation
-admission an operational prerequisite.
+DexScreener, GeckoTerminal (conditional), GoPlus (conditional), one resolved
+Solana RPC endpoint (including holder evidence), conditional free Helius holder
+backup, CoinGecko context and keyless Jupiter paper quotes remain the ordinary
+graph. The locator makes no historical completeness claim and safe-stops on
+honest insufficient eligible supply.
+
+Direct Pump/PumpSwap candidate-acquisition foundation, N2/N7, global cursors,
+recovery and migration-observation admission remain deferred/experimental. Their
+exact-claim rules remain valid inside that subsystem but do not make N2, a
+global cursor, recovery or migration-observation admission an operational
+prerequisite.
 
 DexScreener and GeckoTerminal may provide their supported nomination/current
 market facts. No aggregator fact may weaken exact current token/pair,

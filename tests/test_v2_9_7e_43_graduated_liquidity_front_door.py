@@ -157,7 +157,9 @@ class TestFloor:
         at = _run(db2, {_MINT_A}, _uniform_factory(3000.00))
         assert at["candidates"][0]["liquidity"]["status"] == LIQUIDITY_PROVEN
         assert at["candidates"][0]["eligible"] is True
-        assert at["selected_count"] == 1
+        # Canonical selector is two-or-none: one eligible candidate cannot activate.
+        assert at["selected_count"] == 0
+        assert at["two_candidate_selection"]["ready"] is False
 
     def test_fd01_floor_constant(self):
         assert SELECTION_FLOOR_USD == 3000.0
@@ -302,7 +304,9 @@ class TestEligibilityCrossings:
         r = _run(db, {_MINT_A}, _uniform_factory(3500.0))
         assert r["candidates"][0]["provenance"] == LATEST_GRADUATED_CHANNEL
         assert r["latest_eligible_count"] == 1
-        assert r["selected_count"] == 1
+        # Two-or-none selector: a single eligible candidate cannot activate.
+        assert r["selected_count"] == 0
+        assert r["two_candidate_selection"]["ready"] is False
 
     def test_fd07_persisted_can_cross_above_floor(self):
         db = _temp_db()
@@ -382,14 +386,16 @@ class TestMixedTwoSlot:
         db = self._mixed_db()
         # A is current-cycle (latest); B is persisted; both above floor.
         r = _run(db, {_MINT_A}, _uniform_factory(4000.0))
-        assert r["mix_state"] == "MIXED_TWO_SLOT"
+        assert r["mix_state"] == "LATEST+PERSISTED"
         assert r["selected_count"] == 2
+        assert r["two_candidate_selection"]["ready"] is True
+        provenances = {item["provenance"] for item in r["selected"]}
+        assert provenances == {LATEST_GRADUATED_CHANNEL, PERSISTED_GRADUATED_CHANNEL}
+        # Diagnostic attributes only — not readiness columns.
         assert r["selected_latest"] is not None
         assert r["selected_persisted"] is not None
         assert r["selected_latest"]["provenance"] == LATEST_GRADUATED_CHANNEL
         assert r["selected_persisted"]["provenance"] == PERSISTED_GRADUATED_CHANNEL
-        assert r["selected_latest"]["mint"] == _MINT_A
-        assert r["selected_persisted"]["mint"] == _MINT_B
 
     def test_fd12_deterministic_replay(self):
         db = self._mixed_db()
@@ -414,8 +420,9 @@ class TestMixedTwoSlot:
                 db, cycle_seed=seed, latest_mints=set(),
                 dexscreener_transport_factory=factory, now=_NOW,
             )
-            assert r["mix_state"] == "SINGLE_CATEGORY_DEGRADED"
-            picks.add(r["selected"][0]["mint"])
+            assert r["mix_state"] == "PERSISTED+PERSISTED"
+            assert r["selected_count"] == 2
+            picks.update(item["mint"] for item in r["selected"])
         # Across seeds both mints are pickable -> the huge-liquidity mint has no lock.
         assert picks == {_MINT_B, _MINT_C}
 

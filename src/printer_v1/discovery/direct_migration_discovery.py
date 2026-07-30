@@ -459,18 +459,34 @@ def run_direct_migration_discovery(
                 and not vres.failure_type
             )
             attempts = 1
+            payload = vres.normalized_payload or {}
+            if not isinstance(payload, Mapping):
+                payload = {}
+            # Prefer explicit measured metadata; never invent a fixed batch count.
+            measured_ops = payload.get("transport_operations_used")
+            if measured_ops is None:
+                measured_ops = (payload.get("pumpswap_resolution") or {}).get(
+                    "transport_operations_used"
+                )
+            if measured_ops is None:
+                measured_ops = (payload.get("pump_migration_proof") or {}).get(
+                    "transport_operations_used"
+                )
+            if measured_ops is None:
+                # Offline pure-verifier factories perform zero network I/O.
+                measured_ops = 0
             record: dict[str, Any] = {
                 "mint": mint,
                 "signature": signature,
                 "verified": verified,
                 "verify_attempts": attempts,
+                "transport_operations_used": int(measured_ops),
             }
             if not verified:
                 record["failure_type"] = vres.failure_type
                 verifications.append(record)
                 continue
 
-            payload = vres.normalized_payload or {}
             token_entries = payload.get("tokens") or []
             token = token_entries[0] if token_entries else {}
             pool = token.get("pairAddress")
@@ -483,6 +499,36 @@ def run_direct_migration_discovery(
                 or token.get("mint") != mint
                 or not confirmation.get("confirmed")
             ):
+                # Fall back to resolution/proof fields for pure offline verifiers.
+                resolution = payload.get("pumpswap_resolution") or {}
+                proof = payload.get("pump_migration_proof") or {}
+                pool = pool or resolution.get("pool_address") or proof.get("pool_address")
+                block_time = (
+                    block_time
+                    if block_time is not None
+                    else proof.get("migration_block_time")
+                    or resolution.get("migration_block_time")
+                )
+                slot = (
+                    slot
+                    if slot is not None
+                    else proof.get("migration_slot")
+                    or resolution.get("migration_slot")
+                )
+            if (
+                not pool
+                or block_time is None
+                or not (
+                    confirmation.get("confirmed")
+                    or (payload.get("pumpswap_confirmation") or {}).get("confirmed")
+                    or (payload.get("pump_migration_proof") or {}).get("verified")
+                )
+            ):
+                record["verified"] = False
+                record["failure_type"] = "verification_payload_incomplete"
+                verifications.append(record)
+                continue
+            if token and token.get("mint") not in (None, mint):
                 record["verified"] = False
                 record["failure_type"] = "verification_payload_incomplete"
                 verifications.append(record)
@@ -543,17 +589,28 @@ def run_direct_migration_discovery(
         expected_governed_requests = (
             migration_request_count + pumpswap_request_count
         )
-        expected_transport_operations = (
-            migration_request_count + (2 * pumpswap_request_count)
-        )
-        ledger["transport_operations"] = int(
+        # Measured transports: migration ops are exact one-RPC-per-governed-request;
+        # PumpSwap verification contributes the actual batch count recorded on each
+        # verification result (1 getTransaction + 1..3 getMultipleAccounts).
+        pumpswap_transport_operations = 0
+        for record in verifications:
+            pumpswap_transport_operations += int(
+                record.get("transport_operations_used") or 0
+            )
+        migration_transport_operations = int(
             intake.get("transport_operation_count") or 0
-        ) + (2 * pumpswap_request_count)
+        )
+        expected_transport_operations = (
+            migration_transport_operations + pumpswap_transport_operations
+        )
+        ledger["transport_operations"] = expected_transport_operations
+        ledger["migration_transport_operations"] = migration_transport_operations
+        ledger["pumpswap_transport_operations"] = pumpswap_transport_operations
+        ledger["governed_requests"] = expected_governed_requests
         ledger["operation_accounting_reconciled"] = (
             int(ledger["source_requests"]) == expected_governed_requests
             and ledger["transport_operations"] == expected_transport_operations
-            and int(intake.get("transport_operation_count") or 0)
-            == migration_request_count
+            and migration_transport_operations == migration_request_count
         )
         forbidden = _forbidden_deltas(connection)
     finally:

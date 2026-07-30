@@ -37,6 +37,7 @@ from printer_v1.sources.contracts import (
 )
 from printer_v1.sources.operational_source_contracts import (
     OFFICIAL_SOLANA_PUBLIC_RPC_URL,
+    resolve_solana_rpc_configuration,
 )
 
 
@@ -150,17 +151,26 @@ def fixture_failure_transport(
 def build_solana_rpc_holder_transport(
     token_mint: str,
     *,
-    rpc_url: str = SOLANA_PUBLIC_RPC_URL,
+    rpc_url: str | None = None,
     timeout_seconds: float = SOLANA_RPC_TIMEOUT_SECONDS,
 ) -> Callable[[SourceAdapterContext], Mapping[str, Any]]:
     """Return a real HTTP transport that fetches holder concentration from Solana RPC.
 
     Calls getTokenLargestAccounts and getTokenSupply — read-only, no key.
+    When ``rpc_url`` is omitted the shared ordinary Solana endpoint owner is used
+    so preflight and runtime cannot diverge.
     """
+    endpoint = (
+        str(rpc_url)
+        if rpc_url is not None and str(rpc_url).strip()
+        else resolve_solana_rpc_configuration().url
+    )
 
     def transport(context: SourceAdapterContext) -> Mapping[str, Any]:
         del context
-        return _fetch_holder_data(token_mint, rpc_url=rpc_url, timeout_seconds=timeout_seconds)
+        return _fetch_holder_data(
+            token_mint, rpc_url=endpoint, timeout_seconds=timeout_seconds
+        )
 
     return transport
 

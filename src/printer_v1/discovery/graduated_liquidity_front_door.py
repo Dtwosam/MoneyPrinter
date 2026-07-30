@@ -896,17 +896,19 @@ def _forbidden_deltas(connection: sqlite3.Connection) -> dict[str, int]:
 def _cooldown_ok(
     connection: sqlite3.Connection, mint: str, pool: str, batch_seq: int
 ) -> tuple[bool, str]:
-    """Existing STNP / cooldown / rotation gate (fail-closed on a real cooldown).
+    """Existing STNP / cooldown / rotation gate.
 
-    In a fresh proof DB with no prior selection there is no rotation state, so both
-    gates pass. If the rotation-state table is absent the gate degrades to pass
-    (there can be no prior selection to cool down from).
+    Fail-closed on database/state errors. A fresh DB with the required rotation
+    table present and empty still passes (no prior selection). Missing schema is
+    no longer treated as a silent pass on ordinary migrated databases.
     """
     try:
         ok_token, reason_token = check_token_selection_cooldown(connection, mint, batch_seq)
         ok_pair, reason_pair = check_pair_selection_cooldown(connection, pool, batch_seq)
-    except sqlite3.OperationalError:
-        return True, ""
+    except sqlite3.OperationalError as exc:
+        return False, f"COOLDOWN_STATE_UNAVAILABLE:{exc.__class__.__name__}"
+    except sqlite3.Error as exc:
+        return False, f"COOLDOWN_STATE_ERROR:{exc.__class__.__name__}"
     if not ok_token:
         return False, reason_token or "REJECTION_TOKEN_SELECTION_COOLDOWN"
     if not ok_pair:
@@ -933,10 +935,10 @@ def load_market_floor_state(
                WHERE mint_identity=?""",
             (mint,),
         ).fetchone()
-    except sqlite3.OperationalError:
-        # Pre-migration disposable fixtures may lack the table; fail open to
-        # normal fresh enrichment rather than inventing state.
-        return None
+    except sqlite3.OperationalError as exc:
+        raise GraduatedFrontDoorError(
+            "MARKET_FLOOR_STATE_UNAVAILABLE", str(exc)
+        ) from exc
     if row is None:
         return None
     return dict(row)
@@ -994,10 +996,10 @@ def record_market_floor_state(
                 now,
             ),
         )
-    except sqlite3.OperationalError:
-        # Table absent (pre-migration fixture) — market path still classifies
-        # in-memory; durable cooldown simply does not persist.
-        return
+    except sqlite3.OperationalError as exc:
+        raise GraduatedFrontDoorError(
+            "MARKET_FLOOR_STATE_UNAVAILABLE", str(exc)
+        ) from exc
 
 
 def _bounded_refresh_rows(
@@ -1096,6 +1098,31 @@ def run_graduated_liquidity_front_door(
     # V2-9.7E.46B.2: the exact durable request identities this invocation creates.
     # Stage-local accounting is derived from these, never from a whole-table total.
     stage_request_ids: list[int] = []
+    selected: list[FrontDoorCandidate] = []
+    latest_eligible: list[FrontDoorCandidate] = []
+    persisted_eligible: list[FrontDoorCandidate] = []
+    candidates: list[FrontDoorCandidate] = []
+    below_floor = 0
+    unproven = 0
+    cooldown_skips = 0
+    mix_state = "NONE"
+    two_candidate: dict[str, Any] = {
+        "ready": False,
+        "terminal": "SELECTION_NONE",
+        "candidate_a": None,
+        "candidate_b": None,
+        "selected": [],
+        "selected_count": 0,
+        "composition_label": "NONE",
+        "funnel": [],
+        "evaluated_count": 0,
+        "pool_size": 0,
+    }
+    handoff: dict[str, Any] = {}
+    ledger: dict[str, Any] = {}
+    forbidden: dict[str, int] = {}
+    integrity = "ok"
+    fk_violations: list[Any] = []
     try:
         rows = _bounded_refresh_rows(
             export_graduated_candidates(connection),
@@ -1104,12 +1131,6 @@ def run_graduated_liquidity_front_door(
             max_candidates=max_candidates,
             exclude_mints=excluded_set,
         )
-        candidates: list[FrontDoorCandidate] = []
-        latest_eligible: list[FrontDoorCandidate] = []
-        persisted_eligible: list[FrontDoorCandidate] = []
-        below_floor = 0
-        unproven = 0
-        cooldown_skips = 0
 
         for row in rows:
             mint = str(row["mint_identity"])
@@ -1212,17 +1233,40 @@ def run_graduated_liquidity_front_door(
                 else:
                     persisted_eligible.append(candidate)
 
-        selected, mix_state = _mixed_two_slot(
-            latest_eligible, persisted_eligible, cycle_seed
+        # Canonical selection authority: one combined deterministic selector.
+        # Provenance remains an attribute; latest/persisted are not readiness columns.
+        from printer_v1.discovery.selection_authority import (
+            SelectionCandidate,
+            select_two_candidates,
         )
+
+        authority_pool = [
+            SelectionCandidate(
+                mint=c.mint,
+                pair_address=c.pumpswap_pool,
+                market_identity=c.market_identity,
+                provenance=c.provenance,
+                lifecycle_state=c.lifecycle_state,
+                graduation_block_time=c.graduation_block_time,
+                liquidity_usd=c.liquidity.liquidity_usd,
+            )
+            for c in (list(latest_eligible) + list(persisted_eligible))
+        ]
+        authority = select_two_candidates(
+            authority_pool, cycle_seed=cycle_seed
+        )
+        by_key = {
+            (c.mint, c.pumpswap_pool): c
+            for c in (list(latest_eligible) + list(persisted_eligible))
+        }
+        selected = [
+            by_key[(item.mint, item.pair_address)]
+            for item in authority.selected
+            if (item.mint, item.pair_address) in by_key
+        ]
+        mix_state = authority.composition_label
         connection.commit()
 
-        selected_latest = next(
-            (c for c in selected if c.provenance == LATEST_GRADUATED_CHANNEL), None
-        )
-        selected_persisted = next(
-            (c for c in selected if c.provenance == PERSISTED_GRADUATED_CHANNEL), None
-        )
         handoff = _handoff_compatibility(selected)
         ledger = _dexscreener_ledger(connection, request_ids=stage_request_ids)
         forbidden = _forbidden_deltas(connection)
@@ -1232,7 +1276,10 @@ def run_graduated_liquidity_front_door(
         connection.close()
 
     rejected = [c.to_dict() for c in candidates if not c.eligible]
-    selected_pair_identity = tuple(sorted(f"{c.mint}|{c.pumpswap_pool}" for c in selected))
+    selected_pair_identity = tuple(
+        f"{c.mint}|{c.pumpswap_pool}" for c in selected
+    )
+    two_candidate = authority.as_dict()
     return {
         "generated_at": now,
         "selection_floor_usd": SELECTION_FLOOR_USD,
@@ -1261,11 +1308,26 @@ def run_graduated_liquidity_front_door(
             }
             for c in selected
         ],
-        "selected_latest": (
-            None if selected_latest is None else selected_latest.to_dict()
+        # Neutral two-candidate contract is the selection product.
+        "two_candidate_selection": two_candidate,
+        "candidate_a": two_candidate.get("candidate_a"),
+        "candidate_b": two_candidate.get("candidate_b"),
+        # Diagnostic provenance attributes only — not readiness columns.
+        "selected_latest": next(
+            (
+                c.to_dict()
+                for c in selected
+                if c.provenance == LATEST_GRADUATED_CHANNEL
+            ),
+            None,
         ),
-        "selected_persisted": (
-            None if selected_persisted is None else selected_persisted.to_dict()
+        "selected_persisted": next(
+            (
+                c.to_dict()
+                for c in selected
+                if c.provenance == PERSISTED_GRADUATED_CHANNEL
+            ),
+            None,
         ),
         "selected_count": len(selected),
         "selected_pair_identity": selected_pair_identity,

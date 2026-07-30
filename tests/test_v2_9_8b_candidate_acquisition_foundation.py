@@ -482,28 +482,57 @@ def _pool_account(creator: str, mint: str) -> tuple[str, dict]:
 
 
 def _pinned_migration_fixture() -> tuple[dict, dict, str, str]:
+    from printer_v1.sources.pump_contracts import (
+        PUMP_EVENT_AUTHORITY_ID,
+        PUMP_GLOBAL_ID,
+        PUMPSWAP_EVENT_AUTHORITY_ID,
+        PUMPSWAP_GLOBAL_CONFIG_ID,
+        _derive_ata,
+    )
+
     mint = FIXTURE["candidates"][0][0]
+    user = FIXTURE["candidates"][1][0]
+    withdraw_authority = FIXTURE["candidates"][2][0]
     creator = derive_program_address(
         (b"pool-authority", _b58decode(mint)), PUMP_PROGRAM_ID
     )[0]
     pool, account = _pool_account(creator, mint)
     decoded = decode_pumpswap_pool_account(account, pool_address=pool)
-    keys = [FIXTURE["candidates"][i][0] for i in range(25)]
-    keys[2] = mint
-    keys[3] = derive_program_address(
+    bonding_curve = derive_program_address(
         (b"bonding-curve", _b58decode(mint)), PUMP_PROGRAM_ID
     )[0]
+    keys = [FIXTURE["candidates"][i % len(FIXTURE["candidates"])][0] for i in range(25)]
+    keys[0] = PUMP_GLOBAL_ID
+    keys[1] = withdraw_authority
+    keys[2] = mint
+    keys[3] = bonding_curve
+    keys[4] = _derive_ata(
+        owner=bonding_curve, token_program=TOKEN_PROGRAM_ID, mint=mint
+    )
+    keys[5] = user
     keys[6] = SYSTEM_PROGRAM_ID
     keys[7] = TOKEN_PROGRAM_ID
     keys[8] = PUMPSWAP_AMM_PROGRAM_ID
     keys[9] = pool
     keys[10] = creator
+    keys[11] = _derive_ata(
+        owner=creator, token_program=TOKEN_PROGRAM_ID, mint=mint
+    )
+    keys[12] = _derive_ata(
+        owner=creator, token_program=TOKEN_PROGRAM_ID, mint=WSOL_MINT
+    )
+    keys[13] = PUMPSWAP_GLOBAL_CONFIG_ID
     keys[14] = WSOL_MINT
     keys[15] = decoded["lp_mint"]
+    keys[16] = _derive_ata(
+        owner=user, token_program=TOKEN_2022_PROGRAM_ID, mint=decoded["lp_mint"]
+    )
     keys[17] = decoded["pool_base_token_account"]
     keys[18] = decoded["pool_quote_token_account"]
     keys[19] = TOKEN_2022_PROGRAM_ID
     keys[20] = ASSOCIATED_TOKEN_PROGRAM_ID
+    keys[21] = PUMPSWAP_EVENT_AUTHORITY_ID
+    keys[22] = PUMP_EVENT_AUTHORITY_ID
     keys[23] = PUMP_PROGRAM_ID
     keys[24] = RENT_SYSVAR_ID
     tx = {

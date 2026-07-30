@@ -38,6 +38,9 @@ from printer_v1.sources.jupiter_quote import (
     build_jupiter_paper_quote_transport,
     build_jupiter_quote_adapter,
 )
+from printer_v1.sources.operational_source_contracts import (
+    resolve_solana_rpc_configuration,
+)
 from printer_v1.sources.solana_rpc_holder import (
     SOLANA_PUBLIC_RPC_URL,
     SOLANA_RPC_RATE_LIMIT_FAILURE_TYPE,
@@ -121,7 +124,7 @@ def _collect_holder_concentration_fallback(
     *,
     goplus_evidence_id: int,
     rpc_transport=None,
-    rpc_url: str = SOLANA_PUBLIC_RPC_URL,
+    rpc_url: str | None = None,
     fallback_rpc_url: str | None = None,
     timeout_seconds: float = 10.0,
 ) -> RealEvidenceItemResult | None:
@@ -138,16 +141,21 @@ def _collect_holder_concentration_fallback(
     if goplus_row.get("holder_concentration_label") != "HOLDER_CONCENTRATION_UNKNOWN":
         return None  # GoPlus already provided holder data
 
+    resolved_rpc_url = (
+        str(rpc_url).strip()
+        if rpc_url is not None and str(rpc_url).strip()
+        else resolve_solana_rpc_configuration().url
+    )
     attempts: list[tuple[str, str, Any]] = []
     if rpc_transport is not None:
         attempts.append(("configured_transport", "configured_transport", rpc_transport))
     else:
         attempts.append((
             "primary",
-            redacted_solana_rpc_source(rpc_url),
+            redacted_solana_rpc_source(resolved_rpc_url),
             build_solana_rpc_holder_transport(
                 target.token_mint,
-                rpc_url=rpc_url,
+                rpc_url=resolved_rpc_url,
                 timeout_seconds=timeout_seconds,
             ),
         ))
@@ -450,7 +458,7 @@ def collect_real_evidence(
     paper_quote_currency_mint: str = WSOL_MINT,
     safety_transport=None,
     holder_rpc_transport=None,
-    holder_rpc_url: str = SOLANA_PUBLIC_RPC_URL,
+    holder_rpc_url: str | None = None,
     holder_rpc_fallback_url: str | None = None,
     entry_quote_transport=None,
     exit_quote_transport=None,

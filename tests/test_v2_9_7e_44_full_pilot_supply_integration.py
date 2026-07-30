@@ -176,25 +176,48 @@ def _seed_persisted(db: str) -> None:
             now="2026-07-23T00:00:00+00:00",  # a prior cycle → PERSISTED provenance
             discovery_channel=LATEST_GRADUATED_CHANNEL,
         )
+        record_graduated_candidate(
+            conn,
+            mint=_MINT_LATEST,
+            migration_signature=_SIG_LATEST,
+            pumpswap_pool=_POOL_LATEST,
+            graduation_block_time=1_783_886_668,
+            graduation_slot=432_499_503,
+            now=_NOW,
+            discovery_channel=LATEST_GRADUATED_CHANNEL,
+        )
         conn.commit()
     finally:
         conn.close()
 
 
+def _empty_direct_migration_transport():
+    from printer_v1.sources.direct_pump_migration import SIGNATURE_PAGE_REQUEST_KIND
+
+    def transport(context):
+        if context.request.request_kind == SIGNATURE_PAGE_REQUEST_KIND:
+            return {"result": []}
+        raise AssertionError(context.request.request_kind)
+
+    return transport
+
+
 def _build(db: str, *, latest_liq: float, persisted_liq: float) -> GraduatedSupply:
-    by_sig = {_SIG_LATEST: (_migration_tx(_POOL_LATEST, _MINT_LATEST), {_POOL_LATEST: _pool_acct(_MINT_LATEST)})}
-    with _mock_rpc(by_sig):
-        return build_graduated_supply(
-            db,
-            cycle_seed=_SEED,
-            migration_transport=_migration_transport(
-                [{"mint": _MINT_LATEST, "signature": _SIG_LATEST, "newRaydiumPool": _POOL_LATEST}]
-            ),
-            dexscreener_transport_factory=_dexscreener_factory(
-                {_POOL_LATEST: latest_liq, _POOL_PERSISTED: persisted_liq}
-            ),
-            now=_NOW,
-        )
+    # Registry already holds both identities. Empty direct live-tail is honest
+    # and does not invent PumpPortal frames; front door evaluates both pools.
+    return build_graduated_supply(
+        db,
+        cycle_seed=_SEED,
+        migration_transport=_empty_direct_migration_transport(),
+        dexscreener_transport_factory=_dexscreener_factory(
+            {_POOL_LATEST: latest_liq, _POOL_PERSISTED: persisted_liq}
+        ),
+        now=_NOW,
+        collection_rounds=1,
+        settle_seconds=0.0,
+        reverify_on_transient=False,
+        reverify_settle_seconds=0.0,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -209,10 +232,10 @@ class TestComposition:
 
         assert supply.ready is True
         assert supply.terminal == "GRADUATED_SUPPLY_READY"
-        assert supply.selected_latest is not None
-        assert supply.selected_persisted is not None
         assert set(supply.graduation_proofs) == {_MINT_LATEST, _MINT_PERSISTED}
         assert len(supply.graduated_supply) == 2
+        # Neutral two-candidate contract (provenance is diagnostic only).
+        assert supply.diagnostics["two_candidate_selection"]["ready"] is True
 
         # Graduation proofs bind the exact confirmed PumpSwap pools.
         assert supply.graduation_proofs[_MINT_LATEST].pool_address == _POOL_LATEST
@@ -255,8 +278,9 @@ class TestBelowFloorExcluded:
 
         assert supply.ready is False
         assert supply.terminal == BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL
-        assert supply.selected_latest is None  # below-floor LATEST not selected
         assert supply.diagnostics["below_floor_count"] == 1
+        # Two-or-none: one above-floor eligible cannot activate alone.
+        assert supply.diagnostics["two_candidate_selection"]["ready"] is False
         # The below-floor candidate is still retained in the durable registry.
         conn = sqlite3.connect(db)
         n = conn.execute(

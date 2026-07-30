@@ -145,6 +145,44 @@ def _graduated_case(mint, sig, pool):
     return sig, (tx, infos)
 
 
+def _pinned_direct_case():
+    """Ordinary-path pinned migrate fixture for direct discovery proof."""
+    from test_v2_9_8b_candidate_acquisition_foundation import (
+        _pinned_migration_fixture,
+    )
+    from test_v2_9_8b_restored_factory_source_compatibility_reset import (
+        _verifier_factory,
+    )
+    from printer_v1.sources.direct_pump_migration import (
+        SIGNATURE_PAGE_REQUEST_KIND,
+        TRANSACTION_REQUEST_KIND,
+    )
+
+    tx, infos, mint, pool = _pinned_migration_fixture()
+    signature = (
+        "5PinnedDirectMigrationSig"
+        "11111111111111111111111111111111111111111111111111"
+    )
+
+    def transport(context):
+        if context.request.request_kind == SIGNATURE_PAGE_REQUEST_KIND:
+            return {
+                "result": [
+                    {
+                        "signature": signature,
+                        "slot": tx["slot"],
+                        "err": None,
+                        "confirmationStatus": "finalized",
+                    }
+                ]
+            }
+        if context.request.request_kind == TRANSACTION_REQUEST_KIND:
+            return {"result": tx}
+        raise AssertionError(context.request.request_kind)
+
+    return transport, _verifier_factory(tx, infos), mint, pool, signature
+
+
 # --------------------------------------------------------------------------- #
 # DM-01 / DM-02 / DM-03 — intake & locator                                    #
 # --------------------------------------------------------------------------- #
@@ -240,37 +278,52 @@ class TestPumpMigrationProof:
 
 class TestFullVerification:
     def test_dm06_valid_end_to_end(self):
-        tx = _migration_tx(_POOL_A, _MINT_A)
-        infos = {_POOL_A: _pool_acct(_MINT_A)}
-        v = verify_graduation_from_transaction(tx, infos, expected_mint=_MINT_A)
+        from test_v2_9_8b_candidate_acquisition_foundation import (
+            _pinned_migration_fixture,
+        )
+
+        tx, infos, mint, pool = _pinned_migration_fixture()
+        v = verify_graduation_from_transaction(tx, infos, expected_mint=mint)
         assert v["verified"] is True
-        assert v["pool_address"] == _POOL_A
-        assert v["migration_block_time"] == 1_783_886_668
+        assert v["pool_address"] == pool
+        assert v["migration_block_time"] == tx["blockTime"]
 
     def test_dm06_wrong_owner_fails(self):
-        tx = _migration_tx(_POOL_A, _MINT_A)
-        infos = {_POOL_A: _wrong_owner_pool(_MINT_A)}
-        v = verify_graduation_from_transaction(tx, infos, expected_mint=_MINT_A)
+        from test_v2_9_8b_candidate_acquisition_foundation import (
+            _pinned_migration_fixture,
+        )
+
+        tx, infos, mint, pool = _pinned_migration_fixture()
+        infos = {pool: _wrong_owner_pool(mint)}
+        v = verify_graduation_from_transaction(tx, infos, expected_mint=mint)
         assert v["verified"] is False
-        assert v["stage"] == "POOL_RESOLUTION"
+        assert v["stage"] == "PUMP_MIGRATION_PROOF"
 
     def test_dm06_mint_mismatch_fails(self):
-        # pool actually encodes MINT_B while candidate mint is MINT_A.
-        tx = _migration_tx(_POOL_A, _MINT_A)
-        infos = {_POOL_A: _pool_acct(_MINT_B)}
-        v = verify_graduation_from_transaction(tx, infos, expected_mint=_MINT_A)
+        from test_v2_9_8b_candidate_acquisition_foundation import (
+            _pinned_migration_fixture,
+        )
+
+        tx, infos, mint, pool = _pinned_migration_fixture()
+        infos = {pool: _pool_acct(_MINT_B)}
+        v = verify_graduation_from_transaction(tx, infos, expected_mint=mint)
         assert v["verified"] is False
-        assert v["stage"] == "POOL_RESOLUTION"
+        assert v["stage"] == "PUMP_MIGRATION_PROOF"
 
     def test_dm06_zero_pool_fails(self):
-        tx = _migration_tx(_POOL_A, _MINT_A)
-        infos = {_POOL_A: None}
-        v = verify_graduation_from_transaction(tx, infos, expected_mint=_MINT_A)
+        from test_v2_9_8b_candidate_acquisition_foundation import (
+            _pinned_migration_fixture,
+        )
+
+        tx, infos, mint, pool = _pinned_migration_fixture()
+        infos = {pool: None}
+        v = verify_graduation_from_transaction(tx, infos, expected_mint=mint)
         assert v["verified"] is False
-        assert v["stage"] == "POOL_RESOLUTION"
-        assert v["reason"] == "no_confirmed_pumpswap_pool_in_transaction"
+        assert v["stage"] == "PUMP_MIGRATION_PROOF"
 
     def test_dm06_multiple_pools_fails(self):
+        # Without an exact migrate instruction the pinned path fails closed before
+        # ambiguous pool resolution can be claimed.
         tx = {
             "blockTime": 1_783_886_668, "slot": 1,
             "transaction": {"message": {"accountKeys": [
@@ -280,7 +333,8 @@ class TestFullVerification:
         infos = {_POOL_A: _pool_acct(_MINT_A), _POOL_B: _pool_acct(_MINT_A)}
         v = verify_graduation_from_transaction(tx, infos, expected_mint=_MINT_A)
         assert v["verified"] is False
-        assert v["reason"] == "ambiguous_multiple_pumpswap_pools"
+        assert v["stage"] == "PUMP_MIGRATION_PROOF"
+        assert v["reason"] == "exactly_one_migrate_instruction_required"
 
 
 # --------------------------------------------------------------------------- #
@@ -289,24 +343,27 @@ class TestFullVerification:
 
 class TestOrchestratorAndPersistence:
     def test_dm07_valid_event_reaches_confirmed_persistence(self, monkeypatch):
+        del monkeypatch
         db = _temp_db()
-        by_sig = dict([_graduated_case(_MINT_A, _SIG_A, _POOL_A)])
+        transport, verifier, mint, pool, _sig = _pinned_direct_case()
         report = dmd.run_direct_migration_discovery(
             db,
-            migration_transport=_migration_transport(
-                [{"mint": _MINT_A, "signature": _SIG_A, "newRaydiumPool": _POOL_A}]
-            ),
-            verifier_transport_factory=_live_verifier_factory(monkeypatch, by_sig),
+            migration_transport=transport,
+            verifier_transport_factory=verifier,
             now=_NOW,
+            collection_rounds=1,
+            settle_seconds=0.0,
+            reverify_on_transient=False,
+            reverify_settle_seconds=0.0,
         )
         assert report["confirmed_count"] == 1
         assert report["verifications"][0]["verified"] is True
         conn = sqlite3.connect(db)
         conn.row_factory = sqlite3.Row
-        row = lookup_graduated_candidate(conn, _MINT_A)
+        row = lookup_graduated_candidate(conn, mint)
         assert row["lifecycle_state"] == GRADUATED_LIFECYCLE
-        assert row["pumpswap_pool"] == _POOL_A
-        assert row["market_identity"] == f"solana-mainnet:pumpswap:{_POOL_A}"
+        assert row["pumpswap_pool"] == pool
+        assert row["market_identity"] == f"solana-mainnet:pumpswap:{pool}"
         conn.close()
 
     def test_dm08_no_token_created_at_column_or_field(self):
@@ -321,65 +378,101 @@ class TestOrchestratorAndPersistence:
         assert any(c == "graduation_block_time" for c in cols)
 
     def test_dm09_duplicate_events_idempotent(self, monkeypatch):
+        del monkeypatch
         db = _temp_db()
-        by_sig = dict([_graduated_case(_MINT_A, _SIG_A, _POOL_A)])
-        factory = _live_verifier_factory(monkeypatch, by_sig)
-        events = [
-            {"mint": _MINT_A, "signature": _SIG_A, "newRaydiumPool": _POOL_A},
-            {"mint": _MINT_A, "signature": _SIG_A, "newRaydiumPool": _POOL_A},
-        ]
+        transport, verifier, _mint, _pool, _sig = _pinned_direct_case()
         report = dmd.run_direct_migration_discovery(
-            db, migration_transport=_migration_transport(events),
-            verifier_transport_factory=factory, now=_NOW,
+            db,
+            migration_transport=transport,
+            verifier_transport_factory=verifier,
+            now=_NOW,
+            collection_rounds=1,
+            settle_seconds=0.0,
+            reverify_on_transient=False,
+            reverify_settle_seconds=0.0,
         )
-        # Duplicate collapsed at intake; exactly one persisted candidate.
-        assert report["migration_intake"]["duplicate"] == 1
-        assert report["source_operation_ledger"]["graduated_candidates"] == 1
+        # One-page direct tail yields one confirmation; second run is idempotent.
+        assert report["confirmed_count"] == 1
+        report2 = dmd.run_direct_migration_discovery(
+            db,
+            migration_transport=transport,
+            verifier_transport_factory=verifier,
+            now=_NOW,
+            collection_rounds=1,
+            settle_seconds=0.0,
+            reverify_on_transient=False,
+            reverify_settle_seconds=0.0,
+        )
+        assert report2["source_operation_ledger"]["graduated_candidates"] == 1
 
     def test_dm10_persist_and_refresh_across_cycles(self, monkeypatch):
+        del monkeypatch
         db = _temp_db()
-        by_sig = dict([_graduated_case(_MINT_A, _SIG_A, _POOL_A)])
-        factory = _live_verifier_factory(monkeypatch, by_sig)
-        events = [{"mint": _MINT_A, "signature": _SIG_A, "newRaydiumPool": _POOL_A}]
+        transport, verifier, mint, _pool, _sig = _pinned_direct_case()
         dmd.run_direct_migration_discovery(
-            db, migration_transport=_migration_transport(events),
-            verifier_transport_factory=factory, now=_NOW,
+            db,
+            migration_transport=transport,
+            verifier_transport_factory=verifier,
+            now=_NOW,
+            collection_rounds=1,
+            settle_seconds=0.0,
+            reverify_on_transient=False,
+            reverify_settle_seconds=0.0,
         )
         # Second cycle re-observes the same graduation -> idempotent refresh.
         dmd.run_direct_migration_discovery(
-            db, migration_transport=_migration_transport(events),
-            verifier_transport_factory=factory, now="2026-07-23T18:05:00+00:00",
+            db,
+            migration_transport=transport,
+            verifier_transport_factory=verifier,
+            now="2026-07-23T18:05:00+00:00",
+            collection_rounds=1,
+            settle_seconds=0.0,
+            reverify_on_transient=False,
+            reverify_settle_seconds=0.0,
         )
         conn = sqlite3.connect(db)
         conn.row_factory = sqlite3.Row
-        row = lookup_graduated_candidate(conn, _MINT_A)
+        row = lookup_graduated_candidate(conn, mint)
         assert int(row["observation_count"]) == 2
         assert row["latest_observed_at"] == "2026-07-23T18:05:00+00:00"
         conn.close()
 
     def test_dm11_fresh_vs_persisted_categories_distinct(self, monkeypatch):
+        del monkeypatch
         db = _temp_db()
-        # Cycle 1: confirm A (persisted).
-        by_sig_a = dict([_graduated_case(_MINT_A, _SIG_A, _POOL_A)])
+        transport, verifier, mint, pool, _sig = _pinned_direct_case()
         dmd.run_direct_migration_discovery(
-            db, migration_transport=_migration_transport(
-                [{"mint": _MINT_A, "signature": _SIG_A, "newRaydiumPool": _POOL_A}]),
-            verifier_transport_factory=_live_verifier_factory(monkeypatch, by_sig_a),
+            db,
+            migration_transport=transport,
+            verifier_transport_factory=verifier,
             now=_NOW,
+            collection_rounds=1,
+            settle_seconds=0.0,
+            reverify_on_transient=False,
+            reverify_settle_seconds=0.0,
         )
-        # Cycle 2: confirm B fresh; A becomes persisted (not re-observed).
-        by_sig_b = dict([_graduated_case(_MINT_B, _SIG_B, _POOL_B)])
+        # Second cycle with empty signature page: previously confirmed mint is
+        # truthful PERSISTED_GRADUATED provenance.
+        from printer_v1.sources.direct_pump_migration import SIGNATURE_PAGE_REQUEST_KIND
+
+        def empty_transport(context):
+            if context.request.request_kind == SIGNATURE_PAGE_REQUEST_KIND:
+                return {"result": []}
+            raise AssertionError(context.request.request_kind)
+
         report = dmd.run_direct_migration_discovery(
-            db, migration_transport=_migration_transport(
-                [{"mint": _MINT_B, "signature": _SIG_B, "newRaydiumPool": _POOL_B}]),
-            verifier_transport_factory=_live_verifier_factory(monkeypatch, by_sig_b),
+            db,
+            migration_transport=empty_transport,
+            verifier_transport_factory=verifier,
             now="2026-07-23T18:05:00+00:00",
+            collection_rounds=1,
+            settle_seconds=0.0,
+            reverify_on_transient=False,
+            reverify_settle_seconds=0.0,
         )
         cats = {m["mint"]: m["category"] for m in report["candidate_mix"]}
-        assert cats[_MINT_B] == "LATEST_GRADUATED"
-        # V2-9.7E.43: truthful persisted-graduated provenance (was PERSISTED_ACTIVE).
-        assert cats[_MINT_A] == "PERSISTED_GRADUATED"
-        assert report["latest_graduated_count"] == 1
+        assert cats[mint] == "PERSISTED_GRADUATED"
+        assert report["latest_graduated_count"] == 0
         assert report["persisted_graduated_count"] == 1
 
     def test_dm12_origin_only_pool_export_empty(self):
@@ -454,13 +547,18 @@ class TestOrchestratorAndPersistence:
         conn2.close()
 
     def test_dm15_integrity_and_forbidden_deltas_zero(self, monkeypatch):
+        del monkeypatch
         db = _temp_db()
-        by_sig = dict([_graduated_case(_MINT_A, _SIG_A, _POOL_A)])
+        transport, verifier, _mint, _pool, _sig = _pinned_direct_case()
         report = dmd.run_direct_migration_discovery(
-            db, migration_transport=_migration_transport(
-                [{"mint": _MINT_A, "signature": _SIG_A, "newRaydiumPool": _POOL_A}]),
-            verifier_transport_factory=_live_verifier_factory(monkeypatch, by_sig),
+            db,
+            migration_transport=transport,
+            verifier_transport_factory=verifier,
             now=_NOW,
+            collection_rounds=1,
+            settle_seconds=0.0,
+            reverify_on_transient=False,
+            reverify_settle_seconds=0.0,
         )
         assert report["forbidden_delta_total"] == 0
         # Source ledger recorded governed migration + verify requests.
@@ -472,15 +570,64 @@ class TestOrchestratorAndPersistence:
         conn.close()
 
     def test_dm06_failed_verification_not_persisted(self, monkeypatch):
+        del monkeypatch
         db = _temp_db()
-        # Zero-pool case: verification fails closed, nothing persisted.
-        tx = _migration_tx(_POOL_A, _MINT_A)
-        by_sig = {_SIG_A: (tx, {_POOL_A: None})}
+        from test_v2_9_8b_candidate_acquisition_foundation import (
+            _pinned_migration_fixture,
+        )
+        from printer_v1.sources.direct_pump_migration import (
+            SIGNATURE_PAGE_REQUEST_KIND,
+            TRANSACTION_REQUEST_KIND,
+        )
+
+        tx, infos, mint, pool = _pinned_migration_fixture()
+        infos = {pool: None}
+        signature = "5FailPinnedMigrationSig111111111111111111111111111111111111111111"
+
+        def transport(context):
+            if context.request.request_kind == SIGNATURE_PAGE_REQUEST_KIND:
+                return {
+                    "result": [
+                        {
+                            "signature": signature,
+                            "slot": tx["slot"],
+                            "err": None,
+                            "confirmationStatus": "finalized",
+                        }
+                    ]
+                }
+            if context.request.request_kind == TRANSACTION_REQUEST_KIND:
+                return {"result": tx}
+            raise AssertionError(context.request.request_kind)
+
+        def factory(expected_mint, sig):
+            from printer_v1.sources.pump_migration import verify_graduation_from_transaction
+
+            verification = verify_graduation_from_transaction(
+                tx, infos, expected_mint=expected_mint
+            )
+
+            def inner(_context):
+                if not verification["verified"]:
+                    return {
+                        "fixture_status": "failure",
+                        "failure_type": "frozen_exact_verification_failed",
+                        "failure_message": str(verification["reason"]),
+                        "transport_operations_used": 2,
+                    }
+                raise AssertionError("expected fail")
+
+            return inner
+
         report = dmd.run_direct_migration_discovery(
-            db, migration_transport=_migration_transport(
-                [{"mint": _MINT_A, "signature": _SIG_A, "newRaydiumPool": _POOL_A}]),
-            verifier_transport_factory=_live_verifier_factory(monkeypatch, by_sig),
+            db,
+            migration_transport=transport,
+            verifier_transport_factory=factory,
             now=_NOW,
+            collection_rounds=1,
+            settle_seconds=0.0,
+            reverify_on_transient=False,
+            reverify_settle_seconds=0.0,
         )
         assert report["confirmed_count"] == 0
         assert report["verifications"][0]["verified"] is False
@@ -488,106 +635,44 @@ class TestOrchestratorAndPersistence:
 
 
 class TestBL4201Robustness:
-    """BL-42-01: transient not-yet-finalized transactions re-verify; non-transient
-    failures never retry; multi-round collection accumulates and deduplicates."""
+    """Ordinary restored path forbids automatic re-verify and multi-round tails."""
 
     def test_transient_failure_reverifies_and_confirms(self):
         db = _temp_db()
-        pool_acct = _pool_acct(_MINT_A)
-        tx = _migration_tx(_POOL_A, _MINT_A)
-        calls = {"n": 0}
-
-        def factory(mint, signature):
-            def transport(context):
-                calls["n"] += 1
-                if calls["n"] == 1:
-                    # First attempt: transaction not yet queryable (transient).
-                    return {
-                        "fixture_status": "failure",
-                        "failure_type": "pumpswap_rpc_transport_error",
-                        "failure_message": "timeout",
-                    }
-                # Second attempt after settle: confirmed.
-                from printer_v1.sources.pump_migration import verify_graduation_from_transaction
-                v = verify_graduation_from_transaction(tx, {_POOL_A: pool_acct}, expected_mint=mint)
-                return {
-                    "pumpswap_confirmation": v["pumpswap_confirmation"],
-                    "pumpswap_resolution": v["pumpswap_resolution"],
-                    "migration_signature": signature,
-                    "migration_block_time": v["migration_block_time"],
-                    "migration_slot": v["migration_slot"],
-                }
-            return transport
-
-        report = dmd.run_direct_migration_discovery(
-            db,
-            migration_transport=_migration_transport(
-                [{"mint": _MINT_A, "signature": _SIG_A, "newRaydiumPool": _POOL_A}]
-            ),
-            verifier_transport_factory=factory,
-            now=_NOW,
-            reverify_on_transient=True,
-        )
-        assert report["confirmed_count"] == 1
-        assert report["verifications"][0]["verify_attempts"] == 2
-        assert calls["n"] == 2
+        transport, verifier, _mint, _pool, _sig = _pinned_direct_case()
+        with pytest.raises(ValueError, match="DIRECT_PUMP_LIVE_TAIL_FORBIDS_AUTOMATIC_REVERIFY"):
+            dmd.run_direct_migration_discovery(
+                db,
+                migration_transport=transport,
+                verifier_transport_factory=verifier,
+                now=_NOW,
+                reverify_on_transient=True,
+            )
 
     def test_non_transient_failure_not_retried(self):
         db = _temp_db()
-        calls = {"n": 0}
-
-        def factory(mint, signature):
-            def transport(context):
-                calls["n"] += 1
-                # Non-transient: a genuine graduation failure (wrong owner).
-                return {
-                    "fixture_status": "failure",
-                    "failure_type": "graduation_verification_failed_pool_resolution_pool_owner_not_pumpswap_program",
-                    "failure_message": "wrong owner",
-                }
-            return transport
-
-        report = dmd.run_direct_migration_discovery(
-            db,
-            migration_transport=_migration_transport(
-                [{"mint": _MINT_A, "signature": _SIG_A, "newRaydiumPool": _POOL_A}]
-            ),
-            verifier_transport_factory=factory,
-            now=_NOW,
-            reverify_on_transient=True,
-        )
-        assert report["confirmed_count"] == 0
-        assert report["verifications"][0]["verify_attempts"] == 1
-        assert calls["n"] == 1
+        transport, verifier, _mint, _pool, _sig = _pinned_direct_case()
+        with pytest.raises(ValueError, match="DIRECT_PUMP_LIVE_TAIL_FORBIDS_AUTOMATIC_REVERIFY"):
+            dmd.run_direct_migration_discovery(
+                db,
+                migration_transport=transport,
+                verifier_transport_factory=verifier,
+                now=_NOW,
+                reverify_on_transient=True,
+            )
 
     def test_multi_round_collection_accumulates_and_dedups(self, monkeypatch):
+        del monkeypatch
         db = _temp_db()
-        by_sig = dict([
-            _graduated_case(_MINT_A, _SIG_A, _POOL_A),
-            _graduated_case(_MINT_B, _SIG_B, _POOL_B),
-        ])
-        factory = _live_verifier_factory(monkeypatch, by_sig)
-        rounds = {"n": 0}
-
-        def migration_transport(context):
-            rounds["n"] += 1
-            if rounds["n"] == 1:
-                return {"events": [{"mint": _MINT_A, "signature": _SIG_A, "newRaydiumPool": _POOL_A}]}
-            # Round 2 re-sees A (duplicate across rounds) and adds B.
-            return {"events": [
-                {"mint": _MINT_A, "signature": _SIG_A, "newRaydiumPool": _POOL_A},
-                {"mint": _MINT_B, "signature": _SIG_B, "newRaydiumPool": _POOL_B},
-            ]}
-
-        report = dmd.run_direct_migration_discovery(
-            db, migration_transport=migration_transport,
-            verifier_transport_factory=factory, now=_NOW, collection_rounds=2,
-        )
-        assert report["migration_intake"]["collection_rounds"] == 2
-        assert report["migration_intake"]["valid_pair_count"] == 2
-        assert report["migration_intake"]["duplicate"] == 1  # A re-seen in round 2
-        assert report["confirmed_count"] == 2
-        assert report["source_operation_ledger"]["graduated_candidates"] == 2
+        transport, verifier, _mint, _pool, _sig = _pinned_direct_case()
+        with pytest.raises(ValueError, match="DIRECT_PUMP_LIVE_TAIL_REQUIRES_ONE_COLLECTION_ROUND"):
+            dmd.run_direct_migration_discovery(
+                db,
+                migration_transport=transport,
+                verifier_transport_factory=verifier,
+                now=_NOW,
+                collection_rounds=2,
+            )
 
 
 if __name__ == "__main__":  # pragma: no cover
