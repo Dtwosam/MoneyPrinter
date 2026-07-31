@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 
 UNIT_SOURCE_TRANSPORT_OPERATION = "SOURCE_TRANSPORT_OPERATION"
@@ -140,7 +140,14 @@ class TransportOperationIdentity:
 
 @dataclass
 class MeasuredTransportLedger:
-    """In-memory ledger for one campaign stage or discovery attempt."""
+    """In-memory ledger for one campaign stage or discovery attempt.
+
+    ``on_transport_recorded`` is an optional verification-only observer fired
+    after a transport identity is accepted into this ledger. It is not a second
+    campaign accounting authority. Coordinators use it to collect action-local
+    transport identities at measurement time, before and separately from stage
+    sealing / campaign-owner ingestion.
+    """
 
     campaign_id: str | None = None
     run_id: str | None = None
@@ -149,6 +156,9 @@ class MeasuredTransportLedger:
     local_validations: int = 0
     scheduler_work_items: int = 0
     lifecycle_reservations: int = 0
+    on_transport_recorded: Callable[[TransportOperationIdentity], None] | None = field(
+        default=None, repr=False, compare=False
+    )
     _seen_keys: set[tuple[Any, ...]] = field(default_factory=set, repr=False)
 
     def record_transport(
@@ -192,6 +202,9 @@ class MeasuredTransportLedger:
             raise MeasuredTransportError("NEGATIVE_TRANSPORT_MEASURE")
         self._seen_keys.add(key)
         self.transports.append(identity)
+        # Verification-only fan-out: fires at measurement time, before seal.
+        if self.on_transport_recorded is not None:
+            self.on_transport_recorded(identity)
 
     def record_local_validation(self, count: int = 1) -> None:
         if count < 0:

@@ -1077,6 +1077,7 @@ def run_graduated_liquidity_front_door(
     max_candidates: int = 64,
     exclude_mints: "set[str] | Sequence[str] | None" = None,
     stage_evidence_sink: Callable[[Mapping[str, Any]], None] | None = None,
+    transport_identity_observer: Callable[[Any], None] | None = None,
     campaign_id: str | None = None,
     run_id: str | None = None,
     cycle_id: str | None = None,
@@ -1104,6 +1105,8 @@ def run_graduated_liquidity_front_door(
     When ``stage_evidence_sink`` is supplied, each invocation seals exactly one
     EXACT_LIQUIDITY stage evidence block with a distinct round stage_id before
     returning or propagating an exception.
+
+    ``transport_identity_observer`` is notified at measurement time before seal.
     """
     now = now or _utc_now_iso()
     latest_set = set(latest_mints)
@@ -1125,6 +1128,7 @@ def run_graduated_liquidity_front_door(
         campaign_id=campaign_id,
         run_id=run_id,
         cycle_id=cycle_id,
+        on_transport_recorded=transport_identity_observer,
     )
     stage_terminal_status = "COMPLETED"
     stage_first_terminal_cause: str | None = None

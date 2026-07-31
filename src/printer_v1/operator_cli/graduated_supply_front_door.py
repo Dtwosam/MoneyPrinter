@@ -198,6 +198,7 @@ def run_fresh_profile_locator(
     request_key: str = "v2-9-7e-45-locator",
     now: str | None = None,
     stage_evidence_sink: Callable[[Mapping[str, Any]], None] | None = None,
+    transport_identity_observer: Callable[[Any], None] | None = None,
     campaign_id: str | None = None,
     run_id: str | None = None,
     cycle_id: str | None = None,
@@ -208,6 +209,8 @@ def run_fresh_profile_locator(
     When a governed request is attempted and ``stage_evidence_sink`` is supplied,
     exactly one sealed stage evidence block is emitted before return. When the
     locator is genuinely not requested, callers must not invoke this function.
+
+    ``transport_identity_observer`` is notified at measurement time before seal.
     """
     from printer_v1.sources.campaign_six_unit_accounting import (
         build_campaign_stage_id,
@@ -237,6 +240,7 @@ def run_fresh_profile_locator(
         campaign_id=campaign_id,
         run_id=run_id,
         cycle_id=cycle_id,
+        on_transport_recorded=transport_identity_observer,
     )
     terminal_status = "COMPLETED"
     terminal_cause: str | None = None
@@ -418,6 +422,7 @@ def build_graduated_supply(
     required_token_capacity: int = 2,
     tracking_precheck: bool = False,
     stage_evidence_sink: Callable[[Mapping[str, Any]], None] | None = None,
+    transport_identity_observer: Callable[[Any], None] | None = None,
 ) -> GraduatedSupply:
     """Compose discovery + front door via persistent multi-round supply loop.
 
@@ -474,6 +479,8 @@ def build_graduated_supply(
         # Pass the campaign sink unchanged; child stages emit once each.
         # Do not re-emit evidence already sealed by child stages.
         stage_evidence_sink=stage_evidence_sink,
+        # Pre-seal verification observer (independent of sealed-stage handoff).
+        transport_identity_observer=transport_identity_observer,
     )
 
     discovery = dict(persistent.discovery_report)

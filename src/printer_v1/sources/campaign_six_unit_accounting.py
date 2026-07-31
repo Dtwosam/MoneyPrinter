@@ -550,7 +550,11 @@ def reconcile_owner_to_action_local(
     """Verify owner transport identities and counts against action-local truth.
 
     Action-local evidence is verification only. Missing stage evidence is never
-    manufactured from durable source rows or request counts.
+    manufactured from durable source rows or request counts. Action-local
+    identities must originate at measurement time
+    (``MeasuredTransportLedger.record_transport`` / transport_identity_observer)
+    before and separately from stage sealing — never by mirroring sealed-stage
+    handoff into both reconciliation sides.
 
     Exact equality is required in both directions:
 

@@ -295,6 +295,7 @@ def run_direct_migration_discovery(
     reverify_on_transient: bool = False,
     reverify_settle_seconds: float = 0.0,
     stage_evidence_sink: Callable[[Mapping[str, Any]], None] | None = None,
+    transport_identity_observer: Callable[[Any], None] | None = None,
     campaign_id: str | None = None,
     run_id: str | None = None,
     cycle_id: str | None = None,
@@ -316,6 +317,10 @@ def run_direct_migration_discovery(
     When ``stage_evidence_sink`` is supplied, exactly one sealed stage evidence
     block is emitted before every normal return. The campaign owner remains the
     only campaign-wide accounting authority.
+
+    ``transport_identity_observer`` is verification-only: it is notified when a
+    transport identity is measured on this stage ledger, before sealing. It must
+    not replace the campaign owner.
 
     Returns a full discovery report; raises nothing on ordinary market/verification
     failures (they are recorded honestly).
@@ -350,6 +355,9 @@ def run_direct_migration_discovery(
         started_at=now,
     )
     measured_ledger = campaign_units.ledger
+    # Independent action-local observation at measurement time (pre-seal).
+    if transport_identity_observer is not None:
+        measured_ledger.on_transport_recorded = transport_identity_observer
     local_validations = 0
     started_mono = datetime.now(timezone.utc)
     accounting_block_reason: str | None = None

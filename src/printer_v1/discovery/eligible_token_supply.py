@@ -541,6 +541,7 @@ def run_persistent_eligible_token_supply(
     locator_runner: Callable[..., Mapping[str, Any]] | None = None,
     tracking_precheck: bool = False,
     stage_evidence_sink: Callable[[Mapping[str, Any]], None] | None = None,
+    transport_identity_observer: Callable[[Any], None] | None = None,
 ) -> PersistentSupplyResult:
     """Run persistent multi-round eligible discovery inside one campaign.
 
@@ -562,14 +563,19 @@ def run_persistent_eligible_token_supply(
     # --- Locator (optional, once) -------------------------------------------
     # Genuinely not-requested locators emit no stage evidence block.
     locator_stage_kwargs: dict[str, Any] = {}
-    if stage_evidence_sink is not None and run_locator:
+    if (stage_evidence_sink is not None or transport_identity_observer is not None) and run_locator:
         locator_stage_kwargs = {
-            "stage_evidence_sink": stage_evidence_sink,
             "campaign_id": campaign_id,
             "run_id": run_id,
             "cycle_id": cycle_id,
             "stage_sequence": 1,
         }
+        if stage_evidence_sink is not None:
+            locator_stage_kwargs["stage_evidence_sink"] = stage_evidence_sink
+        if transport_identity_observer is not None:
+            locator_stage_kwargs["transport_identity_observer"] = (
+                transport_identity_observer
+            )
     if locator_runner is not None and run_locator:
         locator = dict(
             locator_runner(
@@ -602,14 +608,19 @@ def run_persistent_eligible_token_supply(
 
     # --- Migration discovery (once at campaign start) -----------------------
     discovery_stage_kwargs: dict[str, Any] = {}
-    if stage_evidence_sink is not None:
+    if stage_evidence_sink is not None or transport_identity_observer is not None:
         discovery_stage_kwargs = {
-            "stage_evidence_sink": stage_evidence_sink,
             "campaign_id": campaign_id,
             "run_id": run_id,
             "cycle_id": cycle_id,
             "stage_sequence": 1,
         }
+        if stage_evidence_sink is not None:
+            discovery_stage_kwargs["stage_evidence_sink"] = stage_evidence_sink
+        if transport_identity_observer is not None:
+            discovery_stage_kwargs["transport_identity_observer"] = (
+                transport_identity_observer
+            )
     discovery = run_direct_migration_discovery(
         db_path,
         migration_transport=migration_transport,
@@ -884,14 +895,19 @@ def run_persistent_eligible_token_supply(
             discovery_rounds += 1
             round_seed = f"{cycle_seed}|ROUND_{discovery_rounds}"
             front_door_stage_kwargs: dict[str, Any] = {}
-            if stage_evidence_sink is not None:
+            if stage_evidence_sink is not None or transport_identity_observer is not None:
                 front_door_stage_kwargs = {
-                    "stage_evidence_sink": stage_evidence_sink,
                     "campaign_id": campaign_id,
                     "run_id": run_id,
                     "cycle_id": cycle_id,
                     "discovery_round": discovery_rounds,
                 }
+                if stage_evidence_sink is not None:
+                    front_door_stage_kwargs["stage_evidence_sink"] = stage_evidence_sink
+                if transport_identity_observer is not None:
+                    front_door_stage_kwargs["transport_identity_observer"] = (
+                        transport_identity_observer
+                    )
             front_door = run_graduated_liquidity_front_door(
                 db_path,
                 cycle_seed=round_seed,

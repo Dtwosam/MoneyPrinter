@@ -1366,8 +1366,9 @@ def _finalize_operational_six_unit_accounting(
     operational work, empty/null post-return lifecycle evidence is not
     re-ingested (prevents double ingestion). Additional sealed stages that are
     not yet present may still be ingested once. Action-local transport
-    identities and counts are verification only and never manufacture missing
-    stage evidence. Count-only action-local surfaces fail closed with
+    identities must be measured independently at record_transport time (not
+    mirrored from sealed-stage handoff) and never manufacture missing stage
+    evidence. Count-only action-local surfaces fail closed with
     ``ACTION_LOCAL_TRANSPORT_IDENTITY_DESIGN_BLOCKED``.
     """
     from printer_v1.sources.campaign_six_unit_accounting import (
@@ -1486,18 +1487,21 @@ def _run_operational_campaign(
         cycle_id=cycle_id,
         started_at=now,
     )
-    # Parallel action-local transport-identity ledger filled only by sealed
-    # stage handoff. Never manufactured from source-request row counts.
+    # Action-local transport identities observed at MeasuredTransportLedger
+    # record_transport time — before and separate from stage sealing. Never
+    # copied from sealed-stage handoff (self-comparison) and never rebuilt
+    # from source-request row counts.
     action_local_transport_identities: list[dict[str, Any]] = []
 
+    def _observe_transport_identity(identity: Any) -> None:
+        if hasattr(identity, "as_dict"):
+            action_local_transport_identities.append(identity.as_dict())
+        elif isinstance(identity, Mapping):
+            action_local_transport_identities.append(dict(identity))
+
     def _campaign_stage_evidence_sink(evidence: Mapping[str, Any]) -> None:
-        transports = evidence.get("transport_operations") if isinstance(evidence, Mapping) else None
-        if isinstance(transports, Sequence) and not isinstance(
-            transports, (str, bytes)
-        ):
-            for item in transports:
-                if isinstance(item, Mapping):
-                    action_local_transport_identities.append(dict(item))
+        # Owner side only. Action-local identities arrive via the measurement
+        # observer, not by mirroring this sealed evidence block.
         campaign_units.ingest_stage_evidence(evidence)
 
     try:
@@ -1617,6 +1621,7 @@ def _run_operational_campaign(
                 ),
                 fifteen_minute_only=True,
                 accounting_stage_evidence_sink=_campaign_stage_evidence_sink,
+                transport_identity_observer=_observe_transport_identity,
             )
         except BaseException:
             campaign_units.block(
@@ -1707,43 +1712,46 @@ def _run_operational_campaign(
         if exposed_stage_evidences is None and campaign_units.stage_evidence_count == 0:
             exposed_stage_evidences = (stage_evidence,)
         # Pre-lifecycle terminals: reconcile owner transport identities to the
-        # sealed action-local handoff set (exact identity + count, both
-        # directions). After lifecycle starts, holder/scheduler stages may add
-        # governed work not yet stage-sealed; skip action-local gate there.
+        # independent action-local measurement set (exact identity + count, both
+        # directions). Action-local identities originate at record_transport time
+        # via transport_identity_observer, not from sealed-stage handoff.
+        # After lifecycle starts, holder/scheduler stages may add governed work
+        # not yet stage-sealed; skip action-local gate there.
         # Count-only campaign_source_calls alone cannot prove transport
         # equality and must not be used as multi-hop-tolerant equality.
         action_local_ops = None
         action_local_identities: Sequence[Mapping[str, Any]] | None = None
         if not bool(result.lifecycle_started):
-            reported_identities = reporting.get(
-                "action_local_transport_identities"
-            )
-            if reported_identities is None:
-                terminal_reporting = lifecycle.get("terminal_reporting")
-                if isinstance(terminal_reporting, Mapping):
-                    reported_identities = terminal_reporting.get(
-                        "action_local_transport_identities"
-                    )
-            if isinstance(reported_identities, Sequence) and not isinstance(
-                reported_identities, (str, bytes)
-            ):
-                action_local_identities = [
-                    dict(item)
-                    for item in reported_identities
-                    if isinstance(item, Mapping)
-                ]
-            elif action_local_transport_identities:
+            if action_local_transport_identities:
                 action_local_identities = list(action_local_transport_identities)
             else:
-                # Only governed-request counts are available — fail closed with
-                # the design blocker rather than asymmetric multi-hop totals.
-                action_local_ops = reporting.get("campaign_source_calls")
-                if action_local_ops is None:
+                reported_identities = reporting.get(
+                    "action_local_transport_identities"
+                )
+                if reported_identities is None:
                     terminal_reporting = lifecycle.get("terminal_reporting")
                     if isinstance(terminal_reporting, Mapping):
-                        action_local_ops = terminal_reporting.get(
-                            "campaign_source_calls"
+                        reported_identities = terminal_reporting.get(
+                            "action_local_transport_identities"
                         )
+                if isinstance(reported_identities, Sequence) and not isinstance(
+                    reported_identities, (str, bytes)
+                ):
+                    action_local_identities = [
+                        dict(item)
+                        for item in reported_identities
+                        if isinstance(item, Mapping)
+                    ]
+                else:
+                    # Only governed-request counts are available — fail closed with
+                    # the design blocker rather than asymmetric multi-hop totals.
+                    action_local_ops = reporting.get("campaign_source_calls")
+                    if action_local_ops is None:
+                        terminal_reporting = lifecycle.get("terminal_reporting")
+                        if isinstance(terminal_reporting, Mapping):
+                            action_local_ops = terminal_reporting.get(
+                                "campaign_source_calls"
+                            )
         try:
             _finalize_operational_six_unit_accounting(
                 campaign_units,

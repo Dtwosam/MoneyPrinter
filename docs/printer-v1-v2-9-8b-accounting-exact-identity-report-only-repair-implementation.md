@@ -2,8 +2,8 @@
 
 Date: 2026-07-31
 
-Implementation baseline (prior repair commit):
-`b168c57d709df34e0f7ddcf6fc9b97c0bd8eca2d`
+Implementation baseline (prior closeout commit):
+`fd35b414edac9ab2d2e533e690e05283db5feaea`
 
 Branch:
 `codex/v2-9-8b-accounting-report-only-repair`
@@ -17,29 +17,31 @@ Forensic source:
 Implementation verdict:
 `V2_9_8B_FIRST_AUTHORITATIVE_15M_ACCOUNTING_EXACT_IDENTITY_REPORT_ONLY_REPAIR_IMPLEMENTATION_PASS`
 
-This document was revised after operator-review gap repair. Earlier PASS language
-that accepted asymmetric multi-hop totals, secondary summary block diagnostics,
-non-exception-safe stage sealing, and a synthetic July 31 payload-only proof is
-no longer retained as current truth.
+This document was revised after the second operator-review gap repair. Earlier
+language that accepted sealed-stage self-comparison for action-local identity
+truth, a synthetic 30-operation report insert, or a label-only WINDOW_15M
+string assertion is no longer retained as current truth.
 
 ## 1. Baseline and branch
 
 | Check | Result |
 | --- | --- |
-| Prior repair commit | `b168c57d709df34e0f7ddcf6fc9b97c0bd8eca2d` |
+| Prior closeout commit | `fd35b414edac9ab2d2e533e690e05283db5feaea` |
 | Branch | `codex/v2-9-8b-accounting-report-only-repair` |
-| Worktree before this gap repair | clean on prior repair commit |
 | Authoritative DB SHA-256 before | `f36f3b3fd7c389018323c219b3ce9421e2006769de3db860593ce4b31415a511` |
 | Authoritative DB SHA-256 after | `f36f3b3fd7c389018323c219b3ce9421e2006769de3db860593ce4b31415a511` (unchanged) |
 
-## 2. Exact files changed (operator-review gap repair)
+## 2. Exact files changed (second operator-review gap repair)
 
 Source:
 
+- `src/printer_v1/sources/measured_transport.py`
 - `src/printer_v1/sources/campaign_six_unit_accounting.py`
 - `src/printer_v1/discovery/direct_migration_discovery.py`
 - `src/printer_v1/discovery/graduated_liquidity_front_door.py`
+- `src/printer_v1/discovery/eligible_token_supply.py`
 - `src/printer_v1/operator_cli/graduated_supply_front_door.py`
+- `src/printer_v1/operator_cli/authoritative_live_operational_campaign.py`
 - `src/printer_v1/operator_cli/operational_memory_factory_command.py`
 
 Tests:
@@ -54,99 +56,105 @@ No schema migration. No authoritative DB mutation. No secrets, logs, or unrelate
 
 ## 3. Operator-review blockers repaired
 
-### 3.1 Exact identity and count reconciliation
+### 3.1 Independent action-local transport identity (no self-comparison)
 
-Replaced asymmetric owner/action-local comparison with exact equality:
+Architecture finding: actual transport identities already exist at
+`MeasuredTransportLedger.record_transport` time — before stage sealing. That
+surface can be wired as a verification-only observer without:
 
-- owner transport total must equal action-local transport-identity total
-- `owner > action_local` blocks
-- `action_local > owner` blocks
-- equal counts with different identity sets block
-- identity keys compare stage/source/kind/method/ordinal/target fields
-- missing stage evidence is never manufactured from request rows
+- a migration;
+- reconstructing evidence from SQLite request rows;
+- creating a second campaign accounting authority;
+- changing source budgets.
 
-When only governed-request counts are available and transport identities cannot
-be proven:
+Implementation:
 
-```text
-ACTION_LOCAL_TRANSPORT_IDENTITY_DESIGN_BLOCKED
-```
+- `MeasuredTransportLedger.on_transport_recorded` fires after a transport is
+  accepted into the stage measurement ledger
+- the public coordinator supplies one observer that appends identity dicts to
+  `action_local_transport_identities`
+- the campaign evidence sink now only ingests sealed stages into
+  `CampaignSixUnitOwner` — it no longer copies sealed transports into
+  action-local
+- pre-lifecycle reconciliation still requires exact identity/set equality both
+  directions
+- count-only governed-request surfaces still return
+  `ACTION_LOCAL_TRANSPORT_IDENTITY_DESIGN_BLOCKED`
 
-The operational coordinator collects action-local transport identities only from
-sealed stage handoff into a parallel list (never from SQLite request counts).
-Pre-lifecycle finalize uses that identity surface. Count-only
-`campaign_source_calls` alone is not accepted as multi-hop-tolerant equality.
+If a started stage measures transports but never seals/emits evidence, action
+local retains the measured identities while the owner does not — the completion
+gate mismatches and blocks the report.
 
-### 3.2 Exception-safe stage sealing
+### 3.2 Exception-safe stage sealing (preserved)
 
-Direct migration, locator, and each exact-liquidity round now seal and ingest
+Direct migration, locator, and each exact-liquidity round still seal and ingest
 exactly once in a `try/except/finally` path before an unexpected exception
-escapes:
+escapes. First-cause precedence is preserved.
 
-- seal `FAILED` after partial work
-- re-raise the original first terminal cause
-- sink failure is noted and does not replace the original source/market cause
-- unstarted stages emit nothing
+### 3.3 Exact terminal-summary identity (preserved)
 
-### 3.3 Exact terminal-summary identity
+`_load_exact_terminal_summary` still requires `campaign_id`, `run_id`,
+`configuration_id`, and `execution_id` exact non-empty matches.
 
-`_load_exact_terminal_summary` requires all of:
-
-- `campaign_id`
-- `run_id`
-- `configuration_id`
-- `execution_id`
-
-to be present, non-empty, and exact. Missing identity is a mismatch.
-
-### 3.4 Missing-summary primary block reasons
+### 3.4 Missing-summary primary block reasons (preserved)
 
 | Condition | Primary `block_reason` |
 | --- | --- |
 | Exact report missing + valid exact summary | `EXACT_TERMINAL_REPORT_MISSING` |
 | Exact report missing + summary absent/mismatched | `EXACT_TERMINAL_SUMMARY_MISSING_OR_MISMATCHED` |
 
-The summary defect is no longer hidden as a secondary diagnostic field.
+### 3.5 Genuine disposable coordinator 30-op shortage proof
 
-### 3.5 Disposable end-to-end coordinator proof
+Replaced the synthetic stage-construction + manual report-row insert with a
+genuine disposable coordinator proof that invokes:
 
-Replaced the synthetic July 31-shaped payload-only test with a disposable
-coordinator proof that shows:
+- real operational stage graph (`run_persistent_eligible_token_supply`)
+- campaign evidence sink (owner ingest only)
+- independent measurement observer (action-local)
+- completion gate (`_finalize_operational_six_unit_accounting`)
+- canonical report builder (`build_campaign_terminal_report`)
+- canonical report writer (`write_campaign_terminal_report`)
 
-- 30 unique governed transport operations
-- full stage handoff into one owner via sink
-- exact action-local identity/count reconciliation
+Requires:
+
+- 30 independently observed actual transport identities
+- exact equality with the single campaign owner
 - terminal `SOURCE_VISIBILITY_SHORTAGE`
-- exactly one canonical blocked terminal report row and artifact
-- independent evidence reconstruction equals stored totals
+- exactly one report row and one report artifact from production report code
+- evidence reconstruction equals stored totals
 - zero lifecycle/memory/retrieval/decision/position/trade/audit/PnL deltas
 - no retry/restart/resume/successor
 
+### 3.6 Genuine ordinary two-token WINDOW_15M regression
+
+Replaced the label-only `window_label = "WINDOW_15M"` assertion with the nearest
+genuine frozen, disposable, ordinary two-token operational coordinator path that
+reaches and closes two `WINDOW_15M` windows (`fifteen_minute_only=True`, no
+providers, no authoritative database).
+
 ## 4. Focused tests added/updated
 
+- action-local observer independence from stage seal/owner ingest
 - owner count greater than action-local blocks
 - action-local greater than owner blocks
 - equal counts with different identities block
 - count-only action-local returns `ACTION_LOCAL_TRANSPORT_IDENTITY_DESIGN_BLOCKED`
-- unexpected direct-migration exception after transport seals `FAILED`, ingests once, re-raises
-- equivalent locator and liquidity exception paths
-- missing summary `run_id` blocks
-- missing summary `configuration_id` blocks
-- missing summary `execution_id` blocks
-- mismatched summary identity uses primary block reason
+- unexpected direct-migration / locator / liquidity exception seal paths
+- missing summary identity fields block
+- mismatched summary identity primary block reason
 - exact report missing with valid summary uses `EXACT_TERMINAL_REPORT_MISSING`
-- disposable 30-op coordinator shortage handoff
-- one full disposable ordinary two-token `WINDOW_15M` regression
+- genuine disposable 30-op coordinator shortage handoff + report write
+- genuine ordinary two-token WINDOW_15M close regression
 
 ## 5. Tests and exact results
 
 | Suite | Result |
 | --- | --- |
-| `tests/test_v2_9_8b_accounting_exact_identity_report_only_repair.py` | 29 passed |
+| `tests/test_v2_9_8b_accounting_exact_identity_report_only_repair.py` | 31 passed |
 | `tests/test_v2_9_8b_campaign_accounting_terminal_enforcement.py` | included |
 | `tests/test_v2_9_8b_terminal_safety_accounting_finalization.py` | included |
 | `tests/test_v2_9_8b_21_eligible_token_supply_architecture.py` | included |
-| Combined focused affected suites | 101 passed |
+| Combined focused affected suites | 103 passed |
 | Python compile of changed sources | pass |
 | `git diff --check` | pass |
 
@@ -163,20 +171,19 @@ Identical. No authoritative mutation.
 
 ## 7. Money-usefulness contribution
 
-Printer can preserve honest negative learning about source visibility and market
-eligibility only when stage evidence is complete and reconcilable by identity.
-Operators can no longer mistake an unrelated historical report for the current
-attempt, and missing/mismatched terminal summaries surface as primary block
-reasons rather than secondary diagnostics.
+Printer can preserve honest negative learning about source visibility only when
+stage evidence is complete and reconcilable against an independent action-local
+measurement surface. A stage that measures transports but never emits sealed
+evidence is now detectable. Operators can no longer mistake sealed-stage
+self-comparison for independent verification.
 
-## 8. What improved versus the first repair commit
+## 8. What improved versus the prior closeout commit
 
-- exact identity/set reconciliation both directions
-- design blocker when only request counts exist
-- exception-safe seal/ingest for started stages
-- exact four-field terminal-summary identity
-- primary missing-summary block reasons
-- disposable coordinator 30-op proof instead of synthetic payload-only test
+- removed sealed-stage self-comparison for action-local identities
+- wired pre-seal `MeasuredTransportLedger.on_transport_recorded` observer
+- genuine disposable 30-op shortage coordinator proof with production report write
+- genuine ordinary two-token WINDOW_15M close regression
+- preserved exception-safe sealing and exact terminal-summary repairs
 
 ## 9. What remains locked
 
@@ -191,14 +198,11 @@ reasons rather than secondary diagnostics.
 
 ## 10. Functionality Risks / Setbacks / Efficiency Blockers
 
-- Action-local identity truth is currently the sealed stage handoff surface
-  collected by the campaign sink. A durable independent transport-identity
-  ledger outside sealed stages is still not a schema-backed ordinary path; when
-  only governed-request counts exist the gate fails closed with
-  `ACTION_LOCAL_TRANSPORT_IDENTITY_DESIGN_BLOCKED` rather than multi-hop
-  asymmetry.
+- Action-local independence depends on every measured stage ledger receiving
+  the coordinator observer. Stages that create ledgers without the observer
+  under-count action-local and fail closed at the completion gate.
 - Fixture/offline transports that omit declared transport identities still fail
-  closed when a stage sink is required.
+  closed when identity equality is required.
 - Holder/lifecycle stages after lifecycle start are not forced into the
   pre-lifecycle action-local identity gate; later lanes may need explicit sealed
   stages for those owners if full-run identity equality is required.
@@ -213,8 +217,8 @@ reasons rather than secondary diagnostics.
 V2_9_8B_FIRST_AUTHORITATIVE_15M_ACCOUNTING_EXACT_IDENTITY_REPORT_ONLY_REPAIR_IMPLEMENTATION_PASS
 ```
 
-All five operator-review blockers listed in the repair prompt are implemented
-and covered by focused disposable-DB tests.
+All three remaining operator-review blockers listed in the repair prompt are
+implemented and covered by focused disposable-DB tests.
 
 ## 12. Exact next permitted lane
 

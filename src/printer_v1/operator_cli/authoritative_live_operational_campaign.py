@@ -1385,6 +1385,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
         accounting_stage_evidence_sink: (
             Callable[[Mapping[str, Any]], None] | None
         ) = None,
+        transport_identity_observer: (
+            Callable[[Any], None] | None
+        ) = None,
     ) -> Any:
         """Run one authoritative live two-token operational-natural campaign.
 
@@ -1474,6 +1477,12 @@ class AuthoritativeLiveOperationalCampaignOwner:
             # (prevents double ingestion and captures shortage-path stages).
             if accounting_stage_evidence_sink is not None:
                 supply_kwargs["stage_evidence_sink"] = accounting_stage_evidence_sink
+            # Action-local transport identities are observed at measurement time
+            # (MeasuredTransportLedger.record_transport), not from sealed stages.
+            if transport_identity_observer is not None:
+                supply_kwargs["transport_identity_observer"] = (
+                    transport_identity_observer
+                )
             supply = build_graduated_supply(
                 command.db_path,
                 cycle_seed=selection_seed,

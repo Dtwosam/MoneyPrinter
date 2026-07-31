@@ -32,6 +32,13 @@ from printer_v1.operator_cli import operational_memory_factory_command as comman
 from printer_v1.operator_cli.graduated_supply_front_door import (
     run_fresh_profile_locator,
 )
+from printer_v1.operator_cli.operational_memory_factory_command import (
+    _finalize_operational_six_unit_accounting,
+)
+from printer_v1.operator_cli.unified_terminal_closure import (
+    build_campaign_terminal_report,
+    write_campaign_terminal_report,
+)
 from printer_v1.sources.campaign_six_unit_accounting import (
     CampaignSixUnitError,
     CampaignSixUnitOwner,
@@ -49,7 +56,16 @@ from printer_v1.sources.measured_transport import (
     MeasuredTransportLedger,
     build_transport_identity,
 )
+from printer_v1.sources.pump_migration import MIGRATION_PROVENANCE
+from printer_v1.sources.pumpswap_graduated_registry import (
+    LATEST_GRADUATED_CHANNEL,
+    record_graduated_candidate,
+)
 
+from test_v2_9_7e_11_authoritative_live_operational_campaign import (
+    _OperationalBase,
+    _two_create_transport,
+)
 from test_v2_9_8b_candidate_acquisition_foundation import _pinned_migration_fixture
 
 
@@ -940,175 +956,154 @@ def test_liquidity_unexpected_exception_seals_failed_once(tmp_path: Path) -> Non
 
 
 # --------------------------------------------------------------------------- #
-# 3c. End-to-end disposable coordinator proof (replaces synthetic July 31 payload)
+# 3c. End-to-end disposable coordinator proof (genuine stage graph + report)
 # --------------------------------------------------------------------------- #
+
+
+def test_action_local_observer_is_independent_of_stage_seal() -> None:
+    """Measurement observer fills before seal; owner only after sink ingest."""
+    action_local: list[dict[str, Any]] = []
+
+    def observe(identity) -> None:
+        action_local.append(identity.as_dict())
+
+    ledger = MeasuredTransportLedger(on_transport_recorded=observe)
+    identity = build_transport_identity(
+        stage="DEXSCREENER_DISCOVERY",
+        source_name="dexscreener_pair",
+        endpoint_owner="dexscreener",
+        governed_request_kind="pair_market_snapshot",
+        method_or_endpoint="GET /pairs",
+        within_request_ordinal=1,
+        target_category="exact_pair",
+        target_identity="pool-x",
+        response_bytes=8,
+        normalized_rows=0,
+        result="MALFORMED",
+    )
+    ledger.record_transport(identity)
+    # Observed at measurement time — no seal, no owner ingest yet.
+    assert len(action_local) == 1
+    owner = CampaignSixUnitOwner(campaign_id=CAMPAIGN, run_id=RUN, cycle_id=CYCLE)
+    assert owner.owner_transport_operation_count == 0
+    recon = reconcile_owner_to_action_local(
+        owner,
+        action_local_transport_identities=action_local,
+    )
+    assert recon["equal"] is False
+    assert recon["mismatch_reason"] == "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH"
 
 
 def test_disposable_coordinator_thirty_op_shortage_exact_handoff(
     tmp_path: Path,
 ) -> None:
-    """Frozen-transport disposable proof: 30 ops, shortage, exact identity gate."""
+    """Genuine disposable coordinator proof: real stages, gate, report writer."""
     db = tmp_path / "coord-30.sqlite3"
     apply_migrations(db)
-    artifacts = tmp_path / "artifacts"
-    artifacts.mkdir()
-    report_dir = artifacts / "reports"
-    report_dir.mkdir()
+    report_dir = tmp_path / "artifacts" / "reports"
+    report_dir.mkdir(parents=True)
+
+    # Seed enough graduated inventory for 29 exact-liquidity market checks.
+    conn = sqlite3.connect(db)
+    try:
+        for i in range(40):
+            record_graduated_candidate(
+                conn,
+                mint=f"MintCoord{i:02d}1111111111111111111111111111111"[:44],
+                migration_signature=f"sig-coord-30-{i}",
+                pumpswap_pool=f"PoolCoord{i:02d}11111111111111111111111111111"[:44],
+                graduation_block_time=1_700_000_000 + i,
+                graduation_slot=100 + i,
+                now=NOW,
+                discovery_channel=LATEST_GRADUATED_CHANNEL,
+                migration_provenance=MIGRATION_PROVENANCE,
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
     owner = CampaignSixUnitOwner(campaign_id=CAMPAIGN, run_id=RUN, cycle_id=CYCLE)
     action_local: list[dict[str, Any]] = []
     sealed_stages: list[Mapping[str, Any]] = []
 
+    def observe(identity) -> None:
+        # Independent of sealed-stage handoff (pre-seal measurement surface).
+        action_local.append(identity.as_dict())
+
     def sink(evidence: Mapping[str, Any]) -> None:
         sealed_stages.append(evidence)
-        for item in evidence.get("transport_operations") or []:
-            if isinstance(item, Mapping):
-                action_local.append(dict(item))
+        # Owner side only — do not mirror transports into action_local here.
         owner.ingest_stage_evidence(evidence)
 
-    # 30 unique governed transport operations across full stage handoff.
-    locator_idents = [
-        _transport_identity(
-            stage="DEXSCREENER_DISCOVERY",
-            source="dexscreener_profiles",
-            kind="dexscreener_fresh_profiles",
-            ordinal=1,
-            target="profiles",
-        ),
-        _transport_identity(
-            stage="DEXSCREENER_DISCOVERY",
-            source="dexscreener_pair",
-            kind="dexscreener_fresh_profiles",
-            ordinal=2,
-            target="token_pairs",
-        ),
-    ]
-    pump_idents = [
-        _transport_identity(
-            stage="DIRECT_PUMP_NOMINATION",
-            source="solana_rpc",
-            kind=SIGNATURE_PAGE_REQUEST_KIND,
-            ordinal=1,
-            target="page",
-            method="getSignaturesForAddress",
-            normalized_rows=3,
-        ),
-        _transport_identity(
-            stage="DIRECT_PUMP_NOMINATION",
-            source="solana_rpc",
-            kind=TRANSACTION_REQUEST_KIND,
-            ordinal=2,
-            target="tx-1",
-            method="getTransaction",
-            result="FAILED",
-        ),
-        _transport_identity(
-            stage="DIRECT_PUMP_NOMINATION",
-            source="solana_rpc",
-            kind=TRANSACTION_REQUEST_KIND,
-            ordinal=3,
-            target="tx-2",
-            method="getTransaction",
-            result="FAILED",
-        ),
-    ]
-    liq_idents = [
-        _transport_identity(
-            stage="DEXSCREENER_DISCOVERY",
-            source="dexscreener_pair",
-            kind="pair_market_snapshot",
-            ordinal=1,
-            target=f"pool-{i}",
-            result="FAILED" if i < 15 else "MALFORMED",
-        )
-        for i in range(25)
-    ]
-    stages = [
-        _sealed_stage(
-            stage_kind="LOCATOR",
-            sequence=1,
-            transports=locator_idents,
-            status="COMPLETED",
-        ),
-        _sealed_stage(
-            stage_kind="DIRECT_MIGRATION",
-            sequence=1,
-            transports=pump_idents,
-            status="BLOCKED",
-            cause="PROVIDER_FAILURE",
-        ),
-        _sealed_stage(
-            stage_kind="EXACT_LIQUIDITY",
-            sequence=1,
-            transports=liq_idents,
-            status="BLOCKED",
-            cause=SOURCE_VISIBILITY_SHORTAGE,
-        ),
-    ]
-    assert sum(len(s["transport_operations"]) for s in stages) == 30
-    for stage in stages:
-        sink(stage)
-    owner.close()
+    def dex_factory(mint: str, pool: str):
+        def transport(_context):
+            identity = _transport_identity(
+                stage="DEXSCREENER_DISCOVERY",
+                source="dexscreener_pair",
+                kind="pair_market_snapshot",
+                ordinal=1,
+                target=pool,
+                result="MALFORMED",
+            )
+            return {
+                "fixture_status": "failure",
+                "failure_type": "dexscreener_malformed_payload",
+                "failure_message": "malformed visibility shortage fixture",
+                "transport_operations_used": 1,
+                "transport_operation_identities": [identity],
+                "response_bytes": 4,
+                "normalized_rows": 0,
+            }
 
-    reconciliation = reconcile_owner_to_action_local(
-        owner,
-        action_local_transport_identities=action_local,
-        action_local_source_operations=30,
+        return transport
+
+    result = run_persistent_eligible_token_supply(
+        db,
+        cycle_seed="coord-30-shortage",
+        migration_transport=lambda _c: {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": [],
+            "response_bytes": 2,
+        },
+        dexscreener_transport_factory=dex_factory,
+        now=NOW,
+        collection_rounds=1,
+        front_door_max_candidates=6,
+        run_locator=False,
+        discovery_operation_budget=30,
+        campaign_id=CAMPAIGN,
+        execution_id="exec-coord-30",
+        run_id=RUN,
+        cycle_id=CYCLE,
+        stage_evidence_sink=sink,
+        transport_identity_observer=observe,
     )
-    assert reconciliation["equal"] is True
-    assert owner.owner_transport_operation_count == 30
+    assert result.ready is False
+    assert result.shortage_classification == SOURCE_VISIBILITY_SHORTAGE
     assert len(action_local) == 30
-    assert len(sealed_stages) == 3
+    assert owner.owner_transport_operation_count == 30
+    assert len(sealed_stages) >= 1
+    # Independence: action_local was filled by measurement observer, not sink.
+    assert all(isinstance(item, dict) for item in action_local)
+
+    _finalize_operational_six_unit_accounting(
+        owner,
+        None,
+        action_local_transport_identities=action_local,
+    )
     totals = owner.six_unit_totals()
     evidence = owner.durable_evidence()
     assert reconstruct_six_unit_totals_from_evidence(evidence) == totals
+    assert totals["SOURCE_TRANSPORT_OPERATION"] == 30
 
-    # One canonical blocked terminal report row + artifact on disposable DB.
     report_id = "report-coord-30"
     configuration_id = "config-coord-30"
     execution_id = "exec-coord-30"
-    report_payload = {
-        "report_kind": "PILOT_CAMPAIGN_TERMINAL",
-        "identity": {
-            "campaign_id": CAMPAIGN,
-            "configuration_id": configuration_id,
-            "run_id": RUN,
-            "cycle_id": CYCLE,
-            "report_id": report_id,
-            "factory_run_id": None,
-            "execution_id": execution_id,
-        },
-        "terminal": {
-            "terminal_status": "BLOCKED",
-            "first_terminal_cause": SOURCE_VISIBILITY_SHORTAGE,
-            "run_status": "NOT_STARTED",
-            "lifecycle_started": False,
-        },
-        "campaign_source_calls": 30,
-        "campaign_scheduler_calls": 0,
-        "six_unit_totals": totals,
-        "six_unit_evidence": evidence,
-        "six_unit_evidence_match": True,
-        "restart_created": False,
-        "successor_created": False,
-        "resume_created": False,
-        "retry_created": False,
-    }
-    body = json.dumps(report_payload, sort_keys=True, separators=(",", ":"))
-    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
-    from printer_v1.operator_cli.abstract_campaign_command import report_path_identity
-
-    config = {
-        "report_directory_identity": report_path_identity(report_dir),
-        "execution_id": execution_id,
-        "run_id": RUN,
-    }
+    # Seed FK parents only; report row/artifact come from production writer.
     conn = sqlite3.connect(db)
     try:
         conn.execute("PRAGMA foreign_keys=ON")
-        now = NOW
-        # Lifecycle / memory / retrieval / decision / position / trade / audit / PnL
-        # baseline counts before write.
         forbidden_tables = [
             "printer_tokens",
             "printer_pairs",
@@ -1117,6 +1112,8 @@ def test_disposable_coordinator_thirty_op_shortage_exact_handoff(
             "printer_paper_positions",
             "printer_paper_trade_events",
             "printer_paper_trade_audits",
+            "printer_memory_retrieval_queries",
+            "printer_memory_retrieval_matches",
         ]
         before = {}
         for table in forbidden_tables:
@@ -1139,9 +1136,9 @@ def test_disposable_coordinator_thirty_op_shortage_exact_handoff(
                 "sha256:test",
                 "V2_9_8B",
                 SOURCE_VISIBILITY_SHORTAGE,
-                now,
-                now,
-                now,
+                NOW,
+                NOW,
+                NOW,
             ),
         )
         conn.execute(
@@ -1153,9 +1150,9 @@ def test_disposable_coordinator_thirty_op_shortage_exact_handoff(
                 configuration_id,
                 CAMPAIGN,
                 "b" * 64,
-                json.dumps(config, sort_keys=True),
+                json.dumps({"execution_id": execution_id, "run_id": RUN}),
                 "{}",
-                now,
+                NOW,
             ),
         )
         conn.execute(
@@ -1163,16 +1160,44 @@ def test_disposable_coordinator_thirty_op_shortage_exact_handoff(
                    run_id,campaign_id,run_ordinal,run_state,
                    first_terminal_cause,terminal_at,created_at,updated_at
                ) VALUES (?,?,1,'TERMINAL_BLOCKED',?,?,?,?)""",
-            (RUN, CAMPAIGN, SOURCE_VISIBILITY_SHORTAGE, now, now, now),
-        )
-        conn.execute(
-            """INSERT INTO printer_memory_factory_campaign_reports(
-                   report_id,campaign_id,configuration_id,report_kind,
-                   report_state,report_json,report_hash,created_at
-               ) VALUES (?,?,?,'TERMINAL','REPORT_TERMINAL',?,?,?)""",
-            (report_id, CAMPAIGN, configuration_id, body, digest, now),
+            (RUN, CAMPAIGN, SOURCE_VISIBILITY_SHORTAGE, NOW, NOW, NOW),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+    payload = build_campaign_terminal_report(
+        campaign_id=CAMPAIGN,
+        configuration_id=configuration_id,
+        run_id=RUN,
+        cycle_id=CYCLE,
+        report_id=report_id,
+        factory_run_id=None,
+        execution_id=execution_id,
+        terminal_status="BLOCKED",
+        terminal_cause=SOURCE_VISIBILITY_SHORTAGE,
+        run_status="NOT_STARTED",
+        lifecycle_started=False,
+        reconciliation={"clean_terminal": True},
+        campaign_source_calls=30,
+        campaign_scheduler_calls=0,
+        six_unit_totals=totals,
+        six_unit_evidence=evidence,
+        require_six_unit_evidence=True,
+        blocked_supply_reason=SOURCE_VISIBILITY_SHORTAGE,
+    )
+    write_campaign_terminal_report(
+        db,
+        report_dir,
+        report_id=report_id,
+        campaign_id=CAMPAIGN,
+        configuration_id=configuration_id,
+        report=payload,
+        require_six_unit_evidence=True,
+    )
+
+    conn = sqlite3.connect(db)
+    try:
         report_rows = int(
             conn.execute(
                 "SELECT COUNT(*) FROM printer_memory_factory_campaign_reports"
@@ -1191,11 +1216,9 @@ def test_disposable_coordinator_thirty_op_shortage_exact_handoff(
     finally:
         conn.close()
 
-    artifact_path = report_dir / f"{report_id}.json"
-    artifact_path.write_text(body + "\n", encoding="utf-8")
-    assert artifact_path.is_file()
-    assert len(list(report_dir.glob("*.json"))) == 1
-    stored = json.loads(artifact_path.read_text(encoding="utf-8"))
+    artifacts = list(report_dir.glob("*.json"))
+    assert len(artifacts) == 1
+    stored = json.loads(artifacts[0].read_text(encoding="utf-8"))
     assert stored["terminal"]["first_terminal_cause"] == SOURCE_VISIBILITY_SHORTAGE
     assert (
         reconstruct_six_unit_totals_from_evidence(stored["six_unit_evidence"])
@@ -1204,9 +1227,9 @@ def test_disposable_coordinator_thirty_op_shortage_exact_handoff(
     assert stored["six_unit_totals"]["SOURCE_TRANSPORT_OPERATION"] == 30
     assert stored["restart_created"] is False
     assert stored["successor_created"] is False
-    assert stored["resume_created"] is False
-    assert stored["retry_created"] is False
     assert stored["terminal"]["lifecycle_started"] is False
+    assert stored.get("resume_created", False) is False
+    assert stored.get("retry_created", False) is False
 
 
 # --------------------------------------------------------------------------- #
@@ -1738,121 +1761,81 @@ def test_ordinary_direct_migration_still_complete_without_sink(tmp_path: Path) -
     assert report.get("sealed_stage_evidence") is None
 
 
+class _OrdinaryWindow15mRegression(_OperationalBase):
+    """Nearest ordinary two-token operational WINDOW_15M path (frozen, disposable)."""
+
+    def runTest(self) -> None:  # pragma: no cover - pytest class host
+        pass
+
+
 def test_ordinary_disposable_two_token_window_15m_regression(tmp_path: Path) -> None:
-    """Nearest ordinary two-token WINDOW_15M disposable regression.
-
-    Proves the accounting seal path does not break normal discovery success
-    on a fresh migration-049 database. Does not unlock retrieval or finance.
-    """
-    tx, infos, mint, pool = _pinned_migration_fixture()
-    db = tmp_path / "ordinary-15m.sqlite3"
-    apply_migrations(db)
-
-    def verifier_factory(mint_value: str, signature: str):
-        def transport(_context):
-            return {
-                "pumpswap_confirmation": {
-                    "confirmed": True,
-                    "pool_address": pool,
-                    "base_mint": mint_value,
-                },
-                "pumpswap_resolution": {
-                    "pool_address": pool,
-                    "resolved": True,
-                    "transport_operations_used": 1,
-                },
-                "pump_migration_proof": {
-                    "verified": True,
-                    "migration_block_time": tx["blockTime"],
-                    "migration_slot": tx["slot"],
-                },
-                "tokens": [
-                    {
-                        "mint": mint_value,
-                        "pairAddress": pool,
-                        "pumpswap_migration_block_time": tx["blockTime"],
-                        "pumpswap_migration_slot": tx["slot"],
-                    }
-                ],
-                "migration_signature": signature,
-                "transport_operations_used": 1,
-                "transport_operation_identities": [
-                    _transport_identity(
-                        stage="PUMPSWAP_EXACT_VERIFICATION",
-                        source="pumpswap",
-                        kind="pumpswap_signature_pool_resolution",
-                        ordinal=1,
-                        target=pool,
-                    )
-                ],
-                "response_bytes": 20,
-                "normalized_rows": 1,
-            }
-
-        return transport
-
-    report = run_direct_migration_discovery(
-        db,
-        migration_transport=_migration_transport(tx),
-        verifier_transport_factory=verifier_factory,
-        now=NOW,
-        collection_rounds=1,
-    )
-    assert report["status"] == "COMPLETE"
-    assert report["campaign_safe_stop"] is False
-    assert report["confirmed_count"] >= 1
-    assert report["source_operation_ledger"]["operation_accounting_reconciled"] is True
-
-    # Second graduated candidate for ordinary two-token readiness shape.
-    from printer_v1.sources.pumpswap_graduated_registry import (
-        LATEST_GRADUATED_CHANNEL,
-        record_graduated_candidate,
-        export_graduated_candidates,
-    )
-    from printer_v1.sources.pump_migration import MIGRATION_PROVENANCE
-
-    mint_b = "MintBOrdinaryTwoToken1111111111111111111111111"
-    pool_b = "PoolBOrdinaryTwoToken111111111111111111111111"
-    conn = sqlite3.connect(db)
-    conn.row_factory = sqlite3.Row
+    """Genuine frozen two-token operational coordinator that closes WINDOW_15M."""
+    del tmp_path  # harness owns a fresh disposable migration-049 database
+    harness = _OrdinaryWindow15mRegression()
+    harness.setUp()
     try:
-        record_graduated_candidate(
-            conn,
-            mint=mint_b,
-            migration_signature="sig-ordinary-b",
-            pumpswap_pool=pool_b,
-            graduation_block_time=int(tx["blockTime"]) + 1,
-            graduation_slot=int(tx["slot"]) + 1,
-            now=NOW,
-            discovery_channel=LATEST_GRADUATED_CHANNEL,
-            migration_provenance=MIGRATION_PROVENANCE,
-        )
-        conn.commit()
-        graduated = export_graduated_candidates(conn)
-        assert len(graduated) >= 2
-        head = [
-            row[0]
-            for row in conn.execute(
-                "SELECT version FROM printer_schema_migrations ORDER BY version"
-            )
-        ][-1]
-        assert str(head).startswith("049")
-        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-        # WINDOW_15M remains the ordinary main window; no longer-window activation.
-        window_label = "WINDOW_15M"
-        assert window_label == "WINDOW_15M"
-        # No retrieval / decision / position unlock surface written.
-        for table in (
-            "printer_paper_decisions",
-            "printer_paper_positions",
-            "printer_paper_trade_events",
+        transport, mints = _two_create_transport()
+        with patch(
+            "printer_v1.operator_cli.proof_db_schema_readiness."
+            "CANONICAL_PERSISTENT_DB",
+            harness.db,
         ):
-            try:
+            result, _continue_mint, _stop_mint = harness._run(
+                pump_transport=transport,
+                fifteen_minute_only=True,
+            )
+        report = result.lifecycle
+        assert result.lifecycle_started is True
+        assert report["run_status"] == "COMPLETED"
+        assert len(result.activation.activated_slots) == 2
+        assert {
+            str(slot["mint_identity"]) for slot in result.activation.activated_slots
+        } == set(mints)
+
+        close_steps = [
+            step
+            for step in report["steps"]
+            if step["step_kind"] == "WINDOW_CLOSE"
+        ]
+        assert len(close_steps) == 2
+        assert not any(
+            step["step_kind"] in {"CONTINUATION_CLOSE", "LONG_CONTINUATION_CLOSE"}
+            for step in report["steps"]
+        )
+
+        conn = sqlite3.connect(harness.db)
+        conn.row_factory = sqlite3.Row
+        try:
+            main_windows = conn.execute(
+                """SELECT token_id,pair_id,window_kind,window_status
+                   FROM printer_memory_windows
+                   WHERE window_kind='WINDOW_15M'
+                   ORDER BY token_id,pair_id"""
+            ).fetchall()
+            assert len(main_windows) == 2
+            assert all(row["window_status"] == "WINDOW_CLOSED" for row in main_windows)
+            head = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT version FROM printer_schema_migrations ORDER BY version"
+                )
+            ][-1]
+            assert str(head).startswith("049")
+            assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+            for table in (
+                "printer_paper_decisions",
+                "printer_paper_positions",
+                "printer_paper_trade_events",
+                "printer_paper_trade_audits",
+                "printer_memory_retrieval_queries",
+                "printer_memory_retrieval_matches",
+            ):
                 assert (
                     int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
                     == 0
                 )
-            except sqlite3.Error:
-                pass
+        finally:
+            conn.close()
+        assert all(value == 0 for value in report["forbidden_deltas"].values())
     finally:
-        conn.close()
+        harness.tearDown()
