@@ -374,3 +374,581 @@ no-rerun marker, and closeout requirements for a new execution identity.
 
 It must not execute a campaign, contact providers/RPC, mutate the authoritative
 database, repair the July 31 attempt, or unlock retrieval/financial capabilities.
+
+## Appendix A. Read-Only Evidence Transcript
+
+Date of transcript re-inspection: 2026-07-31
+
+Purpose: exact reproducible read-only evidence for every authoritative residual-state
+claim in this audit. No writable connection, no provider/RPC/source contact, no
+preflight, no campaign/report-only command, no tests, no DB mutation/copy, and no
+runtime/policy change.
+
+Transcript result: every residual-state claim above was reproduced. No contradiction
+was found; the readiness verdict remains
+`V2_9_8B_POST_ACCOUNTING_REPAIR_AUTHORITATIVE_15M_CAMPAIGN_READINESS_AUDIT_PASS`.
+
+### A.1 SQLite read-only connection setup
+
+```text
+authoritative relative path: data/printer_v1.sqlite3
+authoritative resolved path: <repo>/data/printer_v1.sqlite3
+URI: file:<repo>/data/printer_v1.sqlite3?mode=ro
+open: sqlite3.connect(uri, uri=True)
+PRAGMA query_only=ON
+PRAGMA query_only readback: 1
+writable connection: false
+```
+
+`<repo>` is the MoneyPrinter worktree root. No non-`mode=ro` connection was opened.
+
+### A.2 Sidecar inspection
+
+```text
+listing under data/:
+  printer_v1.sqlite3  size=64901120
+
+WAL/SHM/journal present: none
+```
+
+### A.3 Authoritative DB SHA-256 before / after
+
+```text
+DB SHA-256 before: f36f3b3fd7c389018323c219b3ce9421e2006769de3db860593ce4b31415a511
+DB SHA-256 after:  f36f3b3fd7c389018323c219b3ce9421e2006769de3db860593ce4b31415a511
+equality: true
+```
+
+### A.4 Migration count and latest migration
+
+```sql
+SELECT COUNT(*) AS migration_count,
+       MAX(version) AS latest_migration
+FROM printer_schema_migrations;
+```
+
+```text
+(49, '049_candidate_acquisition_integration.sql')
+```
+
+```sql
+SELECT version, applied_at
+FROM printer_schema_migrations
+ORDER BY version DESC
+LIMIT 3;
+```
+
+```text
+('049_candidate_acquisition_integration.sql', '2026-07-29 11:23:54')
+('048_candidate_acquisition_foundation.sql', '2026-07-29 11:23:54')
+('047_campaign_oneshot_linkage_binds.sql', '2026-07-28 17:34:10')
+```
+
+### A.5 Integrity and foreign-key checks
+
+```sql
+PRAGMA integrity_check;
+```
+
+```text
+('ok',)
+```
+
+```sql
+PRAGMA foreign_key_check;
+```
+
+```text
+[]
+ROW_COUNT: 0
+```
+
+### A.6 Campaigns and runs by state
+
+```sql
+SELECT campaign_state, COUNT(*) AS n
+FROM printer_memory_factory_campaigns
+GROUP BY campaign_state
+ORDER BY campaign_state;
+```
+
+```text
+('TERMINAL_COMPLETED', 11)
+('TERMINAL_FAILED', 7)
+```
+
+```sql
+SELECT COUNT(*) AS n FROM printer_memory_factory_campaigns;
+```
+
+```text
+(18,)
+```
+
+```sql
+SELECT run_state, COUNT(*) AS n
+FROM printer_memory_factory_campaign_runs
+GROUP BY run_state
+ORDER BY run_state;
+```
+
+```text
+('TERMINAL_COMPLETED', 11)
+('TERMINAL_FAILED', 7)
+```
+
+```sql
+SELECT COUNT(*) AS n FROM printer_memory_factory_campaign_runs;
+```
+
+```text
+(18,)
+```
+
+### A.7 Supervision by state
+
+```sql
+SELECT supervision_state, terminal_status, COUNT(*) AS n
+FROM printer_memory_factory_campaign_supervision
+GROUP BY supervision_state, terminal_status
+ORDER BY supervision_state, terminal_status;
+```
+
+```text
+('TERMINAL', 'COMPLETED', 11)
+('TERMINAL', 'FAILED', 7)
+```
+
+```sql
+SELECT COUNT(*) AS n
+FROM printer_memory_factory_campaign_supervision
+WHERE supervision_state IS NULL OR supervision_state != 'TERMINAL';
+```
+
+```text
+(0,)
+```
+
+### A.8 Scheduler job states and lock counts
+
+```sql
+SELECT status, COUNT(*) AS n
+FROM printer_scheduler_jobs
+GROUP BY status
+ORDER BY status;
+```
+
+```text
+('CANCELLED', 41)
+('FAILED', 14)
+('SUCCEEDED', 1282)
+```
+
+```sql
+SELECT COUNT(*) AS n
+FROM printer_scheduler_jobs
+WHERE status NOT IN ('SUCCEEDED','FAILED','CANCELLED');
+```
+
+```text
+(0,)
+```
+
+```sql
+SELECT
+  COUNT(*) AS total_jobs,
+  SUM(CASE WHEN locked_at IS NOT NULL THEN 1 ELSE 0 END) AS locked_at_nonnull,
+  SUM(CASE WHEN lock_owner IS NOT NULL AND lock_owner != '' THEN 1 ELSE 0 END)
+    AS lock_owner_nonempty
+FROM printer_scheduler_jobs;
+```
+
+```text
+(1337, 0, 0)
+```
+
+```sql
+SELECT id, job_name, status, locked_at, lock_owner
+FROM printer_scheduler_jobs
+WHERE locked_at IS NOT NULL
+   OR (lock_owner IS NOT NULL AND lock_owner != '')
+LIMIT 20;
+```
+
+```text
+(empty) ROW_COUNT=0
+```
+
+### A.9 Discovery work states
+
+```sql
+SELECT work_state, COUNT(*) AS n
+FROM printer_discovery_work
+GROUP BY work_state
+ORDER BY work_state;
+```
+
+```text
+('FAILED', 2)
+('SUCCEEDED', 62)
+```
+
+```sql
+SELECT COUNT(*) AS n
+FROM printer_discovery_work
+WHERE work_state NOT IN ('SUCCEEDED','FAILED','CANCELLED');
+```
+
+```text
+(0,)
+```
+
+### A.10 Factory-step states
+
+```sql
+SELECT step_status, COUNT(*) AS n
+FROM printer_memory_factory_run_steps
+GROUP BY step_status
+ORDER BY step_status;
+```
+
+```text
+('CANCELLED', 12)
+('SUCCEEDED', 42)
+```
+
+```sql
+SELECT COUNT(*) AS n
+FROM printer_memory_factory_run_steps
+WHERE step_status NOT IN ('SUCCEEDED','FAILED','CANCELLED');
+```
+
+```text
+(0,)
+```
+
+### A.11 Proof-supervision rows
+
+```sql
+SELECT COUNT(*) AS n FROM printer_proof_run_supervision;
+```
+
+```text
+(0,)
+```
+
+### A.12 Active candidate-acquisition lease count
+
+```sql
+SELECT lease_state, COUNT(*) AS n
+FROM printer_candidate_acquisition_leases
+GROUP BY lease_state
+ORDER BY lease_state;
+```
+
+```text
+('TERMINAL', 19)
+```
+
+```sql
+SELECT COUNT(*) AS active_held
+FROM printer_candidate_acquisition_leases
+WHERE lease_state IN ('ACTIVE','STOPPING','HELD','RUNNING','ACQUIRED')
+   OR (
+        released_at IS NULL
+        AND lease_state NOT LIKE 'TERMINAL%'
+        AND lease_state NOT IN (
+          'RELEASED','EXPIRED','FAILED','COMPLETED','CANCELLED','TERMINAL'
+        )
+      );
+```
+
+```text
+(0,)
+```
+
+```sql
+SELECT COUNT(*) AS n FROM printer_candidate_acquisition_leases;
+```
+
+```text
+(19,)
+```
+
+### A.13 Exact July 31 campaign / run / cycle / supervision state
+
+Identity under inspection:
+
+```text
+campaign_id:    20260731T002406Z-7612696c7295-campaign
+run_id:         20260731T002406Z-7612696c7295-campaign-run
+cycle_id:       20260731T002406Z-7612696c7295-cycle
+supervision_id: 20260731T002406Z-7612696c7295-supervision
+execution_id:   20260731T002406Z-7612696c7295
+```
+
+```sql
+SELECT campaign_id, campaign_state, first_terminal_cause, terminal_at
+FROM printer_memory_factory_campaigns
+WHERE campaign_id = '20260731T002406Z-7612696c7295-campaign';
+```
+
+```text
+('20260731T002406Z-7612696c7295-campaign',
+ 'TERMINAL_COMPLETED',
+ 'SOURCE_VISIBILITY_SHORTAGE',
+ '2026-07-31T00:24:29.612374+00:00')
+```
+
+```sql
+SELECT run_id, campaign_id, run_state, first_terminal_cause, terminal_at
+FROM printer_memory_factory_campaign_runs
+WHERE campaign_id = '20260731T002406Z-7612696c7295-campaign';
+```
+
+```text
+('20260731T002406Z-7612696c7295-campaign-run',
+ '20260731T002406Z-7612696c7295-campaign',
+ 'TERMINAL_COMPLETED',
+ 'SOURCE_VISIBILITY_SHORTAGE',
+ '2026-07-31T00:24:29.612374+00:00')
+```
+
+```sql
+SELECT cycle_id, campaign_id, run_id, cycle_state, first_terminal_cause, terminal_at
+FROM printer_memory_factory_campaign_cycles
+WHERE campaign_id = '20260731T002406Z-7612696c7295-campaign';
+```
+
+```text
+('20260731T002406Z-7612696c7295-cycle',
+ '20260731T002406Z-7612696c7295-campaign',
+ '20260731T002406Z-7612696c7295-campaign-run',
+ 'TERMINAL_COMPLETED',
+ 'SOURCE_VISIBILITY_SHORTAGE',
+ '2026-07-31T00:24:29.612374+00:00')
+```
+
+```sql
+SELECT supervision_id, campaign_id, run_id, supervision_state, terminal_status,
+       first_terminal_cause, cleanup_completed_at, lease_released_at
+FROM printer_memory_factory_campaign_supervision
+WHERE campaign_id = '20260731T002406Z-7612696c7295-campaign';
+```
+
+```text
+('20260731T002406Z-7612696c7295-supervision',
+ '20260731T002406Z-7612696c7295-campaign',
+ '20260731T002406Z-7612696c7295-campaign-run',
+ 'TERMINAL',
+ 'COMPLETED',
+ 'SOURCE_VISIBILITY_SHORTAGE',
+ '2026-07-31T00:24:29.612374+00:00',
+ '2026-07-31T00:24:29.612374+00:00')
+```
+
+July 31 residual surface counts:
+
+```sql
+SELECT COUNT(*) AS n FROM printer_memory_factory_campaign_windows
+WHERE campaign_id = '20260731T002406Z-7612696c7295-campaign';
+-- (0,)
+
+SELECT COUNT(*) AS n FROM printer_memory_factory_campaign_token_slots
+WHERE campaign_id = '20260731T002406Z-7612696c7295-campaign';
+-- (0,)
+
+SELECT COUNT(*) AS n FROM printer_memory_factory_runs
+WHERE run_id LIKE '%20260731T002406Z%'
+   OR CAST(run_id AS TEXT) LIKE '%7612696c7295%';
+-- (0,)
+
+SELECT COUNT(*) AS n FROM printer_discovery_work
+WHERE campaign_id = '20260731T002406Z-7612696c7295-campaign';
+-- (0,)
+
+SELECT COUNT(*) AS n FROM printer_scheduler_jobs
+WHERE target_id LIKE '%20260731T002406Z-7612696c7295%'
+   OR CAST(id AS TEXT) LIKE '%7612696c7295%';
+-- (0,)
+```
+
+### A.14 July 31 report-row count
+
+```sql
+SELECT COUNT(*) AS n
+FROM printer_memory_factory_campaign_reports
+WHERE campaign_id = '20260731T002406Z-7612696c7295-campaign';
+```
+
+```text
+(0,)
+```
+
+### A.15 July 31 exhaustion-certificate facts
+
+```sql
+SELECT certificate_id, campaign_id, execution_id, run_id, cycle_id,
+       required_eligible_capacity, eligible_reserve_count, shortage_classification,
+       certificate_version, created_at
+FROM printer_discovery_exhaustion_certificates
+WHERE campaign_id = '20260731T002406Z-7612696c7295-campaign';
+```
+
+```text
+('exh-20260731T002406Z-7612696c7295',
+ '20260731T002406Z-7612696c7295-campaign',
+ '20260731T002406Z-7612696c7295',
+ '20260731T002406Z-7612696c7295-campaign-run',
+ '20260731T002406Z-7612696c7295-cycle',
+ 2,
+ 1,
+ 'SOURCE_VISIBILITY_SHORTAGE',
+ 'V2_9_8B_LIQUIDITY_EVIDENCE_EXHAUSTION_V2',
+ '2026-07-31T00:24:06.404380+00:00')
+```
+
+Selected scalar fields from `certificate_json` (no secrets):
+
+```text
+shortage_classification: SOURCE_VISIBILITY_SHORTAGE
+source_operations_used: 30
+source_operations_remaining: 0
+required_eligible_capacity: 2
+eligible_reserve_count: 1
+unique_tokens_observed: 30
+rejected_count: 29
+discovery_rounds: 5
+provider_failures: 15
+last_reason_discovery_could_not_continue: DISCOVERY_OPERATION_BUDGET_EXHAUSTED
+unexplored_work_prevented_by_hard_ceiling: true
+```
+
+### A.16 Retrieval and paper / financial baseline counts
+
+```sql
+SELECT COUNT(*) AS n FROM printer_memory_retrieval_matches;  -- (0,)
+SELECT COUNT(*) AS n FROM printer_memory_retrieval_queries;  -- (10,)
+SELECT COUNT(*) AS n FROM printer_paper_decisions;           -- (2,)
+SELECT COUNT(*) AS n FROM printer_paper_audit_reports;       -- (1,)
+SELECT COUNT(*) AS n FROM printer_paper_positions;           -- (0,)
+SELECT COUNT(*) AS n FROM printer_paper_trade_events;        -- (0,)
+SELECT COUNT(*) AS n FROM printer_paper_trade_audits;        -- (0,)
+```
+
+### A.17 External permanent no-rerun marker
+
+```text
+documented path: $HOME/PrinterOperations/v2-9-8/first-authoritative-window-15m-attempt.json
+resolved path:   $HOME/PrinterOperations/v2-9-8/first-authoritative-window-15m-attempt.json
+exists: true
+size: 427
+SHA-256: dd079f82a361aa2364b4142384a0b472698759a861a507539939aab839011564
+file modified by this audit: false
+```
+
+Selected non-secret fields:
+
+```text
+attempt_number: 1
+attempt_scope: FIRST_AUTHORITATIVE_WINDOW_15M_CAMPAIGN
+authorized_git_commit: b5761b6501ad757eecdfc8cfabce6828d5a899bd
+authorization_verdict: V2_9_8B_FIRST_AUTHORITATIVE_15M_CAMPAIGN_FINAL_AUTHORIZATION_PASS
+authoritative_database_sha256: e748ba505cb8c7d67b8feb3a09b97719a0f3560e41dfb9242570cff3157962e6
+created_at_utc: 20260731T002405Z
+rerun_authorized: false
+```
+
+### A.18 External July 31 terminal-summary artifact
+
+```text
+documented path: $HOME/PrinterOperations/v2-9-8/20260731T002406Z-7612696c7295/terminal-summary.json
+resolved path:   $HOME/PrinterOperations/v2-9-8/20260731T002406Z-7612696c7295/terminal-summary.json
+exists: true
+size: 6234
+SHA-256: 183d438d5110c448da6fc134079aedb3bf20c7cbb6ce32f1fa0846073162a0ad
+file modified by this audit: false
+```
+
+Top-level keys present:
+
+```text
+accounting_status, campaign_id, campaign_scheduler_calls, campaign_source_calls,
+cleanup, closure_errors, execution_id, first_terminal_cause,
+original_exception_type, partial_six_unit_evidence, reconciliation,
+report_block_reason, report_written, restart_created, status, successor_created
+```
+
+Selected non-secret top-level fields used by the verdict:
+
+```text
+execution_id: 20260731T002406Z-7612696c7295
+campaign_id: 20260731T002406Z-7612696c7295-campaign
+report_written: false
+report_block_reason: SIX_UNIT_EVIDENCE_MISSING
+accounting_status: SIX_UNIT_ACCOUNTING_BLOCKED
+first_terminal_cause: SOURCE_VISIBILITY_SHORTAGE
+campaign_source_calls: 30
+restart_created: false
+successor_created: false
+status: OPERATIONAL_CAMPAIGN_TERMINAL_FAILURE
+top-level run_id present: false
+top-level configuration_id present: false
+```
+
+Selected nested cleanup fields:
+
+```text
+cleanup.cleanup_completed: true
+cleanup.lease_released: true
+cleanup.automatic_retries: 0
+cleanup.restart_created: false
+cleanup.resume_created: false
+cleanup.successor_created: false
+cleanup.terminal_status: COMPLETED
+cleanup.active_owned_work_after: 0
+```
+
+Selected nested partial six-unit fields:
+
+```text
+partial_six_unit_evidence.stage_evidence_count: 1
+partial_six_unit_evidence.accounting evidence remains incomplete for report write
+```
+
+### A.19 Transcript claim map
+
+| Audit residual claim | Transcript result |
+| --- | --- |
+| 49 migrations; head `049_candidate_acquisition_integration.sql` | reproduced |
+| `integrity_check = ok`; FK violations `0` | reproduced |
+| DB SHA-256 unchanged | reproduced equal before/after |
+| no WAL/SHM/journal sidecars | reproduced |
+| campaigns/runs 18 terminal (11 completed / 7 failed) | reproduced |
+| supervision all `TERMINAL`; zero non-terminal | reproduced |
+| Scheduler only SUCCEEDED/FAILED/CANCELLED; zero locks | reproduced |
+| discovery only SUCCEEDED/FAILED | reproduced |
+| factory steps only SUCCEEDED/CANCELLED | reproduced |
+| proof supervision `0` | reproduced |
+| active CA leases `0`; historical terminal leases `19` | reproduced |
+| July 31 campaign/run/cycle terminal `SOURCE_VISIBILITY_SHORTAGE` | reproduced |
+| July 31 supervision TERMINAL/COMPLETED; lease released; cleanup done | reproduced |
+| July 31 report rows `0` | reproduced |
+| July 31 exhaustion `SOURCE_VISIBILITY_SHORTAGE`; 30 source ops | reproduced |
+| permanent marker attempt 1 / `rerun_authorized=false` / launch commit pin | reproduced |
+| terminal summary `report_written=false` / accounting blocked / no restart/successor | reproduced |
+| retrieval/paper/financial baseline counts | reproduced |
+| discrepancy requiring verdict change | none |
+
+### A.20 Boundary confirmation for this transcript
+
+Commands/classes of work not run:
+
+- preflight-only;
+- tests;
+- campaign or report-only command;
+- providers, RPC, WebSockets, or sources;
+- writable SQLite open;
+- authoritative DB mutation or copy;
+- July 31 repair/reclassification;
+- runtime code, tests, migrations, anchors, policy, verdict, or next-lane wording changes.
