@@ -241,6 +241,9 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
                 conn, context=context, action_local=ledger, execution_id="exec-w",
                 supervision_id=1, launch_git_provenance=dict(TEST_GIT_PROVENANCE),
                 db_target_identity="isolated-w",
+                authorized_invocation_count=1,
+                runtime_terminal_status="TERMINAL_COMPLETED",
+                lease_released=True,
                 forbidden_capability_deltas={
                     "retrieval_queries": 0, "paper_decisions": 0, "paper_trades": 0,
                 },
@@ -254,9 +257,16 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
         result, raw_records = self._drive_real_factory()
         self.assertEqual(result["run_status"], "COMPLETED")
         self.assertIsNotNone(self.captured_run_id)
-        # The observer fired at real scheduler-enqueue boundaries for both tokens.
+        # The observer fired at both real boundaries: the scheduler-enqueue
+        # boundary and the actual measured source-transport boundary, for both
+        # tokens.
         self.assertTrue(raw_records)
-        self.assertTrue(all(r["boundary"] == "SCHEDULER_ENQUEUE" for r in raw_records))
+        boundaries = {r["boundary"] for r in raw_records}
+        self.assertEqual(boundaries, {"SCHEDULER_ENQUEUE", "SOURCE_TRANSPORT"})
+        self.assertTrue(
+            any(r["boundary"] == "SOURCE_TRANSPORT" and r.get("source_request_id")
+                for r in raw_records)
+        )
         self.assertEqual({r["token_id"] for r in raw_records}, {1, 2})
         conn = sqlite3.connect(self.db)
         try:

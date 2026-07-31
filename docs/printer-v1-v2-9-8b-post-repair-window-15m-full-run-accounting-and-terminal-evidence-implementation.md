@@ -419,3 +419,184 @@ support-only 5m stays non-authoritative; no historical row or report was rewritt
 The real coordinator/factory path is wired and focused disposable integration
 tests pass. This does not authorize a live campaign. Next permitted lane remains
 `V2-9.8B Post-Repair WINDOW_15M Full-Run Accounting and Terminal-Evidence Bounded Proof`.
+
+---
+
+## D. Second correction — evidence-semantics repair
+
+The first correction wired the primitives into the coordinator/factory path but
+the sealed evidence was still *semantically hollow*: owner slot stages were sealed
+with empty transport evidence; reservation and validation identities were minted
+one-per-Scheduler-job; `pair_id` was derived from `token_id`; the gate consumed
+hardcoded `authorized_invocation_count=1`, `runtime_terminal_status=
+"TERMINAL_COMPLETED"`, and a default-true lease; Scheduler ownership was projected
+as a hardcoded `SUCCEEDED`; quality always passed `proposed_episode_kind=None`; and
+a compensation block could leave an embedded gate still reading `CAMPAIGN_PASS`.
+This correction replaces every one of those with a value measured from durable
+rows or observed at the real execution boundary.
+
+### D.1 Exact evidence semantics
+
+* **Owner is sealed from durable rows; action-local is observed at execution.**
+  The two derivations remain independent and must be identical or PASS is blocked.
+* **Equality is scoped to what an observer can witness.** `reconcile_full_run_owner_
+  to_action_local` gained an additive `owner_equality_stage_ids` filter. The
+  owner↔action-local six-unit equality is proven over the two lifecycle **slot**
+  stages (the transports, reservations, validations and Scheduler work the factory
+  actually observed). The two owner-only mandatory stages
+  (`DISCOVERY_SELECTION_SCHEDULER`, `CAMPAIGN_TERMINAL_RECONCILIATION`) stay
+  required-present but are excluded from equality — neither vacuous nor forced to
+  invent observations. Omitting the filter preserves the original all-stages
+  contract, so every prior accounting test is unchanged.
+* **Fail-closed transport proof.** A lifecycle-started run whose lifecycle steps
+  issued source requests can never seal zero source transport identities
+  (`LIFECYCLE_SOURCE_TRANSPORT_IDENTITIES_ZERO`).
+
+### D.2 Actual transport / reservation / validation boundaries
+
+Three genuinely distinct boundaries, no longer collapsed onto the enqueue event:
+
+| Unit | Boundary | Real quantity |
+| --- | --- | --- |
+| `SCHEDULER_WORK_ITEM` | `SCHEDULER_ENQUEUE` (plan time) | exactly one per enqueued run-step job |
+| `LIFECYCLE_RESERVED_TRANSPORT_OPERATION` | `SCHEDULER_ENQUEUE` | the step's **projected governed operations**: `SNAPSHOT` → 1, `WINDOW_CLOSE` → `1 + PRECLOSE_CONTEXT_REQUEST_COUNT` (= 6). A close reserving many calls is **never** collapsed to one reservation because it is one Scheduler job. |
+| `SOURCE_TRANSPORT_OPERATION` + `LOCAL_VALIDATION_STEP` | `SOURCE_TRANSPORT` (the actual measured outbound-call boundary the factory now fires) | one measured source transport (keyed on the durable `source_request_id`, carrying real response bytes / normalized rows) and one exact-pair verification validation per observation that actually produced a response |
+
+Real measured example (two `TRACK_NORMAL` tokens, 8 snapshots each + close, driven
+through the real factory): `SOURCE_TRANSPORT_OPERATION=18`,
+`SOURCE_RESPONSE_BYTES=7398`, `NORMALIZED_SOURCE_ROWS=18`, `SCHEDULER_WORK_ITEM=18`,
+`LIFECYCLE_RESERVED_TRANSPORT_OPERATION=28` (16×1 + 2×6). Reservation ≠ Scheduler
+work ≠ transport — the three axes are independent and exact. A
+`PRECLOSE_CONTEXT_REQUEST_COUNT` guard test asserts it stays equal to the factory's
+`_CONTEXT_REQUESTS_PER_TOKEN`, so the projected reservation cannot silently drift.
+
+### D.3 Exact token and pair identity
+
+`finalize` carries the real `token_id`/`token_mint`, `pair_id`/`pair_address`,
+`tracking_lane`, memory-window id and campaign-window id from the `WINDOW_CLOSE`
+step and its campaign slot. `pair_id` is the step's own column — never derived from
+`token_id`. Tests seed deliberately different values (token `1`→pair `101`, token
+`2`→pair `102`) and assert the report reflects the exact distinct identities.
+
+### D.4 Exact terminal and authorization gate inputs
+
+`finalize_full_run_ownership_and_report` now **requires** the durable facts —
+`authorized_invocation_count`, `runtime_terminal_status`, `lease_released` — and
+also carries `runtime_first_terminal_cause` and `active_work_result`. The hardcoded
+`authorized_invocation_count=1`, `runtime_terminal_status="TERMINAL_COMPLETED"`, and
+`lease_released: bool = True` default are gone. The coordinator derives
+`authorized_invocation_count` from the count of factory runs authoritatively bound
+to the campaign run, `runtime_terminal_status` from the factory run row, and threads
+`lease_released` / `active_work_result` from `cleanup_campaign_supervision`
+(unified terminal cleanup), which runs before campaign acceptance is evaluated. New
+gate checks: `exactly_one_authorized_invocation`, `runtime_terminal_completed`,
+`lease_released`, `memory_quality_consistent`,
+`scheduler_ownership_correspondence_exact`,
+`all_lifecycle_scheduler_jobs_succeeded`, and `all_mandatory_stages_sealed`.
+
+### D.5 Complete mandatory stages and accurate Scheduler ownership
+
+All four approved stages are sealed and required; removing any one drops
+`all_mandatory_stages_sealed` and blocks PASS. Scheduler ownership reads each job's
+real `printer_scheduler_jobs.status` (mapped `SUCCEEDED/FAILED/CANCELLED/SKIPPED`);
+a non-terminal job is `SCHEDULER_JOB_NOT_TERMINAL` and blocks. The report carries
+`scheduler_ownership` with exact per-job states, missing/extra ownership, and the
+`correspondence_exact` verdict; a `FAILED`/`CANCELLED` lifecycle job is visible and
+blocks PASS.
+
+### D.6 Quality consistency and report/verdict agreement
+
+`finalize` inspects the real `printer_episodes` attached to each exact memory
+window and passes the real `proposed_episode_kind`. A partial/dirty/`DO_NOT_TRAIN`
+window carrying a `WINDOW_15M_CLEAN_MEMORY` episode yields
+`QUALITY_CONSISTENCY_BLOCKED` and blocks PASS (lifecycle completion of the window
+itself stays valid). The canonical report, embedded gate object and top-level
+verdict are reconciled to a single value: a compensation block downgrades every
+surface together, so no embedded gate can read `CAMPAIGN_PASS` while the run is
+blocked.
+
+### D.7 Tests and outputs
+
+New focused suite
+`tests/test_v2_9_8b_full_run_accounting_semantics_correction.py` (disposable DBs,
+injected transports only) proves all twelve required properties:
+
+1. lifecycle source transports/bytes/rows nonzero and exact;
+2. removing one measured transport identity blocks;
+3. reservation totals reflect per-step projected reservations (close ≠ one);
+4. validation identities arise only from executed observations;
+5. token id differs from pair id and stays exact;
+6. authorization count 0 or 2 blocks;
+7. unreleased lease blocks;
+8. non-completed runtime status is not masked and blocks;
+9. each of the four mandatory stages is independently required;
+10. failed/non-terminal Scheduler state is reported accurately and blocks;
+11. a partial window with a clean episode blocks;
+12. report, gate and top-level verdict cannot disagree
+    (plus a projected-reservation drift guard).
+
+```
+tests/test_v2_9_8b_full_run_accounting_semantics_correction.py  → 14 passed, 6 subtests
+```
+
+Re-run of the focused primitive / wiring / coordinator / factory / ownership /
+accounting / terminal suites:
+
+```
+test_v2_9_8b_full_run_accounting_semantics_correction.py
+test_v2_9_8b_full_run_accounting_terminal_evidence.py
+test_v2_9_8b_full_run_wiring_integration.py
+test_v2_9_8b_accounting_exact_identity_report_only_repair.py
+test_v2_9_8b_campaign_accounting_terminal_enforcement.py
+test_v2_9_8b_terminal_safety_accounting_finalization.py
+test_v2_9_7d_6b_1_campaign_ownership_schema.py
+test_v2_4_one_command_15m_factory.py
+test_v2_9_7e_11_authoritative_live_operational_campaign.py
+test_v2_9_8b_post_handoff_terminal_compensation.py
+                                                → 193 passed, 6 subtests in ~70s
+```
+
+The real factory run now yields non-vacuous exact totals (§D.2), all four stages
+sealed, `correspondence_exact=True`, `all_lifecycle_jobs_succeeded=True`, scoped
+equality over the two slot stages, and agreeing report/gate/verdict all reading
+`CAMPAIGN_PASS`.
+
+### D.8 Money-usefulness contribution
+
+A two-token 15m learning run is only accepted as `CAMPAIGN_PASS` when the campaign
+proves it actually *did the measured work*: real source transports with real bytes,
+per-step reserved capacity, executed validations, exact distinct token/pair
+identity, every Scheduler job owned once in its real terminal state, all four
+mandatory stages sealed, a released lease, exactly one authorization, a completed
+runtime, and consistent memory quality. Hollow or forged evidence can no longer
+buy a PASS — the accounting is now worth trusting for downstream learning value.
+
+### D.9 What remains locked
+
+All §10 locks hold unchanged: `WINDOW_15M` only; retrieval / paper decisions /
+BUY-SELL-HOLD / positions / trades / audits / PnL / wallets / keys / paid APIs /
+scoring locked; support-only 5m non-authoritative; no operational command, live
+campaign, provider, RPC, WebSocket, preflight, recovery, discovery-only, N2/N7 or
+cursor execution was run; `data/printer_v1.sqlite3` was neither opened nor mutated;
+**no migration** was added; no historical execution row, artifact or marker was
+edited. The bounded-proof lane remains locked pending operator review of this
+correction.
+
+### D.10 Functionality Risks / Setbacks / Efficiency Blockers (second correction)
+
+| Risk / blocker | Why it matters | Mitigation | Proof still required |
+| --- | --- | --- | --- |
+| Owner↔action-local equality is scoped to the two lifecycle slot stages | The discovery and terminal stages are proven present but not by execution-time equality | They are sealed only from durable ownership/terminal facts and are independently required; the lifecycle equality (transports, reservations, validations, Scheduler work) is exact and non-vacuous | Observe discovery-selection and terminal reconciliation at their own execution boundaries in the bounded-proof lane |
+| Projected `WINDOW_CLOSE` reservation (`1 + PRECLOSE_CONTEXT_REQUEST_COUNT`) is a constant mirror of the factory | Drift would misstate reservations | A guard test asserts equality with `_CONTEXT_REQUESTS_PER_TOKEN`; both derivations use the same pure map so they cannot diverge from each other | Fold the factory constant into a single shared source in a later lane |
+| Lifecycle source transport = the exact-pair snapshot call linked to each step; the pre-close context bundle is not counted as lifecycle transport | Context-bundle calls are readiness/safety, not the 15m observation | Reservation still projects the full close capacity (6); transport counts only the exact-pair observation, keyed on the durable `source_request_id` | Confirm the intended scope of "lifecycle transport" at operator review |
+| `finalize` remains a post-cleanup compensation boundary (close commits before ownership registration) | A crash between close and register could orphan a window | Each registration is atomic + idempotent; fewer than two owned windows ⇒ no PASS; any fault ⇒ `BLOCKED_UNSAFE` | Live fault-injection between close and register in the bounded-proof lane |
+| Factory now fires a second observation at the source-transport boundary | Added call inside the run loop | Additive, verification-only, gated on `SNAPSHOT`/`WINDOW_CLOSE` + a present source response; never mutates factory state; full factory + lifecycle suites re-run green | Bounded-proof lane end-to-end run |
+
+### D.11 Second-correction verdict
+
+`V2_9_8B_POST_REPAIR_WINDOW_15M_FULL_RUN_ACCOUNTING_AND_TERMINAL_EVIDENCE_IMPLEMENTATION_PASS`
+
+Every defect enumerated in the correction is repaired and proven by focused
+disposable-DB tests with injected transports; the sealed evidence is now measured,
+non-vacuous and exact. This does not authorize a live campaign. The bounded-proof
+lane remains locked until operator review accepts this correction.

@@ -962,6 +962,7 @@ def reconcile_full_run_owner_to_action_local(
     action_local: CampaignActionLocalLedger | None,
     *,
     required_stage_kinds: Sequence[str] | None = None,
+    owner_equality_stage_ids: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Prove exact six-unit equality between owner and an independent observer.
 
@@ -969,6 +970,19 @@ def reconcile_full_run_owner_to_action_local(
     lifecycle-started run with a missing action-local surface, a missing mandatory
     sealed stage, a duplicate identity, or a count/identity mismatch fails closed.
     This never returns ``equal=True`` merely because an argument is absent.
+
+    ``required_stage_kinds`` is the mandatory sealed-stage manifest (every listed
+    kind must have been sealed on the owner or the run fails closed).
+
+    ``owner_equality_stage_ids`` optionally scopes which owner identities enter the
+    per-unit equality comparison to the stages an independent execution-time
+    observer could actually witness (the lifecycle slot stages). Owner-only
+    mandatory stages proven from durable ownership/terminal evidence
+    (``DISCOVERY_SELECTION_SCHEDULER``, ``CAMPAIGN_TERMINAL_RECONCILIATION``) stay
+    required-present but are excluded from action-local equality so the equality
+    contract is neither vacuous nor forced to invent observations. When omitted
+    (default), every owner identity participates, preserving the original
+    all-stages equality contract.
     """
     unit_results: dict[str, Any] = {}
     blocked_reason: str | None = None
@@ -992,10 +1006,26 @@ def reconcile_full_run_owner_to_action_local(
             sorted(missing_stages)
         )
 
+    equality_scope = (
+        None
+        if owner_equality_stage_ids is None
+        else {str(stage_id) for stage_id in owner_equality_stage_ids}
+    )
+
+    def _in_scope(key: tuple[Any, ...]) -> bool:
+        # Every owner identity key carries its owning stage id as element 0
+        # (transport ``stage`` field and non-transport ``stage_id``).
+        return equality_scope is None or (key and key[0] in equality_scope)
+
     owner_transport_keys = {
-        _transport_identity_key(item) for item in owner.ledger.transports
+        key
+        for key in (_transport_identity_key(item) for item in owner.ledger.transports)
+        if _in_scope(key)
     }
-    owner_non_transport = owner.non_transport_identity_keys()
+    owner_non_transport = {
+        unit: {key for key in keys if _in_scope(key)}
+        for unit, keys in owner.non_transport_identity_keys().items()
+    }
 
     comparisons = (
         (
@@ -1065,6 +1095,9 @@ def reconcile_full_run_owner_to_action_local(
         ),
         "required_stage_kinds": list(required_stage_kinds or ()),
         "missing_mandatory_stage_kinds": sorted(missing_stages),
+        "equality_scoped_stage_ids": (
+            None if equality_scope is None else sorted(equality_scope)
+        ),
         "unit_results": unit_results,
         "diagnostics": owner.accounting_diagnostics(),
     }

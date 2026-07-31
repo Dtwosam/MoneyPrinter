@@ -4070,6 +4070,35 @@ def run_one_command_15m_factory(
                         timeout_seconds=timeout_seconds,
                         fallback_adapter_factory=fallback_factory,
                     )
+                # V2-9.8B action-local observation at the actual measured
+                # outbound-call boundary: report the exact-pair source transport a
+                # lifecycle step produced (durable source request/response ids) so
+                # the independent action-local ledger captures the real transport
+                # identity at execution time. Verification-only; never mutates
+                # factory state; fires only when a coordinator threads it through.
+                if (
+                    lifecycle_operation_observer is not None
+                    and str(pending["step_kind"]) in ("SNAPSHOT", "WINDOW_CLOSE")
+                    and result.get("source_request_id") is not None
+                    and result.get("source_response_id") is not None
+                ):
+                    lifecycle_operation_observer(
+                        {
+                            "boundary": "SOURCE_TRANSPORT",
+                            "run_id": run_id,
+                            "scheduler_job_id": int(pending["scheduler_job_id"]),
+                            "step_key": str(pending["step_key"]),
+                            "step_kind": str(pending["step_kind"]),
+                            "token_id": int(pending["token_id"]),
+                            "pair_id": int(pending["pair_id"]),
+                            "source_request_id": int(result["source_request_id"]),
+                            "source_response_id": int(result["source_response_id"]),
+                            "source_name": str(
+                                result.get("snapshot_source_name") or "dexscreener"
+                            ),
+                            "request_kind": "pair_market_snapshot",
+                        }
+                    )
                 if (
                     _post_handoff_scope_recorder is not None
                     and result.get("snapshot_id") is not None

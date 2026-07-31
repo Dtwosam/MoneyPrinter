@@ -1458,13 +1458,23 @@ def _apply_full_run_campaign_acceptance(
     lifecycle_started: bool,
     lifecycle_operation_records: Sequence[Mapping[str, Any]],
     forbidden_deltas: Mapping[str, int],
+    runtime_terminal_status: str | None = None,
+    runtime_first_terminal_cause: str | None = None,
+    lease_released: bool = True,
+    active_work_result: Mapping[str, Any] | None = None,
+    authorized_invocation_count: int | None = None,
 ) -> dict[str, Any]:
     """Register ownership, reconcile, and gate Campaign PASS for the full run.
 
-    Runtime terminal status is decided elsewhere; this only decides campaign
-    acceptance. A pre-lifecycle terminal is ``HONEST_BLOCKED`` with no ownership
-    work. Any fault registering ownership or reconciling accounting is
-    ``BLOCKED_UNSAFE`` — never a silent PASS.
+    Campaign acceptance is evaluated only after unified terminal cleanup has
+    produced the durable authorization/runtime/lease/active-work facts, which are
+    threaded in (never assumed). A pre-lifecycle terminal is ``HONEST_BLOCKED``
+    with no ownership work. Any fault registering ownership or reconciling
+    accounting is ``BLOCKED_UNSAFE`` — never a silent PASS.
+
+    ``authorized_invocation_count`` and ``runtime_terminal_status`` are derived
+    from durable rows when the caller does not supply them (the number of factory
+    runs authoritatively bound to this campaign run, and the factory run status).
     """
     from printer_v1.operator_cli.campaign_full_run_accounting import (
         OperationalLifecycleOwnershipContext,
@@ -1500,6 +1510,25 @@ def _apply_full_run_campaign_acceptance(
         connection = sqlite3.connect(str(db_path))
         connection.execute("PRAGMA foreign_keys = ON")
         try:
+            # Derive the durable authorization/runtime facts unified cleanup left
+            # behind when the caller did not thread explicit values.
+            if authorized_invocation_count is None:
+                authorized_invocation_count = int(connection.execute(
+                    """SELECT COUNT(*) FROM printer_memory_factory_campaign_runs
+                       WHERE run_id=? AND campaign_id=?
+                         AND authoritative_run_id IS NOT NULL""",
+                    (campaign_run_id, campaign_id),
+                ).fetchone()[0])
+            if runtime_terminal_status is None:
+                row = connection.execute(
+                    "SELECT run_status FROM printer_memory_factory_runs WHERE run_id=?",
+                    (str(factory_run_id),),
+                ).fetchone()
+                raw_status = str(row[0]) if row and row[0] is not None else ""
+                runtime_terminal_status = (
+                    "COMPLETED" if raw_status == "COMPLETED"
+                    else (raw_status or "UNKNOWN")
+                )
             outcome = finalize_full_run_ownership_and_report(
                 connection,
                 context=context,
@@ -1508,6 +1537,11 @@ def _apply_full_run_campaign_acceptance(
                 supervision_id=supervision_id,
                 launch_git_provenance=dict(launch_git_provenance or {}),
                 db_target_identity=db_target_identity,
+                authorized_invocation_count=int(authorized_invocation_count),
+                runtime_terminal_status=str(runtime_terminal_status),
+                runtime_first_terminal_cause=runtime_first_terminal_cause,
+                lease_released=bool(lease_released),
+                active_work_result=dict(active_work_result or {}),
                 forbidden_capability_deltas=dict(forbidden_deltas or {}),
             )
         finally:
@@ -1950,6 +1984,18 @@ def _run_operational_campaign(
             lifecycle_started=bool(result.lifecycle_started),
             lifecycle_operation_records=lifecycle_operation_records,
             forbidden_deltas=dict(lifecycle.get("forbidden_deltas") or {}),
+            # Durable facts produced by unified terminal cleanup above.
+            runtime_terminal_status=(
+                "COMPLETED"
+                if str(lifecycle.get("run_status") or "") == "COMPLETED"
+                else str(lifecycle.get("run_status") or "UNKNOWN")
+            ),
+            runtime_first_terminal_cause=cause,
+            lease_released=bool(cleanup.get("lease_released")),
+            active_work_result={
+                "active_owned_work_after": cleanup.get("active_owned_work_after"),
+                "cancelled_scheduler_jobs": cleanup.get("cancelled_scheduler_jobs"),
+            },
         )
         terminal = {
             "status": "OPERATIONAL_CAMPAIGN_TERMINAL",
