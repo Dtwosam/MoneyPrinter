@@ -1129,6 +1129,7 @@ def run_graduated_liquidity_front_door(
     stage_terminal_status = "COMPLETED"
     stage_first_terminal_cause: str | None = None
     stage_opened = False
+    unexpected_exception: BaseException | None = None
 
     connection = connect_operational(db_path)
     dex_request_count = 0
@@ -1324,22 +1325,22 @@ def run_graduated_liquidity_front_door(
     except BaseException as exc:
         stage_terminal_status = "FAILED"
         stage_first_terminal_cause = f"{type(exc).__name__}:{exc}"
+        unexpected_exception = exc
         raise
     finally:
         connection.close()
         if stage_evidence_sink is not None and (
             stage_opened or measured_ledger.source_transport_operations > 0
         ):
-            if not all(
-                str(value or "").strip()
-                for value in (campaign_id, run_id, cycle_id)
-            ):
-                # Preserve the original failure path; sink wiring must be complete.
-                if stage_terminal_status != "FAILED":
+            sink_error: BaseException | None = None
+            try:
+                if not all(
+                    str(value or "").strip()
+                    for value in (campaign_id, run_id, cycle_id)
+                ):
                     raise GraduatedFrontDoorError(
                         "EXACT_LIQUIDITY_STAGE_SINK_REQUIRES_CAMPAIGN_RUN_CYCLE_IDENTITY"
                     )
-            else:
                 sealed = seal_campaign_stage_evidence(
                     ledger=measured_ledger,
                     stage_id=build_campaign_stage_id(
@@ -1359,6 +1360,18 @@ def run_graduated_liquidity_front_door(
                     sealed_at=now,
                 )
                 stage_evidence_sink(sealed)
+            except BaseException as sink_exc:
+                sink_error = sink_exc
+            if unexpected_exception is not None:
+                if sink_error is not None:
+                    try:
+                        unexpected_exception.add_note(
+                            f"stage_evidence_sink_failure:{type(sink_error).__name__}:{sink_error}"
+                        )
+                    except (AttributeError, TypeError):
+                        pass
+            elif sink_error is not None:
+                raise sink_error
 
     rejected = [c.to_dict() for c in candidates if not c.eligible]
     selected_pair_identity = tuple(

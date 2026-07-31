@@ -1226,6 +1226,11 @@ def _terminalize_initialized_failure(
         )
         original_text = str(original_exception)
         if (
+            "ACTION_LOCAL_TRANSPORT_IDENTITY_DESIGN_BLOCKED" in original_text
+            or "ACTION_LOCAL_TRANSPORT_IDENTITY_DESIGN_BLOCKED" in owner_block
+        ):
+            block_reason = "ACTION_LOCAL_TRANSPORT_IDENTITY_DESIGN_BLOCKED"
+        elif (
             "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH" in original_text
             or "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH" in owner_block
         ):
@@ -1353,14 +1358,17 @@ def _finalize_operational_six_unit_accounting(
     stage_evidences: Sequence[Mapping[str, Any] | None] | None,
     *,
     action_local_source_operations: int | None = None,
+    action_local_transport_identities: Sequence[Mapping[str, Any]] | None = None,
 ) -> Any:
     """Coordinator boundary: complete stage ingestion and reconciliation gate.
 
     When stages already sealed into the owner via the campaign sink during
     operational work, empty/null post-return lifecycle evidence is not
     re-ingested (prevents double ingestion). Additional sealed stages that are
-    not yet present may still be ingested once. Action-local operation totals
-    are verification only and never manufacture missing stage evidence.
+    not yet present may still be ingested once. Action-local transport
+    identities and counts are verification only and never manufacture missing
+    stage evidence. Count-only action-local surfaces fail closed with
+    ``ACTION_LOCAL_TRANSPORT_IDENTITY_DESIGN_BLOCKED``.
     """
     from printer_v1.sources.campaign_six_unit_accounting import (
         reconcile_owner_to_action_local,
@@ -1412,6 +1420,7 @@ def _finalize_operational_six_unit_accounting(
     reconciliation = reconcile_owner_to_action_local(
         accounting_owner,
         action_local_source_operations=action_local_source_operations,
+        action_local_transport_identities=action_local_transport_identities,
     )
     if not reconciliation["equal"]:
         reason = str(
@@ -1477,6 +1486,20 @@ def _run_operational_campaign(
         cycle_id=cycle_id,
         started_at=now,
     )
+    # Parallel action-local transport-identity ledger filled only by sealed
+    # stage handoff. Never manufactured from source-request row counts.
+    action_local_transport_identities: list[dict[str, Any]] = []
+
+    def _campaign_stage_evidence_sink(evidence: Mapping[str, Any]) -> None:
+        transports = evidence.get("transport_operations") if isinstance(evidence, Mapping) else None
+        if isinstance(transports, Sequence) and not isinstance(
+            transports, (str, bytes)
+        ):
+            for item in transports:
+                if isinstance(item, Mapping):
+                    action_local_transport_identities.append(dict(item))
+        campaign_units.ingest_stage_evidence(evidence)
+
     try:
         acquire_campaign_supervision(
             command.db_path,
@@ -1593,9 +1616,7 @@ def _run_operational_campaign(
                     OPERATIONAL_GRADUATED_SUPPLY_KWARGS
                 ),
                 fifteen_minute_only=True,
-                accounting_stage_evidence_sink=(
-                    campaign_units.ingest_stage_evidence
-                ),
+                accounting_stage_evidence_sink=_campaign_stage_evidence_sink,
             )
         except BaseException:
             campaign_units.block(
@@ -1685,20 +1706,44 @@ def _run_operational_campaign(
         exposed_stage_evidences = lifecycle.get("six_unit_stage_evidences")
         if exposed_stage_evidences is None and campaign_units.stage_evidence_count == 0:
             exposed_stage_evidences = (stage_evidence,)
-        # Pre-lifecycle terminals: action-local campaign source calls must not
-        # exceed sealed stage transport totals (July 31 completeness gate).
-        # After lifecycle starts, holder/scheduler stages may add governed
-        # requests that are not yet stage-sealed into this owner; do not treat
-        # that larger total as missing supply-stage evidence.
+        # Pre-lifecycle terminals: reconcile owner transport identities to the
+        # sealed action-local handoff set (exact identity + count, both
+        # directions). After lifecycle starts, holder/scheduler stages may add
+        # governed work not yet stage-sealed; skip action-local gate there.
+        # Count-only campaign_source_calls alone cannot prove transport
+        # equality and must not be used as multi-hop-tolerant equality.
         action_local_ops = None
+        action_local_identities: Sequence[Mapping[str, Any]] | None = None
         if not bool(result.lifecycle_started):
-            action_local_ops = reporting.get("campaign_source_calls")
-            if action_local_ops is None:
+            reported_identities = reporting.get(
+                "action_local_transport_identities"
+            )
+            if reported_identities is None:
                 terminal_reporting = lifecycle.get("terminal_reporting")
                 if isinstance(terminal_reporting, Mapping):
-                    action_local_ops = terminal_reporting.get(
-                        "campaign_source_calls"
+                    reported_identities = terminal_reporting.get(
+                        "action_local_transport_identities"
                     )
+            if isinstance(reported_identities, Sequence) and not isinstance(
+                reported_identities, (str, bytes)
+            ):
+                action_local_identities = [
+                    dict(item)
+                    for item in reported_identities
+                    if isinstance(item, Mapping)
+                ]
+            elif action_local_transport_identities:
+                action_local_identities = list(action_local_transport_identities)
+            else:
+                # Only governed-request counts are available — fail closed with
+                # the design blocker rather than asymmetric multi-hop totals.
+                action_local_ops = reporting.get("campaign_source_calls")
+                if action_local_ops is None:
+                    terminal_reporting = lifecycle.get("terminal_reporting")
+                    if isinstance(terminal_reporting, Mapping):
+                        action_local_ops = terminal_reporting.get(
+                            "campaign_source_calls"
+                        )
         try:
             _finalize_operational_six_unit_accounting(
                 campaign_units,
@@ -1706,18 +1751,26 @@ def _run_operational_campaign(
                 action_local_source_operations=(
                     None if action_local_ops is None else int(action_local_ops)
                 ),
+                action_local_transport_identities=action_local_identities,
             )
         except OperationalMemoryFactoryError as accounting_exc:
             # Preserve original first terminal cause; block report on mismatch.
-            if "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH" in str(
-                accounting_exc
-            ) or "SIX_UNIT_ACCOUNTING_BLOCKED" in str(accounting_exc):
-                campaign_units.block(
-                    "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH"
-                    if "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH"
-                    in str(accounting_exc)
-                    else str(accounting_exc)
-                )
+            exc_text = str(accounting_exc)
+            if (
+                "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH" in exc_text
+                or "ACTION_LOCAL_TRANSPORT_IDENTITY_DESIGN_BLOCKED" in exc_text
+                or "SIX_UNIT_ACCOUNTING_BLOCKED" in exc_text
+            ):
+                if "ACTION_LOCAL_TRANSPORT_IDENTITY_DESIGN_BLOCKED" in exc_text:
+                    campaign_units.block(
+                        "ACTION_LOCAL_TRANSPORT_IDENTITY_DESIGN_BLOCKED"
+                    )
+                elif "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH" in exc_text:
+                    campaign_units.block(
+                        "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH"
+                    )
+                else:
+                    campaign_units.block(exc_text)
                 raise
             raise
         aggregated_six_unit_totals = campaign_units.six_unit_totals()
@@ -2766,7 +2819,12 @@ def _load_exact_terminal_summary(
     run_id: str,
     configuration_id: str,
 ) -> dict[str, Any] | None:
-    """Load terminal-summary only when all identities match the exact attempt."""
+    """Load terminal-summary only when all identities exactly match.
+
+    ``campaign_id``, ``run_id``, ``configuration_id``, and ``execution_id`` must
+    all be present on the summary and exactly equal the requested attempt.
+    Missing or empty identity fields are a mismatch (return None).
+    """
     import hashlib
 
     execution_id = str(configuration.get("execution_id") or "").strip()
@@ -2781,18 +2839,19 @@ def _load_exact_terminal_summary(
         return None
     if not isinstance(payload, Mapping):
         return None
-    if str(payload.get("campaign_id") or "") != str(campaign_id):
+    payload_campaign = str(payload.get("campaign_id") or "").strip()
+    payload_run = str(payload.get("run_id") or "").strip()
+    payload_config = str(payload.get("configuration_id") or "").strip()
+    payload_execution = str(payload.get("execution_id") or "").strip()
+    # Missing identity is a mismatch; empty/optional fields are not accepted.
+    if not payload_campaign or payload_campaign != str(campaign_id):
         return None
-    # run_id may live at top level or nested; require match when present.
-    payload_run = payload.get("run_id")
-    if payload_run is not None and str(payload_run) != str(run_id):
+    if not payload_run or payload_run != str(run_id):
         return None
-    payload_config = payload.get("configuration_id")
-    if payload_config is not None and str(payload_config) != str(configuration_id):
+    if not payload_config or payload_config != str(configuration_id):
         return None
-    if str(payload.get("execution_id") or "") not in {"", execution_id}:
-        if str(payload.get("execution_id") or "") != execution_id:
-            return None
+    if not payload_execution or payload_execution != execution_id:
+        return None
     digest = hashlib.sha256(summary_path.read_bytes()).hexdigest()
     return {
         "status": payload.get("status"),
@@ -2914,20 +2973,20 @@ def report_only(
             configuration_id=resolved_configuration_id,
         )
         if summary is None:
+            # Report missing and summary absent/mismatched: primary block reason
+            # is the summary defect (do not hide it as a secondary diagnostic).
             return _report_only_zero_work({
                 "mode": "REPORT_ONLY",
                 "status": "REPLAY_BLOCKED",
                 "requested_identity": identity["requested_identity"],
                 "report_rows": 0,
                 "fallback_used": False,
-                "block_reason": "EXACT_TERMINAL_REPORT_MISSING",
-                "terminal_summary_block_reason": (
-                    "EXACT_TERMINAL_SUMMARY_MISSING_OR_MISMATCHED"
-                ),
+                "block_reason": "EXACT_TERMINAL_SUMMARY_MISSING_OR_MISMATCHED",
                 "source_calls": 0,
                 "scheduler_runtime_calls": 0,
                 "database_writes": 0,
             })
+        # Exact report missing with a valid exact summary.
         return _report_only_zero_work({
             "mode": "REPORT_ONLY",
             "status": "REPLAY_BLOCKED",

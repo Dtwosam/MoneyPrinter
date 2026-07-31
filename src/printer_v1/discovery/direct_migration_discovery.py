@@ -517,6 +517,10 @@ def run_direct_migration_discovery(
         pumpswap_request_count += 1
         return execution.normalized_result
 
+    stage_terminal_status = "COMPLETED"
+    stage_first_terminal_cause: str | None = None
+    unexpected_exception: BaseException | None = None
+    sealed_stage_evidence = None
     try:
         # --- One stateless finalized migration live-tail page ---------------
         round_intakes = [_governed_migration()]
@@ -524,10 +528,10 @@ def run_direct_migration_discovery(
 
         # --- Per-candidate governed on-chain verification -------------------
         # Candidates are never persisted until full identity/totals reconcile.
-        verifications: list[dict[str, Any]] = []
+        verifications = []
         pending_persist: list[dict[str, Any]] = []
-        confirmed_this_cycle: list[str] = []
-        accounting_block_reason: str | None = None
+        confirmed_this_cycle = []
+        accounting_block_reason = None
         for pair in intake["valid_pairs"][:max_candidates]:
             mint = pair["mint"]
             signature = pair["signature"]
@@ -770,8 +774,83 @@ def run_direct_migration_discovery(
             0.0,
             (datetime.now(timezone.utc) - started_mono).total_seconds(),
         )
+    except BaseException as exc:
+        # Unexpected failure after partial work: seal FAILED before re-raise.
+        unexpected_exception = exc
+        stage_terminal_status = "FAILED"
+        stage_first_terminal_cause = f"{type(exc).__name__}:{exc}"
+        if accounting_block_reason is None:
+            accounting_block_reason = stage_first_terminal_cause
+        elapsed_seconds = max(
+            0.0,
+            (datetime.now(timezone.utc) - started_mono).total_seconds(),
+        )
+        raise
     finally:
         connection.close()
+        # Seal and ingest exactly once for every started stage before any
+        # unexpected exception escapes. Sink failures must not replace the
+        # original source/market terminal cause.
+        if stage_evidence_sink is not None and stage_started:
+            sink_error: BaseException | None = None
+            try:
+                if not all(
+                    str(value or "").strip()
+                    for value in (campaign_id, run_id, cycle_id)
+                ):
+                    raise ValueError(
+                        "DIRECT_MIGRATION_STAGE_SINK_REQUIRES_CAMPAIGN_RUN_CYCLE_IDENTITY"
+                    )
+                if unexpected_exception is not None:
+                    terminal_status = "FAILED"
+                    terminal_cause = stage_first_terminal_cause
+                elif accounting_block_reason is not None:
+                    terminal_status = "FAILED"
+                    terminal_cause = str(accounting_block_reason)
+                elif intake.get("direct_pump_live_tail_failures") or intake.get(
+                    "transaction_source_failures"
+                ):
+                    terminal_status = "BLOCKED"
+                    terminal_cause = "PROVIDER_FAILURE"
+                else:
+                    terminal_status = stage_terminal_status
+                    terminal_cause = stage_first_terminal_cause
+                sealed_stage_evidence = seal_campaign_stage_evidence(
+                    ledger=measured_ledger,
+                    stage_id=build_campaign_stage_id(
+                        campaign_id=str(campaign_id),
+                        run_id=str(run_id),
+                        cycle_id=str(cycle_id),
+                        stage_kind=STAGE_KIND_DIRECT_MIGRATION,
+                        stage_sequence=int(stage_sequence),
+                    ),
+                    stage_kind=STAGE_KIND_DIRECT_MIGRATION,
+                    stage_sequence=int(stage_sequence),
+                    stage_terminal_status=terminal_status,
+                    stage_first_terminal_cause=terminal_cause,
+                    campaign_id=str(campaign_id),
+                    run_id=str(run_id),
+                    cycle_id=str(cycle_id),
+                    sealed_at=now,
+                )
+                stage_evidence_sink(sealed_stage_evidence)
+            except BaseException as sink_exc:
+                sink_error = sink_exc
+            if unexpected_exception is not None:
+                if sink_error is not None:
+                    try:
+                        unexpected_exception.add_note(
+                            f"stage_evidence_sink_failure:{type(sink_error).__name__}:{sink_error}"
+                        )
+                    except (AttributeError, TypeError):
+                        pass
+                # Original exception already re-raised from except; finally continues.
+            elif sink_error is not None:
+                raise sink_error
+
+    if unexpected_exception is not None:
+        # Defensive: except already re-raised; keep control-flow honest.
+        raise unexpected_exception
 
     status = "COMPLETE"
     if accounting_block_reason is not None:
@@ -780,44 +859,6 @@ def run_direct_migration_discovery(
         "transaction_source_failures"
     ):
         status = "PROVIDER_FAILURE"
-
-    sealed_stage_evidence = None
-    if stage_evidence_sink is not None and stage_started:
-        if not all(
-            str(value or "").strip()
-            for value in (campaign_id, run_id, cycle_id)
-        ):
-            raise ValueError(
-                "DIRECT_MIGRATION_STAGE_SINK_REQUIRES_CAMPAIGN_RUN_CYCLE_IDENTITY"
-            )
-        if accounting_block_reason is not None:
-            terminal_status = "FAILED"
-            terminal_cause = str(accounting_block_reason)
-        elif status == "PROVIDER_FAILURE":
-            terminal_status = "BLOCKED"
-            terminal_cause = "PROVIDER_FAILURE"
-        else:
-            terminal_status = "COMPLETED"
-            terminal_cause = None
-        sealed_stage_evidence = seal_campaign_stage_evidence(
-            ledger=measured_ledger,
-            stage_id=build_campaign_stage_id(
-                campaign_id=str(campaign_id),
-                run_id=str(run_id),
-                cycle_id=str(cycle_id),
-                stage_kind=STAGE_KIND_DIRECT_MIGRATION,
-                stage_sequence=int(stage_sequence),
-            ),
-            stage_kind=STAGE_KIND_DIRECT_MIGRATION,
-            stage_sequence=int(stage_sequence),
-            stage_terminal_status=terminal_status,
-            stage_first_terminal_cause=terminal_cause,
-            campaign_id=str(campaign_id),
-            run_id=str(run_id),
-            cycle_id=str(cycle_id),
-            sealed_at=now,
-        )
-        stage_evidence_sink(sealed_stage_evidence)
 
     report = {
         "status": status,

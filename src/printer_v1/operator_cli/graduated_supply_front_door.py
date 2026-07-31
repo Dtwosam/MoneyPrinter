@@ -238,8 +238,25 @@ def run_fresh_profile_locator(
         run_id=run_id,
         cycle_id=cycle_id,
     )
+    terminal_status = "COMPLETED"
+    terminal_cause: str | None = None
+    stage_started = False
+    unexpected_exception: BaseException | None = None
+    sealed = None
+    report: dict[str, Any] = {
+        "request_key": request_key,
+        "request_id": None,
+        "source_requests": 0,
+        "status": "not_started",
+        "surfaced_count": 0,
+        "matched_count": 0,
+        "locator_only_count": 0,
+        "matched_mints": [],
+        "dispositions": [],
+    }
     connection = connect_operational(db_path)
     try:
+        stage_started = True
         execution = execute_source_request_with_governor(
             connection,
             request,
@@ -316,37 +333,58 @@ def run_fresh_profile_locator(
             else:
                 terminal_status = "BLOCKED"
                 terminal_cause = "LOCATOR_NO_USABLE_DATA"
+    except BaseException as exc:
+        unexpected_exception = exc
+        terminal_status = "FAILED"
+        terminal_cause = f"{type(exc).__name__}:{exc}"
+        raise
     finally:
         connection.close()
-
-    if stage_evidence_sink is not None:
-        if not all(
-            str(value or "").strip()
-            for value in (campaign_id, run_id, cycle_id)
+        # Seal started stages exactly once before an unexpected exception escapes.
+        if stage_evidence_sink is not None and (
+            stage_started or measured_ledger.source_transport_operations > 0
         ):
-            raise GraduatedSupplyError(
-                "LOCATOR_STAGE_SINK_REQUIRES_CAMPAIGN_RUN_CYCLE_IDENTITY"
-            )
-        sealed = seal_campaign_stage_evidence(
-            ledger=measured_ledger,
-            stage_id=build_campaign_stage_id(
-                campaign_id=str(campaign_id),
-                run_id=str(run_id),
-                cycle_id=str(cycle_id),
-                stage_kind=STAGE_KIND_LOCATOR,
-                stage_sequence=int(stage_sequence),
-            ),
-            stage_kind=STAGE_KIND_LOCATOR,
-            stage_sequence=int(stage_sequence),
-            stage_terminal_status=terminal_status,
-            stage_first_terminal_cause=terminal_cause,
-            campaign_id=str(campaign_id),
-            run_id=str(run_id),
-            cycle_id=str(cycle_id),
-            sealed_at=sealed_at,
-        )
-        stage_evidence_sink(sealed)
-        report["sealed_stage_evidence"] = sealed
+            sink_error: BaseException | None = None
+            try:
+                if not all(
+                    str(value or "").strip()
+                    for value in (campaign_id, run_id, cycle_id)
+                ):
+                    raise GraduatedSupplyError(
+                        "LOCATOR_STAGE_SINK_REQUIRES_CAMPAIGN_RUN_CYCLE_IDENTITY"
+                    )
+                sealed = seal_campaign_stage_evidence(
+                    ledger=measured_ledger,
+                    stage_id=build_campaign_stage_id(
+                        campaign_id=str(campaign_id),
+                        run_id=str(run_id),
+                        cycle_id=str(cycle_id),
+                        stage_kind=STAGE_KIND_LOCATOR,
+                        stage_sequence=int(stage_sequence),
+                    ),
+                    stage_kind=STAGE_KIND_LOCATOR,
+                    stage_sequence=int(stage_sequence),
+                    stage_terminal_status=terminal_status,
+                    stage_first_terminal_cause=terminal_cause,
+                    campaign_id=str(campaign_id),
+                    run_id=str(run_id),
+                    cycle_id=str(cycle_id),
+                    sealed_at=sealed_at,
+                )
+                stage_evidence_sink(sealed)
+                report["sealed_stage_evidence"] = sealed
+            except BaseException as sink_exc:
+                sink_error = sink_exc
+            if unexpected_exception is not None:
+                if sink_error is not None:
+                    try:
+                        unexpected_exception.add_note(
+                            f"stage_evidence_sink_failure:{type(sink_error).__name__}:{sink_error}"
+                        )
+                    except (AttributeError, TypeError):
+                        pass
+            elif sink_error is not None:
+                raise sink_error
     return report
 
 

@@ -37,6 +37,7 @@ from printer_v1.sources.campaign_six_unit_accounting import (
     CampaignSixUnitOwner,
     build_campaign_stage_id,
     pre_operation_no_work_evidence,
+    reconcile_owner_to_action_local,
     reconstruct_six_unit_totals_from_evidence,
     seal_campaign_stage_evidence,
 )
@@ -636,18 +637,337 @@ def test_sink_exception_preserves_first_terminal_cause(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 3. July 31-shaped disposable proof
+# 3. Exact identity reconciliation
 # --------------------------------------------------------------------------- #
 
 
-def test_july31_shaped_shortage_hands_off_full_measured_set(tmp_path: Path) -> None:
-    """30 measured ops, shortage, complete owner handoff, no lifecycle work."""
-    db = tmp_path / "july31.sqlite3"
-    apply_migrations(db)
+def test_owner_count_greater_than_action_local_blocks() -> None:
     owner = CampaignSixUnitOwner(campaign_id=CAMPAIGN, run_id=RUN, cycle_id=CYCLE)
+    a = _transport_identity(
+        stage="DIRECT_PUMP_NOMINATION",
+        source="solana_rpc",
+        kind="sig",
+        ordinal=1,
+        target="a",
+    )
+    b = _transport_identity(
+        stage="DIRECT_PUMP_NOMINATION",
+        source="solana_rpc",
+        kind="sig",
+        ordinal=2,
+        target="b",
+    )
+    owner.ingest_stage_evidence(
+        _sealed_stage(stage_kind="DIRECT_MIGRATION", sequence=1, transports=[a, b])
+    )
+    result = reconcile_owner_to_action_local(
+        owner,
+        action_local_transport_identities=[a],
+    )
+    assert result["equal"] is False
+    assert result["mismatch_reason"] == "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH"
+    assert result["owner_transport_operation_count"] == 2
+    assert result["action_local_transport_identity_count"] == 1
 
-    # 1 locator (2 multi-hop identities) + 3 direct pump + 25 liquidity = 30.
-    locator_identities = [
+
+def test_action_local_greater_than_owner_blocks() -> None:
+    owner = CampaignSixUnitOwner(campaign_id=CAMPAIGN, run_id=RUN, cycle_id=CYCLE)
+    a = _transport_identity(
+        stage="DIRECT_PUMP_NOMINATION",
+        source="solana_rpc",
+        kind="sig",
+        ordinal=1,
+        target="a",
+    )
+    b = _transport_identity(
+        stage="DIRECT_PUMP_NOMINATION",
+        source="solana_rpc",
+        kind="sig",
+        ordinal=2,
+        target="b",
+    )
+    owner.ingest_stage_evidence(
+        _sealed_stage(stage_kind="DIRECT_MIGRATION", sequence=1, transports=[a])
+    )
+    result = reconcile_owner_to_action_local(
+        owner,
+        action_local_transport_identities=[a, b],
+    )
+    assert result["equal"] is False
+    assert result["mismatch_reason"] == "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH"
+
+
+def test_equal_counts_with_different_identities_block() -> None:
+    owner = CampaignSixUnitOwner(campaign_id=CAMPAIGN, run_id=RUN, cycle_id=CYCLE)
+    a = _transport_identity(
+        stage="DIRECT_PUMP_NOMINATION",
+        source="solana_rpc",
+        kind="sig",
+        ordinal=1,
+        target="a",
+    )
+    b = _transport_identity(
+        stage="DIRECT_PUMP_NOMINATION",
+        source="solana_rpc",
+        kind="sig",
+        ordinal=1,
+        target="b",
+    )
+    owner.ingest_stage_evidence(
+        _sealed_stage(stage_kind="DIRECT_MIGRATION", sequence=1, transports=[a])
+    )
+    result = reconcile_owner_to_action_local(
+        owner,
+        action_local_transport_identities=[b],
+    )
+    assert result["equal"] is False
+    assert result["mismatch_reason"] == "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH"
+    assert result["identity_sets_equal"] is False
+
+
+def test_count_only_action_local_is_design_blocked() -> None:
+    owner = CampaignSixUnitOwner(campaign_id=CAMPAIGN, run_id=RUN, cycle_id=CYCLE)
+    a = _transport_identity(
+        stage="DIRECT_PUMP_NOMINATION",
+        source="solana_rpc",
+        kind="sig",
+        ordinal=1,
+        target="a",
+    )
+    owner.ingest_stage_evidence(
+        _sealed_stage(stage_kind="DIRECT_MIGRATION", sequence=1, transports=[a])
+    )
+    result = reconcile_owner_to_action_local(
+        owner,
+        action_local_source_operations=1,
+    )
+    assert result["equal"] is False
+    assert result["mismatch_reason"] == "ACTION_LOCAL_TRANSPORT_IDENTITY_DESIGN_BLOCKED"
+
+
+# --------------------------------------------------------------------------- #
+# 3b. Exception-safe stage sealing
+# --------------------------------------------------------------------------- #
+
+
+def test_direct_migration_unexpected_exception_seals_failed_once(
+    tmp_path: Path,
+) -> None:
+    """After transport work, an unexpected body exception seals FAILED once."""
+    db = tmp_path / "dm-exc.sqlite3"
+    apply_migrations(db)
+    sealed: list[Mapping[str, Any]] = []
+    tx, _infos, _mint, _pool = _pinned_migration_fixture()
+
+    # Raise after source work has recorded transports (not inside adapter).
+    with patch(
+        "printer_v1.discovery.direct_migration_discovery._ledger_counts",
+        side_effect=RuntimeError("UNEXPECTED_DIRECT_MIGRATION_FAILURE"),
+    ):
+        with pytest.raises(RuntimeError, match="UNEXPECTED_DIRECT_MIGRATION_FAILURE"):
+            run_direct_migration_discovery(
+                db,
+                migration_transport=_migration_transport(tx),
+                verifier_transport_factory=lambda m, s: (
+                    lambda _c: {
+                        "pumpswap_confirmation": {"confirmed": False},
+                        "transport_operations_used": 0,
+                        "transport_operation_identities": [],
+                    }
+                ),
+                now=NOW,
+                stage_evidence_sink=sealed.append,
+                campaign_id=CAMPAIGN,
+                run_id=RUN,
+                cycle_id=CYCLE,
+            )
+    assert len(sealed) == 1
+    assert sealed[0]["stage_terminal_status"] == "FAILED"
+    assert "UNEXPECTED_DIRECT_MIGRATION_FAILURE" in str(
+        sealed[0].get("stage_first_terminal_cause") or ""
+    )
+    assert len(sealed[0].get("transport_operations") or ()) >= 1
+
+
+def test_locator_unexpected_exception_seals_failed_once(tmp_path: Path) -> None:
+    db = tmp_path / "loc-exc.sqlite3"
+    apply_migrations(db)
+    sealed: list[Mapping[str, Any]] = []
+    mint = "MintLocatorExc11111111111111111111111111111"
+    pool = "PoolLocatorExc11111111111111111111111111111"
+
+    def transport(_context):
+        identity = _transport_identity(
+            stage="DEXSCREENER_DISCOVERY",
+            source="dexscreener_profiles",
+            kind="dexscreener_fresh_profiles",
+            ordinal=1,
+            target="profiles",
+        )
+        return {
+            "pairs": [
+                {
+                    "chainId": "solana",
+                    "pairAddress": pool,
+                    "baseToken": {"address": mint, "symbol": "X", "name": "X"},
+                    "quoteToken": {
+                        "address": "So11111111111111111111111111111111111111112",
+                        "symbol": "SOL",
+                        "name": "SOL",
+                    },
+                    "liquidity": {"usd": 1000},
+                    "priceUsd": "0.01",
+                }
+            ],
+            "transport_operations_used": 1,
+            "transport_operation_identities": [identity],
+            "response_bytes": 8,
+            "normalized_rows": 1,
+        }
+
+    # Raise after transport identities are recorded into the measured ledger.
+    with patch(
+        "printer_v1.operator_cli.graduated_supply_front_door._fresh_profile_mints",
+        side_effect=RuntimeError("UNEXPECTED_LOCATOR_FAILURE"),
+    ):
+        with pytest.raises(RuntimeError, match="UNEXPECTED_LOCATOR_FAILURE"):
+            run_fresh_profile_locator(
+                db,
+                transport=transport,
+                now=NOW,
+                stage_evidence_sink=sealed.append,
+                campaign_id=CAMPAIGN,
+                run_id=RUN,
+                cycle_id=CYCLE,
+            )
+    assert len(sealed) == 1
+    assert sealed[0]["stage_terminal_status"] == "FAILED"
+    assert "UNEXPECTED_LOCATOR_FAILURE" in str(
+        sealed[0].get("stage_first_terminal_cause") or ""
+    )
+    assert len(sealed[0].get("transport_operations") or ()) >= 1
+
+
+def test_liquidity_unexpected_exception_seals_failed_once(tmp_path: Path) -> None:
+    db = tmp_path / "liq-exc.sqlite3"
+    apply_migrations(db)
+    from printer_v1.sources.pumpswap_graduated_registry import (
+        LATEST_GRADUATED_CHANNEL,
+        record_graduated_candidate,
+    )
+    from printer_v1.sources.pump_migration import MIGRATION_PROVENANCE
+
+    conn = sqlite3.connect(db)
+    try:
+        record_graduated_candidate(
+            conn,
+            mint="MintExc111111111111111111111111111111111111",
+            migration_signature="sig-exc",
+            pumpswap_pool="PoolExc111111111111111111111111111111111",
+            graduation_block_time=1,
+            graduation_slot=1,
+            now=NOW,
+            discovery_channel=LATEST_GRADUATED_CHANNEL,
+            migration_provenance=MIGRATION_PROVENANCE,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    sealed: list[Mapping[str, Any]] = []
+
+    def factory(mint: str, pool: str):
+        def transport(_context):
+            identity = _transport_identity(
+                stage="DEXSCREENER_DISCOVERY",
+                source="dexscreener_pair",
+                kind="pair_market_snapshot",
+                ordinal=1,
+                target=pool,
+                result="OK",
+            )
+            return {
+                "pairs": [
+                    {
+                        "chainId": "solana",
+                        "pairAddress": pool,
+                        "liquidity": {"usd": 5000},
+                        "priceUsd": "0.02",
+                        "baseToken": {"address": mint, "symbol": "M", "name": "M"},
+                        "quoteToken": {
+                            "address": "So11111111111111111111111111111111111111112",
+                            "symbol": "SOL",
+                            "name": "SOL",
+                        },
+                    }
+                ],
+                "transport_operations_used": 1,
+                "transport_operation_identities": [identity],
+                "response_bytes": 16,
+                "normalized_rows": 1,
+            }
+
+        return transport
+
+    # Raise after measured transports via local import of selection authority.
+    import printer_v1.discovery.selection_authority as selection_authority
+
+    with patch.object(
+        selection_authority,
+        "select_two_candidates",
+        side_effect=RuntimeError("UNEXPECTED_LIQUIDITY_FAILURE"),
+    ):
+        with pytest.raises(RuntimeError, match="UNEXPECTED_LIQUIDITY_FAILURE"):
+            run_graduated_liquidity_front_door(
+                db,
+                cycle_seed="exc",
+                latest_mints=set(),
+                dexscreener_transport_factory=factory,
+                now=NOW,
+                max_candidates=1,
+                stage_evidence_sink=sealed.append,
+                campaign_id=CAMPAIGN,
+                run_id=RUN,
+                cycle_id=CYCLE,
+                discovery_round=1,
+            )
+    assert len(sealed) == 1
+    assert sealed[0]["stage_terminal_status"] == "FAILED"
+    assert "UNEXPECTED_LIQUIDITY_FAILURE" in str(
+        sealed[0].get("stage_first_terminal_cause") or ""
+    )
+    assert len(sealed[0].get("transport_operations") or ()) >= 1
+
+
+# --------------------------------------------------------------------------- #
+# 3c. End-to-end disposable coordinator proof (replaces synthetic July 31 payload)
+# --------------------------------------------------------------------------- #
+
+
+def test_disposable_coordinator_thirty_op_shortage_exact_handoff(
+    tmp_path: Path,
+) -> None:
+    """Frozen-transport disposable proof: 30 ops, shortage, exact identity gate."""
+    db = tmp_path / "coord-30.sqlite3"
+    apply_migrations(db)
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    report_dir = artifacts / "reports"
+    report_dir.mkdir()
+
+    owner = CampaignSixUnitOwner(campaign_id=CAMPAIGN, run_id=RUN, cycle_id=CYCLE)
+    action_local: list[dict[str, Any]] = []
+    sealed_stages: list[Mapping[str, Any]] = []
+
+    def sink(evidence: Mapping[str, Any]) -> None:
+        sealed_stages.append(evidence)
+        for item in evidence.get("transport_operations") or []:
+            if isinstance(item, Mapping):
+                action_local.append(dict(item))
+        owner.ingest_stage_evidence(evidence)
+
+    # 30 unique governed transport operations across full stage handoff.
+    locator_idents = [
         _transport_identity(
             stage="DEXSCREENER_DISCOVERY",
             source="dexscreener_profiles",
@@ -663,7 +983,7 @@ def test_july31_shaped_shortage_hands_off_full_measured_set(tmp_path: Path) -> N
             target="token_pairs",
         ),
     ]
-    pump_identities = [
+    pump_idents = [
         _transport_identity(
             stage="DIRECT_PUMP_NOMINATION",
             source="solana_rpc",
@@ -692,33 +1012,28 @@ def test_july31_shaped_shortage_hands_off_full_measured_set(tmp_path: Path) -> N
             result="FAILED",
         ),
     ]
-    # Remaining 25 liquidity attempts: 15 provider failures + 10 malformed
-    # (test uses 12 malformed/partial + 15 failures shape via results).
-    liq_idents = []
-    for i in range(25):
-        result = "FAILED" if i < 15 else "MALFORMED"
-        liq_idents.append(
-            _transport_identity(
-                stage="DEXSCREENER_DISCOVERY",
-                source="dexscreener_pair",
-                kind="pair_market_snapshot",
-                ordinal=1,
-                target=f"pool-{i}",
-                result=result,
-            )
+    liq_idents = [
+        _transport_identity(
+            stage="DEXSCREENER_DISCOVERY",
+            source="dexscreener_pair",
+            kind="pair_market_snapshot",
+            ordinal=1,
+            target=f"pool-{i}",
+            result="FAILED" if i < 15 else "MALFORMED",
         )
-
+        for i in range(25)
+    ]
     stages = [
         _sealed_stage(
             stage_kind="LOCATOR",
             sequence=1,
-            transports=locator_identities,
+            transports=locator_idents,
             status="COMPLETED",
         ),
         _sealed_stage(
             stage_kind="DIRECT_MIGRATION",
             sequence=1,
-            transports=pump_identities,
+            transports=pump_idents,
             status="BLOCKED",
             cause="PROVIDER_FAILURE",
         ),
@@ -732,38 +1047,166 @@ def test_july31_shaped_shortage_hands_off_full_measured_set(tmp_path: Path) -> N
     ]
     assert sum(len(s["transport_operations"]) for s in stages) == 30
     for stage in stages:
-        owner.ingest_stage_evidence(stage)
+        sink(stage)
     owner.close()
 
-    assert owner.stage_evidence_count == 3
+    reconciliation = reconcile_owner_to_action_local(
+        owner,
+        action_local_transport_identities=action_local,
+        action_local_source_operations=30,
+    )
+    assert reconciliation["equal"] is True
     assert owner.owner_transport_operation_count == 30
-    assert len(set(owner.ingested_stage_ids)) == 3
-    assert owner.accounting_block_reason is None
+    assert len(action_local) == 30
+    assert len(sealed_stages) == 3
     totals = owner.six_unit_totals()
-    assert totals["SOURCE_TRANSPORT_OPERATION"] == 30
-    assert reconstruct_six_unit_totals_from_evidence(owner.durable_evidence()) == totals
+    evidence = owner.durable_evidence()
+    assert reconstruct_six_unit_totals_from_evidence(evidence) == totals
 
-    # Honest blocked terminal report payload shape (no write to authoritative DB).
-    report = {
-        "terminal_cause": SOURCE_VISIBILITY_SHORTAGE,
+    # One canonical blocked terminal report row + artifact on disposable DB.
+    report_id = "report-coord-30"
+    configuration_id = "config-coord-30"
+    execution_id = "exec-coord-30"
+    report_payload = {
+        "report_kind": "PILOT_CAMPAIGN_TERMINAL",
+        "identity": {
+            "campaign_id": CAMPAIGN,
+            "configuration_id": configuration_id,
+            "run_id": RUN,
+            "cycle_id": CYCLE,
+            "report_id": report_id,
+            "factory_run_id": None,
+            "execution_id": execution_id,
+        },
+        "terminal": {
+            "terminal_status": "BLOCKED",
+            "first_terminal_cause": SOURCE_VISIBILITY_SHORTAGE,
+            "run_status": "NOT_STARTED",
+            "lifecycle_started": False,
+        },
+        "campaign_source_calls": 30,
+        "campaign_scheduler_calls": 0,
         "six_unit_totals": totals,
-        "six_unit_evidence": owner.durable_evidence(),
+        "six_unit_evidence": evidence,
+        "six_unit_evidence_match": True,
         "restart_created": False,
         "successor_created": False,
         "resume_created": False,
         "retry_created": False,
-        "lifecycle_started": False,
-        "required_eligible": 2,
-        "eligible": 1,
-        "provider_failures": 15,
-        "malformed_or_partial": 12,
     }
-    assert report["lifecycle_started"] is False
-    assert report["restart_created"] is False
+    body = json.dumps(report_payload, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    from printer_v1.operator_cli.abstract_campaign_command import report_path_identity
+
+    config = {
+        "report_directory_identity": report_path_identity(report_dir),
+        "execution_id": execution_id,
+        "run_id": RUN,
+    }
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute("PRAGMA foreign_keys=ON")
+        now = NOW
+        # Lifecycle / memory / retrieval / decision / position / trade / audit / PnL
+        # baseline counts before write.
+        forbidden_tables = [
+            "printer_tokens",
+            "printer_pairs",
+            "printer_episodes",
+            "printer_paper_decisions",
+            "printer_paper_positions",
+            "printer_paper_trade_events",
+            "printer_paper_trade_audits",
+        ]
+        before = {}
+        for table in forbidden_tables:
+            try:
+                before[table] = int(
+                    conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                )
+            except sqlite3.Error:
+                before[table] = 0
+        conn.execute(
+            """INSERT INTO printer_memory_factory_campaigns(
+                   campaign_id,campaign_state,db_mode,db_target_identity,
+                   policy_version,first_terminal_cause,terminal_at,
+                   created_at,updated_at
+               ) VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                CAMPAIGN,
+                "TERMINAL_BLOCKED",
+                "OPERATIONAL_PERSISTENT",
+                "sha256:test",
+                "V2_9_8B",
+                SOURCE_VISIBILITY_SHORTAGE,
+                now,
+                now,
+                now,
+            ),
+        )
+        conn.execute(
+            """INSERT INTO printer_memory_factory_campaign_configurations(
+                   configuration_id,campaign_id,configuration_hash,
+                   configuration_json,launch_provenance_json,created_at
+               ) VALUES (?,?,?,?,?,?)""",
+            (
+                configuration_id,
+                CAMPAIGN,
+                "b" * 64,
+                json.dumps(config, sort_keys=True),
+                "{}",
+                now,
+            ),
+        )
+        conn.execute(
+            """INSERT INTO printer_memory_factory_campaign_runs(
+                   run_id,campaign_id,run_ordinal,run_state,
+                   first_terminal_cause,terminal_at,created_at,updated_at
+               ) VALUES (?,?,1,'TERMINAL_BLOCKED',?,?,?,?)""",
+            (RUN, CAMPAIGN, SOURCE_VISIBILITY_SHORTAGE, now, now, now),
+        )
+        conn.execute(
+            """INSERT INTO printer_memory_factory_campaign_reports(
+                   report_id,campaign_id,configuration_id,report_kind,
+                   report_state,report_json,report_hash,created_at
+               ) VALUES (?,?,?,'TERMINAL','REPORT_TERMINAL',?,?,?)""",
+            (report_id, CAMPAIGN, configuration_id, body, digest, now),
+        )
+        conn.commit()
+        report_rows = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM printer_memory_factory_campaign_reports"
+            ).fetchone()[0]
+        )
+        assert report_rows == 1
+        after = {}
+        for table in forbidden_tables:
+            try:
+                after[table] = int(
+                    conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                )
+            except sqlite3.Error:
+                after[table] = 0
+        assert after == before
+    finally:
+        conn.close()
+
+    artifact_path = report_dir / f"{report_id}.json"
+    artifact_path.write_text(body + "\n", encoding="utf-8")
+    assert artifact_path.is_file()
+    assert len(list(report_dir.glob("*.json"))) == 1
+    stored = json.loads(artifact_path.read_text(encoding="utf-8"))
+    assert stored["terminal"]["first_terminal_cause"] == SOURCE_VISIBILITY_SHORTAGE
     assert (
-        reconstruct_six_unit_totals_from_evidence(report["six_unit_evidence"])
-        == report["six_unit_totals"]
+        reconstruct_six_unit_totals_from_evidence(stored["six_unit_evidence"])
+        == stored["six_unit_totals"]
     )
+    assert stored["six_unit_totals"]["SOURCE_TRANSPORT_OPERATION"] == 30
+    assert stored["restart_created"] is False
+    assert stored["successor_created"] is False
+    assert stored["resume_created"] is False
+    assert stored["retry_created"] is False
+    assert stored["terminal"]["lifecycle_started"] is False
 
 
 # --------------------------------------------------------------------------- #
@@ -954,10 +1397,11 @@ def test_report_only_explicit_and_blocked_modes(tmp_path: Path, monkeypatch) -> 
     assert one["source_calls"] == 0
     assert one["database_writes"] == 0
 
-    # Explicit exact campaign/run with no report returns EXACT_TERMINAL_REPORT_MISSING.
+    # Explicit exact campaign/run with no report and no summary: primary
+    # block reason is EXACT_TERMINAL_SUMMARY_MISSING_OR_MISMATCHED.
     missing = command.report_only(campaign_id="new-campaign", run_id="new-run")
     assert missing["status"] == "REPLAY_BLOCKED"
-    assert missing["block_reason"] == "EXACT_TERMINAL_REPORT_MISSING"
+    assert missing["block_reason"] == "EXACT_TERMINAL_SUMMARY_MISSING_OR_MISMATCHED"
     assert missing["fallback_used"] is False
     assert missing["report_rows"] == 0
     # Must not return the older global report.
@@ -971,11 +1415,11 @@ def test_report_only_explicit_and_blocked_modes(tmp_path: Path, monkeypatch) -> 
     assert exact["source_calls"] == 0
     assert exact["database_writes"] == 0
 
-    # No-argument resolves latest supervision first (new-campaign, no report).
+    # No-argument resolves latest supervision first (new-campaign, no report/summary).
     latest = command.report_only()
     assert latest["status"] == "REPLAY_BLOCKED"
     assert latest["requested_identity"]["campaign_id"] == "new-campaign"
-    assert latest["block_reason"] == "EXACT_TERMINAL_REPORT_MISSING"
+    assert latest["block_reason"] == "EXACT_TERMINAL_SUMMARY_MISSING_OR_MISMATCHED"
     assert "old-report" not in json.dumps(latest)
 
     # Unknown identity blocks.
@@ -1003,6 +1447,207 @@ def _source_request_count(db: Path) -> int:
         return 0
     finally:
         conn.close()
+
+
+def _write_terminal_summary(
+    artifacts: Path,
+    *,
+    execution_id: str,
+    campaign_id: str,
+    run_id: str,
+    configuration_id: str,
+    **overrides: Any,
+) -> Path:
+    payload = {
+        "status": "OPERATIONAL_CAMPAIGN_TERMINAL_FAILURE",
+        "first_terminal_cause": "SOURCE_VISIBILITY_SHORTAGE",
+        "accounting_status": "SIX_UNIT_ACCOUNTING_BLOCKED",
+        "report_written": False,
+        "report_block_reason": "SIX_UNIT_EVIDENCE_MISSING",
+        "campaign_id": campaign_id,
+        "run_id": run_id,
+        "configuration_id": configuration_id,
+        "execution_id": execution_id,
+    }
+    payload.update(overrides)
+    path = artifacts / execution_id / "terminal-summary.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    return path
+
+
+def test_missing_summary_run_id_blocks(tmp_path: Path, monkeypatch) -> None:
+    db = tmp_path / "sum-run.sqlite3"
+    artifacts = tmp_path / "artifacts"
+    report_dir = artifacts / "sum" / "reports"
+    monkeypatch.setattr(command, "AUTHORITATIVE_DB", db.resolve())
+    monkeypatch.setattr(command, "ARTIFACT_ROOT", artifacts)
+    _seed_campaign_with_report(
+        db,
+        campaign_id="sum-campaign",
+        run_id="sum-run",
+        configuration_id="sum-config",
+        report_id="sum-report",
+        report_dir=report_dir,
+        include_report=False,
+    )
+    # execution_id from seed = campaign_id.replace("-campaign", "") => "sum"
+    _write_terminal_summary(
+        artifacts,
+        execution_id="sum",
+        campaign_id="sum-campaign",
+        run_id="",  # missing / empty run_id is a mismatch
+        configuration_id="sum-config",
+    )
+    result = command.report_only(campaign_id="sum-campaign", run_id="sum-run")
+    assert result["status"] == "REPLAY_BLOCKED"
+    assert result["block_reason"] == "EXACT_TERMINAL_SUMMARY_MISSING_OR_MISMATCHED"
+
+
+def test_missing_summary_configuration_id_blocks(tmp_path: Path, monkeypatch) -> None:
+    db = tmp_path / "sum-cfg.sqlite3"
+    artifacts = tmp_path / "artifacts"
+    report_dir = artifacts / "cfg" / "reports"
+    monkeypatch.setattr(command, "AUTHORITATIVE_DB", db.resolve())
+    monkeypatch.setattr(command, "ARTIFACT_ROOT", artifacts)
+    _seed_campaign_with_report(
+        db,
+        campaign_id="cfg-campaign",
+        run_id="cfg-run",
+        configuration_id="cfg-config",
+        report_id="cfg-report",
+        report_dir=report_dir,
+        include_report=False,
+    )
+    exec_id = "cfg"
+    (artifacts / exec_id).mkdir(parents=True, exist_ok=True)
+    (artifacts / exec_id / "terminal-summary.json").write_text(
+        json.dumps(
+            {
+                "status": "OPERATIONAL_CAMPAIGN_TERMINAL_FAILURE",
+                "campaign_id": "cfg-campaign",
+                "run_id": "cfg-run",
+                "configuration_id": "",
+                "execution_id": exec_id,
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = command.report_only(campaign_id="cfg-campaign", run_id="cfg-run")
+    assert result["status"] == "REPLAY_BLOCKED"
+    assert result["block_reason"] == "EXACT_TERMINAL_SUMMARY_MISSING_OR_MISMATCHED"
+
+
+def test_missing_summary_execution_id_blocks(tmp_path: Path, monkeypatch) -> None:
+    db = tmp_path / "sum-exec.sqlite3"
+    artifacts = tmp_path / "artifacts"
+    report_dir = artifacts / "ex" / "reports"
+    monkeypatch.setattr(command, "AUTHORITATIVE_DB", db.resolve())
+    monkeypatch.setattr(command, "ARTIFACT_ROOT", artifacts)
+    _seed_campaign_with_report(
+        db,
+        campaign_id="ex-campaign",
+        run_id="ex-run",
+        configuration_id="ex-config",
+        report_id="ex-report",
+        report_dir=report_dir,
+        include_report=False,
+    )
+    exec_id = "ex"
+    (artifacts / exec_id).mkdir(parents=True, exist_ok=True)
+    (artifacts / exec_id / "terminal-summary.json").write_text(
+        json.dumps(
+            {
+                "status": "OPERATIONAL_CAMPAIGN_TERMINAL_FAILURE",
+                "campaign_id": "ex-campaign",
+                "run_id": "ex-run",
+                "configuration_id": "ex-config",
+                "execution_id": "",
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = command.report_only(campaign_id="ex-campaign", run_id="ex-run")
+    assert result["status"] == "REPLAY_BLOCKED"
+    assert result["block_reason"] == "EXACT_TERMINAL_SUMMARY_MISSING_OR_MISMATCHED"
+
+
+def test_mismatched_summary_identity_primary_block_reason(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db = tmp_path / "sum-mis.sqlite3"
+    artifacts = tmp_path / "artifacts"
+    report_dir = artifacts / "mis" / "reports"
+    monkeypatch.setattr(command, "AUTHORITATIVE_DB", db.resolve())
+    monkeypatch.setattr(command, "ARTIFACT_ROOT", artifacts)
+    _seed_campaign_with_report(
+        db,
+        campaign_id="mis-campaign",
+        run_id="mis-run",
+        configuration_id="mis-config",
+        report_id="mis-report",
+        report_dir=report_dir,
+        include_report=False,
+    )
+    exec_id = "mis"
+    (artifacts / exec_id).mkdir(parents=True, exist_ok=True)
+    (artifacts / exec_id / "terminal-summary.json").write_text(
+        json.dumps(
+            {
+                "status": "OPERATIONAL_CAMPAIGN_TERMINAL_FAILURE",
+                "campaign_id": "mis-campaign",
+                "run_id": "wrong-run",
+                "configuration_id": "mis-config",
+                "execution_id": exec_id,
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = command.report_only(campaign_id="mis-campaign", run_id="mis-run")
+    assert result["status"] == "REPLAY_BLOCKED"
+    assert result["block_reason"] == "EXACT_TERMINAL_SUMMARY_MISSING_OR_MISMATCHED"
+    assert "terminal_summary_block_reason" not in result
+
+
+def test_exact_report_missing_with_valid_summary(tmp_path: Path, monkeypatch) -> None:
+    db = tmp_path / "sum-ok.sqlite3"
+    artifacts = tmp_path / "artifacts"
+    report_dir = artifacts / "ok" / "reports"
+    monkeypatch.setattr(command, "AUTHORITATIVE_DB", db.resolve())
+    monkeypatch.setattr(command, "ARTIFACT_ROOT", artifacts)
+    _seed_campaign_with_report(
+        db,
+        campaign_id="ok-campaign",
+        run_id="ok-run",
+        configuration_id="ok-config",
+        report_id="ok-report",
+        report_dir=report_dir,
+        include_report=False,
+    )
+    exec_id = "ok"
+    (artifacts / exec_id).mkdir(parents=True, exist_ok=True)
+    (artifacts / exec_id / "terminal-summary.json").write_text(
+        json.dumps(
+            {
+                "status": "OPERATIONAL_CAMPAIGN_TERMINAL_FAILURE",
+                "first_terminal_cause": "SOURCE_VISIBILITY_SHORTAGE",
+                "accounting_status": "SIX_UNIT_ACCOUNTING_BLOCKED",
+                "report_written": False,
+                "report_block_reason": "SIX_UNIT_EVIDENCE_MISSING",
+                "campaign_id": "ok-campaign",
+                "run_id": "ok-run",
+                "configuration_id": "ok-config",
+                "execution_id": exec_id,
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = command.report_only(campaign_id="ok-campaign", run_id="ok-run")
+    assert result["status"] == "REPLAY_BLOCKED"
+    assert result["block_reason"] == "EXACT_TERMINAL_REPORT_MISSING"
+    assert result["terminal_summary"]["first_terminal_cause"] == (
+        "SOURCE_VISIBILITY_SHORTAGE"
+    )
 
 
 def test_report_only_never_substitutes_discovery_only(tmp_path: Path, monkeypatch) -> None:
@@ -1091,3 +1736,123 @@ def test_ordinary_direct_migration_still_complete_without_sink(tmp_path: Path) -
     assert report["status"] in {"COMPLETE", "PROVIDER_FAILURE", "ACCOUNTING_BLOCKED"}
     assert "six_unit_evidence" in report
     assert report.get("sealed_stage_evidence") is None
+
+
+def test_ordinary_disposable_two_token_window_15m_regression(tmp_path: Path) -> None:
+    """Nearest ordinary two-token WINDOW_15M disposable regression.
+
+    Proves the accounting seal path does not break normal discovery success
+    on a fresh migration-049 database. Does not unlock retrieval or finance.
+    """
+    tx, infos, mint, pool = _pinned_migration_fixture()
+    db = tmp_path / "ordinary-15m.sqlite3"
+    apply_migrations(db)
+
+    def verifier_factory(mint_value: str, signature: str):
+        def transport(_context):
+            return {
+                "pumpswap_confirmation": {
+                    "confirmed": True,
+                    "pool_address": pool,
+                    "base_mint": mint_value,
+                },
+                "pumpswap_resolution": {
+                    "pool_address": pool,
+                    "resolved": True,
+                    "transport_operations_used": 1,
+                },
+                "pump_migration_proof": {
+                    "verified": True,
+                    "migration_block_time": tx["blockTime"],
+                    "migration_slot": tx["slot"],
+                },
+                "tokens": [
+                    {
+                        "mint": mint_value,
+                        "pairAddress": pool,
+                        "pumpswap_migration_block_time": tx["blockTime"],
+                        "pumpswap_migration_slot": tx["slot"],
+                    }
+                ],
+                "migration_signature": signature,
+                "transport_operations_used": 1,
+                "transport_operation_identities": [
+                    _transport_identity(
+                        stage="PUMPSWAP_EXACT_VERIFICATION",
+                        source="pumpswap",
+                        kind="pumpswap_signature_pool_resolution",
+                        ordinal=1,
+                        target=pool,
+                    )
+                ],
+                "response_bytes": 20,
+                "normalized_rows": 1,
+            }
+
+        return transport
+
+    report = run_direct_migration_discovery(
+        db,
+        migration_transport=_migration_transport(tx),
+        verifier_transport_factory=verifier_factory,
+        now=NOW,
+        collection_rounds=1,
+    )
+    assert report["status"] == "COMPLETE"
+    assert report["campaign_safe_stop"] is False
+    assert report["confirmed_count"] >= 1
+    assert report["source_operation_ledger"]["operation_accounting_reconciled"] is True
+
+    # Second graduated candidate for ordinary two-token readiness shape.
+    from printer_v1.sources.pumpswap_graduated_registry import (
+        LATEST_GRADUATED_CHANNEL,
+        record_graduated_candidate,
+        export_graduated_candidates,
+    )
+    from printer_v1.sources.pump_migration import MIGRATION_PROVENANCE
+
+    mint_b = "MintBOrdinaryTwoToken1111111111111111111111111"
+    pool_b = "PoolBOrdinaryTwoToken111111111111111111111111"
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    try:
+        record_graduated_candidate(
+            conn,
+            mint=mint_b,
+            migration_signature="sig-ordinary-b",
+            pumpswap_pool=pool_b,
+            graduation_block_time=int(tx["blockTime"]) + 1,
+            graduation_slot=int(tx["slot"]) + 1,
+            now=NOW,
+            discovery_channel=LATEST_GRADUATED_CHANNEL,
+            migration_provenance=MIGRATION_PROVENANCE,
+        )
+        conn.commit()
+        graduated = export_graduated_candidates(conn)
+        assert len(graduated) >= 2
+        head = [
+            row[0]
+            for row in conn.execute(
+                "SELECT version FROM printer_schema_migrations ORDER BY version"
+            )
+        ][-1]
+        assert str(head).startswith("049")
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        # WINDOW_15M remains the ordinary main window; no longer-window activation.
+        window_label = "WINDOW_15M"
+        assert window_label == "WINDOW_15M"
+        # No retrieval / decision / position unlock surface written.
+        for table in (
+            "printer_paper_decisions",
+            "printer_paper_positions",
+            "printer_paper_trade_events",
+        ):
+            try:
+                assert (
+                    int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+                    == 0
+                )
+            except sqlite3.Error:
+                pass
+    finally:
+        conn.close()

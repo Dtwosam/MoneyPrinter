@@ -514,39 +514,130 @@ class CampaignSixUnitOwner:
         return self.ledger.six_unit_totals()
 
 
+def _transport_identity_key(raw: Mapping[str, Any] | TransportOperationIdentity) -> tuple[Any, ...]:
+    """Stable identity key for exact owner/action-local set comparison."""
+    if isinstance(raw, TransportOperationIdentity):
+        return (
+            str(raw.stage or ""),
+            str(raw.source_name or ""),
+            str(raw.governed_request_kind or ""),
+            str(raw.method_or_endpoint or ""),
+            int(raw.within_request_ordinal or 0),
+            str(raw.target_category or ""),
+            None if raw.target_identity is None else str(raw.target_identity),
+        )
+    return (
+        str(raw.get("stage") or ""),
+        str(raw.get("source_name") or ""),
+        str(raw.get("governed_request_kind") or ""),
+        str(raw.get("method_or_endpoint") or ""),
+        int(raw.get("within_request_ordinal") or 0),
+        str(raw.get("target_category") or ""),
+        (
+            None
+            if raw.get("target_identity") is None
+            else str(raw.get("target_identity"))
+        ),
+    )
+
+
 def reconcile_owner_to_action_local(
     owner: CampaignSixUnitOwner,
     *,
-    action_local_source_operations: int | None,
+    action_local_source_operations: int | None = None,
+    action_local_transport_identities: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Verify owner transport completeness against action-local truth.
+    """Verify owner transport identities and counts against action-local truth.
 
-    Action-local counts are verification only. Missing stage evidence is never
-    manufactured from durable source rows. When action-local exceeds the owner
-    transport total, accounting is incomplete (the July 31 defect shape).
-    Multi-hop stages may produce more transport identities than governed
-    requests; that direction is not a completeness mismatch.
+    Action-local evidence is verification only. Missing stage evidence is never
+    manufactured from durable source rows or request counts.
+
+    Exact equality is required in both directions:
+
+    * ``owner > action_local`` blocks
+    * ``action_local > owner`` blocks
+    * equal counts with different identity sets block
+
+    When the action-local surface provides only governed-request counts and
+    cannot prove exact transport identity equality, return
+    ``ACTION_LOCAL_TRANSPORT_IDENTITY_DESIGN_BLOCKED`` rather than weakening
+    the contract with count-only multi-hop asymmetry.
     """
     owner_ops = int(owner.owner_transport_operation_count)
-    action_local = (
+    owner_identity_keys = {
+        _transport_identity_key(item) for item in owner.ledger.transports
+    }
+    action_local_count = (
         None
         if action_local_source_operations is None
         else int(action_local_source_operations)
     )
     diagnostics = owner.accounting_diagnostics()
     mismatch_reason: str | None = None
+    action_local_identity_count: int | None = None
+    action_local_identity_keys: set[tuple[Any, ...]] | None = None
+
     if owner.accounting_block_reason is not None:
         mismatch_reason = str(owner.accounting_block_reason)
-    elif action_local is not None and action_local > 0 and owner.stage_evidence_count == 0:
-        mismatch_reason = "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH"
-    elif action_local is not None and action_local > owner_ops:
-        mismatch_reason = "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH"
+    elif action_local_transport_identities is not None:
+        if not isinstance(action_local_transport_identities, Sequence) or isinstance(
+            action_local_transport_identities, (str, bytes)
+        ):
+            mismatch_reason = "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH"
+        else:
+            try:
+                action_local_identity_keys = {
+                    _transport_identity_key(item)
+                    for item in action_local_transport_identities
+                    if isinstance(item, Mapping)
+                }
+                if len(action_local_identity_keys) != len(
+                    action_local_transport_identities
+                ):
+                    # Malformed or non-mapping entries cannot prove equality.
+                    mismatch_reason = (
+                        "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH"
+                    )
+                else:
+                    action_local_identity_count = len(action_local_identity_keys)
+                    if action_local_count is None:
+                        action_local_count = action_local_identity_count
+                    if owner_ops != action_local_identity_count:
+                        mismatch_reason = (
+                            "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH"
+                        )
+                    elif action_local_count != action_local_identity_count:
+                        mismatch_reason = (
+                            "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH"
+                        )
+                    elif owner_ops != action_local_count:
+                        mismatch_reason = (
+                            "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH"
+                        )
+                    elif owner_identity_keys != action_local_identity_keys:
+                        mismatch_reason = (
+                            "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH"
+                        )
+            except (TypeError, ValueError):
+                mismatch_reason = "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH"
+    elif action_local_count is not None:
+        # Count-only governed-request surfaces cannot prove exact transport
+        # identity equality. Do not weaken to asymmetric multi-hop totals.
+        mismatch_reason = "ACTION_LOCAL_TRANSPORT_IDENTITY_DESIGN_BLOCKED"
+
     equal = mismatch_reason is None
     return {
         "equal": equal,
         "mismatch_reason": mismatch_reason,
         "owner_transport_operation_count": owner_ops,
-        "action_local_source_operations": action_local,
+        "action_local_source_operations": action_local_count,
+        "action_local_transport_identity_count": action_local_identity_count,
+        "owner_transport_identity_count": len(owner_identity_keys),
+        "identity_sets_equal": (
+            None
+            if action_local_identity_keys is None
+            else owner_identity_keys == action_local_identity_keys
+        ),
         "diagnostics": diagnostics,
     }
 
