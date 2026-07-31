@@ -34,82 +34,72 @@ The active lane remains:
 V2-9.8B — Active Bounded Memory Growth Operations
 ```
 
-The current completed work inside V2-9.8B is **Terminal Safety, Accounting,
-Runner-Proof, and Supply-Truth Finalization**. Its implementation verdict is:
+The current completed work inside V2-9.8B is the **Accounting and Exact-Identity
+Report-Only Repair** after the first authoritative `WINDOW_15M` campaign
+attempt. Its implementation verdict is:
 
-`V2_9_8B_TERMINAL_SAFETY_ACCOUNTING_FINALIZATION_PASS`.
+`V2_9_8B_FIRST_AUTHORITATIVE_15M_ACCOUNTING_EXACT_IDENTITY_REPORT_ONLY_REPAIR_IMPLEMENTATION_PASS`.
 
-Its independent read-only operator-review verdict is:
+Its independent operator-review verdict is:
 
-`V2_9_8B_TERMINAL_SAFETY_ACCOUNTING_FINALIZATION_OPERATOR_REVIEW_PASS`.
+`V2_9_8B_FIRST_AUTHORITATIVE_15M_ACCOUNTING_EXACT_IDENTITY_REPORT_ONLY_REPAIR_OPERATOR_REVIEW_PASS`.
 
-The operator review inspected the exact pushed implementation commit
-`d285d2cdd7b3dd2232e14cbc378b45835a907755` and found no new blocking defect in
-the repaired surface. The review was static and read-only; it did not rerun the
-local test suite, inspect the local authoritative database, call providers/RPC,
-or execute a campaign.
+Its closeout verdict is:
 
-This finalization supersedes the post-handoff terminal-compensation PASS for the
-repaired surface. Compensation now deletes only exact recorded current-attempt
-primary keys, never token-wide history; the ordinary 15m path owns and mutates no
-candidate-acquisition lease; SQLite/schema failures fail closed; the residual
-matrix includes snapshots, Scheduler jobs, locks, lifecycle state, preservation,
-and unrelated leases. Immutable selected-item links remain untouched and pinned
-slots/tracking still terminalize through `reconcile_campaign_terminal`.
+`V2_9_8B_FIRST_AUTHORITATIVE_15M_ACCOUNTING_EXACT_IDENTITY_REPORT_ONLY_REPAIR_CLOSEOUT_PASS`.
 
-Campaign accounting rejects absent, empty, malformed, duplicate, negative, or
-identity-conflicting stage evidence. The public coordinator owns accounting
-before work, preserves partial evidence, and never persists a matched synthetic
-zero report for attempted work. Initialized failures require six-unit evidence
-or write only an accounting-blocked failure summary.
+Reviewed branch:
+`codex/v2-9-8b-accounting-report-only-repair`
 
-The four final post-handoff proof stages now fault inside the real
-`run_one_command_15m_factory` runner after committed real rows/transitions; the
-driver-level representative object shim is removed. Shared eligible-supply
-provider failures are counted once from exact governed failure identities, so a
-valid empty discovery result no longer overrides true market shortage.
+Reviewed HEAD:
+`0118a37e32929501c45f97ea9353b799b29fef7b`
 
-The historical verdicts remain preserved as evidence:
+Design baseline:
+`e71e543d197154eba427b41e2e01574a59f527f5`
 
-- `V2_9_8B_POST_HANDOFF_TERMINAL_COMPENSATION_PASS` (superseded for this surface)
-- `V2_9_8B_CAMPAIGN_ACCOUNTING_TERMINAL_ENFORCEMENT_BLOCKED` (superseded for
-  this surface)
-- `V2_9_8B_DISCOVERY_SELECTION_VERIFIABLE_REAL_PATH_PASS` (remains historical
-  and superseded)
+Implementation commits: `b168c57`, `fd35b41`, `0118a37`.
 
-Prior closeouts treated as operator-review blocked / superseded for this surface:
+This repair closes the July 31 forensic defects: missing complete stage-evidence
+handoff under bounded shortage, sealed-stage self-comparison for action-local
+truth, and global latest-report `report-only` selection. The public coordinator
+now uses an independent pre-seal transport observer, exact owner/action-local
+identity reconciliation, exception-safe stage sealing, and exact-identity
+report-only behavior with deterministic blocked replay when the exact attempt
+has no terminal report.
 
-- authority consolidation closeout (operator-review BLOCKED)
-- full-system consolidation closeout (treated BLOCKED)
-- verifiable real-path closeout (superseded; operator-review BLOCKED)
-- campaign-accounting / terminal-enforcement closeout (BLOCKED; post-handoff
-  portion superseded by this lane's PASS)
+Focused proof: 31 repair tests and 103 combined focused affected tests passed.
+Authoritative DB SHA-256 remained unchanged at
+`f36f3b3fd7c389018323c219b3ce9421e2006769de3db860593ce4b31415a511`.
 
-Active finalization documents:
+The historical first authoritative campaign remains:
+
+`V2_9_8B_FIRST_AUTHORITATIVE_15M_CAMPAIGN_BLOCKED_UNSAFE`
+
+The permanent no-rerun marker for execution
+`20260731T002406Z-7612696c7295` remains valid. This repair does not backfill
+that attempt and does not authorize another campaign.
+
+Earlier terminal-safety finalization remains closed PASS and is preserved as
+prior completed work:
+
+- `V2_9_8B_TERMINAL_SAFETY_ACCOUNTING_FINALIZATION_PASS`
+- `V2_9_8B_TERMINAL_SAFETY_ACCOUNTING_FINALIZATION_OPERATOR_REVIEW_PASS`
+
+Active repair documents:
+
+- `docs/printer-v1-v2-9-8b-accounting-exact-identity-report-only-repair-design.md`
+- `docs/printer-v1-v2-9-8b-accounting-exact-identity-report-only-repair-implementation.md`
+- `docs/printer-v1-v2-9-8b-accounting-exact-identity-report-only-repair-closeout.md`
+- `docs/printer-v1-v2-9-8b-first-authoritative-15m-forensic-audit.md`
+- `docs/printer-v1-v2-9-8b-first-authoritative-15m-campaign-closeout.md`
+
+Prior terminal-safety / reconciliation documents (evidence):
 
 - `docs/printer-v1-v2-9-8b-terminal-safety-accounting-finalization-audit.md`
 - `docs/printer-v1-v2-9-8b-terminal-safety-accounting-finalization-design.md`
 - `docs/printer-v1-v2-9-8b-terminal-safety-accounting-finalization-closeout.md`
 - `docs/printer-v1-v2-9-8b-terminal-safety-accounting-finalization-operator-review.md`
 - `docs/printer-v1-v2-9-8b-active-build-order-reconciliation.md`
-
-Prior post-handoff terminal-compensation documents (evidence):
-
-- `docs/printer-v1-v2-9-8b-post-handoff-terminal-compensation-readiness.md`
-- `docs/printer-v1-v2-9-8b-post-handoff-terminal-compensation-design.md`
-- `docs/printer-v1-v2-9-8b-post-handoff-terminal-compensation-closeout.md`
-
-Preceding campaign-accounting / terminal-enforcement documents (evidence):
-
-- `docs/printer-v1-v2-9-8b-campaign-accounting-terminal-enforcement-audit.md`
-- `docs/printer-v1-v2-9-8b-campaign-accounting-terminal-enforcement-design.md`
-- `docs/printer-v1-v2-9-8b-campaign-accounting-terminal-enforcement-closeout.md`
-
-Prior verifiable real-path documents (superseded, evidence only):
-
-- `docs/printer-v1-v2-9-8b-discovery-selection-verifiable-real-path-audit.md`
-- `docs/printer-v1-v2-9-8b-discovery-selection-verifiable-real-path-design.md`
-- `docs/printer-v1-v2-9-8b-discovery-selection-verifiable-real-path-closeout.md`
 
 The operational factory active-path restoration remains the restored intake
 anchor:
@@ -241,19 +231,24 @@ liquidity, freshness, holder, safety or tradeability requirements.
 
 On:
 
-`V2_9_8B_ACTIVE_BUILD_ORDER_RECONCILIATION_PASS`
+`V2_9_8B_FIRST_AUTHORITATIVE_15M_ACCOUNTING_EXACT_IDENTITY_REPORT_ONLY_REPAIR_CLOSEOUT_PASS`
 
 the exact next permitted task is:
 
 ```text
-V2-9.8B First Authoritative WINDOW_15M Campaign Readiness Audit
+V2-9.8B Post-Accounting-Repair Authoritative WINDOW_15M Campaign Readiness Audit
 ```
 
-This next task is audit/readiness only. It may statically inspect the committed
-ordinary command and route, read the authoritative database in read-only mode,
-verify the exact non-placeholder operator command and environment-variable names,
-and document a factual PASS/BLOCKED verdict. It must not run providers/RPC,
-fetch sources, mutate the database, execute a campaign, generate memory, rerun a
-1h proof, activate longer windows, start V2-10, enable retrieval, or create any
+This next task is audit/readiness only. It may statically inspect the repaired
+ordinary command, accounting handoff, exact-identity report-only surface, and
+route; read the authoritative database in read-only mode; verify the permanent
+no-rerun marker and residual campaign state; verify the exact non-placeholder
+operator command and environment-variable names; and document a factual
+PASS/BLOCKED verdict.
+
+It must not run providers/RPC, fetch sources, mutate the database, execute a
+campaign, repair or reclassify the July 31 attempt, generate memory, rerun a 1h
+proof, activate longer windows, start V2-10, enable retrieval, or create any
 paper/financial capability. A readiness PASS may authorize only the next approved
-design/specification step; it does not directly authorize campaign execution.
+design/specification or final-authorization step; it does not directly authorize
+campaign execution.

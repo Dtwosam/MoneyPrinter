@@ -1789,14 +1789,34 @@ learning quality, evidence quality, report clarity, or lock safety is not done.
 V2-9.7A through V2-9.7F and V2-9.8A are closed. V2-9.8A verdict is
 `V2_9_8A_OPERATOR_ACTIVATION_GATE_PASS`. V2-9.8B remains the active
 memory-growth lane. Inside it, the operational factory active-path restoration
-supersedes the candidate-acquisition prerequisite chain.
+remains the restored intake anchor, and later V2-9.8B terminal-safety,
+first-authoritative campaign, forensic audit, and accounting/exact-identity
+report-only repair work has advanced beyond the restoration operator-review
+pointer.
 
-On restoration PASS, the exact next permitted task is operator review of:
+The accounting and exact-identity report-only repair is closed:
 
-- branch `restore/proven-operational-factory`;
-- the implementation diff;
-- `docs/printer-v1-v2-9-8b-operational-factory-active-path-restoration.md`; and
-- its closeout and offline proof evidence.
+- design baseline `e71e543d197154eba427b41e2e01574a59f527f5`
+- implementation commits `b168c57`, `fd35b41`, `0118a37`
+- implementation PASS, operator-review PASS, and closeout PASS
+
+Closeout:
+`docs/printer-v1-v2-9-8b-accounting-exact-identity-report-only-repair-closeout.md`
+
+Assistant active anchor:
+`docs/printer-v1-assistant-active-build-order-anchor.md`
+
+The exact next permitted task is the audit-only:
+
+```text
+V2-9.8B Post-Accounting-Repair Authoritative WINDOW_15M Campaign Readiness Audit
+```
+
+That readiness audit may not run providers/RPC, mutate the authoritative
+database, execute a campaign, repair the historical July 31 attempt, generate
+memory, or unlock retrieval or financial capabilities. A readiness PASS may
+authorize only the next approved design/specification or final-authorization
+step.
 
 The candidate foundation, N2/N7, global Pump cursor, recovery and
 migration-observation history remains preserved but deferred. No automatic
