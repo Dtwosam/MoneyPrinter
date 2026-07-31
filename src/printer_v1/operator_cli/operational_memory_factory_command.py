@@ -1436,6 +1436,92 @@ def _finalize_operational_six_unit_accounting(
     return accounting_owner
 
 
+from printer_v1.operator_cli.campaign_full_run_accounting import (  # noqa: E402
+    VERDICT_BLOCKED_UNSAFE as FULL_RUN_VERDICT_BLOCKED_UNSAFE,
+    VERDICT_HONEST_BLOCKED as FULL_RUN_VERDICT_HONEST_BLOCKED,
+    VERDICT_PASS as FULL_RUN_VERDICT_PASS,
+)
+
+
+def _apply_full_run_campaign_acceptance(
+    *,
+    db_path: Any,
+    campaign_id: str,
+    campaign_run_id: str,
+    cycle_id: str,
+    configuration_id: str,
+    factory_run_id: str | None,
+    execution_id: str,
+    supervision_id: Any,
+    launch_git_provenance: Mapping[str, Any],
+    db_target_identity: str,
+    lifecycle_started: bool,
+    lifecycle_operation_records: Sequence[Mapping[str, Any]],
+    forbidden_deltas: Mapping[str, int],
+) -> dict[str, Any]:
+    """Register ownership, reconcile, and gate Campaign PASS for the full run.
+
+    Runtime terminal status is decided elsewhere; this only decides campaign
+    acceptance. A pre-lifecycle terminal is ``HONEST_BLOCKED`` with no ownership
+    work. Any fault registering ownership or reconciling accounting is
+    ``BLOCKED_UNSAFE`` — never a silent PASS.
+    """
+    from printer_v1.operator_cli.campaign_full_run_accounting import (
+        OperationalLifecycleOwnershipContext,
+        build_lifecycle_action_local_observer,
+        finalize_full_run_ownership_and_report,
+    )
+    from printer_v1.sources.campaign_six_unit_accounting import (
+        CampaignActionLocalLedger,
+    )
+
+    if not lifecycle_started or not str(factory_run_id or "").strip():
+        return {
+            "verdict": FULL_RUN_VERDICT_HONEST_BLOCKED,
+            "campaign_acceptance": {"pass": False},
+            "lifecycle_started": bool(lifecycle_started),
+            "reason": "PRE_LIFECYCLE_NO_OWNED_LIFECYCLE",
+        }
+    try:
+        context = OperationalLifecycleOwnershipContext(
+            campaign_id=campaign_id,
+            campaign_run_id=campaign_run_id,
+            cycle_id=cycle_id,
+            configuration_id=configuration_id,
+            factory_run_id=str(factory_run_id),
+        )
+        ledger = CampaignActionLocalLedger(
+            campaign_id=campaign_id, run_id=campaign_run_id, cycle_id=cycle_id,
+            lifecycle_started=True,
+        )
+        observe = build_lifecycle_action_local_observer(context, ledger)
+        for record in lifecycle_operation_records:
+            observe(record)
+        connection = sqlite3.connect(str(db_path))
+        connection.execute("PRAGMA foreign_keys = ON")
+        try:
+            outcome = finalize_full_run_ownership_and_report(
+                connection,
+                context=context,
+                action_local=ledger,
+                execution_id=execution_id,
+                supervision_id=supervision_id,
+                launch_git_provenance=dict(launch_git_provenance or {}),
+                db_target_identity=db_target_identity,
+                forbidden_capability_deltas=dict(forbidden_deltas or {}),
+            )
+        finally:
+            connection.close()
+        return outcome
+    except Exception as exc:  # fail closed: an ownership/accounting fault blocks
+        return {
+            "verdict": FULL_RUN_VERDICT_BLOCKED_UNSAFE,
+            "campaign_acceptance": {"pass": False},
+            "lifecycle_started": True,
+            "reason": f"FULL_RUN_FINALIZATION_FAULT:{type(exc).__name__}:{exc}",
+        }
+
+
 def _run_operational_campaign(
     *,
     policy: _OperationalCampaignPolicy,
@@ -1492,6 +1578,14 @@ def _run_operational_campaign(
     # copied from sealed-stage handoff (self-comparison) and never rebuilt
     # from source-request row counts.
     action_local_transport_identities: list[dict[str, Any]] = []
+
+    # V2-9.8B full-run wiring: capture every real Scheduler-enqueue boundary the
+    # factory reports, at execution time, for independent action-local lifecycle
+    # evidence. Identities are minted after the factory-run id is known.
+    lifecycle_operation_records: list[dict[str, Any]] = []
+
+    def _observe_lifecycle_operation(record: Mapping[str, Any]) -> None:
+        lifecycle_operation_records.append(dict(record))
 
     def _observe_transport_identity(identity: Any) -> None:
         if hasattr(identity, "as_dict"):
@@ -1614,6 +1708,14 @@ def _run_operational_campaign(
                         policy.selective_1h_continuation
                     ),
                     "configuration_id": command.configuration_id,
+                    # Full-run ownership context + action-local operation observer
+                    # propagate coordinator → owner → driver → factory.
+                    "lifecycle_ownership_context": {
+                        "campaign_id": command.campaign_id,
+                        "campaign_run_id": command.run_id,
+                        "cycle_id": cycle_id,
+                    },
+                    "lifecycle_operation_observer": _observe_lifecycle_operation,
                 },
                 migration_transport=migration_transport,
                 graduated_supply_kwargs=dict(
@@ -1830,6 +1932,25 @@ def _run_operational_campaign(
             report=payload,
             require_six_unit_evidence=True,
         )
+        # V2-9.8B full-run acceptance: register campaign ownership from the closed
+        # factory windows, project Scheduler jobs, reconcile owner vs the
+        # execution-time action-local ledger, and gate Campaign PASS. Runtime
+        # COMPLETED never implies Campaign PASS; any failure is BLOCKED_UNSAFE.
+        full_run_acceptance = _apply_full_run_campaign_acceptance(
+            db_path=command.db_path,
+            campaign_id=command.campaign_id,
+            campaign_run_id=command.run_id,
+            cycle_id=cycle_id,
+            configuration_id=command.configuration_id,
+            factory_run_id=initialized_factory_run_id,
+            execution_id=execution_id,
+            supervision_id=command.supervision_id,
+            launch_git_provenance=preflight["git_provenance"],
+            db_target_identity=str(command.db_path),
+            lifecycle_started=bool(result.lifecycle_started),
+            lifecycle_operation_records=lifecycle_operation_records,
+            forbidden_deltas=dict(lifecycle.get("forbidden_deltas") or {}),
+        )
         terminal = {
             "status": "OPERATIONAL_CAMPAIGN_TERMINAL",
             "execution_id": execution_id,
@@ -1837,6 +1958,11 @@ def _run_operational_campaign(
             "run_status": lifecycle.get("run_status"),
             "first_terminal_cause": cause,
             "report": report,
+            "campaign_acceptance_verdict": full_run_acceptance.get("verdict"),
+            "campaign_pass": bool(
+                full_run_acceptance.get("verdict") == FULL_RUN_VERDICT_PASS
+            ),
+            "full_run_campaign_acceptance": full_run_acceptance,
             "campaign_source_calls": report.get("campaign_source_calls"),
             "campaign_scheduler_calls": report.get("campaign_scheduler_calls"),
             "candidates_observed": report.get("candidates_observed"),

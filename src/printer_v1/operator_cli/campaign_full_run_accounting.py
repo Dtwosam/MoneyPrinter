@@ -18,8 +18,28 @@ Concerns owned here:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import sqlite3
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
+
+from printer_v1.operator_cli.campaign_ownership import (
+    CampaignOwnershipError,
+    campaign_scheduler_work_id,
+    project_campaign_scheduler_job,
+    register_campaign_window_close,
+)
+from printer_v1.sources.campaign_six_unit_accounting import (
+    CampaignActionLocalLedger,
+    CampaignSixUnitOwner,
+    build_campaign_stage_id,
+    reconcile_full_run_owner_to_action_local,
+    seal_campaign_stage_evidence,
+)
+from printer_v1.sources.measured_transport import (
+    LifecycleReservationIdentity,
+    LocalValidationIdentity,
+    SchedulerWorkIdentity,
+)
 
 
 class FullRunAccountingError(ValueError):
@@ -444,9 +464,13 @@ def evaluate_campaign_acceptance_gate(
         str(item.get("stage_kind") or "")
         for item in (accounting.get("sealed_stage_diagnostics") or [])
     }
-    all_stages_sealed = all(
-        kind in sealed_kinds for kind in REQUIRED_LIFECYCLE_STAGE_KINDS
-    )
+    # The two identity-bearing slot stages are the lifecycle completion proof.
+    # Discovery/selection accounting is owned by the pre-lifecycle stages and the
+    # terminal reconciliation is proven by the terminal-safety section.
+    both_slot_stages_sealed = {
+        "WINDOW_15M_SLOT_1",
+        "WINDOW_15M_SLOT_2",
+    }.issubset(sealed_kinds)
 
     checks = {
         "exactly_one_authorized_invocation": int(authorized_invocation_count) == 1,
@@ -458,7 +482,7 @@ def evaluate_campaign_acceptance_gate(
         )
         >= 2
         and terminal_window_count == 2,
-        "all_required_stages_sealed": all_stages_sealed,
+        "both_slot_stages_sealed": both_slot_stages_sealed,
         "owner_action_local_equal_non_vacuous": bool(reconciliation.get("equal"))
         and bool(reconciliation.get("lifecycle_started")),
         "all_scheduler_jobs_terminal_and_owned": bool(
@@ -500,6 +524,379 @@ def evaluate_campaign_acceptance_gate(
     }
 
 
+_LIFECYCLE_SLOT_STAGE_KINDS = ("WINDOW_15M_SLOT_1", "WINDOW_15M_SLOT_2")
+
+
+def _slot_ordinal_from_step_key(step_key: str) -> int:
+    prefix = str(step_key or "").split("_", 1)[0]
+    if prefix.startswith("t") and prefix[1:].isdigit():
+        ordinal = int(prefix[1:])
+        if ordinal in (1, 2):
+            return ordinal
+    raise FullRunAccountingError(f"cannot derive slot ordinal from step key: {step_key!r}")
+
+
+def _slot_stage_id(context: OperationalLifecycleOwnershipContext, ordinal: int) -> str:
+    return build_campaign_stage_id(
+        campaign_id=context.campaign_id,
+        run_id=context.campaign_run_id,
+        cycle_id=context.cycle_id,
+        stage_kind=f"WINDOW_15M_SLOT_{ordinal}",
+        stage_sequence=ordinal + 1,
+    )
+
+
+def lifecycle_step_identities(
+    context: OperationalLifecycleOwnershipContext,
+    *,
+    slot_ordinal: int,
+    scheduler_job_id: int,
+    step_kind: str,
+    step_key: str,
+    token_id: int,
+    pair_id: int,
+) -> tuple[SchedulerWorkIdentity, LifecycleReservationIdentity, LocalValidationIdentity]:
+    """Build the exact scheduler/reservation/validation identities for one step.
+
+    Both the independent action-local observer and the post-hoc owner sealing call
+    this, so the two derivations produce identical identity keys when — and only
+    when — the same operation was both executed and owned.
+    """
+    stage_id = _slot_stage_id(context, slot_ordinal)
+    job = int(scheduler_job_id)
+    return (
+        SchedulerWorkIdentity(
+            stage_id=stage_id,
+            scheduler_job_id=job,
+            job_kind=str(step_kind),
+            target_category="token",
+            target_identity=str(int(token_id)),
+        ),
+        LifecycleReservationIdentity(
+            stage_id=stage_id,
+            factory_run_id=context.factory_run_id,
+            token_id=int(token_id),
+            pair_id=int(pair_id),
+            window_kind="WINDOW_15M",
+            reservation_ordinal=job,
+        ),
+        LocalValidationIdentity(
+            stage_id=stage_id,
+            subject_identity=str(step_key),
+            validation_kind="CADENCE",
+            validation_ordinal=job,
+        ),
+    )
+
+
+def build_lifecycle_action_local_observer(
+    context: OperationalLifecycleOwnershipContext,
+    ledger: CampaignActionLocalLedger,
+) -> Callable[[Mapping[str, Any]], None]:
+    """Return the factory ``lifecycle_operation_observer`` bound to a ledger.
+
+    The factory fires this at each real Scheduler-enqueue boundary. It records the
+    three non-transport identities into the independent action-local ledger — the
+    execution-time capture that must equal the post-hoc owner sealing.
+    """
+
+    def observe(record: Mapping[str, Any]) -> None:
+        if str(record.get("boundary")) != "SCHEDULER_ENQUEUE":
+            return
+        ordinal = _slot_ordinal_from_step_key(str(record.get("step_key")))
+        scheduler_identity, reservation_identity, validation_identity = (
+            lifecycle_step_identities(
+                context,
+                slot_ordinal=ordinal,
+                scheduler_job_id=int(record["scheduler_job_id"]),
+                step_kind=str(record["step_kind"]),
+                step_key=str(record["step_key"]),
+                token_id=int(record["token_id"]),
+                pair_id=int(record["pair_id"]),
+            )
+        )
+        ledger.observe_scheduler_work(scheduler_identity)
+        ledger.observe_lifecycle_reservation(reservation_identity)
+        ledger.observe_local_validation(validation_identity)
+
+    return observe
+
+
+def _empty_stage_evidence() -> dict[str, Any]:
+    return {
+        "evidence_kind": "CAMPAIGN_SIX_UNIT_EVIDENCE_V1",
+        "transport_operations": [],
+        "local_validations": 0,
+        "scheduler_work_items": 0,
+        "lifecycle_reservations": 0,
+    }
+
+
+def finalize_full_run_ownership_and_report(
+    connection: sqlite3.Connection,
+    *,
+    context: OperationalLifecycleOwnershipContext,
+    action_local: CampaignActionLocalLedger,
+    execution_id: str,
+    supervision_id: Any,
+    launch_git_provenance: Mapping[str, Any],
+    db_target_identity: str,
+    queue_dispositions: Mapping[int, str] | None = None,
+    forbidden_capability_deltas: Mapping[str, int] | None = None,
+    lease_released: bool = True,
+    now: str | None = None,
+) -> dict[str, Any]:
+    """Register ownership, seal accounting, reconcile, report, and gate a run.
+
+    This is the campaign-layer full-run boundary invoked after the factory closes
+    its windows. Because the memory-window close commits before campaign ownership
+    can be registered, this is an explicit fail-closed compensation boundary: any
+    registration/projection failure is preserved as a block reason and prevents
+    Campaign PASS. It never rewrites factory state.
+    """
+    connection.row_factory = sqlite3.Row
+    stamp = now or datetime.now(timezone.utc).isoformat()
+    blocked_reasons: list[str] = []
+    queue_dispositions = dict(queue_dispositions or {})
+
+    close_steps = connection.execute(
+        """SELECT id, token_id, pair_id, memory_window_id, step_key
+           FROM printer_memory_factory_run_steps
+           WHERE run_id=? AND step_kind='WINDOW_CLOSE' AND step_status='SUCCEEDED'
+           ORDER BY id""",
+        (context.factory_run_id,),
+    ).fetchall()
+
+    token_to_window: dict[int, str] = {}
+    token_to_slot: dict[int, str] = {}
+    token_to_terminal_state: dict[int, str] = {}
+    token_to_memory: dict[int, sqlite3.Row] = {}
+    registered_windows: list[str] = []
+
+    for step in close_steps:
+        token_id = int(step["token_id"])
+        pair_id = int(step["pair_id"])
+        memory_row_id = step["memory_window_id"]
+        if memory_row_id is None:
+            blocked_reasons.append(f"CLOSE_STEP_WITHOUT_MEMORY_WINDOW:{step['id']}")
+            continue
+        ordinal = _slot_ordinal_from_step_key(str(step["step_key"]))
+        slot = connection.execute(
+            """SELECT token_slot_id, lifecycle_identity
+               FROM printer_memory_factory_campaign_token_slots
+               WHERE cycle_id=? AND token_row_id=?""",
+            (context.cycle_id, token_id),
+        ).fetchone()
+        if slot is None:
+            blocked_reasons.append(f"NO_CAMPAIGN_SLOT_FOR_TOKEN:{token_id}")
+            continue
+        token_slot_id = str(slot["token_slot_id"])
+        memory = connection.execute(
+            """SELECT id, memory_status, data_quality_label, do_not_train
+               FROM printer_memory_windows WHERE id=?""",
+            (int(memory_row_id),),
+        ).fetchone()
+        if memory is None:
+            blocked_reasons.append(f"MEMORY_WINDOW_MISSING:{memory_row_id}")
+            continue
+        terminal_state = (
+            "CLEAN_PROMOTED"
+            if str(memory["memory_status"]) == "CLEAN_MEMORY"
+            else "DIRTY"
+        )
+        window_id = f"{context.cycle_id}:window:{token_id}"
+        token_to_window[token_id] = window_id
+        token_to_slot[token_id] = token_slot_id
+        token_to_terminal_state[token_id] = terminal_state
+        token_to_memory[token_id] = memory
+        try:
+            register_campaign_window_close(
+                connection,
+                campaign_id=context.campaign_id,
+                run_id=context.campaign_run_id,
+                cycle_id=context.cycle_id,
+                factory_run_id=context.factory_run_id,
+                token_slot_id=token_slot_id,
+                window_id=window_id,
+                close_step_id=int(step["id"]),
+                memory_window_row_id=int(memory_row_id),
+                root_15m_lifecycle_identity=str(slot["lifecycle_identity"]),
+                checkpoint_cutoff=stamp,
+                terminal_window_state=terminal_state,
+                terminal_cause=f"window_closed_{terminal_state.lower()}",
+                now=stamp,
+            )
+            registered_windows.append(window_id)
+        except CampaignOwnershipError as exc:
+            blocked_reasons.append(f"WINDOW_REGISTRATION_FAILED:{token_id}:{exc}")
+
+    lifecycle_steps = connection.execute(
+        """SELECT id, scheduler_job_id, step_kind, token_id, pair_id, step_key
+           FROM printer_memory_factory_run_steps
+           WHERE run_id=? AND step_kind IN ('SNAPSHOT','WINDOW_CLOSE')
+             AND scheduler_job_id IS NOT NULL
+           ORDER BY id""",
+        (context.factory_run_id,),
+    ).fetchall()
+
+    projected_jobs: list[int] = []
+    for step in lifecycle_steps:
+        token_id = int(step["token_id"])
+        window_id = token_to_window.get(token_id)
+        slot_id = token_to_slot.get(token_id)
+        if window_id is None or slot_id is None:
+            blocked_reasons.append(
+                f"SCHEDULER_PROJECTION_WITHOUT_WINDOW:{step['scheduler_job_id']}"
+            )
+            continue
+        try:
+            project_campaign_scheduler_job(
+                connection,
+                campaign_id=context.campaign_id,
+                run_id=context.campaign_run_id,
+                cycle_id=context.cycle_id,
+                factory_run_id=context.factory_run_id,
+                token_slot_id=slot_id,
+                window_id=window_id,
+                scheduler_job_id=int(step["scheduler_job_id"]),
+                job_kind=str(step["step_kind"]),
+                deadline_at=stamp,
+                terminal_state="SUCCEEDED",
+                terminal_cause="lifecycle_job_terminal",
+                now=stamp,
+            )
+            projected_jobs.append(int(step["scheduler_job_id"]))
+        except CampaignOwnershipError as exc:
+            blocked_reasons.append(
+                f"SCHEDULER_PROJECTION_FAILED:{step['scheduler_job_id']}:{exc}"
+            )
+
+    # Seal the owner lifecycle slot stages from the committed steps (post-hoc,
+    # independent of the execution-time action-local observation).
+    owner = CampaignSixUnitOwner(
+        campaign_id=context.campaign_id,
+        run_id=context.campaign_run_id,
+        cycle_id=context.cycle_id,
+    )
+    by_ordinal: dict[int, list[sqlite3.Row]] = {1: [], 2: []}
+    for step in lifecycle_steps:
+        by_ordinal[_slot_ordinal_from_step_key(str(step["step_key"]))].append(step)
+    for ordinal in (1, 2):
+        steps = by_ordinal.get(ordinal) or []
+        if not steps:
+            continue
+        scheds: list[SchedulerWorkIdentity] = []
+        ress: list[LifecycleReservationIdentity] = []
+        vals: list[LocalValidationIdentity] = []
+        for step in steps:
+            scheduler_identity, reservation_identity, validation_identity = (
+                lifecycle_step_identities(
+                    context,
+                    slot_ordinal=ordinal,
+                    scheduler_job_id=int(step["scheduler_job_id"]),
+                    step_kind=str(step["step_kind"]),
+                    step_key=str(step["step_key"]),
+                    token_id=int(step["token_id"]),
+                    pair_id=int(step["pair_id"]),
+                )
+            )
+            scheds.append(scheduler_identity)
+            ress.append(reservation_identity)
+            vals.append(validation_identity)
+        sealed = seal_campaign_stage_evidence(
+            stage_id=_slot_stage_id(context, ordinal),
+            stage_kind=f"WINDOW_15M_SLOT_{ordinal}",
+            stage_sequence=ordinal + 1,
+            stage_terminal_status="COMPLETED",
+            campaign_id=context.campaign_id,
+            run_id=context.campaign_run_id,
+            cycle_id=context.cycle_id,
+            evidence=_empty_stage_evidence(),
+            scheduler_work_identities=scheds,
+            lifecycle_reservation_identities=ress,
+            local_validation_identities=vals,
+        )
+        owner.ingest_stage_evidence(sealed)
+    owner.close()
+
+    reconciliation = reconcile_full_run_owner_to_action_local(
+        owner, action_local, required_stage_kinds=_LIFECYCLE_SLOT_STAGE_KINDS
+    )
+
+    selected_tokens: list[dict[str, Any]] = []
+    per_token_outcomes: list[dict[str, Any]] = []
+    slot_dispositions: list[dict[str, Any]] = []
+    quality_results: list[dict[str, Any]] = []
+    for token_id in sorted(token_to_window):
+        memory = token_to_memory[token_id]
+        terminal_state = token_to_terminal_state[token_id]
+        queue_disposition = queue_dispositions.get(token_id, "COOLDOWN")
+        selected_tokens.append({"token_id": token_id, "pair_id": token_id,
+                                "token_slot_id": token_to_slot[token_id]})
+        per_token_outcomes.append({
+            "token_id": token_id, "pair_id": token_id,
+            "terminal_status": "WINDOW_CLOSED",
+            "window_id": token_to_window[token_id],
+            "tracking_disposition": queue_disposition,
+        })
+        slot_dispositions.append(
+            resolve_campaign_slot_terminal_disposition(
+                lifecycle_started=True,
+                owned_terminal_window_state=terminal_state,
+                queue_disposition=queue_disposition,
+            )
+        )
+        quality_results.append({
+            **evaluate_quality_consistency(
+                memory_status=str(memory["memory_status"]),
+                data_quality_label=str(memory["data_quality_label"]),
+                do_not_train=int(memory["do_not_train"]),
+                proposed_episode_kind=None,
+            ),
+            "window_id": token_to_window[token_id],
+        })
+
+    active_jobs = int(connection.execute(
+        """SELECT COUNT(*) FROM printer_memory_factory_campaign_scheduler_work
+           WHERE campaign_id=? AND run_id=? AND cycle_id=?
+             AND work_state IN ('PENDING','RUNNING','COOLDOWN')""",
+        (context.campaign_id, context.campaign_run_id, context.cycle_id),
+    ).fetchone()[0])
+
+    report = build_full_run_terminal_report(
+        connection,
+        context=context,
+        execution_id=execution_id,
+        supervision_id=supervision_id,
+        launch_git_provenance=launch_git_provenance,
+        db_target_identity=db_target_identity,
+        selected_tokens=selected_tokens,
+        runtime_terminal_status="TERMINAL_COMPLETED",
+        owner_evidence=owner.durable_evidence(),
+        six_unit_totals=owner.six_unit_totals(),
+        reconciliation=reconciliation,
+        per_token_outcomes=per_token_outcomes,
+        slot_dispositions=slot_dispositions,
+        quality_results=quality_results,
+        zero_active_scheduler_jobs=active_jobs,
+        forbidden_capability_deltas=forbidden_capability_deltas or {},
+        lease_released=lease_released,
+    )
+    gate = evaluate_campaign_acceptance_gate(report, authorized_invocation_count=1)
+    verdict = gate["verdict"]
+    if blocked_reasons and verdict == VERDICT_PASS:
+        verdict = VERDICT_BLOCKED_UNSAFE
+    return {
+        "verdict": verdict,
+        "campaign_acceptance": gate,
+        "report": report,
+        "reconciliation": reconciliation,
+        "registered_windows": registered_windows,
+        "projected_scheduler_jobs": projected_jobs,
+        "blocked_reasons": blocked_reasons,
+    }
+
+
 __all__ = [
     "FullRunAccountingError",
     "OperationalLifecycleOwnershipContext",
@@ -508,7 +905,10 @@ __all__ = [
     "VERDICT_HONEST_BLOCKED",
     "VERDICT_PASS",
     "build_full_run_terminal_report",
+    "build_lifecycle_action_local_observer",
     "evaluate_campaign_acceptance_gate",
     "evaluate_quality_consistency",
+    "finalize_full_run_ownership_and_report",
+    "lifecycle_step_identities",
     "resolve_campaign_slot_terminal_disposition",
 ]

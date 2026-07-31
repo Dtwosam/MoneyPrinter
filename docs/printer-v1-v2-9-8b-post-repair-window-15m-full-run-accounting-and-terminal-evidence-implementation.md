@@ -1,5 +1,12 @@
 # Printer V1 V2-9.8B Post-Repair WINDOW_15M Full-Run Accounting and Terminal-Evidence Implementation
 
+> **Wiring Correction Addendum (2026-07-31).** The original commit `0f6f7a9`
+> implemented and tested the primitives but did **not** wire them into the
+> ordinary coordinator/factory path — see
+> [§C. Wiring Correction](#c-wiring-correction) for the correction, the exact
+> runtime wiring added, the transaction/compensation boundary, and the new
+> integration tests that drive the real factory to two closes.
+
 Date: 2026-07-31
 
 Lane:
@@ -230,7 +237,7 @@ confidence/weighting/embeddings/vectors all remain locked.
 | Risk / blocker | Why it matters | Mitigation in this lane | Proof still required |
 | --- | --- | --- | --- |
 | Live close path may commit before ownership registration | Could create a real but campaign-orphaned window | `register_campaign_window_close` is atomic and read-back verified; a non-atomic underlying close owner would need an explicit compensation boundary | Fault injection at every live close/registration boundary in the bounded-proof lane |
-| Primitives are not yet wired into the operational coordinator | Design intent unproven end-to-end in the live path | Slices delivered as composable, individually-proven units on disposable DBs | One bounded disposable end-to-end proof driving coordinator → factory → report |
+| ~~Primitives are not yet wired into the operational coordinator~~ **(RESOLVED in §C)** | Design intent was unproven end-to-end in the live path | Now wired: coordinator threads the operation observer + ownership context through owner → driver → factory and invokes `finalize_full_run_ownership_and_report`; proven by real-factory integration tests | Bounded-proof lane still exercises the full live command against a disposable operational DB |
 | Scheduler ownership table requires a non-null campaign `window_id` | Discovery/selection jobs have no window | Window-scoped lifecycle jobs (snapshot + close) are projected into the table; discovery/selection Scheduler ownership is carried by the `DISCOVERY_SELECTION_SCHEDULER` six-unit stage | Confirm the live discovery/selection stage seals its Scheduler identities in the bounded-proof lane |
 | Two pre-existing baseline test failures | Could be mistaken for regressions | Confirmed identical with changes stashed: `test_v2_9_7e_44_full_pilot_supply_integration.py::WiringTests::test_closed_supply_stage_flows_to_top_accounting_owner` and both git-provenance-field failures in `test_v2_9_3_early_failure_accounting_repair.py` fail at baseline `463a80e` | None from this lane; recorded, not expanded into scope |
 
@@ -256,3 +263,159 @@ authorize a live campaign.
 ```text
 V2-9.8B Post-Repair WINDOW_15M Full-Run Accounting and Terminal-Evidence Bounded Proof
 ```
+
+---
+
+## C. Wiring Correction
+
+Date: 2026-07-31. Commit: `Wire full-run 15m accounting into operational coordinator`.
+
+### C.1 Why `0f6f7a9` was incomplete
+
+Commit `0f6f7a9` delivered and unit-proved the primitives
+(`register_campaign_window_close`, `project_campaign_scheduler_job`,
+identity-bearing six-unit evidence, `CampaignActionLocalLedger`, non-vacuous
+`reconcile_owner_to_action_local`, the full-run report and acceptance gate), but
+**nothing in the ordinary operational coordinator/factory path called them**. The
+factory still closed memory windows without producing campaign-window ownership,
+Scheduler ownership, lifecycle six-unit stages, or an acceptance verdict — exactly
+the disconnect the forensic closeout found. A bounded-proof lane would therefore
+have had nothing implemented to prove. This addendum wires the primitives into
+the real path.
+
+### C.2 Exact runtime wiring added
+
+Runtime path now flowing:
+`operational command → AuthoritativeLiveOperationalCampaignOwner.run_operational →
+OriginToLifecycleCampaignDriver.run → run_one_command_15m_factory → close/terminal
+→ full-run finalization → canonical terminal summary`.
+
+Files changed in the correction:
+
+| File | Wiring |
+| --- | --- |
+| `src/printer_v1/operator_cli/one_command_15m_factory.py` | Added additive `lifecycle_ownership_context` (factory-run **drift check**: a non-empty bound factory-run id that disagrees with the factory's own run id fails closed before any lifecycle work) and `lifecycle_operation_observer` (fired at the real Scheduler-enqueue boundary in `_insert_step_and_job`, threaded through `_plan_opening_jobs`/`_plan_anchored_jobs`). Default `None`, so non-wired callers are byte-unchanged. |
+| `src/printer_v1/operator_cli/campaign_full_run_accounting.py` | Added shared `lifecycle_step_identities` (used by **both** the action-local observer and the owner sealing so keys match only when the same operation was executed *and* owned), `build_lifecycle_action_local_observer`, and `finalize_full_run_ownership_and_report` — the campaign-layer boundary that registers windows, projects jobs, seals owner lifecycle stages from committed rows, reconciles against the execution-time ledger, builds the report, and gates PASS. |
+| `src/printer_v1/operator_cli/operational_memory_factory_command.py` | The coordinator threads `lifecycle_ownership_context` + `lifecycle_operation_observer` into `lifecycle_kwargs` (propagated unchanged through the owner and driver to the factory), collects the execution-time operation records, and after the factory returns invokes `_apply_full_run_campaign_acceptance` → `finalize_full_run_ownership_and_report`. The canonical terminal summary now carries `campaign_acceptance_verdict`, `campaign_pass`, and `full_run_campaign_acceptance`, kept **separate** from `run_status` (runtime terminal). |
+
+Independent action-local evidence is genuinely captured at execution time: the
+factory reports each Scheduler enqueue as it happens; the coordinator mints
+identities from those records **after** the factory-run id is known and stores
+them in a `CampaignActionLocalLedger`. The owner side is sealed **separately** by
+`finalize` reading the committed `run_steps`. The two derivations are equal only
+when every executed operation was also owned — a real cross-check, not a
+self-comparison or a report-derived copy.
+
+### C.3 Transaction / compensation boundary
+
+The underlying memory-window close commits inside the factory before campaign
+ownership can be registered, so this is **not** one atomic transaction across
+close-and-register, and the report does not claim it is. `finalize` is the
+approved explicit **fail-closed compensation boundary**:
+
+- each `register_campaign_window_close` is itself atomic (cycle-id set +
+  ownership insert + memory-row bind + terminalize + read-back, rolled back on
+  any fault) and idempotent;
+- a registration or projection fault is preserved in `blocked_reasons` and forces
+  `BLOCKED_UNSAFE`;
+- with fewer than two owned terminal windows, or a non-empty block list, or a
+  reconciliation mismatch, the acceptance gate cannot return PASS;
+- runtime `COMPLETED` is never promoted to Campaign PASS.
+
+### C.4 Focused test results
+
+```
+PYTHONPATH=src python -m pytest \
+  tests/test_v2_9_8b_full_run_wiring_integration.py \
+  tests/test_v2_9_8b_full_run_accounting_terminal_evidence.py -q
+25 passed
+```
+
+`tests/test_v2_9_8b_full_run_wiring_integration.py` (8 tests) drives the **real**
+`run_one_command_15m_factory` with injected adapters to two real terminal
+`WINDOW_15M` closes on a disposable DB, then the **real** finalize / coordinator
+helper. It proves: (1) the real factory completes two closes and fires the
+observer for both tokens; (2) finalize registers two exact campaign-owned windows;
+(3) it projects every lifecycle Scheduler job one-row-each; (4) action-local
+identities are captured independently during execution; (5) owner slot stages are
+sealed and ingested; (6) owner/action-local equality is non-vacuous; (7) the
+canonical report is produced and the gate returns `CAMPAIGN_PASS`; (8) PASS is
+blocked when action-local evidence is missing or a single enqueue identity is
+removed; (9) COOLDOWN + quality consistency are preserved; (10) retrieval and
+financial deltas stay zero; plus factory-run drift fails closed and the coordinator
+helper (`_apply_full_run_campaign_acceptance`) gates PASS / HONEST_BLOCKED.
+
+Regression (directly affected suites, all green):
+
+```
+tests/test_v2_4_one_command_15m_factory.py
+tests/test_v2_9_7e_8_origin_to_lifecycle_integration.py
+tests/test_v2_9_7e_11_authoritative_live_operational_campaign.py
+tests/test_v2_9_8a_public_operational_command.py
+tests/test_v2_9_7d_6b_1_campaign_ownership_schema.py
+tests/test_v2_9_8b_accounting_exact_identity_report_only_repair.py
+tests/test_v2_9_7d_6b_6_final_campaign_report.py
+tests/test_v2_9_8b_campaign_accounting_terminal_enforcement.py
+tests/test_v2_9_8b_terminal_safety_accounting_finalization.py         → 169 passed
+tests/test_v2_9_8b_post_handoff_terminal_compensation.py
+tests/test_v2_9_7e_9_two_token_continuous_lifecycle.py
+tests/test_v2_9_8b_18_heartbeat_terminalization_repair.py             →  26 passed
+tests/test_v2_9_7e_47_lifecycle_and_clean_memory_repair.py
+tests/test_v2_5_multi_token_15m_conservative.py                       →  53 passed
+```
+
+Pre-existing baseline failures (unchanged, recorded not fixed):
+`test_v2_9_7e_44_full_pilot_supply_integration.py::WiringTests::test_closed_supply_stage_flows_to_top_accounting_owner`
+and the two git-provenance-field failures in
+`test_v2_9_3_early_failure_accounting_repair.py` — all fail at baseline `463a80e`
+with the branch changes stashed.
+
+### C.5 Confirmation the ordinary runtime path now consumes the primitives
+
+The public coordinator `_run_operational_campaign` now (a) propagates the ownership
+context and operation observer to the factory, (b) captures execution-time
+operation records, and (c) invokes `_apply_full_run_campaign_acceptance` after the
+factory returns, folding `campaign_acceptance_verdict` / `campaign_pass` /
+`full_run_campaign_acceptance` into the canonical terminal summary. The
+integration test drives the exact same helper the coordinator calls, on real
+committed factory rows, and proves it registers ownership and gates PASS. No
+operational command was run and the authoritative database was neither opened nor
+mutated in this lane.
+
+### C.6 Remaining proof requirements
+
+1. The bounded-proof lane runs the full public command against a **disposable**
+   operational DB end to end (the integration tests here drive the factory +
+   finalize directly and the coordinator helper, not the outer supervision /
+   backup / heartbeat shell).
+2. Fault-injection at the live close/registration boundary confirming a
+   registration failure terminalizes `BLOCKED_UNSAFE`.
+3. The design's negative proofs from §17.2 exercised through the wired path.
+
+### C.7 Money-usefulness, locks, risks (correction delta)
+
+Money-usefulness is unchanged and now *actually enforced on the ordinary path*: a
+real two-token learning run cannot be accepted as PASS unless the campaign proves
+exact ownership, exact Scheduler attribution, non-vacuous owner/action-local
+equality, and a complete canonical report — otherwise it is `BLOCKED_UNSAFE`. All
+locks in §10 remain: `WINDOW_15M` only, retrieval / paper decisions / BUY-SELL-HOLD
+/ positions / trades / audits / PnL / wallets / keys / paid APIs / scoring locked;
+support-only 5m stays non-authoritative; no historical row or report was rewritten;
+**no migration** was added.
+
+**Functionality Risks / Setbacks / Efficiency Blockers (correction):**
+
+| Risk / blocker | Why it matters | Mitigation | Proof still required |
+| --- | --- | --- | --- |
+| Close commits before ownership registration (not one atomic transaction) | A crash between close and register could leave a real orphan window | `finalize` is an explicit fail-closed compensation boundary; each registration is atomic + idempotent; unregistered ⇒ fewer than two owned windows ⇒ no PASS | Live fault-injection between close and register in the bounded-proof lane |
+| Action-local observer covers the Scheduler-enqueue boundary (scheduler/reservation/validation), transports via the existing measurement observer | If a future unit executed outside these boundaries it would escape independent capture | Owner and action-local are sealed from different sources and must be identical; any divergence blocks PASS | Extend/observe additional execution boundaries if new lifecycle units appear |
+| Factory instrumentation touches core planning functions | Regression risk across the lifecycle suite | Additive `None`-default params only; full lifecycle + factory suites re-run green | Bounded-proof lane end-to-end run |
+| Integration tests drive factory + finalize + coordinator helper, not the full supervision shell | The outer backup/heartbeat/lease shell is not exercised here | That shell is unchanged and separately tested; wiring is proven at the coordinator-helper seam | Full disposable end-to-end command in the bounded-proof lane |
+
+### C.8 Correction verdict
+
+`V2_9_8B_POST_REPAIR_WINDOW_15M_FULL_RUN_ACCOUNTING_AND_TERMINAL_EVIDENCE_IMPLEMENTATION_PASS`
+
+The real coordinator/factory path is wired and focused disposable integration
+tests pass. This does not authorize a live campaign. Next permitted lane remains
+`V2-9.8B Post-Repair WINDOW_15M Full-Run Accounting and Terminal-Evidence Bounded Proof`.
