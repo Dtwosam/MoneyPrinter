@@ -759,9 +759,10 @@ Status: V2-9.7A through V2-9.7F and V2-9.8A are closed PASS. V2-9.8A is
 V2-9.8B — Active Bounded Memory Growth Operations
 ```
 
-The operational command is published but has not run. V2-9.8B remains a
-separate operator-run bounded campaign lane. Retrieval and financial
-capabilities remain locked.
+At V2-9.7 closeout, the operational command was published but had not yet run.
+That historical status is superseded by the later V2-9.8B first authoritative
+WINDOW_15M campaign attempt, forensic audit, and accounting/exact-identity
+repair documented below. Retrieval and financial capabilities remain locked.
 
 Historical allowed work inside V2-9.7 (now complete): audit, targeted repair of
 proven operational blockers, campaign design, bounded implementation, two-token
