@@ -27,12 +27,168 @@ class CampaignSixUnitError(RuntimeError):
     """Fail-closed campaign six-unit accounting fault."""
 
 
+STAGE_TERMINAL_STATUSES = frozenset({"COMPLETED", "BLOCKED", "FAILED"})
+
+SEALED_STAGE_METADATA_FIELDS = (
+    "stage_id",
+    "stage_kind",
+    "stage_sequence",
+    "stage_terminal_status",
+    "stage_first_terminal_cause",
+    "sealed_at",
+    "campaign_id",
+    "run_id",
+    "cycle_id",
+)
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
 def _parse_iso(value: str) -> datetime:
     return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+
+def _require_nonempty_text(value: Any, *, field_name: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise CampaignSixUnitError(
+            f"SIX_UNIT_STAGE_EVIDENCE_MALFORMED:MISSING_{field_name.upper()}"
+        )
+    return text
+
+
+def build_campaign_stage_id(
+    *,
+    campaign_id: str,
+    run_id: str,
+    cycle_id: str,
+    stage_kind: str,
+    stage_sequence: int,
+) -> str:
+    """Return a deterministic stage identity for one sealed operational stage."""
+    return (
+        f"{_require_nonempty_text(campaign_id, field_name='campaign_id')}"
+        f"|{_require_nonempty_text(run_id, field_name='run_id')}"
+        f"|{_require_nonempty_text(cycle_id, field_name='cycle_id')}"
+        f"|{_require_nonempty_text(stage_kind, field_name='stage_kind')}"
+        f"|{int(stage_sequence)}"
+    )
+
+
+def seal_campaign_stage_evidence(
+    *,
+    stage_id: str,
+    stage_kind: str,
+    stage_sequence: int,
+    stage_terminal_status: str,
+    campaign_id: str,
+    run_id: str,
+    cycle_id: str,
+    stage_first_terminal_cause: str | None = None,
+    sealed_at: str | None = None,
+    ledger: MeasuredTransportLedger | None = None,
+    evidence: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Seal one immutable stage evidence block for campaign-owner ingestion.
+
+    Copies source evidence rather than mutating it. Preserves transport
+    identities and non-transport counters. Attaches exact stage and campaign
+    identities. Rejects missing IDs, invalid sequence/status, negative counters,
+    malformed transports, and empty started-stage evidence. All-zero evidence is
+    permitted only for the existing PRE_OPERATION_NO_WORK contract.
+    """
+    stage_id_text = _require_nonempty_text(stage_id, field_name="stage_id")
+    stage_kind_text = _require_nonempty_text(stage_kind, field_name="stage_kind")
+    campaign_id_text = _require_nonempty_text(campaign_id, field_name="campaign_id")
+    run_id_text = _require_nonempty_text(run_id, field_name="run_id")
+    cycle_id_text = _require_nonempty_text(cycle_id, field_name="cycle_id")
+    try:
+        sequence = int(stage_sequence)
+    except (TypeError, ValueError) as exc:
+        raise CampaignSixUnitError(
+            "SIX_UNIT_STAGE_EVIDENCE_MALFORMED:INVALID_STAGE_SEQUENCE"
+        ) from exc
+    if sequence < 1:
+        raise CampaignSixUnitError(
+            "SIX_UNIT_STAGE_EVIDENCE_MALFORMED:INVALID_STAGE_SEQUENCE"
+        )
+    status = _require_nonempty_text(
+        stage_terminal_status, field_name="stage_terminal_status"
+    ).upper()
+    if status not in STAGE_TERMINAL_STATUSES:
+        raise CampaignSixUnitError(
+            "SIX_UNIT_STAGE_EVIDENCE_MALFORMED:INVALID_STAGE_TERMINAL_STATUS"
+        )
+
+    if ledger is not None and evidence is not None:
+        raise CampaignSixUnitError(
+            "SIX_UNIT_STAGE_EVIDENCE_MALFORMED:SEAL_SOURCE_AMBIGUOUS"
+        )
+    if ledger is None and evidence is None:
+        raise CampaignSixUnitError("SIX_UNIT_STAGE_EVIDENCE_MISSING")
+
+    if ledger is not None:
+        payload: dict[str, Any] = {
+            "evidence_kind": "CAMPAIGN_SIX_UNIT_EVIDENCE_V1",
+            "transport_operations": [
+                item.as_dict() for item in ledger.transports
+            ],
+            "local_validations": int(ledger.local_validations),
+            "scheduler_work_items": int(ledger.scheduler_work_items),
+            "lifecycle_reservations": int(ledger.lifecycle_reservations),
+        }
+    else:
+        if not isinstance(evidence, Mapping) or not evidence:
+            raise CampaignSixUnitError("SIX_UNIT_STAGE_EVIDENCE_EMPTY")
+        payload = copy.deepcopy(dict(evidence))
+
+    is_pre_operation_no_work = payload.get("phase") == "PRE_OPERATION_NO_WORK"
+    try:
+        stage_totals = reconstruct_six_unit_totals_from_evidence(payload)
+    except CampaignSixUnitError as exc:
+        if str(exc).startswith("SIX_UNIT_STAGE_EVIDENCE_"):
+            raise
+        raise CampaignSixUnitError(
+            f"SIX_UNIT_STAGE_EVIDENCE_MALFORMED:{exc}"
+        ) from exc
+
+    if is_pre_operation_no_work:
+        if (
+            payload.get("source_transport_attempted") is not False
+            or int(payload.get("source_governor_requests") or 0) != 0
+            or payload.get("scheduler_work_exists") is not False
+            or payload.get("lifecycle_began") is not False
+            or not str(payload.get("no_work_reason") or "").strip()
+            or any(int(value) != 0 for value in stage_totals.values())
+        ):
+            raise CampaignSixUnitError(
+                "SIX_UNIT_STAGE_EVIDENCE_MALFORMED:PRE_OPERATION_NO_WORK_CONTRACT"
+            )
+    elif all(int(value) == 0 for value in stage_totals.values()):
+        raise CampaignSixUnitError(
+            "SIX_UNIT_STAGE_EVIDENCE_MALFORMED:EMPTY_STARTED_STAGE_EVIDENCE"
+        )
+
+    sealed = dict(payload)
+    sealed["evidence_kind"] = "CAMPAIGN_SIX_UNIT_EVIDENCE_V1"
+    sealed["stage_id"] = stage_id_text
+    sealed["stage_kind"] = stage_kind_text
+    sealed["stage_sequence"] = sequence
+    sealed["stage_terminal_status"] = status
+    sealed["stage_first_terminal_cause"] = (
+        None
+        if stage_first_terminal_cause is None
+        else str(stage_first_terminal_cause)
+    )
+    sealed["sealed_at"] = sealed_at or _utc_now_iso()
+    sealed["campaign_id"] = campaign_id_text
+    sealed["run_id"] = run_id_text
+    sealed["cycle_id"] = cycle_id_text
+    # Re-validate after seal metadata is attached (JSON-serializable copy).
+    reconstruct_six_unit_totals_from_evidence(sealed)
+    return sealed
 
 
 @dataclass
@@ -49,6 +205,11 @@ class CampaignSixUnitOwner:
     pre_operation_no_work: bool = field(default=False, init=False)
     pre_operation_no_work_reason: str | None = field(default=None, init=False)
     accounting_block_reason: str | None = field(default=None, init=False)
+    ingested_stage_ids: list[str] = field(default_factory=list, init=False)
+    sealed_stage_diagnostics: list[dict[str, Any]] = field(
+        default_factory=list, init=False
+    )
+    _ingested_stage_id_set: set[str] = field(default_factory=set, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.ledger.campaign_id = self.campaign_id
@@ -70,6 +231,27 @@ class CampaignSixUnitOwner:
     def reserve_lifecycle_transports(self, count: int) -> None:
         self.ledger.reserve_lifecycle_transports(count)
 
+    @property
+    def sealed_stage_count(self) -> int:
+        return len(self.sealed_stage_diagnostics)
+
+    @property
+    def owner_transport_operation_count(self) -> int:
+        return int(self.ledger.source_transport_operations)
+
+    def accounting_diagnostics(self) -> dict[str, Any]:
+        """Coordinator-facing sealed-stage diagnostics."""
+        return {
+            "sealed_stage_count": self.sealed_stage_count,
+            "ingested_stage_count": int(self.stage_evidence_count),
+            "ingested_stage_ids": list(self.ingested_stage_ids),
+            "owner_transport_operation_count": self.owner_transport_operation_count,
+            "accounting_block_reason": self.accounting_block_reason,
+            "sealed_stage_diagnostics": [
+                dict(item) for item in self.sealed_stage_diagnostics
+            ],
+        }
+
     def ingest_stage_evidence(self, evidence: Mapping[str, Any] | None) -> None:
         """Aggregate one active stage's durable evidence onto this owner.
 
@@ -79,7 +261,20 @@ class CampaignSixUnitOwner:
         (raising) before it can contribute silently. Rehydrated transport
         identities are recorded (the ledger enforces duplicate detection); the
         three non-transport counters are summed.
+
+        Operational sealed stages must carry sealed-stage metadata. Legacy
+        offline evidence without ``stage_id`` remains accepted only for existing
+        tests; it never weakens sealed operational uniqueness rules.
         """
+        try:
+            self._ingest_stage_evidence_impl(evidence)
+        except CampaignSixUnitError as exc:
+            self.block(str(exc))
+            raise
+
+    def _ingest_stage_evidence_impl(
+        self, evidence: Mapping[str, Any] | None
+    ) -> None:
         if not isinstance(evidence, Mapping):
             raise CampaignSixUnitError("SIX_UNIT_STAGE_EVIDENCE_MISSING")
         if not evidence:
@@ -96,6 +291,43 @@ class CampaignSixUnitOwner:
             or not required_fields.issubset(evidence)
         ):
             raise CampaignSixUnitError("SIX_UNIT_STAGE_EVIDENCE_MALFORMED")
+
+        sealed_present = any(
+            field_name in evidence for field_name in SEALED_STAGE_METADATA_FIELDS
+            if field_name not in {"campaign_id", "run_id", "cycle_id"}
+        )
+        stage_id: str | None = None
+        if sealed_present or evidence.get("stage_id") is not None:
+            stage_id = _require_nonempty_text(
+                evidence.get("stage_id"), field_name="stage_id"
+            )
+            _require_nonempty_text(evidence.get("stage_kind"), field_name="stage_kind")
+            try:
+                sequence = int(evidence.get("stage_sequence"))
+            except (TypeError, ValueError) as exc:
+                raise CampaignSixUnitError(
+                    "SIX_UNIT_STAGE_EVIDENCE_MALFORMED:INVALID_STAGE_SEQUENCE"
+                ) from exc
+            if sequence < 1:
+                raise CampaignSixUnitError(
+                    "SIX_UNIT_STAGE_EVIDENCE_MALFORMED:INVALID_STAGE_SEQUENCE"
+                )
+            status = _require_nonempty_text(
+                evidence.get("stage_terminal_status"),
+                field_name="stage_terminal_status",
+            ).upper()
+            if status not in STAGE_TERMINAL_STATUSES:
+                raise CampaignSixUnitError(
+                    "SIX_UNIT_STAGE_EVIDENCE_MALFORMED:INVALID_STAGE_TERMINAL_STATUS"
+                )
+            _require_nonempty_text(evidence.get("sealed_at"), field_name="sealed_at")
+            for field_name in ("campaign_id", "run_id", "cycle_id"):
+                _require_nonempty_text(evidence.get(field_name), field_name=field_name)
+            if stage_id in self._ingested_stage_id_set:
+                raise CampaignSixUnitError(
+                    f"SIX_UNIT_STAGE_EVIDENCE_DUPLICATE_STAGE_ID:{stage_id}"
+                )
+
         for field_name, owner_value in (
             ("campaign_id", self.campaign_id),
             ("run_id", self.run_id),
@@ -200,9 +432,15 @@ class CampaignSixUnitOwner:
         try:
             candidate_ledger.extend(stage_ledger)
         except MeasuredTransportError as exc:
+            if "DUPLICATE_TRANSPORT_IDENTITY" in str(exc):
+                raise CampaignSixUnitError(
+                    f"SIX_UNIT_STAGE_EVIDENCE_DUPLICATE_TRANSPORT:{exc}"
+                ) from exc
             raise CampaignSixUnitError(
                 f"SIX_UNIT_STAGE_EVIDENCE_MALFORMED:{exc}"
             ) from exc
+
+        # Commit atomically only after full validation succeeds.
         self.ledger = candidate_ledger
         self.stage_evidence_count += 1
         self.pre_operation_no_work = is_pre_operation_no_work
@@ -211,6 +449,26 @@ class CampaignSixUnitOwner:
             if is_pre_operation_no_work
             else None
         )
+        if stage_id is not None:
+            self._ingested_stage_id_set.add(stage_id)
+            self.ingested_stage_ids.append(stage_id)
+            self.sealed_stage_diagnostics.append(
+                {
+                    "stage_id": stage_id,
+                    "stage_kind": str(evidence.get("stage_kind") or ""),
+                    "stage_sequence": int(evidence.get("stage_sequence") or 0),
+                    "stage_terminal_status": str(
+                        evidence.get("stage_terminal_status") or ""
+                    ),
+                    "stage_first_terminal_cause": evidence.get(
+                        "stage_first_terminal_cause"
+                    ),
+                    "sealed_at": str(evidence.get("sealed_at") or ""),
+                    "transport_operations": int(
+                        stage_totals["SOURCE_TRANSPORT_OPERATION"]
+                    ),
+                }
+            )
 
     def close(self, *, ended_at: str | None = None) -> None:
         self.ended_at = ended_at or _utc_now_iso()
@@ -239,6 +497,8 @@ class CampaignSixUnitOwner:
             "pre_operation_no_work": self.pre_operation_no_work,
             "pre_operation_no_work_reason": self.pre_operation_no_work_reason,
             "accounting_block_reason": self.accounting_block_reason,
+            "ingested_stage_ids": list(self.ingested_stage_ids),
+            "sealed_stage_count": self.sealed_stage_count,
             "started_at": self.started_at,
             "ended_at": self.ended_at,
             "elapsed_seconds": round(self.elapsed_seconds(), 6),
@@ -252,6 +512,43 @@ class CampaignSixUnitOwner:
 
     def six_unit_totals(self) -> dict[str, int]:
         return self.ledger.six_unit_totals()
+
+
+def reconcile_owner_to_action_local(
+    owner: CampaignSixUnitOwner,
+    *,
+    action_local_source_operations: int | None,
+) -> dict[str, Any]:
+    """Verify owner transport completeness against action-local truth.
+
+    Action-local counts are verification only. Missing stage evidence is never
+    manufactured from durable source rows. When action-local exceeds the owner
+    transport total, accounting is incomplete (the July 31 defect shape).
+    Multi-hop stages may produce more transport identities than governed
+    requests; that direction is not a completeness mismatch.
+    """
+    owner_ops = int(owner.owner_transport_operation_count)
+    action_local = (
+        None
+        if action_local_source_operations is None
+        else int(action_local_source_operations)
+    )
+    diagnostics = owner.accounting_diagnostics()
+    mismatch_reason: str | None = None
+    if owner.accounting_block_reason is not None:
+        mismatch_reason = str(owner.accounting_block_reason)
+    elif action_local is not None and action_local > 0 and owner.stage_evidence_count == 0:
+        mismatch_reason = "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH"
+    elif action_local is not None and action_local > owner_ops:
+        mismatch_reason = "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH"
+    equal = mismatch_reason is None
+    return {
+        "equal": equal,
+        "mismatch_reason": mismatch_reason,
+        "owner_transport_operation_count": owner_ops,
+        "action_local_source_operations": action_local,
+        "diagnostics": diagnostics,
+    }
 
 
 def aggregate_campaign_six_unit_owner(
@@ -450,11 +747,16 @@ def pre_operation_no_work_evidence(
 __all__ = [
     "CampaignSixUnitError",
     "CampaignSixUnitOwner",
+    "SEALED_STAGE_METADATA_FIELDS",
+    "STAGE_TERMINAL_STATUSES",
     "aggregate_campaign_six_unit_owner",
     "assert_identity_count_matches_claimed",
+    "build_campaign_stage_id",
     "compare_report_totals_to_evidence",
     "empty_six_unit_evidence",
     "empty_six_unit_totals",
     "pre_operation_no_work_evidence",
+    "reconcile_owner_to_action_local",
     "reconstruct_six_unit_totals_from_evidence",
+    "seal_campaign_stage_evidence",
 ]

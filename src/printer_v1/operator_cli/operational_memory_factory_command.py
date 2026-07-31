@@ -1220,6 +1220,16 @@ def _terminalize_initialized_failure(
         if owner_has_evidence:
             accounting_owner.close()
             partial_evidence = accounting_owner.durable_evidence()
+        block_reason = "SIX_UNIT_EVIDENCE_MISSING"
+        owner_block = str(
+            getattr(accounting_owner, "accounting_block_reason", None) or ""
+        )
+        original_text = str(original_exception)
+        if (
+            "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH" in original_text
+            or "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH" in owner_block
+        ):
+            block_reason = "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH"
         terminal = {
             "status": "OPERATIONAL_CAMPAIGN_TERMINAL_FAILURE",
             "execution_id": execution_id,
@@ -1230,8 +1240,13 @@ def _terminalize_initialized_failure(
             "cleanup": dict(cleanup),
             "accounting_status": "SIX_UNIT_ACCOUNTING_BLOCKED",
             "report_written": False,
-            "report_block_reason": "SIX_UNIT_EVIDENCE_MISSING",
+            "report_block_reason": block_reason,
             "partial_six_unit_evidence": partial_evidence,
+            "accounting_diagnostics": (
+                accounting_owner.accounting_diagnostics()
+                if hasattr(accounting_owner, "accounting_diagnostics")
+                else None
+            ),
             "closure_errors": tuple(closure_errors),
             "restart_created": False,
             "successor_created": False,
@@ -1336,25 +1351,78 @@ def _terminalize_initialized_failure(
 def _finalize_operational_six_unit_accounting(
     accounting_owner: Any,
     stage_evidences: Sequence[Mapping[str, Any] | None] | None,
+    *,
+    action_local_source_operations: int | None = None,
 ) -> Any:
-    """Coordinator boundary: ingest ordered stage evidence without zero fallback."""
-    if (
-        stage_evidences is None
-        or not isinstance(stage_evidences, Sequence)
-        or isinstance(stage_evidences, (str, bytes))
-        or len(stage_evidences) == 0
-    ):
-        raise OperationalMemoryFactoryError("SIX_UNIT_ACCOUNTING_BLOCKED")
-    for evidence in stage_evidences:
-        if not isinstance(evidence, Mapping) or not evidence:
+    """Coordinator boundary: complete stage ingestion and reconciliation gate.
+
+    When stages already sealed into the owner via the campaign sink during
+    operational work, empty/null post-return lifecycle evidence is not
+    re-ingested (prevents double ingestion). Additional sealed stages that are
+    not yet present may still be ingested once. Action-local operation totals
+    are verification only and never manufacture missing stage evidence.
+    """
+    from printer_v1.sources.campaign_six_unit_accounting import (
+        reconcile_owner_to_action_local,
+    )
+
+    owner_has_stages = int(getattr(accounting_owner, "stage_evidence_count", 0) or 0) > 0
+    if owner_has_stages:
+        if (
+            stage_evidences is not None
+            and isinstance(stage_evidences, Sequence)
+            and not isinstance(stage_evidences, (str, bytes))
+        ):
+            already = set(getattr(accounting_owner, "ingested_stage_ids", ()) or ())
+            for evidence in stage_evidences:
+                if not isinstance(evidence, Mapping) or not evidence:
+                    continue
+                stage_id = evidence.get("stage_id")
+                if stage_id is not None and str(stage_id) in already:
+                    continue
+                # Unsealed legacy post-return aggregates must not double-count
+                # transports already ingested through the operational sink.
+                if stage_id is None:
+                    continue
+                try:
+                    accounting_owner.ingest_stage_evidence(evidence)
+                except BaseException as exc:
+                    raise OperationalMemoryFactoryError(
+                        f"SIX_UNIT_ACCOUNTING_BLOCKED:{type(exc).__name__}:{exc}"
+                    ) from exc
+    else:
+        if (
+            stage_evidences is None
+            or not isinstance(stage_evidences, Sequence)
+            or isinstance(stage_evidences, (str, bytes))
+            or len(stage_evidences) == 0
+        ):
             raise OperationalMemoryFactoryError("SIX_UNIT_ACCOUNTING_BLOCKED")
-        try:
-            accounting_owner.ingest_stage_evidence(evidence)
-        except BaseException as exc:
-            raise OperationalMemoryFactoryError(
-                f"SIX_UNIT_ACCOUNTING_BLOCKED:{type(exc).__name__}:{exc}"
-            ) from exc
+        for evidence in stage_evidences:
+            if not isinstance(evidence, Mapping) or not evidence:
+                raise OperationalMemoryFactoryError("SIX_UNIT_ACCOUNTING_BLOCKED")
+            try:
+                accounting_owner.ingest_stage_evidence(evidence)
+            except BaseException as exc:
+                raise OperationalMemoryFactoryError(
+                    f"SIX_UNIT_ACCOUNTING_BLOCKED:{type(exc).__name__}:{exc}"
+                ) from exc
+
     accounting_owner.close()
+    reconciliation = reconcile_owner_to_action_local(
+        accounting_owner,
+        action_local_source_operations=action_local_source_operations,
+    )
+    if not reconciliation["equal"]:
+        reason = str(
+            reconciliation.get("mismatch_reason")
+            or "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH"
+        )
+        if hasattr(accounting_owner, "block"):
+            accounting_owner.block(reason)
+        raise OperationalMemoryFactoryError(
+            f"SIX_UNIT_ACCOUNTING_BLOCKED:{reason}"
+        )
     return accounting_owner
 
 
@@ -1607,19 +1675,51 @@ def _run_operational_campaign(
             required_token_capacity=TOKEN_CAPACITY,
         )
         # --- Top-level six-unit owner: the single accounting authority -------
-        # Stage results expose evidence; the coordinator's owner aggregates it.
-        # Optional lifecycle/reporting dicts are no longer the authority — a
-        # malformed stage block fails closed here (terminalizes FAILED).
+        # Operational stages seal into campaign_units via the sink during work.
+        # Lifecycle may expose additional sealed stages; post-return discovery
+        # aggregates are no longer re-ingested when stages already arrived.
         stage_evidence = (
             reporting.get("six_unit_evidence")
             or lifecycle.get("six_unit_evidence")
         )
         exposed_stage_evidences = lifecycle.get("six_unit_stage_evidences")
-        if exposed_stage_evidences is None:
+        if exposed_stage_evidences is None and campaign_units.stage_evidence_count == 0:
             exposed_stage_evidences = (stage_evidence,)
-        _finalize_operational_six_unit_accounting(
-            campaign_units, exposed_stage_evidences
-        )
+        # Pre-lifecycle terminals: action-local campaign source calls must not
+        # exceed sealed stage transport totals (July 31 completeness gate).
+        # After lifecycle starts, holder/scheduler stages may add governed
+        # requests that are not yet stage-sealed into this owner; do not treat
+        # that larger total as missing supply-stage evidence.
+        action_local_ops = None
+        if not bool(result.lifecycle_started):
+            action_local_ops = reporting.get("campaign_source_calls")
+            if action_local_ops is None:
+                terminal_reporting = lifecycle.get("terminal_reporting")
+                if isinstance(terminal_reporting, Mapping):
+                    action_local_ops = terminal_reporting.get(
+                        "campaign_source_calls"
+                    )
+        try:
+            _finalize_operational_six_unit_accounting(
+                campaign_units,
+                exposed_stage_evidences,
+                action_local_source_operations=(
+                    None if action_local_ops is None else int(action_local_ops)
+                ),
+            )
+        except OperationalMemoryFactoryError as accounting_exc:
+            # Preserve original first terminal cause; block report on mismatch.
+            if "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH" in str(
+                accounting_exc
+            ) or "SIX_UNIT_ACCOUNTING_BLOCKED" in str(accounting_exc):
+                campaign_units.block(
+                    "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH"
+                    if "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH"
+                    in str(accounting_exc)
+                    else str(accounting_exc)
+                )
+                raise
+            raise
         aggregated_six_unit_totals = campaign_units.six_unit_totals()
         aggregated_six_unit_evidence = campaign_units.durable_evidence()
         payload = build_campaign_terminal_report(
@@ -2481,124 +2581,547 @@ def recover_orphan(*, operator_approved: bool) -> dict[str, Any]:
     )
 
 
-def report_only() -> dict[str, Any]:
-    discovery_only = _load_latest_discovery_only_report()
+def _resolve_report_only_identity(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str | None,
+    run_id: str | None,
+) -> dict[str, Any]:
+    """Resolve exact campaign/run identity for report-only (read-only).
+
+    Explicit mode requires both IDs and never falls back to another campaign.
+    No-argument mode resolves the latest supervision first, then that exact
+    campaign/run configuration — never the globally newest report.
+    """
+    explicit_campaign = None if campaign_id is None else str(campaign_id).strip()
+    explicit_run = None if run_id is None else str(run_id).strip()
+    if (explicit_campaign and not explicit_run) or (
+        explicit_run and not explicit_campaign
+    ):
+        return {
+            "status": "REPLAY_BLOCKED",
+            "block_reason": "REPORT_ONLY_EXACT_IDENTITY_INCOMPLETE",
+            "requested_identity": {
+                "campaign_id": explicit_campaign,
+                "run_id": explicit_run,
+            },
+        }
+
+    if explicit_campaign and explicit_run:
+        # Exact identity: supervision (campaign_id + run_id) owns configuration.
+        # Never inspect another campaign as fallback.
+        run_row = connection.execute(
+            """SELECT campaign_id,run_id FROM printer_memory_factory_campaign_runs
+               WHERE campaign_id=? AND run_id=?""",
+            (explicit_campaign, explicit_run),
+        ).fetchone()
+        supervision = connection.execute(
+            """SELECT campaign_id,run_id,configuration_id,supervision_state
+               FROM printer_memory_factory_campaign_supervision
+               WHERE campaign_id=? AND run_id=?
+               ORDER BY created_at DESC, supervision_id DESC LIMIT 2""",
+            (explicit_campaign, explicit_run),
+        ).fetchall()
+        if run_row is None and not supervision:
+            return {
+                "status": "REPLAY_BLOCKED",
+                "block_reason": "REPORT_ONLY_IDENTITY_UNKNOWN",
+                "requested_identity": {
+                    "campaign_id": explicit_campaign,
+                    "run_id": explicit_run,
+                },
+            }
+        if len(supervision) > 1:
+            # Distinct configuration_ids for one campaign/run is ambiguous.
+            config_ids = {str(row["configuration_id"]) for row in supervision}
+            if len(config_ids) > 1:
+                return {
+                    "status": "REPLAY_BLOCKED",
+                    "block_reason": "REPORT_ONLY_IDENTITY_AMBIGUOUS",
+                    "requested_identity": {
+                        "campaign_id": explicit_campaign,
+                        "run_id": explicit_run,
+                    },
+                }
+        if supervision:
+            configuration_id = str(supervision[0]["configuration_id"])
+        else:
+            # Run exists without supervision: resolve the unique configuration
+            # for this campaign only when exactly one configuration row exists.
+            configs = connection.execute(
+                """SELECT configuration_id,campaign_id,configuration_json
+                   FROM printer_memory_factory_campaign_configurations
+                   WHERE campaign_id=?
+                   ORDER BY created_at DESC, configuration_id DESC""",
+                (explicit_campaign,),
+            ).fetchall()
+            if len(configs) != 1:
+                return {
+                    "status": "REPLAY_BLOCKED",
+                    "block_reason": (
+                        "REPORT_ONLY_IDENTITY_AMBIGUOUS"
+                        if len(configs) > 1
+                        else "REPORT_ONLY_IDENTITY_UNKNOWN"
+                    ),
+                    "requested_identity": {
+                        "campaign_id": explicit_campaign,
+                        "run_id": explicit_run,
+                    },
+                }
+            configuration_id = str(configs[0]["configuration_id"])
+        config_row = connection.execute(
+            """SELECT configuration_id,campaign_id,configuration_json
+               FROM printer_memory_factory_campaign_configurations
+               WHERE configuration_id=? AND campaign_id=?""",
+            (configuration_id, explicit_campaign),
+        ).fetchone()
+        if config_row is None:
+            return {
+                "status": "REPLAY_BLOCKED",
+                "block_reason": "REPORT_ONLY_IDENTITY_UNKNOWN",
+                "requested_identity": {
+                    "campaign_id": explicit_campaign,
+                    "run_id": explicit_run,
+                },
+            }
+        return {
+            "status": "RESOLVED",
+            "campaign_id": explicit_campaign,
+            "run_id": explicit_run,
+            "configuration_id": str(config_row["configuration_id"]),
+            "configuration_json": str(config_row["configuration_json"]),
+            "requested_identity": {
+                "campaign_id": explicit_campaign,
+                "run_id": explicit_run,
+            },
+        }
+
+    # No-argument: latest supervision first, then that exact campaign/run.
+    supervision = connection.execute(
+        """SELECT campaign_id,run_id,configuration_id,supervision_state
+           FROM printer_memory_factory_campaign_supervision
+           ORDER BY created_at DESC, supervision_id DESC LIMIT 1"""
+    ).fetchone()
+    if supervision is None:
+        return {
+            "status": "REPLAY_BLOCKED",
+            "block_reason": "REPORT_ONLY_IDENTITY_UNKNOWN",
+            "requested_identity": {"campaign_id": None, "run_id": None},
+        }
+    resolved_campaign = str(supervision["campaign_id"])
+    resolved_run = str(supervision["run_id"])
+    config_row = connection.execute(
+        """SELECT configuration_id,campaign_id,configuration_json
+           FROM printer_memory_factory_campaign_configurations
+           WHERE configuration_id=? AND campaign_id=?""",
+        (supervision["configuration_id"], resolved_campaign),
+    ).fetchone()
+    if config_row is None:
+        return {
+            "status": "REPLAY_BLOCKED",
+            "block_reason": "REPORT_ONLY_IDENTITY_UNKNOWN",
+            "requested_identity": {
+                "campaign_id": resolved_campaign,
+                "run_id": resolved_run,
+            },
+        }
+    try:
+        config_payload = json.loads(str(config_row["configuration_json"] or "{}"))
+    except json.JSONDecodeError:
+        return {
+            "status": "REPLAY_BLOCKED",
+            "block_reason": "REPLAY_BLOCKED",
+            "requested_identity": {
+                "campaign_id": resolved_campaign,
+                "run_id": resolved_run,
+            },
+        }
+    config_run = str(config_payload.get("run_id") or "")
+    if config_run and config_run != resolved_run:
+        return {
+            "status": "REPLAY_BLOCKED",
+            "block_reason": "REPLAY_BLOCKED",
+            "requested_identity": {
+                "campaign_id": resolved_campaign,
+                "run_id": resolved_run,
+            },
+        }
+    return {
+        "status": "RESOLVED",
+        "campaign_id": resolved_campaign,
+        "run_id": resolved_run,
+        "configuration_id": str(config_row["configuration_id"]),
+        "configuration_json": str(config_row["configuration_json"]),
+        "requested_identity": {
+            "campaign_id": resolved_campaign,
+            "run_id": resolved_run,
+        },
+    }
+
+
+def _load_exact_terminal_summary(
+    *,
+    configuration: Mapping[str, Any],
+    campaign_id: str,
+    run_id: str,
+    configuration_id: str,
+) -> dict[str, Any] | None:
+    """Load terminal-summary only when all identities match the exact attempt."""
+    import hashlib
+
+    execution_id = str(configuration.get("execution_id") or "").strip()
+    if not execution_id:
+        return None
+    summary_path = (ARTIFACT_ROOT / execution_id / "terminal-summary.json").resolve()
+    if not summary_path.is_file():
+        return None
+    try:
+        payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    if str(payload.get("campaign_id") or "") != str(campaign_id):
+        return None
+    # run_id may live at top level or nested; require match when present.
+    payload_run = payload.get("run_id")
+    if payload_run is not None and str(payload_run) != str(run_id):
+        return None
+    payload_config = payload.get("configuration_id")
+    if payload_config is not None and str(payload_config) != str(configuration_id):
+        return None
+    if str(payload.get("execution_id") or "") not in {"", execution_id}:
+        if str(payload.get("execution_id") or "") != execution_id:
+            return None
+    digest = hashlib.sha256(summary_path.read_bytes()).hexdigest()
+    return {
+        "status": payload.get("status"),
+        "first_terminal_cause": payload.get("first_terminal_cause"),
+        "accounting_status": payload.get("accounting_status"),
+        "report_written": payload.get("report_written"),
+        "report_block_reason": payload.get("report_block_reason"),
+        "summary_path": str(summary_path),
+        "summary_sha256": digest,
+    }
+
+
+def _report_only_zero_work(payload: dict[str, Any]) -> dict[str, Any]:
+    """Stamp the zero-source / zero-write report-only contract on every path."""
+    payload.setdefault("mode", "REPORT_ONLY")
+    payload["source_calls"] = 0
+    payload["scheduler_runtime_calls"] = 0
+    payload["database_writes"] = 0
+    payload["replay_new_source_calls"] = 0
+    payload["replay_new_scheduler_calls"] = 0
+    payload.setdefault("fallback_used", False)
+    return payload
+
+
+def report_only(
+    *,
+    campaign_id: str | None = None,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """Replay one exact campaign terminal report (zero-source, zero-write).
+
+    Both ``campaign_id`` and ``run_id`` must be supplied together or neither.
+    Discovery-only output is never a campaign report-only fallback.
+    """
     connection = _read_only()
     try:
+        identity = _resolve_report_only_identity(
+            connection, campaign_id=campaign_id, run_id=run_id
+        )
+        if identity.get("status") != "RESOLVED":
+            return _report_only_zero_work(
+                {
+                    "mode": "REPORT_ONLY",
+                    "status": "REPLAY_BLOCKED",
+                    "requested_identity": identity.get("requested_identity")
+                    or {"campaign_id": campaign_id, "run_id": run_id},
+                    "report_rows": 0,
+                    "fallback_used": False,
+                    "block_reason": str(
+                        identity.get("block_reason") or "REPLAY_BLOCKED"
+                    ),
+                }
+            )
+
+        resolved_campaign = str(identity["campaign_id"])
+        resolved_run = str(identity["run_id"])
+        resolved_configuration_id = str(identity["configuration_id"])
+        try:
+            configuration = json.loads(str(identity["configuration_json"]))
+        except json.JSONDecodeError:
+            return _report_only_zero_work({
+                "mode": "REPORT_ONLY",
+                "status": "REPLAY_BLOCKED",
+                "requested_identity": identity["requested_identity"],
+                "report_rows": 0,
+                "fallback_used": False,
+                "block_reason": "REPLAY_BLOCKED",
+                "source_calls": 0,
+                "scheduler_runtime_calls": 0,
+                "database_writes": 0,
+            })
+        if not isinstance(configuration, dict):
+            return _report_only_zero_work({
+                "mode": "REPORT_ONLY",
+                "status": "REPLAY_BLOCKED",
+                "requested_identity": identity["requested_identity"],
+                "report_rows": 0,
+                "fallback_used": False,
+                "block_reason": "REPLAY_BLOCKED",
+                "source_calls": 0,
+                "scheduler_runtime_calls": 0,
+                "database_writes": 0,
+            })
+        config_run = str(configuration.get("run_id") or "")
+        if config_run and config_run != resolved_run:
+            return _report_only_zero_work({
+                "mode": "REPORT_ONLY",
+                "status": "REPLAY_BLOCKED",
+                "requested_identity": identity["requested_identity"],
+                "report_rows": 0,
+                "fallback_used": False,
+                "block_reason": "REPLAY_BLOCKED",
+                "source_calls": 0,
+                "scheduler_runtime_calls": 0,
+                "database_writes": 0,
+            })
+
         row = connection.execute(
             """SELECT r.report_id,r.campaign_id,r.configuration_id,
-                      c.configuration_json, r.created_at
+                      r.report_state,c.configuration_json,c.campaign_id AS config_campaign_id
                FROM printer_memory_factory_campaign_reports AS r
                JOIN printer_memory_factory_campaign_configurations AS c
                  ON c.configuration_id=r.configuration_id
                WHERE r.report_state='REPORT_TERMINAL'
-               ORDER BY r.created_at DESC,r.report_id DESC LIMIT 1"""
-        ).fetchone()
+                 AND r.campaign_id=?
+                 AND c.campaign_id=?
+                 AND r.configuration_id=?
+               ORDER BY r.created_at DESC, r.report_id DESC""",
+            (resolved_campaign, resolved_campaign, resolved_configuration_id),
+        ).fetchall()
     finally:
         connection.close()
 
-    # Prefer discovery-only when it is the only report or newer than the latest
-    # campaign terminal report.
-    prefer_discovery = False
-    if discovery_only is not None:
-        if row is None:
-            prefer_discovery = True
-        else:
-            try:
-                discovery_path = Path(str(discovery_only.get("report_path") or ""))
-                if discovery_path.is_file():
-                    discovery_mtime = discovery_path.stat().st_mtime
-                    # Campaign report created_at is ISO; compare via path mtime
-                    # of matching report dir when available, else prefer discovery
-                    # when its execution_id is newer lexicographically.
-                    campaign_created = str(row["created_at"] or "")
-                    discovery_exec = str(discovery_only.get("execution_id") or "")
-                    prefer_discovery = bool(
-                        discovery_exec
-                        and (
-                            discovery_exec >= campaign_created.replace(":", "").replace(
-                                "+", ""
-                            )[:15]
-                            or discovery_mtime > 0
-                        )
-                    )
-                    # Strong rule: if discovery-only report exists and was written
-                    # after the campaign report timestamp, prefer it.
-                    try:
-                        campaign_dt = datetime.fromisoformat(
-                            campaign_created.replace("Z", "+00:00")
-                        )
-                        prefer_discovery = discovery_mtime >= campaign_dt.timestamp()
-                    except ValueError:
-                        prefer_discovery = True
-            except OSError:
-                prefer_discovery = True
-
-    if prefer_discovery and discovery_only is not None:
-        return {
-            "mode": "REPORT_ONLY",
-            "report_kind": DISCOVERY_ONLY_MODE,
-            "qualification": discovery_only,
-            "execution_id": discovery_only.get("execution_id"),
-            "qualification_id": discovery_only.get("qualification_id"),
-            "status": discovery_only.get("status"),
-            "discovery_rounds": discovery_only.get("discovery_rounds"),
-            "candidates_observed": discovery_only.get("candidates_observed"),
-            "candidates_validated": discovery_only.get("candidates_validated"),
-            "eligible_candidates": discovery_only.get("eligible_reserve_count"),
-            "required_token_capacity": discovery_only.get("required_token_capacity"),
-            "selected_candidate_mints": discovery_only.get("selected_candidate_mints"),
-            "shortage_classification": discovery_only.get("shortage_classification"),
-            "exhaustion_certificate": discovery_only.get("exhaustion_certificate"),
-            "report_path": discovery_only.get("report_path"),
-            "restart_created": False,
-            "successor_created": False,
-            "replay_new_source_calls": 0,
-            "replay_new_scheduler_calls": 0,
-            "source_calls": 0,
-            "scheduler_runtime_calls": 0,
-            "database_writes": 0,
-        }
-
-    if row is None:
-        if discovery_only is not None:
-            return {
+    if not row:
+        summary = _load_exact_terminal_summary(
+            configuration=configuration,
+            campaign_id=resolved_campaign,
+            run_id=resolved_run,
+            configuration_id=resolved_configuration_id,
+        )
+        if summary is None:
+            return _report_only_zero_work({
                 "mode": "REPORT_ONLY",
-                "report_kind": DISCOVERY_ONLY_MODE,
-                "qualification": discovery_only,
-                "execution_id": discovery_only.get("execution_id"),
-                "qualification_id": discovery_only.get("qualification_id"),
-                "status": discovery_only.get("status"),
-                "report_path": discovery_only.get("report_path"),
-                "restart_created": False,
-                "successor_created": False,
-                "replay_new_source_calls": 0,
-                "replay_new_scheduler_calls": 0,
+                "status": "REPLAY_BLOCKED",
+                "requested_identity": identity["requested_identity"],
+                "report_rows": 0,
+                "fallback_used": False,
+                "block_reason": "EXACT_TERMINAL_REPORT_MISSING",
+                "terminal_summary_block_reason": (
+                    "EXACT_TERMINAL_SUMMARY_MISSING_OR_MISMATCHED"
+                ),
                 "source_calls": 0,
                 "scheduler_runtime_calls": 0,
                 "database_writes": 0,
-            }
-        raise OperationalMemoryFactoryError("no terminal operational report exists")
-    configuration = json.loads(str(row["configuration_json"]))
+            })
+        return _report_only_zero_work({
+            "mode": "REPORT_ONLY",
+            "status": "REPLAY_BLOCKED",
+            "requested_identity": identity["requested_identity"],
+            "report_rows": 0,
+            "fallback_used": False,
+            "block_reason": "EXACT_TERMINAL_REPORT_MISSING",
+            "terminal_summary": summary,
+            "source_calls": 0,
+            "scheduler_runtime_calls": 0,
+            "database_writes": 0,
+        })
+
+    if len(row) != 1:
+        # Exact identity must not be ambiguous across terminal report rows.
+        return _report_only_zero_work({
+            "mode": "REPORT_ONLY",
+            "status": "REPLAY_BLOCKED",
+            "requested_identity": identity["requested_identity"],
+            "report_rows": len(row),
+            "fallback_used": False,
+            "block_reason": "REPLAY_BLOCKED",
+            "source_calls": 0,
+            "scheduler_runtime_calls": 0,
+            "database_writes": 0,
+        })
+
+    report_row = row[0]
+    if str(report_row["campaign_id"]) != resolved_campaign:
+        return _report_only_zero_work({
+            "mode": "REPORT_ONLY",
+            "status": "REPLAY_BLOCKED",
+            "requested_identity": identity["requested_identity"],
+            "report_rows": 1,
+            "fallback_used": False,
+            "block_reason": "REPLAY_BLOCKED",
+            "source_calls": 0,
+            "scheduler_runtime_calls": 0,
+            "database_writes": 0,
+        })
+    if str(report_row["configuration_id"]) != resolved_configuration_id:
+        return _report_only_zero_work({
+            "mode": "REPORT_ONLY",
+            "status": "REPLAY_BLOCKED",
+            "requested_identity": identity["requested_identity"],
+            "report_rows": 1,
+            "fallback_used": False,
+            "block_reason": "REPLAY_BLOCKED",
+            "source_calls": 0,
+            "scheduler_runtime_calls": 0,
+            "database_writes": 0,
+        })
+    if str(report_row["config_campaign_id"]) != resolved_campaign:
+        return _report_only_zero_work({
+            "mode": "REPORT_ONLY",
+            "status": "REPLAY_BLOCKED",
+            "requested_identity": identity["requested_identity"],
+            "report_rows": 1,
+            "fallback_used": False,
+            "block_reason": "REPLAY_BLOCKED",
+            "source_calls": 0,
+            "scheduler_runtime_calls": 0,
+            "database_writes": 0,
+        })
+
     report_dir = None
+    report_directory_identity = configuration.get("report_directory_identity")
+    if not report_directory_identity:
+        return _report_only_zero_work({
+            "mode": "REPORT_ONLY",
+            "status": "REPLAY_BLOCKED",
+            "requested_identity": identity["requested_identity"],
+            "report_rows": 1,
+            "fallback_used": False,
+            "block_reason": "REPLAY_BLOCKED",
+            "source_calls": 0,
+            "scheduler_runtime_calls": 0,
+            "database_writes": 0,
+        })
     for candidate in ARTIFACT_ROOT.glob("*/reports"):
-        if report_path_identity(candidate) == configuration["report_directory_identity"]:
+        if report_path_identity(candidate) == report_directory_identity:
             report_dir = candidate
             break
     if report_dir is None:
-        raise OperationalMemoryFactoryError("terminal report directory is unavailable")
-    replay = replay_campaign_terminal_report(
-        AUTHORITATIVE_DB,
-        report_dir,
-        report_id=row["report_id"],
-        campaign_id=row["campaign_id"],
-        configuration_id=row["configuration_id"],
+        return _report_only_zero_work({
+            "mode": "REPORT_ONLY",
+            "status": "REPLAY_BLOCKED",
+            "requested_identity": identity["requested_identity"],
+            "report_rows": 1,
+            "fallback_used": False,
+            "block_reason": "REPLAY_BLOCKED",
+            "source_calls": 0,
+            "scheduler_runtime_calls": 0,
+            "database_writes": 0,
+        })
+
+    try:
+        replay = replay_campaign_terminal_report(
+            AUTHORITATIVE_DB,
+            report_dir,
+            report_id=report_row["report_id"],
+            campaign_id=report_row["campaign_id"],
+            configuration_id=report_row["configuration_id"],
+        )
+    except Exception:
+        return _report_only_zero_work({
+            "mode": "REPORT_ONLY",
+            "status": "REPLAY_BLOCKED",
+            "requested_identity": identity["requested_identity"],
+            "report_rows": 1,
+            "fallback_used": False,
+            "block_reason": "REPLAY_BLOCKED",
+            "source_calls": 0,
+            "scheduler_runtime_calls": 0,
+            "database_writes": 0,
+        })
+
+    # Exact identity agreement across row, configuration, and report JSON.
+    stored_report = replay.get("report") if isinstance(replay, Mapping) else None
+    stored_identity = (
+        stored_report.get("identity")
+        if isinstance(stored_report, Mapping)
+        else None
     )
-    return {
+    if not isinstance(stored_identity, Mapping):
+        return _report_only_zero_work({
+            "mode": "REPORT_ONLY",
+            "status": "REPLAY_BLOCKED",
+            "requested_identity": identity["requested_identity"],
+            "report_rows": 1,
+            "fallback_used": False,
+            "block_reason": "REPLAY_BLOCKED",
+            "source_calls": 0,
+            "scheduler_runtime_calls": 0,
+            "database_writes": 0,
+        })
+    if str(stored_identity.get("campaign_id") or "") != resolved_campaign:
+        return _report_only_zero_work({
+            "mode": "REPORT_ONLY",
+            "status": "REPLAY_BLOCKED",
+            "requested_identity": identity["requested_identity"],
+            "report_rows": 1,
+            "fallback_used": False,
+            "block_reason": "REPLAY_BLOCKED",
+            "source_calls": 0,
+            "scheduler_runtime_calls": 0,
+            "database_writes": 0,
+        })
+    if str(stored_identity.get("run_id") or "") != resolved_run:
+        return _report_only_zero_work({
+            "mode": "REPORT_ONLY",
+            "status": "REPLAY_BLOCKED",
+            "requested_identity": identity["requested_identity"],
+            "report_rows": 1,
+            "fallback_used": False,
+            "block_reason": "REPLAY_BLOCKED",
+            "source_calls": 0,
+            "scheduler_runtime_calls": 0,
+            "database_writes": 0,
+        })
+    if str(stored_identity.get("configuration_id") or "") != resolved_configuration_id:
+        return _report_only_zero_work({
+            "mode": "REPORT_ONLY",
+            "status": "REPLAY_BLOCKED",
+            "requested_identity": identity["requested_identity"],
+            "report_rows": 1,
+            "fallback_used": False,
+            "block_reason": "REPLAY_BLOCKED",
+            "source_calls": 0,
+            "scheduler_runtime_calls": 0,
+            "database_writes": 0,
+        })
+    if str(replay.get("report_id") or stored_identity.get("report_id") or "") != str(
+        report_row["report_id"]
+    ):
+        return _report_only_zero_work({
+            "mode": "REPORT_ONLY",
+            "status": "REPLAY_BLOCKED",
+            "requested_identity": identity["requested_identity"],
+            "report_rows": 1,
+            "fallback_used": False,
+            "block_reason": "REPLAY_BLOCKED",
+            "source_calls": 0,
+            "scheduler_runtime_calls": 0,
+            "database_writes": 0,
+        })
+
+    return _report_only_zero_work({
         "mode": "REPORT_ONLY",
         "report_kind": "campaign",
+        "status": "REPLAYED",
+        "requested_identity": identity["requested_identity"],
+        "fallback_used": False,
         "replay": replay,
-        # Original campaign totals from the stored terminal report.
         "campaign_source_calls": replay.get("campaign_source_calls"),
         "campaign_scheduler_calls": replay.get("campaign_scheduler_calls"),
         "candidates_observed": replay.get("candidates_observed"),
@@ -2607,23 +3130,12 @@ def report_only() -> dict[str, Any]:
         "required_token_capacity": replay.get("required_token_capacity"),
         "blocked_supply_reason": replay.get("blocked_supply_reason"),
         "blocked_supply": replay.get("blocked_supply"),
-        "discovery_only_qualification": (
-            None
-            if discovery_only is None
-            else {
-                "execution_id": discovery_only.get("execution_id"),
-                "qualification_id": discovery_only.get("qualification_id"),
-                "status": discovery_only.get("status"),
-                "report_path": discovery_only.get("report_path"),
-            }
-        ),
-        # Report-only itself performs no new Source Governor / Scheduler work.
         "replay_new_source_calls": 0,
         "replay_new_scheduler_calls": 0,
         "source_calls": 0,
         "scheduler_runtime_calls": 0,
         "database_writes": 0,
-    }
+    })
 
 
 def main(argv: Iterable[str] | None = None) -> int:
@@ -2645,11 +3157,27 @@ def main(argv: Iterable[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--operator-approved", action="store_true")
+    parser.add_argument(
+        "--campaign-id",
+        default=None,
+        help="Exact campaign identity for report-only (requires --run-id).",
+    )
+    parser.add_argument(
+        "--run-id",
+        default=None,
+        help="Exact run identity for report-only (requires --campaign-id).",
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
     # Reset action-local identity at the start of every public invocation so a
     # blocked preflight/status/report never inherits a previous campaign total.
     _ACTION_RUN_CONTEXT["run_id"] = None
     try:
+        if args.mode != "report-only" and (
+            args.campaign_id is not None or args.run_id is not None
+        ):
+            raise OperationalMemoryFactoryError(
+                "campaign-id/run-id are only valid for report-only"
+            )
         if args.mode == "preflight-only":
             result = build_activation_preflight()
         elif args.mode == SELECTIVE_1H_PREFLIGHT_MODE:
@@ -2671,7 +3199,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         elif args.mode == "recover-orphan":
             result = recover_orphan(operator_approved=args.operator_approved)
         else:
-            result = report_only()
+            result = report_only(
+                campaign_id=args.campaign_id,
+                run_id=args.run_id,
+            )
         print(json.dumps(result, indent=2, sort_keys=True, default=str))
         return 0
     except Exception as exc:

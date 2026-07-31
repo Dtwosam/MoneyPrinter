@@ -388,6 +388,7 @@ def enrich_pool_liquidity(
     request_key: str,
     recent_request_count: int = 0,
     on_request: Callable[[int], None] | None = None,
+    measured_ledger: Any | None = None,
 ) -> LiquidityEvidence:
     """Run one governed exact-pair DexScreener request and classify its liquidity.
 
@@ -397,6 +398,10 @@ def enrich_pool_liquidity(
     rate-limited governed result is LIQUIDITY_UNPROVEN (no retry / rotation /
     reconnect / fallback). DexScreener supplies market evidence only — never Pump
     origin or graduation.
+
+    When ``measured_ledger`` is supplied, every declared transport identity on the
+    governed normalized payload is recorded for success, below-floor, malformed,
+    stale, rate-limited, and failed attempts alike.
     """
     adapter = build_dexscreener_adapter(
         enabled=True, fixture_transport=dexscreener_transport
@@ -422,6 +427,20 @@ def enrich_pool_liquidity(
     if on_request is not None:
         on_request(int(execution.request_record.id))
     result = execution.normalized_result
+    if measured_ledger is not None:
+        from printer_v1.sources.measured_transport import record_payload_transports
+
+        payload_for_measure = result.normalized_payload or {}
+        if isinstance(payload_for_measure, Mapping):
+            try:
+                record_payload_transports(
+                    measured_ledger,
+                    payload_for_measure,
+                    default_stage="DEXSCREENER_DISCOVERY",
+                )
+            except Exception:
+                # Declared identities only; never invent from request rows.
+                pass
     source_status = getattr(result.source_status, "name", str(result.source_status))
     request_id = int(execution.request_record.id)
     response_id = (
@@ -1043,6 +1062,9 @@ def _bounded_refresh_rows(
 # Front door                                                                   #
 # --------------------------------------------------------------------------- #
 
+STAGE_KIND_EXACT_LIQUIDITY = "EXACT_LIQUIDITY"
+
+
 def run_graduated_liquidity_front_door(
     db_path: str | Path,
     *,
@@ -1054,6 +1076,11 @@ def run_graduated_liquidity_front_door(
     request_key_prefix: str = "v2-9-7e-43",
     max_candidates: int = 64,
     exclude_mints: "set[str] | Sequence[str] | None" = None,
+    stage_evidence_sink: Callable[[Mapping[str, Any]], None] | None = None,
+    campaign_id: str | None = None,
+    run_id: str | None = None,
+    cycle_id: str | None = None,
+    discovery_round: int = 1,
 ) -> dict[str, Any]:
     """Enrich, floor, gate, and select graduated candidates from the registry.
 
@@ -1073,6 +1100,10 @@ def run_graduated_liquidity_front_door(
     transport for one candidate; when omitted the live
     ``build_dexscreener_pair_snapshot_transport(pool)`` is used. Never raises on an
     ordinary market/liquidity failure — every rejection is recorded honestly.
+
+    When ``stage_evidence_sink`` is supplied, each invocation seals exactly one
+    EXACT_LIQUIDITY stage evidence block with a distinct round stage_id before
+    returning or propagating an exception.
     """
     now = now or _utc_now_iso()
     latest_set = set(latest_mints)
@@ -1084,6 +1115,20 @@ def run_graduated_liquidity_front_door(
             return build_dexscreener_pair_snapshot_transport(pool)
 
     from printer_v1.db.sqlite_write_contracts import connect_operational
+    from printer_v1.sources.campaign_six_unit_accounting import (
+        build_campaign_stage_id,
+        seal_campaign_stage_evidence,
+    )
+    from printer_v1.sources.measured_transport import MeasuredTransportLedger
+
+    measured_ledger = MeasuredTransportLedger(
+        campaign_id=campaign_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
+    )
+    stage_terminal_status = "COMPLETED"
+    stage_first_terminal_cause: str | None = None
+    stage_opened = False
 
     connection = connect_operational(db_path)
     dex_request_count = 0
@@ -1115,6 +1160,7 @@ def run_graduated_liquidity_front_door(
     forbidden: dict[str, int] = {}
     integrity = "ok"
     fk_violations: list[Any] = []
+    authority = None
     try:
         rows = _bounded_refresh_rows(
             export_graduated_candidates(connection),
@@ -1176,6 +1222,7 @@ def run_graduated_liquidity_front_door(
                     )
                     rejection = LIQUIDITY_BELOW_SELECTION_FLOOR_COOLDOWN
                 else:
+                    stage_opened = True
                     transport = dexscreener_transport_factory(mint, pool)
                     liquidity = enrich_pool_liquidity(
                         connection,
@@ -1185,6 +1232,7 @@ def run_graduated_liquidity_front_door(
                         request_key=f"{request_key_prefix}-liq-{mint}",
                         recent_request_count=dex_request_count,
                         on_request=stage_request_ids.append,
+                        measured_ledger=measured_ledger,
                     )
                     dex_request_count += 1
                     record_market_floor_state(
@@ -1200,6 +1248,15 @@ def run_graduated_liquidity_front_door(
                     elif liquidity.status != LIQUIDITY_PROVEN:
                         rejection = LIQUIDITY_UNPROVEN
                         unproven += 1
+                        if liquidity.outcome_category in {
+                            LIQUIDITY_SOURCE_UNAVAILABLE,
+                            LIQUIDITY_SOURCE_RATE_LIMITED_OR_STALE,
+                            LIQUIDITY_RESPONSE_MALFORMED_OR_PARTIAL,
+                        }:
+                            stage_terminal_status = "BLOCKED"
+                            stage_first_terminal_cause = str(
+                                liquidity.outcome_category
+                            )
                     else:
                         # STNP / cooldown / rotation gate.
                         ok, reason = _cooldown_ok(connection, mint, pool, batch_seq)
@@ -1264,14 +1321,54 @@ def run_graduated_liquidity_front_door(
         forbidden = _forbidden_deltas(connection)
         integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
         fk_violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+    except BaseException as exc:
+        stage_terminal_status = "FAILED"
+        stage_first_terminal_cause = f"{type(exc).__name__}:{exc}"
+        raise
     finally:
         connection.close()
+        if stage_evidence_sink is not None and (
+            stage_opened or measured_ledger.source_transport_operations > 0
+        ):
+            if not all(
+                str(value or "").strip()
+                for value in (campaign_id, run_id, cycle_id)
+            ):
+                # Preserve the original failure path; sink wiring must be complete.
+                if stage_terminal_status != "FAILED":
+                    raise GraduatedFrontDoorError(
+                        "EXACT_LIQUIDITY_STAGE_SINK_REQUIRES_CAMPAIGN_RUN_CYCLE_IDENTITY"
+                    )
+            else:
+                sealed = seal_campaign_stage_evidence(
+                    ledger=measured_ledger,
+                    stage_id=build_campaign_stage_id(
+                        campaign_id=str(campaign_id),
+                        run_id=str(run_id),
+                        cycle_id=str(cycle_id),
+                        stage_kind=STAGE_KIND_EXACT_LIQUIDITY,
+                        stage_sequence=int(discovery_round),
+                    ),
+                    stage_kind=STAGE_KIND_EXACT_LIQUIDITY,
+                    stage_sequence=int(discovery_round),
+                    stage_terminal_status=stage_terminal_status,
+                    stage_first_terminal_cause=stage_first_terminal_cause,
+                    campaign_id=str(campaign_id),
+                    run_id=str(run_id),
+                    cycle_id=str(cycle_id),
+                    sealed_at=now,
+                )
+                stage_evidence_sink(sealed)
 
     rejected = [c.to_dict() for c in candidates if not c.eligible]
     selected_pair_identity = tuple(
         f"{c.mint}|{c.pumpswap_pool}" for c in selected
     )
-    two_candidate = authority.as_dict()
+    two_candidate = (
+        authority.as_dict()
+        if authority is not None
+        else two_candidate
+    )
     return {
         "generated_at": now,
         "selection_floor_usd": SELECTION_FLOOR_USD,
@@ -1333,4 +1430,5 @@ def run_graduated_liquidity_front_door(
         "forbidden_delta_total": sum(forbidden.values()),
         "integrity_check": integrity,
         "foreign_key_violations": len(fk_violations),
+        "discovery_round": int(discovery_round),
     }

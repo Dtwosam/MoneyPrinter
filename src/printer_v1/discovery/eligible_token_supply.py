@@ -540,6 +540,7 @@ def run_persistent_eligible_token_supply(
     cycle_id: str | None = None,
     locator_runner: Callable[..., Mapping[str, Any]] | None = None,
     tracking_precheck: bool = False,
+    stage_evidence_sink: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> PersistentSupplyResult:
     """Run persistent multi-round eligible discovery inside one campaign.
 
@@ -559,6 +560,16 @@ def run_persistent_eligible_token_supply(
     deadline_dt = _parse_iso(deadline_at) if deadline_at else None
 
     # --- Locator (optional, once) -------------------------------------------
+    # Genuinely not-requested locators emit no stage evidence block.
+    locator_stage_kwargs: dict[str, Any] = {}
+    if stage_evidence_sink is not None and run_locator:
+        locator_stage_kwargs = {
+            "stage_evidence_sink": stage_evidence_sink,
+            "campaign_id": campaign_id,
+            "run_id": run_id,
+            "cycle_id": cycle_id,
+            "stage_sequence": 1,
+        }
     if locator_runner is not None and run_locator:
         locator = dict(
             locator_runner(
@@ -566,6 +577,7 @@ def run_persistent_eligible_token_supply(
                 transport=locator_transport,
                 request_key=f"{discovery_request_key_prefix}-locator",
                 now=now,
+                **locator_stage_kwargs,
             )
         )
     elif run_locator:
@@ -578,6 +590,7 @@ def run_persistent_eligible_token_supply(
             transport=locator_transport,
             request_key=f"{discovery_request_key_prefix}-locator",
             now=now,
+            **locator_stage_kwargs,
         )
     else:
         locator = {
@@ -588,6 +601,15 @@ def run_persistent_eligible_token_supply(
         }
 
     # --- Migration discovery (once at campaign start) -----------------------
+    discovery_stage_kwargs: dict[str, Any] = {}
+    if stage_evidence_sink is not None:
+        discovery_stage_kwargs = {
+            "stage_evidence_sink": stage_evidence_sink,
+            "campaign_id": campaign_id,
+            "run_id": run_id,
+            "cycle_id": cycle_id,
+            "stage_sequence": 1,
+        }
     discovery = run_direct_migration_discovery(
         db_path,
         migration_transport=migration_transport,
@@ -599,6 +621,7 @@ def run_persistent_eligible_token_supply(
         settle_seconds=settle_seconds,
         reverify_on_transient=reverify_on_transient,
         reverify_settle_seconds=reverify_settle_seconds,
+        **discovery_stage_kwargs,
     )
     latest_mints = set(discovery.get("confirmed_this_cycle") or ())
 
@@ -860,6 +883,15 @@ def run_persistent_eligible_token_supply(
 
             discovery_rounds += 1
             round_seed = f"{cycle_seed}|ROUND_{discovery_rounds}"
+            front_door_stage_kwargs: dict[str, Any] = {}
+            if stage_evidence_sink is not None:
+                front_door_stage_kwargs = {
+                    "stage_evidence_sink": stage_evidence_sink,
+                    "campaign_id": campaign_id,
+                    "run_id": run_id,
+                    "cycle_id": cycle_id,
+                    "discovery_round": discovery_rounds,
+                }
             front_door = run_graduated_liquidity_front_door(
                 db_path,
                 cycle_seed=round_seed,
@@ -872,6 +904,7 @@ def run_persistent_eligible_token_supply(
                 ),
                 max_candidates=batch_size,
                 exclude_mints=exclude,
+                **front_door_stage_kwargs,
             )
             last_front_door = front_door
             market_calls = int(front_door.get("market_calls") or 0)

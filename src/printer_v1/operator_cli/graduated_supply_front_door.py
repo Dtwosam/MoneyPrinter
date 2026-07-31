@@ -188,15 +188,37 @@ def _fresh_profile_mints(payload: Mapping[str, Any]) -> list[str]:
     return mints
 
 
+STAGE_KIND_LOCATOR = "LOCATOR"
+
+
 def run_fresh_profile_locator(
     db_path: str | Path,
     *,
     transport: Callable[[Any], Mapping[str, Any]] | None = None,
     request_key: str = "v2-9-7e-45-locator",
     now: str | None = None,
+    stage_evidence_sink: Callable[[Mapping[str, Any]], None] | None = None,
+    campaign_id: str | None = None,
+    run_id: str | None = None,
+    cycle_id: str | None = None,
+    stage_sequence: int = 1,
 ) -> dict[str, Any]:
-    """Run one governed DexScreener fresh-profile locator-only request."""
-    del now
+    """Run one governed DexScreener fresh-profile locator-only request.
+
+    When a governed request is attempted and ``stage_evidence_sink`` is supplied,
+    exactly one sealed stage evidence block is emitted before return. When the
+    locator is genuinely not requested, callers must not invoke this function.
+    """
+    from printer_v1.sources.campaign_six_unit_accounting import (
+        build_campaign_stage_id,
+        seal_campaign_stage_evidence,
+    )
+    from printer_v1.sources.measured_transport import (
+        MeasuredTransportLedger,
+        record_payload_transports,
+    )
+
+    sealed_at = now
     transport = transport or build_dexscreener_fresh_profiles_transport()
     adapter = build_dexscreener_adapter(
         enabled=True,
@@ -211,6 +233,11 @@ def run_fresh_profile_locator(
     )
     from printer_v1.db.sqlite_write_contracts import connect_operational
 
+    measured_ledger = MeasuredTransportLedger(
+        campaign_id=campaign_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
+    )
     connection = connect_operational(db_path)
     try:
         execution = execute_source_request_with_governor(
@@ -221,9 +248,21 @@ def run_fresh_profile_locator(
         )
         request_id = int(execution.request_record.id)
         result = execution.normalized_result
+        payload = result.normalized_payload or {}
+        if isinstance(payload, Mapping):
+            try:
+                record_payload_transports(
+                    measured_ledger,
+                    payload,
+                    default_stage="DEXSCREENER_DISCOVERY",
+                )
+            except Exception:
+                # Declared identities only; never invent transports from DB rows.
+                pass
+
         if result.failure_type:
             connection.commit()
-            return {
+            report = {
                 "request_key": request_key,
                 "request_id": request_id,
                 "source_requests": 1,
@@ -238,36 +277,77 @@ def run_fresh_profile_locator(
                 "matched_mints": [],
                 "dispositions": [],
             }
-
-        payload = result.normalized_payload or {}
-        mints = _fresh_profile_mints(payload)
-        matched: list[str] = []
-        dispositions: list[dict[str, str]] = []
-        for mint in mints:
-            row = lookup_graduated_candidate(connection, mint)
-            if row is not None:
-                matched.append(mint)
-                dispositions.append(
-                    {"mint": mint, "disposition": LOCATOR_MATCHED_REGISTRY}
-                )
+            terminal_status = "BLOCKED"
+            terminal_cause = str(result.failure_type)
+        else:
+            mints = _fresh_profile_mints(payload if isinstance(payload, Mapping) else {})
+            matched: list[str] = []
+            dispositions: list[dict[str, str]] = []
+            for mint in mints:
+                row = lookup_graduated_candidate(connection, mint)
+                if row is not None:
+                    matched.append(mint)
+                    dispositions.append(
+                        {"mint": mint, "disposition": LOCATOR_MATCHED_REGISTRY}
+                    )
+                else:
+                    dispositions.append(
+                        {
+                            "mint": mint,
+                            "disposition": LOCATOR_ONLY_NO_GRADUATION_PROOF,
+                        }
+                    )
+            connection.commit()
+            usable = bool(mints)
+            report = {
+                "request_key": request_key,
+                "request_id": request_id,
+                "source_requests": 1,
+                "status": "ok" if usable else "empty",
+                "surfaced_count": len(mints),
+                "matched_count": len(matched),
+                "locator_only_count": len(mints) - len(matched),
+                "matched_mints": matched,
+                "dispositions": dispositions,
+            }
+            if usable:
+                terminal_status = "COMPLETED"
+                terminal_cause = None
             else:
-                dispositions.append(
-                    {"mint": mint, "disposition": LOCATOR_ONLY_NO_GRADUATION_PROOF}
-                )
-        connection.commit()
-        return {
-            "request_key": request_key,
-            "request_id": request_id,
-            "source_requests": 1,
-            "status": "ok",
-            "surfaced_count": len(mints),
-            "matched_count": len(matched),
-            "locator_only_count": len(mints) - len(matched),
-            "matched_mints": matched,
-            "dispositions": dispositions,
-        }
+                terminal_status = "BLOCKED"
+                terminal_cause = "LOCATOR_NO_USABLE_DATA"
     finally:
         connection.close()
+
+    if stage_evidence_sink is not None:
+        if not all(
+            str(value or "").strip()
+            for value in (campaign_id, run_id, cycle_id)
+        ):
+            raise GraduatedSupplyError(
+                "LOCATOR_STAGE_SINK_REQUIRES_CAMPAIGN_RUN_CYCLE_IDENTITY"
+            )
+        sealed = seal_campaign_stage_evidence(
+            ledger=measured_ledger,
+            stage_id=build_campaign_stage_id(
+                campaign_id=str(campaign_id),
+                run_id=str(run_id),
+                cycle_id=str(cycle_id),
+                stage_kind=STAGE_KIND_LOCATOR,
+                stage_sequence=int(stage_sequence),
+            ),
+            stage_kind=STAGE_KIND_LOCATOR,
+            stage_sequence=int(stage_sequence),
+            stage_terminal_status=terminal_status,
+            stage_first_terminal_cause=terminal_cause,
+            campaign_id=str(campaign_id),
+            run_id=str(run_id),
+            cycle_id=str(cycle_id),
+            sealed_at=sealed_at,
+        )
+        stage_evidence_sink(sealed)
+        report["sealed_stage_evidence"] = sealed
+    return report
 
 
 def build_graduated_supply(
@@ -299,6 +379,7 @@ def build_graduated_supply(
     cycle_id: str | None = None,
     required_token_capacity: int = 2,
     tracking_precheck: bool = False,
+    stage_evidence_sink: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> GraduatedSupply:
     """Compose discovery + front door via persistent multi-round supply loop.
 
@@ -352,6 +433,9 @@ def build_graduated_supply(
         cycle_id=cycle_id,
         locator_runner=run_fresh_profile_locator if run_locator else None,
         tracking_precheck=tracking_precheck,
+        # Pass the campaign sink unchanged; child stages emit once each.
+        # Do not re-emit evidence already sealed by child stages.
+        stage_evidence_sink=stage_evidence_sink,
     )
 
     discovery = dict(persistent.discovery_report)

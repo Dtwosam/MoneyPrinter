@@ -48,6 +48,8 @@ from printer_v1.sources.pumpswap_graduated_registry import (
 )
 from printer_v1.sources.campaign_six_unit_accounting import (
     CampaignSixUnitOwner,
+    build_campaign_stage_id,
+    seal_campaign_stage_evidence,
 )
 from printer_v1.sources.measured_transport import (
     MeasuredTransportError,
@@ -55,6 +57,8 @@ from printer_v1.sources.measured_transport import (
     merge_transport_payload_metadata,
     record_payload_transports,
 )
+
+STAGE_KIND_DIRECT_MIGRATION = "DIRECT_MIGRATION"
 
 MIGRATION_REQUEST_KIND = SIGNATURE_PAGE_REQUEST_KIND
 VERIFY_SOURCE = "pumpswap"
@@ -290,6 +294,11 @@ def run_direct_migration_discovery(
     settle_seconds: float = 0.0,
     reverify_on_transient: bool = False,
     reverify_settle_seconds: float = 0.0,
+    stage_evidence_sink: Callable[[Mapping[str, Any]], None] | None = None,
+    campaign_id: str | None = None,
+    run_id: str | None = None,
+    cycle_id: str | None = None,
+    stage_sequence: int = 1,
 ) -> dict[str, Any]:
     """Run one bounded direct-migration discovery cycle (governed, fail-closed).
 
@@ -303,6 +312,10 @@ def run_direct_migration_discovery(
     The restored path requires one finalized stateless page, no settle wait and
     no re-verification. The legacy arguments remain present for call-shape
     compatibility but any non-restored value fails before a source request.
+
+    When ``stage_evidence_sink`` is supplied, exactly one sealed stage evidence
+    block is emitted before every normal return. The campaign owner remains the
+    only campaign-wide accounting authority.
 
     Returns a full discovery report; raises nothing on ordinary market/verification
     failures (they are recorded honestly).
@@ -330,7 +343,12 @@ def run_direct_migration_discovery(
     migration_request_count = 0
     pumpswap_request_count = 0
     stage_request_ids: list[int] = []
-    campaign_units = CampaignSixUnitOwner(started_at=now)
+    campaign_units = CampaignSixUnitOwner(
+        campaign_id=campaign_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
+        started_at=now,
+    )
     measured_ledger = campaign_units.ledger
     local_validations = 0
     started_mono = datetime.now(timezone.utc)
@@ -345,6 +363,7 @@ def run_direct_migration_discovery(
     ledger: dict[str, Any] = {}
     forbidden: dict[str, int] = {}
     intake: dict[str, Any] = {}
+    stage_started = False
 
     def _execute_direct_request(
         *,
@@ -352,7 +371,8 @@ def run_direct_migration_discovery(
         request_key: str,
         payload: Mapping[str, Any],
     ):
-        nonlocal migration_request_count
+        nonlocal migration_request_count, stage_started
+        stage_started = True
         adapter = build_direct_pump_migration_adapter(
             enabled=True,
             transport=migration_transport,
@@ -474,7 +494,8 @@ def run_direct_migration_discovery(
         return one
 
     def _governed_verify(mint: str, signature: str, attempt: int):
-        nonlocal pumpswap_request_count
+        nonlocal pumpswap_request_count, stage_started
+        stage_started = True
         verifier_transport = verifier_transport_factory(mint, signature)
         adapter = build_pumpswap_adapter(enabled=True, fixture_transport=verifier_transport)
         request = build_governed_source_request(
@@ -760,7 +781,45 @@ def run_direct_migration_discovery(
     ):
         status = "PROVIDER_FAILURE"
 
-    return {
+    sealed_stage_evidence = None
+    if stage_evidence_sink is not None and stage_started:
+        if not all(
+            str(value or "").strip()
+            for value in (campaign_id, run_id, cycle_id)
+        ):
+            raise ValueError(
+                "DIRECT_MIGRATION_STAGE_SINK_REQUIRES_CAMPAIGN_RUN_CYCLE_IDENTITY"
+            )
+        if accounting_block_reason is not None:
+            terminal_status = "FAILED"
+            terminal_cause = str(accounting_block_reason)
+        elif status == "PROVIDER_FAILURE":
+            terminal_status = "BLOCKED"
+            terminal_cause = "PROVIDER_FAILURE"
+        else:
+            terminal_status = "COMPLETED"
+            terminal_cause = None
+        sealed_stage_evidence = seal_campaign_stage_evidence(
+            ledger=measured_ledger,
+            stage_id=build_campaign_stage_id(
+                campaign_id=str(campaign_id),
+                run_id=str(run_id),
+                cycle_id=str(cycle_id),
+                stage_kind=STAGE_KIND_DIRECT_MIGRATION,
+                stage_sequence=int(stage_sequence),
+            ),
+            stage_kind=STAGE_KIND_DIRECT_MIGRATION,
+            stage_sequence=int(stage_sequence),
+            stage_terminal_status=terminal_status,
+            stage_first_terminal_cause=terminal_cause,
+            campaign_id=str(campaign_id),
+            run_id=str(run_id),
+            cycle_id=str(cycle_id),
+            sealed_at=now,
+        )
+        stage_evidence_sink(sealed_stage_evidence)
+
+    report = {
         "status": status,
         "generated_at": now,
         "elapsed_seconds": round(elapsed_seconds, 6),
@@ -777,7 +836,9 @@ def run_direct_migration_discovery(
         "source_operation_ledger": ledger,
         "six_unit_totals": ledger.get("six_unit_totals") or empty_six_unit_totals(),
         "six_unit_evidence": ledger.get("six_unit_evidence"),
+        "sealed_stage_evidence": sealed_stage_evidence,
         "accounting_block_reason": accounting_block_reason,
         "forbidden_capability_deltas": forbidden,
         "forbidden_delta_total": sum(forbidden.values()),
     }
+    return report

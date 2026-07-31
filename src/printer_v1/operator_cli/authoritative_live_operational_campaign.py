@@ -1469,6 +1469,11 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 "run_id": command.run_id,
                 "cycle_id": cycle_id,
             })
+            # Stages emit sealed evidence into the campaign owner as each stage
+            # terminalizes. Do not re-ingest discovery evidence after return
+            # (prevents double ingestion and captures shortage-path stages).
+            if accounting_stage_evidence_sink is not None:
+                supply_kwargs["stage_evidence_sink"] = accounting_stage_evidence_sink
             supply = build_graduated_supply(
                 command.db_path,
                 cycle_seed=selection_seed,
@@ -1478,17 +1483,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
             )
         graduated_supply_proofs: tuple[Any, ...] = ()
         if supply is not None:
-            supply_evidence = (
-                (supply.discovery_report or {}).get("six_unit_evidence")
-                if isinstance(supply.discovery_report, Mapping)
-                else None
-            )
-            if (
-                accounting_stage_evidence_sink is not None
-                and isinstance(supply_evidence, Mapping)
-                and supply_evidence
-            ):
-                accounting_stage_evidence_sink(supply_evidence)
+            # Prebuilt supplies that perform no source work intentionally emit
+            # no stage evidence here. Live migration-backed supplies already
+            # sealed child stages through the sink above.
             merged_proofs = dict(graduation_proofs or {})
             merged_proofs.update(dict(supply.graduation_proofs))
             graduation_proofs = merged_proofs
