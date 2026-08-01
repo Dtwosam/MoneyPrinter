@@ -16,8 +16,8 @@ The validator:
 * validates the referenced repository-local final-authorization document;
 * validates every manifest file's exact repository-relative path, package root,
   size, and SHA-256;
-* reconciles the complete ``operator-runs/`` filesystem inventory with both
-  Git-visible and scoped Git-ignored untracked files;
+* reconciles committed historical ``operator-runs/`` files bound by the exact
+  Git HEAD with current manifest-bound visible and ignored untracked evidence;
 * binds the marker to the manifest SHA-256 and to the allowed-file-set digest.
 
 It makes no network request, no database read or write, and creates no files.
@@ -459,6 +459,42 @@ def _ignored_operator_runs_paths(
     return paths
 
 
+def _tracked_operator_runs_paths(
+    root: Path,
+    *,
+    git_executable: str,
+    timeout_seconds: float,
+    runner: Callable[..., Any],
+) -> set[str]:
+    # Return path identities tracked by the exact HEAD under operator-runs.
+    result = _git(
+        root,
+        [
+            "ls-tree",
+            "-r",
+            "--name-only",
+            "-z",
+            "HEAD",
+            "--",
+            f"{OPERATOR_RUNS_ROOT}/",
+        ],
+        git_executable=git_executable,
+        timeout_seconds=timeout_seconds,
+        runner=runner,
+        allowed={0},
+        label="tracked operator-runs status",
+    )
+    paths = _parse_git_path_set(result, label="tracked operator-runs status")
+    prefix = f"{OPERATOR_RUNS_ROOT}/"
+    outside = {path for path in paths if not path.startswith(prefix)}
+    if outside:
+        raise GitProvenanceAuthorizationError(
+            "Git tracked operator-runs status returned a path outside operator-runs: "
+            + ", ".join(sorted(outside))
+        )
+    return paths
+
+
 def _inventory_operator_runs(root: Path) -> set[str]:
     """Return every regular file below operator-runs without following symlinks."""
     operator_root = root / OPERATOR_RUNS_ROOT
@@ -518,6 +554,21 @@ def _inventory_operator_runs(root: Path) -> set[str]:
     return inventory
 
 
+def _is_beneath_root(path: str, root: str) -> bool:
+    prefix = f"{root}/"
+    return path.startswith(prefix) and len(path) > len(prefix)
+
+
+def _current_package_inventory(
+    inventory_paths: set[str], current_package_roots: tuple[str, str]
+) -> set[str]:
+    return {
+        path
+        for path in inventory_paths
+        if any(_is_beneath_root(path, root) for root in current_package_roots)
+    }
+
+
 def _normalize_sidecar_paths(paths: Iterable[str]) -> set[str]:
     normalized = set()
     for item in paths:
@@ -531,19 +582,26 @@ def _reconcile_evidence_sets(
     manifest_paths: set[str],
     visible_paths: set[str],
     ignored_paths: set[str],
+    tracked_paths: set[str],
     inventory_paths: set[str],
+    current_package_roots: tuple[str, str],
     sidecar_untracked_paths: Iterable[str],
 ) -> None:
     effective_visible = visible_paths - _normalize_sidecar_paths(
         sidecar_untracked_paths
     )
 
-    overlap = effective_visible & ignored_paths
-    if overlap:
-        raise GitProvenanceAuthorizationError(
-            "Git visible and ignored untracked classifications overlap: "
-            + ", ".join(sorted(overlap))
-        )
+    overlaps = {
+        "tracked and visible untracked": tracked_paths & effective_visible,
+        "tracked and ignored untracked": tracked_paths & ignored_paths,
+        "visible and ignored untracked": effective_visible & ignored_paths,
+    }
+    for label, overlap in overlaps.items():
+        if overlap:
+            raise GitProvenanceAuthorizationError(
+                f"Git {label} classifications overlap: "
+                + ", ".join(sorted(overlap))
+            )
 
     unexpected_visible = effective_visible - manifest_paths
     if unexpected_visible:
@@ -559,18 +617,29 @@ def _reconcile_evidence_sets(
             + ", ".join(sorted(unexpected_ignored))
         )
 
-    missing_from_inventory = manifest_paths - inventory_paths
-    if missing_from_inventory:
+    tracked_manifest = tracked_paths & manifest_paths
+    if tracked_manifest:
         raise GitProvenanceAuthorizationError(
-            "manifest file is absent from the complete operator-runs inventory: "
-            + ", ".join(sorted(missing_from_inventory))
+            "current manifest file is tracked instead of untracked: "
+            + ", ".join(sorted(tracked_manifest))
         )
 
-    unexpected_inventory = inventory_paths - manifest_paths
-    if unexpected_inventory:
+    tracked_current = {
+        path
+        for path in tracked_paths
+        if any(_is_beneath_root(path, root) for root in current_package_roots)
+    }
+    if tracked_current:
         raise GitProvenanceAuthorizationError(
-            "unexpected operator-runs filesystem file not covered by manifest: "
-            + ", ".join(sorted(unexpected_inventory))
+            "tracked file exists inside a current evidence package: "
+            + ", ".join(sorted(tracked_current))
+        )
+
+    missing_manifest = manifest_paths - inventory_paths
+    if missing_manifest:
+        raise GitProvenanceAuthorizationError(
+            "manifest file is absent from the complete operator-runs inventory: "
+            + ", ".join(sorted(missing_manifest))
         )
 
     ignored_outside_inventory = ignored_paths - inventory_paths
@@ -580,7 +649,17 @@ def _reconcile_evidence_sets(
             + ", ".join(sorted(ignored_outside_inventory))
         )
 
-    classified_manifest = (effective_visible & manifest_paths) | ignored_paths
+    tracked_outside_inventory = tracked_paths - inventory_paths
+    if tracked_outside_inventory:
+        raise GitProvenanceAuthorizationError(
+            "tracked historical operator-runs path is absent from the filesystem "
+            "inventory: "
+            + ", ".join(sorted(tracked_outside_inventory))
+        )
+
+    classified_manifest = (effective_visible & manifest_paths) | (
+        ignored_paths & manifest_paths
+    )
     unclassified = manifest_paths - classified_manifest
     if unclassified:
         raise GitProvenanceAuthorizationError(
@@ -588,9 +667,43 @@ def _reconcile_evidence_sets(
             + ", ".join(sorted(unclassified))
         )
 
-    if inventory_paths != manifest_paths:
+    current_inventory = _current_package_inventory(
+        inventory_paths, current_package_roots
+    )
+    missing_current = manifest_paths - current_inventory
+    if missing_current:
         raise GitProvenanceAuthorizationError(
-            "complete operator-runs inventory does not equal the manifest file set"
+            "current evidence package is missing a manifest file: "
+            + ", ".join(sorted(missing_current))
+        )
+    unexpected_current = current_inventory - manifest_paths
+    if unexpected_current:
+        raise GitProvenanceAuthorizationError(
+            "unexpected file exists inside a current evidence package: "
+            + ", ".join(sorted(unexpected_current))
+        )
+
+    expected_inventory = tracked_paths | manifest_paths
+    unexplained_inventory = inventory_paths - expected_inventory
+    if unexplained_inventory:
+        raise GitProvenanceAuthorizationError(
+            "unexpected operator-runs filesystem file is neither tracked history "
+            "nor current manifest evidence: "
+            + ", ".join(sorted(unexplained_inventory))
+        )
+
+    missing_inventory = expected_inventory - inventory_paths
+    if missing_inventory:
+        raise GitProvenanceAuthorizationError(
+            "tracked-history/current-manifest path is absent from operator-runs "
+            "inventory: "
+            + ", ".join(sorted(missing_inventory))
+        )
+
+    if inventory_paths != expected_inventory:
+        raise GitProvenanceAuthorizationError(
+            "complete operator-runs inventory does not equal tracked history plus "
+            "the current manifest file set"
         )
 
 
@@ -964,12 +1077,24 @@ def validate_git_provenance_authorization(
         timeout_seconds=timeout_seconds,
         runner=runner,
     )
+    tracked_paths = _tracked_operator_runs_paths(
+        root,
+        git_executable=git_executable,
+        timeout_seconds=timeout_seconds,
+        runner=runner,
+    )
     inventory_paths = _inventory_operator_runs(root)
+    current_package_roots = (
+        f"{MIGRATION_PACKAGE_ROOT}/{migration_execution_id}",
+        f"{AUTHORIZATION_PACKAGE_ROOT}/{authorization_id}",
+    )
     _reconcile_evidence_sets(
         manifest_paths=set(allowed_paths),
         visible_paths=visible_paths,
         ignored_paths=ignored_paths,
+        tracked_paths=tracked_paths,
         inventory_paths=inventory_paths,
+        current_package_roots=current_package_roots,
         sidecar_untracked_paths=sidecar_untracked_paths,
     )
 

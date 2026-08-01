@@ -288,14 +288,16 @@ class IgnoredEvidenceVisibilityTests(unittest.TestCase):
         ):
             self.fx.validate()
 
-    def test_tracked_operator_runs_file_blocks(self):
+    def test_tracked_operator_runs_file_is_bound_to_clean_head(self):
         other_tmp = tempfile.TemporaryDirectory()
         try:
             fixture = Fixture(Path(other_tmp.name), tracked_operator_file=True)
-            with self.assertRaisesRegex(
-                GitProvenanceAuthorizationError, "unexpected operator-runs filesystem file"
-            ):
-                fixture.validate()
+            result = fixture.validate()
+            self.assertEqual(result.file_count, 19)
+            self.assertNotIn(
+                "operator-runs/tracked-evidence.txt",
+                result.allowed_untracked_paths,
+            )
         finally:
             other_tmp.cleanup()
 
@@ -504,6 +506,446 @@ class IgnoredEvidenceVisibilityTests(unittest.TestCase):
         serialized = json.dumps(summary)
         for record in self.fx.files:
             self.assertNotIn(record["path"], serialized)
+
+
+class CurrentVsHistoricalTrustBoundaryTests(unittest.TestCase):
+    HISTORICAL_FILES = (
+        "operator-runs/v2-9-7e-5-live-proof/result.json",
+        "operator-runs/v2-9-7e-5-live-proof/runner.py",
+        "operator-runs/v2-9-7e-5a-decisive-reproof/result.json",
+        "operator-runs/v2-9-7e-5a-decisive-reproof/runner.py",
+        "operator-runs/v2-9-7e-6-classification/result.json",
+        "operator-runs/v2-9-7e-6-classification/runner.py",
+        "operator-runs/v2-9-7e-6-final-proof/result.json",
+        "operator-runs/v2-9-7e-6-final-proof/runner.py",
+        "operator-runs/v2-9-8b-mig050-bounded-proof/CONTROLLING_EXECUTION",
+        "operator-runs/v2-9-8b-mig050-bounded-proof/execution/proof_summary.json",
+        "operator-runs/v2-9-8b-mig050-bounded-proof/proof_summary.json",
+    )
+
+    def make_fixture(self, *, tracked_in_current_root: bool = False):
+        tmp = tempfile.TemporaryDirectory()
+        root = Path(tmp.name)
+        repo = root / "repository"
+        external = root / "external"
+        repo.mkdir()
+        external.mkdir()
+
+        def git(*args):
+            return subprocess.run(
+                ["git", *args],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+
+        git("init")
+        git("config", "user.email", "printer-tests@example.invalid")
+        git("config", "user.name", "Printer Tests")
+        (repo / ".gitignore").write_text("*.sqlite3\n", encoding="ascii")
+        (repo / "tracked.txt").write_text("clean\n", encoding="ascii")
+
+        for index, relative in enumerate(self.HISTORICAL_FILES):
+            path = repo / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"historical-{index}\n", encoding="ascii")
+
+        auth_root = f"{AUTHORIZATION_PACKAGE_ROOT}/{AUTH_ID}"
+        mig_root = f"{MIGRATION_PACKAGE_ROOT}/{MIG_ID}"
+        if tracked_in_current_root:
+            tracked = repo / auth_root / "tracked-current.txt"
+            tracked.parent.mkdir(parents=True, exist_ok=True)
+            tracked.write_text("must block\n", encoding="ascii")
+
+        git("add", ".")
+        git("commit", "-m", "historical baseline")
+        head = git("rev-parse", "HEAD").stdout.strip().lower()
+        branch = git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+
+        authorization = {
+            "authorization_id": AUTH_ID,
+            "verdict": "V2_9_8B_WINDOW_15M_TEST_FINAL_AUTHORIZATION_PASS",
+            "authorized_git": {"branch": branch, "head": head},
+            "authorized_command": {
+                "mode": "run",
+                "operator_approved": True,
+                "allowed_invocation_count": 1,
+                "automatic_retry_allowed": False,
+                "manual_rerun_allowed": False,
+                "resume_allowed": False,
+                "restart_allowed": False,
+                "successor_allowed": False,
+            },
+            "campaign_policy": {
+                "main_window": "WINDOW_15M",
+                "selective_1h_continuation": False,
+            },
+        }
+
+        files = []
+
+        def add(relative: str, data: bytes, kind: str):
+            path = repo / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+            files.append(
+                {
+                    "path": relative,
+                    "sha256": _sha(data),
+                    "size": len(data),
+                    "package_kind": kind,
+                }
+            )
+
+        add(
+            f"{auth_root}/final_authorization.json",
+            json.dumps(authorization, sort_keys=True).encode(),
+            AUTHORIZATION_PACKAGE_KIND,
+        )
+        add(
+            f"{auth_root}/pre_run_evidence.json",
+            b'{"kind":"pre_run"}\n',
+            AUTHORIZATION_PACKAGE_KIND,
+        )
+        add(
+            f"{auth_root}/application_started.json",
+            b'{"kind":"started"}\n',
+            AUTHORIZATION_PACKAGE_KIND,
+        )
+        add(
+            f"{mig_root}/preflight.json",
+            b'{"kind":"preflight"}\n',
+            MIGRATION_PACKAGE_KIND,
+        )
+        for index in range(13):
+            add(
+                f"{mig_root}/evidence/evidence-{index:02d}.json",
+                f'{{"index":{index}}}\n'.encode(),
+                MIGRATION_PACKAGE_KIND,
+            )
+        add(
+            f"{mig_root}/disposable-restore/printer_v1-rehearsal.sqlite3",
+            b"SQLITE-REHEARSAL",
+            MIGRATION_PACKAGE_KIND,
+        )
+        add(
+            f"{mig_root}/verified-backup/printer_v1-pre050.sqlite3",
+            b"SQLITE-BACKUP",
+            MIGRATION_PACKAGE_KIND,
+        )
+        self.assertEqual(len(files), 19)
+
+        auth_path = f"{auth_root}/final_authorization.json"
+        manifest = {
+            "schema_version": MANIFEST_SCHEMA_VERSION,
+            "authorization_id": AUTH_ID,
+            "authorization_file": {
+                "path": auth_path,
+                "sha256": _sha((repo / auth_path).read_bytes()),
+            },
+            "repository": {"branch": branch, "head": head},
+            "authorized_command": {"mode": "run", "operator_approved": True},
+            "migration_execution_id": MIG_ID,
+            "created_at": datetime(2026, 8, 1, tzinfo=timezone.utc).isoformat(),
+            "files": copy.deepcopy(files),
+        }
+        manifest_path = external / "manifest.json"
+        marker_path = external / "marker.json"
+
+        data = json.dumps(manifest, indent=2, sort_keys=True).encode()
+        manifest_path.write_bytes(data)
+        manifest_sha = _sha(data)
+        marker = {
+            "schema_version": APPLICATION_MARKER_SCHEMA_VERSION,
+            "authorization_id": AUTH_ID,
+            "authorization_consumed_at": datetime(
+                2026, 8, 1, 21, tzinfo=timezone.utc
+            ).isoformat(),
+            "authorization_sha256": _sha((repo / auth_path).read_bytes()),
+            "manifest_sha256": manifest_sha,
+            "allowed_file_set_sha256": compute_allowed_file_set_sha256(files),
+            "repository_branch": branch,
+            "repository_head": head,
+            "command": {"mode": "run", "operator_approved": True},
+            "allowed_invocation_count": 1,
+            "automatic_retry_allowed": False,
+            "manual_rerun_allowed": False,
+            "resume_allowed": False,
+            "restart_allowed": False,
+            "successor_allowed": False,
+        }
+        marker_data = json.dumps(marker, indent=2, sort_keys=True).encode()
+        marker_path.write_bytes(marker_data)
+        marker_sha = _sha(marker_data)
+
+        def validate(**overrides):
+            kwargs = {
+                "repository_root": repo,
+                "manifest_path": str(manifest_path),
+                "manifest_sha256": manifest_sha,
+                "marker_path": str(marker_path),
+                "marker_sha256": marker_sha,
+            }
+            kwargs.update(overrides)
+            return validate_git_provenance_authorization(**kwargs)
+
+        return {
+            "tmp": tmp,
+            "repo": repo,
+            "validate": validate,
+            "files": files,
+            "auth_root": auth_root,
+            "mig_root": mig_root,
+            "historical": set(self.HISTORICAL_FILES),
+        }
+
+    def test_real_shape_11_tracked_19_current_30_total_passes(self):
+        fx = self.make_fixture()
+        self.addCleanup(fx["tmp"].cleanup)
+        result = fx["validate"]()
+        allowed = set(result.allowed_untracked_paths)
+        inventory = {
+            path.relative_to(fx["repo"]).as_posix()
+            for path in (fx["repo"] / "operator-runs").rglob("*")
+            if path.is_file()
+        }
+        self.assertEqual(len(inventory), 30)
+        self.assertEqual(result.file_count, 19)
+        self.assertEqual(allowed, {record["path"] for record in fx["files"]})
+        self.assertTrue(allowed.isdisjoint(fx["historical"]))
+
+    def test_manifest_digest_excludes_tracked_history(self):
+        fx = self.make_fixture()
+        self.addCleanup(fx["tmp"].cleanup)
+        digest = compute_allowed_file_set_sha256(fx["files"])
+        for historical in fx["historical"]:
+            self.assertNotIn(historical, json.dumps(fx["files"]))
+        self.assertEqual(
+            digest,
+            compute_allowed_file_set_sha256(list(reversed(fx["files"]))),
+        )
+
+    def test_visible_untracked_historical_looking_file_blocks(self):
+        fx = self.make_fixture()
+        self.addCleanup(fx["tmp"].cleanup)
+        extra = fx["repo"] / "operator-runs/v2-9-7e-5-live-proof/new.json"
+        extra.write_text("{}\n", encoding="ascii")
+        with self.assertRaisesRegex(
+            GitProvenanceAuthorizationError, "unexpected untracked repository file"
+        ):
+            fx["validate"]()
+
+    def test_ignored_untracked_historical_looking_file_blocks(self):
+        fx = self.make_fixture()
+        self.addCleanup(fx["tmp"].cleanup)
+        extra = fx["repo"] / "operator-runs/v2-9-7e-5-live-proof/new.sqlite3"
+        extra.write_bytes(b"unexpected")
+        with self.assertRaisesRegex(
+            GitProvenanceAuthorizationError, "unexpected ignored operator-runs file"
+        ):
+            fx["validate"]()
+
+    def test_tracked_file_inside_current_root_blocks(self):
+        fx = self.make_fixture(tracked_in_current_root=True)
+        self.addCleanup(fx["tmp"].cleanup)
+        with self.assertRaisesRegex(
+            GitProvenanceAuthorizationError,
+            "tracked file exists inside a current evidence package",
+        ):
+            fx["validate"]()
+
+    def test_manifest_path_reported_tracked_blocks(self):
+        fx = self.make_fixture()
+        self.addCleanup(fx["tmp"].cleanup)
+        real_run = subprocess.run
+        manifest_path = fx["files"][0]["path"]
+
+        def runner(args, **kwargs):
+            arguments = args[1:]
+            if arguments[:5] == [
+                "ls-tree", "-r", "--name-only", "-z", "HEAD"
+            ]:
+                output = "\0".join([*sorted(fx["historical"]), manifest_path]) + "\0"
+                return subprocess.CompletedProcess(args, 0, stdout=output, stderr="")
+            return real_run(args, **kwargs)
+
+        with self.assertRaisesRegex(
+            GitProvenanceAuthorizationError,
+            "classifications overlap|current manifest file is tracked",
+        ):
+            fx["validate"](runner=runner)
+
+    def test_extra_visible_inside_current_root_blocks(self):
+        fx = self.make_fixture()
+        self.addCleanup(fx["tmp"].cleanup)
+        extra = fx["repo"] / fx["auth_root"] / "extra.json"
+        extra.write_text("{}\n", encoding="ascii")
+        with self.assertRaisesRegex(
+            GitProvenanceAuthorizationError, "unexpected untracked repository file"
+        ):
+            fx["validate"]()
+
+    def test_extra_ignored_inside_current_root_blocks(self):
+        fx = self.make_fixture()
+        self.addCleanup(fx["tmp"].cleanup)
+        extra = fx["repo"] / fx["mig_root"] / "extra.sqlite3"
+        extra.write_bytes(b"extra")
+        with self.assertRaisesRegex(
+            GitProvenanceAuthorizationError, "unexpected ignored operator-runs file"
+        ):
+            fx["validate"]()
+
+    def test_missing_manifest_file_blocks(self):
+        fx = self.make_fixture()
+        self.addCleanup(fx["tmp"].cleanup)
+        path = fx["repo"] / fx["files"][-1]["path"]
+        path.unlink()
+        with self.assertRaisesRegex(
+            GitProvenanceAuthorizationError, "missing or not a regular file"
+        ):
+            fx["validate"]()
+
+    def test_modified_tracked_history_blocks_clean_tree(self):
+        fx = self.make_fixture()
+        self.addCleanup(fx["tmp"].cleanup)
+        path = fx["repo"] / sorted(fx["historical"])[0]
+        path.write_text("changed\n", encoding="ascii")
+        with self.assertRaisesRegex(
+            GitProvenanceAuthorizationError, "unstaged changes"
+        ):
+            fx["validate"]()
+
+    def test_missing_tracked_history_report_blocks(self):
+        fx = self.make_fixture()
+        self.addCleanup(fx["tmp"].cleanup)
+        real_run = subprocess.run
+        ghost = "operator-runs/historical/ghost.json"
+
+        def runner(args, **kwargs):
+            arguments = args[1:]
+            if arguments[:5] == [
+                "ls-tree", "-r", "--name-only", "-z", "HEAD"
+            ]:
+                output = "\0".join([*sorted(fx["historical"]), ghost]) + "\0"
+                return subprocess.CompletedProcess(args, 0, stdout=output, stderr="")
+            return real_run(args, **kwargs)
+
+        with self.assertRaisesRegex(
+            GitProvenanceAuthorizationError,
+            "tracked historical operator-runs path is absent",
+        ):
+            fx["validate"](runner=runner)
+
+    def test_symlink_file_anywhere_under_operator_runs_blocks(self):
+        fx = self.make_fixture()
+        self.addCleanup(fx["tmp"].cleanup)
+        outside = Path(fx["tmp"].name) / "outside.txt"
+        outside.write_text("outside", encoding="ascii")
+        link = fx["repo"] / "operator-runs/historical-link"
+        os.symlink(outside, link)
+        with self.assertRaisesRegex(
+            GitProvenanceAuthorizationError, "inventory contains a symlink"
+        ):
+            fx["validate"]()
+
+    def test_symlink_directory_anywhere_under_operator_runs_blocks(self):
+        fx = self.make_fixture()
+        self.addCleanup(fx["tmp"].cleanup)
+        outside = Path(fx["tmp"].name) / "outside-dir"
+        outside.mkdir()
+        (outside / "secret").write_text("secret", encoding="ascii")
+        link = fx["repo"] / "operator-runs/historical-dir-link"
+        os.symlink(outside, link)
+        with self.assertRaisesRegex(
+            GitProvenanceAuthorizationError, "inventory contains a symlink"
+        ):
+            fx["validate"]()
+
+    def test_non_regular_entry_blocks_when_fifo_supported(self):
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("FIFO creation is unavailable")
+        fx = self.make_fixture()
+        self.addCleanup(fx["tmp"].cleanup)
+        fifo = fx["repo"] / "operator-runs/historical.fifo"
+        os.mkfifo(fifo)
+        with self.assertRaisesRegex(
+            GitProvenanceAuthorizationError, "non-regular entry"
+        ):
+            fx["validate"]()
+
+    def test_duplicate_tracked_git_output_blocks(self):
+        fx = self.make_fixture()
+        self.addCleanup(fx["tmp"].cleanup)
+        real_run = subprocess.run
+        repeated = sorted(fx["historical"])[0]
+
+        def runner(args, **kwargs):
+            arguments = args[1:]
+            if arguments[:5] == [
+                "ls-tree", "-r", "--name-only", "-z", "HEAD"
+            ]:
+                output = "\0".join([*sorted(fx["historical"]), repeated]) + "\0"
+                return subprocess.CompletedProcess(args, 0, stdout=output, stderr="")
+            return real_run(args, **kwargs)
+
+        with self.assertRaisesRegex(
+            GitProvenanceAuthorizationError, "duplicate paths"
+        ):
+            fx["validate"](runner=runner)
+
+    def test_tracked_visible_overlap_blocks(self):
+        fx = self.make_fixture()
+        self.addCleanup(fx["tmp"].cleanup)
+        real_run = subprocess.run
+        visible_manifest = fx["files"][0]["path"]
+
+        def runner(args, **kwargs):
+            arguments = args[1:]
+            if arguments[:5] == [
+                "ls-tree", "-r", "--name-only", "-z", "HEAD"
+            ]:
+                output = "\0".join(
+                    [*sorted(fx["historical"]), visible_manifest]
+                ) + "\0"
+                return subprocess.CompletedProcess(args, 0, stdout=output, stderr="")
+            return real_run(args, **kwargs)
+
+        with self.assertRaisesRegex(
+            GitProvenanceAuthorizationError, "classifications overlap"
+        ):
+            fx["validate"](runner=runner)
+
+    def test_visible_extra_elsewhere_in_repository_blocks(self):
+        fx = self.make_fixture()
+        self.addCleanup(fx["tmp"].cleanup)
+        (fx["repo"] / "stray.txt").write_text("stray\n", encoding="ascii")
+        with self.assertRaisesRegex(
+            GitProvenanceAuthorizationError, "unexpected untracked repository file"
+        ):
+            fx["validate"]()
+
+    def test_unrelated_ignored_outside_operator_runs_is_not_authorized(self):
+        fx = self.make_fixture()
+        self.addCleanup(fx["tmp"].cleanup)
+        (fx["repo"] / "local.sqlite3").write_bytes(b"local")
+        result = fx["validate"]()
+        self.assertNotIn("local.sqlite3", result.allowed_untracked_paths)
+
+    def test_validation_performs_no_network(self):
+        fx = self.make_fixture()
+        self.addCleanup(fx["tmp"].cleanup)
+        real_socket = socket.socket
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("network access is forbidden")
+
+        socket.socket = forbidden
+        try:
+            result = fx["validate"]()
+        finally:
+            socket.socket = real_socket
+        self.assertEqual(result.file_count, 19)
 
 
 if __name__ == "__main__":
