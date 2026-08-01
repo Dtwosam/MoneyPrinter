@@ -65,6 +65,11 @@ from printer_v1.operator_cli.git_provenance import (
     GitProvenanceError,
     capture_git_provenance,
 )
+from printer_v1.operator_cli.git_provenance_authorization_manifest import (
+    GitProvenanceAuthorizationError,
+    ValidatedGitProvenanceAuthorization,
+    validate_git_provenance_authorization,
+)
 from printer_v1.operator_cli.operational_backup_restore_preflight import (
     operational_backup_restore_preflight,
 )
@@ -161,6 +166,17 @@ AUTHORITATIVE_SQLITE_RUNTIME_SIDECARS = (
     "data/printer_v1.sqlite3-wal",
     "data/printer_v1.sqlite3-shm",
 )
+# Bounded, authorization-bound Git-provenance manifest/marker compatibility. The
+# four values are supplied by the external one-shot wrapper only to the single
+# authorized child process. They are accepted together or not at all, and only
+# for the exact ordinary preflight/run boundary.
+GIT_PROVENANCE_MANIFEST_ENV_VARS = (
+    "PRINTER_V1_GIT_PROVENANCE_MANIFEST_PATH",
+    "PRINTER_V1_GIT_PROVENANCE_MANIFEST_SHA256",
+    "PRINTER_V1_APPLICATION_MARKER_PATH",
+    "PRINTER_V1_APPLICATION_MARKER_SHA256",
+)
+GIT_PROVENANCE_MANIFEST_SUPPORTED_MODES = ("preflight-only", "run")
 # Action-local run identity for blocked-command source accounting. Never inherit
 # a previous campaign's holder-ledger totals into a different public action.
 _ACTION_RUN_CONTEXT: dict[str, str | None] = {"run_id": None}
@@ -421,10 +437,20 @@ def _preflight_fail(gate: str, detail: str) -> None:
     )
 
 
-def _capture_operational_git_provenance(root: Path) -> dict[str, Any]:
-    provenance = capture_git_provenance(
-        root, allowed_untracked_paths=AUTHORITATIVE_SQLITE_RUNTIME_SIDECARS
+def _capture_operational_git_provenance(
+    root: Path,
+    *,
+    additional_allowed_untracked_paths: Iterable[str] = (),
+) -> dict[str, Any]:
+    # The fixed SQLite runtime sidecars are always allowed. Any additional exact
+    # repository-relative path comes only from a fully validated authorization
+    # manifest; the canonical six-field payload from capture_git_provenance()
+    # remains unchanged.
+    allowed = (
+        tuple(AUTHORITATIVE_SQLITE_RUNTIME_SIDECARS)
+        + tuple(additional_allowed_untracked_paths)
     )
+    provenance = capture_git_provenance(root, allowed_untracked_paths=allowed)
     if provenance["git_untracked_present"]:
         raise GitProvenanceError(
             "launch Git tree contains an arbitrary untracked file"
@@ -432,10 +458,60 @@ def _capture_operational_git_provenance(root: Path) -> dict[str, Any]:
     return provenance
 
 
+def _resolve_git_provenance_authorization(
+    mode: str,
+    *,
+    environ: Mapping[str, str] | None = None,
+    repository_root: str | Path | None = None,
+) -> ValidatedGitProvenanceAuthorization | None:
+    """Resolve the optional external manifest/marker authorization.
+
+    The four environment variables are accepted only all-together and only for
+    the exact ordinary ``preflight-only``/``run`` boundary. Any partial set, or
+    any presence under an unsupported mode, fails closed. When none are present
+    the operational command behaves exactly as before.
+    """
+    env = os.environ if environ is None else environ
+    present = {name: env.get(name) for name in GIT_PROVENANCE_MANIFEST_ENV_VARS}
+    supplied = [name for name, value in present.items() if value not in (None, "")]
+    if not supplied:
+        return None
+    if len(supplied) != len(GIT_PROVENANCE_MANIFEST_ENV_VARS):
+        missing = [name for name in GIT_PROVENANCE_MANIFEST_ENV_VARS if name not in supplied]
+        raise OperationalMemoryFactoryError(
+            "git provenance manifest environment variables must all be set "
+            "together or all be unset: missing=" + ", ".join(missing)
+        )
+    if mode not in GIT_PROVENANCE_MANIFEST_SUPPORTED_MODES:
+        raise OperationalMemoryFactoryError(
+            "git provenance manifest integration is not accepted for "
+            f"mode={mode!r}"
+        )
+    root = (
+        Path(repository_root).resolve()
+        if repository_root is not None
+        else AUTHORITATIVE_DB.parent.parent
+    )
+    try:
+        return validate_git_provenance_authorization(
+            repository_root=root,
+            manifest_path=present["PRINTER_V1_GIT_PROVENANCE_MANIFEST_PATH"],
+            manifest_sha256=present["PRINTER_V1_GIT_PROVENANCE_MANIFEST_SHA256"],
+            marker_path=present["PRINTER_V1_APPLICATION_MARKER_PATH"],
+            marker_sha256=present["PRINTER_V1_APPLICATION_MARKER_SHA256"],
+            sidecar_untracked_paths=AUTHORITATIVE_SQLITE_RUNTIME_SIDECARS,
+        )
+    except GitProvenanceAuthorizationError as exc:
+        raise OperationalMemoryFactoryError(
+            f"git provenance manifest authorization rejected: {exc}"
+        ) from exc
+
+
 def build_activation_preflight(
     *,
     db_path: str | Path = AUTHORITATIVE_DB,
     repository_root: str | Path | None = None,
+    git_provenance_authorization: ValidatedGitProvenanceAuthorization | None = None,
 ) -> dict[str, Any]:
     """Run the complete read-only, zero-source activation preflight."""
     path = Path(db_path).resolve()
@@ -460,8 +536,15 @@ def build_activation_preflight(
         if repository_root is not None
         else AUTHORITATIVE_DB.parent.parent
     )
+    additional_allowed = (
+        git_provenance_authorization.allowed_untracked_paths
+        if git_provenance_authorization is not None
+        else ()
+    )
     try:
-        provenance = _capture_operational_git_provenance(root)
+        provenance = _capture_operational_git_provenance(
+            root, additional_allowed_untracked_paths=additional_allowed
+        )
     except GitProvenanceError as exc:
         _preflight_fail("git_provenance", str(exc))
     source = build_readiness_source_contract_preflight()
@@ -586,6 +669,11 @@ def build_activation_preflight(
         },
         "dependency_preflight": dependency.to_dict(),
         "git_provenance": provenance,
+        "git_provenance_authorization": (
+            git_provenance_authorization.summary()
+            if git_provenance_authorization is not None
+            else None
+        ),
         "policy": {
             "active_intake_path": ACTIVE_INTAKE_PATH,
             "token_capacity": TOKEN_CAPACITY,
@@ -1575,14 +1663,19 @@ def _run_operational_campaign(
     pump_transport: Any | None = None,
     secondary_transport: Any | None = None,
     migration_transport: Any | None = None,
+    git_provenance_authorization: ValidatedGitProvenanceAuthorization | None = None,
 ) -> dict[str, Any]:
     """Run one fixed-policy campaign through the canonical V2-9.8B owner."""
     if not operator_approved:
         raise OperationalMemoryFactoryError("explicit operator approval is required")
+    # The manifest/marker compatibility exception applies only to the ordinary
+    # WINDOW_15M run. Selective-1h never receives the exact-file allowlist.
     preflight = (
         build_selective_1h_preflight()
         if policy.selective_1h_continuation
-        else build_activation_preflight()
+        else build_activation_preflight(
+            git_provenance_authorization=git_provenance_authorization
+        )
     )
     execution_id = (
         datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -2239,6 +2332,7 @@ def run_operational_campaign(
     pump_transport: Any | None = None,
     secondary_transport: Any | None = None,
     migration_transport: Any | None = None,
+    git_provenance_authorization: ValidatedGitProvenanceAuthorization | None = None,
 ) -> dict[str, Any]:
     """Run one bounded persistent 15m-only production campaign."""
     return _run_operational_campaign(
@@ -2248,6 +2342,7 @@ def run_operational_campaign(
         pump_transport=pump_transport,
         secondary_transport=secondary_transport,
         migration_transport=migration_transport,
+        git_provenance_authorization=git_provenance_authorization,
     )
 
 
@@ -3870,12 +3965,21 @@ def main(argv: Iterable[str] | None = None) -> int:
             raise OperationalMemoryFactoryError(
                 "campaign-id/run-id are only valid for report-only"
             )
+        # Read the four optional external manifest/marker environment variables
+        # once, all-or-none, and fail closed for any unsupported mode. Absent
+        # variables leave every mode behaving exactly as before.
+        git_provenance_authorization = _resolve_git_provenance_authorization(args.mode)
         if args.mode == "preflight-only":
-            result = build_activation_preflight()
+            result = build_activation_preflight(
+                git_provenance_authorization=git_provenance_authorization
+            )
         elif args.mode == SELECTIVE_1H_PREFLIGHT_MODE:
             result = build_selective_1h_preflight()
         elif args.mode == "run":
-            result = run_operational_campaign(operator_approved=args.operator_approved)
+            result = run_operational_campaign(
+                operator_approved=args.operator_approved,
+                git_provenance_authorization=git_provenance_authorization,
+            )
         elif args.mode == SELECTIVE_1H_MODE:
             result = run_selective_1h_proof(
                 operator_approved=args.operator_approved
