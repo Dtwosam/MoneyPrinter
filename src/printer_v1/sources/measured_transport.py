@@ -271,6 +271,110 @@ class MeasuredTransportLedger:
         }
 
 
+@dataclass(frozen=True)
+class SchedulerWorkIdentity:
+    """One campaign-owned Scheduler work item identity (non-transport unit).
+
+    Identity key is ``stage_id + scheduler_job_id + job_kind + target``. Two
+    distinct stages may reference distinct jobs; the same job id must never be
+    projected into two accounting stages under a different identity.
+    """
+
+    stage_id: str
+    scheduler_job_id: int
+    job_kind: str
+    target_category: str
+    target_identity: str | None = None
+
+    def identity_key(self) -> tuple[Any, ...]:
+        return (
+            str(self.stage_id or ""),
+            int(self.scheduler_job_id),
+            str(self.job_kind or ""),
+            str(self.target_category or ""),
+            None if self.target_identity is None else str(self.target_identity),
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "stage_id": self.stage_id,
+            "scheduler_job_id": int(self.scheduler_job_id),
+            "job_kind": self.job_kind,
+            "target_category": self.target_category,
+            "target_identity": self.target_identity,
+            "unit": UNIT_SCHEDULER_WORK_ITEM,
+        }
+
+
+@dataclass(frozen=True)
+class LifecycleReservationIdentity:
+    """One lifecycle transport reservation identity (non-transport unit).
+
+    Identity key is
+    ``stage_id + factory_run_id + token/pair + window_kind + reservation_ordinal``.
+    """
+
+    stage_id: str
+    factory_run_id: str
+    token_id: int
+    pair_id: int
+    window_kind: str
+    reservation_ordinal: int
+
+    def identity_key(self) -> tuple[Any, ...]:
+        return (
+            str(self.stage_id or ""),
+            str(self.factory_run_id or ""),
+            int(self.token_id),
+            int(self.pair_id),
+            str(self.window_kind or ""),
+            int(self.reservation_ordinal),
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "stage_id": self.stage_id,
+            "factory_run_id": self.factory_run_id,
+            "token_id": int(self.token_id),
+            "pair_id": int(self.pair_id),
+            "window_kind": self.window_kind,
+            "reservation_ordinal": int(self.reservation_ordinal),
+            "unit": UNIT_LIFECYCLE_RESERVED_TRANSPORT_OPERATION,
+        }
+
+
+@dataclass(frozen=True)
+class LocalValidationIdentity:
+    """One named local validation identity (non-transport unit).
+
+    Identity key is
+    ``stage_id + subject_identity + validation_kind + validation_ordinal``. The
+    subject is a factory step or window identity that the validation ran against.
+    """
+
+    stage_id: str
+    subject_identity: str
+    validation_kind: str
+    validation_ordinal: int
+
+    def identity_key(self) -> tuple[Any, ...]:
+        return (
+            str(self.stage_id or ""),
+            str(self.subject_identity or ""),
+            str(self.validation_kind or ""),
+            int(self.validation_ordinal),
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "stage_id": self.stage_id,
+            "subject_identity": self.subject_identity,
+            "validation_kind": self.validation_kind,
+            "validation_ordinal": int(self.validation_ordinal),
+            "unit": UNIT_LOCAL_VALIDATION_STEP,
+        }
+
+
 def enforce_normalized_row_ceiling(
     kind: str, row_count: int, *, declared: Mapping[str, int] | None = None
 ) -> None:
@@ -492,11 +596,14 @@ __all__ = [
     "BYTE_CEILINGS",
     "GET_MULTIPLE_ACCOUNTS_BATCH_SIZE",
     "MAX_PUMPSWAP_ACCOUNT_BATCHES",
+    "LifecycleReservationIdentity",
+    "LocalValidationIdentity",
     "MeasuredTransportError",
     "MeasuredTransportLedger",
     "ROW_CEILINGS",
     "SIX_UNITS",
     "STAGE_CEILINGS",
+    "SchedulerWorkIdentity",
     "TransportOperationIdentity",
     "UNIT_LIFECYCLE_RESERVED_TRANSPORT_OPERATION",
     "UNIT_LOCAL_VALIDATION_STEP",

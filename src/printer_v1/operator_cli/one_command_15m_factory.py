@@ -469,6 +469,7 @@ def _schedule_offsets(lane: str, window_seconds: float) -> list[float]:
 def _insert_step_and_job(
     conn: sqlite3.Connection, *, run_id: str, target: dict[str, Any],
     step_key: str, step_kind: str, scheduled_for: datetime,
+    operation_observer: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> int:
     # Scheduler-row ceiling: run-step jobs must stay within the cadence-derived
     # cap. Three TRACK_FAST tokens create _V2_5_MAX_SELECTED_TOKENS *
@@ -531,6 +532,21 @@ def _insert_step_and_job(
             _iso(scheduled_for), job_id, _iso(), _iso(),
         ),
     )
+    # V2-9.8B action-local observation at the real Scheduler-enqueue boundary.
+    # Verification-only: the observer never mutates factory state and fires only
+    # when a coordinator threads it through. Reports exactly what was enqueued.
+    if operation_observer is not None:
+        operation_observer(
+            {
+                "boundary": "SCHEDULER_ENQUEUE",
+                "run_id": run_id,
+                "scheduler_job_id": int(job_id),
+                "step_key": step_key,
+                "step_kind": step_kind,
+                "token_id": int(target["token_id"]),
+                "pair_id": int(target["pair_id"]),
+            }
+        )
     return int(job_id)
 
 
@@ -538,13 +554,14 @@ def _plan_opening_jobs(
     conn: sqlite3.Connection, run_id: str, targets: list[dict[str, Any]],
     scheduled_for: datetime,
     first_commit_callback: Callable[[sqlite3.Connection, str], None] | None = None,
+    operation_observer: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> None:
     for target_index, target in enumerate(targets):
         prefix = f"t{target_index + 1}"
         _insert_step_and_job(
             conn, run_id=run_id, target=target,
             step_key=f"{prefix}_snapshot_00", step_kind="SNAPSHOT",
-            scheduled_for=scheduled_for,
+            scheduled_for=scheduled_for, operation_observer=operation_observer,
         )
         if target_index == 0 and first_commit_callback is not None:
             conn.commit()
@@ -554,6 +571,7 @@ def _plan_opening_jobs(
 def _plan_anchored_jobs(
     conn: sqlite3.Connection, *, run_id: str, opening_step: sqlite3.Row,
     first_snapshot_captured_at: str, window_seconds: float,
+    operation_observer: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> None:
     """Plan one token's remaining work from its persisted opening evidence."""
     anchor = datetime.fromisoformat(first_snapshot_captured_at)
@@ -572,11 +590,13 @@ def _plan_anchored_jobs(
             conn, run_id=run_id, target=target,
             step_key=f"{prefix}_snapshot_{slot_index:02d}", step_kind="SNAPSHOT",
             scheduled_for=anchor + timedelta(seconds=offset),
+            operation_observer=operation_observer,
         )
     _insert_step_and_job(
         conn, run_id=run_id, target=target,
         step_key=f"{prefix}_window_close", step_kind="WINDOW_CLOSE",
         scheduled_for=anchor + timedelta(seconds=window_seconds),
+        operation_observer=operation_observer,
     )
 
 
@@ -3628,6 +3648,8 @@ def run_one_command_15m_factory(
     project_root: str | Path | None = None,
     launch_provenance: Mapping[str, Any] | None = None,
     operational_persistent_mode: bool = False,
+    lifecycle_ownership_context: Mapping[str, Any] | None = None,
+    lifecycle_operation_observer: Callable[[Mapping[str, Any]], None] | None = None,
     _post_handoff_fault: str | None = None,
     _post_handoff_scope_recorder: Any | None = None,
 ) -> dict[str, Any]:
@@ -3884,6 +3906,19 @@ def run_one_command_15m_factory(
     try:
         if factory_run_initialized is not None:
             factory_run_initialized(run_id)
+        # V2-9.8B full-run ownership context: the factory may read the immutable
+        # ownership context but must not replace any identity. If a non-empty
+        # bound factory run id disagrees with this factory's run id, fail closed
+        # before any lifecycle work (identity drift).
+        if lifecycle_ownership_context is not None:
+            bound_factory_run = str(
+                lifecycle_ownership_context.get("factory_run_id") or ""
+            ).strip()
+            if bound_factory_run and bound_factory_run != run_id:
+                raise ValueError(
+                    "FACTORY_RUN_IDENTITY_DRIFT:"
+                    f"{bound_factory_run}!={run_id}"
+                )
         # One-shot campaign → factory authoritative linkage when campaign
         # ownership identities are present (V2-9.8B selective 1h readiness).
         if campaign_run_id:
@@ -3948,6 +3983,7 @@ def run_one_command_15m_factory(
                 run_id,
                 targets,
                 _now(),
+                operation_observer=lifecycle_operation_observer,
                 first_commit_callback=(
                     _first_opening_commit
                     if _post_handoff_scope_recorder is not None
@@ -4034,6 +4070,35 @@ def run_one_command_15m_factory(
                         timeout_seconds=timeout_seconds,
                         fallback_adapter_factory=fallback_factory,
                     )
+                # V2-9.8B action-local observation at the actual measured
+                # outbound-call boundary: report the exact-pair source transport a
+                # lifecycle step produced (durable source request/response ids) so
+                # the independent action-local ledger captures the real transport
+                # identity at execution time. Verification-only; never mutates
+                # factory state; fires only when a coordinator threads it through.
+                if (
+                    lifecycle_operation_observer is not None
+                    and str(pending["step_kind"]) in ("SNAPSHOT", "WINDOW_CLOSE")
+                    and result.get("source_request_id") is not None
+                    and result.get("source_response_id") is not None
+                ):
+                    lifecycle_operation_observer(
+                        {
+                            "boundary": "SOURCE_TRANSPORT",
+                            "run_id": run_id,
+                            "scheduler_job_id": int(pending["scheduler_job_id"]),
+                            "step_key": str(pending["step_key"]),
+                            "step_kind": str(pending["step_kind"]),
+                            "token_id": int(pending["token_id"]),
+                            "pair_id": int(pending["pair_id"]),
+                            "source_request_id": int(result["source_request_id"]),
+                            "source_response_id": int(result["source_response_id"]),
+                            "source_name": str(
+                                result.get("snapshot_source_name") or "dexscreener"
+                            ),
+                            "request_kind": "pair_market_snapshot",
+                        }
+                    )
                 if (
                     _post_handoff_scope_recorder is not None
                     and result.get("snapshot_id") is not None
@@ -4077,6 +4142,7 @@ def run_one_command_15m_factory(
                             opening_step=pending,
                             first_snapshot_captured_at=str(captured[0]),
                             window_seconds=_window_seconds,
+                            operation_observer=lifecycle_operation_observer,
                         )
                     elif pending["step_kind"] == "WINDOW_CLOSE" and effective_continuous_1h:
                         window_id = result.get("memory_window_id")

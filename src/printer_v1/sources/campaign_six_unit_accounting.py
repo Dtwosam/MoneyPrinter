@@ -15,8 +15,14 @@ from typing import Any, Mapping, Sequence
 
 from printer_v1.sources.measured_transport import (
     SIX_UNITS,
+    UNIT_LIFECYCLE_RESERVED_TRANSPORT_OPERATION,
+    UNIT_LOCAL_VALIDATION_STEP,
+    UNIT_SCHEDULER_WORK_ITEM,
+    LifecycleReservationIdentity,
+    LocalValidationIdentity,
     MeasuredTransportError,
     MeasuredTransportLedger,
+    SchedulerWorkIdentity,
     TransportOperationIdentity,
     empty_six_unit_totals,
     reconcile_six_unit_totals,
@@ -28,6 +34,77 @@ class CampaignSixUnitError(RuntimeError):
 
 
 STAGE_TERMINAL_STATUSES = frozenset({"COMPLETED", "BLOCKED", "FAILED"})
+
+# Identity-bearing full-run evidence version. V1 remains readable and replayable
+# as historical evidence; V2 additionally carries durable non-transport unit
+# identities so totals derive from unique identity sets rather than counters.
+EVIDENCE_KIND_V1 = "CAMPAIGN_SIX_UNIT_EVIDENCE_V1"
+EVIDENCE_KIND_V2 = "CAMPAIGN_SIX_UNIT_EVIDENCE_V2"
+
+# Non-transport identity list field names carried by V2 evidence.
+_SCHEDULER_IDENTITY_FIELD = "scheduler_work_identities"
+_RESERVATION_IDENTITY_FIELD = "lifecycle_reservation_identities"
+_VALIDATION_IDENTITY_FIELD = "local_validation_identities"
+_NON_TRANSPORT_IDENTITY_FIELDS = (
+    _SCHEDULER_IDENTITY_FIELD,
+    _RESERVATION_IDENTITY_FIELD,
+    _VALIDATION_IDENTITY_FIELD,
+)
+
+
+def _scheduler_identity_key(
+    raw: Mapping[str, Any] | SchedulerWorkIdentity,
+) -> tuple[Any, ...]:
+    if isinstance(raw, SchedulerWorkIdentity):
+        return raw.identity_key()
+    return (
+        str(raw.get("stage_id") or ""),
+        int(raw.get("scheduler_job_id") or 0),
+        str(raw.get("job_kind") or ""),
+        str(raw.get("target_category") or ""),
+        None if raw.get("target_identity") is None else str(raw.get("target_identity")),
+    )
+
+
+def _reservation_identity_key(
+    raw: Mapping[str, Any] | LifecycleReservationIdentity,
+) -> tuple[Any, ...]:
+    if isinstance(raw, LifecycleReservationIdentity):
+        return raw.identity_key()
+    return (
+        str(raw.get("stage_id") or ""),
+        str(raw.get("factory_run_id") or ""),
+        int(raw.get("token_id") or 0),
+        int(raw.get("pair_id") or 0),
+        str(raw.get("window_kind") or ""),
+        int(raw.get("reservation_ordinal") or 0),
+    )
+
+
+def _validation_identity_key(
+    raw: Mapping[str, Any] | LocalValidationIdentity,
+) -> tuple[Any, ...]:
+    if isinstance(raw, LocalValidationIdentity):
+        return raw.identity_key()
+    return (
+        str(raw.get("stage_id") or ""),
+        str(raw.get("subject_identity") or ""),
+        str(raw.get("validation_kind") or ""),
+        int(raw.get("validation_ordinal") or 0),
+    )
+
+
+_NON_TRANSPORT_IDENTITY_KEY_FUNCS = {
+    _SCHEDULER_IDENTITY_FIELD: _scheduler_identity_key,
+    _RESERVATION_IDENTITY_FIELD: _reservation_identity_key,
+    _VALIDATION_IDENTITY_FIELD: _validation_identity_key,
+}
+
+_NON_TRANSPORT_IDENTITY_UNIT = {
+    _SCHEDULER_IDENTITY_FIELD: UNIT_SCHEDULER_WORK_ITEM,
+    _RESERVATION_IDENTITY_FIELD: UNIT_LIFECYCLE_RESERVED_TRANSPORT_OPERATION,
+    _VALIDATION_IDENTITY_FIELD: UNIT_LOCAL_VALIDATION_STEP,
+}
 
 SEALED_STAGE_METADATA_FIELDS = (
     "stage_id",
@@ -90,6 +167,18 @@ def seal_campaign_stage_evidence(
     sealed_at: str | None = None,
     ledger: MeasuredTransportLedger | None = None,
     evidence: Mapping[str, Any] | None = None,
+    scheduler_work_identities: Sequence[
+        SchedulerWorkIdentity | Mapping[str, Any]
+    ]
+    | None = None,
+    lifecycle_reservation_identities: Sequence[
+        LifecycleReservationIdentity | Mapping[str, Any]
+    ]
+    | None = None,
+    local_validation_identities: Sequence[
+        LocalValidationIdentity | Mapping[str, Any]
+    ]
+    | None = None,
 ) -> dict[str, Any]:
     """Seal one immutable stage evidence block for campaign-owner ingestion.
 
@@ -98,6 +187,11 @@ def seal_campaign_stage_evidence(
     identities. Rejects missing IDs, invalid sequence/status, negative counters,
     malformed transports, and empty started-stage evidence. All-zero evidence is
     permitted only for the existing PRE_OPERATION_NO_WORK contract.
+
+    When any non-transport identity list is supplied, the stage is sealed as
+    identity-bearing ``CAMPAIGN_SIX_UNIT_EVIDENCE_V2``: the three non-transport
+    counters are derived from the unique identity lists so totals cannot be
+    forged from a bare integer.
     """
     stage_id_text = _require_nonempty_text(stage_id, field_name="stage_id")
     stage_kind_text = _require_nonempty_text(stage_kind, field_name="stage_kind")
@@ -131,7 +225,7 @@ def seal_campaign_stage_evidence(
 
     if ledger is not None:
         payload: dict[str, Any] = {
-            "evidence_kind": "CAMPAIGN_SIX_UNIT_EVIDENCE_V1",
+            "evidence_kind": EVIDENCE_KIND_V1,
             "transport_operations": [
                 item.as_dict() for item in ledger.transports
             ],
@@ -143,6 +237,42 @@ def seal_campaign_stage_evidence(
         if not isinstance(evidence, Mapping) or not evidence:
             raise CampaignSixUnitError("SIX_UNIT_STAGE_EVIDENCE_EMPTY")
         payload = copy.deepcopy(dict(evidence))
+
+    identity_lists = {
+        _SCHEDULER_IDENTITY_FIELD: scheduler_work_identities,
+        _RESERVATION_IDENTITY_FIELD: lifecycle_reservation_identities,
+        _VALIDATION_IDENTITY_FIELD: local_validation_identities,
+    }
+    counter_field = {
+        _SCHEDULER_IDENTITY_FIELD: "scheduler_work_items",
+        _RESERVATION_IDENTITY_FIELD: "lifecycle_reservations",
+        _VALIDATION_IDENTITY_FIELD: "local_validations",
+    }
+    is_identity_bearing = any(value is not None for value in identity_lists.values())
+    if is_identity_bearing:
+        for field_name, supplied in identity_lists.items():
+            if supplied is None:
+                continue
+            if isinstance(supplied, (str, bytes)) or not isinstance(
+                supplied, Sequence
+            ):
+                raise CampaignSixUnitError(
+                    f"SIX_UNIT_STAGE_EVIDENCE_MALFORMED:{field_name.upper()}"
+                )
+            key_func = _NON_TRANSPORT_IDENTITY_KEY_FUNCS[field_name]
+            payload_list: list[dict[str, Any]] = []
+            seen: set[tuple[Any, ...]] = set()
+            for item in supplied:
+                record = item.as_dict() if hasattr(item, "as_dict") else dict(item)
+                key = key_func(record)
+                if key in seen:
+                    raise CampaignSixUnitError(
+                        f"SIX_UNIT_STAGE_EVIDENCE_DUPLICATE_IDENTITY:{field_name}:{key}"
+                    )
+                seen.add(key)
+                payload_list.append(record)
+            payload[field_name] = payload_list
+            payload[counter_field[field_name]] = len(payload_list)
 
     is_pre_operation_no_work = payload.get("phase") == "PRE_OPERATION_NO_WORK"
     try:
@@ -172,7 +302,9 @@ def seal_campaign_stage_evidence(
         )
 
     sealed = dict(payload)
-    sealed["evidence_kind"] = "CAMPAIGN_SIX_UNIT_EVIDENCE_V1"
+    sealed["evidence_kind"] = (
+        EVIDENCE_KIND_V2 if is_identity_bearing else EVIDENCE_KIND_V1
+    )
     sealed["stage_id"] = stage_id_text
     sealed["stage_kind"] = stage_kind_text
     sealed["stage_sequence"] = sequence
@@ -210,6 +342,28 @@ class CampaignSixUnitOwner:
         default_factory=list, init=False
     )
     _ingested_stage_id_set: set[str] = field(default_factory=set, init=False, repr=False)
+    # Identity-bearing non-transport unit evidence (V2). Each list is the durable
+    # identity record; the paired key set enforces cross-stage uniqueness so unit
+    # totals derive from unique identities rather than free integers.
+    scheduler_work_identities: list[dict[str, Any]] = field(
+        default_factory=list, init=False
+    )
+    lifecycle_reservation_identities: list[dict[str, Any]] = field(
+        default_factory=list, init=False
+    )
+    local_validation_identities: list[dict[str, Any]] = field(
+        default_factory=list, init=False
+    )
+    identity_mode_units: set[str] = field(default_factory=set, init=False, repr=False)
+    _scheduler_identity_keys: set[tuple[Any, ...]] = field(
+        default_factory=set, init=False, repr=False
+    )
+    _reservation_identity_keys: set[tuple[Any, ...]] = field(
+        default_factory=set, init=False, repr=False
+    )
+    _validation_identity_keys: set[tuple[Any, ...]] = field(
+        default_factory=set, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         self.ledger.campaign_id = self.campaign_id
@@ -230,6 +384,148 @@ class CampaignSixUnitOwner:
 
     def reserve_lifecycle_transports(self, count: int) -> None:
         self.ledger.reserve_lifecycle_transports(count)
+
+    def record_scheduler_work_identity(
+        self, identity: SchedulerWorkIdentity | Mapping[str, Any]
+    ) -> None:
+        """Record one durable Scheduler work item identity (non-transport unit).
+
+        The paired counter is bumped so ``six_unit_totals`` derives the
+        ``SCHEDULER_WORK_ITEM`` total from unique identities. A duplicate identity
+        fails closed before it can inflate the total.
+        """
+        key = _scheduler_identity_key(identity)
+        if key in self._scheduler_identity_keys:
+            raise CampaignSixUnitError(
+                f"SIX_UNIT_DUPLICATE_SCHEDULER_WORK_IDENTITY:{key}"
+            )
+        payload = (
+            identity.as_dict()
+            if isinstance(identity, SchedulerWorkIdentity)
+            else dict(identity)
+        )
+        self._scheduler_identity_keys.add(key)
+        self.scheduler_work_identities.append(payload)
+        self.ledger.record_scheduler_work_item(1)
+        self.identity_mode_units.add(UNIT_SCHEDULER_WORK_ITEM)
+
+    def record_lifecycle_reservation_identity(
+        self, identity: LifecycleReservationIdentity | Mapping[str, Any]
+    ) -> None:
+        """Record one durable lifecycle transport reservation identity."""
+        key = _reservation_identity_key(identity)
+        if key in self._reservation_identity_keys:
+            raise CampaignSixUnitError(
+                f"SIX_UNIT_DUPLICATE_LIFECYCLE_RESERVATION_IDENTITY:{key}"
+            )
+        payload = (
+            identity.as_dict()
+            if isinstance(identity, LifecycleReservationIdentity)
+            else dict(identity)
+        )
+        self._reservation_identity_keys.add(key)
+        self.lifecycle_reservation_identities.append(payload)
+        self.ledger.reserve_lifecycle_transports(1)
+        self.identity_mode_units.add(UNIT_LIFECYCLE_RESERVED_TRANSPORT_OPERATION)
+
+    def record_local_validation_identity(
+        self, identity: LocalValidationIdentity | Mapping[str, Any]
+    ) -> None:
+        """Record one durable named local validation identity."""
+        key = _validation_identity_key(identity)
+        if key in self._validation_identity_keys:
+            raise CampaignSixUnitError(
+                f"SIX_UNIT_DUPLICATE_LOCAL_VALIDATION_IDENTITY:{key}"
+            )
+        payload = (
+            identity.as_dict()
+            if isinstance(identity, LocalValidationIdentity)
+            else dict(identity)
+        )
+        self._validation_identity_keys.add(key)
+        self.local_validation_identities.append(payload)
+        self.ledger.record_local_validation(1)
+        self.identity_mode_units.add(UNIT_LOCAL_VALIDATION_STEP)
+
+    def non_transport_identity_keys(self) -> dict[str, set[tuple[Any, ...]]]:
+        """Return the owner's exact non-transport identity key sets."""
+        return {
+            UNIT_SCHEDULER_WORK_ITEM: set(self._scheduler_identity_keys),
+            UNIT_LIFECYCLE_RESERVED_TRANSPORT_OPERATION: set(
+                self._reservation_identity_keys
+            ),
+            UNIT_LOCAL_VALIDATION_STEP: set(self._validation_identity_keys),
+        }
+
+    def _identity_key_set_for_field(self, field_name: str) -> set[tuple[Any, ...]]:
+        return {
+            _SCHEDULER_IDENTITY_FIELD: self._scheduler_identity_keys,
+            _RESERVATION_IDENTITY_FIELD: self._reservation_identity_keys,
+            _VALIDATION_IDENTITY_FIELD: self._validation_identity_keys,
+        }[field_name]
+
+    def _identity_list_for_field(self, field_name: str) -> list[dict[str, Any]]:
+        return {
+            _SCHEDULER_IDENTITY_FIELD: self.scheduler_work_identities,
+            _RESERVATION_IDENTITY_FIELD: self.lifecycle_reservation_identities,
+            _VALIDATION_IDENTITY_FIELD: self.local_validation_identities,
+        }[field_name]
+
+    def _prepare_stage_non_transport_identities(
+        self, evidence: Mapping[str, Any]
+    ) -> dict[str, list[tuple[tuple[Any, ...], dict[str, Any]]]]:
+        """Validate a stage's non-transport identity lists without committing.
+
+        Each present list must match its paired integer counter and contain no
+        within-stage or cross-stage duplicate identity. Returns per-field
+        ``(key, payload)`` entries to apply atomically once the whole stage is
+        validated.
+        """
+        counter_field = {
+            _SCHEDULER_IDENTITY_FIELD: "scheduler_work_items",
+            _RESERVATION_IDENTITY_FIELD: "lifecycle_reservations",
+            _VALIDATION_IDENTITY_FIELD: "local_validations",
+        }
+        prepared: dict[str, list[tuple[tuple[Any, ...], dict[str, Any]]]] = {
+            field_name: [] for field_name in _NON_TRANSPORT_IDENTITY_FIELDS
+        }
+        for field_name in _NON_TRANSPORT_IDENTITY_FIELDS:
+            raw_list = evidence.get(field_name)
+            if raw_list is None:
+                continue
+            if not isinstance(raw_list, Sequence) or isinstance(
+                raw_list, (str, bytes)
+            ):
+                raise CampaignSixUnitError(
+                    f"SIX_UNIT_STAGE_EVIDENCE_MALFORMED:{field_name.upper()}"
+                )
+            counter = int(evidence.get(counter_field[field_name]) or 0)
+            if len(raw_list) != counter:
+                raise CampaignSixUnitError(
+                    "SIX_UNIT_STAGE_EVIDENCE_IDENTITY_COUNT_MISMATCH:"
+                    f"{field_name}:{len(raw_list)}!={counter}"
+                )
+            key_func = _NON_TRANSPORT_IDENTITY_KEY_FUNCS[field_name]
+            committed = self._identity_key_set_for_field(field_name)
+            within_stage: set[tuple[Any, ...]] = set()
+            for raw in raw_list:
+                if not isinstance(raw, Mapping):
+                    raise CampaignSixUnitError(
+                        f"SIX_UNIT_STAGE_EVIDENCE_MALFORMED:{field_name.upper()}"
+                    )
+                try:
+                    key = key_func(raw)
+                except (TypeError, ValueError) as exc:
+                    raise CampaignSixUnitError(
+                        f"SIX_UNIT_STAGE_EVIDENCE_MALFORMED:{field_name}:{exc}"
+                    ) from exc
+                if key in within_stage or key in committed:
+                    raise CampaignSixUnitError(
+                        f"SIX_UNIT_STAGE_EVIDENCE_DUPLICATE_IDENTITY:{field_name}:{key}"
+                    )
+                within_stage.add(key)
+                prepared[field_name].append((key, dict(raw)))
+        return prepared
 
     @property
     def sealed_stage_count(self) -> int:
@@ -287,7 +583,7 @@ class CampaignSixUnitOwner:
             "lifecycle_reservations",
         }
         if (
-            evidence.get("evidence_kind") != "CAMPAIGN_SIX_UNIT_EVIDENCE_V1"
+            evidence.get("evidence_kind") not in {EVIDENCE_KIND_V1, EVIDENCE_KIND_V2}
             or not required_fields.issubset(evidence)
         ):
             raise CampaignSixUnitError("SIX_UNIT_STAGE_EVIDENCE_MALFORMED")
@@ -426,6 +722,11 @@ class CampaignSixUnitOwner:
         stage_ledger.reserve_lifecycle_transports(
             int(evidence.get("lifecycle_reservations") or 0)
         )
+        # V2 identity-bearing non-transport evidence. When an identity list is
+        # present its length must equal the paired integer counter so unit totals
+        # derive from unique identities. Within-stage and cross-stage duplicate
+        # identities fail closed before the stage commits.
+        prepared_identities = self._prepare_stage_non_transport_identities(evidence)
         # Make one stage atomic in memory. A duplicate against an earlier stage
         # or a combined ceiling failure must not partially alter the owner.
         candidate_ledger = copy.deepcopy(self.ledger)
@@ -442,6 +743,16 @@ class CampaignSixUnitOwner:
 
         # Commit atomically only after full validation succeeds.
         self.ledger = candidate_ledger
+        for field_name, entries in prepared_identities.items():
+            key_set = self._identity_key_set_for_field(field_name)
+            identity_list = self._identity_list_for_field(field_name)
+            for key, payload in entries:
+                key_set.add(key)
+                identity_list.append(payload)
+            if entries:
+                self.identity_mode_units.add(
+                    _NON_TRANSPORT_IDENTITY_UNIT[field_name]
+                )
         self.stage_evidence_count += 1
         self.pre_operation_no_work = is_pre_operation_no_work
         self.pre_operation_no_work_reason = (
@@ -485,11 +796,17 @@ class CampaignSixUnitOwner:
         return max(0.0, (_parse_iso(end) - _parse_iso(self.started_at)).total_seconds())
 
     def durable_evidence(self) -> dict[str, Any]:
-        """Return durable six-unit evidence (not the derived totals alone)."""
+        """Return durable six-unit evidence (not the derived totals alone).
+
+        Emits identity-bearing ``CAMPAIGN_SIX_UNIT_EVIDENCE_V2`` whenever any
+        non-transport identity has been recorded, so the durable evidence carries
+        the exact Scheduler/reservation/validation identities that produce the
+        three non-transport unit totals. Otherwise it stays byte-compatible V1.
+        """
         if self.ended_at is None:
             self.close()
-        return {
-            "evidence_kind": "CAMPAIGN_SIX_UNIT_EVIDENCE_V1",
+        evidence: dict[str, Any] = {
+            "evidence_kind": EVIDENCE_KIND_V1,
             "campaign_id": self.campaign_id,
             "run_id": self.run_id,
             "cycle_id": self.cycle_id,
@@ -509,6 +826,16 @@ class CampaignSixUnitOwner:
             "scheduler_work_items": int(self.ledger.scheduler_work_items),
             "lifecycle_reservations": int(self.ledger.lifecycle_reservations),
         }
+        if self.identity_mode_units:
+            evidence["evidence_kind"] = EVIDENCE_KIND_V2
+            evidence[_SCHEDULER_IDENTITY_FIELD] = list(self.scheduler_work_identities)
+            evidence[_RESERVATION_IDENTITY_FIELD] = list(
+                self.lifecycle_reservation_identities
+            )
+            evidence[_VALIDATION_IDENTITY_FIELD] = list(
+                self.local_validation_identities
+            )
+        return evidence
 
     def six_unit_totals(self) -> dict[str, int]:
         return self.ledger.six_unit_totals()
@@ -541,11 +868,249 @@ def _transport_identity_key(raw: Mapping[str, Any] | TransportOperationIdentity)
     )
 
 
+@dataclass
+class CampaignActionLocalLedger:
+    """Independent action-local observation ledger (verification only).
+
+    Created before operational work starts. It observes operations directly at
+    their execution boundaries — measured transport, Scheduler enqueue/claim/
+    terminal, lifecycle reservation, named local validation — and never becomes an
+    accounting authority. It must not be built by copying sealed stage evidence or
+    by querying the final report; the equality contract fails closed if it is.
+    """
+
+    campaign_id: str | None = None
+    run_id: str | None = None
+    cycle_id: str | None = None
+    lifecycle_started: bool = False
+    transport_identities: list[dict[str, Any]] = field(default_factory=list)
+    scheduler_work_identities: list[dict[str, Any]] = field(default_factory=list)
+    lifecycle_reservation_identities: list[dict[str, Any]] = field(
+        default_factory=list
+    )
+    local_validation_identities: list[dict[str, Any]] = field(default_factory=list)
+
+    def observe_transport(
+        self, identity: TransportOperationIdentity | Mapping[str, Any]
+    ) -> None:
+        self.transport_identities.append(
+            identity.as_dict()
+            if isinstance(identity, TransportOperationIdentity)
+            else dict(identity)
+        )
+
+    def observe_scheduler_work(
+        self, identity: SchedulerWorkIdentity | Mapping[str, Any]
+    ) -> None:
+        self.lifecycle_started = True
+        self.scheduler_work_identities.append(
+            identity.as_dict()
+            if isinstance(identity, SchedulerWorkIdentity)
+            else dict(identity)
+        )
+
+    def observe_lifecycle_reservation(
+        self, identity: LifecycleReservationIdentity | Mapping[str, Any]
+    ) -> None:
+        self.lifecycle_started = True
+        self.lifecycle_reservation_identities.append(
+            identity.as_dict()
+            if isinstance(identity, LifecycleReservationIdentity)
+            else dict(identity)
+        )
+
+    def observe_local_validation(
+        self, identity: LocalValidationIdentity | Mapping[str, Any]
+    ) -> None:
+        self.lifecycle_started = True
+        self.local_validation_identities.append(
+            identity.as_dict()
+            if isinstance(identity, LocalValidationIdentity)
+            else dict(identity)
+        )
+
+    def transport_observer(self):
+        """Return a ``MeasuredTransportLedger.on_transport_recorded`` callback."""
+        return self.observe_transport
+
+    def non_transport_identity_lists(self) -> dict[str, list[dict[str, Any]]]:
+        return {
+            _SCHEDULER_IDENTITY_FIELD: list(self.scheduler_work_identities),
+            _RESERVATION_IDENTITY_FIELD: list(self.lifecycle_reservation_identities),
+            _VALIDATION_IDENTITY_FIELD: list(self.local_validation_identities),
+        }
+
+
+def _keys_and_duplicate(
+    entries: Sequence[Mapping[str, Any]], key_func
+) -> tuple[set[tuple[Any, ...]], bool]:
+    """Return the identity key set and whether any duplicate was present."""
+    keys: set[tuple[Any, ...]] = set()
+    duplicate = False
+    for item in entries:
+        if not isinstance(item, Mapping):
+            raise CampaignSixUnitError("ACTION_LOCAL_IDENTITY_MALFORMED")
+        key = key_func(item)
+        if key in keys:
+            duplicate = True
+        keys.add(key)
+    return keys, duplicate
+
+
+def reconcile_full_run_owner_to_action_local(
+    owner: CampaignSixUnitOwner,
+    action_local: CampaignActionLocalLedger | None,
+    *,
+    required_stage_kinds: Sequence[str] | None = None,
+    owner_equality_stage_ids: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """Prove exact six-unit equality between owner and an independent observer.
+
+    Every unit is compared as an exact identity set in both directions. A
+    lifecycle-started run with a missing action-local surface, a missing mandatory
+    sealed stage, a duplicate identity, or a count/identity mismatch fails closed.
+    This never returns ``equal=True`` merely because an argument is absent.
+
+    ``required_stage_kinds`` is the mandatory sealed-stage manifest (every listed
+    kind must have been sealed on the owner or the run fails closed).
+
+    ``owner_equality_stage_ids`` optionally scopes which owner identities enter the
+    per-unit equality comparison to the stages an independent execution-time
+    observer could actually witness (the lifecycle slot stages). Owner-only
+    mandatory stages proven from durable ownership/terminal evidence
+    (``DISCOVERY_SELECTION_SCHEDULER``, ``CAMPAIGN_TERMINAL_RECONCILIATION``) stay
+    required-present but are excluded from action-local equality so the equality
+    contract is neither vacuous nor forced to invent observations. When omitted
+    (default), every owner identity participates, preserving the original
+    all-stages equality contract.
+    """
+    unit_results: dict[str, Any] = {}
+    blocked_reason: str | None = None
+
+    if owner.accounting_block_reason is not None:
+        blocked_reason = str(owner.accounting_block_reason)
+
+    if blocked_reason is None and action_local is None:
+        blocked_reason = "ACTION_LOCAL_LIFECYCLE_EVIDENCE_MISSING"
+
+    # Required mandatory sealed lifecycle stages.
+    sealed_kinds = {
+        str(item.get("stage_kind") or "")
+        for item in owner.sealed_stage_diagnostics
+    }
+    missing_stages = [
+        kind for kind in (required_stage_kinds or ()) if kind not in sealed_kinds
+    ]
+    if blocked_reason is None and missing_stages:
+        blocked_reason = "MISSING_MANDATORY_LIFECYCLE_STAGE:" + ",".join(
+            sorted(missing_stages)
+        )
+
+    equality_scope = (
+        None
+        if owner_equality_stage_ids is None
+        else {str(stage_id) for stage_id in owner_equality_stage_ids}
+    )
+
+    def _in_scope(key: tuple[Any, ...]) -> bool:
+        # Every owner identity key carries its owning stage id as element 0
+        # (transport ``stage`` field and non-transport ``stage_id``).
+        return equality_scope is None or (key and key[0] in equality_scope)
+
+    owner_transport_keys = {
+        key
+        for key in (_transport_identity_key(item) for item in owner.ledger.transports)
+        if _in_scope(key)
+    }
+    owner_non_transport = {
+        unit: {key for key in keys if _in_scope(key)}
+        for unit, keys in owner.non_transport_identity_keys().items()
+    }
+
+    comparisons = (
+        (
+            "SOURCE_TRANSPORT_OPERATION",
+            owner_transport_keys,
+            None if action_local is None else action_local.transport_identities,
+            _transport_identity_key,
+        ),
+        (
+            UNIT_SCHEDULER_WORK_ITEM,
+            owner_non_transport[UNIT_SCHEDULER_WORK_ITEM],
+            None if action_local is None else action_local.scheduler_work_identities,
+            _scheduler_identity_key,
+        ),
+        (
+            UNIT_LIFECYCLE_RESERVED_TRANSPORT_OPERATION,
+            owner_non_transport[UNIT_LIFECYCLE_RESERVED_TRANSPORT_OPERATION],
+            None
+            if action_local is None
+            else action_local.lifecycle_reservation_identities,
+            _reservation_identity_key,
+        ),
+        (
+            UNIT_LOCAL_VALIDATION_STEP,
+            owner_non_transport[UNIT_LOCAL_VALIDATION_STEP],
+            None if action_local is None else action_local.local_validation_identities,
+            _validation_identity_key,
+        ),
+    )
+
+    for unit, owner_keys, action_entries, key_func in comparisons:
+        result: dict[str, Any] = {
+            "owner_count": len(owner_keys),
+            "action_local_count": None,
+            "identity_sets_equal": None,
+            "unit_block_reason": None,
+        }
+        if action_entries is None:
+            result["unit_block_reason"] = (
+                None if action_local is None else "ACTION_LOCAL_UNIT_SURFACE_MISSING"
+            )
+        else:
+            try:
+                action_keys, duplicate = _keys_and_duplicate(action_entries, key_func)
+            except CampaignSixUnitError:
+                result["unit_block_reason"] = "ACTION_LOCAL_IDENTITY_MALFORMED"
+            else:
+                result["action_local_count"] = len(action_entries)
+                result["identity_sets_equal"] = owner_keys == action_keys
+                if duplicate:
+                    result["unit_block_reason"] = "DUPLICATE_ACTION_LOCAL_IDENTITY"
+                elif len(action_keys) != len(action_entries):
+                    result["unit_block_reason"] = "DUPLICATE_ACTION_LOCAL_IDENTITY"
+                elif owner_keys != action_keys:
+                    result["unit_block_reason"] = "UNIT_IDENTITY_SET_MISMATCH"
+        unit_results[unit] = result
+        if blocked_reason is None and result["unit_block_reason"] is not None:
+            blocked_reason = f"{unit}:{result['unit_block_reason']}"
+
+    equal = blocked_reason is None
+    return {
+        "equal": equal,
+        "mismatch_reason": blocked_reason,
+        "lifecycle_started": bool(
+            owner.stage_evidence_count > 0
+            or (action_local is not None and action_local.lifecycle_started)
+        ),
+        "required_stage_kinds": list(required_stage_kinds or ()),
+        "missing_mandatory_stage_kinds": sorted(missing_stages),
+        "equality_scoped_stage_ids": (
+            None if equality_scope is None else sorted(equality_scope)
+        ),
+        "unit_results": unit_results,
+        "diagnostics": owner.accounting_diagnostics(),
+    }
+
+
 def reconcile_owner_to_action_local(
     owner: CampaignSixUnitOwner,
     *,
     action_local_source_operations: int | None = None,
     action_local_transport_identities: Sequence[Mapping[str, Any]] | None = None,
+    lifecycle_started: bool = False,
+    action_local_ledger: "CampaignActionLocalLedger | None" = None,
+    required_stage_kinds: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Verify owner transport identities and counts against action-local truth.
 
@@ -566,7 +1131,21 @@ def reconcile_owner_to_action_local(
     cannot prove exact transport identity equality, return
     ``ACTION_LOCAL_TRANSPORT_IDENTITY_DESIGN_BLOCKED`` rather than weakening
     the contract with count-only multi-hop asymmetry.
+
+    A lifecycle-started run (``lifecycle_started=True`` or an
+    ``action_local_ledger`` argument) requires a non-empty action-local surface
+    for every unit. It is delegated to
+    :func:`reconcile_full_run_owner_to_action_local`, which fails closed on a
+    missing surface, missing mandatory stage, duplicate identity, or any
+    count/identity mismatch. It never returns ``equal=True`` because both
+    optional arguments happen to be absent.
     """
+    if lifecycle_started or action_local_ledger is not None:
+        return reconcile_full_run_owner_to_action_local(
+            owner,
+            action_local_ledger,
+            required_stage_kinds=required_stage_kinds,
+        )
     owner_ops = int(owner.owner_transport_operation_count)
     owner_identity_keys = {
         _transport_identity_key(item) for item in owner.ledger.transports
@@ -687,11 +1266,18 @@ def aggregate_campaign_six_unit_owner(
 def reconstruct_six_unit_totals_from_evidence(
     evidence: Mapping[str, Any] | None,
 ) -> dict[str, int]:
-    """Independently rebuild six-unit totals from durable evidence only."""
+    """Independently rebuild six-unit totals from durable evidence only.
+
+    For identity-bearing ``CAMPAIGN_SIX_UNIT_EVIDENCE_V2`` the three
+    non-transport unit totals are derived from the unique identity list sizes and
+    cross-checked against the paired integer counters. A duplicate identity or a
+    counter/identity mismatch fails closed so the total cannot be forged.
+    """
     if not isinstance(evidence, Mapping):
         raise CampaignSixUnitError("SIX_UNIT_EVIDENCE_MISSING")
     if str(evidence.get("evidence_kind") or "") not in {
-        "CAMPAIGN_SIX_UNIT_EVIDENCE_V1",
+        EVIDENCE_KIND_V1,
+        EVIDENCE_KIND_V2,
         "",
     } and "transport_operations" not in evidence:
         raise CampaignSixUnitError("SIX_UNIT_EVIDENCE_KIND_UNSUPPORTED")
@@ -742,6 +1328,39 @@ def reconstruct_six_unit_totals_from_evidence(
     }
     if any(value < 0 for value in counters.values()):
         raise CampaignSixUnitError("SIX_UNIT_EVIDENCE_NEGATIVE_MEASURE")
+
+    # Identity-bearing (V2): non-transport totals must equal the unique identity
+    # count, and the paired counter must agree with it.
+    field_to_counter = {
+        _SCHEDULER_IDENTITY_FIELD: "scheduler_work_items",
+        _RESERVATION_IDENTITY_FIELD: "lifecycle_reservations",
+        _VALIDATION_IDENTITY_FIELD: "local_validations",
+    }
+    for field_name, counter_key in field_to_counter.items():
+        raw_list = evidence.get(field_name)
+        if raw_list is None:
+            continue
+        if not isinstance(raw_list, Sequence) or isinstance(raw_list, (str, bytes)):
+            raise CampaignSixUnitError(
+                f"SIX_UNIT_EVIDENCE_IDENTITY_MALFORMED:{field_name}"
+            )
+        key_func = _NON_TRANSPORT_IDENTITY_KEY_FUNCS[field_name]
+        identity_seen: set[tuple[Any, ...]] = set()
+        for raw in raw_list:
+            if not isinstance(raw, Mapping):
+                raise CampaignSixUnitError(
+                    f"SIX_UNIT_EVIDENCE_IDENTITY_MALFORMED:{field_name}"
+                )
+            key = key_func(raw)
+            if key in identity_seen:
+                raise CampaignSixUnitError(
+                    f"SIX_UNIT_EVIDENCE_DUPLICATE_IDENTITY:{field_name}"
+                )
+            identity_seen.add(key)
+        if len(identity_seen) != counters[counter_key]:
+            raise CampaignSixUnitError(
+                f"SIX_UNIT_EVIDENCE_IDENTITY_COUNT_MISMATCH:{field_name}"
+            )
 
     return {
         "SOURCE_TRANSPORT_OPERATION": len(transports),
@@ -840,8 +1459,11 @@ def pre_operation_no_work_evidence(
 
 
 __all__ = [
+    "CampaignActionLocalLedger",
     "CampaignSixUnitError",
     "CampaignSixUnitOwner",
+    "EVIDENCE_KIND_V1",
+    "EVIDENCE_KIND_V2",
     "SEALED_STAGE_METADATA_FIELDS",
     "STAGE_TERMINAL_STATUSES",
     "aggregate_campaign_six_unit_owner",
@@ -851,6 +1473,7 @@ __all__ = [
     "empty_six_unit_evidence",
     "empty_six_unit_totals",
     "pre_operation_no_work_evidence",
+    "reconcile_full_run_owner_to_action_local",
     "reconcile_owner_to_action_local",
     "reconstruct_six_unit_totals_from_evidence",
     "seal_campaign_stage_evidence",

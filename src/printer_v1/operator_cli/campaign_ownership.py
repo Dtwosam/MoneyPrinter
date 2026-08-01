@@ -377,6 +377,393 @@ def persist_scheduler_work(
         )
 
 
+_TERMINAL_WINDOW_STATES = frozenset(
+    {"CLEAN_PROMOTED", "DIRTY", "BLOCKED", "NO_PROMOTION",
+     "ALREADY_EXISTS_IDEMPOTENT", "CANCELLED"}
+)
+_TERMINAL_WORK_STATES = frozenset({"SUCCEEDED", "FAILED", "SKIPPED", "CANCELLED"})
+
+CAMPAIGN_WINDOW_OWNERSHIP_CONFLICT = "CAMPAIGN_WINDOW_OWNERSHIP_CONFLICT"
+CAMPAIGN_SCHEDULER_WORK_OWNERSHIP_CONFLICT = (
+    "CAMPAIGN_SCHEDULER_WORK_OWNERSHIP_CONFLICT"
+)
+
+
+def register_campaign_window_close(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    run_id: str,
+    cycle_id: str,
+    factory_run_id: str,
+    token_slot_id: str,
+    window_id: str,
+    close_step_id: int,
+    memory_window_row_id: int,
+    root_15m_lifecycle_identity: str,
+    checkpoint_cutoff: str,
+    terminal_window_state: str,
+    terminal_cause: str,
+    window_kind: str = "WINDOW_15M",
+    now: str | None = None,
+) -> dict[str, Any]:
+    """Register one real closed factory window under exact campaign ownership.
+
+    Runs as one atomic transaction: it verifies the succeeded ``WINDOW_CLOSE``
+    step belongs to the immutable ownership context, sets the memory window's
+    exact ``cycle_id``, inserts the ``printer_memory_factory_campaign_windows``
+    ownership row (idempotent on the exact identity tuple), binds the memory row,
+    terminalizes the ownership row, and read-back verifies before returning. It
+    reuses the existing ownership table — no parallel window map is created.
+
+    Fails closed with ``CAMPAIGN_WINDOW_OWNERSHIP_CONFLICT`` on a competing
+    campaign/run/cycle owner, a token/pair mismatch, a blank/mismatched cycle in a
+    new run, or a close step outside the ownership context.
+    """
+    timestamp = now or _utc_now()
+    campaign = _required(campaign_id, "campaign_id")
+    run = _required(run_id, "run_id")
+    cycle = _required(cycle_id, "cycle_id")
+    factory_run = _required(factory_run_id, "factory_run_id")
+    slot = _required(token_slot_id, "token_slot_id")
+    window = _required(window_id, "window_id")
+    lifecycle_identity = _required(
+        root_15m_lifecycle_identity, "root_15m_lifecycle_identity"
+    )
+    cutoff = _required(checkpoint_cutoff, "checkpoint_cutoff")
+    terminal_state = _required(terminal_window_state, "terminal_window_state")
+    cause = _required(terminal_cause, "terminal_cause")
+    row_id = int(memory_window_row_id)
+    if terminal_state not in _TERMINAL_WINDOW_STATES:
+        raise CampaignOwnershipError(
+            f"invalid terminal window state: {terminal_state}"
+        )
+    try:
+        with connection:
+            step = connection.execute(
+                """SELECT run_id, step_kind, step_status, token_id, pair_id,
+                          memory_window_id, scheduler_job_id
+                   FROM printer_memory_factory_run_steps WHERE id=?""",
+                (int(close_step_id),),
+            ).fetchone()
+            if step is None:
+                raise CampaignOwnershipError(
+                    f"unknown close step identity: {close_step_id}"
+                )
+            step_run, step_kind, step_status, step_token, step_pair, step_window, _ = (
+                step
+            )
+            if str(step_kind) != "WINDOW_CLOSE":
+                raise CampaignOwnershipError(
+                    f"{CAMPAIGN_WINDOW_OWNERSHIP_CONFLICT}:step is not WINDOW_CLOSE"
+                )
+            if str(step_status) != "SUCCEEDED":
+                raise CampaignOwnershipError(
+                    f"{CAMPAIGN_WINDOW_OWNERSHIP_CONFLICT}:close step not succeeded"
+                )
+            if str(step_run) != factory_run:
+                raise CampaignOwnershipError(
+                    f"{CAMPAIGN_WINDOW_OWNERSHIP_CONFLICT}:close step outside factory run"
+                )
+            if step_window is None or int(step_window) != row_id:
+                raise CampaignOwnershipError(
+                    f"{CAMPAIGN_WINDOW_OWNERSHIP_CONFLICT}:close step window mismatch"
+                )
+
+            campaign_run = connection.execute(
+                """SELECT authoritative_run_id FROM printer_memory_factory_campaign_runs
+                   WHERE run_id=? AND campaign_id=?""",
+                (run, campaign),
+            ).fetchone()
+            if campaign_run is None:
+                raise CampaignOwnershipError(f"unknown campaign run identity: {run}")
+            if campaign_run[0] is None or str(campaign_run[0]) != factory_run:
+                raise CampaignOwnershipError(
+                    f"{CAMPAIGN_WINDOW_OWNERSHIP_CONFLICT}:factory run not bound to campaign run"
+                )
+
+            memory = connection.execute(
+                """SELECT token_id, pair_id, window_kind, cycle_id
+                   FROM printer_memory_windows WHERE id=?""",
+                (row_id,),
+            ).fetchone()
+            if memory is None:
+                raise CampaignOwnershipError(
+                    f"memory window missing for registration: {row_id}"
+                )
+            mem_token, mem_pair, mem_kind, mem_cycle = memory
+            if (
+                int(mem_token) != int(step_token)
+                or int(mem_pair) != int(step_pair)
+                or str(mem_kind) != window_kind
+            ):
+                raise CampaignOwnershipError(
+                    f"{CAMPAIGN_WINDOW_OWNERSHIP_CONFLICT}:memory window identity mismatch"
+                )
+            if mem_cycle is not None and str(mem_cycle).strip():
+                if str(mem_cycle) != cycle:
+                    raise CampaignOwnershipError(
+                        f"{CAMPAIGN_WINDOW_OWNERSHIP_CONFLICT}:cycle already bound to another cycle"
+                    )
+
+            slot_row = connection.execute(
+                """SELECT campaign_id, run_id, cycle_id, token_row_id, pair_row_id
+                   FROM printer_memory_factory_campaign_token_slots
+                   WHERE token_slot_id=?""",
+                (slot,),
+            ).fetchone()
+            if slot_row is None:
+                raise CampaignOwnershipError(f"unknown token slot identity: {slot}")
+            if (
+                str(slot_row[0]) != campaign
+                or str(slot_row[1]) != run
+                or str(slot_row[2]) != cycle
+            ):
+                raise CampaignOwnershipError(
+                    f"{CAMPAIGN_WINDOW_OWNERSHIP_CONFLICT}:token slot outside ownership context"
+                )
+            token_row_id = int(slot_row[3])
+            pair_row_id = int(slot_row[4])
+            if token_row_id != int(step_token) or pair_row_id != int(step_pair):
+                raise CampaignOwnershipError(
+                    f"{CAMPAIGN_WINDOW_OWNERSHIP_CONFLICT}:slot token/pair mismatch"
+                )
+
+            existing = connection.execute(
+                """SELECT campaign_id, run_id, cycle_id, token_slot_id, token_row_id,
+                          pair_row_id, window_kind, memory_window_row_id, window_state
+                   FROM printer_memory_factory_campaign_windows WHERE window_id=?""",
+                (window,),
+            ).fetchone()
+            if existing is not None:
+                same = (
+                    str(existing[0]) == campaign
+                    and str(existing[1]) == run
+                    and str(existing[2]) == cycle
+                    and str(existing[3]) == slot
+                    and int(existing[4]) == token_row_id
+                    and int(existing[5]) == pair_row_id
+                    and str(existing[6]) == window_kind
+                    and existing[7] is not None
+                    and int(existing[7]) == row_id
+                )
+                if not same:
+                    raise CampaignOwnershipError(
+                        f"{CAMPAIGN_WINDOW_OWNERSHIP_CONFLICT}:window already owned differently"
+                    )
+                # Ensure the memory window cycle is bound even on idempotent replay.
+                if mem_cycle is None or not str(mem_cycle).strip():
+                    connection.execute(
+                        "UPDATE printer_memory_windows SET cycle_id=?, updated_at=? WHERE id=?",
+                        (cycle, timestamp, row_id),
+                    )
+                return {
+                    "registered": False,
+                    "idempotent": True,
+                    "window_id": window,
+                    "cycle_id": cycle,
+                    "window_state": str(existing[8]),
+                    "memory_window_row_id": row_id,
+                }
+
+            # New registration: bind memory cycle, insert PLANNED, terminalize.
+            connection.execute(
+                "UPDATE printer_memory_windows SET cycle_id=?, updated_at=? WHERE id=?",
+                (cycle, timestamp, row_id),
+            )
+            connection.execute(
+                """INSERT INTO printer_memory_factory_campaign_windows(
+                    window_id,campaign_id,run_id,cycle_id,token_slot_id,token_row_id,
+                    pair_row_id,window_kind,window_state,root_15m_lifecycle_identity,
+                    predecessor_window_id,containing_main_window_id,memory_window_row_id,
+                    checkpoint_cutoff,support_only,created_at,updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,'PLANNED',?,NULL,NULL,?,?,0,?,?)""",
+                (window, campaign, run, cycle, slot, token_row_id, pair_row_id,
+                 window_kind, lifecycle_identity, row_id, cutoff, timestamp, timestamp),
+            )
+            cursor = connection.execute(
+                """UPDATE printer_memory_factory_campaign_windows
+                   SET window_state=?, first_terminal_cause=?, terminal_at=?, updated_at=?
+                   WHERE window_id=? AND window_state='PLANNED'""",
+                (terminal_state, cause, timestamp, timestamp, window),
+            )
+            if cursor.rowcount != 1:
+                raise CampaignOwnershipError(
+                    f"{CAMPAIGN_WINDOW_OWNERSHIP_CONFLICT}:terminal compare-and-update failed"
+                )
+
+            # Read-back identity verification before returning success.
+            verify = connection.execute(
+                """SELECT w.cycle_id, w.memory_window_row_id, w.window_state, m.cycle_id
+                   FROM printer_memory_factory_campaign_windows AS w
+                   JOIN printer_memory_windows AS m ON m.id=w.memory_window_row_id
+                   WHERE w.window_id=?""",
+                (window,),
+            ).fetchone()
+            if (
+                verify is None
+                or str(verify[0]) != cycle
+                or verify[1] is None
+                or int(verify[1]) != row_id
+                or str(verify[2]) != terminal_state
+                or str(verify[3]) != cycle
+            ):
+                raise CampaignOwnershipError(
+                    f"{CAMPAIGN_WINDOW_OWNERSHIP_CONFLICT}:read-back verification failed"
+                )
+            return {
+                "registered": True,
+                "idempotent": False,
+                "window_id": window,
+                "cycle_id": cycle,
+                "window_state": terminal_state,
+                "memory_window_row_id": row_id,
+            }
+    except sqlite3.Error as exc:
+        raise CampaignOwnershipError(str(exc)) from exc
+
+
+def campaign_scheduler_work_id(campaign_id: str, scheduler_job_id: int) -> str:
+    """Deterministic campaign Scheduler ownership id for one existing job.
+
+    One Scheduler job maps to exactly one campaign ownership row; the id is a
+    stable function of campaign and job so re-projection is idempotent by primary
+    key and one job cannot land in two accounting stages.
+    """
+    campaign = _required(campaign_id, "campaign_id")
+    return f"campaign-work|{campaign}|{int(scheduler_job_id)}"
+
+
+def project_campaign_scheduler_job(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    run_id: str,
+    cycle_id: str,
+    factory_run_id: str,
+    token_slot_id: str,
+    window_id: str,
+    scheduler_job_id: int,
+    job_kind: str,
+    deadline_at: str,
+    terminal_state: str,
+    terminal_cause: str,
+    now: str | None = None,
+) -> dict[str, Any]:
+    """Project one existing factory Scheduler job into campaign ownership.
+
+    References the canonical ``printer_scheduler_jobs`` row and the factory
+    run-step linkage rather than creating a replacement job. Idempotent on the
+    exact identity; a second projection of the same job under a different owner or
+    window fails closed with ``CAMPAIGN_SCHEDULER_WORK_OWNERSHIP_CONFLICT``.
+    """
+    timestamp = now or _utc_now()
+    campaign = _required(campaign_id, "campaign_id")
+    run = _required(run_id, "run_id")
+    cycle = _required(cycle_id, "cycle_id")
+    factory_run = _required(factory_run_id, "factory_run_id")
+    slot = _required(token_slot_id, "token_slot_id")
+    window = _required(window_id, "window_id")
+    kind = _required(job_kind, "job_kind")
+    deadline = _required(deadline_at, "deadline_at")
+    terminal = _required(terminal_state, "terminal_state")
+    cause = _required(terminal_cause, "terminal_cause")
+    job_id = int(scheduler_job_id)
+    if terminal not in _TERMINAL_WORK_STATES:
+        raise CampaignOwnershipError(f"invalid terminal work state: {terminal}")
+    work_id = campaign_scheduler_work_id(campaign, job_id)
+    work_intent = f"{kind}|factory_run={factory_run}|job={job_id}"
+    try:
+        with connection:
+            job = connection.execute(
+                "SELECT id, job_kind FROM printer_scheduler_jobs WHERE id=?",
+                (job_id,),
+            ).fetchone()
+            if job is None:
+                raise CampaignOwnershipError(
+                    f"unknown scheduler job for projection: {job_id}"
+                )
+            step = connection.execute(
+                """SELECT run_id FROM printer_memory_factory_run_steps
+                   WHERE scheduler_job_id=? ORDER BY id LIMIT 1""",
+                (job_id,),
+            ).fetchone()
+            if step is None or str(step[0]) != factory_run:
+                raise CampaignOwnershipError(
+                    f"{CAMPAIGN_SCHEDULER_WORK_OWNERSHIP_CONFLICT}:job not owned by factory run"
+                )
+
+            duplicate_owner = connection.execute(
+                """SELECT scheduler_work_id FROM printer_memory_factory_campaign_scheduler_work
+                   WHERE scheduler_job_id=?""",
+                (job_id,),
+            ).fetchone()
+            if duplicate_owner is not None and str(duplicate_owner[0]) != work_id:
+                raise CampaignOwnershipError(
+                    f"{CAMPAIGN_SCHEDULER_WORK_OWNERSHIP_CONFLICT}:job already owned by another stage"
+                )
+
+            existing = connection.execute(
+                """SELECT campaign_id, run_id, cycle_id, token_slot_id, window_id,
+                          scheduler_job_id, work_state
+                   FROM printer_memory_factory_campaign_scheduler_work
+                   WHERE scheduler_work_id=?""",
+                (work_id,),
+            ).fetchone()
+            if existing is not None:
+                same = (
+                    str(existing[0]) == campaign
+                    and str(existing[1]) == run
+                    and str(existing[2]) == cycle
+                    and str(existing[3]) == slot
+                    and str(existing[4]) == window
+                    and existing[5] is not None
+                    and int(existing[5]) == job_id
+                )
+                if not same:
+                    raise CampaignOwnershipError(
+                        f"{CAMPAIGN_SCHEDULER_WORK_OWNERSHIP_CONFLICT}:work already owned differently"
+                    )
+                return {
+                    "registered": False,
+                    "idempotent": True,
+                    "scheduler_work_id": work_id,
+                    "scheduler_job_id": job_id,
+                    "work_state": str(existing[6]),
+                }
+
+            connection.execute(
+                """INSERT INTO printer_memory_factory_campaign_scheduler_work(
+                    scheduler_work_id,campaign_id,run_id,cycle_id,token_slot_id,
+                    window_id,work_intent,deadline_at,work_state,scheduler_job_id,
+                    source_request_id,source_response_id,source_failure_id,
+                    created_at,updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,'PENDING',?,NULL,NULL,NULL,?,?)""",
+                (work_id, campaign, run, cycle, slot, window, work_intent, deadline,
+                 job_id, timestamp, timestamp),
+            )
+            cursor = connection.execute(
+                """UPDATE printer_memory_factory_campaign_scheduler_work
+                   SET work_state=?, first_terminal_cause=?, terminal_at=?, updated_at=?
+                   WHERE scheduler_work_id=? AND work_state='PENDING'""",
+                (terminal, cause, timestamp, timestamp, work_id),
+            )
+            if cursor.rowcount != 1:
+                raise CampaignOwnershipError(
+                    f"{CAMPAIGN_SCHEDULER_WORK_OWNERSHIP_CONFLICT}:terminal compare-and-update failed"
+                )
+            return {
+                "registered": True,
+                "idempotent": False,
+                "scheduler_work_id": work_id,
+                "scheduler_job_id": job_id,
+                "job_kind": kind,
+                "work_state": terminal,
+            }
+    except sqlite3.Error as exc:
+        raise CampaignOwnershipError(str(exc)) from exc
+
+
 def canonical_object_payload(payload: Mapping[str, Any]) -> tuple[str, str]:
     try:
         encoded = json.dumps(
