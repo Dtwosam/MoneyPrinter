@@ -1,7 +1,8 @@
 """Bounded, fail-closed Git-provenance authorization manifest validator.
 
 This module implements the approved
-``V2-9.8B WINDOW_15M One-Shot Wrapper Git-Provenance Compatibility`` design.
+``V2-9.8B WINDOW_15M One-Shot Wrapper Git-Provenance Compatibility`` design and
+its authoritative ignored-evidence visibility repair.
 
 It converts an already-produced, authorization-bound, out-of-repository manifest
 and one-attempt application marker into a validated exact repository-relative
@@ -15,12 +16,13 @@ The validator:
 * validates the referenced repository-local final-authorization document;
 * validates every manifest file's exact repository-relative path, package root,
   size, and SHA-256;
-* proves exact equality between the observed repository untracked set and the
-  manifest file set;
+* reconciles the complete ``operator-runs/`` filesystem inventory with both
+  Git-visible and scoped Git-ignored untracked files;
 * binds the marker to the manifest SHA-256 and to the allowed-file-set digest.
 
 It makes no network request, no database read or write, and creates no files.
-It only reads the named files and runs read-only ``git`` plumbing commands.
+It only reads the named files, walks the bounded ``operator-runs/`` namespace,
+and runs read-only ``git`` plumbing commands.
 """
 
 from __future__ import annotations
@@ -30,8 +32,9 @@ from datetime import datetime
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
+import stat
 import subprocess
 from typing import Any, Callable, Iterable, Mapping
 
@@ -45,6 +48,7 @@ MIGRATION_PACKAGE_KIND = "MIGRATION_050_EVIDENCE"
 AUTHORIZATION_PACKAGE_KIND = "WINDOW_15M_AUTHORIZATION_EVIDENCE"
 PACKAGE_KINDS = (MIGRATION_PACKAGE_KIND, AUTHORIZATION_PACKAGE_KIND)
 
+OPERATOR_RUNS_ROOT = "operator-runs"
 MIGRATION_PACKAGE_ROOT = "operator-runs/v2-9-8b-authoritative-mig050"
 AUTHORIZATION_PACKAGE_ROOT = "operator-runs/v2-9-8b-window-15m-final-authorization"
 
@@ -134,12 +138,7 @@ class ValidatedGitProvenanceAuthorization:
 
 
 def compute_allowed_file_set_sha256(files: Iterable[Mapping[str, Any]]) -> str:
-    """Deterministically digest the manifest file records.
-
-    Records are sorted by path and encoded as canonical JSON (sorted keys,
-    compact separators, ASCII-safe, no NaN). The wrapper and this production
-    validator must produce byte-identical input, so the digest is stable.
-    """
+    """Deterministically digest the manifest file records."""
     records = []
     for entry in files:
         records.append(
@@ -319,14 +318,40 @@ def _git(
     return result
 
 
-def _live_repository_state(
+def _normalize_git_path(raw: str, *, label: str) -> str:
+    if not raw:
+        raise GitProvenanceAuthorizationError(f"Git {label} returned an empty path")
+    if "\\" in raw or raw.startswith("/") or raw.endswith("/"):
+        raise GitProvenanceAuthorizationError(f"Git {label} returned a malformed path")
+    candidate = PurePosixPath(raw)
+    if any(part in ("", ".", "..") for part in candidate.parts):
+        raise GitProvenanceAuthorizationError(f"Git {label} returned a malformed path")
+    normalized = candidate.as_posix()
+    if normalized != raw:
+        raise GitProvenanceAuthorizationError(f"Git {label} returned a malformed path")
+    return normalized
+
+
+def _parse_git_path_set(result: Any, *, label: str) -> set[str]:
+    output = getattr(result, "stdout", None)
+    if not isinstance(output, str):
+        raise GitProvenanceAuthorizationError(f"Git {label} output is malformed")
+    raw_items = [item for item in output.split("\0") if item]
+    normalized = [_normalize_git_path(item, label=label) for item in raw_items]
+    if len(normalized) != len(set(normalized)):
+        raise GitProvenanceAuthorizationError(
+            f"Git {label} returned duplicate paths"
+        )
+    return set(normalized)
+
+
+def _live_repository_identity(
     root: Path,
     *,
     git_executable: str,
     timeout_seconds: float,
     runner: Callable[..., Any],
-) -> tuple[str, str, set[str]]:
-    """Return (branch, head, observed_untracked) using capture-parity semantics."""
+) -> tuple[str, str]:
     head_result = _git(
         root,
         ["rev-parse", "--verify", "HEAD^{commit}"],
@@ -377,7 +402,17 @@ def _live_repository_state(
     if getattr(unstaged, "returncode", None) == 1:
         raise GitProvenanceAuthorizationError("launch Git tree has unstaged changes")
 
-    untracked_result = _git(
+    return branch, head
+
+
+def _visible_untracked_paths(
+    root: Path,
+    *,
+    git_executable: str,
+    timeout_seconds: float,
+    runner: Callable[..., Any],
+) -> set[str]:
+    result = _git(
         root,
         ["ls-files", "--others", "--exclude-standard", "-z"],
         git_executable=git_executable,
@@ -386,11 +421,177 @@ def _live_repository_state(
         allowed={0},
         label="untracked status",
     )
-    untracked_output = getattr(untracked_result, "stdout", None)
-    if not isinstance(untracked_output, str):
-        raise GitProvenanceAuthorizationError("Git untracked output is malformed")
-    observed = {item for item in untracked_output.split("\0") if item}
-    return branch, head, observed
+    return _parse_git_path_set(result, label="untracked status")
+
+
+def _ignored_operator_runs_paths(
+    root: Path,
+    *,
+    git_executable: str,
+    timeout_seconds: float,
+    runner: Callable[..., Any],
+) -> set[str]:
+    result = _git(
+        root,
+        [
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "-z",
+            "--",
+            f"{OPERATOR_RUNS_ROOT}/",
+        ],
+        git_executable=git_executable,
+        timeout_seconds=timeout_seconds,
+        runner=runner,
+        allowed={0},
+        label="ignored operator-runs status",
+    )
+    paths = _parse_git_path_set(result, label="ignored operator-runs status")
+    prefix = f"{OPERATOR_RUNS_ROOT}/"
+    outside = {path for path in paths if not path.startswith(prefix)}
+    if outside:
+        raise GitProvenanceAuthorizationError(
+            "Git ignored operator-runs status returned a path outside operator-runs: "
+            + ", ".join(sorted(outside))
+        )
+    return paths
+
+
+def _inventory_operator_runs(root: Path) -> set[str]:
+    """Return every regular file below operator-runs without following symlinks."""
+    operator_root = root / OPERATOR_RUNS_ROOT
+    if os.path.islink(operator_root):
+        raise GitProvenanceAuthorizationError(
+            "operator-runs evidence root must not be a symlink"
+        )
+    if not operator_root.is_dir():
+        raise GitProvenanceAuthorizationError(
+            "operator-runs evidence root is unavailable"
+        )
+
+    inventory: set[str] = set()
+    stack = [operator_root]
+    while stack:
+        directory = stack.pop()
+        try:
+            entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
+        except OSError as exc:
+            raise GitProvenanceAuthorizationError(
+                f"operator-runs evidence inventory could not be read: {exc}"
+            ) from exc
+
+        for entry in entries:
+            path = Path(entry.path)
+            try:
+                relative = path.relative_to(root).as_posix()
+            except ValueError as exc:
+                raise GitProvenanceAuthorizationError(
+                    "operator-runs evidence entry resolves outside the repository"
+                ) from exc
+
+            if entry.is_symlink():
+                raise GitProvenanceAuthorizationError(
+                    f"operator-runs evidence inventory contains a symlink: {relative}"
+                )
+            try:
+                mode = entry.stat(follow_symlinks=False).st_mode
+            except OSError as exc:
+                raise GitProvenanceAuthorizationError(
+                    f"operator-runs evidence entry could not be inspected: {relative}"
+                ) from exc
+
+            if stat.S_ISDIR(mode):
+                stack.append(path)
+                continue
+            if not stat.S_ISREG(mode):
+                raise GitProvenanceAuthorizationError(
+                    f"operator-runs evidence inventory contains a non-regular entry: {relative}"
+                )
+            normalized = _normalize_git_path(relative, label="operator-runs inventory")
+            if normalized in inventory:
+                raise GitProvenanceAuthorizationError(
+                    f"operator-runs evidence inventory contains a duplicate path: {normalized}"
+                )
+            inventory.add(normalized)
+    return inventory
+
+
+def _normalize_sidecar_paths(paths: Iterable[str]) -> set[str]:
+    normalized = set()
+    for item in paths:
+        text = Path(str(item)).as_posix()
+        normalized.add(_normalize_git_path(text, label="sidecar allowlist"))
+    return normalized
+
+
+def _reconcile_evidence_sets(
+    *,
+    manifest_paths: set[str],
+    visible_paths: set[str],
+    ignored_paths: set[str],
+    inventory_paths: set[str],
+    sidecar_untracked_paths: Iterable[str],
+) -> None:
+    effective_visible = visible_paths - _normalize_sidecar_paths(
+        sidecar_untracked_paths
+    )
+
+    overlap = effective_visible & ignored_paths
+    if overlap:
+        raise GitProvenanceAuthorizationError(
+            "Git visible and ignored untracked classifications overlap: "
+            + ", ".join(sorted(overlap))
+        )
+
+    unexpected_visible = effective_visible - manifest_paths
+    if unexpected_visible:
+        raise GitProvenanceAuthorizationError(
+            "unexpected untracked repository file not covered by manifest: "
+            + ", ".join(sorted(unexpected_visible))
+        )
+
+    unexpected_ignored = ignored_paths - manifest_paths
+    if unexpected_ignored:
+        raise GitProvenanceAuthorizationError(
+            "unexpected ignored operator-runs file not covered by manifest: "
+            + ", ".join(sorted(unexpected_ignored))
+        )
+
+    missing_from_inventory = manifest_paths - inventory_paths
+    if missing_from_inventory:
+        raise GitProvenanceAuthorizationError(
+            "manifest file is absent from the complete operator-runs inventory: "
+            + ", ".join(sorted(missing_from_inventory))
+        )
+
+    unexpected_inventory = inventory_paths - manifest_paths
+    if unexpected_inventory:
+        raise GitProvenanceAuthorizationError(
+            "unexpected operator-runs filesystem file not covered by manifest: "
+            + ", ".join(sorted(unexpected_inventory))
+        )
+
+    ignored_outside_inventory = ignored_paths - inventory_paths
+    if ignored_outside_inventory:
+        raise GitProvenanceAuthorizationError(
+            "ignored operator-runs path is absent from the filesystem inventory: "
+            + ", ".join(sorted(ignored_outside_inventory))
+        )
+
+    classified_manifest = (effective_visible & manifest_paths) | ignored_paths
+    unclassified = manifest_paths - classified_manifest
+    if unclassified:
+        raise GitProvenanceAuthorizationError(
+            "manifest file is neither visible nor ignored untracked: "
+            + ", ".join(sorted(unclassified))
+        )
+
+    if inventory_paths != manifest_paths:
+        raise GitProvenanceAuthorizationError(
+            "complete operator-runs inventory does not equal the manifest file set"
+        )
 
 
 def _validate_repository_relative_path(raw_path: Any, *, package_root: str) -> str:
@@ -399,7 +600,7 @@ def _validate_repository_relative_path(raw_path: Any, *, package_root: str) -> s
         raise GitProvenanceAuthorizationError(
             "manifest file path must be POSIX and contain no backslash"
         )
-    candidate = Path(text)
+    candidate = PurePosixPath(text)
     if candidate.is_absolute():
         raise GitProvenanceAuthorizationError(
             "manifest file path must not be absolute"
@@ -433,10 +634,8 @@ def _validate_repository_relative_path(raw_path: Any, *, package_root: str) -> s
 def _validate_repository_file(
     normalized: str, *, root: Path, expected_sha256: str, expected_size: int
 ) -> None:
-    # Reject a symlink at any component between the repository root and the file
-    # before resolving, so a symlink never redirects validation elsewhere.
     walked = root
-    for part in Path(normalized).parts:
+    for part in PurePosixPath(normalized).parts:
         walked = walked / part
         if os.path.islink(walked):
             raise GitProvenanceAuthorizationError(
@@ -484,8 +683,6 @@ def _validate_authorization_document(
     expected_sha256 = _require_hex64(
         reference["sha256"], label="authorization_file sha256"
     )
-    # The referenced authorization document must live in this authorization's
-    # package, next to the authorization id, not merely under the shared root.
     prefix = f"{AUTHORIZATION_PACKAGE_ROOT}/{authorization_id}/"
     if not relative.startswith(prefix):
         raise GitProvenanceAuthorizationError(
@@ -686,12 +883,7 @@ def validate_git_provenance_authorization(
     runner: Callable[..., Any] = subprocess.run,
     sidecar_untracked_paths: Iterable[str] = (),
 ) -> ValidatedGitProvenanceAuthorization:
-    """Validate an external manifest and marker and return an exact allowlist.
-
-    Every failure is fail-closed and consumes no state. On success the returned
-    ``allowed_untracked_paths`` may be combined with the fixed SQLite sidecar
-    tuple and passed unchanged to ``capture_git_provenance()``.
-    """
+    """Validate an external manifest and marker and return an exact allowlist."""
     if not 0 < timeout_seconds <= GIT_COMMAND_TIMEOUT_SECONDS:
         raise GitProvenanceAuthorizationError(
             "Git provenance timeout is outside the fixed ceiling"
@@ -700,7 +892,6 @@ def validate_git_provenance_authorization(
     if not root.is_dir():
         raise GitProvenanceAuthorizationError("repository root is unavailable")
 
-    # --- external manifest integrity -------------------------------------
     manifest_file, actual_manifest_sha256 = _resolve_external_file(
         manifest_path, root=root, expected_sha256=manifest_sha256, label="manifest"
     )
@@ -731,8 +922,7 @@ def validate_git_provenance_authorization(
         manifest.get("authorized_command"), label="manifest authorized_command"
     )
 
-    # --- live repository state (capture-parity semantics) ----------------
-    branch, head, observed = _live_repository_state(
+    branch, head = _live_repository_identity(
         root,
         git_executable=git_executable,
         timeout_seconds=timeout_seconds,
@@ -747,7 +937,6 @@ def validate_git_provenance_authorization(
             "manifest HEAD does not match live Git state"
         )
 
-    # --- authorization document ------------------------------------------
     authorization_sha256 = _validate_authorization_document(
         manifest,
         root=root,
@@ -756,33 +945,36 @@ def validate_git_provenance_authorization(
         head=head,
     )
 
-    # --- manifest file set ------------------------------------------------
     allowed_paths = _validate_files(
         manifest,
         root=root,
         authorization_id=authorization_id,
         migration_execution_id=migration_execution_id,
     )
+
+    visible_paths = _visible_untracked_paths(
+        root,
+        git_executable=git_executable,
+        timeout_seconds=timeout_seconds,
+        runner=runner,
+    )
+    ignored_paths = _ignored_operator_runs_paths(
+        root,
+        git_executable=git_executable,
+        timeout_seconds=timeout_seconds,
+        runner=runner,
+    )
+    inventory_paths = _inventory_operator_runs(root)
+    _reconcile_evidence_sets(
+        manifest_paths=set(allowed_paths),
+        visible_paths=visible_paths,
+        ignored_paths=ignored_paths,
+        inventory_paths=inventory_paths,
+        sidecar_untracked_paths=sidecar_untracked_paths,
+    )
+
     allowed_file_set_sha256 = compute_allowed_file_set_sha256(manifest["files"])
 
-    # --- exact observed-untracked equality -------------------------------
-    ignore = {Path(str(item)).as_posix() for item in sidecar_untracked_paths}
-    effective_observed = observed - ignore
-    manifest_paths = set(allowed_paths)
-    missing_from_repo = manifest_paths - effective_observed
-    if missing_from_repo:
-        raise GitProvenanceAuthorizationError(
-            "manifest file is not present in the observed untracked set: "
-            + ", ".join(sorted(missing_from_repo))
-        )
-    extra_in_repo = effective_observed - manifest_paths
-    if extra_in_repo:
-        raise GitProvenanceAuthorizationError(
-            "unexpected untracked repository file not covered by manifest: "
-            + ", ".join(sorted(extra_in_repo))
-        )
-
-    # --- external marker binding -----------------------------------------
     marker_file, actual_marker_sha256 = _resolve_external_file(
         marker_path, root=root, expected_sha256=marker_sha256, label="marker"
     )
