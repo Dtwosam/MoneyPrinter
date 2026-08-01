@@ -15,15 +15,16 @@ Controlling design amendment:
 `docs/printer-v1-v2-9-8b-campaign-scheduler-ownership-schema-design-amendment.md`
 (`V2_9_8B_CAMPAIGN_SCHEDULER_OWNERSHIP_SCHEMA_DESIGN_AMENDMENT_PASS`)
 
-Current verdict (correction "scheduler ownership projection truth"):
+Current verdict (controlling correction "exact capture and evidence"):
 `V2_9_8B_CAMPAIGN_SCHEDULER_OWNERSHIP_SCHEMA_MIGRATION_IMPLEMENTATION_PASS`
 
 > **Superseded prior result.** The original PASS recorded in §1–§12 below was
 > issued before the projection authority proved *exact Scheduler state* and
 > *exact job lineage* for all four scopes. That earlier PASS is preserved
-> unchanged as the historical record. §13 documents the correction that now
-> controls the current verdict. See §13 for the exact corrections, revised
-> tests, and the unchanged schema decision.
+> unchanged as the historical record. §13 records the first correction and is
+> also preserved as a superseded historical result. §14 is the controlling
+> correction for exact cleanup capture, exact terminal evidence, token-slot
+> law, and repeat-state synchronization.
 
 ## 0. Boundary
 
@@ -412,3 +413,159 @@ provider/RPC/operational command run, and no later or financial capability
 unlocked. A PASS still does not authorize applying `050` to the authoritative
 database or resuming C1-C15; the next permitted lane remains the bounded
 disposable migration proof.
+
+> The §13 verdict is a **superseded historical correction**. It is preserved
+> unchanged. The controlling implementation result is §14.
+
+## 14. Controlling correction — exact capture and evidence
+
+Date: 2026-08-01. Correction commit subject:
+`Correct exact scheduler capture and terminal evidence`.
+
+Primary blocker classification under the Python Builder Guide:
+`COMMITTED_CODE_DEFECT`. The defect reproduced offline: cleanup capture still
+used the compatibility campaign/run/cycle `OR` union; terminal discovery
+evidence used `scheduler_job_id` plus `ORDER BY ... LIMIT 1`; optional cleanup
+slots were not proven; and exact repeats returned stored state before comparing
+the canonical Scheduler. The correction stays in the existing active-work,
+campaign ownership, unified terminal-closure, and Central Scheduler owners.
+
+### 14.1 Files changed
+
+| File | Controlling correction |
+| --- | --- |
+| `src/printer_v1/operator_cli/campaign_active_work.py` | Added explicit read-only `exact_scope=True` mode while preserving the broader default API. Every candidate is filtered through one exact campaign/run/cycle durable-owner resolver. |
+| `src/printer_v1/operator_cli/campaign_ownership.py` | Made cleanup capture exact and active-only; replaced job-only terminal lookup with scope-specific evidence; added cleanup slot law; added unchanged-repeat/idempotent, lawful-transition/synchronize, and explicit drift behavior. |
+| `src/printer_v1/operator_cli/unified_terminal_closure.py` | Captures the exact active job set before discovery parity/cancellation and cancels only IDs in that immutable capture through `cancel_job()`. |
+| `tests/test_v2_9_8b_campaign_scheduler_ownership_schema_migration.py` | Expanded the disposable focused suite to 34 tests covering the controlling correction and retained migration proofs. |
+| `docs/printer-v1-v2-9-8b-campaign-scheduler-ownership-schema-migration-implementation.md` | Added this controlling correction without rewriting §§1–13. |
+
+Migration `050_campaign_scheduler_ownership_scope.sql` is unchanged.
+
+### 14.2 Exact capture derivation
+
+`campaign_scoped_job_ids()` keeps its historical broad behavior unless the new
+explicit `exact_scope=True` argument is supplied. Exact mode requires all three
+identities and performs this read-only algorithm:
+
+1. collect compatibility candidates from factory run-steps, discovery work,
+   campaign Scheduler ownership, and exact selected-item handoff links;
+2. filter every candidate through one resolver that requires a durable row
+   carrying the same `campaign_id`, `run_id`, `cycle_id`, and Scheduler job;
+3. accept exact owners only from `printer_discovery_work`,
+   `printer_memory_factory_campaign_scheduler_work`, or
+   `printer_discovery_selected_item_links.first_window_15m_scheduler_job_id`;
+4. do not treat a factory run-step alone as cycle ownership because it carries
+   no `cycle_id`;
+5. read each surviving canonical Scheduler row and freeze only active
+   `PENDING`, `RUNNING`, or `COOLDOWN` jobs in sorted `(job_id, pre_state)` form.
+
+`SchedulerCleanupCapture` therefore contains no job owned only by another run
+or cycle of the same campaign. `reconcile_campaign_terminal()` takes this
+capture before discovery parity or cancellation and sends only captured IDs to
+the canonical Scheduler `cancel_job()` owner.
+
+### 14.3 Exact terminal-evidence derivation
+
+| Scope | Exact lineage | State / cause / time source |
+| --- | --- | --- |
+| `DISCOVERY_SELECTION` | The one `printer_discovery_work` row matching target identity + campaign + run + cycle + Scheduler job. | `work_state`, `first_terminal_cause`, and `terminal_at` from that exact target row, validated against `printer_scheduler_jobs.status`. No other work row sharing the job can supply evidence. |
+| `FIRST_15M_HANDOFF` | The one selected-item link matching exact target, campaign, run, cycle, job, and optional slot. | Canonical `printer_scheduler_jobs.status`, `finished_at`, and `last_error` (for `FAILED`); non-failure terminal cause uses the deterministic `SCHEDULER_JOB_<STATUS>` token. |
+| `WINDOW_LIFECYCLE` | Exact campaign window/slot, exact campaign-run authoritative factory bind, and exact factory run-step job. | Canonical Scheduler `status`, `finished_at`, and failure `last_error`, with the deterministic non-failure cause token. |
+| `TERMINAL_CLEANUP` | Exact captured job plus exact campaign/run/cycle durable owner. | State-bearing exact discovery/campaign-work owners supply state/cause/time and must agree with the Scheduler; a selected-item owner has no terminal fields, so canonical Scheduler terminal fields apply. Conflicting state-bearing owner rows block. |
+
+No terminal-evidence query resolves ambiguity with `ORDER BY ... LIMIT 1`.
+Multiple conflicting cleanup evidence rows, a terminal target work row whose
+state differs from the Scheduler, an active target row for a terminal Scheduler,
+missing terminal time, or missing failure cause all fail closed.
+
+### 14.4 Cleanup token-slot law
+
+`TERMINAL_CLEANUP` keeps the lawful job-only shape when `token_slot_id IS NULL`.
+When a slot is supplied, the projection proves both:
+
+1. the slot exists in the exact campaign/run/cycle; and
+2. the captured job has a durable job-to-slot link through the exact selected-
+   item handoff link or an existing exact campaign Scheduler ownership row.
+
+A foreign-cycle, nonexistent, fabricated, or merely existing-but-unlinked slot
+blocks. When no durable job-to-slot linkage exists, the caller must omit the
+slot; an unverifiable non-null value is never accepted.
+
+### 14.5 Exact-repeat and transition contract
+
+For an exact immutable identity repeat, the owner revalidates exact lineage and
+reads current canonical Scheduler state/evidence before returning:
+
+- same state and same terminal evidence: return `created=False` with no write;
+- lawful Scheduler advance: call existing `transition_state(record_kind=
+  "scheduler_work")`, using Scheduler/exact-owner derived state, cause, and
+  terminal time;
+- invalid transition, contradictory owner state, incomplete evidence, changed
+  terminal evidence, or attempted rewrite of a terminal row: raise
+  `SCHEDULER_OWNERSHIP_STATE_DRIFT` and leave the ownership row unchanged.
+
+Thus a stored active row is never returned as current evidence after the
+Scheduler becomes terminal. `transition_state()` remains the single campaign
+Scheduler ownership-state owner and preserves the first terminal cause.
+
+### 14.6 Focused disposable tests and outputs
+
+Focused correction plus migration preservation, duplicate readiness, and
+rollback:
+
+```text
+$ .venv/bin/python -m pytest \
+    tests/test_v2_9_8b_campaign_scheduler_ownership_schema_migration.py -q
+..................................                                       [100%]
+34 passed in 16.83s
+```
+
+Nearest migration/ownership regressions:
+
+```text
+$ .venv/bin/python -m pytest \
+    tests/test_v2_9_7d_6b_1_campaign_ownership_schema.py \
+    tests/test_v2_9_7d_6b_5_operational_lease_safe_stop.py \
+    tests/test_v2_9_7d_6b_6_final_campaign_report.py \
+    tests/test_v2_9_7e_42_direct_migration_discovery.py \
+    tests/test_v2_9_1_proof_db_schema_readiness.py \
+    tests/test_v2_9_7d_6b_2_operational_backup_restore_preflight.py -q
+.............................................................            [100%]
+61 passed, 10 subtests passed in 22.14s
+```
+
+Canonical Scheduler regressions:
+
+```text
+$ .venv/bin/python -m pytest tests/test_phase3_scheduler_resource_governor.py -q
+.........................                                                [100%]
+25 passed in 5.49s
+```
+
+Five directly affected active-work, discovery-parity, and terminal-closure
+nodes passed in 1.05s. Python compilation and `git diff --check` also passed.
+No full repository suite, operational command, source/provider path, or bounded
+proof was run.
+
+### 14.7 Schema decision, locks, and verdict
+
+No missing schema invariant was proven. Migration `050` already provides the
+needed stage, scope, target, exact identity, nullable-slot, terminal evidence,
+immutability, and unique Scheduler-job columns/constraints. This correction is
+canonical-owner logic and tests only, so migration `050` remains byte-unchanged.
+
+Remaining blockers inside this correction lane: none. The authoritative
+migration application, bounded disposable migration proof, C1–C15, operational
+campaigns, later windows, retrieval, paper decisions, BUY/SELL/HOLD, positions,
+trades, audits, PnL, wallets/keys/signing/real funds/live execution, paid APIs,
+and scoring/ranking/weighting/embeddings remain locked.
+
+Authoritative data and operational paths were untouched:
+`data/printer_v1.sqlite3` was never opened or mutated; migration `050` was not
+applied there; no provider/RPC/WebSocket/operational command ran; no bounded-
+proof lane was entered; and no later or financial capability was unlocked.
+
+Controlling verdict:
+
+`V2_9_8B_CAMPAIGN_SCHEDULER_OWNERSHIP_SCHEMA_MIGRATION_IMPLEMENTATION_PASS`

@@ -39,6 +39,44 @@ def _job_ids(connection: sqlite3.Connection, sql: str, params: tuple[Any, ...]) 
     return {int(row[0]) for row in connection.execute(sql, params).fetchall()}
 
 
+def _job_has_exact_scope_owner(
+    connection: sqlite3.Connection,
+    *,
+    scheduler_job_id: int,
+    campaign_id: str,
+    run_id: str,
+    cycle_id: str,
+) -> bool:
+    """Whether one durable owner binds a job to all three scope identities.
+
+    A factory run-step alone cannot establish ``cycle_id`` and is therefore not
+    an exact campaign owner.  Exact ownership comes from the rows that durably
+    carry campaign, run, cycle, and Scheduler-job identity together.
+    """
+    sources = (
+        ("printer_discovery_work", "scheduler_job_id"),
+        (
+            "printer_memory_factory_campaign_scheduler_work",
+            "scheduler_job_id",
+        ),
+        (
+            "printer_discovery_selected_item_links",
+            "first_window_15m_scheduler_job_id",
+        ),
+    )
+    for table, job_column in sources:
+        if not _table_exists(connection, table):
+            continue
+        row = connection.execute(
+            f"SELECT 1 FROM {table} WHERE {job_column}=? "
+            "AND campaign_id=? AND run_id=? AND cycle_id=? LIMIT 1",
+            (scheduler_job_id, campaign_id, run_id, cycle_id),
+        ).fetchone()
+        if row is not None:
+            return True
+    return False
+
+
 def campaign_scoped_job_ids(
     connection: sqlite3.Connection,
     *,
@@ -46,9 +84,20 @@ def campaign_scoped_job_ids(
     campaign_id: str | None = None,
     run_id: str | None = None,
     cycle_id: str | None = None,
+    exact_scope: bool = False,
 ) -> dict[str, set[int]]:
-    """Every Scheduler job attributable to this campaign, grouped by owner."""
+    """Every Scheduler job attributable to this campaign, grouped by owner.
+
+    The historical compatibility mode (``exact_scope=False``) retains its broad
+    campaign/run/cycle ``OR`` attribution.  Cleanup capture uses the explicit
+    read-only exact mode: every broad candidate is filtered through one complete
+    durable-owner resolver requiring the same campaign, run, *and* cycle.
+    """
     connection.row_factory = sqlite3.Row
+    if exact_scope and not (campaign_id and run_id and cycle_id):
+        raise ValueError(
+            "exact campaign Scheduler scope requires campaign_id, run_id, and cycle_id"
+        )
     groups: dict[str, set[int]] = {
         "factory_run_step_jobs": set(),
         "discovery_jobs": set(),
@@ -106,6 +155,30 @@ def campaign_scoped_job_ids(
                 f"WHERE ({' OR '.join(clauses)}) AND scheduler_job_id IS NOT NULL",
                 tuple(params),
             )
+    if exact_scope and _table_exists(
+        connection, "printer_discovery_selected_item_links"
+    ):
+        groups["first_15m_handoff_jobs"] = _job_ids(
+            connection,
+            "SELECT first_window_15m_scheduler_job_id "
+            "FROM printer_discovery_selected_item_links "
+            "WHERE campaign_id=? AND run_id=? AND cycle_id=? "
+            "AND first_window_15m_scheduler_job_id IS NOT NULL",
+            (campaign_id, run_id, cycle_id),
+        )
+    if exact_scope:
+        for name, job_ids in groups.items():
+            groups[name] = {
+                job_id
+                for job_id in job_ids
+                if _job_has_exact_scope_owner(
+                    connection,
+                    scheduler_job_id=job_id,
+                    campaign_id=str(campaign_id),
+                    run_id=str(run_id),
+                    cycle_id=str(cycle_id),
+                )
+            }
     return groups
 
 

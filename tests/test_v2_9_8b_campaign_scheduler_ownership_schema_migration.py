@@ -41,6 +41,9 @@ from printer_v1.operator_cli.campaign_persistence import (
     DB_MODE_PROOF_ISOLATED,
     create_campaign,
 )
+from printer_v1.operator_cli.unified_terminal_closure import (
+    reconcile_campaign_terminal,
+)
 
 
 NOW = "2026-08-01T00:00:00+00:00"
@@ -162,7 +165,7 @@ class SchedulerOwnershipSchemaMigrationTests(unittest.TestCase):
                 ) VALUES (1,1,1,'WINDOW_15M',?,'CLEAN_MEMORY','CLEAN_DATA')""",
                 (NOW,),
             )
-            for job_id in range(1, 9):
+            for job_id in range(1, 21):
                 self.connection.execute(
                     """INSERT INTO printer_scheduler_jobs(
                         id,job_name,job_kind,status,scheduled_for
@@ -208,6 +211,20 @@ class SchedulerOwnershipSchemaMigrationTests(unittest.TestCase):
             slots=(
                 self._slot(3, 1, ordinal=1),
                 self._slot(4, 2, ordinal=2),
+            ), now=NOW,
+        )
+
+    def _seed_second_run(self) -> None:
+        create_campaign_run(
+            self.connection, campaign_id="campaign-a", run_id="run-b",
+            run_ordinal=2, now=NOW,
+        )
+        create_cycle_with_two_slots(
+            self.connection, campaign_id="campaign-a", run_id="run-b",
+            cycle_id="cycle-run-b", cycle_ordinal=1,
+            slots=(
+                self._slot(5, 1, ordinal=1),
+                self._slot(6, 2, ordinal=2),
             ), now=NOW,
         )
 
@@ -257,7 +274,7 @@ class SchedulerOwnershipSchemaMigrationTests(unittest.TestCase):
 
     def _seed_discovery_work(
         self, *, discovery_work_id: str, scheduler_job_id: int,
-        work_type: str = "DISCOVERY_PUMPFUN_LATEST", work_state: str = "RUNNING",
+        work_type: str = "DISCOVERY_PUMPFUN_LATEST", work_state: str = "PENDING",
         first_terminal_cause: str | None = None, terminal_at: str | None = None,
         discovery_batch_id: str = "disc-1", run_id: str = "run-a",
         cycle_id: str = "cycle-a",
@@ -324,6 +341,19 @@ class SchedulerOwnershipSchemaMigrationTests(unittest.TestCase):
                 "UPDATE printer_scheduler_jobs "
                 "SET status=?, finished_at=?, last_error=? WHERE id=?",
                 (status, finished_at, last_error, job_id),
+            )
+
+    def _set_discovery_work_terminal(
+        self, discovery_work_id: str, state: str, cause: str,
+        *, terminal_at: str = NOW,
+    ) -> None:
+        with self.connection:
+            self.connection.execute(
+                """UPDATE printer_discovery_work
+                   SET work_state=?, first_terminal_cause=?, terminal_at=?,
+                       updated_at=?
+                   WHERE discovery_work_id=?""",
+                (state, cause, terminal_at, terminal_at, discovery_work_id),
             )
 
     def _seed_real_graph(self, db_path: Path, *, extra_job_ids=()) -> None:
@@ -809,8 +839,78 @@ class SchedulerOwnershipSchemaMigrationTests(unittest.TestCase):
             )
         self.assertIsNone(self._work_row("work-sel2"))
 
+    def test_13b_shared_job_uses_only_exact_target_terminal_evidence(self) -> None:
+        self._create_graph()
+        self._seed_discovery_batch("disc-1")
+        self._seed_discovery_work(
+            discovery_work_id="target-work", scheduler_job_id=8,
+            work_type="DISCOVERY_PUMPFUN_LATEST", work_state="SUCCEEDED",
+            first_terminal_cause="TARGET_CAUSE", terminal_at=NOW,
+        )
+        self._seed_discovery_work(
+            discovery_work_id="other-work", scheduler_job_id=8,
+            work_type="DISCOVERY_DEXSCREENER_ACTIVE", work_state="FAILED",
+            first_terminal_cause="OTHER_CAUSE", terminal_at=LATER,
+        )
+        self._set_job_status(8, "SUCCEEDED", finished_at=NOW)
+        result = project_campaign_scheduler_work(
+            self.connection, scheduler_work_id="work-target",
+            campaign_id="campaign-a", run_id="run-a", cycle_id="cycle-a",
+            work_scope="DISCOVERY_SELECTION", stage_id="STAGE_DISCOVERY",
+            work_intent="DISCOVER", deadline_at=NOW, scheduler_job_id=8,
+            target_category="DISCOVERY_WORK", target_identity="target-work",
+            now=NOW,
+        )
+        self.assertTrue(result.created)
+        row = self._work_row("work-target")
+        self.assertEqual(row["first_terminal_cause"], "TARGET_CAUSE")
+        self.assertEqual(row["terminal_at"], NOW)
+
+    def test_13c_terminal_evidence_must_match_exact_target_work_row(self) -> None:
+        self._create_graph()
+        self._seed_discovery_batch("disc-1")
+        self._seed_discovery_work(
+            discovery_work_id="target-active", scheduler_job_id=9,
+            work_type="DISCOVERY_PUMPFUN_LATEST", work_state="RUNNING",
+        )
+        self._seed_discovery_work(
+            discovery_work_id="other-terminal", scheduler_job_id=9,
+            work_type="DISCOVERY_DEXSCREENER_ACTIVE", work_state="SUCCEEDED",
+            first_terminal_cause="OTHER_ONLY", terminal_at=NOW,
+        )
+        self._set_job_status(9, "SUCCEEDED", finished_at=NOW)
+        with self.assertRaises(CampaignOwnershipError):
+            project_campaign_scheduler_work(
+                self.connection, scheduler_work_id="work-target-active",
+                campaign_id="campaign-a", run_id="run-a", cycle_id="cycle-a",
+                work_scope="DISCOVERY_SELECTION", stage_id="STAGE_DISCOVERY",
+                work_intent="DISCOVER", deadline_at=NOW, scheduler_job_id=9,
+                target_category="DISCOVERY_WORK", target_identity="target-active",
+                now=NOW,
+            )
+        self.assertIsNone(self._work_row("work-target-active"))
+
+    def test_13d_terminal_work_state_must_match_scheduler_status(self) -> None:
+        self._create_graph()
+        self._seed_discovery_batch("disc-1")
+        self._seed_discovery_work(
+            discovery_work_id="failed-work", scheduler_job_id=10,
+            work_state="FAILED", first_terminal_cause="WORK_FAILED",
+            terminal_at=NOW,
+        )
+        self._set_job_status(10, "CANCELLED", finished_at=NOW)
+        with self.assertRaises(CampaignOwnershipError):
+            project_campaign_scheduler_work(
+                self.connection, scheduler_work_id="work-state-mismatch",
+                campaign_id="campaign-a", run_id="run-a", cycle_id="cycle-a",
+                work_scope="DISCOVERY_SELECTION", stage_id="STAGE_DISCOVERY",
+                work_intent="DISCOVER", deadline_at=NOW, scheduler_job_id=10,
+                target_category="DISCOVERY_WORK", target_identity="failed-work",
+                now=NOW,
+            )
+
     # =======================================================================
-    # Proof 5: cleanup job from another run/cycle of the same campaign blocks
+    # Proof 5: exact capture excludes another cycle of the same campaign/run
     # =======================================================================
     def test_14_cleanup_foreign_run_or_cycle_blocks(self) -> None:
         self._create_graph()
@@ -825,9 +925,7 @@ class SchedulerOwnershipSchemaMigrationTests(unittest.TestCase):
             self.connection, campaign_id="campaign-a", run_id="run-a",
             cycle_id="cycle-a",
         )
-        # The campaign-wide active-work owner captures job 6 (same campaign),
-        # but the exact-scope check rejects it for cycle-a.
-        self.assertIsNotNone(capture.pre_state(6))
+        self.assertIsNone(capture.pre_state(6))
         self._set_job_status(6, "CANCELLED", finished_at=NOW)
         with self.assertRaises(CampaignOwnershipError):
             project_campaign_scheduler_work(
@@ -839,6 +937,51 @@ class SchedulerOwnershipSchemaMigrationTests(unittest.TestCase):
                 cleanup_capture=capture, now=NOW,
             )
         self.assertIsNone(self._work_row("work-cf"))
+
+    def test_14b_capture_excludes_foreign_run(self) -> None:
+        self._create_graph()
+        self._seed_second_run()
+        self._seed_discovery_batch(
+            "disc-run-b", run_id="run-b", cycle_id="cycle-run-b"
+        )
+        self._seed_discovery_work(
+            discovery_work_id="dwork-run-b", scheduler_job_id=7,
+            discovery_batch_id="disc-run-b", run_id="run-b",
+            cycle_id="cycle-run-b",
+        )
+        capture = capture_campaign_active_scheduler_jobs(
+            self.connection, campaign_id="campaign-a", run_id="run-a",
+            cycle_id="cycle-a",
+        )
+        self.assertIsNone(capture.pre_state(7))
+
+    def test_14c_terminal_cleanup_cancels_only_exact_capture(self) -> None:
+        self._create_graph()
+        self._seed_second_cycle(cycle_id="cycle-b")
+        self._seed_discovery_batch("disc-a")
+        self._seed_discovery_batch("disc-b", cycle_id="cycle-b")
+        self._seed_discovery_work(
+            discovery_work_id="dwork-a", scheduler_job_id=5,
+            discovery_batch_id="disc-a",
+        )
+        self._seed_discovery_work(
+            discovery_work_id="dwork-b", scheduler_job_id=6,
+            discovery_batch_id="disc-b", cycle_id="cycle-b",
+        )
+        result = reconcile_campaign_terminal(
+            self.db, campaign_id="campaign-a", run_id="run-a",
+            cycle_id="cycle-a", terminal_cause="BLOCKED_EXACT_CAPTURE",
+            now=NOW,
+        )
+        self.assertTrue(result["reconciled"])
+        statuses = {
+            int(row[0]): str(row[1])
+            for row in self.connection.execute(
+                "SELECT id,status FROM printer_scheduler_jobs WHERE id IN (5,6)"
+            )
+        }
+        self.assertEqual(statuses[5], "CANCELLED")
+        self.assertEqual(statuses[6], "PENDING")
 
     # =======================================================================
     # Proof 6: cleanup capture after cancellation / missing pre-state blocks
@@ -853,7 +996,7 @@ class SchedulerOwnershipSchemaMigrationTests(unittest.TestCase):
             self.connection, campaign_id="campaign-a", run_id="run-a",
             cycle_id="cycle-a",
         )
-        self.assertEqual(late_capture.pre_state(5), "CANCELLED")
+        self.assertIsNone(late_capture.pre_state(5))
         with self.assertRaises(CampaignOwnershipError):
             project_campaign_scheduler_work(
                 self.connection, scheduler_work_id="work-late",
@@ -924,6 +1067,95 @@ class SchedulerOwnershipSchemaMigrationTests(unittest.TestCase):
                 cleanup_capture=capture, now=NOW,
             )
         self.assertIsNone(self._work_row("work-tc"))
+
+    def test_16b_cleanup_token_slot_requires_exact_durable_job_link(self) -> None:
+        self._create_graph()
+        self._seed_second_cycle(cycle_id="cycle-b")
+        self._seed_discovery_batch("disc-1")
+        self._seed_discovery_work(discovery_work_id="dwork-5", scheduler_job_id=5)
+        capture = capture_campaign_active_scheduler_jobs(
+            self.connection, campaign_id="campaign-a", run_id="run-a",
+            cycle_id="cycle-a",
+        )
+        self._set_discovery_work_terminal(
+            "dwork-5", "CANCELLED", "CLEANUP_CANCELLED"
+        )
+        self._set_job_status(5, "CANCELLED", finished_at=NOW)
+        for index, slot_id in enumerate(("slot-3", "missing-slot", "slot-1")):
+            with self.assertRaises(CampaignOwnershipError):
+                project_campaign_scheduler_work(
+                    self.connection, scheduler_work_id=f"work-slot-{index}",
+                    campaign_id="campaign-a", run_id="run-a", cycle_id="cycle-a",
+                    work_scope="TERMINAL_CLEANUP", stage_id="STAGE_TERMINAL",
+                    work_intent="CANCEL", deadline_at=NOW, scheduler_job_id=5,
+                    target_category="SCHEDULER_JOB", target_identity="5",
+                    token_slot_id=slot_id, cleanup_capture=capture, now=NOW,
+                )
+        lawful = project_campaign_scheduler_work(
+            self.connection, scheduler_work_id="work-job-only",
+            campaign_id="campaign-a", run_id="run-a", cycle_id="cycle-a",
+            work_scope="TERMINAL_CLEANUP", stage_id="STAGE_TERMINAL",
+            work_intent="CANCEL", deadline_at=NOW, scheduler_job_id=5,
+            target_category="SCHEDULER_JOB", target_identity="5",
+            cleanup_capture=capture, now=NOW,
+        )
+        self.assertTrue(lawful.created)
+        self.assertIsNone(self._work_row("work-job-only")["token_slot_id"])
+
+    def test_16c_cleanup_token_slot_with_exact_handoff_link_passes(self) -> None:
+        self._create_graph()
+        self._seed_discovery_batch("disc-1")
+        self._seed_selected_item_link(
+            discovery_batch_id="disc-1", selection_batch_id="sel-1",
+            selection_item_id=1, merged_candidate_id="cand-1",
+            first_window_15m_scheduler_job_id=3, token_slot_id="slot-1",
+        )
+        capture = capture_campaign_active_scheduler_jobs(
+            self.connection, campaign_id="campaign-a", run_id="run-a",
+            cycle_id="cycle-a",
+        )
+        self._set_job_status(3, "CANCELLED", finished_at=NOW)
+        result = project_campaign_scheduler_work(
+            self.connection, scheduler_work_id="work-linked-slot",
+            campaign_id="campaign-a", run_id="run-a", cycle_id="cycle-a",
+            work_scope="TERMINAL_CLEANUP", stage_id="STAGE_TERMINAL",
+            work_intent="CANCEL", deadline_at=NOW, scheduler_job_id=3,
+            target_category="SCHEDULER_JOB", target_identity="3",
+            token_slot_id="slot-1", cleanup_capture=capture, now=NOW,
+        )
+        self.assertTrue(result.created)
+
+    def test_16d_conflicting_cleanup_terminal_evidence_blocks(self) -> None:
+        self._create_graph()
+        self._seed_discovery_batch("disc-1")
+        self._seed_discovery_work(
+            discovery_work_id="cleanup-owner-a", scheduler_job_id=11,
+            work_type="DISCOVERY_PUMPFUN_LATEST",
+        )
+        self._seed_discovery_work(
+            discovery_work_id="cleanup-owner-b", scheduler_job_id=11,
+            work_type="DISCOVERY_DEXSCREENER_ACTIVE",
+        )
+        capture = capture_campaign_active_scheduler_jobs(
+            self.connection, campaign_id="campaign-a", run_id="run-a",
+            cycle_id="cycle-a",
+        )
+        self._set_discovery_work_terminal(
+            "cleanup-owner-a", "CANCELLED", "CAUSE_A", terminal_at=NOW
+        )
+        self._set_discovery_work_terminal(
+            "cleanup-owner-b", "CANCELLED", "CAUSE_B", terminal_at=LATER
+        )
+        self._set_job_status(11, "CANCELLED", finished_at=NOW)
+        with self.assertRaises(CampaignOwnershipError):
+            project_campaign_scheduler_work(
+                self.connection, scheduler_work_id="work-conflicting-cleanup",
+                campaign_id="campaign-a", run_id="run-a", cycle_id="cycle-a",
+                work_scope="TERMINAL_CLEANUP", stage_id="STAGE_TERMINAL",
+                work_intent="CANCEL", deadline_at=NOW, scheduler_job_id=11,
+                target_category="SCHEDULER_JOB", target_identity="11",
+                cleanup_capture=capture, now=NOW,
+            )
 
     # =======================================================================
     # Proof 8: lifecycle run-step from a factory run not bound to the campaign
@@ -1031,7 +1263,11 @@ class SchedulerOwnershipSchemaMigrationTests(unittest.TestCase):
             self.connection, campaign_id="campaign-a", run_id="run-a",
             cycle_id="cycle-a",
         )
-        self._set_job_status(5, "CANCELLED", finished_at="2026-08-01T01:00:00+00:00")
+        cleanup_at = "2026-08-01T01:00:00+00:00"
+        self._set_discovery_work_terminal(
+            "dwork-5", "CANCELLED", "CLEANUP_CANCELLED", terminal_at=cleanup_at
+        )
+        self._set_job_status(5, "CANCELLED", finished_at=cleanup_at)
 
         disc = project_campaign_scheduler_work(
             self.connection, scheduler_work_id="s-disc", campaign_id="campaign-a",
@@ -1075,8 +1311,8 @@ class SchedulerOwnershipSchemaMigrationTests(unittest.TestCase):
         clean_row = self._work_row("s-clean")
         # Terminal state and evidence derived from the canonical Scheduler owner.
         self.assertEqual(clean_row["work_state"], "CANCELLED")
-        self.assertEqual(clean_row["first_terminal_cause"], "SCHEDULER_JOB_CANCELLED")
-        self.assertEqual(clean_row["terminal_at"], "2026-08-01T01:00:00+00:00")
+        self.assertEqual(clean_row["first_terminal_cause"], "CLEANUP_CANCELLED")
+        self.assertEqual(clean_row["terminal_at"], cleanup_at)
 
         scopes = {
             row[0] for row in self.connection.execute(
@@ -1089,17 +1325,66 @@ class SchedulerOwnershipSchemaMigrationTests(unittest.TestCase):
             "TERMINAL_CLEANUP",
         })
 
+    def test_19b_handoff_and_lifecycle_use_scheduler_terminal_fields(self) -> None:
+        self._create_graph()
+        self._seed_discovery_batch("disc-1")
+        self._seed_selected_item_link(
+            discovery_batch_id="disc-1", selection_batch_id="sel-1",
+            selection_item_id=1, merged_candidate_id="cand-1",
+            first_window_15m_scheduler_job_id=3, token_slot_id="slot-1",
+        )
+        self._seed_factory_run_step(factory_run_id="factory-a", scheduler_job_id=4)
+        bind_authoritative_run_id(
+            self.connection, campaign_run_id="run-a", factory_run_id="factory-a",
+            now=NOW,
+        )
+        self._set_job_status(3, "CANCELLED", finished_at=NOW)
+        self._set_job_status(4, "FAILED", finished_at=LATER, last_error="STEP_FAILED")
+        project_campaign_scheduler_work(
+            self.connection, scheduler_work_id="terminal-hand",
+            campaign_id="campaign-a", run_id="run-a", cycle_id="cycle-a",
+            work_scope="FIRST_15M_HANDOFF", stage_id="STAGE_HANDOFF",
+            work_intent="HANDOFF", deadline_at=NOW, scheduler_job_id=3,
+            target_category="MERGED_CANDIDATE", target_identity="cand-1",
+            token_slot_id="slot-1", now=NOW,
+        )
+        project_campaign_scheduler_job(
+            self.connection, scheduler_work_id="terminal-life",
+            campaign_id="campaign-a", run_id="run-a", cycle_id="cycle-a",
+            token_slot_id="slot-1", window_id="window-15m-a",
+            factory_run_id="factory-a", work_intent="CLOSE_WINDOW",
+            deadline_at=NOW, scheduler_job_id=4,
+            stage_id="STAGE_WINDOW_15M", now=NOW,
+        )
+        hand = self._work_row("terminal-hand")
+        life = self._work_row("terminal-life")
+        self.assertEqual(hand["first_terminal_cause"], "SCHEDULER_JOB_CANCELLED")
+        self.assertEqual(hand["terminal_at"], NOW)
+        self.assertEqual(life["first_terminal_cause"], "STEP_FAILED")
+        self.assertEqual(life["terminal_at"], LATER)
+
     # =======================================================================
-    # Proof 11: exact-repeat projection remains idempotent (and preserves the
-    #           existing actual state even if the job later changes)
+    # Proof 11: unchanged repeat is idempotent; lawful Scheduler advance syncs
     # =======================================================================
-    def test_20_exact_repeat_idempotent_preserves_state(self) -> None:
+    def test_20_exact_repeat_idempotent_then_syncs_terminal_advance(self) -> None:
         self._create_graph()
         first = self._project_discovery(work_id="work-disc", job=1)
         self.assertTrue(first.created)
         self.assertEqual(first.work_state, "PENDING")
-        # The real job later goes terminal, but an exact-repeat projection must
-        # remain idempotent and preserve the stored (PENDING) state and cause.
+        unchanged = project_campaign_scheduler_work(
+            self.connection, scheduler_work_id="work-disc", campaign_id="campaign-a",
+            run_id="run-a", cycle_id="cycle-a", work_scope="DISCOVERY_SELECTION",
+            stage_id="STAGE_DISCOVERY", work_intent="DISCOVER", deadline_at=NOW,
+            scheduler_job_id=1, target_category="DISCOVERY_WORK",
+            target_identity="dwork-1", now=LATER,
+        )
+        self.assertFalse(unchanged.created)
+        self.assertEqual(unchanged.work_state, "PENDING")
+        self.assertEqual(self._work_row("work-disc")["updated_at"], NOW)
+        # The exact durable owner and Scheduler then advance together.
+        self._set_discovery_work_terminal(
+            "dwork-1", "CANCELLED", "EXACT_CANCEL", terminal_at=NOW
+        )
         self._set_job_status(1, "CANCELLED", finished_at=NOW)
         second = project_campaign_scheduler_work(
             self.connection, scheduler_work_id="work-disc", campaign_id="campaign-a",
@@ -1109,16 +1394,66 @@ class SchedulerOwnershipSchemaMigrationTests(unittest.TestCase):
             target_identity="dwork-1", now=LATER,
         )
         self.assertFalse(second.created)
-        self.assertEqual(second.work_state, "PENDING")
+        self.assertEqual(second.work_state, "CANCELLED")
         row = self._work_row("work-disc")
-        self.assertEqual(row["work_state"], "PENDING")
-        self.assertIsNone(row["first_terminal_cause"])
+        self.assertEqual(row["work_state"], "CANCELLED")
+        self.assertEqual(row["first_terminal_cause"], "EXACT_CANCEL")
+        self.assertEqual(row["terminal_at"], NOW)
         self.assertEqual(
             self.connection.execute(
                 "SELECT COUNT(*) FROM printer_memory_factory_campaign_scheduler_work"
             ).fetchone()[0],
             1,
         )
+
+    def test_20b_incomplete_scheduler_advance_returns_drift(self) -> None:
+        self._create_graph()
+        self._project_discovery(work_id="work-disc", job=1)
+        self._set_job_status(1, "CANCELLED", finished_at=NOW)
+        with self.assertRaisesRegex(
+            CampaignOwnershipError, "SCHEDULER_OWNERSHIP_STATE_DRIFT"
+        ):
+            project_campaign_scheduler_work(
+                self.connection, scheduler_work_id="work-disc",
+                campaign_id="campaign-a", run_id="run-a", cycle_id="cycle-a",
+                work_scope="DISCOVERY_SELECTION", stage_id="STAGE_DISCOVERY",
+                work_intent="DISCOVER", deadline_at=NOW, scheduler_job_id=1,
+                target_category="DISCOVERY_WORK", target_identity="dwork-1",
+                now=LATER,
+            )
+        self.assertEqual(self._work_row("work-disc")["work_state"], "PENDING")
+
+    def test_20c_first_terminal_cause_remains_immutable(self) -> None:
+        self._create_graph()
+        self._project_discovery(work_id="work-disc", job=1)
+        self._set_discovery_work_terminal(
+            "dwork-1", "CANCELLED", "FIRST_CAUSE", terminal_at=NOW
+        )
+        self._set_job_status(1, "CANCELLED", finished_at=NOW)
+        project_campaign_scheduler_work(
+            self.connection, scheduler_work_id="work-disc",
+            campaign_id="campaign-a", run_id="run-a", cycle_id="cycle-a",
+            work_scope="DISCOVERY_SELECTION", stage_id="STAGE_DISCOVERY",
+            work_intent="DISCOVER", deadline_at=NOW, scheduler_job_id=1,
+            target_category="DISCOVERY_WORK", target_identity="dwork-1", now=NOW,
+        )
+        self._set_discovery_work_terminal(
+            "dwork-1", "CANCELLED", "LATER_CAUSE", terminal_at=LATER
+        )
+        with self.assertRaisesRegex(
+            CampaignOwnershipError, "SCHEDULER_OWNERSHIP_STATE_DRIFT"
+        ):
+            project_campaign_scheduler_work(
+                self.connection, scheduler_work_id="work-disc",
+                campaign_id="campaign-a", run_id="run-a", cycle_id="cycle-a",
+                work_scope="DISCOVERY_SELECTION", stage_id="STAGE_DISCOVERY",
+                work_intent="DISCOVER", deadline_at=NOW, scheduler_job_id=1,
+                target_category="DISCOVERY_WORK", target_identity="dwork-1",
+                now=LATER,
+            )
+        row = self._work_row("work-disc")
+        self.assertEqual(row["first_terminal_cause"], "FIRST_CAUSE")
+        self.assertEqual(row["terminal_at"], NOW)
 
     # =======================================================================
     # Retained: duplicate job ownership + competing identity + handoff owner

@@ -523,6 +523,7 @@ _TERMINAL_WORK_STATES = frozenset(
     {"SUCCEEDED", "FAILED", "SKIPPED", "CANCELLED"}
 )
 _NON_TERMINAL_WORK_STATES = frozenset({"PENDING", "RUNNING", "COOLDOWN"})
+SCHEDULER_OWNERSHIP_STATE_DRIFT = "SCHEDULER_OWNERSHIP_STATE_DRIFT"
 
 # Exact allowed target category per scope. Each scope validator additionally
 # proves the target identity against the scope's durable ownership source, so no
@@ -583,6 +584,10 @@ class SchedulerCleanupCapture:
                 return state
         return None
 
+    @property
+    def job_ids(self) -> tuple[int, ...]:
+        return tuple(job_id for job_id, _state in self.job_states)
+
 
 def capture_campaign_active_scheduler_jobs(
     connection: sqlite3.Connection,
@@ -609,6 +614,7 @@ def capture_campaign_active_scheduler_jobs(
         campaign_id=campaign_id,
         run_id=run_id,
         cycle_id=cycle_id,
+        exact_scope=True,
     )
     every_id: set[int] = set().union(*groups.values()) if groups else set()
     states: list[tuple[int, str]] = []
@@ -621,7 +627,9 @@ def capture_campaign_active_scheduler_jobs(
             raise CampaignOwnershipError(
                 f"captured campaign job {job_id} has no Scheduler row"
             )
-        states.append((int(job_id), str(row[0])))
+        state = str(row[0])
+        if state in _NON_TERMINAL_WORK_STATES:
+            states.append((int(job_id), state))
     return SchedulerCleanupCapture(
         campaign_id=campaign_id,
         run_id=run_id,
@@ -660,65 +668,12 @@ def _scheduler_job_actual_state(
     return str(row[0]), row[1], row[2]
 
 
-def _scheduler_job_in_exact_scope(
-    connection: sqlite3.Connection, *, campaign_id: str, run_id: str,
-    cycle_id: str, scheduler_job_id: int,
-) -> bool:
-    """True only when a durable row binds the job to this exact campaign/run/cycle.
-
-    Unlike the campaign-wide active-work owner (which matches campaign OR run OR
-    cycle), this proves exact three-way scope, so a job from another run or cycle
-    of the same campaign cannot pass.
-    """
-    row = connection.execute(
-        """SELECT 1 WHERE
-            EXISTS (
-                SELECT 1 FROM printer_discovery_work
-                WHERE scheduler_job_id = ? AND campaign_id = ?
-                  AND run_id = ? AND cycle_id = ?
-            )
-         OR EXISTS (
-                SELECT 1 FROM printer_memory_factory_campaign_scheduler_work
-                WHERE scheduler_job_id = ? AND campaign_id = ?
-                  AND run_id = ? AND cycle_id = ?
-            )
-         OR EXISTS (
-                SELECT 1 FROM printer_discovery_selected_item_links
-                WHERE first_window_15m_scheduler_job_id = ? AND campaign_id = ?
-                  AND run_id = ? AND cycle_id = ?
-            )
-        """,
-        (scheduler_job_id, campaign_id, run_id, cycle_id,
-         scheduler_job_id, campaign_id, run_id, cycle_id,
-         scheduler_job_id, campaign_id, run_id, cycle_id),
-    ).fetchone()
-    return row is not None
-
-
-def _durable_scheduler_terminal_evidence(
-    connection: sqlite3.Connection, *, scheduler_job_id: int
-) -> tuple[str | None, str | None]:
-    """Terminal (cause, time) from durable Scheduler evidence, or (None, None).
-
-    ``printer_discovery_work`` durably records the first terminal cause and time
-    for the Scheduler job it owns; it is the canonical Scheduler-adjacent
-    evidence for discovery, selection and cleanup jobs.
-    """
-    row = connection.execute(
-        """SELECT first_terminal_cause, terminal_at
-           FROM printer_discovery_work
-           WHERE scheduler_job_id = ?
-             AND work_state IN ('SUCCEEDED', 'FAILED', 'SKIPPED', 'CANCELLED')
-             AND first_terminal_cause IS NOT NULL
-             AND length(trim(first_terminal_cause)) > 0
-             AND terminal_at IS NOT NULL
-           ORDER BY discovery_work_id
-           LIMIT 1""",
-        (scheduler_job_id,),
-    ).fetchone()
-    if row is None:
-        return None, None
-    return str(row[0]), str(row[1])
+@dataclass(frozen=True)
+class _ExactOwnerStateEvidence:
+    source: str
+    work_state: str
+    first_terminal_cause: str | None
+    terminal_at: str | None
 
 
 def _resolve_scheduler_state(
@@ -728,6 +683,7 @@ def _resolve_scheduler_state(
     requested_state: str | None,
     requested_cause: str | None,
     requested_terminal_at: str | None,
+    exact_owner_evidence: _ExactOwnerStateEvidence | None = None,
 ) -> tuple[str, str | None, str | None]:
     """Derive/validate the exact actual work state from the canonical Scheduler.
 
@@ -749,6 +705,10 @@ def _resolve_scheduler_state(
         )
 
     if status in _NON_TERMINAL_WORK_STATES:
+        if exact_owner_evidence is not None and exact_owner_evidence.work_state != status:
+            raise CampaignOwnershipError(
+                "exact owner work_state contradicts active Scheduler status"
+            )
         # Never project CANCELLED/FAILED/SUCCEEDED/SKIPPED while the job is active.
         if requested_cause is not None or requested_terminal_at is not None:
             raise CampaignOwnershipError(
@@ -756,20 +716,27 @@ def _resolve_scheduler_state(
             )
         return status, None, None
 
-    durable_cause, durable_at = _durable_scheduler_terminal_evidence(
-        connection, scheduler_job_id=scheduler_job_id
-    )
-    terminal_at = durable_at or (str(finished_at) if finished_at else None)
+    if exact_owner_evidence is not None:
+        if exact_owner_evidence.work_state != status:
+            raise CampaignOwnershipError(
+                "exact owner work_state contradicts terminal Scheduler status"
+            )
+        cause = exact_owner_evidence.first_terminal_cause
+        terminal_at = exact_owner_evidence.terminal_at
+    else:
+        terminal_at = str(finished_at) if finished_at else None
+        if status == "FAILED":
+            cause = (
+                str(last_error)
+                if last_error and str(last_error).strip()
+                else None
+            )
+        else:
+            cause = f"SCHEDULER_JOB_{status}"
     if terminal_at is None:
         raise CampaignOwnershipError(
             "terminal Scheduler job lacks a canonical terminal time"
         )
-    if status == "FAILED":
-        cause = durable_cause or (
-            str(last_error) if last_error and str(last_error).strip() else None
-        )
-    else:
-        cause = durable_cause or f"SCHEDULER_JOB_{status}"
     if cause is None or not str(cause).strip():
         raise CampaignOwnershipError(
             "terminal Scheduler job lacks a canonical terminal cause"
@@ -789,7 +756,7 @@ def _validate_discovery_selection_ownership(
     connection: sqlite3.Connection, *, campaign_id: str, run_id: str,
     cycle_id: str, scheduler_job_id: int, target_category: str,
     target_identity: str,
-) -> None:
+) -> _ExactOwnerStateEvidence:
     """Prove the exact Scheduler job lineage for a discovery or selection job.
 
     Batch existence alone is not Scheduler ownership. ``printer_discovery_work``
@@ -805,17 +772,29 @@ def _validate_discovery_selection_ownership(
             "DISCOVERY_SELECTION target_category must be DISCOVERY_WORK "
             "(the exact printer_discovery_work owner carrying scheduler_job_id)"
         )
-    row = connection.execute(
-        """SELECT work_type FROM printer_discovery_work
+    rows = connection.execute(
+        """SELECT work_type, work_state, first_terminal_cause, terminal_at
+           FROM printer_discovery_work
            WHERE discovery_work_id = ? AND campaign_id = ?
              AND run_id = ? AND cycle_id = ? AND scheduler_job_id = ?""",
         (target_identity, campaign_id, run_id, cycle_id, scheduler_job_id),
-    ).fetchone()
-    if row is None:
+    ).fetchall()
+    if not rows:
         raise CampaignOwnershipError(
             "no exact printer_discovery_work lineage binding this Scheduler job "
             "to the discovery/selection identity for DISCOVERY_SELECTION"
         )
+    if len(rows) != 1:
+        raise CampaignOwnershipError(
+            "multiple exact discovery/selection terminal-evidence rows"
+        )
+    row = rows[0]
+    return _ExactOwnerStateEvidence(
+        source=f"printer_discovery_work:{target_identity}",
+        work_state=str(row[1]),
+        first_terminal_cause=(str(row[2]) if row[2] is not None else None),
+        terminal_at=(str(row[3]) if row[3] is not None else None),
+    )
 
 
 def _validate_first_15m_handoff_ownership(
@@ -823,17 +802,28 @@ def _validate_first_15m_handoff_ownership(
     cycle_id: str, scheduler_job_id: int, token_slot_id: str | None,
     target_category: str, target_identity: str,
 ) -> None:
-    row = connection.execute(
-        """SELECT selection_item_id, merged_candidate_id, token_slot_id
+    target_column = (
+        "selection_item_id"
+        if target_category == "SELECTED_ITEM"
+        else "merged_candidate_id"
+    )
+    rows = connection.execute(
+        f"""SELECT selection_item_id, merged_candidate_id, token_slot_id
            FROM printer_discovery_selected_item_links
            WHERE first_window_15m_scheduler_job_id = ?
-             AND campaign_id = ? AND run_id = ? AND cycle_id = ?""",
-        (scheduler_job_id, campaign_id, run_id, cycle_id),
-    ).fetchone()
-    if row is None:
+             AND campaign_id = ? AND run_id = ? AND cycle_id = ?
+             AND {target_column} = ?""",
+        (scheduler_job_id, campaign_id, run_id, cycle_id, target_identity),
+    ).fetchall()
+    if not rows:
         raise CampaignOwnershipError(
             "no lawful first-15m handoff owner for scheduler job"
         )
+    if len(rows) != 1:
+        raise CampaignOwnershipError(
+            "multiple conflicting exact first-15m handoff owners"
+        )
+    row = rows[0]
     link_item_id, link_candidate, link_slot = row[0], row[1], row[2]
     if token_slot_id is not None:
         if link_slot is None or str(link_slot) != str(token_slot_id):
@@ -910,11 +900,128 @@ def _validate_window_lifecycle_ownership(
         )
 
 
+def _cleanup_exact_owner_evidence(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    run_id: str,
+    cycle_id: str,
+    scheduler_job_id: int,
+) -> _ExactOwnerStateEvidence | None:
+    """Resolve cleanup ownership and any state evidence at exact scope.
+
+    Discovery-work and existing campaign Scheduler-work rows carry state/cause/
+    time. Selected-item links carry exact ownership but no terminal fields, so
+    their terminal evidence remains the canonical Scheduler row. Conflicting
+    state-bearing owners fail closed; there is no arbitrary first-row choice.
+    """
+    evidence: list[_ExactOwnerStateEvidence] = []
+    durable_owner_count = 0
+    discovery_rows = connection.execute(
+        """SELECT discovery_work_id, work_state, first_terminal_cause, terminal_at
+           FROM printer_discovery_work
+           WHERE scheduler_job_id=? AND campaign_id=? AND run_id=? AND cycle_id=?
+           ORDER BY discovery_work_id""",
+        (scheduler_job_id, campaign_id, run_id, cycle_id),
+    ).fetchall()
+    durable_owner_count += len(discovery_rows)
+    evidence.extend(
+        _ExactOwnerStateEvidence(
+            source=f"printer_discovery_work:{row[0]}",
+            work_state=str(row[1]),
+            first_terminal_cause=(str(row[2]) if row[2] is not None else None),
+            terminal_at=(str(row[3]) if row[3] is not None else None),
+        )
+        for row in discovery_rows
+    )
+    ownership_rows = connection.execute(
+        """SELECT scheduler_work_id, work_state, first_terminal_cause, terminal_at
+           FROM printer_memory_factory_campaign_scheduler_work
+           WHERE scheduler_job_id=? AND campaign_id=? AND run_id=? AND cycle_id=?
+           ORDER BY scheduler_work_id""",
+        (scheduler_job_id, campaign_id, run_id, cycle_id),
+    ).fetchall()
+    durable_owner_count += len(ownership_rows)
+    evidence.extend(
+        _ExactOwnerStateEvidence(
+            source=f"campaign_scheduler_work:{row[0]}",
+            work_state=str(row[1]),
+            first_terminal_cause=(str(row[2]) if row[2] is not None else None),
+            terminal_at=(str(row[3]) if row[3] is not None else None),
+        )
+        for row in ownership_rows
+    )
+    handoff_count = int(
+        connection.execute(
+            """SELECT COUNT(*)
+               FROM printer_discovery_selected_item_links
+               WHERE first_window_15m_scheduler_job_id=?
+                 AND campaign_id=? AND run_id=? AND cycle_id=?""",
+            (scheduler_job_id, campaign_id, run_id, cycle_id),
+        ).fetchone()[0]
+    )
+    durable_owner_count += handoff_count
+    if durable_owner_count == 0:
+        raise CampaignOwnershipError(
+            "cleanup Scheduler job has no exact durable campaign/run/cycle owner"
+        )
+    distinct = {
+        (item.work_state, item.first_terminal_cause, item.terminal_at)
+        for item in evidence
+    }
+    if len(distinct) > 1:
+        raise CampaignOwnershipError(
+            "multiple conflicting exact cleanup terminal-evidence rows"
+        )
+    return evidence[0] if evidence else None
+
+
+def _validate_cleanup_token_slot(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    run_id: str,
+    cycle_id: str,
+    scheduler_job_id: int,
+    token_slot_id: str | None,
+) -> None:
+    """Validate an optional cleanup slot without inventing job-to-slot truth."""
+    if token_slot_id is None:
+        return
+    slot = connection.execute(
+        """SELECT 1 FROM printer_memory_factory_campaign_token_slots
+           WHERE token_slot_id=? AND campaign_id=? AND run_id=? AND cycle_id=?""",
+        (token_slot_id, campaign_id, run_id, cycle_id),
+    ).fetchone()
+    if slot is None:
+        raise CampaignOwnershipError(
+            "cleanup token_slot_id is not in the exact campaign/run/cycle"
+        )
+    linked = connection.execute(
+        """SELECT 1 FROM printer_discovery_selected_item_links
+           WHERE first_window_15m_scheduler_job_id=? AND token_slot_id=?
+             AND campaign_id=? AND run_id=? AND cycle_id=?""",
+        (scheduler_job_id, token_slot_id, campaign_id, run_id, cycle_id),
+    ).fetchone()
+    if linked is None:
+        linked = connection.execute(
+            """SELECT 1
+               FROM printer_memory_factory_campaign_scheduler_work
+               WHERE scheduler_job_id=? AND token_slot_id=?
+                 AND campaign_id=? AND run_id=? AND cycle_id=?""",
+            (scheduler_job_id, token_slot_id, campaign_id, run_id, cycle_id),
+        ).fetchone()
+    if linked is None:
+        raise CampaignOwnershipError(
+            "cleanup Scheduler job has no durable link to token_slot_id; omit it"
+        )
+
+
 def _validate_terminal_cleanup_ownership(
     connection: sqlite3.Connection, *, campaign_id: str, run_id: str,
     cycle_id: str, scheduler_job_id: int, target_category: str,
-    target_identity: str, actual_state: str, cleanup_capture: object,
-) -> None:
+    target_identity: str, token_slot_id: str | None, cleanup_capture: object,
+) -> _ExactOwnerStateEvidence | None:
     """Validate a terminal cleanup projection against an immutable capture.
 
     The projected job must: belong to the exact campaign/run/cycle (proven from
@@ -945,16 +1052,21 @@ def _validate_terminal_cleanup_ownership(
             "TERMINAL_CLEANUP target_identity must equal the exact Scheduler job id"
         )
 
-    # The job must belong to this exact campaign/run/cycle via a durable owner
-    # (checked independently so a hand-built capture cannot smuggle in a job from
-    # another run or cycle of the same campaign).
-    if not _scheduler_job_in_exact_scope(
-        connection, campaign_id=campaign_id, run_id=run_id, cycle_id=cycle_id,
+    exact_evidence = _cleanup_exact_owner_evidence(
+        connection,
+        campaign_id=campaign_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
         scheduler_job_id=scheduler_job_id,
-    ):
-        raise CampaignOwnershipError(
-            "cleanup Scheduler job does not belong to the exact campaign/run/cycle"
-        )
+    )
+    _validate_cleanup_token_slot(
+        connection,
+        campaign_id=campaign_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
+        scheduler_job_id=scheduler_job_id,
+        token_slot_id=token_slot_id,
+    )
 
     # It must have been captured before cancellation, with an active pre-state; a
     # capture taken after cancellation (terminal pre-state) or missing the job
@@ -970,13 +1082,7 @@ def _validate_terminal_cleanup_ownership(
             "cancellation"
         )
 
-    # Its current Scheduler terminal state must match the recorded ownership
-    # state (the ownership state is derived from this same actual state).
-    if actual_state not in _TERMINAL_WORK_STATES:
-        raise CampaignOwnershipError(
-            "cleanup Scheduler job is not terminal; cannot record terminal cleanup "
-            "ownership"
-        )
+    return exact_evidence
 
 
 def project_campaign_scheduler_work(
@@ -1010,14 +1116,15 @@ def project_campaign_scheduler_work(
     This is the single, scope-aware Scheduler-ownership authority. It never
     creates a Scheduler job; it references an existing ``printer_scheduler_jobs``
     row, derives the recorded work state and terminal evidence from that
-    canonical row (or durable Scheduler evidence), proves the scope's exact job
+    canonical row and the scope's exact durable owner, proves the exact job
     lineage and target against its durable owner, and records a
     ``V2_STAGE_SCOPED`` ownership row. ``work_state`` / ``first_terminal_cause``
     / ``terminal_at`` are optional *assertions*: when supplied they are validated
     against the actual Scheduler state and rejected on contradiction, but the
-    recorded values always come from the Scheduler. It is idempotent only for the
-    exact same complete identity, preserves an existing row's actual state and
-    first terminal cause on exact repeat, rejects competing
+    recorded values always come from those canonical owners. It is idempotent
+    only for the exact same complete identity and unchanged canonical state;
+    lawful Scheduler advances are synchronized through ``transition_state``.
+    It rejects competing
     campaign/scope/stage/target/linkage ownership, and never fabricates a window,
     slot, or factory run-step.
     """
@@ -1104,7 +1211,7 @@ def project_campaign_scheduler_work(
     try:
         with connection:
             existing = connection.execute(
-                f"""SELECT work_state,
+                f"""SELECT work_state, first_terminal_cause, terminal_at,
                     {", ".join(_PROJECTION_IDENTITY_COLUMNS)}
                     FROM printer_memory_factory_campaign_scheduler_work
                     WHERE scheduler_work_id = ?""",
@@ -1112,8 +1219,10 @@ def project_campaign_scheduler_work(
             ).fetchone()
             if existing is not None:
                 existing_state = existing[0]
+                existing_cause = existing[1]
+                existing_terminal_at = existing[2]
                 existing_identity = {
-                    column: existing[index + 1]
+                    column: existing[index + 3]
                     for index, column in enumerate(_PROJECTION_IDENTITY_COLUMNS)
                 }
                 if existing_identity["ownership_contract_version"] != "V2_STAGE_SCOPED":
@@ -1125,71 +1234,122 @@ def project_campaign_scheduler_work(
                         "competing campaign/scope/stage/target/linkage ownership "
                         "for scheduler_work_id"
                     )
-                # Exact-identity repeat: idempotent; preserve actual work state.
+            else:
+                existing_state = None
+                existing_cause = None
+                existing_terminal_at = None
+                # One canonical Scheduler job to one campaign ownership stage.
+                conflict = connection.execute(
+                    """SELECT 1
+                       FROM printer_memory_factory_campaign_scheduler_work
+                       WHERE scheduler_job_id = ? AND scheduler_work_id <> ?""",
+                    (scheduler_job_id, scheduler_work_id),
+                ).fetchone()
+                if conflict is not None:
+                    raise CampaignOwnershipError(
+                        "scheduler job already owned by another campaign work row"
+                    )
+
+            # Validate the scope against its real durable ownership source and
+            # prove exact job lineage / target before terminal evidence is read.
+            exact_evidence: _ExactOwnerStateEvidence | None = None
+            try:
+                if work_scope == "DISCOVERY_SELECTION":
+                    exact_evidence = _validate_discovery_selection_ownership(
+                        connection, campaign_id=campaign_id, run_id=run_id,
+                        cycle_id=cycle_id, scheduler_job_id=scheduler_job_id,
+                        target_category=target_category,
+                        target_identity=target_identity,
+                    )
+                elif work_scope == "FIRST_15M_HANDOFF":
+                    _validate_first_15m_handoff_ownership(
+                        connection, campaign_id=campaign_id, run_id=run_id,
+                        cycle_id=cycle_id, scheduler_job_id=scheduler_job_id,
+                        token_slot_id=token_slot_id,
+                        target_category=target_category,
+                        target_identity=target_identity,
+                    )
+                elif work_scope == "WINDOW_LIFECYCLE":
+                    _validate_window_lifecycle_ownership(
+                        connection, campaign_id=campaign_id, run_id=run_id,
+                        cycle_id=cycle_id, token_slot_id=token_slot_id,
+                        window_id=window_id, factory_run_id=factory_run_id,
+                        scheduler_job_id=scheduler_job_id,
+                        target_identity=target_identity,
+                    )
+                elif work_scope == "TERMINAL_CLEANUP":
+                    exact_evidence = _validate_terminal_cleanup_ownership(
+                        connection, campaign_id=campaign_id, run_id=run_id,
+                        cycle_id=cycle_id, scheduler_job_id=scheduler_job_id,
+                        target_category=target_category,
+                        target_identity=target_identity,
+                        token_slot_id=token_slot_id,
+                        cleanup_capture=cleanup_capture,
+                    )
+
+                actual_state, resolved_cause, resolved_at = _resolve_scheduler_state(
+                    connection,
+                    scheduler_job_id=scheduler_job_id,
+                    requested_state=work_state,
+                    requested_cause=first_terminal_cause,
+                    requested_terminal_at=terminal_at,
+                    exact_owner_evidence=exact_evidence,
+                )
+                if (
+                    work_scope == "TERMINAL_CLEANUP"
+                    and actual_state not in _TERMINAL_WORK_STATES
+                ):
+                    raise CampaignOwnershipError(
+                        "cleanup Scheduler job is not terminal"
+                    )
+            except CampaignOwnershipError as exc:
+                if existing is not None:
+                    raise CampaignOwnershipError(
+                        f"{SCHEDULER_OWNERSHIP_STATE_DRIFT}: {exc}"
+                    ) from exc
+                raise
+
+            if existing is not None:
+                if str(existing_state) == actual_state:
+                    if (
+                        existing_cause != resolved_cause
+                        or existing_terminal_at != resolved_at
+                    ):
+                        raise CampaignOwnershipError(
+                            f"{SCHEDULER_OWNERSHIP_STATE_DRIFT}: canonical "
+                            "terminal evidence differs from stored ownership"
+                        )
+                    return SchedulerWorkProjectionResult(
+                        scheduler_work_id=scheduler_work_id,
+                        campaign_id=campaign_id,
+                        work_scope=work_scope,
+                        stage_id=stage_id,
+                        scheduler_job_id=scheduler_job_id,
+                        work_state=actual_state,
+                        created=False,
+                    )
+                try:
+                    transitioned = transition_state(
+                        connection,
+                        record_kind="scheduler_work",
+                        identity=scheduler_work_id,
+                        expected_state=str(existing_state),
+                        new_state=actual_state,
+                        terminal_cause=resolved_cause,
+                        now=resolved_at or timestamp,
+                    )
+                except CampaignOwnershipError as exc:
+                    raise CampaignOwnershipError(
+                        f"{SCHEDULER_OWNERSHIP_STATE_DRIFT}: {exc}"
+                    ) from exc
                 return SchedulerWorkProjectionResult(
                     scheduler_work_id=scheduler_work_id,
                     campaign_id=campaign_id,
                     work_scope=work_scope,
                     stage_id=stage_id,
                     scheduler_job_id=scheduler_job_id,
-                    work_state=str(existing_state),
+                    work_state=transitioned.current_state,
                     created=False,
-                )
-
-            # One canonical Scheduler job to one campaign ownership stage.
-            conflict = connection.execute(
-                """SELECT 1 FROM printer_memory_factory_campaign_scheduler_work
-                   WHERE scheduler_job_id = ? AND scheduler_work_id <> ?""",
-                (scheduler_job_id, scheduler_work_id),
-            ).fetchone()
-            if conflict is not None:
-                raise CampaignOwnershipError(
-                    "scheduler job already owned by another campaign work row"
-                )
-
-            # Reference an existing Central Scheduler job (never create one) and
-            # derive the exact actual work state and terminal evidence from that
-            # canonical row. A caller-asserted state that contradicts the real
-            # job is rejected here.
-            actual_state, resolved_cause, resolved_at = _resolve_scheduler_state(
-                connection,
-                scheduler_job_id=scheduler_job_id,
-                requested_state=work_state,
-                requested_cause=first_terminal_cause,
-                requested_terminal_at=terminal_at,
-            )
-
-            # Validate the scope against its real durable ownership source and
-            # prove exact job lineage / target.
-            if work_scope == "DISCOVERY_SELECTION":
-                _validate_discovery_selection_ownership(
-                    connection, campaign_id=campaign_id, run_id=run_id,
-                    cycle_id=cycle_id, scheduler_job_id=scheduler_job_id,
-                    target_category=target_category,
-                    target_identity=target_identity,
-                )
-            elif work_scope == "FIRST_15M_HANDOFF":
-                _validate_first_15m_handoff_ownership(
-                    connection, campaign_id=campaign_id, run_id=run_id,
-                    cycle_id=cycle_id, scheduler_job_id=scheduler_job_id,
-                    token_slot_id=token_slot_id, target_category=target_category,
-                    target_identity=target_identity,
-                )
-            elif work_scope == "WINDOW_LIFECYCLE":
-                _validate_window_lifecycle_ownership(
-                    connection, campaign_id=campaign_id, run_id=run_id,
-                    cycle_id=cycle_id, token_slot_id=token_slot_id,
-                    window_id=window_id, factory_run_id=factory_run_id,
-                    scheduler_job_id=scheduler_job_id,
-                    target_identity=target_identity,
-                )
-            elif work_scope == "TERMINAL_CLEANUP":
-                _validate_terminal_cleanup_ownership(
-                    connection, campaign_id=campaign_id, run_id=run_id,
-                    cycle_id=cycle_id, scheduler_job_id=scheduler_job_id,
-                    target_category=target_category,
-                    target_identity=target_identity, actual_state=actual_state,
-                    cleanup_capture=cleanup_capture,
                 )
 
             connection.execute(
