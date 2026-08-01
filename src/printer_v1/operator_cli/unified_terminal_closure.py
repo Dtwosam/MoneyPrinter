@@ -35,10 +35,12 @@ import sys
 from typing import Any, Iterable, Mapping
 
 from printer_v1.discovery.scheduler_parity import reconcile_discovery_work_jobs
-from printer_v1.operator_cli.campaign_active_work import campaign_active_work_report
+from printer_v1.operator_cli.campaign_active_work import (
+    campaign_active_work_report,
+    campaign_scoped_job_ids,
+)
 from printer_v1.operator_cli.campaign_ownership import (
     CampaignOwnershipError,
-    capture_campaign_active_scheduler_jobs,
     transition_state,
 )
 from printer_v1.operator_cli.campaign_persistence import (
@@ -330,19 +332,6 @@ def reconcile_campaign_terminal(
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     try:
-        # Capture the exact active cleanup set before any parity/cancellation
-        # transition. The compatibility active-work API remains broad elsewhere;
-        # this terminal owner acts only on jobs durably bound to all three exact
-        # campaign/run/cycle identities.
-        cleanup_capture = capture_campaign_active_scheduler_jobs(
-            connection,
-            factory_run_id=factory_run_id,
-            campaign_id=campaign_id,
-            run_id=run_id,
-            cycle_id=cycle_id,
-            captured_at=instant,
-        )
-
         # 1. Discovery work / Scheduler job parity (A2), campaign-scoped.
         report["discovery_parity"] = reconcile_discovery_work_jobs(
             connection,
@@ -352,10 +341,17 @@ def reconcile_campaign_terminal(
             abandoned_cause=cause,
         )
 
-        # 2. Every remaining job in the exact pre-cancellation capture is
-        #    cancelled through the Scheduler owner. Work that already succeeded
-        #    or failed keeps its own terminal; only still-active jobs are cancelled.
-        every_id = list(cleanup_capture.job_ids)
+        # 2. Every remaining attributable Scheduler job is cancelled through the
+        #    Scheduler owner. Work that already succeeded or failed keeps its own
+        #    terminal; only still-active jobs are cancelled.
+        groups = campaign_scoped_job_ids(
+            connection,
+            factory_run_id=factory_run_id,
+            campaign_id=campaign_id,
+            run_id=run_id,
+            cycle_id=cycle_id,
+        )
+        every_id = sorted(set().union(*groups.values())) if groups else []
         cancelled = 0
         for job_id in every_id:
             row = connection.execute(

@@ -938,6 +938,7 @@ def _cleanup_exact_owner_evidence(
         """SELECT scheduler_work_id, work_state, first_terminal_cause, terminal_at
            FROM printer_memory_factory_campaign_scheduler_work
            WHERE scheduler_job_id=? AND campaign_id=? AND run_id=? AND cycle_id=?
+             AND ownership_contract_version='V2_STAGE_SCOPED'
            ORDER BY scheduler_work_id""",
         (scheduler_job_id, campaign_id, run_id, cycle_id),
     ).fetchall()
@@ -1008,7 +1009,8 @@ def _validate_cleanup_token_slot(
             """SELECT 1
                FROM printer_memory_factory_campaign_scheduler_work
                WHERE scheduler_job_id=? AND token_slot_id=?
-                 AND campaign_id=? AND run_id=? AND cycle_id=?""",
+                 AND campaign_id=? AND run_id=? AND cycle_id=?
+                 AND ownership_contract_version='V2_STAGE_SCOPED'""",
             (scheduler_job_id, token_slot_id, campaign_id, run_id, cycle_id),
         ).fetchone()
     if linked is None:

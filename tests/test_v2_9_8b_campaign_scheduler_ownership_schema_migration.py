@@ -13,10 +13,17 @@ lineage per scope through the durable owner (``printer_discovery_work`` for
 discovery/selection, the selected-item link for handoff, the factory run-step +
 campaign-run authoritative bind for lifecycle, and an immutable pre-cancellation
 capture for cleanup), and validates every scope's exact target.
+
+The controlling compatibility correction also proves that historical
+``V1_WINDOW_BOUND`` rows remain readable but cannot act as repaired V2 capture,
+terminal, slot-link, equality, report, or replay evidence. Exact cancellation is
+exercised only by a disposable test-local harness over the immutable capture;
+no operational terminal path is imported or invoked here.
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 import os
 import sqlite3
@@ -25,9 +32,12 @@ import unittest
 
 from printer_v1.db import apply_migrations
 from printer_v1.db import migrate as migration_runner
+from printer_v1.operator_cli.campaign_active_work import campaign_scoped_job_ids
 from printer_v1.operator_cli.campaign_ownership import (
     CampaignOwnershipError,
     SchedulerCleanupCapture,
+    _cleanup_exact_owner_evidence,
+    _validate_cleanup_token_slot,
     bind_authoritative_run_id,
     capture_campaign_active_scheduler_jobs,
     create_campaign_run,
@@ -36,14 +46,13 @@ from printer_v1.operator_cli.campaign_ownership import (
     persist_window,
     project_campaign_scheduler_job,
     project_campaign_scheduler_work,
+    transition_state,
 )
 from printer_v1.operator_cli.campaign_persistence import (
     DB_MODE_PROOF_ISOLATED,
     create_campaign,
 )
-from printer_v1.operator_cli.unified_terminal_closure import (
-    reconcile_campaign_terminal,
-)
+from printer_v1.scheduler.scheduler import cancel_job
 
 
 NOW = "2026-08-01T00:00:00+00:00"
@@ -419,6 +428,46 @@ class SchedulerOwnershipSchemaMigrationTests(unittest.TestCase):
             (scheduler_work_id,),
         ).fetchone()
 
+    def _seed_v2_cleanup_work(
+        self, *, scheduler_work_id: str, scheduler_job_id: int,
+        token_slot_id: str | None = None,
+    ) -> None:
+        with self.connection:
+            self.connection.execute(
+                """INSERT INTO printer_memory_factory_campaign_scheduler_work(
+                    scheduler_work_id,campaign_id,run_id,cycle_id,token_slot_id,
+                    work_intent,deadline_at,work_state,scheduler_job_id,
+                    ownership_contract_version,stage_id,work_scope,
+                    target_category,target_identity,created_at,updated_at
+                ) VALUES (?,'campaign-a','run-a','cycle-a',?,'CANCEL',?,
+                    'PENDING',?,'V2_STAGE_SCOPED','STAGE_TERMINAL',
+                    'TERMINAL_CLEANUP','SCHEDULER_JOB',?,?,?)""",
+                (
+                    scheduler_work_id, token_slot_id, NOW, scheduler_job_id,
+                    str(scheduler_job_id), NOW, NOW,
+                ),
+            )
+
+    def _seed_v1_terminal_work(
+        self, *, scheduler_work_id: str, scheduler_job_id: int,
+        terminal_cause: str,
+    ) -> None:
+        with self.connection:
+            self.connection.execute(
+                """INSERT INTO printer_memory_factory_campaign_scheduler_work(
+                    scheduler_work_id,campaign_id,run_id,cycle_id,token_slot_id,
+                    window_id,work_intent,deadline_at,work_state,scheduler_job_id,
+                    ownership_contract_version,first_terminal_cause,terminal_at,
+                    created_at,updated_at
+                ) VALUES (?,'campaign-a','run-a','cycle-a','slot-1',
+                    'window-15m-a','CLOSE_WINDOW',?,'CANCELLED',?,
+                    'V1_WINDOW_BOUND',?,?,?,?)""",
+                (
+                    scheduler_work_id, NOW, scheduler_job_id, terminal_cause,
+                    NOW, NOW, NOW,
+                ),
+            )
+
     # -- lawful projection helpers ------------------------------------------
 
     def _project_discovery(
@@ -714,6 +763,122 @@ class SchedulerOwnershipSchemaMigrationTests(unittest.TestCase):
         row = self._work_row("v1-a")
         self.assertEqual(row["ownership_contract_version"], "V1_WINDOW_BOUND")
 
+    def test_08b_v1_does_not_admit_exact_capture_while_v2_does(self) -> None:
+        self._create_graph()
+        persist_scheduler_work(
+            self.connection, scheduler_work_id="v1-capture",
+            campaign_id="campaign-a", run_id="run-a", cycle_id="cycle-a",
+            token_slot_id="slot-1", window_id="window-15m-a",
+            work_intent="CLOSE_WINDOW", deadline_at=NOW,
+            scheduler_job_id=1, now=NOW,
+        )
+        self._seed_v2_cleanup_work(
+            scheduler_work_id="v2-capture", scheduler_job_id=2,
+            token_slot_id="slot-1",
+        )
+
+        broad_groups = campaign_scoped_job_ids(
+            self.connection, campaign_id="campaign-a", run_id="run-a",
+            cycle_id="cycle-a",
+        )
+        exact_groups = campaign_scoped_job_ids(
+            self.connection, campaign_id="campaign-a", run_id="run-a",
+            cycle_id="cycle-a", exact_scope=True,
+        )
+        capture = capture_campaign_active_scheduler_jobs(
+            self.connection, campaign_id="campaign-a", run_id="run-a",
+            cycle_id="cycle-a", captured_at=NOW,
+        )
+
+        self.assertEqual(
+            broad_groups["campaign_scheduler_work_jobs"], {1, 2}
+        )
+        self.assertEqual(
+            exact_groups["campaign_scheduler_work_jobs"], {2}
+        )
+        self.assertEqual(capture.job_ids, (2,))
+        self.assertIsNone(capture.pre_state(1))
+        self.assertEqual(capture.pre_state(2), "PENDING")
+        versions = {
+            str(row[0]): str(row[1])
+            for row in self.connection.execute(
+                """SELECT scheduler_work_id, ownership_contract_version
+                   FROM printer_memory_factory_campaign_scheduler_work
+                   WHERE scheduler_work_id IN ('v1-capture','v2-capture')"""
+            )
+        }
+        self.assertEqual(
+            versions,
+            {
+                "v1-capture": "V1_WINDOW_BOUND",
+                "v2-capture": "V2_STAGE_SCOPED",
+            },
+        )
+
+    def test_08c_mixed_fixture_uses_only_v2_terminal_and_slot_evidence(self) -> None:
+        self._create_graph()
+        self._seed_v1_terminal_work(
+            scheduler_work_id="v1-evidence", scheduler_job_id=1,
+            terminal_cause="V1_ONLY_CAUSE",
+        )
+        self._seed_v2_cleanup_work(
+            scheduler_work_id="v2-evidence", scheduler_job_id=2,
+            token_slot_id="slot-1",
+        )
+        capture = capture_campaign_active_scheduler_jobs(
+            self.connection, campaign_id="campaign-a", run_id="run-a",
+            cycle_id="cycle-a", captured_at=NOW,
+        )
+        transition_state(
+            self.connection, record_kind="scheduler_work", identity="v2-evidence",
+            expected_state="PENDING", new_state="CANCELLED",
+            terminal_cause="V2_LAWFUL_CAUSE", now=NOW,
+        )
+        self._set_job_status(1, "CANCELLED", finished_at=NOW)
+        self._set_job_status(2, "CANCELLED", finished_at=NOW)
+
+        with self.assertRaisesRegex(
+            CampaignOwnershipError, "no exact durable campaign/run/cycle owner"
+        ):
+            _cleanup_exact_owner_evidence(
+                self.connection, campaign_id="campaign-a", run_id="run-a",
+                cycle_id="cycle-a", scheduler_job_id=1,
+            )
+        with self.assertRaisesRegex(
+            CampaignOwnershipError, "no durable link to token_slot_id"
+        ):
+            _validate_cleanup_token_slot(
+                self.connection, campaign_id="campaign-a", run_id="run-a",
+                cycle_id="cycle-a", scheduler_job_id=1,
+                token_slot_id="slot-1",
+            )
+
+        evidence = _cleanup_exact_owner_evidence(
+            self.connection, campaign_id="campaign-a", run_id="run-a",
+            cycle_id="cycle-a", scheduler_job_id=2,
+        )
+        self.assertIsNotNone(evidence)
+        self.assertEqual(evidence.source, "campaign_scheduler_work:v2-evidence")
+        self.assertEqual(evidence.first_terminal_cause, "V2_LAWFUL_CAUSE")
+        _validate_cleanup_token_slot(
+            self.connection, campaign_id="campaign-a", run_id="run-a",
+            cycle_id="cycle-a", scheduler_job_id=2, token_slot_id="slot-1",
+        )
+        result = project_campaign_scheduler_work(
+            self.connection, scheduler_work_id="v2-evidence",
+            campaign_id="campaign-a", run_id="run-a", cycle_id="cycle-a",
+            work_scope="TERMINAL_CLEANUP", stage_id="STAGE_TERMINAL",
+            work_intent="CANCEL", deadline_at=NOW, scheduler_job_id=2,
+            target_category="SCHEDULER_JOB", target_identity="2",
+            token_slot_id="slot-1", cleanup_capture=capture, now=LATER,
+        )
+        self.assertFalse(result.created)
+        self.assertEqual(result.work_state, "CANCELLED")
+        self.assertEqual(
+            self._work_row("v1-evidence")["first_terminal_cause"],
+            "V1_ONLY_CAUSE",
+        )
+
     # =======================================================================
     # Proof 1: PENDING Scheduler job projected as CANCELLED blocks
     # =======================================================================
@@ -968,12 +1133,16 @@ class SchedulerOwnershipSchemaMigrationTests(unittest.TestCase):
             discovery_work_id="dwork-b", scheduler_job_id=6,
             discovery_batch_id="disc-b", cycle_id="cycle-b",
         )
-        result = reconcile_campaign_terminal(
-            self.db, campaign_id="campaign-a", run_id="run-a",
-            cycle_id="cycle-a", terminal_cause="BLOCKED_EXACT_CAPTURE",
-            now=NOW,
+        capture = capture_campaign_active_scheduler_jobs(
+            self.connection, campaign_id="campaign-a", run_id="run-a",
+            cycle_id="cycle-a", captured_at=NOW,
         )
-        self.assertTrue(result["reconciled"])
+        self.assertEqual(capture.job_ids, (5,))
+        for job_id in capture.job_ids:
+            cancel_job(
+                self.connection, job_id=job_id,
+                now=datetime.fromisoformat(NOW),
+            )
         statuses = {
             int(row[0]): str(row[1])
             for row in self.connection.execute(

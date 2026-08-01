@@ -15,16 +15,16 @@ Controlling design amendment:
 `docs/printer-v1-v2-9-8b-campaign-scheduler-ownership-schema-design-amendment.md`
 (`V2_9_8B_CAMPAIGN_SCHEDULER_OWNERSHIP_SCHEMA_DESIGN_AMENDMENT_PASS`)
 
-Current verdict (controlling correction "exact capture and evidence"):
+Current verdict (controlling correction "compatibility and lane boundary"):
 `V2_9_8B_CAMPAIGN_SCHEDULER_OWNERSHIP_SCHEMA_MIGRATION_IMPLEMENTATION_PASS`
 
 > **Superseded prior result.** The original PASS recorded in §1–§12 below was
 > issued before the projection authority proved *exact Scheduler state* and
 > *exact job lineage* for all four scopes. That earlier PASS is preserved
 > unchanged as the historical record. §13 records the first correction and is
-> also preserved as a superseded historical result. §14 is the controlling
-> correction for exact cleanup capture, exact terminal evidence, token-slot
-> law, and repeat-state synchronization.
+> also preserved as a superseded historical result. §14 is preserved as the
+> superseded exact-capture/evidence correction. §15 is the controlling
+> correction for the V2 evidence boundary and migration-lane boundary.
 
 ## 0. Boundary
 
@@ -560,6 +560,169 @@ migration application, bounded disposable migration proof, C1–C15, operational
 campaigns, later windows, retrieval, paper decisions, BUY/SELL/HOLD, positions,
 trades, audits, PnL, wallets/keys/signing/real funds/live execution, paid APIs,
 and scoring/ranking/weighting/embeddings remain locked.
+
+Authoritative data and operational paths were untouched:
+`data/printer_v1.sqlite3` was never opened or mutated; migration `050` was not
+applied there; no provider/RPC/WebSocket/operational command ran; no bounded-
+proof lane was entered; and no later or financial capability was unlocked.
+
+Controlling verdict:
+
+`V2_9_8B_CAMPAIGN_SCHEDULER_OWNERSHIP_SCHEMA_MIGRATION_IMPLEMENTATION_PASS`
+
+> The §14 verdict is a **superseded historical correction**. It is preserved
+> unchanged. The controlling implementation result is §15.
+
+## 15. Controlling correction — compatibility and lane boundary
+
+Date: 2026-08-01. Correction commit subject:
+`Enforce V2 ownership evidence boundary`.
+
+Primary blocker classification under the Python Builder Guide:
+`COMMITTED_CODE_DEFECT`, with a migration-lane boundary violation in the prior
+correction. The defect reproduced offline: exact capture owner resolution,
+cleanup state/cause/time evidence, and optional cleanup job-to-slot evidence
+could read historical `V1_WINDOW_BOUND` rows as though migrating the table had
+upgraded those rows into repaired V2 proof. The prior correction also wired the
+new immutable capture into `unified_terminal_closure.py`, although operational
+integration is reserved for the resumed C1-C15 implementation.
+
+The minimum correction is query-level compatibility filtering in the existing
+read-only owners, exact restoration of the pre-correction terminal file, and a
+disposable test-local cancellation harness. No new production cancellation
+owner, report owner, replay owner, operational wiring, or schema change is
+introduced.
+
+### 15.1 Exact `V2_STAGE_SCOPED` evidence filters
+
+Every repaired exact-evidence read of
+`printer_memory_factory_campaign_scheduler_work` now requires
+`ownership_contract_version = 'V2_STAGE_SCOPED'` at the SQL boundary:
+
+1. `campaign_scoped_job_ids(..., exact_scope=True)` adds the predicate while
+   collecting campaign Scheduler-work candidates. Compatibility mode remains
+   broad and readable when `exact_scope=False`.
+2. `_job_has_exact_scope_owner()` adds the predicate when the campaign
+   Scheduler-work table is considered as the exact campaign/run/cycle owner.
+3. `_cleanup_exact_owner_evidence()` adds the predicate before a row can supply
+   exact cleanup ownership or state/cause/time evidence.
+4. `_validate_cleanup_token_slot()` adds the predicate before a campaign
+   Scheduler-work row can prove the optional cleanup job-to-slot link.
+
+The projection's exact-repeat identity continues to require
+`ownership_contract_version == 'V2_STAGE_SCOPED'`; a V1 identity cannot satisfy
+V2 equality and cannot be rewritten or upgraded. No repaired V2 report or
+report-only replay helper was added in this migration lane, so there is no
+additional report/replay query to change. Historical V1 rows remain available
+to the pre-existing compatibility readers but are absent from all repaired V2
+capture, cleanup terminal, cleanup slot-link, equality, report, and replay
+proof.
+
+### 15.2 Migration-lane boundary restoration
+
+`src/printer_v1/operator_cli/unified_terminal_closure.py` is restored exactly to
+its state before `ce6a82ef117a7671a91d7a7b80cece4975e2b361`. Its SHA-256 and
+the SHA-256 of `git show ce6a82e^:.../unified_terminal_closure.py` are both:
+
+```text
+e20325a217d403304060d987b1b7b1ea0678e9989c5526a01458243fea241753
+```
+
+`git diff --exit-code ce6a82e^ --
+src/printer_v1/operator_cli/unified_terminal_closure.py` returns zero with no
+output. The migration implementation continues to expose and test
+`campaign_scoped_job_ids(..., exact_scope=True)`,
+`capture_campaign_active_scheduler_jobs()`, the scope-aware projection owner,
+and state synchronization/drift handling, but does not invoke those primitives
+from the operational terminal path.
+
+The exact-cancellation proof now builds `SchedulerCleanupCapture` in the
+disposable fixture, loops only over `capture.job_ids`, and calls the existing
+canonical Scheduler `cancel_job()` for those IDs. The foreign-cycle job remains
+`PENDING`. The focused test does not import or invoke the unified terminal
+closure.
+
+### 15.3 Focused disposable tests and outputs
+
+Correction, exact capture/evidence/state-drift, migration preservation,
+duplicate readiness, and rollback:
+
+```text
+$ .venv/bin/python -m pytest \
+    tests/test_v2_9_8b_campaign_scheduler_ownership_schema_migration.py -q
+....................................                                     [100%]
+36 passed in 10.60s
+```
+
+The added mixed V1/V2 tests prove:
+
+- compatibility mode still reads both historical V1 and V2 rows;
+- exact mode and immutable capture admit only the V2 job;
+- V1 cleanup terminal evidence is rejected;
+- V1 cleanup slot linkage is rejected;
+- the equivalent V2 row supplies exact capture, terminal evidence, and slot
+  linkage;
+- the mixed fixture resolves only `campaign_scheduler_work:v2-evidence`; and
+- captured cancellation changes only the exact captured ID.
+
+Nearest ownership, canonical Scheduler, active-work, discovery-parity, and
+restored terminal-boundary regressions:
+
+```text
+$ .venv/bin/python -m pytest \
+    tests/test_v2_9_7d_6b_1_campaign_ownership_schema.py \
+    tests/test_phase3_scheduler_resource_governor.py \
+    tests/test_v2_9_7e_47_lifecycle_and_clean_memory_repair.py::UnifiedTerminalReconciliationTests::test_terminal_cleanup_leaves_zero_active_campaign_work \
+    tests/test_v2_9_7e_47_lifecycle_and_clean_memory_repair.py::DiscoverySchedulerParityTests::test_discovery_work_and_jobs_agree_terminally \
+    tests/test_v2_9_7e_47_lifecycle_and_clean_memory_repair.py::DiscoverySchedulerParityTests::test_pending_running_cooldown_and_locked_jobs_are_all_detected -q
+..................................                                       [100%]
+34 passed in 11.06s
+```
+
+Python compilation passed for both corrected owners, the restored terminal
+module, and the focused test. Final diff/static checks are recorded in §15.5.
+No full suite, provider, operational command, authoritative database command, or
+bounded proof was run.
+
+### 15.4 Schema decision
+
+Keep migration `050_campaign_scheduler_ownership_scope.sql` unchanged. Its
+SHA-256 remains:
+
+```text
+230153ec73f94208ac733155aca3d9ec86bcc75e3f0891dc1a5502c2dfe1c254
+```
+
+The schema already distinguishes immutable historical `V1_WINDOW_BOUND` rows
+from new `V2_STAGE_SCOPED` rows. The defect was failure to apply that existing
+contract discriminator in repaired V2 evidence reads, not a missing schema
+invariant. Historical rows were not deleted, rewritten, or upgraded.
+
+### 15.5 Static checks, locks, risks, and verdict
+
+The final correction requires these static results before commit:
+
+- `git diff --check`: PASS;
+- Python compilation: PASS;
+- migration `050` diff from `ce6a82e`: empty;
+- unified terminal closure diff from `ce6a82e^`: empty;
+- no operational campaign orchestration, factory, report, replay, provider, or
+  migration file changed; the only operational file in the diff is the exact
+  restoration of the premature terminal-closure change.
+
+Functionality risk: the broad compatibility API intentionally continues to read
+V1 rows; callers requiring repaired V2 proof must explicitly select
+`exact_scope=True`. The immutable capture owner already does so and the focused
+mixed-version proof guards that boundary. Setback: the prior correction's
+operational wiring had to be removed; C1-C15 must perform that integration later
+under its own authorization. Efficiency blockers: none.
+
+Remaining blockers inside this correction lane: none. Applying migration `050`
+to the authoritative database, the bounded-proof lane, C1-C15, operational
+campaign integration, providers/RPC/WebSockets, later windows, retrieval, paper
+decisions, BUY/SELL/HOLD, positions, trades, audits, PnL, wallets/keys/signing,
+real funds/live execution, paid APIs, and scoring/ranking/weighting/embeddings
+remain locked.
 
 Authoritative data and operational paths were untouched:
 `data/printer_v1.sqlite3` was never opened or mutated; migration `050` was not

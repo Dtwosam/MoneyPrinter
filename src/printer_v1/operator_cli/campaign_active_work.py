@@ -67,9 +67,15 @@ def _job_has_exact_scope_owner(
     for table, job_column in sources:
         if not _table_exists(connection, table):
             continue
+        ownership_contract_clause = (
+            " AND ownership_contract_version = 'V2_STAGE_SCOPED'"
+            if table == "printer_memory_factory_campaign_scheduler_work"
+            else ""
+        )
         row = connection.execute(
             f"SELECT 1 FROM {table} WHERE {job_column}=? "
-            "AND campaign_id=? AND run_id=? AND cycle_id=? LIMIT 1",
+            "AND campaign_id=? AND run_id=? AND cycle_id=?"
+            f"{ownership_contract_clause} LIMIT 1",
             (scheduler_job_id, campaign_id, run_id, cycle_id),
         ).fetchone()
         if row is not None:
@@ -148,11 +154,17 @@ def campaign_scoped_job_ids(
             ).fetchall()
         }
         if "scheduler_job_id" in columns:
+            ownership_contract_clause = (
+                " AND ownership_contract_version = 'V2_STAGE_SCOPED'"
+                if exact_scope
+                else ""
+            )
             groups["campaign_scheduler_work_jobs"] = _job_ids(
                 connection,
                 "SELECT scheduler_job_id FROM "
                 "printer_memory_factory_campaign_scheduler_work "
-                f"WHERE ({' OR '.join(clauses)}) AND scheduler_job_id IS NOT NULL",
+                f"WHERE ({' OR '.join(clauses)}) AND scheduler_job_id IS NOT NULL"
+                f"{ownership_contract_clause}",
                 tuple(params),
             )
     if exact_scope and _table_exists(
