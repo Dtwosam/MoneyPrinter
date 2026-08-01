@@ -15,8 +15,15 @@ Controlling design amendment:
 `docs/printer-v1-v2-9-8b-campaign-scheduler-ownership-schema-design-amendment.md`
 (`V2_9_8B_CAMPAIGN_SCHEDULER_OWNERSHIP_SCHEMA_DESIGN_AMENDMENT_PASS`)
 
-Verdict:
+Current verdict (correction "scheduler ownership projection truth"):
 `V2_9_8B_CAMPAIGN_SCHEDULER_OWNERSHIP_SCHEMA_MIGRATION_IMPLEMENTATION_PASS`
+
+> **Superseded prior result.** The original PASS recorded in §1–§12 below was
+> issued before the projection authority proved *exact Scheduler state* and
+> *exact job lineage* for all four scopes. That earlier PASS is preserved
+> unchanged as the historical record. §13 documents the correction that now
+> controls the current verdict. See §13 for the exact corrections, revised
+> tests, and the unchanged schema decision.
 
 ## 0. Boundary
 
@@ -268,3 +275,140 @@ embeddings. The scope-aware owner is not wired into the operational campaign.
 A PASS does not authorize applying the migration to the authoritative database
 or resuming C1-C15. Next permitted lane after operator review/integration is the
 bounded disposable migration proof.
+
+> The §12 verdict above is the **historical** result of the first implementation
+> pass. It is retained verbatim and is **superseded** by §13.
+
+## 13. Correction — scheduler ownership projection truth
+
+Date: 2026-08-01. Correction commit: `Correct scheduler ownership projection
+truth`.
+
+The first pass built the table, wrapper, and tests but the projection authority
+accepted a caller-supplied Scheduler state and terminal cause, and proved
+discovery/selection and cleanup ownership by *presence* rather than by *exact
+Scheduler job lineage*. That is not honest ownership. This correction rewrites
+the single scope-aware authority `project_campaign_scheduler_work()` (and its
+`WINDOW_LIFECYCLE` wrapper) and its focused tests only. **No schema change was
+required**: migration `050_campaign_scheduler_ownership_scope.sql` is unchanged;
+all corrections use columns it already provides (`work_scope`, `stage_id`,
+`target_category`, `target_identity`, `factory_run_id`).
+
+### 13.1 Files changed
+
+| File | Change |
+| --- | --- |
+| `src/printer_v1/operator_cli/campaign_ownership.py` | Corrected `project_campaign_scheduler_work()` to derive state from the canonical Scheduler; added `SchedulerCleanupCapture` + `capture_campaign_active_scheduler_jobs()`; added `_resolve_scheduler_state`, `_durable_scheduler_terminal_evidence`, `_scheduler_job_in_exact_scope`; rewrote all four scope validators; removed the untyped cleanup job-set path and the old `_scheduler_job_belongs_to_campaign` proxy. |
+| `tests/test_v2_9_8b_campaign_scheduler_ownership_schema_migration.py` | Rebuilt focused disposable suite (23 cases) to the corrected contract. |
+| `docs/printer-v1-...-migration-implementation.md` | This §13 (supersede). |
+
+### 13.2 Exact Scheduler-state derivation (all scopes)
+
+Every projection now reads the canonical `printer_scheduler_jobs` row and
+derives the recorded ownership state from it via `_resolve_scheduler_state`:
+
+- the recorded `work_state` **is** the real `printer_scheduler_jobs.status`;
+- a caller-asserted `work_state` / `first_terminal_cause` / `terminal_at` are
+  optional and are **rejected on any contradiction** with the canonical row;
+- a terminal ownership state (`CANCELLED` / `FAILED` / `SUCCEEDED` / `SKIPPED`)
+  can **never** be recorded while the real job is active (`PENDING` / `RUNNING`
+  / `COOLDOWN`);
+- terminal time comes from durable Scheduler evidence
+  (`printer_discovery_work.terminal_at`) or `printer_scheduler_jobs.finished_at`;
+  terminal cause from durable evidence, else `printer_scheduler_jobs.last_error`
+  (FAILED), else the canonical token `SCHEDULER_JOB_<STATUS>`;
+- exact-repeat idempotency preserves the existing row's stored actual state and
+  first terminal cause (it returns before re-deriving).
+
+### 13.3 Exact lineage source and target per scope
+
+| Scope | Exact durable lineage source | Target category / identity |
+| --- | --- | --- |
+| `DISCOVERY_SELECTION` | `printer_discovery_work` row binding campaign/run/cycle/work identity/**exact `scheduler_job_id`** (selection is the `DISCOVERY_UNIFORM_SELECTION` work row on the same table) | `DISCOVERY_WORK` / `discovery_work_id` |
+| `FIRST_15M_HANDOFF` | `printer_discovery_selected_item_links.first_window_15m_scheduler_job_id` == projected job, scoped to campaign/run/cycle, slot match | `SELECTED_ITEM`/`MERGED_CANDIDATE` matching the link |
+| `WINDOW_LIFECYCLE` | exact campaign window/slot **and** campaign run whose `authoritative_run_id` == supplied `factory_run_id` **and** the factory run-step referencing the exact job | `CAMPAIGN_WINDOW` / `window_id` |
+| `TERMINAL_CLEANUP` | immutable `SchedulerCleanupCapture` (from the campaign active-work owner) taken before cancellation + exact-scope durable owner | `SCHEDULER_JOB` / `str(scheduler_job_id)` |
+
+Batch presence is no longer accepted for `DISCOVERY_SELECTION` (the
+`printer_discovery_batches` / `printer_discovery_selection_links` proxies are
+removed). Selection Scheduler jobs **do** have a durable exact linkage via
+`printer_discovery_work.scheduler_job_id`, so no BLOCKED finding was required;
+a selection job with no such linkage fails closed rather than falling back to a
+batch proxy.
+
+### 13.4 Strengthened cleanup capture
+
+`SchedulerCleanupCapture` is a frozen, identity-bearing capture built by
+`capture_campaign_active_scheduler_jobs()` from the existing campaign-scoped
+active-work owner (`campaign_active_work.campaign_scoped_job_ids`), carrying
+campaign/run/cycle, captured job ids, each **pre-cancellation** Scheduler state,
+and a capture-boundary timestamp. Cleanup projection now validates: the job
+belongs to the **exact** campaign/run/cycle (`_scheduler_job_in_exact_scope`,
+tighter than the campaign-wide owner); the job was present in the capture with an
+**active** pre-state (a capture taken after cancellation, or missing the job,
+fails closed); the job's current Scheduler state is terminal and equals the
+recorded ownership state; `target_category` is `SCHEDULER_JOB`; and
+`target_identity` equals the exact job id. The untyped caller-supplied job-id set
+is rejected. No second Scheduler-ownership table or authority was created.
+
+### 13.5 Focused tests and output
+
+Disposable databases only; 23 cases. Coverage of the required negative/positive
+proofs: PENDING→CANCELLED blocks (`test_10`); terminal state/cause mismatch
+blocks (`test_11`); discovery batch presence + unrelated job blocks (`test_12`);
+selection owner + unrelated job blocks (`test_13`); cleanup foreign run/cycle
+blocks (`test_14`); cleanup capture-after-cancel / missing pre-state / untyped
+set blocks (`test_15`); cleanup target-identity mismatch blocks (`test_16`);
+lifecycle factory-run-not-bound blocks (`test_17`, `test_17b`); lifecycle target
+mismatch blocks (`test_18`); all four scopes lawful pass (`test_19`);
+exact-repeat idempotent preserves state (`test_20`); migration preservation and
+rollback remain green (`test_01`, `test_04`, `test_05`). Duplicate job,
+competing identity, handoff-owner, schema-CHECK and immutability proofs retained.
+
+```text
+$ .venv/bin/python -m pytest \
+    tests/test_v2_9_8b_campaign_scheduler_ownership_schema_migration.py -q
+.......................                                                   [100%]
+23 passed in 6.04s
+```
+
+Directly-affected ownership/Scheduler set:
+
+```text
+$ .venv/bin/python -m pytest \
+    tests/test_v2_9_8b_campaign_scheduler_ownership_schema_migration.py \
+    tests/test_v2_9_7d_6b_1_campaign_ownership_schema.py \
+    tests/test_v2_9_7d_6b_5_operational_lease_safe_stop.py \
+    tests/test_v2_9_7d_6b_6_final_campaign_report.py \
+    tests/test_v2_9_7e_42_direct_migration_discovery.py \
+    tests/test_v2_9_1_proof_db_schema_readiness.py \
+    tests/test_v2_9_7d_6b_2_operational_backup_restore_preflight.py -q
+84 passed, 10 subtests passed in 15.70s
+```
+
+### 13.6 Pre-existing, out-of-scope failures (unchanged by this correction)
+
+Verified failing identically **before and after** this correction (they depend
+on migration `050` existing / an unrelated operational cleanup path, not on the
+projection authority):
+
+- `test_v2_9_8b_10_post_selection_lifecycle_integrity.py::...::test_migration_count_and_operational_factory_insert` — hard-codes the latest migration as `049` (stale snapshot, same class as the two noted in §8).
+- `test_v2_9_7e_1_insufficient_pool_terminal_cleanup.py::...::test_insufficient_pool_cleanup_report_replay` — operational cleanup replay asserting `cancelled_scheduler_jobs >= 1`; fails identically on pristine HEAD `68d53ca`.
+
+### 13.7 Schema decision
+
+Keep migration `050` unchanged. The corrections are pure projection-authority
+logic over the columns the migration already provides; no schema amendment is
+genuinely required.
+
+### 13.8 Corrected verdict
+
+`V2_9_8B_CAMPAIGN_SCHEDULER_OWNERSHIP_SCHEMA_MIGRATION_IMPLEMENTATION_PASS`
+
+Exact Scheduler state and exact job lineage are now proven for all four scopes.
+Authoritative data and operational paths were untouched: no migration applied to
+the authoritative database, `data/printer_v1.sqlite3` never opened or mutated, no
+provider/RPC/operational command run, and no later or financial capability
+unlocked. A PASS still does not authorize applying `050` to the authoritative
+database or resuming C1-C15; the next permitted lane remains the bounded
+disposable migration proof.
