@@ -10,6 +10,7 @@ No operational command, no authoritative DB, injected transports only.
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime
 import os
 import shutil
 import sqlite3
@@ -22,8 +23,10 @@ from printer_v1.operator_cli.campaign_persistence import (
     DB_MODE_PROOF_ISOLATED,
     create_campaign,
 )
+from printer_v1.operator_cli.abstract_campaign_command import report_path_identity
 from printer_v1.operator_cli.campaign_ownership import (
     bind_authoritative_run_id,
+    campaign_scheduler_work_id,
     create_campaign_run,
     create_cycle_with_two_slots,
 )
@@ -37,7 +40,28 @@ from printer_v1.operator_cli.campaign_full_run_accounting import (
 from printer_v1.operator_cli.one_command_15m_factory import (
     run_one_command_15m_factory,
 )
-from printer_v1.sources.campaign_six_unit_accounting import CampaignActionLocalLedger
+from printer_v1.operator_cli.unified_terminal_closure import (
+    build_campaign_terminal_report,
+    reconcile_campaign_terminal,
+    write_campaign_terminal_report,
+)
+from printer_v1.sources.campaign_six_unit_accounting import (
+    CampaignActionLocalLedger,
+    CampaignSixUnitOwner,
+    build_campaign_stage_id,
+    seal_campaign_stage_evidence,
+)
+from printer_v1.sources.measured_transport import (
+    LocalValidationIdentity,
+    SchedulerWorkIdentity,
+)
+from printer_v1.scheduler.scheduler import (
+    claim_due_job,
+    complete_job,
+    enqueue_job,
+    reset_scheduler_operation_observer,
+    set_scheduler_operation_observer,
+)
 from printer_v1.sources.governed_execution import (
     FIXTURE_FAILURE,
     build_fixture_source_adapter,
@@ -71,18 +95,25 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
         temp_parent = os.environ.get("TEMP") or os.environ.get("TMP")
         self.temp = tempfile.TemporaryDirectory(dir=temp_parent)
         root = Path(self.temp.name)
+        self.root = root
         self.db = root / "wiring.sqlite3"
         self.backup = root / "wiring.backup.sqlite3"
         apply_migrations(self.db)
         create_campaign(
             self.db, campaign_id=CAMPAIGN, configuration_id=CONFIG,
-            configuration={"slots": 2}, launch_provenance=dict(TEST_GIT_PROVENANCE),
+            configuration={
+                "slots": 2, "execution_id": "exec-w", "run_id": RUN,
+                "report_directory_identity": report_path_identity(
+                    root / "exec-w" / "reports"
+                ),
+            }, launch_provenance=dict(TEST_GIT_PROVENANCE),
             db_mode=DB_MODE_PROOF_ISOLATED, db_target_identity="isolated-w",
             proof_source_db_identity="source-w", policy_version="v2-9.8b",
         )
         self._seed_campaign_graph()
         shutil.copy2(self.db, self.backup)
         self.captured_run_id: str | None = None
+        self.preallocated_run_id = "factory-run-w"
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -104,6 +135,14 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
                         "VALUES (?,?,?,?)",
                         (tok, tok, PAIRS[tok], MINTS[tok]),
                     )
+                    conn.execute(
+                        """INSERT INTO printer_tracking_queue(
+                            id,token_id,pair_id,tracking_lane,tracking_action,
+                            queue_status,source_status,data_quality_label
+                        ) VALUES (?,?,?,'TRACK_NORMAL','TRACK','QUEUED',
+                                  'COMPLETE','CLEAN_DATA')""",
+                        (tok, tok, tok),
+                    )
         finally:
             conn.close()
         create_campaign_run(
@@ -121,6 +160,7 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
                         "token_identity": f"token-{tok}", "token_row_id": tok,
                         "mint_identity": MINTS[tok], "pair_identity": PAIRS[tok],
                         "pair_row_id": tok, "lifecycle_identity": f"lifecycle-{tok}",
+                        "tracking_queue_id": tok,
                     }
                     for tok in (1, 2)
                 ],
@@ -171,7 +211,7 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
                     "buys_24h": 280, "sells_24h": 220,
                     "price_change_5m": 1.0, "price_change_1h": 2.0,
                     "price_change_24h": 3.0,
-                }]},
+                }], "response_bytes": 256, "normalized_rows": 1},
             )
         return build
 
@@ -188,6 +228,26 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
     def _drive_real_factory(self, *, with_observer=True):
         """Drive the real factory to two closes; return raw observed records."""
         raw_records: list[dict] = []
+        context = OperationalLifecycleOwnershipContext(
+            campaign_id=CAMPAIGN, campaign_run_id=RUN, cycle_id=CYCLE,
+            configuration_id=CONFIG, factory_run_id=self.preallocated_run_id,
+        )
+        self.owner = CampaignSixUnitOwner(
+            campaign_id=CAMPAIGN, run_id=RUN, cycle_id=CYCLE, started_at=NOW,
+        )
+        self.ledger = CampaignActionLocalLedger(
+            campaign_id=CAMPAIGN, run_id=RUN, cycle_id=CYCLE,
+        )
+        self.pre_scheduler_identities = self._run_pre_lifecycle_scheduler_work()
+        self._seal_boundary_stage(
+            "DISCOVERY_SELECTION_SCHEDULER", 1,
+            ("SELECTION_HANDOFF_VALIDATED",),
+        )
+        live_observe = build_lifecycle_action_local_observer(context, self.ledger)
+
+        def operation_observer(record):
+            raw_records.append(dict(record))
+            live_observe(record)
 
         def capture_run_id(run_id: str) -> None:
             self.captured_run_id = run_id
@@ -200,13 +260,17 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
             max_selected_tokens=2, max_source_requests=1,
             _window_seconds=0.08, total_duration_seconds=5.0,
             campaign_id=CAMPAIGN, campaign_run_id=RUN, cycle_id=CYCLE,
-            configuration_id=CONFIG,
+            configuration_id=CONFIG, factory_run_id=self.preallocated_run_id,
             factory_run_initialized=capture_run_id,
             lifecycle_ownership_context={
                 "campaign_id": CAMPAIGN, "campaign_run_id": RUN, "cycle_id": CYCLE,
+                "configuration_id": CONFIG,
+                "factory_run_id": self.preallocated_run_id,
+                "expected_window_kind": "WINDOW_15M",
+                "expected_token_capacity": 2,
             },
             lifecycle_operation_observer=(
-                raw_records.append if with_observer else None
+                operation_observer if with_observer else None
             ),
         )
         return result, raw_records
@@ -218,13 +282,111 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
         )
 
     def _build_action_local(self, context, raw_records) -> CampaignActionLocalLedger:
-        ledger = CampaignActionLocalLedger(
-            campaign_id=CAMPAIGN, run_id=RUN, cycle_id=CYCLE, lifecycle_started=True,
+        del context, raw_records
+        return self.ledger
+
+    def _run_pre_lifecycle_scheduler_work(self) -> list[SchedulerWorkIdentity]:
+        stage_id = build_campaign_stage_id(
+            campaign_id=CAMPAIGN, run_id=RUN, cycle_id=CYCLE,
+            stage_kind="DISCOVERY_SELECTION_SCHEDULER", stage_sequence=1,
         )
-        observe = build_lifecycle_action_local_observer(context, ledger)
-        for record in raw_records:
-            observe(record)
-        return ledger
+        events: list[dict] = []
+        observer_token = set_scheduler_operation_observer(
+            lambda event: events.append(dict(event))
+        )
+        jobs: list[tuple[int, str, str, str, str, str | None]] = []
+        try:
+            for index, (kind, scope, category, target, slot) in enumerate((
+                ("DISCOVERY_REFRESH", "DISCOVERY_SELECTION", "DISCOVERY_WORK", "discovery-w", None),
+                ("DISCOVERY_REFRESH", "DISCOVERY_SELECTION", "DISCOVERY_WORK", "selection-w", None),
+                ("TRACK_NORMAL_FIRST_15M", "FIRST_15M_HANDOFF", "TOKEN_SLOT", "slot-1", "slot-1"),
+                ("TRACK_NORMAL_FIRST_15M", "FIRST_15M_HANDOFF", "TOKEN_SLOT", "slot-2", "slot-2"),
+            ), start=1):
+                result, job_id = enqueue_job(
+                    self.db, job_name=f"pre-lifecycle-{index}", job_kind=kind,
+                    target_table=("printer_tokens" if slot else None),
+                    target_id=(index - 1 if slot else None),
+                    scheduled_for=datetime.fromisoformat(NOW),
+                )
+                self.assertEqual(str(result), "ACQUIRED")
+                self.assertIsNotNone(job_id)
+                self.assertEqual(
+                    str(claim_due_job(
+                        self.db, job_id=int(job_id), lock_owner="fixture-worker",
+                        now=datetime.fromisoformat(NOW),
+                    )),
+                    "ACQUIRED",
+                )
+                complete_job(
+                    self.db, job_id=int(job_id), now=datetime.fromisoformat(NOW)
+                )
+                jobs.append((int(job_id), kind, scope, category, target, slot))
+        finally:
+            reset_scheduler_operation_observer(observer_token)
+
+        identities: list[SchedulerWorkIdentity] = []
+        conn = sqlite3.connect(self.db)
+        try:
+            for job_id, kind, scope, category, target, slot in jobs:
+                conn.execute(
+                    """INSERT INTO printer_memory_factory_campaign_scheduler_work(
+                           scheduler_work_id,campaign_id,run_id,cycle_id,
+                           token_slot_id,window_id,work_intent,deadline_at,
+                           work_state,scheduler_job_id,ownership_contract_version,
+                           stage_id,work_scope,target_category,target_identity,
+                           first_terminal_cause,terminal_at,created_at,updated_at)
+                       VALUES (?,?,?,?,?,NULL,?,?,'SUCCEEDED',?,
+                               'V2_STAGE_SCOPED',?,?,?,?,?,?,?,?)""",
+                    (
+                        campaign_scheduler_work_id(CAMPAIGN, job_id), CAMPAIGN,
+                        RUN, CYCLE, slot,
+                        ("DISCOVERY_UNIFORM_SELECTION" if target == "selection-w" else kind),
+                        NOW, job_id, stage_id, scope,
+                        category, target, "FIXTURE_COMPLETED", NOW, NOW, NOW,
+                    ),
+                )
+                identity = SchedulerWorkIdentity(
+                    stage_id=stage_id, scheduler_job_id=job_id, job_kind=kind,
+                    target_category=category, target_identity=target,
+                )
+                identities.append(identity)
+                self.ledger.observe_scheduler_work(identity)
+            conn.commit()
+        finally:
+            conn.close()
+        for event in events:
+            self.ledger.observe_scheduler_transition(event)
+        return identities
+
+    def _seal_boundary_stage(self, kind, sequence, validation_names) -> None:
+        stage_id = build_campaign_stage_id(
+            campaign_id=CAMPAIGN, run_id=RUN, cycle_id=CYCLE,
+            stage_kind=kind, stage_sequence=sequence,
+        )
+        if stage_id in self.owner.ingested_stage_ids:
+            return
+        validations = [
+            LocalValidationIdentity(
+                stage_id=stage_id, subject_identity=f"{kind}:{index}",
+                validation_kind=name, validation_ordinal=index,
+            )
+            for index, name in enumerate(validation_names, start=1)
+        ]
+        for validation in validations:
+            self.ledger.observe_local_validation(validation)
+        self.owner.ingest_stage_evidence(seal_campaign_stage_evidence(
+            stage_id=stage_id, stage_kind=kind, stage_sequence=sequence,
+            stage_terminal_status="COMPLETED", campaign_id=CAMPAIGN,
+            run_id=RUN, cycle_id=CYCLE,
+            evidence={"evidence_kind": "CAMPAIGN_SIX_UNIT_EVIDENCE_V1",
+                      "transport_operations": [], "local_validations": 0,
+                      "scheduler_work_items": 0, "lifecycle_reservations": 0},
+            local_validation_identities=validations,
+            scheduler_work_identities=(
+                self.pre_scheduler_identities
+                if kind == "DISCOVERY_SELECTION_SCHEDULER" else ()
+            ),
+        ))
 
     def _bind_and_finalize(self, context, ledger):
         conn = sqlite3.connect(self.db)
@@ -236,9 +398,26 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
             )
         except Exception:
             pass  # factory may already have bound it
+        reconcile_campaign_terminal(
+            self.db, campaign_id=CAMPAIGN, run_id=RUN, cycle_id=CYCLE,
+            terminal_cause="FACTORY_COMPLETED", run_status="COMPLETED",
+            factory_run_id=str(self.captured_run_id), lifecycle_started=True,
+            now=NOW,
+        )
+        self._seal_boundary_stage(
+            "CAMPAIGN_TERMINAL_RECONCILIATION", 4,
+            (
+                "CAMPAIGN_TERMINAL_OWNERSHIP_VALIDATED",
+                "ZERO_ACTIVE_WORK_VALIDATED", "ZERO_LOCKED_WORK_VALIDATED",
+                "LEASE_RELEASE_VALIDATED", "FORBIDDEN_DELTAS_VALIDATED",
+                "NO_RETRY_VALIDATED", "NO_RESTART_VALIDATED",
+                "NO_RESUME_VALIDATED", "NO_SUCCESSOR_VALIDATED",
+            ),
+        )
         try:
             return finalize_full_run_ownership_and_report(
-                conn, context=context, action_local=ledger, execution_id="exec-w",
+                conn, context=context, owner=self.owner, action_local=ledger,
+                execution_id="exec-w",
                 supervision_id=1, launch_git_provenance=dict(TEST_GIT_PROVENANCE),
                 db_target_identity="isolated-w",
                 authorized_invocation_count=1,
@@ -246,6 +425,13 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
                 lease_released=True,
                 forbidden_capability_deltas={
                     "retrieval_queries": 0, "paper_decisions": 0, "paper_trades": 0,
+                },
+                active_work_result={
+                    "cancelled_scheduler_jobs": 0,
+                    "automatic_retries": 0,
+                    "restart_created": False,
+                    "resume_created": False,
+                    "successor_created": False,
                 },
                 now=NOW,
             )
@@ -262,12 +448,32 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
         # tokens.
         self.assertTrue(raw_records)
         boundaries = {r["boundary"] for r in raw_records}
-        self.assertEqual(boundaries, {"SCHEDULER_ENQUEUE", "SOURCE_TRANSPORT"})
+        self.assertTrue({
+            "SCHEDULER_ENQUEUE", "SCHEDULER_CLAIM", "SCHEDULER_TERMINAL",
+            "GOVERNED_SOURCE_ATTEMPT", "LIFECYCLE_RESERVATION",
+            "LOCAL_VALIDATION",
+        }.issubset(boundaries))
         self.assertTrue(
-            any(r["boundary"] == "SOURCE_TRANSPORT" and r.get("source_request_id")
+            any(r["boundary"] == "GOVERNED_SOURCE_ATTEMPT" and r.get("source_request_id")
                 for r in raw_records)
         )
         self.assertEqual({r["token_id"] for r in raw_records}, {1, 2})
+        attempts = [
+            item for item in raw_records
+            if item["boundary"] == "GOVERNED_SOURCE_ATTEMPT"
+        ]
+        self.assertEqual(len(attempts), 28)
+        self.assertEqual(
+            sum(item["request_kind"] != "pair_market_snapshot" for item in attempts),
+            10,
+        )
+        self.assertEqual(
+            sum(item["result"] == "FAILED" for item in attempts), 10
+        )
+        self.assertEqual(
+            sum(item["boundary"] == "LIFECYCLE_RESERVATION" for item in raw_records),
+            28,
+        )
         conn = sqlite3.connect(self.db)
         try:
             closes = conn.execute(
@@ -293,6 +499,7 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
             owned = conn.execute(
                 "SELECT scheduler_job_id, COUNT(*) c FROM "
                 "printer_memory_factory_campaign_scheduler_work WHERE campaign_id=? "
+                "AND work_scope='WINDOW_LIFECYCLE' "
                 "GROUP BY scheduler_job_id",
                 (CAMPAIGN,),
             ).fetchall()
@@ -325,6 +532,11 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
         self.assertTrue(outcome["campaign_acceptance"]["pass"])
         report = outcome["report"]
         self.assertEqual(
+            report["full_run_accounting"]["scheduler_attribution"],
+            {"discovery": 1, "selection": 1, "handoff": 2,
+             "lifecycle": 18, "cleanup": 0},
+        )
+        self.assertEqual(
             sorted(report["selection_and_lifecycle"]["terminal_window_ids"]),
             sorted(outcome["registered_windows"]),
         )
@@ -341,11 +553,27 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
         self.assertFalse(outcome["reconciliation"]["equal"])
         self.assertFalse(outcome["campaign_acceptance"]["pass"])
 
+    def test_missing_preclose_context_attempt_blocks(self) -> None:
+        _result, raw = self._drive_real_factory()
+        ledger = self._build_action_local(self._context(), raw)
+        index = next(
+            index for index, identity in enumerate(ledger.transport_identities)
+            if identity["governed_request_kind"] != "pair_market_snapshot"
+        )
+        ledger.transport_identities.pop(index)
+        outcome = self._bind_and_finalize(self._context(), ledger)
+        self.assertEqual(outcome["verdict"], VERDICT_BLOCKED_UNSAFE)
+        self.assertIn(
+            "SOURCE_TRANSPORT_OPERATION",
+            outcome["reconciliation"]["mismatch_reason"],
+        )
+
     def test_pass_blocked_when_a_scheduler_identity_is_removed(self) -> None:
         _result, raw = self._drive_real_factory()
         context = self._context()
         # Remove one observed enqueue -> action-local misses one identity.
-        ledger = self._build_action_local(context, raw[:-1])
+        ledger = self._build_action_local(context, raw)
+        ledger.scheduler_work_identities.pop()
         outcome = self._bind_and_finalize(context, ledger)
         self.assertNotEqual(outcome["verdict"], VERDICT_PASS)
         self.assertFalse(outcome["reconciliation"]["equal"])
@@ -397,6 +625,20 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
             pass
         finally:
             conn.close()
+        reconcile_campaign_terminal(
+            self.db, campaign_id=CAMPAIGN, run_id=RUN, cycle_id=CYCLE,
+            terminal_cause="FACTORY_COMPLETED", run_status="COMPLETED",
+            factory_run_id=str(self.captured_run_id), lifecycle_started=True,
+            now=NOW,
+        )
+        self._seal_boundary_stage(
+            "CAMPAIGN_TERMINAL_RECONCILIATION", 4,
+            ("CAMPAIGN_TERMINAL_OWNERSHIP_VALIDATED",
+             "ZERO_ACTIVE_WORK_VALIDATED", "ZERO_LOCKED_WORK_VALIDATED",
+             "LEASE_RELEASE_VALIDATED", "FORBIDDEN_DELTAS_VALIDATED",
+             "NO_RETRY_VALIDATED", "NO_RESTART_VALIDATED",
+             "NO_RESUME_VALIDATED", "NO_SUCCESSOR_VALIDATED"),
+        )
         outcome = _apply_full_run_campaign_acceptance(
             db_path=self.db, campaign_id=CAMPAIGN, campaign_run_id=RUN,
             cycle_id=CYCLE, configuration_id=CONFIG,
@@ -405,6 +647,16 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
             db_target_identity="isolated-w", lifecycle_started=True,
             lifecycle_operation_records=raw,
             forbidden_deltas={"retrieval_queries": 0},
+            accounting_owner=self.owner,
+            action_local_ledger=self.ledger,
+            runtime_terminal_status="TERMINAL_COMPLETED",
+            active_work_result={
+                "cancelled_scheduler_jobs": 0,
+                "automatic_retries": 0,
+                "restart_created": False,
+                "resume_created": False,
+                "successor_created": False,
+            },
         )
         self.assertEqual(outcome["verdict"], VERDICT_PASS, outcome.get("blocked_reasons"))
         self.assertTrue(outcome["campaign_acceptance"]["pass"])
@@ -447,6 +699,55 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
                 )
         finally:
             conn.close()
+
+    def test_public_exact_report_only_reconstructs_with_zero_side_effects(self) -> None:
+        from printer_v1.operator_cli.operational_memory_factory_command import report_only
+
+        _result, raw = self._drive_real_factory()
+        outcome = self._bind_and_finalize(self._context(), self._build_action_local(None, raw))
+        self.assertEqual(outcome["verdict"], VERDICT_PASS)
+        report_dir = self.root / "exec-w" / "reports"
+        owner_evidence = outcome["report"]["full_run_accounting"]["owner_evidence"]
+        totals = outcome["report"]["full_run_accounting"]["six_unit_totals"]
+        outer = build_campaign_terminal_report(
+            campaign_id=CAMPAIGN, configuration_id=CONFIG, run_id=RUN,
+            cycle_id=CYCLE, report_id="report-w", factory_run_id=self.captured_run_id,
+            execution_id="exec-w", terminal_status="COMPLETED",
+            terminal_cause="FACTORY_COMPLETED", run_status="COMPLETED",
+            lifecycle_started=True, reconciliation={"clean_terminal": True},
+            forbidden_deltas={"retrieval_queries": 0, "paper_decisions": 0},
+            launch_git_provenance=TEST_GIT_PROVENANCE,
+            six_unit_totals=totals, six_unit_evidence=owner_evidence,
+            require_six_unit_evidence=True,
+        )
+        outer["full_run_terminal_evidence"] = outcome["report"]
+        write_campaign_terminal_report(
+            self.db, report_dir, report_id="report-w", campaign_id=CAMPAIGN,
+            configuration_id=CONFIG, report=outer, require_six_unit_evidence=True,
+        )
+        before = self.db.stat().st_mtime_ns
+        replay = report_only(
+            campaign_id=CAMPAIGN, run_id=RUN, db_path=self.db,
+            artifact_root=self.root,
+        )
+        after = self.db.stat().st_mtime_ns
+        self.assertEqual(replay["status"], "REPLAYED", replay)
+        self.assertEqual(replay["source_calls"], 0)
+        self.assertEqual(replay["scheduler_runtime_calls"], 0)
+        self.assertEqual(replay["database_writes"], 0)
+        self.assertEqual(before, after)
+        self.assertEqual(
+            replay["full_run_terminal_evidence"]["hashes"],
+            outcome["report"]["hashes"],
+        )
+        wrong_identity = report_only(
+            campaign_id="not-the-campaign", run_id=RUN, db_path=self.db,
+            artifact_root=self.root,
+        )
+        self.assertNotEqual(wrong_identity.get("status"), "REPLAYED")
+        self.assertEqual(wrong_identity.get("source_calls", 0), 0)
+        self.assertEqual(wrong_identity.get("scheduler_runtime_calls", 0), 0)
+        self.assertEqual(wrong_identity.get("database_writes", 0), 0)
 
 
 if __name__ == "__main__":

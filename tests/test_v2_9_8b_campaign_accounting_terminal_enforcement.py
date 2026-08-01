@@ -564,7 +564,7 @@ def test_post_handoff_fault_compensation_terminalizes_to_zero_active_work(stage)
                     "SELECT version FROM printer_schema_migrations ORDER BY version"
                 )
             ][-1]
-            assert head.startswith("049")
+            assert head.startswith("050")
         finally:
             connection.close()
     finally:
@@ -605,7 +605,7 @@ def test_normal_success_two_slots_two_window_15m_jobs(tmp_path: Path) -> None:
                 "SELECT version FROM printer_schema_migrations ORDER BY version"
             )
         ][-1]
-        assert head.startswith("049")
+        assert head.startswith("050")
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     finally:
         connection.close()

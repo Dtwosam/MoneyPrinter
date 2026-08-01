@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextvars import ContextVar, Token
 from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping
@@ -36,6 +37,60 @@ FIXTURE_SUCCESS = "fixture_success"
 FIXTURE_MALFORMED = "fixture_malformed"
 FIXTURE_STALE = "fixture_stale"
 FIXTURE_FAILURE = "fixture_failure"
+
+_ATTEMPT_OBSERVER: ContextVar[Any | None] = ContextVar(
+    "printer_v1_governed_attempt_observer", default=None
+)
+
+
+def set_governed_attempt_observer(observer: Any | None) -> Token:
+    """Install an execution-local observer for the real governed attempt boundary."""
+    return _ATTEMPT_OBSERVER.set(observer)
+
+
+def reset_governed_attempt_observer(token: Token) -> None:
+    _ATTEMPT_OBSERVER.reset(token)
+
+
+def _observe_attempt(execution: GovernedSourceExecutionResult) -> None:
+    observer = _ATTEMPT_OBSERVER.get()
+    if observer is None:
+        return
+    from printer_v1.sources.measured_transport import merge_transport_payload_metadata
+
+    payload = execution.normalized_result.normalized_payload
+    measured = merge_transport_payload_metadata(payload)
+    observer(
+        {
+            "boundary": "GOVERNED_SOURCE_ATTEMPT",
+            "request_key": execution.request_record.request_key,
+            "source_name": execution.request_record.source_name,
+            "request_kind": execution.request_record.request_kind,
+            "source_request_id": int(execution.request_record.id),
+            "source_response_id": (
+                None
+                if execution.response_record is None
+                else int(execution.response_record.id)
+            ),
+            "source_failure_id": (
+                None
+                if execution.failure_record is None
+                else int(execution.failure_record.id)
+            ),
+            "result": (
+                "SUCCEEDED"
+                if execution.response_record is not None
+                else "FAILED"
+            ),
+            "response_bytes": int(measured["response_bytes"]),
+            "normalized_rows": int(measured["normalized_rows"]),
+            "transport_operation_identities": [
+                dict(item)
+                for item in measured["transport_operation_identities"]
+                if isinstance(item, Mapping)
+            ],
+        }
+    )
 
 
 @dataclass(frozen=True)
@@ -175,11 +230,13 @@ def execute_source_request_with_governor(
             failure_type=decision.reason,
             failure_message="Source Governor rejected fixture execution",
         )
-        return GovernedSourceExecutionResult(
+        execution = GovernedSourceExecutionResult(
             request_record=request_record,
             normalized_result=result,
             failure_record=failure_record,
         )
+        _observe_attempt(execution)
+        return execution
 
     context = SourceAdapterContext(
         request=source_request,
@@ -192,11 +249,13 @@ def execute_source_request_with_governor(
     if result.source_status in {SourceStatus.COMPLETE, SourceStatus.PARTIAL, SourceStatus.STALE} and not result.failure_type:
         response_record = record_source_response(db_path_or_conn, request_record, result)
         release_write_transaction(db_path_or_conn)
-        return GovernedSourceExecutionResult(
+        execution = GovernedSourceExecutionResult(
             request_record=request_record,
             normalized_result=result,
             response_record=response_record,
         )
+        _observe_attempt(execution)
+        return execution
 
     failure_record = record_source_failure(
         db_path_or_conn,
@@ -210,8 +269,10 @@ def execute_source_request_with_governor(
         normalized_payload=result.normalized_payload,
     )
     release_write_transaction(db_path_or_conn)
-    return GovernedSourceExecutionResult(
+    execution = GovernedSourceExecutionResult(
         request_record=request_record,
         normalized_result=result,
         failure_record=failure_record,
     )
+    _observe_attempt(execution)
+    return execution

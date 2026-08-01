@@ -5,7 +5,7 @@ Accepted invariant after a post-handoff failure:
     zero active, runnable, leased, reusable, or orphan work;
     immutable terminal handoff audit evidence may remain.
 
-Proven, with frozen inputs and a fresh disposable migration-049 database per
+Proven, with frozen inputs and a fresh disposable migration-050 database per
 injection, for each of the five post-handoff stages:
 
 * surviving token slots are terminal and non-runnable, with the exact
@@ -282,7 +282,7 @@ def test_post_handoff_injection_terminalizes_and_preserves_evidence(stage) -> No
                     "SELECT version FROM printer_schema_migrations ORDER BY version"
                 )
             ][-1]
-            assert head.startswith("049")
+            assert head.startswith("050")
 
             # --- cycle/run/campaign terminalized to the fault cause ---
             cycle_state, cycle_cause = connection.execute(

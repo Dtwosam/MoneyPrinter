@@ -330,6 +330,7 @@ class CampaignSixUnitOwner:
     campaign_id: str | None = None
     run_id: str | None = None
     cycle_id: str | None = None
+    owner_id: str | None = None
     started_at: str = field(default_factory=_utc_now_iso)
     ended_at: str | None = None
     ledger: MeasuredTransportLedger = field(default_factory=MeasuredTransportLedger)
@@ -366,6 +367,10 @@ class CampaignSixUnitOwner:
     )
 
     def __post_init__(self) -> None:
+        if self.owner_id is None:
+            self.owner_id = (
+                f"six-unit-owner|{self.campaign_id}|{self.run_id}|{self.cycle_id}"
+            )
         self.ledger.campaign_id = self.campaign_id
         self.ledger.run_id = self.run_id
         self.ledger.cycle_id = self.cycle_id
@@ -539,6 +544,9 @@ class CampaignSixUnitOwner:
         """Coordinator-facing sealed-stage diagnostics."""
         return {
             "sealed_stage_count": self.sealed_stage_count,
+            "sealed_stage_diagnostics": [
+                dict(item) for item in self.sealed_stage_diagnostics
+            ],
             "ingested_stage_count": int(self.stage_evidence_count),
             "ingested_stage_ids": list(self.ingested_stage_ids),
             "owner_transport_operation_count": self.owner_transport_operation_count,
@@ -782,7 +790,8 @@ class CampaignSixUnitOwner:
             )
 
     def close(self, *, ended_at: str | None = None) -> None:
-        self.ended_at = ended_at or _utc_now_iso()
+        if self.ended_at is None:
+            self.ended_at = ended_at or _utc_now_iso()
 
     def block(self, reason: str) -> None:
         candidate = str(reason or "").strip()
@@ -810,6 +819,7 @@ class CampaignSixUnitOwner:
             "campaign_id": self.campaign_id,
             "run_id": self.run_id,
             "cycle_id": self.cycle_id,
+            "owner_id": self.owner_id,
             "stage_evidence_count": self.stage_evidence_count,
             "pre_operation_no_work": self.pre_operation_no_work,
             "pre_operation_no_work_reason": self.pre_operation_no_work_reason,
@@ -847,15 +857,21 @@ def _transport_identity_key(raw: Mapping[str, Any] | TransportOperationIdentity)
         return (
             str(raw.stage or ""),
             str(raw.source_name or ""),
+            str(raw.endpoint_owner or ""),
             str(raw.governed_request_kind or ""),
             str(raw.method_or_endpoint or ""),
             int(raw.within_request_ordinal or 0),
             str(raw.target_category or ""),
             None if raw.target_identity is None else str(raw.target_identity),
+            int(raw.response_bytes),
+            int(raw.normalized_rows),
+            str(raw.result or ""),
+            None if raw.reserved_from is None else str(raw.reserved_from),
         )
     return (
         str(raw.get("stage") or ""),
         str(raw.get("source_name") or ""),
+        str(raw.get("endpoint_owner") or ""),
         str(raw.get("governed_request_kind") or ""),
         str(raw.get("method_or_endpoint") or ""),
         int(raw.get("within_request_ordinal") or 0),
@@ -865,6 +881,10 @@ def _transport_identity_key(raw: Mapping[str, Any] | TransportOperationIdentity)
             if raw.get("target_identity") is None
             else str(raw.get("target_identity"))
         ),
+        int(raw.get("response_bytes") or 0),
+        int(raw.get("normalized_rows") or 0),
+        str(raw.get("result") or ""),
+        None if raw.get("reserved_from") is None else str(raw.get("reserved_from")),
     )
 
 
@@ -882,6 +902,7 @@ class CampaignActionLocalLedger:
     campaign_id: str | None = None
     run_id: str | None = None
     cycle_id: str | None = None
+    ledger_id: str | None = None
     lifecycle_started: bool = False
     transport_identities: list[dict[str, Any]] = field(default_factory=list)
     scheduler_work_identities: list[dict[str, Any]] = field(default_factory=list)
@@ -889,6 +910,13 @@ class CampaignActionLocalLedger:
         default_factory=list
     )
     local_validation_identities: list[dict[str, Any]] = field(default_factory=list)
+    scheduler_transition_events: list[dict[str, Any]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.ledger_id is None:
+            self.ledger_id = (
+                f"action-local-ledger|{self.campaign_id}|{self.run_id}|{self.cycle_id}"
+            )
 
     def observe_transport(
         self, identity: TransportOperationIdentity | Mapping[str, Any]
@@ -908,6 +936,32 @@ class CampaignActionLocalLedger:
             if isinstance(identity, SchedulerWorkIdentity)
             else dict(identity)
         )
+
+    def observe_scheduler_transition(self, event: Mapping[str, Any]) -> None:
+        self.lifecycle_started = True
+        self.scheduler_transition_events.append(dict(event))
+
+    def scheduler_transition_coverage(self) -> dict[str, Any]:
+        by_job: dict[int, set[str]] = {}
+        terminal_states: dict[int, str] = {}
+        for event in self.scheduler_transition_events:
+            job_id = int(event.get("scheduler_job_id") or 0)
+            by_job.setdefault(job_id, set()).add(str(event.get("boundary") or ""))
+            if event.get("terminal_state") is not None:
+                terminal_states[job_id] = str(event["terminal_state"])
+        incomplete: dict[str, list[str]] = {}
+        for job_id, boundaries in sorted(by_job.items()):
+            required = {"SCHEDULER_ENQUEUE", "SCHEDULER_TERMINAL"}
+            if terminal_states.get(job_id) != "CANCELLED":
+                required.add("SCHEDULER_CLAIM")
+            if not required.issubset(boundaries):
+                incomplete[str(job_id)] = sorted(required - boundaries)
+        return {
+            "job_count": len(by_job),
+            "complete": bool(by_job) and not incomplete,
+            "incomplete_jobs": incomplete,
+            "events": [dict(item) for item in self.scheduler_transition_events],
+        }
 
     def observe_lifecycle_reservation(
         self, identity: LifecycleReservationIdentity | Mapping[str, Any]

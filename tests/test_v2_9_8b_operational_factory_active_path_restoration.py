@@ -1,6 +1,6 @@
 """Offline proof for the V2-9.8B operational active-path restoration.
 
-Frozen transports and disposable migration-049 databases only. No provider,
+Frozen transports and disposable migration-050 databases only. No provider,
 RPC, authoritative database, recovery, campaign or financial execution.
 """
 
@@ -88,10 +88,10 @@ class ActiveCommandBoundaryTests(unittest.TestCase):
         self.assertTrue(callable(command.run_candidate_acquisition_only))
         self.assertTrue(callable(command.run_cursor_recovery_only))
 
-    def test_current_schema_head_remains_migration_049(self) -> None:
+    def test_current_schema_head_is_accepted_migration_050(self) -> None:
         names = canonical_migration_names()
-        self.assertEqual(49, len(names))
-        self.assertEqual("049_candidate_acquisition_integration.sql", names[-1])
+        self.assertEqual(50, len(names))
+        self.assertEqual("050_campaign_scheduler_ownership_scope.sql", names[-1])
         self.assertEqual(2, command.TOKEN_CAPACITY)
         self.assertEqual("WINDOW_15M", command.MAIN_WINDOW)
         self.assertIn("WINDOW_1H", command.LOCKED_WINDOWS)

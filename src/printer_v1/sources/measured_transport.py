@@ -39,6 +39,18 @@ SIX_UNITS = (
     UNIT_LIFECYCLE_RESERVED_TRANSPORT_OPERATION,
 )
 
+# Single source of truth for the governed calls reserved by each WINDOW_15M
+# lifecycle step.  Both the real factory capacity boundary and campaign
+# accounting consume this mapping; callers must not reconstruct the close
+# bundle independently.
+PRECLOSE_CONTEXT_REQUEST_COUNT = 5
+LIFECYCLE_RESERVED_OPERATIONS_BY_STEP_KIND = MappingProxyType(
+    {
+        "SNAPSHOT": 1,
+        "WINDOW_CLOSE": 1 + PRECLOSE_CONTEXT_REQUEST_COUNT,
+    }
+)
+
 # Stage transport ceilings (measured budget architecture).
 STAGE_CEILINGS = MappingProxyType(
     {
@@ -171,11 +183,16 @@ class MeasuredTransportLedger:
         key = (
             identity.stage,
             identity.source_name,
+            identity.endpoint_owner,
             identity.governed_request_kind,
             identity.method_or_endpoint,
             identity.within_request_ordinal,
             identity.target_category,
             identity.target_identity,
+            int(identity.response_bytes),
+            int(identity.normalized_rows),
+            identity.result,
+            identity.reserved_from,
         )
         if key in self._seen_keys:
             raise MeasuredTransportError("DUPLICATE_TRANSPORT_IDENTITY")

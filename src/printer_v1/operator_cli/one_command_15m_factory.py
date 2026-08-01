@@ -29,6 +29,10 @@ from printer_v1.scheduler.scheduler import (
     enqueue_job,
     fail_job,
 )
+from printer_v1.sources.measured_transport import (
+    LIFECYCLE_RESERVED_OPERATIONS_BY_STEP_KIND,
+    PRECLOSE_CONTEXT_REQUEST_COUNT,
+)
 
 
 COMMAND_NAME = "printer-run-one-command-15m-memory-factory"
@@ -77,7 +81,7 @@ from printer_v1.snapshots.cadence_policy import get_policy as _cadence_get_polic
 
 _V2_5_MAX_SELECTED_TOKENS = 3
 _MAX_DISCOVERY_REQUESTS = 2
-_CONTEXT_REQUESTS_PER_TOKEN = 5
+_CONTEXT_REQUESTS_PER_TOKEN = PRECLOSE_CONTEXT_REQUEST_COUNT
 _MAX_HOLDER_FALLBACKS_PER_TOKEN = 1
 # V2-9.6: at most one backup Solana-RPC holder endpoint per token, on top of the
 # single primary holder fallback. So the holder RPC request budget per token is
@@ -2221,6 +2225,123 @@ def _update_step(
     )
 
 
+def _observe_scheduler_terminal(
+    conn: sqlite3.Connection,
+    *,
+    observer: Callable[[Mapping[str, Any]], None] | None,
+    run_id: str,
+    step: sqlite3.Row,
+) -> None:
+    if observer is None or step["scheduler_job_id"] is None:
+        return
+    job_id = int(step["scheduler_job_id"])
+    terminal = conn.execute(
+        """SELECT status,finished_at,last_error
+           FROM printer_scheduler_jobs WHERE id=?""",
+        (job_id,),
+    ).fetchone()
+    if terminal is None:
+        raise ValueError(f"SCHEDULER_TERMINAL_ROW_MISSING:{job_id}")
+    observer(
+        {
+            "boundary": "SCHEDULER_TERMINAL",
+            "run_id": run_id,
+            "scheduler_job_id": job_id,
+            "step_key": str(step["step_key"]),
+            "step_kind": str(step["step_kind"]),
+            "token_id": int(step["token_id"]),
+            "pair_id": int(step["pair_id"]),
+            "terminal_state": str(terminal["status"]),
+            "first_terminal_cause": terminal["last_error"],
+            "terminal_at": terminal["finished_at"],
+        }
+    )
+
+
+def _register_repaired_campaign_window_before_terminalization(
+    conn: sqlite3.Connection,
+    *,
+    step: sqlite3.Row,
+    result: Mapping[str, Any],
+    ownership_context: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Register an exact campaign window before Scheduler/slot terminalization.
+
+    The caller has updated the close step to ``SUCCEEDED`` in the current
+    transaction but has not terminalized its Scheduler job or begun campaign
+    reconciliation.  The scope-aware campaign owner validates and commits the
+    exact run/slot/window graph.  A fault rolls the pending step update back and
+    therefore cannot leave a report-only ownership claim.
+    """
+    if ownership_context is None or str(step["step_kind"]) != "WINDOW_CLOSE":
+        return None
+    memory_window_id = result.get("memory_window_id")
+    if memory_window_id is None:
+        raise ValueError("WINDOW_CLOSE_SUCCEEDED_WITHOUT_MEMORY_WINDOW")
+    from printer_v1.operator_cli.campaign_ownership import (
+        register_campaign_window_close,
+    )
+
+    slot = conn.execute(
+        """SELECT token_slot_id, lifecycle_identity
+           FROM printer_memory_factory_campaign_token_slots
+           WHERE campaign_id=? AND run_id=? AND cycle_id=?
+             AND token_row_id=? AND pair_row_id=?""",
+        (
+            str(ownership_context["campaign_id"]),
+            str(ownership_context["campaign_run_id"]),
+            str(ownership_context["cycle_id"]),
+            int(step["token_id"]),
+            int(step["pair_id"]),
+        ),
+    ).fetchone()
+    if slot is None:
+        raise ValueError("WINDOW_CLOSE_CAMPAIGN_SLOT_MISSING")
+    memory = conn.execute(
+        """SELECT memory_status, data_quality_label, do_not_train, closed_at
+           FROM printer_memory_windows WHERE id=?""",
+        (int(memory_window_id),),
+    ).fetchone()
+    if memory is None:
+        raise ValueError("WINDOW_CLOSE_MEMORY_ROW_MISSING")
+    clean_episode = conn.execute(
+        """SELECT id FROM printer_episodes
+           WHERE memory_window_id=?
+             AND episode_kind='WINDOW_15M_CLEAN_MEMORY'
+             AND memory_status='CLEAN_MEMORY'
+             AND data_quality_label='CLEAN_DATA'
+             AND do_not_train=0
+           ORDER BY id LIMIT 1""",
+        (int(memory_window_id),),
+    ).fetchone()
+    if clean_episode is not None:
+        terminal_state = "CLEAN_PROMOTED"
+    elif int(memory["do_not_train"] or 0) != 0 or str(
+        memory["data_quality_label"] or ""
+    ) != "CLEAN_DATA":
+        terminal_state = "DIRTY"
+    else:
+        terminal_state = "NO_PROMOTION"
+    campaign_window_id = (
+        f"{ownership_context['cycle_id']}:window:{int(step['token_id'])}"
+    )
+    return register_campaign_window_close(
+        conn,
+        campaign_id=str(ownership_context["campaign_id"]),
+        run_id=str(ownership_context["campaign_run_id"]),
+        cycle_id=str(ownership_context["cycle_id"]),
+        factory_run_id=str(ownership_context["factory_run_id"]),
+        token_slot_id=str(slot["token_slot_id"]),
+        window_id=campaign_window_id,
+        close_step_id=int(step["id"]),
+        memory_window_row_id=int(memory_window_id),
+        root_15m_lifecycle_identity=str(slot["lifecycle_identity"]),
+        checkpoint_cutoff=str(memory["closed_at"] or _iso()),
+        terminal_window_state=terminal_state,
+        terminal_cause=f"window_closed_{terminal_state.lower()}",
+    )
+
+
 def _cancel_pending(conn: sqlite3.Connection, run_id: str, reason: str) -> None:
     rows = conn.execute(
         "SELECT id, scheduler_job_id FROM printer_memory_factory_run_steps WHERE run_id=? AND step_status='PENDING'",
@@ -2346,8 +2467,10 @@ def _run_step_job_count(conn: sqlite3.Connection, run_id: str) -> int:
 def _projected_requests_for_step(step: sqlite3.Row) -> int:
     # A snapshot step issues one governed request; a close step issues one
     # snapshot request plus up to five close-time context requests.
-    if step["step_kind"] == "WINDOW_CLOSE":
-        return 6
+    if step["step_kind"] in LIFECYCLE_RESERVED_OPERATIONS_BY_STEP_KIND:
+        return int(
+            LIFECYCLE_RESERVED_OPERATIONS_BY_STEP_KIND[str(step["step_kind"])]
+        )
     if step["step_kind"] == "LONG_CONTINUATION_CLOSE":
         return 5
     if step["step_kind"] == "LONG_CONTINUATION_SNAPSHOT" and str(step["step_key"]).endswith("_snapshot_000"):
@@ -3636,6 +3759,7 @@ def run_one_command_15m_factory(
     campaign_run_id: str | None = None,
     cycle_id: str | None = None,
     configuration_id: str | None = None,
+    factory_run_id: str | None = None,
     cancellation_probe: Callable[[], str | None] | None = None,
     factory_run_initialized: Callable[[str], None] | None = None,
     discovery_transport: Any = None, discovery_runner: Callable[..., dict[str, Any]] | None = None,
@@ -3858,7 +3982,9 @@ def run_one_command_15m_factory(
             ),
         },
     }
-    run_id = str(uuid.uuid4())
+    run_id = str(factory_run_id or uuid.uuid4()).strip()
+    if not run_id:
+        raise ValueError("factory_run_id must be non-empty")
     started_dt = _now()
     started_at = _iso(started_dt)
     conn = sqlite3.connect(str(path))
@@ -3903,6 +4029,57 @@ def run_one_command_15m_factory(
     first_window_checkpointed = False
     post_activation_checkpointed = False
     proof_fault: BaseException | None = None
+    governed_observer_token = None
+    if lifecycle_operation_observer is not None:
+        from printer_v1.sources.governed_execution import (
+            set_governed_attempt_observer,
+        )
+
+        def _observe_governed_attempt(record: Mapping[str, Any]) -> None:
+            request_key = str(record.get("request_key") or "")
+            prefix = f"{run_id}:"
+            if not request_key.startswith(prefix):
+                return
+            step_key = request_key[len(prefix):].split(":", 1)[0]
+            step_row = conn.execute(
+                """SELECT step_key,step_kind,scheduler_job_id,token_id,pair_id
+                   FROM printer_memory_factory_run_steps
+                   WHERE run_id=? AND step_key=?""",
+                (run_id, step_key),
+            ).fetchone()
+            if step_row is None:
+                raise ValueError(
+                    f"GOVERNED_ATTEMPT_WITHOUT_FACTORY_STEP:{request_key}"
+                )
+            attempt_count = int(
+                conn.execute(
+                    """SELECT COUNT(*) FROM printer_source_requests
+                       WHERE request_key LIKE ? AND id<=?""",
+                    (
+                        f"{run_id}:{step_key}%",
+                        int(record["source_request_id"]),
+                    ),
+                ).fetchone()[0]
+            )
+            lifecycle_operation_observer(
+                {
+                    **dict(record),
+                    "run_id": run_id,
+                    "step_key": str(step_row["step_key"]),
+                    "step_kind": str(step_row["step_kind"]),
+                    "scheduler_job_id": int(step_row["scheduler_job_id"]),
+                    "token_id": int(step_row["token_id"]),
+                    "pair_id": int(step_row["pair_id"]),
+                    "attempt_ordinal": attempt_count,
+                    "reserved_from": (
+                        f"{run_id}:{step_key}:reservation:{attempt_count}"
+                    ),
+                }
+            )
+
+        governed_observer_token = set_governed_attempt_observer(
+            _observe_governed_attempt
+        )
     try:
         if factory_run_initialized is not None:
             factory_run_initialized(run_id)
@@ -3911,13 +4088,36 @@ def run_one_command_15m_factory(
         # bound factory run id disagrees with this factory's run id, fail closed
         # before any lifecycle work (identity drift).
         if lifecycle_ownership_context is not None:
-            bound_factory_run = str(
-                lifecycle_ownership_context.get("factory_run_id") or ""
-            ).strip()
-            if bound_factory_run and bound_factory_run != run_id:
+            required_context = {
+                "campaign_id": campaign_id,
+                "campaign_run_id": campaign_run_id,
+                "cycle_id": cycle_id,
+                "configuration_id": configuration_id,
+                "factory_run_id": run_id,
+                "expected_window_kind": window_kind,
+                "expected_token_capacity": max_selected_tokens,
+            }
+            missing = [
+                key
+                for key, expected in required_context.items()
+                if expected is None
+                or str(lifecycle_ownership_context.get(key) or "").strip()
+                == ""
+            ]
+            if missing:
                 raise ValueError(
-                    "FACTORY_RUN_IDENTITY_DRIFT:"
-                    f"{bound_factory_run}!={run_id}"
+                    "INCOMPLETE_LIFECYCLE_OWNERSHIP_CONTEXT:"
+                    + ",".join(sorted(missing))
+                )
+            drift = [
+                key
+                for key, expected in required_context.items()
+                if str(lifecycle_ownership_context.get(key)) != str(expected)
+            ]
+            if drift:
+                raise ValueError(
+                    "LIFECYCLE_OWNERSHIP_CONTEXT_DRIFT:"
+                    + ",".join(sorted(drift))
                 )
         # One-shot campaign → factory authoritative linkage when campaign
         # ownership identities are present (V2-9.8B selective 1h readiness).
@@ -4022,6 +4222,18 @@ def run_one_command_15m_factory(
                 (_iso(), _iso(), int(pending["id"])),
             )
             conn.commit()
+            if lifecycle_operation_observer is not None:
+                lifecycle_operation_observer(
+                    {
+                        "boundary": "SCHEDULER_CLAIM",
+                        "run_id": run_id,
+                        "scheduler_job_id": job_id,
+                        "step_key": str(pending["step_key"]),
+                        "step_kind": str(pending["step_kind"]),
+                        "token_id": int(pending["token_id"]),
+                        "pair_id": int(pending["pair_id"]),
+                    }
+                )
             token_id = int(pending["token_id"])
             try:
                 _emit_supervision_event(
@@ -4035,6 +4247,35 @@ def run_one_command_15m_factory(
                 # Hard ceilings are integrity limits; a projected breach is a
                 # global safe stop (raises _GlobalStop), never an exceeded call.
                 _enforce_budgets_before_step(conn, run_id, pending)
+                reservation_records: list[dict[str, Any]] = []
+                if str(pending["step_kind"]) in {"SNAPSHOT", "WINDOW_CLOSE"}:
+                    for reservation_index in range(
+                        _projected_requests_for_step(pending)
+                    ):
+                        reservation_record = {
+                            "boundary": "LIFECYCLE_RESERVATION",
+                            "run_id": run_id,
+                            "scheduler_job_id": int(pending["scheduler_job_id"]),
+                            "step_key": str(pending["step_key"]),
+                            "step_kind": str(pending["step_kind"]),
+                            "token_id": int(pending["token_id"]),
+                            "pair_id": int(pending["pair_id"]),
+                            "reservation_ordinal": (
+                                int(pending["scheduler_job_id"]) * 100
+                                + reservation_index
+                            ),
+                            "operation_family": (
+                                "CLOSE_OBSERVATION"
+                                if str(pending["step_kind"]) == "WINDOW_CLOSE"
+                                and reservation_index == 0
+                                else "PRECLOSE_CONTEXT"
+                                if str(pending["step_kind"]) == "WINDOW_CLOSE"
+                                else "SNAPSHOT_OBSERVATION"
+                            ),
+                        }
+                        reservation_records.append(reservation_record)
+                        if lifecycle_operation_observer is not None:
+                            lifecycle_operation_observer(reservation_record)
                 if pending["step_kind"] == "WINDOW_CLOSE":
                     result = _execute_close(
                         conn, pending, adapter_factory=adapter_factory,
@@ -4070,35 +4311,45 @@ def run_one_command_15m_factory(
                         timeout_seconds=timeout_seconds,
                         fallback_adapter_factory=fallback_factory,
                     )
-                # V2-9.8B action-local observation at the actual measured
-                # outbound-call boundary: report the exact-pair source transport a
-                # lifecycle step produced (durable source request/response ids) so
-                # the independent action-local ledger captures the real transport
-                # identity at execution time. Verification-only; never mutates
-                # factory state; fires only when a coordinator threads it through.
-                if (
-                    lifecycle_operation_observer is not None
-                    and str(pending["step_kind"]) in ("SNAPSHOT", "WINDOW_CLOSE")
-                    and result.get("source_request_id") is not None
-                    and result.get("source_response_id") is not None
-                ):
-                    lifecycle_operation_observer(
-                        {
-                            "boundary": "SOURCE_TRANSPORT",
-                            "run_id": run_id,
-                            "scheduler_job_id": int(pending["scheduler_job_id"]),
-                            "step_key": str(pending["step_key"]),
-                            "step_kind": str(pending["step_kind"]),
-                            "token_id": int(pending["token_id"]),
-                            "pair_id": int(pending["pair_id"]),
-                            "source_request_id": int(result["source_request_id"]),
-                            "source_response_id": int(result["source_response_id"]),
-                            "source_name": str(
-                                result.get("snapshot_source_name") or "dexscreener"
-                            ),
-                            "request_kind": "pair_market_snapshot",
-                        }
+                result["lifecycle_reservations"] = reservation_records
+                validation_kinds = [
+                    "IMMUTABLE_IDENTITY_VALIDATED",
+                    "CADENCE_DUE_VALIDATED",
+                    "BUDGET_CAPACITY_VALIDATED",
+                ]
+                if result.get("source_response_id") is not None:
+                    validation_kinds.append("EXACT_PAIR_VERIFICATION")
+                if str(pending["step_kind"]) == "WINDOW_CLOSE" and result.get("ok"):
+                    validation_kinds.extend(
+                        [
+                            "WINDOW_CLOSE_VALIDATED",
+                            "SNAPSHOT_COVERAGE_VALIDATED",
+                            "WINDOW_QUALITY_VALIDATED",
+                        ]
                     )
+                validation_records = [
+                    {
+                        "boundary": "LOCAL_VALIDATION",
+                        "run_id": run_id,
+                        "scheduler_job_id": int(pending["scheduler_job_id"]),
+                        "step_key": str(pending["step_key"]),
+                        "step_kind": str(pending["step_kind"]),
+                        "token_id": int(pending["token_id"]),
+                        "pair_id": int(pending["pair_id"]),
+                        "subject_identity": str(pending["step_key"]),
+                        "validation_kind": validation_kind,
+                        "validation_ordinal": (
+                            int(pending["scheduler_job_id"]) * 1000 + index
+                        ),
+                    }
+                    for index, validation_kind in enumerate(
+                        validation_kinds, start=1
+                    )
+                ]
+                result["local_validations"] = validation_records
+                if lifecycle_operation_observer is not None:
+                    for validation_record in validation_records:
+                        lifecycle_operation_observer(validation_record)
                 if (
                     _post_handoff_scope_recorder is not None
                     and result.get("snapshot_id") is not None
@@ -4358,7 +4609,21 @@ def run_one_command_15m_factory(
                             raise ValueError("4h planning blocked: " + "; ".join(plan.get("blocked_reasons", [])))
                         result["four_hour_plan"] = plan
                     _update_step(conn, int(pending["id"]), "SUCCEEDED", result)
+                    result["campaign_window_registration"] = (
+                        _register_repaired_campaign_window_before_terminalization(
+                            conn,
+                            step=pending,
+                            result=result,
+                            ownership_context=lifecycle_ownership_context,
+                        )
+                    )
                     complete_job(conn, job_id=job_id)
+                    _observe_scheduler_terminal(
+                        conn,
+                        observer=lifecycle_operation_observer,
+                        run_id=run_id,
+                        step=pending,
+                    )
                     conn.commit()
                     if (
                         _post_handoff_scope_recorder is not None
@@ -4388,6 +4653,10 @@ def run_one_command_15m_factory(
                     error = str(result.get("blocked_reason") or "governed step blocked")
                     _update_step(conn, int(pending["id"]), "FAILED", result, error=error)
                     fail_job(conn, job_id=job_id, error=error, max_retries=0)
+                    _observe_scheduler_terminal(
+                        conn, observer=lifecycle_operation_observer,
+                        run_id=run_id, step=pending,
+                    )
                     _cancel_pending_for_token(conn, run_id, token_id, TOKEN_LOCAL_CANCELLED)
                     conn.commit()
                     if (
@@ -4417,6 +4686,10 @@ def run_one_command_15m_factory(
                     error=gstop.reason,
                 )
                 fail_job(conn, job_id=job_id, error=gstop.reason, max_retries=0)
+                _observe_scheduler_terminal(
+                    conn, observer=lifecycle_operation_observer,
+                    run_id=run_id, step=pending,
+                )
                 conn.commit()
                 if (
                     _post_handoff_scope_recorder is not None
@@ -4436,6 +4709,10 @@ def run_one_command_15m_factory(
                 result = {"ok": False, "exception": f"{type(exc).__name__}: {exc}"}
                 _update_step(conn, int(pending["id"]), "FAILED", result, error=result["exception"])
                 fail_job(conn, job_id=job_id, error=result["exception"], max_retries=0)
+                _observe_scheduler_terminal(
+                    conn, observer=lifecycle_operation_observer,
+                    run_id=run_id, step=pending,
+                )
                 _cancel_pending_for_token(conn, run_id, token_id, TOKEN_LOCAL_CANCELLED)
                 conn.commit()
                 if (
@@ -4463,6 +4740,11 @@ def run_one_command_15m_factory(
                 "orchestration_error": f"{type(exc).__name__}: {exc}",
             }
     finally:
+        if governed_observer_token is not None:
+            from printer_v1.sources.governed_execution import (
+                reset_governed_attempt_observer,
+            )
+            reset_governed_attempt_observer(governed_observer_token)
         if proof_fault is not None:
             if _post_handoff_scope_recorder is not None:
                 _post_handoff_scope_recorder.record_factory_rows(conn, run_id)

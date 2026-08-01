@@ -2,6 +2,7 @@
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar, Token
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sqlite3
@@ -18,6 +19,23 @@ from printer_v1.sources.governor import can_request_source
 
 
 ACTIVE_STATUS_VALUES = tuple(status.value for status in ACTIVE_JOB_STATUSES)
+_SCHEDULER_OBSERVER: ContextVar[object | None] = ContextVar(
+    "printer_v1_scheduler_operation_observer", default=None
+)
+
+
+def set_scheduler_operation_observer(observer: object | None) -> Token:
+    return _SCHEDULER_OBSERVER.set(observer)
+
+
+def reset_scheduler_operation_observer(token: Token) -> None:
+    _SCHEDULER_OBSERVER.reset(token)
+
+
+def _observe(boundary: str, **evidence: object) -> None:
+    observer = _SCHEDULER_OBSERVER.get()
+    if observer is not None:
+        observer({"boundary": boundary, **evidence})  # type: ignore[operator]
 
 
 def utc_now() -> datetime:
@@ -152,7 +170,16 @@ def enqueue_job(
                 to_timestamp(due_at),
             ),
         )
-        return LockResult.ACQUIRED, int(cursor.lastrowid)
+        job_id = int(cursor.lastrowid)
+        _observe(
+            "SCHEDULER_ENQUEUE",
+            scheduler_job_id=job_id,
+            job_name=job_name,
+            job_kind=kind.value,
+            target_table=target_table,
+            target_id=target_id,
+        )
+        return LockResult.ACQUIRED, job_id
 
 
 def list_due_jobs(
@@ -245,6 +272,12 @@ def claim_due_job(
                 job_id,
             ),
         )
+        _observe(
+            "SCHEDULER_CLAIM",
+            scheduler_job_id=int(job_id),
+            lock_owner=lock_owner,
+            claimed_at=to_timestamp(current_time),
+        )
     return LockResult.ACQUIRED
 
 
@@ -272,6 +305,13 @@ def complete_job(
                 to_timestamp(current_time),
                 job_id,
             ),
+        )
+        _observe(
+            "SCHEDULER_TERMINAL",
+            scheduler_job_id=int(job_id),
+            terminal_state=JobStatus.SUCCEEDED.value,
+            terminal_at=to_timestamp(current_time),
+            first_terminal_cause=None,
         )
 
 
@@ -328,6 +368,13 @@ def fail_job(
                 job_id,
             ),
         )
+    _observe(
+        "SCHEDULER_TERMINAL",
+        scheduler_job_id=int(job_id),
+        terminal_state=status.value,
+        terminal_at=(to_timestamp(finished_at) if finished_at else None),
+        first_terminal_cause=error,
+    )
     return status
 
 
@@ -355,6 +402,13 @@ def cancel_job(
                 to_timestamp(current_time),
                 job_id,
             ),
+        )
+        _observe(
+            "SCHEDULER_TERMINAL",
+            scheduler_job_id=int(job_id),
+            terminal_state=JobStatus.CANCELLED.value,
+            terminal_at=to_timestamp(current_time),
+            first_terminal_cause="CANCELLED_BY_OWNER",
         )
 
 

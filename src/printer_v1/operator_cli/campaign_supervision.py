@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import sqlite3
 import time
-from typing import Any
+from typing import Any, Callable, Mapping
 import uuid
 
 
@@ -688,6 +688,7 @@ def cleanup_campaign_supervision(
     terminal_status: str,
     first_terminal_cause: str,
     now: datetime | None = None,
+    scheduler_operation_observer: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Use one transactional cleanup path, then release the exact lease."""
     if terminal_status not in _TERMINAL_STATUSES:
@@ -773,6 +774,26 @@ def cleanup_campaign_supervision(
                 )
                 discovery_batch_rowcount = int(discovery_batch_cursor.rowcount)
             if _table_exists(connection, "printer_discovery_work"):
+                cancelled_job_rows = connection.execute(
+                    """SELECT id FROM printer_scheduler_jobs
+                       WHERE (
+                           id IN (
+                               SELECT scheduler_job_id
+                               FROM printer_memory_factory_campaign_scheduler_work
+                               WHERE campaign_id=? AND run_id=?
+                                 AND scheduler_job_id IS NOT NULL
+                           )
+                           OR id IN (
+                               SELECT scheduler_job_id
+                               FROM printer_discovery_work
+                               WHERE campaign_id=? AND run_id=?
+                                 AND scheduler_job_id IS NOT NULL
+                           )
+                       ) AND (status IN ('PENDING','RUNNING','COOLDOWN')
+                              OR locked_at IS NOT NULL OR lock_owner IS NOT NULL)
+                       ORDER BY id""",
+                    (campaign_id, run_id, campaign_id, run_id),
+                ).fetchall()
                 job_cursor = connection.execute(
                     """UPDATE printer_scheduler_jobs
                        SET status='CANCELLED',finished_at=?,locked_at=NULL,
@@ -800,6 +821,18 @@ def cleanup_campaign_supervision(
                     ),
                 )
             else:
+                cancelled_job_rows = connection.execute(
+                    """SELECT id FROM printer_scheduler_jobs
+                       WHERE id IN (
+                           SELECT scheduler_job_id
+                           FROM printer_memory_factory_campaign_scheduler_work
+                           WHERE campaign_id=? AND run_id=?
+                             AND scheduler_job_id IS NOT NULL
+                       ) AND (status IN ('PENDING','RUNNING','COOLDOWN')
+                              OR locked_at IS NOT NULL OR lock_owner IS NOT NULL)
+                       ORDER BY id""",
+                    (campaign_id, run_id),
+                ).fetchall()
                 job_cursor = connection.execute(
                     """UPDATE printer_scheduler_jobs
                        SET status='CANCELLED',finished_at=?,locked_at=NULL,
@@ -814,6 +847,18 @@ def cleanup_campaign_supervision(
                               OR locked_at IS NOT NULL OR lock_owner IS NOT NULL)""",
                     (timestamp, cause, timestamp, campaign_id, run_id),
                 )
+            if scheduler_operation_observer is not None:
+                for cancelled_job in cancelled_job_rows:
+                    scheduler_operation_observer(
+                        {
+                            "boundary": "SCHEDULER_TERMINAL",
+                            "scheduler_job_id": int(cancelled_job["id"]),
+                            "terminal_state": "CANCELLED",
+                            "first_terminal_cause": cause,
+                            "terminal_at": timestamp,
+                            "operation_owner": "UNIFIED_TERMINAL_CLEANUP",
+                        }
+                    )
             window_cursor = connection.execute(
                 """UPDATE printer_memory_factory_campaign_windows
                    SET window_state='CANCELLED',first_terminal_cause=?,terminal_at=?,updated_at=?

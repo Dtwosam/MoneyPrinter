@@ -1329,6 +1329,10 @@ class OriginToLifecycleCampaignDriver:
                 lifecycle_started=False,
             )
 
+        lifecycle_options = dict(lifecycle_kwargs or {})
+        full_run_stage_observer = lifecycle_options.pop(
+            "full_run_stage_observer", None
+        )
         try:
             connection = sqlite3.connect(Path(command.db_path))
             connection.row_factory = sqlite3.Row
@@ -1343,6 +1347,110 @@ class OriginToLifecycleCampaignDriver:
                     scope_recorder=recorder,
                 )
                 connection.commit()
+                if full_run_stage_observer is not None:
+                    from printer_v1.operator_cli.campaign_ownership import (
+                        campaign_scheduler_work_id,
+                        project_campaign_scheduler_work,
+                    )
+                    from printer_v1.sources.campaign_six_unit_accounting import (
+                        build_campaign_stage_id,
+                    )
+                    stage_id = build_campaign_stage_id(
+                        campaign_id=command.campaign_id,
+                        run_id=command.run_id,
+                        cycle_id=fixtures.cycle_id,
+                        stage_kind="DISCOVERY_SELECTION_SCHEDULER",
+                        stage_sequence=1,
+                    )
+                    projected: list[dict[str, Any]] = []
+                    discovery_rows = connection.execute(
+                        """SELECT discovery_work_id,scheduler_job_id,work_type,
+                                  deadline_at
+                           FROM printer_discovery_work
+                           WHERE campaign_id=? AND run_id=? AND cycle_id=?
+                             AND scheduler_job_id IS NOT NULL
+                           ORDER BY discovery_work_id""",
+                        (command.campaign_id, command.run_id, fixtures.cycle_id),
+                    ).fetchall()
+                    for row in discovery_rows:
+                        job_id = int(row["scheduler_job_id"])
+                        projection = project_campaign_scheduler_work(
+                            connection,
+                            scheduler_work_id=campaign_scheduler_work_id(
+                                command.campaign_id, job_id
+                            ),
+                            campaign_id=command.campaign_id,
+                            run_id=command.run_id,
+                            cycle_id=fixtures.cycle_id,
+                            work_scope="DISCOVERY_SELECTION",
+                            stage_id=stage_id,
+                            work_intent=str(row["work_type"]),
+                            deadline_at=str(row["deadline_at"]),
+                            scheduler_job_id=job_id,
+                            target_category="DISCOVERY_WORK",
+                            target_identity=str(row["discovery_work_id"]),
+                        )
+                        projected.append(
+                            {
+                                "stage_id": stage_id,
+                                "scheduler_job_id": job_id,
+                                "job_kind": str(row["work_type"]),
+                                "target_category": "DISCOVERY_WORK",
+                                "target_identity": str(row["discovery_work_id"]),
+                                "work_scope": projection.work_scope,
+                            }
+                        )
+                    handoff_rows = connection.execute(
+                        """SELECT first_window_15m_scheduler_job_id,token_slot_id,
+                                  merged_candidate_id
+                           FROM printer_discovery_selected_item_links
+                           WHERE campaign_id=? AND run_id=? AND cycle_id=?
+                             AND first_window_15m_scheduler_job_id IS NOT NULL
+                           ORDER BY selection_item_id""",
+                        (command.campaign_id, command.run_id, fixtures.cycle_id),
+                    ).fetchall()
+                    for row in handoff_rows:
+                        job_id = int(row["first_window_15m_scheduler_job_id"])
+                        job = connection.execute(
+                            """SELECT scheduled_for,job_kind
+                               FROM printer_scheduler_jobs WHERE id=?""",
+                            (job_id,),
+                        ).fetchone()
+                        project_campaign_scheduler_work(
+                            connection,
+                            scheduler_work_id=campaign_scheduler_work_id(
+                                command.campaign_id, job_id
+                            ),
+                            campaign_id=command.campaign_id,
+                            run_id=command.run_id,
+                            cycle_id=fixtures.cycle_id,
+                            work_scope="FIRST_15M_HANDOFF",
+                            stage_id=stage_id,
+                            work_intent="FIRST_15M_HANDOFF",
+                            deadline_at=str(job["scheduled_for"]),
+                            scheduler_job_id=job_id,
+                            target_category="MERGED_CANDIDATE",
+                            target_identity=str(row["merged_candidate_id"]),
+                            token_slot_id=str(row["token_slot_id"]),
+                        )
+                        projected.append(
+                            {
+                                "stage_id": stage_id,
+                                "scheduler_job_id": job_id,
+                                "job_kind": str(job["job_kind"]),
+                                "target_category": "MERGED_CANDIDATE",
+                                "target_identity": str(row["merged_candidate_id"]),
+                                "work_scope": "FIRST_15M_HANDOFF",
+                            }
+                        )
+                    full_run_stage_observer(
+                        {
+                            "boundary": "DISCOVERY_SELECTION_TERMINAL",
+                            "stage_id": stage_id,
+                            "scheduler_work_identities": projected,
+                            "slots": [dict(row) for row in slots],
+                        }
+                    )
             finally:
                 connection.close()
         except PostHandoffInjectedFault as fault:
@@ -1413,7 +1521,7 @@ class OriginToLifecycleCampaignDriver:
                 campaign_run_id=command.run_id,
                 cycle_id=fixtures.cycle_id,
                 **runner_scope_kwargs,
-                **(lifecycle_kwargs or {}),
+                **lifecycle_options,
             )
         except PostHandoffInjectedFault as fault:
             return _fault_result(fault)

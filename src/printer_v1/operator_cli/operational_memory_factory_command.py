@@ -1458,6 +1458,8 @@ def _apply_full_run_campaign_acceptance(
     lifecycle_started: bool,
     lifecycle_operation_records: Sequence[Mapping[str, Any]],
     forbidden_deltas: Mapping[str, int],
+    accounting_owner: Any | None = None,
+    action_local_ledger: Any | None = None,
     runtime_terminal_status: str | None = None,
     runtime_first_terminal_cause: str | None = None,
     lease_released: bool = True,
@@ -1478,11 +1480,7 @@ def _apply_full_run_campaign_acceptance(
     """
     from printer_v1.operator_cli.campaign_full_run_accounting import (
         OperationalLifecycleOwnershipContext,
-        build_lifecycle_action_local_observer,
         finalize_full_run_ownership_and_report,
-    )
-    from printer_v1.sources.campaign_six_unit_accounting import (
-        CampaignActionLocalLedger,
     )
 
     if not lifecycle_started or not str(factory_run_id or "").strip():
@@ -1492,6 +1490,13 @@ def _apply_full_run_campaign_acceptance(
             "lifecycle_started": bool(lifecycle_started),
             "reason": "PRE_LIFECYCLE_NO_OWNED_LIFECYCLE",
         }
+    if accounting_owner is None or action_local_ledger is None:
+        return {
+            "verdict": FULL_RUN_VERDICT_BLOCKED_UNSAFE,
+            "campaign_acceptance": {"pass": False},
+            "lifecycle_started": True,
+            "reason": "FULL_RUN_OWNER_CONTINUITY_MISSING",
+        }
     try:
         context = OperationalLifecycleOwnershipContext(
             campaign_id=campaign_id,
@@ -1500,13 +1505,6 @@ def _apply_full_run_campaign_acceptance(
             configuration_id=configuration_id,
             factory_run_id=str(factory_run_id),
         )
-        ledger = CampaignActionLocalLedger(
-            campaign_id=campaign_id, run_id=campaign_run_id, cycle_id=cycle_id,
-            lifecycle_started=True,
-        )
-        observe = build_lifecycle_action_local_observer(context, ledger)
-        for record in lifecycle_operation_records:
-            observe(record)
         connection = sqlite3.connect(str(db_path))
         connection.execute("PRAGMA foreign_keys = ON")
         try:
@@ -1532,7 +1530,8 @@ def _apply_full_run_campaign_acceptance(
             outcome = finalize_full_run_ownership_and_report(
                 connection,
                 context=context,
-                action_local=ledger,
+                owner=accounting_owner,
+                action_local=action_local_ledger,
                 execution_id=execution_id,
                 supervision_id=supervision_id,
                 launch_git_provenance=dict(launch_git_provenance or {}),
@@ -1595,10 +1594,11 @@ def _run_operational_campaign(
         backup=backup, now=now, policy=policy,
     )
     heartbeat: _CampaignHeartbeat | None = None
-    initialized_factory_run_id: str | None = None
+    initialized_factory_run_id: str | None = str(uuid.uuid4())
     observed_heartbeat_failure: Mapping[str, Any] | None = None
     # The public coordinator owns accounting before the first accounted stage.
     from printer_v1.sources.campaign_six_unit_accounting import (
+        CampaignActionLocalLedger,
         CampaignSixUnitOwner,
     )
     campaign_units = CampaignSixUnitOwner(
@@ -1606,6 +1606,25 @@ def _run_operational_campaign(
         run_id=command.run_id,
         cycle_id=cycle_id,
         started_at=now,
+    )
+    action_local_ledger = CampaignActionLocalLedger(
+        campaign_id=command.campaign_id,
+        run_id=command.run_id,
+        cycle_id=cycle_id,
+    )
+    from printer_v1.operator_cli.campaign_full_run_accounting import (
+        OperationalLifecycleOwnershipContext,
+        build_lifecycle_action_local_observer,
+    )
+    lifecycle_ownership_context = OperationalLifecycleOwnershipContext(
+        campaign_id=command.campaign_id,
+        campaign_run_id=command.run_id,
+        cycle_id=cycle_id,
+        configuration_id=command.configuration_id,
+        factory_run_id=initialized_factory_run_id,
+    )
+    observe_lifecycle_action = build_lifecycle_action_local_observer(
+        lifecycle_ownership_context, action_local_ledger
     )
     # Action-local transport identities observed at MeasuredTransportLedger
     # record_transport time — before and separate from stage sealing. Never
@@ -1617,11 +1636,14 @@ def _run_operational_campaign(
     # factory reports, at execution time, for independent action-local lifecycle
     # evidence. Identities are minted after the factory-run id is known.
     lifecycle_operation_records: list[dict[str, Any]] = []
+    scheduler_runtime_records: list[dict[str, Any]] = []
 
     def _observe_lifecycle_operation(record: Mapping[str, Any]) -> None:
         lifecycle_operation_records.append(dict(record))
+        observe_lifecycle_action(record)
 
     def _observe_transport_identity(identity: Any) -> None:
+        action_local_ledger.observe_transport(identity)
         if hasattr(identity, "as_dict"):
             action_local_transport_identities.append(identity.as_dict())
         elif isinstance(identity, Mapping):
@@ -1631,6 +1653,59 @@ def _run_operational_campaign(
         # Owner side only. Action-local identities arrive via the measurement
         # observer, not by mirroring this sealed evidence block.
         campaign_units.ingest_stage_evidence(evidence)
+
+    def _observe_full_run_stage(record: Mapping[str, Any]) -> None:
+        from printer_v1.sources.campaign_six_unit_accounting import (
+            seal_campaign_stage_evidence,
+        )
+        from printer_v1.sources.measured_transport import (
+            LocalValidationIdentity,
+            SchedulerWorkIdentity,
+        )
+        stage_id = str(record["stage_id"])
+        schedulers = [
+            SchedulerWorkIdentity(
+                stage_id=stage_id,
+                scheduler_job_id=int(item["scheduler_job_id"]),
+                job_kind=str(item["job_kind"]),
+                target_category=str(item["target_category"]),
+                target_identity=str(item["target_identity"]),
+            )
+            for item in record.get("scheduler_work_identities", ())
+        ]
+        validations = [
+            LocalValidationIdentity(
+                stage_id=stage_id,
+                subject_identity=str(slot["token_slot_id"]),
+                validation_kind="SELECTION_HANDOFF_VALIDATED",
+                validation_ordinal=index,
+            )
+            for index, slot in enumerate(record.get("slots", ()), start=1)
+        ]
+        for identity in schedulers:
+            action_local_ledger.observe_scheduler_work(identity)
+        for identity in validations:
+            action_local_ledger.observe_local_validation(identity)
+        campaign_units.ingest_stage_evidence(
+            seal_campaign_stage_evidence(
+                stage_id=stage_id,
+                stage_kind="DISCOVERY_SELECTION_SCHEDULER",
+                stage_sequence=1,
+                stage_terminal_status="COMPLETED",
+                campaign_id=command.campaign_id,
+                run_id=command.run_id,
+                cycle_id=cycle_id,
+                evidence={
+                    "evidence_kind": "CAMPAIGN_SIX_UNIT_EVIDENCE_V1",
+                    "transport_operations": [],
+                    "local_validations": 0,
+                    "scheduler_work_items": 0,
+                    "lifecycle_reservations": 0,
+                },
+                scheduler_work_identities=schedulers,
+                local_validation_identities=validations,
+            )
+        )
 
     try:
         acquire_campaign_supervision(
@@ -1693,35 +1768,21 @@ def _run_operational_campaign(
                 raise OperationalMemoryFactoryError(
                     "initialized factory-run identity is empty"
                 )
-            if initialized_factory_run_id not in (None, candidate):
+            if initialized_factory_run_id != candidate:
                 raise OperationalMemoryFactoryError(
                     "initialized factory-run identity changed"
                 )
-            initialized_factory_run_id = candidate
-            # Best-effort one-shot authoritative bind if factory path did not
-            # already bind (idempotent). Never enables selective 1h production.
-            try:
-                bind_conn = sqlite3.connect(AUTHORITATIVE_DB)
-                bind_conn.execute("PRAGMA foreign_keys=ON")
-                try:
-                    from printer_v1.operator_cli.operational_selective_1h import (
-                        ensure_authoritative_factory_link,
-                    )
-                    ensure_authoritative_factory_link(
-                        bind_conn,
-                        campaign_run_id=str(command.run_id),
-                        factory_run_id=candidate,
-                    )
-                    bind_conn.commit()
-                finally:
-                    bind_conn.close()
-            except Exception:
-                # Factory already binds when campaign_run_id is present; this
-                # path is a redundant safety net and must not abort production.
-                pass
 
         try:
-            result = active_owner.run_operational(
+            from printer_v1.scheduler.scheduler import (
+                reset_scheduler_operation_observer,
+                set_scheduler_operation_observer,
+            )
+            scheduler_observer_token = set_scheduler_operation_observer(
+                lambda record: scheduler_runtime_records.append(dict(record))
+            )
+            try:
+                result = active_owner.run_operational(
                 command=command,
                 pump_transport=active_pump,
                 secondary_transport=active_secondary,
@@ -1733,6 +1794,7 @@ def _run_operational_campaign(
                 evaluated_at=now,
                 backup_path=paths["backup"],
                 lifecycle_kwargs={
+                    "factory_run_id": initialized_factory_run_id,
                     "total_duration_seconds": policy.duration_seconds,
                     "launch_provenance": preflight["git_provenance"],
                     "cancellation_probe": cancellation_probe,
@@ -1748,8 +1810,13 @@ def _run_operational_campaign(
                         "campaign_id": command.campaign_id,
                         "campaign_run_id": command.run_id,
                         "cycle_id": cycle_id,
+                        "configuration_id": command.configuration_id,
+                        "factory_run_id": initialized_factory_run_id,
+                        "expected_window_kind": "WINDOW_15M",
+                        "expected_token_capacity": TOKEN_CAPACITY,
                     },
                     "lifecycle_operation_observer": _observe_lifecycle_operation,
+                    "full_run_stage_observer": _observe_full_run_stage,
                 },
                 migration_transport=migration_transport,
                 graduated_supply_kwargs=dict(
@@ -1758,7 +1825,9 @@ def _run_operational_campaign(
                 fifteen_minute_only=True,
                 accounting_stage_evidence_sink=_campaign_stage_evidence_sink,
                 transport_identity_observer=_observe_transport_identity,
-            )
+                )
+            finally:
+                reset_scheduler_operation_observer(scheduler_observer_token)
         except BaseException:
             campaign_units.block(
                 "OPERATIONAL_STAGE_FAILED_BEFORE_ACCOUNTING_COMPLETION"
@@ -1774,6 +1843,24 @@ def _run_operational_campaign(
         returned_factory_run_id = str(lifecycle.get("run_id") or "").strip() or None
         if returned_factory_run_id is not None:
             retain_factory_run_id(returned_factory_run_id)
+        factory_scheduler_ids = {
+            int(record["scheduler_job_id"])
+            for record in lifecycle_operation_records
+            if record.get("scheduler_job_id") is not None
+            and str(record.get("step_kind") or "")
+            in {"SNAPSHOT", "WINDOW_CLOSE"}
+        }
+        accountable_scheduler_ids = {
+            int(item["scheduler_job_id"])
+            for item in action_local_ledger.scheduler_work_identities
+        }
+        for scheduler_event in scheduler_runtime_records:
+            scheduler_job_id = int(scheduler_event.get("scheduler_job_id") or 0)
+            if (
+                scheduler_job_id in accountable_scheduler_ids
+                and scheduler_job_id not in factory_scheduler_ids
+            ):
+                action_local_ledger.observe_scheduler_transition(scheduler_event)
         cause = str(
             lifecycle.get("first_terminal_cause")
             or lifecycle.get("stop_reason")
@@ -1816,6 +1903,9 @@ def _run_operational_campaign(
                 "FAILED" if lifecycle.get("run_status") == "FAILED" else "COMPLETED"
             ),
             first_terminal_cause=cause,
+            scheduler_operation_observer=(
+                action_local_ledger.observe_scheduler_transition
+            ),
         )
         reconciliation = reconcile_campaign_terminal(
             command.db_path,
@@ -1889,14 +1979,15 @@ def _run_operational_campaign(
                                 "campaign_source_calls"
                             )
         try:
-            _finalize_operational_six_unit_accounting(
+            if not bool(result.lifecycle_started):
+                _finalize_operational_six_unit_accounting(
                 campaign_units,
                 exposed_stage_evidences,
                 action_local_source_operations=(
                     None if action_local_ops is None else int(action_local_ops)
                 ),
                 action_local_transport_identities=action_local_identities,
-            )
+                )
         except OperationalMemoryFactoryError as accounting_exc:
             # Preserve original first terminal cause; block report on mismatch.
             exc_text = str(accounting_exc)
@@ -1917,6 +2008,106 @@ def _run_operational_campaign(
                     campaign_units.block(exc_text)
                 raise
             raise
+        # Seal terminal reconciliation on the same owner at the actual cleanup
+        # boundary.  Every named validation is independently mirrored into the
+        # action-local ledger at execution time.
+        from printer_v1.sources.campaign_six_unit_accounting import (
+            build_campaign_stage_id,
+            seal_campaign_stage_evidence,
+        )
+        from printer_v1.sources.measured_transport import LocalValidationIdentity
+        terminal_stage_id = build_campaign_stage_id(
+            campaign_id=command.campaign_id,
+            run_id=command.run_id,
+            cycle_id=cycle_id,
+            stage_kind="CAMPAIGN_TERMINAL_RECONCILIATION",
+            stage_sequence=4,
+        )
+        terminal_validation_kinds = (
+            "CAMPAIGN_TERMINAL_OWNERSHIP_VALIDATED",
+            "ZERO_ACTIVE_WORK_VALIDATED",
+            "ZERO_LOCKED_WORK_VALIDATED",
+            "LEASE_RELEASE_VALIDATED",
+            "FORBIDDEN_DELTAS_VALIDATED",
+            "NO_RETRY_VALIDATED",
+            "NO_RESTART_VALIDATED",
+            "NO_RESUME_VALIDATED",
+            "NO_SUCCESSOR_VALIDATED",
+        )
+        terminal_validations = [
+            LocalValidationIdentity(
+                stage_id=terminal_stage_id,
+                subject_identity=f"{cycle_id}:terminal",
+                validation_kind=kind,
+                validation_ordinal=index,
+            )
+            for index, kind in enumerate(terminal_validation_kinds, start=1)
+        ]
+        for validation in terminal_validations:
+            action_local_ledger.observe_local_validation(validation)
+        terminal_status = (
+            "COMPLETED"
+            if str(lifecycle.get("run_status") or "") == "COMPLETED"
+            and bool(cleanup.get("lease_released"))
+            else "FAILED"
+        )
+        campaign_units.ingest_stage_evidence(
+            seal_campaign_stage_evidence(
+                stage_id=terminal_stage_id,
+                stage_kind="CAMPAIGN_TERMINAL_RECONCILIATION",
+                stage_sequence=4,
+                stage_terminal_status=terminal_status,
+                stage_first_terminal_cause=(
+                    None if terminal_status == "COMPLETED" else cause
+                ),
+                campaign_id=command.campaign_id,
+                run_id=command.run_id,
+                cycle_id=cycle_id,
+                evidence={
+                    "evidence_kind": "CAMPAIGN_SIX_UNIT_EVIDENCE_V1",
+                    "transport_operations": [],
+                    "local_validations": 0,
+                    "scheduler_work_items": 0,
+                    "lifecycle_reservations": 0,
+                },
+                local_validation_identities=terminal_validations,
+            )
+        )
+        # Repaired lifecycle acceptance finalizes the same coordinator-created
+        # owner and action-local ledger before the canonical report is persisted.
+        # This is the only full-run accounting/report extension boundary.
+        full_run_acceptance = _apply_full_run_campaign_acceptance(
+            db_path=command.db_path,
+            campaign_id=command.campaign_id,
+            campaign_run_id=command.run_id,
+            cycle_id=cycle_id,
+            configuration_id=command.configuration_id,
+            factory_run_id=initialized_factory_run_id,
+            execution_id=execution_id,
+            supervision_id=command.supervision_id,
+            launch_git_provenance=preflight["git_provenance"],
+            db_target_identity=str(command.db_path),
+            lifecycle_started=bool(result.lifecycle_started),
+            lifecycle_operation_records=lifecycle_operation_records,
+            forbidden_deltas=dict(lifecycle.get("forbidden_deltas") or {}),
+            accounting_owner=campaign_units,
+            action_local_ledger=action_local_ledger,
+            runtime_terminal_status=(
+                "COMPLETED"
+                if str(lifecycle.get("run_status") or "") == "COMPLETED"
+                else str(lifecycle.get("run_status") or "UNKNOWN")
+            ),
+            runtime_first_terminal_cause=cause,
+            lease_released=bool(cleanup.get("lease_released")),
+            active_work_result={
+                "active_owned_work_after": cleanup.get("active_owned_work_after"),
+                "cancelled_scheduler_jobs": cleanup.get("cancelled_scheduler_jobs"),
+                "automatic_retries": cleanup.get("automatic_retries"),
+                "restart_created": cleanup.get("restart_created"),
+                "resume_created": cleanup.get("resume_created"),
+                "successor_created": cleanup.get("successor_created"),
+            },
+        )
         aggregated_six_unit_totals = campaign_units.six_unit_totals()
         aggregated_six_unit_evidence = campaign_units.durable_evidence()
         payload = build_campaign_terminal_report(
@@ -1957,6 +2148,13 @@ def _run_operational_campaign(
             if reporting.get("elapsed_seconds") is not None
             else lifecycle.get("elapsed_seconds"),
         )
+        payload["full_run_terminal_evidence"] = dict(
+            full_run_acceptance.get("report") or {}
+        )
+        payload["campaign_acceptance"] = dict(
+            full_run_acceptance.get("campaign_acceptance") or {}
+        )
+        payload["campaign_acceptance_verdict"] = full_run_acceptance.get("verdict")
         report = write_campaign_terminal_report(
             command.db_path,
             paths["reports"],
@@ -1965,37 +2163,6 @@ def _run_operational_campaign(
             configuration_id=command.configuration_id,
             report=payload,
             require_six_unit_evidence=True,
-        )
-        # V2-9.8B full-run acceptance: register campaign ownership from the closed
-        # factory windows, project Scheduler jobs, reconcile owner vs the
-        # execution-time action-local ledger, and gate Campaign PASS. Runtime
-        # COMPLETED never implies Campaign PASS; any failure is BLOCKED_UNSAFE.
-        full_run_acceptance = _apply_full_run_campaign_acceptance(
-            db_path=command.db_path,
-            campaign_id=command.campaign_id,
-            campaign_run_id=command.run_id,
-            cycle_id=cycle_id,
-            configuration_id=command.configuration_id,
-            factory_run_id=initialized_factory_run_id,
-            execution_id=execution_id,
-            supervision_id=command.supervision_id,
-            launch_git_provenance=preflight["git_provenance"],
-            db_target_identity=str(command.db_path),
-            lifecycle_started=bool(result.lifecycle_started),
-            lifecycle_operation_records=lifecycle_operation_records,
-            forbidden_deltas=dict(lifecycle.get("forbidden_deltas") or {}),
-            # Durable facts produced by unified terminal cleanup above.
-            runtime_terminal_status=(
-                "COMPLETED"
-                if str(lifecycle.get("run_status") or "") == "COMPLETED"
-                else str(lifecycle.get("run_status") or "UNKNOWN")
-            ),
-            runtime_first_terminal_cause=cause,
-            lease_released=bool(cleanup.get("lease_released")),
-            active_work_result={
-                "active_owned_work_after": cleanup.get("active_owned_work_after"),
-                "cancelled_scheduler_jobs": cleanup.get("cancelled_scheduler_jobs"),
-            },
         )
         terminal = {
             "status": "OPERATIONAL_CAMPAIGN_TERMINAL",
@@ -3060,13 +3227,20 @@ def report_only(
     *,
     campaign_id: str | None = None,
     run_id: str | None = None,
+    db_path: str | Path | None = None,
+    artifact_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Replay one exact campaign terminal report (zero-source, zero-write).
 
     Both ``campaign_id`` and ``run_id`` must be supplied together or neither.
     Discovery-only output is never a campaign report-only fallback.
     """
-    connection = _read_only()
+    replay_db = Path(db_path or AUTHORITATIVE_DB).resolve()
+    replay_artifact_root = Path(artifact_root or ARTIFACT_ROOT).resolve()
+    connection = sqlite3.connect(
+        f"file:{replay_db}?mode=ro", uri=True
+    )
+    connection.row_factory = sqlite3.Row
     try:
         identity = _resolve_report_only_identity(
             connection, campaign_id=campaign_id, run_id=run_id
@@ -3246,7 +3420,7 @@ def report_only(
             "scheduler_runtime_calls": 0,
             "database_writes": 0,
         })
-    for candidate in ARTIFACT_ROOT.glob("*/reports"):
+    for candidate in replay_artifact_root.glob("*/reports"):
         if report_path_identity(candidate) == report_directory_identity:
             report_dir = candidate
             break
@@ -3265,7 +3439,7 @@ def report_only(
 
     try:
         replay = replay_campaign_terminal_report(
-            AUTHORITATIVE_DB,
+            replay_db,
             report_dir,
             report_id=report_row["report_id"],
             campaign_id=report_row["campaign_id"],
@@ -3354,6 +3528,140 @@ def report_only(
             "database_writes": 0,
         })
 
+    full_run = stored_report.get("full_run_terminal_evidence")
+    if not isinstance(full_run, Mapping):
+        return _report_only_zero_work({
+            "status": "REPLAY_BLOCKED",
+            "requested_identity": identity["requested_identity"],
+            "block_reason": "FULL_RUN_EVIDENCE_MISSING",
+        })
+    full_identity = full_run.get("identity") or {}
+    accounting = full_run.get("full_run_accounting") or {}
+    hashes = full_run.get("hashes") or {}
+    owner_evidence = accounting.get("owner_evidence") or {}
+    action_evidence = accounting.get("action_local_evidence") or {}
+    if (
+        str(full_run.get("report_kind") or "")
+        != "V2_9_8B_FULL_RUN_WINDOW_15M_TERMINAL_EVIDENCE"
+        or str(full_identity.get("campaign_id") or "") != resolved_campaign
+        or str(full_identity.get("campaign_run_id") or "") != resolved_run
+        or str(owner_evidence.get("evidence_kind") or "")
+        != "CAMPAIGN_SIX_UNIT_EVIDENCE_V2"
+        or accounting.get("owner_action_local_reconciliation", {}).get("equal")
+        is not True
+        or accounting.get("owner_action_local_reconciliation", {}).get(
+            "equality_scoped_stage_ids"
+        )
+        is not None
+    ):
+        return _report_only_zero_work({
+            "status": "REPLAY_BLOCKED",
+            "requested_identity": identity["requested_identity"],
+            "block_reason": "FULL_RUN_REPAIRED_EVIDENCE_INVALID",
+        })
+    import hashlib
+    def _canonical(value: Any) -> bytes:
+        return json.dumps(
+            value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+    expected_owner_hash = hashlib.sha256(_canonical(owner_evidence)).hexdigest()
+    expected_action_hash = hashlib.sha256(_canonical(action_evidence)).hexdigest()
+    body = dict(full_run)
+    body_hashes = dict(hashes)
+    body_hashes.pop("report_body_sha256", None)
+    body["hashes"] = body_hashes
+    expected_body_hash = hashlib.sha256(_canonical(body)).hexdigest()
+    if (
+        hashes.get("owner_evidence_sha256") != expected_owner_hash
+        or hashes.get("action_local_evidence_sha256") != expected_action_hash
+        or hashes.get("report_body_sha256") != expected_body_hash
+    ):
+        return _report_only_zero_work({
+            "status": "REPLAY_BLOCKED",
+            "requested_identity": identity["requested_identity"],
+            "block_reason": "FULL_RUN_EVIDENCE_HASH_MISMATCH",
+        })
+    from printer_v1.sources.campaign_six_unit_accounting import (
+        reconstruct_six_unit_totals_from_evidence,
+    )
+    try:
+        reconstructed_totals = reconstruct_six_unit_totals_from_evidence(
+            owner_evidence
+        )
+    except Exception:
+        reconstructed_totals = {}
+    if reconstructed_totals != accounting.get("six_unit_totals"):
+        return _report_only_zero_work({
+            "status": "REPLAY_BLOCKED",
+            "requested_identity": identity["requested_identity"],
+            "block_reason": "FULL_RUN_TOTAL_RECONSTRUCTION_MISMATCH",
+        })
+    verification = sqlite3.connect(f"file:{replay_db}?mode=ro", uri=True)
+    verification.row_factory = sqlite3.Row
+    try:
+        durable_windows = [
+            dict(item)
+            for item in verification.execute(
+                """SELECT window_id,window_kind,window_state,token_slot_id,
+                          token_row_id,pair_row_id,memory_window_row_id,cycle_id,
+                          first_terminal_cause
+                   FROM printer_memory_factory_campaign_windows
+                   WHERE campaign_id=? AND run_id=? AND cycle_id=?
+                   ORDER BY window_id""",
+                (
+                    resolved_campaign,
+                    resolved_run,
+                    str(full_identity.get("cycle_id")),
+                ),
+            )
+        ]
+        durable_scheduler = [
+            dict(item)
+            for item in verification.execute(
+                """SELECT scheduler_work_id,scheduler_job_id,work_intent,
+                          work_state,window_id,token_slot_id,first_terminal_cause,
+                          terminal_at,ownership_contract_version,stage_id,
+                          work_scope,target_category,target_identity,factory_run_id
+                   FROM printer_memory_factory_campaign_scheduler_work
+                   WHERE campaign_id=? AND run_id=? AND cycle_id=?
+                     AND ownership_contract_version='V2_STAGE_SCOPED'
+                   ORDER BY scheduler_work_id""",
+                (
+                    resolved_campaign,
+                    resolved_run,
+                    str(full_identity.get("cycle_id")),
+                ),
+            )
+        ]
+        active_or_locked = int(verification.execute(
+            """SELECT COUNT(DISTINCT j.id)
+               FROM printer_memory_factory_campaign_scheduler_work AS w
+               JOIN printer_scheduler_jobs AS j ON j.id=w.scheduler_job_id
+               WHERE w.campaign_id=? AND w.run_id=? AND w.cycle_id=?
+                 AND w.ownership_contract_version='V2_STAGE_SCOPED'
+                 AND (j.status IN ('PENDING','RUNNING','COOLDOWN')
+                      OR j.locked_at IS NOT NULL OR j.lock_owner IS NOT NULL)""",
+            (
+                resolved_campaign,
+                resolved_run,
+                str(full_identity.get("cycle_id")),
+            ),
+        ).fetchone()[0])
+    finally:
+        verification.close()
+    selection_evidence = full_run.get("selection_and_lifecycle") or {}
+    if (
+        durable_windows
+        != selection_evidence.get("campaign_window_ownership_rows")
+        or durable_scheduler != accounting.get("campaign_scheduler_work_rows")
+        or active_or_locked != 0
+    ):
+        return _report_only_zero_work({
+            "status": "REPLAY_BLOCKED",
+            "requested_identity": identity["requested_identity"],
+            "block_reason": "FULL_RUN_DURABLE_RECONSTRUCTION_MISMATCH",
+        })
+
     return _report_only_zero_work({
         "mode": "REPORT_ONLY",
         "report_kind": "campaign",
@@ -3361,6 +3669,7 @@ def report_only(
         "requested_identity": identity["requested_identity"],
         "fallback_used": False,
         "replay": replay,
+        "full_run_terminal_evidence": dict(full_run),
         "campaign_source_calls": replay.get("campaign_source_calls"),
         "campaign_scheduler_calls": replay.get("campaign_scheduler_calls"),
         "candidates_observed": replay.get("candidates_observed"),

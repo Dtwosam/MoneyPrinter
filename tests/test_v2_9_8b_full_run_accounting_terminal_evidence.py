@@ -28,7 +28,7 @@ from printer_v1.operator_cli.campaign_ownership import (
     campaign_scheduler_work_id,
     create_campaign_run,
     create_cycle_with_two_slots,
-    project_campaign_scheduler_job,
+    project_campaign_scheduler_job as _accepted_project_campaign_scheduler_job,
     register_campaign_window_close,
 )
 from printer_v1.operator_cli.campaign_full_run_accounting import (
@@ -66,6 +66,35 @@ CONFIG = "configuration-a"
 RUN = "run-a"
 CYCLE = "cycle-a"
 FACTORY_RUN = "factory-run-a"
+
+
+def project_campaign_scheduler_job(
+    connection, *, campaign_id, run_id, cycle_id, factory_run_id,
+    token_slot_id, window_id, scheduler_job_id, job_kind, deadline_at,
+    terminal_state=None, terminal_cause=None, now=None,
+):
+    """Exercise the accepted scope-aware wrapper through the historical fixture API."""
+    del terminal_state, terminal_cause, now
+    ordinal = int(str(token_slot_id).rsplit("-", 1)[-1])
+    result = _accepted_project_campaign_scheduler_job(
+        connection,
+        scheduler_work_id=campaign_scheduler_work_id(campaign_id, scheduler_job_id),
+        campaign_id=campaign_id, run_id=run_id, cycle_id=cycle_id,
+        factory_run_id=factory_run_id, token_slot_id=token_slot_id,
+        window_id=window_id,
+        work_intent=f"{job_kind}|factory_run={factory_run_id}|job={scheduler_job_id}",
+        deadline_at=deadline_at, scheduler_job_id=scheduler_job_id,
+        stage_id=build_campaign_stage_id(
+            campaign_id=campaign_id, run_id=run_id, cycle_id=cycle_id,
+            stage_kind=f"WINDOW_15M_SLOT_{ordinal}", stage_sequence=ordinal + 1,
+        ),
+        target_category="CAMPAIGN_WINDOW", target_identity=window_id,
+    )
+    return {
+        "registered": bool(result.created),
+        "idempotent": not bool(result.created),
+        "scheduler_work_id": result.scheduler_work_id,
+    }
 
 
 def _provenance() -> dict[str, object]:
@@ -178,9 +207,9 @@ class _FullRunFixture(unittest.TestCase):
                     job_id += 1
                     self.conn.execute(
                         """INSERT INTO printer_scheduler_jobs(
-                            id,job_name,job_kind,status,scheduled_for
-                        ) VALUES (?,?,?,'SUCCEEDED',?)""",
-                        (job_id, f"snap-{token}-{snap}", "SNAPSHOT", NOW),
+                            id,job_name,job_kind,status,scheduled_for,finished_at
+                        ) VALUES (?,?,?,'SUCCEEDED',?,?)""",
+                        (job_id, f"snap-{token}-{snap}", "SNAPSHOT", NOW, NOW),
                     )
                     self.conn.execute(
                         """INSERT INTO printer_memory_factory_run_steps(
@@ -197,9 +226,9 @@ class _FullRunFixture(unittest.TestCase):
                 job_id += 1
                 self.conn.execute(
                     """INSERT INTO printer_scheduler_jobs(
-                        id,job_name,job_kind,status,scheduled_for
-                    ) VALUES (?,?,?,'SUCCEEDED',?)""",
-                    (job_id, f"close-{token}", "MEMORY_WINDOW_CLOSE", NOW),
+                        id,job_name,job_kind,status,scheduled_for,finished_at
+                    ) VALUES (?,?,?,'SUCCEEDED',?,?)""",
+                    (job_id, f"close-{token}", "MEMORY_WINDOW_CLOSE", NOW, NOW),
                 )
                 close_cursor = self.conn.execute(
                     """INSERT INTO printer_memory_factory_run_steps(
@@ -384,7 +413,7 @@ class SchedulerProjectionTests(_FullRunFixture):
                 job_kind="MEMORY_WINDOW_CLOSE", deadline_at=NOW,
                 terminal_state="SUCCEEDED", terminal_cause="c", now=NOW,
             )
-        self.assertIn(CAMPAIGN_SCHEDULER_WORK_OWNERSHIP_CONFLICT, str(ctx.exception))
+        self.assertIn("competing campaign/scope/stage/target/linkage", str(ctx.exception))
 
 
 # --------------------------------------------------------------------------- #
@@ -628,6 +657,14 @@ class ReportAndGateTests(_FullRunFixture):
             launch_git_provenance=_provenance(), db_target_identity="isolated-a",
             selected_tokens=selected_tokens, runtime_terminal_status="TERMINAL_COMPLETED",
             owner_evidence=owner.durable_evidence(), six_unit_totals=owner.six_unit_totals(),
+            action_local_evidence={
+                "ledger_id": action_local.ledger_id,
+                "transport_identities": action_local.transport_identities,
+                "scheduler_work_identities": action_local.scheduler_work_identities,
+                "lifecycle_reservation_identities": action_local.lifecycle_reservation_identities,
+                "local_validation_identities": action_local.local_validation_identities,
+                "scheduler_transition_coverage": action_local.scheduler_transition_coverage(),
+            },
             reconciliation=reconciliation,
             per_token_outcomes=[
                 {"token_id": t, "pair_id": t, "terminal_status": "WINDOW_CLOSED",
@@ -650,8 +687,9 @@ class ReportAndGateTests(_FullRunFixture):
         self.assertEqual(selection["selected_token_count"], 2)
         self.assertEqual(len(selection["per_token_outcomes"]), 2)
         gate = evaluate_campaign_acceptance_gate(report, authorized_invocation_count=1)
-        self.assertEqual(gate["verdict"], VERDICT_PASS, gate["failing_checks"])
-        self.assertTrue(gate["pass"])
+        # Helper-built, non-persisted reports no longer satisfy repaired PASS.
+        self.assertEqual(gate["verdict"], VERDICT_BLOCKED_UNSAFE)
+        self.assertFalse(gate["pass"])
 
     def test_gate_blocks_unsafe_when_one_window_missing(self) -> None:
         # Only register one window -> lifecycle started but incomplete ownership.
@@ -677,6 +715,10 @@ class ReportAndGateTests(_FullRunFixture):
             ],
             runtime_terminal_status="TERMINAL_COMPLETED",
             owner_evidence=owner.durable_evidence(), six_unit_totals=owner.six_unit_totals(),
+            action_local_evidence={
+                "ledger_id": action_local.ledger_id,
+                "scheduler_transition_coverage": action_local.scheduler_transition_coverage(),
+            },
             reconciliation=reconciliation, per_token_outcomes=[],
             slot_dispositions=[
                 resolve_campaign_slot_terminal_disposition(
@@ -719,6 +761,7 @@ class ReportAndGateTests(_FullRunFixture):
             selected_tokens=report["selection_and_lifecycle"]["selected_tokens"],
             runtime_terminal_status="TERMINAL_COMPLETED",
             owner_evidence=report["full_run_accounting"]["owner_action_local_reconciliation"].get("diagnostics", {}),
+            action_local_evidence=report["full_run_accounting"]["action_local_evidence"],
             six_unit_totals=report["full_run_accounting"]["six_unit_totals"],
             reconciliation=report["full_run_accounting"]["owner_action_local_reconciliation"],
             per_token_outcomes=report["selection_and_lifecycle"]["per_token_outcomes"],

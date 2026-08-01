@@ -1430,11 +1430,11 @@ def test_report_only_explicit_and_blocked_modes(tmp_path: Path, monkeypatch) -> 
     # Must not return the older global report.
     assert "old-report" not in json.dumps(missing)
 
-    # Explicit exact with report returns only that report.
+    # Historical pre-repair V1 evidence is exact-identity data, but it may not
+    # satisfy repaired V2 acceptance or public full-run reconstruction.
     exact = command.report_only(campaign_id="old-campaign", run_id="old-run")
-    assert exact.get("status") == "REPLAYED"
-    assert exact["fallback_used"] is False
-    assert exact["replay"]["report"]["identity"]["campaign_id"] == "old-campaign"
+    assert exact.get("status") == "REPLAY_BLOCKED"
+    assert exact["block_reason"] == "FULL_RUN_EVIDENCE_MISSING"
     assert exact["source_calls"] == 0
     assert exact["database_writes"] == 0
 
@@ -1820,7 +1820,7 @@ def test_ordinary_disposable_two_token_window_15m_regression(tmp_path: Path) -> 
                     "SELECT version FROM printer_schema_migrations ORDER BY version"
                 )
             ][-1]
-            assert str(head).startswith("049")
+            assert str(head).startswith("050")
             assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
             for table in (
                 "printer_paper_decisions",

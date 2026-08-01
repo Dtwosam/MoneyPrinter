@@ -438,16 +438,45 @@ def reconcile_campaign_terminal(
                 queue_id = slot["tracking_queue_id"]
                 slot_result = "already_terminal"
                 queue_result = "not_linked"
+                owned_terminal = connection.execute(
+                    """SELECT window_id, window_state
+                       FROM printer_memory_factory_campaign_windows
+                       WHERE campaign_id=? AND run_id=? AND cycle_id=?
+                         AND token_slot_id=? AND window_kind='WINDOW_15M'
+                         AND window_state IN (
+                           'CLEAN_PROMOTED','DIRTY','NO_PROMOTION',
+                           'ALREADY_EXISTS_IDEMPOTENT'
+                         )
+                       ORDER BY window_id""",
+                    (campaign_id, run_id, cycle_id, slot_id),
+                ).fetchall()
+                has_exact_owned_terminal = len(owned_terminal) == 1
                 if queue_id is not None:
-                    cursor = connection.execute(
-                        """UPDATE printer_tracking_queue
-                           SET queue_status='SKIPPED',tracking_action='MANUAL_REVIEW',
-                               priority_reason=?,last_checked_at=?,updated_at=?
-                           WHERE id=? AND queue_status='QUEUED'""",
-                        (f"campaign_terminal:{cause}", instant, instant, int(queue_id)),
-                    )
+                    if has_exact_owned_terminal:
+                        cursor = connection.execute(
+                            """UPDATE printer_tracking_queue
+                               SET queue_status='COOLDOWN',tracking_action='COOLDOWN',
+                                   priority_reason=?,last_checked_at=?,updated_at=?
+                               WHERE id=?""",
+                            (
+                                f"owned_window_terminal:{owned_terminal[0]['window_id']}",
+                                instant,
+                                instant,
+                                int(queue_id),
+                            ),
+                        )
+                    else:
+                        cursor = connection.execute(
+                            """UPDATE printer_tracking_queue
+                               SET queue_status='SKIPPED',tracking_action='MANUAL_REVIEW',
+                                   priority_reason=?,last_checked_at=?,updated_at=?
+                               WHERE id=? AND queue_status='QUEUED'""",
+                            (f"campaign_terminal:{cause}", instant, instant, int(queue_id)),
+                        )
                     if cursor.rowcount == 1:
-                        queue_result = "SKIPPED"
+                        queue_result = (
+                            "COOLDOWN" if has_exact_owned_terminal else "SKIPPED"
+                        )
                     else:
                         current = connection.execute(
                             "SELECT queue_status FROM printer_tracking_queue WHERE id=?",
@@ -456,7 +485,9 @@ def reconcile_campaign_terminal(
                         queue_result = (
                             "not_found" if current is None else str(current[0])
                         )
-                if str(slot["token_state"]) == "SELECTED":
+                if str(slot["token_state"]) not in {
+                    "COOLDOWN", "ARCHIVED", "MANUAL_REVIEW", "FAILED"
+                }:
                     # transition_state commits the active transaction. Queue
                     # first so the exact queue/slot terminal pair commits
                     # together; a later already-terminal campaign transition
@@ -465,9 +496,21 @@ def reconcile_campaign_terminal(
                         connection,
                         record_kind="token_slot",
                         identity=slot_id,
-                        candidate_states=("SELECTED",),
-                        new_state="MANUAL_REVIEW",
-                        cause=cause,
+                        candidate_states=(
+                            "SELECTED", "WINDOW_15M_ACTIVE", "WINDOW_15M_CLOSED",
+                            "WINDOW_1H_CONTINUING", "WINDOW_1H_CLOSED",
+                            "WINDOW_4H_CONTINUING", "WINDOW_4H_CLOSED",
+                        ),
+                        new_state=(
+                            "COOLDOWN"
+                            if has_exact_owned_terminal and queue_result == "COOLDOWN"
+                            else "MANUAL_REVIEW"
+                        ),
+                        cause=(
+                            "OWNED_TERMINAL_WINDOW_COOLDOWN"
+                            if has_exact_owned_terminal and queue_result == "COOLDOWN"
+                            else cause
+                        ),
                         now=instant,
                     )
                 dispositions.append(

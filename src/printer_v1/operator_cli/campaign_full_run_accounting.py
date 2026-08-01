@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
+import json
 import sqlite3
 from typing import Any, Callable, Mapping, Sequence
 
@@ -26,7 +28,6 @@ from printer_v1.operator_cli.campaign_ownership import (
     CampaignOwnershipError,
     campaign_scheduler_work_id,
     project_campaign_scheduler_job,
-    register_campaign_window_close,
 )
 from printer_v1.sources.campaign_six_unit_accounting import (
     CampaignActionLocalLedger,
@@ -36,13 +37,17 @@ from printer_v1.sources.campaign_six_unit_accounting import (
     seal_campaign_stage_evidence,
 )
 from printer_v1.sources.measured_transport import (
+    LIFECYCLE_RESERVED_OPERATIONS_BY_STEP_KIND,
+    PRECLOSE_CONTEXT_REQUEST_COUNT,
     LifecycleReservationIdentity,
     LocalValidationIdentity,
     MeasuredTransportLedger,
     SchedulerWorkIdentity,
     TransportOperationIdentity,
     build_transport_identity,
+    merge_transport_payload_metadata,
 )
+from printer_v1.snapshots.cadence_policy import get_policy as get_cadence_policy
 
 
 class FullRunAccountingError(ValueError):
@@ -190,12 +195,11 @@ def resolve_campaign_slot_terminal_disposition(
                 "pass_eligible": True,
                 "queue_disposition": queue_disposition,
             }
-        # Owned terminal window with an unexpected queue status still counts as a
-        # completed lifecycle; it must not be relabelled MANUAL_REVIEW.
+        # An owned terminal window does not authorize inventing a queue result.
         return {
-            "slot_terminal_state": "COOLDOWN",
-            "terminal_cause": "OWNED_TERMINAL_WINDOW_NO_QUEUE_COOLDOWN",
-            "pass_eligible": True,
+            "slot_terminal_state": "FAILED",
+            "terminal_cause": "OWNED_TERMINAL_WINDOW_QUEUE_STATE_UNPROVEN",
+            "pass_eligible": False,
             "queue_disposition": queue_disposition,
         }
     # Lifecycle started but no valid owned terminal window exists.
@@ -288,9 +292,12 @@ def _campaign_scheduler_rows(
     connection.row_factory = sqlite3.Row
     rows = connection.execute(
         """SELECT scheduler_work_id, scheduler_job_id, work_intent, work_state,
-                  window_id, token_slot_id, first_terminal_cause
+                  window_id, token_slot_id, first_terminal_cause, terminal_at,
+                  ownership_contract_version, stage_id, work_scope,
+                  target_category, target_identity, factory_run_id
            FROM printer_memory_factory_campaign_scheduler_work
            WHERE campaign_id=? AND run_id=? AND cycle_id=?
+             AND ownership_contract_version='V2_STAGE_SCOPED'
            ORDER BY scheduler_work_id""",
         (campaign_id, run_id, cycle_id),
     ).fetchall()
@@ -308,6 +315,7 @@ def build_full_run_terminal_report(
     selected_tokens: Sequence[Mapping[str, Any]],
     runtime_terminal_status: str,
     owner_evidence: Mapping[str, Any],
+    action_local_evidence: Mapping[str, Any],
     six_unit_totals: Mapping[str, int],
     reconciliation: Mapping[str, Any],
     per_token_outcomes: Sequence[Mapping[str, Any]],
@@ -340,29 +348,38 @@ def build_full_run_terminal_report(
         if str(row["window_kind"]) == "WINDOW_15M"
         and str(row["window_state"]) in _OWNED_TERMINAL_WINDOW_STATES
     ]
+    factory_identity = connection.execute(
+        """SELECT selection_batch_id, config_hash
+           FROM printer_memory_factory_runs WHERE run_id=?""",
+        (context.factory_run_id,),
+    ).fetchone()
     scheduler_attribution: dict[str, int] = {
         "discovery": 0,
+        "selection": 0,
         "handoff": 0,
         "lifecycle": 0,
         "cleanup": 0,
     }
     for row in scheduler_rows:
-        intent = str(row["work_intent"] or "")
-        if intent.startswith("DISCOVERY"):
-            scheduler_attribution["discovery"] += 1
-        elif intent.startswith("HANDOFF") or intent.startswith("EXECUTOR"):
+        scope = str(row.get("work_scope") or "")
+        if scope == "DISCOVERY_SELECTION":
+            if "UNIFORM_SELECTION" in str(row.get("work_intent") or ""):
+                scheduler_attribution["selection"] += 1
+            else:
+                scheduler_attribution["discovery"] += 1
+        elif scope == "FIRST_15M_HANDOFF":
             scheduler_attribution["handoff"] += 1
-        elif str(row["work_state"]) == "CANCELLED":
+        elif scope == "TERMINAL_CLEANUP":
             scheduler_attribution["cleanup"] += 1
-        else:
+        elif scope == "WINDOW_LIFECYCLE":
             scheduler_attribution["lifecycle"] += 1
 
-    all_scheduler_terminal = all(
+    all_scheduler_terminal = bool(scheduler_rows) and all(
         str(row["work_state"]) in {"SUCCEEDED", "FAILED", "SKIPPED", "CANCELLED"}
         for row in scheduler_rows
     )
-    quality_consistent = all(
-        bool(item.get("quality_consistent", True)) for item in quality_results
+    quality_consistent = bool(quality_results) and all(
+        item.get("quality_consistent") is True for item in quality_results
     )
     forbidden_deltas = {key: int(value) for key, value in dict(
         forbidden_capability_deltas or {}
@@ -375,11 +392,16 @@ def build_full_run_terminal_report(
     # consistent so those tests exercise the other axes.
     scheduler_ownership = dict(scheduler_ownership or {})
     scheduler_correspondence_ok = bool(
-        scheduler_ownership.get("correspondence_exact", True)
+        scheduler_ownership.get("correspondence_exact", False)
     )
     all_lifecycle_jobs_succeeded = bool(
-        scheduler_ownership.get("all_lifecycle_jobs_succeeded", True)
+        scheduler_ownership.get("all_lifecycle_jobs_succeeded", False)
     )
+    transport_records = list(owner_evidence.get("transport_operations") or [])
+    validation_families = sorted({
+        str(item.get("validation_kind") or "")
+        for item in (owner_evidence.get("local_validation_identities") or [])
+    })
 
     return {
         "report_kind": "V2_9_8B_FULL_RUN_WINDOW_15M_TERMINAL_EVIDENCE",
@@ -392,11 +414,17 @@ def build_full_run_terminal_report(
             "configuration_id": context.configuration_id,
             "supervision_id": supervision_id,
             "factory_run_id": context.factory_run_id,
+            "factory_config_hash": (
+                None if factory_identity is None else factory_identity["config_hash"]
+            ),
             "launch_git_provenance": dict(launch_git_provenance or {}),
             "db_target_identity": _require(db_target_identity, "db_target_identity"),
         },
         # 10.2 selection and lifecycle
         "selection_and_lifecycle": {
+            "selection_batch_id": (
+                None if factory_identity is None else factory_identity["selection_batch_id"]
+            ),
             "selected_tokens": [dict(item) for item in selected_tokens],
             "selected_token_count": len(selected_tokens),
             "per_token_outcomes": [dict(item) for item in per_token_outcomes],
@@ -408,6 +436,10 @@ def build_full_run_terminal_report(
         },
         # 10.3 full-run accounting
         "full_run_accounting": {
+            "accounting_owner_id": owner_evidence.get("owner_id"),
+            "action_local_ledger_id": action_local_evidence.get("ledger_id"),
+            "owner_evidence": dict(owner_evidence),
+            "action_local_evidence": dict(action_local_evidence),
             "expected_stage_manifest": list(REQUIRED_LIFECYCLE_STAGE_KINDS),
             "sealed_stage_diagnostics": list(
                 owner_evidence.get("sealed_stage_diagnostics")
@@ -418,10 +450,30 @@ def build_full_run_terminal_report(
             "six_unit_totals": {key: int(value) for key, value in dict(
                 six_unit_totals or {}
             ).items()},
+            "source_operation_outcomes": {
+                "reserved": int(
+                    dict(six_unit_totals or {}).get(
+                        "LIFECYCLE_RESERVED_TRANSPORT_OPERATION", 0
+                    )
+                ),
+                "attempted": len(transport_records),
+                "succeeded": sum(
+                    1 for item in transport_records
+                    if str(item.get("result") or "") == "SUCCEEDED"
+                ),
+                "failed": sum(
+                    1 for item in transport_records
+                    if str(item.get("result") or "") == "FAILED"
+                ),
+            },
+            "named_validation_families": validation_families,
             "owner_action_local_reconciliation": dict(reconciliation),
             "scheduler_attribution": scheduler_attribution,
             "campaign_scheduler_work_rows": scheduler_rows,
             "scheduler_ownership": scheduler_ownership,
+            "scheduler_transition_coverage": dict(
+                action_local_evidence.get("scheduler_transition_coverage") or {}
+            ),
             "scheduler_correspondence_exact": scheduler_correspondence_ok,
             "all_lifecycle_scheduler_jobs_succeeded": all_lifecycle_jobs_succeeded,
             "missing_or_mismatched_evidence": list(
@@ -503,13 +555,18 @@ def evaluate_campaign_acceptance_gate(
     all_mandatory_stages_sealed = set(REQUIRED_LIFECYCLE_STAGE_KINDS).issubset(
         sealed_kinds
     )
+    mandatory_stage_statuses_completed = all(
+        str(item.get("stage_terminal_status") or "") == "COMPLETED"
+        for item in (accounting.get("sealed_stage_diagnostics") or [])
+        if str(item.get("stage_kind") or "") in REQUIRED_LIFECYCLE_STAGE_KINDS
+    ) and all_mandatory_stages_sealed
     runtime_status = str(report.get("runtime_terminal_status") or "")
     runtime_terminal_completed = runtime_status in {
         "TERMINAL_COMPLETED",
         "COMPLETED",
     }
     quality_consistent = bool(
-        report.get("quality_consistency", {}).get("consistent", True)
+        report.get("quality_consistency", {}).get("consistent", False)
     )
 
     checks = {
@@ -523,29 +580,121 @@ def evaluate_campaign_acceptance_gate(
         >= 2
         and terminal_window_count == 2,
         "all_mandatory_stages_sealed": all_mandatory_stages_sealed,
+        "mandatory_stage_statuses_completed": mandatory_stage_statuses_completed,
         "owner_action_local_equal_non_vacuous": bool(reconciliation.get("equal"))
-        and bool(reconciliation.get("lifecycle_started")),
+        and bool(reconciliation.get("lifecycle_started"))
+        and reconciliation.get("equality_scoped_stage_ids") is None,
         "all_scheduler_jobs_terminal_and_owned": bool(
             safety.get("campaign_window_reconciliation", {}).get(
                 "all_scheduler_jobs_terminal"
             )
         ),
         "scheduler_ownership_correspondence_exact": bool(
-            accounting.get("scheduler_correspondence_exact", True)
+            accounting.get("scheduler_correspondence_exact", False)
         ),
         "all_lifecycle_scheduler_jobs_succeeded": bool(
-            accounting.get("all_lifecycle_scheduler_jobs_succeeded", True)
+            accounting.get("all_lifecycle_scheduler_jobs_succeeded", False)
+        ),
+        "complete_scheduler_family_attribution": (
+            int(accounting.get("scheduler_attribution", {}).get("discovery") or 0)
+            >= 1
+            and int(accounting.get("scheduler_attribution", {}).get("selection") or 0)
+            >= 1
+            and int(accounting.get("scheduler_attribution", {}).get("handoff") or 0)
+            == 2
+            and int(accounting.get("scheduler_attribution", {}).get("lifecycle") or 0)
+            == 18
         ),
         "runtime_terminal_completed": runtime_terminal_completed,
         "memory_quality_consistent": quality_consistent,
-        "canonical_report_complete": bool(
-            report.get("identity", {}).get("factory_run_id")
+        "canonical_report_complete": all(
+            bool(report.get("identity", {}).get(field))
+            for field in (
+                "execution_id", "campaign_id", "campaign_run_id", "cycle_id",
+                "configuration_id", "supervision_id", "factory_run_id",
+                "db_target_identity",
+            )
         )
-        and bool(selection.get("terminal_window_ids")),
+        and bool(selection.get("selection_batch_id"))
+        and len(selection.get("terminal_window_ids") or []) == 2
+        and all(item.get("cadence") for item in selected)
+        and accounting.get("owner_evidence", {}).get("evidence_kind")
+        == "CAMPAIGN_SIX_UNIT_EVIDENCE_V2"
+        and bool(accounting.get("action_local_evidence"))
+        and bool(accounting.get("campaign_scheduler_work_rows"))
+        and bool(accounting.get("sealed_stage_diagnostics"))
+        and all(
+            key in safety
+            for key in (
+                "active_scheduler_job_count", "locked_scheduler_job_count",
+                "lease_released", "forbidden_capability_deltas",
+                "scheduler_retry_count", "restart_count", "resume_count",
+                "successor_count",
+            )
+        ),
         "all_slot_dispositions_pass_eligible": all_slots_pass_eligible,
+        "persisted_slot_dispositions_exact": bool(slot_dispositions)
+        and all(bool(item.get("persisted_state_matches")) for item in slot_dispositions),
+        "cadence_coverage_and_close_complete": len(selected) == 2
+        and all(
+            item.get("cadence", {}).get("coverage_status") == "COMPLETE"
+            and int(item.get("cadence", {}).get("missing_snapshot_steps") or 0) == 0
+            and int(item.get("cadence", {}).get("succeeded_close_count") or 0) == 1
+            for item in selected
+        )
+        and sum(
+            int(item.get("cadence", {}).get("actual_snapshot_steps") or 0)
+            for item in selected
+        ) == 16,
         "zero_active_scheduler_jobs": bool(safety.get("zero_active_scheduler_jobs")),
         "lease_released": bool(safety.get("lease_released")),
         "zero_forbidden_deltas": bool(safety.get("zero_forbidden_deltas")),
+        "zero_locked_work": bool(safety.get("zero_locked_work")),
+        "scheduler_transition_coverage_complete": bool(
+            accounting.get("scheduler_transition_coverage", {}).get("complete")
+        ),
+        "cleanup_scheduler_observation_exact": bool(
+            safety.get("cleanup_scheduler_observation_exact")
+        ),
+        "reservation_attempt_outcomes_complete": (
+            int(accounting.get("source_operation_outcomes", {}).get("reserved") or 0)
+            >= int(accounting.get("source_operation_outcomes", {}).get("attempted") or 0)
+            > 0
+            and int(accounting.get("source_operation_outcomes", {}).get("attempted") or 0)
+            == int(accounting.get("source_operation_outcomes", {}).get("succeeded") or 0)
+            + int(accounting.get("source_operation_outcomes", {}).get("failed") or 0)
+        ),
+        "required_named_validation_families_present": {
+            "SELECTION_HANDOFF_VALIDATED",
+            "IMMUTABLE_IDENTITY_VALIDATED",
+            "CADENCE_DUE_VALIDATED",
+            "BUDGET_CAPACITY_VALIDATED",
+            "EXACT_PAIR_VERIFICATION",
+            "WINDOW_CLOSE_VALIDATED",
+            "SNAPSHOT_COVERAGE_VALIDATED",
+            "WINDOW_QUALITY_VALIDATED",
+            "CAMPAIGN_TERMINAL_OWNERSHIP_VALIDATED",
+            "ZERO_ACTIVE_WORK_VALIDATED",
+            "ZERO_LOCKED_WORK_VALIDATED",
+            "LEASE_RELEASE_VALIDATED",
+            "FORBIDDEN_DELTAS_VALIDATED",
+            "NO_RETRY_VALIDATED",
+            "NO_RESTART_VALIDATED",
+            "NO_RESUME_VALIDATED",
+            "NO_SUCCESSOR_VALIDATED",
+        }.issubset(set(accounting.get("named_validation_families") or [])),
+        "no_retry_restart_resume_successor": bool(
+            safety.get("no_retry_restart_resume_successor")
+        ),
+        "marker_and_evidence_hashes_present": all(
+            len(str(report.get("hashes", {}).get(key) or "")) == 64
+            for key in (
+                "owner_evidence_sha256",
+                "action_local_evidence_sha256",
+                "report_body_sha256",
+                "invocation_marker_sha256",
+            )
+        ),
     }
 
     lifecycle_started = bool(reconciliation.get("lifecycle_started")) or (
@@ -567,7 +716,7 @@ def evaluate_campaign_acceptance_gate(
         "failing_checks": failing,
         # Memory quality is reported but never lowers the acceptance gate.
         "memory_quality_consistent": bool(
-            report.get("quality_consistency", {}).get("consistent", True)
+            report.get("quality_consistency", {}).get("consistent", False)
         ),
     }
 
@@ -587,12 +736,11 @@ BOUNDARY_SOURCE_TRANSPORT = "SOURCE_TRANSPORT"
 # are the step's *actual projected governed operations* — a close reserving many
 # calls is never collapsed to one reservation just because it is one Scheduler
 # job. ``PRECLOSE_CONTEXT_REQUEST_COUNT`` mirrors the factory's
-# ``_CONTEXT_REQUESTS_PER_TOKEN``; a guard test asserts they stay equal.
-PRECLOSE_CONTEXT_REQUEST_COUNT = 5
-PROJECTED_GOVERNED_OPERATIONS_BY_STEP_KIND = {
-    "SNAPSHOT": 1,
-    "WINDOW_CLOSE": 1 + PRECLOSE_CONTEXT_REQUEST_COUNT,
-}
+# ``_CONTEXT_REQUESTS_PER_TOKEN``. Both execution and accounting consume the
+# immutable shared transport policy rather than maintaining duplicate counts.
+PROJECTED_GOVERNED_OPERATIONS_BY_STEP_KIND = (
+    LIFECYCLE_RESERVED_OPERATIONS_BY_STEP_KIND
+)
 # Lifecycle step kinds that carry an exact-pair source transport identity.
 _TRANSPORT_BEARING_STEP_KINDS = frozenset({"SNAPSHOT", "WINDOW_CLOSE"})
 _EXACT_PAIR_VALIDATION_KIND = "EXACT_PAIR_VERIFICATION"
@@ -706,6 +854,29 @@ def transport_identity_for_step(
     )
 
 
+def transport_identity_for_attempt(
+    context: OperationalLifecycleOwnershipContext,
+    record: Mapping[str, Any],
+) -> TransportOperationIdentity:
+    """Build the complete immutable identity of one governed source attempt."""
+    ordinal = _slot_ordinal_from_step_key(str(record["step_key"]))
+    source_request_id = int(record["source_request_id"])
+    return build_transport_identity(
+        stage=_slot_stage_id(context, ordinal),
+        source_name=str(record["source_name"]),
+        endpoint_owner=str(record["source_name"]),
+        governed_request_kind=str(record["request_kind"]),
+        method_or_endpoint=f"source_request:{source_request_id}",
+        within_request_ordinal=int(record.get("attempt_ordinal") or 0),
+        target_category=str(record.get("target_category") or "pair"),
+        target_identity=str(record.get("pair_id")),
+        response_bytes=int(record.get("response_bytes") or 0),
+        normalized_rows=int(record.get("normalized_rows") or 0),
+        result=str(record.get("result") or "ATTEMPTED"),
+        reserved_from=str(record.get("reserved_from") or "") or None,
+    )
+
+
 def validation_identity_for_step(
     context: OperationalLifecycleOwnershipContext,
     *,
@@ -744,6 +915,7 @@ def build_lifecycle_action_local_observer(
             return
         ordinal = _slot_ordinal_from_step_key(str(record.get("step_key")))
         if boundary == BOUNDARY_SCHEDULER_ENQUEUE:
+            ledger.observe_scheduler_transition(record)
             ledger.observe_scheduler_work(
                 scheduler_work_identity_for_step(
                     context,
@@ -753,15 +925,30 @@ def build_lifecycle_action_local_observer(
                     token_id=int(record["token_id"]),
                 )
             )
-            for reservation in reservation_identities_for_step(
-                context,
-                slot_ordinal=ordinal,
-                scheduler_job_id=int(record["scheduler_job_id"]),
-                step_kind=step_kind,
-                token_id=int(record["token_id"]),
-                pair_id=int(record["pair_id"]),
-            ):
-                ledger.observe_lifecycle_reservation(reservation)
+        elif boundary in {"SCHEDULER_CLAIM", "SCHEDULER_TERMINAL"}:
+            ledger.observe_scheduler_transition(record)
+        elif boundary == "LOCAL_VALIDATION":
+            ledger.observe_local_validation(
+                LocalValidationIdentity(
+                    stage_id=_slot_stage_id(context, ordinal),
+                    subject_identity=str(record["subject_identity"]),
+                    validation_kind=str(record["validation_kind"]),
+                    validation_ordinal=int(record["validation_ordinal"]),
+                )
+            )
+        elif boundary == "LIFECYCLE_RESERVATION":
+            ledger.observe_lifecycle_reservation(
+                LifecycleReservationIdentity(
+                    stage_id=_slot_stage_id(context, ordinal),
+                    factory_run_id=context.factory_run_id,
+                    token_id=int(record["token_id"]),
+                    pair_id=int(record["pair_id"]),
+                    window_kind="WINDOW_15M",
+                    reservation_ordinal=int(record["reservation_ordinal"]),
+                )
+            )
+        elif boundary == "GOVERNED_SOURCE_ATTEMPT":
+            ledger.observe_transport(transport_identity_for_attempt(context, record))
         elif boundary == BOUNDARY_SOURCE_TRANSPORT:
             source_request_id = record.get("source_request_id")
             if source_request_id is None:
@@ -818,6 +1005,7 @@ def finalize_full_run_ownership_and_report(
     connection: sqlite3.Connection,
     *,
     context: OperationalLifecycleOwnershipContext,
+    owner: CampaignSixUnitOwner,
     action_local: CampaignActionLocalLedger,
     execution_id: str,
     supervision_id: Any,
@@ -850,13 +1038,31 @@ def finalize_full_run_ownership_and_report(
     * owner slot-stage evidence sealing the exact lifecycle source transport
       identities (with real response bytes / normalized rows), the projected
       transport reservations, the Scheduler work, and the exact-pair validations;
-    * the four approved mandatory stages, with owner↔action-local equality scoped
-      to the two lifecycle slot stages the observer actually witnessed.
+    * every started stage on the one coordinator-created owner, with unscoped
+      owner↔action-local equality across the complete repaired manifest.
     """
     connection.row_factory = sqlite3.Row
     stamp = now or datetime.now(timezone.utc).isoformat()
     blocked_reasons: list[str] = []
     queue_dispositions = dict(queue_dispositions or {})
+    expected_owner_id = (
+        f"six-unit-owner|{context.campaign_id}|{context.campaign_run_id}|"
+        f"{context.cycle_id}"
+    )
+    expected_ledger_id = (
+        f"action-local-ledger|{context.campaign_id}|{context.campaign_run_id}|"
+        f"{context.cycle_id}"
+    )
+    if owner.owner_id != expected_owner_id:
+        blocked_reasons.append("FULL_RUN_ACCOUNTING_OWNER_CONTINUITY_MISMATCH")
+    if action_local.ledger_id != expected_ledger_id:
+        blocked_reasons.append("ACTION_LOCAL_LEDGER_CONTINUITY_MISMATCH")
+    if (
+        owner.campaign_id != context.campaign_id
+        or owner.run_id != context.campaign_run_id
+        or owner.cycle_id != context.cycle_id
+    ):
+        blocked_reasons.append("FULL_RUN_ACCOUNTING_OWNER_IDENTITY_MISMATCH")
 
     close_steps = connection.execute(
         """SELECT id, token_id, pair_id, token_mint, pair_address, tracking_lane,
@@ -920,39 +1126,44 @@ def finalize_full_run_ownership_and_report(
             "pair_address": step["pair_address"] or slot["pair_identity"],
             "tracking_lane": step["tracking_lane"],
             "token_slot_id": token_slot_id,
-            "memory_window_row_id": int(memory_row_id),
-            "campaign_window_id": window_id,
-            "memory_window_id": window_id,
-            "campaign_window_row_id": window_id,
+                "memory_window_row_id": int(memory_row_id),
+                "campaign_window_id": window_id,
+                "memory_window_id": int(memory_row_id),
         }
-        try:
-            register_campaign_window_close(
-                connection,
-                campaign_id=context.campaign_id,
-                run_id=context.campaign_run_id,
-                cycle_id=context.cycle_id,
-                factory_run_id=context.factory_run_id,
-                token_slot_id=token_slot_id,
-                window_id=window_id,
-                close_step_id=int(step["id"]),
-                memory_window_row_id=int(memory_row_id),
-                root_15m_lifecycle_identity=str(slot["lifecycle_identity"]),
-                checkpoint_cutoff=stamp,
-                terminal_window_state=terminal_state,
-                terminal_cause=f"window_closed_{terminal_state.lower()}",
-                now=stamp,
+        owned_window = connection.execute(
+            """SELECT window_state, memory_window_row_id
+               FROM printer_memory_factory_campaign_windows
+               WHERE window_id=? AND campaign_id=? AND run_id=? AND cycle_id=?
+                 AND token_slot_id=?""",
+            (
+                window_id,
+                context.campaign_id,
+                context.campaign_run_id,
+                context.cycle_id,
+                token_slot_id,
+            ),
+        ).fetchone()
+        if (
+            owned_window is None
+            or owned_window["memory_window_row_id"] is None
+            or int(owned_window["memory_window_row_id"]) != int(memory_row_id)
+        ):
+            blocked_reasons.append(
+                f"WINDOW_NOT_REGISTERED_AT_CLOSE_BOUNDARY:{token_id}"
             )
+        else:
+            terminal_state = str(owned_window["window_state"])
+            token_to_terminal_state[token_id] = terminal_state
             registered_windows.append(window_id)
-        except CampaignOwnershipError as exc:
-            blocked_reasons.append(f"WINDOW_REGISTRATION_FAILED:{token_id}:{exc}")
 
     lifecycle_steps = connection.execute(
         """SELECT s.id, s.scheduler_job_id, s.step_kind, s.token_id, s.pair_id,
-                  s.step_key, s.source_request_id, s.source_response_id,
+                  s.step_key, s.scheduled_for, s.source_request_id,
+                  s.source_response_id,
+                  s.result_json, s.step_status, s.error_or_skip_reason,
                   j.status AS scheduler_job_status,
                   q.source_name AS request_source_name,
-                  q.request_kind AS request_kind,
-                  LENGTH(r.normalized_payload_json) AS response_bytes
+                  q.request_kind AS request_kind
            FROM printer_memory_factory_run_steps s
            LEFT JOIN printer_scheduler_jobs j ON j.id = s.scheduler_job_id
            LEFT JOIN printer_source_requests q ON q.id = s.source_request_id
@@ -986,18 +1197,37 @@ def finalize_full_run_ownership_and_report(
         try:
             project_campaign_scheduler_job(
                 connection,
+                scheduler_work_id=campaign_scheduler_work_id(
+                    context.campaign_id, job_id
+                ),
                 campaign_id=context.campaign_id,
                 run_id=context.campaign_run_id,
                 cycle_id=context.cycle_id,
                 factory_run_id=context.factory_run_id,
                 token_slot_id=slot_id,
                 window_id=window_id,
+                work_intent=(
+                    f"{str(step['step_kind'])}|"
+                    f"factory_run={context.factory_run_id}|job={job_id}"
+                ),
                 scheduler_job_id=job_id,
-                job_kind=str(step["step_kind"]),
-                deadline_at=stamp,
-                terminal_state=work_state,
-                terminal_cause=f"scheduler_job_{work_state.lower()}",
-                now=stamp,
+                deadline_at=str(step["scheduled_for"]),
+                stage_id=_slot_stage_id(
+                    context,
+                    _slot_ordinal_from_step_key(str(step["step_key"])),
+                ),
+                target_category="CAMPAIGN_WINDOW",
+                target_identity=window_id,
+                source_request_id=(
+                    None
+                    if step["source_request_id"] is None
+                    else int(step["source_request_id"])
+                ),
+                source_response_id=(
+                    None
+                    if step["source_response_id"] is None
+                    else int(step["source_response_id"])
+                ),
             )
             projected_jobs.append(job_id)
         except CampaignOwnershipError as exc:
@@ -1007,7 +1237,9 @@ def finalize_full_run_ownership_and_report(
     owned_rows = connection.execute(
         """SELECT scheduler_job_id, work_state
            FROM printer_memory_factory_campaign_scheduler_work
-           WHERE campaign_id=? AND run_id=? AND cycle_id=?""",
+           WHERE campaign_id=? AND run_id=? AND cycle_id=?
+             AND ownership_contract_version='V2_STAGE_SCOPED'
+             AND work_scope='WINDOW_LIFECYCLE'""",
         (context.campaign_id, context.campaign_run_id, context.cycle_id),
     ).fetchall()
     owned_job_ids = {int(r["scheduler_job_id"]) for r in owned_rows}
@@ -1038,11 +1270,6 @@ def finalize_full_run_ownership_and_report(
     }
 
     # --- Seal the four approved mandatory stages from durable evidence. ---
-    owner = CampaignSixUnitOwner(
-        campaign_id=context.campaign_id,
-        run_id=context.campaign_run_id,
-        cycle_id=context.cycle_id,
-    )
     slot_stage_ids: list[str] = []
     by_ordinal: dict[int, list[sqlite3.Row]] = {1: [], 2: []}
     for step in lifecycle_steps:
@@ -1075,44 +1302,146 @@ def finalize_full_run_ownership_and_report(
                     step_kind=step_kind, token_id=token_id,
                 )
             )
-            ress.extend(
-                reservation_identities_for_step(
-                    context, slot_ordinal=ordinal, scheduler_job_id=job_id,
-                    step_kind=step_kind, token_id=token_id, pair_id=pair_id,
-                )
+            try:
+                step_result = json.loads(str(step["result_json"] or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                step_result = {}
+            raw_reservations = step_result.get("lifecycle_reservations") or []
+            expected_reservations = reservation_identities_for_step(
+                context,
+                slot_ordinal=ordinal,
+                scheduler_job_id=job_id,
+                step_kind=step_kind,
+                token_id=token_id,
+                pair_id=pair_id,
             )
-            source_request_id = step["source_request_id"]
-            source_response_id = step["source_response_id"]
-            if source_request_id is not None:
-                lifecycle_source_request_count += 1
-            # The measured source transport + its exact-pair verification only
-            # exist for an observation that actually produced a response.
-            if source_request_id is not None and source_response_id is not None:
+            actual_ordinals = [
+                int(item.get("reservation_ordinal"))
+                for item in raw_reservations
+                if isinstance(item, Mapping)
+                and item.get("reservation_ordinal") is not None
+            ]
+            expected_ordinals = [
+                int(item.reservation_ordinal) for item in expected_reservations
+            ]
+            if actual_ordinals != expected_ordinals:
+                blocked_reasons.append(
+                    f"LIFECYCLE_RESERVATION_EVIDENCE_MISMATCH:{step['id']}"
+                )
+            else:
+                ress.extend(expected_reservations)
+            attempts = connection.execute(
+                """SELECT q.id AS source_request_id, q.source_name,
+                          q.request_kind, r.id AS source_response_id,
+                          r.normalized_payload_json AS response_payload_json,
+                          f.id AS source_failure_id,
+                          f.normalized_payload_json AS failure_payload_json
+                   FROM printer_source_requests AS q
+                   LEFT JOIN printer_source_responses AS r
+                     ON r.source_request_id=q.id
+                   LEFT JOIN printer_source_failures AS f
+                     ON f.source_request_id=q.id
+                   WHERE q.request_key LIKE ?
+                   ORDER BY q.id""",
+                (f"{context.factory_run_id}:{step['step_key']}%",),
+            ).fetchall()
+            lifecycle_source_request_count += len(attempts)
+            for attempt_ordinal, attempt in enumerate(attempts, start=1):
+                payload_json = (
+                    attempt["response_payload_json"]
+                    if attempt["source_response_id"] is not None
+                    else attempt["failure_payload_json"]
+                )
+                try:
+                    payload = json.loads(str(payload_json or "{}"))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    payload = {}
+                measured = merge_transport_payload_metadata(payload)
                 ledger.record_transport(
-                    transport_identity_for_step(
-                        context, slot_ordinal=ordinal,
-                        source_request_id=int(source_request_id),
-                        source_name=str(step["request_source_name"] or "dexscreener"),
-                        request_kind=str(
-                            step["request_kind"] or "pair_market_snapshot"
-                        ),
-                        pair_id=pair_id,
-                        response_bytes=int(step["response_bytes"] or 0),
-                        normalized_rows=_LIFECYCLE_NORMALIZED_ROWS_PER_TRANSPORT,
+                    transport_identity_for_attempt(
+                        context,
+                        {
+                            "step_key": str(step["step_key"]),
+                            "source_request_id": int(attempt["source_request_id"]),
+                            "source_name": str(attempt["source_name"]),
+                            "request_kind": str(attempt["request_kind"]),
+                            "pair_id": pair_id,
+                            "attempt_ordinal": attempt_ordinal,
+                            "response_bytes": int(measured["response_bytes"]),
+                            "normalized_rows": int(measured["normalized_rows"]),
+                            "result": (
+                                "SUCCEEDED"
+                                if attempt["source_response_id"] is not None
+                                else "FAILED"
+                            ),
+                            "reserved_from": (
+                                f"{context.factory_run_id}:{step['step_key']}:"
+                                f"reservation:{attempt_ordinal}"
+                            ),
+                        },
                     )
                 )
+            raw_validations = step_result.get("local_validations") or []
+            if not raw_validations:
+                blocked_reasons.append(
+                    f"LOCAL_VALIDATION_EVIDENCE_MISSING:{step['id']}"
+                )
+            for raw_validation in raw_validations:
+                if not isinstance(raw_validation, Mapping):
+                    blocked_reasons.append(
+                        f"LOCAL_VALIDATION_EVIDENCE_MALFORMED:{step['id']}"
+                    )
+                    continue
                 vals.append(
-                    validation_identity_for_step(
-                        context, slot_ordinal=ordinal,
-                        step_key=str(step["step_key"]), scheduler_job_id=job_id,
+                    LocalValidationIdentity(
+                        stage_id=stage_id,
+                        subject_identity=str(raw_validation["subject_identity"]),
+                        validation_kind=str(raw_validation["validation_kind"]),
+                        validation_ordinal=int(
+                            raw_validation["validation_ordinal"]
+                        ),
                     )
                 )
         sealed_transport_count += len(ledger.transports)
+        failed_step = next(
+            (
+                item
+                for item in steps
+                if str(item["step_status"]) == "FAILED"
+                or str(item["scheduler_job_status"] or "") == "FAILED"
+            ),
+            None,
+        )
+        blocked_step = next(
+            (
+                item
+                for item in steps
+                if str(item["step_status"]) in {"CANCELLED", "SKIPPED"}
+                or str(item["scheduler_job_status"] or "")
+                in {"CANCELLED", "SKIPPED"}
+            ),
+            None,
+        )
+        stage_terminal_status = (
+            "FAILED" if failed_step is not None
+            else "BLOCKED" if blocked_step is not None
+            else "COMPLETED"
+        )
+        terminal_item = failed_step or blocked_step
+        stage_first_cause = (
+            None
+            if terminal_item is None
+            else str(
+                terminal_item["error_or_skip_reason"]
+                or terminal_item["scheduler_job_status"]
+            )
+        )
         sealed = seal_campaign_stage_evidence(
             stage_id=stage_id,
             stage_kind=f"WINDOW_15M_SLOT_{ordinal}",
             stage_sequence=ordinal + 1,
-            stage_terminal_status="COMPLETED",
+            stage_terminal_status=stage_terminal_status,
+            stage_first_terminal_cause=stage_first_cause,
             campaign_id=context.campaign_id,
             run_id=context.campaign_run_id,
             cycle_id=context.cycle_id,
@@ -1121,62 +1450,9 @@ def finalize_full_run_ownership_and_report(
             lifecycle_reservation_identities=ress,
             local_validation_identities=vals,
         )
-        owner.ingest_stage_evidence(sealed)
+        if stage_id not in owner.ingested_stage_ids:
+            owner.ingest_stage_evidence(sealed)
 
-    # DISCOVERY_SELECTION_SCHEDULER: the selection approvals that admitted each
-    # campaign token slot to the lifecycle (owner-only, proven from durable slots).
-    if token_to_slot:
-        discovery_stage_id = build_campaign_stage_id(
-            campaign_id=context.campaign_id, run_id=context.campaign_run_id,
-            cycle_id=context.cycle_id, stage_kind="DISCOVERY_SELECTION_SCHEDULER",
-            stage_sequence=1,
-        )
-        discovery_validations = [
-            LocalValidationIdentity(
-                stage_id=discovery_stage_id,
-                subject_identity=str(token_to_slot[token_id]),
-                validation_kind="SELECTION_APPROVED",
-                validation_ordinal=int(token_id),
-            )
-            for token_id in sorted(token_to_slot)
-        ]
-        owner.ingest_stage_evidence(
-            seal_campaign_stage_evidence(
-                stage_id=discovery_stage_id,
-                stage_kind="DISCOVERY_SELECTION_SCHEDULER",
-                stage_sequence=1, stage_terminal_status="COMPLETED",
-                campaign_id=context.campaign_id, run_id=context.campaign_run_id,
-                cycle_id=context.cycle_id,
-                evidence=_validations_only_stage_evidence(0),
-                local_validation_identities=discovery_validations,
-            )
-        )
-
-    # CAMPAIGN_TERMINAL_RECONCILIATION: the terminal reconciliation this boundary
-    # actually performs (owner-only named validation, proven present).
-    terminal_stage_id = build_campaign_stage_id(
-        campaign_id=context.campaign_id, run_id=context.campaign_run_id,
-        cycle_id=context.cycle_id, stage_kind="CAMPAIGN_TERMINAL_RECONCILIATION",
-        stage_sequence=4,
-    )
-    owner.ingest_stage_evidence(
-        seal_campaign_stage_evidence(
-            stage_id=terminal_stage_id,
-            stage_kind="CAMPAIGN_TERMINAL_RECONCILIATION",
-            stage_sequence=4, stage_terminal_status="COMPLETED",
-            campaign_id=context.campaign_id, run_id=context.campaign_run_id,
-            cycle_id=context.cycle_id,
-            evidence=_validations_only_stage_evidence(0),
-            local_validation_identities=[
-                LocalValidationIdentity(
-                    stage_id=terminal_stage_id,
-                    subject_identity=f"{context.cycle_id}:campaign_terminal",
-                    validation_kind="CAMPAIGN_TERMINAL_RECONCILIATION",
-                    validation_ordinal=1,
-                )
-            ],
-        )
-    )
     owner.close()
 
     # Fail-closed transport proof: a lifecycle-started run whose lifecycle steps
@@ -1185,9 +1461,9 @@ def finalize_full_run_ownership_and_report(
         blocked_reasons.append("LIFECYCLE_SOURCE_TRANSPORT_IDENTITIES_ZERO")
 
     reconciliation = reconcile_full_run_owner_to_action_local(
-        owner, action_local,
+        owner,
+        action_local,
         required_stage_kinds=REQUIRED_LIFECYCLE_STAGE_KINDS,
-        owner_equality_stage_ids=slot_stage_ids,
     )
 
     selected_tokens: list[dict[str, Any]] = []
@@ -1198,24 +1474,125 @@ def finalize_full_run_ownership_and_report(
         memory = token_to_memory[token_id]
         identity = token_to_identity[token_id]
         terminal_state = token_to_terminal_state[token_id]
-        queue_disposition = queue_dispositions.get(token_id, "COOLDOWN")
-        selected_tokens.append(dict(identity))
+        slot_row = connection.execute(
+            """SELECT s.token_state, q.queue_status
+               FROM printer_memory_factory_campaign_token_slots AS s
+               LEFT JOIN printer_tracking_queue AS q ON q.id=s.tracking_queue_id
+               WHERE s.token_slot_id=?""",
+            (identity["token_slot_id"],),
+        ).fetchone()
+        persisted_slot_state = None if slot_row is None else str(slot_row["token_state"])
+        queue_disposition = (
+            queue_dispositions.get(token_id)
+            if token_id in queue_dispositions
+            else None if slot_row is None or slot_row["queue_status"] is None
+            else str(slot_row["queue_status"])
+        )
+        cadence_row = connection.execute(
+            """SELECT tracking_lane,
+                      SUM(CASE WHEN step_kind='SNAPSHOT' THEN 1 ELSE 0 END),
+                      SUM(CASE WHEN step_kind='SNAPSHOT'
+                                AND step_status='SUCCEEDED'
+                                AND snapshot_id IS NOT NULL THEN 1 ELSE 0 END),
+                      SUM(CASE WHEN step_kind='WINDOW_CLOSE'
+                                AND step_status='SUCCEEDED'
+                                AND memory_window_id IS NOT NULL THEN 1 ELSE 0 END)
+               FROM printer_memory_factory_run_steps
+               WHERE run_id=? AND token_id=? AND pair_id=?
+                 AND step_kind IN ('SNAPSHOT','WINDOW_CLOSE')""",
+            (context.factory_run_id, token_id, int(identity["pair_id"])),
+        ).fetchone()
+        snapshot_rows = connection.execute(
+            """SELECT id, step_key, scheduler_job_id, snapshot_id, step_status
+               FROM printer_memory_factory_run_steps
+               WHERE run_id=? AND token_id=? AND pair_id=? AND step_kind='SNAPSHOT'
+               ORDER BY scheduled_for,id""",
+            (context.factory_run_id, token_id, int(identity["pair_id"])),
+        ).fetchall()
+        lane = str(cadence_row["tracking_lane"] or identity["tracking_lane"])
+        # The authoritative cadence minimum includes the closing observation;
+        # planned SNAPSHOT steps are therefore the policy minimum minus the one
+        # WINDOW_CLOSE observation. Never reconstruct cadence from lane literals.
+        cadence_policy = get_cadence_policy("WINDOW_15M", lane)
+        if cadence_policy is None or not cadence_policy.enabled_for_real_collection:
+            raise FullRunAccountingError(
+                f"authoritative WINDOW_15M cadence unavailable for {lane}"
+            )
+        expected_snapshot_steps = int(cadence_policy.minimum_required_snapshots) - 1
+        actual_snapshot_steps = int(cadence_row[2] or 0)
+        missing_snapshot_steps = max(
+            0, expected_snapshot_steps - actual_snapshot_steps
+        )
+        cadence_evidence = {
+            "cadence_policy": "WINDOW_15M_AUTHORITATIVE_CADENCE",
+            "minimum_required_observations": int(
+                cadence_policy.minimum_required_snapshots
+            ),
+            "target_snapshot_interval_seconds": int(
+                cadence_policy.target_snapshot_interval_seconds
+            ),
+            "tracking_lane": lane,
+            "expected_snapshot_steps": expected_snapshot_steps,
+            "planned_snapshot_steps": int(cadence_row[1] or 0),
+            "actual_snapshot_steps": actual_snapshot_steps,
+            "missing_snapshot_steps": missing_snapshot_steps,
+            "snapshot_step_ids": [int(row["id"]) for row in snapshot_rows],
+            "snapshot_ids": [
+                int(row["snapshot_id"])
+                for row in snapshot_rows
+                if row["snapshot_id"] is not None
+                and str(row["step_status"]) == "SUCCEEDED"
+            ],
+            "snapshot_scheduler_job_ids": [
+                int(row["scheduler_job_id"])
+                for row in snapshot_rows
+                if row["scheduler_job_id"] is not None
+            ],
+            "coverage_status": (
+                "COMPLETE"
+                if actual_snapshot_steps == expected_snapshot_steps
+                and len(snapshot_rows) == expected_snapshot_steps
+                else "INCOMPLETE"
+            ),
+            "succeeded_close_count": int(cadence_row[3] or 0),
+        }
+        close_row = connection.execute(
+            """SELECT id,scheduler_job_id,memory_window_id,step_status
+               FROM printer_memory_factory_run_steps
+               WHERE run_id=? AND token_id=? AND pair_id=?
+                 AND step_kind='WINDOW_CLOSE'
+               ORDER BY id""",
+            (context.factory_run_id, token_id, int(identity["pair_id"])),
+        ).fetchall()
+        cadence_evidence["close_step_ids"] = [int(row["id"]) for row in close_row]
+        cadence_evidence["close_scheduler_job_ids"] = [
+            int(row["scheduler_job_id"])
+            for row in close_row if row["scheduler_job_id"] is not None
+        ]
+        selected_tokens.append({**dict(identity), "cadence": cadence_evidence})
         per_token_outcomes.append({
             **identity,
             "terminal_status": "WINDOW_CLOSED",
             "tracking_disposition": queue_disposition,
+            "cadence": cadence_evidence,
         })
         slot_dispositions.append(
-            resolve_campaign_slot_terminal_disposition(
+            {
+                **resolve_campaign_slot_terminal_disposition(
                 lifecycle_started=True,
                 owned_terminal_window_state=terminal_state,
                 queue_disposition=queue_disposition,
-            )
+                ),
+                "persisted_slot_state": persisted_slot_state,
+                "persisted_state_matches": persisted_slot_state
+                in {"COOLDOWN", "ARCHIVED"}
+                and persisted_slot_state == queue_disposition,
+            }
         )
         # Inspect the real episodes attached to this exact memory window: a clean
         # episode on a non-clean window is a quality inconsistency.
         episode = connection.execute(
-            """SELECT episode_kind FROM printer_episodes
+            """SELECT id,episode_kind FROM printer_episodes
                WHERE memory_window_id=?
                ORDER BY (episode_kind = ?) DESC, id LIMIT 1""",
             (identity["memory_window_row_id"], _CLEAN_EPISODE_KIND),
@@ -1229,6 +1606,8 @@ def finalize_full_run_ownership_and_report(
                 proposed_episode_kind=proposed_episode_kind,
             ),
             "window_id": token_to_window[token_id],
+            "episode_id": None if episode is None else int(episode["id"]),
+            "episode_kind": proposed_episode_kind or "NO_CLEAN_EPISODE_CREATED",
         })
 
     active_jobs = int(connection.execute(
@@ -1237,6 +1616,47 @@ def finalize_full_run_ownership_and_report(
              AND work_state IN ('PENDING','RUNNING','COOLDOWN')""",
         (context.campaign_id, context.campaign_run_id, context.cycle_id),
     ).fetchone()[0])
+    locked_jobs = int(connection.execute(
+        """SELECT COUNT(DISTINCT j.id)
+           FROM printer_memory_factory_campaign_scheduler_work AS w
+           JOIN printer_scheduler_jobs AS j ON j.id=w.scheduler_job_id
+           WHERE w.campaign_id=? AND w.run_id=? AND w.cycle_id=?
+             AND w.ownership_contract_version='V2_STAGE_SCOPED'
+             AND (j.locked_at IS NOT NULL OR j.lock_owner IS NOT NULL)""",
+        (context.campaign_id, context.campaign_run_id, context.cycle_id),
+    ).fetchone()[0])
+    retry_count = int(connection.execute(
+        """SELECT COALESCE(SUM(j.retry_count),0)
+           FROM printer_memory_factory_campaign_scheduler_work AS w
+           JOIN printer_scheduler_jobs AS j ON j.id=w.scheduler_job_id
+           WHERE w.campaign_id=? AND w.run_id=? AND w.cycle_id=?
+             AND w.ownership_contract_version='V2_STAGE_SCOPED'""",
+        (context.campaign_id, context.campaign_run_id, context.cycle_id),
+    ).fetchone()[0])
+    bound_run_count = int(connection.execute(
+        """SELECT COUNT(*) FROM printer_memory_factory_campaign_runs
+           WHERE campaign_id=? AND run_id=? AND authoritative_run_id=?""",
+        (
+            context.campaign_id,
+            context.campaign_run_id,
+            context.factory_run_id,
+        ),
+    ).fetchone()[0])
+    action_local_evidence = {
+        "ledger_id": action_local.ledger_id,
+        "campaign_id": action_local.campaign_id,
+        "run_id": action_local.run_id,
+        "cycle_id": action_local.cycle_id,
+        "transport_identities": list(action_local.transport_identities),
+        "scheduler_work_identities": list(action_local.scheduler_work_identities),
+        "lifecycle_reservation_identities": list(
+            action_local.lifecycle_reservation_identities
+        ),
+        "local_validation_identities": list(
+            action_local.local_validation_identities
+        ),
+        "scheduler_transition_coverage": action_local.scheduler_transition_coverage(),
+    }
 
     report = build_full_run_terminal_report(
         connection,
@@ -1251,6 +1671,7 @@ def finalize_full_run_ownership_and_report(
         authorized_invocation_count=authorized_invocation_count,
         active_work_result=active_work_result,
         owner_evidence=owner.durable_evidence(),
+        action_local_evidence=action_local_evidence,
         six_unit_totals=owner.six_unit_totals(),
         reconciliation=reconciliation,
         per_token_outcomes=per_token_outcomes,
@@ -1261,6 +1682,78 @@ def finalize_full_run_ownership_and_report(
         lease_released=lease_released,
         scheduler_ownership=scheduler_ownership,
     )
+    cleanup_truth = dict(active_work_result or {})
+    automatic_retries = int(cleanup_truth.get("automatic_retries") or 0)
+    restart_count = 1 if cleanup_truth.get("restart_created") is True else 0
+    resume_count = 1 if cleanup_truth.get("resume_created") is True else 0
+    cleanup_successor_count = (
+        1 if cleanup_truth.get("successor_created") is True else 0
+    )
+    cleanup_truth_complete = all(
+        field in cleanup_truth
+        for field in (
+            "automatic_retries",
+            "restart_created",
+            "resume_created",
+            "successor_created",
+        )
+    )
+    successor_count = max(cleanup_successor_count, max(0, bound_run_count - 1))
+    cleanup_cancelled_count = int(
+        cleanup_truth.get("cancelled_scheduler_jobs") or 0
+    )
+    cleanup_terminal_observations = sum(
+        1
+        for event in action_local.scheduler_transition_events
+        if event.get("operation_owner") == "UNIFIED_TERMINAL_CLEANUP"
+        and event.get("terminal_state") == "CANCELLED"
+    )
+    report["terminal_safety"].update(
+        {
+            "locked_scheduler_job_count": locked_jobs,
+            "zero_locked_work": locked_jobs == 0,
+            "scheduler_retry_count": retry_count,
+            "automatic_retry_count": automatic_retries,
+            "cleanup_cancelled_scheduler_job_count": cleanup_cancelled_count,
+            "cleanup_scheduler_terminal_observation_count": (
+                cleanup_terminal_observations
+            ),
+            "cleanup_scheduler_observation_exact": (
+                "cancelled_scheduler_jobs" in cleanup_truth
+                and cleanup_cancelled_count == cleanup_terminal_observations
+            ),
+            "restart_count": restart_count,
+            "resume_count": resume_count,
+            "successor_count": successor_count,
+            "cleanup_retry_restart_resume_successor_truth_complete": (
+                cleanup_truth_complete
+            ),
+            "no_retry_restart_resume_successor": cleanup_truth_complete
+            and retry_count == 0
+            and automatic_retries == 0
+            and restart_count == 0
+            and resume_count == 0
+            and successor_count == 0
+            and bound_run_count == 1,
+        }
+    )
+    canonical = lambda value: json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    report["hashes"] = {
+        "owner_evidence_sha256": hashlib.sha256(
+            canonical(report["full_run_accounting"]["owner_evidence"])
+        ).hexdigest(),
+        "action_local_evidence_sha256": hashlib.sha256(
+            canonical(report["full_run_accounting"]["action_local_evidence"])
+        ).hexdigest(),
+        "invocation_marker_sha256": str(
+            report["identity"].get("factory_config_hash") or ""
+        ),
+    }
+    report["hashes"]["report_body_sha256"] = hashlib.sha256(
+        canonical(report)
+    ).hexdigest()
     gate = evaluate_campaign_acceptance_gate(
         report, authorized_invocation_count=int(authorized_invocation_count)
     )
@@ -1281,6 +1774,13 @@ def finalize_full_run_ownership_and_report(
     gate["compensation_blocked_reasons"] = list(blocked_reasons)
     report["campaign_acceptance_verdict"] = verdict
     report["campaign_pass"] = verdict == VERDICT_PASS
+    body = dict(report)
+    body_hashes = dict(body.get("hashes") or {})
+    body_hashes.pop("report_body_sha256", None)
+    body["hashes"] = body_hashes
+    report["hashes"]["report_body_sha256"] = hashlib.sha256(
+        canonical(body)
+    ).hexdigest()
     return {
         "verdict": verdict,
         "campaign_acceptance": gate,
