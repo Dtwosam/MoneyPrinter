@@ -106,6 +106,43 @@ def _load_json_object(raw: Any) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
+def parse_durable_timestamp(value: Any) -> datetime | None:
+    """Parse a durable ISO-8601 timestamp; ``None`` unless non-empty + tz-aware.
+
+    This is the single owner of the durable cleanup/lease timestamp contract. A
+    non-string, empty, malformed, or timezone-naive value returns ``None`` so the
+    acceptance gate and the public replay gate reject it identically. No timestamp
+    is ever invented here.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed
+
+
+def durable_cleanup_release_timestamps_valid(
+    cleanup_completed_at: Any, lease_released_at: Any
+) -> bool:
+    """True only when both durable timestamps parse tz-aware and release>=cleanup.
+
+    Missing, null, malformed, timezone-naive, or chronologically inverted
+    timestamps (a lease released before cleanup completion) all fail closed.
+    """
+    completed = parse_durable_timestamp(cleanup_completed_at)
+    released = parse_durable_timestamp(lease_released_at)
+    if completed is None or released is None:
+        return False
+    return released >= completed
+
+
 def load_authorization_invocation_evidence(
     connection: sqlite3.Connection,
     *,
@@ -745,6 +782,9 @@ def build_full_run_terminal_report(
                 "durable_terminal_supervision"
             ),
             "lease_released": cleanup_evidence.get("lease_released"),
+            "durable_cleanup_completed_at": cleanup_evidence.get(
+                "durable_cleanup_completed_at"
+            ),
             "lease_released_at": cleanup_evidence.get("lease_released_at"),
             "lease_lock_path": cleanup_evidence.get("lease_lock_path"),
             "lease_lock_absent": cleanup_evidence.get("lease_lock_absent"),
@@ -941,6 +981,7 @@ def evaluate_campaign_acceptance_gate(
             for key in (
                 "active_scheduler_job_count", "locked_scheduler_job_count",
                 "cleanup_identity", "cleanup_completed", "lease_released",
+                "durable_cleanup_completed_at",
                 "lease_released_at", "lease_lock_absent",
                 "forbidden_capability_deltas",
                 "scheduler_retry_count", "restart_count", "resume_count",
@@ -979,8 +1020,17 @@ def evaluate_campaign_acceptance_gate(
         "durable_terminal_supervision": (
             safety.get("durable_terminal_supervision") is True
         ),
+        "durable_cleanup_completion_timestamp_present": bool(
+            safety.get("durable_cleanup_completed_at")
+        ),
         "durable_lease_release_timestamp_present": bool(
             safety.get("lease_released_at")
+        ),
+        "durable_cleanup_and_release_timestamps_valid": (
+            durable_cleanup_release_timestamps_valid(
+                safety.get("durable_cleanup_completed_at"),
+                safety.get("lease_released_at"),
+            )
         ),
         "lease_lock_absent": safety.get("lease_lock_absent") is True,
         "zero_forbidden_deltas": bool(safety.get("zero_forbidden_deltas")),
@@ -2172,9 +2222,11 @@ __all__ = [
     "VERDICT_PASS",
     "build_full_run_terminal_report",
     "build_lifecycle_action_local_observer",
+    "durable_cleanup_release_timestamps_valid",
     "evaluate_campaign_acceptance_gate",
     "evaluate_quality_consistency",
     "finalize_full_run_ownership_and_report",
+    "parse_durable_timestamp",
     "reservation_identities_for_step",
     "resolve_campaign_slot_terminal_disposition",
     "scheduler_work_identity_for_step",

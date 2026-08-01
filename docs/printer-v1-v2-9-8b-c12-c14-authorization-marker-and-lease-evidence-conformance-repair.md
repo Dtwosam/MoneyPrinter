@@ -89,11 +89,14 @@ authorization_marker_id
 ```
 
 Both digests use UTF-8 bytes of canonical JSON constructed with sorted keys,
-compact separators, and `ensure_ascii=False`, followed by SHA-256. The
-authorization digest hashes the authorization payload; the invocation digest
-hashes the invocation payload. `factory_config_hash` and the immutable campaign
-`configuration_hash` remain separate fields. The gate explicitly rejects either
-marker digest when it equals `factory_config_hash`.
+compact separators, and `ensure_ascii=True`, followed by SHA-256 (see the
+2026-08-01 addendum: the original text incorrectly said `ensure_ascii=False`;
+the canonical owner `canonical_campaign_evidence_json()` in
+`campaign_persistence.py` uses `ensure_ascii=True`). The authorization digest
+hashes the authorization payload; the invocation digest hashes the invocation
+payload. `factory_config_hash` and the immutable campaign `configuration_hash`
+remain separate fields. The gate explicitly rejects either marker digest when it
+equals `factory_config_hash`.
 
 Authorization count is reconstructed by scanning immutable configuration owners
 for the exact marker ID and exact canonical payload. Invocation count is derived
@@ -209,5 +212,42 @@ not authorize bounded proof or a campaign.
 ## Verdict
 
 `V2_9_8B_C12_C14_AUTHORIZATION_MARKER_AND_LEASE_EVIDENCE_CONFORMANCE_REPAIR_PASS`
+
+## Addendum (2026-08-01): factual corrections from the repeat review
+
+This addendum is added by the follow-on lane
+`V2-9.8B C12-C14 Durable Cleanup Timestamp and Replay Reconstruction Repair`
+(starting HEAD `780fabfc815026243bc5ad9ab3e0f13e86ae05d8`). It does not rewrite or
+erase this report or either independent review; it records factual corrections
+and the residual gaps that the repeat independent read-only C1-C15 review found
+after this PASS.
+
+1. Canonicalization statement corrected. The "Canonical marker payloads and
+   hashes" section originally stated both marker digests use `ensure_ascii=False`.
+   That was inaccurate. The single canonical owner
+   `canonical_campaign_evidence_json()` / `campaign_evidence_sha256()` in
+   `campaign_persistence.py` serializes with `ensure_ascii=True`. Creation and
+   acceptance always used that owner; only the public replay path independently
+   recomputed marker digests with a local `ensure_ascii=False` serializer, so a
+   valid non-ASCII lease-lock path could hash to different bytes and falsely
+   block replay. The follow-on lane removed that replay-local marker
+   serialization and routed replay's marker digests through
+   `campaign_evidence_sha256()`.
+
+2. Durable `cleanup_completed_at` was not gated at initial acceptance. This
+   report's PASS relied on caller-carried `cleanup_completed is True` plus durable
+   terminal supervision, `lease_released_at`, and lock absence, but did not
+   require a non-empty, parseable, timezone-aware durable `cleanup_completed_at`
+   with `lease_released_at` never preceding it. The follow-on lane added that
+   gate (and the identical requirement in public replay).
+
+3. Replay did not independently reconstruct `factory_config_hash`. Public replay
+   copied the report-carried `factory_config_hash` into the durable
+   reconstruction before comparison instead of reading
+   `printer_memory_factory_runs.config_hash` for the exact `factory_run_id`. The
+   follow-on lane replaced that copy with an independent durable query.
+
+See `docs/printer-v1-v2-9-8b-c12-c14-durable-cleanup-timestamp-and-replay-reconstruction-repair.md`
+for the follow-on repair, its completion-law table, and its exact test results.
 
 This PASS authorizes only a repeat independent read-only conformance review.

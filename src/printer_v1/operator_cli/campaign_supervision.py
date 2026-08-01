@@ -1004,6 +1004,20 @@ def cleanup_campaign_supervision(
     if not released:
         raise CampaignSupervisionError("operational campaign lease release failed")
     _finish_released_lease(db_path, terminal_row, released_at=timestamp)
+    # Durable read-back of the exact persisted timestamps. Never trust the local
+    # ``timestamp`` variable: the durable row owns the truth (COALESCE preserves a
+    # prior idempotent release), and the accounting gate requires equality with
+    # this exact supervision row.
+    connection = _connect(db_path, read_only=True)
+    try:
+        durable_row = _load_exact(
+            connection, supervision_id=supervision_id, campaign_id=campaign_id,
+            configuration_id=configuration_id, run_id=run_id, owner_id=owner_id,
+        )
+        durable_cleanup_completed_at = durable_row["cleanup_completed_at"]
+        durable_lease_released_at = durable_row["lease_released_at"]
+    finally:
+        connection.close()
     return {
         "supervision_id": supervision_id,
         "campaign_id": campaign_id,
@@ -1012,6 +1026,8 @@ def cleanup_campaign_supervision(
         "owner_id": owner_id,
         "terminal_status": terminal_status,
         "first_terminal_cause": cause,
+        "cleanup_completed_at": durable_cleanup_completed_at,
+        "lease_released_at": durable_lease_released_at,
         "cancelled_campaign_work": 0 if replay else int(work_cursor.rowcount),
         "cancelled_discovery_work": 0 if replay else discovery_work_rowcount,
         "terminalized_discovery_batches": (

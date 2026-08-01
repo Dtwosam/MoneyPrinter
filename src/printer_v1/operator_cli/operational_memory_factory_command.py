@@ -3574,12 +3574,18 @@ def report_only(
     marker_evidence = full_run.get("authorization_and_invocation") or {}
     authorization_marker = marker_evidence.get("authorization_marker")
     invocation_marker = marker_evidence.get("invocation_marker")
+    # Marker digests share exactly one canonical owner with creation and
+    # acceptance: ``campaign_evidence_sha256`` (sorted keys, compact separators,
+    # ``ensure_ascii=True``). Replay must not re-serialize markers locally, or a
+    # valid non-ASCII lease-lock path would hash to different bytes and falsely
+    # block. The owner/action/body digests keep their own local canonical form
+    # (``ensure_ascii=False``) because creation hashes them the same way.
     expected_authorization_hash = (
-        hashlib.sha256(_canonical(authorization_marker)).hexdigest()
+        campaign_evidence_sha256(authorization_marker)
         if isinstance(authorization_marker, Mapping) else None
     )
     expected_invocation_hash = (
-        hashlib.sha256(_canonical(invocation_marker)).hexdigest()
+        campaign_evidence_sha256(invocation_marker)
         if isinstance(invocation_marker, Mapping) else None
     )
     body = dict(full_run)
@@ -3672,6 +3678,7 @@ def report_only(
         ).fetchone()[0])
         from printer_v1.operator_cli.campaign_full_run_accounting import (
             OperationalLifecycleOwnershipContext,
+            durable_cleanup_release_timestamps_valid,
             load_authorization_invocation_evidence,
         )
         replay_context = OperationalLifecycleOwnershipContext(
@@ -3687,9 +3694,19 @@ def report_only(
             execution_id=str(full_identity.get("execution_id") or ""),
             supervision_id=str(full_identity.get("supervision_id") or ""),
         )
-        durable_markers["factory_config_hash"] = full_identity.get(
-            "factory_config_hash"
-        )
+        # Independently reconstruct the factory configuration hash from its exact
+        # durable owner (repeat-review F3). The report-carried value is never
+        # copied into the durable reconstruction before comparison; the exact
+        # ``printer_memory_factory_runs`` row owns the truth.
+        factory_rows = [
+            dict(item)
+            for item in verification.execute(
+                """SELECT run_id,config_hash
+                   FROM printer_memory_factory_runs
+                   WHERE run_id=?""",
+                (str(full_identity.get("factory_run_id") or ""),),
+            ).fetchall()
+        ]
         durable_cleanup = verification.execute(
             """SELECT supervision_id,campaign_id,configuration_id,run_id,owner_id,
                       supervision_state,terminal_status,cleanup_completed_at,
@@ -3709,11 +3726,19 @@ def report_only(
     selection_evidence = full_run.get("selection_and_lifecycle") or {}
     terminal_safety = full_run.get("terminal_safety") or {}
     cleanup_identity = terminal_safety.get("cleanup_identity") or {}
+    # F1 parity: the public replay gate applies the exact same durable
+    # cleanup/lease timestamp law as initial acceptance — non-empty, parseable,
+    # timezone-aware, and release never before cleanup completion — read from the
+    # exact durable supervision row (never a report-carried or invented value).
     durable_cleanup_exact = bool(
         durable_cleanup is not None
         and str(durable_cleanup["supervision_state"]) == "TERMINAL"
         and durable_cleanup["cleanup_completed_at"] is not None
         and durable_cleanup["lease_released_at"] is not None
+        and durable_cleanup_release_timestamps_valid(
+            durable_cleanup["cleanup_completed_at"],
+            durable_cleanup["lease_released_at"],
+        )
         and not Path(str(durable_cleanup["lease_lock_path"])).exists()
         and all(
             str(cleanup_identity.get(field) or "")
@@ -3725,10 +3750,36 @@ def report_only(
         )
         and terminal_safety.get("cleanup_completed") is True
         and terminal_safety.get("lease_released") is True
+        and str(terminal_safety.get("durable_cleanup_completed_at") or "")
+        == str(durable_cleanup["cleanup_completed_at"])
         and str(terminal_safety.get("lease_released_at") or "")
         == str(durable_cleanup["lease_released_at"])
         and terminal_safety.get("lease_lock_absent") is True
     )
+    # F3: exactly one factory-run row with a non-empty durable config hash whose
+    # identity matches, equal to both the report identity's factory config hash
+    # and the separate marker/report factory-config field, and distinct from both
+    # marker digests. The durable value is assigned only after validation.
+    marker_factory_config_hash = marker_evidence.get("factory_config_hash")
+    durable_factory_config_hash = (
+        str(factory_rows[0]["config_hash"])
+        if len(factory_rows) == 1
+        and factory_rows[0].get("config_hash")
+        and str(factory_rows[0].get("run_id") or "")
+        == str(full_identity.get("factory_run_id") or "")
+        else None
+    )
+    factory_config_reconstruction_exact = bool(
+        durable_factory_config_hash
+        and durable_factory_config_hash
+        == str(full_identity.get("factory_config_hash") or "")
+        and durable_factory_config_hash == str(marker_factory_config_hash or "")
+        and str(hashes.get("authorization_marker_sha256") or "")
+        != durable_factory_config_hash
+        and str(hashes.get("invocation_marker_sha256") or "")
+        != durable_factory_config_hash
+    )
+    durable_markers["factory_config_hash"] = durable_factory_config_hash
     if (
         durable_windows
         != selection_evidence.get("campaign_window_ownership_rows")
@@ -3736,6 +3787,7 @@ def report_only(
         or active_or_locked != 0
         or durable_markers != marker_evidence
         or not durable_cleanup_exact
+        or not factory_config_reconstruction_exact
     ):
         return _report_only_zero_work({
             "status": "REPLAY_BLOCKED",

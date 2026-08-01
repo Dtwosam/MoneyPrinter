@@ -154,7 +154,7 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
             conn.close()
         self.supervision_id = "supervision-w"
         self.supervision_owner_id = "owner-w"
-        self.lease_lock = root / "campaign-w.lease.lock"
+        self.lease_lock = self._lease_lock_path(root)
         acquire_campaign_supervision(
             self.db, lock_path=self.lease_lock,
             supervision_id=self.supervision_id, campaign_id=CAMPAIGN,
@@ -165,6 +165,10 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
         shutil.copy2(self.db, self.backup)
         self.captured_run_id: str | None = None
         self.preallocated_run_id = "factory-run-w"
+
+    def _lease_lock_path(self, root: Path) -> Path:
+        """Overridable lease-lock path (ASCII default; subclasses may vary it)."""
+        return root / "campaign-w.lease.lock"
 
     def tearDown(self) -> None:
         self.temp.cleanup()
