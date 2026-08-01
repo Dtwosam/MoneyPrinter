@@ -676,7 +676,6 @@ class ReportAndGateTests(_FullRunFixture):
                 "retrieval_queries": 0, "paper_decisions": 0, "paper_trades": 0,
                 "window_1h_unlocked": 0,
             },
-            lease_released=True,
         )
 
     def test_canonical_report_includes_both_exact_token_window_outcomes(self) -> None:
@@ -686,7 +685,7 @@ class ReportAndGateTests(_FullRunFixture):
                          ["window-15m-1", "window-15m-2"])
         self.assertEqual(selection["selected_token_count"], 2)
         self.assertEqual(len(selection["per_token_outcomes"]), 2)
-        gate = evaluate_campaign_acceptance_gate(report, authorized_invocation_count=1)
+        gate = evaluate_campaign_acceptance_gate(report)
         # Helper-built, non-persisted reports no longer satisfy repaired PASS.
         self.assertEqual(gate["verdict"], VERDICT_BLOCKED_UNSAFE)
         self.assertFalse(gate["pass"])
@@ -730,9 +729,8 @@ class ReportAndGateTests(_FullRunFixture):
             ],
             quality_results=[], zero_active_scheduler_jobs=0,
             forbidden_capability_deltas={"retrieval_queries": 0},
-            lease_released=True,
         )
-        gate = evaluate_campaign_acceptance_gate(report, authorized_invocation_count=1)
+        gate = evaluate_campaign_acceptance_gate(report)
         self.assertEqual(gate["verdict"], VERDICT_BLOCKED_UNSAFE)
         self.assertFalse(gate["pass"])
 
@@ -769,7 +767,6 @@ class ReportAndGateTests(_FullRunFixture):
             quality_results=report["selection_and_lifecycle"]["quality_results"],
             zero_active_scheduler_jobs=0,
             forbidden_capability_deltas=report["terminal_safety"]["forbidden_capability_deltas"],
-            lease_released=True,
         )
         after = _counts()
         self.assertEqual(before, after)

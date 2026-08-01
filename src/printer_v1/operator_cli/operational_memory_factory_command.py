@@ -48,6 +48,8 @@ from printer_v1.operator_cli.graduated_supply_front_door import (
 from printer_v1.operator_cli.campaign_ownership import create_campaign_run
 from printer_v1.operator_cli.campaign_persistence import (
     DB_MODE_OPERATIONAL_PERSISTENT,
+    build_authorization_marker_payload,
+    campaign_evidence_sha256,
     create_campaign,
 )
 from printer_v1.operator_cli.campaign_supervision import (
@@ -760,6 +762,7 @@ def _create_campaign_command(
     preflight: Mapping[str, Any],
     backup: Mapping[str, Any],
     now: str,
+    operator_approved: bool,
     policy: _OperationalCampaignPolicy = _NORMAL_CAMPAIGN_POLICY,
 ) -> tuple[AbstractCampaignCommand, str]:
     campaign_id = f"{execution_id}-campaign"
@@ -777,7 +780,30 @@ def _create_campaign_command(
         storage_bytes=STORAGE_BYTE_CEILING,
         failures=FAILURE_CEILING,
     )
+    target_identity = f"sha256:{preflight['database_sha256']}"
+    authorization_marker = build_authorization_marker_payload(
+        marker_id=f"{execution_id}-authorization-marker",
+        execution_id=execution_id,
+        campaign_id=campaign_id,
+        configuration_id=configuration_id,
+        run_id=run_id,
+        policy_version=POLICY_VERSION,
+        db_target_identity=target_identity,
+        launch_git_provenance=preflight["git_provenance"],
+        operator_approved=operator_approved,
+    )
     configuration = {
+        "execution_id": execution_id,
+        "campaign_id": campaign_id,
+        "configuration_id": configuration_id,
+        "run_id": run_id,
+        "policy_version": POLICY_VERSION,
+        "db_target_identity": target_identity,
+        "operator_approved": operator_approved is True,
+        "authorization_marker": authorization_marker,
+        "authorization_marker_sha256": campaign_evidence_sha256(
+            authorization_marker
+        ),
         "token_capacity": TOKEN_CAPACITY,
         "ceilings": asdict(ceilings),
         "main_window": MAIN_WINDOW,
@@ -811,7 +837,6 @@ def _create_campaign_command(
             ),
         },
     }
-    target_identity = f"sha256:{preflight['database_sha256']}"
     created = create_campaign(
         AUTHORITATIVE_DB,
         campaign_id=campaign_id,
@@ -1462,9 +1487,7 @@ def _apply_full_run_campaign_acceptance(
     action_local_ledger: Any | None = None,
     runtime_terminal_status: str | None = None,
     runtime_first_terminal_cause: str | None = None,
-    lease_released: bool = True,
-    active_work_result: Mapping[str, Any] | None = None,
-    authorized_invocation_count: int | None = None,
+    cleanup_result: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Register ownership, reconcile, and gate Campaign PASS for the full run.
 
@@ -1474,9 +1497,9 @@ def _apply_full_run_campaign_acceptance(
     with no ownership work. Any fault registering ownership or reconciling
     accounting is ``BLOCKED_UNSAFE`` — never a silent PASS.
 
-    ``authorized_invocation_count`` and ``runtime_terminal_status`` are derived
-    from durable rows when the caller does not supply them (the number of factory
-    runs authoritatively bound to this campaign run, and the factory run status).
+    Authorization/invocation counts come only from the immutable configuration
+    marker and supervision acquisition row. ``cleanup_result`` must be the real
+    ``cleanup_campaign_supervision()`` result; omission or malformed truth blocks.
     """
     from printer_v1.operator_cli.campaign_full_run_accounting import (
         OperationalLifecycleOwnershipContext,
@@ -1508,15 +1531,6 @@ def _apply_full_run_campaign_acceptance(
         connection = sqlite3.connect(str(db_path))
         connection.execute("PRAGMA foreign_keys = ON")
         try:
-            # Derive the durable authorization/runtime facts unified cleanup left
-            # behind when the caller did not thread explicit values.
-            if authorized_invocation_count is None:
-                authorized_invocation_count = int(connection.execute(
-                    """SELECT COUNT(*) FROM printer_memory_factory_campaign_runs
-                       WHERE run_id=? AND campaign_id=?
-                         AND authoritative_run_id IS NOT NULL""",
-                    (campaign_run_id, campaign_id),
-                ).fetchone()[0])
             if runtime_terminal_status is None:
                 row = connection.execute(
                     "SELECT run_status FROM printer_memory_factory_runs WHERE run_id=?",
@@ -1536,11 +1550,9 @@ def _apply_full_run_campaign_acceptance(
                 supervision_id=supervision_id,
                 launch_git_provenance=dict(launch_git_provenance or {}),
                 db_target_identity=db_target_identity,
-                authorized_invocation_count=int(authorized_invocation_count),
                 runtime_terminal_status=str(runtime_terminal_status),
                 runtime_first_terminal_cause=runtime_first_terminal_cause,
-                lease_released=bool(lease_released),
-                active_work_result=dict(active_work_result or {}),
+                cleanup_result=cleanup_result,
                 forbidden_capability_deltas=dict(forbidden_deltas or {}),
             )
         finally:
@@ -1591,7 +1603,7 @@ def _run_operational_campaign(
     now = _iso()
     command, cycle_id = _create_campaign_command(
         execution_id=execution_id, paths=paths, preflight=preflight,
-        backup=backup, now=now, policy=policy,
+        backup=backup, now=now, operator_approved=operator_approved, policy=policy,
     )
     heartbeat: _CampaignHeartbeat | None = None
     initialized_factory_run_id: str | None = str(uuid.uuid4())
@@ -2048,7 +2060,8 @@ def _run_operational_campaign(
         terminal_status = (
             "COMPLETED"
             if str(lifecycle.get("run_status") or "") == "COMPLETED"
-            and bool(cleanup.get("lease_released"))
+            and cleanup.get("cleanup_completed") is True
+            and cleanup.get("lease_released") is True
             else "FAILED"
         )
         campaign_units.ingest_stage_evidence(
@@ -2086,7 +2099,7 @@ def _run_operational_campaign(
             execution_id=execution_id,
             supervision_id=command.supervision_id,
             launch_git_provenance=preflight["git_provenance"],
-            db_target_identity=str(command.db_path),
+            db_target_identity=command.db_target_identity,
             lifecycle_started=bool(result.lifecycle_started),
             lifecycle_operation_records=lifecycle_operation_records,
             forbidden_deltas=dict(lifecycle.get("forbidden_deltas") or {}),
@@ -2098,15 +2111,7 @@ def _run_operational_campaign(
                 else str(lifecycle.get("run_status") or "UNKNOWN")
             ),
             runtime_first_terminal_cause=cause,
-            lease_released=bool(cleanup.get("lease_released")),
-            active_work_result={
-                "active_owned_work_after": cleanup.get("active_owned_work_after"),
-                "cancelled_scheduler_jobs": cleanup.get("cancelled_scheduler_jobs"),
-                "automatic_retries": cleanup.get("automatic_retries"),
-                "restart_created": cleanup.get("restart_created"),
-                "resume_created": cleanup.get("resume_created"),
-                "successor_created": cleanup.get("successor_created"),
-            },
+            cleanup_result=cleanup,
         )
         aggregated_six_unit_totals = campaign_units.six_unit_totals()
         aggregated_six_unit_evidence = campaign_units.durable_evidence()
@@ -3566,6 +3571,17 @@ def report_only(
         ).encode("utf-8")
     expected_owner_hash = hashlib.sha256(_canonical(owner_evidence)).hexdigest()
     expected_action_hash = hashlib.sha256(_canonical(action_evidence)).hexdigest()
+    marker_evidence = full_run.get("authorization_and_invocation") or {}
+    authorization_marker = marker_evidence.get("authorization_marker")
+    invocation_marker = marker_evidence.get("invocation_marker")
+    expected_authorization_hash = (
+        hashlib.sha256(_canonical(authorization_marker)).hexdigest()
+        if isinstance(authorization_marker, Mapping) else None
+    )
+    expected_invocation_hash = (
+        hashlib.sha256(_canonical(invocation_marker)).hexdigest()
+        if isinstance(invocation_marker, Mapping) else None
+    )
     body = dict(full_run)
     body_hashes = dict(hashes)
     body_hashes.pop("report_body_sha256", None)
@@ -3574,6 +3590,13 @@ def report_only(
     if (
         hashes.get("owner_evidence_sha256") != expected_owner_hash
         or hashes.get("action_local_evidence_sha256") != expected_action_hash
+        or hashes.get("authorization_marker_sha256")
+        != expected_authorization_hash
+        or hashes.get("invocation_marker_sha256") != expected_invocation_hash
+        or hashes.get("authorization_marker_sha256")
+        == full_identity.get("factory_config_hash")
+        or hashes.get("invocation_marker_sha256")
+        == full_identity.get("factory_config_hash")
         or hashes.get("report_body_sha256") != expected_body_hash
     ):
         return _report_only_zero_work({
@@ -3647,19 +3670,88 @@ def report_only(
                 str(full_identity.get("cycle_id")),
             ),
         ).fetchone()[0])
+        from printer_v1.operator_cli.campaign_full_run_accounting import (
+            OperationalLifecycleOwnershipContext,
+            load_authorization_invocation_evidence,
+        )
+        replay_context = OperationalLifecycleOwnershipContext(
+            campaign_id=resolved_campaign,
+            campaign_run_id=resolved_run,
+            cycle_id=str(full_identity.get("cycle_id") or ""),
+            configuration_id=resolved_configuration_id,
+            factory_run_id=str(full_identity.get("factory_run_id") or ""),
+        )
+        durable_markers = load_authorization_invocation_evidence(
+            verification,
+            context=replay_context,
+            execution_id=str(full_identity.get("execution_id") or ""),
+            supervision_id=str(full_identity.get("supervision_id") or ""),
+        )
+        durable_markers["factory_config_hash"] = full_identity.get(
+            "factory_config_hash"
+        )
+        durable_cleanup = verification.execute(
+            """SELECT supervision_id,campaign_id,configuration_id,run_id,owner_id,
+                      supervision_state,terminal_status,cleanup_completed_at,
+                      lease_released_at,lease_lock_path
+               FROM printer_memory_factory_campaign_supervision
+               WHERE supervision_id=? AND campaign_id=? AND configuration_id=?
+                 AND run_id=?""",
+            (
+                str(full_identity.get("supervision_id") or ""),
+                resolved_campaign,
+                resolved_configuration_id,
+                resolved_run,
+            ),
+        ).fetchone()
     finally:
         verification.close()
     selection_evidence = full_run.get("selection_and_lifecycle") or {}
+    terminal_safety = full_run.get("terminal_safety") or {}
+    cleanup_identity = terminal_safety.get("cleanup_identity") or {}
+    durable_cleanup_exact = bool(
+        durable_cleanup is not None
+        and str(durable_cleanup["supervision_state"]) == "TERMINAL"
+        and durable_cleanup["cleanup_completed_at"] is not None
+        and durable_cleanup["lease_released_at"] is not None
+        and not Path(str(durable_cleanup["lease_lock_path"])).exists()
+        and all(
+            str(cleanup_identity.get(field) or "")
+            == str(durable_cleanup[field])
+            for field in (
+                "supervision_id", "campaign_id", "configuration_id", "run_id",
+                "owner_id",
+            )
+        )
+        and terminal_safety.get("cleanup_completed") is True
+        and terminal_safety.get("lease_released") is True
+        and str(terminal_safety.get("lease_released_at") or "")
+        == str(durable_cleanup["lease_released_at"])
+        and terminal_safety.get("lease_lock_absent") is True
+    )
     if (
         durable_windows
         != selection_evidence.get("campaign_window_ownership_rows")
         or durable_scheduler != accounting.get("campaign_scheduler_work_rows")
         or active_or_locked != 0
+        or durable_markers != marker_evidence
+        or not durable_cleanup_exact
     ):
         return _report_only_zero_work({
             "status": "REPLAY_BLOCKED",
             "requested_identity": identity["requested_identity"],
             "block_reason": "FULL_RUN_DURABLE_RECONSTRUCTION_MISMATCH",
+        })
+
+    from printer_v1.operator_cli.campaign_full_run_accounting import (
+        evaluate_campaign_acceptance_gate,
+    )
+    replay_gate = evaluate_campaign_acceptance_gate(full_run)
+    if replay_gate.get("pass") is not True:
+        return _report_only_zero_work({
+            "status": "REPLAY_BLOCKED",
+            "requested_identity": identity["requested_identity"],
+            "block_reason": "FULL_RUN_ACCEPTANCE_RECONSTRUCTION_BLOCKED",
         })
 
     return _report_only_zero_work({

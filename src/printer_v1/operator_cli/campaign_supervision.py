@@ -11,8 +11,15 @@ import time
 from typing import Any, Callable, Mapping
 import uuid
 
+from printer_v1.operator_cli.campaign_persistence import (
+    campaign_evidence_sha256,
+    canonical_campaign_evidence_json,
+)
+
 
 OPERATIONAL_SCOPE = "OPERATIONAL_CAMPAIGN"
+INVOCATION_MARKER_KIND = "PRINTER_V1_CAMPAIGN_SUPERVISION_ACQUISITION"
+INVOCATION_MARKER_VERSION = "V2_9_8B_C12_C14_V1"
 DEFAULT_LEASE_SECONDS = 90
 LEASE_REPLACE_MAX_ATTEMPTS = 3
 LEASE_REPLACE_RETRY_SECONDS = 0.05
@@ -76,6 +83,40 @@ def _required(value: object, label: str) -> str:
     if not text:
         raise CampaignSupervisionError(f"{label} is required")
     return text
+
+
+def build_invocation_marker_payload(
+    supervision: Mapping[str, Any], *, authorization_marker_id: str
+) -> dict[str, Any]:
+    """Reconstruct the canonical marker owned by supervision acquisition."""
+    supervision_id = _required(supervision.get("supervision_id"), "supervision_id")
+    created_at = _required(supervision.get("created_at"), "created_at")
+    lease_lock_path = _required(
+        supervision.get("lease_lock_path"), "lease_lock_path"
+    )
+    payload = {
+        "marker_kind": INVOCATION_MARKER_KIND,
+        "marker_version": INVOCATION_MARKER_VERSION,
+        "marker_id": f"{supervision_id}-invocation-marker",
+        "supervision_id": supervision_id,
+        "campaign_id": _required(supervision.get("campaign_id"), "campaign_id"),
+        "configuration_id": _required(
+            supervision.get("configuration_id"), "configuration_id"
+        ),
+        "run_id": _required(supervision.get("run_id"), "run_id"),
+        "owner_id": _required(supervision.get("owner_id"), "owner_id"),
+        "lease_lock_path": lease_lock_path,
+        "lease_lock_path_identity": campaign_evidence_sha256(
+            {"lease_lock_path": lease_lock_path}
+        ),
+        "acquisition_identity": f"{supervision_id}|{created_at}",
+        "acquired_at": created_at,
+        "authorization_marker_id": _required(
+            authorization_marker_id, "authorization_marker_id"
+        ),
+    }
+    canonical_campaign_evidence_json(payload)
+    return payload
 
 
 def _is_sqlite_locked(exc: BaseException) -> bool:

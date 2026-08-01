@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+from pathlib import Path
 import sqlite3
 from typing import Any, Callable, Mapping, Sequence
 
@@ -28,6 +29,18 @@ from printer_v1.operator_cli.campaign_ownership import (
     CampaignOwnershipError,
     campaign_scheduler_work_id,
     project_campaign_scheduler_job,
+)
+from printer_v1.operator_cli.campaign_persistence import (
+    AUTHORIZATION_MARKER_KIND,
+    AUTHORIZATION_MARKER_VERSION,
+    build_authorization_marker_payload,
+    campaign_evidence_sha256,
+    canonical_campaign_evidence_json,
+)
+from printer_v1.operator_cli.campaign_supervision import (
+    INVOCATION_MARKER_KIND,
+    INVOCATION_MARKER_VERSION,
+    build_invocation_marker_payload,
 )
 from printer_v1.sources.campaign_six_unit_accounting import (
     CampaignActionLocalLedger,
@@ -83,6 +96,234 @@ def _require(value: Any, label: str) -> str:
     if not text:
         raise FullRunAccountingError(f"{label} is required")
     return text
+
+
+def _load_json_object(raw: Any) -> dict[str, Any] | None:
+    try:
+        value = json.loads(str(raw))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def load_authorization_invocation_evidence(
+    connection: sqlite3.Connection,
+    *,
+    context: "OperationalLifecycleOwnershipContext",
+    execution_id: str,
+    supervision_id: str,
+) -> dict[str, Any]:
+    """Load and reconstruct both markers from their existing durable owners."""
+    connection.row_factory = sqlite3.Row
+    config_row = connection.execute(
+        """SELECT cfg.configuration_hash,cfg.configuration_json,
+                  cfg.launch_provenance_json,c.policy_version,
+                  c.db_target_identity
+           FROM printer_memory_factory_campaign_configurations AS cfg
+           JOIN printer_memory_factory_campaigns AS c
+             ON c.campaign_id=cfg.campaign_id
+           WHERE cfg.campaign_id=? AND cfg.configuration_id=?""",
+        (context.campaign_id, context.configuration_id),
+    ).fetchone()
+    expected_authorization: dict[str, Any] | None = None
+    stored_authorization: dict[str, Any] | None = None
+    stored_authorization_sha256: str | None = None
+    authorization_sha256: str | None = None
+    marker_id_count = 0
+    exact_authorization_count = 0
+    authorization_marker_id = f"{execution_id}-authorization-marker"
+    if config_row is not None:
+        configuration = _load_json_object(config_row["configuration_json"])
+        provenance = _load_json_object(config_row["launch_provenance_json"])
+        if configuration is not None:
+            candidate = configuration.get("authorization_marker")
+            if isinstance(candidate, Mapping):
+                stored_authorization = dict(candidate)
+            candidate_digest = configuration.get("authorization_marker_sha256")
+            if isinstance(candidate_digest, str):
+                stored_authorization_sha256 = candidate_digest
+        if provenance is not None:
+            try:
+                expected_authorization = build_authorization_marker_payload(
+                    marker_id=authorization_marker_id,
+                    execution_id=execution_id,
+                    campaign_id=context.campaign_id,
+                    configuration_id=context.configuration_id,
+                    run_id=context.campaign_run_id,
+                    policy_version=str(config_row["policy_version"]),
+                    db_target_identity=str(config_row["db_target_identity"]),
+                    launch_git_provenance=provenance,
+                    operator_approved=True,
+                )
+                authorization_sha256 = campaign_evidence_sha256(
+                    expected_authorization
+                )
+            except Exception:
+                expected_authorization = None
+                authorization_sha256 = None
+
+    for row in connection.execute(
+        """SELECT configuration_json
+           FROM printer_memory_factory_campaign_configurations
+           ORDER BY configuration_id"""
+    ).fetchall():
+        payload = _load_json_object(row["configuration_json"])
+        marker = None if payload is None else payload.get("authorization_marker")
+        if not isinstance(marker, Mapping):
+            continue
+        if str(marker.get("marker_id") or "") == authorization_marker_id:
+            marker_id_count += 1
+            if (
+                expected_authorization is not None
+                and canonical_campaign_evidence_json(marker)
+                == canonical_campaign_evidence_json(expected_authorization)
+                and payload.get("authorization_marker_sha256")
+                == campaign_evidence_sha256(marker)
+            ):
+                exact_authorization_count += 1
+
+    supervision_rows = connection.execute(
+        """SELECT supervision_id,campaign_id,configuration_id,run_id,owner_id,
+                  lease_lock_path,created_at,supervision_state,terminal_status,
+                  cleanup_completed_at,lease_released_at
+           FROM printer_memory_factory_campaign_supervision
+           WHERE campaign_id=?
+           ORDER BY created_at,supervision_id""",
+        (context.campaign_id,),
+    ).fetchall()
+    exact_supervision_rows = [
+        row for row in supervision_rows
+        if str(row["supervision_id"]) == str(supervision_id)
+        and str(row["configuration_id"]) == context.configuration_id
+        and str(row["run_id"]) == context.campaign_run_id
+    ]
+    invocation_payload: dict[str, Any] | None = None
+    invocation_sha256: str | None = None
+    if len(exact_supervision_rows) == 1 and expected_authorization is not None:
+        try:
+            invocation_payload = build_invocation_marker_payload(
+                dict(exact_supervision_rows[0]),
+                authorization_marker_id=authorization_marker_id,
+            )
+            invocation_sha256 = campaign_evidence_sha256(invocation_payload)
+        except Exception:
+            invocation_payload = None
+            invocation_sha256 = None
+
+    binding_count = int(connection.execute(
+        """SELECT COUNT(*) FROM printer_memory_factory_campaign_runs
+           WHERE campaign_id=? AND run_id=? AND authoritative_run_id=?""",
+        (context.campaign_id, context.campaign_run_id, context.factory_run_id),
+    ).fetchone()[0])
+    campaign_binding_history_count = int(connection.execute(
+        """SELECT COUNT(*) FROM printer_memory_factory_campaign_runs
+           WHERE campaign_id=? AND authoritative_run_id IS NOT NULL""",
+        (context.campaign_id,),
+    ).fetchone()[0])
+    marker_correspondence_exact = bool(
+        expected_authorization is not None
+        and stored_authorization == expected_authorization
+        and stored_authorization_sha256 == authorization_sha256
+        and invocation_payload is not None
+        and invocation_payload.get("authorization_marker_id")
+        == authorization_marker_id
+        and invocation_payload.get("campaign_id") == context.campaign_id
+        and invocation_payload.get("configuration_id") == context.configuration_id
+        and invocation_payload.get("run_id") == context.campaign_run_id
+        and invocation_payload.get("supervision_id") == str(supervision_id)
+    )
+    return {
+        "factory_config_hash": None,
+        "campaign_configuration_hash": (
+            None if config_row is None else str(config_row["configuration_hash"])
+        ),
+        "authorization_marker": stored_authorization,
+        "expected_authorization_marker": expected_authorization,
+        "authorization_marker_sha256": authorization_sha256,
+        "stored_authorization_marker_sha256": stored_authorization_sha256,
+        "authorization_marker_kind": AUTHORIZATION_MARKER_KIND,
+        "authorization_marker_version": AUTHORIZATION_MARKER_VERSION,
+        "authorization_count": marker_id_count,
+        "exact_authorization_count": exact_authorization_count,
+        "invocation_marker": invocation_payload,
+        "invocation_marker_sha256": invocation_sha256,
+        "invocation_marker_kind": INVOCATION_MARKER_KIND,
+        "invocation_marker_version": INVOCATION_MARKER_VERSION,
+        "invocation_count": len(exact_supervision_rows),
+        "supervision_history_count": len(supervision_rows),
+        "additional_supervision_history_count": max(0, len(supervision_rows) - 1),
+        "factory_binding_count": binding_count,
+        "campaign_factory_binding_history_count": campaign_binding_history_count,
+        "marker_correspondence_exact": marker_correspondence_exact,
+        "configuration_supervision_binding_correspondence_exact": bool(
+            marker_correspondence_exact
+            and len(exact_supervision_rows) == 1
+            and binding_count == 1
+            and campaign_binding_history_count == 1
+        ),
+    }
+
+
+def load_cleanup_lease_evidence(
+    connection: sqlite3.Connection,
+    *,
+    context: "OperationalLifecycleOwnershipContext",
+    supervision_id: str,
+    cleanup_result: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Cross-check the real cleanup result with durable supervision read-back."""
+    connection.row_factory = sqlite3.Row
+    row = connection.execute(
+        """SELECT supervision_id,campaign_id,configuration_id,run_id,owner_id,
+                  supervision_state,terminal_status,cleanup_completed_at,
+                  lease_released_at,lease_lock_path
+           FROM printer_memory_factory_campaign_supervision
+           WHERE supervision_id=? AND campaign_id=? AND configuration_id=?
+             AND run_id=?""",
+        (
+            supervision_id,
+            context.campaign_id,
+            context.configuration_id,
+            context.campaign_run_id,
+        ),
+    ).fetchone()
+    cleanup = dict(cleanup_result) if isinstance(cleanup_result, Mapping) else {}
+    cleanup_identity_exact = bool(
+        row is not None
+        and all(
+            str(cleanup.get(field) or "") == str(row[field])
+            for field in (
+                "supervision_id", "campaign_id", "configuration_id", "run_id",
+                "owner_id",
+            )
+        )
+    )
+    lease_path = None if row is None else str(row["lease_lock_path"])
+    lease_lock_absent = bool(lease_path) and not Path(str(lease_path)).exists()
+    return {
+        "cleanup_result_present": isinstance(cleanup_result, Mapping),
+        "cleanup_identity": {
+            field: cleanup.get(field)
+            for field in (
+                "supervision_id", "campaign_id", "configuration_id", "run_id",
+                "owner_id",
+            )
+        },
+        "cleanup_identity_exact": cleanup_identity_exact,
+        "cleanup_completed": cleanup.get("cleanup_completed"),
+        "lease_released": cleanup.get("lease_released"),
+        "active_owned_work_after": cleanup.get("active_owned_work_after"),
+        "durable_supervision": None if row is None else dict(row),
+        "durable_terminal_supervision": bool(
+            row is not None and str(row["supervision_state"]) == "TERMINAL"
+        ),
+        "durable_cleanup_completed_at": (
+            None if row is None else row["cleanup_completed_at"]
+        ),
+        "lease_released_at": None if row is None else row["lease_released_at"],
+        "lease_lock_path": lease_path,
+        "lease_lock_absent": lease_lock_absent,
+    }
 
 
 @dataclass(frozen=True)
@@ -323,10 +564,10 @@ def build_full_run_terminal_report(
     quality_results: Sequence[Mapping[str, Any]],
     zero_active_scheduler_jobs: int,
     forbidden_capability_deltas: Mapping[str, int],
-    lease_released: bool,
+    authorization_invocation_evidence: Mapping[str, Any] | None = None,
+    cleanup_lease_evidence: Mapping[str, Any] | None = None,
     scheduler_ownership: Mapping[str, Any] | None = None,
     runtime_first_terminal_cause: str | None = None,
-    authorized_invocation_count: int | None = None,
     active_work_result: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Emit the one canonical exact-identity full-run terminal report (design §10)."""
@@ -402,6 +643,12 @@ def build_full_run_terminal_report(
         str(item.get("validation_kind") or "")
         for item in (owner_evidence.get("local_validation_identities") or [])
     })
+    marker_evidence = dict(authorization_invocation_evidence or {})
+    cleanup_evidence = dict(cleanup_lease_evidence or {})
+    factory_config_hash = (
+        None if factory_identity is None else factory_identity["config_hash"]
+    )
+    marker_evidence["factory_config_hash"] = factory_config_hash
 
     return {
         "report_kind": "V2_9_8B_FULL_RUN_WINDOW_15M_TERMINAL_EVIDENCE",
@@ -414,9 +661,7 @@ def build_full_run_terminal_report(
             "configuration_id": context.configuration_id,
             "supervision_id": supervision_id,
             "factory_run_id": context.factory_run_id,
-            "factory_config_hash": (
-                None if factory_identity is None else factory_identity["config_hash"]
-            ),
+            "factory_config_hash": factory_config_hash,
             "launch_git_provenance": dict(launch_git_provenance or {}),
             "db_target_identity": _require(db_target_identity, "db_target_identity"),
         },
@@ -480,6 +725,7 @@ def build_full_run_terminal_report(
                 reconciliation.get("missing_mandatory_stage_kinds") or []
             ),
         },
+        "authorization_and_invocation": marker_evidence,
         # 10.4 terminal safety
         "terminal_safety": {
             "campaign_window_reconciliation": {
@@ -489,7 +735,19 @@ def build_full_run_terminal_report(
             "zero_active_scheduler_jobs": int(zero_active_scheduler_jobs) == 0,
             "active_scheduler_job_count": int(zero_active_scheduler_jobs),
             "active_work_result": dict(active_work_result or {}),
-            "lease_released": bool(lease_released),
+            "cleanup_evidence": cleanup_evidence,
+            "cleanup_identity": cleanup_evidence.get("cleanup_identity"),
+            "cleanup_identity_exact": cleanup_evidence.get(
+                "cleanup_identity_exact"
+            ),
+            "cleanup_completed": cleanup_evidence.get("cleanup_completed"),
+            "durable_terminal_supervision": cleanup_evidence.get(
+                "durable_terminal_supervision"
+            ),
+            "lease_released": cleanup_evidence.get("lease_released"),
+            "lease_released_at": cleanup_evidence.get("lease_released_at"),
+            "lease_lock_path": cleanup_evidence.get("lease_lock_path"),
+            "lease_lock_absent": cleanup_evidence.get("lease_lock_absent"),
             "forbidden_capability_deltas": forbidden_deltas,
             "zero_forbidden_deltas": all(
                 value == 0 for value in forbidden_deltas.values()
@@ -500,10 +758,6 @@ def build_full_run_terminal_report(
         "runtime_first_terminal_cause": (
             None if runtime_first_terminal_cause is None
             else str(runtime_first_terminal_cause)
-        ),
-        "authorized_invocation_count": (
-            None if authorized_invocation_count is None
-            else int(authorized_invocation_count)
         ),
         "memory_quality_outcomes": [
             {
@@ -521,8 +775,6 @@ def build_full_run_terminal_report(
 
 def evaluate_campaign_acceptance_gate(
     report: Mapping[str, Any],
-    *,
-    authorized_invocation_count: int,
 ) -> dict[str, Any]:
     """Apply the campaign acceptance gate to a full-run terminal report (§11).
 
@@ -536,6 +788,7 @@ def evaluate_campaign_acceptance_gate(
     selection = report.get("selection_and_lifecycle", {})
     accounting = report.get("full_run_accounting", {})
     safety = report.get("terminal_safety", {})
+    markers = report.get("authorization_and_invocation", {})
     reconciliation = accounting.get("owner_action_local_reconciliation", {})
 
     selected = selection.get("selected_tokens") or []
@@ -570,7 +823,65 @@ def evaluate_campaign_acceptance_gate(
     )
 
     checks = {
-        "exactly_one_authorized_invocation": int(authorized_invocation_count) == 1,
+        "exactly_one_authorization_marker": (
+            type(markers.get("authorization_count")) is int
+            and markers.get("authorization_count") == 1
+            and type(markers.get("exact_authorization_count")) is int
+            and markers.get("exact_authorization_count") == 1
+        ),
+        "exactly_one_matching_supervision_invocation": (
+            type(markers.get("invocation_count")) is int
+            and markers.get("invocation_count") == 1
+        ),
+        "exactly_one_matching_factory_binding": (
+            type(markers.get("factory_binding_count")) is int
+            and markers.get("factory_binding_count") == 1
+            and type(markers.get("campaign_factory_binding_history_count")) is int
+            and markers.get("campaign_factory_binding_history_count") == 1
+        ),
+        "zero_additional_supervision_history": (
+            markers.get("supervision_history_count") == 1
+            and markers.get("additional_supervision_history_count") == 0
+        ),
+        "authorization_supervision_binding_correspondence_exact": (
+            markers.get("marker_correspondence_exact") is True
+            and markers.get(
+                "configuration_supervision_binding_correspondence_exact"
+            ) is True
+        ),
+        "marker_payload_identities_exact": bool(
+            isinstance(markers.get("authorization_marker"), Mapping)
+            and markers.get("authorization_marker")
+            == markers.get("expected_authorization_marker")
+            and markers.get("authorization_marker", {}).get("campaign_id")
+            == report.get("identity", {}).get("campaign_id")
+            and markers.get("authorization_marker", {}).get("configuration_id")
+            == report.get("identity", {}).get("configuration_id")
+            and markers.get("authorization_marker", {}).get("run_id")
+            == report.get("identity", {}).get("campaign_run_id")
+            and markers.get("authorization_marker", {}).get("execution_id")
+            == report.get("identity", {}).get("execution_id")
+            and markers.get("authorization_marker", {}).get("operator_approved")
+            is True
+            and isinstance(markers.get("invocation_marker"), Mapping)
+            and markers.get("invocation_marker", {}).get("supervision_id")
+            == str(report.get("identity", {}).get("supervision_id") or "")
+            and markers.get("invocation_marker", {}).get("campaign_id")
+            == report.get("identity", {}).get("campaign_id")
+            and markers.get("invocation_marker", {}).get("configuration_id")
+            == report.get("identity", {}).get("configuration_id")
+            and markers.get("invocation_marker", {}).get("run_id")
+            == report.get("identity", {}).get("campaign_run_id")
+            and markers.get("invocation_marker", {}).get("owner_id")
+            == safety.get("cleanup_identity", {}).get("owner_id")
+            and markers.get("invocation_marker", {}).get("owner_id")
+            == safety.get("cleanup_evidence", {}).get(
+                "durable_supervision", {}
+            ).get("owner_id")
+            and markers.get("invocation_marker", {}).get(
+                "authorization_marker_id"
+            ) == markers.get("authorization_marker", {}).get("marker_id")
+        ),
         "exactly_two_distinct_selected_targets": len(distinct_targets) == 2
         and len(selected) == 2,
         "exactly_two_terminal_window_15m_lifecycles": terminal_window_count == 2,
@@ -623,11 +934,15 @@ def evaluate_campaign_acceptance_gate(
         and bool(accounting.get("action_local_evidence"))
         and bool(accounting.get("campaign_scheduler_work_rows"))
         and bool(accounting.get("sealed_stage_diagnostics"))
+        and isinstance(markers.get("authorization_marker"), Mapping)
+        and isinstance(markers.get("invocation_marker"), Mapping)
         and all(
             key in safety
             for key in (
                 "active_scheduler_job_count", "locked_scheduler_job_count",
-                "lease_released", "forbidden_capability_deltas",
+                "cleanup_identity", "cleanup_completed", "lease_released",
+                "lease_released_at", "lease_lock_absent",
+                "forbidden_capability_deltas",
                 "scheduler_retry_count", "restart_count", "resume_count",
                 "successor_count",
             )
@@ -647,7 +962,27 @@ def evaluate_campaign_acceptance_gate(
             for item in selected
         ) == 16,
         "zero_active_scheduler_jobs": bool(safety.get("zero_active_scheduler_jobs")),
-        "lease_released": bool(safety.get("lease_released")),
+        "zero_active_owned_work_after_cleanup": (
+            type(safety.get("cleanup_evidence", {}).get(
+                "active_owned_work_after"
+            )) is int
+            and safety.get("cleanup_evidence", {}).get(
+                "active_owned_work_after"
+            ) == 0
+        ),
+        "cleanup_evidence_present_and_exact": (
+            safety.get("cleanup_evidence", {}).get("cleanup_result_present") is True
+            and safety.get("cleanup_identity_exact") is True
+        ),
+        "cleanup_completed": safety.get("cleanup_completed") is True,
+        "lease_released": safety.get("lease_released") is True,
+        "durable_terminal_supervision": (
+            safety.get("durable_terminal_supervision") is True
+        ),
+        "durable_lease_release_timestamp_present": bool(
+            safety.get("lease_released_at")
+        ),
+        "lease_lock_absent": safety.get("lease_lock_absent") is True,
         "zero_forbidden_deltas": bool(safety.get("zero_forbidden_deltas")),
         "zero_locked_work": bool(safety.get("zero_locked_work")),
         "scheduler_transition_coverage_complete": bool(
@@ -692,8 +1027,28 @@ def evaluate_campaign_acceptance_gate(
                 "owner_evidence_sha256",
                 "action_local_evidence_sha256",
                 "report_body_sha256",
+                "authorization_marker_sha256",
                 "invocation_marker_sha256",
             )
+        ),
+        "authorization_marker_digest_exact": bool(
+            isinstance(markers.get("authorization_marker"), Mapping)
+            and report.get("hashes", {}).get("authorization_marker_sha256")
+            == campaign_evidence_sha256(markers.get("authorization_marker"))
+            and markers.get("stored_authorization_marker_sha256")
+            == report.get("hashes", {}).get("authorization_marker_sha256")
+        ),
+        "invocation_marker_digest_exact": bool(
+            isinstance(markers.get("invocation_marker"), Mapping)
+            and report.get("hashes", {}).get("invocation_marker_sha256")
+            == campaign_evidence_sha256(markers.get("invocation_marker"))
+        ),
+        "configuration_hash_not_substituted_as_marker": bool(
+            report.get("identity", {}).get("factory_config_hash")
+            and report.get("hashes", {}).get("authorization_marker_sha256")
+            != report.get("identity", {}).get("factory_config_hash")
+            and report.get("hashes", {}).get("invocation_marker_sha256")
+            != report.get("identity", {}).get("factory_config_hash")
         ),
     }
 
@@ -1011,11 +1366,9 @@ def finalize_full_run_ownership_and_report(
     supervision_id: Any,
     launch_git_provenance: Mapping[str, Any],
     db_target_identity: str,
-    authorized_invocation_count: int,
     runtime_terminal_status: str,
-    lease_released: bool,
+    cleanup_result: Mapping[str, Any] | None,
     runtime_first_terminal_cause: str | None = None,
-    active_work_result: Mapping[str, Any] | None = None,
     queue_dispositions: Mapping[int, str] | None = None,
     forbidden_capability_deltas: Mapping[str, int] | None = None,
     now: str | None = None,
@@ -1657,6 +2010,18 @@ def finalize_full_run_ownership_and_report(
         ),
         "scheduler_transition_coverage": action_local.scheduler_transition_coverage(),
     }
+    marker_evidence = load_authorization_invocation_evidence(
+        connection,
+        context=context,
+        execution_id=execution_id,
+        supervision_id=str(supervision_id),
+    )
+    cleanup_evidence = load_cleanup_lease_evidence(
+        connection,
+        context=context,
+        supervision_id=str(supervision_id),
+        cleanup_result=cleanup_result,
+    )
 
     report = build_full_run_terminal_report(
         connection,
@@ -1668,8 +2033,7 @@ def finalize_full_run_ownership_and_report(
         selected_tokens=selected_tokens,
         runtime_terminal_status=runtime_terminal_status,
         runtime_first_terminal_cause=runtime_first_terminal_cause,
-        authorized_invocation_count=authorized_invocation_count,
-        active_work_result=active_work_result,
+        active_work_result=cleanup_result,
         owner_evidence=owner.durable_evidence(),
         action_local_evidence=action_local_evidence,
         six_unit_totals=owner.six_unit_totals(),
@@ -1679,10 +2043,11 @@ def finalize_full_run_ownership_and_report(
         quality_results=quality_results,
         zero_active_scheduler_jobs=active_jobs,
         forbidden_capability_deltas=forbidden_capability_deltas or {},
-        lease_released=lease_released,
+        authorization_invocation_evidence=marker_evidence,
+        cleanup_lease_evidence=cleanup_evidence,
         scheduler_ownership=scheduler_ownership,
     )
-    cleanup_truth = dict(active_work_result or {})
+    cleanup_truth = dict(cleanup_result or {})
     automatic_retries = int(cleanup_truth.get("automatic_retries") or 0)
     restart_count = 1 if cleanup_truth.get("restart_created") is True else 0
     resume_count = 1 if cleanup_truth.get("resume_created") is True else 0
@@ -1747,16 +2112,17 @@ def finalize_full_run_ownership_and_report(
         "action_local_evidence_sha256": hashlib.sha256(
             canonical(report["full_run_accounting"]["action_local_evidence"])
         ).hexdigest(),
+        "authorization_marker_sha256": str(
+            marker_evidence.get("authorization_marker_sha256") or ""
+        ),
         "invocation_marker_sha256": str(
-            report["identity"].get("factory_config_hash") or ""
+            marker_evidence.get("invocation_marker_sha256") or ""
         ),
     }
     report["hashes"]["report_body_sha256"] = hashlib.sha256(
         canonical(report)
     ).hexdigest()
-    gate = evaluate_campaign_acceptance_gate(
-        report, authorized_invocation_count=int(authorized_invocation_count)
-    )
+    gate = evaluate_campaign_acceptance_gate(report)
     verdict = gate["verdict"]
     lifecycle_started = bool(reconciliation.get("lifecycle_started"))
     if blocked_reasons and verdict == VERDICT_PASS:

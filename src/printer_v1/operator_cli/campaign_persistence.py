@@ -31,6 +31,8 @@ TERMINAL_CAMPAIGN_STATES = frozenset(
     }
 )
 REPLAY_STATES = frozenset({"REPLAY_VERIFIED", "REPLAY_BLOCKED"})
+AUTHORIZATION_MARKER_KIND = "PRINTER_V1_OPERATIONAL_CAMPAIGN_AUTHORIZATION"
+AUTHORIZATION_MARKER_VERSION = "V2_9_8B_C12_C14_V1"
 
 
 class CampaignPersistenceError(ValueError):
@@ -61,6 +63,59 @@ def _canonical_json(value: Mapping[str, Any], field: str) -> str:
 
 def _sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def canonical_campaign_evidence_json(value: Mapping[str, Any]) -> str:
+    """Return the immutable campaign owner's versioned canonical JSON bytes."""
+    return _canonical_json(value, "campaign evidence")
+
+
+def campaign_evidence_sha256(value: Mapping[str, Any]) -> str:
+    """Hash one canonical campaign-evidence payload with SHA-256."""
+    return _sha256_text(canonical_campaign_evidence_json(value))
+
+
+def build_authorization_marker_payload(
+    *,
+    marker_id: str,
+    execution_id: str,
+    campaign_id: str,
+    configuration_id: str,
+    run_id: str,
+    policy_version: str,
+    db_target_identity: str,
+    launch_git_provenance: Mapping[str, Any],
+    operator_approved: bool,
+) -> dict[str, Any]:
+    """Build the dedicated authorization payload stored by the config owner.
+
+    The payload deliberately excludes ``configuration_hash`` so the marker
+    digest and the factory configuration hash remain separate contracts.
+    """
+    if operator_approved is not True:
+        raise CampaignPersistenceError("authorization marker requires operator approval")
+    try:
+        provenance = validate_launch_provenance(launch_git_provenance)
+    except (GitProvenanceError, TypeError, ValueError) as exc:
+        raise CampaignPersistenceError("launch Git provenance is invalid") from exc
+    payload = {
+        "marker_kind": AUTHORIZATION_MARKER_KIND,
+        "marker_version": AUTHORIZATION_MARKER_VERSION,
+        "marker_id": _nonempty(marker_id, "authorization marker_id"),
+        "execution_id": _nonempty(execution_id, "execution_id"),
+        "campaign_id": _nonempty(campaign_id, "campaign_id"),
+        "configuration_id": _nonempty(configuration_id, "configuration_id"),
+        "run_id": _nonempty(run_id, "run_id"),
+        "policy_version": _nonempty(policy_version, "policy_version"),
+        "db_target_identity": _nonempty(
+            db_target_identity, "db_target_identity"
+        ),
+        "launch_git_provenance": provenance,
+        "operator_approved": True,
+    }
+    # Validate serializability before this payload enters immutable configuration.
+    canonical_campaign_evidence_json(payload)
+    return payload
 
 
 def _connect(db_path: str | Path) -> sqlite3.Connection:

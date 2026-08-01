@@ -13,6 +13,7 @@ campaign, no authoritative database, no migration.
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime
 import copy
 import json
 import os
@@ -23,7 +24,13 @@ import unittest
 from printer_v1.db import apply_migrations
 from printer_v1.operator_cli.campaign_persistence import (
     DB_MODE_PROOF_ISOLATED,
+    build_authorization_marker_payload,
+    campaign_evidence_sha256,
     create_campaign,
+)
+from printer_v1.operator_cli.campaign_supervision import (
+    acquire_campaign_supervision,
+    cleanup_campaign_supervision,
 )
 from printer_v1.operator_cli.campaign_ownership import (
     bind_authoritative_run_id,
@@ -113,9 +120,24 @@ class _SemanticsFixture(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(dir=temp_parent)
         self.db = Path(self.temp.name) / "semantics.sqlite3"
         apply_migrations(self.db)
+        authorization_marker = build_authorization_marker_payload(
+            marker_id="exec-s-authorization-marker", execution_id="exec-s",
+            campaign_id=CAMPAIGN, configuration_id=CONFIG, run_id=RUN,
+            policy_version="v2-9.8b", db_target_identity="isolated-s",
+            launch_git_provenance=_provenance(), operator_approved=True,
+        )
         create_campaign(
             self.db, campaign_id=CAMPAIGN, configuration_id=CONFIG,
-            configuration={"slots": 2}, launch_provenance=_provenance(),
+            configuration={
+                "slots": 2, "execution_id": "exec-s", "campaign_id": CAMPAIGN,
+                "configuration_id": CONFIG, "run_id": RUN,
+                "policy_version": "v2-9.8b", "db_target_identity": "isolated-s",
+                "operator_approved": True,
+                "authorization_marker": authorization_marker,
+                "authorization_marker_sha256": campaign_evidence_sha256(
+                    authorization_marker
+                ),
+            }, launch_provenance=_provenance(),
             db_mode=DB_MODE_PROOF_ISOLATED, db_target_identity="isolated-s",
             proof_source_db_identity="source-s", policy_version="v2-9.8b",
         )
@@ -135,6 +157,32 @@ class _SemanticsFixture(unittest.TestCase):
         )
         self.pre_scheduler_identities = self._project_pre_lifecycle_scheduler_work()
         self._seed_boundary_stages(self.owner)
+        transition_state(
+            self.conn, record_kind="campaign", identity=CAMPAIGN,
+            expected_state="DRAFT", new_state="PREFLIGHT", now=NOW,
+        )
+        transition_state(
+            self.conn, record_kind="campaign", identity=CAMPAIGN,
+            expected_state="PREFLIGHT", new_state="RUNNING", now=NOW,
+        )
+        transition_state(
+            self.conn, record_kind="run", identity=RUN,
+            expected_state="DRAFT", new_state="PREFLIGHT", now=NOW,
+        )
+        transition_state(
+            self.conn, record_kind="run", identity=RUN,
+            expected_state="PREFLIGHT", new_state="RUNNING", now=NOW,
+        )
+        self.supervision_id = "supervision-s"
+        self.supervision_owner_id = "owner-s"
+        self.lease_lock = Path(self.temp.name) / "campaign-s.lease.lock"
+        acquire_campaign_supervision(
+            self.db, lock_path=self.lease_lock,
+            supervision_id=self.supervision_id, campaign_id=CAMPAIGN,
+            configuration_id=CONFIG, run_id=RUN,
+            owner_id=self.supervision_owner_id, now=datetime.fromisoformat(NOW),
+        )
+        self._cleanup_result = None
 
     def tearDown(self) -> None:
         self.conn.close()
@@ -463,22 +511,26 @@ class _SemanticsFixture(unittest.TestCase):
                          "validation_ordinal": job * 1000 + index})
         return ledger
 
+    def _real_cleanup(self):
+        if self._cleanup_result is None:
+            self._cleanup_result = cleanup_campaign_supervision(
+                self.db, supervision_id=self.supervision_id,
+                campaign_id=CAMPAIGN, configuration_id=CONFIG, run_id=RUN,
+                owner_id=self.supervision_owner_id,
+                terminal_status="COMPLETED",
+                first_terminal_cause="FACTORY_COMPLETED",
+                now=datetime.fromisoformat(NOW),
+            )
+        return self._cleanup_result
+
     def _finalize(self, *, action_local=None, **overrides):
         defaults = dict(
-            execution_id="exec-s", supervision_id=1,
+            execution_id="exec-s", supervision_id=self.supervision_id,
             launch_git_provenance=_provenance(), db_target_identity="isolated-s",
-            authorized_invocation_count=1,
             runtime_terminal_status="TERMINAL_COMPLETED",
-            lease_released=True,
+            cleanup_result=self._real_cleanup(),
             forbidden_capability_deltas={
                 "retrieval_queries": 0, "paper_decisions": 0, "paper_trades": 0,
-            },
-            active_work_result={
-                "cancelled_scheduler_jobs": 0,
-                "automatic_retries": 0,
-                "restart_created": False,
-                "resume_created": False,
-                "successor_created": False,
             },
             now=NOW,
         )
@@ -505,20 +557,12 @@ class SemanticsCorrectionTests(_SemanticsFixture):
             owner=replacement_owner,
             action_local=self._action_local(),
             execution_id="exec-s",
-            supervision_id=1,
+            supervision_id=self.supervision_id,
             launch_git_provenance=_provenance(),
             db_target_identity="isolated-s",
-            authorized_invocation_count=1,
             runtime_terminal_status="TERMINAL_COMPLETED",
-            lease_released=True,
+            cleanup_result=self._real_cleanup(),
             forbidden_capability_deltas={"retrieval_queries": 0},
-            active_work_result={
-                "cancelled_scheduler_jobs": 0,
-                "automatic_retries": 0,
-                "restart_created": False,
-                "resume_created": False,
-                "successor_created": False,
-            },
             now=NOW,
         )
         self.assertNotEqual(replaced_owner["verdict"], VERDICT_PASS)
@@ -643,21 +687,23 @@ class SemanticsCorrectionTests(_SemanticsFixture):
 
     # 6. authorization count 0 or 2 blocks; exactly 1 passes.
     def test_authorization_count_zero_or_two_blocks(self) -> None:
-        self.assertEqual(self._finalize()["verdict"], VERDICT_PASS)
+        outcome = self._finalize()
+        self.assertEqual(outcome["verdict"], VERDICT_PASS)
         for bad in (0, 2):
             with self.subTest(count=bad):
-                # fresh graph per finalize (registration is idempotent, gate re-runs)
-                outcome = self._finalize(authorized_invocation_count=bad)
-                self.assertNotEqual(outcome["verdict"], VERDICT_PASS)
+                report = copy.deepcopy(outcome["report"])
+                report["authorization_and_invocation"]["authorization_count"] = bad
+                gate = evaluate_campaign_acceptance_gate(report)
+                self.assertNotEqual(gate["verdict"], VERDICT_PASS)
                 self.assertFalse(
-                    outcome["campaign_acceptance"]["checks"][
-                        "exactly_one_authorized_invocation"
-                    ]
+                    gate["checks"]["exactly_one_authorization_marker"]
                 )
 
     # 7. an unreleased lease blocks.
     def test_unreleased_lease_blocks(self) -> None:
-        outcome = self._finalize(lease_released=False)
+        cleanup = dict(self._real_cleanup())
+        cleanup["lease_released"] = False
+        outcome = self._finalize(cleanup_result=cleanup)
         self.assertNotEqual(outcome["verdict"], VERDICT_PASS)
         self.assertFalse(outcome["report"]["terminal_safety"]["lease_released"])
         self.assertFalse(outcome["campaign_acceptance"]["checks"]["lease_released"])
@@ -669,7 +715,9 @@ class SemanticsCorrectionTests(_SemanticsFixture):
             (NOW, "unexpected-worker", job_id),
         )
         self.conn.commit()
-        locked = self._finalize()
+        cleanup = dict(self._real_cleanup())
+        cleanup["active_owned_work_after"] = 1
+        locked = self._finalize(cleanup_result=cleanup)
         self.assertNotEqual(locked["verdict"], VERDICT_PASS)
         self.assertFalse(locked["campaign_acceptance"]["checks"]["zero_locked_work"])
 
@@ -704,7 +752,9 @@ class SemanticsCorrectionTests(_SemanticsFixture):
         self.assertEqual(ok["report"]["campaign_acceptance_verdict"], VERDICT_PASS)
         self.assertTrue(ok["campaign_acceptance"]["pass"])
         # Blocked case: an unreleased lease. No surface may still say CAMPAIGN_PASS.
-        blocked = self._finalize(lease_released=False)
+        cleanup = dict(self._real_cleanup())
+        cleanup["lease_released"] = False
+        blocked = self._finalize(cleanup_result=cleanup)
         self.assertNotEqual(blocked["verdict"], VERDICT_PASS)
         self.assertEqual(
             blocked["verdict"], blocked["campaign_acceptance"]["verdict"]
@@ -721,16 +771,12 @@ class SemanticsCorrectionTests(_SemanticsFixture):
         scoped["full_run_accounting"]["owner_action_local_reconciliation"][
             "equality_scoped_stage_ids"
         ] = [scoped["full_run_accounting"]["sealed_stage_diagnostics"][0]["stage_id"]]
-        scoped_gate = evaluate_campaign_acceptance_gate(
-            scoped, authorized_invocation_count=1
-        )
+        scoped_gate = evaluate_campaign_acceptance_gate(scoped)
         self.assertFalse(scoped_gate["checks"]["owner_action_local_equal_non_vacuous"])
 
         omitted = copy.deepcopy(outcome["report"])
         omitted["full_run_accounting"].pop("campaign_scheduler_work_rows")
-        omitted_gate = evaluate_campaign_acceptance_gate(
-            omitted, authorized_invocation_count=1
-        )
+        omitted_gate = evaluate_campaign_acceptance_gate(omitted)
         self.assertFalse(omitted_gate["checks"]["canonical_report_complete"])
 
     def test_missing_discovery_scheduler_ownership_blocks(self) -> None:
@@ -840,9 +886,7 @@ class MandatoryStageTests(_SemanticsFixture):
                     for s in report["full_run_accounting"]["sealed_stage_diagnostics"]
                     if s["stage_kind"] != omitted
                 ]
-                gate = evaluate_campaign_acceptance_gate(
-                    report, authorized_invocation_count=1
-                )
+                gate = evaluate_campaign_acceptance_gate(report)
                 self.assertFalse(gate["checks"]["all_mandatory_stages_sealed"])
                 self.assertNotEqual(gate["verdict"], VERDICT_PASS)
 

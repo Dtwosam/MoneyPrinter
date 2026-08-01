@@ -21,7 +21,13 @@ from unittest.mock import patch
 from printer_v1.db import apply_migrations
 from printer_v1.operator_cli.campaign_persistence import (
     DB_MODE_PROOF_ISOLATED,
+    build_authorization_marker_payload,
+    campaign_evidence_sha256,
     create_campaign,
+)
+from printer_v1.operator_cli.campaign_supervision import (
+    acquire_campaign_supervision,
+    cleanup_campaign_supervision,
 )
 from printer_v1.operator_cli.abstract_campaign_command import report_path_identity
 from printer_v1.operator_cli.campaign_ownership import (
@@ -29,6 +35,7 @@ from printer_v1.operator_cli.campaign_ownership import (
     campaign_scheduler_work_id,
     create_campaign_run,
     create_cycle_with_two_slots,
+    transition_state,
 )
 from printer_v1.operator_cli.campaign_full_run_accounting import (
     OperationalLifecycleOwnershipContext,
@@ -99,6 +106,13 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
         self.db = root / "wiring.sqlite3"
         self.backup = root / "wiring.backup.sqlite3"
         apply_migrations(self.db)
+        authorization_marker = build_authorization_marker_payload(
+            marker_id="exec-w-authorization-marker", execution_id="exec-w",
+            campaign_id=CAMPAIGN, configuration_id=CONFIG, run_id=RUN,
+            policy_version="v2-9.8b", db_target_identity="isolated-w",
+            launch_git_provenance=dict(TEST_GIT_PROVENANCE),
+            operator_approved=True,
+        )
         create_campaign(
             self.db, campaign_id=CAMPAIGN, configuration_id=CONFIG,
             configuration={
@@ -106,11 +120,48 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
                 "report_directory_identity": report_path_identity(
                     root / "exec-w" / "reports"
                 ),
+                "campaign_id": CAMPAIGN, "configuration_id": CONFIG,
+                "policy_version": "v2-9.8b", "db_target_identity": "isolated-w",
+                "operator_approved": True,
+                "authorization_marker": authorization_marker,
+                "authorization_marker_sha256": campaign_evidence_sha256(
+                    authorization_marker
+                ),
             }, launch_provenance=dict(TEST_GIT_PROVENANCE),
             db_mode=DB_MODE_PROOF_ISOLATED, db_target_identity="isolated-w",
             proof_source_db_identity="source-w", policy_version="v2-9.8b",
         )
         self._seed_campaign_graph()
+        conn = sqlite3.connect(self.db)
+        try:
+            transition_state(
+                conn, record_kind="campaign", identity=CAMPAIGN,
+                expected_state="DRAFT", new_state="PREFLIGHT", now=NOW,
+            )
+            transition_state(
+                conn, record_kind="campaign", identity=CAMPAIGN,
+                expected_state="PREFLIGHT", new_state="RUNNING", now=NOW,
+            )
+            transition_state(
+                conn, record_kind="run", identity=RUN,
+                expected_state="DRAFT", new_state="PREFLIGHT", now=NOW,
+            )
+            transition_state(
+                conn, record_kind="run", identity=RUN,
+                expected_state="PREFLIGHT", new_state="RUNNING", now=NOW,
+            )
+        finally:
+            conn.close()
+        self.supervision_id = "supervision-w"
+        self.supervision_owner_id = "owner-w"
+        self.lease_lock = root / "campaign-w.lease.lock"
+        acquire_campaign_supervision(
+            self.db, lock_path=self.lease_lock,
+            supervision_id=self.supervision_id, campaign_id=CAMPAIGN,
+            configuration_id=CONFIG, run_id=RUN,
+            owner_id=self.supervision_owner_id, now=datetime.fromisoformat(NOW),
+        )
+        self._cleanup_result = None
         shutil.copy2(self.db, self.backup)
         self.captured_run_id: str | None = None
         self.preallocated_run_id = "factory-run-w"
@@ -398,6 +449,15 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
             )
         except Exception:
             pass  # factory may already have bound it
+        if self._cleanup_result is None:
+            self._cleanup_result = cleanup_campaign_supervision(
+                self.db, supervision_id=self.supervision_id,
+                campaign_id=CAMPAIGN, configuration_id=CONFIG, run_id=RUN,
+                owner_id=self.supervision_owner_id,
+                terminal_status="COMPLETED",
+                first_terminal_cause="FACTORY_COMPLETED",
+                now=datetime.fromisoformat(NOW),
+            )
         reconcile_campaign_terminal(
             self.db, campaign_id=CAMPAIGN, run_id=RUN, cycle_id=CYCLE,
             terminal_cause="FACTORY_COMPLETED", run_status="COMPLETED",
@@ -418,20 +478,13 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
             return finalize_full_run_ownership_and_report(
                 conn, context=context, owner=self.owner, action_local=ledger,
                 execution_id="exec-w",
-                supervision_id=1, launch_git_provenance=dict(TEST_GIT_PROVENANCE),
+                supervision_id=self.supervision_id,
+                launch_git_provenance=dict(TEST_GIT_PROVENANCE),
                 db_target_identity="isolated-w",
-                authorized_invocation_count=1,
                 runtime_terminal_status="TERMINAL_COMPLETED",
-                lease_released=True,
+                cleanup_result=self._cleanup_result,
                 forbidden_capability_deltas={
                     "retrieval_queries": 0, "paper_decisions": 0, "paper_trades": 0,
-                },
-                active_work_result={
-                    "cancelled_scheduler_jobs": 0,
-                    "automatic_retries": 0,
-                    "restart_created": False,
-                    "resume_created": False,
-                    "successor_created": False,
                 },
                 now=NOW,
             )
@@ -625,6 +678,14 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
             pass
         finally:
             conn.close()
+        cleanup = cleanup_campaign_supervision(
+            self.db, supervision_id=self.supervision_id,
+            campaign_id=CAMPAIGN, configuration_id=CONFIG, run_id=RUN,
+            owner_id=self.supervision_owner_id, terminal_status="COMPLETED",
+            first_terminal_cause="FACTORY_COMPLETED",
+            now=datetime.fromisoformat(NOW),
+        )
+        self._cleanup_result = cleanup
         reconcile_campaign_terminal(
             self.db, campaign_id=CAMPAIGN, run_id=RUN, cycle_id=CYCLE,
             terminal_cause="FACTORY_COMPLETED", run_status="COMPLETED",
@@ -643,20 +704,15 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
             db_path=self.db, campaign_id=CAMPAIGN, campaign_run_id=RUN,
             cycle_id=CYCLE, configuration_id=CONFIG,
             factory_run_id=self.captured_run_id, execution_id="exec-w",
-            supervision_id=1, launch_git_provenance=dict(TEST_GIT_PROVENANCE),
+            supervision_id=self.supervision_id,
+            launch_git_provenance=dict(TEST_GIT_PROVENANCE),
             db_target_identity="isolated-w", lifecycle_started=True,
             lifecycle_operation_records=raw,
             forbidden_deltas={"retrieval_queries": 0},
             accounting_owner=self.owner,
             action_local_ledger=self.ledger,
             runtime_terminal_status="TERMINAL_COMPLETED",
-            active_work_result={
-                "cancelled_scheduler_jobs": 0,
-                "automatic_retries": 0,
-                "restart_created": False,
-                "resume_created": False,
-                "successor_created": False,
-            },
+            cleanup_result=cleanup,
         )
         self.assertEqual(outcome["verdict"], VERDICT_PASS, outcome.get("blocked_reasons"))
         self.assertTrue(outcome["campaign_acceptance"]["pass"])
@@ -669,7 +725,7 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
         outcome = _apply_full_run_campaign_acceptance(
             db_path=self.db, campaign_id=CAMPAIGN, campaign_run_id=RUN,
             cycle_id=CYCLE, configuration_id=CONFIG, factory_run_id=None,
-            execution_id="exec-w", supervision_id=1,
+            execution_id="exec-w", supervision_id=self.supervision_id,
             launch_git_provenance=dict(TEST_GIT_PROVENANCE),
             db_target_identity="isolated-w", lifecycle_started=False,
             lifecycle_operation_records=[], forbidden_deltas={},

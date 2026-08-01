@@ -174,3 +174,41 @@ Next permitted lane: `V2-9.8B Post-Repair WINDOW_15M Full-Run Accounting and Ter
 
 Stop after commit and push. Do not merge, tag, apply migration 050, run a
 campaign, or open a successor implementation/proof lane.
+
+## C12-C14 conformance-repair addendum — 2026-08-01
+
+The later independent read-only review correctly blocked the earlier C12-C14
+claims. It found that Campaign PASS could use a default `lease_released=True`,
+that the reported invocation marker hash was the factory configuration hash, and
+that invocation count was inferred from a factory-run binding. The independent
+review remains intact and is not rewritten or erased.
+
+The focused repair on branch
+`agent/v2-9-8b-c12-c14-authorization-marker-lease-evidence-repair` removes those
+false-PASS paths:
+
+- the ordinary coordinator passes the actual `cleanup_campaign_supervision()`
+  mapping and the acceptance boundary has no lease default;
+- immutable campaign configuration owns a dedicated pre-work authorization
+  marker with its own canonical payload and SHA-256 digest;
+- the exact campaign-supervision acquisition row owns the invocation marker and
+  invocation count;
+- factory configuration, authorization-marker, and invocation-marker hashes are
+  distinct fields and substitution blocks;
+- report-only replay reconstructs configuration, supervision, binding, cleanup,
+  release timestamp, and lock absence from the disposable database opened
+  read-only.
+
+The focused repair module reports 15 passed plus 16 subtests; the existing
+C1-C15 accounting/wiring set reports 47 passed plus 6 subtests; the
+supervision/abstract/source-accounting set reports 24 passed plus 11 subtests;
+and the nearest affected compatibility set reports 130 passed. No migration or
+schema changed, migration 050 was not applied, and `data/printer_v1.sqlite3` was
+not opened or mutated.
+
+Repaired C12, C13, and C14 are implementation/disposable-test PASS. This factual
+addendum does not supersede the blocked independent review by assertion. It
+authorizes only a repeat independent read-only conformance review; bounded proof,
+campaign execution, and all locked capabilities remain unauthorized. Full
+details are in
+`docs/printer-v1-v2-9-8b-c12-c14-authorization-marker-and-lease-evidence-conformance-repair.md`.
