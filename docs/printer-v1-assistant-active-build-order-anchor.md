@@ -1,8 +1,8 @@
 # Printer V1 Assistant Active Build Order Anchor
 
-## 1. Purpose
+## 1. Purpose and authority
 
-This document aligns Claude, ChatGPT, Codex and future assistants before
+This document aligns Claude, ChatGPT, Codex, and future assistants before
 Printer V1 memory-growth work.
 
 It does not replace:
@@ -17,6 +17,18 @@ It does not replace:
 Inside that source stack, the active memory-growth build order remains:
 
 `docs/printer-v1-memory-growth-build-order-v2.md`.
+
+It is not the sole source of truth. Current lane position must also follow later
+committed audits, designs, implementations, proofs, closeouts, and explicit
+build-order reconciliations.
+
+The current status reconciliation is:
+
+`docs/printer-v1-v2-9-8b-post-migration-closeout-active-build-order-reconciliation.md`.
+
+Verdict:
+
+`V2_9_8B_POST_MIGRATION_CLOSEOUT_ACTIVE_BUILD_ORDER_RECONCILIATION_PASS`.
 
 ## 2. Active lane
 
@@ -34,221 +46,294 @@ The active lane remains:
 V2-9.8B — Active Bounded Memory Growth Operations
 ```
 
-The current completed work inside V2-9.8B is the **Accounting and Exact-Identity
-Report-Only Repair** after the first authoritative `WINDOW_15M` campaign
-attempt. Its implementation verdict is:
+## 3. Completed V2-9.8B sequence relevant to the current lane
 
-`V2_9_8B_FIRST_AUTHORITATIVE_15M_ACCOUNTING_EXACT_IDENTITY_REPORT_ONLY_REPAIR_IMPLEMENTATION_PASS`.
-
-Its independent operator-review verdict is:
-
-`V2_9_8B_FIRST_AUTHORITATIVE_15M_ACCOUNTING_EXACT_IDENTITY_REPORT_ONLY_REPAIR_OPERATOR_REVIEW_PASS`.
-
-Its closeout verdict is:
-
-`V2_9_8B_FIRST_AUTHORITATIVE_15M_ACCOUNTING_EXACT_IDENTITY_REPORT_ONLY_REPAIR_CLOSEOUT_PASS`.
-
-Reviewed branch:
-`codex/v2-9-8b-accounting-report-only-repair`
-
-Reviewed HEAD:
-`0118a37e32929501c45f97ea9353b799b29fef7b`
-
-Design baseline:
-`e71e543d197154eba427b41e2e01574a59f527f5`
-
-Implementation commits: `b168c57`, `fd35b41`, `0118a37`.
-
-This repair closes the July 31 forensic defects: missing complete stage-evidence
-handoff under bounded shortage, sealed-stage self-comparison for action-local
-truth, and global latest-report `report-only` selection. The public coordinator
-now uses an independent pre-seal transport observer, exact owner/action-local
-identity reconciliation, exception-safe stage sealing, and exact-identity
-report-only behavior with deterministic blocked replay when the exact attempt
-has no terminal report.
-
-Focused proof: 31 repair tests and 103 combined focused affected tests passed.
-Authoritative DB SHA-256 remained unchanged at
-`f36f3b3fd7c389018323c219b3ce9421e2006769de3db860593ce4b31415a511`.
+### 3.1 First authoritative campaign and accounting repair
 
 The historical first authoritative campaign remains:
 
-`V2_9_8B_FIRST_AUTHORITATIVE_15M_CAMPAIGN_BLOCKED_UNSAFE`
+`V2_9_8B_FIRST_AUTHORITATIVE_15M_CAMPAIGN_BLOCKED_UNSAFE`.
 
 The permanent no-rerun marker for execution
-`20260731T002406Z-7612696c7295` remains valid. This repair does not backfill
-that attempt and does not authorize another campaign.
+`20260731T002406Z-7612696c7295` remains valid.
 
-Earlier terminal-safety finalization remains closed PASS and is preserved as
-prior completed work:
+The Accounting and Exact-Identity Report-Only Repair is closed:
 
-- `V2_9_8B_TERMINAL_SAFETY_ACCOUNTING_FINALIZATION_PASS`
-- `V2_9_8B_TERMINAL_SAFETY_ACCOUNTING_FINALIZATION_OPERATOR_REVIEW_PASS`
+- implementation PASS;
+- independent operator-review PASS;
+- closeout PASS;
+- design baseline `e71e543d197154eba427b41e2e01574a59f527f5`;
+- implementation commits `b168c57`, `fd35b41`, `0118a37`.
 
-Active repair documents:
+It repaired bounded-shortage stage evidence, independent pre-seal transport
+verification, exact owner/action-local identity reconciliation, exception-safe
+stage sealing, and exact-identity report-only behavior.
 
-- `docs/printer-v1-v2-9-8b-accounting-exact-identity-report-only-repair-design.md`
-- `docs/printer-v1-v2-9-8b-accounting-exact-identity-report-only-repair-implementation.md`
-- `docs/printer-v1-v2-9-8b-accounting-exact-identity-report-only-repair-closeout.md`
-- `docs/printer-v1-v2-9-8b-first-authoritative-15m-forensic-audit.md`
-- `docs/printer-v1-v2-9-8b-first-authoritative-15m-campaign-closeout.md`
+### 3.2 Post-accounting-repair readiness audit
 
-Prior terminal-safety / reconciliation documents (evidence):
+The readiness audit is already complete and must not be repeated:
 
-- `docs/printer-v1-v2-9-8b-terminal-safety-accounting-finalization-audit.md`
-- `docs/printer-v1-v2-9-8b-terminal-safety-accounting-finalization-design.md`
-- `docs/printer-v1-v2-9-8b-terminal-safety-accounting-finalization-closeout.md`
-- `docs/printer-v1-v2-9-8b-terminal-safety-accounting-finalization-operator-review.md`
-- `docs/printer-v1-v2-9-8b-active-build-order-reconciliation.md`
+- audit commit: `84127c62ba6179fcbddb90e61ed09f43d6bed5a4`;
+- read-only evidence transcript: `d97a382ca831558173fdfa7c5da570d813e2c954`;
+- verdict:
+  `V2_9_8B_POST_ACCOUNTING_REPAIR_AUTHORITATIVE_15M_CAMPAIGN_READINESS_AUDIT_PASS`.
 
-The operational factory active-path restoration remains the restored intake
-anchor:
+That audit statically traced the repaired ordinary route, inspected the
+authoritative DB read-only, verified the permanent marker and residual state,
+and preserved all runtime and financial locks.
 
-`docs/printer-v1-v2-9-8b-operational-factory-active-path-restoration.md`.
+### 3.3 Post-repair attempt and full-run blocker
 
-## 3. Restoration authority
+After the readiness PASS, post-repair campaign design and authorization advanced.
+The bounded post-repair attempt was later closed as:
 
-The selected last-good operational implementation checkpoint is:
+`V2_9_8B_POST_REPAIR_15M_BLOCKED_UNSAFE_FORENSIC_AUDIT_CONFIRMED`.
 
-`7c38f13816169c69697ed19893b7e12802d9b1b7`
+Two real `WINDOW_15M` lifecycles occurred, but the full-run campaign accounting
+and terminal report could not be trusted because complete campaign-wide
+Scheduler ownership, all-stage equality, exact window/cycle linkage, complete
+quality/episode truth, and non-vacuous terminal evidence were not proven.
 
-The first commit where candidate-acquisition adoption entered the active
-operational critical path is:
+The approved response was:
 
-`219ad8125a75f52686bfbf5953be0fa4cdca4712`
+1. full-run accounting and terminal-evidence design;
+2. final C1-C15 conformance map;
+3. schema design amendment;
+4. migration implementation;
+5. bounded disposable proof;
+6. migration closeout.
 
-The restored active route is:
+### 3.4 Scheduler ownership schema chain
+
+Completed documents and evidence include:
+
+- `docs/printer-v1-v2-9-8b-full-run-accounting-final-conformance-map.md`;
+- `docs/printer-v1-v2-9-8b-campaign-scheduler-ownership-schema-design-amendment.md`;
+- `docs/printer-v1-v2-9-8b-campaign-scheduler-ownership-schema-migration-implementation.md`;
+- `docs/printer-v1-v2-9-8b-campaign-scheduler-ownership-schema-migration-bounded-proof.md`;
+- `docs/printer-v1-v2-9-8b-campaign-scheduler-ownership-schema-migration-closeout.md`.
+
+Migration implementation controlling verdict:
+
+`V2_9_8B_CAMPAIGN_SCHEDULER_OWNERSHIP_SCHEMA_MIGRATION_IMPLEMENTATION_PASS`.
+
+Controlling bounded proof verdict:
+
+`V2_9_8B_CAMPAIGN_SCHEDULER_OWNERSHIP_SCHEMA_MIGRATION_BOUNDED_PROOF_PASS`.
+
+Migration closeout verdict:
+
+`V2_9_8B_CAMPAIGN_SCHEDULER_OWNERSHIP_SCHEMA_MIGRATION_CLOSEOUT_PASS`.
+
+Controlling proof execution:
+
+`V2_9_8B_MIG050_BOUNDED_PROOF_20260801T144740Z_5df7a275`.
+
+Closeout commit:
+
+`d0e7298315239cc85ff47155a2922339a9e7a52e`.
+
+Migration `050_campaign_scheduler_ownership_scope.sql` is proven only on a
+byte-identical disposable copy. It is not applied to the authoritative database.
+The supported authoritative schema head remains migration `049` until a later
+explicit operator-approved application lane.
+
+## 4. Current exact next permitted task
+
+On:
+
+`V2_9_8B_POST_MIGRATION_CLOSEOUT_ACTIVE_BUILD_ORDER_RECONCILIATION_PASS`
+
+the exact next permitted task is:
+
+```text
+V2-9.8B Post-Repair WINDOW_15M Full-Run Accounting and Terminal-Evidence Implementation (C1-C15)
+```
+
+The implementation must start from the accepted schema baseline containing the
+migration implementation, controlling proof package, migration closeout, and
+this reconciliation. It must not merge or revive earlier false-PASS C1-C15 work
+unchanged.
+
+## 5. C1-C15 implementation boundary
+
+Allowed:
+
+- static inspection of the accepted schema baseline and existing implementation;
+- implementation of the approved C1-C15 requirements only;
+- focused disposable-database tests and nearest affected regressions;
+- one campaign-wide `CampaignSixUnitOwner` and one independent action-local
+  ledger before first accountable work;
+- exact campaign/run/cycle/factory/token/pair/window/Scheduler/source identity;
+- complete source-attempt, byte, row, reservation, validation, Scheduler,
+  cadence, quality, report, terminal, and replay evidence required by the final
+  conformance map;
+- implementation documentation and factual PASS/BLOCKED closeout.
+
+Not allowed:
+
+- applying migration `050` to `data/printer_v1.sqlite3`;
+- providers, RPC, WebSockets, source fetching, discovery runs, campaigns, or
+  operational runtime;
+- authoritative DB mutation;
+- another post-repair campaign attempt;
+- memory generation or promotion against the authoritative corpus;
+- `WINDOW_1H`, `WINDOW_4H`, `WINDOW_12H`, or `WINDOW_24H` activation;
+- V2-10;
+- retrieval or dirty-memory training;
+- paper decisions, BUY/SELL/HOLD, positions, trades, audits, or PnL;
+- wallets, private keys, signing, real funds, paid APIs, scoring, ranking,
+  confidence, weighting, embeddings, or vectors.
+
+Use minimum sufficient risk-based verification. Run focused tests for the exact
+C1-C15 surface and nearest affected ownership/accounting/report/replay
+regressions. Reserve broad/full suites for the later major implementation
+closeout or pre-proof checkpoint.
+
+## 6. Required C1-C15 completion law
+
+Every requirement must satisfy:
+
+```text
+design requirement
+-> real execution boundary
+-> single owner evidence
+-> independent action-local evidence
+-> canonical report field
+-> acceptance-gate check
+-> negative fail-closed test
+```
+
+PASS requires all C1-C15 requirements, including:
+
+1. one full-run accounting owner;
+2. complete immutable identity before lifecycle work;
+3. every attributable source attempt observed exactly once;
+4. exact byte and normalized-row equality;
+5. real reservation boundaries;
+6. real named validation boundaries;
+7. complete Scheduler ownership and enqueue/claim/terminal observation;
+8. bidirectional full-manifest equality;
+9. window registration before slot terminalization;
+10. exact cadence, coverage, and two-close completeness;
+11. prevention of unlawful clean-episode insertion;
+12. one complete canonical report and strict gate;
+13. real terminal-safety and exactly-one-invocation evidence;
+14. exact public report-only replay with zero source/Scheduler/write effects;
+15. truthful stage terminal status and immutable first cause.
+
+Allowed implementation PASS label:
+
+`V2_9_8B_POST_REPAIR_WINDOW_15M_FULL_RUN_ACCOUNTING_AND_TERMINAL_EVIDENCE_IMPLEMENTATION_PASS`.
+
+A PASS still does not authorize an authoritative migration application or
+campaign execution. It permits only the next approved independent review/proof
+step.
+
+## 7. Operational route and preserved ownership
+
+The restored ordinary route remains conceptually:
 
 ```text
 public operational `run`
 -> operator approval and exact preflight
 -> verified backup / disposable restore rehearsal
--> proven governed discovery
--> deterministic selection with persisted reasons
--> atomic exact two-token tracking handoff
+-> governed discovery and deterministic selection
+-> exact two-token tracking handoff
 -> Source Governor + Central Scheduler
 -> two isolated WINDOW_15M lifecycles
 -> clean / dirty / blocked audit
--> terminal report and deterministic zero-source replay
+-> terminal report and exact zero-source replay
 -> safe stop with no successor
 ```
 
-It preserves independent later:
+The C1-C15 implementation may repair this route only as required by the approved
+full-run accounting design. It must not create another Scheduler, source loop,
+report owner, replay owner, campaign runner, or database authority.
 
-- holder-condition / memory-quality separation;
-- source-operation and Scheduler accounting;
-- Git provenance;
-- action-local blocked counters;
-- exact DB-mode and migration-ledger checks;
-- batch-scoped discovery persistence;
-- reporting and deterministic replay;
-- heartbeat, lease, lock and terminalization protections;
-- token-local identity and tracking reconciliation; and
-- ordinary `run` mode's fixed two-token, 15m-only policy.
-
-Migration 049 remains the supported schema head.
-
-## 4. Deferred candidate-acquisition state
+## 8. Deferred candidate-acquisition state
 
 Candidate-acquisition foundation, N2/N7, live acquisition transport, global
-Pump cursors, cursor recovery, migration-observation admission and
-optional-global accounting are deferred/experimental.
+Pump cursors, cursor recovery, migration-observation admission, and
+optional-global accounting remain deferred/experimental.
 
-Their implementation, migrations 048/049, tables, tests, closeouts and blocked
-live-proof evidence remain preserved. They are not:
+They are not:
 
-- an active operational prerequisite;
-- an active factory intake authority;
-- a public operational command mode;
-- a cursor or recovery authority for the active factory; or
-- permission for a retry, recovery, N7 or successor.
+- active operational prerequisites;
+- active factory intake authorities;
+- public operational command modes;
+- cursor or recovery authorities for the active factory; or
+- permission for a retry, recovery, N7, or successor.
 
-The active operational path must not read, reset, advance or interpret
+The active operational path must not read, reset, advance, or interpret those
 candidate-acquisition cursors or recovery rows.
 
-Historical foundation and live-proof documents remain evidence only. Their
-former "next task" pointers are superseded by this restoration anchor.
+## 9. Permanent restrictions
 
-## 5. Assistant behavior
+Printer V1 remains:
+
+- Solana-only;
+- Solana memecoin-only;
+- paper-trading only;
+- no live wallet, private keys, signing, real funds, or live execution;
+- no paid API dependency;
+- no scoring, ranking, confidence, or weighted decision logic;
+- no embeddings or vectors unless explicitly approved later;
+- no Source Governor bypass;
+- no Central Scheduler bypass;
+- no dirty memory used for retrieval or decisions;
+- no retrieval before its explicit approved lane;
+- no paper decisions before their explicit approved lane;
+- no BUY/SELL/HOLD unlock;
+- no paper positions, trade events, paper trade audits, or PnL.
+
+`WINDOW_5M_MICRO_EVENT` remains support-only. It never becomes a main outcome
+memory, independently triggers continuation, counts toward main clean-memory
+thresholds, or unlocks retrieval or financial behavior.
+
+## 10. Assistant behavior
 
 Assistants must:
 
-- use exactly two active tokens;
-- use the proven operational discovery/selection/tracking path;
+- verify the exact baseline and lane before editing;
+- read the final C1-C15 conformance map and schema amendment;
+- preserve the accepted migration and controlling proof evidence;
+- use disposable databases only for implementation tests;
+- keep the authoritative database byte-identical;
 - preserve Source Governor and Central Scheduler ownership;
-- preserve auditable selection/rejection reasons;
-- keep token/pair identities isolated;
-- keep `WINDOW_5M_MICRO_EVENT` support-only;
-- keep ordinary restoration proof at `WINDOW_15M`;
-- keep 1h/4h/12h/24h inactive in the restoration proof;
-- preserve clean, dirty, blocked and `DO_NOT_TRAIN` separation;
-- preserve deterministic report-only replay and safe stop;
-- use disposable migration-049 databases for proof;
-- keep the authoritative database byte-identical; and
-- stop after the requested lane and factual verdict.
+- preserve exact token/pair and campaign identity;
+- preserve clean, dirty, blocked, and `DO_NOT_TRAIN` separation;
+- stop after the requested implementation lane and factual verdict.
 
 Assistants must not:
 
-- run providers, RPC, WebSockets, N2, N7, recovery or backfill;
-- run a campaign, tracking lifecycle, snapshot, window or memory operation
-  against the authoritative database;
-- create another scheduler, source loop, DB authority or campaign runner;
-- reset or reinterpret any candidate cursor;
-- weaken pair identity, freshness, holder, liquidity, tradeability, evidence
-  quality or safe-stop gates;
+- repeat the completed post-accounting-repair readiness audit;
+- run providers/RPC/WebSockets or any campaign;
+- apply migration `050` to the authoritative database;
+- loosen evidence, identity, safety, budget, Scheduler, memory, or financial
+  gates to make tests pass;
 - auto-retry or auto-restart after terminal failure;
-- start V2-10 or any 12h/24h work;
-- activate retrieval or dirty-memory training;
-- create paper decisions, BUY/SELL/HOLD, positions, trades, audits or PnL;
-- add wallets, private keys, signing, real funds or live execution;
-- add paid APIs, scoring, ranking, confidence, weighting, embeddings or vectors.
+- start V2-10 or any later-window/retrieval/decision/financial lane.
 
-## 6. Source boundary
+## 11. Money-usefulness and remaining risks
 
-The restored active factory ordinary locator is the direct, stateless, one-page
-finalized Pump-program live tail with exact pinned Pump migrate (25 roles) and
-PumpSwap pool join under Source Governor and Central Scheduler. PumpPortal has
-no ordinary-run authority, import, secret, wallet, funding, metered stream or
-fallback path.
+The current implementation lane improves future paper-only money usefulness by
+making all discovery, handoff, lifecycle, and cleanup work fully attributable,
+preventing fake clean episodes, and ensuring terminal reports and replay reflect
+the exact campaign rather than partial or vacuous evidence.
 
-DexScreener, GeckoTerminal (conditional), GoPlus (conditional), one resolved
-Solana RPC endpoint (including holder evidence), conditional free Helius holder
-backup, CoinGecko context and keyless Jupiter paper quotes remain the ordinary
-graph. The locator makes no historical completeness claim and safe-stops on
-honest insufficient eligible supply.
+It makes no profit claim and unlocks no trading capability.
 
-Direct Pump/PumpSwap candidate-acquisition foundation, N2/N7, global cursors,
-recovery and migration-observation admission remain deferred/experimental. Their
-exact-claim rules remain valid inside that subsystem but do not make N2, a
-global cursor, recovery or migration-observation admission an operational
-prerequisite.
+Main risks:
 
-DexScreener and GeckoTerminal may provide their supported nomination/current
-market facts. No aggregator fact may weaken exact current token/pair,
-liquidity, freshness, holder, safety or tradeability requirements.
+- C1-C15 is cross-cutting and can accidentally introduce a second owner;
+- incomplete source-attempt or Scheduler observation can still produce vacuous
+  equality;
+- report fields can appear complete while execution-time evidence is missing;
+- migration `050` can be mistaken for an authoritative application;
+- earlier false-PASS implementation history can be mistaken for accepted code;
+- broad test expansion can hide the exact defect and waste resources.
 
-## 7. Exact next permitted task
-
-On:
-
-`V2_9_8B_FIRST_AUTHORITATIVE_15M_ACCOUNTING_EXACT_IDENTITY_REPORT_ONLY_REPAIR_CLOSEOUT_PASS`
-
-the exact next permitted task is:
-
-```text
-V2-9.8B Post-Accounting-Repair Authoritative WINDOW_15M Campaign Readiness Audit
-```
-
-This next task is audit/readiness only. It may statically inspect the repaired
-ordinary command, accounting handoff, exact-identity report-only surface, and
-route; read the authoritative database in read-only mode; verify the permanent
-no-rerun marker and residual campaign state; verify the exact non-placeholder
-operator command and environment-variable names; and document a factual
-PASS/BLOCKED verdict.
-
-It must not run providers/RPC, fetch sources, mutate the database, execute a
-campaign, repair or reclassify the July 31 attempt, generate memory, rerun a 1h
-proof, activate longer windows, start V2-10, enable retrieval, or create any
-paper/financial capability. A readiness PASS may authorize only the next approved
-design/specification or final-authorization step; it does not directly authorize
-campaign execution.
+Mitigation: follow the final conformance map column by column, use focused
+risk-based tests, fail closed on missing evidence, and preserve the authoritative
+DB and all later capability locks.
