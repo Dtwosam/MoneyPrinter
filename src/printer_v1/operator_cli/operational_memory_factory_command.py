@@ -3965,10 +3965,14 @@ def main(argv: Iterable[str] | None = None) -> int:
             raise OperationalMemoryFactoryError(
                 "campaign-id/run-id are only valid for report-only"
             )
-        # Read the four optional external manifest/marker environment variables
-        # once, all-or-none, and fail closed for any unsupported mode. Absent
-        # variables leave every mode behaving exactly as before.
+        # Read the four external manifest/marker bindings once and all-or-none.
+        # Ordinary run is application-wrapper-only; auxiliary modes preserve
+        # their existing no-binding behavior.
         git_provenance_authorization = _resolve_git_provenance_authorization(args.mode)
+        if args.mode == "run" and git_provenance_authorization is None:
+            raise OperationalMemoryFactoryError(
+                "ordinary run requires external one-shot wrapper authorization"
+            )
         if args.mode == "preflight-only":
             result = build_activation_preflight(
                 git_provenance_authorization=git_provenance_authorization

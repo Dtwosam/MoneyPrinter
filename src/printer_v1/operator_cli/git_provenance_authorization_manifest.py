@@ -108,6 +108,32 @@ class GitProvenanceAuthorizationError(RuntimeError):
     """Fail-closed Git-provenance authorization manifest error."""
 
 
+
+@dataclass(frozen=True)
+class PreparedGitProvenanceAuthorization:
+    """Immutable result of complete manifest validation before consumption."""
+
+    allowed_untracked_paths: tuple[str, ...]
+    authorization_id: str
+    authorization_sha256: str
+    manifest_sha256: str
+    allowed_file_set_sha256: str
+    repository_branch: str
+    repository_head: str
+    file_count: int
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "authorization_id": self.authorization_id,
+            "authorization_sha256": self.authorization_sha256,
+            "manifest_sha256": self.manifest_sha256,
+            "allowed_file_set_sha256": self.allowed_file_set_sha256,
+            "repository_branch": self.repository_branch,
+            "repository_head": self.repository_head,
+            "allowed_file_count": self.file_count,
+        }
+
+
 @dataclass(frozen=True)
 class ValidatedGitProvenanceAuthorization:
     """Immutable result of a passed manifest/marker validation.
@@ -984,19 +1010,18 @@ def _validate_marker(
         _require_false(marker.get(flag), label=f"application marker {flag}")
 
 
-def validate_git_provenance_authorization(
+
+def validate_git_provenance_manifest_pre_marker(
     *,
     repository_root: str | Path,
     manifest_path: str,
     manifest_sha256: str,
-    marker_path: str,
-    marker_sha256: str,
     git_executable: str = "git",
     timeout_seconds: float = GIT_COMMAND_TIMEOUT_SECONDS,
     runner: Callable[..., Any] = subprocess.run,
     sidecar_untracked_paths: Iterable[str] = (),
-) -> ValidatedGitProvenanceAuthorization:
-    """Validate an external manifest and marker and return an exact allowlist."""
+) -> PreparedGitProvenanceAuthorization:
+    """Validate the full manifest/Git/filesystem boundary before consumption."""
     if not 0 < timeout_seconds <= GIT_COMMAND_TIMEOUT_SECONDS:
         raise GitProvenanceAuthorizationError(
             "Git provenance timeout is outside the fixed ceiling"
@@ -1099,30 +1124,63 @@ def validate_git_provenance_authorization(
     )
 
     allowed_file_set_sha256 = compute_allowed_file_set_sha256(manifest["files"])
+    return PreparedGitProvenanceAuthorization(
+        allowed_untracked_paths=allowed_paths,
+        authorization_id=authorization_id,
+        authorization_sha256=authorization_sha256,
+        manifest_sha256=actual_manifest_sha256,
+        allowed_file_set_sha256=allowed_file_set_sha256,
+        repository_branch=branch,
+        repository_head=head,
+        file_count=len(allowed_paths),
+    )
 
+
+def validate_git_provenance_authorization(
+    *,
+    repository_root: str | Path,
+    manifest_path: str,
+    manifest_sha256: str,
+    marker_path: str,
+    marker_sha256: str,
+    git_executable: str = "git",
+    timeout_seconds: float = GIT_COMMAND_TIMEOUT_SECONDS,
+    runner: Callable[..., Any] = subprocess.run,
+    sidecar_untracked_paths: Iterable[str] = (),
+) -> ValidatedGitProvenanceAuthorization:
+    """Validate an external manifest and marker and return an exact allowlist."""
+    prepared = validate_git_provenance_manifest_pre_marker(
+        repository_root=repository_root,
+        manifest_path=manifest_path,
+        manifest_sha256=manifest_sha256,
+        git_executable=git_executable,
+        timeout_seconds=timeout_seconds,
+        runner=runner,
+        sidecar_untracked_paths=sidecar_untracked_paths,
+    )
+    root = Path(repository_root).resolve()
     marker_file, actual_marker_sha256 = _resolve_external_file(
         marker_path, root=root, expected_sha256=marker_sha256, label="marker"
     )
     _validate_marker(
         marker_file,
         marker_sha256=actual_marker_sha256,
-        authorization_id=authorization_id,
-        authorization_sha256=authorization_sha256,
-        manifest_sha256=actual_manifest_sha256,
-        allowed_file_set_sha256=allowed_file_set_sha256,
-        branch=branch,
-        head=head,
+        authorization_id=prepared.authorization_id,
+        authorization_sha256=prepared.authorization_sha256,
+        manifest_sha256=prepared.manifest_sha256,
+        allowed_file_set_sha256=prepared.allowed_file_set_sha256,
+        branch=prepared.repository_branch,
+        head=prepared.repository_head,
     )
 
     return ValidatedGitProvenanceAuthorization(
-        allowed_untracked_paths=allowed_paths,
-        authorization_id=authorization_id,
-        manifest_sha256=actual_manifest_sha256,
+        allowed_untracked_paths=prepared.allowed_untracked_paths,
+        authorization_id=prepared.authorization_id,
+        manifest_sha256=prepared.manifest_sha256,
         marker_sha256=actual_marker_sha256,
-        allowed_file_set_sha256=allowed_file_set_sha256,
-        file_count=len(allowed_paths),
+        allowed_file_set_sha256=prepared.allowed_file_set_sha256,
+        file_count=prepared.file_count,
     )
-
 
 __all__ = [
     "APPLICATION_MARKER_SCHEMA_VERSION",
@@ -1132,7 +1190,9 @@ __all__ = [
     "MANIFEST_SCHEMA_VERSION",
     "MIGRATION_PACKAGE_KIND",
     "MIGRATION_PACKAGE_ROOT",
+    "PreparedGitProvenanceAuthorization",
     "ValidatedGitProvenanceAuthorization",
     "compute_allowed_file_set_sha256",
     "validate_git_provenance_authorization",
+    "validate_git_provenance_manifest_pre_marker",
 ]
