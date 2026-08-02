@@ -1,0 +1,24 @@
+{
+  "authorization_id": "V2_9_8B_WINDOW_15M_AUTH_20260801T205700Z",
+  "command": [
+    "pwsh",
+    "-NoProfile",
+    "-File",
+    "scripts/Start-PrinterV1-MemoryFactory.ps1",
+    "-Mode",
+    "run",
+    "-OperatorApproved"
+  ],
+  "command_completed": true,
+  "command_completed_at": "2026-08-01T21:10:32.981107+00:00",
+  "command_started": true,
+  "command_started_at": "2026-08-01T21:10:32.491526+00:00",
+  "exit_code": 1,
+  "invocation_count": 1,
+  "launch_exception": null,
+  "retry_count": 0,
+  "stderr_sha256": "2147f56be47b8347d347dec71af075a4d2573ba322d709cfbdf2428493c88508",
+  "stderr_size": 408,
+  "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "stdout_size": 0
+}

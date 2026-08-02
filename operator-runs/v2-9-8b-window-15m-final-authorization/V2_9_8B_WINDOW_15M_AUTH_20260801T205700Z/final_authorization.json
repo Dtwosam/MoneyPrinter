@@ -1,0 +1,162 @@
+{
+  "authoritative_database": {
+    "foreign_key_violation_count": 0,
+    "integrity_check": [
+      "ok"
+    ],
+    "migration_count": 50,
+    "migration_tip": "050_campaign_scheduler_ownership_scope.sql",
+    "path": "/Users/Dtwo1/Developer/MoneyPrinter/data/printer_v1.sqlite3",
+    "pre_run_mtime_ns": 1785617072867102156,
+    "pre_run_sha256": "56ca1218442db1a571ba715794ba91b70c3bfeba242f21855275c026d4c8eed5",
+    "pre_run_size": 65671168,
+    "sqlite_sidecars_required_absent": true
+  },
+  "authorization_document": "docs/printer-v1-v2-9-8b-post-migration-authoritative-window-15m-campaign-final-authorization.md",
+  "authorization_id": "V2_9_8B_WINDOW_15M_AUTH_20260801T205700Z",
+  "authorization_type": "V2_9_8B_POST_MIGRATION_AUTHORITATIVE_WINDOW_15M_CAMPAIGN_FINAL_AUTHORIZATION",
+  "authorized_at": "2026-08-01T20:57:00+00:00",
+  "authorized_command": {
+    "allowed_invocation_count": 1,
+    "automatic_retry_allowed": false,
+    "manual_rerun_allowed": false,
+    "mode": "run",
+    "operator_approved": true,
+    "python_equivalent": "python -m printer_v1.operator_cli.operational_memory_factory_command run --operator-approved",
+    "restart_allowed": false,
+    "resume_allowed": false,
+    "shell": "pwsh -NoProfile -File scripts/Start-PrinterV1-MemoryFactory.ps1 -Mode run -OperatorApproved",
+    "successor_allowed": false
+  },
+  "authorized_git": {
+    "branch": "agent/v2-9-8b-post-migration-window-15m-final-authorization",
+    "c1_c15_repair_commit": "e97fa898938f90e3d2c4aaf32c262db7367bffaa",
+    "exact_head_required": true,
+    "head": "ffb7e4581833ee4ee77763a2bfcff0c98f8087a1",
+    "migration_closeout_commit": "fcef6ff55affaec6cc95326105300b6ffe2b59fe",
+    "readiness_commit": "a545d8839934306401c741fbe3f8c622655d7617",
+    "tracked_worktree_must_be_clean": true
+  },
+  "baseline_counts": {
+    "printer_episodes": 59,
+    "printer_memory_retrieval_matches": 0,
+    "printer_memory_retrieval_queries": 10,
+    "printer_memory_windows": 162,
+    "printer_paper_audit_reports": 1,
+    "printer_paper_decision_audits": 0,
+    "printer_paper_decisions": 2,
+    "printer_paper_positions": 0,
+    "printer_paper_quote_evidence": 32,
+    "printer_paper_trade_audits": 0,
+    "printer_paper_trade_events": 0,
+    "printer_scheduler_jobs": 1365,
+    "printer_source_failures": 139,
+    "printer_source_requests": 1748,
+    "printer_source_responses": 1609
+  },
+  "c1_c15": {
+    "completion_required": [
+      "single accounting owner",
+      "complete campaign and factory identity",
+      "governed source accounting",
+      "stage-scoped Scheduler ownership",
+      "exact cadence and snapshot evidence",
+      "durable cleanup and lease release",
+      "canonical report acceptance",
+      "zero retry, restart, resume, and successor state",
+      "truthful terminal status and first terminal cause"
+    ],
+    "verdict": "V2_9_8B_C1_C15_FINAL_INDEPENDENT_CONFORMANCE_REVIEW_PASS"
+  },
+  "campaign_policy": {
+    "admission_operation_ceiling": 45,
+    "automatic_retries": 0,
+    "discovery_request_ceiling": 2,
+    "failure_ceiling": 20,
+    "governed_request_ceiling": 65,
+    "governed_requests_per_token": 21,
+    "locked_windows": [
+      "WINDOW_1H",
+      "WINDOW_4H",
+      "WINDOW_12H",
+      "WINDOW_24H"
+    ],
+    "main_window": "WINDOW_15M",
+    "main_window_seconds": 900,
+    "scheduler_owner": "CENTRAL_SCHEDULER",
+    "scheduler_row_ceiling": 51,
+    "selective_1h_continuation": false,
+    "source_owner": "SOURCE_GOVERNOR",
+    "storage_byte_ceiling": 67108864,
+    "support_only_window": "WINDOW_5M_MICRO_EVENT",
+    "token_capacity": 2,
+    "total_duration_seconds": 1200
+  },
+  "capabilities_remaining_locked": [
+    "WINDOW_1H, WINDOW_4H, WINDOW_12H, WINDOW_24H",
+    "retrieval and dirty-memory use",
+    "paper decisions",
+    "BUY, SELL, HOLD",
+    "positions, trade events, paper trade audits, PnL",
+    "wallets, private keys, signing, real funds, live execution",
+    "paid APIs",
+    "scoring, ranking, confidence, weighting, embeddings, vectors",
+    "provider rotation and automatic retry",
+    "Source Governor bypass",
+    "Central Scheduler bypass"
+  ],
+  "hard_pre_run_gates": [
+    "exact final-authorization branch and HEAD",
+    "clean tracked worktree and index",
+    "no protected untracked source, migration, or test files",
+    "exact authoritative DB hash, size, mtime, ledger, and schema",
+    "integrity ok and zero foreign-key violations",
+    "zero active or locked operational residue",
+    "all historical leases terminal and released",
+    "no SQLite WAL, SHM, or journal sidecar",
+    "no active Printer operational process",
+    "exclusive writer reservation available",
+    "exact protected baseline counts",
+    "migration evidence package and verified backup intact",
+    "zero-I/O source preflight READY with zero issues",
+    "valid redacted Solana RPC configuration",
+    "Source Governor and Central Scheduler ownership exact",
+    "ordinary run policy exact and selective-1h disabled",
+    "all retrieval and financial capability locks preserved",
+    "no prior application marker for this authorization"
+  ],
+  "honest_terminal_law": {
+    "blocked_dirty_or_no_memory_result_consumes_authorization": true,
+    "clean_memory_required_for_command_completion": false,
+    "eligible_two_token_supply_guaranteed": false,
+    "first_terminal_cause_must_be_preserved": true,
+    "profit_or_favorable_outcome_guaranteed": false,
+    "provider_success_guaranteed": false
+  },
+  "migration_identity": {
+    "canonical_count": 50,
+    "canonical_tip": "050_campaign_scheduler_ownership_scope.sql",
+    "migration_050_git_blob_sha": "3a5bf6de05deb202316b6689a2d7f4206359e6e9",
+    "migration_050_must_not_be_invoked_again": true,
+    "migration_050_sha256": "230153ec73f94208ac733155aca3d9ec86bcc75e3f0891dc1a5502c2dfe1c254"
+  },
+  "next_lane": "V2-9.8B Post-Migration Authoritative WINDOW_15M Campaign Bounded Execution and Immediate Terminal Evidence Capture",
+  "post_run_required": {
+    "immediate_terminal_evidence_capture": true,
+    "independent_post_run_closeout_required": true,
+    "orphan_recovery_requires_separate_authorization": true,
+    "report_only_replay_not_authorized_during_execution": true,
+    "second_command_forbidden": true
+  },
+  "readiness": {
+    "active_operational_residue": 0,
+    "evidence_sha256": "7a3db962b2d99e83d7732da746a3fa5fb73ea4d03434c4a6be9305ae5a1dd5f5",
+    "external_requests_during_readiness": 0,
+    "locked_scheduler_jobs": 0,
+    "source_contract_status": "READY",
+    "stale_or_incomplete_leases": 0,
+    "verdict": "V2_9_8B_POST_MIGRATION_AUTHORITATIVE_WINDOW_15M_CAMPAIGN_READINESS_AUDIT_PASS"
+  },
+  "repository": "Dtwosam/MoneyPrinter",
+  "verdict": "V2_9_8B_POST_MIGRATION_AUTHORITATIVE_WINDOW_15M_CAMPAIGN_FINAL_AUTHORIZATION_PASS"
+}

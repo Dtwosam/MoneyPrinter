@@ -1,0 +1,1793 @@
+{
+  "artifact_directories_before": {
+    "20260726T114155Z-95d9979a9302": {
+      "mtime_ns": 1785074616158761993,
+      "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260726T114155Z-95d9979a9302"
+    },
+    "20260726T141321Z-e762ecf7b374": {
+      "mtime_ns": 1785075327738613127,
+      "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260726T141321Z-e762ecf7b374"
+    },
+    "20260726T172119Z-941d6d86aa56": {
+      "mtime_ns": 1785086604152387702,
+      "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260726T172119Z-941d6d86aa56"
+    },
+    "20260727T001520Z-d513e21260b5": {
+      "mtime_ns": 1785111853441386189,
+      "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T001520Z-d513e21260b5"
+    },
+    "20260727T010656Z-0a54a31b6f2d": {
+      "mtime_ns": 1785114801102278579,
+      "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T010656Z-0a54a31b6f2d"
+    },
+    "20260727T122827Z-095d68927784": {
+      "mtime_ns": 1785155622752590321,
+      "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T122827Z-095d68927784"
+    },
+    "20260727T124910Z-f6dc911b3efc": {
+      "mtime_ns": 1785158114252706636,
+      "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T124910Z-f6dc911b3efc"
+    },
+    "20260727T161750Z-95e40c3efae3": {
+      "mtime_ns": 1785179135859251332,
+      "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T161750Z-95e40c3efae3"
+    },
+    "20260727T202052Z-d42812d31bd8": {
+      "mtime_ns": 1785184217771264382,
+      "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T202052Z-d42812d31bd8"
+    },
+    "20260727T203044Z-7f8e098bf267": {
+      "mtime_ns": 1785184968940548253,
+      "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T203044Z-7f8e098bf267"
+    },
+    "20260727T211548Z-5d626101ec34": {
+      "mtime_ns": 1785187275932307335,
+      "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T211548Z-5d626101ec34"
+    },
+    "20260727T225808Z-e25c3248067b": {
+      "mtime_ns": 1785193467751174251,
+      "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T225808Z-e25c3248067b"
+    },
+    "20260727T232042Z-11c5edd2d9da": {
+      "mtime_ns": 1785195099015333252,
+      "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T232042Z-11c5edd2d9da"
+    },
+    "20260727T235023Z-390455e31060": {
+      "mtime_ns": 1785197529317039118,
+      "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T235023Z-390455e31060"
+    },
+    "20260728T174735Z-5c86dd14b245": {
+      "mtime_ns": 1785261250546325612,
+      "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260728T174735Z-5c86dd14b245"
+    },
+    "20260728T202147Z-3c2735e39266": {
+      "mtime_ns": 1785270256824659901,
+      "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260728T202147Z-3c2735e39266"
+    },
+    "20260728T212231Z-80579a4adeb8": {
+      "mtime_ns": 1785275057490290211,
+      "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260728T212231Z-80579a4adeb8"
+    },
+    "20260728T224158Z-6bf2c4fd8e7e": {
+      "mtime_ns": 1785278906881291073,
+      "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260728T224158Z-6bf2c4fd8e7e"
+    },
+    "20260729T112042Z-81e91f2e16c9": {
+      "mtime_ns": 1785324175915403495,
+      "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260729T112042Z-81e91f2e16c9"
+    },
+    "20260729T124351Z-05896a69446d": {
+      "mtime_ns": 1785329217283969408,
+      "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260729T124351Z-05896a69446d"
+    },
+    "20260729T150838Z-final-post-repair-proof": {
+      "mtime_ns": 1785337843513070708,
+      "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260729T150838Z-final-post-repair-proof"
+    },
+    "20260729T154828Z-post-mint-admission-repair-live-n2": {
+      "mtime_ns": 1785340151890299976,
+      "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260729T154828Z-post-mint-admission-repair-live-n2"
+    },
+    "20260731T002406Z-7612696c7295": {
+      "mtime_ns": 1785457469632071879,
+      "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260731T002406Z-7612696c7295"
+    },
+    "20260731T145230Z-2f345456ea78": {
+      "mtime_ns": 1785510479936105909,
+      "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260731T145230Z-2f345456ea78"
+    },
+    "operator-evidence-first-15m-20260731T002405Z": {
+      "mtime_ns": 1785457469861134006,
+      "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/operator-evidence-first-15m-20260731T002405Z"
+    }
+  },
+  "authorization_id": "V2_9_8B_WINDOW_15M_AUTH_20260801T205700Z",
+  "authorization_sha256": "b90dec9584a258314ed2a20a5a2b14c21608c0f90eb22da57f5b26db4adeba47",
+  "authorized_command": [
+    "pwsh",
+    "-NoProfile",
+    "-File",
+    "scripts/Start-PrinterV1-MemoryFactory.ps1",
+    "-Mode",
+    "run",
+    "-OperatorApproved"
+  ],
+  "campaign_invocations_before_marker": 0,
+  "database_metadata": {
+    "exists": true,
+    "mtime_ns": 1785617072867102156,
+    "path": "/Users/Dtwo1/Developer/MoneyPrinter/data/printer_v1.sqlite3",
+    "sha256": "56ca1218442db1a571ba715794ba91b70c3bfeba242f21855275c026d4c8eed5",
+    "size": 65671168
+  },
+  "database_sidecars": {
+    "-journal": {
+      "exists": false,
+      "mtime_ns": null,
+      "path": "/Users/Dtwo1/Developer/MoneyPrinter/data/printer_v1.sqlite3-journal",
+      "sha256": null,
+      "size": null
+    },
+    "-shm": {
+      "exists": false,
+      "mtime_ns": null,
+      "path": "/Users/Dtwo1/Developer/MoneyPrinter/data/printer_v1.sqlite3-shm",
+      "sha256": null,
+      "size": null
+    },
+    "-wal": {
+      "exists": false,
+      "mtime_ns": null,
+      "path": "/Users/Dtwo1/Developer/MoneyPrinter/data/printer_v1.sqlite3-wal",
+      "sha256": null,
+      "size": null
+    }
+  },
+  "database_snapshot": {
+    "active_counts": {
+      "campaign_runs": 0,
+      "campaign_scheduler_work": 0,
+      "campaign_supervision": 0,
+      "campaigns": 0,
+      "discovery_work": 0,
+      "factory_run_steps": 0,
+      "proof_supervision": 0,
+      "scheduler_jobs": 0
+    },
+    "foreign_key_violation_count": 0,
+    "foreign_key_violations": [],
+    "integrity_check": [
+      "ok"
+    ],
+    "journal_mode": "delete",
+    "ledger_matches_canonical": true,
+    "locked_scheduler_jobs": 0,
+    "migration_count": 50,
+    "migration_ledger": [
+      "001_database_foundation.sql",
+      "002_source_registry_governor.sql",
+      "003_scheduler_resource_governor.sql",
+      "004_token_lifecycle_tracking_queue.sql",
+      "005_discovery_engine.sql",
+      "006_token_level_snapshot_system.sql",
+      "007_market_regime_engine.sql",
+      "008_solana_chain_heat_engine.sql",
+      "009_safety_rug_filter_engine.sql",
+      "010_liquidity_exit_engine.sql",
+      "011_trading_flow_engine.sql",
+      "012_chart_volatility_engine.sql",
+      "013_micro_event_engine.sql",
+      "014_episode_memory_engine.sql",
+      "015_memory_retrieval_similarity_engine.sql",
+      "016_paper_decision_engine.sql",
+      "017_paper_trade_monitor.sql",
+      "018_paper_audit_engine.sql",
+      "019_reporting_operator_review.sql",
+      "020_hardening_synthetic_validation.sql",
+      "021_repeatable_evidence_windows.sql",
+      "022_solana_safety_evidence.sql",
+      "023_paper_quote_evidence.sql",
+      "024_discovery_source_channel.sql",
+      "025_selection_batch.sql",
+      "026_selection_rotation_state.sql",
+      "027_source_failure_normalized_payload.sql",
+      "028_memory_factory_run_ledger.sql",
+      "029_composite_safety_evidence.sql",
+      "030_v2_9_proof_run_supervision.sql",
+      "031_operational_campaign_persistence.sql",
+      "032_campaign_ownership_schema.sql",
+      "033_operational_campaign_supervision.sql",
+      "034_discovery_persistence_reconciliation.sql",
+      "035_insufficient_pool_cycle_terminal_trigger.sql",
+      "036_pumpfun_finalized_origin_registry.sql",
+      "037_holder_reliability_budget_control.sql",
+      "038_holder_source_reporting_repair.sql",
+      "039_snapshot_readiness_contract_repair.sql",
+      "040_pumpswap_graduated_candidate_registry.sql",
+      "041_pilot_input_readiness_bundle.sql",
+      "042_held_to_15m_moderate_continuation.sql",
+      "043_graduated_market_floor_state.sql",
+      "044_memory_factory_run_operational_db_mode.sql",
+      "045_heartbeat_failure_evidence.sql",
+      "046_eligible_token_supply.sql",
+      "047_campaign_oneshot_linkage_binds.sql",
+      "048_candidate_acquisition_foundation.sql",
+      "049_candidate_acquisition_integration.sql",
+      "050_campaign_scheduler_ownership_scope.sql"
+    ],
+    "migration_tip": "050_campaign_scheduler_ownership_scope.sql",
+    "pnl_counts": {},
+    "pnl_tables": [],
+    "query_only": 1,
+    "rowid_highwaters": {
+      "printer_candidate_acquisition_cursors": 4,
+      "printer_candidate_acquisition_executions": 2,
+      "printer_candidate_acquisition_failures": 2,
+      "printer_candidate_acquisition_integration_reports": 19,
+      "printer_candidate_acquisition_integrations": 19,
+      "printer_candidate_acquisition_leases": 19,
+      "printer_candidate_acquisition_policies": 2,
+      "printer_candidate_acquisition_reports": 2,
+      "printer_candidate_acquisition_transport_operations": 203,
+      "printer_candidate_acquisition_work": 215,
+      "printer_candidate_certificates": 8,
+      "printer_candidate_cursor_ranges": 10,
+      "printer_candidate_evidence": 88,
+      "printer_candidate_identities": 8,
+      "printer_candidate_manifest_items": 0,
+      "printer_candidate_manifests": 0,
+      "printer_candidate_observation_links": 40,
+      "printer_candidate_reserve": 0,
+      "printer_candidate_source_observations": 52,
+      "printer_candidate_source_rounds": 36,
+      "printer_chart_volatility_snapshots": 23,
+      "printer_discovery_batches": 9,
+      "printer_discovery_candidate_contributions": 18,
+      "printer_discovery_candidates": 15,
+      "printer_discovery_exhaustion_certificates": 2,
+      "printer_discovery_merged_candidates": 18,
+      "printer_discovery_origin_verifications": 18,
+      "printer_discovery_provider_observations": 18,
+      "printer_discovery_provider_report_links": 9,
+      "printer_discovery_pumpswap_confirmations": 18,
+      "printer_discovery_selected_item_links": 16,
+      "printer_discovery_selection_links": 8,
+      "printer_discovery_work": 72,
+      "printer_discovery_work_source_links": 18,
+      "printer_eligible_token_reserve": 10,
+      "printer_engine_outputs": 0,
+      "printer_episode_outcomes": 23,
+      "printer_episode_snapshots": 107,
+      "printer_episodes": 59,
+      "printer_external_source_operations": 0,
+      "printer_graduated_market_floor_state": 46,
+      "printer_holder_campaign_operation_ledgers": 17,
+      "printer_holder_evidence_attempts": 49,
+      "printer_holder_maturation_work": 21,
+      "printer_liquidity_exit_snapshots": 23,
+      "printer_market_regime_snapshots": 31,
+      "printer_memory_audit_reports": 5,
+      "printer_memory_factory_campaign_configurations": 19,
+      "printer_memory_factory_campaign_cycles": 19,
+      "printer_memory_factory_campaign_heartbeat_failures": 3,
+      "printer_memory_factory_campaign_objects": 2,
+      "printer_memory_factory_campaign_report_objects": 0,
+      "printer_memory_factory_campaign_reports": 19,
+      "printer_memory_factory_campaign_runs": 19,
+      "printer_memory_factory_campaign_scheduler_work": 0,
+      "printer_memory_factory_campaign_supervision": 19,
+      "printer_memory_factory_campaign_token_slots": 16,
+      "printer_memory_factory_campaign_windows": 2,
+      "printer_memory_factory_campaigns": 19,
+      "printer_memory_factory_run_steps": 72,
+      "printer_memory_factory_runs": 7,
+      "printer_memory_fingerprints": 23,
+      "printer_memory_retrieval_matches": 0,
+      "printer_memory_retrieval_queries": 10,
+      "printer_memory_windows": 162,
+      "printer_micro_events": 23,
+      "printer_operator_review_items": 12,
+      "printer_operator_review_reports": 3,
+      "printer_pairs": 32,
+      "printer_paper_audit_reports": 1,
+      "printer_paper_decision_audits": 0,
+      "printer_paper_decisions": 2,
+      "printer_paper_positions": 0,
+      "printer_paper_quote_evidence": 32,
+      "printer_paper_trade_audits": 0,
+      "printer_paper_trade_events": 0,
+      "printer_pilot_input_readiness_bundle": 10,
+      "printer_proof_run_supervision": 0,
+      "printer_pumpfun_finalized_origin_registry": 0,
+      "printer_pumpfun_origin_cursor": 0,
+      "printer_pumpswap_graduated_candidate_registry": 48,
+      "printer_run_logs": 0,
+      "printer_safety_evidence_composites": 6,
+      "printer_safety_evidence_contributions": 9,
+      "printer_safety_rug_snapshots": 23,
+      "printer_scheduler_jobs": 1365,
+      "printer_schema_migrations": 50,
+      "printer_selection_batch_items": 32,
+      "printer_selection_batches": 16,
+      "printer_selection_rotation_state": 0,
+      "printer_snapshot_gap_audits": 492,
+      "printer_snapshot_window_coverage": 71,
+      "printer_solana_chain_heat_snapshots": 32,
+      "printer_solana_safety_evidence": 18,
+      "printer_source_failures": 139,
+      "printer_source_health": 0,
+      "printer_source_rate_limits": 0,
+      "printer_source_registry": 0,
+      "printer_source_requests": 1748,
+      "printer_source_responses": 1609,
+      "printer_token_lifecycle_events": 23,
+      "printer_token_snapshots": 1072,
+      "printer_tokens": 28,
+      "printer_tracking_queue": 31,
+      "printer_trading_flow_snapshots": 23,
+      "printer_validation_items": 0,
+      "printer_validation_runs": 0
+    },
+    "schema": {
+      "columns": [
+        "campaign_id",
+        "created_at",
+        "cycle_id",
+        "deadline_at",
+        "factory_run_id",
+        "first_terminal_cause",
+        "ownership_contract_version",
+        "run_id",
+        "scheduler_job_id",
+        "scheduler_work_id",
+        "source_failure_id",
+        "source_request_id",
+        "source_response_id",
+        "stage_id",
+        "target_category",
+        "target_identity",
+        "terminal_at",
+        "token_slot_id",
+        "updated_at",
+        "window_id",
+        "work_intent",
+        "work_scope",
+        "work_state"
+      ],
+      "duplicate_non_null_scheduler_job_ownership": 0,
+      "expected_columns_present": true,
+      "expected_indexes_present": true,
+      "expected_triggers_present": true,
+      "indexes": {
+        "idx_campaign_work_owner": {
+          "origin": "c",
+          "partial": false,
+          "unique": false
+        },
+        "idx_campaign_work_scheduler_job_unique": {
+          "origin": "c",
+          "partial": true,
+          "unique": true
+        },
+        "idx_campaign_work_scope_stage": {
+          "origin": "c",
+          "partial": false,
+          "unique": false
+        },
+        "sqlite_autoindex_printer_memory_factory_campaign_scheduler_work_1": {
+          "origin": "pk",
+          "partial": false,
+          "unique": true
+        },
+        "sqlite_autoindex_printer_memory_factory_campaign_scheduler_work_2": {
+          "origin": "u",
+          "partial": false,
+          "unique": true
+        }
+      },
+      "replacement_or_guard_residue": [],
+      "required_constraint_tokens_present": true,
+      "table_sql": "CREATE TABLE \"printer_memory_factory_campaign_scheduler_work\" (\n    scheduler_work_id TEXT PRIMARY KEY,\n    campaign_id TEXT NOT NULL,\n    run_id TEXT NOT NULL,\n    cycle_id TEXT NOT NULL,\n    token_slot_id TEXT,\n    window_id TEXT,\n    work_intent TEXT NOT NULL,\n    deadline_at TEXT NOT NULL,\n    work_state TEXT NOT NULL CHECK (work_state IN (\n        'PENDING', 'RUNNING', 'COOLDOWN', 'SUCCEEDED', 'FAILED',\n        'SKIPPED', 'CANCELLED'\n    )),\n    scheduler_job_id INTEGER,\n    source_request_id INTEGER,\n    source_response_id INTEGER,\n    source_failure_id INTEGER,\n    ownership_contract_version TEXT NOT NULL CHECK (\n        ownership_contract_version IN ('V1_WINDOW_BOUND', 'V2_STAGE_SCOPED')\n    ),\n    stage_id TEXT,\n    work_scope TEXT CHECK (\n        work_scope IS NULL OR work_scope IN (\n            'DISCOVERY_SELECTION', 'FIRST_15M_HANDOFF',\n            'WINDOW_LIFECYCLE', 'TERMINAL_CLEANUP'\n        )\n    ),\n    target_category TEXT,\n    target_identity TEXT,\n    factory_run_id TEXT,\n    first_terminal_cause TEXT,\n    terminal_at TEXT,\n    created_at TEXT NOT NULL,\n    updated_at TEXT NOT NULL,\n    UNIQUE (scheduler_work_id, window_id, token_slot_id, cycle_id, run_id, campaign_id),\n    FOREIGN KEY (window_id, token_slot_id, cycle_id, run_id, campaign_id)\n        REFERENCES printer_memory_factory_campaign_windows(\n            window_id, token_slot_id, cycle_id, run_id, campaign_id\n        ),\n    FOREIGN KEY (scheduler_job_id) REFERENCES printer_scheduler_jobs(id),\n    FOREIGN KEY (source_request_id) REFERENCES printer_source_requests(id),\n    FOREIGN KEY (source_response_id) REFERENCES printer_source_responses(id),\n    FOREIGN KEY (source_failure_id) REFERENCES printer_source_failures(id),\n    FOREIGN KEY (factory_run_id) REFERENCES printer_memory_factory_runs(run_id),\n    -- Source provenance ordering (preserved from V2-9.7D.6B.1).\n    CHECK (source_response_id IS NULL OR source_request_id IS NOT NULL),\n    CHECK (source_failure_id IS NULL OR source_request_id IS NOT NULL),\n    CHECK (source_response_id IS NULL OR source_failure_id IS NULL),\n    -- Work-state / terminal-cause invariant (preserved).\n    CHECK (\n        (work_state IN ('PENDING', 'RUNNING', 'COOLDOWN')\n            AND first_terminal_cause IS NULL AND terminal_at IS NULL)\n        OR\n        (work_state IN ('SUCCEEDED', 'FAILED', 'SKIPPED', 'CANCELLED')\n            AND first_terminal_cause IS NOT NULL\n            AND length(trim(first_terminal_cause)) > 0 AND terminal_at IS NOT NULL)\n    ),\n    -- V1_WINDOW_BOUND: exact historical window-bound shape, no V2 identity.\n    CHECK (\n        ownership_contract_version <> 'V1_WINDOW_BOUND'\n        OR (\n            window_id IS NOT NULL AND token_slot_id IS NOT NULL\n            AND work_scope IS NULL AND stage_id IS NULL\n            AND target_category IS NULL AND target_identity IS NULL\n            AND factory_run_id IS NULL\n        )\n    ),\n    -- V2_STAGE_SCOPED: common mandatory identity for every repaired row.\n    CHECK (\n        ownership_contract_version <> 'V2_STAGE_SCOPED'\n        OR (\n            work_scope IS NOT NULL\n            AND stage_id IS NOT NULL AND length(trim(stage_id)) > 0\n            AND target_category IS NOT NULL AND length(trim(target_category)) > 0\n            AND target_identity IS NOT NULL AND length(trim(target_identity)) > 0\n            AND scheduler_job_id IS NOT NULL\n        )\n    ),\n    -- WINDOW_LIFECYCLE: exact factory run, token slot, and window linkage.\n    CHECK (\n        NOT (ownership_contract_version = 'V2_STAGE_SCOPED'\n             AND work_scope = 'WINDOW_LIFECYCLE')\n        OR (\n            factory_run_id IS NOT NULL\n            AND token_slot_id IS NOT NULL\n            AND window_id IS NOT NULL\n        )\n    ),\n    -- FIRST_15M_HANDOFF: no fabricated window or factory run-step link.\n    CHECK (\n        NOT (ownership_contract_version = 'V2_STAGE_SCOPED'\n             AND work_scope = 'FIRST_15M_HANDOFF')\n        OR (window_id IS NULL AND factory_run_id IS NULL)\n    ),\n    -- DISCOVERY_SELECTION: no fabricated slot, window, or factory run-step link.\n    CHECK (\n        NOT (ownership_contract_version = 'V2_STAGE_SCOPED'\n             AND work_scope = 'DISCOVERY_SELECTION')\n        OR (window_id IS NULL AND token_slot_id IS NULL AND factory_run_id IS NULL)\n    ),\n    -- TERMINAL_CLEANUP: no fabricated window or factory run-step link.\n    CHECK (\n        NOT (ownership_contract_version = 'V2_STAGE_SCOPED'\n             AND work_scope = 'TERMINAL_CLEANUP')\n        OR (window_id IS NULL AND factory_run_id IS NULL)\n    )\n)",
+      "triggers": [
+        "printer_campaign_work_identity_immutable",
+        "printer_campaign_work_provenance_insert"
+      ]
+    },
+    "supervision_rows": [
+      {
+        "campaign_id": "20260726T114155Z-95d9979a9302-campaign",
+        "cleanup_completed_at": "2026-07-26T14:03:35.964509+00:00",
+        "configuration_id": "20260726T114155Z-95d9979a9302-configuration",
+        "created_at": "2026-07-26T11:41:56.028089+00:00",
+        "first_terminal_cause": "OPERATIONAL_CAMPAIGN_FAILED:GitProvenanceError",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260726T114155Z-95d9979a9302/campaign.lease.lock",
+        "lease_released_at": "2026-07-26T14:03:35.964509+00:00",
+        "owner_id": "20260726T114155Z-95d9979a9302-owner",
+        "run_id": "20260726T114155Z-95d9979a9302-campaign-run",
+        "supervision_id": "20260726T114155Z-95d9979a9302-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "FAILED",
+        "updated_at": "2026-07-26T14:03:35.964509+00:00"
+      },
+      {
+        "campaign_id": "20260726T141321Z-e762ecf7b374-campaign",
+        "cleanup_completed_at": "2026-07-26T14:15:27.721581+00:00",
+        "configuration_id": "20260726T141321Z-e762ecf7b374-configuration",
+        "created_at": "2026-07-26T14:13:21.787598+00:00",
+        "first_terminal_cause": "OPERATIONAL_CAMPAIGN_FAILED:HolderBudgetError",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260726T141321Z-e762ecf7b374/campaign.lease.lock",
+        "lease_released_at": "2026-07-26T14:15:27.721581+00:00",
+        "owner_id": "20260726T141321Z-e762ecf7b374-owner",
+        "run_id": "20260726T141321Z-e762ecf7b374-campaign-run",
+        "supervision_id": "20260726T141321Z-e762ecf7b374-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "FAILED",
+        "updated_at": "2026-07-26T14:15:27.721581+00:00"
+      },
+      {
+        "campaign_id": "20260726T172119Z-941d6d86aa56-campaign",
+        "cleanup_completed_at": "2026-07-26T17:23:24.138914+00:00",
+        "configuration_id": "20260726T172119Z-941d6d86aa56-configuration",
+        "created_at": "2026-07-26T17:21:19.131841+00:00",
+        "first_terminal_cause": "BLOCKED_INSUFFICIENT_GRADUATED_POOL",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260726T172119Z-941d6d86aa56/campaign.lease.lock",
+        "lease_released_at": "2026-07-26T17:23:24.138914+00:00",
+        "owner_id": "20260726T172119Z-941d6d86aa56-owner",
+        "run_id": "20260726T172119Z-941d6d86aa56-campaign-run",
+        "supervision_id": "20260726T172119Z-941d6d86aa56-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "COMPLETED",
+        "updated_at": "2026-07-26T17:23:24.138914+00:00"
+      },
+      {
+        "campaign_id": "20260727T001520Z-d513e21260b5-campaign",
+        "cleanup_completed_at": "2026-07-27T00:24:13.429887+00:00",
+        "configuration_id": "20260727T001520Z-d513e21260b5-configuration",
+        "created_at": "2026-07-27T00:15:20.917172+00:00",
+        "first_terminal_cause": "OPERATIONAL_CAMPAIGN_FAILED:IntegrityError",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T001520Z-d513e21260b5/campaign.lease.lock",
+        "lease_released_at": "2026-07-27T00:24:13.429887+00:00",
+        "owner_id": "20260727T001520Z-d513e21260b5-owner",
+        "run_id": "20260727T001520Z-d513e21260b5-campaign-run",
+        "supervision_id": "20260727T001520Z-d513e21260b5-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "FAILED",
+        "updated_at": "2026-07-27T00:24:13.429887+00:00"
+      },
+      {
+        "campaign_id": "20260727T010656Z-0a54a31b6f2d-campaign",
+        "cleanup_completed_at": "2026-07-27T01:13:21.089108+00:00",
+        "configuration_id": "20260727T010656Z-0a54a31b6f2d-configuration",
+        "created_at": "2026-07-27T01:06:56.380565+00:00",
+        "first_terminal_cause": "BLOCKED_INSUFFICIENT_GRADUATED_POOL",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T010656Z-0a54a31b6f2d/campaign.lease.lock",
+        "lease_released_at": "2026-07-27T01:13:21.089108+00:00",
+        "owner_id": "20260727T010656Z-0a54a31b6f2d-owner",
+        "run_id": "20260727T010656Z-0a54a31b6f2d-campaign-run",
+        "supervision_id": "20260727T010656Z-0a54a31b6f2d-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "COMPLETED",
+        "updated_at": "2026-07-27T01:13:21.089108+00:00"
+      },
+      {
+        "campaign_id": "20260727T122827Z-095d68927784-campaign",
+        "cleanup_completed_at": "2026-07-27T12:33:42.737143+00:00",
+        "configuration_id": "20260727T122827Z-095d68927784-configuration",
+        "created_at": "2026-07-27T12:28:27.397879+00:00",
+        "first_terminal_cause": "BLOCKED_INSUFFICIENT_GRADUATED_POOL",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T122827Z-095d68927784/campaign.lease.lock",
+        "lease_released_at": "2026-07-27T12:33:42.737143+00:00",
+        "owner_id": "20260727T122827Z-095d68927784-owner",
+        "run_id": "20260727T122827Z-095d68927784-campaign-run",
+        "supervision_id": "20260727T122827Z-095d68927784-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "COMPLETED",
+        "updated_at": "2026-07-27T12:33:42.737143+00:00"
+      },
+      {
+        "campaign_id": "20260727T124910Z-f6dc911b3efc-campaign",
+        "cleanup_completed_at": "2026-07-27T13:15:14.227223+00:00",
+        "configuration_id": "20260727T124910Z-f6dc911b3efc-configuration",
+        "created_at": "2026-07-27T12:49:10.965706+00:00",
+        "first_terminal_cause": "PERSISTENCE_FAULT",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T124910Z-f6dc911b3efc/campaign.lease.lock",
+        "lease_released_at": "2026-07-27T13:15:14.227223+00:00",
+        "owner_id": "20260727T124910Z-f6dc911b3efc-owner",
+        "run_id": "20260727T124910Z-f6dc911b3efc-campaign-run",
+        "supervision_id": "20260727T124910Z-f6dc911b3efc-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "COMPLETED",
+        "updated_at": "2026-07-27T13:15:14.227223+00:00"
+      },
+      {
+        "campaign_id": "20260727T161750Z-95e40c3efae3-campaign",
+        "cleanup_completed_at": "2026-07-27T16:24:26.127090+00:00",
+        "configuration_id": "20260727T161750Z-95e40c3efae3-configuration",
+        "created_at": "2026-07-27T16:17:50.301171+00:00",
+        "first_terminal_cause": "OPERATIONAL_CAMPAIGN_FAILED:_ExternalStop",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T161750Z-95e40c3efae3/campaign.lease.lock",
+        "lease_released_at": "2026-07-27T16:24:26.127090+00:00",
+        "owner_id": "20260727T161750Z-95e40c3efae3-owner",
+        "run_id": "20260727T161750Z-95e40c3efae3-campaign-run",
+        "supervision_id": "20260727T161750Z-95e40c3efae3-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "FAILED",
+        "updated_at": "2026-07-27T16:24:26.127090+00:00"
+      },
+      {
+        "campaign_id": "20260727T202052Z-d42812d31bd8-campaign",
+        "cleanup_completed_at": "2026-07-27T20:30:17.759910+00:00",
+        "configuration_id": "20260727T202052Z-d42812d31bd8-configuration",
+        "created_at": "2026-07-27T20:20:52.422494+00:00",
+        "first_terminal_cause": "LEASE_RENEWAL_SQLITE_LOCKED",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T202052Z-d42812d31bd8/campaign.lease.lock",
+        "lease_released_at": "2026-07-27T20:30:17.759910+00:00",
+        "owner_id": "20260727T202052Z-d42812d31bd8-owner",
+        "run_id": "20260727T202052Z-d42812d31bd8-campaign-run",
+        "supervision_id": "20260727T202052Z-d42812d31bd8-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "FAILED",
+        "updated_at": "2026-07-27T20:30:17.759910+00:00"
+      },
+      {
+        "campaign_id": "20260727T203044Z-7f8e098bf267-campaign",
+        "cleanup_completed_at": "2026-07-27T20:42:48.929360+00:00",
+        "configuration_id": "20260727T203044Z-7f8e098bf267-configuration",
+        "created_at": "2026-07-27T20:30:44.402165+00:00",
+        "first_terminal_cause": "LEASE_RENEWAL_SQLITE_LOCKED",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T203044Z-7f8e098bf267/campaign.lease.lock",
+        "lease_released_at": "2026-07-27T20:42:48.929360+00:00",
+        "owner_id": "20260727T203044Z-7f8e098bf267-owner",
+        "run_id": "20260727T203044Z-7f8e098bf267-campaign-run",
+        "supervision_id": "20260727T203044Z-7f8e098bf267-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "FAILED",
+        "updated_at": "2026-07-27T20:42:48.929360+00:00"
+      },
+      {
+        "campaign_id": "20260727T211548Z-5d626101ec34-campaign",
+        "cleanup_completed_at": "2026-07-27T21:21:15.917614+00:00",
+        "configuration_id": "20260727T211548Z-5d626101ec34-configuration",
+        "created_at": "2026-07-27T21:15:48.344313+00:00",
+        "first_terminal_cause": "BLOCKED_INSUFFICIENT_GRADUATED_POOL",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T211548Z-5d626101ec34/campaign.lease.lock",
+        "lease_released_at": "2026-07-27T21:21:15.917614+00:00",
+        "owner_id": "20260727T211548Z-5d626101ec34-owner",
+        "run_id": "20260727T211548Z-5d626101ec34-campaign-run",
+        "supervision_id": "20260727T211548Z-5d626101ec34-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "COMPLETED",
+        "updated_at": "2026-07-27T21:21:15.917614+00:00"
+      },
+      {
+        "campaign_id": "20260727T232042Z-11c5edd2d9da-campaign",
+        "cleanup_completed_at": "2026-07-27T23:31:38.994942+00:00",
+        "configuration_id": "20260727T232042Z-11c5edd2d9da-configuration",
+        "created_at": "2026-07-27T23:20:42.194419+00:00",
+        "first_terminal_cause": "LEASE_RENEWAL_LEASE_EXPIRED",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T232042Z-11c5edd2d9da/campaign.lease.lock",
+        "lease_released_at": "2026-07-27T23:31:38.994942+00:00",
+        "owner_id": "20260727T232042Z-11c5edd2d9da-owner",
+        "run_id": "20260727T232042Z-11c5edd2d9da-campaign-run",
+        "supervision_id": "20260727T232042Z-11c5edd2d9da-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "FAILED",
+        "updated_at": "2026-07-27T23:31:38.994942+00:00"
+      },
+      {
+        "campaign_id": "20260727T235023Z-390455e31060-campaign",
+        "cleanup_completed_at": "2026-07-28T00:12:09.306449+00:00",
+        "configuration_id": "20260727T235023Z-390455e31060-configuration",
+        "created_at": "2026-07-27T23:50:23.090682+00:00",
+        "first_terminal_cause": "COMPLETED_CLEAN_OR_DIRTY_RESULTS_REPORTED",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T235023Z-390455e31060/campaign.lease.lock",
+        "lease_released_at": "2026-07-28T00:12:09.306449+00:00",
+        "owner_id": "20260727T235023Z-390455e31060-owner",
+        "run_id": "20260727T235023Z-390455e31060-campaign-run",
+        "supervision_id": "20260727T235023Z-390455e31060-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "COMPLETED",
+        "updated_at": "2026-07-28T00:12:09.306449+00:00"
+      },
+      {
+        "campaign_id": "20260728T174735Z-5c86dd14b245-campaign",
+        "cleanup_completed_at": "2026-07-28T17:54:10.528363+00:00",
+        "configuration_id": "20260728T174735Z-5c86dd14b245-configuration",
+        "created_at": "2026-07-28T17:47:36.062451+00:00",
+        "first_terminal_cause": "DUPLICATE_ACTIVE_TRACKING",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260728T174735Z-5c86dd14b245/campaign.lease.lock",
+        "lease_released_at": "2026-07-28T17:54:10.528363+00:00",
+        "owner_id": "20260728T174735Z-5c86dd14b245-owner",
+        "run_id": "20260728T174735Z-5c86dd14b245-campaign-run",
+        "supervision_id": "20260728T174735Z-5c86dd14b245-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "COMPLETED",
+        "updated_at": "2026-07-28T17:54:10.528363+00:00"
+      },
+      {
+        "campaign_id": "20260728T202147Z-3c2735e39266-campaign",
+        "cleanup_completed_at": "2026-07-28T20:24:16.813951+00:00",
+        "configuration_id": "20260728T202147Z-3c2735e39266-configuration",
+        "created_at": "2026-07-28T20:21:47.330295+00:00",
+        "first_terminal_cause": "BLOCKED_INSUFFICIENT_GRADUATED_POOL",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260728T202147Z-3c2735e39266/campaign.lease.lock",
+        "lease_released_at": "2026-07-28T20:24:16.813951+00:00",
+        "owner_id": "20260728T202147Z-3c2735e39266-owner",
+        "run_id": "20260728T202147Z-3c2735e39266-campaign-run",
+        "supervision_id": "20260728T202147Z-3c2735e39266-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "COMPLETED",
+        "updated_at": "2026-07-28T20:24:16.813951+00:00"
+      },
+      {
+        "campaign_id": "20260728T212231Z-80579a4adeb8-campaign",
+        "cleanup_completed_at": "2026-07-28T21:44:17.479395+00:00",
+        "configuration_id": "20260728T212231Z-80579a4adeb8-configuration",
+        "created_at": "2026-07-28T21:22:31.519444+00:00",
+        "first_terminal_cause": "COMPLETED_CLEAN_OR_DIRTY_RESULTS_REPORTED",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260728T212231Z-80579a4adeb8/campaign.lease.lock",
+        "lease_released_at": "2026-07-28T21:44:17.479395+00:00",
+        "owner_id": "20260728T212231Z-80579a4adeb8-owner",
+        "run_id": "20260728T212231Z-80579a4adeb8-campaign-run",
+        "supervision_id": "20260728T212231Z-80579a4adeb8-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "COMPLETED",
+        "updated_at": "2026-07-28T21:44:17.479395+00:00"
+      },
+      {
+        "campaign_id": "20260728T224158Z-6bf2c4fd8e7e-campaign",
+        "cleanup_completed_at": "2026-07-28T22:48:26.855322+00:00",
+        "configuration_id": "20260728T224158Z-6bf2c4fd8e7e-configuration",
+        "created_at": "2026-07-28T22:41:58.309042+00:00",
+        "first_terminal_cause": "COOLDOWN_REOPEN_REQUIRED",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260728T224158Z-6bf2c4fd8e7e/campaign.lease.lock",
+        "lease_released_at": "2026-07-28T22:48:26.855322+00:00",
+        "owner_id": "20260728T224158Z-6bf2c4fd8e7e-owner",
+        "run_id": "20260728T224158Z-6bf2c4fd8e7e-campaign-run",
+        "supervision_id": "20260728T224158Z-6bf2c4fd8e7e-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "COMPLETED",
+        "updated_at": "2026-07-28T22:48:26.855322+00:00"
+      },
+      {
+        "campaign_id": "20260731T002406Z-7612696c7295-campaign",
+        "cleanup_completed_at": "2026-07-31T00:24:29.612374+00:00",
+        "configuration_id": "20260731T002406Z-7612696c7295-configuration",
+        "created_at": "2026-07-31T00:24:06.409042+00:00",
+        "first_terminal_cause": "SOURCE_VISIBILITY_SHORTAGE",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260731T002406Z-7612696c7295/campaign.lease.lock",
+        "lease_released_at": "2026-07-31T00:24:29.612374+00:00",
+        "owner_id": "20260731T002406Z-7612696c7295-owner",
+        "run_id": "20260731T002406Z-7612696c7295-campaign-run",
+        "supervision_id": "20260731T002406Z-7612696c7295-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "COMPLETED",
+        "updated_at": "2026-07-31T00:24:29.623369+00:00"
+      },
+      {
+        "campaign_id": "20260731T145230Z-2f345456ea78-campaign",
+        "cleanup_completed_at": "2026-07-31T15:07:59.921888+00:00",
+        "configuration_id": "20260731T145230Z-2f345456ea78-configuration",
+        "created_at": "2026-07-31T14:52:30.417674+00:00",
+        "first_terminal_cause": "COMPLETED_CLEAN_OR_DIRTY_RESULTS_REPORTED",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260731T145230Z-2f345456ea78/campaign.lease.lock",
+        "lease_released_at": "2026-07-31T15:07:59.921888+00:00",
+        "owner_id": "20260731T145230Z-2f345456ea78-owner",
+        "run_id": "20260731T145230Z-2f345456ea78-campaign-run",
+        "supervision_id": "20260731T145230Z-2f345456ea78-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "COMPLETED",
+        "updated_at": "2026-07-31T15:07:59.921888+00:00"
+      }
+    ],
+    "table_counts": {
+      "printer_candidate_acquisition_cursors": 4,
+      "printer_candidate_acquisition_executions": 2,
+      "printer_candidate_acquisition_failures": 2,
+      "printer_candidate_acquisition_integration_reports": 19,
+      "printer_candidate_acquisition_integrations": 19,
+      "printer_candidate_acquisition_leases": 19,
+      "printer_candidate_acquisition_policies": 2,
+      "printer_candidate_acquisition_reports": 2,
+      "printer_candidate_acquisition_transport_operations": 203,
+      "printer_candidate_acquisition_work": 215,
+      "printer_candidate_certificates": 8,
+      "printer_candidate_cursor_ranges": 10,
+      "printer_candidate_evidence": 88,
+      "printer_candidate_identities": 8,
+      "printer_candidate_manifest_items": 0,
+      "printer_candidate_manifests": 0,
+      "printer_candidate_observation_links": 40,
+      "printer_candidate_reserve": 0,
+      "printer_candidate_source_observations": 52,
+      "printer_candidate_source_rounds": 36,
+      "printer_chart_volatility_snapshots": 23,
+      "printer_discovery_batches": 9,
+      "printer_discovery_candidate_contributions": 18,
+      "printer_discovery_candidates": 15,
+      "printer_discovery_exhaustion_certificates": 2,
+      "printer_discovery_merged_candidates": 18,
+      "printer_discovery_origin_verifications": 18,
+      "printer_discovery_provider_observations": 18,
+      "printer_discovery_provider_report_links": 9,
+      "printer_discovery_pumpswap_confirmations": 18,
+      "printer_discovery_selected_item_links": 16,
+      "printer_discovery_selection_links": 8,
+      "printer_discovery_work": 72,
+      "printer_discovery_work_source_links": 18,
+      "printer_eligible_token_reserve": 10,
+      "printer_engine_outputs": 0,
+      "printer_episode_outcomes": 23,
+      "printer_episode_snapshots": 107,
+      "printer_episodes": 59,
+      "printer_external_source_operations": 0,
+      "printer_graduated_market_floor_state": 46,
+      "printer_holder_campaign_operation_ledgers": 17,
+      "printer_holder_evidence_attempts": 49,
+      "printer_holder_maturation_work": 21,
+      "printer_liquidity_exit_snapshots": 23,
+      "printer_market_regime_snapshots": 31,
+      "printer_memory_audit_reports": 5,
+      "printer_memory_factory_campaign_configurations": 19,
+      "printer_memory_factory_campaign_cycles": 19,
+      "printer_memory_factory_campaign_heartbeat_failures": 3,
+      "printer_memory_factory_campaign_objects": 2,
+      "printer_memory_factory_campaign_report_objects": 0,
+      "printer_memory_factory_campaign_reports": 19,
+      "printer_memory_factory_campaign_runs": 19,
+      "printer_memory_factory_campaign_scheduler_work": 0,
+      "printer_memory_factory_campaign_supervision": 19,
+      "printer_memory_factory_campaign_token_slots": 16,
+      "printer_memory_factory_campaign_windows": 2,
+      "printer_memory_factory_campaigns": 19,
+      "printer_memory_factory_run_steps": 72,
+      "printer_memory_factory_runs": 7,
+      "printer_memory_fingerprints": 23,
+      "printer_memory_retrieval_matches": 0,
+      "printer_memory_retrieval_queries": 10,
+      "printer_memory_windows": 162,
+      "printer_micro_events": 23,
+      "printer_operator_review_items": 12,
+      "printer_operator_review_reports": 3,
+      "printer_pairs": 32,
+      "printer_paper_audit_reports": 1,
+      "printer_paper_decision_audits": 0,
+      "printer_paper_decisions": 2,
+      "printer_paper_positions": 0,
+      "printer_paper_quote_evidence": 32,
+      "printer_paper_trade_audits": 0,
+      "printer_paper_trade_events": 0,
+      "printer_pilot_input_readiness_bundle": 10,
+      "printer_proof_run_supervision": 0,
+      "printer_pumpfun_finalized_origin_registry": 0,
+      "printer_pumpfun_origin_cursor": 0,
+      "printer_pumpswap_graduated_candidate_registry": 48,
+      "printer_run_logs": 0,
+      "printer_safety_evidence_composites": 6,
+      "printer_safety_evidence_contributions": 9,
+      "printer_safety_rug_snapshots": 23,
+      "printer_scheduler_jobs": 1365,
+      "printer_schema_migrations": 50,
+      "printer_selection_batch_items": 32,
+      "printer_selection_batches": 16,
+      "printer_selection_rotation_state": 0,
+      "printer_snapshot_gap_audits": 492,
+      "printer_snapshot_window_coverage": 71,
+      "printer_solana_chain_heat_snapshots": 32,
+      "printer_solana_safety_evidence": 18,
+      "printer_source_failures": 139,
+      "printer_source_health": 0,
+      "printer_source_rate_limits": 0,
+      "printer_source_registry": 0,
+      "printer_source_requests": 1748,
+      "printer_source_responses": 1609,
+      "printer_token_lifecycle_events": 23,
+      "printer_token_snapshots": 1072,
+      "printer_tokens": 28,
+      "printer_tracking_queue": 31,
+      "printer_trading_flow_snapshots": 23,
+      "printer_validation_items": 0,
+      "printer_validation_runs": 0
+    },
+    "total_changes_after": 0,
+    "total_changes_before": 0
+  },
+  "external_requests_by_wrapper_preflight": 0,
+  "git": {
+    "blob_evidence": {
+      "migrations/050_campaign_scheduler_ownership_scope.sql": {
+        "actual": "3a5bf6de05deb202316b6689a2d7f4206359e6e9",
+        "expected": "3a5bf6de05deb202316b6689a2d7f4206359e6e9",
+        "matches": true
+      },
+      "scripts/Start-PrinterV1-MemoryFactory.ps1": {
+        "actual": "371d4b1757b8b4c0e0926293fb86617d6f4f5506",
+        "expected": "371d4b1757b8b4c0e0926293fb86617d6f4f5506",
+        "matches": true
+      },
+      "src/printer_v1/operator_cli/final_campaign_report.py": {
+        "actual": "af8c36ef678840251817077240044df05384d67c",
+        "expected": "af8c36ef678840251817077240044df05384d67c",
+        "matches": true
+      },
+      "src/printer_v1/operator_cli/operational_memory_factory_command.py": {
+        "actual": "0c942be065f4154c53d048929a0d60e2b232121f",
+        "expected": "0c942be065f4154c53d048929a0d60e2b232121f",
+        "matches": true
+      },
+      "src/printer_v1/operator_cli/readiness_source_contract_preflight.py": {
+        "actual": "56199dd35b3aaebe4b2e50bf2b5fb0d4d9956e1b",
+        "expected": "56199dd35b3aaebe4b2e50bf2b5fb0d4d9956e1b",
+        "matches": true
+      }
+    },
+    "branch": "agent/v2-9-8b-post-migration-window-15m-final-authorization",
+    "c1_c15_repair_commit": "e97fa898938f90e3d2c4aaf32c262db7367bffaa",
+    "head": "ffb7e4581833ee4ee77763a2bfcff0c98f8087a1",
+    "migration_closeout_commit": "fcef6ff55affaec6cc95326105300b6ffe2b59fe",
+    "protected_untracked": [],
+    "readiness_commit": "a545d8839934306401c741fbe3f8c622655d7617",
+    "tracked_worktree_clean": true
+  },
+  "matching_printer_processes": [],
+  "migration_package": {
+    "authorization_sha256": "eb5388f3fac82b0c628a6b3e1e2893702fe221755838f971c6900f4e24e2b835",
+    "path": "/Users/Dtwo1/Developer/MoneyPrinter/operator-runs/v2-9-8b-authoritative-mig050/V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f",
+    "rollback_json_exists": false,
+    "verified_backup": {
+      "exists": true,
+      "mtime_ns": 1785615863558238499,
+      "path": "/Users/Dtwo1/Developer/MoneyPrinter/operator-runs/v2-9-8b-authoritative-mig050/V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f/verified-backup/printer_v1-pre050.sqlite3",
+      "sha256": "e13c40892f0c14d4c07960e00218569a536c50c0fc27815049284c3dd2aff5c2",
+      "size": 65654784
+    }
+  },
+  "policy_checks": {
+    "ADMISSION_OPERATION_CEILING": 45,
+    "AUTOMATIC_RETRIES": 0,
+    "DISCOVERY_REQUEST_CEILING": 2,
+    "FAILURE_CEILING": 20,
+    "GOVERNED_15M_REQUEST_CEILING": 65,
+    "GOVERNED_REQUESTS_PER_TOKEN": 21,
+    "LOCKED_WINDOWS": [
+      "WINDOW_1H",
+      "WINDOW_4H",
+      "WINDOW_12H",
+      "WINDOW_24H"
+    ],
+    "MAIN_WINDOW": "WINDOW_15M",
+    "MAIN_WINDOW_SECONDS": 900,
+    "SCHEDULER_ROW_CEILING": 51,
+    "STORAGE_BYTE_CEILING": 67108864,
+    "TOKEN_CAPACITY": 2,
+    "TOTAL_DURATION_SECONDS": 1200,
+    "normal_policy_mode": "run",
+    "normal_policy_selective_1h": false
+  },
+  "prepared_at": "2026-08-01T21:10:32.468984+00:00",
+  "source_contract_preflight": {
+    "budget": {
+      "candidate_cap": 3,
+      "contract_snapshot_reservation": 6,
+      "derived_candidate_cap": 3,
+      "holder_worst_case_operations": 15,
+      "operation_ceiling": 45,
+      "pump_worst_case_operations": 13,
+      "snapshot_reservation": 6,
+      "worst_case_total": 43,
+      "zero_transport_operations": 9
+    },
+    "contract_registry_version": "V2_9_8B_SOURCE_COMPATIBILITY_RESET_V1",
+    "external_requests": 0,
+    "helius_secret_present": true,
+    "issues": [],
+    "ordinary_runtime_dependencies": [
+      "coingecko_context",
+      "dexscreener_exact_pair",
+      "dexscreener_latest_profiles",
+      "dexscreener_token_batch",
+      "direct_pump_migration_locator",
+      "geckoterminal_exact_pair_and_15m",
+      "goplus_safety",
+      "helius_holder_backup",
+      "jupiter_entry_exit_quotes",
+      "pump_program_contract",
+      "pumpswap_exact_join",
+      "solana_holder_evidence",
+      "solana_transaction_account_verification"
+    ],
+    "owner_contract": {
+      "central_scheduler": "CENTRAL_SCHEDULER",
+      "direct_source_bypass": false,
+      "source_governor": "SOURCE_GOVERNOR"
+    },
+    "provenance": {
+      "exact_window_seconds": 900,
+      "primary_source": "geckoterminal",
+      "supplemental_15m_source": "geckoterminal"
+    },
+    "pump_pumpswap_pins": {
+      "official_repository_commit": "9c82f61cb711b044a17f770ab8ce9f9bdf78f333",
+      "pump_idl_sha256": "b90bc471327f671449271d5d1d42354d1fae6f5a06502f5834459a3108138e49",
+      "pump_program_id": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+      "pumpswap_idl_sha256": "6b5c7ec4e5ef9742fa99dc57b0d75b1031b379bba02a7e1b3c5a4cad68d77e56",
+      "pumpswap_program_id": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
+    },
+    "runtime_constants": {
+      "coingecko": "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true",
+      "dexscreener_batch": "https://api.dexscreener.com/tokens/v1/solana/{addresses}",
+      "dexscreener_pair": "https://api.dexscreener.com/latest/dex/pairs/solana/{pair_address}",
+      "dexscreener_profiles": "https://api.dexscreener.com/token-profiles/latest/v1",
+      "expected": {
+        "coingecko": "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true",
+        "dexscreener_batch": "https://api.dexscreener.com/tokens/v1/solana/{addresses}",
+        "dexscreener_pair": "https://api.dexscreener.com/latest/dex/pairs/solana/{pair_address}",
+        "dexscreener_profiles": "https://api.dexscreener.com/token-profiles/latest/v1",
+        "geckoterminal_pair": "https://api.geckoterminal.com/api/v2/networks/solana/pools/{pool_address}?include=base_token,quote_token,dex",
+        "goplus": "https://api.gopluslabs.io/api/v1/solana/token_security?contract_addresses={token_mint}",
+        "jupiter_quote": "https://api.jup.ag/swap/v1/quote",
+        "solana_public_rpc": "https://api.mainnet.solana.com"
+      },
+      "geckoterminal_pair": "https://api.geckoterminal.com/api/v2/networks/solana/pools/{pool_address}?include=base_token,quote_token,dex",
+      "goplus": "https://api.gopluslabs.io/api/v1/solana/token_security?contract_addresses={token_mint}",
+      "jupiter_quote": "https://api.jup.ag/swap/v1/quote",
+      "solana_public_rpc": "https://api.mainnet.solana.com"
+    },
+    "secret_material_recorded": false,
+    "solana_rpc": {
+      "authentication": "ENDPOINT_EMBEDDED_REDACTED_IF_PRESENT",
+      "endpoint_identity": "https://solana-mainnet.g.alchemy.com/<redacted-path>",
+      "environment_name": "PRINTER_SOLANA_RPC_URL",
+      "origin": "OPERATOR_CONFIGURED_APPROVED_HTTPS",
+      "secret_material_recorded": false,
+      "status": "VALID"
+    },
+    "sources": {
+      "alternative_me_defillama": {
+        "active_runtime": false,
+        "allowed_credential_category": "NONE",
+        "authentication": "KEYLESS_PUBLIC",
+        "automatic_retries": 0,
+        "classification": "DORMANT",
+        "contract_version": "REGISTERED_NOT_IN_ORDINARY_GRAPH",
+        "credential_requirement": "NONE",
+        "dependency_name": "alternative_me_defillama",
+        "endpoint_rotation": false,
+        "endpoints": [],
+        "environment_state": {},
+        "execution_endpoint": false,
+        "failure_effect": "NO_ORDINARY_RUN_EFFECT",
+        "free_public_compatible": true,
+        "funding_required": false,
+        "metered_account_or_trade_stream": false,
+        "operation_budget": "zero ordinary-run operations",
+        "paid_dependency": false,
+        "printer_rate_limit_per_minute": 0,
+        "private_key_required": false,
+        "registered_request_kinds": {
+          "alternative_me": [
+            "fear_greed_context"
+          ],
+          "defillama": [
+            "chain_liquidity_context",
+            "tvl_context",
+            "dex_volume_context"
+          ]
+        },
+        "request_kinds": [],
+        "required_environment": [],
+        "scheduler_owner": "CENTRAL_SCHEDULER",
+        "signing_required": false,
+        "solana_rpc_origin": null,
+        "source_names": [
+          "alternative_me",
+          "defillama"
+        ],
+        "source_owner": "SOURCE_GOVERNOR",
+        "transaction_submission": false,
+        "wallet_or_private_key": false,
+        "wallet_required": false
+      },
+      "candidate_acquisition_cursor_recovery": {
+        "active_runtime": false,
+        "allowed_credential_category": "NONE",
+        "authentication": "NOT_APPLICABLE",
+        "automatic_retries": 0,
+        "classification": "DEFERRED",
+        "contract_version": "DEFERRED_EXPERIMENTAL",
+        "credential_requirement": "NONE",
+        "dependency_name": "candidate_acquisition_cursor_recovery",
+        "endpoint_rotation": false,
+        "endpoints": [],
+        "environment_state": {},
+        "execution_endpoint": false,
+        "failure_effect": "NO_RUNTIME_AUTHORITY",
+        "free_public_compatible": true,
+        "funding_required": false,
+        "metered_account_or_trade_stream": false,
+        "operation_budget": "zero ordinary-run operations",
+        "paid_dependency": false,
+        "printer_rate_limit_per_minute": 0,
+        "private_key_required": false,
+        "registered_request_kinds": {},
+        "request_kinds": [],
+        "required_environment": [],
+        "scheduler_owner": "CENTRAL_SCHEDULER",
+        "signing_required": false,
+        "solana_rpc_origin": null,
+        "source_names": [],
+        "source_owner": "SOURCE_GOVERNOR",
+        "transaction_submission": false,
+        "wallet_or_private_key": false,
+        "wallet_required": false
+      },
+      "coingecko_context": {
+        "active_runtime": true,
+        "allowed_credential_category": "NONE",
+        "authentication": "KEYLESS_PUBLIC",
+        "automatic_retries": 0,
+        "classification": "MANDATORY",
+        "contract_version": "COINGECKO_PUBLIC_API_V3",
+        "credential_requirement": "NONE",
+        "dependency_name": "coingecko_context",
+        "endpoint_rotation": false,
+        "endpoints": [
+          "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true"
+        ],
+        "environment_state": {},
+        "execution_endpoint": false,
+        "failure_effect": "DIRTIES_WINDOW_OR_FAILS_CLOSED",
+        "free_public_compatible": true,
+        "funding_required": false,
+        "metered_account_or_trade_stream": false,
+        "operation_budget": "one request per governed context collection",
+        "paid_dependency": false,
+        "printer_rate_limit_per_minute": 20,
+        "private_key_required": false,
+        "registered_request_kinds": {
+          "coingecko": [
+            "broad_market_context",
+            "asset_context"
+          ]
+        },
+        "request_kinds": [
+          "broad_market_context"
+        ],
+        "required_environment": [],
+        "scheduler_owner": "CENTRAL_SCHEDULER",
+        "signing_required": false,
+        "solana_rpc_origin": null,
+        "source_names": [
+          "coingecko"
+        ],
+        "source_owner": "SOURCE_GOVERNOR",
+        "transaction_submission": false,
+        "wallet_or_private_key": false,
+        "wallet_required": false
+      },
+      "dexscreener_exact_pair": {
+        "active_runtime": true,
+        "allowed_credential_category": "NONE",
+        "authentication": "KEYLESS_PUBLIC",
+        "automatic_retries": 0,
+        "classification": "MANDATORY",
+        "contract_version": "DEXSCREENER_LATEST_PAIR_V1",
+        "credential_requirement": "NONE",
+        "dependency_name": "dexscreener_exact_pair",
+        "endpoint_rotation": false,
+        "endpoints": [
+          "https://api.dexscreener.com/latest/dex/pairs/solana/{pair_address}"
+        ],
+        "environment_state": {},
+        "execution_endpoint": false,
+        "failure_effect": "PERMITS_ONLY_GOVERNED_GECKOTERMINAL_FALLBACK",
+        "free_public_compatible": true,
+        "funding_required": false,
+        "metered_account_or_trade_stream": false,
+        "operation_budget": "bounded per-candidate exact-pair requests",
+        "paid_dependency": false,
+        "printer_rate_limit_per_minute": 60,
+        "private_key_required": false,
+        "registered_request_kinds": {
+          "dexscreener": [
+            "token_discovery",
+            "candidate_nomination",
+            "candidate_market_batch",
+            "dexscreener_fresh_profiles",
+            "pair_market_snapshot",
+            "token_market_snapshot",
+            "boosted_token_reference"
+          ]
+        },
+        "request_kinds": [
+          "pair_market_snapshot"
+        ],
+        "required_environment": [],
+        "scheduler_owner": "CENTRAL_SCHEDULER",
+        "signing_required": false,
+        "solana_rpc_origin": null,
+        "source_names": [
+          "dexscreener"
+        ],
+        "source_owner": "SOURCE_GOVERNOR",
+        "transaction_submission": false,
+        "wallet_or_private_key": false,
+        "wallet_required": false
+      },
+      "dexscreener_latest_profiles": {
+        "active_runtime": true,
+        "allowed_credential_category": "NONE",
+        "authentication": "KEYLESS_PUBLIC",
+        "automatic_retries": 0,
+        "classification": "MANDATORY",
+        "contract_version": "DEXSCREENER_PUBLIC_API_V1",
+        "credential_requirement": "NONE",
+        "dependency_name": "dexscreener_latest_profiles",
+        "endpoint_rotation": false,
+        "endpoints": [
+          "https://api.dexscreener.com/token-profiles/latest/v1"
+        ],
+        "environment_state": {},
+        "execution_endpoint": false,
+        "failure_effect": "BLOCKS_DISCOVERY_VISIBILITY_NOT_MIGRATION_AUTHORITY",
+        "free_public_compatible": true,
+        "funding_required": false,
+        "metered_account_or_trade_stream": false,
+        "operation_budget": "one request",
+        "paid_dependency": false,
+        "printer_rate_limit_per_minute": 60,
+        "private_key_required": false,
+        "registered_request_kinds": {
+          "dexscreener": [
+            "token_discovery",
+            "candidate_nomination",
+            "candidate_market_batch",
+            "dexscreener_fresh_profiles",
+            "pair_market_snapshot",
+            "token_market_snapshot",
+            "boosted_token_reference"
+          ]
+        },
+        "request_kinds": [
+          "dexscreener_fresh_profiles"
+        ],
+        "required_environment": [],
+        "scheduler_owner": "CENTRAL_SCHEDULER",
+        "signing_required": false,
+        "solana_rpc_origin": null,
+        "source_names": [
+          "dexscreener"
+        ],
+        "source_owner": "SOURCE_GOVERNOR",
+        "transaction_submission": false,
+        "wallet_or_private_key": false,
+        "wallet_required": false
+      },
+      "dexscreener_token_batch": {
+        "active_runtime": true,
+        "allowed_credential_category": "NONE",
+        "authentication": "KEYLESS_PUBLIC",
+        "automatic_retries": 0,
+        "classification": "MANDATORY",
+        "contract_version": "DEXSCREENER_TOKENS_V1",
+        "credential_requirement": "NONE",
+        "dependency_name": "dexscreener_token_batch",
+        "endpoint_rotation": false,
+        "endpoints": [
+          "https://api.dexscreener.com/tokens/v1/solana/{addresses}"
+        ],
+        "environment_state": {},
+        "execution_endpoint": false,
+        "failure_effect": "BLOCKS_CANDIDATE_SUPPLY",
+        "free_public_compatible": true,
+        "funding_required": false,
+        "metered_account_or_trade_stream": false,
+        "operation_budget": "one bounded Solana batch",
+        "paid_dependency": false,
+        "printer_rate_limit_per_minute": 60,
+        "private_key_required": false,
+        "registered_request_kinds": {
+          "dexscreener": [
+            "token_discovery",
+            "candidate_nomination",
+            "candidate_market_batch",
+            "dexscreener_fresh_profiles",
+            "pair_market_snapshot",
+            "token_market_snapshot",
+            "boosted_token_reference"
+          ]
+        },
+        "request_kinds": [
+          "candidate_market_batch"
+        ],
+        "required_environment": [],
+        "scheduler_owner": "CENTRAL_SCHEDULER",
+        "signing_required": false,
+        "solana_rpc_origin": null,
+        "source_names": [
+          "dexscreener"
+        ],
+        "source_owner": "SOURCE_GOVERNOR",
+        "transaction_submission": false,
+        "wallet_or_private_key": false,
+        "wallet_required": false
+      },
+      "direct_pump_migration_locator": {
+        "active_runtime": true,
+        "allowed_credential_category": "NONE",
+        "authentication": "KEYLESS_OR_OPERATOR_ENDPOINT",
+        "automatic_retries": 0,
+        "classification": "MANDATORY",
+        "contract_version": "PUMP_IDL_PINNED_EXACT_MIGRATE_V1",
+        "credential_requirement": "NONE",
+        "dependency_name": "direct_pump_migration_locator",
+        "endpoint_rotation": false,
+        "endpoints": [
+          "https://solana-mainnet.g.alchemy.com/<redacted-path>"
+        ],
+        "environment_state": {},
+        "execution_endpoint": false,
+        "failure_effect": "BLOCKS_BEFORE_LIFECYCLE_OR_HONEST_SUPPLY_STOP",
+        "free_public_compatible": true,
+        "funding_required": false,
+        "metered_account_or_trade_stream": false,
+        "operation_budget": "one finalized page; at most twelve finalized transaction reads",
+        "paid_dependency": false,
+        "printer_rate_limit_per_minute": 30,
+        "private_key_required": false,
+        "registered_request_kinds": {
+          "solana_rpc": [
+            "onchain_reference",
+            "mint_account_reference",
+            "pool_reference",
+            "holder_concentration_reference",
+            "mint_creation_time_reference",
+            "pumpfun_create_index_signature_page",
+            "pumpfun_create_index_transaction",
+            "pumpfun_create_event_subscription",
+            "pumpfun_create_signature_backfill",
+            "pumpfun_create_transaction_reference",
+            "pumpfun_origin_signature_reference",
+            "pumpfun_origin_transaction_reference",
+            "candidate_mint_account_batch",
+            "pumpfun_migration_signature_page",
+            "pumpfun_migration_transaction",
+            "pumpswap_pool_account_batch",
+            "candidate_pump_migration_signature_lookup",
+            "candidate_pump_migration_transaction",
+            "candidate_pumpswap_pool_verification",
+            "restored_pump_migration_signature_page",
+            "restored_pump_migration_transaction"
+          ]
+        },
+        "request_kinds": [
+          "restored_pump_migration_signature_page",
+          "restored_pump_migration_transaction"
+        ],
+        "required_environment": [],
+        "scheduler_owner": "CENTRAL_SCHEDULER",
+        "signing_required": false,
+        "solana_rpc_origin": "OPERATOR_CONFIGURED_APPROVED_HTTPS",
+        "source_names": [
+          "solana_rpc"
+        ],
+        "source_owner": "SOURCE_GOVERNOR",
+        "transaction_submission": false,
+        "wallet_or_private_key": false,
+        "wallet_required": false
+      },
+      "geckoterminal_exact_pair_and_15m": {
+        "active_runtime": true,
+        "allowed_credential_category": "NONE",
+        "authentication": "KEYLESS_PUBLIC",
+        "automatic_retries": 0,
+        "classification": "CONDITIONAL",
+        "contract_version": "GECKOTERMINAL_API_V2_20230203",
+        "credential_requirement": "NONE",
+        "dependency_name": "geckoterminal_exact_pair_and_15m",
+        "endpoint_rotation": false,
+        "endpoints": [
+          "https://api.geckoterminal.com/api/v2/networks/solana/pools/{pool_address}?include=base_token,quote_token,dex",
+          "https://api.geckoterminal.com/api/v2/networks/{network}/pools/{pool_address}/ohlcv/minute?aggregate=15&limit=2&currency=usd&token=base",
+          "https://api.geckoterminal.com/api/v2/networks/{network}/pools/{pool_address}/trades"
+        ],
+        "environment_state": {},
+        "execution_endpoint": false,
+        "failure_effect": "BLOCKS_CANDIDATE_OR_DIRTIES_WINDOW",
+        "free_public_compatible": true,
+        "funding_required": false,
+        "metered_account_or_trade_stream": false,
+        "operation_budget": "one attempt per endpoint; six-second spacing",
+        "paid_dependency": false,
+        "printer_rate_limit_per_minute": 10,
+        "private_key_required": false,
+        "registered_request_kinds": {
+          "geckoterminal": [
+            "candidate_nomination",
+            "candidate_market_batch",
+            "geckoterminal_new_pool_discovery",
+            "geckoterminal_trending_pool_reference",
+            "geckoterminal_active_pool_reference",
+            "geckoterminal_ohlcv_15m",
+            "geckoterminal_pool_trades_15m",
+            "geckoterminal_readiness_base_snapshot",
+            "pair_market_snapshot"
+          ]
+        },
+        "request_kinds": [
+          "pair_market_snapshot",
+          "geckoterminal_readiness_base_snapshot",
+          "geckoterminal_ohlcv_15m",
+          "geckoterminal_pool_trades_15m"
+        ],
+        "required_environment": [],
+        "scheduler_owner": "CENTRAL_SCHEDULER",
+        "signing_required": false,
+        "solana_rpc_origin": null,
+        "source_names": [
+          "geckoterminal"
+        ],
+        "source_owner": "SOURCE_GOVERNOR",
+        "transaction_submission": false,
+        "wallet_or_private_key": false,
+        "wallet_required": false
+      },
+      "goplus_safety": {
+        "active_runtime": true,
+        "allowed_credential_category": "NONE",
+        "authentication": "KEYLESS_PUBLIC",
+        "automatic_retries": 0,
+        "classification": "CONDITIONAL",
+        "contract_version": "GOPLUS_SOLANA_SECURITY_V1",
+        "credential_requirement": "NONE",
+        "dependency_name": "goplus_safety",
+        "endpoint_rotation": false,
+        "endpoints": [
+          "https://api.gopluslabs.io/api/v1/solana/token_security?contract_addresses={token_mint}"
+        ],
+        "environment_state": {},
+        "execution_endpoint": false,
+        "failure_effect": "EXPLICIT_RISK_BLOCKS_CANDIDATE_OTHERWISE_UNKNOWN",
+        "free_public_compatible": true,
+        "funding_required": false,
+        "metered_account_or_trade_stream": false,
+        "operation_budget": "one request per evaluated token",
+        "paid_dependency": false,
+        "printer_rate_limit_per_minute": 20,
+        "private_key_required": false,
+        "registered_request_kinds": {
+          "goplus": [
+            "safety_reference"
+          ]
+        },
+        "request_kinds": [
+          "safety_reference"
+        ],
+        "required_environment": [],
+        "scheduler_owner": "CENTRAL_SCHEDULER",
+        "signing_required": false,
+        "solana_rpc_origin": null,
+        "source_names": [
+          "goplus"
+        ],
+        "source_owner": "SOURCE_GOVERNOR",
+        "transaction_submission": false,
+        "wallet_or_private_key": false,
+        "wallet_required": false
+      },
+      "helius_holder_backup": {
+        "active_runtime": true,
+        "allowed_credential_category": "OPTIONAL_FREE_API_KEY",
+        "authentication": "QUERY_API_KEY_WHEN_SELECTED",
+        "automatic_retries": 0,
+        "available": true,
+        "classification": "CONDITIONAL",
+        "contract_version": "HELIUS_STANDARD_RPC_HOLDER_V1",
+        "credential_requirement": "OPTIONAL_FREE_API_KEY",
+        "dependency_name": "helius_holder_backup",
+        "endpoint_rotation": false,
+        "endpoints": [
+          "https://mainnet.helius-rpc.com/"
+        ],
+        "environment_state": {
+          "PRINTER_HELIUS_API_KEY": "PRESENT_REDACTED"
+        },
+        "execution_endpoint": false,
+        "failure_effect": "CANDIDATE_REMAINS_UNKNOWN_OR_BLOCKED",
+        "free_public_compatible": true,
+        "funding_required": false,
+        "metered_account_or_trade_stream": false,
+        "operation_budget": "two methods; zero retry",
+        "paid_dependency": false,
+        "printer_rate_limit_per_minute": 30,
+        "private_key_required": false,
+        "registered_request_kinds": {
+          "helius_free": [
+            "onchain_reference",
+            "mint_account_reference",
+            "pool_reference",
+            "holder_concentration_reference"
+          ]
+        },
+        "request_kinds": [
+          "holder_concentration_reference"
+        ],
+        "required_environment": [
+          "PRINTER_HELIUS_API_KEY"
+        ],
+        "scheduler_owner": "CENTRAL_SCHEDULER",
+        "signing_required": false,
+        "solana_rpc_origin": null,
+        "source_names": [
+          "helius_free"
+        ],
+        "source_owner": "SOURCE_GOVERNOR",
+        "transaction_submission": false,
+        "wallet_or_private_key": false,
+        "wallet_required": false
+      },
+      "jupiter_entry_exit_quotes": {
+        "active_runtime": true,
+        "allowed_credential_category": "NONE",
+        "authentication": "KEYLESS_PUBLIC",
+        "automatic_retries": 0,
+        "classification": "MANDATORY",
+        "contract_version": "JUPITER_METIS_QUOTE_V1_KEYLESS_2026_07",
+        "credential_requirement": "NONE",
+        "dependency_name": "jupiter_entry_exit_quotes",
+        "endpoint_rotation": false,
+        "endpoints": [
+          "https://api.jup.ag/swap/v1/quote"
+        ],
+        "environment_state": {},
+        "execution_endpoint": false,
+        "failure_effect": "DIRTIES_PAPER_REALISM_EVIDENCE",
+        "free_public_compatible": true,
+        "funding_required": false,
+        "metered_account_or_trade_stream": false,
+        "operation_budget": "entry and exit; minimum two-second spacing; zero retry",
+        "paid_dependency": false,
+        "printer_rate_limit_per_minute": 30,
+        "private_key_required": false,
+        "registered_request_kinds": {
+          "jupiter_quote": [
+            "paper_quote_realism"
+          ]
+        },
+        "request_kinds": [
+          "paper_quote_realism"
+        ],
+        "required_environment": [],
+        "scheduler_owner": "CENTRAL_SCHEDULER",
+        "signing_required": false,
+        "solana_rpc_origin": null,
+        "source_names": [
+          "jupiter_quote"
+        ],
+        "source_owner": "SOURCE_GOVERNOR",
+        "transaction_submission": false,
+        "wallet_or_private_key": false,
+        "wallet_required": false
+      },
+      "pump_program_contract": {
+        "active_runtime": true,
+        "allowed_credential_category": "NONE",
+        "authentication": "NONE",
+        "automatic_retries": 0,
+        "classification": "MANDATORY",
+        "contract_version": "PUMP_IDL_PINNED_EXACT_MIGRATE_V1",
+        "credential_requirement": "NONE",
+        "dependency_name": "pump_program_contract",
+        "endpoint_rotation": false,
+        "endpoints": [
+          "OFFICIAL_PUMP_PROGRAM_ID_AND_PINNED_IDL"
+        ],
+        "environment_state": {},
+        "execution_endpoint": false,
+        "failure_effect": "BLOCKS_PREFLIGHT",
+        "free_public_compatible": true,
+        "funding_required": false,
+        "metered_account_or_trade_stream": false,
+        "operation_budget": "zero transport; pinned static contract",
+        "paid_dependency": false,
+        "printer_rate_limit_per_minute": 0,
+        "private_key_required": false,
+        "registered_request_kinds": {
+          "solana_rpc": [
+            "onchain_reference",
+            "mint_account_reference",
+            "pool_reference",
+            "holder_concentration_reference",
+            "mint_creation_time_reference",
+            "pumpfun_create_index_signature_page",
+            "pumpfun_create_index_transaction",
+            "pumpfun_create_event_subscription",
+            "pumpfun_create_signature_backfill",
+            "pumpfun_create_transaction_reference",
+            "pumpfun_origin_signature_reference",
+            "pumpfun_origin_transaction_reference",
+            "candidate_mint_account_batch",
+            "pumpfun_migration_signature_page",
+            "pumpfun_migration_transaction",
+            "pumpswap_pool_account_batch",
+            "candidate_pump_migration_signature_lookup",
+            "candidate_pump_migration_transaction",
+            "candidate_pumpswap_pool_verification",
+            "restored_pump_migration_signature_page",
+            "restored_pump_migration_transaction"
+          ]
+        },
+        "request_kinds": [],
+        "required_environment": [],
+        "scheduler_owner": "CENTRAL_SCHEDULER",
+        "signing_required": false,
+        "solana_rpc_origin": null,
+        "source_names": [
+          "solana_rpc"
+        ],
+        "source_owner": "SOURCE_GOVERNOR",
+        "transaction_submission": false,
+        "wallet_or_private_key": false,
+        "wallet_required": false
+      },
+      "pumpportal": {
+        "active_runtime": false,
+        "allowed_credential_category": "NONE",
+        "authentication": "PROHIBITED_IN_ORDINARY_RUN",
+        "automatic_retries": 0,
+        "classification": "DEFERRED",
+        "contract_version": "HISTORICAL_ONLY",
+        "credential_requirement": "NONE",
+        "dependency_name": "pumpportal",
+        "endpoint_rotation": false,
+        "endpoints": [],
+        "environment_state": {},
+        "execution_endpoint": false,
+        "failure_effect": "NO_FALLBACK",
+        "free_public_compatible": false,
+        "funding_required": false,
+        "metered_account_or_trade_stream": false,
+        "operation_budget": "zero ordinary-run operations",
+        "paid_dependency": false,
+        "printer_rate_limit_per_minute": 0,
+        "private_key_required": false,
+        "registered_request_kinds": {
+          "pumpportal": [
+            "pumpfun_launch_stream",
+            "pumpfun_migration_stream"
+          ]
+        },
+        "request_kinds": [],
+        "required_environment": [],
+        "scheduler_owner": "CENTRAL_SCHEDULER",
+        "signing_required": false,
+        "solana_rpc_origin": null,
+        "source_names": [
+          "pumpportal"
+        ],
+        "source_owner": "SOURCE_GOVERNOR",
+        "transaction_submission": false,
+        "wallet_or_private_key": false,
+        "wallet_required": false
+      },
+      "pumpswap_exact_join": {
+        "active_runtime": true,
+        "allowed_credential_category": "NONE",
+        "authentication": "KEYLESS_OR_OPERATOR_ENDPOINT",
+        "automatic_retries": 0,
+        "classification": "MANDATORY",
+        "contract_version": "PUMPSWAP_IDL_PINNED_POOL_JOIN_V1",
+        "credential_requirement": "NONE",
+        "dependency_name": "pumpswap_exact_join",
+        "endpoint_rotation": false,
+        "endpoints": [
+          "https://solana-mainnet.g.alchemy.com/<redacted-path>"
+        ],
+        "environment_state": {},
+        "execution_endpoint": false,
+        "failure_effect": "BLOCKS_CANDIDATE",
+        "free_public_compatible": true,
+        "funding_required": false,
+        "metered_account_or_trade_stream": false,
+        "operation_budget": "one finalized transaction plus bounded account batch per candidate",
+        "paid_dependency": false,
+        "printer_rate_limit_per_minute": 30,
+        "private_key_required": false,
+        "registered_request_kinds": {
+          "pumpswap": [
+            "pumpswap_pool_confirmation",
+            "pumpswap_migration_pool_reference",
+            "pumpswap_liquidity_reference",
+            "pumpswap_onchain_pool_confirmation",
+            "pumpswap_signature_pool_resolution"
+          ],
+          "solana_rpc": [
+            "onchain_reference",
+            "mint_account_reference",
+            "pool_reference",
+            "holder_concentration_reference",
+            "mint_creation_time_reference",
+            "pumpfun_create_index_signature_page",
+            "pumpfun_create_index_transaction",
+            "pumpfun_create_event_subscription",
+            "pumpfun_create_signature_backfill",
+            "pumpfun_create_transaction_reference",
+            "pumpfun_origin_signature_reference",
+            "pumpfun_origin_transaction_reference",
+            "candidate_mint_account_batch",
+            "pumpfun_migration_signature_page",
+            "pumpfun_migration_transaction",
+            "pumpswap_pool_account_batch",
+            "candidate_pump_migration_signature_lookup",
+            "candidate_pump_migration_transaction",
+            "candidate_pumpswap_pool_verification",
+            "restored_pump_migration_signature_page",
+            "restored_pump_migration_transaction"
+          ]
+        },
+        "request_kinds": [
+          "pumpswap_signature_pool_resolution"
+        ],
+        "required_environment": [],
+        "scheduler_owner": "CENTRAL_SCHEDULER",
+        "signing_required": false,
+        "solana_rpc_origin": "OPERATOR_CONFIGURED_APPROVED_HTTPS",
+        "source_names": [
+          "pumpswap",
+          "solana_rpc"
+        ],
+        "source_owner": "SOURCE_GOVERNOR",
+        "transaction_submission": false,
+        "wallet_or_private_key": false,
+        "wallet_required": false
+      },
+      "solana_holder_evidence": {
+        "active_runtime": true,
+        "allowed_credential_category": "NONE",
+        "authentication": "KEYLESS_OR_OPERATOR_ENDPOINT",
+        "automatic_retries": 0,
+        "classification": "CONDITIONAL",
+        "contract_version": "SOLANA_HOLDER_FINALIZED_V1",
+        "credential_requirement": "NONE",
+        "dependency_name": "solana_holder_evidence",
+        "endpoint_rotation": false,
+        "endpoints": [
+          "https://solana-mainnet.g.alchemy.com/<redacted-path>"
+        ],
+        "environment_state": {},
+        "execution_endpoint": false,
+        "failure_effect": "PERMITS_ONLY_CONDITIONAL_HELIUS_BACKUP",
+        "free_public_compatible": true,
+        "funding_required": false,
+        "metered_account_or_trade_stream": false,
+        "operation_budget": "two finalized methods per candidate",
+        "paid_dependency": false,
+        "printer_rate_limit_per_minute": 30,
+        "private_key_required": false,
+        "registered_request_kinds": {
+          "solana_rpc": [
+            "onchain_reference",
+            "mint_account_reference",
+            "pool_reference",
+            "holder_concentration_reference",
+            "mint_creation_time_reference",
+            "pumpfun_create_index_signature_page",
+            "pumpfun_create_index_transaction",
+            "pumpfun_create_event_subscription",
+            "pumpfun_create_signature_backfill",
+            "pumpfun_create_transaction_reference",
+            "pumpfun_origin_signature_reference",
+            "pumpfun_origin_transaction_reference",
+            "candidate_mint_account_batch",
+            "pumpfun_migration_signature_page",
+            "pumpfun_migration_transaction",
+            "pumpswap_pool_account_batch",
+            "candidate_pump_migration_signature_lookup",
+            "candidate_pump_migration_transaction",
+            "candidate_pumpswap_pool_verification",
+            "restored_pump_migration_signature_page",
+            "restored_pump_migration_transaction"
+          ]
+        },
+        "request_kinds": [
+          "holder_concentration_reference"
+        ],
+        "required_environment": [],
+        "scheduler_owner": "CENTRAL_SCHEDULER",
+        "signing_required": false,
+        "solana_rpc_origin": "OPERATOR_CONFIGURED_APPROVED_HTTPS",
+        "source_names": [
+          "solana_rpc"
+        ],
+        "source_owner": "SOURCE_GOVERNOR",
+        "transaction_submission": false,
+        "wallet_or_private_key": false,
+        "wallet_required": false
+      },
+      "solana_transaction_account_verification": {
+        "active_runtime": true,
+        "allowed_credential_category": "NONE",
+        "authentication": "KEYLESS_OR_OPERATOR_ENDPOINT",
+        "automatic_retries": 0,
+        "classification": "MANDATORY",
+        "contract_version": "SOLANA_JSON_RPC_FINALIZED_V1",
+        "credential_requirement": "NONE",
+        "dependency_name": "solana_transaction_account_verification",
+        "endpoint_rotation": false,
+        "endpoints": [
+          "https://solana-mainnet.g.alchemy.com/<redacted-path>"
+        ],
+        "environment_state": {},
+        "execution_endpoint": false,
+        "failure_effect": "BLOCKS_LOCATOR_OR_CANDIDATE",
+        "free_public_compatible": true,
+        "funding_required": false,
+        "metered_account_or_trade_stream": false,
+        "operation_budget": "measured transport identities; no automatic retry",
+        "paid_dependency": false,
+        "printer_rate_limit_per_minute": 30,
+        "private_key_required": false,
+        "registered_request_kinds": {
+          "solana_rpc": [
+            "onchain_reference",
+            "mint_account_reference",
+            "pool_reference",
+            "holder_concentration_reference",
+            "mint_creation_time_reference",
+            "pumpfun_create_index_signature_page",
+            "pumpfun_create_index_transaction",
+            "pumpfun_create_event_subscription",
+            "pumpfun_create_signature_backfill",
+            "pumpfun_create_transaction_reference",
+            "pumpfun_origin_signature_reference",
+            "pumpfun_origin_transaction_reference",
+            "candidate_mint_account_batch",
+            "pumpfun_migration_signature_page",
+            "pumpfun_migration_transaction",
+            "pumpswap_pool_account_batch",
+            "candidate_pump_migration_signature_lookup",
+            "candidate_pump_migration_transaction",
+            "candidate_pumpswap_pool_verification",
+            "restored_pump_migration_signature_page",
+            "restored_pump_migration_transaction"
+          ]
+        },
+        "request_kinds": [
+          "holder_concentration_reference",
+          "restored_pump_migration_transaction"
+        ],
+        "required_environment": [],
+        "scheduler_owner": "CENTRAL_SCHEDULER",
+        "signing_required": false,
+        "solana_rpc_origin": "OPERATOR_CONFIGURED_APPROVED_HTTPS",
+        "source_names": [
+          "solana_rpc"
+        ],
+        "source_owner": "SOURCE_GOVERNOR",
+        "transaction_submission": false,
+        "wallet_or_private_key": false,
+        "wallet_required": false
+      }
+    },
+    "status": "READY"
+  }
+}

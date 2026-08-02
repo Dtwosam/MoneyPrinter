@@ -1,0 +1,28 @@
+{
+  "allowed_invocation_count": 1,
+  "authorization_consumed_at": "2026-08-01T21:10:32.491350+00:00",
+  "authorization_id": "V2_9_8B_WINDOW_15M_AUTH_20260801T205700Z",
+  "authorization_sha256": "b90dec9584a258314ed2a20a5a2b14c21608c0f90eb22da57f5b26db4adeba47",
+  "automatic_retry_allowed": false,
+  "branch": "agent/v2-9-8b-post-migration-window-15m-final-authorization",
+  "command": [
+    "pwsh",
+    "-NoProfile",
+    "-File",
+    "scripts/Start-PrinterV1-MemoryFactory.ps1",
+    "-Mode",
+    "run",
+    "-OperatorApproved"
+  ],
+  "head": "ffb7e4581833ee4ee77763a2bfcff0c98f8087a1",
+  "manual_rerun_allowed": false,
+  "orphan_recovery_authorized": false,
+  "pre_run_db_mtime_ns": 1785617072867102156,
+  "pre_run_db_sha256": "56ca1218442db1a571ba715794ba91b70c3bfeba242f21855275c026d4c8eed5",
+  "pre_run_db_size": 65671168,
+  "pre_run_evidence_sha256": "7d9bca953be6976221796d1d441f3edf61704cc6fc036eeef020fdbf7ec6e17f",
+  "report_only_authorized_during_execution": false,
+  "restart_allowed": false,
+  "resume_allowed": false,
+  "successor_allowed": false
+}
