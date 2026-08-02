@@ -429,6 +429,122 @@ def _prepared_matches_validated(
     )
 
 
+def _select_child_python(
+    *,
+    repository_root: Path,
+    override: str | Path | None,
+) -> str:
+    """Select and validate the one-shot child interpreter path.
+
+    The returned string is the *lexical* absolute repository virtual-environment
+    entrypoint (``.venv/bin/python`` on POSIX or ``.venv/Scripts/python.exe`` on
+    Windows). The entrypoint is deliberately never dereferenced: a normal POSIX
+    venv resolves through its symlink chain to an external base interpreter, and
+    launching that base target discards the environment identity carried by
+    ``pyvenv.cfg`` and the venv ``site`` configuration. Symlink targets are
+    followed only to *validate* that the entrypoint reaches an existing regular
+    executable; the dereferenced target is never placed in the child command.
+
+    This is intentionally the only place the wrapper abandons canonicalization:
+    repository, authorization, manifest, marker, application-root, and evidence
+    paths continue to canonicalize as before.
+    """
+    executable_dir_name = "Scripts" if os.name == "nt" else "bin"
+
+    source = os.fspath(override) if override is not None else sys.executable
+    if not source:
+        raise OneShotWrapperError(
+            "child interpreter blocked: interpreter path is empty"
+        )
+
+    # Absolute, normalized, *lexical* path. ``expanduser`` + ``abspath`` removes
+    # relative and "."/".." segments without following any symlink.
+    lexical = Path(os.path.abspath(os.path.expanduser(source)))
+    if not lexical.is_absolute():
+        raise OneShotWrapperError(
+            "child interpreter blocked: interpreter path is not absolute"
+        )
+
+    venv_root = Path(os.path.abspath(repository_root)) / ".venv"
+    executable_dir = venv_root / executable_dir_name
+
+    # Lexical containment under <repository>/.venv, with the exact venv
+    # executable directory as the immediate parent.
+    try:
+        lexical.relative_to(venv_root)
+    except ValueError as exc:
+        raise OneShotWrapperError(
+            "child interpreter blocked: interpreter is outside the repository .venv"
+        ) from exc
+    if lexical.parent != executable_dir:
+        raise OneShotWrapperError(
+            "child interpreter blocked: interpreter parent is not the venv "
+            f"{executable_dir_name} directory"
+        )
+
+    # No venv ancestor directory may be a symlink; both must be real directories.
+    for ancestor in (venv_root, executable_dir):
+        if os.path.islink(ancestor):
+            raise OneShotWrapperError(
+                "child interpreter blocked: venv ancestor is a symlink"
+            )
+        if not os.path.isdir(ancestor):
+            raise OneShotWrapperError(
+                "child interpreter blocked: venv ancestor directory is missing"
+            )
+
+    # ``pyvenv.cfg`` must exist as a regular, non-symlink file.
+    pyvenv_cfg = venv_root / "pyvenv.cfg"
+    if os.path.islink(pyvenv_cfg):
+        raise OneShotWrapperError(
+            "child interpreter blocked: pyvenv.cfg must not be a symlink"
+        )
+    try:
+        cfg_mode = os.stat(pyvenv_cfg, follow_symlinks=False).st_mode
+    except OSError as exc:
+        raise OneShotWrapperError(
+            "child interpreter blocked: pyvenv.cfg is missing"
+        ) from exc
+    if not stat.S_ISREG(cfg_mode):
+        raise OneShotWrapperError(
+            "child interpreter blocked: pyvenv.cfg is not a regular file"
+        )
+
+    # The entrypoint itself may be a regular file or a normal venv symlink.
+    try:
+        entry_mode = os.lstat(lexical).st_mode
+    except OSError as exc:
+        raise OneShotWrapperError(
+            "child interpreter blocked: interpreter entrypoint is missing"
+        ) from exc
+    if not (stat.S_ISREG(entry_mode) or stat.S_ISLNK(entry_mode)):
+        raise OneShotWrapperError(
+            "child interpreter blocked: interpreter entrypoint is not a regular "
+            "file or symlink"
+        )
+
+    # Follow the entrypoint *only for validation*: it must reach an existing
+    # regular file. The dereferenced target is never returned.
+    try:
+        target_mode = os.stat(lexical).st_mode
+    except OSError as exc:
+        raise OneShotWrapperError(
+            "child interpreter blocked: interpreter target is missing or broken"
+        ) from exc
+    if not stat.S_ISREG(target_mode):
+        raise OneShotWrapperError(
+            "child interpreter blocked: interpreter target is not a regular file"
+        )
+
+    # Platform executable-permission contract.
+    if os.name != "nt" and not os.access(lexical, os.X_OK):
+        raise OneShotWrapperError(
+            "child interpreter blocked: interpreter is not executable"
+        )
+
+    return str(lexical)
+
+
 def apply_authorization_once(
     *,
     authorization_file: str | Path,
@@ -465,6 +581,14 @@ def apply_authorization_once(
     if canonical_dir.exists():
         raise OneShotWrapperError("canonical authorization application already exists")
 
+    # Select and validate the lexical venv child interpreter before any staging,
+    # manifest, or marker artifact is created. A directly supplied base/Homebrew
+    # interpreter, a symlinked venv ancestor, a missing/symlinked pyvenv.cfg, or
+    # a broken entrypoint fails closed here with no consumption side effects.
+    child_python = _select_child_python(
+        repository_root=root, override=python_executable
+    )
+
     staging_dir = app_root / ".staging" / f"{authorization_id}-{uuid.uuid4().hex}"
     staging_dir.mkdir(parents=True, exist_ok=False)
     staging_manifest = staging_dir / "git-provenance-manifest.json"
@@ -490,6 +614,17 @@ def apply_authorization_once(
     manifest_path = canonical_dir / "git-provenance-manifest.json"
     os.replace(staging_manifest, manifest_path)
     _fsync_directory(canonical_dir)
+    # Best-effort, non-recursive removal of the now-empty future staging
+    # directory only. ``rmdir`` refuses to delete a non-empty directory, so no
+    # staging evidence is ever recursively removed; a residual directory is a
+    # benign efficiency residue that never consumes an authorization, launches a
+    # second child, or overwrites the first terminal cause. The historical
+    # incident staging directory lives under a different application root and is
+    # never targeted.
+    try:
+        staging_dir.rmdir()
+    except OSError:
+        pass
     _make_read_only(manifest_path)
     if _sha256_file(manifest_path) != manifest_sha256:
         raise OneShotWrapperError("published manifest SHA-256 mismatch")
@@ -506,7 +641,7 @@ def apply_authorization_once(
     child_attempted = False
     started_at = _utc_now()
     child_command = [
-        str(Path(python_executable or (root / ".venv/bin/python")).resolve()),
+        child_python,
         "-m",
         "printer_v1.operator_cli.operational_memory_factory_command",
         "run",

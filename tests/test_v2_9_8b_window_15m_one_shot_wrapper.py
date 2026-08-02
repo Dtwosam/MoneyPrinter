@@ -7,6 +7,7 @@ from pathlib import Path
 import socket
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -24,17 +25,53 @@ def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def build_venv_layout(venv_dir: Path, base_target: Path) -> tuple[Path, Path]:
+    """Create a disposable venv-style layout with a real symlink chain.
+
+    The layout mirrors a normal POSIX virtual environment:
+    ``.venv/bin/python -> python3 -> <external base target>`` with a regular,
+    non-symlink ``pyvenv.cfg``. Returns ``(entrypoint, base_target)`` where the
+    lexical ``entrypoint`` is what the wrapper must preserve and ``base_target``
+    is the dereferenced executable that must never appear in the child command.
+    """
+    if os.name == "nt":
+        exec_dir_name = "Scripts"
+        entry_name = "python.exe"
+    else:
+        exec_dir_name = "bin"
+        entry_name = "python"
+    exec_dir = venv_dir / exec_dir_name
+    exec_dir.mkdir(parents=True)
+    (venv_dir / "pyvenv.cfg").write_text(
+        "home = /usr/bin\nversion = 3.12.0\n", encoding="utf-8"
+    )
+    base_target.parent.mkdir(parents=True, exist_ok=True)
+    base_target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    base_target.chmod(0o755)
+    intermediate = exec_dir / (entry_name + "3" if os.name != "nt" else "python3.exe")
+    entry = exec_dir / entry_name
+    os.symlink(base_target, intermediate)
+    os.symlink(intermediate, entry)
+    return entry, base_target
+
+
 class Fixture:
     def __init__(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name)
+        # Resolve the temporary root so the repository, its ``.venv`` and every
+        # derived path share one canonical prefix. macOS exposes the temporary
+        # directory through both ``/var`` and ``/private/var``; the repaired
+        # wrapper preserves the *lexical* venv entrypoint without dereferencing
+        # symlinks, so the injected interpreter path and the resolved repository
+        # root must not disagree only by that alias.
+        self.root = Path(self.tmp.name).resolve()
         self.repo = self.root / "repo"
         self.app = self.root / "applications"
         self.repo.mkdir()
         self._git("init")
         self._git("config", "user.email", "tests@example.invalid")
         self._git("config", "user.name", "Wrapper Tests")
-        (self.repo / ".gitignore").write_text("*.sqlite3\n", encoding="utf-8")
+        (self.repo / ".gitignore").write_text(".venv/\n*.sqlite3\n", encoding="utf-8")
         (self.repo / "tracked.txt").write_text("clean\n", encoding="utf-8")
         history = self.repo / "operator-runs/history"
         history.mkdir(parents=True)
@@ -75,6 +112,14 @@ class Fixture:
             )
         self.authorization_path = self.authorization_root / "final_authorization.json"
         self.rewrite_authorization()
+
+        # A real repository ``.venv`` symlink chain, gitignored so it never
+        # perturbs the Git-provenance untracked/ignored evidence reconciliation.
+        self.venv_dir = self.repo / ".venv"
+        self.venv_base_target = self.root / "venv-base-python"
+        self.venv_python, _ = build_venv_layout(
+            self.venv_dir, self.venv_base_target
+        )
 
     def _git(self, *args):
         return subprocess.run(
@@ -157,7 +202,7 @@ class WrapperImplementationTests(unittest.TestCase):
             operator_approved=True,
             repository_root=self.fx.repo,
             application_root=self.fx.app,
-            python_executable=self.fx.repo / ".venv/bin/python",
+            python_executable=self.fx.venv_python,
             created_at="2026-08-01T20:00:00+00:00",
             consumed_at="2026-08-01T20:01:00+00:00",
         )
@@ -461,6 +506,308 @@ class WrapperImplementationTests(unittest.TestCase):
                 authorization_sha256=self.fx.authorization_sha256,
                 created_at="2026-08-01T20:00:00+00:00",
             )
+
+def _exec_dir_name() -> str:
+    return "Scripts" if os.name == "nt" else "bin"
+
+
+def _entry_name() -> str:
+    return "python.exe" if os.name == "nt" else "python"
+
+
+class ChildInterpreterPreservationTests(unittest.TestCase):
+    """Integration coverage for lexical venv entrypoint preservation and the
+    future-only staging cleanup, exercised through the injected launcher."""
+
+    def setUp(self):
+        self.fx = Fixture()
+
+    def tearDown(self):
+        self.fx.close()
+
+    def apply(self, **overrides):
+        params = dict(
+            authorization_file=self.fx.authorization_path,
+            authorization_sha256=self.fx.authorization_sha256,
+            operator_approved=True,
+            repository_root=self.fx.repo,
+            application_root=self.fx.app,
+            python_executable=self.fx.venv_python,
+            created_at="2026-08-01T20:00:00+00:00",
+            consumed_at="2026-08-01T20:01:00+00:00",
+        )
+        params.update(overrides)
+        return wrapper.apply_authorization_once(**params)
+
+    def test_29_symlink_chain_command_stays_lexical(self):
+        calls, launcher = self.fx.fake_launcher()
+        result = self.apply(process_launcher=launcher)
+        self.assertEqual(len(calls), 1)
+        command = calls[0]["command"]
+        lexical = str(self.fx.venv_python)
+        resolved_target = os.path.realpath(self.fx.venv_python)
+        # The lexical venv entrypoint is preserved byte-for-byte.
+        self.assertEqual(command[0], lexical)
+        # The dereferenced base target never replaces the entrypoint.
+        self.assertNotEqual(command[0], resolved_target)
+        self.assertNotIn(resolved_target, command)
+        self.assertNotEqual(command[0], str(self.fx.venv_base_target))
+        # Terminal evidence records the same lexical entrypoint.
+        self.assertEqual(result["child_command"][0], lexical)
+        # The remaining operational arguments and launch shape are unchanged.
+        self.assertEqual(
+            command[1:],
+            [
+                "-m",
+                "printer_v1.operator_cli.operational_memory_factory_command",
+                "run",
+                "--operator-approved",
+            ],
+        )
+        self.assertEqual(
+            set(calls[0]),
+            {"command", "cwd", "env", "stdout_path", "stderr_path"},
+        )
+        self.assertTrue(os.path.samefile(calls[0]["cwd"], self.fx.repo))
+
+    def test_30_direct_base_interpreter_blocks_before_marker(self):
+        calls, launcher = self.fx.fake_launcher()
+        # Passing the dereferenced Homebrew-style base interpreter directly (the
+        # exact historical defect) is lexically outside <repo>/.venv.
+        with self.assertRaises(wrapper.OneShotWrapperError):
+            self.apply(
+                process_launcher=launcher,
+                python_executable=self.fx.venv_base_target,
+            )
+        self.assertEqual(calls, [])
+        self.assertFalse((self.fx.app / self.fx.authorization_id).exists())
+        self.assertFalse((self.fx.app / ".staging").exists())
+
+    def test_31_future_empty_staging_is_removed(self):
+        _, launcher = self.fx.fake_launcher()
+        result = self.apply(process_launcher=launcher)
+        self.assertEqual(result["child_exit_code"], 0)
+        staging_parent = self.fx.app / ".staging"
+        remaining = (
+            list(staging_parent.iterdir()) if staging_parent.exists() else []
+        )
+        self.assertEqual(remaining, [])
+
+    def test_32_non_empty_staging_is_not_recursively_deleted(self):
+        calls, launcher = self.fx.fake_launcher()
+        real_replace = os.replace
+        littered = {}
+
+        def replace_and_litter(src, dst, *args, **kwargs):
+            real_replace(src, dst, *args, **kwargs)
+            staging = Path(src).parent
+            stray = staging / "residual-evidence.txt"
+            stray.write_text(
+                "must not be recursively deleted\n", encoding="utf-8"
+            )
+            littered["staging"] = staging
+            littered["stray"] = stray
+
+        with mock.patch.object(
+            wrapper.os, "replace", side_effect=replace_and_litter
+        ):
+            result = self.apply(process_launcher=launcher)
+
+        self.assertEqual(result["child_exit_code"], 0)
+        # Exactly one child; cleanup residue changes no one-attempt counter.
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result["automatic_retries"], 0)
+        self.assertEqual(result["successors"], 0)
+        # The non-empty staging directory and its evidence survive untouched.
+        self.assertTrue(littered["staging"].is_dir())
+        self.assertTrue(littered["stray"].is_file())
+
+
+class ChildInterpreterSelectorUnitTests(unittest.TestCase):
+    """Fail-closed boundary and file-type coverage for ``_select_child_python``."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve()
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def select(self, override):
+        return wrapper._select_child_python(
+            repository_root=self.repo, override=override
+        )
+
+    def healthy(self):
+        return build_venv_layout(self.repo / ".venv", self.root / "base-python")
+
+    def test_33_healthy_chain_returns_lexical_entrypoint(self):
+        entry, base = self.healthy()
+        selected = self.select(entry)
+        self.assertEqual(selected, str(entry))
+        self.assertNotEqual(selected, os.path.realpath(entry))
+        self.assertNotEqual(selected, str(base))
+
+    def test_34_outside_venv_override_blocks(self):
+        self.healthy()
+        with self.assertRaisesRegex(
+            wrapper.OneShotWrapperError, "outside the repository .venv"
+        ):
+            self.select(self.root / "base-python")
+
+    def test_35_missing_pyvenv_cfg_blocks(self):
+        entry, _ = self.healthy()
+        (self.repo / ".venv" / "pyvenv.cfg").unlink()
+        with self.assertRaisesRegex(wrapper.OneShotWrapperError, "pyvenv.cfg"):
+            self.select(entry)
+
+    @unittest.skipIf(not hasattr(os, "symlink"), "symlink unavailable")
+    def test_36_symlinked_pyvenv_cfg_blocks(self):
+        entry, _ = self.healthy()
+        cfg = self.repo / ".venv" / "pyvenv.cfg"
+        cfg.unlink()
+        outside = self.root / "outside-pyvenv.cfg"
+        outside.write_text("home = /usr/bin\n", encoding="utf-8")
+        os.symlink(outside, cfg)
+        with self.assertRaisesRegex(wrapper.OneShotWrapperError, "pyvenv.cfg"):
+            self.select(entry)
+
+    @unittest.skipIf(not hasattr(os, "symlink"), "symlink unavailable")
+    def test_37_symlinked_venv_directory_blocks(self):
+        real_venv = self.root / "real-venv"
+        build_venv_layout(real_venv, self.root / "base-python")
+        os.symlink(real_venv, self.repo / ".venv")
+        lexical_entry = (
+            self.repo / ".venv" / _exec_dir_name() / _entry_name()
+        )
+        with self.assertRaisesRegex(wrapper.OneShotWrapperError, "symlink"):
+            self.select(lexical_entry)
+
+    @unittest.skipIf(not hasattr(os, "symlink"), "symlink unavailable")
+    def test_38_symlinked_executable_directory_blocks(self):
+        venv = self.repo / ".venv"
+        venv.mkdir()
+        (venv / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+        real_bin = self.root / "real-bin"
+        real_bin.mkdir()
+        base = self.root / "base-python"
+        base.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        base.chmod(0o755)
+        os.symlink(base, real_bin / _entry_name())
+        os.symlink(real_bin, venv / _exec_dir_name())
+        with self.assertRaisesRegex(wrapper.OneShotWrapperError, "symlink"):
+            self.select(venv / _exec_dir_name() / _entry_name())
+
+    @unittest.skipIf(not hasattr(os, "symlink"), "symlink unavailable")
+    def test_39_broken_target_blocks(self):
+        venv = self.repo / ".venv"
+        (venv / _exec_dir_name()).mkdir(parents=True)
+        (venv / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+        entry = venv / _exec_dir_name() / _entry_name()
+        os.symlink(self.root / "does-not-exist", entry)
+        with self.assertRaisesRegex(wrapper.OneShotWrapperError, "target"):
+            self.select(entry)
+
+    @unittest.skipIf(not hasattr(os, "symlink"), "symlink unavailable")
+    def test_40_non_regular_target_blocks(self):
+        venv = self.repo / ".venv"
+        (venv / _exec_dir_name()).mkdir(parents=True)
+        (venv / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+        target_dir = self.root / "target-dir"
+        target_dir.mkdir()
+        entry = venv / _exec_dir_name() / _entry_name()
+        os.symlink(target_dir, entry)
+        with self.assertRaisesRegex(wrapper.OneShotWrapperError, "regular file"):
+            self.select(entry)
+
+    def test_41_non_executable_entrypoint_blocks(self):
+        if os.name == "nt":
+            self.skipTest("POSIX executable-bit contract")
+        venv = self.repo / ".venv"
+        (venv / _exec_dir_name()).mkdir(parents=True)
+        (venv / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+        entry = venv / _exec_dir_name() / _entry_name()
+        entry.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        entry.chmod(0o644)
+        with self.assertRaisesRegex(wrapper.OneShotWrapperError, "not executable"):
+            self.select(entry)
+
+    def test_42_missing_entrypoint_blocks(self):
+        venv = self.repo / ".venv"
+        (venv / _exec_dir_name()).mkdir(parents=True)
+        (venv / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+        entry = venv / _exec_dir_name() / _entry_name()
+        with self.assertRaisesRegex(wrapper.OneShotWrapperError, "missing"):
+            self.select(entry)
+
+
+class RealVenvBootstrapProofTests(unittest.TestCase):
+    """One real disposable subprocess boundary using the repository ``.venv``.
+
+    The proof asserts venv identity and operational module-spec discovery
+    without importing or executing the operational command and without creating
+    any manifest, marker, campaign, database, memory, or provider artifact.
+    """
+
+    def _repo(self):
+        return Path(__file__).resolve().parents[1]
+
+    def _venv_python(self):
+        return (
+            self._repo() / ".venv" / _exec_dir_name() / _entry_name()
+        )
+
+    def test_43_default_selection_uses_lexical_repo_venv(self):
+        repo = self._repo()
+        venv_python = self._venv_python()
+        if not venv_python.exists():
+            self.skipTest("repository .venv is unavailable")
+        if os.path.abspath(sys.executable) != str(venv_python):
+            self.skipTest("tests are not running from the repository .venv")
+        selected = wrapper._select_child_python(
+            repository_root=repo, override=None
+        )
+        self.assertEqual(selected, str(venv_python))
+        self.assertNotEqual(selected, os.path.realpath(venv_python))
+
+    def test_44_real_subprocess_bootstrap_proof(self):
+        repo = self._repo()
+        venv_python = self._venv_python()
+        if not venv_python.exists():
+            self.skipTest("repository .venv is unavailable")
+        # The lexical entrypoint must differ from its resolved base target.
+        self.assertNotEqual(str(venv_python), os.path.realpath(venv_python))
+        probe = (
+            "import json, sys, importlib.util as u\n"
+            "print(json.dumps({\n"
+            "  'executable': sys.executable,\n"
+            "  'prefix': sys.prefix,\n"
+            "  'base_prefix': sys.base_prefix,\n"
+            "  'is_venv': sys.prefix != sys.base_prefix,\n"
+            "  'printer_v1': u.find_spec('printer_v1') is not None,\n"
+            "  'operational': u.find_spec(\n"
+            "     'printer_v1.operator_cli.operational_memory_factory_command'\n"
+            "  ) is not None,\n"
+            "}, sort_keys=True))\n"
+        )
+        result = subprocess.run(
+            [str(venv_python), "-c", probe],
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            shell=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertTrue(data["is_venv"])
+        self.assertNotEqual(data["prefix"], data["base_prefix"])
+        self.assertTrue(os.path.samefile(data["prefix"], repo / ".venv"))
+        self.assertTrue(data["printer_v1"])
+        self.assertTrue(data["operational"])
+
 
 class LauncherShapeTests(unittest.TestCase):
     def test_27_powershell_is_thin_and_does_not_set_bindings(self):
