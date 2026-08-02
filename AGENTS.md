@@ -1,4 +1,4 @@
-﻿# Printer V1 Build Rules
+# Printer V1 Build Rules
 
 
 
@@ -1049,3 +1049,56 @@ implements Python code for any blocker, bug, failing test, or live-proof failure
 it must perform the guide's Mandatory Source-Grounded Blocker Investigation and
 classify the issue. Do not issue a repair prompt until the classification shows
 that code is justified.
+
+## V2-9.8B Post-Authoritative-Readiness Roadmap Anchor (2026-08-01)
+
+The repeated post-trust-boundary authoritative readiness audit is closed:
+
+- commit: `21262837322b31301cbfc495f814d7f84f149774`
+- verdict:
+  `V2_9_8B_WINDOW_15M_REPEATED_POST_TRUST_BOUNDARY_REPAIR_AUTHORITATIVE_READINESS_AUDIT_PASS`
+
+The repaired current-vs-historical `operator-runs/` reconciliation is ready.
+This does not mean the ordinary `WINDOW_15M` campaign may run.
+
+Current static inspection confirms:
+
+- the production validator already accepts externally supplied manifest and
+  application-marker identities;
+- the operational Python command already consumes the four exact environment
+  bindings;
+- the public PowerShell command does not construct or supply them;
+- real manifest/marker construction and atomic one-shot launch are not
+  implemented;
+- the only constructors are disposable test fixtures;
+- the previous authorization is consumed, historical-only, and not reusable.
+
+The exact next permitted lane is:
+
+```text
+V2-9.8B WINDOW_15M External One-Shot Wrapper Manifest and Application Marker Design
+```
+
+It is design/specification only. It may define ownership, external artifact
+location, atomic creation, immutability, exact branch/HEAD binding, current
+evidence enumeration, authorization consumption, child environment isolation,
+one-attempt/no-retry behavior, cleanup, failure semantics, and proof plan.
+
+It may not implement the wrapper, create a real manifest or marker, issue
+authorization, contact providers, run Source Governor or Central Scheduler,
+execute a campaign, mutate the authoritative database, generate memory,
+activate retrieval, or unlock paper trading.
+
+The minimum future sequence is:
+
+1. external one-shot wrapper manifest/application-marker design;
+2. narrow implementation, if approved;
+3. bounded disposable proof;
+4. independent closeout;
+5. fresh authoritative readiness audit;
+6. fresh exact-HEAD one-shot authorization;
+7. one separately operator-approved ordinary `WINDOW_15M` attempt;
+8. independent campaign closeout.
+
+No existing consumed authorization, `application_started.json`, campaign exit,
+terminal evidence, or historical artifact may be reused as execution authority.

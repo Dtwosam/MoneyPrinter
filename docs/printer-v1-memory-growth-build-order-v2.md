@@ -1826,3 +1826,94 @@ campaign or later runtime lane is authorized.
 
 Retrieval, paper decisions, BUY/SELL/HOLD, positions, trades, audits, and PnL
 remain locked.
+
+##### Post-Authoritative-Readiness Roadmap Review (2026-08-01)
+
+Verdict:
+
+`V2_9_8B_WINDOW_15M_POST_AUTHORITATIVE_READINESS_ROADMAP_REVIEW_PASS`
+
+The repeated authoritative readiness audit at `21262837322b31301cbfc495f814d7f84f149774` closes the
+current-vs-historical `operator-runs/` reconciliation blocker.
+
+Static review of the exact current operational path finds:
+
+- `git_provenance_authorization_manifest.py` implements strict external
+  manifest/marker validation;
+- `operational_memory_factory_command.py` consumes the four external
+  manifest/marker environment bindings for ordinary preflight/run;
+- `Start-PrinterV1-MemoryFactory.ps1` does not construct or supply those
+  bindings;
+- production has no manifest builder, marker builder, or atomic external
+  one-shot launcher;
+- `_build_manifest` and `_build_marker` exist only in disposable tests;
+- no authoritative external manifest/marker pair exists for reuse;
+- the earlier authorization is consumed and historical-only.
+
+Therefore readiness PASS cannot advance directly to authorization or runtime.
+
+Exact next lane:
+
+```text
+V2-9.8B WINDOW_15M External One-Shot Wrapper Manifest and Application Marker Design
+```
+
+Type: design/specification only.
+
+Required design subjects:
+
+- one authoritative wrapper owner and one child process;
+- exact external root outside the repository;
+- fresh exact branch/HEAD and clean tracked-tree binding;
+- exact current evidence package identities and full file hash/size inventory;
+- preserved tracked historical evidence outside the current allowlist;
+- immutable manifest write and digest;
+- authorization-bound, create-once application marker;
+- marker creation timing as the authorization-consumption boundary;
+- all-or-none four-variable child environment injection;
+- environment removal from parent/successor processes;
+- one invocation only;
+- no automatic retry, manual rerun, resume, restart, or successor;
+- fail-closed behavior before and after marker creation;
+- crash/interruption and partial-artifact handling;
+- no evidence, DB, source, Scheduler, campaign, memory, retrieval, or financial
+  work during design;
+- disposable proof matrix and independent closeout requirements.
+
+Minimum sequence after this roadmap review:
+
+1. design/specification;
+2. narrow implementation if approved;
+3. bounded disposable proof;
+4. independent closeout;
+5. fresh authoritative readiness audit;
+6. fresh final authorization bound to the exact implementation HEAD;
+7. separately approved ordinary `WINDOW_15M` wrapper application;
+8. campaign closeout.
+
+Money-usefulness contribution: prevents another scarce one-shot authorization
+from being consumed by missing or non-atomic provenance artifacts before useful
+paper-only collection begins.
+
+What this lane improves: removes roadmap ambiguity after readiness PASS and
+separates already-built validation from missing real construction/launch
+ownership.
+
+What it still does not unlock: wrapper implementation, manifest or marker
+creation, authorization, provider/source calls, Scheduler/runtime, campaign,
+memory, retrieval, decisions, positions, trades, audits, PnL, or longer windows.
+
+#### Functionality Risks / Setbacks / Efficiency Blockers
+
+| Risk / blocker | Required disposition |
+| --- | --- |
+| Readiness PASS is treated as campaign approval | Block; design is next |
+| Validator existence is mistaken for artifact construction | Record validation/consumer as built and construction as missing |
+| Test fixture is promoted as production wrapper | Prohibited |
+| Consumed authorization is reused | Prohibited; historical-only |
+| Marker is created too early | Design must define exact consumption boundary |
+| Marker is created after child launch | Prohibited; child must receive immutable bound artifacts |
+| Partial manifest/marker write survives | Atomic create-once and fail-closed cleanup contract required |
+| Parent leaks env bindings to later processes | Explicit environment isolation required |
+| Wrapper adds retries or successors | Prohibited |
+| Design drifts into runtime or financial work | Stop immediately |
