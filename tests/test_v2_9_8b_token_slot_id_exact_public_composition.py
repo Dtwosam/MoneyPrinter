@@ -240,6 +240,9 @@ class ExactPublicTokenSlotIdCompositionProof(unittest.TestCase):
         }
         pump_transport, runtime_mints = e11._two_create_transport()
         self.assertEqual(set(runtime_mints), set(pools))
+        secondary_transport = e11._FakeSecondaryTransport(
+            {"trending_pools": {"data": []}, "token-profiles": []}
+        )
 
         clock = e9._Clock()
         e9._ClockDateTime.clock = clock
@@ -288,7 +291,7 @@ class ExactPublicTokenSlotIdCompositionProof(unittest.TestCase):
                 operator_approved=True,
                 owner=owner,
                 pump_transport=pump_transport,
-                secondary_transport=None,
+                secondary_transport=secondary_transport,
                 migration_transport=object(),
             )
 
@@ -448,6 +451,7 @@ class ExactPublicTokenSlotIdCompositionProof(unittest.TestCase):
             "protected_capability_counts": protected_counts,
             "frozen_pump_signature_calls": pump_transport.sig_calls,
             "frozen_pump_transaction_calls": list(pump_transport.tx_calls),
+            "frozen_secondary_http_calls": list(secondary_transport.calls),
             "frozen_snapshot_calls": list(snapshot_calls),
             "external_network_calls": network_open.call_count,
             "authoritative_database_accesses": 0,
