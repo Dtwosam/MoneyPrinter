@@ -32,11 +32,17 @@ from printer_v1.operator_cli.authoritative_live_operational_campaign import (
     AuthoritativeLiveOperationalCampaignOwner,
     LivePumpOriginAdapter,
 )
-from printer_v1.operator_cli.one_command_15m_factory import load_report_only
+from printer_v1.operator_cli.one_command_15m_factory import (
+    load_report_only,
+    run_one_command_15m_factory,
+)
 from printer_v1.operator_cli.git_provenance import capture_git_provenance
 from printer_v1.operator_cli.offline_shared_failure_evidence import (
     OfflineSharedFailureEvidenceError,
     preserve_failed_offline_composition_evidence,
+)
+from printer_v1.operator_cli.origin_lifecycle_campaign import (
+    OriginToLifecycleCampaignDriver,
 )
 from printer_v1.sources.campaign_six_unit_accounting import CampaignActionLocalLedger
 from printer_v1.sources.governed_execution import build_fixture_source_adapter
@@ -48,6 +54,42 @@ import test_v2_9_7e_11_authoritative_live_operational_campaign as e11
 
 GOV = OwnerPort(SOURCE_GOVERNOR_OWNER, True)
 SCH = OwnerPort(CENTRAL_SCHEDULER_OWNER, True)
+
+# Exact offline composition lifecycle-entry contract (test harness only).
+# Public fifteen_minute_only maps to operational_persistent_mode=True /
+# proof_mode=False. That is correct for production and must keep requiring the
+# authoritative corpus. Disposable offline composition remaps only the factory
+# entry flags through the existing driver lifecycle_runner DI port.
+OFFLINE_EXACT_LIFECYCLE_ENTRY_PROOF_MODE = True
+OFFLINE_EXACT_LIFECYCLE_ENTRY_OPERATIONAL_PERSISTENT = False
+OFFLINE_EXACT_LIFECYCLE_ENTRY_OPERATIONAL_NATURAL = False
+
+
+def offline_exact_public_composition_lifecycle_entry(
+    db_path,
+    backup_path,
+    **kwargs,
+):
+    """Test-only remapper: lawful disposable lifecycle entry for offline composition.
+
+    Preserves the real factory while forcing the existing disposable proof-mode
+    contract. Clears operational_natural_disposition because factory preflight
+    couples operational-natural 15m-only to operational-persistent mode (which
+    requires the authoritative corpus). Continuous/4h flags stay false so the
+    proof retains two compressed WINDOW_15M closes only.
+    """
+    options = dict(kwargs)
+    options["proof_mode"] = OFFLINE_EXACT_LIFECYCLE_ENTRY_PROOF_MODE
+    options["operational_persistent_mode"] = (
+        OFFLINE_EXACT_LIFECYCLE_ENTRY_OPERATIONAL_PERSISTENT
+    )
+    options["continuous_first_hour"] = False
+    options["continuous_four_hour"] = False
+    options["four_hour_proof_mode"] = False
+    options["operational_natural_disposition"] = (
+        OFFLINE_EXACT_LIFECYCLE_ENTRY_OPERATIONAL_NATURAL
+    )
+    return run_one_command_15m_factory(db_path, backup_path, **options)
 
 
 def _sha256(path: Path) -> str:
@@ -75,7 +117,12 @@ class _NoopHeartbeat:
 
 
 class _ExactPublicCompositionOwner(AuthoritativeLiveOperationalCampaignOwner):
-    """Inject only frozen evidence/timing while retaining the real owner path."""
+    """Inject only frozen evidence/timing while retaining the real owner path.
+
+    Lifecycle entry uses the existing driver DI port so the real public
+    coordinator → owner → driver chain still runs, while the factory receives
+    lawful disposable proof-mode flags.
+    """
 
     def __init__(
         self,
@@ -85,8 +132,16 @@ class _ExactPublicCompositionOwner(AuthoritativeLiveOperationalCampaignOwner):
         context_adapter_factories,
         clock,
         stage_records,
+        lifecycle_runner=None,
     ) -> None:
-        super().__init__()
+        super().__init__(
+            driver=OriginToLifecycleCampaignDriver(
+                lifecycle_runner=(
+                    lifecycle_runner
+                    or offline_exact_public_composition_lifecycle_entry
+                ),
+            )
+        )
         self._graduation_proofs = dict(graduation_proofs)
         self._snapshot_adapter_factory = snapshot_adapter_factory
         self._context_adapter_factories = dict(context_adapter_factories)
