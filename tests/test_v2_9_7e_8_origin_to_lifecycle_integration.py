@@ -291,6 +291,17 @@ class ActivationToLifecycleTests(_IntegrationBase):
         activated_mints = {s["mint_identity"] for s in result.activation.activated_slots}
         self.assertEqual(activated_mints, {MINT_A, MINT_B})
 
+    def test_success_observer_receives_only_real_accountable_stage_evidence(self) -> None:
+        observed = []
+        result = self._run_driver(full_run_stage_observer=observed.append)
+
+        self.assertTrue(result.lifecycle_started)
+        self.assertEqual(len(observed), 1)
+        evidence = observed[0]
+        self.assertEqual(evidence["boundary"], "DISCOVERY_SELECTION_TERMINAL")
+        self.assertEqual(len(evidence["slots"]), 2)
+        self.assertTrue(evidence["scheduler_work_identities"])
+
     def test_lifecycle_targets_are_exactly_the_activated_identities(self) -> None:
         result = self._run_driver()
         connection = self._conn()
@@ -535,11 +546,21 @@ class NegativePathTests(_IntegrationBase):
     def test_zero_eligible_pool_activates_nothing_and_starts_no_lifecycle(self) -> None:
         # A single origin cannot fill two slots → INSUFFICIENT_ELIGIBLE_TWO_SLOT_POOL.
         fixtures = self._fixtures((self._origin("a", MINT_A, POOL_A, 10),))
-        result = self._run_driver(fixtures=fixtures)
+        observed = []
+        result = self._run_driver(
+            fixtures=fixtures,
+            full_run_stage_observer=observed.append,
+        )
+        self.assertEqual(result.activation.terminal_status, "FAILED")
+        self.assertEqual(
+            result.activation.first_terminal_cause,
+            "INSUFFICIENT_ELIGIBLE_TWO_SLOT_POOL",
+        )
         self.assertEqual(len(result.activation.activated_slots), 0)
         self.assertIsNone(result.activation.selection_batch_id)
         self.assertFalse(result.lifecycle_started)
         self.assertEqual(result.lifecycle["run_status"], "NOT_STARTED")
+        self.assertEqual(observed, [])
         connection = self._conn()
         try:
             steps = connection.execute(
@@ -552,6 +573,33 @@ class NegativePathTests(_IntegrationBase):
             connection.close()
         self.assertEqual(steps, 0)
         self.assertEqual(items, 0)
+
+    def test_shared_failure_preserves_terminal_and_skips_stage_observer(self) -> None:
+        fixtures = replace(
+            self._two_origin_fixtures(),
+            force_shared_fault="SHARED_TEST_FAILURE",
+        )
+        observed = []
+        result = self._run_driver(
+            fixtures=fixtures,
+            full_run_stage_observer=observed.append,
+        )
+
+        self.assertEqual(result.activation.terminal_status, "FAILED")
+        self.assertEqual(
+            result.activation.first_terminal_cause,
+            "SHARED_TEST_FAILURE",
+        )
+        self.assertEqual(
+            result.activation.cancellation_reason,
+            "SHARED_FAILURE",
+        )
+        self.assertEqual(
+            result.lifecycle["cancellation_reason"],
+            "SHARED_FAILURE",
+        )
+        self.assertFalse(result.lifecycle_started)
+        self.assertEqual(observed, [])
 
     def test_no_activation_produces_no_lifecycle_scheduler_work(self) -> None:
         fixtures = self._fixtures(())  # no origins at all

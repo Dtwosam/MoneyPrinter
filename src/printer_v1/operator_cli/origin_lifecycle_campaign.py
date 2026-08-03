@@ -89,6 +89,7 @@ class ActivationResult:
     first_terminal_cause: str
     activated_slots: tuple[dict[str, Any], ...]
     selection_batch_id: str | None
+    cancellation_reason: str | None = None
     fault_details: Mapping[str, Any] | None = None
 
 
@@ -1277,6 +1278,37 @@ class OriginToLifecycleCampaignDriver:
                 lifecycle_started=False,
             )
 
+        # Classify the activation result before opening, projecting, or sealing
+        # any accountable discovery-selection stage. A failed, cancelled,
+        # blocked, stopped, or otherwise non-completed activation is already the
+        # authoritative terminal for this owner. It must reach the public
+        # coordinator unchanged instead of being masked by a later empty-stage
+        # observer/accounting failure.
+        if activation.terminal_status != "COMPLETED":
+            activation_result = ActivationResult(
+                terminal_status=activation.terminal_status,
+                first_terminal_cause=activation.first_terminal_cause,
+                activated_slots=(),
+                selection_batch_id=None,
+                cancellation_reason=activation.cancellation_reason,
+                fault_details=activation.fault_details,
+            )
+            lifecycle = {
+                "run_status": "NOT_STARTED",
+                "stop_reason": activation.first_terminal_cause,
+                "first_terminal_cause": activation.first_terminal_cause,
+                "activation_terminal_status": activation.terminal_status,
+            }
+            if activation.cancellation_reason is not None:
+                lifecycle["cancellation_reason"] = activation.cancellation_reason
+            if activation.fault_details:
+                lifecycle["fault_details"] = dict(activation.fault_details)
+            return OriginLifecycleResult(
+                activation=activation_result,
+                lifecycle=lifecycle,
+                lifecycle_started=False,
+            )
+
         # The initial atomic two-slot handoff has now committed. Capture its
         # activated slots up front so a post-handoff fault can be compensated to
         # zero orphan state regardless of which later stage fails.
@@ -1348,7 +1380,9 @@ class OriginToLifecycleCampaignDriver:
                     scope_recorder=recorder,
                 )
                 connection.commit()
-                if full_run_stage_observer is not None:
+                # Observe a completed accountable stage only after a
+                # successful activation produced a real two-slot handoff.
+                if batch_id is not None and full_run_stage_observer is not None:
                     from printer_v1.operator_cli.campaign_ownership import (
                         campaign_scheduler_work_id,
                         project_campaign_scheduler_work,
@@ -1462,6 +1496,7 @@ class OriginToLifecycleCampaignDriver:
             first_terminal_cause=activation.first_terminal_cause,
             activated_slots=tuple(slots),
             selection_batch_id=batch_id,
+            cancellation_reason=activation.cancellation_reason,
             fault_details=activation.fault_details,
         )
 
