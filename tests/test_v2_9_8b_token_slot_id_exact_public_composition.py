@@ -42,6 +42,7 @@ import test_v2_9_7e_11_authoritative_live_operational_campaign as e11
 
 GOV = OwnerPort(SOURCE_GOVERNOR_OWNER, True)
 SCH = OwnerPort(CENTRAL_SCHEDULER_OWNER, True)
+WSOL = "So11111111111111111111111111111111111111112"
 
 
 def _sha256(path: Path) -> str:
@@ -69,7 +70,7 @@ class _NoopHeartbeat:
 
 
 class _ExactPublicCompositionOwner(AuthoritativeLiveOperationalCampaignOwner):
-    """Inject only frozen evidence/timing while retaining the real owner path."""
+    """Inject frozen evidence/timing while retaining the real owner path."""
 
     def __init__(
         self,
@@ -110,8 +111,8 @@ class _ExactPublicCompositionOwner(AuthoritativeLiveOperationalCampaignOwner):
         kwargs["lifecycle_kwargs"] = lifecycle_kwargs
         kwargs["graduation_proofs"] = self._graduation_proofs
         kwargs["graduated_supply"] = None
-        # The public coordinator still supplies the migration port, but this
-        # frozen direct-origin proof requires no migration-provider operation.
+        # The exact public coordinator still supplies the migration port, but
+        # this frozen direct-origin proof requires no migration-provider call.
         kwargs["migration_transport"] = None
         return super().run_operational(**kwargs)
 
@@ -215,6 +216,35 @@ class ExactPublicTokenSlotIdCompositionProof(unittest.TestCase):
 
         return {"coingecko": market, "goplus": safety, "jupiter_quote": quote}
 
+    @staticmethod
+    def _active_pool_body(*, mint: str, pool: str) -> dict:
+        """Return the exact adopted Gecko active-pool fixture shape."""
+        return {
+            "data": {
+                "type": "pool",
+                "id": f"solana_{pool}",
+                "attributes": {
+                    "address": pool,
+                    "transactions": {"m5": {"buys": 1, "sells": 1}},
+                },
+                "relationships": {
+                    "base_token": {"data": {"id": f"solana_{mint}"}},
+                    "quote_token": {"data": {"id": f"solana_{WSOL}"}},
+                    "dex": {"data": {"id": "pumpfun"}},
+                },
+            }
+        }
+
+    @classmethod
+    def _secondary_transport(cls, pools):
+        bodies = {
+            "trending_pools": {"data": []},
+            "token-profiles": [],
+        }
+        for mint, pool in pools.items():
+            bodies[pool] = cls._active_pool_body(mint=mint, pool=pool)
+        return e11._FakeSecondaryTransport(bodies)
+
     def test_exact_public_coordinator_owner_driver_factory_composition(self) -> None:
         before_hash = _sha256(self.db)
         provenance = e8._provenance()
@@ -240,9 +270,7 @@ class ExactPublicTokenSlotIdCompositionProof(unittest.TestCase):
         }
         pump_transport, runtime_mints = e11._two_create_transport()
         self.assertEqual(set(runtime_mints), set(pools))
-        secondary_transport = e11._FakeSecondaryTransport(
-            {"trending_pools": {"data": []}, "token-profiles": []}
-        )
+        secondary_transport = self._secondary_transport(pools)
 
         clock = e9._Clock()
         e9._ClockDateTime.clock = clock
