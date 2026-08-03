@@ -252,8 +252,9 @@ def _read_activated_slots(
     """
     rows = connection.execute(
         """
-        SELECT s.slot_ordinal, s.token_row_id, s.pair_row_id, s.mint_identity,
-               s.pair_identity, s.token_state, p.pair_address, t.token_status
+        SELECT s.token_slot_id, s.slot_ordinal, s.token_row_id, s.pair_row_id,
+               s.mint_identity, s.pair_identity, s.token_state,
+               p.pair_address, t.token_status
         FROM printer_memory_factory_campaign_token_slots AS s
         JOIN printer_pairs AS p ON p.id = s.pair_row_id
         JOIN printer_tokens AS t ON t.id = s.token_row_id
