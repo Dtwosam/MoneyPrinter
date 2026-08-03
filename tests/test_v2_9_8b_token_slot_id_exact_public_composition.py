@@ -12,6 +12,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 import sqlite3
 from types import SimpleNamespace
@@ -32,6 +33,10 @@ from printer_v1.operator_cli.authoritative_live_operational_campaign import (
     LivePumpOriginAdapter,
 )
 from printer_v1.operator_cli.one_command_15m_factory import load_report_only
+from printer_v1.operator_cli.git_provenance import capture_git_provenance
+from printer_v1.operator_cli.offline_shared_failure_evidence import (
+    preserve_failed_offline_composition_evidence,
+)
 from printer_v1.sources.campaign_six_unit_accounting import CampaignActionLocalLedger
 from printer_v1.sources.governed_execution import build_fixture_source_adapter
 
@@ -299,6 +304,57 @@ class ExactPublicTokenSlotIdCompositionProof(unittest.TestCase):
                 secondary_transport=secondary_transport,
                 migration_transport=object(),
             )
+
+        if str(terminal.get("first_terminal_cause") or "") == "SHARED_FAILURE":
+            project_root = Path(__file__).resolve().parents[1]
+            git_state = capture_git_provenance(project_root)
+            evidence_root = Path(
+                os.environ.get(
+                    "PRINTER_V1_OFFLINE_FAILURE_EVIDENCE_ROOT",
+                    str(
+                        Path(tempfile.gettempdir())
+                        / "printer-v1-shared-failure-evidence"
+                    ),
+                )
+            )
+            preserved = preserve_failed_offline_composition_evidence(
+                source_database=self.db,
+                artifact_root=evidence_root,
+                execution_id=str(terminal["execution_id"]),
+                baseline_git_head=str(git_state["git_head"]),
+                tracked_tree_state={
+                    "git_tracked_tree_clean": git_state["git_tracked_tree_clean"],
+                    "git_staged_changes_present": git_state[
+                        "git_staged_changes_present"
+                    ],
+                    "git_unstaged_changes_present": git_state[
+                        "git_unstaged_changes_present"
+                    ],
+                    "git_untracked_present": git_state["git_untracked_present"],
+                },
+                test_node_id=(
+                    "tests/test_v2_9_8b_token_slot_id_exact_public_composition.py::"
+                    "ExactPublicTokenSlotIdCompositionProof::"
+                    "test_exact_public_coordinator_owner_driver_factory_composition"
+                ),
+                terminal=terminal,
+                zero_network_assertion={
+                    "boundary": (
+                        "frozen transports plus patched urllib.request.urlopen; "
+                        "not packet-level proof"
+                    ),
+                    "patched_urllib_call_count": network_open.call_count,
+                },
+                retry_state={
+                    "automatic_retries": public_command.AUTOMATIC_RETRIES,
+                    "reruns": 0,
+                    "resumes": 0,
+                    "restarts": int(bool(terminal.get("restart_created"))),
+                    "successors": int(bool(terminal.get("successor_created"))),
+                },
+                connections_closed=True,
+            )
+            print("SHARED_FAILURE_EVIDENCE_CAPTURE=" + json.dumps(preserved, sort_keys=True))
 
         network_open.assert_not_called()
         after_hash = _sha256(self.db)

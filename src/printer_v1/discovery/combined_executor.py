@@ -17,10 +17,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
+import re
 import sqlite3
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from printer_v1.contracts.enums import DataQualityLabel, SourceStatus
 from printer_v1.discovery.persistence import (
@@ -396,6 +398,32 @@ _SAFE_PERSISTENCE_MESSAGES = frozenset(
     }
 )
 
+_SENSITIVE_ENV_NAME = re.compile(
+    r"(?:API|AUTH|BEARER|CREDENTIAL|KEY|PASSWORD|RPC|SECRET|TOKEN|URL)", re.IGNORECASE
+)
+_URL_VALUE = re.compile(r"https?://[^\s'\"<>]+", re.IGNORECASE)
+_BEARER_VALUE = re.compile(r"\bBearer\s+[^\s,;]+", re.IGNORECASE)
+_SECRET_ASSIGNMENT = re.compile(
+    r"\b(api[_-]?key|authorization|credential|password|secret|token)\s*[:=]\s*[^\s,;]+",
+    re.IGNORECASE,
+)
+_MAX_SAFE_EXCEPTION_MESSAGE = 500
+
+
+def _safe_exception_message(exc: BaseException) -> str:
+    """Return a bounded useful message without runtime secrets or URLs."""
+    message = str(exc).strip() or "exception message unavailable"
+    for name, value in os.environ.items():
+        if _SENSITIVE_ENV_NAME.search(name) and len(value) >= 4:
+            message = message.replace(value, "[REDACTED_CONFIG]")
+    message = _URL_VALUE.sub("[REDACTED_URL]", message)
+    message = _BEARER_VALUE.sub("Bearer [REDACTED]", message)
+    message = _SECRET_ASSIGNMENT.sub(
+        lambda match: f"{match.group(1)}=[REDACTED]", message
+    )
+    message = " ".join(message.split())
+    return message[:_MAX_SAFE_EXCEPTION_MESSAGE]
+
 
 def _safe_persistence_message(exc: DiscoveryPersistenceError) -> str:
     message = str(exc).strip()
@@ -451,15 +479,237 @@ def _token_identity(mint: str) -> str:
 class CombinedPumpfunCampaignExecutor:
     """Fixture-backed combined discovery execution owner for 7A injection."""
 
-    def __init__(self, fixtures: CombinedDiscoveryFixtures) -> None:
+    def __init__(
+        self,
+        fixtures: CombinedDiscoveryFixtures,
+        *,
+        diagnostic_fault_injector: Callable[[str], None] | None = None,
+        rollback: Callable[[sqlite3.Connection], None] | None = None,
+    ) -> None:
         self.fixtures = fixtures
         self._last_canonical: tuple[object, ...] | None = None
         self._persistence_stage = "DISCOVERY_CYCLE_INITIALIZATION"
         self._persistence_object_kind = "discovery_batch"
+        self._diagnostic_fault_injector = diagnostic_fault_injector
+        self._rollback = rollback or (lambda connection: connection.rollback())
+        self._diagnostic_context: dict[str, Any] = {}
+
+    def _reset_diagnostic_context(self) -> None:
+        self._diagnostic_context = {
+            "discovery_stage": "DISCOVERY_CYCLE_INITIALIZATION",
+            "work_type": None,
+            "discovery_batch_id": None,
+            "discovery_work_id": None,
+            "scheduler_job_id": None,
+            "enqueue_completed": False,
+            "scheduler_job_created_this_attempt": False,
+            "claim_returned": False,
+            "claim_result": None,
+            "claim_status": None,
+            "expected_lock_owner": None,
+            "observed_lock_owner": None,
+            "discovery_work_insertion_completed": False,
+            "observed_scheduler_transitions": [],
+        }
+
+    def _set_diagnostic_stage(self, stage: str, **updates: Any) -> None:
+        self._diagnostic_context["discovery_stage"] = stage
+        self._diagnostic_context.update(updates)
+
+    def _inject_diagnostic_fault(self, stage: str) -> None:
+        if self._diagnostic_fault_injector is not None:
+            self._diagnostic_fault_injector(stage)
 
     def _mark_persistence(self, stage: str, object_kind: str) -> None:
         self._persistence_stage = stage
         self._persistence_object_kind = object_kind
+        self._diagnostic_context["discovery_stage"] = stage
+
+    @staticmethod
+    def _allowlisted_row(
+        row: sqlite3.Row | None, fields: Sequence[str]
+    ) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        return {field: row[field] for field in fields}
+
+    def _pre_rollback_snapshot(
+        self, connection: sqlite3.Connection
+    ) -> dict[str, Any]:
+        context = self._diagnostic_context
+        job_id = context.get("scheduler_job_id")
+        work_id = context.get("discovery_work_id")
+        batch_id = context.get("discovery_batch_id")
+        scheduler_row = None
+        if job_id is not None:
+            scheduler_row = connection.execute(
+                """
+                SELECT id, job_name, job_kind, target_table, target_id, status,
+                       scheduled_for, started_at, finished_at, locked_at,
+                       lock_owner, retry_count, created_at, updated_at
+                FROM printer_scheduler_jobs WHERE id = ?
+                """,
+                (int(job_id),),
+            ).fetchone()
+        work_row = None
+        if work_id:
+            work_row = connection.execute(
+                """
+                SELECT discovery_work_id, discovery_batch_id, campaign_id, run_id,
+                       cycle_id, scheduler_job_id, work_type, work_state,
+                       deadline_at, first_terminal_cause, terminal_at,
+                       created_at, updated_at
+                FROM printer_discovery_work WHERE discovery_work_id = ?
+                """,
+                (str(work_id),),
+            ).fetchone()
+        batch_row = None
+        if batch_id:
+            batch_row = connection.execute(
+                """
+                SELECT discovery_batch_id, campaign_id, configuration_id, run_id,
+                       cycle_id, batch_state, first_terminal_cause, terminal_at,
+                       created_at
+                FROM printer_discovery_batches WHERE discovery_batch_id = ?
+                """,
+                (str(batch_id),),
+            ).fetchone()
+        expected_to_disappear = []
+        if batch_row is not None:
+            expected_to_disappear.append("discovery_batch_attempt_changes")
+        if work_row is not None:
+            expected_to_disappear.append("discovery_work_attempt_changes")
+        if scheduler_row is not None and context.get(
+            "scheduler_job_created_this_attempt"
+        ):
+            expected_to_disappear.append("scheduler_job_attempt_row")
+        return {
+            "captured_before_rollback": True,
+            "connection_in_transaction": bool(connection.in_transaction),
+            "visibility": "ACTIVE_TRANSACTION_MAY_INCLUDE_UNCOMMITTED_STATE",
+            "durable_committed_outside_transaction": {
+                "new_attempt_rows_proven_durable": False,
+                "scheduler_job_preexisting": bool(
+                    scheduler_row is not None
+                    and not context.get("scheduler_job_created_this_attempt")
+                ),
+            },
+            "expected_to_disappear_after_successful_rollback": expected_to_disappear,
+            "scheduler_job": self._allowlisted_row(
+                scheduler_row,
+                (
+                    "id",
+                    "job_name",
+                    "job_kind",
+                    "target_table",
+                    "target_id",
+                    "status",
+                    "scheduled_for",
+                    "started_at",
+                    "finished_at",
+                    "locked_at",
+                    "lock_owner",
+                    "retry_count",
+                    "created_at",
+                    "updated_at",
+                ),
+            ),
+            "discovery_work": self._allowlisted_row(
+                work_row,
+                (
+                    "discovery_work_id",
+                    "discovery_batch_id",
+                    "campaign_id",
+                    "run_id",
+                    "cycle_id",
+                    "scheduler_job_id",
+                    "work_type",
+                    "work_state",
+                    "deadline_at",
+                    "first_terminal_cause",
+                    "terminal_at",
+                    "created_at",
+                    "updated_at",
+                ),
+            ),
+            "discovery_batch": self._allowlisted_row(
+                batch_row,
+                (
+                    "discovery_batch_id",
+                    "campaign_id",
+                    "configuration_id",
+                    "run_id",
+                    "cycle_id",
+                    "batch_state",
+                    "first_terminal_cause",
+                    "terminal_at",
+                    "created_at",
+                ),
+            ),
+            "observed_scheduler_transitions": list(
+                context.get("observed_scheduler_transitions") or []
+            ),
+            "accountable_identity_projection": {
+                "discovery_batch_id": batch_id,
+                "discovery_work_id": work_id,
+                "scheduler_job_id": job_id,
+                "work_type": context.get("work_type"),
+            },
+        }
+
+    @staticmethod
+    def _secondary_failure(exc: BaseException, *, stage: str) -> dict[str, str]:
+        return {
+            "stage": stage,
+            "exception_class": type(exc).__name__,
+            "sanitized_message": _safe_exception_message(exc),
+        }
+
+    def _build_shared_failure_diagnostics(
+        self, connection: sqlite3.Connection, exc: BaseException
+    ) -> dict[str, Any]:
+        context = dict(self._diagnostic_context)
+        context["observed_scheduler_transitions"] = list(
+            context.get("observed_scheduler_transitions") or []
+        )
+        details: dict[str, Any] = {
+            "schema_version": "DISCOVERY_SHARED_FAILURE_DIAGNOSTIC_V1",
+            "first_terminal_cause": "SHARED_FAILURE",
+            "first_failure": {
+                "classification": "SHARED_FAILURE",
+                "exception_class": type(exc).__name__,
+                "sanitized_message": _safe_exception_message(exc),
+            },
+            "discovery": context,
+            "pre_rollback_state": None,
+            "rollback": {
+                "started": False,
+                "completed": False,
+            },
+            "secondary_failures": [],
+        }
+        try:
+            details["pre_rollback_state"] = self._pre_rollback_snapshot(connection)
+        except Exception as snapshot_exc:
+            details["secondary_failures"].append(
+                self._secondary_failure(
+                    snapshot_exc, stage="PRE_ROLLBACK_SNAPSHOT"
+                )
+            )
+        return details
+
+    def _rollback_with_diagnostics(
+        self, connection: sqlite3.Connection, details: dict[str, Any]
+    ) -> None:
+        details["rollback"]["started"] = True
+        try:
+            self._rollback(connection)
+        except Exception as rollback_exc:
+            details["secondary_failures"].append(
+                self._secondary_failure(rollback_exc, stage="ROLLBACK")
+            )
+        else:
+            details["rollback"]["completed"] = True
 
     def execute(
         self,
@@ -477,6 +727,7 @@ class CombinedPumpfunCampaignExecutor:
             raise CombinedDiscoveryError("CENTRAL_SCHEDULER_UNAVAILABLE")
 
         started = datetime.now(timezone.utc)
+        self._reset_diagnostic_context()
         self._persistence_stage = "DISCOVERY_CYCLE_INITIALIZATION"
         self._persistence_object_kind = "discovery_batch"
         usage = _Usage()
@@ -516,8 +767,9 @@ class CombinedPumpfunCampaignExecutor:
                 "first_terminal_cause": cause,
                 "lifecycle_started": False,
             }
-        except Exception:
-            connection.rollback()
+        except Exception as exc:
+            fault_details = self._build_shared_failure_diagnostics(connection, exc)
+            self._rollback_with_diagnostics(connection, fault_details)
             terminal = "FAILED"
             cause = "SHARED_FAILURE"
             cancellation = "SHARED_FAILURE"
@@ -601,6 +853,10 @@ class CombinedPumpfunCampaignExecutor:
             raise CombinedDiscoveryError("OWNERSHIP_MISMATCH")
 
         discovery_batch_id = f"discovery-batch:{campaign_id}:{run_id}:{cycle_id}"
+        self._set_diagnostic_stage(
+            "DISCOVERY_BATCH_CREATE",
+            discovery_batch_id=discovery_batch_id,
+        )
         cycle_seed = derive_cycle_selection_seed(
             campaign_selection_seed=seed,
             campaign_id=campaign_id,
@@ -926,6 +1182,23 @@ class CombinedPumpfunCampaignExecutor:
         job_name = f"{work_type}:{discovery_batch_id}"
         work_id = f"work:{work_type}:{discovery_batch_id}"
         lock_owner = f"discovery-work:{work_id}"
+        self._set_diagnostic_stage(
+            "DISCOVERY_WORK_BEFORE_ENQUEUE",
+            work_type=work_type,
+            discovery_batch_id=discovery_batch_id,
+            discovery_work_id=work_id,
+            scheduler_job_id=None,
+            enqueue_completed=False,
+            scheduler_job_created_this_attempt=False,
+            claim_returned=False,
+            claim_result=None,
+            claim_status=None,
+            expected_lock_owner=lock_owner,
+            observed_lock_owner=None,
+            discovery_work_insertion_completed=False,
+            observed_scheduler_transitions=[],
+        )
+        self._inject_diagnostic_fault("DISCOVERY_WORK_BEFORE_ENQUEUE")
         discovery_now = datetime.fromisoformat(now.replace("Z", "+00:00"))
         result, job_id = enqueue_job(
             connection,
@@ -934,6 +1207,7 @@ class CombinedPumpfunCampaignExecutor:
             target_table="printer_discovery_batches",
             scheduled_for=discovery_now,
         )
+        created_this_attempt = job_id is not None
         if job_id is None:
             # Lawful rebind only for the exact same name/kind active row.
             row = connection.execute(
@@ -976,6 +1250,17 @@ class CombinedPumpfunCampaignExecutor:
                     f"rebind status not claimable:{status}",
                 )
             job_id = int(row["id"])
+        self._set_diagnostic_stage(
+            "DISCOVERY_WORK_AFTER_ENQUEUE_BEFORE_CLAIM",
+            scheduler_job_id=int(job_id),
+            enqueue_completed=True,
+            scheduler_job_created_this_attempt=created_this_attempt,
+        )
+        if created_this_attempt:
+            self._diagnostic_context["observed_scheduler_transitions"].append(
+                "SCHEDULER_ENQUEUE"
+            )
+        self._inject_diagnostic_fault("DISCOVERY_WORK_AFTER_ENQUEUE_BEFORE_CLAIM")
         claimed = False
         claim_result = claim_due_job(
             connection,
@@ -983,6 +1268,8 @@ class CombinedPumpfunCampaignExecutor:
             lock_owner=lock_owner,
             now=discovery_now,
         )
+        self._diagnostic_context["claim_returned"] = True
+        self._diagnostic_context["claim_result"] = claim_result.value
         if claim_result != LockResult.ACQUIRED:
             cause = {
                 LockResult.NOT_FOUND: "DISCOVERY_SCHEDULER_CLAIM_NOT_FOUND",
@@ -1004,6 +1291,24 @@ class CombinedPumpfunCampaignExecutor:
                 job_name=job_name,
                 lock_owner=lock_owner,
             )
+        except CombinedDiscoveryError:
+            self._terminalize_unstarted_discovery_scheduler_job(
+                connection,
+                job_id=int(job_id),
+                expected_lock_owner=lock_owner,
+                claimed=claimed,
+            )
+            raise
+        self._diagnostic_context["claim_status"] = JobStatus.RUNNING.value
+        self._diagnostic_context["observed_lock_owner"] = lock_owner
+        self._diagnostic_context["observed_scheduler_transitions"].append(
+            "SCHEDULER_CLAIM"
+        )
+        self._set_diagnostic_stage(
+            "DISCOVERY_WORK_AFTER_CLAIM_BEFORE_INSERT"
+        )
+        self._inject_diagnostic_fault("DISCOVERY_WORK_AFTER_CLAIM_BEFORE_INSERT")
+        try:
             self._mark_persistence("DISCOVERY_WORK_CREATE", "discovery_work")
             insert_discovery_work(
                 connection,
@@ -1018,6 +1323,7 @@ class CombinedPumpfunCampaignExecutor:
                 work_state="RUNNING",
                 now=now,
             )
+            self._diagnostic_context["discovery_work_insertion_completed"] = True
             self._require_discovery_work_link(
                 connection,
                 work_id=work_id,
@@ -1044,6 +1350,7 @@ class CombinedPumpfunCampaignExecutor:
             raise CombinedDiscoveryError(
                 "DISCOVERY_SCHEDULER_JOB_LINK_MISMATCH", str(exc)
             ) from exc
+        self._set_diagnostic_stage("DISCOVERY_WORK_RUNNING")
         return work_id
 
     def _require_claimed_discovery_scheduler_identity(
@@ -1196,12 +1503,26 @@ class CombinedPumpfunCampaignExecutor:
         ).fetchone()
         if row is None or row["scheduler_job_id"] is None:
             return
-        terminalize_scheduler_job_for_work(
+        terminal_status = terminalize_scheduler_job_for_work(
             connection,
             job_id=int(row["scheduler_job_id"]),
             work_state=state,
             cause=cause,
         )
+        if work_id == self._diagnostic_context.get("discovery_work_id"):
+            self._set_diagnostic_stage(
+                "DISCOVERY_WORK_TERMINALIZED",
+                observed_lock_owner=None,
+            )
+            transitions = self._diagnostic_context.get(
+                "observed_scheduler_transitions"
+            )
+            if (
+                terminal_status is not None
+                and isinstance(transitions, list)
+                and "SCHEDULER_TERMINAL" not in transitions
+            ):
+                transitions.append("SCHEDULER_TERMINAL")
 
     def _governed_request(
         self,
@@ -1287,6 +1608,8 @@ class CombinedPumpfunCampaignExecutor:
         work_id = self._create_work(
             connection, command, usage, discovery_batch_id, DIRECT_WORK_TYPE, now
         )
+        self._set_diagnostic_stage("DISCOVERY_WORK_GOVERNED_EXECUTION")
+        self._inject_diagnostic_fault("DISCOVERY_WORK_GOVERNED_EXECUTION")
         if "direct" in fixtures.provider_failures_injected:
             fail_id = self._store_failure(
                 connection,
