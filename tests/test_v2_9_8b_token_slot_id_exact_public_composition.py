@@ -264,6 +264,11 @@ class ExactPublicTokenSlotIdCompositionProof(unittest.TestCase):
         )
 
         with (
+            patch.object(
+                public_command,
+                "_iso",
+                side_effect=lambda: clock.now().isoformat(),
+            ),
             patch.object(public_command, "AUTHORITATIVE_DB", self.db.resolve()),
             patch.object(public_command, "ARTIFACT_ROOT", self.artifact_root),
             patch.object(
