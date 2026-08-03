@@ -112,6 +112,6 @@ No authoritative memory run, fresh readiness, authorization, retrieval, decision
 
 ## Exact next lane
 
-`V2-9.8B Post-Rollover-2 Authoritative WINDOW_15M token_slot_id Blocker Repair Indepent Closeout`
+`V2-9.8B Post-Rollover-2 Authoritative WINDOW_15M token_slot_id Blocker Repair Independent Closeout`
 
 This PASS does not authorize runtime or a fresh authorization.
