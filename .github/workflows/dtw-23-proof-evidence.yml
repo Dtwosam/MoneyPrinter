@@ -1,0 +1,70 @@
+name: DTW-23 proof evidence
+
+on:
+  pull_request:
+    branches:
+      - agent/v2-9-8b-post-rollover-2-token-slot-id-proof-evidence-completion
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . pytest
+
+      - name: Compile changed proof surface
+        run: |
+          python -m py_compile \
+            src/printer_v1/operator_cli/origin_lifecycle_campaign.py \
+            tests/test_v2_9_8b_token_slot_id_projection_repair.py \
+            tests/test_v2_9_8b_token_slot_id_exact_public_composition.py
+
+      - name: Run blocker-specific proofs
+        run: |
+          set -o pipefail
+          python -m pytest -q -s \
+            tests/test_v2_9_8b_token_slot_id_projection_repair.py \
+            tests/test_v2_9_8b_token_slot_id_exact_public_composition.py \
+            | tee dtw23-focused.log
+
+      - name: Run directly affected regressions
+        run: |
+          set -o pipefail
+          python -m pytest -q \
+            tests/test_v2_9_7e_8_origin_to_lifecycle_integration.py \
+            tests/test_v2_9_8b_operational_factory_active_path_restoration.py \
+            tests/test_v2_9_8b_post_handoff_terminal_compensation.py \
+            tests/test_v2_9_8b_full_run_wiring_integration.py \
+            tests/test_v2_9_8b_full_run_accounting_semantics_correction.py \
+            tests/test_v2_9_8b_full_run_accounting_terminal_evidence.py \
+            tests/test_v2_9_8b_terminal_safety_accounting_finalization.py \
+            tests/test_v2_9_8a_public_operational_command.py \
+            tests/test_v2_9_8b_window_15m_one_shot_wrapper.py \
+            | tee dtw23-regressions.log
+
+      - name: Diff check
+        run: git diff --check
+
+      - name: Upload proof logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dtw-23-proof-logs
+          path: |
+            dtw23-focused.log
+            dtw23-regressions.log
+          if-no-files-found: warn
