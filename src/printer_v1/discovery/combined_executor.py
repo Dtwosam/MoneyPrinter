@@ -66,8 +66,8 @@ from printer_v1.discovery.scheduler_parity import (
     reconcile_discovery_work_jobs,
     terminalize_scheduler_job_for_work,
 )
-from printer_v1.scheduler.contracts import JobKind
-from printer_v1.scheduler.scheduler import enqueue_job
+from printer_v1.scheduler.contracts import JobKind, JobStatus, LockResult
+from printer_v1.scheduler.scheduler import cancel_job, claim_due_job, enqueue_job
 from printer_v1.sources.governor import can_request_source
 from printer_v1.sources.secondary_discovery import (
     DISCARDED_NON_AUTHORITATIVE_FIELDS,
@@ -916,20 +916,31 @@ class CombinedPumpfunCampaignExecutor:
         work_type: str,
         now: str,
     ) -> str:
+        """Enqueue, exactly claim, then mark discovery work RUNNING.
+
+        Approved order (claim-at-work-start):
+        enqueue -> claim_due_job(exact linked id) -> equality checks ->
+        insert discovery work RUNNING -> governed work later.
+        """
         usage.bump_scheduler()
         job_name = f"{work_type}:{discovery_batch_id}"
+        work_id = f"work:{work_type}:{discovery_batch_id}"
+        lock_owner = f"discovery-work:{work_id}"
+        discovery_now = datetime.fromisoformat(now.replace("Z", "+00:00"))
         result, job_id = enqueue_job(
             connection,
             job_name=job_name,
             job_kind=JobKind.DISCOVERY_REFRESH,
             target_table="printer_discovery_batches",
-            scheduled_for=datetime.fromisoformat(now.replace("Z", "+00:00")),
+            scheduled_for=discovery_now,
         )
         if job_id is None:
-            # Idempotent replay may hit duplicate active job; reuse existing.
+            # Lawful rebind only for the exact same name/kind active row.
             row = connection.execute(
                 """
-                SELECT id FROM printer_scheduler_jobs
+                SELECT id, job_name, job_kind, status, lock_owner, locked_at,
+                       scheduled_for
+                FROM printer_scheduler_jobs
                 WHERE job_name = ? AND job_kind = ?
                 ORDER BY id DESC LIMIT 1
                 """,
@@ -937,23 +948,224 @@ class CombinedPumpfunCampaignExecutor:
             ).fetchone()
             if row is None:
                 raise CombinedDiscoveryError("SCHEDULER_JOB_CREATE_FAILED", str(result))
+            if (
+                str(row["job_name"]) != job_name
+                or str(row["job_kind"]) != JobKind.DISCOVERY_REFRESH.value
+            ):
+                raise CombinedDiscoveryError(
+                    "SCHEDULER_JOB_CREATE_FAILED", "rebind identity mismatch"
+                )
+            status = str(row["status"])
+            if row["locked_at"] is not None or row["lock_owner"] is not None:
+                raise CombinedDiscoveryError(
+                    "DISCOVERY_SCHEDULER_CLAIM_ALREADY_OWNED",
+                    str(row["lock_owner"] or "locked"),
+                )
+            if status == JobStatus.RUNNING.value:
+                # Active without visible owner fields is still not stealable.
+                raise CombinedDiscoveryError(
+                    "DISCOVERY_SCHEDULER_CLAIM_ALREADY_OWNED",
+                    f"rebind status not claimable:{status}",
+                )
+            if status not in {
+                JobStatus.PENDING.value,
+                JobStatus.COOLDOWN.value,
+            }:
+                raise CombinedDiscoveryError(
+                    "DISCOVERY_SCHEDULER_CLAIM_NOT_ACQUIRED",
+                    f"rebind status not claimable:{status}",
+                )
             job_id = int(row["id"])
-        work_id = f"work:{work_type}:{discovery_batch_id}"
-        self._mark_persistence("DISCOVERY_WORK_CREATE", "discovery_work")
-        insert_discovery_work(
+        claimed = False
+        claim_result = claim_due_job(
             connection,
-            discovery_work_id=work_id,
-            discovery_batch_id=discovery_batch_id,
-            campaign_id=command.campaign_id,
-            run_id=command.run_id,
-            cycle_id=self.fixtures.cycle_id,
-            scheduler_job_id=int(job_id),
-            work_type=work_type,
-            deadline_at=self.fixtures.cycle_cutoff,
-            work_state="RUNNING",
-            now=now,
+            job_id=int(job_id),
+            lock_owner=lock_owner,
+            now=discovery_now,
         )
+        if claim_result != LockResult.ACQUIRED:
+            cause = {
+                LockResult.NOT_FOUND: "DISCOVERY_SCHEDULER_CLAIM_NOT_FOUND",
+                LockResult.NOT_DUE: "DISCOVERY_SCHEDULER_CLAIM_NOT_DUE",
+                LockResult.ALREADY_LOCKED: "DISCOVERY_SCHEDULER_CLAIM_ALREADY_OWNED",
+            }.get(claim_result, "DISCOVERY_SCHEDULER_CLAIM_NOT_ACQUIRED")
+            self._terminalize_unstarted_discovery_scheduler_job(
+                connection,
+                job_id=int(job_id),
+                expected_lock_owner=lock_owner,
+                claimed=False,
+            )
+            raise CombinedDiscoveryError(cause, str(claim_result))
+        claimed = True
+        try:
+            self._require_claimed_discovery_scheduler_identity(
+                connection,
+                job_id=int(job_id),
+                job_name=job_name,
+                lock_owner=lock_owner,
+            )
+            self._mark_persistence("DISCOVERY_WORK_CREATE", "discovery_work")
+            insert_discovery_work(
+                connection,
+                discovery_work_id=work_id,
+                discovery_batch_id=discovery_batch_id,
+                campaign_id=command.campaign_id,
+                run_id=command.run_id,
+                cycle_id=self.fixtures.cycle_id,
+                scheduler_job_id=int(job_id),
+                work_type=work_type,
+                deadline_at=self.fixtures.cycle_cutoff,
+                work_state="RUNNING",
+                now=now,
+            )
+            self._require_discovery_work_link(
+                connection,
+                work_id=work_id,
+                job_id=int(job_id),
+                discovery_batch_id=discovery_batch_id,
+                command=command,
+                work_type=work_type,
+            )
+        except CombinedDiscoveryError:
+            self._terminalize_unstarted_discovery_scheduler_job(
+                connection,
+                job_id=int(job_id),
+                expected_lock_owner=lock_owner,
+                claimed=claimed,
+            )
+            raise
+        except Exception as exc:
+            self._terminalize_unstarted_discovery_scheduler_job(
+                connection,
+                job_id=int(job_id),
+                expected_lock_owner=lock_owner,
+                claimed=claimed,
+            )
+            raise CombinedDiscoveryError(
+                "DISCOVERY_SCHEDULER_JOB_LINK_MISMATCH", str(exc)
+            ) from exc
         return work_id
+
+    def _require_claimed_discovery_scheduler_identity(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        job_id: int,
+        job_name: str,
+        lock_owner: str,
+    ) -> None:
+        row = connection.execute(
+            """
+            SELECT id, job_name, job_kind, status, lock_owner, locked_at, started_at
+            FROM printer_scheduler_jobs
+            WHERE id = ?
+            """,
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            raise CombinedDiscoveryError(
+                "DISCOVERY_SCHEDULER_CLAIM_IDENTITY_MISMATCH", "missing claimed job"
+            )
+        if (
+            int(row["id"]) != int(job_id)
+            or str(row["job_kind"]) != JobKind.DISCOVERY_REFRESH.value
+            or str(row["job_name"]) != job_name
+            or str(row["status"]) != JobStatus.RUNNING.value
+            or str(row["lock_owner"] or "") != lock_owner
+            or row["locked_at"] is None
+            or row["started_at"] is None
+        ):
+            raise CombinedDiscoveryError(
+                "DISCOVERY_SCHEDULER_CLAIM_IDENTITY_MISMATCH",
+                (
+                    f"id={row['id']} kind={row['job_kind']} name={row['job_name']} "
+                    f"status={row['status']} lock_owner={row['lock_owner']}"
+                ),
+            )
+
+    def _require_discovery_work_link(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        work_id: str,
+        job_id: int,
+        discovery_batch_id: str,
+        command: AbstractCampaignCommand,
+        work_type: str,
+    ) -> None:
+        row = connection.execute(
+            """
+            SELECT discovery_work_id, discovery_batch_id, campaign_id, run_id,
+                   cycle_id, scheduler_job_id, work_type, work_state
+            FROM printer_discovery_work
+            WHERE discovery_work_id = ?
+            """,
+            (work_id,),
+        ).fetchone()
+        if row is None:
+            raise CombinedDiscoveryError(
+                "DISCOVERY_SCHEDULER_JOB_LINK_MISMATCH", "missing discovery work"
+            )
+        if (
+            str(row["discovery_work_id"]) != work_id
+            or str(row["discovery_batch_id"]) != discovery_batch_id
+            or str(row["campaign_id"]) != command.campaign_id
+            or str(row["run_id"]) != command.run_id
+            or str(row["cycle_id"]) != self.fixtures.cycle_id
+            or int(row["scheduler_job_id"]) != int(job_id)
+            or str(row["work_type"]) != work_type
+            or str(row["work_state"]) != "RUNNING"
+        ):
+            raise CombinedDiscoveryError(
+                "DISCOVERY_SCHEDULER_JOB_LINK_MISMATCH",
+                (
+                    f"work={row['discovery_work_id']} job={row['scheduler_job_id']} "
+                    f"state={row['work_state']}"
+                ),
+            )
+
+    def _terminalize_unstarted_discovery_scheduler_job(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        job_id: int,
+        expected_lock_owner: str,
+        claimed: bool,
+    ) -> None:
+        """Terminalize only unstarted residue owned by this unit; never steal.
+
+        Uses the committed Central Scheduler cancel owner. Leaves another
+        worker's locked job untouched.
+        """
+        row = connection.execute(
+            """
+            SELECT id, status, lock_owner, locked_at
+            FROM printer_scheduler_jobs
+            WHERE id = ?
+            """,
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            return
+        status = str(row["status"])
+        if status not in {
+            JobStatus.PENDING.value,
+            JobStatus.RUNNING.value,
+            JobStatus.COOLDOWN.value,
+        }:
+            return
+        owner = None if row["lock_owner"] is None else str(row["lock_owner"])
+        if claimed or owner == expected_lock_owner:
+            cancel_job(connection, job_id=int(job_id))
+            return
+        if owner is None and status in {
+            JobStatus.PENDING.value,
+            JobStatus.COOLDOWN.value,
+        }:
+            # Unclaimed job created for this unit but never successfully claimed.
+            cancel_job(connection, job_id=int(job_id))
+            return
+        # Another owner holds the lock — do not cancel or overwrite.
 
     def _terminalize_work(
         self,
