@@ -317,6 +317,44 @@ class OperationalMemoryFactoryError(RuntimeError):
     """Fail-closed public command fault."""
 
 
+def _is_campaign_run_identity(candidate: str, *, campaign_run_id: str | None = None) -> bool:
+    """True when a candidate identity is campaign-run shaped, not factory UUID."""
+    value = str(candidate or "").strip()
+    if not value:
+        return False
+    campaign = str(campaign_run_id or "").strip()
+    if campaign and value == campaign:
+        return True
+    return value.endswith("-campaign-run")
+
+
+def _extract_returned_factory_run_id(
+    lifecycle: Mapping[str, Any],
+    *,
+    campaign_run_id: str | None = None,
+) -> str | None:
+    """Return factory-run identity only; never adopt campaign-run as factory.
+
+    Prefer explicit ``factory_run_id``. Historical lifecycle reports place the
+    factory UUID in ``run_id`` after genuine lifecycle entry; that path is kept
+    only when the value is not campaign-run shaped.
+    """
+    explicit = str(lifecycle.get("factory_run_id") or "").strip()
+    if explicit:
+        if _is_campaign_run_identity(explicit, campaign_run_id=campaign_run_id):
+            return None
+        return explicit
+    candidate = str(lifecycle.get("run_id") or "").strip()
+    if not candidate:
+        return None
+    lifecycle_campaign = (
+        str(lifecycle.get("campaign_run_id") or "").strip() or campaign_run_id
+    )
+    if _is_campaign_run_identity(candidate, campaign_run_id=lifecycle_campaign):
+        return None
+    return candidate
+
+
 def _iso(value: datetime | None = None) -> str:
     return (value or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
 
@@ -1966,6 +2004,7 @@ def _run_operational_campaign(
     )
     heartbeat: _CampaignHeartbeat | None = None
     initialized_factory_run_id: str | None = str(uuid.uuid4())
+    factory_identity_retained = False
     observed_heartbeat_failure: Mapping[str, Any] | None = None
     # The public coordinator owns accounting before the first accounted stage.
     from printer_v1.sources.campaign_six_unit_accounting import (
@@ -2156,7 +2195,7 @@ def _run_operational_campaign(
             return None
 
         def retain_factory_run_id(factory_run_id: str) -> None:
-            nonlocal initialized_factory_run_id
+            nonlocal initialized_factory_run_id, factory_identity_retained
             candidate = str(factory_run_id).strip()
             if not candidate:
                 raise OperationalMemoryFactoryError(
@@ -2166,6 +2205,7 @@ def _run_operational_campaign(
                 raise OperationalMemoryFactoryError(
                     "initialized factory-run identity changed"
                 )
+            factory_identity_retained = True
 
         try:
             from printer_v1.scheduler.scheduler import (
@@ -2234,9 +2274,15 @@ def _run_operational_campaign(
             heartbeat.stop()
             heartbeat = None
         lifecycle = dict(result.lifecycle)
-        returned_factory_run_id = str(lifecycle.get("run_id") or "").strip() or None
-        if returned_factory_run_id is not None:
-            retain_factory_run_id(returned_factory_run_id)
+        # Never retain factory identity until lifecycle_started is proven true.
+        # Campaign-run IDs in pre-lifecycle lifecycle payloads must not enter
+        # retain_factory_run_id (post-rollover-2 identity-contract repair).
+        if bool(result.lifecycle_started):
+            returned_factory_run_id = _extract_returned_factory_run_id(
+                lifecycle, campaign_run_id=command.run_id
+            )
+            if returned_factory_run_id is not None:
+                retain_factory_run_id(returned_factory_run_id)
         factory_scheduler_ids = {
             int(record["scheduler_job_id"])
             for record in lifecycle_operation_records
@@ -2290,6 +2336,7 @@ def _run_operational_campaign(
             # A returned activation/origin terminal is authoritative.  Decide
             # whether a real accountable stage began before invoking strict
             # accounting; never manufacture a None evidence placeholder.
+            # Factory-run retention was skipped above for this branch.
             return _finalize_returned_pre_lifecycle_result(
                 result=result,
                 lifecycle=lifecycle,
@@ -2532,7 +2579,13 @@ def _run_operational_campaign(
                 execution_id=execution_id,
                 paths=paths,
                 launch_git_provenance=preflight["git_provenance"],
-                factory_run_id=initialized_factory_run_id,
+                # Only report factory identity after genuine lifecycle retention.
+                # A pre-generated UUID alone must not inflate lifecycle_started.
+                factory_run_id=(
+                    initialized_factory_run_id
+                    if factory_identity_retained
+                    else None
+                ),
                 heartbeat_failure=(
                     heartbeat.poll_failure()
                     if heartbeat is not None else observed_heartbeat_failure
@@ -4249,6 +4302,17 @@ def main(argv: Iterable[str] | None = None) -> int:
         source_calls = (
             int(campaign_source_calls) if campaign_source_calls is not None else 0
         )
+        # Mutation honesty: never hardcode database_writes=0 after a campaign
+        # action identity exists. Proven zero only when no campaign run was
+        # created by this action (preflight/status/report-only/etc.).
+        if action_run_id is not None:
+            database_writes: int | None = None
+            database_mutation_known = False
+            database_mutation_status = "UNKNOWN_ON_EXCEPTION"
+        else:
+            database_writes = 0
+            database_mutation_known = True
+            database_mutation_status = "PROVEN_ZERO_NO_CAMPAIGN_ACTION_IDENTITY"
         print(
             json.dumps(
                 {
@@ -4260,7 +4324,9 @@ def main(argv: Iterable[str] | None = None) -> int:
                     "campaign_source_calls": campaign_source_calls,
                     "source_calls": source_calls,
                     "scheduler_runtime_calls": 0,
-                    "database_writes": 0,
+                    "database_writes": database_writes,
+                    "database_mutation_known": database_mutation_known,
+                    "database_mutation_status": database_mutation_status,
                     "restart_created": False,
                     "successor_created": False,
                 },

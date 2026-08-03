@@ -1679,7 +1679,10 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         selection_batch_id=None,
                     ),
                     lifecycle={
-                        "run_id": command.run_id,
+                        # Campaign identity only. Do not place campaign-run ID in
+                        # run_id/factory_run_id; coordinator retains factory UUID
+                        # solely after genuine lifecycle entry.
+                        "campaign_run_id": command.run_id,
                         "run_status": "NOT_STARTED",
                         "stop_reason": supply_terminal_cause,
                         "first_terminal_cause": supply_terminal_cause,
@@ -1916,7 +1919,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     selection_batch_id=None,
                 ),
                 lifecycle={
-                    "run_id": command.run_id,
+                    # Campaign identity only. No factory-run identity on
+                    # pre-lifecycle returns (post-rollover-2 identity contract).
+                    "campaign_run_id": command.run_id,
                     "run_status": "NOT_STARTED",
                     "stop_reason": terminal,
                     "first_terminal_cause": terminal,
