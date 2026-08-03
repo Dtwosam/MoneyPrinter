@@ -114,7 +114,18 @@ class _ExactPublicCompositionOwner(AuthoritativeLiveOperationalCampaignOwner):
         # The exact public coordinator still supplies the migration port, but
         # this frozen direct-origin proof requires no migration-provider call.
         kwargs["migration_transport"] = None
-        return super().run_operational(**kwargs)
+
+        original_driver_run = self._driver.run
+
+        def proof_driver_run(**driver_kwargs):
+            # Retain the real driver/factory chain while selecting the existing
+            # disposable-DB proof boundary instead of persistent corpus mode.
+            driver_kwargs["proof_mode"] = True
+            driver_kwargs["operational_persistent_mode"] = False
+            return original_driver_run(**driver_kwargs)
+
+        with patch.object(self._driver, "run", new=proof_driver_run):
+            return super().run_operational(**kwargs)
 
 
 class ExactPublicTokenSlotIdCompositionProof(unittest.TestCase):
