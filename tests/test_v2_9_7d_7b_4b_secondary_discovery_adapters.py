@@ -342,6 +342,20 @@ class GeckoTerminalAdapterTests(unittest.TestCase):
         )
         self.assertEqual(success.accounting.transport_operations, 2)
 
+    def test_requested_active_pool_requires_an_explicit_active_fixture(self) -> None:
+        result = run_geckoterminal_fixture_lane(
+            gecko_ops(self.fixture, include_active=False),
+            evaluated_at=self.evaluated,
+            requested_active_pool=self.gecko["active"]["requested_pool"],
+        )
+        self.assertEqual(result.status, "PARTIAL")
+        self.assertEqual(result.failures[0].code, "UNAVAILABLE")
+        self.assertEqual(result.failures[0].request_kind, GECKO_ACTIVE_REQUEST)
+        self.assertEqual(
+            result.accounting.governed_requests[GECKO_ACTIVE_REQUEST],
+            0,
+        )
+
 
 class SolanaTrackerAdapterTests(unittest.TestCase):
     def setUp(self) -> None:

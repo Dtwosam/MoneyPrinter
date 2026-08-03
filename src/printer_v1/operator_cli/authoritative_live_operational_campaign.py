@@ -1135,7 +1135,10 @@ class AuthoritativeLiveOperationalCampaignOwner:
             cycle_id=cycle_id,
             cycle_cutoff=cycle_cutoff,
             campaign_selection_seed=selection_seed,
-            provider_contract_versions={"direct": CONTRACT_VERSION},
+            provider_contract_versions={
+                "direct": CONTRACT_VERSION,
+                "geckoterminal": _sd.SECONDARY_DISCOVERY_CONTRACT_VERSION,
+            },
             git_provenance_identity=f"live-operational:{CONTRACT_VERSION}",
             evaluated_at=evaluated_at,
             direct_observations=acquisition.origin_proofs,

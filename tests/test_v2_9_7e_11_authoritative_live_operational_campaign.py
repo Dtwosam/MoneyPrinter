@@ -37,6 +37,7 @@ from printer_v1.sources.governed_execution import (
     FIXTURE_FAILURE,
     build_fixture_source_adapter,
 )
+from printer_v1.sources import secondary_discovery as _sd
 from printer_v1.sources.pumpfun_origin import (
     CREATE_INDEX_PAGE_SIZE,
     PumpContractError,
@@ -298,13 +299,59 @@ class _FakeSecondaryTransport:
         for token, body in self.bodies.items():
             if token in url:
                 return body
-        return {}
+        raise LiveTransportError("MISSING_FROZEN_FIXTURE", url)
+
+
+def _lawful_gecko_active_body(*, pool: str, mint: str) -> dict:
+    """Return one minimal adopted exact-pool GeckoTerminal response."""
+    return {
+        "data": {
+            "id": f"solana_{pool}",
+            "type": "pool",
+            "attributes": {
+                "address": pool,
+                "transactions": {"m5": {"buys": 1, "sells": 1}},
+            },
+            "relationships": {
+                "base_token": {
+                    "data": {"id": f"solana_{mint}", "type": "token"}
+                },
+                "quote_token": {
+                    "data": {
+                        "id": (
+                            "solana_"
+                            "So11111111111111111111111111111111111111112"
+                        ),
+                        "type": "token",
+                    }
+                },
+                "dex": {"data": {"id": "pump-fun", "type": "dex"}},
+            },
+        }
+    }
+
+
+def _lawful_secondary_bodies(
+    pools_by_mint,
+    *,
+    contract_version: str = _sd.SECONDARY_DISCOVERY_CONTRACT_VERSION,
+):
+    """Build every decoded frozen body planned by the live adapter."""
+    if contract_version != _sd.SECONDARY_DISCOVERY_CONTRACT_VERSION:
+        raise ValueError("STALE_FROZEN_SECONDARY_CONTRACT")
+    bodies = {"trending_pools": {"data": []}, "token-profiles": []}
+    for mint, pool in sorted(dict(pools_by_mint).items()):
+        bodies[f"/pools/{pool}"] = _lawful_gecko_active_body(
+            pool=str(pool),
+            mint=str(mint),
+        )
+    return bodies
 
 
 class LiveSecondaryAdapterTests(unittest.TestCase):
     def test_enrichment_emits_governed_source_facts_and_isolates_failures(self) -> None:
         transport = _FakeSecondaryTransport(
-            {"trending_pools": {"data": []}, "token-profiles": []},
+            _lawful_secondary_bodies({"MintFixture111": "pool-1"}),
             fail=[("dexscreener", "TIMEOUT")],
         )
         enrichment = LiveSecondaryDiscoveryAdapter(transport).enrich(

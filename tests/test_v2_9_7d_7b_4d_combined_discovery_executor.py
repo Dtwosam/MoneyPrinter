@@ -34,6 +34,7 @@ from printer_v1.operator_cli.campaign_persistence import (
     create_campaign,
 )
 from printer_v1.sources.secondary_discovery import (
+    GECKO_ACTIVE_REQUEST,
     GECKO_TRENDING_PARAMS,
     GECKO_TRENDING_REQUEST,
     TRACKER_TOP_REQUEST,
@@ -381,6 +382,58 @@ class CombinedDiscoveryExecutorTests(unittest.TestCase):
         }
         self.assertTrue(all(value == 0 for value in locked.values()))
         self.connection.close()
+
+    def test_malformed_secondary_response_is_provider_local_and_terminalized(self) -> None:
+        fixtures = self._fixtures()
+        malformed_active = FixtureSourceFact(
+            request_kind=GECKO_ACTIVE_REQUEST,
+            source_name="geckoterminal",
+            body={},
+            receipt_time=RECEIPT,
+            requested_pool=POOL_A,
+        )
+        result, _executor = self._execute(
+            replace(fixtures, gecko_ops=(*fixtures.gecko_ops, malformed_active))
+        )
+        self.assertEqual(result.terminal_status, "COMPLETED")
+        self.assertNotEqual(result.first_terminal_cause, "SHARED_FAILURE")
+        self.assertIsNone(result.fault_details)
+
+        self.connection.close()
+        self.connection = sqlite3.connect(self.db)
+        self.connection.row_factory = sqlite3.Row
+        work = self.connection.execute(
+            """SELECT work_state, first_terminal_cause, scheduler_job_id
+               FROM printer_discovery_work
+               WHERE work_type='DISCOVERY_GECKOTERMINAL_TRENDING_ACTIVE'"""
+        ).fetchone()
+        self.assertEqual(work["work_state"], "FAILED")
+        self.assertEqual(work["first_terminal_cause"], "GECKOTERMINAL_FAILED")
+        scheduler = self.connection.execute(
+            "SELECT status, job_name FROM printer_scheduler_jobs WHERE id=?",
+            (work["scheduler_job_id"],),
+        ).fetchone()
+        self.assertEqual(scheduler["status"], "FAILED")
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM printer_scheduler_jobs WHERE job_name=?",
+                (scheduler["job_name"],),
+            ).fetchone()[0],
+            1,
+        )
+        failure = self.connection.execute(
+            """SELECT failure_type FROM printer_source_failures
+               WHERE source_name='geckoterminal'
+                 AND request_kind=?""",
+            (GECKO_ACTIVE_REQUEST,),
+        ).fetchone()
+        self.assertEqual(failure["failure_type"], "MALFORMED_RESPONSE")
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM printer_memory_factory_campaign_token_slots"
+            ).fetchone()[0],
+            2,
+        )
 
     def test_rank_order_promoted_does_not_change_selection(self) -> None:
         first, executor = self._execute()

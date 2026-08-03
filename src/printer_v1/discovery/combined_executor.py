@@ -82,6 +82,7 @@ from printer_v1.sources.secondary_discovery import (
     TRACKER_TOP_REQUEST,
     TRACKER_TRENDING_REQUEST,
     TRACKER_WORK_TYPE,
+    SecondaryDiscoveryError,
     SolanaTrackerAuthConfig,
     normalize_gecko_active,
     normalize_gecko_trending,
@@ -1994,6 +1995,7 @@ class CombinedPumpfunCampaignExecutor:
             return []
 
         observations: list[_Observation] = []
+        lane_failures = 0
         for ordinal, op in enumerate(ops, start=1):
             if op.fixture_status in {"failure", "rate_limited", "error"} or (
                 op.status_code not in (200, None) and op.status_code >= 400
@@ -2021,6 +2023,7 @@ class CombinedPumpfunCampaignExecutor:
                     source_failure_id=fail_id,
                     now=now,
                 )
+                lane_failures += 1
                 continue
 
             req = self._governed_request(
@@ -2030,6 +2033,31 @@ class CombinedPumpfunCampaignExecutor:
                 request_kind=op.request_kind,
                 now=now,
             )
+            try:
+                normalized_rows = self._normalize_op(op)
+            except SecondaryDiscoveryError as exc:
+                # Adopted secondary-contract failures are provider-local.  Do
+                # not label a malformed decoded body as a clean response and do
+                # not translate it into a shared campaign rollback.  Database,
+                # ownership and ceiling faults remain outside this narrow catch.
+                fail_id = self._store_failure(
+                    connection,
+                    usage,
+                    source_name=op.source_name,
+                    request_kind=op.request_kind,
+                    failure_type=exc.code,
+                    now=now,
+                )
+                link_discovery_work_source(
+                    connection,
+                    discovery_work_id=work_id,
+                    link_ordinal=ordinal,
+                    source_request_id=req,
+                    source_failure_id=fail_id,
+                    now=now,
+                )
+                lane_failures += 1
+                continue
             resp = self._store_response(
                 connection,
                 usage,
@@ -2047,7 +2075,6 @@ class CombinedPumpfunCampaignExecutor:
                 source_response_id=resp,
                 now=now,
             )
-            normalized_rows = self._normalize_op(op)
             for row in normalized_rows:
                 for banned in FORBIDDEN_FACTUAL_FIELDS:
                     if banned in row:
@@ -2125,7 +2152,22 @@ class CombinedPumpfunCampaignExecutor:
                 )
                 usage.observations += 1
                 usage.unique_mints.add(mint)
-        self._terminalize_work(connection, work_id, "SUCCEEDED", f"{lane_name.upper()}_COMPLETE", now)
+        if lane_failures:
+            self._terminalize_work(
+                connection,
+                work_id,
+                "FAILED",
+                f"{lane_name.upper()}_FAILED",
+                now,
+            )
+        else:
+            self._terminalize_work(
+                connection,
+                work_id,
+                "SUCCEEDED",
+                f"{lane_name.upper()}_COMPLETE",
+                now,
+            )
         return observations
 
     def _normalize_op(self, op: FixtureSourceFact) -> list[dict[str, Any]]:

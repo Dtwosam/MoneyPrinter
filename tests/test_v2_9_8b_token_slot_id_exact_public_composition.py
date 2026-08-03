@@ -247,7 +247,7 @@ class ExactPublicTokenSlotIdCompositionProof(unittest.TestCase):
         pump_transport, runtime_mints = e11._two_create_transport()
         self.assertEqual(set(runtime_mints), set(pools))
         secondary_transport = e11._FakeSecondaryTransport(
-            {"trending_pools": {"data": []}, "token-profiles": []}
+            e11._lawful_secondary_bodies(pools)
         )
 
         clock = e9._Clock()

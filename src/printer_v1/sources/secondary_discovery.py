@@ -25,6 +25,7 @@ from printer_v1.sources.governor import can_request_source
 # ---------------------------------------------------------------------------
 
 SCHEDULER_JOB_KIND = JobKind.DISCOVERY_REFRESH.value
+SECONDARY_DISCOVERY_CONTRACT_VERSION = "V2-9.7D.7B.4B"
 
 GECKO_SOURCE_NAME = "geckoterminal"
 GECKO_TRENDING_REQUEST = "geckoterminal_trending_pool_reference"
@@ -715,7 +716,7 @@ def run_geckoterminal_fixture_lane(
             ProviderFailure(exc.code, GECKO_TRENDING_REQUEST, exc.detail)
         )
 
-    if requested_active_pool and port.peek() is not None:
+    if requested_active_pool:
         try:
             active_op = port.take(GECKO_ACTIVE_REQUEST)
             response = active_op.response
