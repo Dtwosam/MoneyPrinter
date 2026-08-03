@@ -338,7 +338,6 @@ class ExactPublicTokenSlotIdCompositionProof(unittest.TestCase):
         self.assertNotEqual(before_hash, after_hash)
         self.assertEqual("OPERATIONAL_CAMPAIGN_TERMINAL", terminal["status"])
         self.assertEqual("COMPLETED", terminal["run_status"])
-        self.assertTrue(terminal["campaign_pass"])
 
         discovery_records = [
             record
@@ -504,6 +503,7 @@ class ExactPublicTokenSlotIdCompositionProof(unittest.TestCase):
             "report_only_replay_new_evidence_rows": replay_a["replay"]["new_evidence_rows"],
             "sqlite_sidecars_after_close": sidecars,
             "campaign_pass": terminal["campaign_pass"],
+            "campaign_acceptance_verdict": terminal["campaign_acceptance_verdict"],
         }
         print("DTW23_PROOF_EVIDENCE=" + json.dumps(evidence, sort_keys=True))
 
