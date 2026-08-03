@@ -17,3 +17,6 @@ data/*.db3
 *.egg-info/
 src/*.egg-info/
 src/**/*.egg-info/
+
+# macOS Finder metadata (never authorization evidence)
+.DS_Store
