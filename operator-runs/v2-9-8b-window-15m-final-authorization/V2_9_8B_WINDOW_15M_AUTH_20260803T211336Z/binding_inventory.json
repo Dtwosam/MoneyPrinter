@@ -1,0 +1,88 @@
+{
+  "allowed_invocation_count": 1,
+  "authoritative_database": {
+    "inode": 1230526,
+    "journal_exists": false,
+    "migration_count": 50,
+    "migration_head": "050_campaign_scheduler_ownership_scope.sql",
+    "migration_head_applied_at": "2026-08-01 20:44:32",
+    "mtime_ns": 1785707543679666859,
+    "path": "/Users/Dtwo1/Developer/MoneyPrinter/data/printer_v1.sqlite3",
+    "sha256": "d85442e630c2eac3b71021e2e3a33ecbd3a729517caf90aa9dbf936f08925cbe",
+    "shm_exists": false,
+    "size": 65806336,
+    "sqlite_opened_during_authorization_package_hash": false,
+    "wal_exists": false
+  },
+  "authorization_id": "V2_9_8B_WINDOW_15M_AUTH_20260803T211336Z",
+  "authorized_git": {
+    "authorization_report": "docs/printer-v1-v2-9-8b-post-rollover-2-replacement-authoritative-window-15m-one-use-authorization.md",
+    "branch": "agent/v2-9-8b-post-rollover-2-exact-public-composition-scheduler-claim-coverage-audit",
+    "exact_head_required": true,
+    "head": "6bb73ca165469fd60171098ff700241ec5667b34",
+    "tracked_worktree_must_be_clean": true
+  },
+  "campaign_count": 1,
+  "cycle_count": 1,
+  "external_application_preexistence": false,
+  "external_application_root_expected": "/Users/Dtwo1/PrinterOperations/v2-9-8/window-15m-one-shot-applications/V2_9_8B_WINDOW_15M_AUTH_20260803T211336Z",
+  "final_authorization_path": "operator-runs/v2-9-8b-window-15m-final-authorization/V2_9_8B_WINDOW_15M_AUTH_20260803T211336Z/final_authorization.json",
+  "final_authorization_sha256": "5524ada42b3da1a56516ccbb5cfe821b3414ee0653d516453fd4212cb3439c03",
+  "flags": {
+    "automatic_retry": false,
+    "continuous_4h": false,
+    "direct_operational_command_authorized": false,
+    "manual_rerun": false,
+    "manual_terminal_execution_only": true,
+    "operator_approved": true,
+    "paper_only": true,
+    "restart": false,
+    "resume": false,
+    "selective_1h_continuation": false,
+    "solana_memecoin_only": true,
+    "solana_only": true,
+    "successor": false,
+    "wrapper_required": true
+  },
+  "launch_chain": {
+    "scripts/Start-PrinterV1-Window15M-OneShot.ps1": {
+      "bytes": 878,
+      "git_blob": "a7fd77e680fa48dff911982d1491462185b5699a",
+      "sha256": "524c6332d0952b3959a8136140bc9e1a98acd54f486d88d70910dd537a496d4f"
+    },
+    "src/printer_v1/operator_cli/git_provenance_authorization_manifest.py": {
+      "bytes": 42875,
+      "git_blob": "64b8a305765bb0967ae1f57301d8bcee70db22a3",
+      "sha256": "e899ecc14b62b3b46e6344ee2e3358ec5a09b6c523bdcbc821a8d3a70d9854c1"
+    },
+    "src/printer_v1/operator_cli/operational_memory_factory_command.py": {
+      "bytes": 177721,
+      "git_blob": "1b47078ad0e619bb589ffc44f6c1d06aaecfe48e",
+      "sha256": "92b92d67c7daba913839834a5ef5834b9f902c3b12d4140291c5983c459df510"
+    },
+    "src/printer_v1/operator_cli/window_15m_one_shot_wrapper.py": {
+      "bytes": 30802,
+      "git_blob": "73d5ac306eee0241dcb3d1b97bd353fa950bd470",
+      "sha256": "cb3eb498593bec2bd4460d30ddf67e864b195f9bb89b82ecd707dc31304cc047"
+    },
+    "tests/test_v2_9_8b_window_15m_one_shot_wrapper.py": {
+      "bytes": 34700,
+      "git_blob": "e4f1eb046d8ce9c4def2840d9ffb80edd679589a",
+      "sha256": "b41678d3b1ff08ae9dccca9639b7f412e104356805683bfcab178f4a72ff47fe"
+    }
+  },
+  "main_window": "WINDOW_15M",
+  "migration_count": 50,
+  "migration_execution_id": "V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f",
+  "migration_head": "050_campaign_scheduler_ownership_scope.sql",
+  "migration_package_listing_digest_sha256": "08e6f40b2e472d0bd8c6e8e1adaaac27a8b1af59d93571daa6cfb18f31dacb7a",
+  "parent_execution_head": "6bb73ca165469fd60171098ff700241ec5667b34",
+  "readiness_document": "docs/printer-v1-v2-9-8b-post-rollover-2-current-head-authoritative-window-15m-operational-re-readiness-audit.md",
+  "schema_versions": {
+    "application_marker": "PRINTER_V1_APPLICATION_MARKER_V1",
+    "authorization": "PRINTER_V1_WINDOW_15M_FINAL_AUTHORIZATION_V2",
+    "manifest": "PRINTER_V1_GIT_PROVENANCE_MANIFEST_V1",
+    "wrapper": "PRINTER_V1_WINDOW_15M_ONE_SHOT_WRAPPER_V1"
+  },
+  "token_capacity": 2
+}
