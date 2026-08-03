@@ -1655,6 +1655,272 @@ def _apply_full_run_campaign_acceptance(
         }
 
 
+def _finalize_returned_pre_lifecycle_result(
+    *,
+    result: Any,
+    lifecycle: Mapping[str, Any],
+    command: AbstractCampaignCommand,
+    cycle_id: str,
+    execution_id: str,
+    paths: Mapping[str, Path],
+    launch_git_provenance: Mapping[str, Any],
+    campaign_units: Any,
+    action_local_transport_identities: Sequence[Mapping[str, Any]],
+    stage_observer_state: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Finalize a returned pre-lifecycle terminal without replacing its cause.
+
+    The decision to account is made from truthful stage ownership before any
+    evidence sequence is constructed.  No-stage terminals never call the
+    accounting owner.  Claimed stages remain strictly fail-closed when real
+    evidence is absent or malformed.
+    """
+    activation = result.activation
+    lifecycle_map = dict(lifecycle or {})
+    first_cause = str(
+        activation.first_terminal_cause
+        or lifecycle_map.get("first_terminal_cause")
+        or lifecycle_map.get("stop_reason")
+        or "PRE_LIFECYCLE_GOVERNED_SAFE_STOP"
+    )
+    cancellation_reason = (
+        activation.cancellation_reason
+        or lifecycle_map.get("cancellation_reason")
+    )
+    fault_details = dict(
+        activation.fault_details
+        or lifecycle_map.get("fault_details")
+        or {}
+    )
+    secondary: list[dict[str, Any]] = list(
+        fault_details.get("propagation_failures") or []
+    )
+    cleanup: Mapping[str, Any] = {"cleanup_completed": False}
+    reconciliation: Mapping[str, Any] = {
+        "reconciled": False,
+        "restart_created": False,
+        "successor_created": False,
+    }
+    try:
+        cleanup = cleanup_campaign_supervision(
+            command.db_path,
+            supervision_id=command.supervision_id,
+            campaign_id=command.campaign_id,
+            configuration_id=command.configuration_id,
+            run_id=command.run_id,
+            owner_id=command.owner_id,
+            terminal_status="FAILED",
+            first_terminal_cause=first_cause,
+        )
+    except BaseException as exc:
+        secondary.append(
+            {
+                "stage": "PRE_LIFECYCLE_CLEANUP",
+                "exception_class": type(exc).__name__,
+                "message": str(exc),
+            }
+        )
+    try:
+        reconciliation = reconcile_campaign_terminal(
+            command.db_path,
+            campaign_id=command.campaign_id,
+            run_id=command.run_id,
+            cycle_id=cycle_id,
+            terminal_cause=first_cause,
+            run_status=str(lifecycle_map.get("run_status") or "NOT_STARTED"),
+            factory_run_id=None,
+            lifecycle_started=False,
+            now=_iso(),
+        )
+    except BaseException as exc:
+        secondary.append(
+            {
+                "stage": "PRE_LIFECYCLE_RECONCILIATION",
+                "exception_class": type(exc).__name__,
+                "message": str(exc),
+            }
+        )
+
+    raw_stage_evidences = lifecycle_map.get("six_unit_stage_evidences")
+    real_stage_evidences: list[Mapping[str, Any]] = []
+    malformed_collection = False
+    if raw_stage_evidences is not None:
+        if isinstance(raw_stage_evidences, Sequence) and not isinstance(
+            raw_stage_evidences, (str, bytes)
+        ):
+            for evidence in raw_stage_evidences:
+                if isinstance(evidence, Mapping) and bool(evidence):
+                    real_stage_evidences.append(evidence)
+                else:
+                    malformed_collection = True
+        else:
+            malformed_collection = True
+
+    accountable_stage_started = bool(
+        getattr(activation, "accountable_stage_started", False)
+        or stage_observer_state.get("invoked")
+        or int(getattr(campaign_units, "stage_evidence_count", 0) or 0) > 0
+        or action_local_transport_identities
+        or raw_stage_evidences is not None
+        or real_stage_evidences
+    )
+    accounting_required = accountable_stage_started
+    accounting_status = "NOT_REQUIRED_NO_ACCOUNTABLE_STAGE"
+    accounting_error: str | None = None
+    if accounting_required:
+        try:
+            if malformed_collection:
+                raise OperationalMemoryFactoryError(
+                    "SIX_UNIT_ACCOUNTING_BLOCKED:MALFORMED_STAGE_EVIDENCE_COLLECTION"
+                )
+            _finalize_operational_six_unit_accounting(
+                campaign_units,
+                real_stage_evidences,
+                action_local_transport_identities=list(
+                    action_local_transport_identities
+                ),
+            )
+            accounting_status = "SIX_UNIT_ACCOUNTING_COMPLETE"
+        except BaseException as exc:
+            accounting_status = "SIX_UNIT_ACCOUNTING_BLOCKED"
+            accounting_error = f"{type(exc).__name__}:{exc}"
+            if hasattr(campaign_units, "block"):
+                try:
+                    campaign_units.block(str(exc))
+                except BaseException:
+                    pass
+            secondary.append(
+                {
+                    "stage": "PRE_LIFECYCLE_SIX_UNIT_FINALIZATION",
+                    "exception_class": type(exc).__name__,
+                    "message": str(exc),
+                }
+            )
+
+    reporting: Mapping[str, Any] = {}
+    try:
+        reporting = assemble_campaign_terminal_reporting(
+            command.db_path,
+            run_id=command.run_id,
+            cycle_id=cycle_id,
+            terminal_cause=first_cause,
+            lifecycle=lifecycle_map,
+            required_token_capacity=TOKEN_CAPACITY,
+        )
+    except BaseException as exc:
+        secondary.append(
+            {
+                "stage": "PRE_LIFECYCLE_REPORT_ASSEMBLY",
+                "exception_class": type(exc).__name__,
+                "message": str(exc),
+            }
+        )
+
+    report: Mapping[str, Any] | None = None
+    if accounting_status == "SIX_UNIT_ACCOUNTING_COMPLETE":
+        try:
+            totals = campaign_units.six_unit_totals()
+            evidence = campaign_units.durable_evidence()
+            payload = build_campaign_terminal_report(
+                campaign_id=command.campaign_id,
+                configuration_id=command.configuration_id,
+                run_id=command.run_id,
+                cycle_id=cycle_id,
+                report_id=command.report_id,
+                factory_run_id=None,
+                execution_id=execution_id,
+                terminal_status=str(activation.terminal_status),
+                terminal_cause=first_cause,
+                run_status=str(lifecycle_map.get("run_status") or "NOT_STARTED"),
+                lifecycle_started=False,
+                reconciliation=reconciliation,
+                forbidden_deltas=dict(lifecycle_map.get("forbidden_deltas") or {}),
+                launch_git_provenance=launch_git_provenance,
+                campaign_activity=reporting.get("campaign_activity"),
+                blocked_supply=reporting.get("blocked_supply"),
+                campaign_source_calls=reporting.get("campaign_source_calls"),
+                campaign_scheduler_calls=reporting.get("campaign_scheduler_calls"),
+                candidates_observed=reporting.get("candidates_observed"),
+                candidates_validated=reporting.get("candidates_validated"),
+                eligible_candidates=reporting.get("eligible_candidates"),
+                required_token_capacity=reporting.get("required_token_capacity"),
+                blocked_supply_reason=reporting.get("blocked_supply_reason"),
+                fault_details=fault_details or None,
+                pre_lifecycle_admission=reporting.get("pre_lifecycle_admission"),
+                six_unit_totals=totals,
+                six_unit_evidence=evidence,
+                require_six_unit_evidence=True,
+                elapsed_seconds=reporting.get("elapsed_seconds"),
+            )
+            report = write_campaign_terminal_report(
+                command.db_path,
+                paths["reports"],
+                report_id=command.report_id,
+                campaign_id=command.campaign_id,
+                configuration_id=command.configuration_id,
+                report=payload,
+                require_six_unit_evidence=True,
+            )
+        except BaseException as exc:
+            secondary.append(
+                {
+                    "stage": "PRE_LIFECYCLE_REPORT_WRITE",
+                    "exception_class": type(exc).__name__,
+                    "message": str(exc),
+                }
+            )
+
+    if secondary:
+        fault_details["propagation_failures"] = secondary
+    terminal = {
+        "status": "OPERATIONAL_CAMPAIGN_PRE_LIFECYCLE_TERMINAL",
+        "execution_id": execution_id,
+        "campaign_id": command.campaign_id,
+        "run_status": str(lifecycle_map.get("run_status") or "NOT_STARTED"),
+        "activation_terminal_status": str(activation.terminal_status),
+        "first_terminal_cause": first_cause,
+        "cancellation_reason": cancellation_reason,
+        "fault_details": fault_details,
+        "lifecycle_started": False,
+        "accountable_stage_started": accountable_stage_started,
+        "stage_observer_state": dict(stage_observer_state),
+        "stage_evidence_count": int(
+            getattr(campaign_units, "stage_evidence_count", 0) or 0
+        ),
+        "stage_evidences": tuple(real_stage_evidences),
+        "accounting_required": accounting_required,
+        "accounting_status": accounting_status,
+        "accounting_error": accounting_error,
+        "cleanup": dict(cleanup),
+        "reconciliation": dict(reconciliation),
+        "report": None if report is None else dict(report),
+        "campaign_acceptance_verdict": FULL_RUN_VERDICT_HONEST_BLOCKED,
+        "campaign_pass": False,
+        "failure_evidence_required": True,
+        "restart_created": bool(getattr(activation, "restart_created", False)),
+        "successor_created": bool(getattr(activation, "successor_created", False)),
+        "campaign_source_calls": reporting.get("campaign_source_calls"),
+        "campaign_scheduler_calls": reporting.get("campaign_scheduler_calls"),
+        "required_token_capacity": reporting.get("required_token_capacity")
+        or TOKEN_CAPACITY,
+        "blocked_supply_reason": reporting.get("blocked_supply_reason"),
+    }
+    try:
+        paths["summary"].write_text(
+            json.dumps(terminal, indent=2, sort_keys=True, default=str) + "\n",
+            encoding="utf-8",
+        )
+    except BaseException as exc:
+        terminal["fault_details"].setdefault("propagation_failures", []).append(
+            {
+                "stage": "PRE_LIFECYCLE_SUMMARY_WRITE",
+                "exception_class": type(exc).__name__,
+                "message": str(exc),
+            }
+        )
+    return terminal
+
+
 def _run_operational_campaign(
     *,
     policy: _OperationalCampaignPolicy,
@@ -1736,6 +2002,12 @@ def _run_operational_campaign(
     # copied from sealed-stage handoff (self-comparison) and never rebuilt
     # from source-request row counts.
     action_local_transport_identities: list[dict[str, Any]] = []
+    stage_observer_state: dict[str, Any] = {
+        "invoked": False,
+        "completed": False,
+        "returned_none": False,
+        "failure": None,
+    }
 
     # V2-9.8B full-run wiring: capture every real Scheduler-enqueue boundary the
     # factory reports, at execution time, for independent action-local lifecycle
@@ -1767,6 +2039,7 @@ def _run_operational_campaign(
             LocalValidationIdentity,
             SchedulerWorkIdentity,
         )
+        stage_observer_state["invoked"] = True
         stage_id = str(record["stage_id"])
         schedulers = [
             SchedulerWorkIdentity(
@@ -1791,26 +2064,42 @@ def _run_operational_campaign(
             action_local_ledger.observe_scheduler_work(identity)
         for identity in validations:
             action_local_ledger.observe_local_validation(identity)
-        campaign_units.ingest_stage_evidence(
-            seal_campaign_stage_evidence(
-                stage_id=stage_id,
-                stage_kind="DISCOVERY_SELECTION_SCHEDULER",
-                stage_sequence=1,
-                stage_terminal_status="COMPLETED",
-                campaign_id=command.campaign_id,
-                run_id=command.run_id,
-                cycle_id=cycle_id,
-                evidence={
-                    "evidence_kind": "CAMPAIGN_SIX_UNIT_EVIDENCE_V1",
-                    "transport_operations": [],
-                    "local_validations": 0,
-                    "scheduler_work_items": 0,
-                    "lifecycle_reservations": 0,
-                },
-                scheduler_work_identities=schedulers,
-                local_validation_identities=validations,
+        try:
+            campaign_units.ingest_stage_evidence(
+                seal_campaign_stage_evidence(
+                    stage_id=stage_id,
+                    stage_kind="DISCOVERY_SELECTION_SCHEDULER",
+                    stage_sequence=1,
+                    stage_terminal_status=str(
+                        record.get("stage_terminal_status") or "COMPLETED"
+                    ),
+                    stage_first_terminal_cause=record.get(
+                        "stage_first_terminal_cause"
+                    ),
+                    campaign_id=command.campaign_id,
+                    run_id=command.run_id,
+                    cycle_id=cycle_id,
+                    evidence={
+                        "evidence_kind": "CAMPAIGN_SIX_UNIT_EVIDENCE_V1",
+                        "transport_operations": [],
+                        "local_validations": 0,
+                        "scheduler_work_items": 0,
+                        "lifecycle_reservations": 0,
+                    },
+                    scheduler_work_identities=schedulers,
+                    local_validation_identities=validations,
+                )
             )
-        )
+        except BaseException as exc:
+            stage_observer_state["failure"] = {
+                "exception_class": type(exc).__name__,
+                "message": str(exc),
+            }
+            raise
+        stage_observer_state["completed"] = True
+        # Observer callbacks are notification boundaries, not evidence-return
+        # producers.  A normal None return must never enter stage_evidences.
+        stage_observer_state["returned_none"] = True
 
     try:
         acquire_campaign_supervision(
@@ -1997,6 +2286,24 @@ def _run_operational_campaign(
                 lifecycle["run_status"] = "FAILED"
                 lifecycle["first_terminal_cause"] = cause
                 lifecycle["heartbeat_failure"] = dict(heartbeat_failure)
+        if not bool(result.lifecycle_started):
+            # A returned activation/origin terminal is authoritative.  Decide
+            # whether a real accountable stage began before invoking strict
+            # accounting; never manufacture a None evidence placeholder.
+            return _finalize_returned_pre_lifecycle_result(
+                result=result,
+                lifecycle=lifecycle,
+                command=command,
+                cycle_id=cycle_id,
+                execution_id=execution_id,
+                paths=paths,
+                launch_git_provenance=preflight["git_provenance"],
+                campaign_units=campaign_units,
+                action_local_transport_identities=(
+                    action_local_transport_identities
+                ),
+                stage_observer_state=stage_observer_state,
+            )
         cleanup = cleanup_campaign_supervision(
             command.db_path,
             supervision_id=command.supervision_id,
@@ -2031,88 +2338,6 @@ def _run_operational_campaign(
             lifecycle=lifecycle,
             required_token_capacity=TOKEN_CAPACITY,
         )
-        # --- Top-level six-unit owner: the single accounting authority -------
-        # Operational stages seal into campaign_units via the sink during work.
-        # Lifecycle may expose additional sealed stages; post-return discovery
-        # aggregates are no longer re-ingested when stages already arrived.
-        stage_evidence = (
-            reporting.get("six_unit_evidence")
-            or lifecycle.get("six_unit_evidence")
-        )
-        exposed_stage_evidences = lifecycle.get("six_unit_stage_evidences")
-        if exposed_stage_evidences is None and campaign_units.stage_evidence_count == 0:
-            exposed_stage_evidences = (stage_evidence,)
-        # Pre-lifecycle terminals: reconcile owner transport identities to the
-        # independent action-local measurement set (exact identity + count, both
-        # directions). Action-local identities originate at record_transport time
-        # via transport_identity_observer, not from sealed-stage handoff.
-        # After lifecycle starts, holder/scheduler stages may add governed work
-        # not yet stage-sealed; skip action-local gate there.
-        # Count-only campaign_source_calls alone cannot prove transport
-        # equality and must not be used as multi-hop-tolerant equality.
-        action_local_ops = None
-        action_local_identities: Sequence[Mapping[str, Any]] | None = None
-        if not bool(result.lifecycle_started):
-            if action_local_transport_identities:
-                action_local_identities = list(action_local_transport_identities)
-            else:
-                reported_identities = reporting.get(
-                    "action_local_transport_identities"
-                )
-                if reported_identities is None:
-                    terminal_reporting = lifecycle.get("terminal_reporting")
-                    if isinstance(terminal_reporting, Mapping):
-                        reported_identities = terminal_reporting.get(
-                            "action_local_transport_identities"
-                        )
-                if isinstance(reported_identities, Sequence) and not isinstance(
-                    reported_identities, (str, bytes)
-                ):
-                    action_local_identities = [
-                        dict(item)
-                        for item in reported_identities
-                        if isinstance(item, Mapping)
-                    ]
-                else:
-                    # Only governed-request counts are available — fail closed with
-                    # the design blocker rather than asymmetric multi-hop totals.
-                    action_local_ops = reporting.get("campaign_source_calls")
-                    if action_local_ops is None:
-                        terminal_reporting = lifecycle.get("terminal_reporting")
-                        if isinstance(terminal_reporting, Mapping):
-                            action_local_ops = terminal_reporting.get(
-                                "campaign_source_calls"
-                            )
-        try:
-            if not bool(result.lifecycle_started):
-                _finalize_operational_six_unit_accounting(
-                campaign_units,
-                exposed_stage_evidences,
-                action_local_source_operations=(
-                    None if action_local_ops is None else int(action_local_ops)
-                ),
-                action_local_transport_identities=action_local_identities,
-                )
-        except OperationalMemoryFactoryError as accounting_exc:
-            # Preserve original first terminal cause; block report on mismatch.
-            exc_text = str(accounting_exc)
-            if (
-                "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH" in exc_text
-                or "ACTION_LOCAL_TRANSPORT_IDENTITY_DESIGN_BLOCKED" in exc_text
-                or "SIX_UNIT_ACCOUNTING_BLOCKED" in exc_text
-            ):
-                if "ACTION_LOCAL_TRANSPORT_IDENTITY_DESIGN_BLOCKED" in exc_text:
-                    campaign_units.block(
-                        "ACTION_LOCAL_TRANSPORT_IDENTITY_DESIGN_BLOCKED"
-                    )
-                elif "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH" in exc_text:
-                    campaign_units.block(
-                        "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH"
-                    )
-                else:
-                    campaign_units.block(exc_text)
-                raise
-            raise
         # Seal terminal reconciliation on the same owner at the actual cleanup
         # boundary.  Every named validation is independently mirrored into the
         # action-local ledger at execution time.

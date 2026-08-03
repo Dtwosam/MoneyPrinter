@@ -35,6 +35,7 @@ from printer_v1.operator_cli.authoritative_live_operational_campaign import (
 from printer_v1.operator_cli.one_command_15m_factory import load_report_only
 from printer_v1.operator_cli.git_provenance import capture_git_provenance
 from printer_v1.operator_cli.offline_shared_failure_evidence import (
+    OfflineSharedFailureEvidenceError,
     preserve_failed_offline_composition_evidence,
 )
 from printer_v1.sources.campaign_six_unit_accounting import CampaignActionLocalLedger
@@ -305,7 +306,9 @@ class ExactPublicTokenSlotIdCompositionProof(unittest.TestCase):
                 migration_transport=object(),
             )
 
-        if str(terminal.get("first_terminal_cause") or "") == "SHARED_FAILURE":
+        if bool(terminal.get("failure_evidence_required")) or str(
+            terminal.get("run_status") or ""
+        ) != "COMPLETED":
             project_root = Path(__file__).resolve().parents[1]
             git_state = capture_git_provenance(project_root)
             evidence_root = Path(
@@ -317,44 +320,65 @@ class ExactPublicTokenSlotIdCompositionProof(unittest.TestCase):
                     ),
                 )
             )
-            preserved = preserve_failed_offline_composition_evidence(
-                source_database=self.db,
-                artifact_root=evidence_root,
-                execution_id=str(terminal["execution_id"]),
-                baseline_git_head=str(git_state["git_head"]),
-                tracked_tree_state={
-                    "git_tracked_tree_clean": git_state["git_tracked_tree_clean"],
-                    "git_staged_changes_present": git_state[
-                        "git_staged_changes_present"
-                    ],
-                    "git_unstaged_changes_present": git_state[
-                        "git_unstaged_changes_present"
-                    ],
-                    "git_untracked_present": git_state["git_untracked_present"],
-                },
-                test_node_id=(
-                    "tests/test_v2_9_8b_token_slot_id_exact_public_composition.py::"
-                    "ExactPublicTokenSlotIdCompositionProof::"
-                    "test_exact_public_coordinator_owner_driver_factory_composition"
-                ),
-                terminal=terminal,
-                zero_network_assertion={
-                    "boundary": (
-                        "frozen transports plus patched urllib.request.urlopen; "
-                        "not packet-level proof"
+            try:
+                preserved = preserve_failed_offline_composition_evidence(
+                    source_database=self.db,
+                    artifact_root=evidence_root,
+                    execution_id=str(terminal["execution_id"]),
+                    baseline_git_head=str(git_state["git_head"]),
+                    tracked_tree_state={
+                        "git_tracked_tree_clean": git_state[
+                            "git_tracked_tree_clean"
+                        ],
+                        "git_staged_changes_present": git_state[
+                            "git_staged_changes_present"
+                        ],
+                        "git_unstaged_changes_present": git_state[
+                            "git_unstaged_changes_present"
+                        ],
+                        "git_untracked_present": git_state["git_untracked_present"],
+                    },
+                    test_node_id=(
+                        "tests/test_v2_9_8b_token_slot_id_exact_public_composition.py::"
+                        "ExactPublicTokenSlotIdCompositionProof::"
+                        "test_exact_public_coordinator_owner_driver_factory_composition"
                     ),
-                    "patched_urllib_call_count": network_open.call_count,
-                },
-                retry_state={
-                    "automatic_retries": public_command.AUTOMATIC_RETRIES,
-                    "reruns": 0,
-                    "resumes": 0,
-                    "restarts": int(bool(terminal.get("restart_created"))),
-                    "successors": int(bool(terminal.get("successor_created"))),
-                },
-                connections_closed=True,
-            )
-            print("SHARED_FAILURE_EVIDENCE_CAPTURE=" + json.dumps(preserved, sort_keys=True))
+                    terminal=terminal,
+                    zero_network_assertion={
+                        "boundary": (
+                            "frozen transports plus patched urllib.request.urlopen; "
+                            "not packet-level proof"
+                        ),
+                        "patched_urllib_call_count": network_open.call_count,
+                    },
+                    retry_state={
+                        "automatic_retries": public_command.AUTOMATIC_RETRIES,
+                        "reruns": 0,
+                        "resumes": 0,
+                        "restarts": int(bool(terminal.get("restart_created"))),
+                        "successors": int(bool(terminal.get("successor_created"))),
+                    },
+                    connections_closed=True,
+                )
+            except OfflineSharedFailureEvidenceError as helper_exc:
+                terminal.setdefault("fault_details", {}).setdefault(
+                    "propagation_failures", []
+                ).append(helper_exc.secondary_failure)
+                print(
+                    "PRE_LIFECYCLE_FAILURE_EVIDENCE_CAPTURE_SECONDARY="
+                    + json.dumps(
+                        {
+                            "first_failure": helper_exc.first_failure,
+                            "secondary_failure": helper_exc.secondary_failure,
+                        },
+                        sort_keys=True,
+                    )
+                )
+            else:
+                print(
+                    "PRE_LIFECYCLE_FAILURE_EVIDENCE_CAPTURE="
+                    + json.dumps(preserved, sort_keys=True)
+                )
 
         network_open.assert_not_called()
         after_hash = _sha256(self.db)

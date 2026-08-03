@@ -105,6 +105,11 @@ class CampaignExecutionResult:
     successor_created: bool = False
     restart_created: bool = False
     fault_details: Mapping[str, Any] | None = None
+    # Attempt-local truth, separate from activation success: at least one
+    # accountable owner boundary (for discovery, a real Scheduler claim/work
+    # start) was crossed.  Consumers use this to distinguish lawful no-stage
+    # terminals from claimed-stage evidence loss.
+    accountable_stage_started: bool = False
 
 
 @dataclass(frozen=True)

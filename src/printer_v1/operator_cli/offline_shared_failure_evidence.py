@@ -2,7 +2,7 @@
 
 This helper is never called by ordinary discovery or operational production
 paths. It copies a closed disposable database and writes one execution-scoped,
-allowlisted SHARED_FAILURE artifact for later read-only classification.
+allowlisted pre-lifecycle failure artifact for later read-only classification.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from printer_v1.operator_cli.proof_db_schema_readiness import (
 )
 
 
-ARTIFACT_SCHEMA_VERSION = "DISCOVERY_SHARED_FAILURE_OFFLINE_EVIDENCE_V1"
+ARTIFACT_SCHEMA_VERSION = "PRE_LIFECYCLE_FAILURE_OFFLINE_EVIDENCE_V2"
 DATABASE_COPY_NAME = "shared-failure-disposable-migration-050.sqlite3"
 FAILURE_ARTIFACT_NAME = "shared-failure-evidence.json"
 _SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
@@ -184,9 +184,32 @@ def preserve_failed_offline_composition_evidence(
     """Preserve one failed disposable composition after every DB owner closes."""
     fault_details = dict(terminal.get("fault_details") or {})
     first_failure = dict(fault_details.get("first_failure") or {})
-    classification = str(first_failure.get("classification") or "")
-    if classification != "SHARED_FAILURE":
+    activation_status = str(
+        terminal.get("activation_terminal_status")
+        or terminal.get("run_status")
+        or ""
+    )
+    first_cause = str(terminal.get("first_terminal_cause") or "")
+    failure_required = bool(terminal.get("failure_evidence_required"))
+    classification = str(
+        first_failure.get("classification") or first_cause or activation_status
+    )
+    is_returned_failure = bool(
+        first_failure
+        or failure_required
+        or (
+            activation_status
+            and activation_status not in {"COMPLETED", "SUCCEEDED", "PASS"}
+        )
+    )
+    if not is_returned_failure:
         raise ValueError("offline evidence preservation is failure-only")
+    if not first_failure:
+        first_failure = {
+            "classification": classification or "PRE_LIFECYCLE_FAILURE",
+            "exception_class": "RETURNED_OPERATIONAL_TERMINAL",
+            "sanitized_message": first_cause or activation_status,
+        }
     if not connections_closed:
         raise ValueError("all composition database connections must close first")
 
@@ -216,6 +239,25 @@ def preserve_failed_offline_composition_evidence(
             "test_node_id": str(test_node_id),
             "first_failure_classification": classification,
             "first_failure": _redact(first_failure),
+            "authoritative_terminal": _redact(
+                {
+                    "status": terminal.get("status"),
+                    "activation_terminal_status": terminal.get(
+                        "activation_terminal_status"
+                    ),
+                    "run_status": terminal.get("run_status"),
+                    "first_terminal_cause": terminal.get(
+                        "first_terminal_cause"
+                    ),
+                    "cancellation_reason": terminal.get("cancellation_reason"),
+                    "lifecycle_started": terminal.get("lifecycle_started"),
+                    "accountable_stage_started": terminal.get(
+                        "accountable_stage_started"
+                    ),
+                    "accounting_required": terminal.get("accounting_required"),
+                    "accounting_status": terminal.get("accounting_status"),
+                }
+            ),
             "secondary_failures": _redact(
                 list(fault_details.get("secondary_failures") or [])
             ),
@@ -244,7 +286,7 @@ def preserve_failed_offline_composition_evidence(
             "sanitized_message": _redact_text(str(exc)),
         }
         raise OfflineSharedFailureEvidenceError(
-            "offline SHARED_FAILURE evidence capture failed after the operational failure",
+            "offline pre-lifecycle failure evidence capture failed after the operational failure",
             first_failure=first_failure,
             secondary_failure=secondary,
         ) from exc

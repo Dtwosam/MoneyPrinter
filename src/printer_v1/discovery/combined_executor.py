@@ -778,6 +778,17 @@ class CombinedPumpfunCampaignExecutor:
             connection.close()
 
         elapsed = int((datetime.now(timezone.utc) - started).total_seconds())
+        accountable_stage_started = bool(
+            self._diagnostic_context.get("claim_result")
+            == LockResult.ACQUIRED.value
+            or self._diagnostic_context.get("discovery_work_insertion_completed")
+            or "SCHEDULER_CLAIM"
+            in tuple(
+                self._diagnostic_context.get("observed_scheduler_transitions")
+                or ()
+            )
+            or usage.scheduler_work > 1
+        )
         return CampaignExecutionResult(
             terminal_status=terminal,
             first_terminal_cause=cause,
@@ -795,6 +806,7 @@ class CombinedPumpfunCampaignExecutor:
             successor_created=False,
             restart_created=False,
             fault_details=fault_details,
+            accountable_stage_started=accountable_stage_started,
         )
 
     def _run_cycle(

@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import sqlite3
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from printer_v1.discovery.combined_executor import (
     CombinedDiscoveryError,
@@ -91,6 +91,9 @@ class ActivationResult:
     selection_batch_id: str | None
     cancellation_reason: str | None = None
     fault_details: Mapping[str, Any] | None = None
+    accountable_stage_started: bool = False
+    successor_created: bool = False
+    restart_created: bool = False
 
 
 @dataclass(frozen=True)
@@ -1212,6 +1215,137 @@ def _compensate_post_handoff_teardown(
         report_conn.close()
 
 
+def _observe_accountable_discovery_stage(
+    connection: sqlite3.Connection,
+    *,
+    command: AbstractCampaignCommand,
+    cycle_id: str,
+    slots: Sequence[Mapping[str, Any]],
+    observer: Callable[[Mapping[str, Any]], Any],
+    terminal_status: str,
+    first_terminal_cause: str | None,
+    cancellation_reason: str | None,
+) -> int:
+    """Project and observe one real discovery stage from durable identities.
+
+    A failed transaction can legitimately leave no durable rows.  In that case
+    this helper returns zero and never manufactures a Scheduler identity or an
+    empty stage.  The public finalizer then treats a previously claimed stage as
+    missing evidence and fails closed while retaining the operational cause.
+    """
+    from printer_v1.operator_cli.campaign_ownership import (
+        campaign_scheduler_work_id,
+        project_campaign_scheduler_work,
+    )
+    from printer_v1.sources.campaign_six_unit_accounting import (
+        build_campaign_stage_id,
+    )
+
+    stage_id = build_campaign_stage_id(
+        campaign_id=command.campaign_id,
+        run_id=command.run_id,
+        cycle_id=cycle_id,
+        stage_kind="DISCOVERY_SELECTION_SCHEDULER",
+        stage_sequence=1,
+    )
+    projected: list[dict[str, Any]] = []
+    discovery_rows = connection.execute(
+        """SELECT discovery_work_id,scheduler_job_id,work_type,deadline_at
+           FROM printer_discovery_work
+           WHERE campaign_id=? AND run_id=? AND cycle_id=?
+             AND scheduler_job_id IS NOT NULL
+           ORDER BY discovery_work_id""",
+        (command.campaign_id, command.run_id, cycle_id),
+    ).fetchall()
+    for row in discovery_rows:
+        job_id = int(row["scheduler_job_id"])
+        projection = project_campaign_scheduler_work(
+            connection,
+            scheduler_work_id=campaign_scheduler_work_id(
+                command.campaign_id, job_id
+            ),
+            campaign_id=command.campaign_id,
+            run_id=command.run_id,
+            cycle_id=cycle_id,
+            work_scope="DISCOVERY_SELECTION",
+            stage_id=stage_id,
+            work_intent=str(row["work_type"]),
+            deadline_at=str(row["deadline_at"]),
+            scheduler_job_id=job_id,
+            target_category="DISCOVERY_WORK",
+            target_identity=str(row["discovery_work_id"]),
+        )
+        projected.append(
+            {
+                "stage_id": stage_id,
+                "scheduler_job_id": job_id,
+                "job_kind": str(row["work_type"]),
+                "target_category": "DISCOVERY_WORK",
+                "target_identity": str(row["discovery_work_id"]),
+                "work_scope": projection.work_scope,
+            }
+        )
+    handoff_rows = connection.execute(
+        """SELECT first_window_15m_scheduler_job_id,token_slot_id,
+                  merged_candidate_id
+           FROM printer_discovery_selected_item_links
+           WHERE campaign_id=? AND run_id=? AND cycle_id=?
+             AND first_window_15m_scheduler_job_id IS NOT NULL
+           ORDER BY selection_item_id""",
+        (command.campaign_id, command.run_id, cycle_id),
+    ).fetchall()
+    for row in handoff_rows:
+        job_id = int(row["first_window_15m_scheduler_job_id"])
+        job = connection.execute(
+            """SELECT scheduled_for,job_kind
+               FROM printer_scheduler_jobs WHERE id=?""",
+            (job_id,),
+        ).fetchone()
+        if job is None:
+            continue
+        project_campaign_scheduler_work(
+            connection,
+            scheduler_work_id=campaign_scheduler_work_id(
+                command.campaign_id, job_id
+            ),
+            campaign_id=command.campaign_id,
+            run_id=command.run_id,
+            cycle_id=cycle_id,
+            work_scope="FIRST_15M_HANDOFF",
+            stage_id=stage_id,
+            work_intent="FIRST_15M_HANDOFF",
+            deadline_at=str(job["scheduled_for"]),
+            scheduler_job_id=job_id,
+            target_category="MERGED_CANDIDATE",
+            target_identity=str(row["merged_candidate_id"]),
+            token_slot_id=str(row["token_slot_id"]),
+        )
+        projected.append(
+            {
+                "stage_id": stage_id,
+                "scheduler_job_id": job_id,
+                "job_kind": str(job["job_kind"]),
+                "target_category": "MERGED_CANDIDATE",
+                "target_identity": str(row["merged_candidate_id"]),
+                "work_scope": "FIRST_15M_HANDOFF",
+            }
+        )
+    if not projected and not slots:
+        return 0
+    observer(
+        {
+            "boundary": "DISCOVERY_SELECTION_TERMINAL",
+            "stage_id": stage_id,
+            "stage_terminal_status": str(terminal_status),
+            "stage_first_terminal_cause": first_terminal_cause,
+            "cancellation_reason": cancellation_reason,
+            "scheduler_work_identities": projected,
+            "slots": [dict(row) for row in slots],
+        }
+    )
+    return len(projected) + len(slots)
+
+
 class OriginToLifecycleCampaignDriver:
     """Compose origin activation with the memory lifecycle (internal, DI-only)."""
 
@@ -1252,6 +1386,10 @@ class OriginToLifecycleCampaignDriver:
             raise OriginLifecycleError("UNKNOWN_POST_HANDOFF_STAGE", post_handoff_fault)
         governor = source_governor or OwnerPort(SOURCE_GOVERNOR_OWNER, True)
         scheduler = central_scheduler or OwnerPort(CENTRAL_SCHEDULER_OWNER, True)
+        lifecycle_options = dict(lifecycle_kwargs or {})
+        full_run_stage_observer = lifecycle_options.pop(
+            "full_run_stage_observer", None
+        )
 
         executor = self._executor_factory(fixtures)
         try:
@@ -1285,24 +1423,87 @@ class OriginToLifecycleCampaignDriver:
         # coordinator unchanged instead of being masked by a later empty-stage
         # observer/accounting failure.
         if activation.terminal_status != "COMPLETED":
+            fault_details = dict(activation.fault_details or {})
+            propagation_failures = list(
+                fault_details.get("propagation_failures") or []
+            )
+            observer_invoked = False
+            evidence_identity_count = 0
+            if (
+                activation.accountable_stage_started
+                and full_run_stage_observer is not None
+            ):
+                failed_connection = sqlite3.connect(Path(command.db_path))
+                failed_connection.row_factory = sqlite3.Row
+                failed_connection.execute("PRAGMA foreign_keys = ON")
+                try:
+                    try:
+                        evidence_identity_count = _observe_accountable_discovery_stage(
+                            failed_connection,
+                            command=command,
+                            cycle_id=fixtures.cycle_id,
+                            slots=(),
+                            observer=full_run_stage_observer,
+                            terminal_status=(
+                                activation.terminal_status
+                                if activation.terminal_status in {"FAILED", "BLOCKED"}
+                                else "FAILED"
+                            ),
+                            first_terminal_cause=activation.first_terminal_cause,
+                            cancellation_reason=activation.cancellation_reason,
+                        )
+                        observer_invoked = evidence_identity_count > 0
+                        failed_connection.commit()
+                    except Exception as observer_exc:
+                        failed_connection.rollback()
+                        observer_invoked = True
+                        propagation_failures.append(
+                            {
+                                "stage": "FAILED_DISCOVERY_STAGE_OBSERVER",
+                                "exception_class": type(observer_exc).__name__,
+                                "sanitized_message": str(observer_exc),
+                            }
+                        )
+                finally:
+                    failed_connection.close()
+            if (
+                activation.accountable_stage_started
+                and evidence_identity_count == 0
+            ):
+                propagation_failures.append(
+                    {
+                        "stage": "FAILED_DISCOVERY_STAGE_EVIDENCE",
+                        "classification": "CLAIMED_STAGE_EVIDENCE_MISSING",
+                    }
+                )
+            if propagation_failures:
+                fault_details["propagation_failures"] = propagation_failures
             activation_result = ActivationResult(
                 terminal_status=activation.terminal_status,
                 first_terminal_cause=activation.first_terminal_cause,
                 activated_slots=(),
                 selection_batch_id=None,
                 cancellation_reason=activation.cancellation_reason,
-                fault_details=activation.fault_details,
+                fault_details=fault_details or None,
+                accountable_stage_started=activation.accountable_stage_started,
+                successor_created=activation.successor_created,
+                restart_created=activation.restart_created,
             )
             lifecycle = {
                 "run_status": "NOT_STARTED",
                 "stop_reason": activation.first_terminal_cause,
                 "first_terminal_cause": activation.first_terminal_cause,
                 "activation_terminal_status": activation.terminal_status,
+                "accountable_stage_started": activation.accountable_stage_started,
+                "stage_observer_invoked": observer_invoked,
+                "stage_evidence_identity_count": evidence_identity_count,
+                "successor_created": activation.successor_created,
+                "restart_created": activation.restart_created,
             }
             if activation.cancellation_reason is not None:
                 lifecycle["cancellation_reason"] = activation.cancellation_reason
-            if activation.fault_details:
-                lifecycle["fault_details"] = dict(activation.fault_details)
+            if fault_details:
+                lifecycle["fault_details"] = fault_details
             return OriginLifecycleResult(
                 activation=activation_result,
                 lifecycle=lifecycle,
@@ -1362,10 +1563,6 @@ class OriginToLifecycleCampaignDriver:
                 lifecycle_started=False,
             )
 
-        lifecycle_options = dict(lifecycle_kwargs or {})
-        full_run_stage_observer = lifecycle_options.pop(
-            "full_run_stage_observer", None
-        )
         try:
             connection = sqlite3.connect(Path(command.db_path))
             connection.row_factory = sqlite3.Row
@@ -1383,108 +1580,15 @@ class OriginToLifecycleCampaignDriver:
                 # Observe a completed accountable stage only after a
                 # successful activation produced a real two-slot handoff.
                 if batch_id is not None and full_run_stage_observer is not None:
-                    from printer_v1.operator_cli.campaign_ownership import (
-                        campaign_scheduler_work_id,
-                        project_campaign_scheduler_work,
-                    )
-                    from printer_v1.sources.campaign_six_unit_accounting import (
-                        build_campaign_stage_id,
-                    )
-                    stage_id = build_campaign_stage_id(
-                        campaign_id=command.campaign_id,
-                        run_id=command.run_id,
+                    _observe_accountable_discovery_stage(
+                        connection,
+                        command=command,
                         cycle_id=fixtures.cycle_id,
-                        stage_kind="DISCOVERY_SELECTION_SCHEDULER",
-                        stage_sequence=1,
-                    )
-                    projected: list[dict[str, Any]] = []
-                    discovery_rows = connection.execute(
-                        """SELECT discovery_work_id,scheduler_job_id,work_type,
-                                  deadline_at
-                           FROM printer_discovery_work
-                           WHERE campaign_id=? AND run_id=? AND cycle_id=?
-                             AND scheduler_job_id IS NOT NULL
-                           ORDER BY discovery_work_id""",
-                        (command.campaign_id, command.run_id, fixtures.cycle_id),
-                    ).fetchall()
-                    for row in discovery_rows:
-                        job_id = int(row["scheduler_job_id"])
-                        projection = project_campaign_scheduler_work(
-                            connection,
-                            scheduler_work_id=campaign_scheduler_work_id(
-                                command.campaign_id, job_id
-                            ),
-                            campaign_id=command.campaign_id,
-                            run_id=command.run_id,
-                            cycle_id=fixtures.cycle_id,
-                            work_scope="DISCOVERY_SELECTION",
-                            stage_id=stage_id,
-                            work_intent=str(row["work_type"]),
-                            deadline_at=str(row["deadline_at"]),
-                            scheduler_job_id=job_id,
-                            target_category="DISCOVERY_WORK",
-                            target_identity=str(row["discovery_work_id"]),
-                        )
-                        projected.append(
-                            {
-                                "stage_id": stage_id,
-                                "scheduler_job_id": job_id,
-                                "job_kind": str(row["work_type"]),
-                                "target_category": "DISCOVERY_WORK",
-                                "target_identity": str(row["discovery_work_id"]),
-                                "work_scope": projection.work_scope,
-                            }
-                        )
-                    handoff_rows = connection.execute(
-                        """SELECT first_window_15m_scheduler_job_id,token_slot_id,
-                                  merged_candidate_id
-                           FROM printer_discovery_selected_item_links
-                           WHERE campaign_id=? AND run_id=? AND cycle_id=?
-                             AND first_window_15m_scheduler_job_id IS NOT NULL
-                           ORDER BY selection_item_id""",
-                        (command.campaign_id, command.run_id, fixtures.cycle_id),
-                    ).fetchall()
-                    for row in handoff_rows:
-                        job_id = int(row["first_window_15m_scheduler_job_id"])
-                        job = connection.execute(
-                            """SELECT scheduled_for,job_kind
-                               FROM printer_scheduler_jobs WHERE id=?""",
-                            (job_id,),
-                        ).fetchone()
-                        project_campaign_scheduler_work(
-                            connection,
-                            scheduler_work_id=campaign_scheduler_work_id(
-                                command.campaign_id, job_id
-                            ),
-                            campaign_id=command.campaign_id,
-                            run_id=command.run_id,
-                            cycle_id=fixtures.cycle_id,
-                            work_scope="FIRST_15M_HANDOFF",
-                            stage_id=stage_id,
-                            work_intent="FIRST_15M_HANDOFF",
-                            deadline_at=str(job["scheduled_for"]),
-                            scheduler_job_id=job_id,
-                            target_category="MERGED_CANDIDATE",
-                            target_identity=str(row["merged_candidate_id"]),
-                            token_slot_id=str(row["token_slot_id"]),
-                        )
-                        projected.append(
-                            {
-                                "stage_id": stage_id,
-                                "scheduler_job_id": job_id,
-                                "job_kind": str(job["job_kind"]),
-                                "target_category": "MERGED_CANDIDATE",
-                                "target_identity": str(row["merged_candidate_id"]),
-                                "work_scope": "FIRST_15M_HANDOFF",
-                            }
-                        )
-                    full_run_stage_observer(
-                        {
-                            "boundary": "DISCOVERY_SELECTION_TERMINAL",
-                            "stage_id": stage_id,
-                            "scheduler_work_identities": projected,
-                            "slots": [dict(row) for row in slots],
-                        }
+                        slots=slots,
+                        observer=full_run_stage_observer,
+                        terminal_status="COMPLETED",
+                        first_terminal_cause=None,
+                        cancellation_reason=None,
                     )
             finally:
                 connection.close()
@@ -1498,6 +1602,9 @@ class OriginToLifecycleCampaignDriver:
             selection_batch_id=batch_id,
             cancellation_reason=activation.cancellation_reason,
             fault_details=activation.fault_details,
+            accountable_stage_started=activation.accountable_stage_started,
+            successor_created=activation.successor_created,
+            restart_created=activation.restart_created,
         )
 
         if batch_id is None:

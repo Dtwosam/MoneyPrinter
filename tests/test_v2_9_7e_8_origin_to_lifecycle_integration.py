@@ -560,7 +560,16 @@ class NegativePathTests(_IntegrationBase):
         self.assertIsNone(result.activation.selection_batch_id)
         self.assertFalse(result.lifecycle_started)
         self.assertEqual(result.lifecycle["run_status"], "NOT_STARTED")
-        self.assertEqual(observed, [])
+        self.assertEqual(1, len(observed))
+        self.assertEqual(
+            observed[0]["stage_terminal_status"], "FAILED"
+        )
+        self.assertEqual(
+            observed[0]["stage_first_terminal_cause"],
+            "INSUFFICIENT_ELIGIBLE_TWO_SLOT_POOL",
+        )
+        self.assertTrue(observed[0]["scheduler_work_identities"])
+        self.assertEqual(observed[0]["slots"], [])
         connection = self._conn()
         try:
             steps = connection.execute(
