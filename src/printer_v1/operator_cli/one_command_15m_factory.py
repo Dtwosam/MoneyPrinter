@@ -4617,6 +4617,12 @@ def run_one_command_15m_factory(
                             ownership_context=lifecycle_ownership_context,
                         )
                     )
+                    # Re-persist enriched close-step result_json (includes
+                    # campaign_window_registration) before Scheduler terminalization.
+                    # Registration remains inside the same open transaction; a
+                    # registration fault still rolls back the SUCCEEDED update.
+                    if result.get("campaign_window_registration") is not None:
+                        _update_step(conn, int(pending["id"]), "SUCCEEDED", result)
                     complete_job(conn, job_id=job_id)
                     _observe_scheduler_terminal(
                         conn,

@@ -637,6 +637,55 @@ def build_dexscreener_fresh_profiles_transport(
     return transport
 
 
+def _pairs_field_type_label(pairs: Any, *, present: bool) -> str:
+    """Stable categorical label for a DexScreener ``pairs`` field shape."""
+    if not present:
+        return "MISSING"
+    if pairs is None:
+        return "NULL"
+    if isinstance(pairs, list):
+        return "LIST"
+    if isinstance(pairs, dict):
+        return "OBJECT"
+    if isinstance(pairs, bool):
+        # bool is a subclass of int; classify before NUMBER.
+        return "BOOLEAN"
+    if isinstance(pairs, str):
+        return "STRING"
+    if isinstance(pairs, (int, float)):
+        return "NUMBER"
+    return "OTHER"
+
+
+def _dexscreener_pairs_schema_diagnostics(
+    payload: Mapping[str, Any],
+    *,
+    request_kind: str,
+    measured_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Bounded schema diagnostics for missing/non-list ``pairs`` (no raw body)."""
+    present = "pairs" in payload
+    pairs = payload.get("pairs") if present else None
+    http_status = payload.get("_source_status_code")
+    if http_status is None:
+        http_status = payload.get("source_http_status")
+    if http_status is None:
+        http_status = payload.get("status_code")
+    diagnostics = {
+        **dict(measured_payload),
+        "pairs_field_present": bool(present),
+        "pairs_field_type": _pairs_field_type_label(pairs, present=present),
+        "pairs_count": None,
+        "request_kind": str(request_kind),
+    }
+    if http_status is not None:
+        try:
+            diagnostics["source_http_status"] = int(http_status)
+        except (TypeError, ValueError):
+            diagnostics["source_http_status"] = None
+    return diagnostics
+
+
 def normalize_dexscreener_fixture_result(
     payload: Mapping[str, Any],
     *,
@@ -681,6 +730,11 @@ def normalize_dexscreener_fixture_result(
 
     pairs = payload.get("pairs")
     if not isinstance(pairs, list):
+        diagnostics = _dexscreener_pairs_schema_diagnostics(
+            payload,
+            request_kind=request_kind,
+            measured_payload=measured_payload,
+        )
         return NormalizedSourceResult(
             source_name=DEXSCREENER_SOURCE_NAME,
             request_kind=request_kind,
@@ -688,6 +742,7 @@ def normalize_dexscreener_fixture_result(
             data_quality_label=DataQualityLabel.MISSING_CRITICAL_DATA,
             failure_type="dexscreener_malformed_fixture",
             failure_message="DexScreener fixture missing pairs",
+            normalized_payload=MappingProxyType(diagnostics),
         )
     # Fail closed on provider-controlled multi-row arrays above declared ceiling.
     from printer_v1.sources.measured_transport import (

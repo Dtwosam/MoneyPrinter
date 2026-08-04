@@ -591,13 +591,20 @@ class TerminalAndQualityTests(unittest.TestCase):
         self.assertFalse(dirty["clean_episode_allowed"])
         self.assertFalse(dirty["quality_consistent"])
         self.assertTrue(dirty["lifecycle_completion_valid"])
-        # A clean window may create a clean episode.
+        # Legacy CLEAN_MEMORY label may create a clean episode.
         clean = evaluate_quality_consistency(
             memory_status="CLEAN_MEMORY", data_quality_label="CLEAN_DATA",
             do_not_train=0, proposed_episode_kind="WINDOW_15M_CLEAN_MEMORY",
         )
         self.assertTrue(clean["clean_episode_allowed"])
         self.assertTrue(clean["quality_consistent"])
+        # E2Z clean-candidate shape: PARTIAL_MEMORY + CLEAN_DATA + do_not_train=0.
+        e2z_candidate = evaluate_quality_consistency(
+            memory_status="PARTIAL_MEMORY", data_quality_label="CLEAN_DATA",
+            do_not_train=0, proposed_episode_kind="WINDOW_15M_CLEAN_MEMORY",
+        )
+        self.assertTrue(e2z_candidate["clean_episode_allowed"])
+        self.assertTrue(e2z_candidate["quality_consistent"])
 
 
 # --------------------------------------------------------------------------- #

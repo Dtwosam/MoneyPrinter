@@ -510,12 +510,21 @@ def evaluate_quality_consistency(
     promotion is gated. A ``WINDOW_15M_CLEAN_MEMORY`` episode attached to a
     non-clean window is a quality inconsistency (blocks clean acceptance) but
     never erases the real lifecycle outcome.
+
+    Clean-candidate window status is aligned with E2Z
+    (``e2z_clean_memory_creation``): operational clean promotion requires
+    ``PARTIAL_MEMORY`` + ``CLEAN_DATA`` + ``do_not_train=0`` on the window row
+    (the window is not rewritten to ``CLEAN_MEMORY``). Legacy rows already
+    labeled ``CLEAN_MEMORY`` remain accepted as clean candidates.
     """
     status = str(memory_status or "")
     label = str(data_quality_label or "")
     dnt = int(do_not_train or 0)
+    # E2Z clean-candidate status is PARTIAL_MEMORY; CLEAN_MEMORY is legacy.
     is_clean_window = (
-        status == _CLEAN_MEMORY_STATUS and label == _CLEAN_DATA_LABEL and dnt == 0
+        status in {_CLEAN_MEMORY_STATUS, "PARTIAL_MEMORY"}
+        and label == _CLEAN_DATA_LABEL
+        and dnt == 0
     )
     proposed = None if proposed_episode_kind is None else str(proposed_episode_kind)
     clean_episode_allowed = is_clean_window
@@ -524,6 +533,8 @@ def evaluate_quality_consistency(
     if proposed == _CLEAN_EPISODE_KIND and not is_clean_window:
         quality_consistent = False
         outcome = "QUALITY_CONSISTENCY_BLOCKED"
+    elif is_clean_window and proposed == _CLEAN_EPISODE_KIND:
+        outcome = "CLEAN_EPISODE_ALLOWED"
     elif is_clean_window:
         outcome = "CLEAN_EPISODE_ALLOWED"
     else:

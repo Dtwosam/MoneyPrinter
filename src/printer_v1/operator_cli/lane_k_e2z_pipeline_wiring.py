@@ -8,14 +8,22 @@ Connects existing audited 15m windows into the clean-memory creation path:
   → Lane U2 coverage persistence (persist_coverage_for_windows) — runs for
       ALL Lane Q-valid windows, independent of E2Y same-pair grouping
   → E2Y candidate set gate (build_e2y_15m_candidate_set_gate_report)
-  → E2Z clean-memory creation (create_clean_memory_from_window)
+      — informational reporting for mixed operational batches
+  → E2Z clean-memory creation (create_clean_memory_from_window) with
+      individual_promotion=True
 
 Coverage persistence is decoupled from the E2Y set gate so that valid
 WINDOW_15M windows get their coverage written even when E2Y fails because
-windows are split across different pair_ids.  E2Y (and therefore E2Z) still
-requires all 5+ candidates to share the same (token_id, pair_id).
+windows are split across different pair_ids or mixed memory statuses.
 
-Zero clean memories is a valid outcome when E2Y does not pass.
+Adopted promotion contract (Lane X10 / V2-6.1a closeouts):
+  * Operational mixed batches use individual promotion: E2Y batch passage is
+    NOT mandatory for E2Z. E2Z per-window ``_gate_window`` is the final
+    individual authority (dirty / do_not_train / quality still block).
+  * E2Y remains available and mandatory for explicit batch mode
+    (``individual_promotion=False`` on ``create_clean_memory_from_window``).
+  * Zero clean memories is a valid outcome when no window passes per-window
+    gates (independent of E2Y batch status).
 
 Requires operator_approved=True and a valid db_path.
 
@@ -123,10 +131,11 @@ _LOCKED_CAPABILITIES: dict[str, bool] = {
 
 _RECOMMENDED_NEXT_ACTION: str = (
     "Rerun to verify idempotency (e2z_already_exists_count should equal "
-    "e2z_created_count from the first run). If E2Y set gate did not pass, "
-    "verify that at least 5 eligible E2Q-audited WINDOW_15M rows exist with "
-    "the same token/pair, CLEAN_DATA, PARTIAL_MEMORY status, do_not_train=0, "
-    "snapshot links, and strictly increasing snapshot_ids."
+    "e2z_created_count from the first run). Operational promotion uses "
+    "individual_promotion=True: when e2z_created_count is zero, inspect "
+    "per-window E2X / Lane Q / Lane U2 / E2Z _gate_window blockers rather "
+    "than requiring E2Y batch passage. E2Y remains informational in mixed "
+    "batches and is still mandatory only for explicit batch-mode promotion."
 )
 
 
