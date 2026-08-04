@@ -172,6 +172,8 @@ def _clean_goplus_extreme():
                 "top_10_holders": [{"percent": "90"}] + [{"percent": "1"}] * 9,
                 "lp_info": [{"locked": True}],
                 "risk_flags": ["extreme_holder_concentration"],
+                # Fixture adapter bypasses goplus normalize; surface measured cost.
+                "underlying_operation_count": 1,
             },
         )
 
@@ -187,6 +189,10 @@ def _force_holder_extreme_ineligible(owner, proofs):
     """
 
     def _fake(self, connection, **kwargs):
+        from printer_v1.operator_cli.holder_reliability_budget_control import (
+            HolderContextResult,
+        )
+
         facts = {}
         for proof in kwargs.get("bounded_candidates") or proofs:
             facts[proof.mint.lower()] = {
@@ -195,7 +201,16 @@ def _force_holder_extreme_ineligible(owner, proofs):
                 "source_name": "goplus",
                 "holder_concentration_label": "HOLDER_CONCENTRATION_EXTREME",
             }
-        return facts, kwargs["ledger"]
+        return HolderContextResult(
+            holder_facts=facts,
+            ledger=kwargs["ledger"],
+            source_request_ids=(),
+            source_request_coverage=(),
+            accounting_blocker=False,
+            accounting_blocker_reason=None,
+            governed_request_count=0,
+            measured_transport_count=0,
+        )
 
     owner._evaluate_holder_eligibility = _fake.__get__(
         owner, AuthoritativeLiveOperationalCampaignOwner
@@ -218,6 +233,8 @@ def _clean_goplus_healthy():
                 "top_10_holders": [{"percent": "3"} for _ in range(10)],
                 "lp_info": [{"locked": True}],
                 "risk_flags": [],
+                # Fixture adapter bypasses goplus normalize; surface measured cost.
+                "underlying_operation_count": 1,
             },
         )
 
@@ -604,11 +621,21 @@ class TestCampaignSourceRequestReconciliationWiring:
             diag = result.lifecycle.get("graduated_supply_diagnostics") or {}
             recon = diag.get("campaign_source_request_reconciliation") or {}
             assert recon.get("status") == "OK"
-            assert set(diag.get("durable_campaign_request_ids") or ()) == set(rids)
-            assert len(diag.get("campaign_source_request_manifest") or ()) == 4
+            durable = set(diag.get("durable_campaign_request_ids") or ())
+            # Protocol stages remain present; real holder requests also join the
+            # three-way reconciliation set after V2-9.8B holder composition.
+            assert set(rids) <= durable
+            holder_ids = set(diag.get("holder_source_request_ids") or ())
+            assert holder_ids
+            assert holder_ids <= durable
+            assert durable == set(recon.get("stage_reported_request_ids") or ())
+            assert durable == set(recon.get("coverage_request_ids") or ())
+            assert len(diag.get("campaign_source_request_manifest") or ()) == len(
+                durable
+            )
             assert result.lifecycle.get("pilot_input_readiness") is not None
             admission = result.lifecycle.get("pre_lifecycle_admission") or {}
-            assert admission.get("campaign_source_request_count") == 4
+            assert admission.get("campaign_source_request_count") == len(durable)
             assert admission.get("holder_ledger_governed_requests") is not None
         finally:
             base.tearDown()

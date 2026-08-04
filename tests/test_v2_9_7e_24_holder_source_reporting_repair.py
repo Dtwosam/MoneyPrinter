@@ -152,10 +152,12 @@ def test_fixed_endpoint_zero_retry_governor_and_operation_accounting(
     execution = execute_source_request_with_governor(
         connection, request, adapter, recent_request_count=0
     )
-    governed, transports = budget.persist_bundle_attempts(
+    persist_result = budget.persist_bundle_attempts(
         connection, run_id="run", cycle_id="cycle", mint=MINT,
         executions={"holder_backup": execution}, created_at=NOW.isoformat(),
     )
+    governed = persist_result.governed_request_count
+    transports = persist_result.measured_transport_count
     assert governed == 1 and transports == 2
     assert adapter.call_count == 1 and len(calls) == 1
     assert calls[0].startswith("https://mainnet.helius-rpc.com/?api-key=")

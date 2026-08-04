@@ -620,6 +620,10 @@ def _seed_markets(db_path, supply):
 
 def _force_holder(owner, proofs):
     def _fake(self, connection, **kwargs):
+        from printer_v1.operator_cli.holder_reliability_budget_control import (
+            HolderContextResult,
+        )
+
         facts = {}
         for proof in kwargs.get("bounded_candidates") or proofs:
             facts[proof.mint.lower()] = {
@@ -628,7 +632,16 @@ def _force_holder(owner, proofs):
                 "source_name": "goplus",
                 "holder_concentration_label": "HOLDER_CONCENTRATION_EXTREME",
             }
-        return facts, kwargs["ledger"]
+        return HolderContextResult(
+            holder_facts=facts,
+            ledger=kwargs["ledger"],
+            source_request_ids=(),
+            source_request_coverage=(),
+            accounting_blocker=False,
+            accounting_blocker_reason=None,
+            governed_request_count=0,
+            measured_transport_count=0,
+        )
 
     owner._evaluate_holder_eligibility = _fake.__get__(
         owner, AuthoritativeLiveOperationalCampaignOwner

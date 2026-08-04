@@ -332,7 +332,7 @@ class SelectiveOneHourTrackingHandoffContractTests(unittest.TestCase):
         with patch(
             "printer_v1.operator_cli.one_command_15m_factory._collect_preclose_context"
         ) as collect:
-            facts, returned_ledger = owner._evaluate_holder_eligibility(
+            holder_result = owner._evaluate_holder_eligibility(
                 self.connection,
                 command=SimpleNamespace(run_id="run-test"),
                 cycle_id="cycle-test",
@@ -346,7 +346,8 @@ class SelectiveOneHourTrackingHandoffContractTests(unittest.TestCase):
                 tracking_pair_by_mint={"mint-a": "pair-a"},
             )
         collect.assert_not_called()
-        self.assertIs(returned_ledger, ledger)
+        self.assertIs(holder_result.ledger, ledger)
+        facts = holder_result.holder_facts
         self.assertEqual(
             facts["mint-a"]["reason"], HANDOFF_COOLDOWN_REOPEN_REQUIRED
         )

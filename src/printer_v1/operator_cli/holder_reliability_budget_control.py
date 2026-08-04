@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 import math
 import sqlite3
 import time
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from printer_v1.sources.registry import SOURCE_REGISTRY
 
@@ -456,11 +456,165 @@ def record_attempt(connection: sqlite3.Connection, **values: Any) -> int:
     return int(cursor.lastrowid)
 
 
+@dataclass(frozen=True)
+class HolderBundlePersistResult:
+    """One candidate's governed holder attempts: IDs, coverage, accounting."""
+
+    governed_request_count: int
+    measured_transport_count: int
+    source_request_ids: tuple[int, ...]
+    source_request_coverage: tuple[Mapping[str, Any], ...]
+    accounting_blocker: bool
+    accounting_blocker_reason: str | None
+
+
+@dataclass(frozen=True)
+class HolderContextResult:
+    """Campaign-owned holder-stage result for reconciliation and readiness.
+
+    Request count and transport count remain independent. Coverage entries are
+    emitted only from real governed execution records (never invented IDs).
+    """
+
+    holder_facts: Mapping[str, Mapping[str, Any]]
+    ledger: CampaignOperationLedger
+    source_request_ids: tuple[int, ...]
+    source_request_coverage: tuple[Mapping[str, Any], ...]
+    accounting_blocker: bool
+    accounting_blocker_reason: str | None
+    governed_request_count: int
+    measured_transport_count: int
+
+    def as_holder_context_diagnostics(self) -> dict[str, Any]:
+        return {
+            "accounting_blocker": bool(self.accounting_blocker),
+            "accounting_blocker_reason": self.accounting_blocker_reason,
+            "source_request_ids": list(self.source_request_ids),
+            "source_request_coverage": [
+                dict(entry) for entry in self.source_request_coverage
+            ],
+            "governed_request_count": int(self.governed_request_count),
+            "measured_transport_count": int(self.measured_transport_count),
+        }
+
+
+def empty_holder_context_result(
+    ledger: CampaignOperationLedger,
+    *,
+    holder_facts: Mapping[str, Mapping[str, Any]] | None = None,
+) -> HolderContextResult:
+    """Build an empty holder-stage result (no governed holder attempts)."""
+    return HolderContextResult(
+        holder_facts=dict(holder_facts or {}),
+        ledger=ledger,
+        source_request_ids=(),
+        source_request_coverage=(),
+        accounting_blocker=False,
+        accounting_blocker_reason=None,
+        governed_request_count=0,
+        measured_transport_count=0,
+    )
+
+
+def _holder_source_role(execution_key: str) -> str:
+    key = str(execution_key or "")
+    if key == "safety":
+        return "SAFETY"
+    if key == "holder_backup":
+        return "HOLDER_BACKUP"
+    if key in {"holder_primary", "holder"}:
+        return "HOLDER_PRIMARY"
+    return key.upper() or "HOLDER"
+
+
+def _measure_holder_transport_count(
+    execution: Any,
+) -> tuple[int, bool, str | None]:
+    """Return (count, accounting_complete, reason) from proven measured evidence.
+
+    Never invents RPC=2 / non-RPC=1 fallbacks. Accepts only:
+    * transport_operation_identities (+ matching transport_operations_used)
+    * explicit underlying_operation_count from the adapter/normalized payload
+    * explicit transport_operations_used when identities prove the same count
+    """
+    normalized = execution.normalized_result
+    payload = dict(getattr(normalized, "normalized_payload", None) or {})
+    identities_raw = payload.get("transport_operation_identities")
+    if isinstance(identities_raw, Sequence) and not isinstance(
+        identities_raw, (str, bytes)
+    ):
+        identities = [item for item in identities_raw if isinstance(item, Mapping)]
+        if identities:
+            used = payload.get("transport_operations_used")
+            count = len(identities)
+            if used is not None and int(used) != count:
+                return 0, False, "HOLDER_TRANSPORT_IDENTITY_COUNT_MISMATCH"
+            return count, True, None
+        if payload.get("transport_operations_used"):
+            return 0, False, "HOLDER_TRANSPORT_IDENTITIES_MISSING"
+    if "underlying_operation_count" in payload and payload[
+        "underlying_operation_count"
+    ] is not None:
+        try:
+            count = int(payload["underlying_operation_count"])
+        except (TypeError, ValueError):
+            return 0, False, "HOLDER_TRANSPORT_COUNT_INVALID"
+        if count < 0:
+            return 0, False, "HOLDER_TRANSPORT_COUNT_NEGATIVE"
+        return count, True, None
+    if payload.get("transport_operations_used") is not None:
+        try:
+            used = int(payload["transport_operations_used"])
+        except (TypeError, ValueError):
+            return 0, False, "HOLDER_TRANSPORT_COUNT_INVALID"
+        if used > 0:
+            return 0, False, "HOLDER_TRANSPORT_IDENTITIES_MISSING"
+        return 0, True, None
+    return 0, False, "HOLDER_TRANSPORT_IDENTITY_ABSENT"
+
+
+def _holder_source_failed(execution: Any) -> bool:
+    normalized = execution.normalized_result
+    if getattr(normalized, "failure_type", None):
+        return True
+    status = getattr(normalized, "source_status", None)
+    value = getattr(status, "value", status)
+    return str(value or "") not in {"COMPLETE", "PARTIAL"}
+
+
+def _holder_logical_stage_id(
+    *,
+    campaign_id: str | None,
+    run_id: str,
+    cycle_id: str,
+    mint: str,
+    candidate_ordinal: int,
+    source_role: str,
+) -> str:
+    candidate_key = str(mint or "").lower() or str(candidate_ordinal)
+    camp = str(campaign_id or "campaign")
+    return (
+        f"{camp}|{run_id}|{cycle_id}|HOLDER|{candidate_key}|{source_role}"
+    )
+
+
 def persist_bundle_attempts(
-    connection: sqlite3.Connection, *, run_id: str, cycle_id: str,
-    mint: str, executions: Mapping[str, Any], created_at: str,
-) -> tuple[int, int]:
-    """Persist each distinct governed attempt and return request/transport use."""
+    connection: sqlite3.Connection,
+    *,
+    run_id: str,
+    cycle_id: str,
+    mint: str,
+    executions: Mapping[str, Any],
+    created_at: str,
+    campaign_id: str | None = None,
+    candidate_ordinal: int = 1,
+) -> HolderBundlePersistResult:
+    """Persist each distinct governed attempt; return IDs, coverage, accounting.
+
+    Alias keys that refer to the same execution object are not double-counted.
+    Request IDs always come from ``execution.request_record.id``. Transport
+    counts require proven measured metadata — never RPC/non-RPC fallbacks.
+    """
     from printer_v1.safety.goplus_normalizer import holder_concentration_label_from_goplus
 
     distinct: list[tuple[str, Any]] = []
@@ -472,53 +626,145 @@ def persist_bundle_attempts(
             continue
         seen.add(id(execution))
         distinct.append((key, execution))
+
     transports = 0
+    request_ids: list[int] = []
+    coverage: list[dict[str, Any]] = []
+    accounting_blocker = False
+    accounting_reasons: list[str] = []
+
     for key, execution in distinct:
         normalized = execution.normalized_result
-        payload = dict(normalized.normalized_payload or {})
-        is_rpc = key.startswith("holder")
+        payload = dict(getattr(normalized, "normalized_payload", None) or {})
+        is_rpc = str(key).startswith("holder")
         role = "BACKUP" if key == "holder_backup" else "PRIMARY"
-        source_name = str(getattr(normalized, "source_name", ""))
-        host = str(payload.get("redacted_host") or (
-            "mainnet.helius-rpc.com" if source_name == "helius_free"
-            else "api.mainnet.solana.com" if is_rpc
-            else "api.gopluslabs.io"
-        ))
-        raw_operation_count = payload.get("underlying_operation_count")
-        operation_count = int(
-            raw_operation_count if raw_operation_count is not None
-            else (2 if is_rpc and execution.response_record is not None else 1)
+        source_role = _holder_source_role(str(key))
+        source_name = str(getattr(normalized, "source_name", "") or "")
+        request_kind = str(
+            getattr(normalized, "request_kind", None)
+            or getattr(getattr(execution, "request_record", None), "request_kind", None)
+            or ("holder_concentration_reference" if is_rpc else "safety_reference")
         )
-        transports += operation_count
+        host = str(
+            payload.get("redacted_host")
+            or (
+                "mainnet.helius-rpc.com"
+                if source_name == "helius_free"
+                else "api.mainnet.solana.com"
+                if is_rpc
+                else "api.gopluslabs.io"
+            )
+        )
+        request_id = int(execution.request_record.id)
+        request_ids.append(request_id)
+
+        operation_count, accounting_ok, measure_reason = _measure_holder_transport_count(
+            execution
+        )
+        if not accounting_ok:
+            accounting_blocker = True
+            if measure_reason:
+                accounting_reasons.append(f"{measure_reason}:request={request_id}")
+            operation_count = 0
+        transports += int(operation_count)
+
+        source_failed = _holder_source_failed(execution)
+        terminal_status = (
+            "BLOCKED" if (not accounting_ok or source_failed) else "COMPLETED"
+        )
+        member_count = 0
+        if accounting_ok and not source_failed:
+            # One normalized holder/safety contribution when evidence is present.
+            if payload:
+                member_count = 1
+
+        coverage.append(
+            {
+                "source_request_id": request_id,
+                "source_name": source_name
+                or ("solana_rpc" if is_rpc else "goplus"),
+                "request_kind": request_kind,
+                "logical_stage_id": _holder_logical_stage_id(
+                    campaign_id=campaign_id,
+                    run_id=run_id,
+                    cycle_id=cycle_id,
+                    mint=mint,
+                    candidate_ordinal=candidate_ordinal,
+                    source_role=source_role,
+                ),
+                "terminal_status": terminal_status,
+                "transport_identity_count": int(operation_count),
+                "normalized_member_count": int(member_count),
+            }
+        )
+
         returned_mint = str(payload.get("token_mint") or "")
         holder_label = (
-            str(payload.get("holder_concentration_label") or "HOLDER_CONCENTRATION_UNKNOWN")
-            if is_rpc else holder_concentration_label_from_goplus(payload)
+            str(
+                payload.get("holder_concentration_label")
+                or "HOLDER_CONCENTRATION_UNKNOWN"
+            )
+            if is_rpc
+            else holder_concentration_label_from_goplus(payload)
         )
         record_attempt(
-            connection, run_id=run_id, cycle_id=cycle_id, mint_identity=mint,
+            connection,
+            run_id=run_id,
+            cycle_id=cycle_id,
+            mint_identity=mint,
             source_name=source_name or ("solana_rpc" if is_rpc else "goplus"),
-            endpoint_role=role, redacted_host=host,
-            source_request_id=int(execution.request_record.id),
-            source_response_id=(int(execution.response_record.id) if execution.response_record else None),
-            source_failure_id=(int(execution.failure_record.id) if execution.failure_record else None),
-            lineage_response_id=(int(execution.response_record.id) if execution.response_record else None),
+            endpoint_role=role,
+            redacted_host=host,
+            source_request_id=request_id,
+            source_response_id=(
+                int(execution.response_record.id)
+                if execution.response_record
+                else None
+            ),
+            source_failure_id=(
+                int(execution.failure_record.id)
+                if execution.failure_record
+                else None
+            ),
+            lineage_response_id=(
+                int(execution.response_record.id)
+                if execution.response_record
+                else None
+            ),
             reused_evidence_id=None,
             captured_at=payload.get("captured_at") or normalized.received_at,
             received_at=normalized.received_at,
             source_status=normalized.source_status.value,
             data_quality_label=normalized.data_quality_label.value,
-            exact_target=int(bool(returned_mint) and returned_mint.lower() == mint.lower()),
+            exact_target=int(
+                bool(returned_mint) and returned_mint.lower() == mint.lower()
+            ),
             holder_concentration_label=holder_label,
-            rpc_method=(payload.get("rpc_method") or (
-                "getTokenLargestAccounts+getTokenSupply" if is_rpc and operation_count == 2
-                else "getTokenLargestAccounts" if is_rpc else "HTTP_GET"
-            )),
-            commitment=payload.get("commitment") or ("finalized" if is_rpc else None),
+            rpc_method=(
+                payload.get("rpc_method")
+                or (
+                    "getTokenLargestAccounts+getTokenSupply"
+                    if is_rpc and operation_count == 2
+                    else "getTokenLargestAccounts"
+                    if is_rpc
+                    else "HTTP_GET"
+                )
+            ),
+            commitment=payload.get("commitment")
+            or ("finalized" if is_rpc else None),
             context_slot=payload.get("context_slot"),
             underlying_operation_count=operation_count,
             failure_subtype=normalized.failure_type,
             retry_after_at=normalized.retry_after_at,
             created_at=created_at,
         )
-    return len(distinct), transports
+
+    reason = ";".join(accounting_reasons) if accounting_reasons else None
+    return HolderBundlePersistResult(
+        governed_request_count=len(distinct),
+        measured_transport_count=transports,
+        source_request_ids=tuple(request_ids),
+        source_request_coverage=tuple(coverage),
+        accounting_blocker=accounting_blocker,
+        accounting_blocker_reason=reason,
+    )

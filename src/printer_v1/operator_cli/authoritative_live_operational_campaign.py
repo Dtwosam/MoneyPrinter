@@ -1164,7 +1164,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
         partition_by_mint: Mapping[str, str] | None = None,
         tracking_pair_by_mint: Mapping[str, str] | None = None,
         eligible_target: int = 2,
-    ) -> tuple[dict[str, Mapping[str, Any]], Any]:
+    ) -> Any:
         """Shared pre-activation holder-eligibility funnel.
 
         The single committed implementation used by BOTH the full operational
@@ -1173,11 +1173,15 @@ class AuthoritativeLiveOperationalCampaignOwner:
         governed GoPlus/RPC/Helius holder bundle through the existing owners, and
         derives per-candidate eligibility. It stops after ``eligible_target``
         candidates. No lifecycle, memory, retrieval or financial work occurs.
+
+        Returns a single ``HolderContextResult`` owning holder facts, the ledger,
+        durable source request IDs, stage coverage, and accounting-blocker state.
         """
         from printer_v1.operator_cli.one_command_15m_factory import (
             _collect_preclose_context,
         )
         from printer_v1.operator_cli.holder_reliability_budget_control import (
+            HolderContextResult,
             complete_maturation,
             persist_bundle_attempts,
             persist_ledger,
@@ -1193,6 +1197,13 @@ class AuthoritativeLiveOperationalCampaignOwner:
         accepted_partitions: set[str] = set()
         required_partitions = set((partition_by_mint or {}).values())
         pacer = request_pacer or SequentialRequestPacer()
+        campaign_id = str(getattr(command, "campaign_id", None) or "")
+        stage_request_ids: list[int] = []
+        stage_coverage: list[Mapping[str, Any]] = []
+        stage_governed = 0
+        stage_transports = 0
+        accounting_blocker = False
+        accounting_reasons: list[str] = []
         persist_ledger(
             connection, run_id=command.run_id, cycle_id=cycle_id,
             ledger=ledger, now=evaluated.isoformat(),
@@ -1301,16 +1312,39 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     ),
                     **handoff_detail,
                 }
-                governed_used, transports_used = persist_bundle_attempts(
-                    connection, run_id=command.run_id, cycle_id=cycle_id,
-                    mint=proof.mint, executions=bundle.get("executions", {}),
+                persist_result = persist_bundle_attempts(
+                    connection,
+                    run_id=command.run_id,
+                    cycle_id=cycle_id,
+                    mint=proof.mint,
+                    executions=bundle.get("executions", {}),
                     created_at=evaluated.isoformat(),
+                    campaign_id=campaign_id or None,
+                    candidate_ordinal=ordinal,
                 )
+                stage_governed += int(persist_result.governed_request_count)
+                stage_transports += int(persist_result.measured_transport_count)
+                stage_request_ids.extend(
+                    int(rid) for rid in persist_result.source_request_ids
+                )
+                stage_coverage.extend(
+                    dict(entry) for entry in persist_result.source_request_coverage
+                )
+                if persist_result.accounting_blocker:
+                    accounting_blocker = True
+                    if persist_result.accounting_blocker_reason:
+                        accounting_reasons.append(
+                            str(persist_result.accounting_blocker_reason)
+                        )
                 ledger = replace(
                     ledger,
-                    governed_requests=ledger.governed_requests + governed_used,
+                    governed_requests=(
+                        ledger.governed_requests
+                        + int(persist_result.governed_request_count)
+                    ),
                     underlying_transport_operations=(
-                        ledger.underlying_transport_operations + transports_used
+                        ledger.underlying_transport_operations
+                        + int(persist_result.measured_transport_count)
                     ),
                 )
                 persist_ledger(
@@ -1342,7 +1376,27 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     "source_name": None,
                     **handoff_detail,
                 }
-        return holder_facts, ledger
+        # Preserve order while de-duplicating request IDs that may repeat only
+        # if the same durable row is legitimately re-reported (should not).
+        deduped_ids: list[int] = []
+        seen_ids: set[int] = set()
+        for rid in stage_request_ids:
+            if rid in seen_ids:
+                continue
+            seen_ids.add(rid)
+            deduped_ids.append(rid)
+        return HolderContextResult(
+            holder_facts=holder_facts,
+            ledger=ledger,
+            source_request_ids=tuple(deduped_ids),
+            source_request_coverage=tuple(stage_coverage),
+            accounting_blocker=accounting_blocker,
+            accounting_blocker_reason=(
+                ";".join(accounting_reasons) if accounting_reasons else None
+            ),
+            governed_request_count=stage_governed,
+            measured_transport_count=stage_transports,
+        )
 
     def run(self, *, mode: str, **kwargs: Any) -> Any:
         """Single dispatch entry point for the canonical operational modes.
@@ -1731,7 +1785,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
             # V2-9.8B.20: holder pacing/source I/O must not inherit an open write.
             release_write_transaction(connection)
             holder_transport_before = int(ledger.underlying_transport_operations)
-            holder_facts, ledger = self._evaluate_holder_eligibility(
+            holder_result = self._evaluate_holder_eligibility(
                 connection,
                 command=command,
                 cycle_id=cycle_id,
@@ -1754,6 +1808,8 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     else 2
                 ),
             )
+            holder_facts = dict(holder_result.holder_facts)
+            ledger = holder_result.ledger
             holder_transport_used = (
                 int(ledger.underlying_transport_operations)
                 - holder_transport_before
@@ -1936,13 +1992,18 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                 ),
                             )
                 # Campaign-wide source-request reconciliation before readiness.
-                # holder ledger governed_requests remains diagnostic only.
-                holder_ids = list(
-                    supply.diagnostics.get("holder_source_request_ids") or ()
+                # Holder stage result is the sole owner of holder IDs/coverage;
+                # never invent IDs and never fall back to ledger.request_ids.
+                supply.diagnostics["holder_context"] = (
+                    holder_result.as_holder_context_diagnostics()
                 )
-                if not holder_ids and getattr(ledger, "request_ids", None):
-                    holder_ids = list(ledger.request_ids or ())
-                supply.diagnostics["holder_source_request_ids"] = holder_ids
+                supply.diagnostics["holder_source_request_ids"] = list(
+                    holder_result.source_request_ids
+                )
+                supply.diagnostics["holder_source_request_coverage"] = [
+                    dict(entry)
+                    for entry in holder_result.source_request_coverage
+                ]
                 # Prefer stage-reported durable IDs + explicit discovery request
                 # key prefixes. Do not scrape the whole DB by campaign/run id
                 # alone — that can pull unrelated holder/other rows and false
@@ -2936,7 +2997,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
             # 5. Holder eligibility (shared committed funnel). Snapshot maturity
             # is Scheduler-owned and precedes holder I/O. A pool smaller than
             # the two-bundle goal persists the ledger with zero holder calls.
-            holder_facts, ledger = self._evaluate_holder_eligibility(
+            holder_result = self._evaluate_holder_eligibility(
                 connection,
                 command=command,
                 cycle_id=cycle_id,
@@ -2950,6 +3011,8 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 context_factories=context_adapter_factories,
                 request_pacer=holder_request_pacer,
             )
+            holder_facts = dict(holder_result.holder_facts)
+            ledger = holder_result.ledger
             eligible_candidates = [
                 proof for proof in bounded_candidates
                 if bool(holder_facts.get(proof.mint.lower(), {}).get("eligible"))

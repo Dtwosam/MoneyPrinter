@@ -176,6 +176,13 @@ def normalize_goplus_payload(
             datetime.now(timezone.utc)
             + timedelta(seconds=int(payload.get("retry_after_seconds") or 120))
         ).isoformat()
+        # One measured HTTP transport was attempted; surface the count so
+        # holder-stage accounting can remain complete without inventing fallsbacks.
+        measured_count = int(
+            payload.get("underlying_operation_count")
+            if payload.get("underlying_operation_count") is not None
+            else GOPLUS_TRANSPORT_OPERATION_COST
+        )
         return NormalizedSourceResult(
             source_name=GOPLUS_SOURCE_NAME,
             request_kind=request_kind,
@@ -184,6 +191,13 @@ def normalize_goplus_payload(
             failure_type="goplus_rate_limited",
             failure_message="GoPlus rate limit",
             retry_after_at=retry_at,
+            normalized_payload=MappingProxyType(
+                {
+                    "underlying_operation_count": measured_count,
+                    "redacted_host": "api.gopluslabs.io",
+                    "request_kind": request_kind,
+                }
+            ),
         )
 
     # GoPlus API returns {"code": 1, "message": "OK", "result": {...}}
@@ -239,6 +253,18 @@ def normalize_goplus_payload(
     normalized["source_name"] = GOPLUS_SOURCE_NAME
     normalized["request_kind"] = request_kind
     normalized["captured_at"] = datetime.now(timezone.utc).isoformat()
+    # Authoritative single-HTTP measured cost for holder-stage accounting.
+    if "underlying_operation_count" not in normalized or normalized[
+        "underlying_operation_count"
+    ] is None:
+        if payload.get("underlying_operation_count") is not None:
+            normalized["underlying_operation_count"] = int(
+                payload["underlying_operation_count"]
+            )
+        else:
+            normalized["underlying_operation_count"] = int(
+                GOPLUS_TRANSPORT_OPERATION_COST
+            )
 
     return NormalizedSourceResult(
         source_name=GOPLUS_SOURCE_NAME,
