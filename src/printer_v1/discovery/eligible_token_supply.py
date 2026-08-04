@@ -76,6 +76,7 @@ DURATION_EXHAUSTION = "DURATION_EXHAUSTION"
 STALE_EVIDENCE_SHORTAGE = "STALE_EVIDENCE_SHORTAGE"
 DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE = "DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE"
 TRACKING_STATE_CAPACITY_BLOCKED = "TRACKING_STATE_CAPACITY_BLOCKED"
+MIGRATION_EVIDENCE_REJECTED = "MIGRATION_EVIDENCE_REJECTED"
 
 SHORTAGE_CLASSIFICATIONS = (
     TRUE_MARKET_SUPPLY_SHORTAGE,
@@ -87,6 +88,15 @@ SHORTAGE_CLASSIFICATIONS = (
     DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE,
     TRACKING_STATE_CAPACITY_BLOCKED,
 )
+
+# Candidate-local Pump migrate validation failures. Transport completed; the
+# pinned exactly-one migrate proof failed closed. These must never mark a
+# shared channel unavailable or stop peer discovery work.
+_CANDIDATE_LOCAL_MIGRATE_FAILURE_PREFIX = "direct_pump_migration_rejected_"
+
+
+def _is_candidate_local_migrate_failure(failure_type: str | None) -> bool:
+    return str(failure_type or "").startswith(_CANDIDATE_LOCAL_MIGRATE_FAILURE_PREFIX)
 
 BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL = (
     "BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL"
@@ -705,6 +715,14 @@ def run_persistent_eligible_token_supply(
     tracking_dispositions: dict[str, dict[str, Any]] = {}
     permanent_market_reports: list[dict[str, Any]] = []
     stage_budget = StageBudget.permanent_discovery_default()
+    protocol_stage_charged = False
+    protocol_confirmation_outcomes: list[dict[str, Any]] = []
+    work_queues: dict[str, list[dict[str, str]]] = {
+        "MARKET_BATCHING_DUE": [],
+        "RECONCILIATION_DUE": [],
+        "PROTOCOL_CONFIRMATION_DUE": [],
+        "HOLDER_SAFETY_DUE": [],
+    }
     geckoterminal_nomination_report: dict[str, Any] = {
         "status": "NOT_REQUESTED",
         "source_requests": 0,
@@ -791,17 +809,43 @@ def run_persistent_eligible_token_supply(
                 else {}
             ),
         }
+        migration_evidence_rejections: list[dict[str, Any]] = []
         attributable_request_ids = sorted(request_channels)
         if attributable_request_ids:
             placeholders = ",".join("?" * len(attributable_request_ids))
             governed_failures = connection.execute(
-                "SELECT f.id,r.id AS request_id,r.source_name,r.request_kind "
+                "SELECT f.id,f.failure_type,f.normalized_payload_json,"
+                "r.id AS request_id,r.source_name,r.request_kind "
                 "FROM printer_source_failures AS f "
                 "JOIN printer_source_requests AS r ON r.id=f.source_request_id "
                 f"WHERE r.id IN ({placeholders}) ORDER BY f.id",
                 tuple(attributable_request_ids),
             ).fetchall()
             for failure in governed_failures:
+                failure_type = str(failure["failure_type"] or "")
+                if _is_candidate_local_migrate_failure(failure_type):
+                    digest: dict[str, Any] = {}
+                    raw_payload = failure["normalized_payload_json"]
+                    if raw_payload:
+                        try:
+                            parsed = json.loads(raw_payload)
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            parsed = {}
+                        if isinstance(parsed, dict):
+                            candidate = parsed.get("migration_rejection_digest")
+                            if isinstance(candidate, dict):
+                                digest = dict(candidate)
+                    migration_evidence_rejections.append(
+                        {
+                            "outcome": MIGRATION_EVIDENCE_REJECTED,
+                            "failure_id": int(failure["id"]),
+                            "request_id": int(failure["request_id"]),
+                            "failure_type": failure_type,
+                            "digest": digest,
+                        }
+                    )
+                    # Candidate-local validation only — never shared channel death.
+                    continue
                 provider_failure_facts.add(
                     (
                         str(failure["source_name"]),
@@ -1012,8 +1056,36 @@ def run_persistent_eligible_token_supply(
                 if not permanent_rows:
                     last_stop_reason = "ALL_REACHABLE_CANDIDATES_EVALUATED"
                     break
+                # Charge migration protocol ops once, without sealing market.
+                # Protocol and market stages may both be open; residual market
+                # capacity is not stranded by protocol accounting.
+                if not protocol_stage_charged:
+                    protocol_calls = max(
+                        0,
+                        int(
+                            (discovery.get("source_operation_ledger") or {}).get(
+                                "source_requests"
+                            )
+                            or 0
+                        )
+                        - 1,
+                    )
+                    if protocol_calls:
+                        try:
+                            stage_budget.consume(
+                                "protocol_confirmation", protocol_calls
+                            )
+                        except ValueError:
+                            last_stop_reason = "DISCOVERY_OPERATION_BUDGET_EXHAUSTED"
+                            break
+                    protocol_stage_charged = True
+                if stage_budget.available("market_batching") < 1:
+                    # Seal market only when no capacity remains for another batch.
+                    if not stage_budget.is_sealed("market_batching"):
+                        stage_budget.seal("market_batching")
+                    last_stop_reason = "DISCOVERY_OPERATION_BUDGET_EXHAUSTED"
+                    break
                 try:
-                    stage_budget.advance("market_batching")
                     stage_budget.consume("market_batching", 1)
                 except ValueError:
                     last_stop_reason = "DISCOVERY_OPERATION_BUDGET_EXHAUSTED"
@@ -1051,21 +1123,20 @@ def run_persistent_eligible_token_supply(
                     )
                 )
                 if reconciliation_calls:
-                    stage_budget.advance("reconciliation")
-                    stage_budget.consume("reconciliation", reconciliation_calls)
-                protocol_calls = max(
-                    0,
-                    int(
-                        (discovery.get("source_operation_ledger") or {}).get(
-                            "source_requests"
+                    try:
+                        stage_budget.consume(
+                            "reconciliation", reconciliation_calls
                         )
-                        or 0
-                    )
-                    - 1,
-                )
-                stage_budget.advance("protocol_confirmation")
-                if protocol_calls:
-                    stage_budget.consume("protocol_confirmation", protocol_calls)
+                    except ValueError:
+                        # Spend only what remains; do not invent budget.
+                        remaining_recon = stage_budget.available("reconciliation")
+                        if remaining_recon > 0:
+                            stage_budget.consume(
+                                "reconciliation", remaining_recon
+                            )
+                        else:
+                            last_stop_reason = "DISCOVERY_OPERATION_BUDGET_EXHAUSTED"
+                            break
                 front_door = {
                     "candidates": permanent_report["candidates"],
                     "market_calls": int(
@@ -1253,9 +1324,57 @@ def run_persistent_eligible_token_supply(
         pools_confirmed = len(inventory_mints)
         unexplored_remaining = len(inventory_mints - evaluated_mints)
 
+        if permanent_availability:
+            from printer_v1.discovery.permanent_discovery_availability import (
+                process_protocol_confirmation_queue,
+            )
+
+            # Seal market/recon when no further batch capacity remains so any
+            # residual may flow into protocol processing only after seal.
+            if stage_budget.available("market_batching") < 1 and not stage_budget.is_sealed(
+                "market_batching"
+            ):
+                stage_budget.seal("market_batching")
+            if stage_budget.available("reconciliation") < 1 and not stage_budget.is_sealed(
+                "reconciliation"
+            ):
+                stage_budget.seal("reconciliation")
+            protocol_report = process_protocol_confirmation_queue(
+                connection,
+                stage_budget=stage_budget,
+                now=now,
+                campaign_id=campaign_id,
+            )
+            protocol_confirmation_outcomes = list(
+                protocol_report.get("outcomes") or ()
+            )
+            work_queues["PROTOCOL_CONFIRMATION_DUE"] = list(
+                protocol_report.get("remaining_due") or ()
+            )
+            ops_used += int(protocol_report.get("source_requests") or 0)
+            if not stage_budget.is_sealed("protocol_confirmation"):
+                if stage_budget.available("protocol_confirmation") < 1 or not (
+                    protocol_report.get("remaining_due")
+                ):
+                    stage_budget.seal("protocol_confirmation")
+
         eligible_list = list(campaign_eligible.values())
         # Deterministic non-ranked order by mint identity for handoff stability.
         eligible_list.sort(key=lambda c: str(c["mint"]))
+        if permanent_availability:
+            work_queues["HOLDER_SAFETY_DUE"] = [
+                {
+                    "mint": str(item.get("mint") or ""),
+                    "pool": str(
+                        item.get("pumpswap_pool") or item.get("pool") or ""
+                    ),
+                }
+                for item in eligible_list
+            ]
+            work_queues["MARKET_BATCHING_DUE"] = [
+                {"mint": mint, "pool": ""}
+                for mint in sorted(inventory_mints - evaluated_mints)
+            ]
 
         ready = len(eligible_list) >= required_token_capacity
         certificate: ExhaustionCertificate | None = None
@@ -1277,6 +1396,33 @@ def run_persistent_eligible_token_supply(
                     "NO_ADDITIONAL_UNIQUE_CANDIDATES_REACHABLE",
                 }
             )
+            # Budget exhaustion is legal only when flat or stage capacity that
+            # could execute remaining queued work is actually gone.
+            executable_stage_capacity = 0
+            if permanent_availability:
+                for stage_name in (
+                    "market_batching",
+                    "reconciliation",
+                    "protocol_confirmation",
+                ):
+                    if not stage_budget.is_sealed(stage_name):
+                        executable_stage_capacity += stage_budget.available(
+                            stage_name
+                        )
+            true_flat_exhausted = _ops_remaining() <= 0
+            true_stage_exhausted = (
+                permanent_availability
+                and executable_stage_capacity <= 0
+                and last_stop_reason == "DISCOVERY_OPERATION_BUDGET_EXHAUSTED"
+            )
+            if (
+                last_stop_reason == "DISCOVERY_OPERATION_BUDGET_EXHAUSTED"
+                and not true_flat_exhausted
+                and not true_stage_exhausted
+                and unexplored_remaining > 0
+            ):
+                # Do not emit false budget exhaustion while capacity remains.
+                last_stop_reason = "LAWFUL_WORK_REMAINING_WITH_CAPACITY"
             unexplored_prevented = last_stop_reason in {
                 "DISCOVERY_OPERATION_BUDGET_EXHAUSTED",
                 "CAMPAIGN_DURATION_EXHAUSTED",
@@ -1304,6 +1450,8 @@ def run_persistent_eligible_token_supply(
             )
             # Source-evidence failures take precedence over a budget consumed by
             # those failed operations. Healthy evidence may still exhaust budget.
+            # Candidate-local migrate rejects are intentionally absent from
+            # provider_failures / channels_unavailable.
             if liquidity_outcome_counts.get(LIQUIDITY_SOURCE_UNAVAILABLE, 0) > 0:
                 shortage = SOURCE_AVAILABILITY_FAILURE
             elif liquidity_outcome_counts.get(
@@ -1316,7 +1464,9 @@ def run_persistent_eligible_token_supply(
                 shortage = SOURCE_VISIBILITY_SHORTAGE
             elif provider_failures > 0 and channels_unavailable:
                 shortage = SOURCE_AVAILABILITY_FAILURE
-            elif last_stop_reason == "DISCOVERY_OPERATION_BUDGET_EXHAUSTED":
+            elif last_stop_reason == "DISCOVERY_OPERATION_BUDGET_EXHAUSTED" and (
+                true_flat_exhausted or true_stage_exhausted
+            ):
                 shortage = BUDGET_EXHAUSTION
             elif last_stop_reason == "CAMPAIGN_DURATION_EXHAUSTED":
                 shortage = DURATION_EXHAUSTION
@@ -1330,7 +1480,8 @@ def run_persistent_eligible_token_supply(
                     shortage = SOURCE_VISIBILITY_SHORTAGE
                 else:
                     shortage = TRUE_MARKET_SUPPLY_SHORTAGE
-
+            elif last_stop_reason == "LAWFUL_WORK_REMAINING_WITH_CAPACITY":
+                shortage = DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE
             certificate = ExhaustionCertificate(
                 certificate_id=(
                     f"exh-{execution_id or campaign_id or uuid.uuid4().hex[:12]}"
@@ -1600,9 +1751,33 @@ def run_persistent_eligible_token_supply(
                 for report in permanent_market_reports
                 for exclusion in report.get("local_zero_source_exclusions", ())
             ],
-            "stage_reservations": dict(stage_budget.reservations),
+            "stage_reservations": {
+                name: reserved for name, reserved in stage_budget.reservations
+            },
             "stage_operations_used": dict(stage_budget.used_by_stage),
             "stage_total_ceiling": stage_budget.total_ceiling,
+            "stage_capacity": stage_budget.snapshot(),
+            "sealed_stages": sorted(stage_budget.sealed),
+            "unsealed_stages": [
+                name
+                for name in stage_budget.stage_names
+                if name not in stage_budget.sealed
+            ],
+            "pending_work_by_queue": {
+                name: list(items) for name, items in work_queues.items()
+            },
+            "market_batch_rounds": discovery_rounds if permanent_availability else discovery_rounds,
+            "protocol_confirmation_attempts": len(protocol_confirmation_outcomes),
+            "protocol_confirmation_outcomes": list(protocol_confirmation_outcomes),
+            "migration_evidence_rejections": list(migration_evidence_rejections),
+            "shared_source_failures": provider_failures,
+            "holder_safety_due_count": len(work_queues.get("HOLDER_SAFETY_DUE") or ()),
+            "market_ready_reserve_depth": len(eligible_list),
+            "fully_eligible_reserve_depth": 0,
+            "lawful_work_remaining_at_terminal": bool(
+                unexplored_remaining > 0
+                or any(work_queues.get(name) for name in work_queues)
+            ),
             "lifecycle_operation_ceiling": LIFECYCLE_OPERATION_CEILING,
             "restart_created": False,
             "successor_created": False,
@@ -1643,6 +1818,7 @@ __all__ = [
     "STALE_EVIDENCE_SHORTAGE",
     "DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE",
     "TRACKING_STATE_CAPACITY_BLOCKED",
+    "MIGRATION_EVIDENCE_REJECTED",
     "SHORTAGE_CLASSIFICATIONS",
     "BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL",
     "GRADUATED_SUPPLY_READY",
@@ -1655,4 +1831,5 @@ __all__ = [
     "persist_exhaustion_certificate",
     "classify_shortage",
     "run_persistent_eligible_token_supply",
+    "_is_candidate_local_migrate_failure",
 ]

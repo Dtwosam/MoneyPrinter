@@ -1613,12 +1613,20 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 candidate_cap=candidate_cap,
             )
 
-            if len(graduated_candidates) < 2:
-                # Fewer than two graduation-confirmed candidates. No holder,
-                # snapshot, lifecycle or memory work occurs. Persist the ledger and
-                # close honestly with the graduation-only terminal before any
-                # activation. Ungraduated origins remain staged as pending
-                # discovery evidence.
+            permanent_mode = bool(
+                supply is not None
+                and bool(supply.diagnostics.get("permanent_availability"))
+            )
+            # Permanent conversion: a solitary market-ready survivor must still
+            # receive holder/safety evaluation. Legacy (non-permanent) path keeps
+            # the two-candidate pre-holder gate.
+            if len(graduated_candidates) < 1 or (
+                not permanent_mode and len(graduated_candidates) < 2
+            ):
+                # No holder, snapshot, lifecycle or memory work occurs. Persist
+                # the ledger and close honestly with the graduation-only terminal
+                # before any activation. Ungraduated origins remain staged as
+                # pending discovery evidence.
                 persist_ledger(
                     connection, run_id=command.run_id, cycle_id=cycle_id,
                     ledger=ledger, now=evaluated.isoformat(),

@@ -561,18 +561,71 @@ def validate_migrate_account_roles(
     }
 
 
+def _migration_rejection_digest(
+    *,
+    reason: str,
+    signature: str | None = None,
+    top_level_instruction_count: int = 0,
+    inner_instruction_count: int = 0,
+    pump_migrate_match_count: int = 0,
+    candidate_mint_identities: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Bounded, non-raw rejection digest for offline audit (no full tx body)."""
+    mints = [
+        str(item)
+        for item in candidate_mint_identities
+        if isinstance(item, str) and item
+    ]
+    # Stable unique order without ranking semantics.
+    unique_mints = sorted(set(mints))
+    return {
+        "outcome": "MIGRATION_EVIDENCE_REJECTED",
+        "rejection_reason": str(reason),
+        "signature": signature,
+        "top_level_instruction_count": int(top_level_instruction_count),
+        "inner_instruction_count": int(inner_instruction_count),
+        "pump_migrate_match_count": int(pump_migrate_match_count),
+        "candidate_mint_identities": unique_mints,
+    }
+
+
 def decode_supported_pump_migration_transaction(
     tx_result: Mapping[str, Any] | None,
+    *,
+    expected_signature: str | None = None,
 ) -> dict[str, Any]:
     """Extract the exact pinned migrate identity before Pool account verification."""
     failed: dict[str, Any] = {"supported": False, "reason": "transaction_missing"}
     if not tx_result:
+        failed["migration_rejection_digest"] = _migration_rejection_digest(
+            reason="transaction_missing",
+            signature=expected_signature,
+        )
         return failed
     if tx_result.get("version") not in (None, "legacy", 0):
-        return {**failed, "reason": "unsupported_transaction_version"}
+        reason = "unsupported_transaction_version"
+        return {
+            **failed,
+            "reason": reason,
+            "migration_rejection_digest": _migration_rejection_digest(
+                reason=reason, signature=expected_signature
+            ),
+        }
     meta = tx_result.get("meta")
     if not isinstance(meta, Mapping) or meta.get("err") is not None:
-        return {**failed, "reason": "transaction_failed_or_meta_missing"}
+        reason = "transaction_failed_or_meta_missing"
+        return {
+            **failed,
+            "reason": reason,
+            "migration_rejection_digest": _migration_rejection_digest(
+                reason=reason, signature=expected_signature
+            ),
+        }
+    message = ((tx_result.get("transaction") or {}).get("message") or {})
+    top_level = list(message.get("instructions") or [])
+    inner_count = 0
+    for group in meta.get("innerInstructions") or []:
+        inner_count += len(group.get("instructions") or [])
     keys = _account_keys(tx_result)
     matches: list[list[str]] = []
     for instruction in _instructions(tx_result):
@@ -584,22 +637,71 @@ def decode_supported_pump_migration_transaction(
         data = _instruction_data(instruction)
         if program == PUMP_PROGRAM_ID and data is not None and data[:8] == PUMP_MIGRATE_DISCRIMINATOR:
             if len(accounts) != 25:
-                return {**failed, "reason": "migrate_account_layout_mismatch"}
+                reason = "migrate_account_layout_mismatch"
+                return {
+                    **failed,
+                    "reason": reason,
+                    "migration_rejection_digest": _migration_rejection_digest(
+                        reason=reason,
+                        signature=expected_signature,
+                        top_level_instruction_count=len(top_level),
+                        inner_instruction_count=inner_count,
+                        pump_migrate_match_count=len(matches),
+                    ),
+                }
             matches.append(accounts)
+    mint_identities = [
+        accounts[2]
+        for accounts in matches
+        if len(accounts) > 2 and isinstance(accounts[2], str)
+    ]
     if len(matches) != 1:
-        return {**failed, "reason": "exactly_one_migrate_instruction_required"}
+        reason = "exactly_one_migrate_instruction_required"
+        return {
+            **failed,
+            "reason": reason,
+            "migration_rejection_digest": _migration_rejection_digest(
+                reason=reason,
+                signature=expected_signature,
+                top_level_instruction_count=len(top_level),
+                inner_instruction_count=inner_count,
+                pump_migrate_match_count=len(matches),
+                candidate_mint_identities=mint_identities,
+            ),
+        }
     accounts = matches[0]
     role_check = validate_migrate_account_roles(accounts, expected_mint=None)
     if not role_check.get("valid"):
+        reason = str(role_check.get("reason") or "migrate_role_validation_failed")
         return {
             **failed,
-            "reason": str(role_check.get("reason") or "migrate_role_validation_failed"),
+            "reason": reason,
             "role": role_check.get("role"),
             "position": role_check.get("position"),
             "accounts": list(accounts),
+            "migration_rejection_digest": _migration_rejection_digest(
+                reason=reason,
+                signature=expected_signature,
+                top_level_instruction_count=len(top_level),
+                inner_instruction_count=inner_count,
+                pump_migrate_match_count=1,
+                candidate_mint_identities=[accounts[2]] if len(accounts) > 2 else (),
+            ),
         }
     if not isinstance(tx_result.get("slot"), int) or not isinstance(tx_result.get("blockTime"), (int, float)):
-        return {**failed, "reason": "finalized_slot_or_block_time_missing"}
+        reason = "finalized_slot_or_block_time_missing"
+        return {
+            **failed,
+            "reason": reason,
+            "migration_rejection_digest": _migration_rejection_digest(
+                reason=reason,
+                signature=expected_signature,
+                top_level_instruction_count=len(top_level),
+                inner_instruction_count=inner_count,
+                pump_migrate_match_count=1,
+                candidate_mint_identities=[accounts[2]] if len(accounts) > 2 else (),
+            ),
+        }
     return {
         "supported": True,
         "reason": "supported_pump_migration",

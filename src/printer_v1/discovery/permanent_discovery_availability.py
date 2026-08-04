@@ -540,9 +540,17 @@ def order_canonical_inventory_fairly(
 
 @dataclass
 class StageBudget:
+    """Seal-gated permanent conversion capacity.
+
+    Stages may run concurrently while unsealed. Unused capacity from a stage
+    flows forward only after that stage is explicitly sealed. Later stages never
+    lend capacity backward. There is no global rewind exception path.
+    """
+
     reservations: tuple[tuple[str, int], ...]
     current_index: int = 0
     used_by_stage: dict[str, int] = field(default_factory=dict)
+    sealed: set[str] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         if not self.reservations or any(value < 0 for _, value in self.reservations):
@@ -551,6 +559,8 @@ class StageBudget:
             raise ValueError("DUPLICATE_STAGE_RESERVATION")
         for name, _ in self.reservations:
             self.used_by_stage.setdefault(name, 0)
+        if not isinstance(self.sealed, set):
+            self.sealed = set(self.sealed)
 
     @classmethod
     def permanent_discovery_default(cls) -> "StageBudget":
@@ -564,44 +574,81 @@ class StageBudget:
     def stage_names(self) -> tuple[str, ...]:
         return tuple(name for name, _ in self.reservations)
 
-    def advance(self, stage: str) -> None:
+    def _index(self, stage: str) -> int:
         try:
-            index = self.stage_names.index(stage)
+            return self.stage_names.index(stage)
         except ValueError as exc:
             raise ValueError("UNKNOWN_BUDGET_STAGE") from exc
-        if index < self.current_index:
-            raise ValueError("BUDGET_STAGE_REWIND_FORBIDDEN")
-        self.current_index = index
+
+    def advance(self, stage: str) -> None:
+        """Seal every earlier stage so residual capacity may flow to ``stage``.
+
+        Retained for call-site compatibility. Prefer explicit :meth:`seal` for
+        permanent conversion loops.
+        """
+        index = self._index(stage)
+        for name, _ in self.reservations[:index]:
+            self.sealed.add(name)
+        self.current_index = max(self.current_index, index)
+
+    def seal(self, stage: str) -> None:
+        index = self._index(stage)
+        self.sealed.add(stage)
+        self.current_index = max(self.current_index, index)
+
+    def is_sealed(self, stage: str) -> bool:
+        return stage in self.sealed
+
+    def available(self, stage: str) -> int:
+        """Own remaining capacity plus unused capacity from sealed earlier stages."""
+        index = self._index(stage)
+        available = 0
+        for i, (name, reserved) in enumerate(self.reservations[: index + 1]):
+            remaining = max(0, int(reserved) - int(self.used_by_stage.get(name, 0)))
+            if i == index:
+                available += remaining
+            elif name in self.sealed:
+                available += remaining
+        return available
 
     def _available_at(self, index: int) -> int:
-        reserved_through = sum(value for _, value in self.reservations[: index + 1])
-        used_through = sum(
-            self.used_by_stage[name] for name, _ in self.reservations[: index + 1]
-        )
-        return reserved_through - used_through
+        return self.available(self.stage_names[index])
 
     def consume(self, stage: str, count: int = 1) -> None:
         if type(count) is not int or count < 0:
             raise ValueError("INVALID_STAGE_OPERATION_COUNT")
-        try:
-            index = self.stage_names.index(stage)
-        except ValueError as exc:
-            raise ValueError("UNKNOWN_BUDGET_STAGE") from exc
-        if index < self.current_index:
-            raise ValueError("BUDGET_STAGE_REWIND_FORBIDDEN")
-        if index > self.current_index:
-            self.advance(stage)
-        if count > self._available_at(index):
+        index = self._index(stage)
+        if stage in self.sealed:
+            raise ValueError("STAGE_ALREADY_SEALED")
+        if count > self.available(stage):
             raise ValueError("STAGE_RESERVATION_EXCEEDED")
         self.used_by_stage[stage] += count
+        self.current_index = max(self.current_index, index)
 
     def protected_remaining(self, stage: str) -> int:
-        try:
-            index = self.stage_names.index(stage)
-        except ValueError as exc:
-            raise ValueError("UNKNOWN_BUDGET_STAGE") from exc
+        index = self._index(stage)
         reserved = self.reservations[index][1]
         return max(0, reserved - self.used_by_stage[stage])
+
+    def remaining_by_stage(self) -> dict[str, int]:
+        return {
+            name: max(0, reserved - self.used_by_stage.get(name, 0))
+            for name, reserved in self.reservations
+        }
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "reservations": {name: reserved for name, reserved in self.reservations},
+            "used_by_stage": dict(self.used_by_stage),
+            "remaining_by_stage": self.remaining_by_stage(),
+            "sealed_stages": sorted(self.sealed),
+            "unsealed_stages": [
+                name for name in self.stage_names if name not in self.sealed
+            ],
+            "total_ceiling": self.total_ceiling,
+            "total_used": sum(self.used_by_stage.values()),
+            "total_remaining": self.total_ceiling - sum(self.used_by_stage.values()),
+        }
 
 
 @dataclass(frozen=True)
@@ -1592,6 +1639,150 @@ def freeze_eligible_reserve(
     )
 
 
+def process_protocol_confirmation_queue(
+    connection: sqlite3.Connection,
+    *,
+    stage_budget: StageBudget,
+    now: str,
+    campaign_id: str | None = None,
+    max_confirmations: int | None = None,
+) -> dict[str, Any]:
+    """Process PROTOCOL_CONFIRMATION_DUE exact-market identities under stage capacity.
+
+    Fresh aggregator nominations enter ``CONTRACT_BLOCKED`` with reason
+    ``FRESH_AGGREGATOR_NOMINATION_REQUIRES_EXACT_PROTOCOL_PROOF``. This owner
+    spends protocol_confirmation capacity deterministically (oldest observed,
+    then mint+pool) and:
+
+    * leaves unsupported venues (e.g. Meteora) blocked as ``UNSUPPORTED_VENUE``;
+    * never auto-accepts alternate ``pump-fun`` label pools as historical substitutes;
+    * for supported Pump-family venues without an account transport, records a
+      bounded confirmation attempt and retains protocol-due state (fail-closed).
+
+    Does not contact providers. Account-batch confirmation uses only already
+    governed local projection facts in this offline-safe path.
+    """
+    outcomes: list[dict[str, Any]] = []
+    remaining_due: list[dict[str, str]] = []
+    source_requests = 0
+    limit = (
+        stage_budget.available("protocol_confirmation")
+        if max_confirmations is None
+        else min(int(max_confirmations), stage_budget.available("protocol_confirmation"))
+    )
+    if limit <= 0 or stage_budget.is_sealed("protocol_confirmation"):
+        rows = connection.execute(
+            """
+            SELECT mint_identity, pool_address, venue, current_reason, last_observed_at
+            FROM printer_exact_market_states
+            WHERE current_state=? AND current_reason=?
+            ORDER BY last_observed_at ASC, mint_identity ASC, pool_address ASC
+            """,
+            (CONTRACT_BLOCKED, "FRESH_AGGREGATOR_NOMINATION_REQUIRES_EXACT_PROTOCOL_PROOF"),
+        ).fetchall()
+        for row in rows:
+            remaining_due.append(
+                {
+                    "mint": str(row["mint_identity"]),
+                    "pool": str(row["pool_address"]),
+                    "venue": str(row["venue"] or ""),
+                }
+            )
+        return {
+            "outcomes": outcomes,
+            "remaining_due": remaining_due,
+            "source_requests": 0,
+            "attempts": 0,
+        }
+
+    rows = connection.execute(
+        """
+        SELECT network, mint_identity, pool_address, venue, base_mint, quote_mint,
+               pool_program_id, token_program_id, current_reason, last_observed_at,
+               latest_source_provenance_json
+        FROM printer_exact_market_states
+        WHERE current_state=? AND current_reason=?
+        ORDER BY last_observed_at ASC, mint_identity ASC, pool_address ASC
+        """,
+        (CONTRACT_BLOCKED, "FRESH_AGGREGATOR_NOMINATION_REQUIRES_EXACT_PROTOCOL_PROOF"),
+    ).fetchall()
+    attempts = 0
+    for row in rows:
+        mint = str(row["mint_identity"])
+        pool = str(row["pool_address"])
+        venue = str(row["venue"] or "")
+        venue_key = venue.casefold()
+        if attempts >= limit:
+            remaining_due.append({"mint": mint, "pool": pool, "venue": venue})
+            continue
+        if stage_budget.available("protocol_confirmation") < 1:
+            remaining_due.append({"mint": mint, "pool": pool, "venue": venue})
+            continue
+        stage_budget.consume("protocol_confirmation", 1)
+        attempts += 1
+        source_requests += 1
+        # Unsupported venues never enter Pump protocol paths.
+        if venue_key not in SUPPORTED_PUMPSWAP_PROVIDER_VENUES and venue_key not in {
+            "pump-fun",
+            "pumpswap",
+            "pumpfun",
+            "pump-amm",
+        }:
+            record_exact_market_transition(
+                connection,
+                ExactMarketObservation(
+                    network=str(row["network"] or NETWORK),
+                    mint=mint,
+                    pool=pool,
+                    token_program=str(row["token_program_id"] or "UNRESOLVED_TOKEN_PROGRAM"),
+                    pool_program=str(row["pool_program_id"] or "UNRESOLVED_POOL_PROGRAM"),
+                    base_mint=str(row["base_mint"] or mint),
+                    quote_mint=str(row["quote_mint"] or "UNKNOWN_QUOTE_MINT"),
+                    venue=venue or "UNKNOWN_VENUE",
+                    state=UNSUPPORTED_VENUE,
+                    reason="PROTOCOL_UNSUPPORTED_VENUE",
+                    observed_at=now,
+                    next_lawful_action_at=None,
+                    source_provenance={
+                        "stage": "protocol_confirmation",
+                        "campaign_id": campaign_id,
+                    },
+                    contract_version="PROTOCOL_CONFIRMATION_V1_2026_08_04",
+                ),
+                now=now,
+            )
+            outcomes.append(
+                {
+                    "mint": mint,
+                    "pool": pool,
+                    "venue": venue,
+                    "outcome": "UNSUPPORTED_VENUE",
+                    "reason": "PROTOCOL_UNSUPPORTED_VENUE",
+                }
+            )
+            continue
+        # Supported Pump-family: without a governed account batch transport in
+        # this offline path, retain protocol-due state after a counted attempt.
+        # Never invent CURRENT_POOL_CONFIRMED from aggregator labels alone.
+        outcomes.append(
+            {
+                "mint": mint,
+                "pool": pool,
+                "venue": venue,
+                "outcome": "PROTOCOL_CONFIRMATION_ATTEMPTED_STILL_DUE",
+                "reason": "FRESH_AGGREGATOR_NOMINATION_REQUIRES_EXACT_PROTOCOL_PROOF",
+            }
+        )
+        remaining_due.append({"mint": mint, "pool": pool, "venue": venue})
+    connection.commit()
+    return {
+        "outcomes": outcomes,
+        "remaining_due": remaining_due,
+        "source_requests": source_requests,
+        "attempts": attempts,
+    }
+
+
 __all__ = [
     "BROAD_NOMINATED",
     "MARKET_READY",
@@ -1620,6 +1811,7 @@ __all__ = [
     "load_exact_market_states",
     "merge_candidate_observations",
     "order_canonical_inventory_fairly",
+    "process_protocol_confirmation_queue",
     "record_exact_market_transition",
     "record_fresh_pool_nominations",
     "reconcile_pool_identity",

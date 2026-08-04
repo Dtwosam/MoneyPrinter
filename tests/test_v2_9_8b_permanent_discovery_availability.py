@@ -586,9 +586,19 @@ class TestProductionSupplyComposition:
             campaign_id="campaign-unexplored",
         )
         assert result.ready is False
-        assert result.shortage_classification == BUDGET_EXHAUSTION
-        assert result.diagnostics["unexplored_unique_remaining"] == 1
-        assert result.diagnostics["last_stop_reason"] == "DISCOVERY_OPERATION_BUDGET_EXHAUSTED"
+        # Post-conversion-repair: two market-batch rounds may evaluate all 31
+        # below-floor mints. That is honest market shortage, not universe
+        # exhaustion and not a false budget terminal with stranded work.
+        from printer_v1.discovery.eligible_token_supply import (
+            TRUE_MARKET_SUPPLY_SHORTAGE,
+        )
+        assert result.shortage_classification == TRUE_MARKET_SUPPLY_SHORTAGE
+        assert result.diagnostics["evaluated_unique_mints"] == 31
+        assert result.diagnostics["unexplored_unique_remaining"] == 0
+        assert result.diagnostics["discovery_rounds"] >= 2
+        assert "GOVERNED_UNIVERSE_EXHAUSTED" not in str(
+            result.shortage_classification or ""
+        )
 
     def test_geckoterminal_fresh_pool_enters_only_broad_reserve(self, database):
         _, connection = database

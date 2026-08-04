@@ -280,15 +280,34 @@ def normalize_direct_pump_migration_response(
             "direct_pump_migration_transaction_malformed",
             "getTransaction result is not an object",
         )
-    decoded = decode_supported_pump_migration_transaction(result)
+    decoded = decode_supported_pump_migration_transaction(
+        result,
+        expected_signature=(
+            str(expected_signature) if isinstance(expected_signature, str) else None
+        ),
+    )
     response_bytes = int(payload.get("response_bytes") or 0)
     if not decoded.get("supported"):
+        digest = decoded.get("migration_rejection_digest")
+        if not isinstance(digest, Mapping):
+            digest = {
+                "outcome": "MIGRATION_EVIDENCE_REJECTED",
+                "rejection_reason": str(decoded.get("reason") or "unknown"),
+                "signature": (
+                    str(expected_signature) if isinstance(expected_signature, str) else None
+                ),
+                "top_level_instruction_count": 0,
+                "inner_instruction_count": 0,
+                "pump_migrate_match_count": 0,
+                "candidate_mint_identities": [],
+            }
         return _failure(
             request_kind,
             f"direct_pump_migration_rejected_{decoded.get('reason') or 'unknown'}",
             "transaction is not the exact pinned Pump migrate instruction",
             response_bytes=response_bytes,
             target_identity=str(expected_signature) if expected_signature else None,
+            migration_rejection_digest=dict(digest),
         )
     signature = expected_signature
     if not isinstance(signature, str) or not signature.strip():
@@ -363,6 +382,7 @@ def _failure(
     *,
     response_bytes: int = 0,
     target_identity: str | None = None,
+    migration_rejection_digest: Mapping[str, Any] | None = None,
 ) -> NormalizedSourceResult:
     method = (
         "getSignaturesForAddress"
@@ -388,6 +408,22 @@ def _failure(
         "normalized_rows": 0,
         "result": "FAILED",
     }
+    payload: dict[str, Any] = {
+        "transport_operations_used": 1,
+        "response_bytes": int(response_bytes),
+        "normalized_rows": 0,
+        "transport_operation_identities": (identity,),
+    }
+    if migration_rejection_digest is not None:
+        payload["migration_rejection_digest"] = dict(migration_rejection_digest)
+        payload["outcome"] = "MIGRATION_EVIDENCE_REJECTED"
+        # Candidate-local validation: transport completed; proof failed closed.
+        payload["candidate_local_validation"] = True
+        payload["shared_source_failure"] = False
+    elif str(failure_type).startswith("direct_pump_migration_rejected_"):
+        payload["outcome"] = "MIGRATION_EVIDENCE_REJECTED"
+        payload["candidate_local_validation"] = True
+        payload["shared_source_failure"] = False
     return NormalizedSourceResult(
         source_name=SOURCE_NAME,
         request_kind=request_kind,
@@ -395,14 +431,7 @@ def _failure(
         data_quality_label=DataQualityLabel.MISSING_CRITICAL_DATA,
         failure_type=failure_type,
         failure_message=failure_message,
-        normalized_payload=MappingProxyType(
-            {
-                "transport_operations_used": 1,
-                "response_bytes": int(response_bytes),
-                "normalized_rows": 0,
-                "transport_operation_identities": (identity,),
-            }
-        ),
+        normalized_payload=MappingProxyType(payload),
     )
 
 
