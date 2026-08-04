@@ -765,8 +765,15 @@ def _blocked_coverage_entry(
     mint: str,
     campaign_id: str | None,
     candidate_ordinal: int,
+    transport_identity_count: int = 0,
 ) -> dict[str, Any]:
-    """Coverage for a real governed request whose attempt did not complete."""
+    """Coverage for a real governed request whose attempt did not complete.
+
+    ``transport_identity_count`` carries the transport count already proven
+    from authoritative measured metadata before the failing operation. A
+    persistence failure may terminalize the attempt ``BLOCKED``, but it must
+    not erase transport work that really happened.
+    """
     normalized = getattr(execution, "normalized_result", None)
     is_rpc = str(key).startswith("holder")
     return {
@@ -789,7 +796,7 @@ def _blocked_coverage_entry(
             source_role=_holder_source_role(str(key)),
         ),
         "terminal_status": "BLOCKED",
-        "transport_identity_count": 0,
+        "transport_identity_count": int(transport_identity_count),
         "normalized_member_count": 0,
     }
 
@@ -838,6 +845,18 @@ def persist_bundle_attempts(
             request_id: int | None = int(execution.request_record.id)
         except Exception:  # pragma: no cover - no durable identity exists
             request_id = None
+        # Measure the transport count from authoritative measured metadata
+        # before any evidence-table operation that may raise, so a proven count
+        # survives a later persistence failure. Zero is used only when the
+        # measurement is itself absent, invalid, negative, or contradictory.
+        try:
+            proven_count, proven_ok, _proven_reason = _measure_holder_transport_count(
+                execution
+            )
+        except Exception:  # pragma: no cover - unmeasurable execution record
+            proven_count, proven_ok = 0, False
+        if not proven_ok:
+            proven_count = 0
         try:
             entry, operation_count, accounting_ok, reason = _persist_one_holder_attempt(
                 connection,
@@ -867,24 +886,30 @@ def persist_bundle_attempts(
                             mint=mint,
                             campaign_id=campaign_id,
                             candidate_ordinal=candidate_ordinal,
+                            transport_identity_count=proven_count,
                         )
                     )
             accounting_reasons.append(
                 f"HOLDER_BUNDLE_PERSIST_FAILED:{type(exc).__name__}"
                 f":request={request_id}"
             )
+            # An incomplete attempt is never a completed one, and it never
+            # contributed a normalized member. The transport counts already
+            # proven from the preserved real executions are kept exactly.
             blocked_coverage = []
             for item in coverage:
                 blocked = dict(item)
                 blocked["terminal_status"] = "BLOCKED"
-                blocked["transport_identity_count"] = 0
                 blocked["normalized_member_count"] = 0
                 blocked_coverage.append(blocked)
+            partial_transports = sum(
+                int(item["transport_identity_count"]) for item in blocked_coverage
+            )
             raise HolderBundlePersistPartialError(
                 "HOLDER_BUNDLE_PERSIST_INCOMPLETE",
                 partial=HolderBundlePersistResult(
                     governed_request_count=len(request_ids),
-                    measured_transport_count=0,
+                    measured_transport_count=partial_transports,
                     source_request_ids=tuple(request_ids),
                     source_request_coverage=tuple(blocked_coverage),
                     accounting_blocker=True,
