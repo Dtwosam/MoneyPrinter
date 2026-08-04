@@ -1777,11 +1777,12 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 and bool(supply.diagnostics.get("permanent_availability"))
             ):
                 from printer_v1.discovery.permanent_discovery_availability import (
+                    CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH,
                     FULLY_ELIGIBLE,
                     MEMORY_OBSERVATION_ELIGIBLE,
                     NETWORK,
+                    assemble_and_reconcile_campaign_source_requests,
                     freeze_eligible_reserve,
-                    observation_reserve_depth_status,
                     upsert_reserve_layer,
                 )
 
@@ -1890,31 +1891,31 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             },
                             campaign_id=command.campaign_id,
                         )
-                depth_status = observation_reserve_depth_status(len(observation_rows))
-                supply.diagnostics["observation_reserve"] = depth_status
-                # MINIMUM_FREEZE_DEPTH is an admission gate. Below four: durable
-                # coverage terminal, no selected/alternates, no readiness/handoff.
-                if depth_status.get("coverage_blocker"):
-                    frozen_eligible_reserve = freeze_eligible_reserve(
-                        observation_rows,
-                        cycle_seed=selection_seed,
-                        at=datetime.now(timezone.utc).isoformat(),
-                    )
-                    # Ensure no selected/alternate reserve-state writes occur.
-                    supply.diagnostics["freeze_depth_enforcement"] = {
-                        "enforced": True,
-                        "selected_count": 0,
-                        "alternate_count": 0,
-                        "terminal": "PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT",
-                        "durable_report_required": True,
-                        **depth_status,
-                    }
+                # Post-filter freeze depth is the sole admission authority.
+                # Never use raw observation_rows count for coverage decisions.
+                frozen_eligible_reserve = freeze_eligible_reserve(
+                    observation_rows,
+                    cycle_seed=selection_seed,
+                    at=datetime.now(timezone.utc).isoformat(),
+                )
+                freeze_authority = dict(
+                    frozen_eligible_reserve.selection_authority or {}
+                )
+                supply.diagnostics["observation_reserve"] = freeze_authority
+                supply.diagnostics["freeze_depth_enforcement"] = {
+                    "enforced": True,
+                    "selected_count": len(frozen_eligible_reserve.selected),
+                    "alternate_count": len(frozen_eligible_reserve.alternates[:2]),
+                    **freeze_authority,
+                }
+                if freeze_authority.get("coverage_blocker"):
+                    supply.diagnostics["freeze_depth_enforcement"][
+                        "terminal"
+                    ] = "PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT"
+                    supply.diagnostics["freeze_depth_enforcement"][
+                        "durable_report_required"
+                    ] = True
                 else:
-                    frozen_eligible_reserve = freeze_eligible_reserve(
-                        observation_rows,
-                        cycle_seed=selection_seed,
-                        at=datetime.now(timezone.utc).isoformat(),
-                    )
                     for reserve_state, items in (
                         ("SELECTED", frozen_eligible_reserve.selected),
                         ("ALTERNATE", frozen_eligible_reserve.alternates[:2]),
@@ -1934,12 +1935,50 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                     MEMORY_OBSERVATION_ELIGIBLE,
                                 ),
                             )
-                    supply.diagnostics["freeze_depth_enforcement"] = {
-                        "enforced": True,
-                        "selected_count": len(frozen_eligible_reserve.selected),
-                        "alternate_count": len(frozen_eligible_reserve.alternates[:2]),
-                        **depth_status,
-                    }
+                # Campaign-wide source-request reconciliation before readiness.
+                # holder ledger governed_requests remains diagnostic only.
+                holder_ids = list(
+                    supply.diagnostics.get("holder_source_request_ids") or ()
+                )
+                if not holder_ids and getattr(ledger, "request_ids", None):
+                    holder_ids = list(ledger.request_ids or ())
+                supply.diagnostics["holder_source_request_ids"] = holder_ids
+                # Prefer stage-reported durable IDs + explicit discovery request
+                # key prefixes. Do not scrape the whole DB by campaign/run id
+                # alone — that can pull unrelated holder/other rows and false
+                # reconciliation mismatches.
+                prefixes = []
+                for key in (
+                    "discovery_request_key_prefix",
+                    "request_key_prefix",
+                ):
+                    value = supply.diagnostics.get(key)
+                    if value:
+                        prefixes.append(str(value))
+                recon = assemble_and_reconcile_campaign_source_requests(
+                    connection,
+                    diagnostics=supply.diagnostics,
+                    request_key_prefixes=prefixes,
+                )
+                supply.diagnostics[
+                    "campaign_source_request_reconciliation"
+                ] = recon
+                supply.diagnostics["durable_campaign_request_ids"] = list(
+                    recon.get("durable_campaign_request_ids") or ()
+                )
+                supply.diagnostics["campaign_source_request_manifest"] = list(
+                    recon.get("campaign_source_request_manifest") or ()
+                )
+                supply.diagnostics["campaign_source_request_count"] = int(
+                    recon.get("campaign_source_request_count") or 0
+                )
+                supply.diagnostics["campaign_transport_operation_count"] = int(
+                    recon.get("campaign_transport_operation_count") or 0
+                )
+                # Diagnostic comparison only — not the authoritative count.
+                supply.diagnostics["holder_ledger_governed_requests"] = int(
+                    ledger.governed_requests
+                )
             connection.commit()
         finally:
             connection.close()
@@ -1972,13 +2011,19 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     reserve_order.append(mint)
             chosen: list[Any] = []
             seen: set[str] = set()
-            # Freeze-depth admission: fewer than MINIMUM_FREEZE_DEPTH yields no
-            # selected slots, no alternates, no readiness bundle, no handoff.
+            # Freeze-depth admission from post-filter freeze authority only.
             depth_blocker = bool(
                 (supply.diagnostics.get("observation_reserve") or {}).get(
                     "coverage_blocker"
                 )
             )
+            recon_status = (
+                supply.diagnostics.get("campaign_source_request_reconciliation")
+                or {}
+            )
+            recon_blocker = str(recon_status.get("status") or "OK") != "OK"
+            if recon_blocker:
+                depth_blocker = True  # block readiness/handoff on reconcile failure
             for mint in reserve_order:
                 # Memory freeze already chose from MEMORY_OBSERVATION_ELIGIBLE.
                 # Do not re-gate selection on holder pass; holder is context only.
@@ -2008,10 +2053,11 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 if len(chosen) == 2:
                     break
 
-            if len(chosen) == 2 and not depth_blocker:
+            if len(chosen) == 2 and not depth_blocker and not recon_blocker:
                 graduated_candidates = tuple(chosen)
                 selection_terminal = "PILOT_INPUT_READY"
                 from printer_v1.operator_cli.pilot_input_readiness import (
+                    READINESS_PURPOSE_MEMORY_OBSERVATION,
                     ReadinessCandidate,
                     build_pilot_input_ready_bundle,
                 )
@@ -2019,10 +2065,14 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 def readiness_candidate(proof: Any) -> ReadinessCandidate:
                     item = dict(supply.holder_reserve_candidates[proof.mint.lower()])
                     liquidity = dict(item.get("liquidity") or {})
+                    fact = dict(holder_facts.get(proof.mint.lower()) or {})
                     # Record actual holder eligibility; never force True for
                     # legacy gates. Memory path already admitted without it.
-                    actual_holder = bool(
-                        (holder_facts.get(proof.mint.lower()) or {}).get("eligible")
+                    actual_holder = bool(fact.get("eligible"))
+                    holder_label = str(
+                        fact.get("holder_concentration_label")
+                        or item.get("holder_condition")
+                        or "HOLDER_CONCENTRATION_UNKNOWN"
                     )
                     return ReadinessCandidate(
                         mint=proof.mint,
@@ -2037,11 +2087,23 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         # True provenance per token; a LATEST token is never
                         # relabelled PERSISTED (or vice versa).
                         provenance=provenance_by_mint.get(proof.mint.lower(), ""),
+                        memory_observation_eligible=True,
+                        holder_condition=holder_label,
+                        future_action_eligibility=str(
+                            item.get("future_action_eligibility")
+                            or "BLOCKED_OR_UNKNOWN"
+                        ),
                     )
 
                 readiness_connection = sqlite3.connect(Path(command.db_path))
                 readiness_connection.execute("PRAGMA foreign_keys = ON")
                 try:
+                    recon = (
+                        supply.diagnostics.get(
+                            "campaign_source_request_reconciliation"
+                        )
+                        or {}
+                    )
                     readiness_bundle = build_pilot_input_ready_bundle(
                         readiness_connection,
                         readiness_id=f"{command.run_id}:{cycle_id}:pilot-input",
@@ -2052,7 +2114,32 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         },
                         source_ledger={
                             "operation_ceiling": ledger.operation_ceiling,
-                            "governed_requests": ledger.governed_requests,
+                            # Diagnostic comparison only.
+                            "holder_ledger_governed_requests": ledger.governed_requests,
+                            "campaign_source_request_count": int(
+                                recon.get("campaign_source_request_count")
+                                or supply.diagnostics.get(
+                                    "campaign_source_request_count"
+                                )
+                                or 0
+                            ),
+                            "campaign_transport_operation_count": int(
+                                recon.get("campaign_transport_operation_count")
+                                or supply.diagnostics.get(
+                                    "campaign_transport_operation_count"
+                                )
+                                or 0
+                            ),
+                            "campaign_source_request_reconciliation": recon.get(
+                                "campaign_source_request_reconciliation"
+                            )
+                            or recon,
+                            "durable_campaign_request_ids": list(
+                                recon.get("durable_campaign_request_ids") or ()
+                            ),
+                            "campaign_source_request_manifest": list(
+                                recon.get("campaign_source_request_manifest") or ()
+                            ),
                             "underlying_transport_operations": (
                                 ledger.underlying_transport_operations
                             ),
@@ -2065,15 +2152,21 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         configuration_hash=command.configuration_hash,
                         expires_at=(evaluated + timedelta(minutes=10)).isoformat(),
                         now=evaluated.isoformat(),
+                        readiness_purpose=READINESS_PURPOSE_MEMORY_OBSERVATION,
                     )
                 finally:
                     readiness_connection.close()
             else:
-                # Fewer than two memory-observation freeze selections, or freeze
-                # depth coverage blocker. Classify the terminal honestly: a
-                # source/network outage is never attributed to market coverage.
+                # Fewer than two memory-observation freeze selections, freeze
+                # depth coverage blocker, or source-request reconciliation
+                # mismatch. Classify the terminal honestly.
                 graduated_candidates = ()
-                if depth_blocker:
+                if recon_blocker:
+                    selection_terminal = (
+                        "CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH"
+                    )
+                    eligible_alternates = []
+                elif depth_blocker:
                     selection_terminal = (
                         "PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT"
                     )
@@ -2137,7 +2230,30 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 "pre_source_tracking_exclusions", 0
             ),
             "candidates": admission_candidates,
-            "campaign_source_calls": int(ledger.governed_requests),
+            "campaign_source_calls": int(
+                (supply_diagnostics.get("campaign_source_request_count"))
+                if supply_diagnostics.get("campaign_source_request_count") is not None
+                else ledger.governed_requests
+            ),
+            "campaign_source_request_count": int(
+                supply_diagnostics.get("campaign_source_request_count")
+                or 0
+            ),
+            "campaign_transport_operation_count": int(
+                supply_diagnostics.get("campaign_transport_operation_count")
+                or 0
+            ),
+            "holder_ledger_governed_requests": int(ledger.governed_requests),
+            "durable_campaign_request_ids": list(
+                supply_diagnostics.get("durable_campaign_request_ids") or ()
+            ),
+            "campaign_source_request_manifest": list(
+                supply_diagnostics.get("campaign_source_request_manifest") or ()
+            ),
+            "campaign_source_request_reconciliation": dict(
+                supply_diagnostics.get("campaign_source_request_reconciliation")
+                or {}
+            ),
             "campaign_scheduler_calls": 0,
             "selected_identities": [proof.mint for proof in graduated_candidates],
             "alternate_identities": [

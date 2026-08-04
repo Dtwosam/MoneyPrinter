@@ -1858,6 +1858,7 @@ def run_geckoterminal_fresh_nomination(
     )
     from printer_v1.sources.governed_execution import execute_source_request_with_governor
     from printer_v1.sources.measured_transport import (
+        MeasuredTransportError,
         MeasuredTransportLedger,
         record_payload_transports,
     )
@@ -1885,11 +1886,25 @@ def run_geckoterminal_fresh_nomination(
     execution = execute_source_request_with_governor(connection, request, adapter)
     result = execution.normalized_result
     payload = result.normalized_payload or {}
+    request_id = int(execution.request_record.id)
+    accounting_blocker = False
+    accounting_blocker_reason: str | None = None
+    transport_identity_count = 0
     if isinstance(payload, Mapping):
         try:
-            record_payload_transports(ledger, payload, default_stage="FRESH_POOL_NOMINATION")
-        except Exception:
-            pass
+            before = ledger.source_transport_operations
+            record_payload_transports(
+                ledger, payload, default_stage="FRESH_POOL_NOMINATION"
+            )
+            transport_identity_count = int(
+                ledger.source_transport_operations - before
+            )
+        except MeasuredTransportError as exc:
+            accounting_blocker = True
+            accounting_blocker_reason = (
+                f"TRANSPORT_IDENTITY_MEASUREMENT_FAILED:{exc}"
+            )
+            transport_identity_count = 0
     observations = []
     for item in payload.get("pairs", ()) if isinstance(payload, Mapping) else ():
         if not isinstance(item, Mapping):
@@ -1917,7 +1932,7 @@ def run_geckoterminal_fresh_nomination(
         connection,
         observations=observations,
         source=GECKOTERMINAL_SOURCE_NAME,
-        request_id=int(execution.request_record.id),
+        request_id=request_id,
         now=now,
         campaign_id=campaign_id,
         response_id=(
@@ -1925,41 +1940,79 @@ def run_geckoterminal_fresh_nomination(
             if execution.response_record is None
             else int(execution.response_record.id)
         ),
-    ) if result.source_status == SourceStatus.COMPLETE and not result.failure_type else {
+    ) if (
+        result.source_status == SourceStatus.COMPLETE
+        and not result.failure_type
+        and not accounting_blocker
+    ) else {
         "accepted": [], "exclusions": [], "prefilter_counts": {}
     }
     sealed = None
+    stage_terminal = (
+        "COMPLETED"
+        if (
+            result.source_status == SourceStatus.COMPLETE
+            and not result.failure_type
+            and not accounting_blocker
+        )
+        else "BLOCKED"
+    )
+    stage_first_cause = (
+        accounting_blocker_reason
+        if accounting_blocker
+        else result.failure_type
+    )
+    coverage_entry = {
+        "source_request_id": request_id,
+        "source_name": GECKOTERMINAL_SOURCE_NAME,
+        "request_kind": "geckoterminal_new_pool_discovery",
+        "logical_stage_id": (
+            f"{campaign_id}|{run_id}|{cycle_id}|FRESH_POOL_NOMINATION|1"
+            if campaign_id and run_id and cycle_id
+            else f"FRESH_POOL_NOMINATION|1|{request_key}"
+        ),
+        "transport_identity_count": transport_identity_count,
+        "normalized_member_count": len(observations),
+        "terminal_status": stage_terminal,
+    }
     if stage_evidence_sink is not None:
         if not all(str(value or "").strip() for value in (campaign_id, run_id, cycle_id)):
             raise ValueError("FRESH_POOL_NOMINATION_STAGE_REQUIRES_CAMPAIGN_RUN_CYCLE")
-        sealed = seal_campaign_stage_evidence(
-            ledger=ledger,
-            stage_id=build_campaign_stage_id(
+        if accounting_blocker:
+            # Do not claim successful stage accounting after measurement failure.
+            sealed = None
+        else:
+            sealed = seal_campaign_stage_evidence(
+                ledger=ledger,
+                stage_id=build_campaign_stage_id(
+                    campaign_id=str(campaign_id), run_id=str(run_id), cycle_id=str(cycle_id),
+                    stage_kind="FRESH_POOL_NOMINATION", stage_sequence=1,
+                ),
+                stage_kind="FRESH_POOL_NOMINATION",
+                stage_sequence=1,
+                stage_terminal_status=stage_terminal,
+                stage_first_terminal_cause=stage_first_cause,
                 campaign_id=str(campaign_id), run_id=str(run_id), cycle_id=str(cycle_id),
-                stage_kind="FRESH_POOL_NOMINATION", stage_sequence=1,
-            ),
-            stage_kind="FRESH_POOL_NOMINATION",
-            stage_sequence=1,
-            stage_terminal_status=(
-                "COMPLETED"
-                if result.source_status == SourceStatus.COMPLETE and not result.failure_type
-                else "BLOCKED"
-            ),
-            stage_first_terminal_cause=result.failure_type,
-            campaign_id=str(campaign_id), run_id=str(run_id), cycle_id=str(cycle_id),
-            sealed_at=now,
-        )
-        stage_evidence_sink(sealed)
+                sealed_at=now,
+            )
+            sealed = dict(sealed)
+            sealed["source_request_coverage"] = [coverage_entry]
+            stage_evidence_sink(sealed)
     return {
         "status": getattr(result.source_status, "name", str(result.source_status)),
         "failure_type": result.failure_type,
-        "request_id": int(execution.request_record.id),
+        "request_id": request_id,
         "response_id": None if execution.response_record is None else int(execution.response_record.id),
         "failure_id": None if execution.failure_record is None else int(execution.failure_record.id),
         "source_requests": 1,
+        "source_request_ids": [request_id],
+        "source_request_coverage": [coverage_entry],
+        "transport_operations": transport_identity_count,
         "nominations": merge["accepted"],
         "local_exclusions": merge["exclusions"],
         "sealed_stage_evidence": sealed,
+        "accounting_blocker": accounting_blocker,
+        "accounting_blocker_reason": accounting_blocker_reason,
     }
 
 
@@ -1983,6 +2036,9 @@ def freeze_eligible_reserve(
     Admission is observation eligibility only. Holder concentration, manipulation
     context, liquidity magnitude, source order, and provider popularity never
     influence ordering or selection. FULLY_ELIGIBLE is not the memory input.
+
+    Post-filter valid depth in selection_authority is the sole freeze-depth
+    authority for campaign admission (never raw input count).
     """
     from printer_v1.discovery.selection_authority import (
         candidate_from_front_door_mapping,
@@ -1995,7 +2051,13 @@ def freeze_eligible_reserve(
     stale: list[dict[str, Any]] = []
     seen_mints: set[str] = set()
     seen_pools: set[str] = set()
+    input_count = 0
+    malformed_count = 0
+    not_observation_eligible_count = 0
+    duplicate_mint_count = 0
+    duplicate_pool_count = 0
     for raw in candidates:
+        input_count += 1
         item = dict(raw)
         mint = str(item.get("mint") or item.get("mint_identity") or "")
         pool = str(item.get("pool") or item.get("pair_address") or "")
@@ -2003,13 +2065,19 @@ def freeze_eligible_reserve(
         # Admission gate: MEMORY_OBSERVATION_ELIGIBLE only. fully_eligible is
         # never a compatibility admission fallback for the memory path.
         if item.get("memory_observation_eligible") is not True:
+            not_observation_eligible_count += 1
             continue
         if not mint or not pool:
+            malformed_count += 1
             continue
         if expiry is None or _parse_iso(str(expiry)) <= instant:
             stale.append(item)
             continue
-        if mint in seen_mints or pool in seen_pools:
+        if mint in seen_mints:
+            duplicate_mint_count += 1
+            continue
+        if pool in seen_pools:
+            duplicate_pool_count += 1
             continue
         seen_mints.add(mint)
         seen_pools.add(pool)
@@ -2023,8 +2091,27 @@ def freeze_eligible_reserve(
         )
         fresh.append(item)
 
+    valid_depth = len(fresh)
+    depth_status = observation_reserve_depth_status(valid_depth)
+    filter_authority = {
+        "input_count": input_count,
+        "valid_fresh_unique_observation_depth": valid_depth,
+        "observation_eligible_count": valid_depth,
+        "stale_count": len(stale),
+        "duplicate_mint_count": duplicate_mint_count,
+        "duplicate_pool_count": duplicate_pool_count,
+        "malformed_count": malformed_count,
+        "not_observation_eligible_count": not_observation_eligible_count,
+        "minimum_freeze_depth": MINIMUM_FREEZE_DEPTH,
+        "observation_surplus_target": OBSERVATION_SURPLUS_TARGET,
+        "freeze_depth_met": bool(depth_status["freeze_depth_met"]),
+        "surplus_target_met": bool(depth_status["surplus_target_met"]),
+        "coverage_blocker": bool(depth_status["coverage_blocker"]),
+        "surplus_status": depth_status["surplus_status"],
+    }
+
     # MINIMUM_FREEZE_DEPTH is an admission gate, not only a diagnostic.
-    if len(fresh) < MINIMUM_FREEZE_DEPTH:
+    if valid_depth < MINIMUM_FREEZE_DEPTH:
         return FrozenEligibleReserve(
             selected=(),
             alternates=(),
@@ -2033,10 +2120,8 @@ def freeze_eligible_reserve(
             ),
             frozen_at=at,
             selection_authority={
+                **filter_authority,
                 "selected": [],
-                "coverage_blocker": True,
-                "observation_eligible_count": len(fresh),
-                "minimum_freeze_depth": MINIMUM_FREEZE_DEPTH,
                 "reason": "INSUFFICIENT_OBSERVATION_COVERAGE",
             },
         )
@@ -2052,12 +2137,14 @@ def freeze_eligible_reserve(
         by_mint[item.mint] for item in ordered if item.mint not in selected_mints
     ]
     alternates = tuple(alternate_items[:2])
+    selection_dict = dict(authority.as_dict())
+    selection_dict.update(filter_authority)
     return FrozenEligibleReserve(
         selected=selected,
         alternates=alternates,
         rejected_stale=tuple(sorted(stale, key=lambda item: str(item.get("mint") or ""))),
         frozen_at=at,
-        selection_authority=authority.as_dict(),
+        selection_authority=selection_dict,
     )
 
 
@@ -3245,6 +3332,265 @@ def build_campaign_source_request_manifest(
     }
 
 
+def collect_stage_source_request_coverage(
+    diagnostics: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Collect coverage entries from permanent-discovery stage diagnostics.
+
+    Covers every governed stage that may have run: intake/locator, Gecko fresh,
+    unknown-liquidity backup, market batches, reconciliation, early/residual
+    protocol, and any explicit campaign_source_request_coverage surface.
+    """
+    diag = dict(diagnostics or {})
+    entries: list[dict[str, Any]] = []
+
+    def _extend(raw: Any) -> None:
+        if not raw:
+            return
+        if isinstance(raw, Mapping):
+            # Single coverage entry shape.
+            if raw.get("source_request_id") is not None:
+                entries.append(dict(raw))
+                return
+            for nested in raw.values():
+                _extend(nested)
+            return
+        if isinstance(raw, (list, tuple)):
+            for item in raw:
+                _extend(item)
+
+    # Explicit assembled list if already present.
+    _extend(diag.get("campaign_source_request_coverage"))
+    _extend(diag.get("source_request_coverage"))
+
+    protocol = diag.get("protocol_confirmation") or {}
+    if isinstance(protocol, Mapping):
+        _extend(protocol.get("source_request_coverage"))
+        for rid in protocol.get("source_request_ids") or ():
+            # Synthesize minimal coverage only when coverage list omitted the ID.
+            if not any(int(e.get("source_request_id") or -1) == int(rid) for e in entries):
+                entries.append(
+                    {
+                        "source_request_id": int(rid),
+                        "source_name": "solana_rpc",
+                        "request_kind": "pumpswap_pool_account_batch",
+                        "logical_stage_id": "PROTOCOL_CONFIRMATION",
+                        "transport_identity_count": 0,
+                        "normalized_member_count": 0,
+                        "terminal_status": "COMPLETED",
+                    }
+                )
+
+    backup = diag.get("liquidity_backup") or {}
+    if isinstance(backup, Mapping):
+        _extend(backup.get("source_request_coverage"))
+        for rid in backup.get("source_request_ids") or ():
+            if not any(int(e.get("source_request_id") or -1) == int(rid) for e in entries):
+                entries.append(
+                    {
+                        "source_request_id": int(rid),
+                        "source_name": "unknown_liquidity_backup",
+                        "request_kind": "candidate_market_batch",
+                        "logical_stage_id": "UNKNOWN_LIQUIDITY_BACKUP",
+                        "transport_identity_count": 0,
+                        "normalized_member_count": 0,
+                        "terminal_status": "COMPLETED",
+                    }
+                )
+
+    gecko = diag.get("geckoterminal_nomination") or diag.get(
+        "geckoterminal_fresh_nomination"
+    ) or {}
+    if isinstance(gecko, Mapping):
+        _extend(gecko.get("source_request_coverage"))
+        rid = gecko.get("request_id")
+        if rid is not None and not any(
+            int(e.get("source_request_id") or -1) == int(rid) for e in entries
+        ):
+            entries.append(
+                {
+                    "source_request_id": int(rid),
+                    "source_name": "geckoterminal",
+                    "request_kind": "geckoterminal_new_pool_discovery",
+                    "logical_stage_id": "FRESH_POOL_NOMINATION",
+                    "transport_identity_count": int(
+                        gecko.get("transport_operations") or 0
+                    ),
+                    "normalized_member_count": len(gecko.get("nominations") or ()),
+                    "terminal_status": (
+                        "BLOCKED" if gecko.get("accounting_blocker") else "COMPLETED"
+                    ),
+                }
+            )
+
+    for report in diag.get("permanent_market_reports") or ():
+        if not isinstance(report, Mapping):
+            continue
+        _extend(report.get("source_request_coverage"))
+        for rid in report.get("source_request_ids") or ():
+            if not any(int(e.get("source_request_id") or -1) == int(rid) for e in entries):
+                entries.append(
+                    {
+                        "source_request_id": int(rid),
+                        "source_name": "dexscreener",
+                        "request_kind": "candidate_market_batch",
+                        "logical_stage_id": "MINT_MARKET_BATCH",
+                        "transport_identity_count": 0,
+                        "normalized_member_count": 0,
+                        "terminal_status": "COMPLETED",
+                    }
+                )
+
+    holder = diag.get("holder_source_request_coverage") or ()
+    _extend(holder)
+    for rid in diag.get("holder_source_request_ids") or ():
+        if not any(int(e.get("source_request_id") or -1) == int(rid) for e in entries):
+            entries.append(
+                {
+                    "source_request_id": int(rid),
+                    "source_name": "holder_context",
+                    "request_kind": "holder_safety",
+                    "logical_stage_id": "HOLDER_CONTEXT",
+                    "transport_identity_count": 0,
+                    "normalized_member_count": 0,
+                    "terminal_status": "COMPLETED",
+                }
+            )
+
+    # Drop incomplete entries lacking stage ownership.
+    cleaned: list[dict[str, Any]] = []
+    for entry in entries:
+        if entry.get("source_request_id") is None:
+            continue
+        cleaned.append(
+            {
+                "source_request_id": int(entry["source_request_id"]),
+                "source_name": str(entry.get("source_name") or ""),
+                "request_kind": str(entry.get("request_kind") or ""),
+                "logical_stage_id": str(entry.get("logical_stage_id") or ""),
+                "terminal_status": str(entry.get("terminal_status") or "COMPLETED"),
+                "transport_identity_count": int(
+                    entry.get("transport_identity_count") or 0
+                ),
+                "normalized_member_count": int(
+                    entry.get("normalized_member_count") or 0
+                ),
+            }
+        )
+    return cleaned
+
+
+def load_durable_campaign_source_request_ids(
+    connection: sqlite3.Connection,
+    *,
+    request_key_prefixes: Sequence[str],
+    known_request_ids: Sequence[int] | None = None,
+) -> list[int]:
+    """Load durable Source Governor request IDs for this campaign invocation.
+
+    Uses request_key prefix linkage (canonical campaign/run/cycle embedding in
+    request_key) plus any stage-reported known IDs. Never invents completeness
+    from a bare counter.
+    """
+    ids: set[int] = set()
+    for rid in known_request_ids or ():
+        ids.add(int(rid))
+    for prefix in request_key_prefixes:
+        if not prefix:
+            continue
+        rows = connection.execute(
+            """
+            SELECT id FROM printer_source_requests
+            WHERE request_key = ? OR request_key LIKE ?
+            ORDER BY id ASC
+            """,
+            (str(prefix), f"{prefix}%"),
+        ).fetchall()
+        for row in rows:
+            ids.add(int(row[0] if not hasattr(row, "keys") else row["id"]))
+    return sorted(ids)
+
+
+def assemble_and_reconcile_campaign_source_requests(
+    connection: sqlite3.Connection,
+    *,
+    diagnostics: Mapping[str, Any] | None,
+    request_key_prefixes: Sequence[str] | None = None,
+    extra_manifest_entries: Sequence[Mapping[str, Any]] | None = None,
+    stage_accounting_blockers: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """Build durable IDs + manifest and reconcile for campaign admission."""
+    diag = dict(diagnostics or {})
+    coverage = collect_stage_source_request_coverage(diag)
+    if extra_manifest_entries:
+        coverage.extend(dict(item) for item in extra_manifest_entries)
+    known_ids = [int(e["source_request_id"]) for e in coverage]
+    for key in (
+        "protocol_source_request_ids",
+        "source_request_ids",
+    ):
+        for rid in diag.get(key) or ():
+            known_ids.append(int(rid))
+    durable = load_durable_campaign_source_request_ids(
+        connection,
+        request_key_prefixes=list(request_key_prefixes or ()),
+        known_request_ids=known_ids,
+    )
+    recon = reconcile_campaign_source_requests(
+        durable_request_ids=durable,
+        manifest_entries=coverage,
+    )
+    blockers = [str(b) for b in (stage_accounting_blockers or ()) if b]
+    protocol = diag.get("protocol_confirmation") or {}
+    if isinstance(protocol, Mapping) and protocol.get("accounting_blocker"):
+        blockers.append(
+            str(
+                protocol.get("accounting_blocker_reason")
+                or "PROTOCOL_ACCOUNTING_BLOCKER"
+            )
+        )
+    backup = diag.get("liquidity_backup") or {}
+    if isinstance(backup, Mapping) and backup.get("accounting_blocker"):
+        blockers.append(
+            str(
+                backup.get("accounting_blocker_reason")
+                or "LIQUIDITY_BACKUP_ACCOUNTING_BLOCKER"
+            )
+        )
+    gecko = diag.get("geckoterminal_nomination") or diag.get(
+        "geckoterminal_fresh_nomination"
+    ) or {}
+    if isinstance(gecko, Mapping) and gecko.get("accounting_blocker"):
+        blockers.append(
+            str(
+                gecko.get("accounting_blocker_reason")
+                or "GECKO_FRESH_NOMINATION_ACCOUNTING_BLOCKER"
+            )
+        )
+    if blockers and recon.get("status") == "OK":
+        recon = dict(recon)
+        recon["status"] = "BLOCKED"
+        recon["blocker"] = CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH
+        recon["stage_accounting_blockers"] = blockers
+    elif blockers:
+        recon = dict(recon)
+        recon["stage_accounting_blockers"] = blockers
+    recon["campaign_source_request_count"] = int(recon.get("request_count") or 0)
+    recon["campaign_transport_operation_count"] = int(
+        recon.get("transport_identity_count_total") or 0
+    )
+    recon["durable_campaign_request_ids"] = list(recon.get("durable_request_ids") or ())
+    recon["campaign_source_request_manifest"] = list(recon.get("manifest") or ())
+    recon["campaign_source_request_reconciliation"] = {
+        "status": recon.get("status"),
+        "blocker": recon.get("blocker"),
+        "missing_from_manifest": recon.get("missing_from_manifest"),
+        "extra_in_manifest": recon.get("extra_in_manifest"),
+        "duplicate_request_ids": recon.get("duplicate_request_ids"),
+    }
+    return recon
+
+
 def reconcile_campaign_source_requests(
     *,
     durable_request_ids: Sequence[int],
@@ -3371,6 +3717,11 @@ def run_bounded_unknown_liquidity_backup(
         build_geckoterminal_adapter,
     )
     from printer_v1.sources.governed_execution import execute_source_request_with_governor
+    from printer_v1.sources.measured_transport import (
+        MeasuredTransportError,
+        MeasuredTransportLedger,
+        record_payload_transports,
+    )
 
     candidates = load_liquidity_unknown_candidates(connection)
     report: dict[str, Any] = {
@@ -3380,6 +3731,7 @@ def run_bounded_unknown_liquidity_backup(
         "source_failure_ids": [],
         "source_request_coverage": [],
         "source_requests": 0,
+        "transport_operations": 0,
         "outcomes": [],
         "above_floor_promoted_to_protocol_due": 0,
         "below_floor": 0,
@@ -3387,6 +3739,8 @@ def run_bounded_unknown_liquidity_backup(
         "identity_conflict": 0,
         "still_unknown": 0,
         "skipped_already_attempted": 0,
+        "accounting_blocker": False,
+        "accounting_blocker_reason": None,
     }
     budget_cap = stage_budget.available("reconciliation")
     limit = budget_cap if max_backups is None else min(int(max_backups), budget_cap)
@@ -3448,6 +3802,11 @@ def run_bounded_unknown_liquidity_backup(
             tracking_priority=0,
             payload=payload,
         )
+        stage_ledger = MeasuredTransportLedger(
+            campaign_id=campaign_id,
+            run_id=run_id,
+            cycle_id=cycle_id,
+        )
         execution = execute_source_request_with_governor(
             connection,
             request,
@@ -3461,32 +3820,55 @@ def run_bounded_unknown_liquidity_backup(
             report["source_response_ids"].append(int(execution.response_record.id))
         if execution.failure_record is not None:
             report["source_failure_ids"].append(int(execution.failure_record.id))
-        coverage = {
-            "source_request_id": rid,
-            "source_name": source_name,
-            "request_kind": request_kind,
-            "logical_stage_id": (
-                f"{campaign_id}|{run_id}|{cycle_id}|UNKNOWN_LIQUIDITY_BACKUP|1"
-                if campaign_id and run_id and cycle_id
-                else f"UNKNOWN_LIQUIDITY_BACKUP|{attempted}"
-            ),
-            "transport_identity_count": 0,
-            "normalized_member_count": 0,
-            "terminal_status": "COMPLETED",
-        }
         result = execution.normalized_result
         payload_norm = result.normalized_payload or {}
+        transport_identity_count = 0
+        measurement_failed = False
+        if isinstance(payload_norm, Mapping):
+            try:
+                before = stage_ledger.source_transport_operations
+                record_payload_transports(
+                    stage_ledger,
+                    payload_norm,
+                    default_stage="UNKNOWN_LIQUIDITY_BACKUP",
+                )
+                transport_identity_count = int(
+                    stage_ledger.source_transport_operations - before
+                )
+                report["transport_operations"] += transport_identity_count
+            except MeasuredTransportError as exc:
+                measurement_failed = True
+                report["accounting_blocker"] = True
+                report["accounting_blocker_reason"] = (
+                    f"TRANSPORT_IDENTITY_MEASUREMENT_FAILED:{exc}"
+                )
+                transport_identity_count = 0
         pairs = (
             list(payload_norm.get("pairs") or ())
             if isinstance(payload_norm, Mapping)
             else []
         )
+        coverage = {
+            "source_request_id": rid,
+            "source_name": source_name,
+            "request_kind": request_kind,
+            "logical_stage_id": (
+                f"{campaign_id}|{run_id}|{cycle_id}|UNKNOWN_LIQUIDITY_BACKUP|{attempted}"
+                if campaign_id and run_id and cycle_id
+                else f"UNKNOWN_LIQUIDITY_BACKUP|{attempted}"
+            ),
+            "transport_identity_count": transport_identity_count,
+            "normalized_member_count": len(pairs),
+            "terminal_status": "COMPLETED",
+        }
         resolution = resolve_dexscreener_mint_batch([mint], pairs, observed_at=now)
         exact_rows = [
             row for row in resolution.by_mint.get(mint, ()) if row.pool == pool
         ]
         shared_fail = bool(
-            result.failure_type or result.source_status != SourceStatus.COMPLETE
+            result.failure_type
+            or result.source_status != SourceStatus.COMPLETE
+            or measurement_failed
         )
         outcome_label = "LIQUIDITY_UNKNOWN"
         liquidity_usd = None
@@ -3497,6 +3879,10 @@ def run_bounded_unknown_liquidity_backup(
             coverage["terminal_status"] = "BLOCKED"
             outcome_label = "LIQUIDITY_UNKNOWN"
             report["still_unknown"] += 1
+            # Measurement failure: preserve request ID, do not invent transport,
+            # do not promote to protocol-due liquidity.
+            if measurement_failed:
+                exact_rows = []
         elif not exact_rows:
             outcome_label = "EXACT_POOL_NO_MATCH"
             report["exact_pool_no_match"] += 1
@@ -3779,11 +4165,14 @@ __all__ = [
     "PoolReconciliation",
     "StageBudget",
     "CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH",
+    "assemble_and_reconcile_campaign_source_requests",
     "build_campaign_source_request_manifest",
     "build_source_request_coverage_manifest",
     "classify_exact_pool_liquidity_prefilter",
+    "collect_stage_source_request_coverage",
     "freeze_eligible_reserve",
     "interleave_candidate_observations",
+    "load_durable_campaign_source_request_ids",
     "load_exact_market_states",
     "load_liquidity_unknown_candidates",
     "load_retained_market_evidence",

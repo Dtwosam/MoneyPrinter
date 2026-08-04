@@ -1,14 +1,14 @@
-"""V2-9.7E.45 Repair 6 — explicit pilot-input readiness boundary.
+"""V2-9.7E.45 / V2-9.8B — explicit pilot-input readiness boundary.
 
-Writes one immutable ``PILOT_INPUT_READY`` bundle (migration 041) only when all
-five readiness gates are simultaneously satisfied for one lawful LATEST + one
-lawful PERSISTED graduated candidate:
+Writes one immutable ``PILOT_INPUT_READY`` bundle (migration 041) when all
+required gates for the selected readiness purpose are satisfied.
 
-    DISCOVERY_READY  - durable candidate universe evaluated
-    SELECTION_READY  - one lawful LATEST and one lawful PERSISTED identified
-    MARKET_READY     - both pass fresh exact-pool $3K front door + categorical gates
-    HOLDER_READY     - both pass the existing holder-evidence contract
-    ACTIVATION_READY - both pass graduation-native / create-native activation validation
+Readiness purposes (V2-9.8B remaining runtime repair):
+
+* ``FUTURE_ACTION`` (default / legacy) — requires holder eligibility.
+* ``MEMORY_OBSERVATION`` — memory freeze handoff; does **not** require holder
+  eligibility; requires ``memory_observation_eligible=True`` plus market floor,
+  exact pool, lawful activation route, and valid evidence context.
 
 The owner enqueues no snapshot/lifecycle/memory work and consumes no campaign
 authorization. It fails closed if any gate is unmet. The bundle is immutable; when
@@ -27,12 +27,22 @@ from typing import Any, Mapping
 SELECTION_FLOOR_USD = 3000.0
 LAWFUL_ROUTES = frozenset({"GRADUATION_NATIVE", "PUMP_CREATE"})
 
+READINESS_PURPOSE_FUTURE_ACTION = "FUTURE_ACTION"
+READINESS_PURPOSE_MEMORY_OBSERVATION = "MEMORY_OBSERVATION"
+LAWFUL_READINESS_PURPOSES = frozenset(
+    {
+        READINESS_PURPOSE_FUTURE_ACTION,
+        READINESS_PURPOSE_MEMORY_OBSERVATION,
+    }
+)
+
 READINESS_READY = "PILOT_INPUT_READY"
 BLOCKED_DISCOVERY = "PILOT_INPUT_BLOCKED_DISCOVERY"
 BLOCKED_SELECTION = "PILOT_INPUT_BLOCKED_SELECTION"
 BLOCKED_MARKET = "PILOT_INPUT_BLOCKED_MARKET"
 BLOCKED_HOLDER = "PILOT_INPUT_BLOCKED_HOLDER"
 BLOCKED_ACTIVATION = "PILOT_INPUT_BLOCKED_ACTIVATION"
+BLOCKED_MEMORY_OBSERVATION = "PILOT_INPUT_BLOCKED_MEMORY_OBSERVATION"
 
 
 class PilotInputReadinessError(RuntimeError):
@@ -54,6 +64,10 @@ class ReadinessCandidate:
     activation_route: str
     holder_eligible: bool
     provenance: str  # LATEST_GRADUATED | PERSISTED_GRADUATED
+    # Memory-observation context (optional; required True for MEMORY_OBSERVATION).
+    memory_observation_eligible: bool = False
+    holder_condition: str = "UNKNOWN"
+    future_action_eligibility: str = "BLOCKED_OR_UNKNOWN"
 
 
 def _canonical(value: Any) -> str:
@@ -65,22 +79,58 @@ def evaluate_readiness_gates(
     persisted: ReadinessCandidate | None,
     *,
     discovery_universe_evaluated: bool,
+    readiness_purpose: str = READINESS_PURPOSE_FUTURE_ACTION,
 ) -> str:
-    """Return ``PILOT_INPUT_READY`` or the first failed gate terminal (fail-closed)."""
+    """Return ``PILOT_INPUT_READY`` or the first failed gate terminal (fail-closed).
+
+    Default purpose ``FUTURE_ACTION`` preserves legacy holder-gated semantics.
+    ``MEMORY_OBSERVATION`` admits observation-eligible candidates without holder pass.
+    """
+    purpose = str(readiness_purpose or READINESS_PURPOSE_FUTURE_ACTION).strip()
+    if purpose not in LAWFUL_READINESS_PURPOSES:
+        return BLOCKED_SELECTION
     if not discovery_universe_evaluated:
         return BLOCKED_DISCOVERY
     if latest is None or persisted is None:
         return BLOCKED_SELECTION
     for candidate in (latest, persisted):
-        if candidate.liquidity_usd < SELECTION_FLOOR_USD or not candidate.pool:
+        if (
+            candidate.liquidity_usd < SELECTION_FLOOR_USD
+            or not candidate.pool
+            or not candidate.mint
+        ):
             return BLOCKED_MARKET
-    for candidate in (latest, persisted):
-        if not candidate.holder_eligible:
-            return BLOCKED_HOLDER
+    if purpose == READINESS_PURPOSE_MEMORY_OBSERVATION:
+        for candidate in (latest, persisted):
+            if candidate.memory_observation_eligible is not True:
+                return BLOCKED_MEMORY_OBSERVATION
+        # Holder eligibility is context only for memory observation readiness.
+    else:
+        for candidate in (latest, persisted):
+            if not candidate.holder_eligible:
+                return BLOCKED_HOLDER
     for candidate in (latest, persisted):
         if candidate.activation_route not in LAWFUL_ROUTES:
             return BLOCKED_ACTIVATION
     return READINESS_READY
+
+
+def _candidate_surface(candidate: ReadinessCandidate) -> dict[str, Any]:
+    return {
+        "mint": candidate.mint,
+        "pool": candidate.pool,
+        "market_identity": candidate.market_identity,
+        "liquidity_usd": candidate.liquidity_usd,
+        "liquidity_observed_at": candidate.liquidity_observed_at,
+        "activation_route": candidate.activation_route,
+        "provenance": candidate.provenance,
+        "holder_eligible": bool(candidate.holder_eligible),
+        "memory_observation_eligible": bool(candidate.memory_observation_eligible),
+        "holder_condition": str(candidate.holder_condition or "UNKNOWN"),
+        "future_action_eligibility": str(
+            candidate.future_action_eligibility or "BLOCKED_OR_UNKNOWN"
+        ),
+    }
 
 
 def _bundle_payload(
@@ -94,28 +144,14 @@ def _bundle_payload(
     git_provenance_identity: str,
     configuration_hash: str,
     expires_at: str,
+    readiness_purpose: str,
 ) -> dict[str, Any]:
     return {
         "readiness_id": readiness_id,
         "readiness_state": READINESS_READY,
-        "latest": {
-            "mint": latest.mint,
-            "pool": latest.pool,
-            "market_identity": latest.market_identity,
-            "liquidity_usd": latest.liquidity_usd,
-            "liquidity_observed_at": latest.liquidity_observed_at,
-            "activation_route": latest.activation_route,
-            "provenance": latest.provenance,
-        },
-        "persisted": {
-            "mint": persisted.mint,
-            "pool": persisted.pool,
-            "market_identity": persisted.market_identity,
-            "liquidity_usd": persisted.liquidity_usd,
-            "liquidity_observed_at": persisted.liquidity_observed_at,
-            "activation_route": persisted.activation_route,
-            "provenance": persisted.provenance,
-        },
+        "readiness_purpose": readiness_purpose,
+        "latest": _candidate_surface(latest),
+        "persisted": _candidate_surface(persisted),
         "holder_evidence": dict(holder_evidence),
         "source_ledger": dict(source_ledger),
         "selection_seed": selection_seed,
@@ -139,6 +175,7 @@ def build_pilot_input_ready_bundle(
     expires_at: str,
     now: str,
     discovery_universe_evaluated: bool = True,
+    readiness_purpose: str = READINESS_PURPOSE_FUTURE_ACTION,
 ) -> dict[str, Any]:
     """Persist one immutable PILOT_INPUT_READY bundle. Fail-closed if a gate is unmet.
 
@@ -146,24 +183,50 @@ def build_pilot_input_ready_bundle(
     ``bundle_hash``); a conflicting re-write for a known id fails closed as
     ``READINESS_BUNDLE_CONFLICT`` (the bundle is immutable).
     """
+    purpose = str(readiness_purpose or READINESS_PURPOSE_FUTURE_ACTION).strip()
+    if purpose not in LAWFUL_READINESS_PURPOSES:
+        raise PilotInputReadinessError("READINESS_PURPOSE_UNSUPPORTED", purpose)
     gate = evaluate_readiness_gates(
-        latest, persisted, discovery_universe_evaluated=discovery_universe_evaluated
+        latest,
+        persisted,
+        discovery_universe_evaluated=discovery_universe_evaluated,
+        readiness_purpose=purpose,
     )
     if gate != READINESS_READY:
         raise PilotInputReadinessError("READINESS_GATE_UNMET", gate)
     if latest.mint == persisted.mint:
         raise PilotInputReadinessError("READINESS_DUPLICATE_MINT", latest.mint)
 
+    # Durable purpose + memory/action context live in source_ledger JSON so
+    # existing schema preserves them without migration 053.
+    durable_ledger = dict(source_ledger)
+    durable_ledger["readiness_purpose"] = purpose
+    durable_ledger["memory_observation_context"] = {
+        "latest": {
+            "memory_observation_eligible": latest.memory_observation_eligible,
+            "holder_eligible": latest.holder_eligible,
+            "holder_condition": latest.holder_condition,
+            "future_action_eligibility": latest.future_action_eligibility,
+        },
+        "persisted": {
+            "memory_observation_eligible": persisted.memory_observation_eligible,
+            "holder_eligible": persisted.holder_eligible,
+            "holder_condition": persisted.holder_condition,
+            "future_action_eligibility": persisted.future_action_eligibility,
+        },
+    }
+
     payload = _bundle_payload(
         readiness_id=readiness_id,
         latest=latest,
         persisted=persisted,
         holder_evidence=holder_evidence,
-        source_ledger=source_ledger,
+        source_ledger=durable_ledger,
         selection_seed=selection_seed,
         git_provenance_identity=git_provenance_identity,
         configuration_hash=configuration_hash,
         expires_at=expires_at,
+        readiness_purpose=purpose,
     )
     bundle_hash = hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
 
@@ -177,7 +240,11 @@ def build_pilot_input_ready_bundle(
             return {**payload, "bundle_hash": bundle_hash, "created_at": None}
         raise PilotInputReadinessError("READINESS_BUNDLE_CONFLICT", readiness_id)
 
-    provenance = {"latest": latest.provenance, "persisted": persisted.provenance}
+    provenance = {
+        "latest": latest.provenance,
+        "persisted": persisted.provenance,
+        "readiness_purpose": purpose,
+    }
     connection.execute(
         """
         INSERT INTO printer_pilot_input_readiness_bundle(
@@ -209,7 +276,7 @@ def build_pilot_input_ready_bundle(
             persisted.liquidity_observed_at,
             persisted.activation_route,
             _canonical(dict(holder_evidence)),
-            _canonical(dict(source_ledger)),
+            _canonical(durable_ledger),
             _canonical(provenance),
             selection_seed,
             git_provenance_identity,

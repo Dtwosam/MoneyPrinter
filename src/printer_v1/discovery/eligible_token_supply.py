@@ -1998,6 +1998,15 @@ def run_persistent_eligible_token_supply(
                 "source_request_coverage": list(
                     liquidity_backup_report.get("source_request_coverage") or ()
                 ),
+                "transport_operations": int(
+                    liquidity_backup_report.get("transport_operations") or 0
+                ),
+                "accounting_blocker": bool(
+                    liquidity_backup_report.get("accounting_blocker")
+                ),
+                "accounting_blocker_reason": liquidity_backup_report.get(
+                    "accounting_blocker_reason"
+                ),
                 "attempts": list(liquidity_backup_report.get("attempts") or ()),
                 "above_floor_promoted_to_protocol_due": int(
                     liquidity_backup_report.get(
@@ -2013,6 +2022,21 @@ def run_persistent_eligible_token_supply(
                     liquidity_backup_report.get("still_unknown") or 0
                 ),
             },
+            "geckoterminal_nomination": dict(geckoterminal_nomination_report),
+            "permanent_market_reports": list(permanent_market_reports),
+            "campaign_source_request_coverage": list(
+                list(
+                    (protocol_report or {}).get("source_request_coverage") or ()
+                )
+                + list(
+                    liquidity_backup_report.get("source_request_coverage") or ()
+                )
+                + list(
+                    geckoterminal_nomination_report.get("source_request_coverage")
+                    or ()
+                )
+            ),
+            "discovery_request_key_prefix": discovery_request_key_prefix,
             "memory_observation_eligible_count": sum(
                 1
                 for item in eligible_list
