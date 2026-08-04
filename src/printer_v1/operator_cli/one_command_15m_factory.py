@@ -836,6 +836,32 @@ def _context_execution_summary(execution: Any) -> dict[str, Any]:
     }
 
 
+class PrecloseContextPartialError(RuntimeError):
+    """Typed partial-result contract for governed pre-close context collection.
+
+    Raised only when a caller opts in with ``preserve_partial_executions=True``
+    (the holder-eligibility funnel). It carries every governed execution that
+    really happened before the failure so an already-created
+    ``printer_source_requests`` row can never disappear from holder IDs,
+    coverage, or campaign reconciliation. The default behaviour for memory-close
+    callers is unchanged: the original exception propagates untouched.
+    """
+
+    def __init__(
+        self,
+        code: str,
+        *,
+        executions: Mapping[str, Any],
+        failed_stage: str,
+        cause: BaseException | None = None,
+    ) -> None:
+        self.code = str(code)
+        self.executions = dict(executions)
+        self.failed_stage = str(failed_stage)
+        self.cause = cause
+        super().__init__(f"{self.code}:stage={self.failed_stage}")
+
+
 def _collect_preclose_context(
     conn: sqlite3.Connection,
     step: sqlite3.Row,
@@ -845,8 +871,15 @@ def _collect_preclose_context(
     include: frozenset[str] | None = None,
     cancellation_probe: Callable[[], str | None] | None = None,
     request_pacer: Any | None = None,
+    preserve_partial_executions: bool = False,
 ) -> dict[str, Any]:
-    """Collect a fixed, governed context bundle before the close snapshot."""
+    """Collect a fixed, governed context bundle before the close snapshot.
+
+    ``preserve_partial_executions`` is a holder-specific fail-closed mode. When
+    it is ``True`` any failure after one or more governed executions raises
+    :class:`PrecloseContextPartialError` carrying those executions. It changes
+    no provider or fallback policy and no default caller behaviour.
+    """
     from printer_v1.paper_quote.jupiter_fixture import SOURCE_NAME as JUPITER_SOURCE
     from printer_v1.sources.budget_accounting import count_recent_source_requests
     from printer_v1.sources.coingecko import (
@@ -961,98 +994,121 @@ def _collect_preclose_context(
 
     requested = include or frozenset({"market_chain", "safety", "entry_quote", "exit_quote"})
     executions: dict[str, Any] = {}
-    if "market_chain" in requested:
-        executions["market_chain"] = execute(
-            "coingecko", "broad_market_context", "market-chain", {}, market_adapter
-        )
-    if "safety" in requested:
-        executions["safety"] = execute(
-            "goplus", "safety_reference", "safety", {}, safety_adapter
-        )
-    if "entry_quote" in requested:
-        executions["entry_quote"] = execute(
-            JUPITER_SOURCE,
-            "paper_quote_realism",
-            "entry",
-            {
-                "quote_direction": "ENTRY",
-                "input_mint": WSOL_MINT,
-                "output_mint": mint,
-                "amount_lamports": DEFAULT_PAPER_AMOUNT_LAMPORTS,
-            },
-            quote_adapter(WSOL_MINT, mint),
-        )
-    if "exit_quote" in requested:
-        executions["exit_quote"] = execute(
-            JUPITER_SOURCE,
-            "paper_quote_realism",
-            "exit",
-            {
-                "quote_direction": "EXIT",
-                "input_mint": mint,
-                "output_mint": WSOL_MINT,
-                "amount_lamports": DEFAULT_PAPER_AMOUNT_LAMPORTS,
-            },
-            quote_adapter(mint, WSOL_MINT),
-        )
-    goplus_holder = (
-        holder_concentration_label_from_goplus(
-            executions["safety"].normalized_result.normalized_payload
-        )
-        if "safety" in executions else None
-    )
-    if goplus_holder == "HOLDER_CONCENTRATION_UNKNOWN":
-        holder_factory = factories.get("solana_rpc_holder")
-        holder_adapter = (
-            holder_factory(token_mint=mint, timeout_seconds=timeout_seconds)
-            if holder_factory
-            else build_solana_rpc_holder_adapter(
-                enabled=True,
-                fixture_transport=build_solana_rpc_holder_transport(
-                    mint, timeout_seconds=timeout_seconds
-                ),
-            )
-        )
-        primary_holder = execute(
-            "solana_rpc",
-            "holder_concentration_reference",
-            "holder",
-            {},
-            holder_adapter,
-        )
-        executions["holder_primary"] = primary_holder
-        chosen_holder = primary_holder
-        # V2-9.6: on an eligible transient primary-RPC failure, attempt exactly
-        # one governed backup RPC endpoint. The composite still receives a single
-        # holder contribution (the successful attempt, or the preserved primary
-        # failure if both fail); both source attempts are persisted and budgeted.
-        from printer_v1.operator_cli.safety_context_source_redundancy import (
-            execute_solana_rpc_holder_backup,
-            is_eligible_transient_solana_rpc_failure,
-        )
-        if (
-            holder_backup_adapter_factory is not None
-            and is_eligible_transient_solana_rpc_failure(primary_holder)
-        ):
-            from printer_v1.db.sqlite_write_contracts import release_write_transaction
+    stage = ["context_collection"]
 
-            release_write_transaction(conn)
-            if request_pacer is not None:
-                request_pacer.pace(backup_source_name)
-            backup_holder = execute_solana_rpc_holder_backup(
-                conn,
-                run_id=str(step["run_id"]),
-                step_key=str(step["step_key"]),
-                token_mint=mint,
-                pair_address=pair,
-                backup_adapter_factory=holder_backup_adapter_factory,
-                timeout_seconds=timeout_seconds,
-                source_name=backup_source_name,
+    def _collect_all() -> None:
+        if "market_chain" in requested:
+            stage[0] = "market_chain"
+            executions["market_chain"] = execute(
+                "coingecko", "broad_market_context", "market-chain", {}, market_adapter
             )
-            executions["holder_backup"] = backup_holder
-            if backup_holder.response_record is not None:
-                chosen_holder = backup_holder
-        executions["holder"] = chosen_holder
+        if "safety" in requested:
+            stage[0] = "safety"
+            executions["safety"] = execute(
+                "goplus", "safety_reference", "safety", {}, safety_adapter
+            )
+        if "entry_quote" in requested:
+            stage[0] = "entry_quote"
+            executions["entry_quote"] = execute(
+                JUPITER_SOURCE,
+                "paper_quote_realism",
+                "entry",
+                {
+                    "quote_direction": "ENTRY",
+                    "input_mint": WSOL_MINT,
+                    "output_mint": mint,
+                    "amount_lamports": DEFAULT_PAPER_AMOUNT_LAMPORTS,
+                },
+                quote_adapter(WSOL_MINT, mint),
+            )
+        if "exit_quote" in requested:
+            stage[0] = "exit_quote"
+            executions["exit_quote"] = execute(
+                JUPITER_SOURCE,
+                "paper_quote_realism",
+                "exit",
+                {
+                    "quote_direction": "EXIT",
+                    "input_mint": mint,
+                    "output_mint": WSOL_MINT,
+                    "amount_lamports": DEFAULT_PAPER_AMOUNT_LAMPORTS,
+                },
+                quote_adapter(mint, WSOL_MINT),
+            )
+        goplus_holder = (
+            holder_concentration_label_from_goplus(
+                executions["safety"].normalized_result.normalized_payload
+            )
+            if "safety" in executions else None
+        )
+        if goplus_holder == "HOLDER_CONCENTRATION_UNKNOWN":
+            stage[0] = "holder_primary"
+            holder_factory = factories.get("solana_rpc_holder")
+            holder_adapter = (
+                holder_factory(token_mint=mint, timeout_seconds=timeout_seconds)
+                if holder_factory
+                else build_solana_rpc_holder_adapter(
+                    enabled=True,
+                    fixture_transport=build_solana_rpc_holder_transport(
+                        mint, timeout_seconds=timeout_seconds
+                    ),
+                )
+            )
+            primary_holder = execute(
+                "solana_rpc",
+                "holder_concentration_reference",
+                "holder",
+                {},
+                holder_adapter,
+            )
+            executions["holder_primary"] = primary_holder
+            chosen_holder = primary_holder
+            # V2-9.6: on an eligible transient primary-RPC failure, attempt exactly
+            # one governed backup RPC endpoint. The composite still receives a single
+            # holder contribution (the successful attempt, or the preserved primary
+            # failure if both fail); both source attempts are persisted and budgeted.
+            from printer_v1.operator_cli.safety_context_source_redundancy import (
+                execute_solana_rpc_holder_backup,
+                is_eligible_transient_solana_rpc_failure,
+            )
+            if (
+                holder_backup_adapter_factory is not None
+                and is_eligible_transient_solana_rpc_failure(primary_holder)
+            ):
+                stage[0] = "holder_backup"
+                from printer_v1.db.sqlite_write_contracts import release_write_transaction
+
+                release_write_transaction(conn)
+                if request_pacer is not None:
+                    request_pacer.pace(backup_source_name)
+                backup_holder = execute_solana_rpc_holder_backup(
+                    conn,
+                    run_id=str(step["run_id"]),
+                    step_key=str(step["step_key"]),
+                    token_mint=mint,
+                    pair_address=pair,
+                    backup_adapter_factory=holder_backup_adapter_factory,
+                    timeout_seconds=timeout_seconds,
+                    source_name=backup_source_name,
+                )
+                executions["holder_backup"] = backup_holder
+                if backup_holder.response_record is not None:
+                    chosen_holder = backup_holder
+            executions["holder"] = chosen_holder
+
+    if not preserve_partial_executions:
+        # Default behaviour for memory-close callers is unchanged.
+        _collect_all()
+    else:
+        try:
+            _collect_all()
+        except Exception as exc:
+            raise PrecloseContextPartialError(
+                "PRECLOSE_CONTEXT_COLLECTION_FAILED",
+                executions=executions,
+                failed_stage=stage[0],
+                cause=exc,
+            ) from exc
     return {
         "executions": executions,
         "report": {

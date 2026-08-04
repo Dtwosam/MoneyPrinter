@@ -126,7 +126,14 @@ class _NoSleepPacer:
 
 
 def _eligible_safety_factories():
-    """Holder-eligible GoPlus safety factory (only the 'safety' role is used)."""
+    """Holder-eligible GoPlus safety factory (only the 'safety' role is used).
+
+    The raw fixture adapter bypasses the GoPlus normalizer, so it must attach
+    the same authoritative single-HTTP measured transport count the production
+    normalizer emits. Without it the holder stage correctly fails closed on
+    incomplete accounting.
+    """
+    from printer_v1.sources.goplus import GOPLUS_TRANSPORT_OPERATION_COST
     from printer_v1.sources.governed_execution import build_fixture_source_adapter
 
     def safety(**kwargs):
@@ -142,6 +149,7 @@ def _eligible_safety_factories():
                 "top_10_holders": [{"percent": "3"} for _ in range(10)],
                 "lp_info": [{"locked": True}],
                 "risk_flags": [],
+                "underlying_operation_count": int(GOPLUS_TRANSPORT_OPERATION_COST),
             },
         )
 

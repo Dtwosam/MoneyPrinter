@@ -1040,6 +1040,9 @@ class SnapshotReadinessResult:
     cancelled_dry_run_jobs: int
     summary: Mapping[str, Any]
     blocked_reasons: tuple[str, ...]
+    # Complete holder-stage result surface (IDs, coverage, accounting blocker,
+    # governed request count, measured transport count).
+    holder_context: Mapping[str, Any] = field(default_factory=dict)
 
 
 def build_live_geckoterminal_base_adapter_factory(
@@ -1178,9 +1181,11 @@ class AuthoritativeLiveOperationalCampaignOwner:
         durable source request IDs, stage coverage, and accounting-blocker state.
         """
         from printer_v1.operator_cli.one_command_15m_factory import (
+            PrecloseContextPartialError,
             _collect_preclose_context,
         )
         from printer_v1.operator_cli.holder_reliability_budget_control import (
+            HolderBundlePersistPartialError,
             HolderContextResult,
             complete_maturation,
             persist_bundle_attempts,
@@ -1305,6 +1310,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     ),
                     include=frozenset({"safety"}),
                     request_pacer=pacer,
+                    # Holder-specific fail-closed mode: a later failure must
+                    # carry the governed executions that already happened.
+                    preserve_partial_executions=True,
                 )
                 holder_facts[proof.mint.lower()] = {
                     **_holder_eligibility_from_bundle(
@@ -1365,11 +1373,94 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 ):
                     break
             except Exception as exc:
-                complete_maturation(
-                    connection, work_id=str(maturation["work_id"]),
-                    cause=f"EVIDENCE_COLLECTION_FAILED:{type(exc).__name__}",
-                    now=evaluated.isoformat(),
+                # V2-9.8B: a governed holder request row must never disappear
+                # because a later collection or persistence operation raised.
+                # Recover every real execution/request identity, mark the
+                # attempt BLOCKED, and set a holder accounting blocker. A
+                # failure before any governed request exists reports no ID but
+                # still blocks. Counts are never fabricated.
+                failed_stage = "HOLDER_CONTEXT_COLLECTION"
+                partial_result = None
+                partial_executions: Mapping[str, Any] = {}
+                if isinstance(exc, HolderBundlePersistPartialError):
+                    failed_stage = f"HOLDER_PERSIST:{exc.failed_stage}"
+                    partial_result = exc.partial
+                elif isinstance(exc, PrecloseContextPartialError):
+                    failed_stage = f"HOLDER_COLLECTION:{exc.failed_stage}"
+                    partial_executions = exc.executions
+                if partial_result is None and partial_executions:
+                    try:
+                        partial_result = persist_bundle_attempts(
+                            connection,
+                            run_id=command.run_id,
+                            cycle_id=cycle_id,
+                            mint=proof.mint,
+                            executions=partial_executions,
+                            created_at=evaluated.isoformat(),
+                            campaign_id=campaign_id or None,
+                            candidate_ordinal=ordinal,
+                        )
+                    except HolderBundlePersistPartialError as persist_exc:
+                        partial_result = persist_exc.partial
+                    except Exception as persist_exc:  # pragma: no cover
+                        accounting_reasons.append(
+                            "HOLDER_PARTIAL_PERSIST_UNRECOVERABLE:"
+                            f"{type(persist_exc).__name__}"
+                        )
+                accounting_blocker = True
+                accounting_reasons.append(
+                    f"HOLDER_PARTIAL_ATTEMPT_{type(exc).__name__}"
+                    f":stage={failed_stage}"
                 )
+                if partial_result is not None:
+                    if partial_result.accounting_blocker_reason:
+                        accounting_reasons.append(
+                            str(partial_result.accounting_blocker_reason)
+                        )
+                    stage_governed += int(partial_result.governed_request_count)
+                    stage_transports += int(
+                        partial_result.measured_transport_count
+                    )
+                    stage_request_ids.extend(
+                        int(rid) for rid in partial_result.source_request_ids
+                    )
+                    for entry in partial_result.source_request_coverage:
+                        blocked_entry = dict(entry)
+                        # An incomplete attempt is never a completed one.
+                        blocked_entry["terminal_status"] = "BLOCKED"
+                        stage_coverage.append(blocked_entry)
+                    try:
+                        ledger = replace(
+                            ledger,
+                            governed_requests=(
+                                ledger.governed_requests
+                                + int(partial_result.governed_request_count)
+                            ),
+                            underlying_transport_operations=(
+                                ledger.underlying_transport_operations
+                                + int(partial_result.measured_transport_count)
+                            ),
+                        )
+                        persist_ledger(
+                            connection, run_id=command.run_id, cycle_id=cycle_id,
+                            ledger=ledger, now=evaluated.isoformat(),
+                        )
+                    except Exception as ledger_exc:  # pragma: no cover
+                        accounting_reasons.append(
+                            "HOLDER_PARTIAL_LEDGER_UNRECOVERABLE:"
+                            f"{type(ledger_exc).__name__}"
+                        )
+                try:
+                    complete_maturation(
+                        connection, work_id=str(maturation["work_id"]),
+                        cause=f"EVIDENCE_COLLECTION_FAILED:{type(exc).__name__}",
+                        now=evaluated.isoformat(),
+                    )
+                except Exception as maturation_exc:  # pragma: no cover
+                    accounting_reasons.append(
+                        "HOLDER_PARTIAL_MATURATION_UNRECOVERABLE:"
+                        f"{type(maturation_exc).__name__}"
+                    )
                 holder_facts[proof.mint.lower()] = {
                     "eligible": False,
                     "reason": f"HOLDER_EVIDENCE_COLLECTION_FAILED:{type(exc).__name__}",
@@ -3013,16 +3104,24 @@ class AuthoritativeLiveOperationalCampaignOwner:
             )
             holder_facts = dict(holder_result.holder_facts)
             ledger = holder_result.ledger
+            # V2-9.8B: readiness inspects the COMPLETE holder result, not only
+            # holder facts. Incomplete holder accounting fails closed before any
+            # readiness snapshot bundle is attempted.
+            holder_accounting_blocker = bool(holder_result.accounting_blocker)
+            holder_context = holder_result.as_holder_context_diagnostics()
             eligible_candidates = [
                 proof for proof in bounded_candidates
                 if bool(holder_facts.get(proof.mint.lower(), {}).get("eligible"))
             ]
             holder_eligible = len(eligible_candidates)
+            snapshot_candidates = (
+                [] if holder_accounting_blocker else eligible_candidates
+            )
 
             # 6. Exactly two complete snapshot bundles or an honest blocker. The
             # bundle is attempted only for holder-eligible candidates; it stops
             # after two complete bundles.
-            for ordinal, proof in enumerate(eligible_candidates, start=1):
+            for ordinal, proof in enumerate(snapshot_candidates, start=1):
                 if complete_bundles >= 2:
                     break
                 step = {
@@ -3098,6 +3197,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
         # 9. Fixed readiness gates — every one must hold to become READY.
         gates = {
             "preflight_ready": preflight["status"] == "READY",
+            "holder_accounting_complete": not holder_accounting_blocker,
             "two_mature_candidates": len(mature_candidates) >= 2,
             "exactly_two_complete_bundles": complete_bundles == 2,
             "two_holder_eligible_candidates": holder_eligible >= 2,
@@ -3117,6 +3217,10 @@ class AuthoritativeLiveOperationalCampaignOwner:
 
         if not blocked_reasons:
             status = "READY"
+        elif holder_accounting_blocker:
+            # Typed holder accounting terminal. It dominates other blockers:
+            # the holder request/transport accounting itself is not trustworthy.
+            status = "BLOCKED_HOLDER_ACCOUNTING"
         elif cancellation_requested:
             status = "CANCELLED"
         elif (
@@ -3147,6 +3251,24 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 "candidates": maturity_records,
             },
             "holder_eligible_count": holder_eligible,
+            "holder_context": holder_context,
+            "holder_accounting_blocker": holder_accounting_blocker,
+            "holder_accounting_blocker_reason": holder_context.get(
+                "accounting_blocker_reason"
+            ),
+            "holder_source_request_ids": list(
+                holder_context.get("source_request_ids") or ()
+            ),
+            "holder_source_request_coverage": [
+                dict(entry)
+                for entry in (holder_context.get("source_request_coverage") or ())
+            ],
+            "holder_governed_request_count": int(
+                holder_context.get("governed_request_count") or 0
+            ),
+            "holder_measured_transport_count": int(
+                holder_context.get("measured_transport_count") or 0
+            ),
             "complete_bundle_count": complete_bundles,
             "persisted_readiness_snapshots": len(readiness_snapshots),
             "cancelled_dry_run_jobs": cancelled,
@@ -3185,4 +3307,5 @@ class AuthoritativeLiveOperationalCampaignOwner:
             cancelled_dry_run_jobs=cancelled,
             summary=summary,
             blocked_reasons=tuple(blocked_reasons),
+            holder_context=holder_context,
         )

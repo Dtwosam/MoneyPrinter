@@ -468,6 +468,30 @@ class HolderBundlePersistResult:
     accounting_blocker_reason: str | None
 
 
+class HolderBundlePersistPartialError(RuntimeError):
+    """Typed partial-result contract for a failed holder persistence pass.
+
+    Raised when ``persist_bundle_attempts`` cannot complete every governed
+    execution. It carries the evidence already derivable from the real
+    execution records so a governed ``printer_source_requests`` row can never
+    disappear from holder IDs, coverage, or campaign reconciliation.
+    """
+
+    def __init__(
+        self,
+        code: str,
+        *,
+        partial: HolderBundlePersistResult,
+        failed_stage: str,
+        cause: BaseException | None = None,
+    ) -> None:
+        self.code = str(code)
+        self.partial = partial
+        self.failed_stage = str(failed_stage)
+        self.cause = cause
+        super().__init__(f"{self.code}:stage={self.failed_stage}")
+
+
 @dataclass(frozen=True)
 class HolderContextResult:
     """Campaign-owned holder-stage result for reconciliation and readiness.
@@ -598,6 +622,178 @@ def _holder_logical_stage_id(
     )
 
 
+
+
+def _persist_one_holder_attempt(
+    connection: sqlite3.Connection,
+    *,
+    key: str,
+    execution: Any,
+    run_id: str,
+    cycle_id: str,
+    mint: str,
+    created_at: str,
+    campaign_id: str | None,
+    candidate_ordinal: int,
+) -> tuple[dict[str, Any], int, bool, str | None]:
+    """Persist one governed holder attempt.
+
+    Returns ``(coverage_entry, measured_transport_count, accounting_ok,
+    accounting_reason)``. The coverage entry is derived from the real execution
+    record only; transport counts require proven measured metadata.
+    """
+    from printer_v1.safety.goplus_normalizer import holder_concentration_label_from_goplus
+
+    normalized = execution.normalized_result
+    payload = dict(getattr(normalized, "normalized_payload", None) or {})
+    is_rpc = str(key).startswith("holder")
+    role = "BACKUP" if key == "holder_backup" else "PRIMARY"
+    source_role = _holder_source_role(str(key))
+    source_name = str(getattr(normalized, "source_name", "") or "")
+    request_kind = str(
+        getattr(normalized, "request_kind", None)
+        or getattr(getattr(execution, "request_record", None), "request_kind", None)
+        or ("holder_concentration_reference" if is_rpc else "safety_reference")
+    )
+    host = str(
+        payload.get("redacted_host")
+        or (
+            "mainnet.helius-rpc.com"
+            if source_name == "helius_free"
+            else "api.mainnet.solana.com"
+            if is_rpc
+            else "api.gopluslabs.io"
+        )
+    )
+    request_id = int(execution.request_record.id)
+
+    operation_count, accounting_ok, measure_reason = _measure_holder_transport_count(
+        execution
+    )
+    accounting_reason: str | None = None
+    if not accounting_ok:
+        if measure_reason:
+            accounting_reason = f"{measure_reason}:request={request_id}"
+        operation_count = 0
+
+    source_failed = _holder_source_failed(execution)
+    terminal_status = "BLOCKED" if (not accounting_ok or source_failed) else "COMPLETED"
+    member_count = 0
+    if accounting_ok and not source_failed:
+        # One normalized holder/safety contribution when evidence is present.
+        if payload:
+            member_count = 1
+
+    coverage_entry = {
+        "source_request_id": request_id,
+        "source_name": source_name or ("solana_rpc" if is_rpc else "goplus"),
+        "request_kind": request_kind,
+        "logical_stage_id": _holder_logical_stage_id(
+            campaign_id=campaign_id,
+            run_id=run_id,
+            cycle_id=cycle_id,
+            mint=mint,
+            candidate_ordinal=candidate_ordinal,
+            source_role=source_role,
+        ),
+        "terminal_status": terminal_status,
+        "transport_identity_count": int(operation_count),
+        "normalized_member_count": int(member_count),
+    }
+
+    returned_mint = str(payload.get("token_mint") or "")
+    holder_label = (
+        str(
+            payload.get("holder_concentration_label")
+            or "HOLDER_CONCENTRATION_UNKNOWN"
+        )
+        if is_rpc
+        else holder_concentration_label_from_goplus(payload)
+    )
+    record_attempt(
+        connection,
+        run_id=run_id,
+        cycle_id=cycle_id,
+        mint_identity=mint,
+        source_name=source_name or ("solana_rpc" if is_rpc else "goplus"),
+        endpoint_role=role,
+        redacted_host=host,
+        source_request_id=request_id,
+        source_response_id=(
+            int(execution.response_record.id) if execution.response_record else None
+        ),
+        source_failure_id=(
+            int(execution.failure_record.id) if execution.failure_record else None
+        ),
+        lineage_response_id=(
+            int(execution.response_record.id) if execution.response_record else None
+        ),
+        reused_evidence_id=None,
+        captured_at=payload.get("captured_at") or normalized.received_at,
+        received_at=normalized.received_at,
+        source_status=normalized.source_status.value,
+        data_quality_label=normalized.data_quality_label.value,
+        exact_target=int(bool(returned_mint) and returned_mint.lower() == mint.lower()),
+        holder_concentration_label=holder_label,
+        rpc_method=(
+            payload.get("rpc_method")
+            or (
+                "getTokenLargestAccounts+getTokenSupply"
+                if is_rpc and operation_count == 2
+                else "getTokenLargestAccounts"
+                if is_rpc
+                else "HTTP_GET"
+            )
+        ),
+        commitment=payload.get("commitment") or ("finalized" if is_rpc else None),
+        context_slot=payload.get("context_slot"),
+        underlying_operation_count=operation_count,
+        failure_subtype=normalized.failure_type,
+        retry_after_at=normalized.retry_after_at,
+        created_at=created_at,
+    )
+    return coverage_entry, int(operation_count), bool(accounting_ok), accounting_reason
+
+
+def _blocked_coverage_entry(
+    *,
+    key: str,
+    request_id: int,
+    execution: Any,
+    run_id: str,
+    cycle_id: str,
+    mint: str,
+    campaign_id: str | None,
+    candidate_ordinal: int,
+) -> dict[str, Any]:
+    """Coverage for a real governed request whose attempt did not complete."""
+    normalized = getattr(execution, "normalized_result", None)
+    is_rpc = str(key).startswith("holder")
+    return {
+        "source_request_id": int(request_id),
+        "source_name": str(
+            getattr(normalized, "source_name", "")
+            or ("solana_rpc" if is_rpc else "goplus")
+        ),
+        "request_kind": str(
+            getattr(normalized, "request_kind", None)
+            or getattr(getattr(execution, "request_record", None), "request_kind", None)
+            or ("holder_concentration_reference" if is_rpc else "safety_reference")
+        ),
+        "logical_stage_id": _holder_logical_stage_id(
+            campaign_id=campaign_id,
+            run_id=run_id,
+            cycle_id=cycle_id,
+            mint=mint,
+            candidate_ordinal=candidate_ordinal,
+            source_role=_holder_source_role(str(key)),
+        ),
+        "terminal_status": "BLOCKED",
+        "transport_identity_count": 0,
+        "normalized_member_count": 0,
+    }
+
+
 def persist_bundle_attempts(
     connection: sqlite3.Connection,
     *,
@@ -614,9 +810,11 @@ def persist_bundle_attempts(
     Alias keys that refer to the same execution object are not double-counted.
     Request IDs always come from ``execution.request_record.id``. Transport
     counts require proven measured metadata — never RPC/non-RPC fallbacks.
-    """
-    from printer_v1.safety.goplus_normalizer import holder_concentration_label_from_goplus
 
+    If persistence fails after one or more executions were processed, the
+    evidence derivable from every real execution record is preserved and raised
+    as a typed :class:`HolderBundlePersistPartialError` rather than lost.
+    """
     distinct: list[tuple[str, Any]] = []
     seen: set[int] = set()
     for key, execution in executions.items():
@@ -634,137 +832,83 @@ def persist_bundle_attempts(
     accounting_reasons: list[str] = []
 
     for key, execution in distinct:
-        normalized = execution.normalized_result
-        payload = dict(getattr(normalized, "normalized_payload", None) or {})
-        is_rpc = str(key).startswith("holder")
-        role = "BACKUP" if key == "holder_backup" else "PRIMARY"
-        source_role = _holder_source_role(str(key))
-        source_name = str(getattr(normalized, "source_name", "") or "")
-        request_kind = str(
-            getattr(normalized, "request_kind", None)
-            or getattr(getattr(execution, "request_record", None), "request_kind", None)
-            or ("holder_concentration_reference" if is_rpc else "safety_reference")
-        )
-        host = str(
-            payload.get("redacted_host")
-            or (
-                "mainnet.helius-rpc.com"
-                if source_name == "helius_free"
-                else "api.mainnet.solana.com"
-                if is_rpc
-                else "api.gopluslabs.io"
+        # Capture the durable identity before any work that can raise, so a
+        # governed request row can never vanish from IDs or coverage.
+        try:
+            request_id: int | None = int(execution.request_record.id)
+        except Exception:  # pragma: no cover - no durable identity exists
+            request_id = None
+        try:
+            entry, operation_count, accounting_ok, reason = _persist_one_holder_attempt(
+                connection,
+                key=key,
+                execution=execution,
+                run_id=run_id,
+                cycle_id=cycle_id,
+                mint=mint,
+                created_at=created_at,
+                campaign_id=campaign_id,
+                candidate_ordinal=candidate_ordinal,
             )
-        )
-        request_id = int(execution.request_record.id)
-        request_ids.append(request_id)
+        except Exception as exc:
+            if request_id is not None:
+                if request_id not in request_ids:
+                    request_ids.append(request_id)
+                if not any(
+                    int(item["source_request_id"]) == request_id for item in coverage
+                ):
+                    coverage.append(
+                        _blocked_coverage_entry(
+                            key=key,
+                            request_id=request_id,
+                            execution=execution,
+                            run_id=run_id,
+                            cycle_id=cycle_id,
+                            mint=mint,
+                            campaign_id=campaign_id,
+                            candidate_ordinal=candidate_ordinal,
+                        )
+                    )
+            accounting_reasons.append(
+                f"HOLDER_BUNDLE_PERSIST_FAILED:{type(exc).__name__}"
+                f":request={request_id}"
+            )
+            blocked_coverage = []
+            for item in coverage:
+                blocked = dict(item)
+                blocked["terminal_status"] = "BLOCKED"
+                blocked["transport_identity_count"] = 0
+                blocked["normalized_member_count"] = 0
+                blocked_coverage.append(blocked)
+            raise HolderBundlePersistPartialError(
+                "HOLDER_BUNDLE_PERSIST_INCOMPLETE",
+                partial=HolderBundlePersistResult(
+                    governed_request_count=len(request_ids),
+                    measured_transport_count=0,
+                    source_request_ids=tuple(request_ids),
+                    source_request_coverage=tuple(blocked_coverage),
+                    accounting_blocker=True,
+                    accounting_blocker_reason=";".join(accounting_reasons),
+                ),
+                failed_stage=str(key),
+                cause=exc,
+            ) from exc
 
-        operation_count, accounting_ok, measure_reason = _measure_holder_transport_count(
-            execution
-        )
+        if request_id is not None and request_id not in request_ids:
+            request_ids.append(request_id)
+        coverage.append(entry)
+        transports += int(operation_count)
         if not accounting_ok:
             accounting_blocker = True
-            if measure_reason:
-                accounting_reasons.append(f"{measure_reason}:request={request_id}")
-            operation_count = 0
-        transports += int(operation_count)
+            if reason:
+                accounting_reasons.append(reason)
 
-        source_failed = _holder_source_failed(execution)
-        terminal_status = (
-            "BLOCKED" if (not accounting_ok or source_failed) else "COMPLETED"
-        )
-        member_count = 0
-        if accounting_ok and not source_failed:
-            # One normalized holder/safety contribution when evidence is present.
-            if payload:
-                member_count = 1
-
-        coverage.append(
-            {
-                "source_request_id": request_id,
-                "source_name": source_name
-                or ("solana_rpc" if is_rpc else "goplus"),
-                "request_kind": request_kind,
-                "logical_stage_id": _holder_logical_stage_id(
-                    campaign_id=campaign_id,
-                    run_id=run_id,
-                    cycle_id=cycle_id,
-                    mint=mint,
-                    candidate_ordinal=candidate_ordinal,
-                    source_role=source_role,
-                ),
-                "terminal_status": terminal_status,
-                "transport_identity_count": int(operation_count),
-                "normalized_member_count": int(member_count),
-            }
-        )
-
-        returned_mint = str(payload.get("token_mint") or "")
-        holder_label = (
-            str(
-                payload.get("holder_concentration_label")
-                or "HOLDER_CONCENTRATION_UNKNOWN"
-            )
-            if is_rpc
-            else holder_concentration_label_from_goplus(payload)
-        )
-        record_attempt(
-            connection,
-            run_id=run_id,
-            cycle_id=cycle_id,
-            mint_identity=mint,
-            source_name=source_name or ("solana_rpc" if is_rpc else "goplus"),
-            endpoint_role=role,
-            redacted_host=host,
-            source_request_id=request_id,
-            source_response_id=(
-                int(execution.response_record.id)
-                if execution.response_record
-                else None
-            ),
-            source_failure_id=(
-                int(execution.failure_record.id)
-                if execution.failure_record
-                else None
-            ),
-            lineage_response_id=(
-                int(execution.response_record.id)
-                if execution.response_record
-                else None
-            ),
-            reused_evidence_id=None,
-            captured_at=payload.get("captured_at") or normalized.received_at,
-            received_at=normalized.received_at,
-            source_status=normalized.source_status.value,
-            data_quality_label=normalized.data_quality_label.value,
-            exact_target=int(
-                bool(returned_mint) and returned_mint.lower() == mint.lower()
-            ),
-            holder_concentration_label=holder_label,
-            rpc_method=(
-                payload.get("rpc_method")
-                or (
-                    "getTokenLargestAccounts+getTokenSupply"
-                    if is_rpc and operation_count == 2
-                    else "getTokenLargestAccounts"
-                    if is_rpc
-                    else "HTTP_GET"
-                )
-            ),
-            commitment=payload.get("commitment")
-            or ("finalized" if is_rpc else None),
-            context_slot=payload.get("context_slot"),
-            underlying_operation_count=operation_count,
-            failure_subtype=normalized.failure_type,
-            retry_after_at=normalized.retry_after_at,
-            created_at=created_at,
-        )
-
-    reason = ";".join(accounting_reasons) if accounting_reasons else None
+    reason_text = ";".join(accounting_reasons) if accounting_reasons else None
     return HolderBundlePersistResult(
         governed_request_count=len(distinct),
         measured_transport_count=transports,
         source_request_ids=tuple(request_ids),
         source_request_coverage=tuple(coverage),
         accounting_blocker=accounting_blocker,
-        accounting_blocker_reason=reason,
+        accounting_blocker_reason=reason_text,
     )
