@@ -178,15 +178,43 @@ def test_exact_above_and_below_floor_preserve_response_lineage(tmp_path) -> None
 
 
 @pytest.mark.parametrize(
-    ("transport", "category", "failure_expected"),
+    ("transport", "category", "failure_expected", "reason"),
     [
-        (fixture_rate_limited_transport(), LIQUIDITY_SOURCE_RATE_LIMITED_OR_STALE, True),
-        (fixture_success_transport({"bad": "payload"}), LIQUIDITY_RESPONSE_MALFORMED_OR_PARTIAL, True),
-        (fixture_success_transport({"pairs": []}), LIQUIDITY_RESPONSE_MALFORMED_OR_PARTIAL, False),
+        (
+            fixture_rate_limited_transport(),
+            LIQUIDITY_SOURCE_RATE_LIMITED_OR_STALE,
+            True,
+            None,
+        ),
+        (
+            fixture_success_transport({"bad": "payload"}),
+            LIQUIDITY_RESPONSE_MALFORMED_OR_PARTIAL,
+            True,
+            None,
+        ),
+        # Exact-pair lawful no-match (empty / null) is not a provider outage.
+        (
+            fixture_success_transport({"pairs": []}),
+            LIQUIDITY_EXACT_PAIR_UNAVAILABLE_OR_MISMATCH,
+            False,
+            "LIQUIDITY_NO_EXACT_PAIR",
+        ),
+        (
+            fixture_success_transport(
+                {
+                    "pairs": None,
+                    "schemaVersion": "1.0.0",
+                    "_source_status_code": 200,
+                }
+            ),
+            LIQUIDITY_EXACT_PAIR_UNAVAILABLE_OR_MISMATCH,
+            False,
+            "LIQUIDITY_NO_EXACT_PAIR",
+        ),
     ],
 )
 def test_rate_limit_malformed_and_partial_are_distinct_lineaged_outcomes(
-    tmp_path, transport, category, failure_expected
+    tmp_path, transport, category, failure_expected, reason
 ) -> None:
     db = _db(tmp_path)
     mint, _signature, pool = _seed(db, 1)[0]
@@ -206,6 +234,9 @@ def test_rate_limit_malformed_and_partial_are_distinct_lineaged_outcomes(
     assert evidence["source_request_id"] is not None
     assert (evidence["source_failure_id"] is not None) is failure_expected
     assert (evidence["source_response_id"] is not None) is (not failure_expected)
+    if reason is not None:
+        assert evidence["reason"] == reason
+        assert evidence.get("liquidity_usd") is None
 
 
 def test_no_exact_pair_and_mint_pool_mismatches_are_not_provider_outages(tmp_path) -> None:

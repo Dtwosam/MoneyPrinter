@@ -657,6 +657,43 @@ def _pairs_field_type_label(pairs: Any, *, present: bool) -> str:
     return "OTHER"
 
 
+def _is_exact_pair_request_kind(request_kind: str) -> bool:
+    """True only for exact-pair snapshot request kinds (not search/fresh-profile)."""
+    rk = str(request_kind or "").casefold()
+    if not rk:
+        return False
+    if "fresh" in rk or "profile" in rk or "search" in rk or "token_discovery" in rk:
+        return False
+    if rk in {"pair_market_snapshot", "dexscreener_pair_snapshot"}:
+        return True
+    if rk.endswith("_pair_snapshot"):
+        return True
+    return "pair_market" in rk or ("pair" in rk and "snapshot" in rk)
+
+
+def _exact_pair_success_envelope(payload: Mapping[str, Any]) -> bool:
+    """Pinned successful exact-pair envelope under the DexScreener contract.
+
+    Contract envelope is ``{schemaVersion, pairs}``. Live exact-pair no-match
+    responses may also arrive as HTTP 200 measured transports without raising a
+    fixture failure. Either marker is accepted; fixture failures are not.
+    """
+    if payload.get("fixture_status") in {"failure", "rate_limited"}:
+        return False
+    schema = payload.get("schemaVersion")
+    if isinstance(schema, str) and schema.strip():
+        return True
+    http_status = payload.get("_source_status_code")
+    if http_status is None:
+        http_status = payload.get("source_http_status")
+    if http_status is None:
+        http_status = payload.get("status_code")
+    try:
+        return int(http_status) == 200
+    except (TypeError, ValueError):
+        return False
+
+
 def _dexscreener_pairs_schema_diagnostics(
     payload: Mapping[str, Any],
     *,
@@ -684,6 +721,45 @@ def _dexscreener_pairs_schema_diagnostics(
         except (TypeError, ValueError):
             diagnostics["source_http_status"] = None
     return diagnostics
+
+
+def _dexscreener_exact_pair_no_match_result(
+    *,
+    request_kind: str,
+    measured_payload: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    reason: str,
+    pairs_present: bool,
+    pairs_value: Any,
+) -> NormalizedSourceResult:
+    """Lawful exact-pair no-match: PARTIAL, no fabricated liquidity, bounded diag."""
+    diagnostics = _dexscreener_pairs_schema_diagnostics(
+        payload,
+        request_kind=request_kind,
+        measured_payload=measured_payload,
+    )
+    # Empty kept set — never invent a pair/liquidity row from a no-match.
+    diagnostics["pairs"] = []
+    diagnostics["no_matching_pairs"] = True
+    diagnostics["no_matching_pairs_reason"] = reason
+    diagnostics["pairs_field_present"] = bool(pairs_present)
+    diagnostics["pairs_field_type"] = _pairs_field_type_label(
+        pairs_value, present=pairs_present
+    )
+    if pairs_present and isinstance(pairs_value, list):
+        diagnostics["pairs_count"] = 0
+    elif not pairs_present:
+        diagnostics["pairs_count"] = None
+    else:
+        # null / non-list lawful only when already accepted as no-match
+        diagnostics["pairs_count"] = 0
+    return NormalizedSourceResult(
+        source_name=DEXSCREENER_SOURCE_NAME,
+        request_kind=request_kind,
+        source_status=SourceStatus.PARTIAL,
+        data_quality_label=DataQualityLabel.ACCEPTABLE_PARTIAL_DATA,
+        normalized_payload=MappingProxyType(diagnostics),
+    )
 
 
 def normalize_dexscreener_fixture_result(
@@ -728,7 +804,36 @@ def normalize_dexscreener_fixture_result(
             normalized_payload=MappingProxyType(measured_payload),
         )
 
-    pairs = payload.get("pairs")
+    pairs_present = "pairs" in payload
+    pairs = payload.get("pairs") if pairs_present else None
+    exact_pair_request = _is_exact_pair_request_kind(request_kind)
+
+    # Exact-pair endpoint only (live evidence 20260804T005054Z): HTTP 200 with
+    # pairs:null is a lawful no-match, not a schema failure. pairs:[] already was.
+    # Missing pairs is lawful no-match only under the pinned success envelope.
+    if exact_pair_request and pairs_present and pairs is None:
+        return _dexscreener_exact_pair_no_match_result(
+            request_kind=request_kind,
+            measured_payload=measured_payload,
+            payload=payload,
+            reason="source_returned_null_pairs",
+            pairs_present=True,
+            pairs_value=None,
+        )
+    if (
+        exact_pair_request
+        and not pairs_present
+        and _exact_pair_success_envelope(payload)
+    ):
+        return _dexscreener_exact_pair_no_match_result(
+            request_kind=request_kind,
+            measured_payload=measured_payload,
+            payload=payload,
+            reason="source_omitted_pairs_under_success_envelope",
+            pairs_present=False,
+            pairs_value=None,
+        )
+
     if not isinstance(pairs, list):
         diagnostics = _dexscreener_pairs_schema_diagnostics(
             payload,
@@ -780,15 +885,27 @@ def normalize_dexscreener_fixture_result(
             failure_message=str(exc),
         )
     if not pairs:
-        return NormalizedSourceResult(
+        return _dexscreener_exact_pair_no_match_result(
+            request_kind=request_kind,
+            measured_payload=measured_payload,
+            payload=payload,
+            reason="source_returned_empty_pairs",
+            pairs_present=True,
+            pairs_value=pairs,
+        ) if exact_pair_request else NormalizedSourceResult(
             source_name=DEXSCREENER_SOURCE_NAME,
             request_kind=request_kind,
             source_status=SourceStatus.PARTIAL,
             data_quality_label=DataQualityLabel.ACCEPTABLE_PARTIAL_DATA,
             normalized_payload=MappingProxyType({
+                **dict(measured_payload),
                 "pairs": [],
                 "no_matching_pairs": True,
                 "no_matching_pairs_reason": "source_returned_empty_pairs",
+                "pairs_field_present": True,
+                "pairs_field_type": "LIST",
+                "pairs_count": 0,
+                "request_kind": str(request_kind),
             }),
         )
 

@@ -463,6 +463,41 @@ def enrich_pool_liquidity(
             failure_id,
             failure_type,
         )
+
+    payload = result.normalized_payload or {}
+    # Lawful exact-pair no-match (pairs:[], pairs:null, or envelope-missing pairs)
+    # is PARTIAL/ACCEPTABLE_PARTIAL_DATA with no failure_type. It must become
+    # LIQUIDITY_NO_EXACT_PAIR — never a fabricated liquidity row and never a
+    # malformed-provider outage.
+    if (
+        result.source_status == SourceStatus.PARTIAL
+        and not result.failure_type
+        and isinstance(payload, Mapping)
+        and (
+            bool(payload.get("no_matching_pairs"))
+            or payload.get("pairs") == []
+            or (
+                payload.get("pairs") is None
+                and payload.get("pairs_field_type") in {"NULL", "MISSING", "LIST"}
+            )
+        )
+    ):
+        no_match_reason = str(
+            payload.get("no_matching_pairs_reason") or "LIQUIDITY_NO_EXACT_PAIR"
+        )
+        return classify_liquidity(
+            None,
+            mint=mint,
+            pool=pumpswap_pool,
+            reason="LIQUIDITY_NO_EXACT_PAIR",
+            source_status=source_status,
+            detailed_reason=no_match_reason,
+            source_request_id=request_id,
+            source_response_id=response_id,
+            source_failure_id=failure_id,
+            failure_type=None,
+        )
+
     if result.source_status != SourceStatus.COMPLETE or result.failure_type:
         reason = f"LIQUIDITY_SOURCE_{result.failure_type or source_status}"
         return LiquidityEvidence(
@@ -481,7 +516,6 @@ def enrich_pool_liquidity(
             failure_type,
         )
 
-    payload = result.normalized_payload or {}
     pairs = payload.get("pairs") or []
     value, reason = _extract_exact_pair_liquidity(pairs, mint=mint, pool=pumpswap_pool)
     return classify_liquidity(

@@ -71,7 +71,8 @@ class DexScreenerPairsSchemaDiagnosticsMatrix(unittest.TestCase):
         self.assertIsNone(result.failure_type)
         self.assertTrue(result.normalized_payload.get("no_matching_pairs"))
 
-    def test_02_missing_pairs_malformed_missing(self) -> None:
+    def test_02_missing_pairs_without_envelope_malformed(self) -> None:
+        # Measured transport only, no schemaVersion / HTTP 200 envelope.
         result = normalize_dexscreener_fixture_result(
             dict(_measured()),
             request_kind="pair_market_snapshot",
@@ -87,14 +88,55 @@ class DexScreenerPairsSchemaDiagnosticsMatrix(unittest.TestCase):
         self.assertNotIn("raw_body", payload)
         self.assertNotIn("headers", payload)
 
-    def test_03_pairs_null_malformed_null(self) -> None:
+    def test_02b_missing_pairs_under_success_envelope_lawful_no_match(self) -> None:
         result = normalize_dexscreener_fixture_result(
-            {**_measured(), "pairs": None},
+            {
+                **_measured(),
+                "schemaVersion": "1.0.0",
+                "_source_status_code": 200,
+            },
             request_kind="pair_market_snapshot",
         )
+        self.assertEqual(result.source_status, SourceStatus.PARTIAL)
+        self.assertEqual(
+            result.data_quality_label, DataQualityLabel.ACCEPTABLE_PARTIAL_DATA
+        )
+        self.assertIsNone(result.failure_type)
+        payload = dict(result.normalized_payload)
+        self.assertTrue(payload["no_matching_pairs"])
+        self.assertEqual(
+            payload["no_matching_pairs_reason"],
+            "source_omitted_pairs_under_success_envelope",
+        )
+        self.assertFalse(payload["pairs_field_present"])
+        self.assertEqual(payload["pairs_field_type"], "MISSING")
+        self.assertEqual(payload["pairs"], [])
+
+    def test_03_pairs_null_exact_pair_lawful_no_match(self) -> None:
+        result = normalize_dexscreener_fixture_result(
+            {
+                **_measured(),
+                "pairs": None,
+                "schemaVersion": "1.0.0",
+                "_source_status_code": 200,
+            },
+            request_kind="pair_market_snapshot",
+        )
+        self.assertEqual(result.source_status, SourceStatus.PARTIAL)
+        self.assertEqual(
+            result.data_quality_label, DataQualityLabel.ACCEPTABLE_PARTIAL_DATA
+        )
+        self.assertIsNone(result.failure_type)
         payload = dict(result.normalized_payload)
         self.assertTrue(payload["pairs_field_present"])
         self.assertEqual(payload["pairs_field_type"], "NULL")
+        self.assertTrue(payload["no_matching_pairs"])
+        self.assertEqual(
+            payload["no_matching_pairs_reason"], "source_returned_null_pairs"
+        )
+        self.assertEqual(payload["pairs"], [])
+        self.assertEqual(payload["transport_operations_used"], 1)
+        self.assertEqual(payload["source_http_status"], 200)
 
     def test_04_pairs_string_malformed_string(self) -> None:
         result = normalize_dexscreener_fixture_result(
@@ -177,13 +219,14 @@ class DexScreenerPairsSchemaDiagnosticsMatrix(unittest.TestCase):
         self.assertIsNotNone(liq)
         self.assertLess(float(liq), 3000.0)
 
-    def test_10_failure_persists_schema_diagnostics_and_transport(self) -> None:
+    def test_10_null_pairs_exact_pair_persists_response_not_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "diag.sqlite3"
             apply_migrations(db)
             payload = {
                 **_measured(),
                 "pairs": None,
+                "schemaVersion": "1.0.0",
                 "_source_status_code": 200,
             }
             adapter = build_dexscreener_adapter(
@@ -198,6 +241,57 @@ class DexScreenerPairsSchemaDiagnosticsMatrix(unittest.TestCase):
             execution = execute_source_request_with_governor(
                 db, request, adapter, recent_request_count=0
             )
+            self.assertIsNone(execution.failure_record)
+            self.assertIsNotNone(execution.response_record)
+            self.assertEqual(
+                execution.normalized_result.source_status, SourceStatus.PARTIAL
+            )
+            conn = sqlite3.connect(db)
+            try:
+                row = conn.execute(
+                    "SELECT normalized_payload_json, source_status, data_quality_label "
+                    "FROM printer_source_responses WHERE id=?",
+                    (execution.response_record.id,),
+                ).fetchone()
+                fail_count = conn.execute(
+                    "SELECT COUNT(*) FROM printer_source_failures"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+            self.assertIsNotNone(row)
+            stored = json.loads(row[0])
+            self.assertEqual(row[1], SourceStatus.PARTIAL.value)
+            self.assertEqual(row[2], DataQualityLabel.ACCEPTABLE_PARTIAL_DATA.value)
+            self.assertEqual(fail_count, 0)
+            self.assertEqual(stored["pairs_field_type"], "NULL")
+            self.assertTrue(stored["pairs_field_present"])
+            self.assertTrue(stored["no_matching_pairs"])
+            self.assertEqual(stored["source_http_status"], 200)
+            self.assertEqual(stored["transport_operations_used"], 1)
+            self.assertNotIn("raw_body", stored)
+            self.assertNotIn("Authorization", json.dumps(stored))
+
+    def test_10b_string_pairs_still_persists_failure_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "diag-bad.sqlite3"
+            apply_migrations(db)
+            payload = {
+                **_measured(),
+                "pairs": "not-a-list",
+                "_source_status_code": 200,
+            }
+            adapter = build_dexscreener_adapter(
+                enabled=True,
+                fixture_transport=fixture_success_transport(payload),
+            )
+            request = SourceRequest(
+                source_name="dexscreener",
+                request_kind="pair_market_snapshot",
+                request_key="diag-string-pairs",
+            )
+            execution = execute_source_request_with_governor(
+                db, request, adapter, recent_request_count=0
+            )
             self.assertIsNotNone(execution.failure_record)
             conn = sqlite3.connect(db)
             try:
@@ -208,19 +302,12 @@ class DexScreenerPairsSchemaDiagnosticsMatrix(unittest.TestCase):
                 ).fetchone()
             finally:
                 conn.close()
-            self.assertIsNotNone(row)
             stored = json.loads(row[0])
             self.assertEqual(row[1], "dexscreener_malformed_fixture")
-            self.assertEqual(stored["pairs_field_type"], "NULL")
-            self.assertTrue(stored["pairs_field_present"])
-            self.assertIsNone(stored["pairs_count"])
-            self.assertEqual(stored["source_http_status"], 200)
-            self.assertEqual(stored["transport_operations_used"], 1)
-            self.assertNotIn("raw_body", stored)
-            self.assertNotIn("Authorization", json.dumps(stored))
+            self.assertEqual(stored["pairs_field_type"], "STRING")
 
     def test_11_no_raw_body_or_secret_in_malformed_payloads(self) -> None:
-        for pairs in (None, "bad", {}, 12, True):
+        for pairs in ("bad", {}, 12, True):
             result = normalize_dexscreener_fixture_result(
                 {
                     **_measured(),
@@ -235,6 +322,21 @@ class DexScreenerPairsSchemaDiagnosticsMatrix(unittest.TestCase):
             self.assertNotIn("Bearer secret", dumped)
             self.assertNotIn("raw_body", result.normalized_payload)
             self.assertNotIn("headers", result.normalized_payload)
+            self.assertEqual(result.failure_type, "dexscreener_malformed_fixture")
+        # null is lawful no-match for exact-pair; still must not leak secrets
+        result = normalize_dexscreener_fixture_result(
+            {
+                **_measured(),
+                "pairs": None,
+                "raw_body": "SECRET_SHOULD_NOT_LEAK",
+                "headers": {"Authorization": "Bearer secret"},
+                "_source_status_code": 200,
+            },
+            request_kind="pair_market_snapshot",
+        )
+        dumped = json.dumps(dict(result.normalized_payload))
+        self.assertNotIn("SECRET_SHOULD_NOT_LEAK", dumped)
+        self.assertIsNone(result.failure_type)
 
     def test_governed_path_persists_diagnostics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
