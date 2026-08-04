@@ -293,6 +293,7 @@ class TestProtocolQueueAndHolderGate:
                 "base_mint": f"MintP{i}{'z' * 30}",
                 "quote_mint": WSOL,
                 "venue": "pumpswap" if i < 3 else "meteora-damm-v2",
+                "liquidity_usd": 5000.0,
             }
             for i in range(5)
         ]
@@ -325,10 +326,7 @@ class TestProtocolQueueAndHolderGate:
             account_batch_transport=transport,
         )
         assert report["source_requests"] >= 1
-        assert any(o["outcome"] == "UNSUPPORTED_VENUE" for o in report["outcomes"])
-        assert any(
-            o["outcome"] == "ACCOUNT_NOT_FOUND" for o in report["outcomes"]
-        )
+        # Unsupported venues are filtered at nomination (no protocol capacity).
         meteora = connection.execute(
             """
             SELECT current_state FROM printer_exact_market_states
@@ -336,7 +334,10 @@ class TestProtocolQueueAndHolderGate:
             """
         ).fetchone()
         assert meteora is not None
-        assert meteora["current_state"] in {CONTRACT_BLOCKED, UNSUPPORTED_VENUE}
+        assert meteora["current_state"] == UNSUPPORTED_VENUE
+        assert any(
+            o["outcome"] == "ACCOUNT_NOT_FOUND" for o in report["outcomes"]
+        )
 
     def test_permanent_holder_gate_allows_single_market_ready(self):
         permanent_mode = True

@@ -1778,41 +1778,80 @@ class AuthoritativeLiveOperationalCampaignOwner:
             ):
                 from printer_v1.discovery.permanent_discovery_availability import (
                     FULLY_ELIGIBLE,
+                    MEMORY_OBSERVATION_ELIGIBLE,
                     NETWORK,
                     freeze_eligible_reserve,
+                    observation_reserve_depth_status,
                     upsert_reserve_layer,
                 )
 
-                fully_eligible_rows = []
+                # Memory observation is independent of holder pass/fail.
+                # Holder concentration and unavailable evidence remain context.
+                observation_rows = []
                 for proof in graduated_candidates:
                     mint_key = proof.mint.lower()
                     fact = holder_facts.get(mint_key, {})
-                    if not fact.get("eligible"):
-                        continue
                     item = dict(supply.holder_reserve_candidates.get(mint_key, {}))
+                    if not item and not getattr(proof, "mint", None):
+                        continue
                     expiry = item.get("evidence_expires_at")
                     if not expiry:
                         # No alternate can exist without an explicit current
                         # evidence boundary. Selected candidates remain governed
                         # by the same rule; this never fabricates freshness.
                         continue
-                    fully = {
+                    holder_label = str(
+                        fact.get("holder_concentration_label")
+                        or "HOLDER_CONCENTRATION_UNKNOWN"
+                    )
+                    holder_eligible = bool(fact.get("eligible"))
+                    if not fact:
+                        holder_condition = "UNKNOWN"
+                        holder_evidence_status = "SOURCE_UNAVAILABLE_OR_INCOMPLETE"
+                        future_action = "UNKNOWN"
+                    elif holder_eligible:
+                        holder_condition = holder_label
+                        holder_evidence_status = "COMPLETE"
+                        # Future paper action remains locked; concentration may
+                        # still block action policy later without removing memory.
+                        if holder_label in {
+                            "HOLDER_CONCENTRATION_EXTREME",
+                            "HOLDER_CONCENTRATION_CONCENTRATED",
+                        }:
+                            future_action = "BLOCKED_OR_UNKNOWN"
+                        else:
+                            future_action = "BLOCKED_OR_UNKNOWN"
+                    else:
+                        holder_condition = holder_label
+                        holder_evidence_status = str(
+                            fact.get("reason") or "SOURCE_UNAVAILABLE_OR_INCOMPLETE"
+                        )
+                        future_action = "BLOCKED_OR_UNKNOWN"
+                    observation = {
                         **item,
                         "mint": proof.mint,
-                        "pool": str(item.get("pool") or proof.bonding_curve),
-                        "fully_eligible": True,
+                        "pool": str(
+                            item.get("pool")
+                            or item.get("pumpswap_pool")
+                            or proof.bonding_curve
+                        ),
+                        "memory_observation_eligible": True,
+                        "fully_eligible": holder_eligible,
                         "evidence_expires_at": expiry,
                         "holder_safety": dict(fact),
+                        "holder_condition": holder_condition,
+                        "holder_evidence_status": holder_evidence_status,
+                        "future_action_eligibility": future_action,
                     }
-                    fully_eligible_rows.append(fully)
+                    observation_rows.append(observation)
                     upsert_reserve_layer(
                         connection,
                         network=NETWORK,
-                        mint=fully["mint"],
-                        pool=fully["pool"],
-                        layer=FULLY_ELIGIBLE,
+                        mint=observation["mint"],
+                        pool=observation["pool"],
+                        layer=MEMORY_OBSERVATION_ELIGIBLE,
                         reserve_state="ACTIVE",
-                        reason="IDENTITY_MARKET_HOLDER_SAFETY_PASS",
+                        reason="IDENTITY_POOL_LIQUIDITY_MEMORY_OBSERVATION_PASS",
                         observed_at=evaluated.isoformat(),
                         next_lawful_action_at=None,
                         evidence_expires_at=str(expiry),
@@ -1823,11 +1862,41 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         evidence={
                             "liquidity": dict(item.get("liquidity") or {}),
                             "holder_safety": dict(fact),
+                            "holder_condition": holder_condition,
+                            "holder_evidence_status": holder_evidence_status,
+                            "future_action_eligibility": future_action,
+                            "memory_observation_eligible": True,
                         },
                         campaign_id=command.campaign_id,
                     )
+                    # FULLY_ELIGIBLE retained only for future action-specific policy.
+                    if holder_eligible:
+                        upsert_reserve_layer(
+                            connection,
+                            network=NETWORK,
+                            mint=observation["mint"],
+                            pool=observation["pool"],
+                            layer=FULLY_ELIGIBLE,
+                            reserve_state="ACTIVE",
+                            reason="IDENTITY_MARKET_HOLDER_SAFETY_PASS",
+                            observed_at=evaluated.isoformat(),
+                            next_lawful_action_at=None,
+                            evidence_expires_at=str(expiry),
+                            source_provenance={
+                                "market": item.get("provenance"),
+                                "holder_source": fact.get("source_name"),
+                            },
+                            evidence={
+                                "liquidity": dict(item.get("liquidity") or {}),
+                                "holder_safety": dict(fact),
+                            },
+                            campaign_id=command.campaign_id,
+                        )
+                supply.diagnostics["observation_reserve"] = (
+                    observation_reserve_depth_status(len(observation_rows))
+                )
                 frozen_eligible_reserve = freeze_eligible_reserve(
-                    fully_eligible_rows,
+                    observation_rows,
                     cycle_seed=selection_seed,
                     at=datetime.now(timezone.utc).isoformat(),
                 )
@@ -1847,7 +1916,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                 NETWORK,
                                 str(item.get("mint") or ""),
                                 str(item.get("pool") or ""),
-                                FULLY_ELIGIBLE,
+                                MEMORY_OBSERVATION_ELIGIBLE,
                             ),
                         )
             connection.commit()
@@ -1883,10 +1952,17 @@ class AuthoritativeLiveOperationalCampaignOwner:
             chosen: list[Any] = []
             seen: set[str] = set()
             for mint in reserve_order:
-                fact = holder_facts.get(mint, {})
-                if fact.get("eligible") and mint not in seen:
-                    chosen.append(admitted_by_mint[mint])
-                    seen.add(mint)
+                # Memory freeze already chose from MEMORY_OBSERVATION_ELIGIBLE.
+                # Do not re-gate selection on holder pass; holder is context only.
+                if mint not in seen and mint in admitted_by_mint:
+                    if frozen_eligible_reserve is not None:
+                        chosen.append(admitted_by_mint[mint])
+                        seen.add(mint)
+                    else:
+                        fact = holder_facts.get(mint, {})
+                        if fact.get("eligible"):
+                            chosen.append(admitted_by_mint[mint])
+                            seen.add(mint)
                 if len(chosen) == 2:
                     break
 

@@ -756,6 +756,11 @@ def run_persistent_eligible_token_supply(
                     request_id=int(locator_request_id),
                     now=now,
                     campaign_id=campaign_id,
+                    response_id=(
+                        None
+                        if locator.get("response_id") is None
+                        else int(locator["response_id"])
+                    ),
                 )
             if run_geckoterminal_nomination:
                 stage_budget.consume("intake", 1)
@@ -776,6 +781,62 @@ def run_persistent_eligible_token_supply(
                 channels_attempted.append("geckoterminal_fresh_pool_nomination")
                 if geckoterminal_nomination_transport is None:
                     live_geckoterminal_requests += 1
+
+            # V2-9.8B: process above-floor protocol confirmation before market
+            # batches consume residual promotion capacity. Confirmed rows promote
+            # via retained unexpired liquidity without a second market request.
+            if stage_budget.available("protocol_confirmation") >= 1:
+                from printer_v1.discovery.permanent_discovery_availability import (
+                    process_protocol_confirmation_queue as _early_protocol,
+                )
+
+                early_protocol = _early_protocol(
+                    connection,
+                    stage_budget=stage_budget,
+                    now=now,
+                    campaign_id=campaign_id,
+                    run_id=run_id,
+                    cycle_id=cycle_id,
+                    account_batch_transport=protocol_account_batch_transport,
+                    account_batch_transport_factory=(
+                        protocol_account_batch_transport_factory
+                    ),
+                    stage_evidence_sink=stage_evidence_sink,
+                    transport_identity_observer=transport_identity_observer,
+                    stage_sequence=1,
+                    request_key_prefix=f"{discovery_request_key_prefix}-protocol",
+                )
+                protocol_report = early_protocol
+                protocol_confirmation_outcomes = list(
+                    early_protocol.get("outcomes") or ()
+                )
+                ops_used += int(early_protocol.get("source_requests") or 0)
+                for promo in early_protocol.get("promoted_observation_eligible") or ():
+                    mint = str(promo.get("mint") or "")
+                    if not mint or mint in campaign_eligible:
+                        continue
+                    cand = {
+                        "mint": mint,
+                        "pool": str(promo.get("pool") or ""),
+                        "pumpswap_pool": str(promo.get("pool") or ""),
+                        "market_identity": str(
+                            promo.get("market_identity")
+                            or f"solana-mainnet:pumpswap:{promo.get('pool')}"
+                        ),
+                        "provenance": "FRESH_AGGREGATOR_PROTOCOL_CONFIRMED",
+                        "liquidity_usd": promo.get("liquidity_usd"),
+                        "liquidity_status": "LIQUIDITY_PROVEN",
+                        "liquidity": dict(promo.get("liquidity") or {}),
+                        "evidence_expires_at": promo.get("evidence_expires_at"),
+                        "eligible": True,
+                        "rejection": None,
+                        "memory_observation_eligible": True,
+                        "future_action_eligibility": "BLOCKED_OR_UNKNOWN",
+                        "source_path": "retained_liquidity_protocol_promotion",
+                    }
+                    campaign_eligible[mint] = cand
+                    evaluated_mints.add(mint)
+                    all_candidates.append(cand)
 
         # Count locator and direct migration/verification failures only through
         # the exact Source-Governor request/failure lineage exposed by those
@@ -1356,7 +1417,8 @@ def run_persistent_eligible_token_supply(
                 "reconciliation"
             ):
                 stage_budget.seal("reconciliation")
-            protocol_report = process_protocol_confirmation_queue(
+            # Residual protocol due only (early pass may have already run).
+            residual_protocol = process_protocol_confirmation_queue(
                 connection,
                 stage_budget=stage_budget,
                 now=now,
@@ -1369,18 +1431,78 @@ def run_persistent_eligible_token_supply(
                 ),
                 stage_evidence_sink=stage_evidence_sink,
                 transport_identity_observer=transport_identity_observer,
+                stage_sequence=2,
+                request_key_prefix=f"{discovery_request_key_prefix}-protocol-residual",
             )
-            protocol_confirmation_outcomes = list(
-                protocol_report.get("outcomes") or ()
-            )
+            # Merge residual outcomes into the campaign protocol report.
+            if residual_protocol.get("source_requests") or residual_protocol.get(
+                "outcomes"
+            ):
+                if protocol_report:
+                    merged_outcomes = list(protocol_report.get("outcomes") or ())
+                    merged_outcomes.extend(residual_protocol.get("outcomes") or ())
+                    protocol_report = dict(protocol_report)
+                    protocol_report["outcomes"] = merged_outcomes
+                    protocol_report["remaining_due"] = list(
+                        residual_protocol.get("remaining_due") or ()
+                    )
+                    protocol_report["promoted_observation_eligible"] = list(
+                        protocol_report.get("promoted_observation_eligible") or ()
+                    ) + list(
+                        residual_protocol.get("promoted_observation_eligible") or ()
+                    )
+                    protocol_report["requires_market_revalidation"] = list(
+                        protocol_report.get("requires_market_revalidation") or ()
+                    ) + list(
+                        residual_protocol.get("requires_market_revalidation") or ()
+                    )
+                    protocol_report["source_request_ids"] = list(
+                        protocol_report.get("source_request_ids") or ()
+                    ) + list(residual_protocol.get("source_request_ids") or ())
+                    protocol_report["source_requests"] = int(
+                        protocol_report.get("source_requests") or 0
+                    ) + int(residual_protocol.get("source_requests") or 0)
+                else:
+                    protocol_report = residual_protocol
+                protocol_confirmation_outcomes = list(
+                    protocol_report.get("outcomes") or ()
+                )
             work_queues["PROTOCOL_CONFIRMATION_DUE"] = list(
                 protocol_report.get("remaining_due") or ()
             )
-            ops_used += int(protocol_report.get("source_requests") or 0)
-            # Confirmed identities re-enter current-market validation when
-            # market-batch capacity remains (never invent liquidity here).
+            ops_used += int(residual_protocol.get("source_requests") or 0)
+            for promo in residual_protocol.get("promoted_observation_eligible") or ():
+                mint = str(promo.get("mint") or "")
+                if not mint or mint in campaign_eligible:
+                    continue
+                cand = {
+                    "mint": mint,
+                    "pool": str(promo.get("pool") or ""),
+                    "pumpswap_pool": str(promo.get("pool") or ""),
+                    "market_identity": str(
+                        promo.get("market_identity")
+                        or f"solana-mainnet:pumpswap:{promo.get('pool')}"
+                    ),
+                    "provenance": "FRESH_AGGREGATOR_PROTOCOL_CONFIRMED",
+                    "liquidity_usd": promo.get("liquidity_usd"),
+                    "liquidity_status": "LIQUIDITY_PROVEN",
+                    "liquidity": dict(promo.get("liquidity") or {}),
+                    "evidence_expires_at": promo.get("evidence_expires_at"),
+                    "eligible": True,
+                    "rejection": None,
+                    "memory_observation_eligible": True,
+                    "future_action_eligibility": "BLOCKED_OR_UNKNOWN",
+                    "source_path": "retained_liquidity_protocol_promotion",
+                }
+                campaign_eligible[mint] = cand
+                evaluated_mints.add(mint)
+                all_candidates.append(cand)
+            # Only rows that could not promote via retained evidence re-enter
+            # market validation when capacity remains (never invent liquidity).
             confirmed_for_market = list(
-                protocol_report.get("confirmed_for_market") or ()
+                residual_protocol.get("requires_market_revalidation")
+                or protocol_report.get("requires_market_revalidation")
+                or ()
             )
             if (
                 confirmed_for_market
@@ -1818,6 +1940,33 @@ def run_persistent_eligible_token_supply(
             "duplicate_observations_removed": duplicate_observations_removed,
             "evaluation_batch_size": front_door_max_candidates,
             "permanent_availability": bool(permanent_availability),
+            "protocol_confirmation": {
+                "source_request_ids": list(
+                    (protocol_report or {}).get("source_request_ids") or ()
+                ),
+                "source_request_coverage": list(
+                    (protocol_report or {}).get("source_request_coverage") or ()
+                ),
+                "promoted_observation_eligible_count": len(
+                    (protocol_report or {}).get("promoted_observation_eligible")
+                    or ()
+                ),
+                "requires_market_revalidation_count": len(
+                    (protocol_report or {}).get("requires_market_revalidation")
+                    or ()
+                ),
+                "outcome_counts": dict(
+                    (protocol_report or {}).get("outcome_counts") or {}
+                ),
+                "sealed_stage_present": bool(
+                    (protocol_report or {}).get("sealed_stage_evidence")
+                ),
+            },
+            "memory_observation_eligible_count": sum(
+                1
+                for item in eligible_list
+                if item.get("memory_observation_eligible") or item.get("eligible")
+            ),
             "nominations_by_source": {
                 "direct_pump_migration": int(
                     discovery.get("confirmed_count") or 0

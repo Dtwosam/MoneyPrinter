@@ -252,6 +252,7 @@ class TestProductionQueueComposition:
                     "base_mint": _MINT_A,
                     "quote_mint": WSOL,
                     "venue": "pumpswap",
+                    "liquidity_usd": 5000.0,
                 },
                 {
                     "mint": _MINT_B,
@@ -259,6 +260,7 @@ class TestProductionQueueComposition:
                     "base_mint": _MINT_B,
                     "quote_mint": WSOL,
                     "venue": "pumpswap",
+                    "liquidity_usd": 5000.0,
                 },
                 {
                     "mint": "MintMeteora" + "z" * 20,
@@ -266,6 +268,7 @@ class TestProductionQueueComposition:
                     "base_mint": "MintMeteora" + "z" * 20,
                     "quote_mint": WSOL,
                     "venue": "meteora-damm-v2",
+                    "liquidity_usd": 5000.0,
                 },
             ],
         )
@@ -290,19 +293,27 @@ class TestProductionQueueComposition:
         assert report["transport_operations"] >= 1
         assert report["local_validation_steps"] >= 2
         assert len(report["source_request_ids"]) == 1
-        # Meteora: zero transport, unsupported
-        assert any(o["outcome"] == "UNSUPPORTED_VENUE" for o in report["outcomes"])
+        # Meteora: candidate-local unsupported at nomination; never protocol-transported
+        meteora_state = connection.execute(
+            """SELECT current_state FROM printer_exact_market_states
+               WHERE mint_identity=?""",
+            ("MintMeteora" + "z" * 20,),
+        ).fetchone()
+        assert meteora_state["current_state"] == "UNSUPPORTED_VENUE"
         # Valid PumpSwap confirms
         assert any(o["outcome"] == "CURRENT_POOL_CONFIRMED" for o in report["outcomes"])
         assert len(report["confirmed_for_market"]) >= 1
-        # DB transitions
+        # DB transitions — direct promotion may advance confirmed rows to CURRENT_VISIBLE
         states = {
             (r["mint_identity"], r["current_state"])
             for r in connection.execute(
                 "SELECT mint_identity, current_state FROM printer_exact_market_states"
             )
         }
-        assert (_MINT_A, CURRENT_POOL_CONFIRMED) in states
+        assert (_MINT_A, CURRENT_POOL_CONFIRMED) in states or (
+            _MINT_A,
+            "CURRENT_VISIBLE",
+        ) in states
         # Governed request persisted
         kind = connection.execute(
             "SELECT request_kind, source_name FROM printer_source_requests WHERE id=?",
@@ -322,6 +333,7 @@ class TestProductionQueueComposition:
                     "base_mint": "MintM1" + "a" * 30,
                     "quote_mint": WSOL,
                     "venue": "meteora-damm-v2",
+                    "liquidity_usd": 5000.0,
                 }
             ],
         )
@@ -340,7 +352,10 @@ class TestProductionQueueComposition:
         )
         assert calls["n"] == 0
         assert report["source_requests"] == 0
-        assert report["outcomes"][0]["outcome"] == "UNSUPPORTED_VENUE"
+        state = connection.execute(
+            "SELECT current_state FROM printer_exact_market_states"
+        ).fetchone()
+        assert state["current_state"] == "UNSUPPORTED_VENUE"
 
     def test_shared_failure_marks_all_members_source_unavailable(self, database):
         _, connection = database
@@ -353,6 +368,7 @@ class TestProductionQueueComposition:
                     "base_mint": _MINT_A,
                     "quote_mint": WSOL,
                     "venue": "pumpswap",
+                    "liquidity_usd": 5000.0,
                 },
                 {
                     "mint": _MINT_B,
@@ -360,6 +376,7 @@ class TestProductionQueueComposition:
                     "base_mint": _MINT_B,
                     "quote_mint": WSOL,
                     "venue": "pumpswap",
+                    "liquidity_usd": 5000.0,
                 },
             ],
         )
@@ -391,6 +408,7 @@ class TestProductionQueueComposition:
                     "base_mint": _MINT_A,
                     "quote_mint": WSOL,
                     "venue": "pumpswap",
+                    "liquidity_usd": 5000.0,
                 },
                 {
                     "mint": _MINT_B,
@@ -398,6 +416,7 @@ class TestProductionQueueComposition:
                     "base_mint": _MINT_B,
                     "quote_mint": WSOL,
                     "venue": "pump-fun",
+                    "liquidity_usd": 5000.0,
                 },
             ],
         )

@@ -182,8 +182,8 @@ class TestMigration051:
                     )
                 ]
                 assert before == 50
-                assert versions[-1] == "051_permanent_discovery_availability.sql"
-                assert len(versions) == 51
+                assert versions[-1] == "052_memory_observation_eligibility_layers.sql"
+                assert len(versions) == 52
                 assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
                 assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
             finally:
@@ -625,13 +625,24 @@ class TestProductionSupplyComposition:
                 }
             ),
         )
-        assert report["nominations"] == [{
-            "mint": "FreshMint", "pool": "FreshPool", "source": "geckoterminal"
-        }]
-        layers = connection.execute(
-            "SELECT reserve_layer FROM printer_discovery_reserve_layers"
-        ).fetchall()
-        assert [row[0] for row in layers] == [BROAD_NOMINATED]
+        assert report["nominations"][0]["mint"] == "FreshMint"
+        assert report["nominations"][0]["pool"] == "FreshPool"
+        assert report["nominations"][0]["source"] == "geckoterminal"
+        assert report["nominations"][0]["liquidity_usd"] == 9000.0
+        assert report["nominations"][0]["prefilter_outcome"] == "ABOVE_FLOOR_NOMINATION"
+        layers = {
+            row[0]
+            for row in connection.execute(
+                "SELECT reserve_layer FROM printer_discovery_reserve_layers"
+            ).fetchall()
+        }
+        assert BROAD_NOMINATED in layers
+        # Above-floor fresh nominations also enter the prefilter reserve.
+        from printer_v1.discovery.permanent_discovery_availability import (
+            ABOVE_FLOOR_NOMINATED,
+        )
+
+        assert ABOVE_FLOOR_NOMINATED in layers
         assert load_exact_market_states(connection, mint="FreshMint")[0]["current_state"] == "CONTRACT_BLOCKED"
 
     def test_production_inventory_interleaves_all_five_categories(self, database):

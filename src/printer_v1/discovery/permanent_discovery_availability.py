@@ -49,9 +49,35 @@ EXACT_MARKET_STATES = frozenset(
 )
 
 BROAD_NOMINATED = "BROAD_NOMINATED"
+ABOVE_FLOOR_NOMINATED = "ABOVE_FLOOR_NOMINATED"
 MARKET_READY = "MARKET_READY"
+MEMORY_OBSERVATION_ELIGIBLE = "MEMORY_OBSERVATION_ELIGIBLE"
 FULLY_ELIGIBLE = "FULLY_ELIGIBLE"
-RESERVE_LAYERS = frozenset({BROAD_NOMINATED, MARKET_READY, FULLY_ELIGIBLE})
+RESERVE_LAYERS = frozenset(
+    {
+        BROAD_NOMINATED,
+        ABOVE_FLOOR_NOMINATED,
+        MARKET_READY,
+        MEMORY_OBSERVATION_ELIGIBLE,
+        FULLY_ELIGIBLE,
+    }
+)
+
+# Categorical prefilter / protocol-due reason codes (state remains existing enum).
+REASON_ABOVE_FLOOR_NOMINATION = "ABOVE_FLOOR_NOMINATION_REQUIRES_PROTOCOL_CONFIRMATION"
+REASON_LIQUIDITY_UNKNOWN = "LIQUIDITY_UNKNOWN"
+REASON_FRESH_AGGREGATOR_LEGACY = "FRESH_AGGREGATOR_NOMINATION_REQUIRES_EXACT_PROTOCOL_PROOF"
+REASON_BELOW_FLOOR = "BELOW_3000_FLOOR"
+PROTOCOL_DUE_REASONS = frozenset(
+    {
+        REASON_ABOVE_FLOOR_NOMINATION,
+        REASON_FRESH_AGGREGATOR_LEGACY,
+    }
+)
+
+MINIMUM_FREEZE_DEPTH = 4
+OBSERVATION_SURPLUS_TARGET = 8
+SELECTION_FLOOR_USD = 3000.0
 
 TRAVERSAL_CATEGORIES = (
     "FRESH_NOMINATION",
@@ -83,6 +109,42 @@ EXACT_POOL_RECONCILIATION_SECONDS = 1_800
 SUPPORTED_PUMPSWAP_PROVIDER_VENUES = frozenset(
     {"pumpswap", "pumpfun", "pump-amm"}
 )
+
+
+def _liquidity_evidence_expiry(observed_at: str) -> str:
+    return (
+        _parse_iso(observed_at) + timedelta(seconds=EXACT_POOL_RECONCILIATION_SECONDS)
+    ).isoformat()
+
+
+def _coerce_liquidity_usd(raw: Any) -> float | None:
+    if raw is None:
+        return None
+    if isinstance(raw, Mapping):
+        raw = raw.get("usd") if "usd" in raw else raw.get("liquidity_usd")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if value != value or value < 0:  # NaN or negative
+        return None
+    return value
+
+
+def classify_exact_pool_liquidity_prefilter(
+    *,
+    liquidity_usd: float | None,
+) -> tuple[str, str]:
+    """Return (exact_market_state, reason) for one exact-pool liquidity prefilter.
+
+    Floor is unchanged at $3,000. Liquidity belongs only to the exact nominated
+    pool; callers must never pass token-wide or alternate-pool values.
+    """
+    if liquidity_usd is None:
+        return CONTRACT_BLOCKED, REASON_LIQUIDITY_UNKNOWN
+    if float(liquidity_usd) < SELECTION_FLOOR_USD:
+        return BELOW_LIQUIDITY_FLOOR, REASON_BELOW_FLOOR
+    return CONTRACT_BLOCKED, REASON_ABOVE_FLOOR_NOMINATION
 
 
 def _parse_iso(value: str) -> datetime:
@@ -1533,10 +1595,31 @@ def record_fresh_pool_nominations(
     request_id: int,
     now: str,
     campaign_id: str | None,
+    response_id: int | None = None,
 ) -> dict[str, Any]:
-    """Merge fresh aggregator pools into the canonical broad reserve only."""
-    accepted: list[dict[str, str]] = []
+    """Merge fresh aggregator pools, preserve exact-pool liquidity, prefilter floor.
+
+    Fresh DexScreener/GeckoTerminal nominations retain exact mint, pool, base and
+    quote mints, provider venue, liquidity_usd, observation time, evidence expiry,
+    request/response provenance, and provider contract version. The $3,000 floor
+    is applied to the exact nominated pool before protocol confirmation whenever
+    liquidity is already present. No graduation-registry re-proof is required.
+    """
+    accepted: list[dict[str, Any]] = []
     exclusions: list[dict[str, str]] = []
+    prefilter_counts = {
+        "ABOVE_FLOOR_NOMINATION": 0,
+        "BELOW_LIQUIDITY_FLOOR": 0,
+        "LIQUIDITY_UNKNOWN": 0,
+        "IDENTITY_CONFLICT": 0,
+        "EXACT_POOL_NO_MATCH": 0,
+    }
+    contract_version = (
+        "GECKOTERMINAL_KEYLESS_V2_2026_08_04"
+        if source == "geckoterminal"
+        else "DEXSCREENER_TOKENS_V1_2026_08_04"
+    )
+    evidence_expires_at = _liquidity_evidence_expiry(now)
     for raw in observations:
         mint = str(raw.get("mint") or raw.get("base_mint") or "")
         pool = str(raw.get("pool") or raw.get("pair_address") or raw.get("pairAddress") or "")
@@ -1549,13 +1632,71 @@ def record_fresh_pool_nominations(
             else venue
         )
         if not mint or not pool or base != mint:
-            exclusions.append({"mint": mint, "pool": pool, "reason": "INCOMPLETE_ORIENTATION"})
+            exclusions.append(
+                {"mint": mint, "pool": pool, "reason": "INCOMPLETE_ORIENTATION"}
+            )
+            prefilter_counts["IDENTITY_CONFLICT"] += 1
             continue
         if mint in SOLANA_INFRASTRUCTURE_MINTS:
-            exclusions.append({"mint": mint, "pool": pool, "reason": "INFRASTRUCTURE_MINT"})
+            exclusions.append(
+                {"mint": mint, "pool": pool, "reason": "INFRASTRUCTURE_MINT"}
+            )
             continue
-        provenance = {"source": source, "request_id": int(request_id)}
-        reason = "FRESH_AGGREGATOR_NOMINATION_REQUIRES_EXACT_PROTOCOL_PROOF"
+        liquidity_usd = _coerce_liquidity_usd(
+            raw.get("liquidity_usd")
+            if raw.get("liquidity_usd") is not None
+            else raw.get("liquidity")
+        )
+        observed_at = str(raw.get("observed_at") or raw.get("liquidity_observed_at") or now)
+        item_expires = str(
+            raw.get("liquidity_evidence_expires_at")
+            or raw.get("evidence_expires_at")
+            or evidence_expires_at
+        )
+        # Unsupported venues are candidate-local and never enter protocol.
+        if venue and not _protocol_supported_venue(venue):
+            state, reason = UNSUPPORTED_VENUE, "PROTOCOL_UNSUPPORTED_VENUE"
+            prefilter_label = "UNSUPPORTED_VENUE"
+        else:
+            state, reason = classify_exact_pool_liquidity_prefilter(
+                liquidity_usd=liquidity_usd
+            )
+            if reason == REASON_ABOVE_FLOOR_NOMINATION:
+                prefilter_counts["ABOVE_FLOOR_NOMINATION"] += 1
+                prefilter_label = "ABOVE_FLOOR_NOMINATION"
+            elif reason == REASON_BELOW_FLOOR:
+                prefilter_counts["BELOW_LIQUIDITY_FLOOR"] += 1
+                prefilter_label = "BELOW_LIQUIDITY_FLOOR"
+            else:
+                prefilter_counts["LIQUIDITY_UNKNOWN"] += 1
+                prefilter_label = "LIQUIDITY_UNKNOWN"
+        provenance = {
+            "source": source,
+            "request_id": int(request_id),
+            "response_id": None if response_id is None else int(response_id),
+            "provider_venue": venue or canonical_venue,
+            "liquidity_usd": liquidity_usd,
+            "liquidity_observed_at": observed_at,
+            "liquidity_evidence_expires_at": item_expires,
+            "market_evidence_contract_version": contract_version,
+            "prefilter_outcome": prefilter_label,
+            # Market-source provenance only — never claimed as migration proof.
+            "provenance_kind": "MARKET_SOURCE_OBSERVATION",
+        }
+        evidence = {
+            "base_mint": base,
+            "quote_mint": quote,
+            "venue": venue,
+            "provider_venue": venue or canonical_venue,
+            "liquidity_usd": liquidity_usd,
+            "liquidity_observed_at": observed_at,
+            "liquidity_evidence_expires_at": item_expires,
+            "market_evidence_contract_version": contract_version,
+            "prefilter_outcome": prefilter_label,
+            "source": source,
+            "request_id": int(request_id),
+            "response_id": None if response_id is None else int(response_id),
+        }
         record_exact_market_transition(
             connection,
             ExactMarketObservation(
@@ -1567,16 +1708,14 @@ def record_fresh_pool_nominations(
                 base_mint=base,
                 quote_mint=quote or "UNKNOWN_QUOTE_MINT",
                 venue=canonical_venue or "UNKNOWN_VENUE",
-                state=CONTRACT_BLOCKED,
+                state=state,
                 reason=reason,
-                observed_at=now,
-                next_lawful_action_at=now,
-                source_provenance=provenance,
-                contract_version=(
-                    "GECKOTERMINAL_KEYLESS_V2_2026_08_04"
-                    if source == "geckoterminal"
-                    else "DEXSCREENER_TOKENS_V1_2026_08_04"
+                observed_at=observed_at,
+                next_lawful_action_at=(
+                    now if reason == REASON_ABOVE_FLOOR_NOMINATION else now
                 ),
+                source_provenance=provenance,
+                contract_version=contract_version,
             ),
             now=now,
         )
@@ -1588,16 +1727,46 @@ def record_fresh_pool_nominations(
             layer=BROAD_NOMINATED,
             reserve_state="ACTIVE",
             reason=reason,
-            observed_at=now,
+            observed_at=observed_at,
             next_lawful_action_at=now,
-            evidence_expires_at=None,
+            evidence_expires_at=item_expires if liquidity_usd is not None else None,
             source_provenance=provenance,
-            evidence={"base_mint": base, "quote_mint": quote, "venue": venue},
+            evidence=evidence,
             campaign_id=campaign_id,
         )
-        accepted.append({"mint": mint, "pool": pool, "source": source})
+        if reason == REASON_ABOVE_FLOOR_NOMINATION:
+            upsert_reserve_layer(
+                connection,
+                network=NETWORK,
+                mint=mint,
+                pool=pool,
+                layer=ABOVE_FLOOR_NOMINATED,
+                reserve_state="ACTIVE",
+                reason=reason,
+                observed_at=observed_at,
+                next_lawful_action_at=now,
+                evidence_expires_at=item_expires,
+                source_provenance=provenance,
+                evidence=evidence,
+                campaign_id=campaign_id,
+            )
+        accepted.append(
+            {
+                "mint": mint,
+                "pool": pool,
+                "source": source,
+                "liquidity_usd": liquidity_usd,
+                "prefilter_outcome": prefilter_label,
+                "liquidity_evidence_expires_at": item_expires,
+                "protocol_confirmation_due": reason == REASON_ABOVE_FLOOR_NOMINATION,
+            }
+        )
     connection.commit()
-    return {"accepted": accepted, "exclusions": exclusions}
+    return {
+        "accepted": accepted,
+        "exclusions": exclusions,
+        "prefilter_counts": prefilter_counts,
+    }
 
 
 def run_geckoterminal_fresh_nomination(
@@ -1664,6 +1833,12 @@ def run_geckoterminal_fresh_nomination(
             continue
         base = item.get("baseToken") if isinstance(item.get("baseToken"), Mapping) else {}
         quote = item.get("quoteToken") if isinstance(item.get("quoteToken"), Mapping) else {}
+        liquidity_raw = item.get("liquidity")
+        liquidity_usd = _coerce_liquidity_usd(
+            item.get("liquidity_usd")
+            if item.get("liquidity_usd") is not None
+            else liquidity_raw
+        )
         observations.append(
             {
                 "mint": item.get("base_mint") or base.get("address"),
@@ -1671,6 +1846,8 @@ def run_geckoterminal_fresh_nomination(
                 "base_mint": item.get("base_mint") or base.get("address"),
                 "quote_mint": item.get("quote_mint") or quote.get("address"),
                 "venue": item.get("dex_id") or item.get("dex"),
+                "liquidity_usd": liquidity_usd,
+                "observed_at": item.get("captured_at") or now,
             }
         )
     merge = record_fresh_pool_nominations(
@@ -1680,8 +1857,13 @@ def run_geckoterminal_fresh_nomination(
         request_id=int(execution.request_record.id),
         now=now,
         campaign_id=campaign_id,
+        response_id=(
+            None
+            if execution.response_record is None
+            else int(execution.response_record.id)
+        ),
     ) if result.source_status == SourceStatus.COMPLETE and not result.failure_type else {
-        "accepted": [], "exclusions": []
+        "accepted": [], "exclusions": [], "prefilter_counts": {}
     }
     sealed = None
     if stage_evidence_sink is not None:
@@ -1733,7 +1915,12 @@ def freeze_eligible_reserve(
     cycle_seed: str,
     at: str,
 ) -> FrozenEligibleReserve:
-    """Freeze current fully eligible rows, select two neutrally, retain spares."""
+    """Freeze MEMORY_OBSERVATION_ELIGIBLE rows; select two neutrally, retain spares.
+
+    Admission is observation eligibility only. Holder concentration, manipulation
+    context, liquidity magnitude, source order, and provider popularity never
+    influence ordering or selection. FULLY_ELIGIBLE is not the memory input.
+    """
     from printer_v1.discovery.selection_authority import (
         candidate_from_front_door_mapping,
         deterministic_candidate_order,
@@ -1750,7 +1937,11 @@ def freeze_eligible_reserve(
         mint = str(item.get("mint") or item.get("mint_identity") or "")
         pool = str(item.get("pool") or item.get("pair_address") or "")
         expiry = item.get("evidence_expires_at")
-        if not item.get("fully_eligible") or not mint or not pool:
+        observation_eligible = bool(
+            item.get("memory_observation_eligible")
+            or item.get("fully_eligible")
+        )
+        if not observation_eligible or not mint or not pool:
             continue
         if expiry is None or _parse_iso(str(expiry)) <= instant:
             stale.append(item)
@@ -1761,6 +1952,12 @@ def freeze_eligible_reserve(
         seen_pools.add(pool)
         item.setdefault("market_identity", f"solana-mainnet:eligible:{pool}")
         item.setdefault("provenance", "PERSISTED_GRADUATED")
+        # Explicit separation: memory observation vs future action eligibility.
+        item.setdefault("memory_observation_eligible", True)
+        item.setdefault(
+            "future_action_eligibility",
+            item.get("future_action_eligibility") or "BLOCKED_OR_UNKNOWN",
+        )
         fresh.append(item)
 
     selection_candidates = [candidate_from_front_door_mapping(item) for item in fresh]
@@ -1769,9 +1966,11 @@ def freeze_eligible_reserve(
     ordered = deterministic_candidate_order(selection_candidates, cycle_seed=cycle_seed)
     by_mint = {str(item["mint"]): item for item in fresh}
     selected = tuple(by_mint[item.mint] for item in authority.selected)
-    alternates = tuple(
+    # Exactly two alternates when depth permits; remainder stays standby inventory.
+    alternate_items = [
         by_mint[item.mint] for item in ordered if item.mint not in selected_mints
-    )
+    ]
+    alternates = tuple(alternate_items[:2])
     return FrozenEligibleReserve(
         selected=selected,
         alternates=alternates,
@@ -1779,6 +1978,205 @@ def freeze_eligible_reserve(
         frozen_at=at,
         selection_authority=authority.as_dict(),
     )
+
+
+def load_retained_market_evidence(
+    connection: sqlite3.Connection,
+    *,
+    mint: str,
+    pool: str,
+    at: str,
+) -> dict[str, Any] | None:
+    """Load unexpired exact-pool market evidence retained at nomination time."""
+    row = connection.execute(
+        """SELECT evidence_json, evidence_expires_at, source_provenance_json,
+                  categorical_reason, observed_at
+           FROM printer_discovery_reserve_layers
+           WHERE network=? AND mint_identity=? AND pool_address=?
+             AND reserve_layer IN (?, ?)
+           ORDER BY CASE reserve_layer
+             WHEN ? THEN 0
+             WHEN ? THEN 1
+             ELSE 2 END""",
+        (
+            NETWORK,
+            mint,
+            pool,
+            ABOVE_FLOOR_NOMINATED,
+            BROAD_NOMINATED,
+            ABOVE_FLOOR_NOMINATED,
+            BROAD_NOMINATED,
+        ),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        evidence = json.loads(str(row["evidence_json"] or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        evidence = {}
+    if not isinstance(evidence, dict):
+        evidence = {}
+    try:
+        provenance = json.loads(str(row["source_provenance_json"] or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        provenance = {}
+    expiry = row["evidence_expires_at"] or evidence.get("liquidity_evidence_expires_at")
+    liquidity_usd = _coerce_liquidity_usd(evidence.get("liquidity_usd"))
+    if liquidity_usd is None and isinstance(provenance, Mapping):
+        # Fall back to accumulated observations envelope.
+        observations = provenance.get("observations") if isinstance(provenance, Mapping) else None
+        if isinstance(observations, list):
+            for obs in observations:
+                if not isinstance(obs, Mapping):
+                    continue
+                liquidity_usd = _coerce_liquidity_usd(obs.get("liquidity_usd"))
+                if liquidity_usd is not None:
+                    if expiry is None:
+                        expiry = obs.get("liquidity_evidence_expires_at")
+                    break
+    if liquidity_usd is None:
+        return None
+    if expiry is None:
+        return None
+    if _parse_iso(str(expiry)) <= _parse_iso(at):
+        return {
+            "liquidity_usd": liquidity_usd,
+            "evidence_expires_at": str(expiry),
+            "fresh": False,
+            "evidence": evidence,
+        }
+    return {
+        "liquidity_usd": liquidity_usd,
+        "evidence_expires_at": str(expiry),
+        "fresh": True,
+        "evidence": evidence,
+        "passes_floor": float(liquidity_usd) >= SELECTION_FLOOR_USD,
+    }
+
+
+def promote_confirmed_with_retained_liquidity(
+    connection: sqlite3.Connection,
+    *,
+    mint: str,
+    pool: str,
+    venue: str,
+    now: str,
+    campaign_id: str | None,
+    protocol_request_id: int | None,
+) -> dict[str, Any]:
+    """Promote CURRENT_POOL_CONFIRMED via retained unexpired liquidity evidence.
+
+    No second DexScreener market request. Expired/incomplete evidence requires
+    revalidation rather than silent promotion.
+    """
+    retained = load_retained_market_evidence(
+        connection, mint=mint, pool=pool, at=now
+    )
+    if retained is None or not retained.get("fresh") or not retained.get("passes_floor"):
+        return {
+            "mint": mint,
+            "pool": pool,
+            "promoted": False,
+            "reason": (
+                "RETAINED_LIQUIDITY_EXPIRED_OR_MISSING"
+                if retained is None or not retained.get("fresh")
+                else "RETAINED_LIQUIDITY_BELOW_FLOOR"
+            ),
+            "requires_market_revalidation": True,
+            "memory_observation_eligible": False,
+        }
+    from printer_v1.sources.pumpswap import PUMPSWAP_AMM_PROGRAM_ID
+
+    evidence = dict(retained.get("evidence") or {})
+    evidence_expires_at = str(retained["evidence_expires_at"])
+    liquidity_usd = float(retained["liquidity_usd"])
+    provenance = {
+        "stage": "protocol_confirmation_direct_promotion",
+        "campaign_id": campaign_id,
+        "protocol_request_id": protocol_request_id,
+        "liquidity_usd": liquidity_usd,
+        "liquidity_evidence_expires_at": evidence_expires_at,
+        "promotion_path": "RETAINED_FRESH_EXACT_POOL_LIQUIDITY",
+    }
+    # Liquidity floor already proven via retained exact-pool evidence.
+    record_exact_market_transition(
+        connection,
+        ExactMarketObservation(
+            network=NETWORK,
+            mint=mint,
+            pool=pool,
+            token_program=SPL_TOKEN_PROGRAM_ID,
+            pool_program=PUMPSWAP_AMM_PROGRAM_ID,
+            base_mint=mint,
+            quote_mint="So11111111111111111111111111111111111111112",
+            venue=venue or "pumpswap",
+            state=CURRENT_VISIBLE,
+            reason="AT_OR_ABOVE_3000_FLOOR_RETAINED",
+            observed_at=now,
+            next_lawful_action_at=None,
+            source_provenance=provenance,
+            contract_version=str(
+                evidence.get("market_evidence_contract_version")
+                or "RETAINED_MARKET_EVIDENCE_V1"
+            ),
+        ),
+        now=now,
+    )
+    liquidity_evidence = {
+        "status": "LIQUIDITY_PROVEN",
+        "liquidity_usd": liquidity_usd,
+        "mint": mint,
+        "pool": pool,
+        "reason": "AT_OR_ABOVE_3000_FLOOR",
+        "source_status": "COMPLETE",
+        "outcome_category": "LIQUIDITY_EXACT_ABOVE_FLOOR",
+        "detailed_reason": "AT_OR_ABOVE_3000_FLOOR_RETAINED",
+    }
+    for layer, reason in (
+        (MARKET_READY, "EXACT_POOL_CURRENT_AND_LIQUIDITY_FLOOR_PASS"),
+        (
+            MEMORY_OBSERVATION_ELIGIBLE,
+            "IDENTITY_POOL_LIQUIDITY_MEMORY_OBSERVATION_PASS",
+        ),
+    ):
+        upsert_reserve_layer(
+            connection,
+            network=NETWORK,
+            mint=mint,
+            pool=pool,
+            layer=layer,
+            reserve_state="ACTIVE",
+            reason=reason,
+            observed_at=now,
+            next_lawful_action_at=None,
+            evidence_expires_at=evidence_expires_at,
+            source_provenance=provenance,
+            evidence={
+                "liquidity": liquidity_evidence,
+                "base_mint": mint,
+                "venue": venue or "pumpswap",
+                "memory_observation_eligible": True,
+                "future_action_eligibility": "BLOCKED_OR_UNKNOWN",
+                "holder_condition": "UNKNOWN",
+                "holder_evidence_status": "NOT_YET_ENRICHED",
+            },
+            campaign_id=campaign_id,
+        )
+    return {
+        "mint": mint,
+        "pool": pool,
+        "promoted": True,
+        "reason": "PROMOTED_WITH_RETAINED_LIQUIDITY",
+        "requires_market_revalidation": False,
+        "memory_observation_eligible": True,
+        "liquidity_usd": liquidity_usd,
+        "evidence_expires_at": evidence_expires_at,
+        "liquidity": liquidity_evidence,
+        "market_identity": f"solana-mainnet:pumpswap:{pool}",
+        "eligible": True,
+        "rejection": None,
+        "future_action_eligibility": "BLOCKED_OR_UNKNOWN",
+    }
 
 
 
@@ -1825,24 +2223,32 @@ def process_protocol_confirmation_queue(
     request_key_prefix: str = "protocol-account-batch",
     stage_evidence_sink: Any | None = None,
     transport_identity_observer: Any | None = None,
+    stage_sequence: int = 1,
 ) -> dict[str, Any]:
-    """Process PROTOCOL_CONFIRMATION_DUE rows via governed getMultipleAccounts.
+    """Process ABOVE_FLOOR protocol-due rows via governed getMultipleAccounts.
 
     Production path:
-      due exact identities
+      above-floor nominations only
       → filter unsupported venues / invalid pools (zero transport)
       → Source-Governed solana_rpc/pumpswap_pool_account_batch
       → per-member PumpSwap owner + base_mint@43 confirmation
       → exact-market transitions
-      → confirmed identities returned for current-market validation
+      → direct MEMORY_OBSERVATION_ELIGIBLE promotion when retained liquidity is fresh
 
-    One governed request per address batch (≤100). Stage budget charges one
-    protocol_confirmation operation per batch, not per candidate.
+    Below-floor and liquidity-unknown rows never enter this queue. One governed
+    request per address batch (≤100). Stage budget charges one
+    protocol_confirmation operation per batch, not per candidate. Seals one
+    PROTOCOL_CONFIRMATION stage through stage_evidence_sink when provided.
     """
     from printer_v1.contracts.enums import SourceStatus
+    from printer_v1.sources.campaign_six_unit_accounting import (
+        build_campaign_stage_id,
+        seal_campaign_stage_evidence,
+    )
     from printer_v1.sources.contracts import build_governed_source_request
     from printer_v1.sources.governed_execution import execute_source_request_with_governor
     from printer_v1.sources.measured_transport import (
+        LocalValidationIdentity,
         MeasuredTransportError,
         MeasuredTransportLedger,
         record_payload_transports,
@@ -1861,6 +2267,8 @@ def process_protocol_confirmation_queue(
     outcomes: list[dict[str, Any]] = []
     remaining_due: list[dict[str, str]] = []
     confirmed_for_market: list[dict[str, str]] = []
+    promoted_observation_eligible: list[dict[str, Any]] = []
+    requires_market_revalidation: list[dict[str, str]] = []
     source_request_ids: list[int] = []
     source_response_ids: list[int] = []
     source_failure_ids: list[int] = []
@@ -1869,17 +2277,27 @@ def process_protocol_confirmation_queue(
     local_validation_steps = 0
     shared_source_failures = 0
     batch_count = 0
+    outcome_counts: dict[str, int] = {}
+    stage_ledger = MeasuredTransportLedger(
+        campaign_id=campaign_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
+        on_transport_recorded=transport_identity_observer,
+    )
+    local_validation_identities: list[LocalValidationIdentity] = []
+    source_request_coverage: list[dict[str, Any]] = []
 
+    reason_placeholders = ",".join("?" * len(PROTOCOL_DUE_REASONS))
     rows = connection.execute(
-        """
+        f"""
         SELECT network, mint_identity, pool_address, venue, base_mint, quote_mint,
                pool_program_id, token_program_id, current_reason, last_observed_at,
                latest_source_provenance_json
         FROM printer_exact_market_states
-        WHERE current_state=? AND current_reason=?
+        WHERE current_state=? AND current_reason IN ({reason_placeholders})
         ORDER BY last_observed_at ASC, mint_identity ASC, pool_address ASC
         """,
-        (CONTRACT_BLOCKED, "FRESH_AGGREGATOR_NOMINATION_REQUIRES_EXACT_PROTOCOL_PROOF"),
+        (CONTRACT_BLOCKED, *sorted(PROTOCOL_DUE_REASONS)),
     ).fetchall()
 
     pending: list[dict[str, Any]] = []
@@ -1907,6 +2325,9 @@ def process_protocol_confirmation_queue(
                     "reason": "MISSING_POOL_OR_MINT",
                     "transport": False,
                 }
+            )
+            outcome_counts["CONTRACT_BLOCKED"] = (
+                outcome_counts.get("CONTRACT_BLOCKED", 0) + 1
             )
             continue
         if not _protocol_supported_venue(venue):
@@ -1944,34 +2365,117 @@ def process_protocol_confirmation_queue(
                     "transport": False,
                 }
             )
+            outcome_counts["UNSUPPORTED_VENUE"] = (
+                outcome_counts.get("UNSUPPORTED_VENUE", 0) + 1
+            )
             continue
         pending.append(base)
 
-    empty = {
-        "outcomes": outcomes,
-        "remaining_due": [
-            {"mint": p["mint"], "pool": p["pool"], "venue": p["venue"]} for p in pending
-        ],
-        "confirmed_for_market": confirmed_for_market,
-        "source_requests": 0,
-        "transport_operations": 0,
-        "local_validation_steps": 0,
-        "attempts": 0,
-        "batch_count": 0,
-        "source_request_ids": source_request_ids,
-        "source_response_ids": source_response_ids,
-        "source_failure_ids": source_failure_ids,
-        "shared_source_failures": 0,
-        "contract_version": BATCH_CONTRACT_VERSION,
-        "requested_address_cap": MAX_BATCH_ADDRESSES,
-    }
+    def _finalize_report(
+        *,
+        remaining: list[dict[str, str]],
+        seal: bool,
+    ) -> dict[str, Any]:
+        sealed = None
+        stage_id = None
+        if (
+            seal
+            and stage_evidence_sink is not None
+            and (source_request_ids or outcomes)
+            and all(str(value or "").strip() for value in (campaign_id, run_id, cycle_id))
+        ):
+            stage_id = build_campaign_stage_id(
+                campaign_id=str(campaign_id),
+                run_id=str(run_id),
+                cycle_id=str(cycle_id),
+                stage_kind="PROTOCOL_CONFIRMATION",
+                stage_sequence=int(stage_sequence),
+            )
+            # Bind validation identities to the sealed stage_id.
+            bound_validations = [
+                LocalValidationIdentity(
+                    stage_id=stage_id,
+                    subject_identity=item.subject_identity,
+                    validation_kind=item.validation_kind,
+                    validation_ordinal=item.validation_ordinal,
+                )
+                for item in local_validation_identities
+            ]
+            first_cause = None
+            terminal_status = "COMPLETED"
+            if shared_source_failures:
+                terminal_status = "BLOCKED"
+                first_cause = "PROTOCOL_ACCOUNT_BATCH_SOURCE_UNAVAILABLE"
+            elif not source_request_ids and outcomes:
+                # Local-only outcomes (unsupported venue etc.) with zero transport.
+                terminal_status = "COMPLETED"
+            try:
+                if stage_ledger.source_transport_operations > 0 or bound_validations:
+                    sealed = seal_campaign_stage_evidence(
+                        ledger=stage_ledger,
+                        stage_id=stage_id,
+                        stage_kind="PROTOCOL_CONFIRMATION",
+                        stage_sequence=int(stage_sequence),
+                        stage_terminal_status=terminal_status,
+                        stage_first_terminal_cause=first_cause,
+                        campaign_id=str(campaign_id),
+                        run_id=str(run_id),
+                        cycle_id=str(cycle_id),
+                        sealed_at=now,
+                        local_validation_identities=bound_validations or None,
+                    )
+                else:
+                    # Zero-transport local-only stage: PRE_OPERATION_NO_WORK not
+                    # appropriate; emit diagnostic coverage without empty seal.
+                    sealed = None
+            except Exception:
+                sealed = None
+            if sealed is not None:
+                sealed = dict(sealed)
+                sealed["source_request_ids"] = list(source_request_ids)
+                sealed["source_response_ids"] = list(source_response_ids)
+                sealed["source_failure_ids"] = list(source_failure_ids)
+                sealed["outcome_counts"] = dict(outcome_counts)
+                sealed["normalized_member_count"] = int(local_validation_steps)
+                sealed["source_request_coverage"] = list(source_request_coverage)
+                stage_evidence_sink(sealed)
+        connection.commit()
+        return {
+            "outcomes": outcomes,
+            "remaining_due": remaining,
+            "confirmed_for_market": confirmed_for_market,
+            "promoted_observation_eligible": promoted_observation_eligible,
+            "requires_market_revalidation": requires_market_revalidation,
+            "source_requests": source_requests,
+            "transport_operations": transport_operations or source_requests,
+            "local_validation_steps": local_validation_steps,
+            "attempts": source_requests,
+            "batch_count": batch_count,
+            "source_request_ids": source_request_ids,
+            "source_response_ids": source_response_ids,
+            "source_failure_ids": source_failure_ids,
+            "shared_source_failures": shared_source_failures,
+            "contract_version": BATCH_CONTRACT_VERSION,
+            "requested_address_cap": MAX_BATCH_ADDRESSES,
+            "outcome_counts": dict(outcome_counts),
+            "source_request_coverage": list(source_request_coverage),
+            "sealed_stage_evidence": sealed,
+            "stage_id": stage_id,
+            "stage_sequence": int(stage_sequence),
+        }
+
     if (
         not pending
         or stage_budget.is_sealed("protocol_confirmation")
         or stage_budget.available("protocol_confirmation") < 1
     ):
-        connection.commit()
-        return empty
+        return _finalize_report(
+            remaining=[
+                {"mint": p["mint"], "pool": p["pool"], "venue": p["venue"]}
+                for p in pending
+            ],
+            seal=bool(outcomes),
+        )
 
     cursor = 0
     max_batches = (
@@ -2052,28 +2556,39 @@ def process_protocol_confirmation_queue(
 
         result = execution.normalized_result
         payload = result.normalized_payload or {}
+        coverage_entry = {
+            "source_request_id": int(execution.request_record.id),
+            "source_name": BATCH_SOURCE_NAME,
+            "request_kind": BATCH_REQUEST_KIND,
+            "logical_stage_id": (
+                f"{campaign_id}|{run_id}|{cycle_id}|PROTOCOL_CONFIRMATION|{int(stage_sequence)}"
+                if campaign_id and run_id and cycle_id
+                else f"PROTOCOL_CONFIRMATION|{int(stage_sequence)}|{batch_count}"
+            ),
+            "transport_identity_count": 0,
+            "normalized_member_count": 0,
+            "terminal_status": "COMPLETED",
+        }
         if isinstance(payload, Mapping):
-            measured = MeasuredTransportLedger(
-                campaign_id=campaign_id, run_id=run_id, cycle_id=cycle_id
-            )
             try:
+                before = stage_ledger.source_transport_operations
                 record_payload_transports(
-                    measured, payload, default_stage="PROTOCOL_CONFIRMATION"
+                    stage_ledger, payload, default_stage="PROTOCOL_CONFIRMATION"
                 )
-                transport_operations += int(
-                    measured.six_unit_totals().get("SOURCE_TRANSPORT_OPERATION") or 1
-                )
+                delta = stage_ledger.source_transport_operations - before
+                transport_operations += int(delta or 1)
+                coverage_entry["transport_identity_count"] = int(delta or 1)
             except MeasuredTransportError:
                 transport_operations += 1
-            if transport_identity_observer is not None:
-                for identity in payload.get("transport_operation_identities") or ():
-                    transport_identity_observer(identity)
+                coverage_entry["transport_identity_count"] = 1
 
         shared_fail = bool(
             result.failure_type or result.source_status != SourceStatus.COMPLETE
         )
         if shared_fail:
             shared_source_failures += 1
+            coverage_entry["terminal_status"] = "BLOCKED"
+            source_request_coverage.append(coverage_entry)
             for pool in addresses:
                 for cand in address_map.get(pool, ()):
                     mint = str(cand["mint"])
@@ -2120,13 +2635,19 @@ def process_protocol_confirmation_queue(
                             "shared_source_failure": True,
                         }
                     )
+                    outcome_counts["SOURCE_UNAVAILABLE"] = (
+                        outcome_counts.get("SOURCE_UNAVAILABLE", 0) + 1
+                    )
             continue
 
         members = list(payload.get("members") or ()) if isinstance(payload, Mapping) else []
-        local_validation_steps += int(
+        member_count = int(
             (payload.get("local_validation_steps") if isinstance(payload, Mapping) else 0)
             or len(members)
         )
+        local_validation_steps += member_count
+        coverage_entry["normalized_member_count"] = member_count
+        source_request_coverage.append(coverage_entry)
         for member in members:
             if not isinstance(member, Mapping):
                 continue
@@ -2197,48 +2718,105 @@ def process_protocol_confirmation_queue(
                     "batch_index": member.get("batch_index"),
                 }
             )
+            outcome_counts[outcome] = outcome_counts.get(outcome, 0) + 1
+            local_validation_identities.append(
+                LocalValidationIdentity(
+                    stage_id="PROTOCOL_CONFIRMATION_PENDING",
+                    subject_identity=f"{mint}:{pool}",
+                    validation_kind=f"PUMPSWAP_ACCOUNT_{outcome}",
+                    validation_ordinal=len(local_validation_identities) + 1,
+                )
+            )
             if outcome == "CURRENT_POOL_CONFIRMED":
                 confirmed_for_market.append(
                     {"mint": mint, "pool": pool, "venue": venue or "pumpswap"}
                 )
+                promotion = promote_confirmed_with_retained_liquidity(
+                    connection,
+                    mint=mint,
+                    pool=pool,
+                    venue=venue or "pumpswap",
+                    now=now,
+                    campaign_id=campaign_id,
+                    protocol_request_id=int(execution.request_record.id),
+                )
+                if promotion.get("promoted"):
+                    promoted_observation_eligible.append(promotion)
+                else:
+                    requires_market_revalidation.append(
+                        {
+                            "mint": mint,
+                            "pool": pool,
+                            "venue": venue or "pumpswap",
+                            "reason": str(promotion.get("reason") or ""),
+                        }
+                    )
 
     # Unprocessed remainder stays due.
-    processed = {(str(o.get("mint")), str(o.get("pool"))) for o in outcomes if o.get("transport")}
     for item in pending[cursor:]:
         remaining_due.append(
             {"mint": item["mint"], "pool": item["pool"], "venue": item["venue"]}
         )
-    for item in pending[:cursor]:
-        key = (item["mint"], item["pool"])
-        if key not in processed and not any(
-            d["mint"] == item["mint"] and d["pool"] == item["pool"] for d in remaining_due
-        ):
-            # Shared failure already recorded; not remaining protocol-due.
-            pass
 
-    connection.commit()
+    return _finalize_report(remaining=remaining_due, seal=True)
+
+
+
+def build_source_request_coverage_manifest(
+    entries: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Normalize durable Source Governor request coverage entries.
+
+    Request count and transport count remain independent surfaces. Each durable
+    request_id appears exactly once.
+    """
+    seen: dict[int, dict[str, Any]] = {}
+    for raw in entries:
+        if not isinstance(raw, Mapping):
+            continue
+        request_id = raw.get("source_request_id")
+        if request_id is None:
+            continue
+        rid = int(request_id)
+        if rid in seen:
+            continue
+        seen[rid] = {
+            "source_request_id": rid,
+            "source_name": str(raw.get("source_name") or ""),
+            "request_kind": str(raw.get("request_kind") or ""),
+            "logical_stage_id": str(raw.get("logical_stage_id") or ""),
+            "transport_identity_count": int(raw.get("transport_identity_count") or 0),
+            "normalized_member_count": int(raw.get("normalized_member_count") or 0),
+            "terminal_status": str(raw.get("terminal_status") or "COMPLETED"),
+        }
+    return [seen[key] for key in sorted(seen)]
+
+
+def observation_reserve_depth_status(observation_eligible_count: int) -> dict[str, Any]:
+    """Report freeze-depth and surplus-target coverage without expanding budgets."""
+    count = int(observation_eligible_count)
     return {
-        "outcomes": outcomes,
-        "remaining_due": remaining_due,
-        "confirmed_for_market": confirmed_for_market,
-        "source_requests": source_requests,
-        "transport_operations": transport_operations or source_requests,
-        "local_validation_steps": local_validation_steps,
-        "attempts": source_requests,
-        "batch_count": batch_count,
-        "source_request_ids": source_request_ids,
-        "source_response_ids": source_response_ids,
-        "source_failure_ids": source_failure_ids,
-        "shared_source_failures": shared_source_failures,
-        "contract_version": BATCH_CONTRACT_VERSION,
-        "requested_address_cap": MAX_BATCH_ADDRESSES,
+        "observation_eligible_count": count,
+        "minimum_freeze_depth": MINIMUM_FREEZE_DEPTH,
+        "observation_surplus_target": OBSERVATION_SURPLUS_TARGET,
+        "freeze_depth_met": count >= MINIMUM_FREEZE_DEPTH,
+        "surplus_target_met": count >= OBSERVATION_SURPLUS_TARGET,
+        "coverage_blocker": count < MINIMUM_FREEZE_DEPTH,
+        "surplus_status": (
+            "SURPLUS_TARGET_MET"
+            if count >= OBSERVATION_SURPLUS_TARGET
+            else "SURPLUS_TARGET_NOT_MET"
+            if count >= MINIMUM_FREEZE_DEPTH
+            else "INSUFFICIENT_OBSERVATION_COVERAGE"
+        ),
     }
 
 
-
 __all__ = [
+    "ABOVE_FLOOR_NOMINATED",
     "BROAD_NOMINATED",
     "MARKET_READY",
+    "MEMORY_OBSERVATION_ELIGIBLE",
     "FULLY_ELIGIBLE",
     "CURRENT_VISIBLE",
     "BELOW_LIQUIDITY_FLOOR",
@@ -2252,6 +2830,13 @@ __all__ = [
     "IDENTITY_CONFLICT",
     "UNSUPPORTED_VENUE",
     "CONTRACT_BLOCKED",
+    "MINIMUM_FREEZE_DEPTH",
+    "OBSERVATION_SURPLUS_TARGET",
+    "SELECTION_FLOOR_USD",
+    "REASON_ABOVE_FLOOR_NOMINATION",
+    "REASON_LIQUIDITY_UNKNOWN",
+    "REASON_BELOW_FLOOR",
+    "PROTOCOL_DUE_REASONS",
     "CandidateObservation",
     "ExactMarketObservation",
     "FrozenEligibleReserve",
@@ -2259,12 +2844,17 @@ __all__ = [
     "MintBatchResolution",
     "PoolReconciliation",
     "StageBudget",
+    "build_source_request_coverage_manifest",
+    "classify_exact_pool_liquidity_prefilter",
     "freeze_eligible_reserve",
     "interleave_candidate_observations",
     "load_exact_market_states",
+    "load_retained_market_evidence",
     "merge_candidate_observations",
+    "observation_reserve_depth_status",
     "order_canonical_inventory_fairly",
     "process_protocol_confirmation_queue",
+    "promote_confirmed_with_retained_liquidity",
     "record_exact_market_transition",
     "record_fresh_pool_nominations",
     "reconcile_pool_identity",

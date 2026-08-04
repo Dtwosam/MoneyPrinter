@@ -346,6 +346,22 @@ def run_fresh_profile_locator(
                         "base_mint": str(item.get("base_mint") or ""),
                         "quote_mint": str(item.get("quote_mint") or ""),
                         "venue": str(item.get("dex_id") or ""),
+                        # Preserve exact-pool liquidity at discovery; never
+                        # discard available market evidence for the nominated pool.
+                        "liquidity_usd": (
+                            None
+                            if item.get("liquidity_usd") is None
+                            and not isinstance(item.get("liquidity"), Mapping)
+                            else (
+                                item.get("liquidity_usd")
+                                if item.get("liquidity_usd") is not None
+                                else (
+                                    (item.get("liquidity") or {}).get("usd")
+                                    if isinstance(item.get("liquidity"), Mapping)
+                                    else None
+                                )
+                            )
+                        ),
                     }
                     for item in (
                         payload.get("pairs") or ()
