@@ -113,7 +113,14 @@ class DexScreenerAdapter:
                 failure_type="dexscreener_transport_error",
                 failure_message=str(exc),
             )
-        return normalize_dexscreener_fixture_result(payload, request_kind=context.request.request_kind)
+        requested_token_mints = context.request.payload.get("token_mints")
+        if not isinstance(requested_token_mints, (list, tuple)):
+            requested_token_mints = None
+        return normalize_dexscreener_fixture_result(
+            payload,
+            request_kind=context.request.request_kind,
+            requested_token_mints=requested_token_mints,
+        )
 
 
 def build_dexscreener_adapter_contract() -> SourceAdapterContract:
@@ -321,6 +328,110 @@ def build_dexscreener_token_transport(
         timeout_seconds=timeout_seconds,
         endpoint=endpoint,
     )
+
+
+def build_dexscreener_mint_batch_transport(
+    token_mints: Sequence[str],
+    *,
+    timeout_seconds: float = DEXSCREENER_SMOKE_TIMEOUT_SECONDS,
+    endpoint_template: str = DEXSCREENER_TOKENS_BATCH_URL_TEMPLATE,
+) -> Callable[[SourceAdapterContext], Mapping[str, Any]]:
+    """Build one exact governed `/tokens/v1/solana/{mints}` transport.
+
+    The provider contract permits at most 30 distinct mints. Input order is
+    discarded before request construction so it cannot become selection
+    authority. There is one HTTP attempt and no retry.
+    """
+    mints = tuple(
+        sorted({str(value).strip() for value in token_mints if str(value).strip()})
+    )
+    if not 1 <= len(mints) <= _DEXSCREENER_FRESH_PROFILES_MAX_TOKENS:
+        raise ValueError("DEXSCREENER_BATCH_SIZE_OUT_OF_CONTRACT")
+    endpoint = endpoint_template.format(addresses=",".join(mints))
+
+    def transport(context: SourceAdapterContext | None) -> Mapping[str, Any]:
+        if context is not None:
+            requested = context.request.payload.get("token_mints")
+            if not isinstance(requested, (list, tuple)) or tuple(
+                sorted({str(item).strip() for item in requested if str(item).strip()})
+            ) != mints:
+                raise ValueError("DEXSCREENER_BATCH_TRANSPORT_TARGET_MISMATCH")
+        from printer_v1.sources.measured_transport import (
+            BYTE_CEILINGS,
+            MeasuredTransportError,
+            build_transport_identity,
+            measured_payload_fields,
+        )
+
+        response_bytes = 0
+        result_label = "OK"
+        try:
+            pairs, response_bytes = _dexscreener_http_get_json(
+                endpoint,
+                timeout_seconds,
+                byte_ceiling=int(BYTE_CEILINGS["dexscreener_pair"]),
+            )
+            if not isinstance(pairs, list):
+                result_label = "MALFORMED"
+                payload: dict[str, Any] = {
+                    "fixture_status": "failure",
+                    "failure_type": "dexscreener_tokens_malformed",
+                    "failure_message": "DexScreener mint batch did not return a list",
+                }
+            else:
+                payload = {
+                    "pairs": pairs,
+                    "_source_status_code": 200,
+                    "_requested_token_mints": list(mints),
+                }
+        except MeasuredTransportError as exc:
+            result_label = "BYTE_CEILING"
+            payload = {
+                "fixture_status": "failure",
+                "failure_type": "dexscreener_tokens_byte_ceiling",
+                "failure_message": str(exc),
+            }
+        except url_error.HTTPError as exc:
+            if exc.code == 429:
+                result_label = "RATE_LIMITED"
+                payload = {
+                    "fixture_status": "rate_limited",
+                    "failure_type": "dexscreener_tokens_rate_limited",
+                    "failure_message": "DexScreener mint batch rate limited",
+                    "retry_after_seconds": 60,
+                }
+            else:
+                result_label = "HTTP_ERROR"
+                payload = {
+                    "fixture_status": "failure",
+                    "failure_type": "dexscreener_tokens_http_error",
+                    "failure_message": f"DexScreener mint batch HTTP error {exc.code}",
+                }
+        except (OSError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            result_label = "TRANSPORT_FAILURE"
+            payload = {
+                "fixture_status": "failure",
+                "failure_type": "dexscreener_tokens_transport_failure",
+                "failure_message": str(exc),
+            }
+        identity = build_transport_identity(
+            stage="MINT_MARKET_BATCH",
+            source_name="dexscreener_pair",
+            endpoint_owner="dexscreener",
+            governed_request_kind="candidate_market_batch",
+            method_or_endpoint="GET /tokens/v1/solana/{mints}",
+            within_request_ordinal=1,
+            target_category="due_mints",
+            target_identity=",".join(mints),
+            response_bytes=response_bytes,
+            normalized_rows=len(payload.get("pairs") or ()),
+            result=result_label,
+            reserved_from="market_batching",
+        )
+        payload.update(measured_payload_fields((identity,)))
+        return MappingProxyType(payload)
+
+    return transport
 
 
 def build_dexscreener_pair_snapshot_transport(
@@ -869,6 +980,10 @@ def normalize_dexscreener_fixture_result(
         declared["dexscreener_fresh_profile_mints"] = (
             int(ROW_CEILINGS["dexscreener_fresh_profile_mints"]) * 4
         )
+    elif request_kind == "candidate_market_batch":
+        declared["dexscreener_exact_pair_rows"] = (
+            _DEXSCREENER_FRESH_PROFILES_MAX_TOKENS * 4
+        )
     try:
         enforce_normalized_row_ceiling(
             row_kind if row_kind in declared else "dexscreener_exact_pair_rows",
@@ -895,8 +1010,16 @@ def normalize_dexscreener_fixture_result(
         ) if exact_pair_request else NormalizedSourceResult(
             source_name=DEXSCREENER_SOURCE_NAME,
             request_kind=request_kind,
-            source_status=SourceStatus.PARTIAL,
-            data_quality_label=DataQualityLabel.ACCEPTABLE_PARTIAL_DATA,
+            source_status=(
+                SourceStatus.COMPLETE
+                if request_kind == "candidate_market_batch"
+                else SourceStatus.PARTIAL
+            ),
+            data_quality_label=(
+                DataQualityLabel.CLEAN_DATA
+                if request_kind == "candidate_market_batch"
+                else DataQualityLabel.ACCEPTABLE_PARTIAL_DATA
+            ),
             normalized_payload=MappingProxyType({
                 **dict(measured_payload),
                 "pairs": [],

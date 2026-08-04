@@ -175,8 +175,8 @@ of the confirmation event. Per this sprint's lock:
 
 | Item | Status |
 |---|---|
-| Official PumpSwap AMM program ID / IDL and pinned authority | RESOLVED — program ID `pAMMBay…` verified on-chain (executable) + A7 SDK/Bitquery corroboration. Full IDL/account layout beyond base_mint@43 still UNKNOWN_REQUIRES_RESEARCH |
-| PumpSwap Pool account full layout (quote_mint, lp_mint, reserves offsets) | UNKNOWN_REQUIRES_RESEARCH — only base_mint@43 verified live; quote_mint@75 inferred, not independently confirmed |
+| Official PumpSwap AMM program ID / IDL and pinned authority | RESOLVED — program ID `pAMMBay…` plus official `pump-public-docs` commit and exact IDL hash pinned on 2026-08-04 |
+| PumpSwap Pool account full layout (quote_mint, lp_mint, reserves offsets) | RESOLVED for the pinned current prefix and append-only extension at official commit `9c82f61…`; unknown lengths/extensions still fail closed |
 | Resolve the pool address without DexScreener | RESOLVED — resolved from the migration signature via `getTransaction` + `getMultipleAccounts` (owner==program AND base_mint@43==mint, unique-or-fail). PDA seed derivation itself is still UNKNOWN_REQUIRES_RESEARCH but no longer required for resolution |
 | Whether migration events ever carry the pool ADDRESS (not just `pool: "pump-amm"` venue label) | ANSWERED — no; the migration event carries only `mint`, `signature`, and venue label. The pool is resolved from the transaction, not the event |
 | PumpSwap pool PDA seed derivation | UNKNOWN_REQUIRES_RESEARCH (not required now that the pool resolves from the migration transaction) |
@@ -187,4 +187,25 @@ of the confirmation event. Per this sprint's lock:
 |---|---|---|
 | 2026-07-12 | Authored from A6 implementation; confirmation, timestamp, dedup, and governed-signature rules documented; live endpoint gaps marked UNKNOWN_REQUIRES_RESEARCH | Claude Opus 4.8 / PumpPortal-PumpSwap readiness |
 | 2026-07-12 | Governed on-chain confirmation implemented and proven live: program ID verified on-chain, base_mint@43 layout verified, migration block-time as evidence-only. Program-ID UNKNOWN resolved; full IDL/PDA/quote_mint remain open | Claude Opus 4.8 / PumpSwap live confirmation |
+| 2026-08-04 | Refreshed and pinned official `pump-fun/pump-public-docs` commit `9c82f61cb711b044a17f770ab8ce9f9bdf78f333`; Pump IDL SHA-256 `b90bc471327f671449271d5d1d42354d1fae6f5a06502f5834459a3108138e49`; PumpSwap IDL SHA-256 `6b5c7ec4e5ef9742fa99dc57b0d75b1031b379bba02a7e1b3c5a4cad68d77e56`. Current Pool prefix includes exact quote mint, cashback flag and appended signed i128 `virtual_quote_reserves`. | Permanent Discovery Availability |
+
+## 2026-08-04 quote and effective-reserve amendment
+
+The previously open full-layout question is resolved for the exact pinned
+official commit above. The adopted PumpSwap `Pool` account prefix is:
+
+`discriminator, pool_bump, index, creator, base_mint, quote_mint, lp_mint, pool_base_token_account, pool_quote_token_account, lp_supply, coin_creator, is_mayhem_mode, is_cashback_coin, virtual_quote_reserves`
+
+`virtual_quote_reserves` is a signed `i128`. Wherever Printer interprets
+PumpSwap quote reserves, the only lawful value is:
+
+`effective_quote_reserves = quote_vault_amount + virtual_quote_reserves`
+
+Raw quote-vault balance alone is not sufficient. The permanent discovery lane
+does not derive USD liquidity from reserves, but its exact protocol confirmation
+must preserve the decoded quote mint and virtual reserve value as categorical
+provenance. The active canonical migration path remains WSOL-quote only. A
+different quote mint, unknown account length, discriminator, extension, program,
+PDA or token-program relationship is `CONTRACT_BLOCKED`; it is never silently
+treated as WSOL or as an unrelated zero-liquidity pool.
 | 2026-07-12 | Signature pool resolution added: pool resolved from the migration transaction alone (getTransaction + getMultipleAccounts, owner+base_mint@43 unique filter), removing the DexScreener pool-resolution dependency. Audit of a real migration tx confirmed a unique pool among PumpSwap-owned accounts | Claude Opus 4.8 / PumpSwap signature pool resolution |

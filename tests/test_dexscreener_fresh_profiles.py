@@ -72,15 +72,16 @@ class _FakeHTTP:
         self.raise_on = raise_on or {}
         self.calls = []
 
-    def __call__(self, endpoint, timeout_seconds):
+    def __call__(self, endpoint, timeout_seconds, *, byte_ceiling=None):
+        del timeout_seconds, byte_ceiling
         self.calls.append(endpoint)
         for key, exc in self.raise_on.items():
             if key in endpoint:
                 raise exc
         if "token-profiles" in endpoint:
-            return self.profiles
+            return self.profiles, 0
         if "/tokens/v1/" in endpoint:
-            return self.tokens
+            return self.tokens, 0
         raise AssertionError(f"unexpected endpoint {endpoint}")
 
 

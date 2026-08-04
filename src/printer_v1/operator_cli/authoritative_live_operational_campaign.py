@@ -1163,6 +1163,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
         request_pacer: Any,
         partition_by_mint: Mapping[str, str] | None = None,
         tracking_pair_by_mint: Mapping[str, str] | None = None,
+        eligible_target: int = 2,
     ) -> tuple[dict[str, Mapping[str, Any]], Any]:
         """Shared pre-activation holder-eligibility funnel.
 
@@ -1170,7 +1171,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
         campaign and the snapshot-readiness boundary. It admits candidates
         against the operation ledger, replays matured evidence, collects the
         governed GoPlus/RPC/Helius holder bundle through the existing owners, and
-        derives per-candidate eligibility. It stops after two eligible
+        derives per-candidate eligibility. It stops after ``eligible_target``
         candidates. No lifecycle, memory, retrieval or financial work occurs.
         """
         from printer_v1.operator_cli.one_command_15m_factory import (
@@ -1272,7 +1273,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         required_partitions and accepted_partitions == required_partitions
                     ) or (
                         not required_partitions
-                        and sum(bool(fact.get("eligible")) for fact in holder_facts.values()) == 2
+                        and sum(bool(fact.get("eligible")) for fact in holder_facts.values()) >= eligible_target
                     ):
                         break
                     continue
@@ -1326,7 +1327,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     required_partitions and accepted_partitions == required_partitions
                 ) or (
                     not required_partitions
-                    and sum(bool(fact.get("eligible")) for fact in holder_facts.values()) == 2
+                    and sum(bool(fact.get("eligible")) for fact in holder_facts.values()) >= eligible_target
                 ):
                     break
             except Exception as exc:
@@ -1564,6 +1565,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
         )
 
         connection = connect_operational(command.db_path)
+        frozen_eligible_reserve = None
         try:
             # V2-9.7E.41 pending-discovery population: stage every confirmed
             # origin from this cycle into the durable prospective-origin registry
@@ -1720,6 +1722,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
             # failures and stops after any two eligible candidates.
             # V2-9.8B.20: holder pacing/source I/O must not inherit an open write.
             release_write_transaction(connection)
+            holder_transport_before = int(ledger.underlying_transport_operations)
             holder_facts, ledger = self._evaluate_holder_eligibility(
                 connection,
                 command=command,
@@ -1736,23 +1739,136 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     mint.lower(): proof.pool_address
                     for mint, proof in fixtures.pumpswap_proofs.items()
                 },
+                eligible_target=(
+                    4
+                    if supply is not None
+                    and bool(supply.diagnostics.get("permanent_availability"))
+                    else 2
+                ),
             )
+            holder_transport_used = (
+                int(ledger.underlying_transport_operations)
+                - holder_transport_before
+            )
+            if (
+                supply is not None
+                and bool(supply.diagnostics.get("permanent_availability"))
+            ):
+                if holder_transport_used > 8:
+                    raise LiveOperationalError(
+                        "PERMANENT_DISCOVERY_HOLDER_SAFETY_RESERVATION_EXCEEDED",
+                        str(holder_transport_used),
+                    )
+                stage_used = dict(
+                    supply.diagnostics.get("stage_operations_used") or {}
+                )
+                stage_used["holder_safety"] = holder_transport_used
+                supply.diagnostics["stage_operations_used"] = stage_used
+            if (
+                supply is not None
+                and bool(supply.diagnostics.get("permanent_availability"))
+            ):
+                from printer_v1.discovery.permanent_discovery_availability import (
+                    FULLY_ELIGIBLE,
+                    NETWORK,
+                    freeze_eligible_reserve,
+                    upsert_reserve_layer,
+                )
+
+                fully_eligible_rows = []
+                for proof in graduated_candidates:
+                    mint_key = proof.mint.lower()
+                    fact = holder_facts.get(mint_key, {})
+                    if not fact.get("eligible"):
+                        continue
+                    item = dict(supply.holder_reserve_candidates.get(mint_key, {}))
+                    expiry = item.get("evidence_expires_at")
+                    if not expiry:
+                        # No alternate can exist without an explicit current
+                        # evidence boundary. Selected candidates remain governed
+                        # by the same rule; this never fabricates freshness.
+                        continue
+                    fully = {
+                        **item,
+                        "mint": proof.mint,
+                        "pool": str(item.get("pool") or proof.bonding_curve),
+                        "fully_eligible": True,
+                        "evidence_expires_at": expiry,
+                        "holder_safety": dict(fact),
+                    }
+                    fully_eligible_rows.append(fully)
+                    upsert_reserve_layer(
+                        connection,
+                        network=NETWORK,
+                        mint=fully["mint"],
+                        pool=fully["pool"],
+                        layer=FULLY_ELIGIBLE,
+                        reserve_state="ACTIVE",
+                        reason="IDENTITY_MARKET_HOLDER_SAFETY_PASS",
+                        observed_at=evaluated.isoformat(),
+                        next_lawful_action_at=None,
+                        evidence_expires_at=str(expiry),
+                        source_provenance={
+                            "market": item.get("provenance"),
+                            "holder_source": fact.get("source_name"),
+                        },
+                        evidence={
+                            "liquidity": dict(item.get("liquidity") or {}),
+                            "holder_safety": dict(fact),
+                        },
+                        campaign_id=command.campaign_id,
+                    )
+                frozen_eligible_reserve = freeze_eligible_reserve(
+                    fully_eligible_rows,
+                    cycle_seed=selection_seed,
+                    at=datetime.now(timezone.utc).isoformat(),
+                )
+                for reserve_state, items in (
+                    ("SELECTED", frozen_eligible_reserve.selected),
+                    ("ALTERNATE", frozen_eligible_reserve.alternates[:2]),
+                ):
+                    for item in items:
+                        connection.execute(
+                            """UPDATE printer_discovery_reserve_layers
+                               SET reserve_state=?,updated_at=?
+                               WHERE network=? AND mint_identity=?
+                                 AND pool_address=? AND reserve_layer=?""",
+                            (
+                                reserve_state,
+                                evaluated.isoformat(),
+                                NETWORK,
+                                str(item.get("mint") or ""),
+                                str(item.get("pool") or ""),
+                                FULLY_ELIGIBLE,
+                            ),
+                        )
             connection.commit()
         finally:
             connection.close()
 
         readiness_bundle = None
         selection_terminal = None
+        eligible_alternates: list[dict[str, Any]] = []
         if supply is not None and provenance_by_mint:
             # Deterministic combined order: honour the seeded combined reserve order
             # (front door) so which two eligible tokens are chosen is fair and
             # replayable, never provider/recency/liquidity biased.
             admitted_by_mint = {p.mint.lower(): p for p in graduated_candidates}
-            reserve_order = [
-                p.mint.lower()
-                for p in getattr(supply, "holder_reserve_supply", ())
-                if p.mint.lower() in admitted_by_mint
-            ]
+            if frozen_eligible_reserve is not None:
+                reserve_order = [
+                    str(item.get("mint") or "").lower()
+                    for item in frozen_eligible_reserve.selected
+                    if str(item.get("mint") or "").lower() in admitted_by_mint
+                ]
+                eligible_alternates = [
+                    dict(item) for item in frozen_eligible_reserve.alternates[:2]
+                ]
+            else:
+                reserve_order = [
+                    p.mint.lower()
+                    for p in getattr(supply, "holder_reserve_supply", ())
+                    if p.mint.lower() in admitted_by_mint
+                ]
             for mint in sorted(admitted_by_mint):
                 if mint not in reserve_order:
                     reserve_order.append(mint)
@@ -1886,6 +2002,10 @@ class AuthoritativeLiveOperationalCampaignOwner:
             "candidates": admission_candidates,
             "campaign_source_calls": int(ledger.governed_requests),
             "campaign_scheduler_calls": 0,
+            "selected_identities": [proof.mint for proof in graduated_candidates],
+            "alternate_identities": [
+                str(item.get("mint") or "") for item in eligible_alternates
+            ],
         }
 
         # V2-9.7E.44/46B bounded pre-lifecycle boundary: return atomic two-slot
@@ -1932,6 +2052,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     "graduated_candidate_count": len(graduated_candidates),
                     "holder_eligible_count": holder_eligible,
                     "holder_facts": holder_facts,
+                    "eligible_alternates": eligible_alternates,
                     "handoff_readiness": (
                         dict(supply.handoff_readiness) if supply is not None else {}
                     ),
@@ -1952,6 +2073,13 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             "shortage_classification"
                         ),
                         "candidates": admission_candidates,
+                        "selected_identities": [
+                            proof.mint for proof in graduated_candidates
+                        ],
+                        "alternate_identities": [
+                            str(item.get("mint") or "")
+                            for item in eligible_alternates
+                        ],
                         "pre_lifecycle_admission": pre_lifecycle_admission,
                     },
                 },
@@ -1977,6 +2105,17 @@ class AuthoritativeLiveOperationalCampaignOwner:
             operational_persistent_mode=fifteen_minute_only,
             lifecycle_kwargs=lk,
         )
+        if (
+            supply is not None
+            and bool(supply.diagnostics.get("permanent_availability"))
+        ):
+            stage_used = dict(
+                supply.diagnostics.get("stage_operations_used") or {}
+            )
+            stage_used["final_refresh_handoff"] = len(
+                result.activation.activated_slots
+            )
+            supply.diagnostics["stage_operations_used"] = stage_used
         try:
             result.lifecycle.setdefault("full_pilot_admission", admission)
             result.lifecycle.setdefault("pilot_input_readiness", readiness_bundle)

@@ -207,3 +207,24 @@ operation so the fixed two-candidate snapshot reservation remains six rather
 than growing to eight. DexScreener remains available for its other governed
 roles and its historical E.26 permission remains auditable; it is not combined
 with, used to overwrite, or used as an automatic fallback for the E.30 base.
+
+## 2026-08-04 permanent discovery availability pin
+
+The official DexScreener API reference was refreshed on 2026-08-04 for the
+permanent mint-first discovery lane. The adopted current-market endpoint is:
+
+`GET https://api.dexscreener.com/tokens/v1/solana/{comma-separated-mints}`
+
+The official maximum remains **30 token addresses per request**. Printer pins
+this boundary as `DEXSCREENER_TOKENS_V1_2026_08_04`. The active Eligible Token
+Supply owner may issue one Source-Governed `candidate_market_batch` request for
+1-30 distinct due mints before any targeted exact-pair request. Input identities
+are deterministically deduplicated and sorted only to construct a stable request;
+provider order, pair order and every market magnitude are forbidden as pool or
+selection authority.
+
+A successful HTTP 200 batch containing no pairs is categorical market absence,
+not source unavailability. Every returned exact pool identity is preserved.
+Different pools remain pending exact reconciliation and are never selected by
+first row, liquidity, activity, provider popularity or provider order. There is
+one transport attempt and no adapter retry.

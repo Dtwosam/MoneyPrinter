@@ -86,6 +86,8 @@ OPERATIONAL_GRADUATED_SUPPLY_KWARGS: dict[str, object] = {
     "reverify_settle_seconds": 0.0,
     "front_door_max_candidates": 6,
     "run_locator": True,
+    "permanent_availability": True,
+    "run_geckoterminal_nomination": True,
 }
 
 
@@ -256,6 +258,7 @@ def run_fresh_profile_locator(
         "matched_count": 0,
         "locator_only_count": 0,
         "matched_mints": [],
+        "pool_observations": [],
         "dispositions": [],
     }
     connection = connect_operational(db_path)
@@ -296,6 +299,7 @@ def run_fresh_profile_locator(
                 "matched_count": 0,
                 "locator_only_count": 0,
                 "matched_mints": [],
+                "pool_observations": [],
                 "dispositions": [],
             }
             terminal_status = "BLOCKED"
@@ -330,6 +334,32 @@ def run_fresh_profile_locator(
                 "locator_only_count": len(mints) - len(matched),
                 "matched_mints": matched,
                 "dispositions": dispositions,
+                "pool_observations": [
+                    {
+                        "mint": str(
+                            item.get("candidate_mint")
+                            or item.get("token_mint")
+                            or item.get("base_mint")
+                            or ""
+                        ),
+                        "pool": str(item.get("pair_address") or ""),
+                        "base_mint": str(item.get("base_mint") or ""),
+                        "quote_mint": str(item.get("quote_mint") or ""),
+                        "venue": str(item.get("dex_id") or ""),
+                    }
+                    for item in (
+                        payload.get("pairs") or ()
+                        if isinstance(payload, Mapping)
+                        else ()
+                    )
+                    if isinstance(item, Mapping)
+                    and item.get("pair_address")
+                    and (
+                        item.get("candidate_mint")
+                        or item.get("token_mint")
+                        or item.get("base_mint")
+                    )
+                ],
             }
             if usable:
                 terminal_status = "COMPLETED"
@@ -401,6 +431,12 @@ def build_graduated_supply(
     | None = None,
     dexscreener_transport_factory: Callable[[str, str], Callable[[Any], Mapping[str, Any]]]
     | None = None,
+    dexscreener_batch_transport_factory: Callable[
+        [Sequence[str]], Callable[[Any], Mapping[str, Any]]
+    ] | None = None,
+    geckoterminal_reconciliation_transport_factory: Callable[
+        [str], Callable[[Any], Mapping[str, Any]]
+    ] | None = None,
     now: str | None = None,
     collection_rounds: int = 1,
     max_candidates: int = 5,
@@ -413,6 +449,7 @@ def build_graduated_supply(
     batch_seq: int = 1,
     run_locator: bool = False,
     locator_transport: Callable[[Any], Mapping[str, Any]] | None = None,
+    geckoterminal_nomination_transport: Callable[[Any], Mapping[str, Any]] | None = None,
     discovery_operation_budget: int | None = None,
     deadline_at: str | None = None,
     campaign_id: str | None = None,
@@ -423,6 +460,9 @@ def build_graduated_supply(
     tracking_precheck: bool = False,
     stage_evidence_sink: Callable[[Mapping[str, Any]], None] | None = None,
     transport_identity_observer: Callable[[Any], None] | None = None,
+    permanent_availability: bool = False,
+    run_geckoterminal_nomination: bool = False,
+    enable_geckoterminal_reconciliation: bool = True,
 ) -> GraduatedSupply:
     """Compose discovery + front door via persistent multi-round supply loop.
 
@@ -451,7 +491,12 @@ def build_graduated_supply(
         migration_transport=migration_transport,
         verifier_transport_factory=verifier_transport_factory,
         dexscreener_transport_factory=dexscreener_transport_factory,
+        dexscreener_batch_transport_factory=dexscreener_batch_transport_factory,
+        geckoterminal_reconciliation_transport_factory=(
+            geckoterminal_reconciliation_transport_factory
+        ),
         locator_transport=locator_transport,
+        geckoterminal_nomination_transport=geckoterminal_nomination_transport,
         now=now,
         collection_rounds=collection_rounds,
         max_candidates=max_candidates,
@@ -481,6 +526,11 @@ def build_graduated_supply(
         stage_evidence_sink=stage_evidence_sink,
         # Pre-seal verification observer (independent of sealed-stage handoff).
         transport_identity_observer=transport_identity_observer,
+        permanent_availability=permanent_availability,
+        run_geckoterminal_nomination=run_geckoterminal_nomination,
+        enable_geckoterminal_reconciliation=(
+            enable_geckoterminal_reconciliation
+        ),
     )
 
     discovery = dict(persistent.discovery_report)
@@ -505,6 +555,7 @@ def build_graduated_supply(
                     "status": c.get("liquidity_status"),
                     "liquidity_usd": c.get("liquidity_usd"),
                 }),
+                "evidence_expires_at": c.get("evidence_expires_at"),
                 "historical_reserve_evidence": c.get(
                     "historical_reserve_evidence"
                 ),

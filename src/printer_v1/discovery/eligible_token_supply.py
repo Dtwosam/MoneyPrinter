@@ -44,6 +44,13 @@ from printer_v1.discovery.graduated_liquidity_front_door import (
     SELECTION_FLOOR_USD,
     run_graduated_liquidity_front_door,
 )
+from printer_v1.discovery.permanent_discovery_availability import (
+    StageBudget,
+    order_canonical_inventory_fairly,
+    record_fresh_pool_nominations,
+    run_dexscreener_batch_market_resolution,
+    run_geckoterminal_fresh_nomination,
+)
 from printer_v1.sources.pumpswap_graduated_registry import (
     export_graduated_candidates,
 )
@@ -460,6 +467,7 @@ def _candidate_from_front_door_item(item: Mapping[str, Any]) -> dict[str, Any]:
         "liquidity_source_status": liquidity.get("source_status"),
         "liquidity_outcome_category": liquidity.get("outcome_category"),
         "liquidity": liquidity_evidence,
+        "evidence_expires_at": item.get("evidence_expires_at"),
         "eligible": bool(item.get("eligible")),
         "rejection": item.get("rejection"),
         "source_path": (
@@ -519,7 +527,14 @@ def run_persistent_eligible_token_supply(
     | None = None,
     dexscreener_transport_factory: Callable[[str, str], Callable[[Any], Mapping[str, Any]]]
     | None = None,
+    dexscreener_batch_transport_factory: Callable[
+        [Sequence[str]], Callable[[Any], Mapping[str, Any]]
+    ] | None = None,
+    geckoterminal_reconciliation_transport_factory: Callable[
+        [str], Callable[[Any], Mapping[str, Any]]
+    ] | None = None,
     locator_transport: Callable[[Any], Mapping[str, Any]] | None = None,
+    geckoterminal_nomination_transport: Callable[[Any], Mapping[str, Any]] | None = None,
     now: str | None = None,
     collection_rounds: int = 1,
     max_candidates: int = 5,
@@ -542,6 +557,9 @@ def run_persistent_eligible_token_supply(
     tracking_precheck: bool = False,
     stage_evidence_sink: Callable[[Mapping[str, Any]], None] | None = None,
     transport_identity_observer: Callable[[Any], None] | None = None,
+    permanent_availability: bool = False,
+    run_geckoterminal_nomination: bool = False,
+    enable_geckoterminal_reconciliation: bool = True,
 ) -> PersistentSupplyResult:
     """Run persistent multi-round eligible discovery inside one campaign.
 
@@ -555,6 +573,10 @@ def run_persistent_eligible_token_supply(
         raise EligibleTokenSupplyError("INVALID_REQUIRED_CAPACITY")
     if front_door_max_candidates < 1:
         raise EligibleTokenSupplyError("INVALID_EVALUATION_BATCH_SIZE")
+    if permanent_availability:
+        # Two selected plus one fully eligible alternate per slot. This is a
+        # reserve capacity, never a ranking or permission to consume four slots.
+        required_token_capacity = max(4, required_token_capacity)
 
     now = now or _utc_now_iso()
     started_at = _parse_iso(now)
@@ -662,7 +684,11 @@ def run_persistent_eligible_token_supply(
                 pass
     channels_attempted.append("direct_pump_finalized_live_tail")
     channels_attempted.append("exact_pump_pumpswap_graduation_verify")
-    channels_attempted.append("dexscreener_exact_pool_market")
+    channels_attempted.append(
+        "dexscreener_mint_market_batch"
+        if permanent_availability
+        else "dexscreener_exact_pool_market"
+    )
 
     evaluated_mints: set[str] = set()
     campaign_eligible: dict[str, dict[str, Any]] = {}
@@ -677,9 +703,59 @@ def run_persistent_eligible_token_supply(
     last_stop_reason = "NOT_STARTED"
     inventory_known_at_start = 0
     tracking_dispositions: dict[str, dict[str, Any]] = {}
+    permanent_market_reports: list[dict[str, Any]] = []
+    stage_budget = StageBudget.permanent_discovery_default()
+    geckoterminal_nomination_report: dict[str, Any] = {
+        "status": "NOT_REQUESTED",
+        "source_requests": 0,
+        "nominations": [],
+        "local_exclusions": [],
+    }
+    live_geckoterminal_requests = 0
+
+    def _pace_live_geckoterminal() -> None:
+        nonlocal live_geckoterminal_requests
+        if live_geckoterminal_requests > 0:
+            import time
+
+            time.sleep(6.0)
+        live_geckoterminal_requests += 1
 
     connection = _connect(db_path)
     try:
+        if permanent_availability:
+            intake_before_gecko = int(locator.get("source_requests") or 0) + 1
+            stage_budget.consume("intake", min(3, intake_before_gecko))
+            locator_request_id = locator.get("request_id")
+            if locator_request_id is not None:
+                record_fresh_pool_nominations(
+                    connection,
+                    observations=locator.get("pool_observations") or (),
+                    source="dexscreener",
+                    request_id=int(locator_request_id),
+                    now=now,
+                    campaign_id=campaign_id,
+                )
+            if run_geckoterminal_nomination:
+                stage_budget.consume("intake", 1)
+                geckoterminal_nomination_report = run_geckoterminal_fresh_nomination(
+                    connection,
+                    request_key=f"{discovery_request_key_prefix}-gt-new-pools",
+                    now=now,
+                    campaign_id=campaign_id,
+                    run_id=run_id,
+                    cycle_id=cycle_id,
+                    transport=geckoterminal_nomination_transport,
+                    stage_evidence_sink=stage_evidence_sink,
+                    transport_identity_observer=transport_identity_observer,
+                )
+                ops_used += int(
+                    geckoterminal_nomination_report.get("source_requests") or 0
+                )
+                channels_attempted.append("geckoterminal_fresh_pool_nomination")
+                if geckoterminal_nomination_transport is None:
+                    live_geckoterminal_requests += 1
+
         # Count locator and direct migration/verification failures only through
         # the exact Source-Governor request/failure lineage exposed by those
         # stages. Their terminal labels are deliberately not failure identities.
@@ -706,6 +782,14 @@ def run_persistent_eligible_token_supply(
                 request_id: "direct_pump_finalized_live_tail"
                 for request_id in discovery_request_ids
             },
+            **(
+                {
+                    int(geckoterminal_nomination_report["request_id"]):
+                        "geckoterminal_fresh_pool_nomination"
+                }
+                if geckoterminal_nomination_report.get("request_id") is not None
+                else {}
+            ),
         }
         attributable_request_ids = sorted(request_channels)
         if attributable_request_ids:
@@ -736,6 +820,14 @@ def run_persistent_eligible_token_supply(
         provider_failures = len(provider_failure_facts)
 
         inventory_rows = export_graduated_candidates(connection)
+        if permanent_availability:
+            inventory_rows = order_canonical_inventory_fairly(
+                connection,
+                inventory_rows=inventory_rows,
+                latest_mints=tuple(latest_mints),
+                fresh_mints=tuple(locator.get("matched_mints") or ()),
+                now=now,
+            )
         inventory_known_at_start = len(inventory_rows)
         inventory_mints = {str(r["mint_identity"]) for r in inventory_rows}
 
@@ -908,20 +1000,95 @@ def run_persistent_eligible_token_supply(
                     front_door_stage_kwargs["transport_identity_observer"] = (
                         transport_identity_observer
                     )
-            front_door = run_graduated_liquidity_front_door(
-                db_path,
-                cycle_seed=round_seed,
-                latest_mints=latest_mints,
-                dexscreener_transport_factory=dexscreener_transport_factory,
-                now=now,
-                batch_seq=batch_seq,
-                request_key_prefix=(
-                    f"{front_door_request_key_prefix}-r{discovery_rounds}"
-                ),
-                max_candidates=batch_size,
-                exclude_mints=exclude,
-                **front_door_stage_kwargs,
-            )
+            if permanent_availability:
+                # The exact-state owner itself applies due/no-match suppression.
+                # The traversal here remains the existing canonical graduated
+                # inventory; rows excluded by tracking are never sent to market.
+                permanent_rows = [
+                    row
+                    for row in inventory_rows
+                    if str(row["mint_identity"]) not in evaluated_mints
+                ][:30]
+                if not permanent_rows:
+                    last_stop_reason = "ALL_REACHABLE_CANDIDATES_EVALUATED"
+                    break
+                try:
+                    stage_budget.advance("market_batching")
+                    stage_budget.consume("market_batching", 1)
+                except ValueError:
+                    last_stop_reason = "DISCOVERY_OPERATION_BUDGET_EXHAUSTED"
+                    break
+                permanent_report = run_dexscreener_batch_market_resolution(
+                    connection,
+                    inventory_rows=permanent_rows,
+                    transport_factory=dexscreener_batch_transport_factory,
+                    geckoterminal_transport_factory=(
+                        geckoterminal_reconciliation_transport_factory
+                    ),
+                    enable_geckoterminal_fallback=(
+                        enable_geckoterminal_reconciliation
+                    ),
+                    before_geckoterminal_request=(
+                        (lambda: _pace_live_geckoterminal())
+                        if geckoterminal_reconciliation_transport_factory is None
+                        else None
+                    ),
+                    request_key=(
+                        f"{front_door_request_key_prefix}-mint-batch-r{discovery_rounds}"
+                    ),
+                    now=now,
+                    campaign_id=campaign_id,
+                    recent_request_count=fresh_market_checks,
+                    run_id=run_id,
+                    cycle_id=cycle_id,
+                    stage_evidence_sink=stage_evidence_sink,
+                    transport_identity_observer=transport_identity_observer,
+                )
+                permanent_market_reports.append(permanent_report)
+                reconciliation_calls = int(
+                    permanent_report.get("calls_by_stage", {}).get(
+                        "reconciliation", 0
+                    )
+                )
+                if reconciliation_calls:
+                    stage_budget.advance("reconciliation")
+                    stage_budget.consume("reconciliation", reconciliation_calls)
+                protocol_calls = max(
+                    0,
+                    int(
+                        (discovery.get("source_operation_ledger") or {}).get(
+                            "source_requests"
+                        )
+                        or 0
+                    )
+                    - 1,
+                )
+                stage_budget.advance("protocol_confirmation")
+                if protocol_calls:
+                    stage_budget.consume("protocol_confirmation", protocol_calls)
+                front_door = {
+                    "candidates": permanent_report["candidates"],
+                    "market_calls": int(
+                        permanent_report.get("source_request_count")
+                        or len(permanent_report["source_request_ids"])
+                    ),
+                    "cooldown_skip_count": 0,
+                }
+            else:
+                front_door = run_graduated_liquidity_front_door(
+                    db_path,
+                    cycle_seed=round_seed,
+                    latest_mints=latest_mints,
+                    dexscreener_transport_factory=dexscreener_transport_factory,
+                    now=now,
+                    batch_seq=batch_seq,
+                    request_key_prefix=(
+                        f"{front_door_request_key_prefix}-r{discovery_rounds}"
+                    ),
+                    max_candidates=batch_size,
+                    exclude_mints=exclude,
+                    **front_door_stage_kwargs,
+                )
             last_front_door = front_door
             market_calls = int(front_door.get("market_calls") or 0)
             fresh_market_checks += market_calls
@@ -979,8 +1146,14 @@ def run_persistent_eligible_token_supply(
                     LIQUIDITY_SOURCE_RATE_LIMITED_OR_STALE,
                     LIQUIDITY_RESPONSE_MALFORMED_OR_PARTIAL,
                 )
-            ) and "dexscreener_exact_pool_market" not in channels_unavailable:
-                channels_unavailable.append("dexscreener_exact_pool_market")
+            ):
+                market_channel = (
+                    "dexscreener_mint_market_batch"
+                    if permanent_availability
+                    else "dexscreener_exact_pool_market"
+                )
+                if market_channel not in channels_unavailable:
+                    channels_unavailable.append(market_channel)
             if not batch_candidates and not unexplored:
                 last_stop_reason = "NO_ADDITIONAL_UNIQUE_CANDIDATES_REACHABLE"
                 break
@@ -1216,6 +1389,7 @@ def run_persistent_eligible_token_supply(
                         "lifecycle_state": c.get("lifecycle_state"),
                         "graduation_block_time": c.get("graduation_block_time"),
                         "liquidity": dict(c.get("liquidity") or {}),
+                        "evidence_expires_at": c.get("evidence_expires_at"),
                         "historical_reserve_evidence": c.get(
                             "historical_reserve_evidence"
                         ),
@@ -1250,6 +1424,7 @@ def run_persistent_eligible_token_supply(
                         "lifecycle_state": c.get("lifecycle_state"),
                         "graduation_block_time": c.get("graduation_block_time"),
                         "liquidity": dict(c.get("liquidity") or {}),
+                        "evidence_expires_at": c.get("evidence_expires_at"),
                         "tracking_handoff": dict(c.get("tracking_handoff") or {}),
                         "tracking_requalification_required": bool(
                             c.get("tracking_requalification_required")
@@ -1285,6 +1460,7 @@ def run_persistent_eligible_token_supply(
                 "discovery_rounds": discovery_rounds,
                 "evaluated_unique_mints": len(evaluated_mints),
                 "eligible_reserve_count": len(eligible_list),
+                "permanent_market_reports": permanent_market_reports,
             }
         )
 
@@ -1313,6 +1489,7 @@ def run_persistent_eligible_token_supply(
             "locator_status": locator.get("status"),
             "locator_matched_count": int(locator.get("matched_count") or 0),
             "locator_source_requests": int(locator.get("source_requests") or 0),
+            "geckoterminal_nomination": geckoterminal_nomination_report,
             "discovery_source_requests": int(
                 (discovery.get("source_operation_ledger") or {}).get("source_requests")
                 or 0
@@ -1360,6 +1537,72 @@ def run_persistent_eligible_token_supply(
             ],
             "duplicate_observations_removed": duplicate_observations_removed,
             "evaluation_batch_size": front_door_max_candidates,
+            "permanent_availability": bool(permanent_availability),
+            "nominations_by_source": {
+                "direct_pump_migration": int(
+                    discovery.get("confirmed_count") or 0
+                ),
+                "dexscreener_fresh_profiles": int(
+                    locator.get("surfaced_count") or 0
+                ),
+                "geckoterminal_new_pools": len(
+                    geckoterminal_nomination_report.get("nominations") or ()
+                ),
+                "due_persisted_graduated": int(inventory_known_at_start),
+            },
+            "unique_mints_by_source": {
+                "direct_pump_migration": sorted(latest_mints),
+                "dexscreener_fresh_profiles": sorted(
+                    {
+                        str(item.get("mint") or "")
+                        for item in locator.get("pool_observations") or ()
+                        if item.get("mint")
+                    }
+                ),
+                "geckoterminal_new_pools": sorted(
+                    {
+                        str(item.get("mint") or "")
+                        for item in geckoterminal_nomination_report.get(
+                            "nominations"
+                        )
+                        or ()
+                        if item.get("mint")
+                    }
+                ),
+            },
+            "permanent_batch_sizes": [
+                size
+                for report in permanent_market_reports
+                for size in report.get("batch_sizes", ())
+            ],
+            "exact_pools_by_mint": {
+                mint: pools
+                for report in permanent_market_reports
+                for mint, pools in report.get("exact_pools_by_mint", {}).items()
+            },
+            "market_ready_count": len(eligible_list),
+            "reconciliation_outcomes": [
+                outcome
+                for report in permanent_market_reports
+                for outcome in report.get("reconciliation_outcomes", ())
+            ],
+            "state_transition_ids": [
+                transition_id
+                for report in permanent_market_reports
+                for transition_id in report.get("state_transition_ids", ())
+            ],
+            "suppressed_exact_pool_count": sum(
+                int(report.get("suppressed_exact_pool_count") or 0)
+                for report in permanent_market_reports
+            ),
+            "local_zero_source_exclusions": [
+                exclusion
+                for report in permanent_market_reports
+                for exclusion in report.get("local_zero_source_exclusions", ())
+            ],
+            "stage_reservations": dict(stage_budget.reservations),
+            "stage_operations_used": dict(stage_budget.used_by_stage),
+            "stage_total_ceiling": stage_budget.total_ceiling,
             "lifecycle_operation_ceiling": LIFECYCLE_OPERATION_CEILING,
             "restart_created": False,
             "successor_created": False,

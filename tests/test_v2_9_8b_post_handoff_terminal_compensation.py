@@ -282,7 +282,7 @@ def test_post_handoff_injection_terminalizes_and_preserves_evidence(stage) -> No
                     "SELECT version FROM printer_schema_migrations ORDER BY version"
                 )
             ][-1]
-            assert head.startswith("050")
+            assert head.startswith("051")
 
             # --- cycle/run/campaign terminalized to the fault cause ---
             cycle_state, cycle_cause = connection.execute(

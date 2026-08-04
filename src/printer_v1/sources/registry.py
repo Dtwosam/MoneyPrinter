@@ -70,7 +70,11 @@ SOURCE_REGISTRY: dict[str, SourceDefinition] = {
         retry_after_seconds=60,
         max_retries=0,
         priority_class="discovery",
-        notes="Keyless Public API v2; local 10/min ceiling is conservative below the documented public 30/min limit; fixed readiness endpoints make one attempt with no retry/rotation.",
+        notes=(
+            "Keyless Public API v2; current public throttling is dynamic/IP-based; "
+            "Printer retains a fixed stricter 10/min ceiling, six-second spacing "
+            "and zero retries. Token-pools reconciliation is exact-mint-bound."
+        ),
     ),
     "birdeye": SourceDefinition(
         source_name="birdeye",

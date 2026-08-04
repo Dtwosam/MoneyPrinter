@@ -14,7 +14,7 @@ from typing import Mapping
 from urllib import parse as url_parse
 
 
-CONTRACT_REGISTRY_VERSION = "V2_9_8B_SOURCE_COMPATIBILITY_RESET_V1"
+CONTRACT_REGISTRY_VERSION = "V2_9_8B_PERMANENT_DISCOVERY_AVAILABILITY_V1"
 SOLANA_RPC_ENVIRONMENT_NAME = "PRINTER_SOLANA_RPC_URL"
 HELIUS_API_KEY_ENVIRONMENT_NAME = "PRINTER_HELIUS_API_KEY"
 
@@ -30,6 +30,10 @@ DEXSCREENER_EXACT_PAIR_URL = (
 GECKOTERMINAL_EXACT_PAIR_URL = (
     "https://api.geckoterminal.com/api/v2/networks/solana/pools/{pool_address}"
     "?include=base_token,quote_token,dex"
+)
+GECKOTERMINAL_TOKEN_POOLS_URL = (
+    "https://api.geckoterminal.com/api/v2/networks/solana/tokens/{token_mint}"
+    "/pools?page=1&include=base_token,quote_token,dex"
 )
 GECKOTERMINAL_OHLCV_15M_URL = (
     "https://api.geckoterminal.com/api/v2/networks/{network}/pools/{pool_address}"
@@ -286,7 +290,7 @@ _CONTRACTS = (
         True,
         (),
         ("candidate_market_batch",),
-        "DEXSCREENER_TOKENS_V1",
+        "DEXSCREENER_TOKENS_V1_2026_08_04",
         60,
         "one bounded Solana batch",
         "BLOCKS_CANDIDATE_SUPPLY",
@@ -312,18 +316,20 @@ _CONTRACTS = (
         "KEYLESS_PUBLIC",
         (
             GECKOTERMINAL_EXACT_PAIR_URL,
+            GECKOTERMINAL_TOKEN_POOLS_URL,
             GECKOTERMINAL_OHLCV_15M_URL,
             GECKOTERMINAL_TRADES_15M_URL,
         ),
         True,
         (),
         (
+            "candidate_market_batch",
             "pair_market_snapshot",
             "geckoterminal_readiness_base_snapshot",
             "geckoterminal_ohlcv_15m",
             "geckoterminal_pool_trades_15m",
         ),
-        "GECKOTERMINAL_API_V2_20230203",
+        "GECKOTERMINAL_KEYLESS_V2_2026_08_04",
         10,
         "one attempt per endpoint; six-second spacing",
         "BLOCKS_CANDIDATE_OR_DIRTIES_WINDOW",
@@ -562,6 +568,7 @@ __all__ = [
     "DEXSCREENER_TOKEN_BATCH_URL",
     "DEXSCREENER_EXACT_PAIR_URL",
     "GECKOTERMINAL_EXACT_PAIR_URL",
+    "GECKOTERMINAL_TOKEN_POOLS_URL",
     "GECKOTERMINAL_OHLCV_15M_URL",
     "GECKOTERMINAL_TRADES_15M_URL",
     "GOPLUS_SOLANA_SECURITY_URL",

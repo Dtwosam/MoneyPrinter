@@ -257,6 +257,20 @@ not proof that adapters execute two safe retries.
 | Boundary | Current Printer behavior | Relationship to upstream |
 |---|---|---|
 | Source registry | 30/min, stale 120s, retry-after 60s, max retries 2 | Stricter than 100/10s total but insufficient alone for method, connection, or bandwidth ceilings |
+
+## 2026-08-04 `getMultipleAccounts` permanent discovery pin
+
+The official Solana `getMultipleAccounts` reference was refreshed on 2026-08-04.
+It continues to permit at most **100 pubkeys** and returns its `value` array in
+request order. Printer pins this as `SOLANA_GET_MULTIPLE_ACCOUNTS_2026_08_04`.
+
+The permanent discovery owner may use an already Source-Governed,
+Scheduler-led account batch for exact mint, token-program or pool confirmation.
+Every requested pubkey retains a separate index-bound provenance and separate
+categorical outcome. A null/malformed/unsupported member does not fabricate or
+invalidate facts for its siblings, but that member cannot pass. Short result
+arrays, reordering, unknown encodings/layouts and response-wide errors fail
+closed. One batch is one transport attempt; there is no automatic retry.
 | T3 token-age total | Maximum 8 RPC operations per mint | Per-token ceiling; still requires global IP/method scheduling |
 | T3 signature pages | Maximum 3 | Local coverage bound, not completeness |
 | T3 transaction calls | Maximum 3 | Local coverage bound |

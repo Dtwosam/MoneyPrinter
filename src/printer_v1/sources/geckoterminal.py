@@ -28,6 +28,7 @@ from printer_v1.sources.geckoterminal_15m import (
 )
 from printer_v1.sources.operational_source_contracts import (
     GECKOTERMINAL_EXACT_PAIR_URL,
+    GECKOTERMINAL_TOKEN_POOLS_URL,
 )
 
 
@@ -45,6 +46,7 @@ GECKOTERMINAL_TIMEOUT_SECONDS = 8.0
 GECKOTERMINAL_PAIR_SNAPSHOT_REQUEST_KIND = "pair_market_snapshot"
 GECKOTERMINAL_READINESS_BASE_REQUEST_KIND = "geckoterminal_readiness_base_snapshot"
 GECKOTERMINAL_POOL_URL_TEMPLATE = GECKOTERMINAL_EXACT_PAIR_URL
+GECKOTERMINAL_TOKEN_POOLS_URL_TEMPLATE = GECKOTERMINAL_TOKEN_POOLS_URL
 
 ALLOWED_REQUEST_KINDS = frozenset({
     "candidate_nomination",
@@ -166,7 +168,44 @@ def build_geckoterminal_pools_transport(
 ) -> Callable[[SourceAdapterContext], Mapping[str, Any]]:
     def transport(context: SourceAdapterContext) -> Mapping[str, Any]:
         del context
-        return _load_public_json(endpoint, timeout_seconds=timeout_seconds)
+        payload = dict(_load_public_json(endpoint, timeout_seconds=timeout_seconds))
+        return _attach_measured_geckoterminal_transport(
+            payload,
+            request_kind="geckoterminal_new_pool_discovery",
+            endpoint="GET /api/v2/networks/solana/new_pools",
+            target_category="fresh_solana_pools",
+        )
+
+    return transport
+
+
+def build_geckoterminal_token_pools_transport(
+    token_mint: str,
+    *,
+    timeout_seconds: float = GECKOTERMINAL_TIMEOUT_SECONDS,
+    endpoint_template: str = GECKOTERMINAL_TOKEN_POOLS_URL_TEMPLATE,
+) -> Callable[[SourceAdapterContext], Mapping[str, Any]]:
+    """Build one keyless, exact-mint GeckoTerminal pool-resolution attempt."""
+    mint = str(token_mint or "").strip()
+    if not mint:
+        raise ValueError("GeckoTerminal token pools requires token_mint")
+    endpoint = endpoint_template.format(token_mint=mint)
+
+    def transport(context: SourceAdapterContext) -> Mapping[str, Any]:
+        requested = str(context.request.payload.get("token_mint") or "").strip()
+        if requested != mint:
+            raise ValueError("GECKOTERMINAL_TOKEN_POOL_TARGET_MISMATCH")
+        payload = dict(_load_public_json(endpoint, timeout_seconds=timeout_seconds))
+        payload["_requested_token_mint"] = mint
+        payload["_requested_network"] = "solana"
+        payload["_requested_endpoint"] = endpoint
+        return _attach_measured_geckoterminal_transport(
+            payload,
+            request_kind="candidate_market_batch",
+            endpoint="GET /api/v2/networks/solana/tokens/{mint}/pools",
+            target_category="mint_pool_reconciliation",
+            target_identity=mint,
+        )
 
     return transport
 
@@ -306,6 +345,24 @@ def normalize_geckoterminal_payload(
         if flat:
             solana_pools.append(flat)
 
+    if not solana_pools and request_kind == "candidate_market_batch":
+        return NormalizedSourceResult(
+            source_name=GECKOTERMINAL_SOURCE_NAME,
+            request_kind=request_kind,
+            source_status=SourceStatus.COMPLETE,
+            data_quality_label=DataQualityLabel.CLEAN_DATA,
+            normalized_payload=MappingProxyType(
+                {
+                    **_measured_geckoterminal_metadata(payload),
+                    "source_name": GECKOTERMINAL_SOURCE_NAME,
+                    "request_kind": request_kind,
+                    "pairs": [],
+                    "no_matching_pools": True,
+                    "requested_token_mint": payload.get("_requested_token_mint"),
+                }
+            ),
+            status_code=int(payload.get("_source_status_code") or 200),
+        )
     if not solana_pools:
         return _failure_result(
             request_kind,
@@ -321,6 +378,7 @@ def normalize_geckoterminal_payload(
         data_quality_label=DataQualityLabel.STALE_DATA if stale else DataQualityLabel.CLEAN_DATA,
         normalized_payload=MappingProxyType(
             {
+                **_measured_geckoterminal_metadata(payload),
                 "source_name": GECKOTERMINAL_SOURCE_NAME,
                 "request_kind": request_kind,
                 "pairs": solana_pools,
@@ -807,10 +865,20 @@ def _load_public_json(endpoint: str, *, timeout_seconds: float) -> Mapping[str, 
     )
     try:
         with url_request.urlopen(req, timeout=timeout_seconds) as response:
-            raw_body = response.read(512_000)
+            raw_body = response.read(512_001)
+            if len(raw_body) > 512_000:
+                return MappingProxyType(
+                    {
+                        "fixture_status": "failure",
+                        "failure_type": "geckoterminal_response_byte_ceiling",
+                        "failure_message": "GeckoTerminal response exceeded 512000 bytes",
+                        "_source_response_bytes": len(raw_body),
+                    }
+                )
             payload = json.loads(raw_body.decode("utf-8"))
             if isinstance(payload, dict):
                 payload["_source_status_code"] = getattr(response, "status", None)
+                payload["_source_response_bytes"] = len(raw_body)
                 return MappingProxyType(payload)
             return MappingProxyType(
                 {
@@ -837,3 +905,45 @@ def _load_public_json(endpoint: str, *, timeout_seconds: float) -> Mapping[str, 
                 "failure_message": str(exc),
             }
         )
+
+
+def _measured_geckoterminal_metadata(payload: Mapping[str, Any]) -> dict[str, Any]:
+    from printer_v1.sources.measured_transport import merge_transport_payload_metadata
+
+    return merge_transport_payload_metadata(payload)
+
+
+def _attach_measured_geckoterminal_transport(
+    payload: Mapping[str, Any],
+    *,
+    request_kind: str,
+    endpoint: str,
+    target_category: str,
+    target_identity: str | None = None,
+) -> Mapping[str, Any]:
+    """Attach one exact identity to an actual keyless GeckoTerminal GET."""
+    from printer_v1.sources.measured_transport import (
+        build_transport_identity,
+        measured_payload_fields,
+    )
+
+    rows = payload.get("data")
+    row_count = len(rows) if isinstance(rows, list) else 0
+    identity = build_transport_identity(
+        stage=(
+            "FRESH_POOL_NOMINATION"
+            if request_kind == "geckoterminal_new_pool_discovery"
+            else "MINT_MARKET_BATCH"
+        ),
+        source_name="geckoterminal",
+        endpoint_owner="geckoterminal",
+        governed_request_kind=request_kind,
+        method_or_endpoint=endpoint,
+        within_request_ordinal=1,
+        target_category=target_category,
+        target_identity=target_identity,
+        response_bytes=int(payload.get("_source_response_bytes") or 0),
+        normalized_rows=row_count,
+        result="FAILED" if payload.get("fixture_status") else "OK",
+    )
+    return MappingProxyType({**dict(payload), **measured_payload_fields([identity])})

@@ -461,6 +461,30 @@ must agree with `reserve_in_usd` within a narrow numeric tolerance; disagreement
 is a source conflict and fails closed. Optional composition is not required and
 is not added to the fixed keyless request.
 
+## 2026-08-04 permanent mint-pool reconciliation amendment
+
+The current official CoinGecko Keyless Public API documentation was refreshed
+on 2026-08-04. It continues to publish the keyless GeckoTerminal v2 root and now
+describes public throttling as dynamic and IP-based. Printer therefore retains
+its stricter fixed operational ceiling of **10 requests per minute**, six-second
+minimum spacing and zero retries. The historical 30/minute FAQ value remains
+inadmissible. The pin is `GECKOTERMINAL_KEYLESS_V2_2026_08_04`.
+
+The permanent discovery owner may use exactly one keyless token-pools request for
+an unresolved mint after its DexScreener mint batch has not resolved a supported
+current pool:
+
+`GET /api/v2/networks/solana/tokens/{token_mint}/pools?page=1&include=base_token,quote_token,dex`
+
+This is a `candidate_market_batch` reconciliation operation despite being bound
+to one exact mint; it is not selection/ranking authority. The adapter preserves
+all valid returned pool identities and exact base/quote orientation. An empty
+successful response is `NO_SUPPORTED_CURRENT_POOL`, while rate limit, HTTP,
+transport and malformed-response outcomes remain `SOURCE_UNAVAILABLE` or
+`CONTRACT_BLOCKED`. A different pool remains `NEW_POOL_PENDING_PROOF` until the
+applicable exact on-chain and migration/revival rules pass. There is no retry,
+pagination loop, provider rotation or paid CoinGecko fallback.
+
 The registry receipt-age ceiling remains 180 seconds, matching the existing
 GeckoTerminal policy and accounting honestly for the documented public cache.
 No pair-age delay is adopted: official documentation describes fast updates and
