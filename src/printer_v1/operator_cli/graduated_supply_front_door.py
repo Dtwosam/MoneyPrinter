@@ -253,6 +253,8 @@ def run_fresh_profile_locator(
         "request_key": request_key,
         "request_id": None,
         "source_requests": 0,
+        "source_request_ids": [],
+        "source_request_coverage": [],
         "status": "not_started",
         "surfaced_count": 0,
         "matched_count": 0,
@@ -273,23 +275,53 @@ def run_fresh_profile_locator(
         request_id = int(execution.request_record.id)
         result = execution.normalized_result
         payload = result.normalized_payload or {}
+        transport_identity_count = 0
+        measurement_failed = False
         if isinstance(payload, Mapping):
             try:
+                before = measured_ledger.source_transport_operations
                 record_payload_transports(
                     measured_ledger,
                     payload,
                     default_stage="DEXSCREENER_DISCOVERY",
                 )
+                transport_identity_count = int(
+                    measured_ledger.source_transport_operations - before
+                )
             except Exception:
                 # Declared identities only; never invent transports from DB rows.
-                pass
+                measurement_failed = True
+                transport_identity_count = 0
+        pairs = (
+            list(payload.get("pairs") or ())
+            if isinstance(payload, Mapping)
+            else []
+        )
+        coverage_entry = {
+            "source_request_id": request_id,
+            "source_name": "dexscreener",
+            "request_kind": "dexscreener_fresh_profiles",
+            "logical_stage_id": (
+                f"{campaign_id}|{run_id}|{cycle_id}|DEXSCREENER_FRESH_LOCATOR|1"
+                if campaign_id and run_id and cycle_id
+                else f"DEXSCREENER_FRESH_LOCATOR|{request_key}"
+            ),
+            "transport_identity_count": transport_identity_count,
+            "normalized_member_count": len(pairs),
+            "terminal_status": "COMPLETED",
+        }
 
         if result.failure_type:
             connection.commit()
+            coverage_entry["terminal_status"] = "BLOCKED"
+            if measurement_failed:
+                coverage_entry["terminal_status"] = "BLOCKED"
             report = {
                 "request_key": request_key,
                 "request_id": request_id,
                 "source_requests": 1,
+                "source_request_ids": [request_id],
+                "source_request_coverage": [coverage_entry],
                 "status": (
                     "rate_limited"
                     if result.failure_type == "dexscreener_rate_limited_fixture"
@@ -324,10 +356,14 @@ def run_fresh_profile_locator(
                     )
             connection.commit()
             usable = bool(mints)
+            if measurement_failed:
+                coverage_entry["terminal_status"] = "BLOCKED"
             report = {
                 "request_key": request_key,
                 "request_id": request_id,
                 "source_requests": 1,
+                "source_request_ids": [request_id],
+                "source_request_coverage": [coverage_entry],
                 "status": "ok" if usable else "empty",
                 "surfaced_count": len(mints),
                 "matched_count": len(matched),

@@ -1907,6 +1907,45 @@ def run_persistent_eligible_token_supply(
             "locator_status": locator.get("status"),
             "locator_matched_count": int(locator.get("matched_count") or 0),
             "locator_source_requests": int(locator.get("source_requests") or 0),
+            "dexscreener_locator": {
+                "request_id": locator.get("request_id"),
+                "source_request_ids": list(
+                    locator.get("source_request_ids")
+                    or (
+                        [int(locator["request_id"])]
+                        if locator.get("request_id") is not None
+                        else []
+                    )
+                ),
+                "source_request_coverage": list(
+                    locator.get("source_request_coverage") or ()
+                ),
+                "status": locator.get("status"),
+                "source_requests": int(locator.get("source_requests") or 0),
+            },
+            "direct_migration_discovery": {
+                "source_request_ids": list(
+                    discovery.get("source_request_ids")
+                    or (discovery.get("source_operation_ledger") or {}).get(
+                        "source_request_ids"
+                    )
+                    or (discovery.get("source_operation_ledger") or {}).get(
+                        "request_ids"
+                    )
+                    or ()
+                ),
+                "source_request_coverage": list(
+                    discovery.get("source_request_coverage")
+                    or (discovery.get("source_operation_ledger") or {}).get(
+                        "source_request_coverage"
+                    )
+                    or ()
+                ),
+                "status": discovery.get("status"),
+                "source_operation_ledger": dict(
+                    discovery.get("source_operation_ledger") or {}
+                ),
+            },
             "geckoterminal_nomination": geckoterminal_nomination_report,
             "discovery_source_requests": int(
                 (discovery.get("source_operation_ledger") or {}).get("source_requests")
@@ -2025,16 +2064,29 @@ def run_persistent_eligible_token_supply(
             "geckoterminal_nomination": dict(geckoterminal_nomination_report),
             "permanent_market_reports": list(permanent_market_reports),
             "campaign_source_request_coverage": list(
-                list(
-                    (protocol_report or {}).get("source_request_coverage") or ()
-                )
+                list(locator.get("source_request_coverage") or ())
                 + list(
-                    liquidity_backup_report.get("source_request_coverage") or ()
+                    discovery.get("source_request_coverage")
+                    or (discovery.get("source_operation_ledger") or {}).get(
+                        "source_request_coverage"
+                    )
+                    or ()
                 )
                 + list(
                     geckoterminal_nomination_report.get("source_request_coverage")
                     or ()
                 )
+                + list(
+                    liquidity_backup_report.get("source_request_coverage") or ()
+                )
+                + list(
+                    (protocol_report or {}).get("source_request_coverage") or ()
+                )
+                + [
+                    entry
+                    for report in permanent_market_reports
+                    for entry in (report.get("source_request_coverage") or ())
+                ]
             ),
             "discovery_request_key_prefix": discovery_request_key_prefix,
             "memory_observation_eligible_count": sum(

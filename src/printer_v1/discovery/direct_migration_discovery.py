@@ -348,6 +348,7 @@ def run_direct_migration_discovery(
     migration_request_count = 0
     pumpswap_request_count = 0
     stage_request_ids: list[int] = []
+    stage_request_coverage: list[dict[str, Any]] = []
     campaign_units = CampaignSixUnitOwner(
         campaign_id=campaign_id,
         run_id=run_id,
@@ -395,8 +396,56 @@ def run_direct_migration_discovery(
         execution = execute_source_request_with_governor(
             connection, request, adapter, recent_request_count=migration_request_count
         )
-        stage_request_ids.append(int(execution.request_record.id))
+        rid = int(execution.request_record.id)
+        stage_request_ids.append(rid)
         migration_request_count += 1
+        transport_count = 0
+        measurement_failed = False
+        payload = execution.normalized_result.normalized_payload or {}
+        if isinstance(payload, Mapping):
+            try:
+                before = measured_ledger.source_transport_operations
+                record_payload_transports(
+                    measured_ledger,
+                    payload,
+                    default_stage="DIRECT_PUMP_NOMINATION",
+                )
+                transport_count = int(
+                    measured_ledger.source_transport_operations - before
+                )
+            except MeasuredTransportError:
+                measurement_failed = True
+                transport_count = 0
+        failed = bool(
+            execution.normalized_result.failure_type
+            or execution.normalized_result.source_status
+            not in {SourceStatus.COMPLETE, SourceStatus.PARTIAL}
+        )
+        members = 0
+        if isinstance(payload, Mapping):
+            for key in ("signatures", "transactions", "members", "rows"):
+                value = payload.get(key)
+                if isinstance(value, (list, tuple)):
+                    members = len(value)
+                    break
+        stage_request_coverage.append(
+            {
+                "source_request_id": rid,
+                "source_name": MIGRATION_SOURCE,
+                "request_kind": request_kind,
+                "logical_stage_id": (
+                    f"{campaign_id}|{run_id}|{cycle_id}|DIRECT_MIGRATION_INTAKE|"
+                    f"{migration_request_count}"
+                    if campaign_id and run_id and cycle_id
+                    else f"DIRECT_MIGRATION_INTAKE|{migration_request_count}"
+                ),
+                "transport_identity_count": transport_count,
+                "normalized_member_count": members,
+                "terminal_status": (
+                    "BLOCKED" if failed or measurement_failed else "COMPLETED"
+                ),
+            }
+        )
         return execution.normalized_result
 
     def _governed_migration() -> dict[str, Any]:
@@ -415,31 +464,15 @@ def run_direct_migration_discovery(
             and not page.failure_type
         )
         if not page_ok:
-            try:
-                record_payload_transports(
-                    measured_ledger,
-                    page.normalized_payload or {},
-                    default_stage="DIRECT_PUMP_NOMINATION",
-                )
-            except MeasuredTransportError:
-                pass
+            # Transports already measured in _execute_direct_request coverage path.
             one = intake_migration_events(None)
             one["direct_pump_live_tail_failure"] = page.failure_type
             one["transport_operation_count"] = 1
             return one
 
-        try:
-            record_payload_transports(
-                measured_ledger,
-                page.normalized_payload or {},
-                default_stage="DIRECT_PUMP_NOMINATION",
-            )
-        except MeasuredTransportError as exc:
-            one = intake_migration_events(None)
-            one["direct_pump_live_tail_failure"] = f"measured_transport:{exc}"
-            one["transport_operation_count"] = 1
-            return one
-
+        # Transports for the page request are measured in _execute_direct_request.
+        # If that measurement failed, coverage is already BLOCKED; continue parsing
+        # for candidate-local diagnostics without re-recording transports.
         signatures = list((page.normalized_payload or {}).get("signatures") or ())
         tokens: list[Mapping[str, Any]] = []
         failures: list[str] = []
@@ -464,16 +497,7 @@ def run_direct_migration_discovery(
                 },
             )
             operation_count += 1
-            try:
-                record_payload_transports(
-                    measured_ledger,
-                    tx.normalized_payload or {},
-                    default_stage="DIRECT_PUMP_NOMINATION",
-                )
-            except MeasuredTransportError as exc:
-                failures.append(f"measured_transport:{exc}")
-                source_failures.append(f"measured_transport:{exc}")
-                continue
+            # Transports already measured in _execute_direct_request coverage path.
             if (
                 tx.source_status not in {SourceStatus.COMPLETE, SourceStatus.PARTIAL}
                 or tx.failure_type
@@ -521,8 +545,49 @@ def run_direct_migration_discovery(
         execution = execute_source_request_with_governor(
             connection, request, adapter, recent_request_count=pumpswap_request_count
         )
-        stage_request_ids.append(int(execution.request_record.id))
+        rid = int(execution.request_record.id)
+        stage_request_ids.append(rid)
         pumpswap_request_count += 1
+        transport_count = 0
+        measurement_failed = False
+        payload = execution.normalized_result.normalized_payload or {}
+        if isinstance(payload, Mapping):
+            try:
+                before = measured_ledger.source_transport_operations
+                record_payload_transports(
+                    measured_ledger,
+                    payload,
+                    default_stage="DIRECT_PUMP_NOMINATION",
+                )
+                transport_count = int(
+                    measured_ledger.source_transport_operations - before
+                )
+            except MeasuredTransportError:
+                measurement_failed = True
+                transport_count = 0
+        failed = bool(
+            execution.normalized_result.failure_type
+            or execution.normalized_result.source_status
+            not in {SourceStatus.COMPLETE, SourceStatus.PARTIAL}
+        )
+        stage_request_coverage.append(
+            {
+                "source_request_id": rid,
+                "source_name": VERIFY_SOURCE,
+                "request_kind": VERIFY_REQUEST_KIND,
+                "logical_stage_id": (
+                    f"{campaign_id}|{run_id}|{cycle_id}|DIRECT_MIGRATION_VERIFY|"
+                    f"{pumpswap_request_count}"
+                    if campaign_id and run_id and cycle_id
+                    else f"DIRECT_MIGRATION_VERIFY|{pumpswap_request_count}"
+                ),
+                "transport_identity_count": transport_count,
+                "normalized_member_count": 1 if not failed else 0,
+                "terminal_status": (
+                    "BLOCKED" if failed or measurement_failed else "COMPLETED"
+                ),
+            }
+        )
         return execution.normalized_result
 
     stage_terminal_status = "COMPLETED"
@@ -565,15 +630,11 @@ def run_direct_migration_discovery(
                     )
                     or 0
                 )
+            # Transports for the verify request are measured in _governed_verify.
+            # Claimed transports without identities still fail closed when the
+            # coverage path recorded measurement failure.
             try:
-                if meta["transport_operation_identities"]:
-                    record_payload_transports(
-                        measured_ledger,
-                        payload,
-                        default_stage="PUMPSWAP_EXACT_VERIFICATION",
-                    )
-                elif measured_ops:
-                    # Claimed transports without identities fail closed.
+                if not meta["transport_operation_identities"] and measured_ops:
                     raise MeasuredTransportError("TRANSPORT_IDENTITIES_MISSING")
             except MeasuredTransportError as exc:
                 accounting_block_reason = f"measured_transport:{exc}"
@@ -741,6 +802,8 @@ def run_direct_migration_discovery(
             )
 
         ledger = _ledger_counts(connection, request_ids=stage_request_ids)
+        ledger["source_request_ids"] = list(stage_request_ids)
+        ledger["source_request_coverage"] = list(stage_request_coverage)
         expected_governed_requests = (
             migration_request_count + pumpswap_request_count
         )
@@ -883,6 +946,8 @@ def run_direct_migration_discovery(
         "campaign_safe_stop": accounting_block_reason is not None,
         "registry_candidates_withheld": registry_candidates_withheld,
         "source_operation_ledger": ledger,
+        "source_request_ids": list(stage_request_ids),
+        "source_request_coverage": list(stage_request_coverage),
         "six_unit_totals": ledger.get("six_unit_totals") or empty_six_unit_totals(),
         "six_unit_evidence": ledger.get("six_unit_evidence"),
         "sealed_stage_evidence": sealed_stage_evidence,

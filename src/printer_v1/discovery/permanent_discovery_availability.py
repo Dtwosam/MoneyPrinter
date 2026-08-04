@@ -1111,6 +1111,7 @@ def run_dexscreener_batch_market_resolution(
         "source_request_ids": [],
         "source_response_ids": [],
         "source_failure_ids": [],
+        "source_request_coverage": [],
         "calls_by_stage": {"market_batching": 0, "reconciliation": 0},
         "provider_failures": 0,
         "local_zero_source_exclusions": [],
@@ -1161,30 +1162,58 @@ def run_dexscreener_batch_market_resolution(
         result = execution.normalized_result
         report["calls_by_stage"]["market_batching"] += 1
         report["batch_sizes"].append(len(mints))
-        report["source_request_ids"].append(int(execution.request_record.id))
+        batch_request_id = int(execution.request_record.id)
+        report["source_request_ids"].append(batch_request_id)
         if execution.response_record is not None:
             report["source_response_ids"].append(int(execution.response_record.id))
         if execution.failure_record is not None:
             report["source_failure_ids"].append(int(execution.failure_record.id))
 
         payload = result.normalized_payload or {}
+        transport_identity_count = 0
+        measurement_failed = False
         if isinstance(payload, Mapping):
             try:
+                before = measured_ledger.source_transport_operations
                 record_payload_transports(
                     measured_ledger,
                     payload,
                     default_stage="MINT_MARKET_BATCH",
                 )
+                transport_identity_count = int(
+                    measured_ledger.source_transport_operations - before
+                )
             except Exception:
-                # Declared transport identities only; never infer them from a
-                # request row or fabricate them for fixtures.
-                pass
+                # Declared transport identities only; never invent transports.
+                # Zero is lawful only when measurement succeeds with zero
+                # declared identities; measurement failure is recorded as
+                # BLOCKED coverage with transport 0 (not a fabricated COMPLETED).
+                measurement_failed = True
+                transport_identity_count = 0
         pairs = list(payload.get("pairs") or ()) if isinstance(payload, Mapping) else []
+        failed = result.source_status != SourceStatus.COMPLETE or bool(result.failure_type)
+        batch_seq = batch_index // 30 + 1
+        report["source_request_coverage"].append(
+            {
+                "source_request_id": batch_request_id,
+                "source_name": DEXSCREENER_SOURCE_NAME,
+                "request_kind": "candidate_market_batch",
+                "logical_stage_id": (
+                    f"{campaign_id}|{run_id}|{cycle_id}|MINT_MARKET_BATCH|{batch_seq}"
+                    if campaign_id and run_id and cycle_id
+                    else f"MINT_MARKET_BATCH|{batch_seq}"
+                ),
+                "transport_identity_count": transport_identity_count,
+                "normalized_member_count": len(pairs),
+                "terminal_status": (
+                    "BLOCKED" if failed or measurement_failed else "COMPLETED"
+                ),
+            }
+        )
         resolution = resolve_dexscreener_mint_batch(mints, pairs, observed_at=now)
         for mint, pool_rows in resolution.by_mint.items():
             report["exact_pools_by_mint"][mint] = [row.pool for row in pool_rows]
         report["local_zero_source_exclusions"].extend(resolution.local_exclusions)
-        failed = result.source_status != SourceStatus.COMPLETE or bool(result.failure_type)
         if failed:
             report["provider_failures"] += 1
 
@@ -1238,21 +1267,29 @@ def run_dexscreener_batch_market_resolution(
                 )
                 gt_result = gt_execution.normalized_result
                 report["calls_by_stage"]["reconciliation"] += 1
-                report["source_request_ids"].append(int(gt_execution.request_record.id))
+                gt_request_id = int(gt_execution.request_record.id)
+                report["source_request_ids"].append(gt_request_id)
                 if gt_execution.response_record is not None:
                     report["source_response_ids"].append(int(gt_execution.response_record.id))
                 if gt_execution.failure_record is not None:
                     report["source_failure_ids"].append(int(gt_execution.failure_record.id))
                 gt_payload = gt_result.normalized_payload or {}
+                gt_transport_count = 0
+                gt_measurement_failed = False
                 if isinstance(gt_payload, Mapping):
                     try:
+                        before_gt = measured_ledger.source_transport_operations
                         record_payload_transports(
                             measured_ledger,
                             gt_payload,
                             default_stage="MINT_MARKET_BATCH",
                         )
+                        gt_transport_count = int(
+                            measured_ledger.source_transport_operations - before_gt
+                        )
                     except Exception:
-                        pass
+                        gt_measurement_failed = True
+                        gt_transport_count = 0
                 gt_failed = (
                     gt_result.source_status != SourceStatus.COMPLETE
                     or bool(gt_result.failure_type)
@@ -1264,6 +1301,26 @@ def run_dexscreener_batch_market_resolution(
                     if isinstance(gt_payload, Mapping)
                     else []
                 )
+                report["source_request_coverage"].append(
+                    {
+                        "source_request_id": gt_request_id,
+                        "source_name": GECKOTERMINAL_SOURCE_NAME,
+                        "request_kind": "candidate_market_batch",
+                        "logical_stage_id": (
+                            f"{campaign_id}|{run_id}|{cycle_id}|"
+                            f"GECKOTERMINAL_RECONCILIATION|{fallback_index}"
+                            if campaign_id and run_id and cycle_id
+                            else f"GECKOTERMINAL_RECONCILIATION|{fallback_index}"
+                        ),
+                        "transport_identity_count": gt_transport_count,
+                        "normalized_member_count": len(gt_pairs),
+                        "terminal_status": (
+                            "BLOCKED"
+                            if gt_failed or gt_measurement_failed
+                            else "COMPLETED"
+                        ),
+                    }
+                )
                 gt_resolution = resolve_dexscreener_mint_batch(
                     [mint], gt_pairs, observed_at=now
                 )
@@ -1271,7 +1328,7 @@ def run_dexscreener_batch_market_resolution(
                     "failed": gt_failed,
                     "failure_type": gt_result.failure_type,
                     "rows": gt_resolution.by_mint.get(mint, ()),
-                    "request_id": int(gt_execution.request_record.id),
+                    "request_id": gt_request_id,
                     "response_id": (
                         None
                         if gt_execution.response_record is None
@@ -3332,152 +3389,191 @@ def build_campaign_source_request_manifest(
     }
 
 
+def _normalize_stage_coverage_entry(raw: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Accept only stage-produced coverage rows with required ownership fields.
+
+    Never invents missing fields into a successful COMPLETED zero-transport entry.
+    """
+    if raw.get("source_request_id") is None:
+        return None
+    stage = str(raw.get("logical_stage_id") or "").strip()
+    source_name = str(raw.get("source_name") or "").strip()
+    request_kind = str(raw.get("request_kind") or "").strip()
+    terminal = str(raw.get("terminal_status") or "").strip()
+    if not stage or not source_name or not request_kind or not terminal:
+        return None
+    # transport/member counts must be explicitly present (including lawful zero).
+    if "transport_identity_count" not in raw or "normalized_member_count" not in raw:
+        return None
+    try:
+        transport_count = int(raw["transport_identity_count"])
+        member_count = int(raw["normalized_member_count"])
+    except (TypeError, ValueError):
+        return None
+    if transport_count < 0 or member_count < 0:
+        return None
+    return {
+        "source_request_id": int(raw["source_request_id"]),
+        "source_name": source_name,
+        "request_kind": request_kind,
+        "logical_stage_id": stage,
+        "terminal_status": terminal,
+        "transport_identity_count": transport_count,
+        "normalized_member_count": member_count,
+    }
+
+
 def collect_stage_source_request_coverage(
     diagnostics: Mapping[str, Any] | None,
 ) -> list[dict[str, Any]]:
-    """Collect coverage entries from permanent-discovery stage diagnostics.
+    """Collect real stage-produced coverage entries only.
 
-    Covers every governed stage that may have run: intake/locator, Gecko fresh,
-    unknown-liquidity backup, market batches, reconciliation, early/residual
-    protocol, and any explicit campaign_source_request_coverage surface.
+    Never synthesizes COMPLETED/zero-transport coverage from bare request IDs.
+    A request ID without stage-produced coverage remains missing and must fail
+    reconciliation.
     """
     diag = dict(diagnostics or {})
     entries: list[dict[str, Any]] = []
 
-    def _extend(raw: Any) -> None:
+    def _extend_coverage(raw: Any) -> None:
         if not raw:
             return
         if isinstance(raw, Mapping):
-            # Single coverage entry shape.
-            if raw.get("source_request_id") is not None:
-                entries.append(dict(raw))
+            # Prefer explicit list fields over recursive map walks that can
+            # re-enter request-id-only surfaces.
+            if "source_request_coverage" in raw and raw is not diag:
+                _extend_coverage(raw.get("source_request_coverage"))
                 return
-            for nested in raw.values():
-                _extend(nested)
+            normalized = _normalize_stage_coverage_entry(raw)
+            if normalized is not None:
+                entries.append(normalized)
             return
         if isinstance(raw, (list, tuple)):
             for item in raw:
-                _extend(item)
+                _extend_coverage(item)
 
-    # Explicit assembled list if already present.
-    _extend(diag.get("campaign_source_request_coverage"))
-    _extend(diag.get("source_request_coverage"))
+    # Explicit campaign-assembled list (must already be stage-produced rows).
+    _extend_coverage(diag.get("campaign_source_request_coverage"))
+    _extend_coverage(diag.get("source_request_coverage"))
 
+    # Per-stage real coverage surfaces only — never request-id fallbacks.
     protocol = diag.get("protocol_confirmation") or {}
     if isinstance(protocol, Mapping):
-        _extend(protocol.get("source_request_coverage"))
-        for rid in protocol.get("source_request_ids") or ():
-            # Synthesize minimal coverage only when coverage list omitted the ID.
-            if not any(int(e.get("source_request_id") or -1) == int(rid) for e in entries):
-                entries.append(
-                    {
-                        "source_request_id": int(rid),
-                        "source_name": "solana_rpc",
-                        "request_kind": "pumpswap_pool_account_batch",
-                        "logical_stage_id": "PROTOCOL_CONFIRMATION",
-                        "transport_identity_count": 0,
-                        "normalized_member_count": 0,
-                        "terminal_status": "COMPLETED",
-                    }
-                )
+        _extend_coverage(protocol.get("source_request_coverage"))
 
     backup = diag.get("liquidity_backup") or {}
     if isinstance(backup, Mapping):
-        _extend(backup.get("source_request_coverage"))
-        for rid in backup.get("source_request_ids") or ():
-            if not any(int(e.get("source_request_id") or -1) == int(rid) for e in entries):
-                entries.append(
-                    {
-                        "source_request_id": int(rid),
-                        "source_name": "unknown_liquidity_backup",
-                        "request_kind": "candidate_market_batch",
-                        "logical_stage_id": "UNKNOWN_LIQUIDITY_BACKUP",
-                        "transport_identity_count": 0,
-                        "normalized_member_count": 0,
-                        "terminal_status": "COMPLETED",
-                    }
-                )
+        _extend_coverage(backup.get("source_request_coverage"))
 
     gecko = diag.get("geckoterminal_nomination") or diag.get(
         "geckoterminal_fresh_nomination"
     ) or {}
     if isinstance(gecko, Mapping):
-        _extend(gecko.get("source_request_coverage"))
-        rid = gecko.get("request_id")
-        if rid is not None and not any(
-            int(e.get("source_request_id") or -1) == int(rid) for e in entries
-        ):
-            entries.append(
-                {
-                    "source_request_id": int(rid),
-                    "source_name": "geckoterminal",
-                    "request_kind": "geckoterminal_new_pool_discovery",
-                    "logical_stage_id": "FRESH_POOL_NOMINATION",
-                    "transport_identity_count": int(
-                        gecko.get("transport_operations") or 0
-                    ),
-                    "normalized_member_count": len(gecko.get("nominations") or ()),
-                    "terminal_status": (
-                        "BLOCKED" if gecko.get("accounting_blocker") else "COMPLETED"
-                    ),
-                }
-            )
+        _extend_coverage(gecko.get("source_request_coverage"))
+
+    locator = diag.get("dexscreener_locator") or diag.get("locator") or {}
+    if isinstance(locator, Mapping):
+        _extend_coverage(locator.get("source_request_coverage"))
+
+    discovery = diag.get("direct_migration_discovery") or diag.get("discovery") or {}
+    if isinstance(discovery, Mapping):
+        _extend_coverage(discovery.get("source_request_coverage"))
+        ledger = discovery.get("source_operation_ledger") or {}
+        if isinstance(ledger, Mapping):
+            _extend_coverage(ledger.get("source_request_coverage"))
 
     for report in diag.get("permanent_market_reports") or ():
-        if not isinstance(report, Mapping):
-            continue
-        _extend(report.get("source_request_coverage"))
-        for rid in report.get("source_request_ids") or ():
-            if not any(int(e.get("source_request_id") or -1) == int(rid) for e in entries):
-                entries.append(
-                    {
-                        "source_request_id": int(rid),
-                        "source_name": "dexscreener",
-                        "request_kind": "candidate_market_batch",
-                        "logical_stage_id": "MINT_MARKET_BATCH",
-                        "transport_identity_count": 0,
-                        "normalized_member_count": 0,
-                        "terminal_status": "COMPLETED",
-                    }
-                )
+        if isinstance(report, Mapping):
+            _extend_coverage(report.get("source_request_coverage"))
 
-    holder = diag.get("holder_source_request_coverage") or ()
-    _extend(holder)
-    for rid in diag.get("holder_source_request_ids") or ():
-        if not any(int(e.get("source_request_id") or -1) == int(rid) for e in entries):
-            entries.append(
-                {
-                    "source_request_id": int(rid),
-                    "source_name": "holder_context",
-                    "request_kind": "holder_safety",
-                    "logical_stage_id": "HOLDER_CONTEXT",
-                    "transport_identity_count": 0,
-                    "normalized_member_count": 0,
-                    "terminal_status": "COMPLETED",
-                }
-            )
+    _extend_coverage(diag.get("holder_source_request_coverage"))
+    _extend_coverage(diag.get("final_refresh_source_request_coverage"))
 
-    # Drop incomplete entries lacking stage ownership.
-    cleaned: list[dict[str, Any]] = []
+    # Collapse exact duplicate rows collected from multiple diagnostic surfaces
+    # that re-export the same stage-produced coverage entry. Distinct stage
+    # owners for one request ID are preserved so reconciliation can fail closed.
+    deduped: list[dict[str, Any]] = []
+    seen_exact: set[tuple[Any, ...]] = set()
     for entry in entries:
-        if entry.get("source_request_id") is None:
-            continue
-        cleaned.append(
-            {
-                "source_request_id": int(entry["source_request_id"]),
-                "source_name": str(entry.get("source_name") or ""),
-                "request_kind": str(entry.get("request_kind") or ""),
-                "logical_stage_id": str(entry.get("logical_stage_id") or ""),
-                "terminal_status": str(entry.get("terminal_status") or "COMPLETED"),
-                "transport_identity_count": int(
-                    entry.get("transport_identity_count") or 0
-                ),
-                "normalized_member_count": int(
-                    entry.get("normalized_member_count") or 0
-                ),
-            }
+        key = (
+            entry["source_request_id"],
+            entry["logical_stage_id"],
+            entry["source_name"],
+            entry["request_kind"],
+            entry["terminal_status"],
+            entry["transport_identity_count"],
+            entry["normalized_member_count"],
         )
-    return cleaned
+        if key in seen_exact:
+            continue
+        seen_exact.add(key)
+        deduped.append(entry)
+    return deduped
+
+
+def collect_stage_reported_request_ids(
+    diagnostics: Mapping[str, Any] | None,
+) -> list[int]:
+    """Collect stage-reported durable request IDs without inventing coverage."""
+    diag = dict(diagnostics or {})
+    ids: list[int] = []
+
+    def _add(raw: Any) -> None:
+        if raw is None:
+            return
+        if isinstance(raw, (list, tuple)):
+            for item in raw:
+                _add(item)
+            return
+        try:
+            ids.append(int(raw))
+        except (TypeError, ValueError):
+            return
+
+    for key in (
+        "source_request_ids",
+        "protocol_source_request_ids",
+        "holder_source_request_ids",
+        "stage_reported_request_ids",
+    ):
+        _add(diag.get(key))
+
+    protocol = diag.get("protocol_confirmation") or {}
+    if isinstance(protocol, Mapping):
+        _add(protocol.get("source_request_ids"))
+
+    backup = diag.get("liquidity_backup") or {}
+    if isinstance(backup, Mapping):
+        _add(backup.get("source_request_ids"))
+
+    gecko = diag.get("geckoterminal_nomination") or diag.get(
+        "geckoterminal_fresh_nomination"
+    ) or {}
+    if isinstance(gecko, Mapping):
+        if gecko.get("request_id") is not None:
+            _add(gecko.get("request_id"))
+        _add(gecko.get("source_request_ids"))
+
+    locator = diag.get("dexscreener_locator") or diag.get("locator") or {}
+    if isinstance(locator, Mapping):
+        if locator.get("request_id") is not None:
+            _add(locator.get("request_id"))
+        _add(locator.get("source_request_ids"))
+
+    discovery = diag.get("direct_migration_discovery") or diag.get("discovery") or {}
+    if isinstance(discovery, Mapping):
+        _add(discovery.get("source_request_ids"))
+        ledger = discovery.get("source_operation_ledger") or {}
+        if isinstance(ledger, Mapping):
+            _add(ledger.get("request_ids"))
+            _add(ledger.get("source_request_ids"))
+
+    for report in diag.get("permanent_market_reports") or ():
+        if isinstance(report, Mapping):
+            _add(report.get("source_request_ids"))
+
+    _add(diag.get("final_refresh_source_request_ids"))
+    return ids
 
 
 def load_durable_campaign_source_request_ids(
@@ -3519,26 +3615,37 @@ def assemble_and_reconcile_campaign_source_requests(
     extra_manifest_entries: Sequence[Mapping[str, Any]] | None = None,
     stage_accounting_blockers: Sequence[str] | None = None,
 ) -> dict[str, Any]:
-    """Build durable IDs + manifest and reconcile for campaign admission."""
+    """Build durable IDs + stage-reported IDs + real coverage and reconcile.
+
+    PASS invariant:
+      set(durable request IDs)
+      == set(stage-reported request IDs)
+      == set(coverage manifest request IDs)
+    """
     diag = dict(diagnostics or {})
     coverage = collect_stage_source_request_coverage(diag)
     if extra_manifest_entries:
-        coverage.extend(dict(item) for item in extra_manifest_entries)
-    known_ids = [int(e["source_request_id"]) for e in coverage]
-    for key in (
-        "protocol_source_request_ids",
-        "source_request_ids",
-    ):
-        for rid in diag.get(key) or ():
-            known_ids.append(int(rid))
+        for item in extra_manifest_entries:
+            normalized = _normalize_stage_coverage_entry(dict(item))
+            if normalized is not None:
+                coverage.append(normalized)
+    stage_reported_raw = collect_stage_reported_request_ids(diag)
+    # Unique stage-reported IDs for durable load; raw list still checked for
+    # duplicates inside reconcile_campaign_source_requests.
+    stage_reported = sorted({int(x) for x in stage_reported_raw})
+    # Coverage IDs are not used to invent stage-reported completeness; they are
+    # compared independently below.
     durable = load_durable_campaign_source_request_ids(
         connection,
         request_key_prefixes=list(request_key_prefixes or ()),
-        known_request_ids=known_ids,
+        known_request_ids=stage_reported,
     )
     recon = reconcile_campaign_source_requests(
         durable_request_ids=durable,
         manifest_entries=coverage,
+        # Pass unique list for set equality; duplicate detection uses raw list.
+        stage_reported_request_ids=stage_reported,
+        stage_reported_request_ids_raw=stage_reported_raw,
     )
     blockers = [str(b) for b in (stage_accounting_blockers or ()) if b]
     protocol = diag.get("protocol_confirmation") or {}
@@ -3580,6 +3687,10 @@ def assemble_and_reconcile_campaign_source_requests(
         recon.get("transport_identity_count_total") or 0
     )
     recon["durable_campaign_request_ids"] = list(recon.get("durable_request_ids") or ())
+    recon["stage_reported_request_ids"] = list(
+        recon.get("stage_reported_request_ids") or stage_reported
+    )
+    recon["stage_produced_coverage_entries"] = list(coverage)
     recon["campaign_source_request_manifest"] = list(recon.get("manifest") or ())
     recon["campaign_source_request_reconciliation"] = {
         "status": recon.get("status"),
@@ -3587,6 +3698,10 @@ def assemble_and_reconcile_campaign_source_requests(
         "missing_from_manifest": recon.get("missing_from_manifest"),
         "extra_in_manifest": recon.get("extra_in_manifest"),
         "duplicate_request_ids": recon.get("duplicate_request_ids"),
+        "missing_stage_reported_coverage": recon.get(
+            "missing_stage_reported_coverage"
+        ),
+        "stage_ownership_gaps": recon.get("stage_ownership_gaps"),
     }
     return recon
 
@@ -3595,52 +3710,90 @@ def reconcile_campaign_source_requests(
     *,
     durable_request_ids: Sequence[int],
     manifest_entries: Sequence[Mapping[str, Any]],
+    stage_reported_request_ids: Sequence[int] | None = None,
+    stage_reported_request_ids_raw: Sequence[int] | None = None,
 ) -> dict[str, Any]:
-    """Require set(durable campaign request IDs) == set(manifest request IDs)."""
+    """Require durable IDs == stage-reported IDs == coverage manifest IDs."""
     durable = sorted({int(x) for x in durable_request_ids})
+    stage_reported = sorted(
+        {
+            int(x)
+            for x in (
+                stage_reported_request_ids
+                if stage_reported_request_ids is not None
+                else durable_request_ids
+            )
+        }
+    )
     built = build_campaign_source_request_manifest(manifest_entries)
     manifest_ids = sorted({int(x) for x in built["request_ids"]})
     durable_set = set(durable)
+    stage_set = set(stage_reported)
     manifest_set = set(manifest_ids)
     missing_from_manifest = sorted(durable_set - manifest_set)
     extra_in_manifest = sorted(manifest_set - durable_set)
+    missing_stage_reported_coverage = sorted(stage_set - manifest_set)
+    stage_only_not_durable = sorted(stage_set - durable_set)
+    durable_only_not_stage = sorted(durable_set - stage_set)
+    stage_ownership_gaps = [
+        entry["source_request_id"]
+        for entry in built.get("manifest") or ()
+        if not str(entry.get("logical_stage_id") or "").strip()
+    ]
     ok = (
         built["status"] == "OK"
         and not missing_from_manifest
         and not extra_in_manifest
-        and len(durable) == len(set(durable))
+        and not missing_stage_reported_coverage
+        and not stage_only_not_durable
+        and not durable_only_not_stage
+        and not stage_ownership_gaps
+        and len(list(durable_request_ids)) == len(set(int(x) for x in durable_request_ids))
     )
-    if len(durable) != len(set(int(x) for x in durable_request_ids)):
+    duplicate_durable: list[int] = []
+    if len(list(durable_request_ids)) != len(set(int(x) for x in durable_request_ids)):
         ok = False
-        built = dict(built)
-        built["status"] = "BLOCKED"
-        built["blocker"] = CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH
-        built["duplicate_durable_request_ids"] = sorted(
-            {
-                int(x)
-                for x in durable_request_ids
-                if list(durable_request_ids).count(x) > 1
-            }
-        )
-    if missing_from_manifest or extra_in_manifest:
+        seen: dict[int, int] = {}
+        for x in durable_request_ids:
+            rid = int(x)
+            seen[rid] = seen.get(rid, 0) + 1
+        duplicate_durable = sorted(rid for rid, count in seen.items() if count > 1)
+    raw_stage = (
+        list(stage_reported_request_ids_raw)
+        if stage_reported_request_ids_raw is not None
+        else list(stage_reported_request_ids or stage_reported)
+    )
+    # Multi-surface re-reporting of the same ID is allowed; only true duplicate
+    # durable IDs and duplicate coverage rows (different stages) fail closed.
+    if (
+        missing_from_manifest
+        or extra_in_manifest
+        or missing_stage_reported_coverage
+        or stage_only_not_durable
+        or durable_only_not_stage
+        or stage_ownership_gaps
+    ):
         ok = False
-        built = dict(built)
-        built["status"] = "BLOCKED"
-        built["blocker"] = CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH
     return {
         "status": "OK" if ok else "BLOCKED",
         "blocker": None if ok else CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH,
         "durable_request_ids": durable,
+        "stage_reported_request_ids": stage_reported,
         "manifest_request_ids": manifest_ids,
         "missing_from_manifest": missing_from_manifest,
         "extra_in_manifest": extra_in_manifest,
+        "missing_stage_reported_coverage": missing_stage_reported_coverage,
+        "stage_only_not_durable": stage_only_not_durable,
+        "durable_only_not_stage": durable_only_not_stage,
+        "stage_ownership_gaps": stage_ownership_gaps,
         "manifest": built["manifest"],
         "request_count": len(manifest_ids),
         "transport_identity_count_total": built.get("transport_identity_count_total", 0),
-        "duplicate_request_ids": list(built.get("duplicate_request_ids") or ()),
+        "duplicate_request_ids": list(built.get("duplicate_request_ids") or ())
+        + duplicate_durable,
         "invariant": (
-            "set(all durable campaign source-request IDs) == "
-            "set(all campaign manifest request IDs)"
+            "set(durable request IDs) == set(stage-reported request IDs) == "
+            "set(coverage manifest request IDs)"
         ),
     }
 
@@ -4169,6 +4322,7 @@ __all__ = [
     "build_campaign_source_request_manifest",
     "build_source_request_coverage_manifest",
     "classify_exact_pool_liquidity_prefilter",
+    "collect_stage_reported_request_ids",
     "collect_stage_source_request_coverage",
     "freeze_eligible_reserve",
     "interleave_candidate_observations",
