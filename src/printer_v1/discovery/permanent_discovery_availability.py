@@ -12,6 +12,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 import json
+import math
 import sqlite3
 from typing import Any, Mapping, Sequence
 
@@ -126,9 +127,51 @@ def _coerce_liquidity_usd(raw: Any) -> float | None:
         value = float(raw)
     except (TypeError, ValueError):
         return None
-    if value != value or value < 0:  # NaN or negative
+    # Reject NaN, ±infinity, and negative liquidity.
+    if not math.isfinite(value) or value < 0:
         return None
     return value
+
+
+def resolve_liquidity_evidence_expiry(
+    *,
+    observed_at: str,
+    explicit_expiry: str | None,
+    ingestion_now: str | None = None,
+) -> str | None:
+    """Return observation-based evidence expiry or None when contradictory.
+
+    Default: observed_at + EXACT_POOL_RECONCILIATION_SECONDS.
+    Explicit expiry must be timezone-aware, strictly after observed_at, and must
+    not exceed the observation-based maximum. Ingestion time never extends
+    freshness when observed_at is older.
+    """
+    del ingestion_now  # freshness is never extended from ingestion time
+    try:
+        observed = _parse_iso(observed_at)
+    except (TypeError, ValueError):
+        return None
+    max_expiry = observed + timedelta(seconds=EXACT_POOL_RECONCILIATION_SECONDS)
+    if explicit_expiry is None or str(explicit_expiry).strip() == "":
+        return max_expiry.isoformat()
+    raw = str(explicit_expiry).strip()
+    # Require explicit timezone awareness (Z or offset); bare local times fail closed.
+    if "Z" not in raw and "+" not in raw[1:] and raw.count("-") < 3:
+        # Allow ISO with trailing offset via fromisoformat; reject naive results.
+        pass
+    try:
+        explicit = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if explicit.tzinfo is None:
+        return None
+    if explicit.tzinfo is not None and observed.tzinfo is not None:
+        explicit = explicit.astimezone(observed.tzinfo)
+    if explicit <= observed:
+        return None
+    if explicit > max_expiry:
+        return None
+    return explicit.isoformat()
 
 
 def classify_exact_pool_liquidity_prefilter(
@@ -1619,7 +1662,6 @@ def record_fresh_pool_nominations(
         if source == "geckoterminal"
         else "DEXSCREENER_TOKENS_V1_2026_08_04"
     )
-    evidence_expires_at = _liquidity_evidence_expiry(now)
     for raw in observations:
         mint = str(raw.get("mint") or raw.get("base_mint") or "")
         pool = str(raw.get("pool") or raw.get("pair_address") or raw.get("pairAddress") or "")
@@ -1648,11 +1690,26 @@ def record_fresh_pool_nominations(
             else raw.get("liquidity")
         )
         observed_at = str(raw.get("observed_at") or raw.get("liquidity_observed_at") or now)
-        item_expires = str(
-            raw.get("liquidity_evidence_expires_at")
-            or raw.get("evidence_expires_at")
-            or evidence_expires_at
+        explicit_expiry = raw.get("liquidity_evidence_expires_at") or raw.get(
+            "evidence_expires_at"
         )
+        item_expires = resolve_liquidity_evidence_expiry(
+            observed_at=observed_at,
+            explicit_expiry=(
+                None if explicit_expiry is None else str(explicit_expiry)
+            ),
+            ingestion_now=now,
+        )
+        if item_expires is None:
+            exclusions.append(
+                {
+                    "mint": mint,
+                    "pool": pool,
+                    "reason": "EVIDENCE_FRESHNESS_CONTRADICTION",
+                }
+            )
+            prefilter_counts["IDENTITY_CONFLICT"] += 1
+            continue
         # Unsupported venues are candidate-local and never enter protocol.
         if venue and not _protocol_supported_venue(venue):
             state, reason = UNSUPPORTED_VENUE, "PROTOCOL_UNSUPPORTED_VENUE"
@@ -1682,6 +1739,9 @@ def record_fresh_pool_nominations(
             "prefilter_outcome": prefilter_label,
             # Market-source provenance only — never claimed as migration proof.
             "provenance_kind": "MARKET_SOURCE_OBSERVATION",
+            "liquidity_backup_attempted": bool(
+                raw.get("liquidity_backup_attempted")
+            ),
         }
         evidence = {
             "base_mint": base,
@@ -1696,6 +1756,9 @@ def record_fresh_pool_nominations(
             "source": source,
             "request_id": int(request_id),
             "response_id": None if response_id is None else int(response_id),
+            "liquidity_backup_attempted": bool(
+                raw.get("liquidity_backup_attempted")
+            ),
         }
         record_exact_market_transition(
             connection,
@@ -1937,11 +2000,11 @@ def freeze_eligible_reserve(
         mint = str(item.get("mint") or item.get("mint_identity") or "")
         pool = str(item.get("pool") or item.get("pair_address") or "")
         expiry = item.get("evidence_expires_at")
-        observation_eligible = bool(
-            item.get("memory_observation_eligible")
-            or item.get("fully_eligible")
-        )
-        if not observation_eligible or not mint or not pool:
+        # Admission gate: MEMORY_OBSERVATION_ELIGIBLE only. fully_eligible is
+        # never a compatibility admission fallback for the memory path.
+        if item.get("memory_observation_eligible") is not True:
+            continue
+        if not mint or not pool:
             continue
         if expiry is None or _parse_iso(str(expiry)) <= instant:
             stale.append(item)
@@ -1953,12 +2016,30 @@ def freeze_eligible_reserve(
         item.setdefault("market_identity", f"solana-mainnet:eligible:{pool}")
         item.setdefault("provenance", "PERSISTED_GRADUATED")
         # Explicit separation: memory observation vs future action eligibility.
-        item.setdefault("memory_observation_eligible", True)
+        item["memory_observation_eligible"] = True
         item.setdefault(
             "future_action_eligibility",
             item.get("future_action_eligibility") or "BLOCKED_OR_UNKNOWN",
         )
         fresh.append(item)
+
+    # MINIMUM_FREEZE_DEPTH is an admission gate, not only a diagnostic.
+    if len(fresh) < MINIMUM_FREEZE_DEPTH:
+        return FrozenEligibleReserve(
+            selected=(),
+            alternates=(),
+            rejected_stale=tuple(
+                sorted(stale, key=lambda item: str(item.get("mint") or ""))
+            ),
+            frozen_at=at,
+            selection_authority={
+                "selected": [],
+                "coverage_blocker": True,
+                "observation_eligible_count": len(fresh),
+                "minimum_freeze_depth": MINIMUM_FREEZE_DEPTH,
+                "reason": "INSUFFICIENT_OBSERVATION_COVERAGE",
+            },
+        )
 
     selection_candidates = [candidate_from_front_door_mapping(item) for item in fresh]
     authority = select_two_candidates(selection_candidates, cycle_seed=cycle_seed)
@@ -2090,6 +2171,44 @@ def promote_confirmed_with_retained_liquidity(
     evidence = dict(retained.get("evidence") or {})
     evidence_expires_at = str(retained["evidence_expires_at"])
     liquidity_usd = float(retained["liquidity_usd"])
+    retained_base = str(evidence.get("base_mint") or mint)
+    retained_quote = str(evidence.get("quote_mint") or "")
+    retained_venue = str(evidence.get("venue") or evidence.get("provider_venue") or venue or "")
+    retained_pool = str(evidence.get("pool") or pool)
+    contract_version = str(
+        evidence.get("market_evidence_contract_version")
+        or "RETAINED_MARKET_EVIDENCE_V1"
+    )
+    # Exact identity continuity: base must equal candidate mint; quote/pool
+    # must be present and non-conflicting. Never hardcode WSOL or substitute.
+    if retained_base != mint:
+        return {
+            "mint": mint,
+            "pool": pool,
+            "promoted": False,
+            "reason": "RETAINED_BASE_MINT_CONFLICT",
+            "requires_market_revalidation": True,
+            "memory_observation_eligible": False,
+        }
+    if not retained_quote or retained_quote in {"", "UNKNOWN_QUOTE_MINT"}:
+        return {
+            "mint": mint,
+            "pool": pool,
+            "promoted": False,
+            "reason": "RETAINED_QUOTE_MINT_MISSING",
+            "requires_market_revalidation": True,
+            "memory_observation_eligible": False,
+        }
+    if retained_pool and retained_pool != pool:
+        return {
+            "mint": mint,
+            "pool": pool,
+            "promoted": False,
+            "reason": "RETAINED_POOL_IDENTITY_CONFLICT",
+            "requires_market_revalidation": True,
+            "memory_observation_eligible": False,
+        }
+    promotion_venue = retained_venue or venue or "pumpswap"
     provenance = {
         "stage": "protocol_confirmation_direct_promotion",
         "campaign_id": campaign_id,
@@ -2097,6 +2216,14 @@ def promote_confirmed_with_retained_liquidity(
         "liquidity_usd": liquidity_usd,
         "liquidity_evidence_expires_at": evidence_expires_at,
         "promotion_path": "RETAINED_FRESH_EXACT_POOL_LIQUIDITY",
+        "base_mint": retained_base,
+        "quote_mint": retained_quote,
+        "venue": promotion_venue,
+        "pool": pool,
+        "market_evidence_contract_version": contract_version,
+        "source": evidence.get("source"),
+        "request_id": evidence.get("request_id"),
+        "response_id": evidence.get("response_id"),
     }
     # Liquidity floor already proven via retained exact-pool evidence.
     record_exact_market_transition(
@@ -2107,18 +2234,15 @@ def promote_confirmed_with_retained_liquidity(
             pool=pool,
             token_program=SPL_TOKEN_PROGRAM_ID,
             pool_program=PUMPSWAP_AMM_PROGRAM_ID,
-            base_mint=mint,
-            quote_mint="So11111111111111111111111111111111111111112",
-            venue=venue or "pumpswap",
+            base_mint=retained_base,
+            quote_mint=retained_quote,
+            venue=promotion_venue,
             state=CURRENT_VISIBLE,
             reason="AT_OR_ABOVE_3000_FLOOR_RETAINED",
             observed_at=now,
             next_lawful_action_at=None,
             source_provenance=provenance,
-            contract_version=str(
-                evidence.get("market_evidence_contract_version")
-                or "RETAINED_MARKET_EVIDENCE_V1"
-            ),
+            contract_version=contract_version,
         ),
         now=now,
     )
@@ -2127,6 +2251,8 @@ def promote_confirmed_with_retained_liquidity(
         "liquidity_usd": liquidity_usd,
         "mint": mint,
         "pool": pool,
+        "base_mint": retained_base,
+        "quote_mint": retained_quote,
         "reason": "AT_OR_ABOVE_3000_FLOOR",
         "source_status": "COMPLETE",
         "outcome_category": "LIQUIDITY_EXACT_ABOVE_FLOOR",
@@ -2153,8 +2279,11 @@ def promote_confirmed_with_retained_liquidity(
             source_provenance=provenance,
             evidence={
                 "liquidity": liquidity_evidence,
-                "base_mint": mint,
-                "venue": venue or "pumpswap",
+                "base_mint": retained_base,
+                "quote_mint": retained_quote,
+                "venue": promotion_venue,
+                "pool": pool,
+                "market_evidence_contract_version": contract_version,
                 "memory_observation_eligible": True,
                 "future_action_eligibility": "BLOCKED_OR_UNKNOWN",
                 "holder_condition": "UNKNOWN",
@@ -2172,6 +2301,9 @@ def promote_confirmed_with_retained_liquidity(
         "liquidity_usd": liquidity_usd,
         "evidence_expires_at": evidence_expires_at,
         "liquidity": liquidity_evidence,
+        "base_mint": retained_base,
+        "quote_mint": retained_quote,
+        "venue": promotion_venue,
         "market_identity": f"solana-mainnet:pumpswap:{pool}",
         "eligible": True,
         "rejection": None,
@@ -2242,6 +2374,7 @@ def process_protocol_confirmation_queue(
     """
     from printer_v1.contracts.enums import SourceStatus
     from printer_v1.sources.campaign_six_unit_accounting import (
+        CampaignSixUnitError,
         build_campaign_stage_id,
         seal_campaign_stage_evidence,
     )
@@ -2286,6 +2419,8 @@ def process_protocol_confirmation_queue(
     )
     local_validation_identities: list[LocalValidationIdentity] = []
     source_request_coverage: list[dict[str, Any]] = []
+    accounting_blocker = False
+    accounting_blocker_reason: str | None = None
 
     reason_placeholders = ",".join("?" * len(PROTOCOL_DUE_REASONS))
     rows = connection.execute(
@@ -2376,6 +2511,7 @@ def process_protocol_confirmation_queue(
         remaining: list[dict[str, str]],
         seal: bool,
     ) -> dict[str, Any]:
+        nonlocal accounting_blocker, accounting_blocker_reason
         sealed = None
         stage_id = None
         if (
@@ -2409,6 +2545,7 @@ def process_protocol_confirmation_queue(
             elif not source_request_ids and outcomes:
                 # Local-only outcomes (unsupported venue etc.) with zero transport.
                 terminal_status = "COMPLETED"
+            seal_error: Exception | None = None
             try:
                 if stage_ledger.source_transport_operations > 0 or bound_validations:
                     sealed = seal_campaign_stage_evidence(
@@ -2425,12 +2562,20 @@ def process_protocol_confirmation_queue(
                         local_validation_identities=bound_validations or None,
                     )
                 else:
-                    # Zero-transport local-only stage: PRE_OPERATION_NO_WORK not
-                    # appropriate; emit diagnostic coverage without empty seal.
+                    # Expected zero-work: no transport and no validations.
+                    # Explicit non-seal; never fabricate successful stage evidence.
                     sealed = None
-            except Exception:
+            except (CampaignSixUnitError, MeasuredTransportError, ValueError, TypeError) as exc:
+                seal_error = exc
                 sealed = None
-            if sealed is not None:
+                accounting_blocker = True
+                accounting_blocker_reason = (
+                    f"PROTOCOL_STAGE_SEAL_FAILURE:{type(exc).__name__}:{exc}"
+                )
+            if seal_error is not None:
+                # Fail closed: do not fabricate sealed success; surface typed blocker.
+                pass
+            elif sealed is not None:
                 sealed = dict(sealed)
                 sealed["source_request_ids"] = list(source_request_ids)
                 sealed["source_response_ids"] = list(source_response_ids)
@@ -2440,14 +2585,15 @@ def process_protocol_confirmation_queue(
                 sealed["source_request_coverage"] = list(source_request_coverage)
                 stage_evidence_sink(sealed)
         connection.commit()
-        return {
+        report_out: dict[str, Any] = {
             "outcomes": outcomes,
             "remaining_due": remaining,
             "confirmed_for_market": confirmed_for_market,
             "promoted_observation_eligible": promoted_observation_eligible,
             "requires_market_revalidation": requires_market_revalidation,
             "source_requests": source_requests,
-            "transport_operations": transport_operations or source_requests,
+            # Transport count is measured only; never fall back to request count.
+            "transport_operations": transport_operations,
             "local_validation_steps": local_validation_steps,
             "attempts": source_requests,
             "batch_count": batch_count,
@@ -2460,9 +2606,15 @@ def process_protocol_confirmation_queue(
             "outcome_counts": dict(outcome_counts),
             "source_request_coverage": list(source_request_coverage),
             "sealed_stage_evidence": sealed,
+            "sealed_stage_evidence_blocks": (
+                [sealed] if sealed is not None else []
+            ),
             "stage_id": stage_id,
             "stage_sequence": int(stage_sequence),
+            "accounting_blocker": accounting_blocker,
+            "accounting_blocker_reason": accounting_blocker_reason,
         }
+        return report_out
 
     if (
         not pending
@@ -2576,11 +2728,19 @@ def process_protocol_confirmation_queue(
                     stage_ledger, payload, default_stage="PROTOCOL_CONFIRMATION"
                 )
                 delta = stage_ledger.source_transport_operations - before
-                transport_operations += int(delta or 1)
-                coverage_entry["transport_identity_count"] = int(delta or 1)
-            except MeasuredTransportError:
-                transport_operations += 1
-                coverage_entry["transport_identity_count"] = 1
+                # Transport counts come only from successfully accepted measured
+                # identities. Never invent a count when measurement yields zero
+                # or fails.
+                transport_operations += int(delta)
+                coverage_entry["transport_identity_count"] = int(delta)
+            except MeasuredTransportError as exc:
+                accounting_blocker = True
+                accounting_blocker_reason = (
+                    f"TRANSPORT_IDENTITY_MEASUREMENT_FAILED:{exc}"
+                )
+                coverage_entry["transport_identity_count"] = 0
+                coverage_entry["terminal_status"] = "BLOCKED"
+                coverage_entry["measurement_error"] = str(exc)
 
         shared_fail = bool(
             result.failure_type or result.source_status != SourceStatus.COMPLETE
@@ -2764,13 +2924,17 @@ def process_protocol_confirmation_queue(
 
 def build_source_request_coverage_manifest(
     entries: Sequence[Mapping[str, Any]],
-) -> list[dict[str, Any]]:
+    *,
+    fail_closed_on_duplicate: bool = False,
+) -> list[dict[str, Any]] | dict[str, Any]:
     """Normalize durable Source Governor request coverage entries.
 
     Request count and transport count remain independent surfaces. Each durable
-    request_id appears exactly once.
+    request_id appears exactly once. When fail_closed_on_duplicate is True,
+    duplicate request IDs return a blocker payload instead of silent skip.
     """
     seen: dict[int, dict[str, Any]] = {}
+    duplicates: list[int] = []
     for raw in entries:
         if not isinstance(raw, Mapping):
             continue
@@ -2779,6 +2943,9 @@ def build_source_request_coverage_manifest(
             continue
         rid = int(request_id)
         if rid in seen:
+            duplicates.append(rid)
+            if fail_closed_on_duplicate:
+                continue
             continue
         seen[rid] = {
             "source_request_id": rid,
@@ -2789,7 +2956,774 @@ def build_source_request_coverage_manifest(
             "normalized_member_count": int(raw.get("normalized_member_count") or 0),
             "terminal_status": str(raw.get("terminal_status") or "COMPLETED"),
         }
+    if fail_closed_on_duplicate and duplicates:
+        return {
+            "status": "BLOCKED",
+            "blocker": "CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH",
+            "reason": "DUPLICATE_SOURCE_REQUEST_ID",
+            "duplicate_request_ids": sorted(set(duplicates)),
+            "manifest": [seen[key] for key in sorted(seen)],
+        }
     return [seen[key] for key in sorted(seen)]
+
+
+def union_market_revalidation_candidates(
+    *groups: Sequence[Mapping[str, Any]] | None,
+) -> list[dict[str, str]]:
+    """Deterministic deduplicated union keyed by (mint, pool, venue).
+
+    Preserves first-seen order across groups (early then residual). Never uses
+    truthy A-or-B selection that can discard an early list.
+    """
+    out: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for group in groups:
+        if not group:
+            continue
+        for raw in group:
+            if not isinstance(raw, Mapping):
+                continue
+            mint = str(raw.get("mint") or "")
+            pool = str(raw.get("pool") or "")
+            venue = str(raw.get("venue") or "")
+            key = (mint, pool, venue)
+            if not mint or not pool or key in seen:
+                continue
+            seen.add(key)
+            entry = {
+                "mint": mint,
+                "pool": pool,
+                "venue": venue,
+            }
+            reason = raw.get("reason")
+            if reason is not None:
+                entry["reason"] = str(reason)
+            out.append(entry)
+    return out
+
+
+def merge_protocol_confirmation_reports(
+    early: Mapping[str, Any] | None,
+    residual: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Deterministic merge of protocol sequence 1 and sequence 2 reports.
+
+    Preserves both sealed stage sequences as an ordered collection. Legacy
+    single sealed_stage_evidence is a compatibility view only (last sealed).
+    Duplicate durable request IDs fail closed.
+    """
+    left = dict(early or {})
+    right = dict(residual or {})
+    if not left and not right:
+        return {
+            "outcomes": [],
+            "remaining_due": [],
+            "promoted_observation_eligible": [],
+            "requires_market_revalidation": [],
+            "source_request_ids": [],
+            "source_response_ids": [],
+            "source_failure_ids": [],
+            "source_requests": 0,
+            "transport_operations": 0,
+            "local_validation_steps": 0,
+            "batch_count": 0,
+            "shared_source_failures": 0,
+            "outcome_counts": {},
+            "source_request_coverage": [],
+            "sealed_stage_evidence_blocks": [],
+            "sealed_stage_evidence": None,
+            "accounting_blocker": False,
+            "accounting_blocker_reason": None,
+        }
+    if left and not right:
+        blocks = list(left.get("sealed_stage_evidence_blocks") or ())
+        if not blocks and left.get("sealed_stage_evidence") is not None:
+            blocks = [left["sealed_stage_evidence"]]
+        out = dict(left)
+        out["sealed_stage_evidence_blocks"] = blocks
+        out.setdefault("accounting_blocker", False)
+        out.setdefault("accounting_blocker_reason", None)
+        return out
+    if right and not left:
+        blocks = list(right.get("sealed_stage_evidence_blocks") or ())
+        if not blocks and right.get("sealed_stage_evidence") is not None:
+            blocks = [right["sealed_stage_evidence"]]
+        out = dict(right)
+        out["sealed_stage_evidence_blocks"] = blocks
+        out.setdefault("accounting_blocker", False)
+        out.setdefault("accounting_blocker_reason", None)
+        return out
+
+    def _list(key: str) -> list[Any]:
+        return list(left.get(key) or ()) + list(right.get(key) or ())
+
+    merged_request_ids = _list("source_request_ids")
+    if len(merged_request_ids) != len(set(int(x) for x in merged_request_ids)):
+        return {
+            "outcomes": _list("outcomes"),
+            "remaining_due": list(right.get("remaining_due") or ()),
+            "promoted_observation_eligible": _list("promoted_observation_eligible"),
+            "requires_market_revalidation": union_market_revalidation_candidates(
+                left.get("requires_market_revalidation"),
+                right.get("requires_market_revalidation"),
+            ),
+            "source_request_ids": merged_request_ids,
+            "source_response_ids": _list("source_response_ids"),
+            "source_failure_ids": _list("source_failure_ids"),
+            "source_requests": int(left.get("source_requests") or 0)
+            + int(right.get("source_requests") or 0),
+            "transport_operations": int(left.get("transport_operations") or 0)
+            + int(right.get("transport_operations") or 0),
+            "local_validation_steps": int(left.get("local_validation_steps") or 0)
+            + int(right.get("local_validation_steps") or 0),
+            "batch_count": int(left.get("batch_count") or 0)
+            + int(right.get("batch_count") or 0),
+            "shared_source_failures": int(left.get("shared_source_failures") or 0)
+            + int(right.get("shared_source_failures") or 0),
+            "outcome_counts": {},
+            "source_request_coverage": _list("source_request_coverage"),
+            "sealed_stage_evidence_blocks": [],
+            "sealed_stage_evidence": None,
+            "accounting_blocker": True,
+            "accounting_blocker_reason": (
+                "CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH:"
+                "DUPLICATE_PROTOCOL_REQUEST_ID"
+            ),
+            "merge_status": "BLOCKED",
+        }
+
+    outcome_counts: dict[str, int] = {}
+    for source in (left.get("outcome_counts") or {}, right.get("outcome_counts") or {}):
+        if not isinstance(source, Mapping):
+            continue
+        for key, value in source.items():
+            outcome_counts[str(key)] = outcome_counts.get(str(key), 0) + int(value or 0)
+
+    coverage_entries = _list("source_request_coverage")
+    coverage_result = build_source_request_coverage_manifest(
+        coverage_entries, fail_closed_on_duplicate=True
+    )
+    accounting_blocker = bool(
+        left.get("accounting_blocker") or right.get("accounting_blocker")
+    )
+    accounting_blocker_reason = (
+        left.get("accounting_blocker_reason")
+        or right.get("accounting_blocker_reason")
+    )
+    if isinstance(coverage_result, dict) and coverage_result.get("status") == "BLOCKED":
+        accounting_blocker = True
+        accounting_blocker_reason = str(
+            coverage_result.get("blocker")
+            or "CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH"
+        )
+        coverage_manifest = list(coverage_result.get("manifest") or ())
+    else:
+        coverage_manifest = list(coverage_result)  # type: ignore[arg-type]
+
+    sealed_blocks: list[Any] = []
+    for report in (left, right):
+        blocks = list(report.get("sealed_stage_evidence_blocks") or ())
+        if blocks:
+            sealed_blocks.extend(blocks)
+        elif report.get("sealed_stage_evidence") is not None:
+            sealed_blocks.append(report["sealed_stage_evidence"])
+
+    # Dedupe promoted by (mint, pool) preserving order.
+    promoted: list[dict[str, Any]] = []
+    seen_promo: set[tuple[str, str]] = set()
+    for raw in _list("promoted_observation_eligible"):
+        if not isinstance(raw, Mapping):
+            continue
+        key = (str(raw.get("mint") or ""), str(raw.get("pool") or ""))
+        if key in seen_promo:
+            continue
+        seen_promo.add(key)
+        promoted.append(dict(raw))
+
+    return {
+        "outcomes": _list("outcomes"),
+        "remaining_due": list(right.get("remaining_due") or ()),
+        "confirmed_for_market": union_market_revalidation_candidates(
+            left.get("confirmed_for_market"),
+            right.get("confirmed_for_market"),
+        ),
+        "promoted_observation_eligible": promoted,
+        "requires_market_revalidation": union_market_revalidation_candidates(
+            left.get("requires_market_revalidation"),
+            right.get("requires_market_revalidation"),
+        ),
+        "source_request_ids": [int(x) for x in merged_request_ids],
+        "source_response_ids": [int(x) for x in _list("source_response_ids")],
+        "source_failure_ids": [int(x) for x in _list("source_failure_ids")],
+        "source_requests": int(left.get("source_requests") or 0)
+        + int(right.get("source_requests") or 0),
+        "transport_operations": int(left.get("transport_operations") or 0)
+        + int(right.get("transport_operations") or 0),
+        "local_validation_steps": int(left.get("local_validation_steps") or 0)
+        + int(right.get("local_validation_steps") or 0),
+        "batch_count": int(left.get("batch_count") or 0)
+        + int(right.get("batch_count") or 0),
+        "shared_source_failures": int(left.get("shared_source_failures") or 0)
+        + int(right.get("shared_source_failures") or 0),
+        "outcome_counts": outcome_counts,
+        "source_request_coverage": coverage_manifest,
+        "sealed_stage_evidence_blocks": sealed_blocks,
+        # Compatibility view only — never the authoritative multi-stage owner.
+        "sealed_stage_evidence": sealed_blocks[-1] if sealed_blocks else None,
+        "accounting_blocker": accounting_blocker,
+        "accounting_blocker_reason": accounting_blocker_reason,
+        "merge_status": "BLOCKED" if accounting_blocker else "MERGED",
+        "stage_sequences": sorted(
+            {
+                int(b.get("stage_sequence"))
+                for b in sealed_blocks
+                if isinstance(b, Mapping) and b.get("stage_sequence") is not None
+            }
+        ),
+    }
+
+
+CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH = (
+    "CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH"
+)
+
+
+def build_campaign_source_request_manifest(
+    entries: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Build the authoritative campaign-wide source-request manifest.
+
+    Each durable request ID appears exactly once and owns one logical stage.
+    Duplicate IDs fail closed (never silently deduplicated as success).
+    """
+    ordered: list[dict[str, Any]] = []
+    by_id: dict[int, dict[str, Any]] = {}
+    duplicates: list[int] = []
+    missing_stage: list[int] = []
+    for raw in entries:
+        if not isinstance(raw, Mapping):
+            continue
+        if raw.get("source_request_id") is None:
+            continue
+        rid = int(raw["source_request_id"])
+        if rid in by_id:
+            duplicates.append(rid)
+            continue
+        stage = str(raw.get("logical_stage_id") or "").strip()
+        entry = {
+            "source_request_id": rid,
+            "source_name": str(raw.get("source_name") or ""),
+            "request_kind": str(raw.get("request_kind") or ""),
+            "logical_stage_id": stage,
+            "terminal_status": str(raw.get("terminal_status") or "COMPLETED"),
+            "transport_identity_count": int(raw.get("transport_identity_count") or 0),
+            "normalized_member_count": int(raw.get("normalized_member_count") or 0),
+        }
+        if not stage:
+            missing_stage.append(rid)
+        by_id[rid] = entry
+        ordered.append(entry)
+    status = "OK"
+    blocker = None
+    if duplicates:
+        status = "BLOCKED"
+        blocker = CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH
+    elif missing_stage:
+        status = "BLOCKED"
+        blocker = CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH
+    return {
+        "status": status,
+        "blocker": blocker,
+        "manifest": ordered,
+        "request_ids": [item["source_request_id"] for item in ordered],
+        "duplicate_request_ids": sorted(set(duplicates)),
+        "unowned_or_missing_stage_ids": sorted(set(missing_stage)),
+        "request_count": len(ordered),
+        "transport_identity_count_total": sum(
+            int(item["transport_identity_count"]) for item in ordered
+        ),
+    }
+
+
+def reconcile_campaign_source_requests(
+    *,
+    durable_request_ids: Sequence[int],
+    manifest_entries: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Require set(durable campaign request IDs) == set(manifest request IDs)."""
+    durable = sorted({int(x) for x in durable_request_ids})
+    built = build_campaign_source_request_manifest(manifest_entries)
+    manifest_ids = sorted({int(x) for x in built["request_ids"]})
+    durable_set = set(durable)
+    manifest_set = set(manifest_ids)
+    missing_from_manifest = sorted(durable_set - manifest_set)
+    extra_in_manifest = sorted(manifest_set - durable_set)
+    ok = (
+        built["status"] == "OK"
+        and not missing_from_manifest
+        and not extra_in_manifest
+        and len(durable) == len(set(durable))
+    )
+    if len(durable) != len(set(int(x) for x in durable_request_ids)):
+        ok = False
+        built = dict(built)
+        built["status"] = "BLOCKED"
+        built["blocker"] = CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH
+        built["duplicate_durable_request_ids"] = sorted(
+            {
+                int(x)
+                for x in durable_request_ids
+                if list(durable_request_ids).count(x) > 1
+            }
+        )
+    if missing_from_manifest or extra_in_manifest:
+        ok = False
+        built = dict(built)
+        built["status"] = "BLOCKED"
+        built["blocker"] = CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH
+    return {
+        "status": "OK" if ok else "BLOCKED",
+        "blocker": None if ok else CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH,
+        "durable_request_ids": durable,
+        "manifest_request_ids": manifest_ids,
+        "missing_from_manifest": missing_from_manifest,
+        "extra_in_manifest": extra_in_manifest,
+        "manifest": built["manifest"],
+        "request_count": len(manifest_ids),
+        "transport_identity_count_total": built.get("transport_identity_count_total", 0),
+        "duplicate_request_ids": list(built.get("duplicate_request_ids") or ()),
+        "invariant": (
+            "set(all durable campaign source-request IDs) == "
+            "set(all campaign manifest request IDs)"
+        ),
+    }
+
+
+def load_liquidity_unknown_candidates(
+    connection: sqlite3.Connection,
+) -> list[dict[str, Any]]:
+    """Load exact-pool rows still in LIQUIDITY_UNKNOWN after fresh nomination."""
+    rows = connection.execute(
+        """
+        SELECT mint_identity, pool_address, venue, base_mint, quote_mint,
+               last_observed_at, latest_source_provenance_json
+        FROM printer_exact_market_states
+        WHERE current_state=? AND current_reason=?
+        ORDER BY last_observed_at ASC, mint_identity ASC, pool_address ASC
+        """,
+        (CONTRACT_BLOCKED, REASON_LIQUIDITY_UNKNOWN),
+    ).fetchall()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            provenance = json.loads(str(row["latest_source_provenance_json"] or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            provenance = {}
+        if not isinstance(provenance, dict):
+            provenance = {}
+        out.append(
+            {
+                "mint": str(row["mint_identity"]),
+                "pool": str(row["pool_address"]),
+                "venue": str(row["venue"] or ""),
+                "base_mint": str(row["base_mint"] or row["mint_identity"]),
+                "quote_mint": str(row["quote_mint"] or ""),
+                "observed_at": str(row["last_observed_at"] or ""),
+                "source": str(provenance.get("source") or ""),
+                "liquidity_backup_attempted": bool(
+                    provenance.get("liquidity_backup_attempted")
+                ),
+                "provenance": provenance,
+            }
+        )
+    return out
+
+
+def run_bounded_unknown_liquidity_backup(
+    connection: sqlite3.Connection,
+    *,
+    stage_budget: StageBudget,
+    now: str,
+    campaign_id: str | None,
+    run_id: str | None = None,
+    cycle_id: str | None = None,
+    request_key_prefix: str = "unknown-liq-backup",
+    dexscreener_transport_factory: Any | None = None,
+    geckoterminal_transport_factory: Any | None = None,
+    max_backups: int | None = None,
+) -> dict[str, Any]:
+    """One lawful opposite-source exact-pool backup for LIQUIDITY_UNKNOWN rows.
+
+    DexScreener nomination → one GeckoTerminal exact-pool backup.
+    GeckoTerminal nomination → one DexScreener exact-pool backup.
+
+    Uses Source Governor + existing stage budget (reconciliation). No direct
+    provider bypass, no additional campaign ceiling, no repeated backup loop.
+    """
+    from printer_v1.contracts.enums import SourceStatus
+    from printer_v1.sources.contracts import build_governed_source_request
+    from printer_v1.sources.dexscreener import (
+        DEXSCREENER_SOURCE_NAME,
+        build_dexscreener_adapter,
+    )
+    from printer_v1.sources.geckoterminal import (
+        GECKOTERMINAL_SOURCE_NAME,
+        build_geckoterminal_adapter,
+    )
+    from printer_v1.sources.governed_execution import execute_source_request_with_governor
+
+    candidates = load_liquidity_unknown_candidates(connection)
+    report: dict[str, Any] = {
+        "attempts": [],
+        "source_request_ids": [],
+        "source_response_ids": [],
+        "source_failure_ids": [],
+        "source_request_coverage": [],
+        "source_requests": 0,
+        "outcomes": [],
+        "above_floor_promoted_to_protocol_due": 0,
+        "below_floor": 0,
+        "exact_pool_no_match": 0,
+        "identity_conflict": 0,
+        "still_unknown": 0,
+        "skipped_already_attempted": 0,
+    }
+    budget_cap = stage_budget.available("reconciliation")
+    limit = budget_cap if max_backups is None else min(int(max_backups), budget_cap)
+    attempted = 0
+    for cand in candidates:
+        if attempted >= limit:
+            break
+        if cand.get("liquidity_backup_attempted"):
+            report["skipped_already_attempted"] += 1
+            continue
+        mint = cand["mint"]
+        pool = cand["pool"]
+        source = str(cand.get("source") or "").casefold()
+        # Opposite-source backup only.
+        if source in {"dexscreener", "dex"}:
+            backup_source = "geckoterminal"
+            request_kind = "candidate_market_batch"
+            source_name = GECKOTERMINAL_SOURCE_NAME
+            transport = (
+                geckoterminal_transport_factory(mint)
+                if geckoterminal_transport_factory is not None
+                else None
+            )
+            adapter = build_geckoterminal_adapter(
+                enabled=True, fixture_transport=transport
+            )
+            payload = {
+                "request_kind": request_kind,
+                "chain": "solana",
+                "token_mint": mint,
+                "exact_pool": pool,
+            }
+        else:
+            backup_source = "dexscreener"
+            request_kind = "candidate_market_batch"
+            source_name = DEXSCREENER_SOURCE_NAME
+            transport = (
+                dexscreener_transport_factory(mint)
+                if dexscreener_transport_factory is not None
+                else None
+            )
+            adapter = build_dexscreener_adapter(
+                enabled=True, fixture_transport=transport
+            )
+            payload = {
+                "request_kind": request_kind,
+                "chain": "solana",
+                "token_mints": [mint],
+                "exact_pool": pool,
+            }
+        if not stage_budget.available("reconciliation"):
+            break
+        stage_budget.consume("reconciliation", 1)
+        attempted += 1
+        request = build_governed_source_request(
+            source_name,
+            request_kind,
+            request_key=f"{request_key_prefix}-{backup_source}-{mint[:8]}-{pool[:8]}",
+            tracking_priority=0,
+            payload=payload,
+        )
+        execution = execute_source_request_with_governor(
+            connection,
+            request,
+            adapter,
+            recent_request_count=report["source_requests"],
+        )
+        report["source_requests"] += 1
+        rid = int(execution.request_record.id)
+        report["source_request_ids"].append(rid)
+        if execution.response_record is not None:
+            report["source_response_ids"].append(int(execution.response_record.id))
+        if execution.failure_record is not None:
+            report["source_failure_ids"].append(int(execution.failure_record.id))
+        coverage = {
+            "source_request_id": rid,
+            "source_name": source_name,
+            "request_kind": request_kind,
+            "logical_stage_id": (
+                f"{campaign_id}|{run_id}|{cycle_id}|UNKNOWN_LIQUIDITY_BACKUP|1"
+                if campaign_id and run_id and cycle_id
+                else f"UNKNOWN_LIQUIDITY_BACKUP|{attempted}"
+            ),
+            "transport_identity_count": 0,
+            "normalized_member_count": 0,
+            "terminal_status": "COMPLETED",
+        }
+        result = execution.normalized_result
+        payload_norm = result.normalized_payload or {}
+        pairs = (
+            list(payload_norm.get("pairs") or ())
+            if isinstance(payload_norm, Mapping)
+            else []
+        )
+        resolution = resolve_dexscreener_mint_batch([mint], pairs, observed_at=now)
+        exact_rows = [
+            row for row in resolution.by_mint.get(mint, ()) if row.pool == pool
+        ]
+        shared_fail = bool(
+            result.failure_type or result.source_status != SourceStatus.COMPLETE
+        )
+        outcome_label = "LIQUIDITY_UNKNOWN"
+        liquidity_usd = None
+        quote_mint = str(cand.get("quote_mint") or "")
+        venue = str(cand.get("venue") or "")
+        base_mint = str(cand.get("base_mint") or mint)
+        if shared_fail:
+            coverage["terminal_status"] = "BLOCKED"
+            outcome_label = "LIQUIDITY_UNKNOWN"
+            report["still_unknown"] += 1
+        elif not exact_rows:
+            outcome_label = "EXACT_POOL_NO_MATCH"
+            report["exact_pool_no_match"] += 1
+            record_exact_market_transition(
+                connection,
+                ExactMarketObservation(
+                    network=NETWORK,
+                    mint=mint,
+                    pool=pool,
+                    token_program="UNRESOLVED_TOKEN_PROGRAM",
+                    pool_program="UNRESOLVED_POOL_PROGRAM",
+                    base_mint=base_mint,
+                    quote_mint=quote_mint or "UNKNOWN_QUOTE_MINT",
+                    venue=venue or "UNKNOWN_VENUE",
+                    state=EXACT_POOL_NO_MATCH,
+                    reason="LAWFUL_BACKUP_EXACT_POOL_NO_MATCH",
+                    observed_at=now,
+                    next_lawful_action_at=now,
+                    source_provenance={
+                        "source": backup_source,
+                        "request_id": rid,
+                        "liquidity_backup_attempted": True,
+                        "backup_of_source": source,
+                        "stage": "unknown_liquidity_backup",
+                    },
+                    contract_version="UNKNOWN_LIQUIDITY_BACKUP_V1",
+                ),
+                now=now,
+            )
+        else:
+            row = exact_rows[0]
+            if row.base_mint and row.base_mint != mint:
+                outcome_label = "IDENTITY_CONFLICT"
+                report["identity_conflict"] += 1
+                record_exact_market_transition(
+                    connection,
+                    ExactMarketObservation(
+                        network=NETWORK,
+                        mint=mint,
+                        pool=pool,
+                        token_program="UNRESOLVED_TOKEN_PROGRAM",
+                        pool_program="UNRESOLVED_POOL_PROGRAM",
+                        base_mint=mint,
+                        quote_mint=str(row.quote_mint or quote_mint or "UNKNOWN_QUOTE_MINT"),
+                        venue=str(row.venue or venue or "UNKNOWN_VENUE"),
+                        state=IDENTITY_CONFLICT,
+                        reason="BACKUP_BASE_MINT_MISMATCH",
+                        observed_at=now,
+                        next_lawful_action_at=now,
+                        source_provenance={
+                            "source": backup_source,
+                            "request_id": rid,
+                            "liquidity_backup_attempted": True,
+                            "backup_of_source": source,
+                            "stage": "unknown_liquidity_backup",
+                        },
+                        contract_version="UNKNOWN_LIQUIDITY_BACKUP_V1",
+                    ),
+                    now=now,
+                )
+            else:
+                liquidity_usd = _coerce_liquidity_usd(row.liquidity_usd)
+                quote_mint = str(row.quote_mint or quote_mint or "")
+                venue = str(row.venue or venue or "")
+                state, reason = classify_exact_pool_liquidity_prefilter(
+                    liquidity_usd=liquidity_usd
+                )
+                if reason == REASON_ABOVE_FLOOR_NOMINATION:
+                    outcome_label = "ABOVE_FLOOR_NOMINATION"
+                    report["above_floor_promoted_to_protocol_due"] += 1
+                elif reason == REASON_BELOW_FLOOR:
+                    outcome_label = "BELOW_LIQUIDITY_FLOOR"
+                    report["below_floor"] += 1
+                else:
+                    outcome_label = "LIQUIDITY_UNKNOWN"
+                    report["still_unknown"] += 1
+                observed_at = now
+                item_expires = resolve_liquidity_evidence_expiry(
+                    observed_at=observed_at,
+                    explicit_expiry=None,
+                    ingestion_now=now,
+                )
+                provenance = {
+                    "source": backup_source,
+                    "request_id": rid,
+                    "response_id": (
+                        None
+                        if execution.response_record is None
+                        else int(execution.response_record.id)
+                    ),
+                    "liquidity_usd": liquidity_usd,
+                    "liquidity_observed_at": observed_at,
+                    "liquidity_evidence_expires_at": item_expires,
+                    "liquidity_backup_attempted": True,
+                    "backup_of_source": source,
+                    "stage": "unknown_liquidity_backup",
+                    "prefilter_outcome": outcome_label,
+                    "provenance_kind": "MARKET_SOURCE_OBSERVATION",
+                    "market_evidence_contract_version": "UNKNOWN_LIQUIDITY_BACKUP_V1",
+                }
+                evidence = {
+                    "base_mint": mint,
+                    "quote_mint": quote_mint,
+                    "venue": venue,
+                    "pool": pool,
+                    "liquidity_usd": liquidity_usd,
+                    "liquidity_observed_at": observed_at,
+                    "liquidity_evidence_expires_at": item_expires,
+                    "market_evidence_contract_version": "UNKNOWN_LIQUIDITY_BACKUP_V1",
+                    "prefilter_outcome": outcome_label,
+                    "source": backup_source,
+                    "request_id": rid,
+                    "liquidity_backup_attempted": True,
+                    "backup_of_source": source,
+                }
+                record_exact_market_transition(
+                    connection,
+                    ExactMarketObservation(
+                        network=NETWORK,
+                        mint=mint,
+                        pool=pool,
+                        token_program="UNRESOLVED_TOKEN_PROGRAM",
+                        pool_program="UNRESOLVED_POOL_PROGRAM",
+                        base_mint=mint,
+                        quote_mint=quote_mint or "UNKNOWN_QUOTE_MINT",
+                        venue=venue or "UNKNOWN_VENUE",
+                        state=state,
+                        reason=reason,
+                        observed_at=observed_at,
+                        next_lawful_action_at=now,
+                        source_provenance=provenance,
+                        contract_version="UNKNOWN_LIQUIDITY_BACKUP_V1",
+                    ),
+                    now=now,
+                )
+                upsert_reserve_layer(
+                    connection,
+                    network=NETWORK,
+                    mint=mint,
+                    pool=pool,
+                    layer=BROAD_NOMINATED,
+                    reserve_state="ACTIVE",
+                    reason=reason,
+                    observed_at=observed_at,
+                    next_lawful_action_at=now,
+                    evidence_expires_at=item_expires if liquidity_usd is not None else None,
+                    source_provenance=provenance,
+                    evidence=evidence,
+                    campaign_id=campaign_id,
+                )
+                if reason == REASON_ABOVE_FLOOR_NOMINATION:
+                    upsert_reserve_layer(
+                        connection,
+                        network=NETWORK,
+                        mint=mint,
+                        pool=pool,
+                        layer=ABOVE_FLOOR_NOMINATED,
+                        reserve_state="ACTIVE",
+                        reason=reason,
+                        observed_at=observed_at,
+                        next_lawful_action_at=now,
+                        evidence_expires_at=item_expires,
+                        source_provenance=provenance,
+                        evidence=evidence,
+                        campaign_id=campaign_id,
+                    )
+                if outcome_label == "LIQUIDITY_UNKNOWN":
+                    # Still unknown after one backup: mark attempted so no loop.
+                    # State already LIQUIDITY_UNKNOWN via classify.
+                    pass
+        # Mark backup attempted even when still unknown / shared fail so a
+        # second attempt cannot loop.
+        if outcome_label == "LIQUIDITY_UNKNOWN" and (
+            shared_fail or not exact_rows or liquidity_usd is None
+        ):
+            # Refresh provenance flag on existing state when no transition above
+            # already wrote liquidity_backup_attempted (shared_fail path).
+            if shared_fail:
+                record_exact_market_transition(
+                    connection,
+                    ExactMarketObservation(
+                        network=NETWORK,
+                        mint=mint,
+                        pool=pool,
+                        token_program="UNRESOLVED_TOKEN_PROGRAM",
+                        pool_program="UNRESOLVED_POOL_PROGRAM",
+                        base_mint=base_mint,
+                        quote_mint=quote_mint or "UNKNOWN_QUOTE_MINT",
+                        venue=venue or "UNKNOWN_VENUE",
+                        state=CONTRACT_BLOCKED,
+                        reason=REASON_LIQUIDITY_UNKNOWN,
+                        observed_at=now,
+                        next_lawful_action_at=now,
+                        source_provenance={
+                            "source": backup_source,
+                            "request_id": rid,
+                            "liquidity_backup_attempted": True,
+                            "backup_of_source": source,
+                            "stage": "unknown_liquidity_backup",
+                            "backup_result": "STILL_UNKNOWN_AFTER_BACKUP",
+                        },
+                        contract_version="UNKNOWN_LIQUIDITY_BACKUP_V1",
+                    ),
+                    now=now,
+                )
+        report["source_request_coverage"].append(coverage)
+        report["attempts"].append(
+            {
+                "mint": mint,
+                "pool": pool,
+                "original_source": source,
+                "backup_source": backup_source,
+                "outcome": outcome_label,
+                "liquidity_usd": liquidity_usd,
+                "source_request_id": rid,
+            }
+        )
+        report["outcomes"].append(
+            {
+                "mint": mint,
+                "pool": pool,
+                "outcome": outcome_label,
+                "liquidity_backup_attempted": True,
+            }
+        )
+    connection.commit()
+    return report
 
 
 def observation_reserve_depth_status(observation_eligible_count: int) -> dict[str, Any]:
@@ -2844,24 +3778,32 @@ __all__ = [
     "MintBatchResolution",
     "PoolReconciliation",
     "StageBudget",
+    "CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH",
+    "build_campaign_source_request_manifest",
     "build_source_request_coverage_manifest",
     "classify_exact_pool_liquidity_prefilter",
     "freeze_eligible_reserve",
     "interleave_candidate_observations",
     "load_exact_market_states",
+    "load_liquidity_unknown_candidates",
     "load_retained_market_evidence",
     "merge_candidate_observations",
+    "merge_protocol_confirmation_reports",
     "observation_reserve_depth_status",
     "order_canonical_inventory_fairly",
     "process_protocol_confirmation_queue",
     "promote_confirmed_with_retained_liquidity",
     "record_exact_market_transition",
     "record_fresh_pool_nominations",
+    "reconcile_campaign_source_requests",
     "reconcile_pool_identity",
     "resolve_dexscreener_mint_batch",
+    "resolve_liquidity_evidence_expiry",
+    "run_bounded_unknown_liquidity_backup",
     "run_dexscreener_batch_market_resolution",
     "run_geckoterminal_fresh_nomination",
     "should_poll_exact_pool",
+    "union_market_revalidation_candidates",
     "upsert_reserve_layer",
     "mint_set_digest",
     "parse_mint_market_batch_stage_sequence",

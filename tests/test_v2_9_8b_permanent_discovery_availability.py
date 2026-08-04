@@ -970,7 +970,7 @@ class TestMintBatchAndReserve:
             {
                 "mint": f"Mint{i}",
                 "pool": f"Pool{i}",
-                "fully_eligible": True,
+                "memory_observation_eligible": True,
                 "evidence_expires_at": "2026-08-04T13:00:00+00:00",
             }
             for i in range(4)
@@ -981,23 +981,27 @@ class TestMintBatchAndReserve:
         assert len({item["mint"] for item in frozen.selected + frozen.alternates}) == 4
 
     def test_stale_alternate_is_rejected_before_activation(self):
+        # Five observation-eligible rows so that after rejecting one stale row
+        # the freeze still meets MINIMUM_FREEZE_DEPTH = 4.
         candidates = [
             {
                 "mint": f"Mint{i}",
                 "pool": f"Pool{i}",
-                "fully_eligible": True,
+                "memory_observation_eligible": True,
                 "evidence_expires_at": (
                     "2026-08-04T11:59:59+00:00"
                     if i == 3
                     else "2026-08-04T13:00:00+00:00"
                 ),
             }
-            for i in range(4)
+            for i in range(5)
         ]
         frozen = freeze_eligible_reserve(candidates, cycle_seed="neutral-seed", at=NOW)
         assert len(frozen.selected) == 2
-        assert len(frozen.alternates) == 1
+        assert len(frozen.alternates) == 2
         assert [item["mint"] for item in frozen.rejected_stale] == ["Mint3"]
+        frozen_mints = {item["mint"] for item in frozen.selected + frozen.alternates}
+        assert "Mint3" not in frozen_mints
 
 
 class TestGovernedBatchTransports:

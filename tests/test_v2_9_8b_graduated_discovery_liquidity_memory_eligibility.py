@@ -316,11 +316,14 @@ class TestDirectPromotion:
 
     def test_expired_evidence_requires_revalidation(self, database):
         _, connection = database
+        # observed_at before expiry; ingestion later does not extend freshness.
+        # At EXPIRED_AT the retained evidence is stale → revalidation required.
         record_fresh_pool_nominations(
             connection,
             observations=[
                 {
                     **_obs(_MINT_A, _POOL_A, liquidity_usd=9000.0),
+                    "observed_at": "2026-08-04T16:00:00+00:00",
                     "liquidity_evidence_expires_at": "2026-08-04T16:30:00+00:00",
                 }
             ],

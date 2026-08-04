@@ -732,6 +732,13 @@ def run_persistent_eligible_token_supply(
         "nominations": [],
         "local_exclusions": [],
     }
+    liquidity_backup_report: dict[str, Any] = {
+        "source_requests": 0,
+        "attempts": [],
+        "source_request_ids": [],
+        "source_request_coverage": [],
+        "outcomes": [],
+    }
     live_geckoterminal_requests = 0
 
     def _pace_live_geckoterminal() -> None:
@@ -781,6 +788,37 @@ def run_persistent_eligible_token_supply(
                 channels_attempted.append("geckoterminal_fresh_pool_nomination")
                 if geckoterminal_nomination_transport is None:
                     live_geckoterminal_requests += 1
+
+            # One bounded opposite-source backup for fresh LIQUIDITY_UNKNOWN
+            # before protocol confirmation (no protocol without proven liquidity).
+            if stage_budget.available("reconciliation") >= 1:
+                from printer_v1.discovery.permanent_discovery_availability import (
+                    run_bounded_unknown_liquidity_backup,
+                )
+
+                liquidity_backup_report = run_bounded_unknown_liquidity_backup(
+                    connection,
+                    stage_budget=stage_budget,
+                    now=now,
+                    campaign_id=campaign_id,
+                    run_id=run_id,
+                    cycle_id=cycle_id,
+                    request_key_prefix=f"{discovery_request_key_prefix}-liq-backup",
+                    geckoterminal_transport_factory=(
+                        geckoterminal_reconciliation_transport_factory
+                    ),
+                    dexscreener_transport_factory=(
+                        dexscreener_batch_transport_factory
+                    ),
+                )
+                ops_used += int(liquidity_backup_report.get("source_requests") or 0)
+            else:
+                liquidity_backup_report = {
+                    "source_requests": 0,
+                    "attempts": [],
+                    "source_request_ids": [],
+                    "source_request_coverage": [],
+                }
 
             # V2-9.8B: process above-floor protocol confirmation before market
             # batches consume residual promotion capacity. Confirmed rows promote
@@ -1434,39 +1472,18 @@ def run_persistent_eligible_token_supply(
                 stage_sequence=2,
                 request_key_prefix=f"{discovery_request_key_prefix}-protocol-residual",
             )
-            # Merge residual outcomes into the campaign protocol report.
-            if residual_protocol.get("source_requests") or residual_protocol.get(
-                "outcomes"
-            ):
-                if protocol_report:
-                    merged_outcomes = list(protocol_report.get("outcomes") or ())
-                    merged_outcomes.extend(residual_protocol.get("outcomes") or ())
-                    protocol_report = dict(protocol_report)
-                    protocol_report["outcomes"] = merged_outcomes
-                    protocol_report["remaining_due"] = list(
-                        residual_protocol.get("remaining_due") or ()
-                    )
-                    protocol_report["promoted_observation_eligible"] = list(
-                        protocol_report.get("promoted_observation_eligible") or ()
-                    ) + list(
-                        residual_protocol.get("promoted_observation_eligible") or ()
-                    )
-                    protocol_report["requires_market_revalidation"] = list(
-                        protocol_report.get("requires_market_revalidation") or ()
-                    ) + list(
-                        residual_protocol.get("requires_market_revalidation") or ()
-                    )
-                    protocol_report["source_request_ids"] = list(
-                        protocol_report.get("source_request_ids") or ()
-                    ) + list(residual_protocol.get("source_request_ids") or ())
-                    protocol_report["source_requests"] = int(
-                        protocol_report.get("source_requests") or 0
-                    ) + int(residual_protocol.get("source_requests") or 0)
-                else:
-                    protocol_report = residual_protocol
-                protocol_confirmation_outcomes = list(
-                    protocol_report.get("outcomes") or ()
-                )
+            # Deterministic merge of protocol sequence 1 and 2.
+            from printer_v1.discovery.permanent_discovery_availability import (
+                merge_protocol_confirmation_reports,
+                union_market_revalidation_candidates,
+            )
+
+            protocol_report = merge_protocol_confirmation_reports(
+                protocol_report, residual_protocol
+            )
+            protocol_confirmation_outcomes = list(
+                protocol_report.get("outcomes") or ()
+            )
             work_queues["PROTOCOL_CONFIRMATION_DUE"] = list(
                 protocol_report.get("remaining_due") or ()
             )
@@ -1499,10 +1516,9 @@ def run_persistent_eligible_token_supply(
                 all_candidates.append(cand)
             # Only rows that could not promote via retained evidence re-enter
             # market validation when capacity remains (never invent liquidity).
-            confirmed_for_market = list(
-                residual_protocol.get("requires_market_revalidation")
-                or protocol_report.get("requires_market_revalidation")
-                or ()
+            # Preserve both early and residual revalidation candidates.
+            confirmed_for_market = union_market_revalidation_candidates(
+                protocol_report.get("requires_market_revalidation"),
             )
             if (
                 confirmed_for_market
@@ -1961,11 +1977,46 @@ def run_persistent_eligible_token_supply(
                 "sealed_stage_present": bool(
                     (protocol_report or {}).get("sealed_stage_evidence")
                 ),
+                "sealed_stage_evidence_blocks": list(
+                    (protocol_report or {}).get("sealed_stage_evidence_blocks")
+                    or ()
+                ),
+                "accounting_blocker": bool(
+                    (protocol_report or {}).get("accounting_blocker")
+                ),
+                "accounting_blocker_reason": (
+                    protocol_report or {}
+                ).get("accounting_blocker_reason"),
+            },
+            "liquidity_backup": {
+                "source_requests": int(
+                    liquidity_backup_report.get("source_requests") or 0
+                ),
+                "source_request_ids": list(
+                    liquidity_backup_report.get("source_request_ids") or ()
+                ),
+                "source_request_coverage": list(
+                    liquidity_backup_report.get("source_request_coverage") or ()
+                ),
+                "attempts": list(liquidity_backup_report.get("attempts") or ()),
+                "above_floor_promoted_to_protocol_due": int(
+                    liquidity_backup_report.get(
+                        "above_floor_promoted_to_protocol_due"
+                    )
+                    or 0
+                ),
+                "below_floor": int(liquidity_backup_report.get("below_floor") or 0),
+                "exact_pool_no_match": int(
+                    liquidity_backup_report.get("exact_pool_no_match") or 0
+                ),
+                "still_unknown": int(
+                    liquidity_backup_report.get("still_unknown") or 0
+                ),
             },
             "memory_observation_eligible_count": sum(
                 1
                 for item in eligible_list
-                if item.get("memory_observation_eligible") or item.get("eligible")
+                if item.get("memory_observation_eligible") is True
             ),
             "nominations_by_source": {
                 "direct_pump_migration": int(

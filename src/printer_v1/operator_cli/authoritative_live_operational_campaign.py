@@ -1804,27 +1804,22 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         fact.get("holder_concentration_label")
                         or "HOLDER_CONCENTRATION_UNKNOWN"
                     )
-                    holder_eligible = bool(fact.get("eligible"))
+                    # Actual holder pass for future action policy only — never
+                    # invent holder_eligible=True to satisfy memory gates.
+                    holder_actually_eligible = bool(fact.get("eligible"))
                     if not fact:
                         holder_condition = "UNKNOWN"
                         holder_evidence_status = "SOURCE_UNAVAILABLE_OR_INCOMPLETE"
-                        future_action = "UNKNOWN"
-                    elif holder_eligible:
-                        holder_condition = holder_label
-                        holder_evidence_status = "COMPLETE"
-                        # Future paper action remains locked; concentration may
-                        # still block action policy later without removing memory.
-                        if holder_label in {
-                            "HOLDER_CONCENTRATION_EXTREME",
-                            "HOLDER_CONCENTRATION_CONCENTRATED",
-                        }:
-                            future_action = "BLOCKED_OR_UNKNOWN"
-                        else:
-                            future_action = "BLOCKED_OR_UNKNOWN"
+                        future_action = "BLOCKED_OR_UNKNOWN"
                     else:
                         holder_condition = holder_label
-                        holder_evidence_status = str(
-                            fact.get("reason") or "SOURCE_UNAVAILABLE_OR_INCOMPLETE"
+                        holder_evidence_status = (
+                            "COMPLETE"
+                            if holder_actually_eligible
+                            else str(
+                                fact.get("reason")
+                                or "SOURCE_UNAVAILABLE_OR_INCOMPLETE"
+                            )
                         )
                         future_action = "BLOCKED_OR_UNKNOWN"
                     observation = {
@@ -1836,7 +1831,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             or proof.bonding_curve
                         ),
                         "memory_observation_eligible": True,
-                        "fully_eligible": holder_eligible,
+                        # fully_eligible reflects actual holder pass only; it is
+                        # never a memory admission input.
+                        "fully_eligible": holder_actually_eligible,
                         "evidence_expires_at": expiry,
                         "holder_safety": dict(fact),
                         "holder_condition": holder_condition,
@@ -1869,8 +1866,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         },
                         campaign_id=command.campaign_id,
                     )
-                    # FULLY_ELIGIBLE retained only for future action-specific policy.
-                    if holder_eligible:
+                    # FULLY_ELIGIBLE retained only for future action-specific
+                    # policy when holder actually passes. Never for memory path.
+                    if holder_actually_eligible:
                         upsert_reserve_layer(
                             connection,
                             network=NETWORK,
@@ -1892,33 +1890,56 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             },
                             campaign_id=command.campaign_id,
                         )
-                supply.diagnostics["observation_reserve"] = (
-                    observation_reserve_depth_status(len(observation_rows))
-                )
-                frozen_eligible_reserve = freeze_eligible_reserve(
-                    observation_rows,
-                    cycle_seed=selection_seed,
-                    at=datetime.now(timezone.utc).isoformat(),
-                )
-                for reserve_state, items in (
-                    ("SELECTED", frozen_eligible_reserve.selected),
-                    ("ALTERNATE", frozen_eligible_reserve.alternates[:2]),
-                ):
-                    for item in items:
-                        connection.execute(
-                            """UPDATE printer_discovery_reserve_layers
-                               SET reserve_state=?,updated_at=?
-                               WHERE network=? AND mint_identity=?
-                                 AND pool_address=? AND reserve_layer=?""",
-                            (
-                                reserve_state,
-                                evaluated.isoformat(),
-                                NETWORK,
-                                str(item.get("mint") or ""),
-                                str(item.get("pool") or ""),
-                                MEMORY_OBSERVATION_ELIGIBLE,
-                            ),
-                        )
+                depth_status = observation_reserve_depth_status(len(observation_rows))
+                supply.diagnostics["observation_reserve"] = depth_status
+                # MINIMUM_FREEZE_DEPTH is an admission gate. Below four: durable
+                # coverage terminal, no selected/alternates, no readiness/handoff.
+                if depth_status.get("coverage_blocker"):
+                    frozen_eligible_reserve = freeze_eligible_reserve(
+                        observation_rows,
+                        cycle_seed=selection_seed,
+                        at=datetime.now(timezone.utc).isoformat(),
+                    )
+                    # Ensure no selected/alternate reserve-state writes occur.
+                    supply.diagnostics["freeze_depth_enforcement"] = {
+                        "enforced": True,
+                        "selected_count": 0,
+                        "alternate_count": 0,
+                        "terminal": "PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT",
+                        "durable_report_required": True,
+                        **depth_status,
+                    }
+                else:
+                    frozen_eligible_reserve = freeze_eligible_reserve(
+                        observation_rows,
+                        cycle_seed=selection_seed,
+                        at=datetime.now(timezone.utc).isoformat(),
+                    )
+                    for reserve_state, items in (
+                        ("SELECTED", frozen_eligible_reserve.selected),
+                        ("ALTERNATE", frozen_eligible_reserve.alternates[:2]),
+                    ):
+                        for item in items:
+                            connection.execute(
+                                """UPDATE printer_discovery_reserve_layers
+                                   SET reserve_state=?,updated_at=?
+                                   WHERE network=? AND mint_identity=?
+                                     AND pool_address=? AND reserve_layer=?""",
+                                (
+                                    reserve_state,
+                                    evaluated.isoformat(),
+                                    NETWORK,
+                                    str(item.get("mint") or ""),
+                                    str(item.get("pool") or ""),
+                                    MEMORY_OBSERVATION_ELIGIBLE,
+                                ),
+                            )
+                    supply.diagnostics["freeze_depth_enforcement"] = {
+                        "enforced": True,
+                        "selected_count": len(frozen_eligible_reserve.selected),
+                        "alternate_count": len(frozen_eligible_reserve.alternates[:2]),
+                        **depth_status,
+                    }
             connection.commit()
         finally:
             connection.close()
@@ -1951,22 +1972,43 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     reserve_order.append(mint)
             chosen: list[Any] = []
             seen: set[str] = set()
+            # Freeze-depth admission: fewer than MINIMUM_FREEZE_DEPTH yields no
+            # selected slots, no alternates, no readiness bundle, no handoff.
+            depth_blocker = bool(
+                (supply.diagnostics.get("observation_reserve") or {}).get(
+                    "coverage_blocker"
+                )
+            )
             for mint in reserve_order:
                 # Memory freeze already chose from MEMORY_OBSERVATION_ELIGIBLE.
                 # Do not re-gate selection on holder pass; holder is context only.
+                if depth_blocker:
+                    break
                 if mint not in seen and mint in admitted_by_mint:
                     if frozen_eligible_reserve is not None:
-                        chosen.append(admitted_by_mint[mint])
-                        seen.add(mint)
+                        # Only freeze-selected mints may enter the two-slot handoff.
+                        selected_mints = {
+                            str(item.get("mint") or "").lower()
+                            for item in frozen_eligible_reserve.selected
+                        }
+                        if mint in selected_mints or not selected_mints:
+                            if mint in selected_mints:
+                                chosen.append(admitted_by_mint[mint])
+                                seen.add(mint)
                     else:
-                        fact = holder_facts.get(mint, {})
-                        if fact.get("eligible"):
+                        # Non-permanent path: never invent holder-safe admission
+                        # for memory; require explicit memory observation flag
+                        # when present on reserve candidates.
+                        reserve_item = dict(
+                            supply.holder_reserve_candidates.get(mint) or {}
+                        )
+                        if reserve_item.get("memory_observation_eligible") is True:
                             chosen.append(admitted_by_mint[mint])
                             seen.add(mint)
                 if len(chosen) == 2:
                     break
 
-            if len(chosen) == 2:
+            if len(chosen) == 2 and not depth_blocker:
                 graduated_candidates = tuple(chosen)
                 selection_terminal = "PILOT_INPUT_READY"
                 from printer_v1.operator_cli.pilot_input_readiness import (
@@ -1977,6 +2019,11 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 def readiness_candidate(proof: Any) -> ReadinessCandidate:
                     item = dict(supply.holder_reserve_candidates[proof.mint.lower()])
                     liquidity = dict(item.get("liquidity") or {})
+                    # Record actual holder eligibility; never force True for
+                    # legacy gates. Memory path already admitted without it.
+                    actual_holder = bool(
+                        (holder_facts.get(proof.mint.lower()) or {}).get("eligible")
+                    )
                     return ReadinessCandidate(
                         mint=proof.mint,
                         pool=str(item["pool"]),
@@ -1986,7 +2033,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             supply.front_door_report.get("generated_at") or evaluated_at
                         ),
                         activation_route=str(proof.origin_route),
-                        holder_eligible=True,
+                        holder_eligible=actual_holder,
                         # True provenance per token; a LATEST token is never
                         # relabelled PERSISTED (or vice versa).
                         provenance=provenance_by_mint.get(proof.mint.lower(), ""),
@@ -2022,13 +2069,19 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 finally:
                     readiness_connection.close()
             else:
-                # Fewer than two holder-eligible tokens. Classify the terminal
-                # honestly: a source/network outage is never attributed to market
-                # coverage (item 8).
+                # Fewer than two memory-observation freeze selections, or freeze
+                # depth coverage blocker. Classify the terminal honestly: a
+                # source/network outage is never attributed to market coverage.
                 graduated_candidates = ()
-                selection_terminal = _classify_pre_lifecycle_terminal(
-                    holder_facts, reserve_count=len(admitted_by_mint)
-                )
+                if depth_blocker:
+                    selection_terminal = (
+                        "PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT"
+                    )
+                    eligible_alternates = []
+                else:
+                    selection_terminal = _classify_pre_lifecycle_terminal(
+                        holder_facts, reserve_count=len(admitted_by_mint)
+                    )
 
         front_door_candidates = (
             list((supply.front_door_report or {}).get("candidates") or [])
@@ -2101,7 +2154,28 @@ class AuthoritativeLiveOperationalCampaignOwner:
             holder_eligible = sum(
                 1 for fact in holder_facts.values() if fact.get("eligible")
             )
-            atomic_ready = len(graduated_candidates) >= 2 and holder_eligible >= 2
+            # Permanent-discovery memory path: atomic readiness is freeze/selection
+            # depth, not holder pass. Holder remains context only.
+            depth_blocker = bool(
+                (
+                    (supply.diagnostics if supply is not None else {}).get(
+                        "observation_reserve"
+                    )
+                    or {}
+                ).get("coverage_blocker")
+            )
+            if supply is not None and bool(
+                supply.diagnostics.get("permanent_availability")
+            ):
+                atomic_ready = (
+                    readiness_bundle is not None and len(graduated_candidates) >= 2
+                )
+            else:
+                atomic_ready = len(graduated_candidates) >= 2 and holder_eligible >= 2
+            if depth_blocker and selection_terminal is None:
+                selection_terminal = (
+                    "PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT"
+                )
             terminal = (
                 "PILOT_INPUT_READY"
                 if readiness_bundle is not None
@@ -2111,7 +2185,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     else (
                         "PRE_LIFECYCLE_ATOMIC_TWO_SLOT_READY"
                         if atomic_ready and not provenance_by_mint
-                        else "PRE_LIFECYCLE_HOLDER_EVIDENCE_BLOCKED"
+                        else "PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT"
                     )
                 )
             )
