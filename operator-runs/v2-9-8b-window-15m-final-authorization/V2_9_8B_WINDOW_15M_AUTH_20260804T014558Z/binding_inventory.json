@@ -1,0 +1,84 @@
+{
+  "allowed_invocation_count": 1,
+  "authoritative_database": {
+    "inode": 1230526,
+    "journal_exists": false,
+    "migration_count": 50,
+    "migration_head": "050_campaign_scheduler_ownership_scope.sql",
+    "migration_head_applied_at": "2026-08-01 20:44:32",
+    "mtime_ns": 1785804677865967136,
+    "path": "/Users/Dtwo1/Developer/MoneyPrinter/data/printer_v1.sqlite3",
+    "sha256": "841ccb18485355d4a1f1a574d53e3b62ee7c038f412495ebce62b5da09de2326",
+    "shm_exists": false,
+    "size": 66355200,
+    "sqlite_opened_during_authorization_package_hash": false,
+    "wal_exists": false
+  },
+  "authorization_id": "V2_9_8B_WINDOW_15M_AUTH_20260804T014558Z",
+  "authorization_preparation_readiness_gate": {
+    "provider_contacted": false,
+    "readiness_artifact_created": false,
+    "readiness_required": false,
+    "status": "AUTHORIZATION_PREPARATION_READINESS_GATE_NOT_REQUIRED",
+    "valid": true
+  },
+  "authorized_git": {
+    "authorization_report": "docs/printer-v1-v2-9-8b-discovery-selection-strengthening-closeout.md",
+    "branch": "agent/v2-9-8b-post-rollover-2-exact-public-composition-scheduler-claim-coverage-audit",
+    "exact_head_required": true,
+    "head": "0ab3fa33e580cbe1c55e3a6bfd2b318edd93aa6c",
+    "tracked_worktree_must_be_clean": true
+  },
+  "campaign_count": 1,
+  "cycle_count": 1,
+  "external_application_preexistence": false,
+  "external_application_root_expected": "/Users/Dtwo1/PrinterOperations/v2-9-8/window-15m-one-shot-applications/V2_9_8B_WINDOW_15M_AUTH_20260804T014558Z",
+  "final_authorization_path": "operator-runs/v2-9-8b-window-15m-final-authorization/V2_9_8B_WINDOW_15M_AUTH_20260804T014558Z/final_authorization.json",
+  "final_authorization_sha256": "8bb922e4450a81ee42e160a638f93175723f128bc05c058664aa211c008c70e7",
+  "flags": {
+    "automatic_retry": false,
+    "continuous_4h": false,
+    "direct_operational_command_authorized": false,
+    "manual_rerun": false,
+    "manual_terminal_execution_only": true,
+    "operator_approved": true,
+    "paper_only": true,
+    "restart": false,
+    "resume": false,
+    "selective_1h_continuation": false,
+    "solana_memecoin_only": true,
+    "solana_only": true,
+    "successor": false,
+    "wrapper_required": true
+  },
+  "launch_chain": {
+    "scripts/Start-PrinterV1-Window15M-OneShot.ps1": {
+      "bytes": 878,
+      "git_blob": "a7fd77e680fa48dff911982d1491462185b5699a",
+      "sha256": "524c6332d0952b3959a8136140bc9e1a98acd54f486d88d70910dd537a496d4f"
+    },
+    "src/printer_v1/operator_cli/git_provenance_authorization_manifest.py": {
+      "bytes": 42875,
+      "git_blob": "64b8a305765bb0967ae1f57301d8bcee70db22a3",
+      "sha256": "e899ecc14b62b3b46e6344ee2e3358ec5a09b6c523bdcbc821a8d3a70d9854c1"
+    },
+    "src/printer_v1/operator_cli/operational_memory_factory_command.py": {
+      "bytes": 180667,
+      "git_blob": "cdba6f95cf1affc6a90a4272cce82b0822bba7b8",
+      "sha256": "58b65975bf16f745250e7ec3491815d3f878dc984b693eec9d6cec20d9e73df1"
+    },
+    "src/printer_v1/operator_cli/window_15m_one_shot_wrapper.py": {
+      "bytes": 30802,
+      "git_blob": "73d5ac306eee0241dcb3d1b97bd353fa950bd470",
+      "sha256": "cb3eb498593bec2bd4460d30ddf67e864b195f9bb89b82ecd707dc31304cc047"
+    },
+    "tests/test_v2_9_8b_window_15m_one_shot_wrapper.py": {
+      "bytes": 34700,
+      "git_blob": "e4f1eb046d8ce9c4def2840d9ffb80edd679589a",
+      "sha256": "b41678d3b1ff08ae9dccca9639b7f412e104356805683bfcab178f4a72ff47fe"
+    }
+  },
+  "main_window": "WINDOW_15M",
+  "migration_execution_id": "V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f",
+  "token_capacity": 2
+}

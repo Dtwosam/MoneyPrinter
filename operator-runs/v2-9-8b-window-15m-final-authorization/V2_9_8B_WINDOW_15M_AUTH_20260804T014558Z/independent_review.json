@@ -1,0 +1,46 @@
+{
+  "authorization_id": "V2_9_8B_WINDOW_15M_AUTH_20260804T014558Z",
+  "authorization_preparation_readiness_gate": {
+    "authorization_emitted": false,
+    "blockers": [],
+    "provider_contacted": false,
+    "readiness_required": false,
+    "readiness_schema_version": "PRINTER_V1_PRE_LIFECYCLE_READINESS_ARTIFACT_V1",
+    "readiness_validation": {
+      "blockers": [],
+      "status": "READINESS_ARTIFACT_NOT_REQUIRED",
+      "valid": true
+    },
+    "schema_version": "PRINTER_V1_AUTHORIZATION_PREPARATION_READINESS_GATE_V1",
+    "status": "AUTHORIZATION_PREPARATION_READINESS_GATE_NOT_REQUIRED",
+    "valid": true,
+    "wrapper_invoked": false
+  },
+  "branch": "agent/v2-9-8b-post-rollover-2-exact-public-composition-scheduler-claim-coverage-audit",
+  "checks": {
+    "1h_4h_forbidden": true,
+    "allowed_invocation_count_one": true,
+    "authorization_id_new": true,
+    "db_identity_matches": true,
+    "direct_child_forbidden": true,
+    "exact_head_matches_live": true,
+    "external_application_absent": true,
+    "financial_paths_locked": true,
+    "gate_not_required_pass": true,
+    "historical_not_reused": true,
+    "launch_chain_matches": true,
+    "main_window_15m_only": true,
+    "no_readiness_artifact": true,
+    "package_hash_matches": true,
+    "provider_not_contacted_during_prep": true,
+    "retry_flags_false": true,
+    "token_capacity_two": true,
+    "wrapper_only_entry": true
+  },
+  "executable_head": "0ab3fa33e580cbe1c55e3a6bfd2b318edd93aa6c",
+  "final_authorization_sha256": "8bb922e4450a81ee42e160a638f93175723f128bc05c058664aa211c008c70e7",
+  "readiness_artifact_present": false,
+  "readiness_artifact_required": false,
+  "reviewed_at": "2026-08-04T01:45:58.484139+00:00",
+  "verdict": "V2_9_8B_STRENGTHENED_DISCOVERY_SELECTION_WINDOW_15M_ONE_USE_AUTHORIZATION_REVIEW_PASS"
+}

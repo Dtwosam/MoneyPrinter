@@ -1,0 +1,285 @@
+{
+  "accepted_launch_chain": {
+    "direct_operational_command_authorized": false,
+    "entrypoint": "scripts/Start-PrinterV1-Window15M-OneShot.ps1",
+    "files": {
+      "scripts/Start-PrinterV1-Window15M-OneShot.ps1": "524c6332d0952b3959a8136140bc9e1a98acd54f486d88d70910dd537a496d4f",
+      "src/printer_v1/operator_cli/git_provenance_authorization_manifest.py": "e899ecc14b62b3b46e6344ee2e3358ec5a09b6c523bdcbc821a8d3a70d9854c1",
+      "src/printer_v1/operator_cli/operational_memory_factory_command.py": "58b65975bf16f745250e7ec3491815d3f878dc984b693eec9d6cec20d9e73df1",
+      "src/printer_v1/operator_cli/window_15m_one_shot_wrapper.py": "cb3eb498593bec2bd4460d30ddf67e864b195f9bb89b82ecd707dc31304cc047",
+      "tests/test_v2_9_8b_window_15m_one_shot_wrapper.py": "b41678d3b1ff08ae9dccca9639b7f412e104356805683bfcab178f4a72ff47fe"
+    },
+    "files_detailed": {
+      "scripts/Start-PrinterV1-Window15M-OneShot.ps1": {
+        "bytes": 878,
+        "git_blob": "a7fd77e680fa48dff911982d1491462185b5699a",
+        "sha256": "524c6332d0952b3959a8136140bc9e1a98acd54f486d88d70910dd537a496d4f"
+      },
+      "src/printer_v1/operator_cli/git_provenance_authorization_manifest.py": {
+        "bytes": 42875,
+        "git_blob": "64b8a305765bb0967ae1f57301d8bcee70db22a3",
+        "sha256": "e899ecc14b62b3b46e6344ee2e3358ec5a09b6c523bdcbc821a8d3a70d9854c1"
+      },
+      "src/printer_v1/operator_cli/operational_memory_factory_command.py": {
+        "bytes": 180667,
+        "git_blob": "cdba6f95cf1affc6a90a4272cce82b0822bba7b8",
+        "sha256": "58b65975bf16f745250e7ec3491815d3f878dc984b693eec9d6cec20d9e73df1"
+      },
+      "src/printer_v1/operator_cli/window_15m_one_shot_wrapper.py": {
+        "bytes": 30802,
+        "git_blob": "73d5ac306eee0241dcb3d1b97bd353fa950bd470",
+        "sha256": "cb3eb498593bec2bd4460d30ddf67e864b195f9bb89b82ecd707dc31304cc047"
+      },
+      "tests/test_v2_9_8b_window_15m_one_shot_wrapper.py": {
+        "bytes": 34700,
+        "git_blob": "e4f1eb046d8ce9c4def2840d9ffb80edd679589a",
+        "sha256": "b41678d3b1ff08ae9dccca9639b7f412e104356805683bfcab178f4a72ff47fe"
+      }
+    },
+    "one_shot_wrapper": "src/printer_v1/operator_cli/window_15m_one_shot_wrapper.py",
+    "operational_child": "printer_v1.operator_cli.operational_memory_factory_command",
+    "wrapper_required": true
+  },
+  "authoritative_database": {
+    "inode": 1230526,
+    "journal_exists": false,
+    "migration_count": 50,
+    "migration_head": "050_campaign_scheduler_ownership_scope.sql",
+    "migration_head_applied_at": "2026-08-01 20:44:32",
+    "mtime_ns": 1785804677865967136,
+    "path": "/Users/Dtwo1/Developer/MoneyPrinter/data/printer_v1.sqlite3",
+    "sha256": "841ccb18485355d4a1f1a574d53e3b62ee7c038f412495ebce62b5da09de2326",
+    "shm_exists": false,
+    "size": 66355200,
+    "sqlite_opened_during_authorization_package_hash": false,
+    "wal_exists": false
+  },
+  "authorization_id": "V2_9_8B_WINDOW_15M_AUTH_20260804T014558Z",
+  "authorization_type": "V2_9_8B_STRENGTHENED_DISCOVERY_SELECTION_WINDOW_15M_ONE_USE_AUTHORIZATION",
+  "authorized_at": "2026-08-04T01:45:58.380900+00:00",
+  "authorized_command": {
+    "allowed_invocation_count": 1,
+    "automatic_retry_allowed": false,
+    "manual_rerun_allowed": false,
+    "manual_terminal_execution_only": true,
+    "mode": "run",
+    "operator_approved": true,
+    "restart_allowed": false,
+    "resume_allowed": false,
+    "successor_allowed": false
+  },
+  "authorized_git": {
+    "authorization_report": "docs/printer-v1-v2-9-8b-discovery-selection-strengthening-closeout.md",
+    "branch": "agent/v2-9-8b-post-rollover-2-exact-public-composition-scheduler-claim-coverage-audit",
+    "exact_head_required": true,
+    "head": "0ab3fa33e580cbe1c55e3a6bfd2b318edd93aa6c",
+    "tracked_worktree_must_be_clean": true
+  },
+  "campaign_policy": {
+    "automatic_retries": 0,
+    "campaign_count": 1,
+    "continuous_4h": false,
+    "cycle_count": 1,
+    "locked_windows": [
+      "WINDOW_1H",
+      "WINDOW_4H",
+      "WINDOW_12H",
+      "WINDOW_24H"
+    ],
+    "main_window": "WINDOW_15M",
+    "main_window_seconds": 900,
+    "paper_only": true,
+    "provider_rotation_allowed": false,
+    "scheduler_owner": "CENTRAL_SCHEDULER",
+    "selective_1h_continuation": false,
+    "solana_memecoin_only": true,
+    "solana_only": true,
+    "source_owner": "SOURCE_GOVERNOR",
+    "support_only_window": "WINDOW_5M_MICRO_EVENT",
+    "token_capacity": 2,
+    "total_duration_seconds": 1200
+  },
+  "capabilities_remaining_locked": [
+    "external application marker until wrapper execution",
+    "git provenance manifest until wrapper execution",
+    "provider/source access until authorized wrapper child runtime",
+    "Source Governor and Central Scheduler runtime until wrapper child",
+    "campaign execution until wrapper child",
+    "memory retrieval",
+    "paper decisions",
+    "BUY SELL HOLD",
+    "positions trade events audits PnL",
+    "WINDOW_1H WINDOW_4H WINDOW_12H WINDOW_24H",
+    "wallets private keys real funds live execution",
+    "paid APIs",
+    "scoring ranking confidence weighting embeddings vectors",
+    "financial capability",
+    "direct operational_memory_factory_command invocation"
+  ],
+  "consumption_law": {
+    "authorization_lane_must_not_create_marker_or_manifest": true,
+    "consumed_regardless_of": [
+      "PASS",
+      "block",
+      "safe-stop",
+      "interruption",
+      "failure"
+    ],
+    "consumed_when": "wrapper_execution_begins",
+    "create_once_external_application_marker": true,
+    "permanently_non_reusable_after_start": true,
+    "schema_application_marker": "PRINTER_V1_APPLICATION_MARKER_V1",
+    "schema_manifest": "PRINTER_V1_GIT_PROVENANCE_MANIFEST_V1",
+    "wrapper_creates_marker_and_manifest": true
+  },
+  "hard_pre_application_gates": [
+    "independent authorization review PASS",
+    "exact branch and HEAD equal authorized_git bindings",
+    "tracked worktree and index clean",
+    "retained migration package byte-identical",
+    "authorization package exact and unconsumed",
+    "authoritative DB identity exact",
+    "no SQLite sidecars",
+    "accepted launch-chain identities exact including operational_memory_factory_command 58b65975",
+    "no pre-existing external application directory, manifest, or application marker for this authorization_id",
+    "authorization package files present as untracked evidence at application time",
+    "exact visible untracked set equals Migration-050 visible paths plus this authorization package visible paths",
+    "zero active or locked Scheduler residue",
+    "no relevant Printer processes",
+    "manual Terminal execution only with -OperatorApproved",
+    "no separate live pre-lifecycle readiness artifact required"
+  ],
+  "historical_consumed_authorizations_not_reusable": [
+    "V2_9_8B_WINDOW_15M_AUTH_20260801T205700Z",
+    "V2_9_8B_WINDOW_15M_AUTH_20260802T112358Z",
+    "V2_9_8B_WINDOW_15M_AUTH_20260802T210122Z",
+    "V2_9_8B_WINDOW_15M_AUTH_20260803T204800Z",
+    "V2_9_8B_WINDOW_15M_AUTH_20260803T211336Z",
+    "V2_9_8B_WINDOW_15M_AUTH_20260803T232743Z",
+    "V2_9_8B_EXACT_OFFLINE_PUBLIC_COMPOSITION_AUTH_20260803_01",
+    "V2_9_8B_WINDOW_15M_AUTH_20260804T005013Z"
+  ],
+  "honest_terminal_law": {
+    "authorization_consumed_by_blocked_attempt": true,
+    "clean_memory_guaranteed": false,
+    "eligible_two_token_supply_guaranteed": false,
+    "favorable_outcome_guaranteed": false,
+    "profit_guaranteed": false,
+    "provider_success_guaranteed": false
+  },
+  "migration_execution_id": "V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f",
+  "migration_package": {
+    "file_count": 12,
+    "files": [
+      {
+        "path": "operator-runs/v2-9-8b-authoritative-mig050/V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f/application_started.json",
+        "sha256": "8678ecb14feb1f04a315303ac5afd92639541900a267b8951adc7fad75050e8a",
+        "size": 50133
+      },
+      {
+        "path": "operator-runs/v2-9-8b-authoritative-mig050/V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f/application_stderr.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "size": 0
+      },
+      {
+        "path": "operator-runs/v2-9-8b-authoritative-mig050/V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f/application_stdout.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "size": 0
+      },
+      {
+        "path": "operator-runs/v2-9-8b-authoritative-mig050/V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f/backup_restore_preflight.json",
+        "sha256": "569bea4e6d9aeacb6f612b4ec7ea85f43a73bfdc5cbde1693ecb8191aeb98083",
+        "size": 13836
+      },
+      {
+        "path": "operator-runs/v2-9-8b-authoritative-mig050/V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f/closeout_inputs.json",
+        "sha256": "c10a76ba5729a2e4af42a9f3a4219571e0f959c2ba3d1214cfa1aa96a072e11f",
+        "size": 2384
+      },
+      {
+        "path": "operator-runs/v2-9-8b-authoritative-mig050/V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f/disposable-restore/printer_v1-rehearsal.sqlite3",
+        "sha256": "e13c40892f0c14d4c07960e00218569a536c50c0fc27815049284c3dd2aff5c2",
+        "size": 65654784
+      },
+      {
+        "path": "operator-runs/v2-9-8b-authoritative-mig050/V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f/final_authorization.json",
+        "sha256": "eb5388f3fac82b0c628a6b3e1e2893702fe221755838f971c6900f4e24e2b835",
+        "size": 6589
+      },
+      {
+        "path": "operator-runs/v2-9-8b-authoritative-mig050/V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f/post_migration_proof.json",
+        "sha256": "fd7509280b2541eb3afa6010bdfdb44f6769219cd8a345224cfa26c6854f3c94",
+        "size": 103903
+      },
+      {
+        "path": "operator-runs/v2-9-8b-authoritative-mig050/V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f/preauthorization_evidence.json",
+        "sha256": "4250b0e6a85bad41e50712ef21e5b11aab633c54e0246fc72aff037f7437119c",
+        "size": 36274
+      },
+      {
+        "path": "operator-runs/v2-9-8b-authoritative-mig050/V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f/preflight.json",
+        "sha256": "3e3897da82a2012c1eb63aa8ea883a83a8c64fae49a86b2ff6192c8f82c88383",
+        "size": 18590
+      },
+      {
+        "path": "operator-runs/v2-9-8b-authoritative-mig050/V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f/rollback_rehearsal.json",
+        "sha256": "997695a5aa4f4ffe6b8dd09970c93692d1a935491cf104b9a63a9c38440af149",
+        "size": 16244
+      },
+      {
+        "path": "operator-runs/v2-9-8b-authoritative-mig050/V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f/verified-backup/printer_v1-pre050.sqlite3",
+        "sha256": "e13c40892f0c14d4c07960e00218569a536c50c0fc27815049284c3dd2aff5c2",
+        "size": 65654784
+      }
+    ],
+    "listing_digest_sha256": "08e6f40b2e472d0bd8c6e8e1adaaac27a8b1af59d93571daa6cfb18f31dacb7a",
+    "migration_050_must_not_be_invoked_again": true,
+    "root": "operator-runs/v2-9-8b-authoritative-mig050/V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f"
+  },
+  "next_lane": "V2-9.8B Strengthened Discovery Selection WINDOW_15M One-Shot Application",
+  "parent_execution_head": "0ab3fa33e580cbe1c55e3a6bfd2b318edd93aa6c",
+  "parent_execution_head_note": "Authorization binds exact strengthening implementation HEAD 0ab3fa33e580cbe1c55e3a6bfd2b318edd93aa6c; no separate live pre-lifecycle readiness proof is required.",
+  "post_run_required": {
+    "immediate_terminal_evidence_capture": true,
+    "independent_post_run_closeout_required": true,
+    "orphan_recovery_requires_separate_authorization": true,
+    "second_command_forbidden": true
+  },
+  "readiness": {
+    "classification": "READY_FOR_FRESH_ONE_USE_WINDOW_15M_AUTHORIZATION_WITHOUT_SEPARATE_READINESS_ARTIFACT",
+    "controlling_document": "docs/printer-v1-v2-9-8b-discovery-selection-strengthening-closeout.md",
+    "document": "docs/printer-v1-v2-9-8b-discovery-selection-strengthening-closeout.md",
+    "parent_execution_head": "0ab3fa33e580cbe1c55e3a6bfd2b318edd93aa6c",
+    "post_repair_closeout_commit": "0ab3fa33e580cbe1c55e3a6bfd2b318edd93aa6c",
+    "post_repair_closeout_subject": "Strengthen discovery and selection funnel",
+    "pre_lifecycle_readiness_artifact_required": false,
+    "separate_live_readiness_proof_required": false,
+    "verdict_context": "Discovery/selection funnel strengthened; separate readiness prerequisite remains removed; real WINDOW_15M discovers and validates candidates; honest shortage remains acceptable"
+  },
+  "repository": "Dtwosam/MoneyPrinter",
+  "schema_version": "PRINTER_V1_WINDOW_15M_FINAL_AUTHORIZATION_V2",
+  "schema_versions": {
+    "application_marker": "PRINTER_V1_APPLICATION_MARKER_V1",
+    "authorization": "PRINTER_V1_WINDOW_15M_FINAL_AUTHORIZATION_V2",
+    "manifest": "PRINTER_V1_GIT_PROVENANCE_MANIFEST_V1",
+    "wrapper": "PRINTER_V1_WINDOW_15M_ONE_SHOT_WRAPPER_V1"
+  },
+  "stop_conditions": [
+    "HEAD or branch differs from authorized_git bindings",
+    "tracked tree dirty with unexpected product changes",
+    "authorization package missing, modified, or already consumed",
+    "external application directory or marker already exists for this ID",
+    "authoritative DB identity drift (sha256/size/mtime_ns/inode/sidecars)",
+    "launch-chain identity drift",
+    "Migration-050 package identity drift or re-invocation attempt",
+    "visible untracked set does not equal Migration-050 visible plus this package",
+    "any active or locked Scheduler residue",
+    "any relevant Printer process present",
+    "attempt to retry/rerun/resume/restart/successor under this authorization",
+    "attempt to continue into WINDOW_1H or continuous 4h under this authorization",
+    "attempt to invoke operational_memory_factory_command directly",
+    "mutable binding change after package creation without new authorization",
+    "reuse of historical consumed authorizations including 005013Z and prior IDs"
+  ],
+  "verdict": "V2_9_8B_STRENGTHENED_DISCOVERY_SELECTION_WINDOW_15M_ONE_USE_AUTHORIZATION_PASS"
+}
