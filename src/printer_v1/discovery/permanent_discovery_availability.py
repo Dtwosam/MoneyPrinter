@@ -786,6 +786,104 @@ def reconcile_pool_identity(
     )
 
 
+def mint_set_digest(mints: Sequence[str]) -> str:
+    """Stable content fingerprint for an ordered mint set (not sole identity)."""
+    import hashlib
+
+    ordered = sorted({str(m).strip() for m in mints if str(m).strip()})
+    payload = "\n".join(ordered).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def parse_mint_market_batch_stage_sequence(request_key: str) -> int | None:
+    """Reconstruct stage sequence embedded in a durable market-batch request key."""
+    import re
+
+    text = str(request_key or "")
+    match = re.search(r"(?:mint-batch-r|protocol-resume-mb)(\d+)$", text)
+    if match is None:
+        return None
+    sequence = int(match.group(1))
+    return sequence if sequence >= 1 else None
+
+
+def next_mint_market_batch_stage_sequence(
+    connection: sqlite3.Connection | None,
+    *,
+    request_key_prefix: str,
+) -> int:
+    """Allocate the next monotonic MINT_MARKET_BATCH sequence for a cycle prefix.
+
+    Durable reconstruction uses existing ``printer_source_requests.request_key``
+    values that embed the sequence. When no prior keys exist, returns 1.
+    """
+    prefix = str(request_key_prefix or "").strip()
+    highest = 0
+    if connection is not None and prefix:
+        rows = connection.execute(
+            """
+            SELECT request_key FROM printer_source_requests
+            WHERE request_key LIKE ?
+            ORDER BY id ASC
+            """,
+            (f"{prefix}-%",),
+        ).fetchall()
+        for row in rows:
+            key = row[0] if not isinstance(row, Mapping) else row["request_key"]
+            parsed = parse_mint_market_batch_stage_sequence(str(key))
+            if parsed is not None and parsed > highest:
+                highest = parsed
+    return highest + 1
+
+
+def build_mint_market_batch_request_key(
+    *,
+    request_key_prefix: str,
+    stage_sequence: int,
+    kind: str = "round",
+) -> str:
+    """Build durable request key carrying the allocated stage sequence."""
+    sequence = int(stage_sequence)
+    if sequence < 1:
+        raise ValueError("INVALID_MINT_MARKET_BATCH_STAGE_SEQUENCE")
+    prefix = str(request_key_prefix or "").strip() or "mint-market"
+    if kind == "protocol_resume":
+        return f"{prefix}-protocol-resume-mb{sequence}"
+    return f"{prefix}-mint-batch-r{sequence}"
+
+
+def build_mint_market_batch_logical_identity(
+    *,
+    campaign_id: str,
+    run_id: str,
+    cycle_id: str,
+    stage_sequence: int,
+    ordered_mints: Sequence[str],
+) -> dict[str, Any]:
+    """Immutable logical identity for one mint-market batch (sequence + digest)."""
+    from printer_v1.sources.campaign_six_unit_accounting import build_campaign_stage_id
+
+    sequence = int(stage_sequence)
+    if sequence < 1:
+        raise ValueError("INVALID_MINT_MARKET_BATCH_STAGE_SEQUENCE")
+    digest = mint_set_digest(ordered_mints)
+    stage_id = build_campaign_stage_id(
+        campaign_id=str(campaign_id),
+        run_id=str(run_id),
+        cycle_id=str(cycle_id),
+        stage_kind="MINT_MARKET_BATCH",
+        stage_sequence=sequence,
+    )
+    return {
+        "logical_batch_id": f"{stage_id}|{digest[:16]}",
+        "stage_id": stage_id,
+        "stage_kind": "MINT_MARKET_BATCH",
+        "stage_sequence": sequence,
+        "mint_set_digest": digest,
+        "ordered_mint_count": len(sorted({str(m).strip() for m in ordered_mints if str(m).strip()})),
+    }
+
+
 def run_dexscreener_batch_market_resolution(
     connection: sqlite3.Connection,
     *,
@@ -803,6 +901,7 @@ def run_dexscreener_batch_market_resolution(
     cycle_id: str | None = None,
     stage_evidence_sink: Any | None = None,
     transport_identity_observer: Any | None = None,
+    stage_sequence: int | None = None,
 ) -> dict[str, Any]:
     """Resolve due graduated inventory by exact mint in governed batches.
 
@@ -811,6 +910,11 @@ def run_dexscreener_batch_market_resolution(
     exact pool is admitted only when that exact identity is visible and clears
     the existing categorical $3,000 floor. Other returned pools are preserved as
     pending reconciliation and can never silently replace it.
+
+    ``stage_sequence`` is the durable monotonic logical-batch sequence for
+    six-unit sealing (``MINT_MARKET_BATCH|N``). When omitted, sequence is
+    reconstructed from ``request_key`` or defaults to 1 only for a first batch
+    key that carries no embedded sequence.
     """
     from printer_v1.contracts.enums import SourceStatus
     from printer_v1.discovery.graduated_liquidity_front_door import (
@@ -1345,6 +1449,39 @@ def run_dexscreener_batch_market_resolution(
                 )
                 report["market_ready_count"] += 1
         connection.commit()
+
+    ordered_mints = sorted(
+        {
+            str(row.get("mint_identity") or row.get("mint") or "").strip()
+            for row in inventory_rows
+            if str(row.get("mint_identity") or row.get("mint") or "").strip()
+        }
+    )
+    resolved_sequence = stage_sequence
+    if resolved_sequence is None:
+        resolved_sequence = parse_mint_market_batch_stage_sequence(request_key)
+    if resolved_sequence is None:
+        resolved_sequence = 1
+    if int(resolved_sequence) < 1:
+        raise ValueError("INVALID_MINT_MARKET_BATCH_STAGE_SEQUENCE")
+    report["stage_sequence"] = int(resolved_sequence)
+    report["request_key"] = str(request_key)
+    if campaign_id and run_id and cycle_id:
+        logical = build_mint_market_batch_logical_identity(
+            campaign_id=str(campaign_id),
+            run_id=str(run_id),
+            cycle_id=str(cycle_id),
+            stage_sequence=int(resolved_sequence),
+            ordered_mints=ordered_mints,
+        )
+        report["logical_batch_identity"] = logical
+    else:
+        report["logical_batch_identity"] = {
+            "stage_sequence": int(resolved_sequence),
+            "mint_set_digest": mint_set_digest(ordered_mints),
+            "ordered_mint_count": len(ordered_mints),
+        }
+
     if stage_evidence_sink is not None and report["source_request_ids"]:
         from printer_v1.sources.campaign_six_unit_accounting import (
             build_campaign_stage_id,
@@ -1360,10 +1497,10 @@ def run_dexscreener_batch_market_resolution(
                 run_id=str(run_id),
                 cycle_id=str(cycle_id),
                 stage_kind="MINT_MARKET_BATCH",
-                stage_sequence=1,
+                stage_sequence=int(resolved_sequence),
             ),
             stage_kind="MINT_MARKET_BATCH",
-            stage_sequence=1,
+            stage_sequence=int(resolved_sequence),
             stage_terminal_status=(
                 "BLOCKED" if report["provider_failures"] else "COMPLETED"
             ),
@@ -1377,6 +1514,11 @@ def run_dexscreener_batch_market_resolution(
             cycle_id=str(cycle_id),
             sealed_at=now,
         )
+        # Attach durable logical identity to sealed evidence for reconciliation.
+        sealed = dict(sealed)
+        sealed["logical_batch_identity"] = dict(report["logical_batch_identity"])
+        sealed["request_key"] = str(request_key)
+        sealed["source_request_ids"] = list(report["source_request_ids"])
         stage_evidence_sink(sealed)
         report["sealed_stage_evidence"] = sealed
     report["source_request_count"] = len(report["source_request_ids"])
@@ -2131,4 +2273,9 @@ __all__ = [
     "run_geckoterminal_fresh_nomination",
     "should_poll_exact_pool",
     "upsert_reserve_layer",
+    "mint_set_digest",
+    "parse_mint_market_batch_stage_sequence",
+    "next_mint_market_batch_stage_sequence",
+    "build_mint_market_batch_request_key",
+    "build_mint_market_batch_logical_identity",
 ]

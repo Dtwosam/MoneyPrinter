@@ -1093,6 +1093,21 @@ def run_persistent_eligible_token_supply(
                 except ValueError:
                     last_stop_reason = "DISCOVERY_OPERATION_BUDGET_EXHAUSTED"
                     break
+                from printer_v1.discovery.permanent_discovery_availability import (
+                    build_mint_market_batch_request_key,
+                    next_mint_market_batch_stage_sequence,
+                )
+
+                # Durable sequence at logical batch creation (request key + seal).
+                market_stage_sequence = next_mint_market_batch_stage_sequence(
+                    connection,
+                    request_key_prefix=str(front_door_request_key_prefix),
+                )
+                market_request_key = build_mint_market_batch_request_key(
+                    request_key_prefix=str(front_door_request_key_prefix),
+                    stage_sequence=market_stage_sequence,
+                    kind="round",
+                )
                 permanent_report = run_dexscreener_batch_market_resolution(
                     connection,
                     inventory_rows=permanent_rows,
@@ -1108,9 +1123,7 @@ def run_persistent_eligible_token_supply(
                         if geckoterminal_reconciliation_transport_factory is None
                         else None
                     ),
-                    request_key=(
-                        f"{front_door_request_key_prefix}-mint-batch-r{discovery_rounds}"
-                    ),
+                    request_key=market_request_key,
                     now=now,
                     campaign_id=campaign_id,
                     recent_request_count=fresh_market_checks,
@@ -1118,6 +1131,7 @@ def run_persistent_eligible_token_supply(
                     cycle_id=cycle_id,
                     stage_evidence_sink=stage_evidence_sink,
                     transport_identity_observer=transport_identity_observer,
+                    stage_sequence=market_stage_sequence,
                 )
                 permanent_market_reports.append(permanent_report)
                 reconciliation_calls = int(
@@ -1394,15 +1408,28 @@ def run_persistent_eligible_token_supply(
                 except ValueError:
                     resume_rows = []
                 if resume_rows:
+                    from printer_v1.discovery.permanent_discovery_availability import (
+                        build_mint_market_batch_request_key,
+                        next_mint_market_batch_stage_sequence,
+                    )
+
+                    # Continue monotonic market-batch sequence after protocol work.
+                    resume_stage_sequence = next_mint_market_batch_stage_sequence(
+                        connection,
+                        request_key_prefix=str(front_door_request_key_prefix),
+                    )
+                    resume_request_key = build_mint_market_batch_request_key(
+                        request_key_prefix=str(front_door_request_key_prefix),
+                        stage_sequence=resume_stage_sequence,
+                        kind="protocol_resume",
+                    )
                     resume_report = run_dexscreener_batch_market_resolution(
                         connection,
                         inventory_rows=resume_rows,
                         transport_factory=dexscreener_batch_transport_factory,
                         geckoterminal_transport_factory=None,
                         enable_geckoterminal_fallback=False,
-                        request_key=(
-                            f"{front_door_request_key_prefix}-protocol-resume"
-                        ),
+                        request_key=resume_request_key,
                         now=now,
                         campaign_id=campaign_id,
                         recent_request_count=fresh_market_checks,
@@ -1410,6 +1437,7 @@ def run_persistent_eligible_token_supply(
                         cycle_id=cycle_id,
                         stage_evidence_sink=stage_evidence_sink,
                         transport_identity_observer=transport_identity_observer,
+                        stage_sequence=resume_stage_sequence,
                     )
                     permanent_market_reports.append(resume_report)
                     market_calls = int(
