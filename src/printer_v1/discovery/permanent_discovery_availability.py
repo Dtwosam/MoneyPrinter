@@ -1639,6 +1639,36 @@ def freeze_eligible_reserve(
     )
 
 
+
+def _protocol_supported_venue(venue: str) -> bool:
+    venue_key = str(venue or "").casefold()
+    return venue_key in SUPPORTED_PUMPSWAP_PROVIDER_VENUES or venue_key in {
+        "pump-fun",
+        "pumpswap",
+        "pumpfun",
+        "pump-amm",
+    }
+
+
+def _outcome_to_exact_state(outcome: str) -> tuple[str, str]:
+    """Map protocol outcome codes into exact-market (state, reason)."""
+    if outcome == "CURRENT_POOL_CONFIRMED":
+        return CURRENT_POOL_CONFIRMED, "EXACT_PUMPSWAP_OWNER_AND_BASE_MINT"
+    if outcome == "ACCOUNT_NOT_FOUND":
+        return EXACT_POOL_NO_MATCH, "ACCOUNT_NOT_FOUND"
+    if outcome == "BASE_MINT_MISMATCH":
+        return IDENTITY_CONFLICT, "BASE_MINT_MISMATCH"
+    if outcome == "SOURCE_UNAVAILABLE":
+        return SOURCE_UNAVAILABLE, "PROTOCOL_ACCOUNT_BATCH_SOURCE_UNAVAILABLE"
+    if outcome == "UNSUPPORTED_VENUE":
+        return UNSUPPORTED_VENUE, "PROTOCOL_UNSUPPORTED_VENUE"
+    if outcome == "POOL_OWNER_MISMATCH":
+        return CONTRACT_BLOCKED, "POOL_OWNER_MISMATCH"
+    if outcome == "POOL_DATA_UNDECODABLE":
+        return CONTRACT_BLOCKED, "POOL_DATA_UNDECODABLE"
+    return CONTRACT_BLOCKED, str(outcome or "CONTRACT_BLOCKED")
+
+
 def process_protocol_confirmation_queue(
     connection: sqlite3.Connection,
     *,
@@ -1646,54 +1676,57 @@ def process_protocol_confirmation_queue(
     now: str,
     campaign_id: str | None = None,
     max_confirmations: int | None = None,
+    account_batch_transport: Any | None = None,
+    account_batch_transport_factory: Any | None = None,
+    run_id: str | None = None,
+    cycle_id: str | None = None,
+    request_key_prefix: str = "protocol-account-batch",
+    stage_evidence_sink: Any | None = None,
+    transport_identity_observer: Any | None = None,
 ) -> dict[str, Any]:
-    """Process PROTOCOL_CONFIRMATION_DUE exact-market identities under stage capacity.
+    """Process PROTOCOL_CONFIRMATION_DUE rows via governed getMultipleAccounts.
 
-    Fresh aggregator nominations enter ``CONTRACT_BLOCKED`` with reason
-    ``FRESH_AGGREGATOR_NOMINATION_REQUIRES_EXACT_PROTOCOL_PROOF``. This owner
-    spends protocol_confirmation capacity deterministically (oldest observed,
-    then mint+pool) and:
+    Production path:
+      due exact identities
+      → filter unsupported venues / invalid pools (zero transport)
+      → Source-Governed solana_rpc/pumpswap_pool_account_batch
+      → per-member PumpSwap owner + base_mint@43 confirmation
+      → exact-market transitions
+      → confirmed identities returned for current-market validation
 
-    * leaves unsupported venues (e.g. Meteora) blocked as ``UNSUPPORTED_VENUE``;
-    * never auto-accepts alternate ``pump-fun`` label pools as historical substitutes;
-    * for supported Pump-family venues without an account transport, records a
-      bounded confirmation attempt and retains protocol-due state (fail-closed).
-
-    Does not contact providers. Account-batch confirmation uses only already
-    governed local projection facts in this offline-safe path.
+    One governed request per address batch (≤100). Stage budget charges one
+    protocol_confirmation operation per batch, not per candidate.
     """
+    from printer_v1.contracts.enums import SourceStatus
+    from printer_v1.sources.contracts import build_governed_source_request
+    from printer_v1.sources.governed_execution import execute_source_request_with_governor
+    from printer_v1.sources.measured_transport import (
+        MeasuredTransportError,
+        MeasuredTransportLedger,
+        record_payload_transports,
+    )
+    from printer_v1.sources.pumpswap import PUMPSWAP_AMM_PROGRAM_ID
+    from printer_v1.sources.pumpswap_pool_account_batch import (
+        CONTRACT_VERSION as BATCH_CONTRACT_VERSION,
+        MAX_BATCH_ADDRESSES,
+        REQUEST_KIND as BATCH_REQUEST_KIND,
+        SOURCE_NAME as BATCH_SOURCE_NAME,
+        build_ordered_unique_addresses,
+        build_pumpswap_pool_account_batch_adapter,
+        build_pumpswap_pool_account_batch_transport,
+    )
+
     outcomes: list[dict[str, Any]] = []
     remaining_due: list[dict[str, str]] = []
+    confirmed_for_market: list[dict[str, str]] = []
+    source_request_ids: list[int] = []
+    source_response_ids: list[int] = []
+    source_failure_ids: list[int] = []
     source_requests = 0
-    limit = (
-        stage_budget.available("protocol_confirmation")
-        if max_confirmations is None
-        else min(int(max_confirmations), stage_budget.available("protocol_confirmation"))
-    )
-    if limit <= 0 or stage_budget.is_sealed("protocol_confirmation"):
-        rows = connection.execute(
-            """
-            SELECT mint_identity, pool_address, venue, current_reason, last_observed_at
-            FROM printer_exact_market_states
-            WHERE current_state=? AND current_reason=?
-            ORDER BY last_observed_at ASC, mint_identity ASC, pool_address ASC
-            """,
-            (CONTRACT_BLOCKED, "FRESH_AGGREGATOR_NOMINATION_REQUIRES_EXACT_PROTOCOL_PROOF"),
-        ).fetchall()
-        for row in rows:
-            remaining_due.append(
-                {
-                    "mint": str(row["mint_identity"]),
-                    "pool": str(row["pool_address"]),
-                    "venue": str(row["venue"] or ""),
-                }
-            )
-        return {
-            "outcomes": outcomes,
-            "remaining_due": remaining_due,
-            "source_requests": 0,
-            "attempts": 0,
-        }
+    transport_operations = 0
+    local_validation_steps = 0
+    shared_source_failures = 0
+    batch_count = 0
 
     rows = connection.execute(
         """
@@ -1706,38 +1739,45 @@ def process_protocol_confirmation_queue(
         """,
         (CONTRACT_BLOCKED, "FRESH_AGGREGATOR_NOMINATION_REQUIRES_EXACT_PROTOCOL_PROOF"),
     ).fetchall()
-    attempts = 0
+
+    pending: list[dict[str, Any]] = []
     for row in rows:
         mint = str(row["mint_identity"])
         pool = str(row["pool_address"])
         venue = str(row["venue"] or "")
-        venue_key = venue.casefold()
-        if attempts >= limit:
-            remaining_due.append({"mint": mint, "pool": pool, "venue": venue})
+        base = {
+            "network": str(row["network"] or NETWORK),
+            "mint": mint,
+            "pool": pool,
+            "venue": venue,
+            "base_mint": str(row["base_mint"] or mint),
+            "quote_mint": str(row["quote_mint"] or "UNKNOWN_QUOTE_MINT"),
+            "token_program": str(row["token_program_id"] or "UNRESOLVED_TOKEN_PROGRAM"),
+            "pool_program": str(row["pool_program_id"] or "UNRESOLVED_POOL_PROGRAM"),
+        }
+        if not mint or not pool:
+            outcomes.append(
+                {
+                    "mint": mint,
+                    "pool": pool,
+                    "venue": venue,
+                    "outcome": "CONTRACT_BLOCKED",
+                    "reason": "MISSING_POOL_OR_MINT",
+                    "transport": False,
+                }
+            )
             continue
-        if stage_budget.available("protocol_confirmation") < 1:
-            remaining_due.append({"mint": mint, "pool": pool, "venue": venue})
-            continue
-        stage_budget.consume("protocol_confirmation", 1)
-        attempts += 1
-        source_requests += 1
-        # Unsupported venues never enter Pump protocol paths.
-        if venue_key not in SUPPORTED_PUMPSWAP_PROVIDER_VENUES and venue_key not in {
-            "pump-fun",
-            "pumpswap",
-            "pumpfun",
-            "pump-amm",
-        }:
+        if not _protocol_supported_venue(venue):
             record_exact_market_transition(
                 connection,
                 ExactMarketObservation(
-                    network=str(row["network"] or NETWORK),
+                    network=base["network"],
                     mint=mint,
                     pool=pool,
-                    token_program=str(row["token_program_id"] or "UNRESOLVED_TOKEN_PROGRAM"),
-                    pool_program=str(row["pool_program_id"] or "UNRESOLVED_POOL_PROGRAM"),
-                    base_mint=str(row["base_mint"] or mint),
-                    quote_mint=str(row["quote_mint"] or "UNKNOWN_QUOTE_MINT"),
+                    token_program=base["token_program"],
+                    pool_program=base["pool_program"],
+                    base_mint=base["base_mint"],
+                    quote_mint=base["quote_mint"],
                     venue=venue or "UNKNOWN_VENUE",
                     state=UNSUPPORTED_VENUE,
                     reason="PROTOCOL_UNSUPPORTED_VENUE",
@@ -1746,8 +1786,9 @@ def process_protocol_confirmation_queue(
                     source_provenance={
                         "stage": "protocol_confirmation",
                         "campaign_id": campaign_id,
+                        "transport": False,
                     },
-                    contract_version="PROTOCOL_CONFIRMATION_V1_2026_08_04",
+                    contract_version=BATCH_CONTRACT_VERSION,
                 ),
                 now=now,
             )
@@ -1758,29 +1799,299 @@ def process_protocol_confirmation_queue(
                     "venue": venue,
                     "outcome": "UNSUPPORTED_VENUE",
                     "reason": "PROTOCOL_UNSUPPORTED_VENUE",
+                    "transport": False,
                 }
             )
             continue
-        # Supported Pump-family: without a governed account batch transport in
-        # this offline path, retain protocol-due state after a counted attempt.
-        # Never invent CURRENT_POOL_CONFIRMED from aggregator labels alone.
-        outcomes.append(
-            {
-                "mint": mint,
-                "pool": pool,
-                "venue": venue,
-                "outcome": "PROTOCOL_CONFIRMATION_ATTEMPTED_STILL_DUE",
-                "reason": "FRESH_AGGREGATOR_NOMINATION_REQUIRES_EXACT_PROTOCOL_PROOF",
-            }
+        pending.append(base)
+
+    empty = {
+        "outcomes": outcomes,
+        "remaining_due": [
+            {"mint": p["mint"], "pool": p["pool"], "venue": p["venue"]} for p in pending
+        ],
+        "confirmed_for_market": confirmed_for_market,
+        "source_requests": 0,
+        "transport_operations": 0,
+        "local_validation_steps": 0,
+        "attempts": 0,
+        "batch_count": 0,
+        "source_request_ids": source_request_ids,
+        "source_response_ids": source_response_ids,
+        "source_failure_ids": source_failure_ids,
+        "shared_source_failures": 0,
+        "contract_version": BATCH_CONTRACT_VERSION,
+        "requested_address_cap": MAX_BATCH_ADDRESSES,
+    }
+    if (
+        not pending
+        or stage_budget.is_sealed("protocol_confirmation")
+        or stage_budget.available("protocol_confirmation") < 1
+    ):
+        connection.commit()
+        return empty
+
+    cursor = 0
+    max_batches = (
+        stage_budget.available("protocol_confirmation")
+        if max_confirmations is None
+        else min(int(max_confirmations), stage_budget.available("protocol_confirmation"))
+    )
+
+    while cursor < len(pending) and batch_count < max_batches:
+        slice_rows = pending[cursor:]
+        addresses, address_map, skipped = build_ordered_unique_addresses(
+            slice_rows, max_addresses=MAX_BATCH_ADDRESSES
         )
-        remaining_due.append({"mint": mint, "pool": pool, "venue": venue})
+        # Advance cursor past every candidate belonging to this batch's pools,
+        # and past invalid skips; stop before pure BATCH_CAP_EXCEEDED remainder.
+        batch_pools = set(addresses)
+        advanced = 0
+        for item in slice_rows:
+            if item["pool"] in batch_pools:
+                advanced += 1
+                continue
+            # Cap exceeded — leave for next loop iteration after cursor advance
+            break
+        if advanced == 0 and not addresses:
+            # Nothing transportable in remaining work
+            for item in slice_rows:
+                remaining_due.append(
+                    {"mint": item["mint"], "pool": item["pool"], "venue": item["venue"]}
+                )
+            break
+        cursor += advanced
+        if not addresses:
+            continue
+
+        stage_budget.consume("protocol_confirmation", 1)
+        batch_count += 1
+
+        transport = account_batch_transport
+        if account_batch_transport_factory is not None:
+            transport = account_batch_transport_factory(tuple(addresses))
+        if transport is None:
+            transport = build_pumpswap_pool_account_batch_transport(addresses=addresses)
+
+        adapter = build_pumpswap_pool_account_batch_adapter(
+            enabled=True, transport=transport
+        )
+        serializable_map = {
+            pool: [dict(c) for c in cands] for pool, cands in address_map.items()
+        }
+        request = build_governed_source_request(
+            BATCH_SOURCE_NAME,
+            BATCH_REQUEST_KIND,
+            request_key=f"{request_key_prefix}-{batch_count}",
+            tracking_priority=0,
+            payload={
+                "request_kind": BATCH_REQUEST_KIND,
+                "chain": "solana",
+                "addresses": list(addresses),
+                "address_to_candidates": serializable_map,
+                "commitment": "finalized",
+                "encoding": "base64",
+                "contract_version": BATCH_CONTRACT_VERSION,
+                "campaign_id": campaign_id,
+            },
+        )
+        execution = execute_source_request_with_governor(
+            connection,
+            request,
+            adapter,
+            recent_request_count=source_requests,
+        )
+        source_requests += 1
+        source_request_ids.append(int(execution.request_record.id))
+        if execution.response_record is not None:
+            source_response_ids.append(int(execution.response_record.id))
+        if execution.failure_record is not None:
+            source_failure_ids.append(int(execution.failure_record.id))
+
+        result = execution.normalized_result
+        payload = result.normalized_payload or {}
+        if isinstance(payload, Mapping):
+            measured = MeasuredTransportLedger(
+                campaign_id=campaign_id, run_id=run_id, cycle_id=cycle_id
+            )
+            try:
+                record_payload_transports(
+                    measured, payload, default_stage="PROTOCOL_CONFIRMATION"
+                )
+                transport_operations += int(
+                    measured.six_unit_totals().get("SOURCE_TRANSPORT_OPERATION") or 1
+                )
+            except MeasuredTransportError:
+                transport_operations += 1
+            if transport_identity_observer is not None:
+                for identity in payload.get("transport_operation_identities") or ():
+                    transport_identity_observer(identity)
+
+        shared_fail = bool(
+            result.failure_type or result.source_status != SourceStatus.COMPLETE
+        )
+        if shared_fail:
+            shared_source_failures += 1
+            for pool in addresses:
+                for cand in address_map.get(pool, ()):
+                    mint = str(cand["mint"])
+                    state, reason = _outcome_to_exact_state("SOURCE_UNAVAILABLE")
+                    record_exact_market_transition(
+                        connection,
+                        ExactMarketObservation(
+                            network=NETWORK,
+                            mint=mint,
+                            pool=pool,
+                            token_program="UNRESOLVED_TOKEN_PROGRAM",
+                            pool_program=PUMPSWAP_AMM_PROGRAM_ID,
+                            base_mint=mint,
+                            quote_mint="UNKNOWN_QUOTE_MINT",
+                            venue=str(cand.get("venue") or "pumpswap"),
+                            state=state,
+                            reason=reason,
+                            observed_at=now,
+                            next_lawful_action_at=now,
+                            source_provenance={
+                                "stage": "protocol_confirmation",
+                                "campaign_id": campaign_id,
+                                "request_id": int(execution.request_record.id),
+                                "failure_id": (
+                                    None
+                                    if execution.failure_record is None
+                                    else int(execution.failure_record.id)
+                                ),
+                                "failure_type": result.failure_type,
+                                "shared_source_failure": True,
+                            },
+                            contract_version=BATCH_CONTRACT_VERSION,
+                        ),
+                        now=now,
+                    )
+                    outcomes.append(
+                        {
+                            "mint": mint,
+                            "pool": pool,
+                            "venue": cand.get("venue"),
+                            "outcome": "SOURCE_UNAVAILABLE",
+                            "reason": str(result.failure_type or reason),
+                            "transport": True,
+                            "shared_source_failure": True,
+                        }
+                    )
+            continue
+
+        members = list(payload.get("members") or ()) if isinstance(payload, Mapping) else []
+        local_validation_steps += int(
+            (payload.get("local_validation_steps") if isinstance(payload, Mapping) else 0)
+            or len(members)
+        )
+        for member in members:
+            if not isinstance(member, Mapping):
+                continue
+            mint = str(member.get("mint") or "")
+            pool = str(member.get("pool") or "")
+            outcome = str(member.get("outcome") or "CONTRACT_BLOCKED")
+            state, reason = _outcome_to_exact_state(outcome)
+            venue = ""
+            for cand in address_map.get(pool, ()):
+                if cand.get("mint") == mint:
+                    venue = str(cand.get("venue") or "")
+                    break
+            record_exact_market_transition(
+                connection,
+                ExactMarketObservation(
+                    network=NETWORK,
+                    mint=mint,
+                    pool=pool,
+                    token_program="TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                    pool_program=(
+                        PUMPSWAP_AMM_PROGRAM_ID
+                        if outcome == "CURRENT_POOL_CONFIRMED"
+                        else str(member.get("owner") or "UNRESOLVED_POOL_PROGRAM")
+                    ),
+                    base_mint=mint,
+                    quote_mint="So11111111111111111111111111111111111111112",
+                    venue=venue or "pumpswap",
+                    state=state,
+                    reason=reason,
+                    observed_at=now,
+                    next_lawful_action_at=(
+                        None if outcome == "CURRENT_POOL_CONFIRMED" else now
+                    ),
+                    source_provenance={
+                        "stage": "protocol_confirmation",
+                        "campaign_id": campaign_id,
+                        "request_id": int(execution.request_record.id),
+                        "response_id": (
+                            None
+                            if execution.response_record is None
+                            else int(execution.response_record.id)
+                        ),
+                        "batch_index": member.get("batch_index"),
+                        "context_slot": (
+                            payload.get("context_slot")
+                            if isinstance(payload, Mapping)
+                            else None
+                        ),
+                        "owner": member.get("owner"),
+                        "data_length": member.get("data_length"),
+                        "confirm_reason": member.get("confirm_reason"),
+                        "contract_version": BATCH_CONTRACT_VERSION,
+                        "shared_source_failure": False,
+                    },
+                    contract_version=BATCH_CONTRACT_VERSION,
+                ),
+                now=now,
+            )
+            outcomes.append(
+                {
+                    "mint": mint,
+                    "pool": pool,
+                    "venue": venue,
+                    "outcome": outcome,
+                    "reason": reason,
+                    "transport": True,
+                    "shared_source_failure": False,
+                    "batch_index": member.get("batch_index"),
+                }
+            )
+            if outcome == "CURRENT_POOL_CONFIRMED":
+                confirmed_for_market.append(
+                    {"mint": mint, "pool": pool, "venue": venue or "pumpswap"}
+                )
+
+    # Unprocessed remainder stays due.
+    processed = {(str(o.get("mint")), str(o.get("pool"))) for o in outcomes if o.get("transport")}
+    for item in pending[cursor:]:
+        remaining_due.append(
+            {"mint": item["mint"], "pool": item["pool"], "venue": item["venue"]}
+        )
+    for item in pending[:cursor]:
+        key = (item["mint"], item["pool"])
+        if key not in processed and not any(
+            d["mint"] == item["mint"] and d["pool"] == item["pool"] for d in remaining_due
+        ):
+            # Shared failure already recorded; not remaining protocol-due.
+            pass
+
     connection.commit()
     return {
         "outcomes": outcomes,
         "remaining_due": remaining_due,
+        "confirmed_for_market": confirmed_for_market,
         "source_requests": source_requests,
-        "attempts": attempts,
+        "transport_operations": transport_operations or source_requests,
+        "local_validation_steps": local_validation_steps,
+        "attempts": source_requests,
+        "batch_count": batch_count,
+        "source_request_ids": source_request_ids,
+        "source_response_ids": source_response_ids,
+        "source_failure_ids": source_failure_ids,
+        "shared_source_failures": shared_source_failures,
+        "contract_version": BATCH_CONTRACT_VERSION,
+        "requested_address_cap": MAX_BATCH_ADDRESSES,
     }
+
 
 
 __all__ = [

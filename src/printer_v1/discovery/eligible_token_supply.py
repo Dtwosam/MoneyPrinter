@@ -570,6 +570,8 @@ def run_persistent_eligible_token_supply(
     permanent_availability: bool = False,
     run_geckoterminal_nomination: bool = False,
     enable_geckoterminal_reconciliation: bool = True,
+    protocol_account_batch_transport: Any | None = None,
+    protocol_account_batch_transport_factory: Any | None = None,
 ) -> PersistentSupplyResult:
     """Run persistent multi-round eligible discovery inside one campaign.
 
@@ -717,6 +719,7 @@ def run_persistent_eligible_token_supply(
     stage_budget = StageBudget.permanent_discovery_default()
     protocol_stage_charged = False
     protocol_confirmation_outcomes: list[dict[str, Any]] = []
+    protocol_report: dict[str, Any] = {}
     work_queues: dict[str, list[dict[str, str]]] = {
         "MARKET_BATCHING_DUE": [],
         "RECONCILIATION_DUE": [],
@@ -1344,6 +1347,14 @@ def run_persistent_eligible_token_supply(
                 stage_budget=stage_budget,
                 now=now,
                 campaign_id=campaign_id,
+                run_id=run_id,
+                cycle_id=cycle_id,
+                account_batch_transport=protocol_account_batch_transport,
+                account_batch_transport_factory=(
+                    protocol_account_batch_transport_factory
+                ),
+                stage_evidence_sink=stage_evidence_sink,
+                transport_identity_observer=transport_identity_observer,
             )
             protocol_confirmation_outcomes = list(
                 protocol_report.get("outcomes") or ()
@@ -1352,6 +1363,96 @@ def run_persistent_eligible_token_supply(
                 protocol_report.get("remaining_due") or ()
             )
             ops_used += int(protocol_report.get("source_requests") or 0)
+            # Confirmed identities re-enter current-market validation when
+            # market-batch capacity remains (never invent liquidity here).
+            confirmed_for_market = list(
+                protocol_report.get("confirmed_for_market") or ()
+            )
+            if (
+                confirmed_for_market
+                and stage_budget.available("market_batching") >= 1
+                and dexscreener_batch_transport_factory is not None
+            ):
+                from printer_v1.sources.pumpswap import PUMPSWAP_AMM_PROGRAM_ID as _PAM
+
+                resume_rows = [
+                    {
+                        "mint_identity": str(item["mint"]),
+                        "pumpswap_pool": str(item["pool"]),
+                        "market_identity": (
+                            f"solana-mainnet:pumpswap:{item['pool']}"
+                        ),
+                        "lifecycle_state": "PUMPSWAP_PROTOCOL_CONFIRMED",
+                        "graduation_block_time": None,
+                        "pumpswap_program_id": _PAM,
+                        "latest_channel": "PROTOCOL_CONFIRMED",
+                    }
+                    for item in confirmed_for_market
+                ]
+                try:
+                    stage_budget.consume("market_batching", 1)
+                except ValueError:
+                    resume_rows = []
+                if resume_rows:
+                    resume_report = run_dexscreener_batch_market_resolution(
+                        connection,
+                        inventory_rows=resume_rows,
+                        transport_factory=dexscreener_batch_transport_factory,
+                        geckoterminal_transport_factory=None,
+                        enable_geckoterminal_fallback=False,
+                        request_key=(
+                            f"{front_door_request_key_prefix}-protocol-resume"
+                        ),
+                        now=now,
+                        campaign_id=campaign_id,
+                        recent_request_count=fresh_market_checks,
+                        run_id=run_id,
+                        cycle_id=cycle_id,
+                        stage_evidence_sink=stage_evidence_sink,
+                        transport_identity_observer=transport_identity_observer,
+                    )
+                    permanent_market_reports.append(resume_report)
+                    market_calls = int(
+                        resume_report.get("source_request_count")
+                        or len(resume_report.get("source_request_ids") or ())
+                    )
+                    fresh_market_checks += market_calls
+                    ops_used += market_calls
+                    for cand in resume_report.get("candidates") or ():
+                        if not cand.get("eligible"):
+                            continue
+                        mint = str(cand.get("mint") or "")
+                        if not mint or mint in campaign_eligible:
+                            continue
+                        campaign_eligible[mint] = _candidate_from_front_door_item(
+                            cand
+                        )
+                        evaluated_mints.add(mint)
+                        all_candidates.append(campaign_eligible[mint])
+                        upsert_eligible_reserve(
+                            connection,
+                            mint=mint,
+                            pumpswap_pool=str(
+                                cand.get("pumpswap_pool") or cand.get("pool") or ""
+                            ),
+                            market_identity=str(cand.get("market_identity") or ""),
+                            provenance=str(
+                                cand.get("provenance") or "PROTOCOL_CONFIRMED"
+                            ),
+                            liquidity_usd=(
+                                None
+                                if cand.get("liquidity_usd") is None
+                                else float(cand["liquidity_usd"])
+                            ),
+                            liquidity_status=str(
+                                cand.get("liquidity_status") or LIQUIDITY_PROVEN
+                            ),
+                            eligibility_status=ELIGIBLE_FRESH,
+                            last_validated_at=now,
+                            source_provenance="protocol_confirmed_market_resume",
+                            last_campaign_id=campaign_id,
+                        )
+                    connection.commit()
             if not stage_budget.is_sealed("protocol_confirmation"):
                 if stage_budget.available("protocol_confirmation") < 1 or not (
                     protocol_report.get("remaining_due")
@@ -1769,6 +1870,19 @@ def run_persistent_eligible_token_supply(
             "market_batch_rounds": discovery_rounds if permanent_availability else discovery_rounds,
             "protocol_confirmation_attempts": len(protocol_confirmation_outcomes),
             "protocol_confirmation_outcomes": list(protocol_confirmation_outcomes),
+            "protocol_batch_count": int(protocol_report.get("batch_count") or 0),
+            "protocol_source_request_ids": list(
+                protocol_report.get("source_request_ids") or ()
+            ),
+            "protocol_confirmed_for_market": list(
+                protocol_report.get("confirmed_for_market") or ()
+            ),
+            "protocol_local_validation_steps": int(
+                protocol_report.get("local_validation_steps") or 0
+            ),
+            "protocol_transport_operations": int(
+                protocol_report.get("transport_operations") or 0
+            ),
             "migration_evidence_rejections": list(migration_evidence_rejections),
             "shared_source_failures": provider_failures,
             "holder_safety_due_count": len(work_queues.get("HOLDER_SAFETY_DUE") or ()),

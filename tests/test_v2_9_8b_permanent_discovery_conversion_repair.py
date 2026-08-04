@@ -283,23 +283,32 @@ class TestStageSealAndMultiRoundMarket:
 class TestProtocolQueueAndHolderGate:
     def test_protocol_due_identities_receive_bounded_work(self, database):
         _, connection = database
+        from printer_v1.sources.pumpswap_pool_account_batch import (
+            fixture_account_batch_transport,
+        )
+        observations = [
+            {
+                "mint": f"MintP{i}{'z' * 30}",
+                "pool": f"PoolP{i}{'z' * 30}",
+                "base_mint": f"MintP{i}{'z' * 30}",
+                "quote_mint": WSOL,
+                "venue": "pumpswap" if i < 3 else "meteora-damm-v2",
+            }
+            for i in range(5)
+        ]
         record_fresh_pool_nominations(
             connection,
-            observations=[
-                {
-                    "mint": f"MintP{i}{'z' * 30}",
-                    "pool": f"PoolP{i}{'z' * 30}",
-                    "base_mint": f"MintP{i}{'z' * 30}",
-                    "quote_mint": WSOL,
-                    "venue": "pumpswap" if i < 3 else "meteora-damm-v2",
-                }
-                for i in range(5)
-            ],
+            observations=observations,
             source="geckoterminal",
             request_id=99,
             now=NOW,
             campaign_id="camp-proto",
         )
+        # Fixture returns null accounts → candidate-local ACCOUNT_NOT_FOUND
+        values = {
+            f"PoolP{i}{'z' * 30}": None for i in range(3)
+        }
+        transport = fixture_account_batch_transport(values)
         budget = StageBudget.permanent_discovery_default()
         budget.consume("intake", 3)
         budget.seal("intake")
@@ -313,12 +322,12 @@ class TestProtocolQueueAndHolderGate:
             now=NOW,
             campaign_id="camp-proto",
             max_confirmations=4,
+            account_batch_transport=transport,
         )
-        assert report["attempts"] == 4
+        assert report["source_requests"] >= 1
         assert any(o["outcome"] == "UNSUPPORTED_VENUE" for o in report["outcomes"])
         assert any(
-            o["outcome"] == "PROTOCOL_CONFIRMATION_ATTEMPTED_STILL_DUE"
-            for o in report["outcomes"]
+            o["outcome"] == "ACCOUNT_NOT_FOUND" for o in report["outcomes"]
         )
         meteora = connection.execute(
             """
