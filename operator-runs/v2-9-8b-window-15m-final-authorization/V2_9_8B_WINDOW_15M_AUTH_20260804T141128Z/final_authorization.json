@@ -1,0 +1,133 @@
+{
+  "schema_version": "PRINTER_V1_WINDOW_15M_FINAL_AUTHORIZATION_V2",
+  "authorization_id": "V2_9_8B_WINDOW_15M_AUTH_20260804T141128Z",
+  "authorization_type": "V2_9_8B_PERMANENT_DISCOVERY_AVAILABILITY_WINDOW_15M_ONE_USE_AUTHORIZATION",
+  "authorized_at": "2026-08-04T14:11:28.819840000Z",
+  "verdict": "V2_9_8B_PERMANENT_DISCOVERY_AVAILABILITY_WINDOW_15M_ONE_USE_AUTHORIZATION_PASS",
+  "migration_execution_id": "V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f",
+  "authorized_git": {
+    "branch": "agent/v2-9-8b-post-rollover-2-exact-public-composition-scheduler-claim-coverage-audit",
+    "head": "5c5c733c6c1a6a936bd8ce8ad6eb1a64033771fd",
+    "subject": "Build permanent discovery availability",
+    "authorization_report": "docs/printer-v1-v2-9-8b-permanent-discovery-availability-closeout.md",
+    "exact_head_required": true,
+    "tracked_worktree_must_be_clean": true
+  },
+  "authorized_command": {
+    "mode": "run",
+    "operator_approved": true,
+    "allowed_invocation_count": 1,
+    "automatic_retry_allowed": false,
+    "manual_rerun_allowed": false,
+    "resume_allowed": false,
+    "restart_allowed": false,
+    "successor_allowed": false,
+    "manual_terminal_execution_only": true
+  },
+  "campaign_policy": {
+    "campaign_count": 1,
+    "cycle_count": 1,
+    "token_capacity": 2,
+    "main_window": "WINDOW_15M",
+    "main_window_seconds": 900,
+    "total_duration_seconds": 1200,
+    "support_only_window": "WINDOW_5M_MICRO_EVENT",
+    "selective_1h_continuation": false,
+    "locked_windows": [
+      "WINDOW_1H",
+      "WINDOW_4H",
+      "WINDOW_12H",
+      "WINDOW_24H"
+    ],
+    "source_owner": "SOURCE_GOVERNOR",
+    "scheduler_owner": "CENTRAL_SCHEDULER",
+    "solana_only": true,
+    "solana_memecoin_only": true,
+    "paper_only": true,
+    "provider_rotation_allowed": false,
+    "automatic_retries": 0
+  },
+  "authoritative_database": {
+    "path": "/Users/Dtwo1/Developer/MoneyPrinter/data/printer_v1.sqlite3",
+    "sha256": "198546f6ab0ad54af9ef5b8ac61e7d11d8d235a4d3f0f0d8364e317eae354afb",
+    "size": 66650112,
+    "inode": 1230526,
+    "mtime_ns": 1785852659113941600,
+    "migration_count": 51,
+    "migration_head": "051_permanent_discovery_availability.sql",
+    "integrity": "ok",
+    "foreign_key_violations": 0,
+    "journal_exists": false,
+    "wal_exists": false,
+    "shm_exists": false,
+    "pre_migration_backup": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260804T140924Z-permanent-discovery-attempt/printer_v1.pre-migration-051.backup.sqlite3",
+    "pre_migration_backup_sha256": "ad7b72a86cb4d3345a722ba519b6abd68a977a9cdc04a66316fbb9129449aa9e"
+  },
+  "accepted_launch_chain": {
+    "entrypoint": "scripts/Start-PrinterV1-Window15M-OneShot.ps1",
+    "wrapper": "src/printer_v1/operator_cli/window_15m_one_shot_wrapper.py",
+    "operational_child": "printer_v1.operator_cli.operational_memory_factory_command",
+    "direct_operational_command_authorized": false,
+    "files": {
+      "scripts/Start-PrinterV1-Window15M-OneShot.ps1": "524c6332d0952b3959a8136140bc9e1a98acd54f486d88d70910dd537a496d4f",
+      "src/printer_v1/operator_cli/git_provenance_authorization_manifest.py": "e899ecc14b62b3b46e6344ee2e3358ec5a09b6c523bdcbc821a8d3a70d9854c1",
+      "src/printer_v1/operator_cli/operational_memory_factory_command.py": "58b65975bf16f745250e7ec3491815d3f878dc984b693eec9d6cec20d9e73df1",
+      "src/printer_v1/operator_cli/window_15m_one_shot_wrapper.py": "cb3eb498593bec2bd4460d30ddf67e864b195f9bb89b82ecd707dc31304cc047"
+    }
+  },
+  "consumption_law": {
+    "consumed_when": "wrapper_execution_begins",
+    "permanently_non_reusable_after_start": true,
+    "consumed_regardless_of": [
+      "PASS",
+      "block",
+      "safe-stop",
+      "interruption",
+      "failure"
+    ],
+    "wrapper_creates_manifest": true,
+    "wrapper_creates_marker": true,
+    "authorization_lane_must_not_create_manifest_or_marker": true
+  },
+  "hard_pre_application_gates": [
+    "exact branch and HEAD match",
+    "clean tracked worktree and index",
+    "migration-050 evidence package byte-identical",
+    "authorization package exact and unconsumed",
+    "authoritative database identity exact at authorization",
+    "migration ledger through 051 exact",
+    "no SQLite sidecars",
+    "no active or locked Scheduler residue",
+    "no relevant Printer process",
+    "no separate readiness artifact",
+    "manual wrapper invocation with operator approval"
+  ],
+  "honest_terminal_law": {
+    "authorization_consumed_by_blocked_attempt": true,
+    "clean_memory_guaranteed": false,
+    "eligible_two_token_supply_guaranteed": false,
+    "provider_success_guaranteed": false,
+    "exit_code_zero_is_memory_pass": false,
+    "memory_pass_requires_authoritative_completed_window_15m_and_clean_memory_rows": true
+  },
+  "post_run_required": {
+    "immediate_terminal_evidence_capture": true,
+    "live_closeout_required": true,
+    "second_command_forbidden": true,
+    "orphan_recovery_requires_separate_authorization": true
+  },
+  "capabilities_remaining_locked": [
+    "retrieval",
+    "paper decisions",
+    "BUY SELL HOLD",
+    "positions",
+    "trade events",
+    "paper audits",
+    "PnL",
+    "wallets private keys signing real funds live execution",
+    "paid APIs",
+    "scoring ranking confidence weighting",
+    "automatic retry rerun resume restart successor",
+    "WINDOW_1H WINDOW_4H WINDOW_12H WINDOW_24H"
+  ]
+}

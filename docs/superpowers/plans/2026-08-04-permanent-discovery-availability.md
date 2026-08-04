@@ -93,12 +93,12 @@
 - Create: one fresh exact-HEAD one-use authorization package under the existing authorization root.
 - Create: one concise live closeout document.
 
-- [ ] Confirm the implementation commit is exact HEAD and the tracked tree is clean; create no readiness artifact.
-- [ ] Build and validate one fresh authorization bound to that exact HEAD, branch, command and one-attempt law.
-- [ ] Invoke the canonical wrapper exactly once. Do not retry, rerun, restart, resume or create a successor regardless of outcome.
-- [ ] Preserve complete source/candidate/reserve/lifecycle/memory/cleanup evidence and verify authoritative DB integrity.
-- [ ] Classify Memory PASS only when authoritative completed `WINDOW_15M` and clean-memory rows exist.
-- [ ] Write the honest live closeout and commit `Close permanent discovery 15m attempt`; do not push.
+- [x] Confirm the implementation commit is exact HEAD and the tracked tree is clean; create no readiness artifact.
+- [x] Build and validate one fresh authorization bound to that exact HEAD, branch, command and one-attempt law.
+- [x] Invoke the canonical wrapper exactly once. Do not retry, rerun, restart, resume or create a successor regardless of outcome.
+- [x] Preserve complete source/candidate/reserve/lifecycle/memory/cleanup evidence and verify authoritative DB integrity.
+- [x] Classify Memory PASS only when authoritative completed `WINDOW_15M` and clean-memory rows exist.
+- [x] Write the honest live closeout and commit `Close permanent discovery 15m attempt`; do not push.
 
 ### Plan self-review
 

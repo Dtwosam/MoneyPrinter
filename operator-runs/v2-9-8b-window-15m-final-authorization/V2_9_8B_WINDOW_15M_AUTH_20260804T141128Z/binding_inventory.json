@@ -1,0 +1,11 @@
+{
+  "authorization_id": "V2_9_8B_WINDOW_15M_AUTH_20260804T141128Z",
+  "branch": "agent/v2-9-8b-post-rollover-2-exact-public-composition-scheduler-claim-coverage-audit",
+  "head": "5c5c733c6c1a6a936bd8ce8ad6eb1a64033771fd",
+  "database_sha256": "198546f6ab0ad54af9ef5b8ac61e7d11d8d235a4d3f0f0d8364e317eae354afb",
+  "migration_head": "051_permanent_discovery_availability.sql",
+  "migration_execution_id": "V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f",
+  "main_window": "WINDOW_15M",
+  "allowed_invocation_count": 1,
+  "readiness_artifact_created": false
+}
