@@ -256,23 +256,32 @@ class PreLifecycleReadinessArtifactMatrix(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_auth_gate_refuses_every_invalid_artifact(self) -> None:
-        cases = [
-            None,
-            self._build(),  # will mutate checks via kwargs
-        ]
-        # absent
+    def test_auth_gate_absent_artifact_not_required_for_normal_prep(self) -> None:
+        """Normal WINDOW_15M authorization prep/review does not require readiness."""
         gate = evaluate_authorization_preparation_readiness_gate(
             readiness_artifact=None,
             now=self.t0,
             expected_head=self.head,
             expected_db_identity=self.db_identity,
         )
-        self.assertFalse(gate["valid"])
+        self.assertTrue(gate["valid"])
+        self.assertEqual(
+            gate["status"],
+            "AUTHORIZATION_PREPARATION_READINESS_GATE_NOT_REQUIRED",
+        )
+        self.assertFalse(gate["readiness_required"])
         self.assertFalse(gate["authorization_emitted"])
+        self.assertFalse(gate["wrapper_invoked"])
+        self.assertFalse(gate["provider_contacted"])
+        self.assertEqual(gate["blockers"], [])
+        self.assertEqual(
+            gate["readiness_validation"]["status"],
+            "READINESS_ARTIFACT_NOT_REQUIRED",
+        )
 
+    def test_auth_gate_refuses_invalid_supplied_artifact(self) -> None:
         artifact = self._build()
-        # expired
+        # expired (optional artifact still validated if supplied)
         gate = evaluate_authorization_preparation_readiness_gate(
             readiness_artifact=artifact,
             now=self.t0 + timedelta(hours=1),
@@ -281,6 +290,7 @@ class PreLifecycleReadinessArtifactMatrix(unittest.TestCase):
         )
         self.assertFalse(gate["valid"])
         self.assertFalse(gate["authorization_emitted"])
+        self.assertFalse(gate["readiness_required"])
 
         # head mismatch
         gate = evaluate_authorization_preparation_readiness_gate(
@@ -293,6 +303,21 @@ class PreLifecycleReadinessArtifactMatrix(unittest.TestCase):
         self.assertFalse(gate["authorization_emitted"])
 
     def test_no_actual_authorization_produced(self) -> None:
+        # Without artifact (normal path)
+        gate_absent = evaluate_authorization_preparation_readiness_gate(
+            readiness_artifact=None,
+            now=self.t0 + timedelta(seconds=5),
+            expected_head=self.head,
+            expected_db_identity=self.db_identity,
+        )
+        self.assertTrue(gate_absent["valid"])
+        self.assertFalse(gate_absent["authorization_emitted"])
+        self.assertFalse(gate_absent["wrapper_invoked"])
+        self.assertFalse(gate_absent["provider_contacted"])
+        self.assertNotIn("final_authorization", gate_absent)
+        self.assertNotIn("authorization_id", gate_absent)
+
+        # With optional valid artifact (dormant path still does not emit auth)
         artifact = self._build()
         gate = evaluate_authorization_preparation_readiness_gate(
             readiness_artifact=artifact,
