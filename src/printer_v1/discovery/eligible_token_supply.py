@@ -1922,6 +1922,10 @@ def run_persistent_eligible_token_supply(
                 ),
                 "status": locator.get("status"),
                 "source_requests": int(locator.get("source_requests") or 0),
+                "accounting_blocker": bool(locator.get("accounting_blocker")),
+                "accounting_blocker_reason": locator.get(
+                    "accounting_blocker_reason"
+                ),
             },
             "direct_migration_discovery": {
                 "source_request_ids": list(
@@ -1945,6 +1949,16 @@ def run_persistent_eligible_token_supply(
                 "source_operation_ledger": dict(
                     discovery.get("source_operation_ledger") or {}
                 ),
+                "campaign_safe_stop": bool(discovery.get("campaign_safe_stop")),
+                "accounting_block_reason": discovery.get("accounting_block_reason"),
+                "accounting_blocker": bool(
+                    discovery.get("campaign_safe_stop")
+                    or discovery.get("accounting_blocker")
+                ),
+                "accounting_blocker_reason": discovery.get(
+                    "accounting_blocker_reason"
+                )
+                or discovery.get("accounting_block_reason"),
             },
             "geckoterminal_nomination": geckoterminal_nomination_report,
             "discovery_source_requests": int(

@@ -1114,6 +1114,8 @@ def run_dexscreener_batch_market_resolution(
         "source_request_coverage": [],
         "calls_by_stage": {"market_batching": 0, "reconciliation": 0},
         "provider_failures": 0,
+        "accounting_blocker": False,
+        "accounting_blocker_reason": None,
         "local_zero_source_exclusions": [],
         "suppressed_exact_pool_count": len(suppressed),
         "reconciliation_due_count": 0,
@@ -1183,13 +1185,17 @@ def run_dexscreener_batch_market_resolution(
                 transport_identity_count = int(
                     measured_ledger.source_transport_operations - before
                 )
-            except Exception:
+            except Exception as exc:
                 # Declared transport identities only; never invent transports.
                 # Zero is lawful only when measurement succeeds with zero
                 # declared identities; measurement failure is recorded as
                 # BLOCKED coverage with transport 0 (not a fabricated COMPLETED).
                 measurement_failed = True
                 transport_identity_count = 0
+                report["accounting_blocker"] = True
+                report["accounting_blocker_reason"] = (
+                    f"TRANSPORT_IDENTITY_MEASUREMENT_FAILED:{exc}"
+                )
         pairs = list(payload.get("pairs") or ()) if isinstance(payload, Mapping) else []
         failed = result.source_status != SourceStatus.COMPLETE or bool(result.failure_type)
         batch_seq = batch_index // 30 + 1
@@ -1287,9 +1293,13 @@ def run_dexscreener_batch_market_resolution(
                         gt_transport_count = int(
                             measured_ledger.source_transport_operations - before_gt
                         )
-                    except Exception:
+                    except Exception as gt_exc:
                         gt_measurement_failed = True
                         gt_transport_count = 0
+                        report["accounting_blocker"] = True
+                        report["accounting_blocker_reason"] = (
+                            f"TRANSPORT_IDENTITY_MEASUREMENT_FAILED:{gt_exc}"
+                        )
                 gt_failed = (
                     gt_result.source_status != SourceStatus.COMPLETE
                     or bool(gt_result.failure_type)
@@ -3582,15 +3592,26 @@ def load_durable_campaign_source_request_ids(
     request_key_prefixes: Sequence[str],
     known_request_ids: Sequence[int] | None = None,
 ) -> list[int]:
-    """Load durable Source Governor request IDs for this campaign invocation.
+    """Load database-proven durable Source Governor request IDs.
 
-    Uses request_key prefix linkage (canonical campaign/run/cycle embedding in
-    request_key) plus any stage-reported known IDs. Never invents completeness
-    from a bare counter.
+    Stage-reported IDs are never copied into the durable set. Each candidate
+    ID must exist as a row in ``printer_source_requests``. Request-key prefix
+    lookup may add other genuine durable IDs for the invocation.
     """
     ids: set[int] = set()
-    for rid in known_request_ids or ():
-        ids.add(int(rid))
+    candidates = sorted({int(rid) for rid in (known_request_ids or ())})
+    if candidates:
+        placeholders = ",".join("?" * len(candidates))
+        rows = connection.execute(
+            f"""
+            SELECT id FROM printer_source_requests
+            WHERE id IN ({placeholders})
+            ORDER BY id ASC
+            """,
+            tuple(candidates),
+        ).fetchall()
+        for row in rows:
+            ids.add(int(row[0] if not hasattr(row, "keys") else row["id"]))
     for prefix in request_key_prefixes:
         if not prefix:
             continue
@@ -3607,6 +3628,121 @@ def load_durable_campaign_source_request_ids(
     return sorted(ids)
 
 
+def collect_stage_accounting_blockers(
+    diagnostics: Mapping[str, Any] | None,
+) -> list[dict[str, str]]:
+    """Collect accounting blockers from every governed stage surface present.
+
+    Ordinary candidate-local rejections are not accounting blockers. Only
+    explicit ``accounting_blocker`` / stage-safe-stop surfaces qualify.
+    """
+    diag = dict(diagnostics or {})
+    blockers: list[dict[str, str]] = []
+
+    def _maybe_add(stage_name: str, surface: Any) -> None:
+        if not isinstance(surface, Mapping):
+            return
+        if surface.get("accounting_blocker") is True:
+            reason = str(
+                surface.get("accounting_blocker_reason")
+                or f"{stage_name.upper()}_ACCOUNTING_BLOCKER"
+            )
+            blockers.append({"stage": stage_name, "reason": reason})
+            return
+        # Direct-migration / six-unit safe-stop surfaces.
+        if surface.get("campaign_safe_stop") is True:
+            reason = str(
+                surface.get("accounting_block_reason")
+                or surface.get("accounting_blocker_reason")
+                or f"{stage_name.upper()}_CAMPAIGN_SAFE_STOP"
+            )
+            blockers.append({"stage": stage_name, "reason": reason})
+            return
+        if surface.get("accounting_block_reason"):
+            blockers.append(
+                {
+                    "stage": stage_name,
+                    "reason": str(surface.get("accounting_block_reason")),
+                }
+            )
+
+    # Named stage surfaces.
+    named = (
+        ("protocol_confirmation", diag.get("protocol_confirmation")),
+        ("liquidity_backup", diag.get("liquidity_backup")),
+        (
+            "geckoterminal_nomination",
+            diag.get("geckoterminal_nomination")
+            or diag.get("geckoterminal_fresh_nomination"),
+        ),
+        (
+            "dexscreener_locator",
+            diag.get("dexscreener_locator") or diag.get("locator"),
+        ),
+        (
+            "direct_migration_discovery",
+            diag.get("direct_migration_discovery") or diag.get("discovery"),
+        ),
+        ("holder_context", diag.get("holder_context")),
+        ("final_refresh", diag.get("final_refresh")),
+    )
+    for name, surface in named:
+        _maybe_add(name, surface)
+        if isinstance(surface, Mapping):
+            ledger = surface.get("source_operation_ledger")
+            if isinstance(ledger, Mapping):
+                _maybe_add(f"{name}.source_operation_ledger", ledger)
+
+    # Market batch / reconciliation reports.
+    for index, report in enumerate(diag.get("permanent_market_reports") or ()):
+        if isinstance(report, Mapping):
+            _maybe_add(f"permanent_market_reports[{index}]", report)
+
+    # Generic scan of remaining mapping children that carry accounting flags
+    # without hardcoding only three stage names.
+    for key, value in diag.items():
+        if key in {
+            "protocol_confirmation",
+            "liquidity_backup",
+            "geckoterminal_nomination",
+            "geckoterminal_fresh_nomination",
+            "dexscreener_locator",
+            "locator",
+            "direct_migration_discovery",
+            "discovery",
+            "holder_context",
+            "final_refresh",
+            "permanent_market_reports",
+            "campaign_source_request_coverage",
+            "source_request_coverage",
+            "stage_reported_request_ids",
+            "source_request_ids",
+            "holder_source_request_ids",
+            "protocol_source_request_ids",
+            "observation_reserve",
+            "freeze_depth_enforcement",
+            "campaign_source_request_reconciliation",
+        }:
+            continue
+        if isinstance(value, Mapping) and (
+            value.get("accounting_blocker") is True
+            or value.get("campaign_safe_stop") is True
+            or value.get("accounting_block_reason")
+        ):
+            _maybe_add(str(key), value)
+
+    # Deduplicate by (stage, reason).
+    seen: set[tuple[str, str]] = set()
+    unique: list[dict[str, str]] = []
+    for item in blockers:
+        key = (item["stage"], item["reason"])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    return unique
+
+
 def assemble_and_reconcile_campaign_source_requests(
     connection: sqlite3.Connection,
     *,
@@ -3617,10 +3753,13 @@ def assemble_and_reconcile_campaign_source_requests(
 ) -> dict[str, Any]:
     """Build durable IDs + stage-reported IDs + real coverage and reconcile.
 
-    PASS invariant:
+    PASS invariant (database-proven):
       set(durable request IDs)
       == set(stage-reported request IDs)
       == set(coverage manifest request IDs)
+
+    Stage-reported IDs are never treated as durable until a
+    ``printer_source_requests`` row is proven.
     """
     diag = dict(diagnostics or {})
     coverage = collect_stage_source_request_coverage(diag)
@@ -3630,11 +3769,8 @@ def assemble_and_reconcile_campaign_source_requests(
             if normalized is not None:
                 coverage.append(normalized)
     stage_reported_raw = collect_stage_reported_request_ids(diag)
-    # Unique stage-reported IDs for durable load; raw list still checked for
-    # duplicates inside reconcile_campaign_source_requests.
     stage_reported = sorted({int(x) for x in stage_reported_raw})
-    # Coverage IDs are not used to invent stage-reported completeness; they are
-    # compared independently below.
+    # Independent durable set: only database-proven IDs (plus prefix lookup).
     durable = load_durable_campaign_source_request_ids(
         connection,
         request_key_prefixes=list(request_key_prefixes or ()),
@@ -3643,45 +3779,40 @@ def assemble_and_reconcile_campaign_source_requests(
     recon = reconcile_campaign_source_requests(
         durable_request_ids=durable,
         manifest_entries=coverage,
-        # Pass unique list for set equality; duplicate detection uses raw list.
         stage_reported_request_ids=stage_reported,
         stage_reported_request_ids_raw=stage_reported_raw,
     )
-    blockers = [str(b) for b in (stage_accounting_blockers or ()) if b]
-    protocol = diag.get("protocol_confirmation") or {}
-    if isinstance(protocol, Mapping) and protocol.get("accounting_blocker"):
-        blockers.append(
-            str(
-                protocol.get("accounting_blocker_reason")
-                or "PROTOCOL_ACCOUNTING_BLOCKER"
+    # Generic all-stage accounting-blocker collector.
+    stage_blockers = collect_stage_accounting_blockers(diag)
+    if stage_accounting_blockers:
+        for raw in stage_accounting_blockers:
+            if not raw:
+                continue
+            stage_blockers.append(
+                {"stage": "caller_supplied", "reason": str(raw)}
             )
-        )
-    backup = diag.get("liquidity_backup") or {}
-    if isinstance(backup, Mapping) and backup.get("accounting_blocker"):
-        blockers.append(
-            str(
-                backup.get("accounting_blocker_reason")
-                or "LIQUIDITY_BACKUP_ACCOUNTING_BLOCKER"
-            )
-        )
-    gecko = diag.get("geckoterminal_nomination") or diag.get(
-        "geckoterminal_fresh_nomination"
-    ) or {}
-    if isinstance(gecko, Mapping) and gecko.get("accounting_blocker"):
-        blockers.append(
-            str(
-                gecko.get("accounting_blocker_reason")
-                or "GECKO_FRESH_NOMINATION_ACCOUNTING_BLOCKER"
-            )
-        )
-    if blockers and recon.get("status") == "OK":
+    # BLOCKED coverage caused by accounting failure must not pass as a
+    # harmless present row when the stage also flagged an accounting blocker.
+    coverage_ids = sorted({int(e["source_request_id"]) for e in coverage})
+    recon["coverage_request_ids"] = coverage_ids
+    recon["stage_reported_not_durable"] = list(
+        recon.get("stage_only_not_durable") or ()
+    )
+    recon["durable_not_stage_reported"] = list(
+        recon.get("durable_only_not_stage") or ()
+    )
+    if recon.get("stage_only_not_durable"):
         recon = dict(recon)
         recon["status"] = "BLOCKED"
         recon["blocker"] = CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH
-        recon["stage_accounting_blockers"] = blockers
-    elif blockers:
+        recon["categorical_detail"] = "STAGE_REPORTED_REQUEST_NOT_DURABLE"
+    if stage_blockers:
         recon = dict(recon)
-        recon["stage_accounting_blockers"] = blockers
+        recon["status"] = "BLOCKED"
+        recon["blocker"] = CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH
+        recon["stage_accounting_blockers"] = stage_blockers
+        if not recon.get("categorical_detail"):
+            recon["categorical_detail"] = "STAGE_ACCOUNTING_BLOCKER"
     recon["campaign_source_request_count"] = int(recon.get("request_count") or 0)
     recon["campaign_transport_operation_count"] = int(
         recon.get("transport_identity_count_total") or 0
@@ -3695,6 +3826,7 @@ def assemble_and_reconcile_campaign_source_requests(
     recon["campaign_source_request_reconciliation"] = {
         "status": recon.get("status"),
         "blocker": recon.get("blocker"),
+        "categorical_detail": recon.get("categorical_detail"),
         "missing_from_manifest": recon.get("missing_from_manifest"),
         "extra_in_manifest": recon.get("extra_in_manifest"),
         "duplicate_request_ids": recon.get("duplicate_request_ids"),
@@ -3702,6 +3834,16 @@ def assemble_and_reconcile_campaign_source_requests(
             "missing_stage_reported_coverage"
         ),
         "stage_ownership_gaps": recon.get("stage_ownership_gaps"),
+        "stage_reported_not_durable": recon.get("stage_reported_not_durable"),
+        "durable_not_stage_reported": recon.get("durable_not_stage_reported"),
+        "stage_accounting_blockers": recon.get("stage_accounting_blockers") or [],
+        "coverage_request_ids": coverage_ids,
+        "durable_campaign_request_ids": list(
+            recon.get("durable_campaign_request_ids") or ()
+        ),
+        "stage_reported_request_ids": list(
+            recon.get("stage_reported_request_ids") or ()
+        ),
     }
     return recon
 
@@ -4322,6 +4464,7 @@ __all__ = [
     "build_campaign_source_request_manifest",
     "build_source_request_coverage_manifest",
     "classify_exact_pool_liquidity_prefilter",
+    "collect_stage_accounting_blockers",
     "collect_stage_reported_request_ids",
     "collect_stage_source_request_coverage",
     "freeze_eligible_reserve",

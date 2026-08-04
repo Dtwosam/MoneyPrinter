@@ -219,6 +219,7 @@ def run_fresh_profile_locator(
         seal_campaign_stage_evidence,
     )
     from printer_v1.sources.measured_transport import (
+        MeasuredTransportError,
         MeasuredTransportLedger,
         record_payload_transports,
     )
@@ -277,6 +278,7 @@ def run_fresh_profile_locator(
         payload = result.normalized_payload or {}
         transport_identity_count = 0
         measurement_failed = False
+        measurement_error: str | None = None
         if isinstance(payload, Mapping):
             try:
                 before = measured_ledger.source_transport_operations
@@ -288,9 +290,12 @@ def run_fresh_profile_locator(
                 transport_identity_count = int(
                     measured_ledger.source_transport_operations - before
                 )
-            except Exception:
-                # Declared identities only; never invent transports from DB rows.
+            except MeasuredTransportError as exc:
+                # Typed measured-transport failure only — never invent transports.
                 measurement_failed = True
+                measurement_error = (
+                    f"TRANSPORT_IDENTITY_MEASUREMENT_FAILED:{exc}"
+                )
                 transport_identity_count = 0
         pairs = (
             list(payload.get("pairs") or ())
@@ -311,11 +316,33 @@ def run_fresh_profile_locator(
             "terminal_status": "COMPLETED",
         }
 
-        if result.failure_type:
+        # Transport measurement failure: fail closed for the whole locator.
+        # Preserve durable request ID, block coverage, contribute no candidates.
+        if measurement_failed:
             connection.commit()
             coverage_entry["terminal_status"] = "BLOCKED"
-            if measurement_failed:
-                coverage_entry["terminal_status"] = "BLOCKED"
+            coverage_entry["normalized_member_count"] = 0
+            report = {
+                "request_key": request_key,
+                "request_id": request_id,
+                "source_requests": 1,
+                "source_request_ids": [request_id],
+                "source_request_coverage": [coverage_entry],
+                "status": "accounting_blocked",
+                "surfaced_count": 0,
+                "matched_count": 0,
+                "locator_only_count": 0,
+                "matched_mints": [],
+                "pool_observations": [],
+                "dispositions": [],
+                "accounting_blocker": True,
+                "accounting_blocker_reason": measurement_error,
+            }
+            terminal_status = "BLOCKED"
+            terminal_cause = measurement_error
+        elif result.failure_type:
+            connection.commit()
+            coverage_entry["terminal_status"] = "BLOCKED"
             report = {
                 "request_key": request_key,
                 "request_id": request_id,
@@ -333,6 +360,8 @@ def run_fresh_profile_locator(
                 "matched_mints": [],
                 "pool_observations": [],
                 "dispositions": [],
+                "accounting_blocker": False,
+                "accounting_blocker_reason": None,
             }
             terminal_status = "BLOCKED"
             terminal_cause = str(result.failure_type)
@@ -356,8 +385,6 @@ def run_fresh_profile_locator(
                     )
             connection.commit()
             usable = bool(mints)
-            if measurement_failed:
-                coverage_entry["terminal_status"] = "BLOCKED"
             report = {
                 "request_key": request_key,
                 "request_id": request_id,
@@ -370,6 +397,8 @@ def run_fresh_profile_locator(
                 "locator_only_count": len(mints) - len(matched),
                 "matched_mints": matched,
                 "dispositions": dispositions,
+                "accounting_blocker": False,
+                "accounting_blocker_reason": None,
                 "pool_observations": [
                     {
                         "mint": str(
