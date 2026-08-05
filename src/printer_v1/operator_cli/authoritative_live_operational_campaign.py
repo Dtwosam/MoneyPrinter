@@ -1058,6 +1058,130 @@ def _holder_observation_context(
     }
 
 
+def _owned_transport_keys_for_request(
+    manifest_entry: Mapping[str, Any],
+) -> tuple[tuple[object, ...], ...]:
+    """Return exact serialized transport keys owned by one manifest request."""
+    raw_keys = manifest_entry.get("transport_identity_keys")
+    if raw_keys is None:
+        return ()
+    keys: list[tuple[object, ...]] = []
+    for item in raw_keys:
+        if isinstance(item, Mapping):
+            from printer_v1.discovery.memory_observation_activation import (
+                transport_identity_key_from_mapping,
+            )
+
+            keys.append(transport_identity_key_from_mapping(item))
+        else:
+            keys.append(tuple(item))
+    return tuple(keys)
+
+
+def _resolve_retained_role_pair(
+    connection: sqlite3.Connection,
+    *,
+    mint: str,
+    pool: str,
+    role_name: str,
+    request_id_raw: object,
+    response_id_raw: object,
+    failure_id_raw: object = None,
+) -> tuple[int, int, str, str, str, int | None]:
+    """Load one exact retained source request/response pair for a role."""
+    from printer_v1.discovery.memory_observation_activation import (
+        MemoryObservationActivationError,
+    )
+
+    if request_id_raw is None or response_id_raw is None:
+        raise MemoryObservationActivationError(
+            "RETAINED_EVIDENCE_ROLE_MISSING", f"{mint}:{role_name}"
+        )
+    request_id = int(request_id_raw)
+    response_id = int(response_id_raw)
+    request = connection.execute(
+        """SELECT source_name,request_kind,requested_at
+           FROM printer_source_requests WHERE id=?""",
+        (request_id,),
+    ).fetchone()
+    response = connection.execute(
+        """SELECT response_hash FROM printer_source_responses
+           WHERE id=? AND source_request_id=?""",
+        (response_id, request_id),
+    ).fetchone()
+    if request is None or response is None:
+        raise MemoryObservationActivationError(
+            "RETAINED_EVIDENCE_ROW_MISSING",
+            f"{role_name}:{request_id}:{response_id}",
+        )
+    failure_id = None if failure_id_raw is None else int(failure_id_raw)
+    return (
+        request_id,
+        response_id,
+        str(request[0]),
+        str(request[1]),
+        str(response[0]),
+        failure_id,
+    )
+
+
+def _role_ids_from_candidate(
+    item: Mapping[str, Any],
+    liquidity: Mapping[str, Any],
+    role: str,
+) -> tuple[object, object, object]:
+    """Extract request/response/failure IDs for one evidence role from a candidate."""
+    role_blob = item.get("retained_evidence") or {}
+    if isinstance(role_blob, Mapping):
+        role_entry = role_blob.get(role) or {}
+        if isinstance(role_entry, Mapping) and role_entry.get("source_request_id") is not None:
+            return (
+                role_entry.get("source_request_id"),
+                role_entry.get("source_response_id"),
+                role_entry.get("source_failure_id"),
+            )
+    if role == "MARKET_OBSERVATION":
+        return (
+            liquidity.get("source_request_id"),
+            liquidity.get("source_response_id"),
+            liquidity.get("source_failure_id"),
+        )
+    if role == "PUMPSWAP_CONFIRMATION":
+        pumpswap = item.get("pumpswap_confirmation") or {}
+        if not isinstance(pumpswap, Mapping):
+            pumpswap = {}
+        provenance = item.get("source_provenance") or liquidity.get("source_provenance") or {}
+        if not isinstance(provenance, Mapping):
+            provenance = {}
+        request_id = (
+            pumpswap.get("source_request_id")
+            or item.get("pumpswap_source_request_id")
+            or item.get("protocol_request_id")
+            or provenance.get("protocol_request_id")
+        )
+        if request_id is None and str(provenance.get("stage") or "") in {
+            "protocol_confirmation",
+            "protocol_confirmation_direct_promotion",
+        }:
+            request_id = provenance.get("request_id")
+        response_id = (
+            pumpswap.get("source_response_id")
+            or item.get("pumpswap_source_response_id")
+            or provenance.get("response_id")
+        )
+        return (request_id, response_id, pumpswap.get("source_failure_id"))
+    if role == "ORIGIN_LINEAGE":
+        origin = item.get("origin_lineage") or {}
+        if not isinstance(origin, Mapping):
+            origin = {}
+        return (
+            origin.get("source_request_id") or item.get("origin_source_request_id"),
+            origin.get("source_response_id") or item.get("origin_source_response_id"),
+            origin.get("source_failure_id"),
+        )
+    return (None, None, None)
+
+
 def _build_frozen_memory_activation_set(
     connection: sqlite3.Connection,
     *,
@@ -1078,7 +1202,9 @@ def _build_frozen_memory_activation_set(
         EvidenceRole,
         FrozenMemoryActivationCandidate,
         FrozenMemoryActivationSet,
+        ManifestRequestEntry,
         MemoryObservationActivationError,
+        REQUIRED_EVIDENCE_ROLES,
         RetainedEvidenceReference,
         TrackingFeasibility,
     )
@@ -1088,101 +1214,173 @@ def _build_frozen_memory_activation_set(
         for entry in manifest
         if entry.get("source_request_id") is not None
     }
-    transport_keys = tuple(tuple(key) for key in measured_transport_identity_keys)
+    typed_entries: list[Any] = []
+    owned_key_union: list[tuple[object, ...]] = []
+    for rid in sorted(manifest_by_id):
+        entry = manifest_by_id[rid]
+        owned_keys = _owned_transport_keys_for_request(entry)
+        declared = int(entry.get("transport_identity_count") or 0)
+        # Prefer explicit keys; never invent keys from the flat set by
+        # source-name / request-kind fallback.
+        if owned_keys and declared and declared != len(owned_keys):
+            raise MemoryObservationActivationError(
+                "RETAINED_TRANSPORT_IDENTITY_COUNT_MISMATCH",
+                f"request={rid}:declared={declared}:keys={len(owned_keys)}",
+            )
+        if not owned_keys and declared == 0 and str(
+            entry.get("terminal_status") or "COMPLETED"
+        ) == "COMPLETED":
+            # Successful request with zero owned identities is a hard block for
+            # activation binding; counts alone are never accepted.
+            owned_keys = ()
+        typed_entries.append(
+            ManifestRequestEntry(
+                source_request_id=rid,
+                source_name=str(entry.get("source_name") or ""),
+                request_kind=str(entry.get("request_kind") or ""),
+                logical_stage_id=str(entry.get("logical_stage_id") or ""),
+                transport_identity_count=(
+                    declared if declared or not owned_keys else len(owned_keys)
+                ),
+                transport_identity_keys=owned_keys,
+                terminal_status=str(entry.get("terminal_status") or "COMPLETED"),
+            )
+        )
+        owned_key_union.extend(owned_keys)
+
+    flat_keys = tuple(tuple(key) for key in measured_transport_identity_keys)
+    transport_keys = tuple(owned_key_union) if owned_key_union else flat_keys
+
+    def _reference_for_role(
+        *,
+        role: EvidenceRole,
+        mint: str,
+        pool: str,
+        request_id: int,
+        response_id: int,
+        source_name: str,
+        request_kind: str,
+        raw_hash: str,
+        failure_id: int | None,
+        observed_at: str,
+    ) -> Any:
+        manifest_entry = manifest_by_id.get(request_id)
+        if manifest_entry is None:
+            raise MemoryObservationActivationError(
+                "RETAINED_REQUEST_NOT_IN_MANIFEST", str(request_id)
+            )
+        owned_keys = _owned_transport_keys_for_request(manifest_entry)
+        declared = int(manifest_entry.get("transport_identity_count") or 0)
+        if not owned_keys:
+            raise MemoryObservationActivationError(
+                "RETAINED_REQUEST_TRANSPORT_IDENTITY_MISSING",
+                f"{mint}:{role.value}:request={request_id}",
+            )
+        if declared and declared != len(owned_keys):
+            raise MemoryObservationActivationError(
+                "RETAINED_TRANSPORT_IDENTITY_COUNT_MISMATCH",
+                f"request={request_id}",
+            )
+        return RetainedEvidenceReference(
+            evidence_role=role,
+            source_name=source_name,
+            request_kind=request_kind,
+            source_request_id=request_id,
+            source_response_id=response_id,
+            source_failure_id=failure_id,
+            transport_identity_keys=owned_keys,
+            observed_at=observed_at,
+            raw_payload_hash=raw_hash,
+            target_mint=mint,
+            target_pool=pool,
+            campaign_id=campaign_id,
+            campaign_run_id=run_id,
+            cycle_id=cycle_id,
+        )
 
     def candidate(raw: Mapping[str, Any], ordinal: int) -> Any:
         item = dict(raw)
         mint = str(item.get("mint") or "")
         pool = str(item.get("pool") or "")
         liquidity = dict(item.get("liquidity") or {})
-        request_id_raw = liquidity.get("source_request_id")
-        response_id_raw = liquidity.get("source_response_id")
-        if request_id_raw is None or response_id_raw is None:
-            raise MemoryObservationActivationError(
-                "RETAINED_EVIDENCE_REFERENCE_INCOMPLETE", mint
-            )
-        request_id = int(request_id_raw)
-        response_id = int(response_id_raw)
-        manifest_entry = manifest_by_id.get(request_id)
-        if manifest_entry is None:
-            raise MemoryObservationActivationError(
-                "RETAINED_REQUEST_NOT_IN_MANIFEST", str(request_id)
-            )
-        request = connection.execute(
-            """SELECT source_name,request_kind,requested_at
-               FROM printer_source_requests WHERE id=?""",
-            (request_id,),
-        ).fetchone()
-        response = connection.execute(
-            """SELECT response_hash FROM printer_source_responses
-               WHERE id=? AND source_request_id=?""",
-            (response_id, request_id),
-        ).fetchone()
-        if request is None or response is None:
-            raise MemoryObservationActivationError(
-                "RETAINED_EVIDENCE_ROW_MISSING", f"{request_id}:{response_id}"
-            )
         retained_time = str(
             item.get("liquidity_observed_at")
             or liquidity.get("liquidity_observed_at")
             or ""
         )
-        if not retained_time:
-            reserve_rows = connection.execute(
-                """SELECT observed_at,evidence_json,source_provenance_json
-                   FROM printer_discovery_reserve_layers
-                   WHERE network='solana-mainnet' AND mint_identity=?
-                     AND pool_address=?
-                   ORDER BY observed_at DESC""",
-                (mint, pool),
-            ).fetchall()
-            for reserve_row in reserve_rows:
-                envelope = f"{reserve_row[1] or ''} {reserve_row[2] or ''}"
-                if str(request_id) in envelope and str(response_id) in envelope:
-                    retained_time = str(reserve_row[0] or "")
-                    break
+        # Preserve the categorical incomplete-market signal before role checks so
+        # disposable fixtures that omit market response rows keep their exact
+        # blocker code. Missing origin/pumpswap roles still fail closed below.
+        market_req, market_resp, _market_fail = _role_ids_from_candidate(
+            item, liquidity, EvidenceRole.MARKET_OBSERVATION.value
+        )
+        if market_req is None or market_resp is None:
+            raise MemoryObservationActivationError(
+                "RETAINED_EVIDENCE_REFERENCE_INCOMPLETE", mint
+            )
+
+        role_refs: list[Any] = []
+        for role in REQUIRED_EVIDENCE_ROLES:
+            req_raw, resp_raw, fail_raw = _role_ids_from_candidate(
+                item, liquidity, role.value
+            )
+            (
+                request_id,
+                response_id,
+                source_name,
+                request_kind,
+                raw_hash,
+                failure_id,
+            ) = _resolve_retained_role_pair(
+                connection,
+                mint=mint,
+                pool=pool,
+                role_name=role.value,
+                request_id_raw=req_raw,
+                response_id_raw=resp_raw,
+                failure_id_raw=fail_raw,
+            )
+            observed = retained_time
+            if not observed:
+                reserve_rows = connection.execute(
+                    """SELECT observed_at,evidence_json,source_provenance_json
+                       FROM printer_discovery_reserve_layers
+                       WHERE network='solana-mainnet' AND mint_identity=?
+                         AND pool_address=?
+                       ORDER BY observed_at DESC""",
+                    (mint, pool),
+                ).fetchall()
+                for reserve_row in reserve_rows:
+                    envelope = f"{reserve_row[1] or ''} {reserve_row[2] or ''}"
+                    if str(request_id) in envelope and str(response_id) in envelope:
+                        observed = str(reserve_row[0] or "")
+                        break
+            if not observed:
+                request_time = connection.execute(
+                    "SELECT requested_at FROM printer_source_requests WHERE id=?",
+                    (request_id,),
+                ).fetchone()
+                observed = str(request_time[0] if request_time else "") or frozen_at
+            if role is EvidenceRole.MARKET_OBSERVATION:
+                retained_time = observed
+            role_refs.append(
+                _reference_for_role(
+                    role=role,
+                    mint=mint,
+                    pool=pool,
+                    request_id=request_id,
+                    response_id=response_id,
+                    source_name=source_name,
+                    request_kind=request_kind,
+                    raw_hash=raw_hash,
+                    failure_id=failure_id,
+                    observed_at=str(observed),
+                )
+            )
         if not retained_time:
             raise MemoryObservationActivationError(
                 "RETAINED_OBSERVATION_TIME_MISSING", mint
             )
-        source_name = str(request[0])
-        request_kind = str(request[1])
-        matching_keys = tuple(
-            key
-            for key in transport_keys
-            if len(key) >= 8
-            and str(key[1]) == source_name
-            and str(key[3]) == request_kind
-            and (
-                mint in str(key[7] or "")
-                or pool in str(key[7] or "")
-            )
-        )
-        expected_transports = int(
-            manifest_entry.get("transport_identity_count") or 0
-        )
-        if expected_transports and not matching_keys:
-            # A single manifest owner for this source/kind is still exact even
-            # when its batch target identity is opaque to individual members.
-            same_kind_manifest = [
-                entry
-                for entry in manifest_by_id.values()
-                if str(entry.get("source_name") or "") == source_name
-                and str(entry.get("request_kind") or "") == request_kind
-            ]
-            same_kind_keys = tuple(
-                key
-                for key in transport_keys
-                if len(key) >= 4
-                and str(key[1]) == source_name
-                and str(key[3]) == request_kind
-            )
-            if len(same_kind_manifest) == 1 and same_kind_keys:
-                matching_keys = same_kind_keys
-            else:
-                raise MemoryObservationActivationError(
-                    "RETAINED_TRANSPORT_IDENTITY_UNRESOLVED", mint
-                )
         holder_condition = str(item.get("holder_condition") or "UNKNOWN")
         return FrozenMemoryActivationCandidate(
             slot_ordinal=ordinal,
@@ -1204,9 +1402,7 @@ def _build_frozen_memory_activation_set(
                 item.get("future_action_eligibility") or "BLOCKED_OR_UNKNOWN"
             ),
             evidence_expires_at=str(item.get("evidence_expires_at") or ""),
-            liquidity_observed_at=str(
-                retained_time
-            ),
+            liquidity_observed_at=str(retained_time),
             tracking_feasibility=TrackingFeasibility(
                 eligible=bool(item.get("tracking_handoff_eligible")),
                 reason_code=str(item.get("tracking_handoff_reason") or "UNKNOWN"),
@@ -1230,30 +1426,7 @@ def _build_frozen_memory_activation_set(
                 ),
                 assessed_at=str(item.get("tracking_assessed_at") or frozen_at),
             ),
-            retained_evidence_references=(
-                RetainedEvidenceReference(
-                    evidence_role=EvidenceRole.MARKET_OBSERVATION,
-                    source_name=source_name,
-                    request_kind=request_kind,
-                    source_request_id=request_id,
-                    source_response_id=response_id,
-                    source_failure_id=(
-                        None
-                        if liquidity.get("source_failure_id") is None
-                        else int(liquidity["source_failure_id"])
-                    ),
-                    transport_identity_keys=matching_keys,
-                    observed_at=str(
-                        retained_time
-                    ),
-                    raw_payload_hash=str(response[0]),
-                    target_mint=mint,
-                    target_pool=pool,
-                    campaign_id=campaign_id,
-                    campaign_run_id=run_id,
-                    cycle_id=cycle_id,
-                ),
-            ),
+            retained_evidence_references=tuple(role_refs),
         )
 
     selected = tuple(
@@ -1274,6 +1447,7 @@ def _build_frozen_memory_activation_set(
         manifest_transport_identity_keys=transport_keys,
         frozen_at=frozen_at,
         expires_at=expires_at,
+        manifest_entries=tuple(typed_entries),
     )
 
 
@@ -2498,6 +2672,21 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             tracking_assessment.reason_code
                             or "TRACKING_HANDOFF_INELIGIBLE"
                         )
+                        tracking_assessment_evidence = {
+                            "eligible": tracking_eligible,
+                            "reason_code": tracking_reason,
+                            "category": str(
+                                getattr(tracking_assessment, "category", None)
+                                or tracking_reason
+                            ),
+                            "queue_id": tracking_assessment.queue_id,
+                            "queue_status": tracking_assessment.queue_status,
+                            "requalification_required": (
+                                tracking_requalification_required
+                            ),
+                            "cooldown_until": tracking_assessment.cooldown_until,
+                            "assessed_at": evaluated.isoformat(),
+                        }
                         exclusion = {
                             "mint": proof.mint,
                             "pool": exact_pool,
@@ -2506,6 +2695,8 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             "tracking_requalification_required": (
                                 tracking_requalification_required
                             ),
+                            "tracking_handoff": dict(tracking_assessment_evidence),
+                            "holder_safety": dict(fact),
                         }
                         tracking_exclusions.append(exclusion)
                         upsert_reserve_layer(
@@ -2523,7 +2714,10 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             evidence_expires_at=str(expiry),
                             source_provenance={"market": item.get("provenance")},
                             evidence={
-                                "tracking_handoff": dict(fact),
+                                "tracking_handoff": dict(
+                                    tracking_assessment_evidence
+                                ),
+                                "holder_safety": dict(fact),
                                 "memory_observation_eligible": False,
                             },
                             campaign_id=command.campaign_id,
@@ -3080,22 +3274,31 @@ class AuthoritativeLiveOperationalCampaignOwner:
             mint_key = str(item.get("mint") or "").lower()
             holder = dict(holder_facts.get(mint_key) or {})
             tracking = dict(item.get("tracking_handoff") or {})
+            # Keep tracking assessment under tracking_handoff and holder facts
+            # under holder_safety. Never store holder concentration under
+            # tracking_handoff.
             if holder:
-                tracking.update({
-                    "category": holder.get("tracking_handoff_category"),
-                    "tracking_queue_id": holder.get("tracking_queue_id"),
-                    "tracking_queue_status": holder.get("tracking_queue_status"),
-                    "requalification_required": holder.get(
-                        "tracking_requalification_required"
-                    ),
-                    "cooldown_until": holder.get("cooldown_until"),
-                    "historical_cooldown_expiry_derived": holder.get(
-                        "historical_cooldown_expiry_derived"
-                    ),
-                })
+                # Only adopt tracking-assessment fields if the holder fact
+                # payload actually carries them from an identity assessment.
+                for key in (
+                    "category",
+                    "tracking_queue_id",
+                    "tracking_queue_status",
+                    "queue_id",
+                    "queue_status",
+                    "requalification_required",
+                    "cooldown_until",
+                    "historical_cooldown_expiry_derived",
+                    "reason_code",
+                    "eligible",
+                    "assessed_at",
+                ):
+                    if key in holder and holder.get(key) is not None:
+                        tracking.setdefault(key, holder.get(key))
             item["tracking_handoff"] = {
                 key: value for key, value in tracking.items() if value is not None
             }
+            item["holder_safety"] = holder
             item["holder_eligibility"] = holder
             item["excluded_before_market_source"] = bool(
                 item.get("excluded_before_market_source")

@@ -12,7 +12,7 @@ from datetime import datetime
 from enum import Enum
 import json
 import sqlite3
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 
 class ActivationPurpose(str, Enum):
@@ -23,6 +23,15 @@ class EvidenceRole(str, Enum):
     ORIGIN_LINEAGE = "ORIGIN_LINEAGE"
     PUMPSWAP_CONFIRMATION = "PUMPSWAP_CONFIRMATION"
     MARKET_OBSERVATION = "MARKET_OBSERVATION"
+
+
+REQUIRED_EVIDENCE_ROLES: tuple[EvidenceRole, ...] = (
+    EvidenceRole.ORIGIN_LINEAGE,
+    EvidenceRole.PUMPSWAP_CONFIRMATION,
+    EvidenceRole.MARKET_OBSERVATION,
+)
+
+MEMORY_OBSERVATION_SELECTION_REASON = "memory_observation_frozen_selection"
 
 
 class MemoryObservationActivationError(RuntimeError):
@@ -48,6 +57,19 @@ class RetainedEvidenceReference:
     campaign_id: str
     campaign_run_id: str
     cycle_id: str
+
+
+@dataclass(frozen=True)
+class ManifestRequestEntry:
+    """One durable request ownership row with exact transport binding."""
+
+    source_request_id: int
+    source_name: str
+    request_kind: str
+    logical_stage_id: str
+    transport_identity_count: int
+    transport_identity_keys: tuple[tuple[object, ...], ...]
+    terminal_status: str = "COMPLETED"
 
 
 @dataclass(frozen=True)
@@ -92,6 +114,153 @@ class FrozenMemoryActivationSet:
     manifest_transport_identity_keys: tuple[tuple[object, ...], ...]
     frozen_at: str
     expires_at: str
+    manifest_entries: tuple[ManifestRequestEntry, ...] = ()
+
+
+def transport_identity_key_from_mapping(
+    raw: Mapping[str, Any],
+) -> tuple[object, ...]:
+    """Serialize one measured transport identity into the exact durable key."""
+    return (
+        str(raw.get("stage") or ""),
+        str(raw.get("source_name") or ""),
+        str(raw.get("endpoint_owner") or ""),
+        str(raw.get("governed_request_kind") or ""),
+        str(raw.get("method_or_endpoint") or ""),
+        int(raw.get("within_request_ordinal") or 0),
+        str(raw.get("target_category") or ""),
+        None if raw.get("target_identity") is None else str(raw.get("target_identity")),
+        int(raw.get("response_bytes") or 0),
+        int(raw.get("normalized_rows") or 0),
+        str(raw.get("result") or "ATTEMPTED"),
+        None if raw.get("reserved_from") is None else str(raw.get("reserved_from")),
+    )
+
+
+def transport_identity_keys_from_payload(
+    payload: Mapping[str, Any] | None,
+) -> tuple[tuple[object, ...], ...]:
+    """Extract exact serialized keys from a measured payload."""
+    if not isinstance(payload, Mapping):
+        return ()
+    identities = payload.get("transport_operation_identities") or ()
+    keys: list[tuple[object, ...]] = []
+    seen: set[tuple[object, ...]] = set()
+    for raw in identities:
+        if not isinstance(raw, Mapping):
+            continue
+        key = transport_identity_key_from_mapping(raw)
+        if key in seen:
+            continue
+        seen.add(key)
+        keys.append(key)
+    return tuple(keys)
+
+
+def measure_source_row_ids(connection: sqlite3.Connection) -> dict[str, set[int]]:
+    """Capture exact durable source-row ID sets for measured reconciliation."""
+    return {
+        "source_request_ids": {
+            int(row[0])
+            for row in connection.execute(
+                "SELECT id FROM printer_source_requests"
+            ).fetchall()
+        },
+        "source_response_ids": {
+            int(row[0])
+            for row in connection.execute(
+                "SELECT id FROM printer_source_responses"
+            ).fetchall()
+        },
+        "source_failure_ids": {
+            int(row[0])
+            for row in connection.execute(
+                "SELECT id FROM printer_source_failures"
+            ).fetchall()
+        },
+    }
+
+
+def reconcile_activation_source_rows(
+    *,
+    before: Mapping[str, set[int]] | Mapping[str, Sequence[int]],
+    after: Mapping[str, set[int]] | Mapping[str, Sequence[int]],
+    activation: FrozenMemoryActivationSet,
+    request_to_transport_bindings: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Measure pre/post source-row deltas. Never hard-codes empty success."""
+
+    def _as_set(value: object) -> set[int]:
+        if value is None:
+            return set()
+        return {int(item) for item in value}
+
+    before_requests = _as_set(before.get("source_request_ids"))
+    before_responses = _as_set(before.get("source_response_ids"))
+    before_failures = _as_set(before.get("source_failure_ids"))
+    after_requests = _as_set(after.get("source_request_ids"))
+    after_responses = _as_set(after.get("source_response_ids"))
+    after_failures = _as_set(after.get("source_failure_ids"))
+
+    new_requests = sorted(after_requests - before_requests)
+    new_responses = sorted(after_responses - before_responses)
+    new_failures = sorted(after_failures - before_failures)
+
+    role_request_ids: dict[str, list[int]] = {
+        role.value: [] for role in REQUIRED_EVIDENCE_ROLES
+    }
+    referenced_manifest_ids: list[int] = []
+    for candidate in activation.selected:
+        for reference in candidate.retained_evidence_references:
+            role_request_ids[reference.evidence_role.value].append(
+                int(reference.source_request_id)
+            )
+            referenced_manifest_ids.append(int(reference.source_request_id))
+
+    manifest_ids = set(int(item) for item in activation.manifest_request_ids)
+    unmanifested = sorted(
+        rid for rid in referenced_manifest_ids if rid not in manifest_ids
+    )
+    missing_manifest = sorted(
+        rid for rid in manifest_ids if rid not in set(referenced_manifest_ids)
+        and rid
+        in {
+            int(ref.source_request_id)
+            for cand in activation.selected
+            for ref in cand.retained_evidence_references
+        }
+    )
+    # Referenced IDs not present in the after set are not newly created; they
+    # must already have existed before projection.
+    missing_or_unmanifested = sorted(set(unmanifested) | set(missing_manifest))
+
+    bindings = list(request_to_transport_bindings or ())
+    status = "PASS"
+    if new_requests or new_responses or new_failures or unmanifested:
+        status = "BLOCKED"
+
+    return {
+        "before_source_request_ids": sorted(before_requests),
+        "before_source_response_ids": sorted(before_responses),
+        "before_source_failure_ids": sorted(before_failures),
+        "after_source_request_ids": sorted(after_requests),
+        "after_source_response_ids": sorted(after_responses),
+        "after_source_failure_ids": sorted(after_failures),
+        "newly_created_source_request_ids": new_requests,
+        "newly_created_source_response_ids": new_responses,
+        "newly_created_source_failure_ids": new_failures,
+        # Compatibility aliases used by earlier validators/reports.
+        "new_source_request_ids": new_requests,
+        "new_source_response_ids": new_responses,
+        "new_source_failure_ids": new_failures,
+        "referenced_manifest_ids": referenced_manifest_ids,
+        "manifest_request_ids": list(activation.manifest_request_ids),
+        "per_role_request_ids": role_request_ids,
+        "missing_or_unmanifested_ids": missing_or_unmanifested,
+        "request_to_transport_binding_results": bindings,
+        "reconciliation_status": status,
+        "evidence_reuse_kind": "RETAINED_GOVERNED_EVIDENCE_REFERENCE",
+    }
 
 
 def _parse_instant(value: str, *, code: str) -> datetime:
@@ -168,11 +337,223 @@ def _retained_observation_time_matches(
     return False
 
 
+def _manifest_entries_for_activation(
+    activation: FrozenMemoryActivationSet,
+) -> tuple[dict[int, ManifestRequestEntry], bool]:
+    """Index exact request ownership.
+
+    Returns ``(by_id, exact_binding)`` where ``exact_binding`` is True only when
+    typed per-request transport ownership entries were supplied.
+    """
+    by_id: dict[int, ManifestRequestEntry] = {}
+    if activation.manifest_entries:
+        for entry in activation.manifest_entries:
+            rid = int(entry.source_request_id)
+            if rid in by_id:
+                raise MemoryObservationActivationError(
+                    "ACTIVATION_MANIFEST_DUPLICATE_REQUEST", str(rid)
+                )
+            by_id[rid] = entry
+        return by_id, True
+
+    # Compatibility path for fixtures that still pass flat keys only. Exact
+    # request ownership is not claimed; per-reference keys must still be
+    # non-empty and present in the flat measured key set.
+    for rid in activation.manifest_request_ids:
+        by_id[int(rid)] = ManifestRequestEntry(
+            source_request_id=int(rid),
+            source_name="",
+            request_kind="",
+            logical_stage_id="",
+            transport_identity_count=0,
+            transport_identity_keys=(),
+            terminal_status="COMPLETED",
+        )
+    return by_id, False
+
+
+def _validate_request_transport_binding(
+    *,
+    reference: RetainedEvidenceReference,
+    manifest_entry: ManifestRequestEntry | None,
+    all_request_owned_keys: Mapping[int, set[tuple[object, ...]]],
+    expected_ownership: tuple[str, str, str] | None,
+    flat_transport_keys: set[tuple[object, ...]],
+    exact_binding: bool,
+) -> dict[str, Any]:
+    """Fail-closed exact request-to-transport binding for one retained reference."""
+    request_id = int(reference.source_request_id)
+    keys = tuple(tuple(item) for item in reference.transport_identity_keys)
+    result: dict[str, Any] = {
+        "source_request_id": request_id,
+        "evidence_role": reference.evidence_role.value,
+        "transport_identity_keys": [list(item) for item in keys],
+        "status": "PASS",
+        "blocker": None,
+    }
+
+    if not keys:
+        result["status"] = "BLOCKED"
+        result["blocker"] = "RETAINED_REQUEST_TRANSPORT_IDENTITY_MISSING"
+        raise MemoryObservationActivationError(
+            "RETAINED_REQUEST_TRANSPORT_IDENTITY_MISSING",
+            f"request={request_id}",
+        )
+
+    if manifest_entry is None:
+        result["status"] = "BLOCKED"
+        result["blocker"] = "RETAINED_REQUEST_NOT_IN_MANIFEST"
+        raise MemoryObservationActivationError(
+            "RETAINED_REQUEST_NOT_IN_MANIFEST", str(request_id)
+        )
+
+    if not exact_binding:
+        # Flat-key compatibility: membership only, no source-name/kind fallback.
+        # An empty measured key set cannot accept any retained transport key.
+        if not flat_transport_keys:
+            result["status"] = "BLOCKED"
+            result["blocker"] = "RETAINED_TRANSPORT_IDENTITY_MISSING"
+            raise MemoryObservationActivationError(
+                "RETAINED_TRANSPORT_IDENTITY_MISSING",
+                f"request={request_id}",
+            )
+        for key in keys:
+            if tuple(key) not in flat_transport_keys:
+                result["status"] = "BLOCKED"
+                result["blocker"] = "RETAINED_TRANSPORT_IDENTITY_MISSING"
+                raise MemoryObservationActivationError(
+                    "RETAINED_TRANSPORT_IDENTITY_MISSING",
+                    f"request={request_id}",
+                )
+        if expected_ownership is not None:
+            campaign_id, run_id, cycle_id = expected_ownership
+            if (
+                reference.campaign_id != campaign_id
+                or reference.campaign_run_id != run_id
+                or reference.cycle_id != cycle_id
+            ):
+                result["status"] = "BLOCKED"
+                result["blocker"] = "RETAINED_OWNERSHIP_MISMATCH"
+                raise MemoryObservationActivationError(
+                    "RETAINED_OWNERSHIP_MISMATCH",
+                    f"request={request_id}",
+                )
+        result["logical_stage_id"] = ""
+        result["declared_transport_identity_count"] = len(keys)
+        return result
+
+    owned_keys = tuple(
+        tuple(item) for item in manifest_entry.transport_identity_keys
+    )
+    owned_set = {tuple(item) for item in owned_keys}
+    for key in keys:
+        if tuple(key) not in owned_set:
+            foreign_owners = [
+                rid
+                for rid, key_set in all_request_owned_keys.items()
+                if rid != request_id and tuple(key) in key_set
+            ]
+            if foreign_owners:
+                result["status"] = "BLOCKED"
+                result["blocker"] = "RETAINED_TRANSPORT_IDENTITY_FOREIGN_REQUEST"
+                raise MemoryObservationActivationError(
+                    "RETAINED_TRANSPORT_IDENTITY_FOREIGN_REQUEST",
+                    f"request={request_id}:foreign={foreign_owners[0]}",
+                )
+            result["status"] = "BLOCKED"
+            result["blocker"] = "RETAINED_TRANSPORT_IDENTITY_MISSING"
+            raise MemoryObservationActivationError(
+                "RETAINED_TRANSPORT_IDENTITY_MISSING",
+                f"request={request_id}",
+            )
+
+    declared_count = int(manifest_entry.transport_identity_count)
+    if declared_count != len(owned_keys):
+        result["status"] = "BLOCKED"
+        result["blocker"] = "RETAINED_TRANSPORT_IDENTITY_COUNT_MISMATCH"
+        raise MemoryObservationActivationError(
+            "RETAINED_TRANSPORT_IDENTITY_COUNT_MISMATCH",
+            f"request={request_id}:declared={declared_count}:keys={len(owned_keys)}",
+        )
+    if set(keys) != owned_set or len(keys) != declared_count:
+        result["status"] = "BLOCKED"
+        result["blocker"] = "RETAINED_TRANSPORT_IDENTITY_COUNT_MISMATCH"
+        raise MemoryObservationActivationError(
+            "RETAINED_TRANSPORT_IDENTITY_COUNT_MISMATCH",
+            f"request={request_id}:ref={len(keys)}:declared={declared_count}",
+        )
+
+    if manifest_entry.source_name and manifest_entry.source_name != reference.source_name:
+        result["status"] = "BLOCKED"
+        result["blocker"] = "RETAINED_REQUEST_CONTRACT_MISMATCH"
+        raise MemoryObservationActivationError(
+            "RETAINED_REQUEST_CONTRACT_MISMATCH",
+            f"source_name request={request_id}",
+        )
+    if (
+        manifest_entry.request_kind
+        and manifest_entry.request_kind != reference.request_kind
+    ):
+        result["status"] = "BLOCKED"
+        result["blocker"] = "RETAINED_REQUEST_CONTRACT_MISMATCH"
+        raise MemoryObservationActivationError(
+            "RETAINED_REQUEST_CONTRACT_MISMATCH",
+            f"request_kind request={request_id}",
+        )
+
+    stage = str(manifest_entry.logical_stage_id or "").strip()
+    if not stage:
+        result["status"] = "BLOCKED"
+        result["blocker"] = "RETAINED_LOGICAL_STAGE_MISSING"
+        raise MemoryObservationActivationError(
+            "RETAINED_LOGICAL_STAGE_MISSING", str(request_id)
+        )
+
+    if expected_ownership is not None:
+        campaign_id, run_id, cycle_id = expected_ownership
+        # Stage ownership must match the current activation command, not values
+        # copied only from the reference payload.
+        expected_prefix = f"{campaign_id}|{run_id}|{cycle_id}|"
+        if not stage.startswith(expected_prefix):
+            result["status"] = "BLOCKED"
+            result["blocker"] = "RETAINED_LOGICAL_STAGE_OWNERSHIP_MISMATCH"
+            raise MemoryObservationActivationError(
+                "RETAINED_LOGICAL_STAGE_OWNERSHIP_MISMATCH",
+                f"request={request_id}:stage={stage}",
+            )
+        if (
+            reference.campaign_id != campaign_id
+            or reference.campaign_run_id != run_id
+            or reference.cycle_id != cycle_id
+        ):
+            result["status"] = "BLOCKED"
+            result["blocker"] = "RETAINED_OWNERSHIP_MISMATCH"
+            raise MemoryObservationActivationError(
+                "RETAINED_OWNERSHIP_MISMATCH",
+                f"request={request_id}",
+            )
+
+    if manifest_entry.terminal_status == "COMPLETED" and declared_count == 0:
+        result["status"] = "BLOCKED"
+        result["blocker"] = "RETAINED_REQUEST_TRANSPORT_IDENTITY_MISSING"
+        raise MemoryObservationActivationError(
+            "RETAINED_REQUEST_TRANSPORT_IDENTITY_MISSING",
+            f"request={request_id}",
+        )
+
+    result["logical_stage_id"] = stage
+    result["declared_transport_identity_count"] = declared_count
+    return result
+
+
 def validate_memory_activation_set(
     connection: sqlite3.Connection,
     activation: FrozenMemoryActivationSet,
     *,
     now: str,
+    expected_ownership: tuple[str, str, str] | None = None,
+    source_ids_before: Mapping[str, set[int] | Sequence[int]] | None = None,
+    source_ids_after: Mapping[str, set[int] | Sequence[int]] | None = None,
 ) -> dict[str, Any]:
     """Validate one exact frozen pair and its original governed evidence rows.
 
@@ -199,15 +580,62 @@ def validate_memory_activation_set(
     ):
         raise MemoryObservationActivationError("ACTIVATION_MANIFEST_DUPLICATE_REQUEST")
 
-    manifest_ids = set(int(item) for item in activation.manifest_request_ids)
+    manifest_by_id, exact_binding = _manifest_entries_for_activation(activation)
+    manifest_ids = set(manifest_by_id)
+    if set(int(item) for item in activation.manifest_request_ids) != manifest_ids:
+        # Flat id list must agree with typed entries when both are supplied.
+        if exact_binding:
+            raise MemoryObservationActivationError(
+                "ACTIVATION_MANIFEST_ID_SET_MISMATCH"
+            )
+
+    # Build exact ownership index: each transport key may belong to one request.
+    all_request_owned_keys: dict[int, set[tuple[object, ...]]] = {}
+    key_owners: dict[tuple[object, ...], int] = {}
+    if exact_binding:
+        for rid, entry in manifest_by_id.items():
+            owned = {tuple(item) for item in entry.transport_identity_keys}
+            all_request_owned_keys[rid] = owned
+            for key in owned:
+                prior = key_owners.get(key)
+                if prior is not None and prior != rid:
+                    raise MemoryObservationActivationError(
+                        "RETAINED_TRANSPORT_IDENTITY_SHARED_ACROSS_REQUESTS",
+                        f"key_owner={prior}:other={rid}",
+                    )
+                key_owners[key] = rid
+
     transport_keys = {
         tuple(item) for item in activation.manifest_transport_identity_keys
     }
+    if exact_binding:
+        # When exact entries exist, the flat set must equal the union of owned keys.
+        owned_union: set[tuple[object, ...]] = set()
+        for owned in all_request_owned_keys.values():
+            owned_union |= owned
+        if transport_keys and transport_keys != owned_union:
+            raise MemoryObservationActivationError(
+                "ACTIVATION_MANIFEST_TRANSPORT_SET_MISMATCH"
+            )
+        transport_keys = owned_union
+
     seen_mints: set[str] = set()
     seen_pools: set[str] = set()
     reference_request_ids: list[int] = []
     reference_response_ids: list[int] = []
-    campaign_scope: tuple[str, str, str] | None = None
+    binding_results: list[dict[str, Any]] = []
+    role_request_ids: dict[str, list[int]] = {
+        role.value: [] for role in REQUIRED_EVIDENCE_ROLES
+    }
+
+    ownership_scope = expected_ownership
+    if ownership_scope is None and activation.selected:
+        first_ref = activation.selected[0].retained_evidence_references[0]
+        ownership_scope = (
+            first_ref.campaign_id,
+            first_ref.campaign_run_id,
+            first_ref.cycle_id,
+        )
 
     for candidate in activation.selected:
         mint = _require_identity(candidate.mint, code="ACTIVATION_MINT_MISSING")
@@ -246,6 +674,21 @@ def validate_memory_activation_set(
         if not candidate.retained_evidence_references:
             raise MemoryObservationActivationError("RETAINED_EVIDENCE_MISSING", mint)
 
+        roles_present = {
+            reference.evidence_role
+            for reference in candidate.retained_evidence_references
+        }
+        for required_role in REQUIRED_EVIDENCE_ROLES:
+            if required_role not in roles_present:
+                raise MemoryObservationActivationError(
+                    "RETAINED_EVIDENCE_ROLE_MISSING",
+                    f"{mint}:{required_role.value}",
+                )
+        if len(roles_present) != len(candidate.retained_evidence_references):
+            raise MemoryObservationActivationError(
+                "RETAINED_EVIDENCE_ROLE_DUPLICATE", mint
+            )
+
         for reference in candidate.retained_evidence_references:
             if reference.source_failure_id is not None:
                 raise MemoryObservationActivationError("RETAINED_SUCCESS_HAS_FAILURE")
@@ -258,16 +701,25 @@ def validate_memory_activation_set(
                 _require_identity(reference.campaign_run_id, code="RETAINED_RUN_ID_MISSING"),
                 _require_identity(reference.cycle_id, code="RETAINED_CYCLE_ID_MISSING"),
             )
-            if campaign_scope is None:
-                campaign_scope = scope
-            elif scope != campaign_scope:
+            if ownership_scope is not None and scope != ownership_scope:
                 raise MemoryObservationActivationError("RETAINED_OWNERSHIP_MISMATCH")
             request_id = int(reference.source_request_id)
             response_id = int(reference.source_response_id)
             if request_id not in manifest_ids:
                 raise MemoryObservationActivationError("RETAINED_REQUEST_NOT_IN_MANIFEST")
+
+            binding = _validate_request_transport_binding(
+                reference=reference,
+                manifest_entry=manifest_by_id.get(request_id),
+                all_request_owned_keys=all_request_owned_keys,
+                expected_ownership=ownership_scope,
+                flat_transport_keys=transport_keys,
+                exact_binding=exact_binding,
+            )
+            binding_results.append(binding)
+
             for key in reference.transport_identity_keys:
-                if tuple(key) not in transport_keys:
+                if transport_keys and tuple(key) not in transport_keys:
                     raise MemoryObservationActivationError(
                         "RETAINED_TRANSPORT_IDENTITY_MISSING"
                     )
@@ -329,18 +781,51 @@ def validate_memory_activation_set(
                 )
             reference_request_ids.append(request_id)
             reference_response_ids.append(response_id)
+            role_request_ids[reference.evidence_role.value].append(request_id)
 
-    return {
-        "manifest_request_ids": list(activation.manifest_request_ids),
-        "activation_reference_request_ids": reference_request_ids,
-        "activation_reference_response_ids": reference_response_ids,
-        "new_source_request_ids": [],
-        "new_source_response_ids": [],
-        "unmanifested_reference_ids": [],
-        "missing_transport_identity_keys": [],
-        "reconciliation_status": "PASS",
-        "evidence_reuse_kind": "RETAINED_GOVERNED_EVIDENCE_REFERENCE",
-    }
+    # Measured reconciliation: when pre/post snapshots are supplied, use them.
+    # Validation itself must not create rows; when snapshots are omitted, measure
+    # the live connection once so the report is never a hard-coded empty pass.
+    measured_before = (
+        dict(source_ids_before)
+        if source_ids_before is not None
+        else measure_source_row_ids(connection)
+    )
+    measured_after = (
+        dict(source_ids_after)
+        if source_ids_after is not None
+        else measure_source_row_ids(connection)
+    )
+    reconciliation = reconcile_activation_source_rows(
+        before=measured_before,
+        after=measured_after,
+        activation=activation,
+        request_to_transport_bindings=binding_results,
+    )
+    reconciliation.update(
+        {
+            "activation_reference_request_ids": reference_request_ids,
+            "activation_reference_response_ids": reference_response_ids,
+            "per_role_request_ids": role_request_ids,
+            "missing_transport_identity_keys": [],
+            "unmanifested_reference_ids": reconciliation.get(
+                "missing_or_unmanifested_ids", []
+            ),
+        }
+    )
+    return reconciliation
+
+
+def role_reference_for_candidate(
+    candidate: FrozenMemoryActivationCandidate,
+    role: EvidenceRole,
+) -> RetainedEvidenceReference:
+    for reference in candidate.retained_evidence_references:
+        if reference.evidence_role is role:
+            return reference
+    raise MemoryObservationActivationError(
+        "RETAINED_EVIDENCE_ROLE_MISSING", f"{candidate.mint}:{role.value}"
+    )
 
 
 __all__ = [
@@ -348,8 +833,16 @@ __all__ = [
     "EvidenceRole",
     "FrozenMemoryActivationCandidate",
     "FrozenMemoryActivationSet",
+    "MEMORY_OBSERVATION_SELECTION_REASON",
+    "ManifestRequestEntry",
     "MemoryObservationActivationError",
+    "REQUIRED_EVIDENCE_ROLES",
     "RetainedEvidenceReference",
     "TrackingFeasibility",
+    "measure_source_row_ids",
+    "reconcile_activation_source_rows",
+    "role_reference_for_candidate",
+    "transport_identity_key_from_mapping",
+    "transport_identity_keys_from_payload",
     "validate_memory_activation_set",
 ]

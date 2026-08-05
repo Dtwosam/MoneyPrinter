@@ -1173,10 +1173,12 @@ def run_dexscreener_batch_market_resolution(
 
         payload = result.normalized_payload or {}
         transport_identity_count = 0
+        transport_identity_keys: list[list[object]] = []
         measurement_failed = False
         if isinstance(payload, Mapping):
             try:
                 before = measured_ledger.source_transport_operations
+                before_len = len(list(getattr(measured_ledger, "transports", ()) or ()))
                 record_payload_transports(
                     measured_ledger,
                     payload,
@@ -1185,6 +1187,9 @@ def run_dexscreener_batch_market_resolution(
                 transport_identity_count = int(
                     measured_ledger.source_transport_operations - before
                 )
+                transport_identity_keys = _transport_identity_keys_from_ledger_delta(
+                    measured_ledger, before_count=before_len
+                )
             except Exception as exc:
                 # Declared transport identities only; never invent transports.
                 # Zero is lawful only when measurement succeeds with zero
@@ -1192,6 +1197,7 @@ def run_dexscreener_batch_market_resolution(
                 # BLOCKED coverage with transport 0 (not a fabricated COMPLETED).
                 measurement_failed = True
                 transport_identity_count = 0
+                transport_identity_keys = []
                 report["accounting_blocker"] = True
                 report["accounting_blocker_reason"] = (
                     f"TRANSPORT_IDENTITY_MEASUREMENT_FAILED:{exc}"
@@ -1210,6 +1216,7 @@ def run_dexscreener_batch_market_resolution(
                     else f"MINT_MARKET_BATCH|{batch_seq}"
                 ),
                 "transport_identity_count": transport_identity_count,
+                "transport_identity_keys": transport_identity_keys,
                 "normalized_member_count": len(pairs),
                 "terminal_status": (
                     "BLOCKED" if failed or measurement_failed else "COMPLETED"
@@ -2029,6 +2036,20 @@ def run_geckoterminal_fresh_nomination(
         if accounting_blocker
         else result.failure_type
     )
+    gecko_transport_keys: list[list[object]] = []
+    gecko_payload = (
+        execution.normalized_result.normalized_payload
+        if getattr(execution, "normalized_result", None) is not None
+        else None
+    )
+    if transport_identity_count and isinstance(gecko_payload, Mapping):
+        from printer_v1.discovery.memory_observation_activation import (
+            transport_identity_keys_from_payload,
+        )
+
+        gecko_transport_keys = [
+            list(key) for key in transport_identity_keys_from_payload(gecko_payload)
+        ]
     coverage_entry = {
         "source_request_id": request_id,
         "source_name": GECKOTERMINAL_SOURCE_NAME,
@@ -2039,6 +2060,7 @@ def run_geckoterminal_fresh_nomination(
             else f"FRESH_POOL_NOMINATION|1|{request_key}"
         ),
         "transport_identity_count": transport_identity_count,
+        "transport_identity_keys": gecko_transport_keys,
         "normalized_member_count": len(observations),
         "terminal_status": stage_terminal,
     }
@@ -2889,12 +2911,14 @@ def process_protocol_confirmation_queue(
                 else f"PROTOCOL_CONFIRMATION|{int(stage_sequence)}|{batch_count}"
             ),
             "transport_identity_count": 0,
+            "transport_identity_keys": [],
             "normalized_member_count": 0,
             "terminal_status": "COMPLETED",
         }
         if isinstance(payload, Mapping):
             try:
                 before = stage_ledger.source_transport_operations
+                before_len = len(list(getattr(stage_ledger, "transports", ()) or ()))
                 record_payload_transports(
                     stage_ledger, payload, default_stage="PROTOCOL_CONFIRMATION"
                 )
@@ -2904,12 +2928,18 @@ def process_protocol_confirmation_queue(
                 # or fails.
                 transport_operations += int(delta)
                 coverage_entry["transport_identity_count"] = int(delta)
+                coverage_entry["transport_identity_keys"] = (
+                    _transport_identity_keys_from_ledger_delta(
+                        stage_ledger, before_count=before_len
+                    )
+                )
             except MeasuredTransportError as exc:
                 accounting_blocker = True
                 accounting_blocker_reason = (
                     f"TRANSPORT_IDENTITY_MEASUREMENT_FAILED:{exc}"
                 )
                 coverage_entry["transport_identity_count"] = 0
+                coverage_entry["transport_identity_keys"] = []
                 coverage_entry["terminal_status"] = "BLOCKED"
                 coverage_entry["measurement_error"] = str(exc)
 
@@ -3093,6 +3123,44 @@ def process_protocol_confirmation_queue(
 
 
 
+def _transport_identity_keys_from_ledger_delta(
+    ledger: Any,
+    *,
+    before_count: int,
+) -> list[list[object]]:
+    """Serialize newly recorded ledger transport identities for one request."""
+    transports = list(getattr(ledger, "transports", ()) or ())
+    keys: list[list[object]] = []
+    for identity in transports[before_count:]:
+        if hasattr(identity, "as_dict"):
+            raw = identity.as_dict()
+        elif isinstance(identity, Mapping):
+            raw = dict(identity)
+        else:
+            continue
+        keys.append(
+            [
+                str(raw.get("stage") or ""),
+                str(raw.get("source_name") or ""),
+                str(raw.get("endpoint_owner") or ""),
+                str(raw.get("governed_request_kind") or ""),
+                str(raw.get("method_or_endpoint") or ""),
+                int(raw.get("within_request_ordinal") or 0),
+                str(raw.get("target_category") or ""),
+                None
+                if raw.get("target_identity") is None
+                else str(raw.get("target_identity")),
+                int(raw.get("response_bytes") or 0),
+                int(raw.get("normalized_rows") or 0),
+                str(raw.get("result") or "ATTEMPTED"),
+                None
+                if raw.get("reserved_from") is None
+                else str(raw.get("reserved_from")),
+            ]
+        )
+    return keys
+
+
 def build_source_request_coverage_manifest(
     entries: Sequence[Mapping[str, Any]],
     *,
@@ -3118,6 +3186,14 @@ def build_source_request_coverage_manifest(
             if fail_closed_on_duplicate:
                 continue
             continue
+        transport_keys_raw = raw.get("transport_identity_keys")
+        transport_keys: list[Any] = []
+        if isinstance(transport_keys_raw, (list, tuple)):
+            for item in transport_keys_raw:
+                if isinstance(item, Mapping):
+                    transport_keys.append(dict(item))
+                elif isinstance(item, (list, tuple)):
+                    transport_keys.append(list(item))
         seen[rid] = {
             "source_request_id": rid,
             "source_name": str(raw.get("source_name") or ""),
@@ -3126,6 +3202,7 @@ def build_source_request_coverage_manifest(
             "transport_identity_count": int(raw.get("transport_identity_count") or 0),
             "normalized_member_count": int(raw.get("normalized_member_count") or 0),
             "terminal_status": str(raw.get("terminal_status") or "COMPLETED"),
+            "transport_identity_keys": transport_keys,
         }
     if fail_closed_on_duplicate and duplicates:
         return {
@@ -3381,6 +3458,14 @@ def build_campaign_source_request_manifest(
             duplicates.append(rid)
             continue
         stage = str(raw.get("logical_stage_id") or "").strip()
+        transport_keys_raw = raw.get("transport_identity_keys")
+        transport_keys: list[Any] = []
+        if isinstance(transport_keys_raw, (list, tuple)):
+            for item in transport_keys_raw:
+                if isinstance(item, Mapping):
+                    transport_keys.append(dict(item))
+                elif isinstance(item, (list, tuple)):
+                    transport_keys.append(list(item))
         entry = {
             "source_request_id": rid,
             "source_name": str(raw.get("source_name") or ""),
@@ -3389,6 +3474,7 @@ def build_campaign_source_request_manifest(
             "terminal_status": str(raw.get("terminal_status") or "COMPLETED"),
             "transport_identity_count": int(raw.get("transport_identity_count") or 0),
             "normalized_member_count": int(raw.get("normalized_member_count") or 0),
+            "transport_identity_keys": transport_keys,
         }
         if not stage:
             missing_stage.append(rid)
@@ -3439,6 +3525,14 @@ def _normalize_stage_coverage_entry(raw: Mapping[str, Any]) -> dict[str, Any] | 
         return None
     if transport_count < 0 or member_count < 0:
         return None
+    transport_keys_raw = raw.get("transport_identity_keys")
+    transport_keys: list[Any] = []
+    if isinstance(transport_keys_raw, (list, tuple)):
+        for item in transport_keys_raw:
+            if isinstance(item, Mapping):
+                transport_keys.append(dict(item))
+            elif isinstance(item, (list, tuple)):
+                transport_keys.append(list(item))
     return {
         "source_request_id": int(raw["source_request_id"]),
         "source_name": source_name,
@@ -3447,6 +3541,7 @@ def _normalize_stage_coverage_entry(raw: Mapping[str, Any]) -> dict[str, Any] | 
         "terminal_status": terminal,
         "transport_identity_count": transport_count,
         "normalized_member_count": member_count,
+        "transport_identity_keys": transport_keys,
     }
 
 
@@ -4207,6 +4302,13 @@ def run_bounded_unknown_liquidity_backup(
             if isinstance(payload_norm, Mapping)
             else []
         )
+        backup_keys = _transport_identity_keys_from_ledger_delta(
+            stage_ledger,
+            before_count=max(
+                0, len(list(getattr(stage_ledger, "transports", ()) or ()))
+                - int(transport_identity_count)
+            ),
+        )
         coverage = {
             "source_request_id": rid,
             "source_name": source_name,
@@ -4217,6 +4319,7 @@ def run_bounded_unknown_liquidity_backup(
                 else f"UNKNOWN_LIQUIDITY_BACKUP|{attempted}"
             ),
             "transport_identity_count": transport_identity_count,
+            "transport_identity_keys": backup_keys,
             "normalized_member_count": len(pairs),
             "terminal_status": "COMPLETED",
         }

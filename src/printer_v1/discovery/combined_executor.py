@@ -72,8 +72,13 @@ from printer_v1.scheduler.contracts import JobKind, JobStatus, LockResult
 from printer_v1.scheduler.scheduler import cancel_job, claim_due_job, enqueue_job
 from printer_v1.sources.governor import can_request_source
 from printer_v1.discovery.memory_observation_activation import (
+    EvidenceRole,
     FrozenMemoryActivationSet,
+    MEMORY_OBSERVATION_SELECTION_REASON,
     MemoryObservationActivationError,
+    measure_source_row_ids,
+    reconcile_activation_source_rows,
+    role_reference_for_candidate,
     validate_memory_activation_set,
 )
 from printer_v1.sources.secondary_discovery import (
@@ -912,15 +917,24 @@ class CombinedPumpfunCampaignExecutor:
         provider_reports: list[dict[str, Any]] = []
 
         # 3-5. Provider work through Central Scheduler + Source Governor.
+        retained_source_ids_before: dict[str, set[int]] | None = None
+        retained_reconciliation: dict[str, Any] | None = None
         if fixtures.memory_activation_set is not None:
             try:
                 validate_memory_activation_set(
                     connection,
                     fixtures.memory_activation_set,
                     now=now,
+                    expected_ownership=(
+                        command.campaign_id,
+                        command.run_id,
+                        fixtures.cycle_id,
+                    ),
                 )
             except MemoryObservationActivationError as exc:
                 raise CombinedDiscoveryError(exc.code, exc.detail) from exc
+            # Capture exact source-row identity sets before retained projection.
+            retained_source_ids_before = measure_source_row_ids(connection)
             observations.extend(
                 self._run_retained_evidence_lane(
                     connection,
@@ -1203,6 +1217,31 @@ class CombinedPumpfunCampaignExecutor:
             connection, command, discovery_batch_id, provider_reports, usage, now
         )
 
+        if (
+            fixtures.memory_activation_set is not None
+            and retained_source_ids_before is not None
+        ):
+            retained_source_ids_after = measure_source_row_ids(connection)
+            retained_reconciliation = reconcile_activation_source_rows(
+                before=retained_source_ids_before,
+                after=retained_source_ids_after,
+                activation=fixtures.memory_activation_set,
+            )
+            if retained_reconciliation.get("reconciliation_status") != "PASS":
+                raise CombinedDiscoveryError(
+                    "RETAINED_ACTIVATION_SOURCE_ROW_RECONCILIATION_BLOCKED",
+                    str(
+                        retained_reconciliation.get("newly_created_source_request_ids")
+                        or retained_reconciliation.get(
+                            "newly_created_source_response_ids"
+                        )
+                        or retained_reconciliation.get(
+                            "newly_created_source_failure_ids"
+                        )
+                        or "measured non-zero source-row delta"
+                    ),
+                )
+
         canonical = (
             discovery_batch_id,
             tuple(sorted(m.mint for m in selected)),
@@ -1215,13 +1254,17 @@ class CombinedPumpfunCampaignExecutor:
             # Conflicting replay against a prior successful identical-owner run.
             raise CombinedDiscoveryError("CONFLICTING_REPLAY")
         self._last_canonical = canonical
-        return {
+        result_payload: dict[str, Any] = {
             "terminal_status": "COMPLETED",
             "first_terminal_cause": "DISCOVERY_CYCLE_COMPLETED",
             "cancellation_reason": None,
             "selected_mints": [m.mint for m in selected],
             "cycle_seed": cycle_seed,
         }
+        if retained_reconciliation is not None:
+            result_payload["retained_evidence_reconciliation"] = retained_reconciliation
+            result_payload["selection_reason"] = MEMORY_OBSERVATION_SELECTION_REASON
+        return result_payload
 
     def _create_work(
         self,
@@ -1703,6 +1746,24 @@ class CombinedPumpfunCampaignExecutor:
                     candidate.mint,
                     candidate.pool,
                 )
+                # Provenance authority is the candidate's true provenance —
+                # never derived from slot ordinal. Observation channel labels
+                # remain the lawful CHANNELS vocabulary; mapping is provenance
+                # based, not slot based.
+                true_provenance = str(candidate.provenance or "")
+                if true_provenance in {"LATEST_GRADUATED", "LATEST_PUMPFUN"}:
+                    channel = "LATEST_PUMPFUN"
+                elif true_provenance in {
+                    "PERSISTED_GRADUATED",
+                    "PERSISTED_ACTIVE",
+                }:
+                    channel = "ACTIVE_PUMPFUN"
+                elif true_provenance in {"TRENDING_PUMPFUN", "TOP_PUMPFUN"}:
+                    channel = true_provenance
+                else:
+                    # Unknown truthful provenance still must use a lawful
+                    # channel label without inventing slot-based latestness.
+                    channel = "TOP_PUMPFUN"
                 factual = {
                     "network": "solana",
                     "mint": candidate.mint,
@@ -1714,7 +1775,11 @@ class CombinedPumpfunCampaignExecutor:
                         "RETAINED_GOVERNED_EVIDENCE_REFERENCE"
                     ),
                     "slot_ordinal": candidate.slot_ordinal,
-                    "true_provenance": candidate.provenance,
+                    "true_provenance": true_provenance,
+                    "channel_authority": true_provenance,
+                    "readiness_id": activation.readiness_id,
+                    "selection_seed": activation.selection_seed,
+                    "selection_reason": MEMORY_OBSERVATION_SELECTION_REASON,
                     "legacy_role_field": "POSITIONAL_COMPATIBILITY_ONLY",
                 }
                 insert_provider_observation(
@@ -1727,11 +1792,7 @@ class CombinedPumpfunCampaignExecutor:
                     cycle_id=self.fixtures.cycle_id,
                     source_name=reference.source_name,
                     request_kind=reference.request_kind,
-                    channel=(
-                        "LATEST_PUMPFUN"
-                        if candidate.slot_ordinal == 1
-                        else "ACTIVE_PUMPFUN"
-                    ),
+                    channel=channel,
                     mint_identity=candidate.mint,
                     market_identity=candidate.market_identity,
                     lifecycle_identity=candidate.lifecycle_identity,
@@ -1748,11 +1809,7 @@ class CombinedPumpfunCampaignExecutor:
                         observation_id=observation_id,
                         provider=reference.source_name,
                         request_kind=reference.request_kind,
-                        channel=(
-                            "LATEST_PUMPFUN"
-                            if candidate.slot_ordinal == 1
-                            else "ACTIVE_PUMPFUN"
-                        ),
+                        channel=channel,
                         mint=candidate.mint,
                         pool=candidate.pool,
                         quote_mint="",
@@ -2496,6 +2553,12 @@ class CombinedPumpfunCampaignExecutor:
             for candidate in merged.values()
             if candidate.origin_state == "CONFIRMED"
         ]
+        memory_by_mint: dict[str, Any] = {}
+        if fixtures.memory_activation_set is not None:
+            memory_by_mint = {
+                item.mint: item for item in fixtures.memory_activation_set.selected
+            }
+
         for candidate in already_confirmed:
             # V2-9.7E.45: label the confirmed-origin evidence source by activation
             # route. A graduation-native candidate is origin-confirmed by its Pump
@@ -2505,6 +2568,34 @@ class CombinedPumpfunCampaignExecutor:
                 if candidate.origin_route == "GRADUATION_NATIVE"
                 else "direct_finalized_create"
             )
+            origin_request_id = None
+            origin_response_id = None
+            evidence_detail: dict[str, Any] = {"source": evidence_source}
+            frozen = memory_by_mint.get(candidate.mint)
+            if frozen is not None:
+                origin_ref = role_reference_for_candidate(
+                    frozen, EvidenceRole.ORIGIN_LINEAGE
+                )
+                origin_request_id = int(origin_ref.source_request_id)
+                origin_response_id = int(origin_ref.source_response_id)
+                evidence_detail.update(
+                    {
+                        "evidence_reuse_kind": "RETAINED_GOVERNED_EVIDENCE_REFERENCE",
+                        "retained_evidence_role": EvidenceRole.ORIGIN_LINEAGE.value,
+                        "retained_source_request_id": origin_request_id,
+                        "retained_source_response_id": origin_response_id,
+                        "retained_response_hash": origin_ref.raw_payload_hash,
+                        "retained_transport_identity_keys": [
+                            list(key) for key in origin_ref.transport_identity_keys
+                        ],
+                        "retained_source_name": origin_ref.source_name,
+                        "retained_request_kind": origin_ref.request_kind,
+                        "retained_observed_at": origin_ref.observed_at,
+                        "retained_campaign_id": origin_ref.campaign_id,
+                        "retained_run_id": origin_ref.campaign_run_id,
+                        "retained_cycle_id": origin_ref.cycle_id,
+                    }
+                )
             self._mark_persistence(
                 "DISCOVERY_ORIGIN_VERIFICATION", "origin_verification"
             )
@@ -2518,7 +2609,9 @@ class CombinedPumpfunCampaignExecutor:
                 mint_identity=candidate.mint,
                 admission_state="NOT_REQUIRED",
                 verification_state="CONFIRMED",
-                evidence_detail={"source": evidence_source},
+                source_request_id=origin_request_id,
+                source_response_id=origin_response_id,
+                evidence_detail=evidence_detail,
                 now=now,
             )
 
@@ -2683,6 +2776,34 @@ class CombinedPumpfunCampaignExecutor:
                 admission_state = "ADMITTED"
                 confirmation_state = "FAILED"
                 candidate.pumpswap_state = "FAILED"
+            pumpswap_request_id = None
+            pumpswap_response_id = None
+            pumpswap_detail: dict[str, Any] = {}
+            frozen = memory_by_mint.get(candidate.mint)
+            if frozen is not None:
+                pumpswap_ref = role_reference_for_candidate(
+                    frozen, EvidenceRole.PUMPSWAP_CONFIRMATION
+                )
+                pumpswap_request_id = int(pumpswap_ref.source_request_id)
+                pumpswap_response_id = int(pumpswap_ref.source_response_id)
+                pumpswap_detail = {
+                    "evidence_reuse_kind": "RETAINED_GOVERNED_EVIDENCE_REFERENCE",
+                    "retained_evidence_role": (
+                        EvidenceRole.PUMPSWAP_CONFIRMATION.value
+                    ),
+                    "retained_source_request_id": pumpswap_request_id,
+                    "retained_source_response_id": pumpswap_response_id,
+                    "retained_response_hash": pumpswap_ref.raw_payload_hash,
+                    "retained_transport_identity_keys": [
+                        list(key) for key in pumpswap_ref.transport_identity_keys
+                    ],
+                    "retained_source_name": pumpswap_ref.source_name,
+                    "retained_request_kind": pumpswap_ref.request_kind,
+                    "retained_observed_at": pumpswap_ref.observed_at,
+                    "retained_campaign_id": pumpswap_ref.campaign_id,
+                    "retained_run_id": pumpswap_ref.campaign_run_id,
+                    "retained_cycle_id": pumpswap_ref.cycle_id,
+                }
             self._mark_persistence(
                 "DISCOVERY_PUMPSWAP_CONFIRMATION", "pumpswap_confirmation"
             )
@@ -2697,8 +2818,11 @@ class CombinedPumpfunCampaignExecutor:
                 market_identity=candidate.market_identity,
                 admission_state=admission_state,
                 confirmation_state=confirmation_state,
+                source_request_id=pumpswap_request_id,
+                source_response_id=pumpswap_response_id,
                 pool_address=proof.pool_address,
                 program_id=proof.program_id,
+                evidence_detail=pumpswap_detail or None,
                 now=now,
             )
         self._terminalize_work(connection, ps_work, "SUCCEEDED", "PUMPSWAP_COMPLETE", now)
@@ -3211,6 +3335,10 @@ class CombinedPumpfunCampaignExecutor:
                     raise CombinedDiscoveryError("CONFLICTING_SLOT")
             slot_id = existing_slot["token_slot_id"]
 
+        if fixtures.memory_activation_set is not None:
+            selection_reason = MEMORY_OBSERVATION_SELECTION_REASON
+        else:
+            selection_reason = f"uniform:{cycle_seed[:12]}"
         item_cursor = connection.execute(
             """
             INSERT INTO printer_selection_batch_items(
@@ -3226,7 +3354,7 @@ class CombinedPumpfunCampaignExecutor:
                 pair_id,
                 mint,
                 pool,
-                f"uniform:{cycle_seed[:12]}",
+                selection_reason,
                 now,
                 now,
             ),

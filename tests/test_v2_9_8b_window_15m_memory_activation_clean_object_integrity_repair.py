@@ -63,14 +63,22 @@ POOL_1 = "Pool111111111111111111111111111111111111111"
 POOL_2 = "Pool222222222222222222222222222222222222222"
 
 
-def _transport_key(mint: str) -> tuple[object, ...]:
+def _transport_key(
+    mint: str,
+    *,
+    stage: str = "MARKET_OBSERVATION",
+    source_name: str = "dexscreener",
+    request_kind: str = "candidate_market_batch",
+    method: str = "POST /latest/dex/tokens",
+    ordinal: int = 1,
+) -> tuple[object, ...]:
     return (
-        "MARKET_OBSERVATION",
-        "dexscreener",
-        "dexscreener",
-        "candidate_market_batch",
-        "POST /latest/dex/tokens",
-        1,
+        stage,
+        source_name,
+        source_name,
+        request_kind,
+        method,
+        ordinal,
         "MINT",
         mint,
         128,
@@ -86,6 +94,8 @@ def _insert_source_pair(
     mint: str,
     pool: str,
     request_key: str,
+    source_name: str = "dexscreener",
+    request_kind: str = "candidate_market_batch",
 ) -> tuple[int, int, str]:
     payload = {"mint": mint, "pool": pool, "observed_at": NOW}
     payload_json = json.dumps(payload, sort_keys=True)
@@ -94,17 +104,17 @@ def _insert_source_pair(
         """INSERT INTO printer_source_requests(
                source_name,request_kind,requested_at,request_key,
                source_status,data_quality_label
-           ) VALUES ('dexscreener','candidate_market_batch',?,?,
+           ) VALUES (?,?,?,?,
                      'COMPLETE','CLEAN_DATA')""",
-        (NOW, request_key),
+        (source_name, request_kind, NOW, request_key),
     )
     response = connection.execute(
         """INSERT INTO printer_source_responses(
                source_request_id,source_name,received_at,status_code,
                source_status,data_quality_label,response_hash,
                normalized_payload_json
-           ) VALUES (?,'dexscreener',?,200,'COMPLETE','CLEAN_DATA',?,?)""",
-        (int(request.lastrowid), NOW, raw_hash, payload_json),
+           ) VALUES (?,?,?,200,'COMPLETE','CLEAN_DATA',?,?)""",
+        (int(request.lastrowid), source_name, NOW, raw_hash, payload_json),
     )
     return int(request.lastrowid), int(response.lastrowid), raw_hash
 
@@ -134,16 +144,33 @@ def _tracking(*, eligible: bool = True, reason: str = "TRACKING_HANDOFF_ELIGIBLE
 
 
 def _reference(
-    *, mint: str, pool: str, request_id: int, response_id: int, raw_hash: str
+    *,
+    mint: str,
+    pool: str,
+    request_id: int,
+    response_id: int,
+    raw_hash: str,
+    role: EvidenceRole = EvidenceRole.MARKET_OBSERVATION,
+    source_name: str = "dexscreener",
+    request_kind: str = "candidate_market_batch",
+    transport_key: tuple[object, ...] | None = None,
 ) -> RetainedEvidenceReference:
     return RetainedEvidenceReference(
-        evidence_role=EvidenceRole.MARKET_OBSERVATION,
-        source_name="dexscreener",
-        request_kind="candidate_market_batch",
+        evidence_role=role,
+        source_name=source_name,
+        request_kind=request_kind,
         source_request_id=request_id,
         source_response_id=response_id,
         source_failure_id=None,
-        transport_identity_keys=(_transport_key(mint),),
+        transport_identity_keys=(
+            (
+                transport_key
+                if transport_key is not None
+                else _transport_key(
+                    mint, source_name=source_name, request_kind=request_kind
+                )
+            ),
+        ),
         observed_at=NOW,
         raw_payload_hash=raw_hash,
         target_mint=mint,
@@ -154,12 +181,79 @@ def _reference(
     )
 
 
+def _three_role_references(
+    connection: sqlite3.Connection,
+    *,
+    mint: str,
+    pool: str,
+    key_prefix: str,
+) -> tuple[tuple[RetainedEvidenceReference, ...], list[int], list[tuple[object, ...]]]:
+    role_specs = (
+        (
+            EvidenceRole.ORIGIN_LINEAGE,
+            "solana_rpc",
+            "pumpfun_origin_transaction_reference",
+            "ORIGIN_LINEAGE",
+            "rpc origin",
+        ),
+        (
+            EvidenceRole.PUMPSWAP_CONFIRMATION,
+            "solana_rpc",
+            "pumpswap_pool_account_batch",
+            "PUMPSWAP_CONFIRMATION",
+            "getMultipleAccounts",
+        ),
+        (
+            EvidenceRole.MARKET_OBSERVATION,
+            "dexscreener",
+            "candidate_market_batch",
+            "MARKET_OBSERVATION",
+            "POST /latest/dex/tokens",
+        ),
+    )
+    refs: list[RetainedEvidenceReference] = []
+    request_ids: list[int] = []
+    keys: list[tuple[object, ...]] = []
+    for role, source_name, request_kind, stage, method in role_specs:
+        rid, sid, raw_hash = _insert_source_pair(
+            connection,
+            mint=mint,
+            pool=pool,
+            request_key=f"{key_prefix}:{role.value}",
+            source_name=source_name,
+            request_kind=request_kind,
+        )
+        key = _transport_key(
+            mint,
+            stage=stage,
+            source_name=source_name,
+            request_kind=request_kind,
+            method=method,
+        )
+        refs.append(
+            _reference(
+                mint=mint,
+                pool=pool,
+                request_id=rid,
+                response_id=sid,
+                raw_hash=raw_hash,
+                role=role,
+                source_name=source_name,
+                request_kind=request_kind,
+                transport_key=key,
+            )
+        )
+        request_ids.append(rid)
+        keys.append(key)
+    return tuple(refs), request_ids, keys
+
+
 def _candidate(
     *,
     ordinal: int,
     mint: str,
     pool: str,
-    reference: RetainedEvidenceReference,
+    references: tuple[RetainedEvidenceReference, ...],
     holder_condition: str = "HOLDER_CONCENTRATION_PASS",
     fully_eligible: bool = True,
     future_action: str = "ELIGIBLE",
@@ -181,34 +275,28 @@ def _candidate(
         evidence_expires_at=EXPIRES,
         liquidity_observed_at=NOW,
         tracking_feasibility=tracking or _tracking(),
-        retained_evidence_references=(reference,),
+        retained_evidence_references=references,
     )
 
 
 def _activation_set(connection: sqlite3.Connection) -> FrozenMemoryActivationSet:
-    r1, s1, h1 = _insert_source_pair(
-        connection, mint=MINT_1, pool=POOL_1, request_key="campaign-1:run-1:cycle-1:1"
+    refs1, ids1, keys1 = _three_role_references(
+        connection, mint=MINT_1, pool=POOL_1, key_prefix="campaign-1:run-1:cycle-1:1"
     )
-    r2, s2, h2 = _insert_source_pair(
-        connection, mint=MINT_2, pool=POOL_2, request_key="campaign-1:run-1:cycle-1:2"
-    )
-    ref1 = _reference(
-        mint=MINT_1, pool=POOL_1, request_id=r1, response_id=s1, raw_hash=h1
-    )
-    ref2 = _reference(
-        mint=MINT_2, pool=POOL_2, request_id=r2, response_id=s2, raw_hash=h2
+    refs2, ids2, keys2 = _three_role_references(
+        connection, mint=MINT_2, pool=POOL_2, key_prefix="campaign-1:run-1:cycle-1:2"
     )
     return FrozenMemoryActivationSet(
         activation_purpose=ActivationPurpose.MEMORY_OBSERVATION,
         readiness_id="ready-1",
         selection_seed="seed-1",
         selected=(
-            _candidate(ordinal=1, mint=MINT_1, pool=POOL_1, reference=ref1),
+            _candidate(ordinal=1, mint=MINT_1, pool=POOL_1, references=refs1),
             _candidate(
                 ordinal=2,
                 mint=MINT_2,
                 pool=POOL_2,
-                reference=ref2,
+                references=refs2,
                 holder_condition="HOLDER_SOURCE_UNAVAILABLE",
                 fully_eligible=False,
                 future_action="BLOCKED_OR_UNKNOWN",
@@ -217,21 +305,21 @@ def _activation_set(connection: sqlite3.Connection) -> FrozenMemoryActivationSet
         alternates=(
             replace(
                 _candidate(
-                    ordinal=3, mint=MINT_1, pool=POOL_1, reference=ref1
+                    ordinal=3, mint=MINT_1, pool=POOL_1, references=refs1
                 ),
                 mint="Mint333333333333333333333333333333333333333",
                 pool="Pool333333333333333333333333333333333333333",
             ),
             replace(
                 _candidate(
-                    ordinal=4, mint=MINT_2, pool=POOL_2, reference=ref2
+                    ordinal=4, mint=MINT_2, pool=POOL_2, references=refs2
                 ),
                 mint="Mint444444444444444444444444444444444444444",
                 pool="Pool444444444444444444444444444444444444444",
             ),
         ),
-        manifest_request_ids=(r1, r2),
-        manifest_transport_identity_keys=(_transport_key(MINT_1), _transport_key(MINT_2)),
+        manifest_request_ids=tuple(ids1 + ids2),
+        manifest_transport_identity_keys=tuple(keys1 + keys2),
         frozen_at=NOW,
         expires_at=EXPIRES,
     )
