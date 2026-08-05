@@ -167,6 +167,15 @@ class _Fixture:
                 "main_window": "WINDOW_15M",
                 "selective_1h_continuation": False,
             },
+            "authoritative_database": {
+                "path": "/tmp/testonly-printer-v1.sqlite3",
+                "sha256": "a" * 64,
+                "size": 1,
+                "inode": 1,
+                "mtime_ns": 1,
+                "migration_count": 52,
+                "migration_head": "052_memory_observation_eligibility_layers.sql",
+            },
         }
 
     def _build_manifest(self) -> dict:
@@ -614,6 +623,7 @@ class GitProvenanceAuthorizationManifestTests(unittest.TestCase):
             GitProvenanceAuthorizationError, "successor_allowed must be exactly false"
         ):
             self.fx.validate()
+
 
     def _rewrite_authorization_document(self, document: dict) -> None:
         relative = f"{self.fx.auth_root}/final_authorization.json"

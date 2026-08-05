@@ -49,6 +49,9 @@ from printer_v1.sources.governed_execution import build_fixture_source_adapter
 
 import test_v2_9_7e_8_origin_to_lifecycle_integration as e8
 import test_v2_9_7e_9_two_token_continuous_lifecycle as e9
+from tests.support.window_15m_authorization_fixtures import (
+    validated_window_15m_authorization,
+)
 import test_v2_9_7e_11_authoritative_live_operational_campaign as e11
 
 
@@ -171,6 +174,9 @@ class _ExactPublicCompositionOwner(AuthoritativeLiveOperationalCampaignOwner):
         kwargs["lifecycle_kwargs"] = lifecycle_kwargs
         kwargs["graduation_proofs"] = self._graduation_proofs
         kwargs["graduated_supply"] = None
+        # This historical composition fixture does not exercise the separately
+        # covered strict holder-stage accounting path.
+        kwargs["holder_stage_evidence_sealer"] = None
         # The public coordinator still supplies the migration port, but this
         # frozen direct-origin proof requires no migration-provider operation.
         kwargs["migration_transport"] = None
@@ -359,6 +365,7 @@ class ExactPublicTokenSlotIdCompositionProof(unittest.TestCase):
                 pump_transport=pump_transport,
                 secondary_transport=secondary_transport,
                 migration_transport=object(),
+                git_provenance_authorization=validated_window_15m_authorization(),
             )
 
         if bool(terminal.get("failure_evidence_required")) or str(

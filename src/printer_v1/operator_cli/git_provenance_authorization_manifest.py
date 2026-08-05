@@ -121,6 +121,7 @@ class PreparedGitProvenanceAuthorization:
     repository_branch: str
     repository_head: str
     file_count: int
+    authoritative_database: Mapping[str, Any]
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -148,6 +149,15 @@ class ValidatedGitProvenanceAuthorization:
     marker_sha256: str
     allowed_file_set_sha256: str
     file_count: int
+    authorization_consumed_once: bool
+    invocation_count: int
+    allowed_invocation_count: int
+    automatic_retry_allowed: bool
+    manual_rerun_allowed: bool
+    resume_allowed: bool
+    restart_allowed: bool
+    successor_allowed: bool
+    authoritative_database: Mapping[str, Any]
 
     def summary(self) -> dict[str, Any]:
         """Return the bounded manifest/marker summary for preflight evidence.
@@ -809,7 +819,7 @@ def _validate_authorization_document(
     authorization_id: str,
     branch: str,
     head: str,
-) -> str:
+) -> tuple[str, dict[str, Any]]:
     reference = manifest["authorization_file"]
     if not isinstance(reference, Mapping):
         raise GitProvenanceAuthorizationError("authorization_file must be an object")
@@ -892,6 +902,35 @@ def _validate_authorization_document(
         )
     for flag in _MARKER_FALSE_FLAGS:
         _require_false(command.get(flag), label=f"authorized {flag}")
+    from printer_v1.operator_cli.pre_authorization_migration_ledger_guard import (
+        PACKAGE_BINDING_FIELDS,
+        MigrationLedgerDriftGuardError,
+        package_binding_from_document,
+    )
+
+    try:
+        database = package_binding_from_document(document)
+    except MigrationLedgerDriftGuardError as exc:
+        raise GitProvenanceAuthorizationError(str(exc)) from exc
+    if set(database) != set(PACKAGE_BINDING_FIELDS):
+        raise GitProvenanceAuthorizationError(
+            "authoritative_database must contain the exact required fields"
+        )
+    database["path"] = _require_str(
+        database["path"], label="authoritative_database path"
+    )
+    database["sha256"] = _require_hex64(
+        database["sha256"], label="authoritative_database sha256"
+    )
+    for field in ("size", "inode", "mtime_ns", "migration_count"):
+        value = database[field]
+        if type(value) is not int or value < 0:
+            raise GitProvenanceAuthorizationError(
+                f"authoritative_database {field} must be a non-negative integer"
+            )
+    database["migration_head"] = _require_str(
+        database["migration_head"], label="authoritative_database migration_head"
+    )
     policy = document.get("campaign_policy")
     if not isinstance(policy, Mapping):
         raise GitProvenanceAuthorizationError("campaign_policy must be an object")
@@ -903,7 +942,7 @@ def _validate_authorization_document(
         policy.get("selective_1h_continuation"),
         label="campaign selective_1h_continuation",
     )
-    return actual_sha256
+    return actual_sha256, database
 
 
 def _validate_files(
@@ -969,7 +1008,7 @@ def _validate_marker(
     allowed_file_set_sha256: str,
     branch: str,
     head: str,
-) -> None:
+) -> dict[str, Any]:
     marker = _load_json_object(marker_path, label="application marker")
     _require_keys(marker, _MARKER_KEYS, label="application marker")
     if marker.get("schema_version") != APPLICATION_MARKER_SCHEMA_VERSION:
@@ -1021,6 +1060,7 @@ def _validate_marker(
         )
     for flag in _MARKER_FALSE_FLAGS:
         _require_false(marker.get(flag), label=f"application marker {flag}")
+    return marker
 
 
 
@@ -1088,7 +1128,7 @@ def validate_git_provenance_manifest_pre_marker(
             "manifest HEAD does not match live Git state"
         )
 
-    authorization_sha256 = _validate_authorization_document(
+    authorization_sha256, authoritative_database = _validate_authorization_document(
         manifest,
         root=root,
         authorization_id=authorization_id,
@@ -1146,6 +1186,7 @@ def validate_git_provenance_manifest_pre_marker(
         repository_branch=branch,
         repository_head=head,
         file_count=len(allowed_paths),
+        authoritative_database=authoritative_database,
     )
 
 
@@ -1175,7 +1216,7 @@ def validate_git_provenance_authorization(
     marker_file, actual_marker_sha256 = _resolve_external_file(
         marker_path, root=root, expected_sha256=marker_sha256, label="marker"
     )
-    _validate_marker(
+    marker = _validate_marker(
         marker_file,
         marker_sha256=actual_marker_sha256,
         authorization_id=prepared.authorization_id,
@@ -1193,6 +1234,15 @@ def validate_git_provenance_authorization(
         marker_sha256=actual_marker_sha256,
         allowed_file_set_sha256=prepared.allowed_file_set_sha256,
         file_count=prepared.file_count,
+        authorization_consumed_once=bool(marker.get("authorization_consumed_at")),
+        invocation_count=(1 if marker.get("authorization_consumed_at") else 0),
+        allowed_invocation_count=int(marker["allowed_invocation_count"]),
+        automatic_retry_allowed=bool(marker["automatic_retry_allowed"]),
+        manual_rerun_allowed=bool(marker["manual_rerun_allowed"]),
+        resume_allowed=bool(marker["resume_allowed"]),
+        restart_allowed=bool(marker["restart_allowed"]),
+        successor_allowed=bool(marker["successor_allowed"]),
+        authoritative_database=dict(prepared.authoritative_database),
     )
 
 __all__ = [

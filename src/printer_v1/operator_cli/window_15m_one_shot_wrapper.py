@@ -440,6 +440,8 @@ def _prepared_matches_validated(
         and prepared.manifest_sha256 == validated.manifest_sha256
         and prepared.allowed_file_set_sha256 == validated.allowed_file_set_sha256
         and prepared.file_count == validated.file_count
+        and dict(prepared.authoritative_database)
+        == dict(validated.authoritative_database)
     )
 
 

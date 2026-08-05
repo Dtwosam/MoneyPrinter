@@ -26,6 +26,9 @@ from printer_v1.sources.campaign_six_unit_accounting import (
     build_campaign_stage_id,
     seal_campaign_stage_evidence,
 )
+from tests.support.window_15m_authorization_fixtures import (
+    validated_window_15m_authorization,
+)
 
 from test_v2_9_8b_10_post_selection_lifecycle_integrity import (
     _command,
@@ -426,6 +429,9 @@ def test_public_coordinator_returns_no_stage_failure_and_never_builds_none_place
             pump_transport=object(),
             secondary_transport=object(),
             migration_transport=object(),
+            git_provenance_authorization=validated_window_15m_authorization(
+                database_sha256="a" * 64
+            ),
         )
     assert terminal["activation_terminal_status"] == "CANCELLED"
     assert terminal["first_terminal_cause"] == "PUBLIC_PRE_STAGE_CANCEL"

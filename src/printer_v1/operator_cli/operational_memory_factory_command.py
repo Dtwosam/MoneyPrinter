@@ -919,6 +919,7 @@ def _create_campaign_command(
     now: str,
     operator_approved: bool,
     policy: _OperationalCampaignPolicy = _NORMAL_CAMPAIGN_POLICY,
+    authorization_runtime_facts: Mapping[str, Any] | None = None,
 ) -> tuple[AbstractCampaignCommand, str]:
     campaign_id = f"{execution_id}-campaign"
     configuration_id = f"{execution_id}-configuration"
@@ -992,6 +993,36 @@ def _create_campaign_command(
             ),
         },
     }
+    if authorization_runtime_facts is not None:
+        from printer_v1.operator_cli.operational_database_target_binding import (
+            AUTHORIZED_DISPOSABLE_OPERATIONAL_PROOF,
+            PRODUCTION_AUTHORITATIVE,
+            build_durable_operational_database_target_expectation,
+        )
+        from printer_v1.operator_cli.proof_db_schema_readiness import (
+            CANONICAL_PERSISTENT_DB,
+        )
+
+        target_kind = (
+            PRODUCTION_AUTHORITATIVE
+            if Path(AUTHORITATIVE_DB).resolve()
+            == Path(CANONICAL_PERSISTENT_DB).resolve()
+            else AUTHORIZED_DISPOSABLE_OPERATIONAL_PROOF
+        )
+        configuration["cycle_id"] = cycle_id
+        configuration["operational_database_target_expectation"] = (
+            build_durable_operational_database_target_expectation(
+                target_kind=target_kind,
+                resolved_db_path=str(authorization_runtime_facts["authorized_db_path"]),
+                durable_db_target_identity=target_identity,
+                execution_id=execution_id,
+                campaign_id=campaign_id,
+                campaign_run_id=run_id,
+                cycle_id=cycle_id,
+                configuration_id=configuration_id,
+                **dict(authorization_runtime_facts),
+            )
+        )
     created = create_campaign(
         AUTHORITATIVE_DB,
         campaign_id=campaign_id,
@@ -2232,6 +2263,21 @@ def _run_operational_campaign(
             git_provenance_authorization=git_provenance_authorization
         )
     )
+    from printer_v1.operator_cli.operational_database_target_binding import (
+        validate_authorized_database_preflight,
+        validated_authorization_runtime_facts,
+    )
+    authorization_runtime_facts = (
+        None
+        if policy.selective_1h_continuation
+        else validated_authorization_runtime_facts(git_provenance_authorization)
+    )
+    if authorization_runtime_facts is not None:
+        validate_authorized_database_preflight(
+            authorization_runtime_facts,
+            actual_db_path=AUTHORITATIVE_DB,
+            preflight=preflight,
+        )
     execution_id = (
         datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         + "-"
@@ -2266,6 +2312,7 @@ def _run_operational_campaign(
     command, cycle_id = _create_campaign_command(
         execution_id=execution_id, paths=paths, preflight=preflight,
         backup=backup, now=now, operator_approved=operator_approved, policy=policy,
+        authorization_runtime_facts=authorization_runtime_facts,
     )
     from printer_v1.operator_cli.operational_database_target_binding import (
         AUTHORIZED_DISPOSABLE_OPERATIONAL_PROOF,
@@ -2275,38 +2322,36 @@ def _run_operational_campaign(
     from printer_v1.operator_cli.proof_db_schema_readiness import (
         CANONICAL_PERSISTENT_DB,
     )
-    authorization = dict(preflight.get("git_provenance_authorization") or {})
-    authorization_id = str(authorization.get("authorization_id") or execution_id)
-    authorization_marker_sha256 = str(
-        authorization.get("manifest_sha256")
-        or campaign_evidence_sha256({"authorization_id": authorization_id})
-    )
-    application_marker_sha256 = str(
-        authorization.get("marker_sha256") or authorization_marker_sha256
-    )
+    authorization = dict(authorization_runtime_facts or {})
     target_kind = (
         PRODUCTION_AUTHORITATIVE
         if Path(AUTHORITATIVE_DB).resolve() == Path(CANONICAL_PERSISTENT_DB).resolve()
         else AUTHORIZED_DISPOSABLE_OPERATIONAL_PROOF
     )
-    operational_database_target_binding = build_operational_database_target_binding(
+    operational_database_target_binding = None if not authorization else build_operational_database_target_binding(
         target_kind=target_kind,
         resolved_db_path=AUTHORITATIVE_DB,
-        authorized_pre_mutation_sha256=str(preflight["database_sha256"]),
-        migration_count=int(
-            preflight.get("migration_count", canonical_migration_count())
+        authorized_pre_mutation_sha256=str(
+            authorization["authorized_pre_mutation_sha256"]
         ),
-        migration_head=str(
-            preflight.get("latest_migration", canonical_migration_names()[-1])
-        ),
-        authorization_id=authorization_id,
-        authorization_marker_sha256=authorization_marker_sha256,
-        application_marker_sha256=application_marker_sha256,
+        migration_count=int(authorization["migration_count"]),
+        migration_head=str(authorization["migration_head"]),
+        authorization_id=str(authorization["authorization_id"]),
+        authorization_marker_sha256=str(authorization["manifest_sha256"]),
+        application_marker_sha256=str(authorization["application_marker_sha256"]),
         execution_id=execution_id,
         campaign_id=command.campaign_id,
         campaign_run_id=command.run_id,
         cycle_id=cycle_id,
         configuration_id=command.configuration_id,
+        authorization_consumed_once=authorization["authorization_consumed_once"],
+        invocation_count=int(authorization["invocation_count"]),
+        allowed_invocation_count=int(authorization["allowed_invocation_count"]),
+        automatic_retry_allowed=authorization["automatic_retry_allowed"],
+        manual_rerun_allowed=authorization["manual_rerun_allowed"],
+        resume_allowed=authorization["resume_allowed"],
+        restart_allowed=authorization["restart_allowed"],
+        successor_allowed=authorization["successor_allowed"],
     )
     heartbeat: _CampaignHeartbeat | None = None
     initialized_factory_run_id: str | None = str(uuid.uuid4())

@@ -3931,7 +3931,8 @@ def run_one_command_15m_factory(
             CANONICAL_PERSISTENT_DB,
         )
         from printer_v1.operator_cli.operational_database_target_binding import (
-            validate_operational_database_target_binding,
+            load_durable_operational_database_target_expectation,
+            validate_bound_operational_invocation,
         )
         from printer_v1.db.migrate import (
             canonical_migration_count,
@@ -3942,69 +3943,28 @@ def run_one_command_15m_factory(
             reasons.append(
                 "operational persistent mode requires the authoritative corpus"
             )
-        binding_expected = {
-            "authorized_pre_mutation_sha256": (
-                None
-                if operational_database_target_binding is None
-                else str(operational_database_target_binding.db_target_identity)
-                .removeprefix("sha256:")
-            ),
-            "durable_db_target_identity": (
-                None
-                if operational_database_target_binding is None
-                else operational_database_target_binding.db_target_identity
-            ),
-            "execution_id": (
-                None
-                if operational_database_target_binding is None
-                else operational_database_target_binding.execution_id
-            ),
-            "campaign_id": campaign_id,
-            "campaign_run_id": campaign_run_id,
-            "cycle_id": cycle_id,
-            "configuration_id": configuration_id,
-            "migration_count": canonical_migration_count(),
-            "migration_head": canonical_migration_names()[-1],
-            "authorization_consumed_once": True,
-            "invocation_count": 1,
-            "automatic_retry_allowed": False,
-            "manual_rerun_allowed": False,
-            "resume_allowed": False,
-            "restart_allowed": False,
-            "successor_allowed": False,
-        }
-        if (
-            operational_database_target_binding is not None
-            and operational_database_target_binding.target_kind
-            == "AUTHORIZED_DISPOSABLE_OPERATIONAL_PROOF"
-        ):
-            binding_expected["fixture_authorization"] = {
-                "resolved_db_path": operational_database_target_binding.resolved_db_path,
-                "authorized_pre_mutation_sha256": binding_expected[
-                    "authorized_pre_mutation_sha256"
-                ],
-                "authorization_id": operational_database_target_binding.authorization_id,
-                "authorization_marker_sha256": operational_database_target_binding.authorization_marker_sha256,
-                "application_marker_sha256": operational_database_target_binding.application_marker_sha256,
-                "execution_id": operational_database_target_binding.execution_id,
-                "campaign_id": operational_database_target_binding.campaign_id,
-                "campaign_run_id": operational_database_target_binding.campaign_run_id,
-                "cycle_id": operational_database_target_binding.cycle_id,
-                "configuration_id": operational_database_target_binding.configuration_id,
-                "migration_count": operational_database_target_binding.migration_count,
-                "migration_head": operational_database_target_binding.migration_head,
-                "allowed_invocation_count": 1,
-                "automatic_retry_allowed": False,
-                "manual_rerun_allowed": False,
-                "resume_allowed": False,
-                "restart_allowed": False,
-                "successor_allowed": False,
-            }
-        binding_reason = validate_operational_database_target_binding(
+        binding_expected = (
+            load_durable_operational_database_target_expectation(
+                path,
+                campaign_id=str(campaign_id or ""),
+                campaign_run_id=str(campaign_run_id or ""),
+                cycle_id=str(cycle_id or ""),
+                configuration_id=str(configuration_id or ""),
+            )
+            if all((campaign_id, campaign_run_id, cycle_id, configuration_id))
+            else None
+        )
+        binding_reason = validate_bound_operational_invocation(
             operational_database_target_binding,
             actual_db_path=path,
             canonical_authoritative_db_path=canonical,
-            expected=binding_expected,
+            migration_count=canonical_migration_count(),
+            migration_head=canonical_migration_names()[-1],
+            campaign_id=campaign_id,
+            campaign_run_id=campaign_run_id,
+            cycle_id=cycle_id,
+            configuration_id=configuration_id,
+            durable_expectation=binding_expected,
         )
         if binding_reason is not None:
             reasons.append(binding_reason)

@@ -34,6 +34,9 @@ from printer_v1.sources.campaign_six_unit_accounting import CampaignActionLocalL
 
 import test_v2_9_7e_8_origin_to_lifecycle_integration as e8
 import test_v2_9_7e_9_two_token_continuous_lifecycle as e9
+from tests.support.window_15m_authorization_fixtures import (
+    validated_window_15m_authorization,
+)
 import test_v2_9_7e_11_authoritative_live_operational_campaign as e11
 import test_v2_9_8b_token_slot_id_exact_public_composition as base
 
@@ -72,6 +75,9 @@ class _ExactPublic900Owner(base._ExactPublicCompositionOwner):
         kwargs["lifecycle_kwargs"] = lifecycle_kwargs
         kwargs["graduation_proofs"] = self._graduation_proofs
         kwargs["graduated_supply"] = None
+        # Holder-stage exact accounting is covered by its focused repair suite;
+        # this fixture remains scoped to logical-window composition.
+        kwargs["holder_stage_evidence_sealer"] = None
         kwargs["migration_transport"] = None
         return super(base._ExactPublicCompositionOwner, self).run_operational(**kwargs)
 
@@ -169,6 +175,7 @@ class ExactPublicComposition900LogicalSeconds(unittest.TestCase):
                 pump_transport=pump_transport,
                 secondary_transport=secondary_transport,
                 migration_transport=object(),
+                git_provenance_authorization=validated_window_15m_authorization(),
             )
 
         if bool(terminal.get("failure_evidence_required")) or str(

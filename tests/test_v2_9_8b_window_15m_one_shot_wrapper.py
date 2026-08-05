@@ -421,6 +421,15 @@ class WrapperImplementationTests(unittest.TestCase):
                 marker_sha256=valid.marker_sha256,
                 allowed_file_set_sha256=valid.allowed_file_set_sha256,
                 file_count=valid.file_count - 1,
+                authorization_consumed_once=valid.authorization_consumed_once,
+                invocation_count=valid.invocation_count,
+                allowed_invocation_count=valid.allowed_invocation_count,
+                automatic_retry_allowed=valid.automatic_retry_allowed,
+                manual_rerun_allowed=valid.manual_rerun_allowed,
+                resume_allowed=valid.resume_allowed,
+                restart_allowed=valid.restart_allowed,
+                successor_allowed=valid.successor_allowed,
+                authoritative_database=dict(valid.authoritative_database),
             )
 
         with self.assertRaises(wrapper.OneShotWrapperError):

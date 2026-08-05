@@ -1734,10 +1734,18 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 canonical_migration_names,
             )
             from printer_v1.operator_cli.operational_database_target_binding import (
+                load_durable_operational_database_target_expectation,
                 validate_bound_operational_invocation,
             )
             from printer_v1.operator_cli.proof_db_schema_readiness import (
                 CANONICAL_PERSISTENT_DB,
+            )
+            durable_expectation = load_durable_operational_database_target_expectation(
+                command.db_path,
+                campaign_id=command.campaign_id,
+                campaign_run_id=command.run_id,
+                cycle_id=cycle_id,
+                configuration_id=command.configuration_id,
             )
             binding_reason = validate_bound_operational_invocation(
                 operational_database_target_binding,
@@ -1751,6 +1759,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 cycle_id=cycle_id,
                 configuration_id=command.configuration_id,
                 durable_db_target_identity=command.db_target_identity,
+                durable_expectation=durable_expectation,
             )
             if binding_reason is not None:
                 raise LiveOperationalError(binding_reason, "database target binding")

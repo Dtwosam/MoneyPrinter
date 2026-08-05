@@ -47,6 +47,155 @@ class ContinuousProofEvidenceError(RuntimeError):
     pass
 
 
+class FailureSafeProofRetention:
+    """Single-owner seam for post-child proof artifact retention."""
+
+    def __init__(
+        self,
+        *,
+        retained_directory: str | Path,
+        initial_artifact_sources: Mapping[str, str | Path],
+    ) -> None:
+        self.retained_directory = Path(retained_directory)
+        self.artifact_sources = dict(initial_artifact_sources)
+        self.absence_reasons: dict[str, str] = {}
+        self._finalized: dict[str, Any] | None = None
+
+    def __enter__(self) -> "FailureSafeProofRetention":
+        self.retained_directory.mkdir(parents=True, exist_ok=False)
+        for name in (
+            "child-stdout.txt",
+            "child-stderr.txt",
+            "wrapper-terminal.json",
+        ):
+            self._copy_if_present(name)
+        return self
+
+    def parse_and_preserve_child_terminal(self) -> dict[str, Any]:
+        stdout_path = self.retained_directory / "child-stdout.txt"
+        if not stdout_path.is_file():
+            raise ContinuousProofEvidenceError("CHILD_STDOUT_ABSENT")
+        terminal = parse_final_child_terminal(
+            stdout_path.read_text(encoding="utf-8")
+        )
+        target = self.retained_directory / "child-terminal.json"
+        target.write_text(
+            json.dumps(
+                terminal_truth_projection(terminal),
+                indent=2,
+                sort_keys=True,
+                default=str,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        self.artifact_sources["child-terminal.json"] = target
+        return terminal
+
+    def record_absence(self, name: str, reason: str) -> None:
+        if name not in MANDATORY_RETAINED_ARTIFACTS:
+            raise ValueError(f"unsupported retained artifact: {name}")
+        self.absence_reasons[name] = str(reason)
+
+    def add_artifacts(self, sources: Mapping[str, str | Path]) -> None:
+        for name, source in sources.items():
+            if name not in MANDATORY_RETAINED_ARTIFACTS:
+                continue
+            self.artifact_sources[name] = source
+            self._copy_if_present(name)
+
+    def _copy_if_present(self, name: str) -> bool:
+        source_value = self.artifact_sources.get(name)
+        if source_value is None:
+            return False
+        source = Path(source_value)
+        if not source.is_file():
+            return False
+        target = self.retained_directory / name
+        if source.resolve() != target.resolve():
+            shutil.copyfile(source, target)
+        return True
+
+    def _finalize(self, first_failure: BaseException | str | None) -> dict[str, Any]:
+        hashes: dict[str, dict[str, Any]] = {}
+        missing: list[str] = []
+        absence_reasons: dict[str, str] = {}
+        for name in MANDATORY_RETAINED_ARTIFACTS:
+            self._copy_if_present(name)
+            target = self.retained_directory / name
+            if not target.is_file():
+                missing.append(name)
+                reason = self.absence_reasons.get(
+                    name, "MANDATORY_ARTIFACT_MISSING"
+                )
+                absence_reasons[name] = reason
+                hashes[name] = {"status": "ABSENT_MANDATORY", "reason": reason}
+                continue
+            payload = target.read_bytes()
+            digest = _sha256_bytes(payload)
+            hashes[name] = {
+                "status": "PRESENT",
+                "sha256": digest,
+                "size": len(payload),
+            }
+            reread = target.read_bytes()
+            if reread != payload or _sha256_bytes(reread) != digest:
+                raise ContinuousProofEvidenceError(
+                    f"RETAINED_ARTIFACT_REREAD_MISMATCH:{name}"
+                )
+        package = {
+            "status": "BLOCKED" if first_failure is not None or missing else "COMPLETE",
+            "first_failure": (
+                None if first_failure is None else str(first_failure)
+            ),
+            "absent_artifacts": sorted(missing),
+            "absence_reasons": absence_reasons,
+            "artifacts": hashes,
+            "retained_directory": str(self.retained_directory.resolve()),
+        }
+        hash_path = self.retained_directory / "artifact-hashes.json"
+        hash_path.write_text(
+            json.dumps(package, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        # The manifest itself is the final write; reread it before teardown.
+        json.loads(hash_path.read_text(encoding="utf-8"))
+        return package
+
+    def finalize(
+        self,
+        *,
+        first_failure: BaseException | str | None = None,
+        raise_on_missing: bool = True,
+    ) -> dict[str, Any]:
+        """Finalize exactly once; callers may use a test-framework cleanup owner."""
+        if self._finalized is not None:
+            return dict(self._finalized)
+        package = self._finalize(first_failure)
+        self._finalized = dict(package)
+        if raise_on_missing and first_failure is None and package["absent_artifacts"]:
+            raise ContinuousProofEvidenceError(
+                "MANDATORY_ARTIFACT_MISSING:"
+                + ",".join(package["absent_artifacts"])
+            )
+        return dict(package)
+
+    def __exit__(self, exc_type: Any, exc: BaseException | None, traceback: Any) -> bool:
+        try:
+            package = self.finalize(first_failure=exc, raise_on_missing=False)
+        except Exception as retention_exc:
+            if exc is not None:
+                exc.add_note(f"secondary retention failure: {retention_exc}")
+                return False
+            raise
+        if exc is None and package["absent_artifacts"]:
+            raise ContinuousProofEvidenceError(
+                "MANDATORY_ARTIFACT_MISSING:"
+                + ",".join(package["absent_artifacts"])
+            )
+        return False
+
+
 def _sha256_bytes(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 

@@ -22,6 +22,9 @@ from printer_v1.operator_cli import operational_memory_factory_command as public
 from printer_v1.operator_cli.campaign_supervision import acquire_campaign_supervision
 from printer_v1.operator_cli.final_campaign_report import LOCKED_CAPABILITY_TABLES
 from printer_v1.operator_cli.origin_lifecycle_campaign import ActivationResult
+from tests.support.window_15m_authorization_fixtures import (
+    validated_window_15m_authorization,
+)
 
 from test_v2_9_8b_10_post_selection_lifecycle_integrity import (
     _command,
@@ -227,6 +230,9 @@ def _run_coordinator(tmp_path: Path, owner, *, command=None, cycle_id=None):
             pump_transport=object(),
             secondary_transport=object(),
             migration_transport=object(),
+            git_provenance_authorization=validated_window_15m_authorization(
+                database_sha256="a" * 64
+            ),
         )
     return db, terminal, command
 

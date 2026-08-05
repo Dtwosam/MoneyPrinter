@@ -40,6 +40,9 @@ from printer_v1.sources.governed_execution import build_fixture_source_adapter
 
 import test_v2_9_7e_8_origin_to_lifecycle_integration as e8
 import test_v2_9_7e_9_two_token_continuous_lifecycle as e9
+from tests.support.window_15m_authorization_fixtures import (
+    validated_window_15m_authorization,
+)
 import test_v2_9_7e_11_authoritative_live_operational_campaign as e11
 from test_v2_9_8b_token_slot_id_exact_public_composition import (
     OFFLINE_EXACT_LIFECYCLE_ENTRY_OPERATIONAL_NATURAL,
@@ -525,6 +528,7 @@ class OfflineExactLifecycleEntryCompositionProof(unittest.TestCase):
                 pump_transport=pump_transport,
                 secondary_transport=secondary_transport,
                 migration_transport=object(),
+                git_provenance_authorization=validated_window_15m_authorization(),
             )
 
         # #11 Zero network.

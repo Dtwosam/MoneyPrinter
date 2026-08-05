@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
+import sqlite3
 from typing import Any, Mapping
+
+from printer_v1.db.migrate import (
+    canonical_migration_count,
+    canonical_migration_names,
+)
 
 
 PRODUCTION_AUTHORITATIVE = "PRODUCTION_AUTHORITATIVE"
@@ -14,6 +21,161 @@ AUTHORIZED_DISPOSABLE_OPERATIONAL_PROOF = (
 ALLOWED_OPERATIONAL_DATABASE_TARGET_KINDS = frozenset(
     {PRODUCTION_AUTHORITATIVE, AUTHORIZED_DISPOSABLE_OPERATIONAL_PROOF}
 )
+OPERATIONAL_DATABASE_TARGET_BINDING_VERSION = (
+    "OPERATIONAL_DATABASE_TARGET_BINDING_V1"
+)
+
+
+def build_durable_operational_database_target_expectation(**values: Any) -> dict[str, Any]:
+    """Build the configuration-owned facts used to validate a later binding."""
+    normalized = dict(values)
+    if "manifest_sha256" in normalized:
+        normalized["authorization_marker_sha256"] = normalized.pop(
+            "manifest_sha256"
+        )
+    if "resolved_db_path" in normalized:
+        normalized["resolved_db_path"] = str(
+            Path(normalized["resolved_db_path"]).resolve()
+        )
+    normalized["expectation_version"] = (
+        "OPERATIONAL_DATABASE_TARGET_EXPECTATION_V1"
+    )
+    return normalized
+
+
+def validated_authorization_runtime_facts(authorization: Any | None) -> dict[str, Any]:
+    """Project real validated manifest/marker facts or fail before binding."""
+    if authorization is None:
+        raise ValueError("VALIDATED_AUTHORIZATION_REQUIRED")
+    if not str(getattr(authorization, "authorization_id", "")):
+        raise ValueError("VALIDATED_AUTHORIZATION_ID_REQUIRED")
+    if not str(getattr(authorization, "manifest_sha256", "")):
+        raise ValueError("AUTHORIZATION_MANIFEST_REQUIRED")
+    if not str(getattr(authorization, "marker_sha256", "")):
+        raise ValueError("APPLICATION_MARKER_REQUIRED")
+    authorized_database = getattr(authorization, "authoritative_database", None)
+    if not isinstance(authorized_database, Mapping):
+        raise ValueError("AUTHORIZED_DATABASE_BINDING_REQUIRED")
+    required_database_fields = (
+        "path",
+        "sha256",
+        "migration_count",
+        "migration_head",
+    )
+    if any(
+        authorized_database.get(field) in (None, "")
+        for field in required_database_fields
+    ):
+        raise ValueError("AUTHORIZED_DATABASE_BINDING_REQUIRED")
+    if getattr(authorization, "authorization_consumed_once", None) is not True:
+        raise ValueError("AUTHORIZATION_CONSUMPTION_REQUIRED")
+    for field in ("invocation_count", "allowed_invocation_count"):
+        value = getattr(authorization, field, None)
+        if type(value) is not int:
+            raise ValueError("AUTHORIZATION_INVOCATION_FACT_REQUIRED")
+    reuse_flags = (
+        "automatic_retry_allowed",
+        "manual_rerun_allowed",
+        "resume_allowed",
+        "restart_allowed",
+        "successor_allowed",
+    )
+    if any(
+        type(getattr(authorization, field, None)) is not bool
+        for field in reuse_flags
+    ):
+        raise ValueError("AUTHORIZATION_REUSE_FACT_REQUIRED")
+    return {
+        "authorization_id": str(authorization.authorization_id),
+        "manifest_sha256": str(authorization.manifest_sha256),
+        "application_marker_sha256": str(authorization.marker_sha256),
+        "authorization_consumed_once": authorization.authorization_consumed_once,
+        "invocation_count": authorization.invocation_count,
+        "allowed_invocation_count": authorization.allowed_invocation_count,
+        "automatic_retry_allowed": getattr(
+            authorization, "automatic_retry_allowed", None
+        ),
+        "manual_rerun_allowed": getattr(
+            authorization, "manual_rerun_allowed", None
+        ),
+        "resume_allowed": getattr(authorization, "resume_allowed", None),
+        "restart_allowed": getattr(authorization, "restart_allowed", None),
+        "successor_allowed": getattr(authorization, "successor_allowed", None),
+        "authorized_db_path": str(
+            Path(str(authorized_database["path"])).resolve()
+        ),
+        "authorized_pre_mutation_sha256": str(authorized_database["sha256"]),
+        "migration_count": int(authorized_database["migration_count"]),
+        "migration_head": str(authorized_database["migration_head"]),
+    }
+
+
+def validate_authorized_database_preflight(
+    authorization_facts: Mapping[str, Any],
+    *,
+    actual_db_path: str | Path,
+    preflight: Mapping[str, Any],
+) -> None:
+    """Block before campaign construction unless preflight matches authorization."""
+    actual = Path(actual_db_path).resolve()
+    authorized = Path(str(authorization_facts["authorized_db_path"])).resolve()
+    if actual != authorized:
+        raise ValueError("AUTHORIZED_DATABASE_PATH_MISMATCH")
+    if str(preflight.get("database_sha256") or "") != str(
+        authorization_facts["authorized_pre_mutation_sha256"]
+    ):
+        raise ValueError("AUTHORIZED_DATABASE_SHA256_MISMATCH")
+    if int(preflight.get("migration_count", canonical_migration_count())) != int(
+        authorization_facts["migration_count"]
+    ):
+        raise ValueError("AUTHORIZED_DATABASE_MIGRATION_MISMATCH")
+    observed_migration_head = str(
+        preflight.get("latest_migration") or canonical_migration_names()[-1]
+    )
+    if observed_migration_head != str(authorization_facts["migration_head"]):
+        raise ValueError("AUTHORIZED_DATABASE_MIGRATION_MISMATCH")
+
+
+def load_durable_operational_database_target_expectation(
+    db_path: str | Path,
+    *,
+    campaign_id: str,
+    campaign_run_id: str,
+    cycle_id: str,
+    configuration_id: str,
+) -> Mapping[str, Any] | None:
+    """Load the configuration-owned expectation without consulting a binding."""
+    connection = sqlite3.connect(Path(db_path))
+    connection.row_factory = sqlite3.Row
+    try:
+        row = connection.execute(
+            """SELECT campaign_id, configuration_json
+                 FROM printer_memory_factory_campaign_configurations
+                WHERE configuration_id=? AND campaign_id=?""",
+            (configuration_id, campaign_id),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        connection.close()
+    if row is None:
+        return None
+    try:
+        configuration = json.loads(str(row["configuration_json"]))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    expectation = configuration.get("operational_database_target_expectation")
+    if not isinstance(expectation, Mapping):
+        return None
+    ownership = {
+        "campaign_id": campaign_id,
+        "campaign_run_id": campaign_run_id,
+        "cycle_id": cycle_id,
+        "configuration_id": configuration_id,
+    }
+    if any(str(expectation.get(field) or "") != value for field, value in ownership.items()):
+        return None
+    return dict(expectation)
 
 
 @dataclass(frozen=True)
@@ -33,6 +195,14 @@ class OperationalDatabaseTargetBinding:
     campaign_run_id: str
     cycle_id: str
     configuration_id: str
+    authorization_consumed_once: bool
+    invocation_count: int
+    allowed_invocation_count: int
+    automatic_retry_allowed: bool
+    manual_rerun_allowed: bool
+    resume_allowed: bool
+    restart_allowed: bool
+    successor_allowed: bool
 
 
 def build_operational_database_target_binding(
@@ -50,10 +220,18 @@ def build_operational_database_target_binding(
     campaign_run_id: str,
     cycle_id: str,
     configuration_id: str,
+    authorization_consumed_once: bool,
+    invocation_count: int,
+    allowed_invocation_count: int,
+    automatic_retry_allowed: bool,
+    manual_rerun_allowed: bool,
+    resume_allowed: bool,
+    restart_allowed: bool,
+    successor_allowed: bool,
 ) -> OperationalDatabaseTargetBinding:
     """Coordinator-only constructor for the immutable downstream capability."""
     return OperationalDatabaseTargetBinding(
-        binding_version="OPERATIONAL_DATABASE_TARGET_BINDING_V1",
+        binding_version=OPERATIONAL_DATABASE_TARGET_BINDING_VERSION,
         target_kind=target_kind,
         resolved_db_path=str(Path(resolved_db_path).resolve()),
         authorized_pre_mutation_sha256=str(authorized_pre_mutation_sha256),
@@ -68,6 +246,14 @@ def build_operational_database_target_binding(
         campaign_run_id=str(campaign_run_id),
         cycle_id=str(cycle_id),
         configuration_id=str(configuration_id),
+        authorization_consumed_once=authorization_consumed_once,
+        invocation_count=int(invocation_count),
+        allowed_invocation_count=int(allowed_invocation_count),
+        automatic_retry_allowed=automatic_retry_allowed,
+        manual_rerun_allowed=manual_rerun_allowed,
+        resume_allowed=resume_allowed,
+        restart_allowed=restart_allowed,
+        successor_allowed=successor_allowed,
     )
 
 
@@ -81,6 +267,8 @@ def validate_operational_database_target_binding(
     """Return the first categorical mismatch without reading mutable DB bytes."""
     if binding is None:
         return "OPERATIONAL_DB_BINDING_MISSING"
+    if binding.binding_version != OPERATIONAL_DATABASE_TARGET_BINDING_VERSION:
+        return "OPERATIONAL_DB_BINDING_VERSION_UNSUPPORTED"
     if binding.target_kind not in ALLOWED_OPERATIONAL_DATABASE_TARGET_KINDS:
         return "OPERATIONAL_DB_BINDING_KIND_INVALID"
     actual = Path(actual_db_path).resolve()
@@ -95,6 +283,15 @@ def validate_operational_database_target_binding(
         and bound == canonical
     ):
         return "OPERATIONAL_DB_BINDING_PRODUCTION_PATH_MISMATCH"
+    if (
+        expected.get("target_kind") is not None
+        and str(expected["target_kind"]) != binding.target_kind
+    ):
+        return "OPERATIONAL_DB_BINDING_AUTHORIZATION_MISMATCH"
+    if expected.get("resolved_db_path") is not None and Path(
+        str(expected["resolved_db_path"])
+    ).resolve() != bound:
+        return "OPERATIONAL_DB_BINDING_PATH_MISMATCH"
 
     expected_baseline = str(
         expected.get("authorized_pre_mutation_sha256") or ""
@@ -199,8 +396,24 @@ def validate_operational_database_target_binding(
         else expected
     )
     if (
-        expected.get("authorization_consumed_once") is not True
+        binding.authorization_consumed_once
+        is not expected.get("authorization_consumed_once")
+        or binding.invocation_count != int(expected.get("invocation_count", 0))
+        or (
+            expected.get("allowed_invocation_count") is not None
+            and binding.allowed_invocation_count
+            != int(expected["allowed_invocation_count"])
+        )
+        or any(
+            getattr(binding, flag) is not expected.get(flag)
+            for flag in retry_flags
+        )
+        or expected.get("authorization_consumed_once") is not True
         or int(expected.get("invocation_count", 0)) != 1
+        or (
+            expected.get("allowed_invocation_count") is not None
+            and int(expected["allowed_invocation_count"]) != 1
+        )
         or not isinstance(reuse_source, Mapping)
         or any(reuse_source.get(flag) is not False for flag in retry_flags)
         or (
@@ -217,20 +430,52 @@ def validate_bound_operational_invocation(
     *,
     actual_db_path: str | Path,
     canonical_authoritative_db_path: str | Path,
-    migration_count: int,
-    migration_head: str,
-    execution_id: str,
-    campaign_id: str,
-    campaign_run_id: str,
-    cycle_id: str,
-    configuration_id: str,
-    durable_db_target_identity: str,
+    migration_count: int | None = None,
+    migration_head: str | None = None,
+    execution_id: str | None = None,
+    campaign_id: str | None = None,
+    campaign_run_id: str | None = None,
+    cycle_id: str | None = None,
+    configuration_id: str | None = None,
+    durable_db_target_identity: str | None = None,
+    durable_expectation: Mapping[str, Any] | None = None,
 ) -> str | None:
-    """Validate the capability against independent invocation ownership."""
-    expected: dict[str, Any] = {
-        "authorized_pre_mutation_sha256": (
-            None if binding is None else binding.authorized_pre_mutation_sha256
-        ),
+    """Validate a capability only against separately loaded durable facts."""
+    if binding is None:
+        return "OPERATIONAL_DB_BINDING_MISSING"
+    if not isinstance(durable_expectation, Mapping):
+        return "OPERATIONAL_DB_BINDING_EXPECTATION_MISSING"
+    expected = dict(durable_expectation)
+    required = (
+        "expectation_version",
+        "authorized_pre_mutation_sha256",
+        "migration_count",
+        "migration_head",
+        "durable_db_target_identity",
+        "authorization_id",
+        "authorization_marker_sha256",
+        "application_marker_sha256",
+        "execution_id",
+        "campaign_id",
+        "campaign_run_id",
+        "cycle_id",
+        "configuration_id",
+        "authorization_consumed_once",
+        "invocation_count",
+        "allowed_invocation_count",
+        "automatic_retry_allowed",
+        "manual_rerun_allowed",
+        "resume_allowed",
+        "restart_allowed",
+        "successor_allowed",
+    )
+    if any(field not in expected for field in required):
+        return "OPERATIONAL_DB_BINDING_EXPECTATION_INCOMPLETE"
+    if expected["expectation_version"] != "OPERATIONAL_DATABASE_TARGET_EXPECTATION_V1":
+        return "OPERATIONAL_DB_BINDING_EXPECTATION_INCOMPLETE"
+    # Runtime ownership remains independent input and may only further restrict
+    # the durable configuration; it never supplies authorization facts.
+    runtime_ownership = {
         "migration_count": migration_count,
         "migration_head": migration_head,
         "durable_db_target_identity": durable_db_target_identity,
@@ -239,41 +484,14 @@ def validate_bound_operational_invocation(
         "campaign_run_id": campaign_run_id,
         "cycle_id": cycle_id,
         "configuration_id": configuration_id,
-        "authorization_consumed_once": True,
-        "invocation_count": 1,
-        "automatic_retry_allowed": False,
-        "manual_rerun_allowed": False,
-        "resume_allowed": False,
-        "restart_allowed": False,
-        "successor_allowed": False,
     }
-    if binding is not None:
-        expected.update({
-            "authorization_id": binding.authorization_id,
-            "authorization_marker_sha256": binding.authorization_marker_sha256,
-            "application_marker_sha256": binding.application_marker_sha256,
-        })
-        if binding.target_kind == AUTHORIZED_DISPOSABLE_OPERATIONAL_PROOF:
-            expected["fixture_authorization"] = {
-                "resolved_db_path": binding.resolved_db_path,
-                "authorized_pre_mutation_sha256": binding.authorized_pre_mutation_sha256,
-                "authorization_id": binding.authorization_id,
-                "authorization_marker_sha256": binding.authorization_marker_sha256,
-                "application_marker_sha256": binding.application_marker_sha256,
-                "execution_id": execution_id,
-                "campaign_id": campaign_id,
-                "campaign_run_id": campaign_run_id,
-                "cycle_id": cycle_id,
-                "configuration_id": configuration_id,
-                "migration_count": migration_count,
-                "migration_head": migration_head,
-                "allowed_invocation_count": 1,
-                "automatic_retry_allowed": False,
-                "manual_rerun_allowed": False,
-                "resume_allowed": False,
-                "restart_allowed": False,
-                "successor_allowed": False,
-            }
+    if any(
+        value is not None and str(expected.get(field)) != str(value)
+        for field, value in runtime_ownership.items()
+    ):
+        return "OPERATIONAL_DB_BINDING_OWNERSHIP_MISMATCH"
+    if binding is not None and binding.target_kind == AUTHORIZED_DISPOSABLE_OPERATIONAL_PROOF:
+        expected["fixture_authorization"] = dict(expected)
     return validate_operational_database_target_binding(
         binding,
         actual_db_path=actual_db_path,
@@ -286,8 +504,13 @@ __all__ = [
     "ALLOWED_OPERATIONAL_DATABASE_TARGET_KINDS",
     "AUTHORIZED_DISPOSABLE_OPERATIONAL_PROOF",
     "OperationalDatabaseTargetBinding",
+    "OPERATIONAL_DATABASE_TARGET_BINDING_VERSION",
     "PRODUCTION_AUTHORITATIVE",
     "build_operational_database_target_binding",
+    "build_durable_operational_database_target_expectation",
+    "load_durable_operational_database_target_expectation",
+    "validated_authorization_runtime_facts",
+    "validate_authorized_database_preflight",
     "validate_operational_database_target_binding",
     "validate_bound_operational_invocation",
 ]

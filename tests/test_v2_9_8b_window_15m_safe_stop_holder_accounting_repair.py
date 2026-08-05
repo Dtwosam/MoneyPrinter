@@ -55,6 +55,14 @@ def _binding(path: Path, *, target_kind: str = PRODUCTION_AUTHORITATIVE, **chang
         "campaign_run_id": "run-1",
         "cycle_id": "cycle-1",
         "configuration_id": "configuration-1",
+        "authorization_consumed_once": True,
+        "invocation_count": 1,
+        "allowed_invocation_count": 1,
+        "automatic_retry_allowed": False,
+        "manual_rerun_allowed": False,
+        "resume_allowed": False,
+        "restart_allowed": False,
+        "successor_allowed": False,
     }
     values.update(changes)
     return OperationalDatabaseTargetBinding(**values)
@@ -231,7 +239,9 @@ def test_post_mutation_sha_is_not_compared_to_authorized_baseline(
     ) is None
 
 
-def test_binding_reason_reaches_factory_terminal_envelope(tmp_path: Path) -> None:
+def test_direct_binding_without_durable_expectation_reaches_factory_terminal(
+    tmp_path: Path,
+) -> None:
     database = tmp_path / "fixture.sqlite3"
     backup = tmp_path / "fixture.backup.sqlite3"
     database.write_bytes(b"fixture")
@@ -249,7 +259,7 @@ def test_binding_reason_reaches_factory_terminal_envelope(tmp_path: Path) -> Non
         ),
         total_duration_seconds=901.0,
     )
-    assert "OPERATIONAL_DB_BINDING_BASELINE_SHA_MISMATCH" in result["blocked_reasons"]
+    assert "OPERATIONAL_DB_BINDING_EXPECTATION_MISSING" in result["blocked_reasons"]
 
 
 def test_goplus_transport_emits_one_exact_holder_identity() -> None:

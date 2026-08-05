@@ -35,11 +35,9 @@ from printer_v1.operator_cli.window_15m_concrete_composition import (
     production_runtime_constructor_identities,
 )
 from printer_v1.operator_cli.continuous_proof_evidence_retention import (
+    FailureSafeProofRetention,
     capture_public_command_main,
     extract_proof_diagnostics,
-    parse_final_child_terminal,
-    retain_required_artifacts,
-    terminal_truth_projection,
     write_proof_diagnostic_artifacts,
 )
 
@@ -441,24 +439,53 @@ class ContinuousWrapperToMemoryProof(unittest.TestCase):
                 process_launcher=real_child_launcher,
             )
 
+        # Start external retention immediately after the one child returns.  The
+        # unittest cleanup owner finalizes it before the disposable temp owner.
+        RETAINED_PROOF_ROOT.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        retained = RETAINED_PROOF_ROOT / f"{PROOF_EXECUTION_ID}_{stamp}"
+        retention = FailureSafeProofRetention(
+            retained_directory=retained,
+            initial_artifact_sources={
+                "child-stdout.txt": app / auth_id / "child-stdout.txt",
+                "child-stderr.txt": app / auth_id / "child-stderr.txt",
+                "wrapper-terminal.json": app / auth_id / "wrapper-terminal.json",
+            },
+        )
+        retention.__enter__()
+        ContinuousWrapperToMemoryProof.last_retained = retained  # type: ignore[attr-defined]
+
+        def _finalize_retention_after_test() -> None:
+            first_failure = None
+            outcome = getattr(self, "_outcome", None)
+            result_owner = getattr(outcome, "result", None)
+            for collection_name in ("failures", "errors"):
+                for failed_test, traceback_text in getattr(
+                    result_owner, collection_name, ()
+                ):
+                    if failed_test is self:
+                        first_failure = str(traceback_text).strip().splitlines()[-1]
+                        break
+                if first_failure is not None:
+                    break
+            package = retention.finalize(
+                first_failure=first_failure,
+                raise_on_missing=first_failure is None,
+            )
+            ContinuousWrapperToMemoryProof.last_hashes = package  # type: ignore[attr-defined]
+
+        self.addCleanup(_finalize_retention_after_test)
+
         # One child launch, no retry.
         self.assertEqual(1, len(child_invocations))
+        if int(result.get("child_exit_code") or 0) != 0:
+            raise AssertionError(
+                f"CHILD_NONZERO_RETURN:{result.get('child_exit_code')}"
+            )
         self.assertEqual(0, result.get("automatic_retries", 0) if isinstance(result.get("automatic_retries"), int) else 0)
         self.assertTrue((app / auth_id / "application-marker.json").is_file())
         child_stdout_path = app / auth_id / "child-stdout.txt"
-        child_terminal = parse_final_child_terminal(
-            child_stdout_path.read_text(encoding="utf-8")
-        )
-        (app / auth_id / "child-terminal.json").write_text(
-            json.dumps(
-                terminal_truth_projection(child_terminal),
-                indent=2,
-                sort_keys=True,
-                default=str,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
+        child_terminal = retention.parse_and_preserve_child_terminal()
 
         # Zero unhandled external network escapes (frozen known hosts are allowed).
         self.assertEqual([], network_hits)
@@ -534,10 +561,8 @@ class ContinuousWrapperToMemoryProof(unittest.TestCase):
                 )
         self.assertEqual(1, len(child_invocations))
 
-        # Retain proof artifacts outside temp.
-        RETAINED_PROOF_ROOT.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        retained = RETAINED_PROOF_ROOT / f"{PROOF_EXECUTION_ID}_{stamp}"
+        # Build later diagnostics in disposable staging; the retention owner has
+        # already preserved raw streams and wrapper terminal externally.
         retention_staging = root / "retention-staging"
         retention_staging.mkdir(parents=True, exist_ok=False)
 
@@ -638,12 +663,8 @@ class ContinuousWrapperToMemoryProof(unittest.TestCase):
             "proof-summary.json": summary_path,
             **diagnostic_paths,
         }
-        hashes = retain_required_artifacts(
-            artifact_sources, retained_directory=retained
-        )
-        hashes["retained_dir"] = str(retained)
-        # Stash paths on the test case for external readers.
-        ContinuousWrapperToMemoryProof.last_retained = retained  # type: ignore[attr-defined]
+        retention.add_artifacts(artifact_sources)
+        hashes = retention.finalize()
         ContinuousWrapperToMemoryProof.last_hashes = hashes  # type: ignore[attr-defined]
 
 

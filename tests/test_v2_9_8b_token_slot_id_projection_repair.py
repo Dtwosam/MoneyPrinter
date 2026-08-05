@@ -24,6 +24,9 @@ from printer_v1.operator_cli import operational_memory_factory_command as public
 from printer_v1.operator_cli.one_command_15m_factory import load_report_only
 from printer_v1.operator_cli.origin_lifecycle_campaign import _read_activated_slots
 from printer_v1.sources.campaign_six_unit_accounting import CampaignActionLocalLedger
+from tests.support.window_15m_authorization_fixtures import (
+    validated_window_15m_authorization,
+)
 
 import test_v2_9_7e_8_origin_to_lifecycle_integration as e8
 
@@ -142,6 +145,9 @@ class TokenSlotIdProjectionRepairTests(e8._IntegrationBase):
                     pump_transport=object(),
                     secondary_transport=object(),
                     migration_transport=object(),
+                    git_provenance_authorization=validated_window_15m_authorization(
+                        database_sha256="a" * 64
+                    ),
                 )
         terminalize_mock.assert_called_once()
         return observed
@@ -290,6 +296,9 @@ class TokenSlotIdProjectionRepairTests(e8._IntegrationBase):
                     pump_transport=object(),
                     secondary_transport=object(),
                     migration_transport=object(),
+                    git_provenance_authorization=validated_window_15m_authorization(
+                        database_sha256="a" * 64
+                    ),
                 )
         terminalize.assert_called_once()
         self.assertEqual([], observed)
