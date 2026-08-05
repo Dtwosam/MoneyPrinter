@@ -548,7 +548,11 @@ class TestAssembleAndCampaignPath:
             diag = life.get("graduated_supply_diagnostics") or {}
             recon = diag.get("campaign_source_request_reconciliation") or {}
             assert recon.get("status") == "OK"
-            assert life.get("pilot_input_readiness") is not None
+            # This legacy fixture has request coverage but intentionally no
+            # retained market response rows.  The activation contract must now
+            # block instead of manufacturing them.
+            assert life.get("pilot_input_readiness") is None
+            assert life["stop_reason"] == "RETAINED_EVIDENCE_REFERENCE_INCOMPLETE"
             assert life["lifecycle_started"] is False
         finally:
             base.tearDown()

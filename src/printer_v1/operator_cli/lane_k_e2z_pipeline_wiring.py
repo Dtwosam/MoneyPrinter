@@ -289,164 +289,6 @@ def _normalize_candidate_window_ids(
     return normalized
 
 
-def _attach_fingerprint_for_episode(
-    db_path: str | Path,
-    *,
-    episode_id: int,
-    window_id: int,
-) -> int | None:
-    """Wire the existing canonical fingerprint owner after E2Z creation.
-
-    Fetches exact episode/window/token/pair identity and proven outcome,
-    tracking lane, age, and discovery facts from durable rows. Does not invent
-    a new fingerprint schema or writer.
-    """
-    from printer_v1.memory.fingerprints import (
-        build_memory_fingerprint_payload,
-        record_memory_fingerprint,
-    )
-    import json
-
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    try:
-        existing = conn.execute(
-            """SELECT id FROM printer_memory_fingerprints
-               WHERE episode_id=? LIMIT 1""",
-            (episode_id,),
-        ).fetchone()
-        if existing is not None:
-            return int(existing["id"])
-        episode = conn.execute(
-            """SELECT id, memory_window_id, token_id, pair_id, episode_kind,
-                      memory_status, memory_quality_label, data_quality_label,
-                      do_not_train, window_kind, episode_outcome_label,
-                      supporting_context_json
-               FROM printer_episodes WHERE id=?""",
-            (episode_id,),
-        ).fetchone()
-        if episode is None:
-            return None
-        window = conn.execute(
-            """SELECT id, token_id, pair_id, window_kind, outcome_label,
-                      supporting_context_json, memory_quality_label
-               FROM printer_memory_windows WHERE id=?""",
-            (window_id,),
-        ).fetchone()
-
-        def _load_json(raw: object) -> dict:
-            if raw is None:
-                return {}
-            if isinstance(raw, dict):
-                return dict(raw)
-            text = str(raw).strip()
-            if not text:
-                return {}
-            try:
-                parsed = json.loads(text)
-            except Exception:
-                return {}
-            return dict(parsed) if isinstance(parsed, dict) else {}
-
-        window_supporting = _load_json(
-            window["supporting_context_json"] if window is not None else None
-        )
-        episode_supporting = _load_json(episode["supporting_context_json"])
-        # Prefer episode supporting context (canonical sections); fall back to
-        # window open-context for tracking_lane.
-        supporting: dict[str, Any] = {}
-        if episode_supporting:
-            supporting = dict(episode_supporting)
-        # Flatten nested sections for fingerprint labels when present.
-        if not supporting and window_supporting:
-            supporting = dict(window_supporting)
-
-        # Proven outcome: episode first, then window.
-        outcome_label = (
-            episode["episode_outcome_label"]
-            or (window["outcome_label"] if window is not None else None)
-        )
-        # Actual tracking lane from window supporting context or token status.
-        tracking_lane = window_supporting.get("tracking_lane")
-        if not tracking_lane and episode["token_id"] is not None:
-            token_row = conn.execute(
-                "SELECT token_status FROM printer_tokens WHERE id=?",
-                (int(episode["token_id"]),),
-            ).fetchone()
-            if token_row is not None:
-                status = str(token_row["token_status"] or "")
-                if status in {"TRACK_FAST", "TRACK_NORMAL"}:
-                    tracking_lane = status
-
-        # Age / discovery facts when durable columns or context keys exist.
-        token_age_bucket = (
-            supporting.get("token_age_bucket")
-            or window_supporting.get("token_age_bucket")
-        )
-        pair_age_bucket = (
-            supporting.get("pair_age_bucket")
-            or window_supporting.get("pair_age_bucket")
-        )
-        discovery_label = (
-            supporting.get("discovery_label")
-            or window_supporting.get("discovery_label")
-        )
-
-        token_id = episode["token_id"]
-        pair_id = episode["pair_id"]
-        if window is not None:
-            token_id = window["token_id"] if window["token_id"] is not None else token_id
-            pair_id = window["pair_id"] if window["pair_id"] is not None else pair_id
-
-        episode_payload = {
-            "episode_id": int(episode_id),
-            "window_id": int(window_id),
-            "token_id": int(token_id) if token_id is not None else None,
-            "pair_id": int(pair_id) if pair_id is not None else None,
-            "tracking_lane": tracking_lane,
-            "window": {
-                "id": int(window_id),
-                "token_id": int(token_id) if token_id is not None else None,
-                "pair_id": int(pair_id) if pair_id is not None else None,
-                "window_kind": (
-                    window["window_kind"]
-                    if window is not None
-                    else episode["window_kind"]
-                )
-                or "WINDOW_15M",
-                "supporting_context_json": window_supporting,
-                "tracking_lane": tracking_lane,
-            },
-            "outcome_label": outcome_label,
-            "memory_quality_label": episode["memory_quality_label"] or "CLEAN_MEMORY",
-            "supporting_context": supporting,
-            "token_age_bucket": token_age_bucket,
-            "pair_age_bucket": pair_age_bucket,
-            "discovery_label": discovery_label,
-        }
-        payload = build_memory_fingerprint_payload(
-            episode_payload, episode_id=int(episode_id)
-        )
-        fingerprint_id = record_memory_fingerprint(
-            conn,
-            int(episode_id),
-            payload,
-            episode["memory_quality_label"] or "CLEAN_MEMORY",
-        )
-        try:
-            from printer_v1.operator_cli.action_local_mutation_recorder import (
-                emit_insert,
-            )
-
-            emit_insert("printer_memory_fingerprints", int(fingerprint_id))
-        except Exception:
-            pass
-        conn.commit()
-        return int(fingerprint_id)
-    finally:
-        conn.close()
-
-
 def run_e2z_pipeline(
     db_path: str | Path | None,
     *,
@@ -595,21 +437,13 @@ def run_e2z_pipeline(
         )
         status = result.get("e2z_status")
         episode_id = result.get("episode_id")
-        fingerprint_id = None
+        fingerprint_id = result.get("fingerprint_id")
         if status == E2Z_STATUS_CREATED:
             created_count += 1
             promoted_window_ids.append(wid)
-            if episode_id is not None:
-                fingerprint_id = _attach_fingerprint_for_episode(
-                    db_path, episode_id=int(episode_id), window_id=int(wid)
-                )
         elif status == E2Z_STATUS_ALREADY_EXISTS:
             already_exists_count += 1
             already_existing_window_ids.append(wid)
-            if episode_id is not None:
-                fingerprint_id = _attach_fingerprint_for_episode(
-                    db_path, episode_id=int(episode_id), window_id=int(wid)
-                )
         else:
             e2z_blocked_count += 1
         if fingerprint_id is not None:
@@ -619,6 +453,9 @@ def run_e2z_pipeline(
             "e2z_status": status,
             "episode_id": episode_id,
             "fingerprint_id": fingerprint_id,
+            "atomic_status": result.get("atomic_status"),
+            "idempotent": bool(result.get("idempotent")),
+            "blocked_reasons": list(result.get("blocked_reasons") or ()),
             "blocked_by": (
                 "e2z_per_window_gate" if status == _E2Z_STATUS_BLOCKED else None
             ),
@@ -663,6 +500,13 @@ def run_e2z_pipeline(
         if not set_gate_passed
         else []
     )
+    clean_object_integrity_blockers = [
+        reason
+        for item in window_results
+        for reason in (item.get("blocked_reasons") or ())
+        if str(reason).startswith("clean_object_integrity:")
+    ]
+    blocked_reasons.extend(clean_object_integrity_blockers)
 
     unrelated_promotion_count = 0
     if explicit_scope is not None:
@@ -700,6 +544,9 @@ def run_e2z_pipeline(
         "e2z_created_count": created_count,
         "e2z_already_exists_count": already_exists_count,
         "e2z_blocked_count": e2z_blocked_count,
+        "clean_object_integrity_blocked": bool(
+            clean_object_integrity_blockers
+        ),
         "clean_memory_rows_created": created_count,
         "candidate_window_ids": (
             list(requested_window_ids)

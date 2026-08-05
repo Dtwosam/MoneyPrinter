@@ -2123,6 +2123,8 @@ def freeze_eligible_reserve(
     not_observation_eligible_count = 0
     duplicate_mint_count = 0
     duplicate_pool_count = 0
+    tracking_ineligible_count = 0
+    tracking_requalification_required_count = 0
     for raw in candidates:
         input_count += 1
         item = dict(raw)
@@ -2133,6 +2135,17 @@ def freeze_eligible_reserve(
         # never a compatibility admission fallback for the memory path.
         if item.get("memory_observation_eligible") is not True:
             not_observation_eligible_count += 1
+            continue
+        # Current exact tracking feasibility is a pre-freeze input.  Older
+        # callers that do not yet project this field retain their legacy path;
+        # the MEMORY_OBSERVATION owner always supplies it explicitly.
+        if "tracking_handoff_eligible" in item and not bool(
+            item.get("tracking_handoff_eligible")
+        ):
+            tracking_ineligible_count += 1
+            continue
+        if bool(item.get("tracking_requalification_required")):
+            tracking_requalification_required_count += 1
             continue
         if not mint or not pool:
             malformed_count += 1
@@ -2167,6 +2180,10 @@ def freeze_eligible_reserve(
         "stale_count": len(stale),
         "duplicate_mint_count": duplicate_mint_count,
         "duplicate_pool_count": duplicate_pool_count,
+        "tracking_ineligible_count": tracking_ineligible_count,
+        "tracking_requalification_required_count": (
+            tracking_requalification_required_count
+        ),
         "malformed_count": malformed_count,
         "not_observation_eligible_count": not_observation_eligible_count,
         "minimum_freeze_depth": MINIMUM_FREEZE_DEPTH,

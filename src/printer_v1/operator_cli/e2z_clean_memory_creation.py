@@ -256,83 +256,37 @@ def create_clean_memory_from_window(
         if gate_failures:
             return _blocked(gate_failures, db_path_str, window_id)
 
-        # Idempotency: check for existing CLEAN_MEMORY episode for this window.
-        existing = conn.execute(
-            """
-            SELECT id FROM printer_episodes
-            WHERE memory_window_id = ? AND memory_status = 'CLEAN_MEMORY'
-            LIMIT 1
-            """,
-            (window_id,),
-        ).fetchone()
-
-        if existing is not None:
-            return {
-                "e2z_status": E2Z_STATUS_ALREADY_EXISTS,
-                "episode_id": int(existing["id"]),
-                "window_id": window_id,
-                "db_path": db_path_str,
-                "operator_approved": True,
-                "created": False,
-                "retrieval_activated": False,
-                "paper_decisions_created": 0,
-                "buy_enabled": False,
-                "sell_enabled": False,
-                "hold_enabled": False,
-                "positions_created": 0,
-                "pnl_created": 0,
-                "hard_locks": dict(_HARD_LOCKS),
-            }
-
-        # Create the clean-memory episode row.
-        now = _utc_now()
-        ctx = _loads_json(win_row["supporting_context_json"])
-        episode_ctx = json.dumps({
-            "source_window_id": window_id,
-            "snapshot_id": ctx.get("snapshot_id") or ctx.get("token_snapshot_id"),
-            "e2q_audit_status": ctx.get("e2q_audit_status"),
-            "created_by": E2Z_CREATED_BY,
-        }, sort_keys=True)
-
-        cur = conn.execute(
-            """
-            INSERT INTO printer_episodes (
-                memory_window_id, token_id, pair_id,
-                episode_kind, episode_status,
-                memory_status, data_quality_label, do_not_train,
-                window_kind, memory_quality_label,
-                supporting_context_json, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                window_id,
-                win_row["token_id"],
-                win_row["pair_id"],
-                f"{win_row['window_kind']}_CLEAN_MEMORY",
-                E2Z_EPISODE_STATUS,
-                "CLEAN_MEMORY",
-                "CLEAN_DATA",
-                0,
-                win_row["window_kind"],
-                "CLEAN_MEMORY",
-                episode_ctx,
-                now,
-                now,
-            ),
+        from printer_v1.memory.clean_object_promotion import (
+            CleanObjectIntegrityError,
+            promote_clean_object,
         )
-        episode_id = int(cur.lastrowid)
-        conn.commit()
+
+        try:
+            promotion = promote_clean_object(conn, window_id=int(window_id))
+        except CleanObjectIntegrityError as exc:
+            return _blocked(
+                [f"clean_object_integrity:{exc.code}"],
+                db_path_str,
+                window_id,
+            )
+        episode_id = int(promotion.episode_id)
+        fingerprint_id = int(promotion.fingerprint_id)
+        created = promotion.created
+        e2z_status = E2Z_STATUS_CREATED if created else E2Z_STATUS_ALREADY_EXISTS
 
     finally:
         conn.close()
 
     return {
-        "e2z_status": E2Z_STATUS_CREATED,
+        "e2z_status": e2z_status,
         "episode_id": episode_id,
+        "fingerprint_id": fingerprint_id,
+        "atomic_status": promotion.status,
+        "idempotent": promotion.idempotent,
         "window_id": window_id,
         "db_path": db_path_str,
         "operator_approved": True,
-        "created": True,
+        "created": created,
         "retrieval_activated": False,
         "paper_decisions_created": 0,
         "buy_enabled": False,
@@ -352,6 +306,9 @@ def _blocked(
     return {
         "e2z_status": E2Z_STATUS_BLOCKED,
         "episode_id": None,
+        "fingerprint_id": None,
+        "atomic_status": "BLOCKED",
+        "idempotent": False,
         "window_id": window_id,
         "db_path": db_path_str,
         "operator_approved": False,

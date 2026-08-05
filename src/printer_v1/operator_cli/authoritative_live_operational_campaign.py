@@ -1058,6 +1058,225 @@ def _holder_observation_context(
     }
 
 
+def _build_frozen_memory_activation_set(
+    connection: sqlite3.Connection,
+    *,
+    frozen_reserve: Any,
+    readiness_id: str,
+    selection_seed: str,
+    campaign_id: str,
+    run_id: str,
+    cycle_id: str,
+    manifest: Sequence[Mapping[str, Any]],
+    measured_transport_identity_keys: Sequence[Sequence[object]],
+    frozen_at: str,
+    expires_at: str,
+) -> Any:
+    """Project the exact freeze authority into the typed activation contract."""
+    from printer_v1.discovery.memory_observation_activation import (
+        ActivationPurpose,
+        EvidenceRole,
+        FrozenMemoryActivationCandidate,
+        FrozenMemoryActivationSet,
+        MemoryObservationActivationError,
+        RetainedEvidenceReference,
+        TrackingFeasibility,
+    )
+
+    manifest_by_id = {
+        int(entry["source_request_id"]): dict(entry)
+        for entry in manifest
+        if entry.get("source_request_id") is not None
+    }
+    transport_keys = tuple(tuple(key) for key in measured_transport_identity_keys)
+
+    def candidate(raw: Mapping[str, Any], ordinal: int) -> Any:
+        item = dict(raw)
+        mint = str(item.get("mint") or "")
+        pool = str(item.get("pool") or "")
+        liquidity = dict(item.get("liquidity") or {})
+        request_id_raw = liquidity.get("source_request_id")
+        response_id_raw = liquidity.get("source_response_id")
+        if request_id_raw is None or response_id_raw is None:
+            raise MemoryObservationActivationError(
+                "RETAINED_EVIDENCE_REFERENCE_INCOMPLETE", mint
+            )
+        request_id = int(request_id_raw)
+        response_id = int(response_id_raw)
+        manifest_entry = manifest_by_id.get(request_id)
+        if manifest_entry is None:
+            raise MemoryObservationActivationError(
+                "RETAINED_REQUEST_NOT_IN_MANIFEST", str(request_id)
+            )
+        request = connection.execute(
+            """SELECT source_name,request_kind,requested_at
+               FROM printer_source_requests WHERE id=?""",
+            (request_id,),
+        ).fetchone()
+        response = connection.execute(
+            """SELECT response_hash FROM printer_source_responses
+               WHERE id=? AND source_request_id=?""",
+            (response_id, request_id),
+        ).fetchone()
+        if request is None or response is None:
+            raise MemoryObservationActivationError(
+                "RETAINED_EVIDENCE_ROW_MISSING", f"{request_id}:{response_id}"
+            )
+        retained_time = str(
+            item.get("liquidity_observed_at")
+            or liquidity.get("liquidity_observed_at")
+            or ""
+        )
+        if not retained_time:
+            reserve_rows = connection.execute(
+                """SELECT observed_at,evidence_json,source_provenance_json
+                   FROM printer_discovery_reserve_layers
+                   WHERE network='solana-mainnet' AND mint_identity=?
+                     AND pool_address=?
+                   ORDER BY observed_at DESC""",
+                (mint, pool),
+            ).fetchall()
+            for reserve_row in reserve_rows:
+                envelope = f"{reserve_row[1] or ''} {reserve_row[2] or ''}"
+                if str(request_id) in envelope and str(response_id) in envelope:
+                    retained_time = str(reserve_row[0] or "")
+                    break
+        if not retained_time:
+            raise MemoryObservationActivationError(
+                "RETAINED_OBSERVATION_TIME_MISSING", mint
+            )
+        source_name = str(request[0])
+        request_kind = str(request[1])
+        matching_keys = tuple(
+            key
+            for key in transport_keys
+            if len(key) >= 8
+            and str(key[1]) == source_name
+            and str(key[3]) == request_kind
+            and (
+                mint in str(key[7] or "")
+                or pool in str(key[7] or "")
+            )
+        )
+        expected_transports = int(
+            manifest_entry.get("transport_identity_count") or 0
+        )
+        if expected_transports and not matching_keys:
+            # A single manifest owner for this source/kind is still exact even
+            # when its batch target identity is opaque to individual members.
+            same_kind_manifest = [
+                entry
+                for entry in manifest_by_id.values()
+                if str(entry.get("source_name") or "") == source_name
+                and str(entry.get("request_kind") or "") == request_kind
+            ]
+            same_kind_keys = tuple(
+                key
+                for key in transport_keys
+                if len(key) >= 4
+                and str(key[1]) == source_name
+                and str(key[3]) == request_kind
+            )
+            if len(same_kind_manifest) == 1 and same_kind_keys:
+                matching_keys = same_kind_keys
+            else:
+                raise MemoryObservationActivationError(
+                    "RETAINED_TRANSPORT_IDENTITY_UNRESOLVED", mint
+                )
+        holder_condition = str(item.get("holder_condition") or "UNKNOWN")
+        return FrozenMemoryActivationCandidate(
+            slot_ordinal=ordinal,
+            mint=mint,
+            pool=pool,
+            market_identity=str(item.get("market_identity") or ""),
+            lifecycle_identity=GRADUATED_LIFECYCLE,
+            activation_route=str(item.get("activation_route") or "GRADUATION_NATIVE"),
+            provenance=str(item.get("provenance") or ""),
+            memory_observation_eligible=(
+                item.get("memory_observation_eligible") is True
+            ),
+            fully_eligible=bool(item.get("fully_eligible")),
+            holder_condition=holder_condition,
+            holder_evidence_status=str(
+                item.get("holder_evidence_status") or "UNKNOWN"
+            ),
+            future_action_eligibility=str(
+                item.get("future_action_eligibility") or "BLOCKED_OR_UNKNOWN"
+            ),
+            evidence_expires_at=str(item.get("evidence_expires_at") or ""),
+            liquidity_observed_at=str(
+                retained_time
+            ),
+            tracking_feasibility=TrackingFeasibility(
+                eligible=bool(item.get("tracking_handoff_eligible")),
+                reason_code=str(item.get("tracking_handoff_reason") or "UNKNOWN"),
+                tracking_queue_id=(
+                    None
+                    if item.get("tracking_queue_id") is None
+                    else int(item["tracking_queue_id"])
+                ),
+                tracking_queue_status=(
+                    None
+                    if item.get("tracking_queue_status") is None
+                    else str(item["tracking_queue_status"])
+                ),
+                requalification_required=bool(
+                    item.get("tracking_requalification_required")
+                ),
+                cooldown_until=(
+                    None
+                    if item.get("cooldown_until") is None
+                    else str(item["cooldown_until"])
+                ),
+                assessed_at=str(item.get("tracking_assessed_at") or frozen_at),
+            ),
+            retained_evidence_references=(
+                RetainedEvidenceReference(
+                    evidence_role=EvidenceRole.MARKET_OBSERVATION,
+                    source_name=source_name,
+                    request_kind=request_kind,
+                    source_request_id=request_id,
+                    source_response_id=response_id,
+                    source_failure_id=(
+                        None
+                        if liquidity.get("source_failure_id") is None
+                        else int(liquidity["source_failure_id"])
+                    ),
+                    transport_identity_keys=matching_keys,
+                    observed_at=str(
+                        retained_time
+                    ),
+                    raw_payload_hash=str(response[0]),
+                    target_mint=mint,
+                    target_pool=pool,
+                    campaign_id=campaign_id,
+                    campaign_run_id=run_id,
+                    cycle_id=cycle_id,
+                ),
+            ),
+        )
+
+    selected = tuple(
+        candidate(item, ordinal)
+        for ordinal, item in enumerate(frozen_reserve.selected, start=1)
+    )
+    alternates = tuple(
+        candidate(item, ordinal)
+        for ordinal, item in enumerate(frozen_reserve.alternates[:2], start=3)
+    )
+    return FrozenMemoryActivationSet(
+        activation_purpose=ActivationPurpose.MEMORY_OBSERVATION,
+        readiness_id=readiness_id,
+        selection_seed=selection_seed,
+        selected=selected,
+        alternates=alternates,
+        manifest_request_ids=tuple(manifest_by_id),
+        manifest_transport_identity_keys=transport_keys,
+        frozen_at=frozen_at,
+        expires_at=expires_at,
+    )
+
+
 @dataclass(frozen=True)
 class ReadinessResult:
     status: str
@@ -1296,6 +1515,8 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 assessed_at=evaluated,
             )
             handoff_detail = {
+                "tracking_handoff_eligible": handoff.eligible,
+                "tracking_handoff_reason": handoff.reason_code,
                 "tracking_handoff_category": handoff.category,
                 "tracking_queue_id": handoff.queue_id,
                 "tracking_queue_status": handoff.queue_status,
@@ -1306,6 +1527,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 "historical_cooldown_expiry_derived": (
                     handoff.historical_cooldown_expiry_derived
                 ),
+                "tracking_assessed_at": evaluated.isoformat(),
             }
             if not handoff.eligible:
                 holder_facts[proof.mint.lower()] = {
@@ -1373,6 +1595,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     "eligible": False,
                     "reason": f"HOLDER_MATURATION_{maturation['work_state']}",
                     "source_name": None,
+                    **handoff_detail,
                 }
                 if attempt_trace is not None:
                     attempt_trace["ledger_after_attempt"] = ledger.budget_detail()
@@ -1914,6 +2137,8 @@ class AuthoritativeLiveOperationalCampaignOwner:
 
         connection = connect_operational(command.db_path)
         frozen_eligible_reserve = None
+        memory_activation_set = None
+        memory_activation_contract_blocker = None
         try:
             # V2-9.7E.41 pending-discovery population: stage every confirmed
             # origin from this cycle into the durable prospective-origin registry
@@ -2234,6 +2459,11 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 # Memory observation is independent of holder pass/fail.
                 # Holder concentration and unavailable evidence remain context.
                 observation_rows = []
+                tracking_exclusions: list[dict[str, Any]] = []
+                from printer_v1.lifecycle.contracts import TokenLifecycleState
+                from printer_v1.lifecycle.tracking_queue import (
+                    assess_tracking_handoff_by_identity,
+                )
                 for proof in graduated_candidates:
                     mint_key = proof.mint.lower()
                     fact = holder_facts.get(mint_key, {})
@@ -2247,6 +2477,58 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         # by the same rule; this never fabricates freshness.
                         continue
                     holder_context = _holder_observation_context(fact)
+                    exact_pool = str(
+                        item.get("pool")
+                        or item.get("pumpswap_pool")
+                        or proof.bonding_curve
+                    )
+                    tracking_assessment = assess_tracking_handoff_by_identity(
+                        connection,
+                        token_mint=proof.mint,
+                        pair_address=exact_pool,
+                        tracking_lane=TokenLifecycleState.TRACK_NORMAL,
+                        assessed_at=evaluated,
+                    )
+                    tracking_eligible = bool(tracking_assessment.eligible)
+                    tracking_requalification_required = bool(
+                        tracking_assessment.requalification_eligible
+                    )
+                    if not tracking_eligible or tracking_requalification_required:
+                        tracking_reason = str(
+                            tracking_assessment.reason_code
+                            or "TRACKING_HANDOFF_INELIGIBLE"
+                        )
+                        exclusion = {
+                            "mint": proof.mint,
+                            "pool": exact_pool,
+                            "reason": tracking_reason,
+                            "tracking_handoff_eligible": tracking_eligible,
+                            "tracking_requalification_required": (
+                                tracking_requalification_required
+                            ),
+                        }
+                        tracking_exclusions.append(exclusion)
+                        upsert_reserve_layer(
+                            connection,
+                            network=NETWORK,
+                            mint=exclusion["mint"],
+                            pool=exclusion["pool"],
+                            layer=MEMORY_OBSERVATION_ELIGIBLE,
+                            reserve_state="EXCLUDED",
+                            reason=tracking_reason,
+                            observed_at=evaluated.isoformat(),
+                            next_lawful_action_at=(
+                                tracking_assessment.cooldown_until
+                            ),
+                            evidence_expires_at=str(expiry),
+                            source_provenance={"market": item.get("provenance")},
+                            evidence={
+                                "tracking_handoff": dict(fact),
+                                "memory_observation_eligible": False,
+                            },
+                            campaign_id=command.campaign_id,
+                        )
+                        continue
                     holder_actually_eligible = bool(
                         holder_context["fully_eligible"]
                     ) and not bool(holder_result.accounting_blocker)
@@ -2274,6 +2556,25 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         "holder_condition": holder_condition,
                         "holder_evidence_status": holder_evidence_status,
                         "future_action_eligibility": future_action,
+                        "liquidity_observed_at": str(
+                            item.get("liquidity_observed_at")
+                            or (item.get("liquidity") or {}).get(
+                                "liquidity_observed_at"
+                            )
+                            or ""
+                        ),
+                        "activation_route": str(proof.origin_route),
+                        "tracking_handoff_eligible": tracking_eligible,
+                        "tracking_handoff_reason": str(
+                            tracking_assessment.reason_code or "ELIGIBLE"
+                        ),
+                        "tracking_queue_id": tracking_assessment.queue_id,
+                        "tracking_queue_status": (
+                            tracking_assessment.queue_status
+                        ),
+                        "tracking_requalification_required": False,
+                        "cooldown_until": tracking_assessment.cooldown_until,
+                        "tracking_assessed_at": evaluated.isoformat(),
                     }
                     observation_rows.append(observation)
                     upsert_reserve_layer(
@@ -2325,6 +2626,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             },
                             campaign_id=command.campaign_id,
                         )
+                supply.diagnostics["memory_observation_tracking_exclusions"] = (
+                    tracking_exclusions
+                )
                 # Post-filter freeze depth is the sole admission authority.
                 # Never use raw observation_rows count for coverage decisions.
                 frozen_eligible_reserve = freeze_eligible_reserve(
@@ -2418,6 +2722,85 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 supply.diagnostics["holder_ledger_governed_requests"] = int(
                     ledger.governed_requests
                 )
+                if (
+                    recon.get("status") == "OK"
+                    and frozen_eligible_reserve is not None
+                    and len(frozen_eligible_reserve.selected) == 2
+                ):
+                    candidate_expiries = [
+                        datetime.fromisoformat(
+                            str(item["evidence_expires_at"]).replace(
+                                "Z", "+00:00"
+                            )
+                        )
+                        for item in frozen_eligible_reserve.selected
+                    ]
+                    activation_expiry = min(
+                        min(candidate_expiries),
+                        evaluated + timedelta(minutes=10),
+                    ).isoformat()
+                    try:
+                        memory_activation_set = _build_frozen_memory_activation_set(
+                            connection,
+                            frozen_reserve=frozen_eligible_reserve,
+                            readiness_id=(
+                                f"{command.run_id}:{cycle_id}:pilot-input"
+                            ),
+                            selection_seed=selection_seed,
+                            campaign_id=str(command.campaign_id),
+                            run_id=str(command.run_id),
+                            cycle_id=cycle_id,
+                            manifest=(
+                                recon.get("campaign_source_request_manifest")
+                                or recon.get("manifest")
+                                or ()
+                            ),
+                            measured_transport_identity_keys=(
+                                (
+                                    supply.diagnostics.get(
+                                        "pre_holder_budget_snapshot"
+                                    )
+                                    or {}
+                                ).get("measured_transport_identity_keys")
+                                or ()
+                            ),
+                            frozen_at=frozen_eligible_reserve.frozen_at,
+                            expires_at=activation_expiry,
+                        )
+                    except Exception as exc:
+                        from printer_v1.discovery.memory_observation_activation import (
+                            MemoryObservationActivationError,
+                        )
+
+                        if not isinstance(exc, MemoryObservationActivationError):
+                            raise
+                        memory_activation_contract_blocker = exc.code
+                        supply.diagnostics["memory_activation_contract"] = {
+                            "status": "BLOCKED",
+                            "first_blocker": exc.code,
+                            "detail": exc.detail,
+                        }
+                        memory_activation_set = None
+                    if memory_activation_set is not None:
+                        supply.diagnostics["memory_activation_contract"] = {
+                            "activation_purpose": "MEMORY_OBSERVATION",
+                            "readiness_id": memory_activation_set.readiness_id,
+                            "ordered_selected_candidates": [
+                                {
+                                    "slot_ordinal": item.slot_ordinal,
+                                    "mint": item.mint,
+                                    "pool": item.pool,
+                                }
+                                for item in memory_activation_set.selected
+                            ],
+                            "report_only_alternates": [
+                                {"mint": item.mint, "pool": item.pool}
+                                for item in memory_activation_set.alternates
+                            ],
+                            "evidence_reuse_kind": (
+                                "RETAINED_GOVERNED_EVIDENCE_REFERENCE"
+                            ),
+                        }
             connection.commit()
         finally:
             connection.close()
@@ -2445,9 +2828,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     for p in getattr(supply, "holder_reserve_supply", ())
                     if p.mint.lower() in admitted_by_mint
                 ]
-            for mint in sorted(admitted_by_mint):
-                if mint not in reserve_order:
-                    reserve_order.append(mint)
+                for mint in sorted(admitted_by_mint):
+                    if mint not in reserve_order:
+                        reserve_order.append(mint)
             chosen: list[Any] = []
             seen: set[str] = set()
             # Freeze-depth admission from post-filter freeze authority only.
@@ -2492,7 +2875,15 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 if len(chosen) == 2:
                     break
 
-            if len(chosen) == 2 and not depth_blocker and not recon_blocker:
+            if (
+                len(chosen) == 2
+                and not depth_blocker
+                and not recon_blocker
+                and (
+                    frozen_eligible_reserve is None
+                    or memory_activation_set is not None
+                )
+            ):
                 graduated_candidates = tuple(chosen)
                 selection_terminal = "PILOT_INPUT_READY"
                 from printer_v1.operator_cli.pilot_input_readiness import (
@@ -2505,6 +2896,18 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     item = dict(supply.holder_reserve_candidates[proof.mint.lower()])
                     liquidity = dict(item.get("liquidity") or {})
                     fact = dict(holder_facts.get(proof.mint.lower()) or {})
+                    activation_candidate = next(
+                        (
+                            value
+                            for value in (
+                                memory_activation_set.selected
+                                if memory_activation_set is not None
+                                else ()
+                            )
+                            if value.mint.lower() == proof.mint.lower()
+                        ),
+                        None,
+                    )
                     # Record actual holder eligibility; never force True for
                     # legacy gates. Memory path already admitted without it.
                     actual_holder = bool(fact.get("eligible"))
@@ -2519,7 +2922,13 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         market_identity=str(item["market_identity"]),
                         liquidity_usd=float(liquidity["liquidity_usd"]),
                         liquidity_observed_at=str(
-                            supply.front_door_report.get("generated_at") or evaluated_at
+                            (
+                                activation_candidate.liquidity_observed_at
+                                if activation_candidate is not None
+                                else item.get("liquidity_observed_at")
+                                or liquidity.get("liquidity_observed_at")
+                                or evaluated_at
+                            )
                         ),
                         activation_route=str(proof.origin_route),
                         holder_eligible=actual_holder,
@@ -2531,6 +2940,42 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         future_action_eligibility=str(
                             item.get("future_action_eligibility")
                             or "BLOCKED_OR_UNKNOWN"
+                        ),
+                        slot_ordinal=(
+                            None
+                            if activation_candidate is None
+                            else activation_candidate.slot_ordinal
+                        ),
+                        tracking_eligible=(
+                            None
+                            if activation_candidate is None
+                            else activation_candidate.tracking_feasibility.eligible
+                        ),
+                        tracking_reason=(
+                            None
+                            if activation_candidate is None
+                            else activation_candidate.tracking_feasibility.reason_code
+                        ),
+                        tracking_requalification_required=(
+                            False
+                            if activation_candidate is None
+                            else activation_candidate.tracking_feasibility.requalification_required
+                        ),
+                        retained_source_request_ids=(
+                            ()
+                            if activation_candidate is None
+                            else tuple(
+                                reference.source_request_id
+                                for reference in activation_candidate.retained_evidence_references
+                            )
+                        ),
+                        retained_source_response_ids=(
+                            ()
+                            if activation_candidate is None
+                            else tuple(
+                                reference.source_response_id
+                                for reference in activation_candidate.retained_evidence_references
+                            )
                         ),
                     )
 
@@ -2600,7 +3045,17 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 # depth coverage blocker, or source-request reconciliation
                 # mismatch. Classify the terminal honestly.
                 graduated_candidates = ()
-                if recon_blocker:
+                if memory_activation_contract_blocker:
+                    selection_terminal = memory_activation_contract_blocker
+                    eligible_alternates = [
+                        dict(item)
+                        for item in (
+                            frozen_eligible_reserve.alternates[:2]
+                            if frozen_eligible_reserve is not None
+                            else ()
+                        )
+                    ]
+                elif recon_blocker:
                     selection_terminal = (
                         "CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH"
                     )
@@ -2695,6 +3150,16 @@ class AuthoritativeLiveOperationalCampaignOwner:
             ),
             "campaign_scheduler_calls": 0,
             "selected_identities": [proof.mint for proof in graduated_candidates],
+            "ordered_selected_slots": [
+                {
+                    "slot_ordinal": ordinal,
+                    "mint": proof.mint,
+                    "pool": str(
+                        supply.holder_reserve_candidates[proof.mint.lower()]["pool"]
+                    ),
+                }
+                for ordinal, proof in enumerate(graduated_candidates, start=1)
+            ],
             "alternate_identities": [
                 str(item.get("mint") or "") for item in eligible_alternates
             ],
@@ -2789,6 +3254,15 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         "selected_identities": [
                             proof.mint for proof in graduated_candidates
                         ],
+                        "ordered_selected_slots": [
+                            {
+                                "slot_ordinal": ordinal,
+                                "mint": proof.mint,
+                            }
+                            for ordinal, proof in enumerate(
+                                graduated_candidates, start=1
+                            )
+                        ],
                         "alternate_identities": [
                             str(item.get("mint") or "")
                             for item in eligible_alternates
@@ -2803,6 +3277,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
             fixtures,
             direct_observations=graduated_candidates,
             holder_evidence_eligibility=holder_facts,
+            memory_activation_set=memory_activation_set,
         )
         result = self._driver.run(
             command=command,

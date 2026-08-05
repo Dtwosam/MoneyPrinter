@@ -485,16 +485,8 @@ class TestMemoryObservationReadiness:
             assert freeze.get("selected_count") == 2
             assert freeze.get("alternate_count") == 2
             bundle = life.get("pilot_input_readiness")
-            assert bundle is not None
-            assert bundle["readiness_state"] == "PILOT_INPUT_READY"
-            assert bundle["readiness_purpose"] == READINESS_PURPOSE_MEMORY_OBSERVATION
-            assert bundle["latest"]["holder_eligible"] is False
-            assert bundle["persisted"]["holder_eligible"] is False
-            assert bundle["latest"]["memory_observation_eligible"] is True
-            assert (
-                bundle["latest"]["future_action_eligibility"]
-                == "BLOCKED_OR_UNKNOWN"
-            )
+            assert bundle is None
+            assert life["stop_reason"] == "RETAINED_EVIDENCE_REFERENCE_INCOMPLETE"
             # No paper / memory unlock.
             conn = sqlite3.connect(base.db)
             try:
@@ -633,7 +625,11 @@ class TestCampaignSourceRequestReconciliationWiring:
             assert len(diag.get("campaign_source_request_manifest") or ()) == len(
                 durable
             )
-            assert result.lifecycle.get("pilot_input_readiness") is not None
+            assert result.lifecycle.get("pilot_input_readiness") is None
+            assert (
+                result.lifecycle.get("stop_reason")
+                == "RETAINED_EVIDENCE_REFERENCE_INCOMPLETE"
+            )
             admission = result.lifecycle.get("pre_lifecycle_admission") or {}
             assert admission.get("campaign_source_request_count") == len(durable)
             assert admission.get("holder_ledger_governed_requests") is not None
@@ -808,7 +804,11 @@ class TestPostFilterFreezeDepthCampaign:
             assert (diag.get("freeze_depth_enforcement") or {}).get(
                 "alternate_count"
             ) == 2
-            assert result.lifecycle.get("pilot_input_readiness") is not None
+            assert result.lifecycle.get("pilot_input_readiness") is None
+            assert (
+                result.lifecycle.get("stop_reason")
+                == "RETAINED_EVIDENCE_REFERENCE_INCOMPLETE"
+            )
         finally:
             base.tearDown()
 
@@ -1153,13 +1153,8 @@ class TestIntegratedComposition:
                 "alternate_count"
             ) == 2
             bundle = life.get("pilot_input_readiness")
-            assert bundle is not None
-            assert bundle["readiness_purpose"] == READINESS_PURPOSE_MEMORY_OBSERVATION
-            assert bundle["latest"]["holder_eligible"] is False
-            assert (
-                bundle["latest"]["future_action_eligibility"]
-                == "BLOCKED_OR_UNKNOWN"
-            )
+            assert bundle is None
+            assert life["stop_reason"] == "RETAINED_EVIDENCE_REFERENCE_INCOMPLETE"
             recon = diag.get("campaign_source_request_reconciliation") or {}
             assert recon.get("status") == "OK"
             assert life["lifecycle_started"] is False

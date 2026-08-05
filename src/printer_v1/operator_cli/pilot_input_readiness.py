@@ -68,6 +68,12 @@ class ReadinessCandidate:
     memory_observation_eligible: bool = False
     holder_condition: str = "UNKNOWN"
     future_action_eligibility: str = "BLOCKED_OR_UNKNOWN"
+    slot_ordinal: int | None = None
+    tracking_eligible: bool | None = None
+    tracking_reason: str | None = None
+    tracking_requalification_required: bool = False
+    retained_source_request_ids: tuple[int, ...] = ()
+    retained_source_response_ids: tuple[int, ...] = ()
 
 
 def _canonical(value: Any) -> str:
@@ -130,6 +136,20 @@ def _candidate_surface(candidate: ReadinessCandidate) -> dict[str, Any]:
         "future_action_eligibility": str(
             candidate.future_action_eligibility or "BLOCKED_OR_UNKNOWN"
         ),
+        "slot_ordinal": candidate.slot_ordinal,
+        "tracking_feasibility": {
+            "eligible": candidate.tracking_eligible,
+            "reason": candidate.tracking_reason,
+            "requalification_required": bool(
+                candidate.tracking_requalification_required
+            ),
+        },
+        "retained_source_request_ids": list(
+            candidate.retained_source_request_ids
+        ),
+        "retained_source_response_ids": list(
+            candidate.retained_source_response_ids
+        ),
     }
 
 
@@ -150,8 +170,16 @@ def _bundle_payload(
         "readiness_id": readiness_id,
         "readiness_state": READINESS_READY,
         "readiness_purpose": readiness_purpose,
+        # ``latest`` and ``persisted`` are frozen migration-041 column names.
+        # They are positional compatibility fields, never selection/provenance
+        # authority.  The ordered surface below is the truthful contract.
         "latest": _candidate_surface(latest),
         "persisted": _candidate_surface(persisted),
+        "legacy_candidate_fields": "POSITIONAL_COMPATIBILITY_ONLY",
+        "ordered_selected_candidates": [
+            _candidate_surface(latest),
+            _candidate_surface(persisted),
+        ],
         "holder_evidence": dict(holder_evidence),
         "source_ledger": dict(source_ledger),
         "selection_seed": selection_seed,
@@ -215,6 +243,11 @@ def build_pilot_input_ready_bundle(
             "future_action_eligibility": persisted.future_action_eligibility,
         },
     }
+    durable_ledger["legacy_candidate_fields"] = "POSITIONAL_COMPATIBILITY_ONLY"
+    durable_ledger["ordered_selected_candidates"] = [
+        _candidate_surface(latest),
+        _candidate_surface(persisted),
+    ]
 
     payload = _bundle_payload(
         readiness_id=readiness_id,
@@ -243,6 +276,8 @@ def build_pilot_input_ready_bundle(
     provenance = {
         "latest": latest.provenance,
         "persisted": persisted.provenance,
+        "legacy_candidate_fields": "POSITIONAL_COMPATIBILITY_ONLY",
+        "ordered_provenance": [latest.provenance, persisted.provenance],
         "readiness_purpose": purpose,
     }
     connection.execute(

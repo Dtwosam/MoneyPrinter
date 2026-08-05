@@ -1556,6 +1556,31 @@ def _attach_closing_snapshot_to_ledger(
     return report
 
 
+def _apply_clean_object_integrity_gate(result: dict[str, Any]) -> bool:
+    """Make atomic clean-object failure categorical at the close boundary."""
+    pipeline = result.get("memory_pipeline")
+    if not isinstance(pipeline, Mapping) or not pipeline.get(
+        "clean_object_integrity_blocked"
+    ):
+        return True
+    reasons = [
+        str(reason)
+        for reason in (pipeline.get("blocked_reasons") or ())
+        if str(reason).startswith("clean_object_integrity:")
+    ]
+    exact_cause = (
+        reasons[0]
+        if reasons
+        else "clean_object_integrity:UNKNOWN_ATOMIC_INTEGRITY_FAILURE"
+    )
+    result.update(
+        ok=False,
+        blocked_reason=exact_cause,
+        clean_object_integrity_reasons=reasons,
+    )
+    return False
+
+
 def _execute_close(
     conn: sqlite3.Connection, step: sqlite3.Row, *, adapter_factory: Callable[..., Any],
     timeout_seconds: float, minimum_evidence_seconds: float,
@@ -1655,6 +1680,8 @@ def _execute_close(
         production_mode=True,
         candidate_window_ids=[int(window_id)],
     )
+    if not _apply_clean_object_integrity_gate(result):
+        return result
     result["ok"] = True
     return result
 
@@ -2694,8 +2721,15 @@ def _authoritative_promotions_for_run(
     """Load eligible E2Z episodes for this run's attached windows, read-only."""
     rows = conn.execute(
         """
-        SELECT e.*
+        SELECT e.*, f.id AS fingerprint_id,
+               f.fingerprint_payload_json AS fingerprint_payload_json
         FROM printer_episodes e
+        JOIN printer_memory_fingerprints f
+          ON f.episode_id=e.id
+         AND f.fingerprint_kind='STATIC_CONDITION_SUMMARY'
+         AND f.memory_status='CLEAN_MEMORY'
+         AND f.data_quality_label='CLEAN_DATA'
+         AND f.do_not_train=0
         JOIN printer_memory_factory_run_steps s
           ON s.memory_window_id=e.memory_window_id
         WHERE s.run_id=?
@@ -2704,6 +2738,11 @@ def _authoritative_promotions_for_run(
           AND e.data_quality_label='CLEAN_DATA'
           AND e.do_not_train=0
           AND e.memory_quality_label='CLEAN_MEMORY'
+          AND json_extract(f.fingerprint_payload_json,'$.episode_id')=e.id
+          AND json_extract(f.fingerprint_payload_json,'$.window_id')=e.memory_window_id
+          AND json_extract(f.fingerprint_payload_json,'$.token_id')=e.token_id
+          AND json_extract(f.fingerprint_payload_json,'$.pair_id')=e.pair_id
+          AND json_extract(f.fingerprint_payload_json,'$.window_kind')=e.window_kind
         ORDER BY e.id
         """,
         (run_id,),
@@ -3289,6 +3328,7 @@ def _four_hour_terminal_validation(
     windows_by_id: dict[int, dict[str, Any]], budgets: dict[str, Any],
     pending_steps: int, running_jobs: int,
     primary_cause: dict[str, Any] | None = None,
+    complete_clean_objects_by_window_id: Mapping[int, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Prove either a terminal 4h outcome or an exact natural two-stop end."""
     if not config.get("continuous_four_hour"):
@@ -3392,7 +3432,21 @@ def _four_hour_terminal_validation(
                     and int(window.get("do_not_train") or 0) == 0
                 )
                 if clean:
-                    memory_acceptance["clean_windows"] += 1
+                    if complete_clean_objects_by_window_id is None:
+                        # Compatibility for isolated historical validator tests.
+                        memory_acceptance["clean_windows"] += 1
+                    elif int(window["id"]) in complete_clean_objects_by_window_id:
+                        memory_acceptance["clean_windows"] += 1
+                    else:
+                        reasons.append(
+                            f"incomplete_clean_object:{int(window['id'])}"
+                        )
+                        memory_acceptance["blocking_windows"].append(
+                            {
+                                "window_id": int(window["id"]),
+                                "reason": "INCOMPLETE_CLEAN_OBJECT",
+                            }
+                        )
                 else:
                     memory_acceptance["dirty_or_audit_only_windows"] += 1
                     memory_acceptance["blocking_windows"].append(
@@ -3750,6 +3804,7 @@ def _final_report(
         config=config, steps=steps, windows_by_id=windows_by_id,
         budgets=budgets, pending_steps=pending_run_steps, running_jobs=running,
         primary_cause=primary_cause,
+        complete_clean_objects_by_window_id=promotions_by_window_id,
     )
     two_token_validation = _two_token_continuous_proof_validation(
         config=config, selected=selected, steps=steps,

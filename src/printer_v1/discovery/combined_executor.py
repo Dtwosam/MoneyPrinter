@@ -71,6 +71,11 @@ from printer_v1.discovery.scheduler_parity import (
 from printer_v1.scheduler.contracts import JobKind, JobStatus, LockResult
 from printer_v1.scheduler.scheduler import cancel_job, claim_due_job, enqueue_job
 from printer_v1.sources.governor import can_request_source
+from printer_v1.discovery.memory_observation_activation import (
+    FrozenMemoryActivationSet,
+    MemoryObservationActivationError,
+    validate_memory_activation_set,
+)
 from printer_v1.sources.secondary_discovery import (
     DISCARDED_NON_AUTHORITATIVE_FIELDS,
     GECKO_ACTIVE_REQUEST,
@@ -287,6 +292,9 @@ class CombinedDiscoveryFixtures:
     # Atomic handoff injection points for focused repair proofs only.
     # BEFORE_FIRST | DURING_SECOND | SECOND_SCHEDULER_JOB | DUPLICATE_ACTIVE | CONFLICTING_SLOT
     force_handoff_failure: str | None = None
+    # Exact post-freeze authority for the operational memory-observation path.
+    # When present, no provider lane or selector may run.
+    memory_activation_set: FrozenMemoryActivationSet | None = None
 
 
 @dataclass
@@ -904,44 +912,64 @@ class CombinedPumpfunCampaignExecutor:
         provider_reports: list[dict[str, Any]] = []
 
         # 3-5. Provider work through Central Scheduler + Source Governor.
-        observations.extend(
-            self._run_direct_lane(
-                connection, command, usage, discovery_batch_id, observations
+        if fixtures.memory_activation_set is not None:
+            try:
+                validate_memory_activation_set(
+                    connection,
+                    fixtures.memory_activation_set,
+                    now=now,
+                )
+            except MemoryObservationActivationError as exc:
+                raise CombinedDiscoveryError(exc.code, exc.detail) from exc
+            observations.extend(
+                self._run_retained_evidence_lane(
+                    connection,
+                    command,
+                    usage,
+                    discovery_batch_id,
+                    fixtures.memory_activation_set,
+                    now,
+                )
             )
-        )
-        observations.extend(
-            self._run_secondary_lane(
-                connection,
-                command,
-                usage,
-                discovery_batch_id,
-                work_type=GECKO_WORK_TYPE,
-                ops=fixtures.gecko_ops,
-                lane_name="geckoterminal",
+        else:
+            observations.extend(
+                self._run_direct_lane(
+                    connection, command, usage, discovery_batch_id, observations
+                )
             )
-        )
-        observations.extend(
-            self._run_secondary_lane(
-                connection,
-                command,
-                usage,
-                discovery_batch_id,
-                work_type=TRACKER_WORK_TYPE,
-                ops=fixtures.tracker_ops,
-                lane_name="solana_tracker",
+            observations.extend(
+                self._run_secondary_lane(
+                    connection,
+                    command,
+                    usage,
+                    discovery_batch_id,
+                    work_type=GECKO_WORK_TYPE,
+                    ops=fixtures.gecko_ops,
+                    lane_name="geckoterminal",
+                )
             )
-        )
-        observations.extend(
-            self._run_secondary_lane(
-                connection,
-                command,
-                usage,
-                discovery_batch_id,
-                work_type=DEXSCREENER_WORK_TYPE,
-                ops=fixtures.dexscreener_ops,
-                lane_name="dexscreener",
+            observations.extend(
+                self._run_secondary_lane(
+                    connection,
+                    command,
+                    usage,
+                    discovery_batch_id,
+                    work_type=TRACKER_WORK_TYPE,
+                    ops=fixtures.tracker_ops,
+                    lane_name="solana_tracker",
+                )
             )
-        )
+            observations.extend(
+                self._run_secondary_lane(
+                    connection,
+                    command,
+                    usage,
+                    discovery_batch_id,
+                    work_type=DEXSCREENER_WORK_TYPE,
+                    ops=fixtures.dexscreener_ops,
+                    lane_name="dexscreener",
+                )
+            )
 
         if usage.observations > INTAKE_OBSERVATIONS:
             raise CombinedDiscoveryError("OBSERVATION_CEILING")
@@ -959,7 +987,10 @@ class CombinedPumpfunCampaignExecutor:
         )
         merged = self._merge(observations, discovery_batch_id)
         for candidate in merged.values():
-            if fixtures.holder_evidence_eligibility:
+            if (
+                fixtures.holder_evidence_eligibility
+                and fixtures.memory_activation_set is None
+            ):
                 holder_fact = fixtures.holder_evidence_eligibility.get(
                     candidate.mint.lower()
                 )
@@ -1036,7 +1067,23 @@ class CombinedPumpfunCampaignExecutor:
         vacancies = list(fixtures.vacant_slot_ordinals)
         if fixtures.mode == "INITIAL":
             vacancies = [1, 2]
-        selected = self._select(eligible, cycle_seed, vacancy_count=len(vacancies))
+        if fixtures.memory_activation_set is not None:
+            eligible_by_identity = {
+                (candidate.mint, candidate.market_identity.rsplit(":", 1)[-1]): candidate
+                for candidate in eligible
+            }
+            selected = []
+            for frozen in fixtures.memory_activation_set.selected:
+                candidate = eligible_by_identity.get((frozen.mint, frozen.pool))
+                if candidate is None:
+                    raise CombinedDiscoveryError(
+                        "FROZEN_SELECTED_CANDIDATE_GATE_FAILED", frozen.mint
+                    )
+                selected.append(candidate)
+        else:
+            selected = self._select(
+                eligible, cycle_seed, vacancy_count=len(vacancies)
+            )
         if fixtures.mode == "INITIAL" and len(selected) < 2:
             tracking_causes = {
                 HANDOFF_ACTIVE_CONFLICT,
@@ -1606,6 +1653,132 @@ class CombinedPumpfunCampaignExecutor:
             (source_name, request_kind, now, failure_type),
         )
         return int(cursor.lastrowid)
+
+    def _run_retained_evidence_lane(
+        self,
+        connection: sqlite3.Connection,
+        command: AbstractCampaignCommand,
+        usage: _Usage,
+        discovery_batch_id: str,
+        activation: FrozenMemoryActivationSet,
+        now: str,
+    ) -> list[_Observation]:
+        """Project already governed evidence without creating a source operation."""
+        work_id = self._create_work(
+            connection,
+            command,
+            usage,
+            discovery_batch_id,
+            DIRECT_WORK_TYPE,
+            now,
+        )
+        observations: list[_Observation] = []
+        linked: set[tuple[int, int]] = set()
+        link_ordinal = 0
+        for candidate in activation.selected:
+            for reference_ordinal, reference in enumerate(
+                candidate.retained_evidence_references, start=1
+            ):
+                link_key = (
+                    int(reference.source_request_id),
+                    int(reference.source_response_id),
+                )
+                if link_key not in linked:
+                    linked.add(link_key)
+                    link_ordinal += 1
+                    link_discovery_work_source(
+                        connection,
+                        discovery_work_id=work_id,
+                        link_ordinal=link_ordinal,
+                        source_request_id=link_key[0],
+                        source_response_id=link_key[1],
+                        now=now,
+                    )
+                observation_id = _batch_scoped_object_id(
+                    "obs",
+                    discovery_batch_id,
+                    "retained",
+                    candidate.slot_ordinal,
+                    reference_ordinal,
+                    candidate.mint,
+                    candidate.pool,
+                )
+                factual = {
+                    "network": "solana",
+                    "mint": candidate.mint,
+                    "pool": candidate.pool,
+                    "venue": PUMPSWAP_VENUE,
+                    "observed_at": reference.observed_at,
+                    "evidence_role": reference.evidence_role.value,
+                    "evidence_reuse_kind": (
+                        "RETAINED_GOVERNED_EVIDENCE_REFERENCE"
+                    ),
+                    "slot_ordinal": candidate.slot_ordinal,
+                    "true_provenance": candidate.provenance,
+                    "legacy_role_field": "POSITIONAL_COMPATIBILITY_ONLY",
+                }
+                insert_provider_observation(
+                    connection,
+                    observation_id=observation_id,
+                    discovery_batch_id=discovery_batch_id,
+                    discovery_work_id=work_id,
+                    campaign_id=command.campaign_id,
+                    run_id=command.run_id,
+                    cycle_id=self.fixtures.cycle_id,
+                    source_name=reference.source_name,
+                    request_kind=reference.request_kind,
+                    channel=(
+                        "LATEST_PUMPFUN"
+                        if candidate.slot_ordinal == 1
+                        else "ACTIVE_PUMPFUN"
+                    ),
+                    mint_identity=candidate.mint,
+                    market_identity=candidate.market_identity,
+                    lifecycle_identity=candidate.lifecycle_identity,
+                    observed_at=reference.observed_at,
+                    captured_at=now,
+                    raw_payload_hash=reference.raw_payload_hash,
+                    factual_payload=factual,
+                    source_request_id=int(reference.source_request_id),
+                    source_response_id=int(reference.source_response_id),
+                    now=now,
+                )
+                observations.append(
+                    _Observation(
+                        observation_id=observation_id,
+                        provider=reference.source_name,
+                        request_kind=reference.request_kind,
+                        channel=(
+                            "LATEST_PUMPFUN"
+                            if candidate.slot_ordinal == 1
+                            else "ACTIVE_PUMPFUN"
+                        ),
+                        mint=candidate.mint,
+                        pool=candidate.pool,
+                        quote_mint="",
+                        venue=PUMPSWAP_VENUE,
+                        observed_at=reference.observed_at,
+                        raw_payload_hash=reference.raw_payload_hash,
+                        source_request_id=int(reference.source_request_id),
+                        source_response_id=int(reference.source_response_id),
+                        source_failure_id=None,
+                        work_id=work_id,
+                        pumpfun_origin_status="PUMPFUN_ORIGIN_CONFIRMED",
+                        lifecycle=candidate.lifecycle_identity,
+                        origin_route=candidate.activation_route,
+                    )
+                )
+                usage.observations += 1
+                usage.unique_mints.add(candidate.mint)
+                usage.bump_storage(256)
+        self._terminalize_work(
+            connection,
+            work_id,
+            "SUCCEEDED",
+            "RETAINED_GOVERNED_EVIDENCE_REFERENCE",
+            now,
+        )
+        return observations
 
     def _run_direct_lane(
         self,
@@ -2914,6 +3087,13 @@ class CombinedPumpfunCampaignExecutor:
             and holder_fact.get("eligible") is True
             and holder_fact.get("tracking_requalification_required") is True
         )
+        if (
+            fixtures.memory_activation_set is not None
+            and handoff.requalification_eligible
+        ):
+            raise CombinedDiscoveryError(
+                handoff.reason_code or handoff.category
+            )
         if handoff.requalification_eligible and not fresh_requalification:
             raise CombinedDiscoveryError(handoff.category)
 
