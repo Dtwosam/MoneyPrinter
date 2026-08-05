@@ -412,6 +412,109 @@ class ActionLocalTruthTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
+    def _seed_canonical_campaign_graph(
+        self,
+        *,
+        cause: str = "PermissionError:GeckoTerminal adapter requires an explicit transport",
+    ) -> dict[str, str]:
+        """Insert real campaign/run/cycle/supervision rows with Migration-052 columns."""
+        now = "2026-08-05T12:00:00+00:00"
+        terminal_at = "2026-08-05T12:01:00+00:00"
+        campaign_id = "20260805T120000Z-truth-campaign"
+        run_id = f"{campaign_id}-run"
+        cycle_id = f"{campaign_id}-cycle"
+        supervision_id = f"{campaign_id}-supervision"
+        configuration_id = f"{campaign_id}-config"
+        conn = sqlite3.connect(self.db)
+        try:
+            conn.execute(
+                """INSERT INTO printer_memory_factory_campaigns(
+                       campaign_id, campaign_state, db_mode, db_target_identity,
+                       policy_version, first_terminal_cause, terminal_at,
+                       created_at, updated_at
+                   ) VALUES (?, 'TERMINAL_FAILED', 'OPERATIONAL_PERSISTENT', ?,
+                             'V2_9_8B', ?, ?, ?, ?)""",
+                (campaign_id, f"sha256:test", cause, terminal_at, now, terminal_at),
+            )
+            config_hash = "ab" * 32  # exactly 64 lowercase hex digits
+            conn.execute(
+                """INSERT INTO printer_memory_factory_campaign_configurations(
+                       configuration_id, campaign_id, configuration_hash,
+                       configuration_json, launch_provenance_json, created_at
+                   ) VALUES (?, ?, ?, '{}', '{}', ?)""",
+                (configuration_id, campaign_id, config_hash, now),
+            )
+            conn.execute(
+                """INSERT INTO printer_memory_factory_campaign_runs(
+                       run_id, campaign_id, run_ordinal, run_state,
+                       first_terminal_cause, terminal_at, created_at, updated_at
+                   ) VALUES (?, ?, 1, 'TERMINAL_FAILED', ?, ?, ?, ?)""",
+                (run_id, campaign_id, cause, terminal_at, now, terminal_at),
+            )
+            conn.execute(
+                """INSERT INTO printer_memory_factory_campaign_cycles(
+                       cycle_id, campaign_id, run_id, cycle_ordinal, cycle_state,
+                       first_terminal_cause, terminal_at, created_at, updated_at
+                   ) VALUES (?, ?, ?, 1, 'TERMINAL_FAILED', ?, ?, ?, ?)""",
+                (cycle_id, campaign_id, run_id, cause, terminal_at, now, terminal_at),
+            )
+            conn.execute(
+                """INSERT INTO printer_memory_factory_campaign_supervision(
+                       supervision_id, campaign_id, configuration_id, run_id,
+                       owner_id, supervision_state, terminal_status,
+                       first_terminal_cause, heartbeat_at, lease_expires_at,
+                       lease_lock_path, cleanup_completed_at, lease_released_at,
+                       created_at, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, 'TERMINAL', 'FAILED', ?, ?, ?,
+                             ?, ?, ?, ?, ?)""",
+                (
+                    supervision_id,
+                    campaign_id,
+                    configuration_id,
+                    run_id,
+                    f"{campaign_id}-owner",
+                    cause,
+                    now,
+                    terminal_at,
+                    f"/tmp/{supervision_id}.lock",
+                    terminal_at,
+                    terminal_at,
+                    now,
+                    terminal_at,
+                ),
+            )
+            conn.execute(
+                """INSERT INTO printer_source_requests(
+                       source_name, request_kind, requested_at, request_key,
+                       tracking_priority, source_status, data_quality_label, created_at
+                   ) VALUES (
+                       'dexscreener','candidate_market_batch',?, 'truth-req-1',
+                       0,'COMPLETE','CLEAN_DATA', ?
+                   )""",
+                (now, now),
+            )
+            # Pre-lifecycle discovery mutation surfaces for inventory coverage.
+            try:
+                conn.execute(
+                    """INSERT INTO printer_source_health(
+                           source_name, source_status, data_quality_label,
+                           consecutive_failures, created_at, updated_at
+                       ) VALUES ('dexscreener','COMPLETE','CLEAN_DATA',0,?,?)""",
+                    (now, now),
+                )
+            except sqlite3.Error:
+                pass
+            conn.commit()
+        finally:
+            conn.close()
+        return {
+            "campaign_id": campaign_id,
+            "run_id": run_id,
+            "cycle_id": cycle_id,
+            "supervision_id": supervision_id,
+            "cause": cause,
+        }
+
     def test_baseline_and_delta_after_source_request(self) -> None:
         baseline = capture_action_local_baseline(self.db)
         conn = sqlite3.connect(self.db)
@@ -443,6 +546,101 @@ class ActionLocalTruthTests(unittest.TestCase):
         )
         self.assertGreaterEqual(int(envelope["source_calls"]), 1)
         self.assertNotEqual("UNKNOWN_ON_EXCEPTION", envelope["database_mutation_status"])
+
+    def test_canonical_campaign_graph_state_columns_and_envelope(self) -> None:
+        baseline = capture_action_local_baseline(self.db)
+        ids = self._seed_canonical_campaign_graph()
+        original_cause = ids["cause"]
+        truth = build_action_local_terminal_truth(
+            self.db,
+            baseline=baseline,
+            execution_id="exec-truth-1",
+            campaign_id=ids["campaign_id"],
+            run_id=ids["run_id"],
+            cycle_id=ids["cycle_id"],
+            supervision_id=ids["supervision_id"],
+            first_terminal_cause=original_cause,
+        )
+        self.assertIsInstance(truth, dict)
+        states = truth["campaign_run_cycle_states"]
+        self.assertEqual("TERMINAL_FAILED", states["run_state"])
+        self.assertEqual("TERMINAL_FAILED", states["cycle_state"])
+        self.assertEqual("TERMINAL", states["supervision_state"])
+        self.assertEqual("FAILED", states["terminal_status"])
+        self.assertEqual(original_cause, states["first_terminal_cause"])
+        self.assertEqual(original_cause, truth["first_terminal_cause"])
+        self.assertNotEqual("UNKNOWN_NOT_ATTRIBUTABLE", states["cleanup_completed_at"])
+        self.assertNotEqual("UNKNOWN_NOT_ATTRIBUTABLE", states["lease_released_at"])
+        self.assertTrue(truth["cleanup_complete"])
+        self.assertTrue(truth["lease_released"])
+        self.assertGreaterEqual(int(truth["source_request_count"]), 1)
+        self.assertGreaterEqual(len(truth["source_request_ids"]), 1)
+        self.assertTrue(truth["database_mutation_known"])
+        self.assertIn("printer_memory_factory_campaign_runs", truth["table_deltas"])
+        self.assertIn("printer_discovery_reserve_layers", truth["table_deltas"])
+        self.assertIn("printer_exact_market_states", truth["table_deltas"])
+        self.assertIn("printer_source_health", truth["table_deltas"])
+        self.assertIn("printer_holder_evidence_attempts", truth["table_deltas"])
+        self.assertIn(
+            "printer_memory_factory_campaign_scheduler_work", truth["table_deltas"]
+        )
+        # Campaign run row was inserted after baseline → positive delta.
+        run_delta = truth["table_deltas"]["printer_memory_factory_campaign_runs"]
+        self.assertEqual(1, run_delta["delta"])
+
+        envelope = merge_action_local_into_exception_envelope(
+            {
+                "status": "OPERATIONAL_COMMAND_BLOCKED",
+                "error_type": "PermissionError",
+                "error_message": original_cause,
+                "source_calls": 0,
+            },
+            truth,
+        )
+        payload = json.dumps(envelope, sort_keys=True, default=str)
+        self.assertIn("run_state", payload)
+        self.assertIn("TERMINAL_FAILED", payload)
+        self.assertEqual("TERMINAL_FAILED", envelope["run_state"])
+        self.assertEqual("TERMINAL", envelope["supervision_state"])
+        self.assertEqual(original_cause, envelope["first_terminal_cause"])
+        self.assertGreaterEqual(int(envelope["source_calls"]), 1)
+        self.assertTrue(envelope["cleanup_complete"])
+        self.assertTrue(envelope["lease_released"])
+
+    def test_state_read_failure_is_unknown_not_attributable(self) -> None:
+        baseline = capture_action_local_baseline(self.db)
+        ids = self._seed_canonical_campaign_graph()
+        original_cause = "ORIGINAL_EXCEPTION:forced"
+        # Force the state-read section to raise; source inventory must survive.
+        with patch(
+            "printer_v1.operator_cli.action_local_terminal_truth."
+            "_read_campaign_run_cycle_supervision_states",
+            side_effect=RuntimeError("forced_state_read_failure"),
+        ):
+            truth = build_action_local_terminal_truth(
+                self.db,
+                baseline=baseline,
+                campaign_id=ids["campaign_id"],
+                run_id=ids["run_id"],
+                cycle_id=ids["cycle_id"],
+                supervision_id=ids["supervision_id"],
+                first_terminal_cause=original_cause,
+            )
+        states = truth["campaign_run_cycle_states"]
+        self.assertIn("UNKNOWN_NOT_ATTRIBUTABLE", str(states["state_read_status"]))
+        self.assertEqual("UNKNOWN_NOT_ATTRIBUTABLE", states["run_state"])
+        self.assertEqual(original_cause, states["first_terminal_cause"])
+        self.assertEqual(original_cause, truth["first_terminal_cause"])
+        # Source IDs / deltas already derived must not be wiped.
+        self.assertGreaterEqual(int(truth["source_request_count"]), 1)
+        self.assertTrue(truth["database_mutation_known"])
+        self.assertIn("printer_memory_factory_campaign_runs", truth["table_deltas"])
+        envelope = merge_action_local_into_exception_envelope(
+            {"status": "OPERATIONAL_COMMAND_BLOCKED", "error_message": original_cause},
+            truth,
+        )
+        self.assertEqual(original_cause, envelope["first_terminal_cause"])
+        json.dumps(envelope, sort_keys=True, default=str)
 
 
 class ExplicitE2ZScopeTests(unittest.TestCase):

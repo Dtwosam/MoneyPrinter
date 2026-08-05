@@ -1,10 +1,10 @@
 # Printer V1 — V2-9.8B `WINDOW_15M` End-to-End Readiness Unified Repair Closeout
 
-**Date:** 2026-08-05  
-**Lane:** `V2-9.8B — WINDOW_15M End-to-End Operational Readiness Unified Repair`  
-**Branch:** `agent/v2-9-8b-window-15m-end-to-end-readiness-unified-repair`  
-**Baseline HEAD:** `7a4152bb90b14317513bb10879ee3861410270c7`  
-**Design:** `docs/printer-v1-v2-9-8b-window-15m-end-to-end-readiness-unified-repair-design.md`  
+**Date:** 2026-08-05
+**Lane:** `V2-9.8B — WINDOW_15M End-to-End Operational Readiness Unified Repair`
+**Branch:** `agent/v2-9-8b-window-15m-end-to-end-readiness-unified-repair`
+**Baseline HEAD:** `7a4152bb90b14317513bb10879ee3861410270c7`
+**Design:** `docs/printer-v1-v2-9-8b-window-15m-end-to-end-readiness-unified-repair-design.md`
 **Audit:** `docs/printer-v1-window-15m-a-to-z-operational-readiness-audit-2026-08-05.md`
 
 ## Final verdict
@@ -185,22 +185,85 @@ This repair introduces **no** live provider calls and **no** authoritative DB wr
 
 ## Test / proof command summary
 
+### Narrow focused + public + wrapper + 900s
+
+```bash
+.venv/bin/python -m pytest \
+  tests/test_v2_9_8b_window_15m_end_to_end_readiness_unified_repair.py \
+  tests/test_v2_9_8a_public_operational_command.py \
+  tests/test_v2_9_8b_window_15m_one_shot_wrapper.py \
+  tests/test_v2_9_8b_exact_public_composition_900_logical_seconds.py \
+  -q
+```
+
+Result: **70 passed**.
+
+### Final broad regression (canonical closeout command)
+
 ```bash
 .venv/bin/python -m pytest \
   tests/test_v2_9_8b_window_15m_end_to_end_readiness_unified_repair.py \
   tests/test_v2_9_8b_exact_public_composition_900_logical_seconds.py \
   tests/test_v2_9_8b_window_15m_one_shot_wrapper.py \
   tests/test_post_lane10_lane_k_e2z_pipeline_wiring.py \
+  tests/test_post_rc_lane_e2z_clean_memory_creation.py \
+  tests/test_v2_9_8b_token_slot_id_exact_public_composition.py \
+  tests/test_v2_9_8b_permanent_discovery_availability.py \
+  tests/test_v2_9_8b_pre_authorization_migration_ledger_drift_guard.py \
   -q
 ```
 
-Primary focused+integrated: **13 passed**.  
-Wrapper + Lane K + focused (prior run): **183 passed**.
+Result after action-local schema repair: **342 passed, 24 subtests passed**.
+
+### Count reconciliation
+
+| Report | Suite composition | Count |
+|---|---|---|
+| Initial handoff “183 passed” | wrapper + Lane K + focused unified-repair only (partial closeout subset) | 183 |
+| Prior full broad closeout | same 8-file command as above | **340 passed, 24 subtests** |
+| Current full broad closeout | same 8-file command + 2 new action-local schema tests | **342 passed, 24 subtests** |
+
+The “183” figure was never the full broad command; it was a narrower intermediate subset. The authoritative broad regression for this lane is the 8-file command above (340 → 342 after the two schema-drift proofs).
+
+## Follow-up: action-local terminal truth schema drift
+
+**Status:** `CLOSED_WITH_PROOF`
+**Baseline for this follow-up:** `42781cbbb36727fcc5e892adb1ab9df16a5511cc`
+
+Remotely verified defect: `action_local_terminal_truth.py` selected non-existent columns
+`run_status` / `stop_reason` / `cycle_status` / `supervision_status`.
+
+Repair:
+
+- Read only Migration-052 canonical columns:
+  - run: `run_state`, `first_terminal_cause`, `terminal_at`
+  - cycle: `cycle_state`, `first_terminal_cause`, `terminal_at`
+  - supervision: `supervision_state`, `terminal_status`, `first_terminal_cause`,
+    `cleanup_completed_at`, `lease_released_at`
+- Stable output keys preserve those durable names.
+- Original exception remains `first_terminal_cause`.
+- Optional state-read faults return `UNKNOWN_NOT_ATTRIBUTABLE` without raising a
+  secondary exception or wiping source IDs / table deltas.
+- Mutation inventory expanded with pre-lifecycle discovery/campaign/holder tables
+  (`printer_discovery_reserve_layers`, `printer_exact_market_states`,
+  `printer_source_health`, `printer_source_rate_limits`,
+  `printer_external_source_operations`, `printer_discovery_work`,
+  `printer_memory_factory_campaign_scheduler_work`, campaign reports/objects,
+  holder evidence attempts and maturation work).
+
+Focused proofs:
+`ActionLocalTruthTests.test_canonical_campaign_graph_state_columns_and_envelope`
+and `test_state_read_failure_is_unknown_not_attributable`.
 
 ## Commit
 
-Message: `Repair WINDOW_15M end-to-end readiness`
+Initial unified repair:
 
-Full SHA: the single closeout commit on this branch (`git rev-parse HEAD` after commit; reported in the operator handoff as the current HEAD).
+Message: `Repair WINDOW_15M end-to-end readiness`
+SHA: `42781cbbb36727fcc5e892adb1ab9df16a5511cc`
+
+Schema-drift follow-up:
+
+Message: `Repair action-local terminal truth schema`
 
 Not pushed. Untracked incident operator-run directories preserved outside the commit.
