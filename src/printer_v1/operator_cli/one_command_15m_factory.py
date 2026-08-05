@@ -719,13 +719,21 @@ def _execute_snapshot(
     from printer_v1.sources.contracts import build_governed_source_request
     from printer_v1.sources.governed_execution import execute_source_request_with_governor
 
+    from printer_v1.operator_cli.window_15m_concrete_composition import (
+        require_concrete_adapter,
+    )
+
     mint = str(step["token_mint"])
     request = build_governed_source_request(
         "dexscreener", "pair_market_snapshot",
         request_key=f"{step['run_id']}:{step['step_key']}",
         payload={"token_mint": mint, "pair_address": step["pair_address"]},
     )
-    adapter = adapter_factory(token_mint=mint, timeout_seconds=timeout_seconds)
+    adapter = require_concrete_adapter(
+        "lifecycle_exact_pair_dexscreener_primary",
+        adapter_factory(token_mint=mint, timeout_seconds=timeout_seconds),
+        expected_source_name="dexscreener",
+    )
     execution = execute_source_request_with_governor(
         conn, request, adapter,
         recent_request_count=count_recent_source_requests(conn, "dexscreener"),
@@ -948,48 +956,68 @@ def _collect_preclose_context(
         _check_cancellation(cancellation_probe)
         return result
 
+    from printer_v1.operator_cli.window_15m_concrete_composition import (
+        require_concrete_adapter,
+    )
+
     market_factory = factories.get("coingecko")
-    market_adapter = (
-        market_factory(timeout_seconds=timeout_seconds)
-        if market_factory
-        else build_coingecko_adapter(
-            enabled=True,
-            fixture_transport=build_coingecko_market_transport(
-                timeout_seconds=timeout_seconds
-            ),
-        )
+    market_adapter = require_concrete_adapter(
+        "preclose_coingecko_market_chain",
+        (
+            market_factory(timeout_seconds=timeout_seconds)
+            if market_factory
+            else build_coingecko_adapter(
+                enabled=True,
+                fixture_transport=build_coingecko_market_transport(
+                    timeout_seconds=timeout_seconds
+                ),
+            )
+        ),
+        expected_source_name="coingecko",
     )
     safety_factory = factories.get("goplus")
-    safety_adapter = (
-        safety_factory(token_mint=mint, timeout_seconds=timeout_seconds)
-        if safety_factory
-        else build_goplus_adapter(
-            enabled=True,
-            fixture_transport=build_goplus_token_safety_transport(
-                mint, timeout_seconds=timeout_seconds
-            ),
-        )
+    safety_adapter = require_concrete_adapter(
+        "preclose_goplus_safety",
+        (
+            safety_factory(token_mint=mint, timeout_seconds=timeout_seconds)
+            if safety_factory
+            else build_goplus_adapter(
+                enabled=True,
+                fixture_transport=build_goplus_token_safety_transport(
+                    mint, timeout_seconds=timeout_seconds
+                ),
+            )
+        ),
+        expected_source_name="goplus",
     )
     quote_factory = factories.get("jupiter_quote")
 
     def quote_adapter(input_mint: str, output_mint: str) -> Any:
         if quote_factory:
-            return quote_factory(
-                input_mint=input_mint,
-                output_mint=output_mint,
-                amount_lamports=DEFAULT_PAPER_AMOUNT_LAMPORTS,
-                slippage_bps=DEFAULT_SLIPPAGE_BPS,
-                timeout_seconds=timeout_seconds,
+            return require_concrete_adapter(
+                "preclose_jupiter_quote",
+                quote_factory(
+                    input_mint=input_mint,
+                    output_mint=output_mint,
+                    amount_lamports=DEFAULT_PAPER_AMOUNT_LAMPORTS,
+                    slippage_bps=DEFAULT_SLIPPAGE_BPS,
+                    timeout_seconds=timeout_seconds,
+                ),
+                expected_source_name="jupiter_quote",
             )
-        return build_jupiter_quote_adapter(
-            enabled=True,
-            fixture_transport=build_jupiter_paper_quote_transport(
-                input_mint=input_mint,
-                output_mint=output_mint,
-                amount_lamports=DEFAULT_PAPER_AMOUNT_LAMPORTS,
-                slippage_bps=DEFAULT_SLIPPAGE_BPS,
-                timeout_seconds=timeout_seconds,
+        return require_concrete_adapter(
+            "preclose_jupiter_quote",
+            build_jupiter_quote_adapter(
+                enabled=True,
+                fixture_transport=build_jupiter_paper_quote_transport(
+                    input_mint=input_mint,
+                    output_mint=output_mint,
+                    amount_lamports=DEFAULT_PAPER_AMOUNT_LAMPORTS,
+                    slippage_bps=DEFAULT_SLIPPAGE_BPS,
+                    timeout_seconds=timeout_seconds,
+                ),
             ),
+            expected_source_name="jupiter_quote",
         )
 
     requested = include or frozenset({"market_chain", "safety", "entry_quote", "exit_quote"})
@@ -1044,15 +1072,19 @@ def _collect_preclose_context(
         if goplus_holder == "HOLDER_CONCENTRATION_UNKNOWN":
             stage[0] = "holder_primary"
             holder_factory = factories.get("solana_rpc_holder")
-            holder_adapter = (
-                holder_factory(token_mint=mint, timeout_seconds=timeout_seconds)
-                if holder_factory
-                else build_solana_rpc_holder_adapter(
-                    enabled=True,
-                    fixture_transport=build_solana_rpc_holder_transport(
-                        mint, timeout_seconds=timeout_seconds
-                    ),
-                )
+            holder_adapter = require_concrete_adapter(
+                "preclose_solana_rpc_holder_primary",
+                (
+                    holder_factory(token_mint=mint, timeout_seconds=timeout_seconds)
+                    if holder_factory
+                    else build_solana_rpc_holder_adapter(
+                        enabled=True,
+                        fixture_transport=build_solana_rpc_holder_transport(
+                            mint, timeout_seconds=timeout_seconds
+                        ),
+                    )
+                ),
+                expected_source_name="solana_rpc",
             )
             primary_holder = execute(
                 "solana_rpc",
@@ -1589,7 +1621,9 @@ def _execute_close(
     conn.commit()
     result["memory_pipeline"] = run_e2z_pipeline(
         str(conn.execute("PRAGMA database_list").fetchone()[2]),
-        operator_approved=True, production_mode=True,
+        operator_approved=True,
+        production_mode=True,
+        candidate_window_ids=[int(window_id)],
     )
     result["ok"] = True
     return result
@@ -2129,6 +2163,7 @@ def _execute_continuation_close(
         str(conn.execute("PRAGMA database_list").fetchone()[2]),
         operator_approved=True,
         production_mode=True,
+        candidate_window_ids=[int(window_id)],
     )
     result["ok"] = True
     result["continuity_source"] = source

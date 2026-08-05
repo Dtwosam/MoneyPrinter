@@ -179,7 +179,13 @@ GIT_PROVENANCE_MANIFEST_ENV_VARS = (
 GIT_PROVENANCE_MANIFEST_SUPPORTED_MODES = ("preflight-only", "run")
 # Action-local run identity for blocked-command source accounting. Never inherit
 # a previous campaign's holder-ledger totals into a different public action.
-_ACTION_RUN_CONTEXT: dict[str, str | None] = {"run_id": None}
+_ACTION_RUN_CONTEXT: dict[str, Any] = {
+    "run_id": None,
+    "campaign_id": None,
+    "cycle_id": None,
+    "execution_id": None,
+    "action_local_baseline": None,
+}
 
 
 @dataclass(frozen=True)
@@ -586,7 +592,25 @@ def build_activation_preflight(
     except GitProvenanceError as exc:
         _preflight_fail("git_provenance", str(exc))
     source = build_readiness_source_contract_preflight()
-    dependency = assert_runtime_dependency_preflight(repository_root=root)
+    from printer_v1.operator_cli.window_15m_concrete_composition import (
+        ConcreteCompositionError,
+        run_window_15m_concrete_composition_preflight,
+        window_15m_preflight_builders,
+    )
+
+    # Final child defense: full concrete composition before campaign identity,
+    # artifacts, supervision, heartbeat, source work or DB mutation (B1/B5).
+    try:
+        concrete_composition = run_window_15m_concrete_composition_preflight(
+            repository_root=str(root),
+            timeout_seconds=5.0,
+        )
+    except ConcreteCompositionError as exc:
+        _preflight_fail("concrete_composition", str(exc))
+    dependency = assert_runtime_dependency_preflight(
+        repository_root=root,
+        adapter_builders=window_15m_preflight_builders(timeout_seconds=5.0),
+    )
     budget = build_operational_budget_preflight(
         admission_operation_ceiling=ADMISSION_OPERATION_CEILING,
         discovery_request_ceiling=DISCOVERY_REQUEST_CEILING,
@@ -706,6 +730,7 @@ def build_activation_preflight(
             "source_calls": budget["source_calls"],
         },
         "dependency_preflight": dependency.to_dict(),
+        "concrete_composition_preflight": concrete_composition,
         "git_provenance": provenance,
         "git_provenance_authorization": (
             git_provenance_authorization.summary()
@@ -1003,6 +1028,9 @@ def _create_campaign_command(
         connection.close()
     # Publish the exact run identity so blocked-command counters stay action-local.
     _ACTION_RUN_CONTEXT["run_id"] = run_id
+    _ACTION_RUN_CONTEXT["campaign_id"] = campaign_id
+    _ACTION_RUN_CONTEXT["cycle_id"] = cycle_id
+    _ACTION_RUN_CONTEXT["execution_id"] = execution_id
     return (
         AbstractCampaignCommand(
             mode=CAMPAIGN_MODE,
@@ -1163,6 +1191,204 @@ def _with_sqlite_busy_retry(label: str, operation, *, attempts: int = 8, base_sl
     if last_error is not None:
         raise last_error
     raise RuntimeError(f"{label}: busy retry exhausted without result")
+
+
+def build_current_run_clean_memory_outcome(
+    db_path: Path | str,
+    *,
+    campaign_id: str | None,
+    run_id: str | None,
+    factory_run_id: str | None = None,
+) -> dict[str, Any]:
+    """Independent current-run clean-memory outcome (E3).
+
+    Lifecycle CAMPAIGN_PASS remains separate. This reports exact current-run
+    WINDOW_15M quality, episodes and fingerprint linkage only.
+    """
+    path = Path(db_path).resolve()
+    outcome: dict[str, Any] = {
+        "expected_window_ids": [],
+        "e2q_clean_candidate_window_ids": [],
+        "dirty_or_audit_only_window_ids": [],
+        "blocked_window_ids": [],
+        "windows": [],
+        "episode_ids": [],
+        "fingerprint_ids": [],
+        "unrelated_promotion_count": 0,
+        "blocker_categories": [],
+        "clean_memory_outcome_pass": False,
+    }
+    if not path.is_file():
+        outcome["blocker_categories"].append("DATABASE_MISSING")
+        return outcome
+    connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        window_ids: list[int] = []
+        # Prefer campaign-registered windows for this run.
+        if run_id and _table_exists_ro(connection, "printer_memory_factory_campaign_windows"):
+            rows = connection.execute(
+                """SELECT memory_window_row_id
+                   FROM printer_memory_factory_campaign_windows
+                   WHERE run_id=? AND memory_window_row_id IS NOT NULL
+                   ORDER BY window_id""",
+                (run_id,),
+            ).fetchall()
+            window_ids = [
+                int(row["memory_window_row_id"])
+                for row in rows
+                if row["memory_window_row_id"] is not None
+            ]
+        if not window_ids and factory_run_id:
+            rows = connection.execute(
+                """SELECT memory_window_id FROM printer_memory_factory_run_steps
+                   WHERE run_id=? AND step_kind='WINDOW_CLOSE'
+                     AND step_status='SUCCEEDED' AND memory_window_id IS NOT NULL
+                   ORDER BY id""",
+                (factory_run_id,),
+            ).fetchall()
+            window_ids = [int(row["memory_window_id"]) for row in rows]
+        outcome["expected_window_ids"] = window_ids
+        if not window_ids:
+            outcome["blocker_categories"].append("NO_CURRENT_RUN_WINDOWS")
+            return outcome
+
+        placeholders = ",".join("?" for _ in window_ids)
+        windows = connection.execute(
+            f"""SELECT id, window_kind, window_status, memory_status,
+                       memory_quality_label, data_quality_label, do_not_train,
+                       token_id, pair_id, supporting_context_json
+                FROM printer_memory_windows
+                WHERE id IN ({placeholders})
+                ORDER BY id""",
+            window_ids,
+        ).fetchall()
+        clean_candidate_ids: list[int] = []
+        dirty_ids: list[int] = []
+        blocked_ids: list[int] = []
+        episode_ids: list[int] = []
+        fingerprint_ids: list[int] = []
+        window_details: list[dict[str, Any]] = []
+        for win in windows:
+            wid = int(win["id"])
+            detail = {
+                "window_id": wid,
+                "window_status": win["window_status"],
+                "memory_status": win["memory_status"],
+                "memory_quality_label": win["memory_quality_label"],
+                "data_quality_label": win["data_quality_label"],
+                "do_not_train": int(win["do_not_train"] or 0),
+                "token_id": win["token_id"],
+                "pair_id": win["pair_id"],
+                "episode_id": None,
+                "fingerprint_id": None,
+            }
+            is_closed = str(win["window_status"] or "") in {
+                "WINDOW_CLOSED",
+                "CLOSED",
+            }
+            is_partial = str(win["memory_status"] or "") == "PARTIAL_MEMORY"
+            is_clean_data = str(win["data_quality_label"] or "") == "CLEAN_DATA"
+            no_dnt = int(win["do_not_train"] or 0) == 0
+            if is_closed and is_partial and is_clean_data and no_dnt:
+                clean_candidate_ids.append(wid)
+            elif str(win["memory_status"] or "") in {
+                "DIRTY_MEMORY",
+                "AUDIT_ONLY",
+                "AUDIT_ONLY_MEMORY",
+            }:
+                dirty_ids.append(wid)
+            else:
+                blocked_ids.append(wid)
+
+            episode = connection.execute(
+                """SELECT id FROM printer_episodes
+                   WHERE memory_window_id=? AND memory_status='CLEAN_MEMORY'
+                   ORDER BY id LIMIT 1""",
+                (wid,),
+            ).fetchone()
+            if episode is not None:
+                eid = int(episode["id"])
+                detail["episode_id"] = eid
+                episode_ids.append(eid)
+                fp = connection.execute(
+                    """SELECT id FROM printer_memory_fingerprints
+                       WHERE episode_id=? ORDER BY id LIMIT 1""",
+                    (eid,),
+                ).fetchone()
+                if fp is not None:
+                    fid = int(fp["id"])
+                    detail["fingerprint_id"] = fid
+                    fingerprint_ids.append(fid)
+            window_details.append(detail)
+
+        outcome["windows"] = window_details
+        outcome["e2q_clean_candidate_window_ids"] = clean_candidate_ids
+        outcome["dirty_or_audit_only_window_ids"] = dirty_ids
+        outcome["blocked_window_ids"] = blocked_ids
+        outcome["episode_ids"] = episode_ids
+        outcome["fingerprint_ids"] = fingerprint_ids
+
+        # Unrelated promotions: CLEAN_MEMORY episodes for windows outside this run.
+        if window_ids:
+            unrelated = connection.execute(
+                f"""SELECT COUNT(*) FROM printer_episodes
+                    WHERE memory_status='CLEAN_MEMORY'
+                      AND memory_window_id NOT IN ({placeholders})
+                      AND created_at >= (
+                          SELECT COALESCE(MIN(created_at), '9999-01-01')
+                          FROM printer_memory_factory_campaign_runs
+                          WHERE run_id=?
+                      )""",
+                (*window_ids, run_id or ""),
+            ).fetchone()
+            # Simpler unrelated check: any clean episode not in expected windows
+            # created while this run's windows exist is reported only when we can
+            # attribute; default to 0 when unprovable.
+            try:
+                outcome["unrelated_promotion_count"] = int(unrelated[0]) if unrelated else 0
+            except Exception:
+                outcome["unrelated_promotion_count"] = 0
+
+        expected_count = len(window_ids)
+        all_have_episodes = (
+            expected_count > 0
+            and len(episode_ids) == expected_count
+            and len(set(episode_ids)) == expected_count
+        )
+        all_have_fingerprints = (
+            all_have_episodes
+            and len(fingerprint_ids) == expected_count
+        )
+        all_clean_candidates = (
+            expected_count > 0
+            and set(clean_candidate_ids) == set(window_ids)
+        )
+        if not all_clean_candidates:
+            outcome["blocker_categories"].append("NOT_ALL_WINDOWS_E2Q_CLEAN_CANDIDATES")
+        if not all_have_episodes:
+            outcome["blocker_categories"].append("MISSING_CLEAN_MEMORY_EPISODES")
+        if not all_have_fingerprints:
+            outcome["blocker_categories"].append("MISSING_FINGERPRINT_LINKAGE")
+        if int(outcome["unrelated_promotion_count"] or 0) != 0:
+            outcome["blocker_categories"].append("UNRELATED_PROMOTION_DETECTED")
+        outcome["clean_memory_outcome_pass"] = (
+            all_clean_candidates
+            and all_have_episodes
+            and all_have_fingerprints
+            and int(outcome["unrelated_promotion_count"] or 0) == 0
+        )
+        return outcome
+    finally:
+        connection.close()
+
+
+def _table_exists_ro(connection: sqlite3.Connection, table: str) -> bool:
+    row = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+        (table,),
+    ).fetchone()
+    return row is not None
 
 
 def _latest_campaign_source_total(
@@ -1986,6 +2212,16 @@ def _run_operational_campaign(
         + "-"
         + uuid.uuid4().hex[:12]
     )
+    # Capture pre-mutation baseline before artifacts or campaign identity so
+    # exception envelopes can report exact action-local DB deltas (B7).
+    from printer_v1.operator_cli.action_local_terminal_truth import (
+        capture_action_local_baseline,
+    )
+
+    _ACTION_RUN_CONTEXT["execution_id"] = execution_id
+    _ACTION_RUN_CONTEXT["action_local_baseline"] = capture_action_local_baseline(
+        AUTHORITATIVE_DB
+    )
     paths = _artifact_paths(execution_id)
     paths["root"].mkdir(parents=True, exist_ok=False)
     paths["reports"].mkdir()
@@ -2525,6 +2761,20 @@ def _run_operational_campaign(
             full_run_acceptance.get("campaign_acceptance") or {}
         )
         payload["campaign_acceptance_verdict"] = full_run_acceptance.get("verdict")
+        lifecycle_pass = bool(
+            full_run_acceptance.get("verdict") == FULL_RUN_VERDICT_PASS
+        )
+        clean_memory_outcome = build_current_run_clean_memory_outcome(
+            command.db_path,
+            campaign_id=command.campaign_id,
+            run_id=command.run_id,
+            factory_run_id=initialized_factory_run_id,
+        )
+        payload["operational_lifecycle_pass"] = lifecycle_pass
+        payload["clean_memory_outcome_pass"] = bool(
+            clean_memory_outcome.get("clean_memory_outcome_pass")
+        )
+        payload["clean_memory_outcome"] = clean_memory_outcome
         report = write_campaign_terminal_report(
             command.db_path,
             paths["reports"],
@@ -2542,9 +2792,12 @@ def _run_operational_campaign(
             "first_terminal_cause": cause,
             "report": report,
             "campaign_acceptance_verdict": full_run_acceptance.get("verdict"),
-            "campaign_pass": bool(
-                full_run_acceptance.get("verdict") == FULL_RUN_VERDICT_PASS
+            "campaign_pass": lifecycle_pass,
+            "operational_lifecycle_pass": lifecycle_pass,
+            "clean_memory_outcome_pass": bool(
+                clean_memory_outcome.get("clean_memory_outcome_pass")
             ),
+            "clean_memory_outcome": clean_memory_outcome,
             "full_run_campaign_acceptance": full_run_acceptance,
             "campaign_source_calls": report.get("campaign_source_calls"),
             "campaign_scheduler_calls": report.get("campaign_scheduler_calls"),
@@ -4236,6 +4489,10 @@ def main(argv: Iterable[str] | None = None) -> int:
     # Reset action-local identity at the start of every public invocation so a
     # blocked preflight/status/report never inherits a previous campaign total.
     _ACTION_RUN_CONTEXT["run_id"] = None
+    _ACTION_RUN_CONTEXT["campaign_id"] = None
+    _ACTION_RUN_CONTEXT["cycle_id"] = None
+    _ACTION_RUN_CONTEXT["execution_id"] = None
+    _ACTION_RUN_CONTEXT["action_local_baseline"] = None
     try:
         if args.mode != "report-only" and (
             args.campaign_id is not None or args.run_id is not None
@@ -4284,56 +4541,82 @@ def main(argv: Iterable[str] | None = None) -> int:
         print(json.dumps(result, indent=2, sort_keys=True, default=str))
         return 0
     except Exception as exc:
-        # V2-9.8B.10 / V2-9.8B.19: surface a durable total only for the exact
-        # run identity created by this action. Never copy a previous campaign's
-        # holder-ledger counters into preflight/status/report-only failures.
+        # V2-9.8B.10 / V2-9.8B.19 / V2-9.8B readiness: action-local terminal
+        # truth from durable campaign ownership and source rows. Never invent
+        # source_calls=0 when attributable requests exist (B6/B7).
         action_run_id = _ACTION_RUN_CONTEXT.get("run_id")
-        campaign_source_calls: int | None = None
+        action_campaign_id = _ACTION_RUN_CONTEXT.get("campaign_id")
+        action_cycle_id = _ACTION_RUN_CONTEXT.get("cycle_id")
+        action_execution_id = _ACTION_RUN_CONTEXT.get("execution_id")
+        baseline = _ACTION_RUN_CONTEXT.get("action_local_baseline")
         campaign_modes = {"run", SELECTIVE_1H_MODE}
-        if args.mode in campaign_modes and action_run_id:
-            campaign_source_calls = _latest_campaign_source_total(run_id=str(action_run_id))
-        elif args.mode in campaign_modes:
-            # Run failed before campaign creation (e.g. preflight). Action-local
-            # total remains zero; do not inherit historical ledgers.
-            campaign_source_calls = None
-        elif args.mode == "discovery-only":
-            # Discovery-only never inherits campaign holder ledgers.
-            campaign_source_calls = None
-        source_calls = (
-            int(campaign_source_calls) if campaign_source_calls is not None else 0
+        from printer_v1.operator_cli.action_local_terminal_truth import (
+            build_action_local_terminal_truth,
+            merge_action_local_into_exception_envelope,
         )
-        # Mutation honesty: never hardcode database_writes=0 after a campaign
-        # action identity exists. Proven zero only when no campaign run was
-        # created by this action (preflight/status/report-only/etc.).
-        if action_run_id is not None:
-            database_writes: int | None = None
-            database_mutation_known = False
-            database_mutation_status = "UNKNOWN_ON_EXCEPTION"
-        else:
-            database_writes = 0
-            database_mutation_known = True
-            database_mutation_status = "PROVEN_ZERO_NO_CAMPAIGN_ACTION_IDENTITY"
-        print(
-            json.dumps(
+
+        if args.mode in campaign_modes and (
+            action_run_id is not None or action_campaign_id is not None
+        ):
+            truth = build_action_local_terminal_truth(
+                AUTHORITATIVE_DB,
+                baseline=baseline,
+                execution_id=(
+                    str(action_execution_id) if action_execution_id else None
+                ),
+                campaign_id=(
+                    str(action_campaign_id) if action_campaign_id else None
+                ),
+                run_id=str(action_run_id) if action_run_id else None,
+                cycle_id=str(action_cycle_id) if action_cycle_id else None,
+                first_terminal_cause=f"{type(exc).__name__}:{exc}",
+            )
+            envelope = merge_action_local_into_exception_envelope(
                 {
                     "status": "OPERATIONAL_COMMAND_BLOCKED",
                     "error_type": type(exc).__name__,
                     "error_message": str(exc),
                     "mode": args.mode,
                     "action_run_id": action_run_id,
-                    "campaign_source_calls": campaign_source_calls,
-                    "source_calls": source_calls,
                     "scheduler_runtime_calls": 0,
-                    "database_writes": database_writes,
-                    "database_mutation_known": database_mutation_known,
-                    "database_mutation_status": database_mutation_status,
                     "restart_created": False,
                     "successor_created": False,
                 },
-                sort_keys=True,
-            ),
-            file=sys.stderr,
-        )
+                truth,
+            )
+        elif args.mode in campaign_modes:
+            envelope = {
+                "status": "OPERATIONAL_COMMAND_BLOCKED",
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+                "mode": args.mode,
+                "action_run_id": None,
+                "campaign_source_calls": None,
+                "source_calls": 0,
+                "scheduler_runtime_calls": 0,
+                "database_writes": 0,
+                "database_mutation_known": True,
+                "database_mutation_status": "PROVEN_ZERO_NO_CAMPAIGN_ACTION_IDENTITY",
+                "restart_created": False,
+                "successor_created": False,
+            }
+        else:
+            envelope = {
+                "status": "OPERATIONAL_COMMAND_BLOCKED",
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+                "mode": args.mode,
+                "action_run_id": action_run_id,
+                "campaign_source_calls": None,
+                "source_calls": 0,
+                "scheduler_runtime_calls": 0,
+                "database_writes": 0,
+                "database_mutation_known": True,
+                "database_mutation_status": "PROVEN_ZERO_NO_CAMPAIGN_ACTION_IDENTITY",
+                "restart_created": False,
+                "successor_created": False,
+            }
+        print(json.dumps(envelope, sort_keys=True, default=str), file=sys.stderr)
         return 1
 
 

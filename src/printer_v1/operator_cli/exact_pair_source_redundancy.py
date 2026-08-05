@@ -106,8 +106,18 @@ def execute_geckoterminal_fallback(
         request_key=f"{step['run_id']}:{step['step_key']}:geckoterminal_fallback",
         payload={"pool_address": pair_address, "token_mint": mint},
     )
-    adapter = fallback_adapter_factory(
-        pair_address=pair_address, token_mint=mint, timeout_seconds=timeout_seconds,
+    from printer_v1.operator_cli.window_15m_concrete_composition import (
+        require_concrete_adapter,
+    )
+
+    adapter = require_concrete_adapter(
+        "lifecycle_exact_pair_geckoterminal_fallback",
+        fallback_adapter_factory(
+            pair_address=pair_address,
+            token_mint=mint,
+            timeout_seconds=timeout_seconds,
+        ),
+        expected_source_name=FALLBACK_SOURCE_NAME,
     )
     return execute_source_request_with_governor(
         conn, request, adapter,

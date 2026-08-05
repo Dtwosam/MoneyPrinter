@@ -4049,43 +4049,90 @@ def run_bounded_unknown_liquidity_backup(
         mint = cand["mint"]
         pool = cand["pool"]
         source = str(cand.get("source") or "").casefold()
-        # Opposite-source backup only.
-        if source in {"dexscreener", "dex"}:
-            backup_source = "geckoterminal"
-            request_kind = "candidate_market_batch"
-            source_name = GECKOTERMINAL_SOURCE_NAME
-            transport = (
-                geckoterminal_transport_factory(mint)
-                if geckoterminal_transport_factory is not None
-                else None
+        # Opposite-source backup only. Defaults always supply an explicit
+        # transport so ordinary production cannot construct a transportless
+        # adapter after campaign mutation (V2-9.8B B2/B3).
+        from printer_v1.operator_cli.window_15m_concrete_composition import (
+            ConcreteCompositionError,
+            require_concrete_adapter,
+            require_concrete_transport,
+        )
+        from printer_v1.sources.dexscreener import (
+            build_dexscreener_mint_batch_transport,
+        )
+        from printer_v1.sources.geckoterminal import (
+            build_geckoterminal_token_pools_transport,
+        )
+
+        try:
+            if source in {"dexscreener", "dex"}:
+                backup_source = "geckoterminal"
+                request_kind = "candidate_market_batch"
+                source_name = GECKOTERMINAL_SOURCE_NAME
+                if geckoterminal_transport_factory is not None:
+                    transport = require_concrete_transport(
+                        f"unknown_liq_backup.gt_factory:{mint[:8]}",
+                        geckoterminal_transport_factory(mint),
+                    )
+                else:
+                    transport = require_concrete_transport(
+                        f"unknown_liq_backup.gt_default:{mint[:8]}",
+                        build_geckoterminal_token_pools_transport(mint),
+                    )
+                adapter = require_concrete_adapter(
+                    f"unknown_liq_backup.gt_adapter:{mint[:8]}",
+                    build_geckoterminal_adapter(
+                        enabled=True, fixture_transport=transport
+                    ),
+                    expected_source_name=GECKOTERMINAL_SOURCE_NAME,
+                )
+                payload = {
+                    "request_kind": request_kind,
+                    "chain": "solana",
+                    "token_mint": mint,
+                    "exact_pool": pool,
+                }
+            else:
+                backup_source = "dexscreener"
+                request_kind = "candidate_market_batch"
+                source_name = DEXSCREENER_SOURCE_NAME
+                if dexscreener_transport_factory is not None:
+                    transport = require_concrete_transport(
+                        f"unknown_liq_backup.dex_factory:{mint[:8]}",
+                        dexscreener_transport_factory(mint),
+                    )
+                else:
+                    transport = require_concrete_transport(
+                        f"unknown_liq_backup.dex_default:{mint[:8]}",
+                        build_dexscreener_mint_batch_transport([mint]),
+                    )
+                adapter = require_concrete_adapter(
+                    f"unknown_liq_backup.dex_adapter:{mint[:8]}",
+                    build_dexscreener_adapter(
+                        enabled=True, fixture_transport=transport
+                    ),
+                    expected_source_name=DEXSCREENER_SOURCE_NAME,
+                )
+                payload = {
+                    "request_kind": request_kind,
+                    "chain": "solana",
+                    "token_mints": [mint],
+                    "exact_pool": pool,
+                }
+        except ConcreteCompositionError as exc:
+            report["accounting_blocker"] = True
+            report["accounting_blocker_reason"] = (
+                f"UNKNOWN_LIQUIDITY_BACKUP_COMPOSITION_BLOCKED:{exc}"
             )
-            adapter = build_geckoterminal_adapter(
-                enabled=True, fixture_transport=transport
+            report["outcomes"].append(
+                {
+                    "mint": mint,
+                    "pool": pool,
+                    "outcome": "COMPOSITION_BLOCKED",
+                    "reason": str(exc),
+                }
             )
-            payload = {
-                "request_kind": request_kind,
-                "chain": "solana",
-                "token_mint": mint,
-                "exact_pool": pool,
-            }
-        else:
-            backup_source = "dexscreener"
-            request_kind = "candidate_market_batch"
-            source_name = DEXSCREENER_SOURCE_NAME
-            transport = (
-                dexscreener_transport_factory(mint)
-                if dexscreener_transport_factory is not None
-                else None
-            )
-            adapter = build_dexscreener_adapter(
-                enabled=True, fixture_transport=transport
-            )
-            payload = {
-                "request_kind": request_kind,
-                "chain": "solana",
-                "token_mints": [mint],
-                "exact_pool": pool,
-            }
+            break
         if not stage_budget.available("reconciliation"):
             break
         stage_budget.consume("reconciliation", 1)

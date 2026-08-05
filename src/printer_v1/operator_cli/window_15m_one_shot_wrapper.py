@@ -621,6 +621,47 @@ def apply_authorization_once(
             f"authorization blocked before consumption: {exc}"
         ) from exc
 
+    # Prove the wrapper interpreter is the exact selected repository-venv
+    # interpreter on the ordinary auto-select path, then run the same zero-I/O
+    # concrete composition guard before any staging, application directory,
+    # manifest, marker or child launch. A block leaves the authorization
+    # unconsumed (V2-9.8B B1/B5). Explicit python_executable overrides (test /
+    # diagnostic injection) still run composition but do not re-require that
+    # the host pytest interpreter equal the injected child path.
+    if python_executable is None:
+        wrapper_interpreter = (
+            str(Path(sys.executable).resolve()) if sys.executable else ""
+        )
+        child_resolved = str(Path(child_python).resolve())
+        if not wrapper_interpreter or wrapper_interpreter != child_resolved:
+            raise OneShotWrapperError(
+                "authorization blocked before consumption: "
+                "wrapper interpreter is not the exact selected repository-venv "
+                "interpreter "
+                f"(wrapper={wrapper_interpreter!r} child={child_python!r})"
+            )
+    try:
+        from printer_v1.operator_cli.window_15m_concrete_composition import (
+            ConcreteCompositionError,
+            run_window_15m_concrete_composition_preflight,
+        )
+
+        run_window_15m_concrete_composition_preflight(
+            repository_root=str(root),
+            timeout_seconds=5.0,
+        )
+    except ConcreteCompositionError as exc:
+        raise OneShotWrapperError(
+            f"authorization blocked before consumption: concrete composition: {exc}"
+        ) from exc
+    except OneShotWrapperError:
+        raise
+    except Exception as exc:
+        raise OneShotWrapperError(
+            f"authorization blocked before consumption: concrete composition: "
+            f"{type(exc).__name__}:{exc}"
+        ) from exc
+
     staging_dir = app_root / ".staging" / f"{authorization_id}-{uuid.uuid4().hex}"
     staging_dir.mkdir(parents=True, exist_ok=False)
     staging_manifest = staging_dir / "git-provenance-manifest.json"

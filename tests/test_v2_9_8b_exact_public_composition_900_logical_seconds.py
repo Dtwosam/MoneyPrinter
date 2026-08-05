@@ -312,6 +312,12 @@ class ExactPublicComposition900LogicalSeconds(unittest.TestCase):
                     e2q_pass += 1
             self.assertEqual(2, e2q_pass)
 
+            for win in windows:
+                self.assertEqual("WINDOW_CLOSED", str(win["window_status"] or ""))
+                self.assertEqual("PARTIAL_MEMORY", str(win["memory_status"] or ""))
+                self.assertEqual("CLEAN_DATA", str(win["data_quality_label"] or ""))
+                self.assertEqual(0, int(win["do_not_train"] or 0))
+
             clean_episodes = int(
                 connection.execute(
                     """SELECT COUNT(*) FROM printer_episodes
@@ -321,9 +327,23 @@ class ExactPublicComposition900LogicalSeconds(unittest.TestCase):
                          AND do_not_train=0"""
                 ).fetchone()[0]
             )
-            # Clean promotion is expected when per-window gates pass; allow >= 0
-            # but require that windows closed cleanly under 900s law.
-            self.assertGreaterEqual(clean_episodes, 0)
+            fingerprint_count = int(
+                connection.execute(
+                    """SELECT COUNT(*) FROM printer_memory_fingerprints f
+                       JOIN printer_episodes e ON e.id=f.episode_id
+                       WHERE e.episode_kind='WINDOW_15M_CLEAN_MEMORY'
+                         AND e.memory_status='CLEAN_MEMORY'"""
+                ).fetchone()[0]
+            )
+            self.assertEqual(2, clean_episodes)
+            self.assertEqual(2, fingerprint_count)
+            # Independent lifecycle vs clean-memory verdicts (E3).
+            self.assertTrue(terminal.get("operational_lifecycle_pass"))
+            self.assertTrue(terminal.get("clean_memory_outcome_pass"))
+            cmo = terminal.get("clean_memory_outcome") or {}
+            self.assertEqual(2, len(cmo.get("episode_ids") or []))
+            self.assertEqual(2, len(cmo.get("fingerprint_ids") or []))
+            self.assertEqual(0, int(cmo.get("unrelated_promotion_count") or 0))
 
             campaign_windows = connection.execute(
                 """SELECT window_state

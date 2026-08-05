@@ -44,6 +44,7 @@ Classification outcomes:
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -271,17 +272,110 @@ def _e2y_blocked_reason(
     return "; ".join(parts)
 
 
+def _normalize_candidate_window_ids(
+    candidate_window_ids: Sequence[int] | None,
+) -> list[int] | None:
+    """None preserves backlog/global behaviour; otherwise unique positive IDs."""
+    if candidate_window_ids is None:
+        return None
+    normalized: list[int] = []
+    seen: set[int] = set()
+    for raw in candidate_window_ids:
+        wid = int(raw)
+        if wid <= 0 or wid in seen:
+            continue
+        seen.add(wid)
+        normalized.append(wid)
+    return normalized
+
+
+def _attach_fingerprint_for_episode(
+    db_path: str | Path,
+    *,
+    episode_id: int,
+    window_id: int,
+) -> int | None:
+    """Wire the existing canonical fingerprint owner after E2Z creation."""
+    from printer_v1.memory.fingerprints import (
+        build_memory_fingerprint_payload,
+        record_memory_fingerprint,
+    )
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        existing = conn.execute(
+            """SELECT id FROM printer_memory_fingerprints
+               WHERE episode_id=? LIMIT 1""",
+            (episode_id,),
+        ).fetchone()
+        if existing is not None:
+            return int(existing["id"])
+        episode = conn.execute(
+            """SELECT id, memory_window_id, token_id, pair_id, episode_kind,
+                      memory_status, memory_quality_label, data_quality_label,
+                      do_not_train, window_kind, supporting_context_json
+               FROM printer_episodes WHERE id=?""",
+            (episode_id,),
+        ).fetchone()
+        if episode is None:
+            return None
+        window = conn.execute(
+            """SELECT id, window_kind, supporting_context_json
+               FROM printer_memory_windows WHERE id=?""",
+            (window_id,),
+        ).fetchone()
+        import json
+
+        supporting = {}
+        if window is not None and window["supporting_context_json"]:
+            try:
+                supporting = json.loads(str(window["supporting_context_json"]))
+            except Exception:
+                supporting = {}
+        episode_payload = {
+            "window": {
+                "window_kind": (
+                    window["window_kind"] if window is not None else episode["window_kind"]
+                ),
+                "supporting_context_json": supporting,
+            },
+            "outcome_label": None,
+            "memory_quality_label": episode["memory_quality_label"] or "CLEAN_MEMORY",
+            "supporting_context": supporting,
+            "token_age_bucket": None,
+            "pair_age_bucket": None,
+            "discovery_label": None,
+        }
+        payload = build_memory_fingerprint_payload(episode_payload)
+        fingerprint_id = record_memory_fingerprint(
+            conn,
+            int(episode_id),
+            payload,
+            episode["memory_quality_label"] or "CLEAN_MEMORY",
+        )
+        conn.commit()
+        return int(fingerprint_id)
+    finally:
+        conn.close()
+
+
 def run_e2z_pipeline(
     db_path: str | Path | None,
     *,
     operator_approved: bool = False,
     production_mode: bool = False,
+    candidate_window_ids: Sequence[int] | None = None,
 ) -> dict[str, Any]:
     """Wire E2X eligibility → Lane Q guard → Lane U2 coverage → E2Y set gate → E2Z.
 
     Coverage persistence (Lane U2) runs for ALL Lane Q-valid windows regardless of
     whether the E2Y same-pair set gate passes.  E2Y still gates clean-memory
     creation (E2Z); zero clean memories is always a valid outcome.
+
+    When ``candidate_window_ids`` is an explicit list, it is the complete write
+    authority: only those unique positive IDs may be mutated. ``None`` preserves
+    the historical global/backlog maintenance behaviour.
 
     Requires operator_approved=True and a valid db_path.
     Idempotent: re-running does not duplicate coverage or clean-memory rows.
@@ -303,16 +397,22 @@ def run_e2z_pipeline(
     if blocked_reasons:
         return _blocked_result(blocked_reasons, db_path_str)
 
+    explicit_scope = _normalize_candidate_window_ids(candidate_window_ids)
+    requested_window_ids = list(explicit_scope) if explicit_scope is not None else None
+
     before = _snapshot_counts(db_path_str)
 
-    # Step 1: E2X eligibility — all WINDOW_15M candidates
+    # Step 1: E2X eligibility — all WINDOW_15M candidates, then optional scope.
     e2x_report = build_e2x_15m_clean_memory_eligibility_report(
         db_path, operator_approved=True
     )
     e2x_status = e2x_report.get("e2x_status", _E2X_STATUS_BLOCKED)
     all_eligible_ids: list[int] = list(e2x_report.get("review_candidate_ids", []))
+    if explicit_scope is not None:
+        scope_set = set(explicit_scope)
+        all_eligible_ids = [wid for wid in all_eligible_ids if wid in scope_set]
 
-    # Step 2: Lane Q guard for ALL E2X-eligible windows — runs before E2Y so
+    # Step 2: Lane Q guard for scoped E2X-eligible windows — runs before E2Y so
     #         coverage can be persisted regardless of same-pair grouping outcome.
     lane_q_guard = guard_candidate_windows(
         db_path, all_eligible_ids, operator_approved=True,
@@ -324,9 +424,10 @@ def run_e2z_pipeline(
 
     # Downgrade Lane Q-blocked windows before E2Y runs so E2Y's independent DB
     # query does not include them in the clean-memory candidate set.
+    # Under explicit operational scope, only scoped IDs may be written.
     _downgrade_blocked_windows(db_path_str, all_lane_q_blocked_ids)
 
-    # Step 3: Lane U2 — persist coverage for ALL Lane Q-valid windows.
+    # Step 3: Lane U2 — persist coverage for scoped Lane Q-valid windows.
     #         Decoupled from E2Y: writes coverage rows even when E2Y fails.
     lane_u2_result = persist_coverage_for_windows(
         db_path,
@@ -342,33 +443,43 @@ def run_e2z_pipeline(
     coverage_persisted_count: int = lane_u2_result.get("coverage_rows_written", 0)
     coverage_blocked_count: int = len(_coverage_blocked)
 
-    # Step 4: E2Y set gate — informational reporting only.
-    # The E2Y batch gate (all_partial_memory, candidate_count_is_5) is NOT used
-    # to gate E2Z in mixed batches. Individual per-window eligibility (E2Z gate)
-    # is the sole authority for clean-memory creation.  This allows a run with
-    # 3 PARTIAL_MEMORY + 10 DIRTY_MEMORY windows to promote the 3 clean ones
-    # without being blocked by the 10 dirty ones.
-    e2y_report = build_e2y_15m_candidate_set_gate_report(
-        db_path, operator_approved=True
-    )
-    e2y_status = e2y_report.get("e2y_status", "E2Y_SET_GATE_BLOCKED")
-    set_gate_passed: bool = bool(e2y_report.get("set_gate_passed", False))
-    e2y_candidate_ids: list[int] = (
-        e2y_report.get("candidate_set_summary", {}).get("candidate_ids", [])
-    )
-
-    e2y_candidate_reason: str | None = None
-    if not set_gate_passed:
-        set_gate = e2y_report.get("set_gate", {})
-        token_pairs = (
-            e2y_report.get("candidate_set_summary", {}).get("token_pairs", [])
+    # Step 4: E2Y set gate — informational reporting only under global mode.
+    # Explicit operational scope does not use global E2Y as write authority.
+    if explicit_scope is not None:
+        e2y_report = {
+            "e2y_status": "NOT_APPLICABLE_EXPLICIT_WINDOW_SCOPE",
+            "set_gate_passed": False,
+            "candidate_set_summary": {
+                "candidate_ids": list(explicit_scope),
+                "token_pairs": [],
+            },
+            "set_gate": {},
+        }
+        e2y_status = "NOT_APPLICABLE_EXPLICIT_WINDOW_SCOPE"
+        set_gate_passed = False
+        e2y_candidate_ids = list(explicit_scope)
+        e2y_candidate_reason = "NOT_APPLICABLE_EXPLICIT_WINDOW_SCOPE"
+        _e2y_css = e2y_report.get("candidate_set_summary", {})
+    else:
+        e2y_report = build_e2y_15m_candidate_set_gate_report(
+            db_path, operator_approved=True
         )
-        e2y_candidate_reason = _e2y_blocked_reason(
-            set_gate, token_pairs, coverage_blocked_count,
-            lane_q_excluded_count=len(all_lane_q_blocked_ids),
+        e2y_status = e2y_report.get("e2y_status", "E2Y_SET_GATE_BLOCKED")
+        set_gate_passed = bool(e2y_report.get("set_gate_passed", False))
+        e2y_candidate_ids = (
+            e2y_report.get("candidate_set_summary", {}).get("candidate_ids", [])
         )
-
-    _e2y_css = e2y_report.get("candidate_set_summary", {})
+        e2y_candidate_reason = None
+        if not set_gate_passed:
+            set_gate = e2y_report.get("set_gate", {})
+            token_pairs = (
+                e2y_report.get("candidate_set_summary", {}).get("token_pairs", [])
+            )
+            e2y_candidate_reason = _e2y_blocked_reason(
+                set_gate, token_pairs, coverage_blocked_count,
+                lane_q_excluded_count=len(all_lane_q_blocked_ids),
+            )
+        _e2y_css = e2y_report.get("candidate_set_summary", {})
 
     # Step 5: E2Z for individually eligible windows.
     # Eligible = Lane Q valid ∩ not coverage blocked.
@@ -384,6 +495,9 @@ def run_e2z_pipeline(
     already_exists_count = 0
     e2z_blocked_count = 0
     window_results: list[dict[str, Any]] = []
+    promoted_window_ids: list[int] = []
+    already_existing_window_ids: list[int] = []
+    fingerprint_ids: list[int] = []
 
     for wid in e2z_eligible_ids:
         result = create_clean_memory_from_window(
@@ -393,16 +507,31 @@ def run_e2z_pipeline(
             individual_promotion=True,
         )
         status = result.get("e2z_status")
+        episode_id = result.get("episode_id")
+        fingerprint_id = None
         if status == E2Z_STATUS_CREATED:
             created_count += 1
+            promoted_window_ids.append(wid)
+            if episode_id is not None:
+                fingerprint_id = _attach_fingerprint_for_episode(
+                    db_path, episode_id=int(episode_id), window_id=int(wid)
+                )
         elif status == E2Z_STATUS_ALREADY_EXISTS:
             already_exists_count += 1
+            already_existing_window_ids.append(wid)
+            if episode_id is not None:
+                fingerprint_id = _attach_fingerprint_for_episode(
+                    db_path, episode_id=int(episode_id), window_id=int(wid)
+                )
         else:
             e2z_blocked_count += 1
+        if fingerprint_id is not None:
+            fingerprint_ids.append(int(fingerprint_id))
         window_results.append({
             "window_id": wid,
             "e2z_status": status,
-            "episode_id": result.get("episode_id"),
+            "episode_id": episode_id,
+            "fingerprint_id": fingerprint_id,
             "blocked_by": (
                 "e2z_per_window_gate" if status == _E2Z_STATUS_BLOCKED else None
             ),
@@ -448,6 +577,13 @@ def run_e2z_pipeline(
         else []
     )
 
+    unrelated_promotion_count = 0
+    if explicit_scope is not None:
+        scope_set = set(explicit_scope)
+        for wid in promoted_window_ids + already_existing_window_ids:
+            if wid not in scope_set:
+                unrelated_promotion_count += 1
+
     return {
         "lane_k_status": LANE_K_STATUS_COMPLETED,
         "lane": LANE_K_NAME,
@@ -478,7 +614,18 @@ def run_e2z_pipeline(
         "e2z_already_exists_count": already_exists_count,
         "e2z_blocked_count": e2z_blocked_count,
         "clean_memory_rows_created": created_count,
-        "candidate_window_ids": e2y_candidate_ids,
+        "candidate_window_ids": (
+            list(requested_window_ids)
+            if requested_window_ids is not None
+            else e2y_candidate_ids
+        ),
+        "requested_window_ids": requested_window_ids,
+        "eligible_window_ids": list(all_eligible_ids),
+        "promoted_window_ids": list(promoted_window_ids),
+        "already_existing_window_ids": list(already_existing_window_ids),
+        "fingerprint_ids": list(fingerprint_ids),
+        "unrelated_promotion_count": unrelated_promotion_count,
+        "explicit_window_scope": explicit_scope is not None,
         "zero_clean_memories_valid": True,
         "hard_locks": dict(_HARD_LOCKS),
         "locked_capabilities": dict(_LOCKED_CAPABILITIES),
