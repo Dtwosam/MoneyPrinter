@@ -85,20 +85,57 @@ sidecar created.
 
 `review` never ratifies what a package asserts. It re-derives the canonical
 catalogue from the live repository and the ledger from the live database, then
-checks the package's claimed `migration_count`, `migration_head`, `sha256`,
-`size`, and `path` against independently observed values, and additionally
-rejects a package binding a head the repository does not actually ship. Missing
-claims are rejected as `package_binding_incomplete` rather than silently skipped.
+compares every field the package bound against independently observed values.
+
+`PACKAGE_BINDING_FIELDS` — all seven required:
+
+| Field | Comparison |
+| --- | --- |
+| `path` | resolved-path equality against the inspected database |
+| `sha256` | exact content identity |
+| `size` | exact byte size |
+| `inode` | exact filesystem identity |
+| `mtime_ns` | exact modification time in nanoseconds |
+| `migration_count` | exact applied count |
+| `migration_head` | exact applied head |
+
+Content identity alone is deliberately not sufficient. Because a package binds a
+specific *file*, `inode` and `mtime_ns` are compared alongside `sha256` and
+`size`: a replaced or rewritten database that happens to reproduce the same bytes
+is still not the file the package was authorized against.
+
+Any omitted field blocks as `package_binding_incomplete` rather than being
+silently skipped, and a package binding a head the repository does not ship is
+rejected as dishonest.
+
+Crucially, an honest binding does not buy a bypass. Integrity, foreign keys,
+sidecars, and canonical-ledger compatibility are all still checked independently
+in `review` — a package that truthfully reports a drifted database is still
+blocked, on the ledger findings rather than on dishonesty.
 
 ### 5. Wrapper integration — `src/printer_v1/operator_cli/window_15m_one_shot_wrapper.py`
 
-The guard runs inside `apply_authorization_once` **after** authorization/package
-resolution and child-interpreter selection, and **before** the staging directory,
-manifest bytes, canonical application directory, marker, and child creation. At
-that point the authorization is resolved but untouched, so a block costs nothing.
+`apply_authorization_once` retains the authorization document returned by
+`_resolve_authorization`, extracts its `authoritative_database` mapping via
+`package_binding_from_document`, and invokes the shared guard in **`review`**
+mode with that binding. This runs **after** authorization/package resolution and
+child-interpreter selection, and **before** the staging directory, manifest
+bytes, canonical application directory, marker, and child creation. At that point
+the authorization is resolved but untouched, so a block costs nothing.
+
+`review` rather than `prepare` is the point of the integration. A ledger that
+merely agrees with the repository is not sufficient: the package pinned one exact
+database *file*, and the wrapper must refuse to consume the authorization against
+any other. A different path, content hash, size, inode, mtime, migration count,
+or head all mean the authorized subject no longer exists. A package omitting any
+of those fields never pinned anything and is rejected as incomplete.
+
 The call is injectable (`migration_ledger_guard`) and defaults to the real
 `assert_migration_ledger_ready`; a guard fault is re-raised as
 `OneShotWrapperError` prefixed `authorization blocked before consumption:`.
+
+The standalone `prepare` CLI mode is preserved unchanged for preparation flows
+that have no package to review yet.
 
 ### 6. Existing operational preflight unchanged
 
@@ -124,17 +161,18 @@ supports the approved design, so **no authorization schema change was made**.
 | File | Change |
 | --- | --- |
 | `src/printer_v1/db/migrate.py` | strict filename/sequence validation, ordered-name digest |
-| `src/printer_v1/operator_cli/pre_authorization_migration_ledger_guard.py` | new guard module and CLI |
-| `src/printer_v1/operator_cli/window_15m_one_shot_wrapper.py` | guard invocation before staging |
-| `tests/test_v2_9_8b_pre_authorization_migration_ledger_drift_guard.py` | new bounded proof (43 tests) |
-| `tests/test_v2_9_8b_window_15m_one_shot_wrapper.py` | one required test correction (below) |
+| `src/printer_v1/operator_cli/pre_authorization_migration_ledger_guard.py` | new guard module and CLI; seven-field package-binding enforcement |
+| `src/printer_v1/operator_cli/window_15m_one_shot_wrapper.py` | `review`-mode guard invocation with the package binding, before staging |
+| `tests/test_v2_9_8b_pre_authorization_migration_ledger_drift_guard.py` | new bounded proof (57 tests, 24 subtests) |
+| `tests/test_v2_9_8b_window_15m_one_shot_wrapper.py` | required test correction and honest live binding in the fixture (below) |
 | `docs/printer-v1-v2-9-8b-pre-authorization-migration-ledger-drift-guard-closeout.md` | this closeout |
 
 ## Integration points
 
-1. `window_15m_one_shot_wrapper.apply_authorization_once` — after package
-   resolution and interpreter selection, before staging/manifest/directory/
-   marker/child. The only consumption-path integration.
+1. `window_15m_one_shot_wrapper.apply_authorization_once` — **`review` mode with
+   the package's own `authoritative_database` binding**, after package resolution
+   and interpreter selection, before staging/manifest/directory/marker/child. The
+   only consumption-path integration.
 2. `pre_authorization_migration_ledger_guard prepare` CLI — for any authorization
    preparation flow, before a package directory or byte exists.
 3. `pre_authorization_migration_ledger_guard review --authorization-file` CLI —
@@ -159,8 +197,8 @@ supports the approved design, so **no authorization schema change was made**.
 | `database_integrity` | `PRAGMA integrity_check` not `ok` |
 | `foreign_key_violations` | `PRAGMA foreign_key_check` returned rows |
 | `database_unavailable` | file missing, unreadable, or sidecars present |
-| `package_binding_dishonest` | package claim contradicts independently observed truth |
-| `package_binding_incomplete` | package omits a required migration fact |
+| `package_binding_dishonest` | any of path, sha256, size, inode, mtime_ns, count, or head contradicts independently observed truth |
+| `package_binding_incomplete` | package omits any of the seven required binding fields |
 | `guard_input_invalid` | malformed CLI input or package file |
 
 The exact historical failure reproduces as `migration_ledger_missing` +
@@ -173,11 +211,14 @@ The exact historical failure reproduces as `migration_ledger_missing` +
   `0c31f75ea2e204be2a9857542895a5dfc8f1f88120eb0c60ae83cd47f5d22fbe`,
   integrity `ok`, FK violations `0`, no sidecars.
 * `review` against the consumed `V2_9_8B_WINDOW_15M_AUTH_20260804T214901Z`
-  package: **BLOCKED** with four `package_binding_dishonest` findings — the
-  package binds the pre-052 database (`51` / `051…` /
-  `a9c1472…f6233` / `67862528`) which no longer matches the live post-052
-  database (`52` / `052…` / `5cf5326…cfafdc` / `68009984`). Correct: that package
-  is stale and must never be treated as current.
+  package: **BLOCKED** with five `package_binding_dishonest` findings — `sha256`
+  (`a9c1472…f6233` vs `5cf5326…cfafdc`), `size` (`67862528` vs `68009984`),
+  `mtime_ns` (`1785862166532276815` vs `1785921369859239685`), `migration_count`
+  (`51` vs `52`), and `migration_head` (`051…` vs `052…`). `path` and `inode`
+  match, because migration 052 was applied in place to the same file — which is
+  exactly why content, size, mtime, and ledger must all be bound rather than
+  filesystem identity alone. Correct outcome: that package is stale and must
+  never be treated as current.
 
 ## Tests
 
@@ -186,14 +227,14 @@ disposable temporary file; the authoritative database is only ever observed.
 
 | Suite | Result |
 | --- | --- |
-| `test_v2_9_8b_pre_authorization_migration_ledger_drift_guard.py` (new) | 43 passed, 10 subtests |
+| `test_v2_9_8b_pre_authorization_migration_ledger_drift_guard.py` (new) | 57 passed, 24 subtests |
 | `test_v2_9_8b_window_15m_one_shot_wrapper.py` | 44 passed |
-| `test_v2_9_8b_graduated_discovery_liquidity_memory_eligibility.py` | passed |
-| `test_v2_9_8b_campaign_scheduler_ownership_schema_migration.py` | passed |
-| `test_v2_9_8b_campaign_scheduler_ownership_schema_migration_bounded_proof.py` | passed (1 env-gated skip) |
-| `test_v2_9_7d_6b_2_operational_backup_restore_preflight.py` | passed |
-| `test_v2_9_1_proof_db_schema_readiness.py` | passed |
-| **Combined focused run** | **174 passed, 1 skipped, 10 subtests** |
+| **Combined scoped run** | **101 passed, 24 subtests** |
+
+The earlier migration/backup/schema-readiness suites were run at the
+implementation stage (174 passed, 1 skipped); the package-binding repair touches
+neither those modules nor their fixtures, so the repair run was scoped to the
+guard and wrapper suites as instructed.
 
 Compilation (`compileall`) clean on all changed modules and tests.
 `git diff --check` clean.
@@ -209,8 +250,31 @@ Required proof coverage:
   two on-disk disposable catalogue tests
 * integrity and FK failures BLOCK — real corrupted file, real FK violation
 * dishonest package facts rejected by review — head, count, hash, size, path,
-  non-canonical head, and incomplete binding
+  inode, mtime_ns, non-canonical head, and incomplete binding
 * wrapper blocks before consumption — `test_drift_blocks_before_any_consumption_artifact`
+
+Package-binding enforcement proof:
+
+* `test_wrapper_passes_exact_package_binding_in_review_mode` — the wrapper calls
+  the guard exactly once, in `review` mode, with the package's own
+  `authoritative_database` mapping byte-for-byte, covering all seven fields
+* `test_matching_ledger_with_wrong_sha256_blocks_before_consumption` and
+  `..._wrong_size_...` — a genuinely canonical `52 / 052` live database still
+  blocks when the package binds a different hash or size
+* `test_inode_mismatch_blocks_before_consumption` and
+  `test_mtime_ns_mismatch_blocks_before_consumption`
+* `test_incomplete_package_binding_blocks_before_consumption` — subtested over
+  every one of the seven required fields, each on a fresh fixture
+* `test_absent_package_binding_blocks_before_consumption`
+* Each of the above asserts, via `_assert_nothing_consumed`, that no staging
+  directory, manifest, application directory, marker, terminal, stdout/stderr
+  file, or child process was created
+* `test_honest_live_binding_passes_the_real_guard` — the unmodified fixture binds
+  the live database honestly and is consumed normally, so the tests prove a real
+  gate rather than an unconditional refusal
+* `test_review_still_checks_health_and_ledger_independently` — a package that
+  tells the truth about a drifted database is still blocked on the ledger
+* `test_sidecars_block_review_even_with_matching_binding`
 * authoritative DB hash/size/inode/mtime unchanged — enforced by the
   `AuthoritativeDatabaseUntouched` base class at every class teardown
 * no package, marker, campaign, provider, Scheduler, memory or financial activity
@@ -225,7 +289,14 @@ narrowed honestly rather than deleted — the network prohibition remains absolu
 and the SQLite assertion is now stronger in the dimension that matters: exactly
 one open, via URI, containing both `mode=ro` and `immutable=1`, against the
 authoritative database path, with the file's SHA-256 verified unchanged across
-the call. This is the only test correction made.
+the call.
+
+The wrapper fixture's synthetic authorization payload also gained an
+`authoritative_database` binding, because the wrapper now requires one. The
+binding is produced by `live_authoritative_database_binding()`, which observes
+the real database read-only (hash, stat, immutable read-only ledger query) rather
+than asserting a convenient fiction — so the fixture exercises the real
+enforcement path instead of stubbing around it.
 
 ### Pre-existing failures outside this lane
 
@@ -281,7 +352,11 @@ are spent on observation rather than on discovering schema drift.
 * Ledger comparison is order-sensitive. A ledger with the right names in the
   wrong order is now drift, not a match.
 * Package migration claims are checked for honesty against independently
-  observed truth instead of being trusted.
+  observed truth instead of being trusted, across all seven bound fields.
+* The wrapper now enforces the package's *own* database binding before
+  consumption. An authorization can only be spent against the exact file it was
+  authorized against — not merely against a database that happens to be at the
+  right migration head.
 * Database inspection is provably non-disturbing: sidecar-refusing, immutable,
   read-only, lock-free, and asserted byte-identical after every test class.
 
@@ -301,9 +376,11 @@ are spent on observation rather than on discovering schema drift.
 * Strict catalogue validation and ordered-name digest: complete
 * Guard module with sidecar-safe immutable inspection: complete
 * Structured PASS/BLOCKED result and both CLI modes: complete
-* `prepare` writes-nothing proof: complete
+* `prepare` writes-nothing proof: complete, and `prepare` CLI preserved separately
 * `review` independent re-derivation and dishonesty rejection: complete
-* Wrapper integration before consumption: complete
+* Seven-field package-binding enforcement (path, sha256, size, inode, mtime_ns,
+  count, head), with missing fields blocking: complete
+* Wrapper `review`-mode integration before consumption: complete
 * Operational preflight unchanged: complete and asserted
 * Focused bounded tests, compilation, and `git diff --check`: complete
 * Authoritative database identity unchanged: complete
@@ -322,6 +399,18 @@ are spent on observation rather than on discovering schema drift.
   cannot prevent the database changing between review and consumption. The
   wrapper-start guard and the in-child operational preflight are what close that
   window; `review` alone must not be treated as a consumption-time guarantee.
+* Binding on `mtime_ns` and `inode` is strict by design, and strictness has a
+  cost: any operation that rewrites or replaces the authoritative database file —
+  including a legitimate migration, backup-restore, or filesystem move —
+  invalidates every existing authorization package immediately. That is the
+  intended behaviour, but it means an authorization package must be regenerated
+  after any authoritative database change, and a package prepared before a
+  migration can never be consumed after it.
+* `inode` and `mtime_ns` are filesystem-level facts. They are stable for
+  in-place use on one machine, but are not portable across copies, restores, or
+  volumes. This binding therefore pins an authorization to one database file on
+  one filesystem, which is correct for this single-operator design and would need
+  revisiting if the corpus ever moved between hosts.
 * Enforcing the filename contract inside `canonical_migration_names` means any
   future migration violating it fails closed everywhere at once, including in
   unrelated callers. This is intended, but it makes the naming contract a hard

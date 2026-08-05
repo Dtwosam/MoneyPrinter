@@ -50,6 +50,24 @@ LEDGER_TABLE = "printer_schema_migrations"
 #: Package field carrying the authorization's authoritative-database binding.
 PACKAGE_DB_BINDING_KEY = "authoritative_database"
 
+#: Every field a package must bind. All are required: a package that omits one
+#: has not actually pinned the database it was authorized against.
+PACKAGE_BINDING_FIELDS = (
+    "path",
+    "sha256",
+    "size",
+    "inode",
+    "mtime_ns",
+    "migration_count",
+    "migration_head",
+)
+
+#: Fields compared by exact equality. ``path`` is excluded because it is
+#: compared after resolution, not literally.
+PACKAGE_BINDING_COMPARED_FIELDS = tuple(
+    field_name for field_name in PACKAGE_BINDING_FIELDS if field_name != "path"
+)
+
 
 class MigrationLedgerDriftGuardError(RuntimeError):
     """Fail-closed pre-authorization migration-ledger drift fault."""
@@ -436,43 +454,38 @@ def _review_package_binding(
     live repository catalogue and the live database, so a package asserting a
     head, count, or identity it does not actually have is rejected rather than
     ratified.
+
+    Content identity alone is not enough. A package binds a specific *file*, so
+    ``inode`` and ``mtime_ns`` are compared alongside ``sha256`` and ``size``: a
+    replaced or rewritten database that happens to reproduce the same bytes is
+    still not the file the package was authorized against.
     """
-    claimed = {
-        "migration_count": package_binding.get("migration_count"),
-        "migration_head": package_binding.get("migration_head"),
-        "sha256": package_binding.get("sha256"),
-        "size": package_binding.get("size"),
-        "path": package_binding.get("path"),
-    }
+    claimed = {key: package_binding.get(key) for key in PACKAGE_BINDING_FIELDS}
     blockers: list[dict[str, str]] = []
 
     if not database.get("readable"):
         # Health blockers already recorded; nothing independent to compare to.
         return {"claimed": claimed, "observed": None, "honest": False}, blockers
 
-    observed = {
-        "migration_count": database.get("migration_count"),
-        "migration_head": database.get("migration_head"),
-        "sha256": database.get("sha256"),
-        "size": database.get("size"),
-        "path": database.get("path"),
-    }
+    observed = {key: database.get(key) for key in PACKAGE_BINDING_FIELDS}
 
-    for key in ("migration_count", "migration_head", "sha256", "size"):
-        claim = claimed[key]
-        if claim is None:
-            blockers.append(
-                _blocker(
-                    "package_binding_incomplete",
-                    f"package migration binding omits {key!r}",
-                )
+    missing = [key for key in PACKAGE_BINDING_FIELDS if claimed[key] is None]
+    for key in missing:
+        blockers.append(
+            _blocker(
+                "package_binding_incomplete",
+                f"package migration binding omits {key!r}",
             )
+        )
+
+    for key in PACKAGE_BINDING_COMPARED_FIELDS:
+        if claimed[key] is None:
             continue
-        if claim != observed[key]:
+        if claimed[key] != observed[key]:
             blockers.append(
                 _blocker(
                     "package_binding_dishonest",
-                    f"package claims {key}={claim!r} but the live database has "
+                    f"package claims {key}={claimed[key]!r} but the live database has "
                     f"{observed[key]!r}",
                 )
             )
@@ -524,6 +537,22 @@ def assert_migration_ledger_ready(
     return result
 
 
+def package_binding_from_document(document: Mapping[str, Any]) -> dict[str, Any]:
+    """Extract and shape-validate a package's authoritative-database binding.
+
+    Only the presence and shape of the binding are checked here. Whether its
+    contents are *true* is decided by ``review``, against the live database.
+    """
+    if not isinstance(document, Mapping):
+        raise MigrationLedgerDriftGuardError("authorization document must be a mapping")
+    binding = document.get(PACKAGE_DB_BINDING_KEY)
+    if not isinstance(binding, Mapping):
+        raise MigrationLedgerDriftGuardError(
+            f"authorization package has no {PACKAGE_DB_BINDING_KEY!r} binding"
+        )
+    return dict(binding)
+
+
 def load_package_binding(authorization_file: str | Path) -> dict[str, Any]:
     """Read the authoritative-database binding out of an authorization package.
 
@@ -540,12 +569,7 @@ def load_package_binding(authorization_file: str | Path) -> dict[str, Any]:
         ) from exc
     if not isinstance(document, dict):
         raise MigrationLedgerDriftGuardError("authorization file must be a JSON object")
-    binding = document.get(PACKAGE_DB_BINDING_KEY)
-    if not isinstance(binding, Mapping):
-        raise MigrationLedgerDriftGuardError(
-            f"authorization package has no {PACKAGE_DB_BINDING_KEY!r} binding"
-        )
-    return dict(binding)
+    return package_binding_from_document(document)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -616,12 +640,15 @@ __all__ = [
     "GUARD_SCHEMA_VERSION",
     "GuardResult",
     "MigrationLedgerDriftGuardError",
+    "PACKAGE_BINDING_COMPARED_FIELDS",
+    "PACKAGE_BINDING_FIELDS",
     "PACKAGE_DB_BINDING_KEY",
     "PASS_VERDICT",
     "assert_migration_ledger_ready",
     "evaluate_migration_ledger_drift",
     "inspect_authoritative_database",
     "load_package_binding",
+    "package_binding_from_document",
     "main",
     "present_sidecars",
 ]

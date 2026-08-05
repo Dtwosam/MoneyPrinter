@@ -25,6 +25,36 @@ def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def live_authoritative_database_binding() -> dict:
+    """Observe the live authoritative database and return an honest binding.
+
+    Read-only: the file is hashed and stat'd, never opened for writing.
+    """
+    path = command.AUTHORITATIVE_DB
+    info = path.stat()
+    connection = sqlite3.connect(
+        f"file:{path.as_posix()}?mode=ro&immutable=1", uri=True, timeout=0.0
+    )
+    try:
+        ledger = [
+            str(row[0])
+            for row in connection.execute(
+                "SELECT version FROM printer_schema_migrations ORDER BY rowid"
+            ).fetchall()
+        ]
+    finally:
+        connection.close()
+    return {
+        "path": str(path),
+        "sha256": _sha(path),
+        "size": info.st_size,
+        "inode": info.st_ino,
+        "mtime_ns": info.st_mtime_ns,
+        "migration_count": len(ledger),
+        "migration_head": ledger[-1],
+    }
+
+
 def build_venv_layout(venv_dir: Path, base_target: Path) -> tuple[Path, Path]:
     """Create a disposable venv-style layout with a real symlink chain.
 
@@ -152,6 +182,10 @@ class Fixture:
                 "main_window": "WINDOW_15M",
                 "selective_1h_continuation": False,
             },
+            # The wrapper reviews this binding against the live authoritative
+            # database before consuming anything, so the fixture must bind the
+            # real file honestly rather than assert a convenient fiction.
+            "authoritative_database": live_authoritative_database_binding(),
         }
         self.authorization_path.write_text(
             json.dumps(payload, indent=2, sort_keys=True) + "\n",

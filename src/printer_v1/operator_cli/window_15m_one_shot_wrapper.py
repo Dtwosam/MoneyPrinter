@@ -25,6 +25,7 @@ from printer_v1.operator_cli.pre_authorization_migration_ledger_guard import (
     GuardResult,
     MigrationLedgerDriftGuardError,
     assert_migration_ledger_ready,
+    package_binding_from_document,
 )
 from printer_v1.operator_cli.git_provenance_authorization_manifest import (
     APPLICATION_MARKER_SCHEMA_VERSION,
@@ -578,7 +579,7 @@ def apply_authorization_once(
     if app_root == root or app_root.is_relative_to(root):
         raise OneShotWrapperError("application artifacts must live outside repository")
 
-    _, _, authorization_id, _ = _resolve_authorization(
+    _, authorization_document, authorization_id, _ = _resolve_authorization(
         repository_root=root,
         authorization_file=authorization_file,
         authorization_sha256=authorization_sha256,
@@ -595,15 +596,26 @@ def apply_authorization_once(
         repository_root=root, override=python_executable
     )
 
-    # Migration-ledger drift gate. The authorization package has been resolved
-    # by this point, but nothing has been staged, no manifest or marker byte
-    # exists, and the canonical application directory has not been created — so
-    # a block here costs nothing. The identical structural question is asked
-    # again later by the operational preflight inside the child, which remains
-    # the final defence; this gate exists only so drift stops being discovered
-    # after the authorization is already permanently consumed.
+    # Migration-ledger drift gate, in ``review`` mode against this package's own
+    # database binding. The authorization package has been resolved by this
+    # point, but nothing has been staged, no manifest or marker byte exists, and
+    # the canonical application directory has not been created — so a block here
+    # costs nothing.
+    #
+    # ``review`` rather than ``prepare``: a ledger that merely agrees with the
+    # repository is not sufficient. The package pinned one exact database file,
+    # and the wrapper must refuse to consume the authorization against any other
+    # — a different path, content hash, size, inode, mtime, migration count, or
+    # head all mean the authorized subject no longer exists. A package that
+    # omits any of those fields never pinned anything and is rejected too.
+    #
+    # The identical structural question is asked again later by the operational
+    # preflight inside the child, which remains the final defence; this gate
+    # exists only so drift stops being discovered after the authorization is
+    # already permanently consumed.
     try:
-        migration_ledger_guard(mode="prepare")
+        package_binding = package_binding_from_document(authorization_document)
+        migration_ledger_guard(mode="review", package_binding=package_binding)
     except MigrationLedgerDriftGuardError as exc:
         raise OneShotWrapperError(
             f"authorization blocked before consumption: {exc}"

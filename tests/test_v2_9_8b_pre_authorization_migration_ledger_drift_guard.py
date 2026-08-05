@@ -361,6 +361,8 @@ class ReviewModeTests(AuthoritativeDatabaseUntouched):
             "migration_head": self.canonical[-1],
             "sha256": _sha(self.db),
             "size": info.st_size,
+            "inode": info.st_ino,
+            "mtime_ns": info.st_mtime_ns,
         }
 
     def tearDown(self) -> None:
@@ -402,6 +404,18 @@ class ReviewModeTests(AuthoritativeDatabaseUntouched):
         self.assertEqual(result.status, "BLOCKED")
         self.assertIn("package_binding_dishonest", result.blocker_codes)
 
+    def test_dishonest_inode_rejected(self) -> None:
+        result = self.review(dict(self.honest, inode=self.honest["inode"] + 1))
+        self.assertEqual(result.status, "BLOCKED")
+        self.assertIn("package_binding_dishonest", result.blocker_codes)
+        self.assertIn("inode", result.summary())
+
+    def test_dishonest_mtime_ns_rejected(self) -> None:
+        result = self.review(dict(self.honest, mtime_ns=self.honest["mtime_ns"] - 1))
+        self.assertEqual(result.status, "BLOCKED")
+        self.assertIn("package_binding_dishonest", result.blocker_codes)
+        self.assertIn("mtime_ns", result.summary())
+
     def test_non_canonical_head_claim_rejected(self) -> None:
         db = _disposable_db(self.root / "claim.sqlite3", ["999_invented.sql"])
         info = db.stat()
@@ -414,10 +428,22 @@ class ReviewModeTests(AuthoritativeDatabaseUntouched):
                 "migration_head": "999_invented.sql",
                 "sha256": _sha(db),
                 "size": info.st_size,
+                "inode": info.st_ino,
+                "mtime_ns": info.st_mtime_ns,
             },
         )
         self.assertEqual(result.status, "BLOCKED")
         self.assertIn("package_binding_dishonest", result.blocker_codes)
+
+    def test_every_binding_field_is_required(self) -> None:
+        for field_name in guard.PACKAGE_BINDING_FIELDS:
+            with self.subTest(field=field_name):
+                binding = dict(self.honest)
+                binding.pop(field_name)
+                result = self.review(binding)
+                self.assertEqual(result.status, "BLOCKED")
+                self.assertIn("package_binding_incomplete", result.blocker_codes)
+                self.assertIn(field_name, result.summary())
 
     def test_incomplete_binding_rejected(self) -> None:
         binding = dict(self.honest)
@@ -425,6 +451,51 @@ class ReviewModeTests(AuthoritativeDatabaseUntouched):
         result = self.review(binding)
         self.assertEqual(result.status, "BLOCKED")
         self.assertIn("package_binding_incomplete", result.blocker_codes)
+
+    def test_binding_fields_cover_the_required_contract(self) -> None:
+        self.assertEqual(
+            set(guard.PACKAGE_BINDING_FIELDS),
+            {
+                "path",
+                "sha256",
+                "size",
+                "inode",
+                "mtime_ns",
+                "migration_count",
+                "migration_head",
+            },
+        )
+
+    def test_review_still_checks_health_and_ledger_independently(self) -> None:
+        """Requirement 5: an honest binding does not bypass independent checks."""
+        drifted = _disposable_db(self.root / "drifted.sqlite3", self.canonical[:-1])
+        info = drifted.stat()
+        honest_about_drift = {
+            "path": str(drifted),
+            "migration_count": len(self.canonical) - 1,
+            "migration_head": self.canonical[-2],
+            "sha256": _sha(drifted),
+            "size": info.st_size,
+            "inode": info.st_ino,
+            "mtime_ns": info.st_mtime_ns,
+        }
+        result = guard.evaluate_migration_ledger_drift(
+            mode="review", db_path=drifted, package_binding=honest_about_drift
+        )
+        # The package tells the truth, and the truth is still drift.
+        self.assertEqual(result.status, "BLOCKED")
+        self.assertTrue(result.package_binding["honest"])
+        self.assertIn("migration_ledger_missing", result.blocker_codes)
+        self.assertIn("migration_head_mismatch", result.blocker_codes)
+
+    def test_sidecars_block_review_even_with_matching_binding(self) -> None:
+        Path(f"{self.db}-journal").write_bytes(b"")
+        try:
+            result = self.review(self.honest)
+        finally:
+            Path(f"{self.db}-journal").unlink()
+        self.assertEqual(result.status, "BLOCKED")
+        self.assertIn("database_unavailable", result.blocker_codes)
 
     def test_binding_loader_reads_existing_schema_unchanged(self) -> None:
         package = self.root / "final_authorization.json"
@@ -530,7 +601,7 @@ class WrapperIntegrationTests(AuthoritativeDatabaseUntouched):
         message = str(caught.exception)
         self.assertIn("blocked before consumption", message)
         self.assertIn("052_memory_observation_eligibility_layers.sql", message)
-        self.assertEqual([item["mode"] for item in calls], ["prepare"])
+        self.assertEqual([item["mode"] for item in calls], ["review"])
 
         # Nothing was consumed: no application directory, no staging directory,
         # no manifest, no marker, no terminal, no child.
@@ -565,6 +636,146 @@ class WrapperIntegrationTests(AuthoritativeDatabaseUntouched):
         )
         self.assertEqual(order, ["guard", "child"])
         self.assertEqual(result["child_exit_code"], 0)
+
+    def _assert_nothing_consumed(self) -> None:
+        """No staging, manifest, application directory, marker, terminal, child."""
+        canonical_dir = Path(self.fx.app) / self.fx.authorization_id
+        self.assertFalse(canonical_dir.exists())
+        self.assertFalse((Path(self.fx.app) / ".staging").exists())
+        for name in (
+            "git-provenance-manifest.json",
+            "application-marker.json",
+            "wrapper-terminal.json",
+            "child-stdout.txt",
+            "child-stderr.txt",
+        ):
+            self.assertEqual(list(Path(self.fx.app).rglob(name)), [], name)
+
+    def _block_with_binding(self, binding, *, launched):
+        def launcher(**kwargs):
+            launched.append(kwargs)
+            return {"returncode": 0, "pid": 1}
+
+        document = json.loads(Path(self.fx.authorization_path).read_text("utf-8"))
+        if binding is None:
+            document.pop(guard.PACKAGE_DB_BINDING_KEY, None)
+        else:
+            document[guard.PACKAGE_DB_BINDING_KEY] = binding
+        Path(self.fx.authorization_path).write_text(
+            json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        self.fx.authorization_sha256 = hashlib.sha256(
+            Path(self.fx.authorization_path).read_bytes()
+        ).hexdigest()
+        with self.assertRaises(wrapper.OneShotWrapperError) as caught:
+            self._apply(
+                authorization_sha256=self.fx.authorization_sha256,
+                process_launcher=launcher,
+            )
+        return str(caught.exception)
+
+    def _live_binding(self) -> dict:
+        return dict(self.fixture_module.live_authoritative_database_binding())
+
+    def test_wrapper_passes_exact_package_binding_in_review_mode(self) -> None:
+        seen: list[dict] = []
+
+        def recording_guard(**kwargs):
+            seen.append(kwargs)
+            return guard.GuardResult(
+                mode=kwargs["mode"], status="PASS", verdict=guard.PASS_VERDICT
+            )
+
+        def launcher(**kwargs):
+            return {"returncode": 0, "pid": 7}
+
+        self._apply(migration_ledger_guard=recording_guard, process_launcher=launcher)
+
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0]["mode"], "review")
+        document = json.loads(Path(self.fx.authorization_path).read_text("utf-8"))
+        self.assertEqual(
+            seen[0]["package_binding"], document[guard.PACKAGE_DB_BINDING_KEY]
+        )
+        # The binding actually pins every required field.
+        self.assertEqual(
+            set(seen[0]["package_binding"]), set(guard.PACKAGE_BINDING_FIELDS)
+        )
+
+    def test_matching_ledger_with_wrong_sha256_blocks_before_consumption(self) -> None:
+        """A canonical 52/052 database is not enough: the file must be the one."""
+        launched: list[object] = []
+        binding = self._live_binding()
+        self.assertEqual(binding["migration_count"], 52)
+        self.assertEqual(
+            binding["migration_head"], "052_memory_observation_eligibility_layers.sql"
+        )
+        binding["sha256"] = "0" * 64
+        message = self._block_with_binding(binding, launched=launched)
+        self.assertIn("blocked before consumption", message)
+        self.assertIn("sha256", message)
+        self.assertEqual(launched, [])
+        self._assert_nothing_consumed()
+
+    def test_matching_ledger_with_wrong_size_blocks_before_consumption(self) -> None:
+        launched: list[object] = []
+        binding = self._live_binding()
+        binding["size"] = int(binding["size"]) + 1
+        message = self._block_with_binding(binding, launched=launched)
+        self.assertIn("size", message)
+        self.assertEqual(launched, [])
+        self._assert_nothing_consumed()
+
+    def test_inode_mismatch_blocks_before_consumption(self) -> None:
+        launched: list[object] = []
+        binding = self._live_binding()
+        binding["inode"] = int(binding["inode"]) + 1
+        message = self._block_with_binding(binding, launched=launched)
+        self.assertIn("inode", message)
+        self.assertEqual(launched, [])
+        self._assert_nothing_consumed()
+
+    def test_mtime_ns_mismatch_blocks_before_consumption(self) -> None:
+        launched: list[object] = []
+        binding = self._live_binding()
+        binding["mtime_ns"] = int(binding["mtime_ns"]) - 1
+        message = self._block_with_binding(binding, launched=launched)
+        self.assertIn("mtime_ns", message)
+        self.assertEqual(launched, [])
+        self._assert_nothing_consumed()
+
+    def test_incomplete_package_binding_blocks_before_consumption(self) -> None:
+        for field_name in guard.PACKAGE_BINDING_FIELDS:
+            with self.subTest(field=field_name):
+                self.fx.close()
+                self.fx = self.fixture_module.Fixture()
+                launched: list[object] = []
+                binding = self._live_binding()
+                binding.pop(field_name)
+                message = self._block_with_binding(binding, launched=launched)
+                self.assertIn("package_binding_incomplete", message)
+                self.assertIn(field_name, message)
+                self.assertEqual(launched, [])
+                self._assert_nothing_consumed()
+
+    def test_absent_package_binding_blocks_before_consumption(self) -> None:
+        launched: list[object] = []
+        message = self._block_with_binding(None, launched=launched)
+        self.assertIn("authoritative_database", message)
+        self.assertEqual(launched, [])
+        self._assert_nothing_consumed()
+
+    def test_honest_live_binding_passes_the_real_guard(self) -> None:
+        """The unmodified fixture binds the live database and is consumed."""
+        launched: list[object] = []
+
+        def launcher(**kwargs):
+            launched.append(kwargs)
+            return {"returncode": 0, "pid": 11}
+
+        result = self._apply(process_launcher=launcher)
+        self.assertEqual(result["child_exit_code"], 0)
+        self.assertEqual(len(launched), 1)
 
     def test_wrapper_default_guard_is_the_real_guard(self) -> None:
         import inspect
