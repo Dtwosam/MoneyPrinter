@@ -52,6 +52,7 @@ from printer_v1.sources.campaign_six_unit_accounting import (
     seal_campaign_stage_evidence,
 )
 from printer_v1.sources.measured_transport import (
+    LocalValidationIdentity,
     MeasuredTransportError,
     empty_six_unit_totals,
     merge_transport_payload_metadata,
@@ -282,6 +283,27 @@ def _forbidden_deltas(connection: sqlite3.Connection) -> dict[str, int]:
     return deltas
 
 
+def coerce_migration_transport(
+    migration_transport: Any,
+) -> Callable[[Any], Mapping[str, Any]]:
+    """Accept either a transport callable or a preflight adapter shell.
+
+    Shared WINDOW_15M composition returns a concrete
+    ``DirectPumpMigrationAdapter`` so preflight can validate request-kind
+    contracts. Discovery always needs the inner transport callable that emits
+    one Solana JSON-RPC response per governed live-tail operation.
+    """
+    if callable(migration_transport):
+        return migration_transport
+    inner = getattr(migration_transport, "transport", None)
+    if callable(inner):
+        return inner
+    raise TypeError(
+        "DIRECT_PUMP_MIGRATION_TRANSPORT_NOT_CALLABLE:"
+        f"{type(migration_transport).__name__}"
+    )
+
+
 def run_direct_migration_discovery(
     db_path: str | Path,
     *,
@@ -304,7 +326,8 @@ def run_direct_migration_discovery(
     """Run one bounded direct-migration discovery cycle (governed, fail-closed).
 
     ``migration_transport`` supplies exactly one Solana JSON-RPC response per
-    governed live-tail page/transaction request. ``verifier_transport_factory``
+    governed live-tail page/transaction request. A preflight adapter shell is
+    also accepted and coerced to its inner transport. ``verifier_transport_factory``
     returns
     the governed PumpSwap graduation-verifier transport for one candidate; when
     omitted, the live ``build_graduation_verifier_transport`` is used. All source
@@ -326,6 +349,7 @@ def run_direct_migration_discovery(
     failures (they are recorded honestly).
     """
     now = now or _utc_now_iso()
+    migration_transport = coerce_migration_transport(migration_transport)
     if collection_rounds != 1:
         raise ValueError("DIRECT_PUMP_LIVE_TAIL_REQUIRES_ONE_COLLECTION_ROUND")
     if settle_seconds != 0.0:
@@ -365,6 +389,7 @@ def run_direct_migration_discovery(
     elapsed_seconds = 0.0
     confirmed_this_cycle: list[str] = []
     verifications: list[dict[str, Any]] = []
+    migration_validation_identities: list[LocalValidationIdentity] = []
     mix: list[dict[str, Any]] = []
     latest_count = 0
     persisted_count = 0
@@ -719,7 +744,43 @@ def run_direct_migration_discovery(
             pending_persist.append(record)
 
         # --- Six-unit identity reconcile BEFORE any candidate persistence ---
-        measured_ledger.record_local_validation(local_validations + len(verifications))
+        # Emit one LocalValidationIdentity per verification so campaign V2
+        # aggregation can derive LOCAL_VALIDATION_STEP from identities only.
+        migration_validation_identities = []
+        stage_id_for_validations = (
+            build_campaign_stage_id(
+                campaign_id=str(campaign_id),
+                run_id=str(run_id),
+                cycle_id=str(cycle_id),
+                stage_kind=STAGE_KIND_DIRECT_MIGRATION,
+                stage_sequence=int(stage_sequence),
+            )
+            if all(str(value or "").strip() for value in (campaign_id, run_id, cycle_id))
+            else f"{STAGE_KIND_DIRECT_MIGRATION}|{int(stage_sequence)}"
+        )
+        for index, record in enumerate(verifications, start=1):
+            subject = str(
+                record.get("mint")
+                or record.get("signature")
+                or record.get("pool")
+                or f"verification-{index}"
+            )
+            kind = (
+                "PUMPSWAP_GRADUATION_VERIFIED"
+                if record.get("verified")
+                else f"PUMPSWAP_GRADUATION_{str(record.get('failure_type') or 'FAILED').upper()}"
+            )
+            migration_validation_identities.append(
+                LocalValidationIdentity(
+                    stage_id=stage_id_for_validations,
+                    subject_identity=subject,
+                    validation_kind=kind,
+                    validation_ordinal=index,
+                )
+            )
+        measured_ledger.record_local_validation(
+            local_validations + len(migration_validation_identities)
+        )
         pumpswap_transport_operations = sum(
             int(record.get("transport_operations_used") or 0) for record in verifications
         )
@@ -903,6 +964,9 @@ def run_direct_migration_discovery(
                     run_id=str(run_id),
                     cycle_id=str(cycle_id),
                     sealed_at=now,
+                    local_validation_identities=(
+                        migration_validation_identities or None
+                    ),
                 )
                 stage_evidence_sink(sealed_stage_evidence)
             except BaseException as sink_exc:

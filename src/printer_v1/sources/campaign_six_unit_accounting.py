@@ -837,6 +837,9 @@ class CampaignSixUnitOwner:
             "lifecycle_reservations": int(self.ledger.lifecycle_reservations),
         }
         if self.identity_mode_units:
+            # V2 contract: non-transport counters derive from unique identity
+            # lists. Bare integer contributions from V1 stages must not outrun
+            # the identity set (IDENTITY_COUNT_MISMATCH).
             evidence["evidence_kind"] = EVIDENCE_KIND_V2
             evidence[_SCHEDULER_IDENTITY_FIELD] = list(self.scheduler_work_identities)
             evidence[_RESERVATION_IDENTITY_FIELD] = list(
@@ -845,6 +848,14 @@ class CampaignSixUnitOwner:
             evidence[_VALIDATION_IDENTITY_FIELD] = list(
                 self.local_validation_identities
             )
+            if "SCHEDULER_WORK_ITEM" in self.identity_mode_units:
+                evidence["scheduler_work_items"] = len(self.scheduler_work_identities)
+            if "LIFECYCLE_RESERVED_TRANSPORT_OPERATION" in self.identity_mode_units:
+                evidence["lifecycle_reservations"] = len(
+                    self.lifecycle_reservation_identities
+                )
+            if "LOCAL_VALIDATION_STEP" in self.identity_mode_units:
+                evidence["local_validations"] = len(self.local_validation_identities)
         return evidence
 
     def six_unit_totals(self) -> dict[str, int]:

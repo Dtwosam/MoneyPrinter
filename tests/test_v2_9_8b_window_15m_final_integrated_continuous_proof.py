@@ -30,19 +30,17 @@ from printer_v1.operator_cli import window_15m_one_shot_wrapper as wrapper
 from printer_v1.operator_cli.authoritative_live_operational_campaign import (
     LivePumpOriginAdapter,
 )
-from printer_v1.operator_cli.graduated_supply_front_door import (
-    OPERATIONAL_GRADUATED_SUPPLY_KWARGS,
-)
 from printer_v1.operator_cli.window_15m_concrete_composition import (
     ordinary_window_15m_builder_identities,
     production_runtime_constructor_identities,
 )
-from printer_v1.sources.pumpswap_graduated_registry import record_graduated_candidate
 
-import test_v2_9_7e_8_origin_to_lifecycle_integration as e8
 import test_v2_9_7e_9_two_token_continuous_lifecycle as e9
-import test_v2_9_7e_11_authoritative_live_operational_campaign as e11
 import test_v2_9_8b_token_slot_id_exact_public_composition as base
+from tests.support.window_15m_measured_frozen_transports import (
+    NetworkFreezeBundle,
+    build_four_migration_cases,
+)
 
 PROOF_EXECUTION_ID = "V2_9_8B_WINDOW_15M_FINAL_INTEGRATED_CONTINUOUS_PROOF_V1"
 # Artifacts retained outside the disposable temp tree.
@@ -142,35 +140,11 @@ class ContinuousWrapperToMemoryProof(unittest.TestCase):
         finally:
             conn.close()
 
-        # Seed four graduated candidates for ordinary front-door evaluation.
-        mints = [
-            "25E1oYYcgMRDK1QiB2ns8e3hEZkFyLW5pqa68T3JGEpi",
-            "GvBfTT3o8Gr9FC5x8mm3JtPitDRsp7mAqnQrutt1c65z",
-            "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
-            "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
-        ]
-        pools = [
-            "2ZNhPJSXQKsnayAerTiUU8XeBaTY93g6BcPc7TF1uVnS",
-            "4At3mHxCwdfosUPs6egTwNY9nS93EmcXvPifhw2sRu8c",
-            "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2",
-            "7XawhbbxtsRcQA8KTkHT9f9nc6d69UwqCDh6U5EEbEmX",
-        ]
-        conn = sqlite3.connect(disposable_db)
-        try:
-            for i, mint in enumerate(mints):
-                record_graduated_candidate(
-                    conn,
-                    mint=mint,
-                    migration_signature=f"migSig{i}" * 8,
-                    pumpswap_pool=pools[i],
-                    graduation_block_time=1_784_000_000 + i,
-                    graduation_slot=100 + i,
-                    now="2026-08-05T12:00:00+00:00",
-                    discovery_channel="PERSISTED_GRADUATED",
-                )
-            conn.commit()
-        finally:
-            conn.close()
+        # Four ordinary-path migration cases (not pre-seeded graduated registry).
+        migration_cases = build_four_migration_cases()
+        mints = [str(case["mint"]) for case in migration_cases]
+        pools = [str(case["pool"]) for case in migration_cases]
+        network_freeze = NetworkFreezeBundle(migration_cases)
 
         # --- disposable git with historical + current packages ---
         _git(repo, "init")
@@ -244,59 +218,6 @@ class ContinuousWrapperToMemoryProof(unittest.TestCase):
         venv_python, _ = build_venv_layout(repo / ".venv", root / "venv-base-python")
         child_python = str(venv_python)
 
-        # Frozen market payloads for four pools (above $3k floor).
-        def _pair_payload(pool: str, mint: str, liq: float) -> dict:
-            return {
-                "pairs": [
-                    {
-                        "pairAddress": pool,
-                        "baseToken": {"address": mint, "symbol": "T", "name": "T"},
-                        "quoteToken": {
-                            "address": "So11111111111111111111111111111111111111112",
-                            "symbol": "SOL",
-                            "name": "SOL",
-                        },
-                        "chainId": "solana",
-                        "dexId": "pumpswap",
-                        "liquidity": {"usd": liq},
-                        "priceUsd": "0.01",
-                        "fdv": 50_000.0,
-                        "marketCap": 50_000.0,
-                    }
-                ]
-            }
-
-        payloads = {
-            pools[i]: _pair_payload(pools[i], mints[i], 12_000.0 + i)
-            for i in range(4)
-        }
-
-        def frozen_dex_factory(mint: str, pool: str):
-            body = payloads.get(pool) or {"pairs": []}
-
-            def transport(_ctx):
-                return dict(body)
-
-            return transport
-
-        def frozen_dex_batch_factory(addresses):
-            pairs = []
-            for addr in addresses:
-                body = payloads.get(str(addr))
-                if body and body.get("pairs"):
-                    pairs.extend(body["pairs"])
-
-            def transport(_ctx):
-                return {"pairs": pairs, "_requested_token_mints": list(addresses)}
-
-            return transport
-
-        def empty_migration_transport(context):
-            kind = context.request.request_kind
-            if "signature" in kind or "page" in kind:
-                return {"result": []}
-            return {"result": None}
-
         # Controlled clock for 900 logical seconds.
         clock = e9._Clock()
         e9._ClockDateTime.clock = clock
@@ -307,6 +228,59 @@ class ContinuousWrapperToMemoryProof(unittest.TestCase):
         # Snapshot/context factories for lifecycle (frozen fixture bodies).
         snapshot_calls: list[str] = []
         pool_map = {mints[i]: pools[i] for i in range(4)}
+
+        def _measured_context_factories(clock_obj):
+            """Production-shaped context factories with holder-stage measured costs.
+
+            The shared token-slot composition helpers omit
+            ``underlying_operation_count``. Holder-stage accounting then fails
+            closed with HOLDER_TRANSPORT_IDENTITY_ABSENT and blocks recon.
+            """
+            from printer_v1.sources.governed_execution import build_fixture_source_adapter
+
+            base_factories = base.ExactPublicTokenSlotIdCompositionProof._context_factories(
+                clock_obj
+            )
+
+            def safety(**kwargs):
+                return build_fixture_source_adapter(
+                    "goplus",
+                    fixture_payload={
+                        "token_mint": kwargs.get("token_mint"),
+                        "mint_authority": None,
+                        "freeze_authority": None,
+                        "metadata_mutable": False,
+                        "total_supply": "1000000000",
+                        "top_10_holders": [{"percent": "3"} for _ in range(10)],
+                        "lp_info": [{"locked": True}],
+                        "risk_flags": [],
+                        # Single GoPlus HTTP cost for holder-stage measurement.
+                        "underlying_operation_count": 1,
+                    },
+                )
+
+            def solana_rpc_holder(**kwargs):
+                mint = kwargs.get("token_mint")
+                return build_fixture_source_adapter(
+                    "solana_rpc",
+                    fixture_payload={
+                        "token_mint": mint,
+                        "holder_concentration_label": "HOLDER_CONCENTRATION_HEALTHY",
+                        "top_10_holder_percent": 40.0,
+                        "holder_measurement_basis": "SOLANA_GET_TOKEN_LARGEST_ACCOUNTS",
+                        "holder_measurement_limitations": [],
+                        "holder_condition_reason": "HOLDER_CONDITION_MEASURED",
+                        "rpc_method": "getTokenLargestAccounts+getTokenSupply",
+                        "commitment": "finalized",
+                        "underlying_operation_count": 2,
+                        "request_kind": "holder_concentration_reference",
+                    },
+                )
+
+            factories = dict(base_factories)
+            factories["goplus"] = safety
+            factories["solana_rpc_holder"] = solana_rpc_holder
+            return factories
 
         def lifecycle_inject(original_run):
             def wrapped(self, **kwargs):
@@ -323,9 +297,7 @@ class ContinuousWrapperToMemoryProof(unittest.TestCase):
                         "snapshot_adapter_factory": base.ExactPublicTokenSlotIdCompositionProof._snapshot_factory(
                             pool_map, snapshot_calls
                         ),
-                        "context_adapter_factories": base.ExactPublicTokenSlotIdCompositionProof._context_factories(
-                            clock
-                        ),
+                        "context_adapter_factories": _measured_context_factories(clock),
                         "_window_seconds": 900.0,
                         "_sleep": clock.sleep,
                         "_monotonic": clock.monotonic,
@@ -343,7 +315,6 @@ class ContinuousWrapperToMemoryProof(unittest.TestCase):
         def real_child_launcher(*, command, cwd, env, stdout_path, stderr_path):
             """Launch the actual operational child module (not a fake success)."""
             child_invocations.append(list(command))
-            # Assert actual module launch.
             self.assertIn(
                 "printer_v1.operator_cli.operational_memory_factory_command",
                 command,
@@ -351,90 +322,92 @@ class ContinuousWrapperToMemoryProof(unittest.TestCase):
             self.assertIn("run", command)
             self.assertIn("--operator-approved", command)
 
-            def guarded_urlopen(*_a, **_k):
-                network_hits.append("urlopen")
-                raise AssertionError("external network forbidden in continuous proof")
+            from contextlib import ExitStack
 
-            # Ordinary production uses migration from shared registry; wrap the
-            # registry migration constructor with frozen empty live-tail (seeded
-            # inventory supplies candidates) and freeze market transports.
-            original_constructors = (
-                public_command.production_runtime_default_constructors
-                if hasattr(public_command, "production_runtime_default_constructors")
-                else None
-            )
-
-            supply_kwargs_patch = dict(OPERATIONAL_GRADUATED_SUPPLY_KWARGS)
-            supply_kwargs_patch.update(
-                {
-                    "permanent_availability": False,
-                    "run_geckoterminal_nomination": False,
-                    "run_locator": False,
-                    "collection_rounds": 1,
-                    "front_door_max_candidates": 6,
-                    "max_candidates": 5,
-                    "dexscreener_transport_factory": frozen_dex_factory,
-                    "dexscreener_batch_transport_factory": frozen_dex_batch_factory,
-                }
-            )
-
-            # Build a real owner path: patch only transport factories and time.
             from printer_v1.operator_cli.authoritative_live_operational_campaign import (
                 AuthoritativeLiveOperationalCampaignOwner,
             )
-            from printer_v1.operator_cli import window_15m_concrete_composition as composition
 
             original_run = AuthoritativeLiveOperationalCampaignOwner.run_operational
-            real_construct = composition.construct_ordinary_window_15m_dependency
-
-            def construct_with_frozen_migration(label, **kwargs):
-                if label == "direct_pump_finalized_migration_transport":
-                    return empty_migration_transport
-                return real_construct(label, **kwargs)
-
             artifact_root = root / "child-artifacts"
             artifact_root.mkdir(exist_ok=True)
 
-            # Auth DB binding uses disposable path; re-hash after seed.
-            with (
-                patch.object(public_command, "AUTHORITATIVE_DB", disposable_db.resolve()),
-                patch.object(public_command, "ARTIFACT_ROOT", artifact_root),
-                patch.object(
-                    public_command,
-                    "OPERATIONAL_GRADUATED_SUPPLY_KWARGS",
-                    supply_kwargs_patch,
-                ),
-                patch.object(
-                    composition,
-                    "construct_ordinary_window_15m_dependency",
-                    construct_with_frozen_migration,
-                ),
-                patch.object(
-                    AuthoritativeLiveOperationalCampaignOwner,
-                    "run_operational",
-                    lifecycle_inject(original_run),
-                ),
-                patch(
-                    "printer_v1.operator_cli.one_command_15m_factory._now",
-                    clock.now,
-                ),
-                patch(
-                    "printer_v1.sources.contracts.datetime",
-                    e9._ClockDateTime,
-                ),
-                patch("urllib.request.urlopen", side_effect=guarded_urlopen),
-                patch.dict(os.environ, {k: str(v) for k, v in env.items() if v is not None}, clear=False),
-            ):
-                # Re-bind env for child provenance.
+            # Production network freezes: production transports emit measured
+            # identities. Do not replace migration with a plain callable.
+            freeze_patches = network_freeze.freeze()
+
+            def counting_urlopen(*args, **kwargs):
+                # Frozen lawful bodies only. Record unhandled hosts as escapes.
+                request = args[0] if args else kwargs.get("url")
+                url = (
+                    getattr(request, "full_url", None)
+                    or (
+                        request.get_full_url()
+                        if hasattr(request, "get_full_url")
+                        else str(request or "")
+                    )
+                )
+                text = str(url)
+                known = (
+                    "dexscreener.com",
+                    "geckoterminal.com",
+                    "coingecko.com",
+                    "gopluslabs.io",
+                    "jup.ag",
+                    "helius",
+                    "mainnet",
+                    "solana.com",
+                )
+                if not any(host in text.lower() for host in known):
+                    network_hits.append(text or "urlopen-unknown")
+                return network_freeze._urlopen(*args, **kwargs)
+
+            with ExitStack() as stack:
+                stack.enter_context(
+                    patch.object(
+                        public_command, "AUTHORITATIVE_DB", disposable_db.resolve()
+                    )
+                )
+                stack.enter_context(
+                    patch.object(public_command, "ARTIFACT_ROOT", artifact_root)
+                )
+                stack.enter_context(
+                    patch.object(
+                        AuthoritativeLiveOperationalCampaignOwner,
+                        "run_operational",
+                        lifecycle_inject(original_run),
+                    )
+                )
+                stack.enter_context(
+                    patch(
+                        "printer_v1.operator_cli.one_command_15m_factory._now",
+                        clock.now,
+                    )
+                )
+                stack.enter_context(
+                    patch(
+                        "printer_v1.sources.contracts.datetime",
+                        e9._ClockDateTime,
+                    )
+                )
+                for freeze_patch in freeze_patches:
+                    # urlopen freeze is applied below with counting wrapper.
+                    target = getattr(freeze_patch, "attribute", None) or str(
+                        freeze_patch
+                    )
+                    if "urlopen" in str(getattr(freeze_patch, "target", target)):
+                        continue
+                    stack.enter_context(freeze_patch)
+                stack.enter_context(
+                    patch("urllib.request.urlopen", side_effect=counting_urlopen)
+                )
                 for k, v in env.items():
                     if v is None:
                         os.environ.pop(k, None)
                     else:
                         os.environ[k] = str(v)
                 try:
-                    rc = public_command.main(
-                        ["run", "--operator-approved"]
-                    )
+                    rc = public_command.main(["run", "--operator-approved"])
                 except SystemExit as exc:
                     rc = int(exc.code or 0)
                 except Exception as exc:
@@ -469,8 +442,16 @@ class ContinuousWrapperToMemoryProof(unittest.TestCase):
         self.assertEqual(0, result.get("automatic_retries", 0) if isinstance(result.get("automatic_retries"), int) else 0)
         self.assertTrue((app / auth_id / "application-marker.json").is_file())
 
-        # Zero external network.
+        # Zero unhandled external network escapes (frozen known hosts are allowed).
         self.assertEqual([], network_hits)
+
+        # Capture freeze/RPC diagnostics for closeout when handoff is short.
+        ContinuousWrapperToMemoryProof.last_freeze_rpc = list(  # type: ignore[attr-defined]
+            network_freeze.rpc_calls
+        )
+        ContinuousWrapperToMemoryProof.last_freeze_http = list(  # type: ignore[attr-defined]
+            network_freeze.http_calls
+        )
 
         # Inspect disposable DB outcomes.
         connection = sqlite3.connect(disposable_db)
