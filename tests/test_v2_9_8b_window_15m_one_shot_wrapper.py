@@ -427,16 +427,42 @@ class WrapperImplementationTests(unittest.TestCase):
                 ]
             )
 
-    def test_23_network_and_authoritative_sqlite_are_unused(self):
+    def test_23_network_unused_and_sqlite_limited_to_immutable_ledger_guard(self):
+        """Network stays forbidden; SQLite is limited to the drift guard.
+
+        The wrapper now runs the pre-authorization migration-ledger drift guard
+        before staging, so it does open the authoritative database. That access
+        must be immutable and read-only, and it must be the *only* SQLite use in
+        the wrapper path.
+        """
         calls, launcher = self.fx.fake_launcher()
+        opened: list[tuple[str, bool]] = []
+        real_connect = sqlite3.connect
+
+        def recording_connect(target, *args, **kwargs):
+            opened.append((str(target), bool(kwargs.get("uri"))))
+            return real_connect(target, *args, **kwargs)
+
+        db_before = _sha(command.AUTHORITATIVE_DB)
         with mock.patch.object(
             socket.socket, "connect", side_effect=AssertionError("network")
-        ), mock.patch.object(
-            sqlite3, "connect", side_effect=AssertionError("sqlite")
-        ):
+        ), mock.patch.object(sqlite3, "connect", side_effect=recording_connect):
             result = self.apply(process_launcher=launcher)
+
         self.assertEqual(result["child_exit_code"], 0)
         self.assertEqual(len(calls), 1)
+
+        # Exactly one SQLite open, and it is the guard's immutable read-only
+        # handle on the authoritative database.
+        self.assertEqual(len(opened), 1, opened)
+        target, used_uri = opened[0]
+        self.assertTrue(used_uri)
+        self.assertIn("mode=ro", target)
+        self.assertIn("immutable=1", target)
+        self.assertIn(command.AUTHORITATIVE_DB.as_posix(), target)
+
+        # The authoritative database is observed, never written.
+        self.assertEqual(_sha(command.AUTHORITATIVE_DB), db_before)
 
     def test_24_tracked_file_in_current_root_blocks(self):
         target = self.fx.migration_root / "migration-00.json"

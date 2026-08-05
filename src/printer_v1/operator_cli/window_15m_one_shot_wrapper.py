@@ -21,6 +21,11 @@ import sys
 from typing import Any, Callable, Mapping
 import uuid
 
+from printer_v1.operator_cli.pre_authorization_migration_ledger_guard import (
+    GuardResult,
+    MigrationLedgerDriftGuardError,
+    assert_migration_ledger_ready,
+)
 from printer_v1.operator_cli.git_provenance_authorization_manifest import (
     APPLICATION_MARKER_SCHEMA_VERSION,
     AUTHORIZATION_PACKAGE_KIND,
@@ -557,6 +562,7 @@ def apply_authorization_once(
     created_at: str | None = None,
     consumed_at: str | None = None,
     process_launcher: Callable[..., Mapping[str, Any]] | None = None,
+    migration_ledger_guard: Callable[..., GuardResult] = assert_migration_ledger_ready,
     pre_marker_validator: Callable[..., PreparedGitProvenanceAuthorization] = (
         validate_git_provenance_manifest_pre_marker
     ),
@@ -588,6 +594,20 @@ def apply_authorization_once(
     child_python = _select_child_python(
         repository_root=root, override=python_executable
     )
+
+    # Migration-ledger drift gate. The authorization package has been resolved
+    # by this point, but nothing has been staged, no manifest or marker byte
+    # exists, and the canonical application directory has not been created — so
+    # a block here costs nothing. The identical structural question is asked
+    # again later by the operational preflight inside the child, which remains
+    # the final defence; this gate exists only so drift stops being discovered
+    # after the authorization is already permanently consumed.
+    try:
+        migration_ledger_guard(mode="prepare")
+    except MigrationLedgerDriftGuardError as exc:
+        raise OneShotWrapperError(
+            f"authorization blocked before consumption: {exc}"
+        ) from exc
 
     staging_dir = app_root / ".staging" / f"{authorization_id}-{uuid.uuid4().hex}"
     staging_dir.mkdir(parents=True, exist_ok=False)
