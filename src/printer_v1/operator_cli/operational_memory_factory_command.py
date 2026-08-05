@@ -2189,6 +2189,27 @@ def _finalize_returned_pre_lifecycle_result(
     return terminal
 
 
+def build_pre_holder_accounting_projection(
+    *,
+    campaign_units: Any,
+    action_local_transport_identities: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Read an immutable pre-holder view from existing accounting owners."""
+    campaign_identities = [
+        item.as_dict() if hasattr(item, "as_dict") else dict(item)
+        for item in campaign_units.ledger.transports
+    ]
+    action_local_identities = [
+        dict(item) for item in action_local_transport_identities
+    ]
+    return {
+        "campaign_transport_identities": campaign_identities,
+        "action_local_transport_identities": action_local_identities,
+        "campaign_transport_count": len(campaign_identities),
+        "action_local_transport_count": len(action_local_identities),
+    }
+
+
 def _run_operational_campaign(
     *,
     policy: _OperationalCampaignPolicy,
@@ -2521,6 +2542,14 @@ def _run_operational_campaign(
                 fifteen_minute_only=True,
                 accounting_stage_evidence_sink=_campaign_stage_evidence_sink,
                 transport_identity_observer=_observe_transport_identity,
+                pre_holder_accounting_projection=lambda: (
+                    build_pre_holder_accounting_projection(
+                        campaign_units=campaign_units,
+                        action_local_transport_identities=(
+                            action_local_transport_identities
+                        ),
+                    )
+                ),
                 )
             finally:
                 reset_scheduler_operation_observer(scheduler_observer_token)

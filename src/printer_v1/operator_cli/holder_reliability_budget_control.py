@@ -24,6 +24,7 @@ REQUIRED_READINESS_SNAPSHOT_RESERVATION = 6
 COMBINED_ZERO_TRANSPORT_VALIDATION = 9
 HOLDER_WORST_CASE_GOVERNED_REQUESTS = 3
 HOLDER_WORST_CASE_TRANSPORT_OPERATIONS = 5
+PERMANENT_HOLDER_STAGE_TRANSPORT_CEILING = 8
 HOLDER_REQUEST_PURPOSE = "pre_activation_holder_eligibility"
 HOLDER_POLICY_VERSION = "v2-9.7e.22"
 HOLDER_PARSER_VERSION = "v2-9.7e.22"
@@ -157,6 +158,188 @@ class CampaignOperationLedger:
             )
 
 
+@dataclass(frozen=True)
+class PreHolderBudgetSnapshot:
+    """Immutable projection of existing campaign accounting before holder I/O."""
+
+    governed_request_ids: tuple[int, ...]
+    measured_transport_identity_keys: tuple[tuple[object, ...], ...]
+    governed_request_count: int
+    measured_transport_count: int
+    zero_transport_operations: int
+    reserved_snapshot_operations: int
+    reserved_snapshot_completion_operations: int
+
+
+@dataclass(frozen=True)
+class HolderAttemptAdmission:
+    """Non-mutating pre-attempt decision for permanent holder context."""
+
+    allowed: bool
+    reason: str | None
+    available_operations: int
+    required_worst_case_operations: int
+    permanent_stage_operations_used: int
+    permanent_stage_operations_remaining: int
+    deadline_expired: bool
+
+
+def holder_attempt_admission(
+    ledger: CampaignOperationLedger,
+    *,
+    now: str | datetime,
+    permanent_stage_operations_used: int,
+) -> HolderAttemptAdmission:
+    used = int(permanent_stage_operations_used)
+    if used < 0:
+        raise HolderBudgetError("PERMANENT_HOLDER_STAGE_OPERATION_COUNT_NEGATIVE")
+    remaining = max(0, PERMANENT_HOLDER_STAGE_TRANSPORT_CEILING - used)
+    deadline_expired = _time(now) > ledger.deadline_at
+    enough_campaign_budget = (
+        ledger.available_before_reservation
+        >= HOLDER_WORST_CASE_TRANSPORT_OPERATIONS
+    )
+    enough_stage_budget = remaining >= HOLDER_WORST_CASE_TRANSPORT_OPERATIONS
+    allowed = not deadline_expired and enough_campaign_budget and enough_stage_budget
+    reason = None
+    if deadline_expired:
+        reason = "HOLDER_CONTEXT_DEADLINE_EXPIRED"
+    elif not enough_campaign_budget or not enough_stage_budget:
+        reason = "HOLDER_CONTEXT_BUDGET_EXHAUSTED"
+    return HolderAttemptAdmission(
+        allowed=allowed,
+        reason=reason,
+        available_operations=ledger.available_before_reservation,
+        required_worst_case_operations=HOLDER_WORST_CASE_TRANSPORT_OPERATIONS,
+        permanent_stage_operations_used=used,
+        permanent_stage_operations_remaining=remaining,
+        deadline_expired=deadline_expired,
+    )
+
+
+def _measured_transport_identity_key(raw: Mapping[str, Any]) -> tuple[object, ...]:
+    return (
+        str(raw.get("stage") or ""),
+        str(raw.get("source_name") or ""),
+        str(raw.get("governed_request_kind") or ""),
+        str(raw.get("method_or_endpoint") or ""),
+        int(raw.get("within_request_ordinal") or 0),
+        str(raw.get("target_category") or ""),
+        None
+        if raw.get("target_identity") is None
+        else str(raw.get("target_identity")),
+    )
+
+
+def _exact_transport_keys(
+    identities: Sequence[Mapping[str, Any]],
+) -> tuple[tuple[object, ...], ...]:
+    keys: list[tuple[object, ...]] = []
+    seen: set[tuple[object, ...]] = set()
+    for raw in identities:
+        if not isinstance(raw, Mapping):
+            raise HolderBudgetError(
+                "PRE_HOLDER_MEASURED_TRANSPORT_IDENTITY_MALFORMED"
+            )
+        try:
+            key = _measured_transport_identity_key(raw)
+        except (TypeError, ValueError) as exc:
+            raise HolderBudgetError(
+                "PRE_HOLDER_MEASURED_TRANSPORT_IDENTITY_MALFORMED"
+            ) from exc
+        if key in seen:
+            raise HolderBudgetError(
+                "PRE_HOLDER_DUPLICATE_MEASURED_TRANSPORT_IDENTITY"
+            )
+        seen.add(key)
+        keys.append(key)
+    return tuple(keys)
+
+
+def build_pre_holder_budget_snapshot(
+    *,
+    campaign_id: str,
+    governed_request_ids: Sequence[int],
+    request_manifest: Sequence[Mapping[str, Any]],
+    campaign_transport_identities: Sequence[Mapping[str, Any]],
+    action_local_transport_identities: Sequence[Mapping[str, Any]],
+) -> PreHolderBudgetSnapshot:
+    """Project request and measured-transport truth from canonical owners.
+
+    This function owns no accounting state. It freezes and reconciles the
+    Source Governor manifest, campaign six-unit owner, and action-local
+    measurement surface before holder work begins.
+    """
+    campaign = str(campaign_id or "").strip()
+    if not campaign:
+        raise HolderBudgetError("PRE_HOLDER_CAMPAIGN_IDENTITY_MISSING")
+    request_ids = tuple(int(value) for value in governed_request_ids)
+    if len(request_ids) != len(set(request_ids)):
+        raise HolderBudgetError("PRE_HOLDER_DUPLICATE_GOVERNED_REQUEST_ID")
+
+    manifest_ids: list[int] = []
+    manifest_transport_count = 0
+    for raw in request_manifest:
+        if not isinstance(raw, Mapping) or raw.get("source_request_id") is None:
+            raise HolderBudgetError("PRE_HOLDER_REQUEST_MANIFEST_MALFORMED")
+        rid = int(raw["source_request_id"])
+        manifest_ids.append(rid)
+        stage_id = str(raw.get("logical_stage_id") or "")
+        if not stage_id.startswith(f"{campaign}|"):
+            raise HolderBudgetError(
+                "PRE_HOLDER_REQUEST_CAMPAIGN_OWNERSHIP_MISSING",
+                detail={"source_request_id": rid},
+            )
+        if "transport_identity_count" not in raw:
+            raise HolderBudgetError(
+                "PRE_HOLDER_TRANSPORT_COUNT_WITHOUT_IDENTITIES",
+                detail={"source_request_id": rid},
+            )
+        try:
+            count = int(raw["transport_identity_count"])
+        except (TypeError, ValueError) as exc:
+            raise HolderBudgetError(
+                "PRE_HOLDER_TRANSPORT_COUNT_WITHOUT_IDENTITIES",
+                detail={"source_request_id": rid},
+            ) from exc
+        if count < 0:
+            raise HolderBudgetError(
+                "PRE_HOLDER_TRANSPORT_COUNT_WITHOUT_IDENTITIES",
+                detail={"source_request_id": rid},
+            )
+        manifest_transport_count += count
+    if len(manifest_ids) != len(set(manifest_ids)):
+        raise HolderBudgetError("PRE_HOLDER_DUPLICATE_GOVERNED_REQUEST_ID")
+    if set(manifest_ids) != set(request_ids):
+        raise HolderBudgetError("PRE_HOLDER_REQUEST_MANIFEST_MISMATCH")
+
+    campaign_keys = _exact_transport_keys(campaign_transport_identities)
+    action_local_keys = _exact_transport_keys(action_local_transport_identities)
+    if manifest_transport_count != len(campaign_keys):
+        raise HolderBudgetError(
+            "PRE_HOLDER_TRANSPORT_COUNT_WITHOUT_IDENTITIES",
+            detail={
+                "manifest_transport_count": manifest_transport_count,
+                "campaign_identity_count": len(campaign_keys),
+            },
+        )
+    if set(campaign_keys) != set(action_local_keys):
+        raise HolderBudgetError(
+            "PRE_HOLDER_STAGE_CAMPAIGN_RECONCILIATION_MISMATCH"
+        )
+    return PreHolderBudgetSnapshot(
+        governed_request_ids=tuple(sorted(request_ids)),
+        measured_transport_identity_keys=tuple(sorted(campaign_keys, key=repr)),
+        governed_request_count=len(request_ids),
+        measured_transport_count=len(campaign_keys),
+        zero_transport_operations=COMBINED_ZERO_TRANSPORT_VALIDATION,
+        reserved_snapshot_operations=REQUIRED_DEX_SNAPSHOT_RESERVATION,
+        reserved_snapshot_completion_operations=(
+            REQUIRED_SNAPSHOT_COMPLETION_RESERVATION
+        ),
+    )
+
+
 def budget_contract_constants() -> dict[str, int]:
     """Authoritative admission/holder budget constants shared by preflight+runtime."""
     return {
@@ -247,15 +430,27 @@ def build_operational_budget_preflight(
     }
 
 
-def build_ledger(
-    *, pump_operations: int, deadline_at: str | datetime,
-    additional_governed_operations: int = 0,
+def build_ledger_from_exact_counts(
+    *,
+    governed_request_count: int,
+    underlying_transport_operations: int,
+    deadline_at: str | datetime,
 ) -> CampaignOperationLedger:
-    base_operations = int(pump_operations) + int(additional_governed_operations)
+    """Build the ledger from independently proven request/transport counts."""
+    requests = int(governed_request_count)
+    transports = int(underlying_transport_operations)
+    if requests < 0 or transports < 0:
+        raise HolderBudgetError(
+            "CAMPAIGN_BASE_WORK_COUNT_NEGATIVE",
+            detail={
+                "governed_request_count": requests,
+                "underlying_transport_operations": transports,
+            },
+        )
     ledger = CampaignOperationLedger(
         operation_ceiling=OPERATION_CEILING,
-        governed_requests=base_operations,
-        underlying_transport_operations=base_operations,
+        governed_requests=requests,
+        underlying_transport_operations=transports,
         zero_transport_operations=COMBINED_ZERO_TRANSPORT_VALIDATION,
         reserved_snapshot_operations=REQUIRED_DEX_SNAPSHOT_RESERVATION,
         reserved_snapshot_completion_operations=REQUIRED_SNAPSHOT_COMPLETION_RESERVATION,
@@ -270,9 +465,8 @@ def build_ledger(
         detail = ledger.budget_detail()
         detail.update(
             {
-                "pump_operations": int(pump_operations),
-                "additional_governed_operations": int(additional_governed_operations),
-                "base_operations": base_operations,
+                "governed_request_count": requests,
+                "underlying_transport_operations": transports,
                 "available_for_base_work": (
                     OPERATION_CEILING
                     - COMBINED_ZERO_TRANSPORT_VALIDATION
@@ -286,6 +480,19 @@ def build_ledger(
             detail=detail,
         )
     return ledger
+
+
+def build_ledger(
+    *, pump_operations: int, deadline_at: str | datetime,
+    additional_governed_operations: int = 0,
+) -> CampaignOperationLedger:
+    """Legacy equality path where callers prove one request equals one transport."""
+    base_operations = int(pump_operations) + int(additional_governed_operations)
+    return build_ledger_from_exact_counts(
+        governed_request_count=base_operations,
+        underlying_transport_operations=base_operations,
+        deadline_at=deadline_at,
+    )
 
 
 def persist_ledger(connection: sqlite3.Connection, *, run_id: str, cycle_id: str, ledger: CampaignOperationLedger, now: str) -> None:
@@ -508,6 +715,13 @@ class HolderContextResult:
     accounting_blocker_reason: str | None
     governed_request_count: int
     measured_transport_count: int
+    evaluated_candidate_mints: tuple[str, ...] = ()
+    unattempted_candidate_mints: tuple[str, ...] = ()
+    budget_exhausted: bool = False
+    budget_exhaustion_reason: str | None = None
+    ledger_before_holder: CampaignOperationLedger | None = None
+    ledger_after_holder: CampaignOperationLedger | None = None
+    holder_attempt_budget_trace: tuple[Mapping[str, Any], ...] = ()
 
     def as_holder_context_diagnostics(self) -> dict[str, Any]:
         return {
@@ -519,6 +733,23 @@ class HolderContextResult:
             ],
             "governed_request_count": int(self.governed_request_count),
             "measured_transport_count": int(self.measured_transport_count),
+            "evaluated_candidate_mints": list(self.evaluated_candidate_mints),
+            "unattempted_candidate_mints": list(self.unattempted_candidate_mints),
+            "budget_exhausted": bool(self.budget_exhausted),
+            "budget_exhaustion_reason": self.budget_exhaustion_reason,
+            "ledger_before_holder": (
+                None
+                if self.ledger_before_holder is None
+                else self.ledger_before_holder.budget_detail()
+            ),
+            "ledger_after_holder": (
+                None
+                if self.ledger_after_holder is None
+                else self.ledger_after_holder.budget_detail()
+            ),
+            "holder_attempt_budget_trace": [
+                dict(entry) for entry in self.holder_attempt_budget_trace
+            ],
         }
 
 
@@ -537,6 +768,8 @@ def empty_holder_context_result(
         accounting_blocker_reason=None,
         governed_request_count=0,
         measured_transport_count=0,
+        ledger_before_holder=ledger,
+        ledger_after_holder=ledger,
     )
 
 

@@ -909,6 +909,17 @@ def _graduated_admission(
     return graduated, decisions
 
 
+def _graduated_admission_candidate_cap(
+    *,
+    permanent_memory_observation: bool,
+    ledger: Any,
+) -> int:
+    """Keep permanent observation supply independent of holder workload budget."""
+    if permanent_memory_observation:
+        return HOLDER_ELIGIBILITY_CANDIDATE_MAX
+    return min(HOLDER_ELIGIBILITY_CANDIDATE_MAX, ledger.candidate_cap())
+
+
 def _classify_pre_lifecycle_terminal(
     holder_facts: Mapping[str, Mapping[str, Any]], *, reserve_count: int
 ) -> str:
@@ -1007,6 +1018,44 @@ def _holder_eligibility_from_bundle(
     # Preserve transport/auth/rate-limit/provider failure precedence. Target
     # mismatch is returned only when an actual response supplied a wrong mint.
     return attempted[-1] if attempted else goplus
+
+
+def _holder_observation_context(
+    fact: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Convert truthful holder evidence into memory-only contextual fields."""
+    holder_fact = dict(fact or {})
+    holder_actually_eligible = bool(holder_fact.get("eligible"))
+    if not holder_fact:
+        holder_condition = "UNKNOWN"
+        holder_evidence_status = "SOURCE_UNAVAILABLE_OR_INCOMPLETE"
+    elif (
+        holder_fact.get("holder_evidence_status")
+        == "SOURCE_NOT_EVALUATED_BUDGET_BOUND"
+    ):
+        holder_condition = "UNKNOWN"
+        holder_evidence_status = "SOURCE_NOT_EVALUATED_BUDGET_BOUND"
+    else:
+        holder_condition = str(
+            holder_fact.get("holder_condition")
+            or holder_fact.get("holder_concentration_label")
+            or "HOLDER_CONCENTRATION_UNKNOWN"
+        )
+        holder_evidence_status = (
+            "COMPLETE"
+            if holder_actually_eligible
+            else str(
+                holder_fact.get("holder_evidence_status")
+                or holder_fact.get("reason")
+                or "SOURCE_UNAVAILABLE_OR_INCOMPLETE"
+            )
+        )
+    return {
+        "holder_condition": holder_condition,
+        "holder_evidence_status": holder_evidence_status,
+        "future_action_eligibility": "BLOCKED_OR_UNKNOWN",
+        "fully_eligible": holder_actually_eligible,
+    }
 
 
 @dataclass(frozen=True)
@@ -1167,6 +1216,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
         partition_by_mint: Mapping[str, str] | None = None,
         tracking_pair_by_mint: Mapping[str, str] | None = None,
         eligible_target: int = 2,
+        permanent_memory_observation: bool = False,
     ) -> Any:
         """Shared pre-activation holder-eligibility funnel.
 
@@ -1188,6 +1238,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
             HolderBundlePersistPartialError,
             HolderContextResult,
             complete_maturation,
+            holder_attempt_admission,
             persist_bundle_attempts,
             persist_ledger,
             reuse_holder_fact,
@@ -1209,6 +1260,12 @@ class AuthoritativeLiveOperationalCampaignOwner:
         stage_transports = 0
         accounting_blocker = False
         accounting_reasons: list[str] = []
+        ledger_before_holder = ledger
+        evaluated_candidate_mints: list[str] = []
+        unattempted_candidate_mints: list[str] = []
+        budget_exhausted = False
+        budget_exhaustion_reason: str | None = None
+        holder_attempt_budget_trace: list[dict[str, Any]] = []
         persist_ledger(
             connection, run_id=command.run_id, cycle_id=cycle_id,
             ledger=ledger, now=evaluated.isoformat(),
@@ -1248,7 +1305,54 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     **handoff_detail,
                 }
                 continue
-            ledger.admit_candidate(now=evaluated)
+            attempt_trace: dict[str, Any] | None = None
+            if permanent_memory_observation:
+                admission_decision = holder_attempt_admission(
+                    ledger,
+                    now=evaluated,
+                    permanent_stage_operations_used=stage_transports,
+                )
+                attempt_trace = {
+                    "mint": proof.mint.lower(),
+                    "allowed": admission_decision.allowed,
+                    "reason": admission_decision.reason,
+                    "available_operations": admission_decision.available_operations,
+                    "required_worst_case_operations": (
+                        admission_decision.required_worst_case_operations
+                    ),
+                    "permanent_stage_operations_used": (
+                        admission_decision.permanent_stage_operations_used
+                    ),
+                    "permanent_stage_operations_remaining": (
+                        admission_decision.permanent_stage_operations_remaining
+                    ),
+                    "deadline_expired": admission_decision.deadline_expired,
+                    "ledger_before_attempt": ledger.budget_detail(),
+                    "attempted": False,
+                }
+                holder_attempt_budget_trace.append(attempt_trace)
+                if not admission_decision.allowed:
+                    budget_exhausted = True
+                    budget_exhaustion_reason = admission_decision.reason
+                    for remaining in bounded_candidates[ordinal - 1 :]:
+                        mint_key = remaining.mint.lower()
+                        if mint_key in holder_facts:
+                            continue
+                        unattempted_candidate_mints.append(mint_key)
+                        holder_facts[mint_key] = {
+                            "eligible": False,
+                            "holder_condition": "UNKNOWN",
+                            "holder_evidence_status": (
+                                "SOURCE_NOT_EVALUATED_BUDGET_BOUND"
+                            ),
+                            "future_action_eligibility": "BLOCKED_OR_UNKNOWN",
+                            "source_name": None,
+                            "source_request_ids": [],
+                        }
+                    attempt_trace["ledger_after_attempt"] = ledger.budget_detail()
+                    break
+            else:
+                ledger.admit_candidate(now=evaluated)
             maturation = schedule_maturation(
                 connection, run_id=command.run_id, cycle_id=cycle_id,
                 mint=proof.mint, observed_at=str(proof.block_time),
@@ -1260,8 +1364,11 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     "reason": f"HOLDER_MATURATION_{maturation['work_state']}",
                     "source_name": None,
                 }
+                if attempt_trace is not None:
+                    attempt_trace["ledger_after_attempt"] = ledger.budget_detail()
                 continue
             try:
+                evaluated_candidate_mints.append(proof.mint.lower())
                 reused_fact = reuse_holder_fact(
                     connection, run_id=command.run_id, cycle_id=cycle_id,
                     mint=proof.mint, evaluated_at=evaluated.isoformat(),
@@ -1283,6 +1390,10 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         connection, work_id=str(maturation["work_id"]),
                         cause="EVIDENCE_REUSED", now=evaluated.isoformat(),
                     )
+                    if attempt_trace is not None:
+                        attempt_trace["attempted"] = True
+                        attempt_trace["evidence_reused"] = True
+                        attempt_trace["ledger_after_attempt"] = ledger.budget_detail()
                     if reused_fact.get("eligible") and partition is not None:
                         accepted_partitions.add(partition)
                     if (
@@ -1363,6 +1474,15 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     connection, work_id=str(maturation["work_id"]),
                     cause="EVIDENCE_EVALUATED", now=evaluated.isoformat(),
                 )
+                if attempt_trace is not None:
+                    attempt_trace["attempted"] = True
+                    attempt_trace["governed_request_count"] = int(
+                        persist_result.governed_request_count
+                    )
+                    attempt_trace["measured_transport_count"] = int(
+                        persist_result.measured_transport_count
+                    )
+                    attempt_trace["ledger_after_attempt"] = ledger.budget_detail()
                 if holder_facts[proof.mint.lower()].get("eligible") and partition is not None:
                     accepted_partitions.add(partition)
                 if (
@@ -1467,6 +1587,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     "source_name": None,
                     **handoff_detail,
                 }
+                if attempt_trace is not None:
+                    attempt_trace["attempted"] = bool(partial_result is not None)
+                    attempt_trace["ledger_after_attempt"] = ledger.budget_detail()
         # Preserve order while de-duplicating request IDs that may repeat only
         # if the same durable row is legitimately re-reported (should not).
         deduped_ids: list[int] = []
@@ -1487,6 +1610,13 @@ class AuthoritativeLiveOperationalCampaignOwner:
             ),
             governed_request_count=stage_governed,
             measured_transport_count=stage_transports,
+            evaluated_candidate_mints=tuple(evaluated_candidate_mints),
+            unattempted_candidate_mints=tuple(unattempted_candidate_mints),
+            budget_exhausted=budget_exhausted,
+            budget_exhaustion_reason=budget_exhaustion_reason,
+            ledger_before_holder=ledger_before_holder,
+            ledger_after_holder=ledger,
+            holder_attempt_budget_trace=tuple(holder_attempt_budget_trace),
         )
 
     def run(self, *, mode: str, **kwargs: Any) -> Any:
@@ -1536,6 +1666,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
         ) = None,
         transport_identity_observer: (
             Callable[[Any], None] | None
+        ) = None,
+        pre_holder_accounting_projection: (
+            Callable[[], Mapping[str, Any]] | None
         ) = None,
     ) -> Any:
         """Run one authoritative live two-token operational-natural campaign.
@@ -1740,8 +1873,13 @@ class AuthoritativeLiveOperationalCampaignOwner:
             # pool, base_mint == mint) bound to a valid post-graduation market
             # identity may reach holder, market-readiness and lifecycle work.
             # Bonding-curve / unpaired origins of any age remain discovery-only.
-            candidate_cap = min(
-                HOLDER_ELIGIBILITY_CANDIDATE_MAX, ledger.candidate_cap()
+            permanent_mode = bool(
+                supply is not None
+                and bool(supply.diagnostics.get("permanent_availability"))
+            )
+            candidate_cap = _graduated_admission_candidate_cap(
+                permanent_memory_observation=permanent_mode,
+                ledger=ledger,
             )
             graduated_candidates, graduation_decisions = _graduated_admission(
                 tuple(acquisition.origin_proofs) + graduated_supply_proofs,
@@ -1758,10 +1896,6 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 candidate_cap=candidate_cap,
             )
 
-            permanent_mode = bool(
-                supply is not None
-                and bool(supply.diagnostics.get("permanent_availability"))
-            )
             # Permanent conversion: a solitary market-ready survivor must still
             # receive holder/safety evaluation. Legacy (non-permanent) path keeps
             # the two-candidate pre-holder gate.
@@ -1874,6 +2008,94 @@ class AuthoritativeLiveOperationalCampaignOwner:
             # PERSISTED+PERSISTED) is reachable. The funnel continues past holder
             # failures and stops after any two eligible candidates.
             # V2-9.8B.20: holder pacing/source I/O must not inherit an open write.
+            if permanent_mode and pre_holder_accounting_projection is not None:
+                from printer_v1.discovery.permanent_discovery_availability import (
+                    assemble_and_reconcile_campaign_source_requests,
+                )
+                from printer_v1.operator_cli.holder_reliability_budget_control import (
+                    build_ledger_from_exact_counts,
+                    build_pre_holder_budget_snapshot,
+                )
+
+                prefixes = []
+                for key in ("discovery_request_key_prefix", "request_key_prefix"):
+                    value = supply.diagnostics.get(key)
+                    if value:
+                        prefixes.append(str(value))
+                pre_holder_reconciliation = (
+                    assemble_and_reconcile_campaign_source_requests(
+                        connection,
+                        diagnostics=supply.diagnostics,
+                        request_key_prefixes=prefixes,
+                    )
+                )
+                if pre_holder_reconciliation.get("status") != "OK":
+                    raise LiveOperationalError(
+                        "CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH",
+                        str(
+                            pre_holder_reconciliation.get("categorical_detail")
+                            or pre_holder_reconciliation.get("blocker")
+                            or "PRE_HOLDER_RECONCILIATION_BLOCKED"
+                        ),
+                    )
+                projection = dict(pre_holder_accounting_projection())
+                pre_holder_snapshot = build_pre_holder_budget_snapshot(
+                    campaign_id=command.campaign_id,
+                    governed_request_ids=tuple(
+                        pre_holder_reconciliation.get(
+                            "durable_campaign_request_ids"
+                        )
+                        or ()
+                    ),
+                    request_manifest=tuple(
+                        pre_holder_reconciliation.get(
+                            "campaign_source_request_manifest"
+                        )
+                        or ()
+                    ),
+                    campaign_transport_identities=tuple(
+                        projection.get("campaign_transport_identities") or ()
+                    ),
+                    action_local_transport_identities=tuple(
+                        projection.get("action_local_transport_identities") or ()
+                    ),
+                )
+                ledger = build_ledger_from_exact_counts(
+                    governed_request_count=(
+                        pre_holder_snapshot.governed_request_count
+                    ),
+                    underlying_transport_operations=(
+                        pre_holder_snapshot.measured_transport_count
+                    ),
+                    deadline_at=deadline,
+                )
+                supply.diagnostics["pre_holder_source_request_reconciliation"] = (
+                    pre_holder_reconciliation
+                )
+                supply.diagnostics["pre_holder_budget_snapshot"] = {
+                    "governed_request_ids": list(
+                        pre_holder_snapshot.governed_request_ids
+                    ),
+                    "measured_transport_identity_keys": [
+                        list(key)
+                        for key in pre_holder_snapshot.measured_transport_identity_keys
+                    ],
+                    "governed_request_count": (
+                        pre_holder_snapshot.governed_request_count
+                    ),
+                    "measured_transport_count": (
+                        pre_holder_snapshot.measured_transport_count
+                    ),
+                    "zero_transport_operations": (
+                        pre_holder_snapshot.zero_transport_operations
+                    ),
+                    "reserved_snapshot_operations": (
+                        pre_holder_snapshot.reserved_snapshot_operations
+                    ),
+                    "reserved_snapshot_completion_operations": (
+                        pre_holder_snapshot.reserved_snapshot_completion_operations
+                    ),
+                }
             release_write_transaction(connection)
             holder_transport_before = int(ledger.underlying_transport_operations)
             holder_result = self._evaluate_holder_eligibility(
@@ -1897,6 +2119,10 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     if supply is not None
                     and bool(supply.diagnostics.get("permanent_availability"))
                     else 2
+                ),
+                permanent_memory_observation=bool(
+                    supply is not None
+                    and bool(supply.diagnostics.get("permanent_availability"))
                 ),
             )
             holder_facts = dict(holder_result.holder_facts)
@@ -1948,28 +2174,17 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         # evidence boundary. Selected candidates remain governed
                         # by the same rule; this never fabricates freshness.
                         continue
-                    holder_label = str(
-                        fact.get("holder_concentration_label")
-                        or "HOLDER_CONCENTRATION_UNKNOWN"
+                    holder_context = _holder_observation_context(fact)
+                    holder_actually_eligible = bool(
+                        holder_context["fully_eligible"]
                     )
-                    # Actual holder pass for future action policy only — never
-                    # invent holder_eligible=True to satisfy memory gates.
-                    holder_actually_eligible = bool(fact.get("eligible"))
-                    if not fact:
-                        holder_condition = "UNKNOWN"
-                        holder_evidence_status = "SOURCE_UNAVAILABLE_OR_INCOMPLETE"
-                        future_action = "BLOCKED_OR_UNKNOWN"
-                    else:
-                        holder_condition = holder_label
-                        holder_evidence_status = (
-                            "COMPLETE"
-                            if holder_actually_eligible
-                            else str(
-                                fact.get("reason")
-                                or "SOURCE_UNAVAILABLE_OR_INCOMPLETE"
-                            )
-                        )
-                        future_action = "BLOCKED_OR_UNKNOWN"
+                    holder_condition = str(holder_context["holder_condition"])
+                    holder_evidence_status = str(
+                        holder_context["holder_evidence_status"]
+                    )
+                    future_action = str(
+                        holder_context["future_action_eligibility"]
+                    )
                     observation = {
                         **item,
                         "mint": proof.mint,
