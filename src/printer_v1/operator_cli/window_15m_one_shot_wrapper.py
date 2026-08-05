@@ -21,6 +21,10 @@ import sys
 from typing import Any, Callable, Mapping
 import uuid
 
+from printer_v1.operator_cli.authorization_temporal_validity import (
+    AuthorizationTemporalError,
+    validate_authorization_temporal_validity,
+)
 from printer_v1.operator_cli.pre_authorization_migration_ledger_guard import (
     GuardResult,
     MigrationLedgerDriftGuardError,
@@ -40,6 +44,10 @@ from printer_v1.operator_cli.git_provenance_authorization_manifest import (
     compute_allowed_file_set_sha256,
     validate_git_provenance_authorization,
     validate_git_provenance_manifest_pre_marker,
+)
+from printer_v1.sources.operational_source_contracts import (
+    SolanaRpcConfigurationError,
+    validate_window_15m_source_configuration,
 )
 
 
@@ -584,6 +592,15 @@ def apply_authorization_once(
         authorization_file=authorization_file,
         authorization_sha256=authorization_sha256,
     )
+    # Temporal validity before any staging, marker, composition side effect, or
+    # child launch. Failures leave the package unconsumed.
+    try:
+        validate_authorization_temporal_validity(authorization_document)
+    except AuthorizationTemporalError as exc:
+        raise OneShotWrapperError(
+            f"authorization blocked before consumption: temporal validity: {exc}"
+        ) from exc
+
     canonical_dir = app_root / authorization_id
     if canonical_dir.exists():
         raise OneShotWrapperError("canonical authorization application already exists")
@@ -640,19 +657,41 @@ def apply_authorization_once(
                 "interpreter "
                 f"(wrapper={wrapper_interpreter!r} child={child_python!r})"
             )
+    # Shared source-configuration law against the exact child environment mapping
+    # that will be launched (parent env minus binding vars, same as child_env
+    # construction below). Missing RPC → documented public fallback. Present but
+    # invalid explicit RPC → block before marker / consumption. Parent env is
+    # never mutated.
+    parent_env = dict(os.environ if environ is None else environ)
+    child_env_preview = dict(parent_env)
+    for name in BINDING_ENV_VARS:
+        child_env_preview.pop(name, None)
+    try:
+        validate_window_15m_source_configuration(child_env_preview)
+    except SolanaRpcConfigurationError as exc:
+        raise OneShotWrapperError(
+            f"authorization blocked before consumption: source configuration: {exc}"
+        ) from exc
+
     try:
         from printer_v1.operator_cli.window_15m_concrete_composition import (
             ConcreteCompositionError,
             run_window_15m_concrete_composition_preflight,
         )
 
+        # Same child environment mapping — no parent process environment mutation.
         run_window_15m_concrete_composition_preflight(
             repository_root=str(root),
             timeout_seconds=5.0,
+            environment=child_env_preview,
         )
     except ConcreteCompositionError as exc:
         raise OneShotWrapperError(
             f"authorization blocked before consumption: concrete composition: {exc}"
+        ) from exc
+    except SolanaRpcConfigurationError as exc:
+        raise OneShotWrapperError(
+            f"authorization blocked before consumption: source configuration: {exc}"
         ) from exc
     except OneShotWrapperError:
         raise

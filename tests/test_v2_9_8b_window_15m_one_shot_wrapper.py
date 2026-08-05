@@ -161,12 +161,18 @@ class Fixture:
         )
 
     def rewrite_authorization(self):
+        from datetime import datetime, timedelta, timezone
+
         self.branch = self._git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
         self.head = self._git("rev-parse", "HEAD").stdout.strip()
+        issued = datetime.now(timezone.utc)
         payload = {
             "authorization_id": self.authorization_id,
             "migration_execution_id": self.migration_id,
             "verdict": "V2_9_8B_WINDOW_15M_TEST_AUTHORIZATION_PASS",
+            "authorized_at": issued.isoformat(),
+            "expires_at": (issued + timedelta(hours=12)).isoformat(),
+            "validity_seconds": 43200,
             "authorized_git": {"branch": self.branch, "head": self.head},
             "authorized_command": {
                 "mode": "run",

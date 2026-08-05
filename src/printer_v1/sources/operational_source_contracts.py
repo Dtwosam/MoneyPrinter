@@ -204,6 +204,20 @@ def resolve_solana_rpc_configuration(
     )
 
 
+def validate_window_15m_source_configuration(
+    environment: Mapping[str, str] | None = None,
+) -> SolanaRpcConfiguration:
+    """Shared wrapper/child source-configuration law for ordinary WINDOW_15M.
+
+    * Missing ``PRINTER_SOLANA_RPC_URL`` → documented official public fallback.
+    * Present but malformed, placeholder, non-HTTPS, or otherwise invalid →
+      raises ``SolanaRpcConfigurationError`` (must block before consumption).
+
+    Performs zero network I/O and does not mutate the parent environment.
+    """
+    return resolve_solana_rpc_configuration(environment)
+
+
 _CONTRACTS = (
     OperationalSourceContract(
         "direct_pump_migration_locator",

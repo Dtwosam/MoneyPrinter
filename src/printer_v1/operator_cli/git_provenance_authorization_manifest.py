@@ -843,6 +843,19 @@ def _validate_authorization_document(
         raise GitProvenanceAuthorizationError(
             "final authorization document authorization_id mismatch"
         )
+    # Temporal validity is mandatory before the document can stage or authorize
+    # consumption. Uses the same central max-age policy as the one-shot wrapper.
+    try:
+        from printer_v1.operator_cli.authorization_temporal_validity import (
+            AuthorizationTemporalError,
+            validate_authorization_temporal_validity,
+        )
+
+        validate_authorization_temporal_validity(document)
+    except AuthorizationTemporalError as exc:
+        raise GitProvenanceAuthorizationError(
+            f"authorization temporal validity failed: {exc}"
+        ) from exc
     verdict = _require_str(document.get("verdict"), label="authorization verdict")
     if not verdict.endswith("_PASS"):
         raise GitProvenanceAuthorizationError(

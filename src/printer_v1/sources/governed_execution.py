@@ -102,7 +102,15 @@ class GovernedSourceExecutionResult:
 
 
 class FixtureSourceAdapter:
-    """Local test double for future adapters; it has no network implementation."""
+    """Local test double for future adapters; it has no network implementation.
+
+    Explicit fixture type for composition validation: production adapter checks
+    must not treat missing ``enabled``/``transport`` as an implicit exemption for
+    arbitrary objects, but this class is the authorized offline fixture surface.
+    """
+
+    # Recognized by window_15m_concrete_composition.require_concrete_adapter.
+    PRINTER_EXPLICIT_FIXTURE_ADAPTER = True
 
     def __init__(
         self,

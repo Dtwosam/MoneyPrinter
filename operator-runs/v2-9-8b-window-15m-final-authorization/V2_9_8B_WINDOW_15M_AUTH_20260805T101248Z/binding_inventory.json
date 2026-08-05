@@ -1,0 +1,22 @@
+{
+  "allowed_invocation_count": 1,
+  "authorization_id": "V2_9_8B_WINDOW_15M_AUTH_20260805T101248Z",
+  "authorization_nonce": "d1fd4876eb4b6f610d2bfcc6e017ab97",
+  "authorized_at": "2026-08-05T10:12:48.555929Z",
+  "branch": "agent/v2-9-8b-pre-authorization-migration-ledger-drift-guard",
+  "database_inode": 1230526,
+  "database_mtime_ns": 1785921369859239685,
+  "database_path": "/Users/Dtwo1/Developer/MoneyPrinter/data/printer_v1.sqlite3",
+  "database_sha256": "5cf5326c4a820538a2f648a274bf14797c23a988bfae0f25aa49f01205cfafdc",
+  "database_size": 68009984,
+  "expires_at": "2026-08-06T10:12:48.555929Z",
+  "head": "7a4152bb90b14317513bb10879ee3861410270c7",
+  "main_window": "WINDOW_15M",
+  "migration_count": 52,
+  "migration_execution_id": "V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f",
+  "migration_head": "052_memory_observation_eligibility_layers.sql",
+  "package_sha256": "500b634619fe1ba59fca1db0dd805c03cab9a2d5a08ba469ff74ea239475256c",
+  "readiness_artifact_created": false,
+  "repository": "/Users/Dtwo1/Developer/MoneyPrinter",
+  "token_capacity": 2
+}

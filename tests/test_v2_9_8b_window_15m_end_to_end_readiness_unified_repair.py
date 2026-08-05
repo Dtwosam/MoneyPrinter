@@ -122,6 +122,9 @@ class WrapperCompositionBlockTests(unittest.TestCase):
                         {
                             "authorization_id": "TEST_AUTH_COMPOSITION_BLOCK",
                             "package_kind": "WINDOW_15M",
+                            "authorized_at": "2026-08-05T12:00:00+00:00",
+                            "expires_at": "2026-08-06T12:00:00+00:00",
+                            "validity_seconds": 86400,
                         },
                         "TEST_AUTH_COMPOSITION_BLOCK",
                         "deadbeef",

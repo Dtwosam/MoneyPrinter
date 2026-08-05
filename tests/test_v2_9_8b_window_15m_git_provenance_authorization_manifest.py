@@ -14,7 +14,7 @@ import socket
 import subprocess
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from printer_v1.operator_cli.git_provenance import (
@@ -145,9 +145,13 @@ class _Fixture:
         return _sha256_bytes((self.repo / relative).read_bytes())
 
     def _build_authorization_document(self) -> dict:
+        issued = datetime.now(timezone.utc)
         return {
             "authorization_id": AUTH_ID,
             "verdict": "V2_9_8B_WINDOW_15M_TESTONLY_FINAL_AUTHORIZATION_PASS",
+            "authorized_at": issued.isoformat(),
+            "expires_at": (issued + timedelta(hours=12)).isoformat(),
+            "validity_seconds": 43200,
             "authorized_git": {"branch": self.branch, "head": self.head},
             "authorized_command": {
                 "mode": "run",

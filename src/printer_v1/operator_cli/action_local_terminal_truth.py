@@ -43,7 +43,7 @@ _MUTATION_TABLES: tuple[str, ...] = (
     "printer_memory_factory_campaign_heartbeat_failures",
     "printer_memory_factory_runs",
     "printer_memory_factory_run_steps",
-    # Source Governor durable evidence.
+    # Source Governor durable evidence / source ledgers.
     "printer_source_requests",
     "printer_source_responses",
     "printer_source_failures",
@@ -51,8 +51,12 @@ _MUTATION_TABLES: tuple[str, ...] = (
     "printer_source_rate_limits",
     "printer_external_source_operations",
     "printer_measured_transport_operations",
-    # Discovery / reserve layers reachable before lifecycle handoff.
+    # Discovery / reserve / eligibility / graduated registry.
     "printer_discovery_reserve_layers",
+    "printer_eligible_token_reserve",
+    "printer_candidate_reserve",
+    "printer_pumpswap_graduated_candidate_registry",
+    "printer_graduated_market_floor_state",
     "printer_exact_market_states",
     "printer_discovery_work",
     "printer_discovery_work_source_links",
@@ -66,16 +70,49 @@ _MUTATION_TABLES: tuple[str, ...] = (
     "printer_discovery_availability_observations",
     "printer_discovery_provider_observations",
     "printer_discovery_exhaustion_certificates",
+    "printer_candidate_source_observations",
+    "printer_candidate_source_rounds",
+    # Tokens / pairs / selection / tracking / lifecycle.
+    "printer_tokens",
+    "printer_pairs",
+    "printer_selection_batches",
+    "printer_selection_batch_items",
+    "printer_selection_rotation_state",
+    "printer_tracking_queue",
+    "printer_token_lifecycle_events",
     # Holder evidence and maturation (pre-lifecycle admission).
     "printer_holder_campaign_operation_ledgers",
     "printer_holder_evidence_attempts",
     "printer_holder_maturation_work",
-    # Scheduler and memory surfaces that may mutate once lifecycle starts.
+    # Scheduler, snapshots, context, coverage, audits, windows, episodes, fingerprints.
     "printer_scheduler_jobs",
     "printer_token_snapshots",
+    "printer_snapshot_window_coverage",
+    "printer_snapshot_gap_audits",
+    "printer_market_regime_snapshots",
+    "printer_solana_chain_heat_snapshots",
+    "printer_safety_rug_snapshots",
+    "printer_liquidity_exit_snapshots",
+    "printer_trading_flow_snapshots",
+    "printer_chart_volatility_snapshots",
+    "printer_micro_events",
     "printer_memory_windows",
     "printer_episodes",
+    "printer_episode_snapshots",
+    "printer_episode_outcomes",
+    "printer_memory_audit_reports",
     "printer_memory_fingerprints",
+)
+
+# Tables that are projection / report surfaces only (not primary corpus inserts).
+_PROJECTION_ONLY_TABLES: frozenset[str] = frozenset(
+    {
+        "printer_memory_factory_campaign_reports",
+        "printer_memory_factory_campaign_report_objects",
+        "printer_memory_factory_campaign_objects",
+        "printer_memory_audit_reports",
+        "printer_snapshot_gap_audits",
+    }
 )
 
 
@@ -202,8 +239,17 @@ def build_action_local_terminal_truth(
     cycle_id: str | None = None,
     supervision_id: str | None = None,
     first_terminal_cause: str | None = None,
+    owner_emitted_inserted_row_ids: Mapping[str, Sequence[Any]] | None = None,
+    owner_emitted_updated_row_ids: Mapping[str, Sequence[Any]] | None = None,
+    authoritative_write_count: int | None = None,
 ) -> dict[str, object]:
-    """Build action-local source and mutation truth from durable evidence."""
+    """Build action-local source and mutation truth from durable evidence.
+
+    ``database_writes`` is numeric only when ``authoritative_write_count`` or
+    owner-emitted row identities make the write count truly authoritative;
+    otherwise it is ``None`` / ``UNKNOWN_NOT_ATTRIBUTABLE``. Net row growth is
+    never labelled as ``database_writes``.
+    """
     path = Path(db_path).resolve()
     after_identity = capture_database_identity(path)
     before_identity = (
@@ -227,6 +273,8 @@ def build_action_local_terminal_truth(
         "fresh_external_transport_attempts": 0,
         "retained_evidence_reuse_zero_transport": 0,
         "projection_only_writes": 0,
+        "inserted_rows": {},
+        "updated_rows": {},
         "table_deltas": {},
         "mutation_classifications": {},
         "campaign_run_cycle_states": {
@@ -247,7 +295,20 @@ def build_action_local_terminal_truth(
         "database_mutation_known": False,
         "database_mutation_status": "UNKNOWN_NOT_ATTRIBUTABLE",
         "database_writes": None,
+        "authoritative_write_count_status": "UNKNOWN_NOT_ATTRIBUTABLE",
     }
+    # Preserve owner-emitted identities when supplied (never invent them).
+    if owner_emitted_inserted_row_ids is not None:
+        truth["inserted_rows"] = {
+            str(k): list(v) for k, v in owner_emitted_inserted_row_ids.items()
+        }
+    if owner_emitted_updated_row_ids is not None:
+        truth["updated_rows"] = {
+            str(k): list(v) for k, v in owner_emitted_updated_row_ids.items()
+        }
+    if authoritative_write_count is not None:
+        truth["database_writes"] = int(authoritative_write_count)
+        truth["authoritative_write_count_status"] = "OWNER_EMITTED_AUTHORITATIVE"
     if not path.is_file():
         return truth
 
@@ -265,6 +326,9 @@ def build_action_local_terminal_truth(
                 after_identity=after_identity,
                 campaign_id=campaign_id,
                 run_id=run_id,
+                owner_emitted_inserted_row_ids=owner_emitted_inserted_row_ids,
+                owner_emitted_updated_row_ids=owner_emitted_updated_row_ids,
+                authoritative_write_count=authoritative_write_count,
             )
         except Exception as exc:
             truth["source_inventory_status"] = (
@@ -358,6 +422,9 @@ def _populate_source_and_mutation_inventory(
     after_identity: Mapping[str, object],
     campaign_id: str | None,
     run_id: str | None,
+    owner_emitted_inserted_row_ids: Mapping[str, Sequence[Any]] | None = None,
+    owner_emitted_updated_row_ids: Mapping[str, Sequence[Any]] | None = None,
+    authoritative_write_count: int | None = None,
 ) -> None:
     """Fill source IDs and table deltas; may raise only for programming bugs."""
     scope_sql, scope_params = _campaign_scope_clause(
@@ -448,20 +515,84 @@ def _populate_source_and_mutation_inventory(
         if _table_exists(connection, candidate):
             transport_table = candidate
             break
+    fresh_transport: object
     if transport_table is not None and baseline is not None:
-        count = int(
+        fresh_transport = int(
             connection.execute(
                 f"SELECT COUNT(*) FROM {transport_table} WHERE id > ?",
                 (int(baseline.measured_transport_max_id),),
             ).fetchone()[0]
         )
-        truth["fresh_external_transport_attempts"] = count
+        truth["fresh_external_transport_attempts"] = fresh_transport
+    elif transport_table is not None:
+        fresh_transport = "UNKNOWN_NOT_ATTRIBUTABLE"
+        truth["fresh_external_transport_attempts"] = fresh_transport
     elif len(request_ids) > 0:
-        truth["fresh_external_transport_attempts"] = "UNKNOWN_NOT_ATTRIBUTABLE"
+        # Requests without measured-transport evidence cannot claim zero fresh
+        # transport; leave categorical unknown rather than inventing counts.
+        fresh_transport = "UNKNOWN_NOT_ATTRIBUTABLE"
+        truth["fresh_external_transport_attempts"] = fresh_transport
+    else:
+        fresh_transport = 0
+        truth["fresh_external_transport_attempts"] = 0
+
+    # Retained-evidence reuse: campaign/source rows exist with zero fresh transport.
+    if (
+        isinstance(fresh_transport, int)
+        and fresh_transport == 0
+        and len(request_ids) == 0
+        and baseline is not None
+    ):
+        # Count campaign-owned discovery/reserve growth without new transport as
+        # retained reuse when present; otherwise leave at 0.
+        retained = 0
+        for table in (
+            "printer_discovery_reserve_layers",
+            "printer_eligible_token_reserve",
+            "printer_candidate_reserve",
+            "printer_discovery_availability_observations",
+        ):
+            before = int(baseline.table_counts.get(table, 0))
+            after = _count_table(connection, table)
+            if after > before:
+                retained += after - before
+        truth["retained_evidence_reuse_zero_transport"] = retained
+    elif isinstance(fresh_transport, int) and fresh_transport == 0:
+        truth["retained_evidence_reuse_zero_transport"] = 0
+    else:
+        truth["retained_evidence_reuse_zero_transport"] = (
+            "UNKNOWN_NOT_ATTRIBUTABLE"
+            if fresh_transport == "UNKNOWN_NOT_ATTRIBUTABLE"
+            else 0
+        )
+
+    identity_changed = (
+        before_identity is not None
+        and (
+            before_identity.get("sha256") != after_identity.get("sha256")
+            or before_identity.get("mtime_ns") != after_identity.get("mtime_ns")
+            or before_identity.get("size") != after_identity.get("size")
+        )
+    )
+
+    inserted_owner = {
+        str(k): list(v)
+        for k, v in (owner_emitted_inserted_row_ids or {}).items()
+    }
+    updated_owner = {
+        str(k): list(v)
+        for k, v in (owner_emitted_updated_row_ids or {}).items()
+    }
+    if inserted_owner:
+        truth["inserted_rows"] = inserted_owner
+    if updated_owner:
+        truth["updated_rows"] = updated_owner
 
     deltas: dict[str, dict[str, object]] = {}
     classifications: dict[str, str] = {}
     total_positive_delta = 0
+    projection_only_positive = 0
+    any_update_without_growth = False
     for table in _MUTATION_TABLES:
         after = _count_table(connection, table)
         before = (
@@ -469,37 +600,98 @@ def _populate_source_and_mutation_inventory(
             if baseline is not None
             else None
         )
+        owner_inserts = inserted_owner.get(table) or []
+        owner_updates = updated_owner.get(table) or []
         if before is None:
             delta: object = "UNKNOWN_NOT_ATTRIBUTABLE"
             classifications[table] = "UNKNOWN_NOT_ATTRIBUTABLE"
         else:
             delta_int = after - before
             delta = delta_int
-            if delta_int > 0:
+            if owner_inserts and owner_updates:
+                classifications[table] = "MIXED_INSERT_AND_UPDATE"
+                if delta_int > 0:
+                    total_positive_delta += delta_int
+            elif owner_inserts and not owner_updates:
+                classifications[table] = "INSERT_ONLY"
+                if delta_int > 0:
+                    total_positive_delta += delta_int
+            elif owner_updates and not owner_inserts:
+                classifications[table] = "UPDATE_ONLY"
+                any_update_without_growth = True
+            elif delta_int > 0:
                 total_positive_delta += delta_int
-                classifications[table] = "INSERT_OR_UPDATE_NET_POSITIVE"
-            elif delta_int == 0:
-                classifications[table] = "UNCHANGED"
-            else:
+                if table in _PROJECTION_ONLY_TABLES:
+                    classifications[table] = "PROJECTION_ONLY_INSERT"
+                    projection_only_positive += delta_int
+                else:
+                    classifications[table] = "INSERT_NET_POSITIVE"
+            elif delta_int < 0:
                 classifications[table] = "NET_NEGATIVE_OR_DELETE"
+            else:
+                # delta_int == 0: never label UPDATE as UNCHANGED.
+                if owner_updates:
+                    classifications[table] = "UPDATE_WITHOUT_NET_GROWTH"
+                    any_update_without_growth = True
+                elif identity_changed and table not in _PROJECTION_ONLY_TABLES:
+                    # Identity changed with zero net growth: honest unknown as to
+                    # which tables received UPDATE-only mutations.
+                    classifications[table] = "POSSIBLE_UPDATE_OR_UNCHANGED"
+                    any_update_without_growth = True
+                else:
+                    classifications[table] = "UNCHANGED"
         deltas[table] = {"before": before, "after": after, "delta": delta}
     truth["table_deltas"] = deltas
     truth["mutation_classifications"] = classifications
+    truth["projection_only_writes"] = projection_only_positive
+
+    # database_writes: numeric only when truly authoritative.
+    if authoritative_write_count is not None:
+        truth["database_writes"] = int(authoritative_write_count)
+        truth["authoritative_write_count_status"] = "OWNER_EMITTED_AUTHORITATIVE"
+    elif inserted_owner or updated_owner:
+        write_ids = 0
+        for ids in inserted_owner.values():
+            write_ids += len(ids)
+        for ids in updated_owner.values():
+            write_ids += len(ids)
+        truth["database_writes"] = write_ids
+        truth["authoritative_write_count_status"] = "OWNER_EMITTED_ROW_IDENTITIES"
+    else:
+        # Do not call net row growth database_writes.
+        truth["database_writes"] = None
+        truth["authoritative_write_count_status"] = "UNKNOWN_NOT_ATTRIBUTABLE"
 
     if baseline is not None:
         truth["database_mutation_known"] = True
-        if total_positive_delta == 0 and before_identity == after_identity:
+        if (
+            total_positive_delta == 0
+            and not any_update_without_growth
+            and not identity_changed
+            and before_identity == after_identity
+        ):
             truth["database_mutation_status"] = "PROVEN_ZERO_NO_MUTATION"
-            truth["database_writes"] = 0
+            if authoritative_write_count is None and not (
+                inserted_owner or updated_owner
+            ):
+                truth["database_writes"] = 0
+                truth["authoritative_write_count_status"] = "PROVEN_ZERO"
+        elif any_update_without_growth and total_positive_delta == 0:
+            truth["database_mutation_status"] = "PROVEN_UPDATE_WITHOUT_NET_GROWTH"
+        elif total_positive_delta > 0 and any_update_without_growth:
+            truth["database_mutation_status"] = "PROVEN_MIXED_INSERT_AND_UPDATE"
         elif total_positive_delta > 0:
             truth["database_mutation_status"] = "PROVEN_POSITIVE_DELTA"
-            truth["database_writes"] = total_positive_delta
+        elif identity_changed:
+            truth["database_mutation_status"] = "PROVEN_IDENTITY_CHANGED"
         else:
             truth["database_mutation_status"] = "PROVEN_DELTA_PRESENT"
-            truth["database_writes"] = total_positive_delta
     else:
         truth["database_mutation_status"] = "UNKNOWN_NOT_ATTRIBUTABLE"
-        truth["database_writes"] = None
+        if authoritative_write_count is None and not (
+            inserted_owner or updated_owner
+        ):
+            truth["database_writes"] = None
 
 
 def _read_campaign_run_cycle_supervision_states(

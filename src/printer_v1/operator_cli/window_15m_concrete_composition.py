@@ -52,28 +52,89 @@ def require_concrete_transport(label: str, transport: object) -> object:
     return transport
 
 
+class ProductionFixtureAdapter:
+    """Explicit fixture-type marker for controlled offline proofs.
+
+    Missing attributes are never an implicit exemption. Callers that inject
+    non-production adapters must either subclass this marker or pass
+    ``validation_mode="fixture"`` / ``test_only=True``.
+    """
+
+
 def require_concrete_adapter(
     label: str,
     adapter: object,
     *,
     expected_source_name: str | None = None,
+    expected_request_kind: str | None = None,
     require_enabled: bool = True,
     require_transport: bool = True,
+    require_execute: bool = True,
+    validation_mode: str = "production",
+    test_only: bool = False,
 ) -> object:
     """Reject None / disabled / transportless / wrong-source adapters.
 
-    Production adapters expose ``enabled`` and ``transport``. Offline fixture
-    adapters used by controlled-clock proofs may implement a different surface;
-    when those attributes are absent the call still requires a non-None object
-    and, when a source name is discoverable, an exact source match.
+    Production mode requires callable ``execute``, canonical contract/metadata,
+    exact expected source identity, enabled state where applicable, callable
+    transport where required, and compatible governed request kind when supplied.
+
+    Fixture exceptions require an explicit ``ProductionFixtureAdapter`` type or
+    ``validation_mode="fixture"`` / ``test_only=True`` — never missing attributes
+    as an implicit exemption. An arbitrary non-None object fails.
     """
     if adapter is None:
         raise ConcreteCompositionError(f"REQUIRED_ADAPTER_MISSING:{label}")
+
+    mode = str(validation_mode or "production").strip().lower()
+    fixture_mode = (
+        test_only
+        or mode == "fixture"
+        or isinstance(adapter, ProductionFixtureAdapter)
+        or bool(getattr(adapter, "PRINTER_EXPLICIT_FIXTURE_ADAPTER", False))
+    )
+
+    if fixture_mode:
+        # Explicit fixture path still rejects None (above) and wrong source when
+        # the fixture exposes a discoverable source name.
+        if expected_source_name is not None:
+            source_name = _adapter_source_name(adapter)
+            if source_name is not None and str(source_name) != str(expected_source_name):
+                raise ConcreteCompositionError(
+                    f"REQUIRED_ADAPTER_SOURCE_MISMATCH:{label}"
+                    f":expected={expected_source_name!r}:got={source_name!r}"
+                )
+        return adapter
+
+    # Production surface: require execute + contract/metadata. Arbitrary objects fail.
+    if require_execute:
+        execute = getattr(adapter, "execute", None)
+        if execute is None or not callable(execute):
+            raise ConcreteCompositionError(
+                f"REQUIRED_ADAPTER_EXECUTE_MISSING:{label}"
+            )
+
+    contract = getattr(adapter, "contract", None)
+    metadata = getattr(adapter, "metadata", None)
+    if contract is None and metadata is None:
+        raise ConcreteCompositionError(
+            f"REQUIRED_ADAPTER_CONTRACT_OR_METADATA_MISSING:{label}"
+        )
+
     has_enabled = hasattr(adapter, "enabled")
     has_transport = hasattr(adapter, "transport")
-    if require_enabled and has_enabled and not bool(adapter.enabled):
-        raise ConcreteCompositionError(f"REQUIRED_ADAPTER_DISABLED:{label}")
-    if require_transport and has_transport:
+    if require_enabled:
+        if not has_enabled:
+            raise ConcreteCompositionError(
+                f"REQUIRED_ADAPTER_ENABLED_MISSING:{label}"
+            )
+        if not bool(adapter.enabled):
+            raise ConcreteCompositionError(f"REQUIRED_ADAPTER_DISABLED:{label}")
+    if require_transport:
+        if not has_transport:
+            raise ConcreteCompositionError(
+                f"REQUIRED_ADAPTER_TRANSPORT_MISSING:{label}"
+            )
         transport = adapter.transport
         if transport is None:
             raise ConcreteCompositionError(
@@ -83,20 +144,26 @@ def require_concrete_adapter(
             raise ConcreteCompositionError(
                 f"REQUIRED_ADAPTER_TRANSPORT_NOT_CALLABLE:{label}"
             )
-    # Production default builders always expose enabled+transport; rejecting a
-    # production-shaped missing transport is mandatory even when the attribute
-    # is present and None (handled above). When both attributes are absent the
-    # object is treated as an injected fixture owner and only None is rejected.
-    if require_transport and has_enabled and not has_transport:
-        raise ConcreteCompositionError(
-            f"REQUIRED_ADAPTER_TRANSPORT_MISSING:{label}"
-        )
+
     if expected_source_name is not None:
         source_name = _adapter_source_name(adapter)
-        if source_name is not None and str(source_name) != str(expected_source_name):
+        if source_name is None:
+            raise ConcreteCompositionError(
+                f"REQUIRED_ADAPTER_SOURCE_UNKNOWN:{label}"
+                f":expected={expected_source_name!r}"
+            )
+        if str(source_name) != str(expected_source_name):
             raise ConcreteCompositionError(
                 f"REQUIRED_ADAPTER_SOURCE_MISMATCH:{label}"
                 f":expected={expected_source_name!r}:got={source_name!r}"
+            )
+
+    if expected_request_kind is not None:
+        allowed = _adapter_allowed_request_kinds(adapter)
+        if allowed is not None and str(expected_request_kind) not in allowed:
+            raise ConcreteCompositionError(
+                f"REQUIRED_ADAPTER_REQUEST_KIND_UNSUPPORTED:{label}"
+                f":kind={expected_request_kind!r}"
             )
     return adapter
 
@@ -149,6 +216,19 @@ def _adapter_source_name(adapter: object) -> str | None:
     return str(name) if name is not None else None
 
 
+def _adapter_allowed_request_kinds(adapter: object) -> frozenset[str] | None:
+    contract = getattr(adapter, "contract", None)
+    if contract is None:
+        return None
+    allowed = getattr(contract, "allowed_request_kinds", None)
+    if allowed is None:
+        return None
+    try:
+        return frozenset(str(item) for item in allowed)
+    except TypeError:
+        return None
+
+
 @dataclass(frozen=True)
 class CompositionBuilderSpec:
     """One reachable ordinary-path builder for the readiness matrix."""
@@ -161,7 +241,9 @@ class CompositionBuilderSpec:
     adapter_builder: str
 
 
-# Exact matrix of ordinary WINDOW_15M owners. Labels are stable for closeout.
+# Runtime-derived composition registry of ordinary WINDOW_15M default
+# constructors. Used by both production preflight and runtime builder
+# enumeration — not a second parallel graph.
 COMPOSITION_MATRIX: tuple[CompositionBuilderSpec, ...] = (
     CompositionBuilderSpec(
         label="pump_origin_solana_rpc_transport",
@@ -170,6 +252,22 @@ COMPOSITION_MATRIX: tuple[CompositionBuilderSpec, ...] = (
         request_kind="pump_origin_acquisition",
         transport_builder="OneShotUrllibPumpTransport",
         adapter_builder="OneShotUrllibPumpTransport",
+    ),
+    CompositionBuilderSpec(
+        label="direct_pump_finalized_migration_transport",
+        owner="sources.direct_pump_migration.build_direct_pump_migration_transport",
+        source_name="solana_rpc",
+        request_kind="restored_pump_migration_signature_page",
+        transport_builder="build_direct_pump_migration_transport",
+        adapter_builder="build_direct_pump_migration_adapter",
+    ),
+    CompositionBuilderSpec(
+        label="exact_pump_pumpswap_graduation_verifier_transport",
+        owner="sources.pump_migration.build_graduation_verifier_transport",
+        source_name="pumpswap",
+        request_kind="pumpswap_onchain_pool_confirmation",
+        transport_builder="build_graduation_verifier_transport",
+        adapter_builder="build_pumpswap_adapter",
     ),
     CompositionBuilderSpec(
         label="secondary_discovery_http_transport",
@@ -190,7 +288,7 @@ COMPOSITION_MATRIX: tuple[CompositionBuilderSpec, ...] = (
     CompositionBuilderSpec(
         label="pumpswap_account_batch_transport",
         owner="sources.pumpswap_pool_account_batch.build_pumpswap_pool_account_batch_transport",
-        source_name="pumpswap",
+        source_name="solana_rpc",
         request_kind="pumpswap_pool_account_batch",
         transport_builder="build_pumpswap_pool_account_batch_transport",
         adapter_builder="build_pumpswap_pool_account_batch_adapter",
@@ -313,6 +411,7 @@ COMPOSITION_MATRIX: tuple[CompositionBuilderSpec, ...] = (
 def _build_composition_callables(
     *,
     timeout_seconds: float,
+    environment: Mapping[str, str] | None = None,
 ) -> tuple[tuple[str, Callable[[], object]], ...]:
     """Construct zero-I/O builders for every matrix entry."""
     from printer_v1.operator_cli.authoritative_live_operational_campaign import (
@@ -357,10 +456,14 @@ def _build_composition_callables(
         build_jupiter_paper_quote_transport,
         build_jupiter_quote_adapter,
     )
-    from printer_v1.sources.operational_source_contracts import (
-        OFFICIAL_SOLANA_PUBLIC_RPC_URL,
-        resolve_solana_rpc_configuration,
+    from printer_v1.sources.direct_pump_migration import (
+        build_direct_pump_migration_adapter,
+        build_direct_pump_migration_transport,
     )
+    from printer_v1.sources.operational_source_contracts import (
+        validate_window_15m_source_configuration,
+    )
+    from printer_v1.sources.pump_migration import build_graduation_verifier_transport
     from printer_v1.sources.pumpswap import (
         PUMPSWAP_SOURCE_NAME,
         build_pumpswap_adapter,
@@ -379,18 +482,54 @@ def _build_composition_callables(
     mint = PREFLIGHT_MINT
     pool = PREFLIGHT_POOL
     timeout = float(timeout_seconds)
+    # Shared source-configuration law: missing RPC may fall back; present but
+    # invalid RPC must raise (no catch-and-substitute). Uses the supplied
+    # environment mapping when provided so wrapper and child evaluate the same
+    # law without mutating the parent process environment.
+    rpc_config = validate_window_15m_source_configuration(environment)
+    endpoint = str(rpc_config.url)
 
     def pump_origin() -> object:
-        try:
-            endpoint = str(resolve_solana_rpc_configuration().url)
-        except Exception:
-            endpoint = OFFICIAL_SOLANA_PUBLIC_RPC_URL
         transport = OneShotUrllibPumpTransport(endpoint)
         if not hasattr(transport, "json_rpc"):
             raise ConcreteCompositionError(
                 "REQUIRED_ADAPTER_NOT_CONSTRUCTIBLE:pump_origin_solana_rpc_transport"
             )
         return transport
+
+    def direct_pump_migration() -> object:
+        transport = require_concrete_transport(
+            "direct_pump_finalized_migration_transport.transport",
+            build_direct_pump_migration_transport(
+                rpc_url=endpoint,
+                timeout_seconds=timeout,
+            ),
+        )
+        return require_concrete_adapter(
+            "direct_pump_finalized_migration_transport",
+            build_direct_pump_migration_adapter(
+                enabled=True, transport=transport
+            ),
+            expected_source_name="solana_rpc",
+            expected_request_kind="restored_pump_migration_signature_page",
+        )
+
+    def graduation_verifier() -> object:
+        transport = require_concrete_transport(
+            "exact_pump_pumpswap_graduation_verifier_transport.transport",
+            build_graduation_verifier_transport(
+                migration_signature=PREFLIGHT_SIGNATURE,
+                expected_mint=mint,
+                rpc_url=endpoint,
+                timeout_seconds=timeout,
+            ),
+        )
+        return require_concrete_adapter(
+            "exact_pump_pumpswap_graduation_verifier_transport",
+            build_pumpswap_adapter(enabled=True, fixture_transport=transport),
+            expected_source_name=PUMPSWAP_SOURCE_NAME,
+            expected_request_kind="pumpswap_onchain_pool_confirmation",
+        )
 
     def secondary_http() -> object:
         transport = OneShotUrllibSecondaryTransport()
@@ -594,35 +733,54 @@ def _build_composition_callables(
             expected_source_name=HELIUS_SOURCE_NAME,
         )
 
-    builders: list[tuple[str, Callable[[], object]]] = [
-        ("pump_origin_solana_rpc_transport", pump_origin),
-        ("secondary_discovery_http_transport", secondary_http),
-        ("pumpswap_migration_pool_confirmation", pumpswap_confirm),
-        ("pumpswap_account_batch_transport", pumpswap_batch),
-        ("dexscreener_fresh_profiles_discovery", dex_fresh),
-        ("dexscreener_mint_batch_discovery", dex_batch),
-        ("geckoterminal_fresh_nomination", gt_fresh),
-        ("geckoterminal_token_pools_discovery", gt_token_pools),
-        ("unknown_liquidity_backup_dex_to_gecko", backup_dex_to_gecko),
-        ("unknown_liquidity_backup_gecko_to_dex", backup_gecko_to_dex),
-        ("lifecycle_exact_pair_dexscreener_primary", lifecycle_dex_primary),
-        ("lifecycle_exact_pair_geckoterminal_fallback", lifecycle_gt_fallback),
-        ("preclose_coingecko_market_chain", coingecko_market),
-        ("preclose_goplus_safety", goplus_safety),
-        ("preclose_jupiter_entry_quote", jupiter_entry),
-        ("preclose_jupiter_exit_quote", jupiter_exit),
-        ("preclose_solana_rpc_holder_primary", holder_primary),
-        ("preclose_helius_holder_backup", holder_backup),
-    ]
+    # Builders ordered and labeled exactly as COMPOSITION_MATRIX registry.
+    builder_by_label: dict[str, Callable[[], object]] = {
+        "pump_origin_solana_rpc_transport": pump_origin,
+        "direct_pump_finalized_migration_transport": direct_pump_migration,
+        "exact_pump_pumpswap_graduation_verifier_transport": graduation_verifier,
+        "secondary_discovery_http_transport": secondary_http,
+        "pumpswap_migration_pool_confirmation": pumpswap_confirm,
+        "pumpswap_account_batch_transport": pumpswap_batch,
+        "dexscreener_fresh_profiles_discovery": dex_fresh,
+        "dexscreener_mint_batch_discovery": dex_batch,
+        "geckoterminal_fresh_nomination": gt_fresh,
+        "geckoterminal_token_pools_discovery": gt_token_pools,
+        "unknown_liquidity_backup_dex_to_gecko": backup_dex_to_gecko,
+        "unknown_liquidity_backup_gecko_to_dex": backup_gecko_to_dex,
+        "lifecycle_exact_pair_dexscreener_primary": lifecycle_dex_primary,
+        "lifecycle_exact_pair_geckoterminal_fallback": lifecycle_gt_fallback,
+        "preclose_coingecko_market_chain": coingecko_market,
+        "preclose_goplus_safety": goplus_safety,
+        "preclose_jupiter_entry_quote": jupiter_entry,
+        "preclose_jupiter_exit_quote": jupiter_exit,
+        "preclose_solana_rpc_holder_primary": holder_primary,
+        "preclose_helius_holder_backup": holder_backup,
+    }
+    builders: list[tuple[str, Callable[[], object]]] = []
+    for spec in COMPOSITION_MATRIX:
+        if spec.label not in builder_by_label:
+            raise ConcreteCompositionError(
+                f"COMPOSITION_REGISTRY_BUILDER_MISSING:{spec.label}"
+            )
+        builders.append((spec.label, builder_by_label[spec.label]))
+    extra = sorted(set(builder_by_label) - {spec.label for spec in COMPOSITION_MATRIX})
+    if extra:
+        raise ConcreteCompositionError(
+            f"COMPOSITION_REGISTRY_BUILDER_EXTRA:{extra}"
+        )
     return tuple(builders)
 
 
 def window_15m_preflight_builders(
     *,
     timeout_seconds: float = 5.0,
+    environment: Mapping[str, str] | None = None,
 ) -> tuple[tuple[str, Callable[[], object]], ...]:
     """Return labeled zero-I/O builders for assert_runtime_dependency_preflight."""
-    return _build_composition_callables(timeout_seconds=timeout_seconds)
+    return _build_composition_callables(
+        timeout_seconds=timeout_seconds,
+        environment=environment,
+    )
 
 
 def run_window_15m_concrete_composition_preflight(
@@ -630,6 +788,7 @@ def run_window_15m_concrete_composition_preflight(
     repository_root: str | None = None,
     timeout_seconds: float = 5.0,
     adapter_builders: Iterable[tuple[str, Any]] | None = None,
+    environment: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Run the full concrete composition guard with zero external I/O.
 
@@ -639,7 +798,10 @@ def run_window_15m_concrete_composition_preflight(
     builders = (
         tuple(adapter_builders)
         if adapter_builders is not None
-        else window_15m_preflight_builders(timeout_seconds=timeout_seconds)
+        else window_15m_preflight_builders(
+            timeout_seconds=timeout_seconds,
+            environment=environment,
+        )
     )
     # Validate matrix coverage against builder labels when using defaults.
     if adapter_builders is None:
@@ -727,6 +889,16 @@ def composition_matrix_as_dicts() -> list[dict[str, str]]:
     ]
 
 
+def ordinary_window_15m_composition_registry() -> tuple[CompositionBuilderSpec, ...]:
+    """Return the single ordinary-path composition registry (production + preflight)."""
+    return COMPOSITION_MATRIX
+
+
+def ordinary_window_15m_builder_identities() -> tuple[str, ...]:
+    """Stable ordered builder identity labels from the shared registry."""
+    return tuple(spec.label for spec in COMPOSITION_MATRIX)
+
+
 __all__ = [
     "COMPOSITION_MATRIX",
     "PREFLIGHT_MINT",
@@ -736,7 +908,10 @@ __all__ = [
     "PREFLIGHT_SIGNATURE",
     "CompositionBuilderSpec",
     "ConcreteCompositionError",
+    "ProductionFixtureAdapter",
     "composition_matrix_as_dicts",
+    "ordinary_window_15m_builder_identities",
+    "ordinary_window_15m_composition_registry",
     "require_concrete_adapter",
     "require_concrete_transport",
     "require_factory_output",

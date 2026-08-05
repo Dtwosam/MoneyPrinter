@@ -1,0 +1,1006 @@
+{
+  "application_started_at": "2026-08-01T20:44:32.822303+00:00",
+  "authoritative_database": {
+    "exists": true,
+    "mtime_ns": 1785510479935495533,
+    "path": "/Users/Dtwo1/Developer/MoneyPrinter/data/printer_v1.sqlite3",
+    "sha256": "e13c40892f0c14d4c07960e00218569a536c50c0fc27815049284c3dd2aff5c2",
+    "size": 65654784
+  },
+  "authorization_review_commit": "e3f15dfeea77dcca4822d675f38de838cc12a164",
+  "authorization_sha256": "eb5388f3fac82b0c628a6b3e1e2893702fe221755838f971c6900f4e24e2b835",
+  "authorized_git_head": "82f7dc64f73fc164f27e8528c2122a6035d7bab6",
+  "automatic_retry_allowed": false,
+  "execution_id": "V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f",
+  "historical_artifact_fingerprint_before": {
+    "file_count": 128,
+    "files": [
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260726T114155Z-95d9979a9302/printer_v1.pre-campaign.backup.sqlite3",
+        "sha256": "e0f506d480b448c65c5f4573df5dea09adabd21bd017cd4664602b920edcae7f",
+        "size": 13881344
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260726T114155Z-95d9979a9302/printer_v1.restore-rehearsal.sqlite3",
+        "sha256": "e0f506d480b448c65c5f4573df5dea09adabd21bd017cd4664602b920edcae7f",
+        "size": 13881344
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260726T114155Z-95d9979a9302/reports/20260726T114155Z-95d9979a9302-report.campaign-report.json",
+        "sha256": "917c754c7317ada04049cd4b829e09bf4454598564de94390af01c1be20a3f22",
+        "size": 2517
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260726T114155Z-95d9979a9302/stderr.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "size": 0
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260726T114155Z-95d9979a9302/stdout.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "size": 0
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260726T141321Z-e762ecf7b374/printer_v1.pre-campaign.backup.sqlite3",
+        "sha256": "6bc642018aec12c1a9cc09b950de390f4927d75e53a7bc4965c0c509fe4909f1",
+        "size": 13881344
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260726T141321Z-e762ecf7b374/printer_v1.restore-rehearsal.sqlite3",
+        "sha256": "6bc642018aec12c1a9cc09b950de390f4927d75e53a7bc4965c0c509fe4909f1",
+        "size": 13881344
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260726T141321Z-e762ecf7b374/reports/20260726T141321Z-e762ecf7b374-report.campaign-report.json",
+        "sha256": "29dad217a5b77de3a8140a43b7dff774f1e706ff214b2b7eaf295b32ce667924",
+        "size": 2292
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260726T141321Z-e762ecf7b374/stderr.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "size": 0
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260726T141321Z-e762ecf7b374/stdout.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "size": 0
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260726T141321Z-e762ecf7b374/terminal-summary.json",
+        "sha256": "5a66ab822ee45f7b30791db4a6b8433acfe2d9a49fb1520a262a3d4e25d6a24a",
+        "size": 3529
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260726T172119Z-941d6d86aa56/printer_v1.pre-campaign.backup.sqlite3",
+        "sha256": "10f5da945c9f5d5355f99d9cc655fd21893a338b56db6a365e27958db470b5cf",
+        "size": 13881344
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260726T172119Z-941d6d86aa56/printer_v1.restore-rehearsal.sqlite3",
+        "sha256": "10f5da945c9f5d5355f99d9cc655fd21893a338b56db6a365e27958db470b5cf",
+        "size": 13881344
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260726T172119Z-941d6d86aa56/reports/20260726T172119Z-941d6d86aa56-report.campaign-report.json",
+        "sha256": "9d520e7429842cebcd27f82381cdc8ae3df3159ea6b1ab6ea034aa672efd09c2",
+        "size": 2364
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260726T172119Z-941d6d86aa56/stderr.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "size": 0
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260726T172119Z-941d6d86aa56/stdout.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "size": 0
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260726T172119Z-941d6d86aa56/terminal-summary.json",
+        "sha256": "e1b2c3152496d8738ce8d82355f0fb3f3bea7e512309f163d954ac327e52a18e",
+        "size": 1063
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T001520Z-d513e21260b5/printer_v1.pre-campaign.backup.sqlite3",
+        "sha256": "e2768876e90d91f25b51bf0c0e79f2b075d32568884851767ba95a6f75e0b439",
+        "size": 13881344
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T001520Z-d513e21260b5/printer_v1.restore-rehearsal.sqlite3",
+        "sha256": "e2768876e90d91f25b51bf0c0e79f2b075d32568884851767ba95a6f75e0b439",
+        "size": 13881344
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T001520Z-d513e21260b5/reports/20260727T001520Z-d513e21260b5-report.campaign-report.json",
+        "sha256": "707dd25543c2b15c6982e104dc9e4a4ebfe75de0bccc77d0184cd793e196b781",
+        "size": 2267
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T001520Z-d513e21260b5/same-execution-closeout.json",
+        "sha256": "f4363b33284dcfc1f095bec1f8e0fc2a936a58af25c94018ecb543d5b621d010",
+        "size": 3682
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T001520Z-d513e21260b5/stderr.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "size": 0
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T001520Z-d513e21260b5/stdout.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "size": 0
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T001520Z-d513e21260b5/terminal-summary.json",
+        "sha256": "7c4cb8097599ed61fd8570dfed531c3f2b65777fcd4d8931ccae1350cb425b52",
+        "size": 2267
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T010656Z-0a54a31b6f2d/printer_v1.pre-campaign.backup.sqlite3",
+        "sha256": "0189e053c26af3b8b5c5decb7b7380a52609c441a38e624e333785c62991b335",
+        "size": 13930496
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T010656Z-0a54a31b6f2d/printer_v1.restore-rehearsal.sqlite3",
+        "sha256": "0189e053c26af3b8b5c5decb7b7380a52609c441a38e624e333785c62991b335",
+        "size": 13930496
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T010656Z-0a54a31b6f2d/reports/20260727T010656Z-0a54a31b6f2d-report.campaign-report.json",
+        "sha256": "f8e3f92a84cb6416710696a83e770ac6121f41f59be6d5120afa5d8ede676b02",
+        "size": 6719
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T010656Z-0a54a31b6f2d/stderr.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "size": 0
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T010656Z-0a54a31b6f2d/stdout.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "size": 0
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T010656Z-0a54a31b6f2d/terminal-summary.json",
+        "sha256": "4ab0e3162b3ccb5dcb6aeb789baed3d1d14ded395c396c36725d01f30e524324",
+        "size": 7159
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T122827Z-095d68927784/printer_v1.pre-campaign.backup.sqlite3",
+        "sha256": "f5de1e089166d70c30cfbb285b7df50beba41070a2998dad0ecf9612aa7f6eae",
+        "size": 13959168
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T122827Z-095d68927784/printer_v1.restore-rehearsal.sqlite3",
+        "sha256": "f5de1e089166d70c30cfbb285b7df50beba41070a2998dad0ecf9612aa7f6eae",
+        "size": 13959168
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T122827Z-095d68927784/reports/20260727T122827Z-095d68927784-report.campaign-report.json",
+        "sha256": "7399a4141d46e89be15e9dea94c435d93ad19df4f27c258d9a2c040c500ee154",
+        "size": 6768
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T122827Z-095d68927784/stderr.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "size": 0
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T122827Z-095d68927784/stdout.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "size": 0
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T122827Z-095d68927784/terminal-summary.json",
+        "sha256": "0e8201a918bbde15bd2536560be5e0e217bcce67b69fb4c121275571861ca0c8",
+        "size": 7209
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T124910Z-f6dc911b3efc/printer_v1.pre-campaign.backup.sqlite3",
+        "sha256": "97b168223a7234886739798511ae380487b810380b89f1e815b71ddc17a1296c",
+        "size": 13996032
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T124910Z-f6dc911b3efc/printer_v1.restore-rehearsal.sqlite3",
+        "sha256": "97b168223a7234886739798511ae380487b810380b89f1e815b71ddc17a1296c",
+        "size": 13996032
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T124910Z-f6dc911b3efc/reports/20260727T124910Z-f6dc911b3efc-report.campaign-report.json",
+        "sha256": "10655c550b435a076f787677a60ce1d24ff89f4237064803dcbc7542b7f35444",
+        "size": 2382
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T124910Z-f6dc911b3efc/stderr.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "size": 0
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T124910Z-f6dc911b3efc/stdout.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "size": 0
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T124910Z-f6dc911b3efc/terminal-summary.json",
+        "sha256": "8540b8e680f9371f4d2c172f8b2509a1e2ee7a464fd0c33f03de3035eb196a2d",
+        "size": 1537
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T161750Z-95e40c3efae3/printer_v1.pre-campaign.backup.sqlite3",
+        "sha256": "0d662350feb4fb5f1e1cd4cb9d33fa045b1e70ad474feb824221edb54c222d86",
+        "size": 14041088
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T161750Z-95e40c3efae3/printer_v1.restore-rehearsal.sqlite3",
+        "sha256": "0d662350feb4fb5f1e1cd4cb9d33fa045b1e70ad474feb824221edb54c222d86",
+        "size": 14041088
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T161750Z-95e40c3efae3/reports/20260727T161750Z-95e40c3efae3-report.campaign-report.json",
+        "sha256": "06f6c26ca3480bdab14c574b6f53bc28bee2f2f93ba1026bf8fc39e6217f8e13",
+        "size": 2431
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T161750Z-95e40c3efae3/reports/20260727T161750Z-95e40c3efae3-v2-9-8b-18-recovery-report.campaign-report.json",
+        "sha256": "6b755ab7ae9d57a47a08b780851f6f4cd67e399d2a06d3a568bc95ca0c4eb715",
+        "size": 3076
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T161750Z-95e40c3efae3/terminal-summary.json",
+        "sha256": "f9c38935c240ba4cb7f33fa2ca84d57f4d6d38a7cb0a268b250a9c3d5fd5400f",
+        "size": 3843
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T161750Z-95e40c3efae3/v2-9-8b-18-recovery-20260727T210000Z/printer_v1.pre-v2-9-8b-18-recovery.sqlite3",
+        "sha256": "49d9d1cadf910acb011e31240bc6f38ab49d4e7bf2f6b8eb270cb3d9a949f851",
+        "size": 14159872
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T161750Z-95e40c3efae3/v2-9-8b-18-recovery-20260727T210000Z/printer_v1.v2-9-8b-18-restore.sqlite3",
+        "sha256": "3a0c5abb278aec4656fb16ed740abfb1e641bb772ba076ffb5f26c36bb312be5",
+        "size": 14176256
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T202052Z-d42812d31bd8/printer_v1.pre-campaign.backup.sqlite3",
+        "sha256": "fce4ee55147d3a5dbcfb6c9111b29570cedac2d5819db44afb8ffc4ec9f5e06d",
+        "size": 14180352
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T202052Z-d42812d31bd8/printer_v1.restore-rehearsal.sqlite3",
+        "sha256": "fce4ee55147d3a5dbcfb6c9111b29570cedac2d5819db44afb8ffc4ec9f5e06d",
+        "size": 14180352
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T202052Z-d42812d31bd8/reports/20260727T202052Z-d42812d31bd8-report.campaign-report.json",
+        "sha256": "e7593b14f93e74b13029bde558672beb6ab9fc55df4869afbf321ba834897e61",
+        "size": 3028
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T202052Z-d42812d31bd8/terminal-summary.json",
+        "sha256": "e4df89c9ddc5b3cf75d0d79dc60ebaad7ff272ec76cb6644980cec72001a6aaf",
+        "size": 1565
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T203044Z-7f8e098bf267/printer_v1.pre-campaign.backup.sqlite3",
+        "sha256": "781576768f5afecdc0dff4ad6a3070ae5010774081eba51002bbff5a3248a742",
+        "size": 14331904
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T203044Z-7f8e098bf267/printer_v1.restore-rehearsal.sqlite3",
+        "sha256": "781576768f5afecdc0dff4ad6a3070ae5010774081eba51002bbff5a3248a742",
+        "size": 14331904
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T203044Z-7f8e098bf267/reports/20260727T203044Z-7f8e098bf267-report.campaign-report.json",
+        "sha256": "df4eb201354b2185dc9b5e2bc87e52fd0c4f422120a1a4b84391a4fd8deb82fe",
+        "size": 3028
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T203044Z-7f8e098bf267/terminal-summary.json",
+        "sha256": "037942e1b0f788241ef3e66cc5d33047f5d50895c67dbdf78062d4f3a519c56d",
+        "size": 1565
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T211548Z-5d626101ec34/printer_v1.pre-campaign.backup.sqlite3",
+        "sha256": "5fddf0c61c9e8954dd77cea0d9c250f5553a07bcd05e27ba5cf3ad0989d21ed3",
+        "size": 14458880
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T211548Z-5d626101ec34/printer_v1.restore-rehearsal.sqlite3",
+        "sha256": "5fddf0c61c9e8954dd77cea0d9c250f5553a07bcd05e27ba5cf3ad0989d21ed3",
+        "size": 14458880
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T211548Z-5d626101ec34/reports/20260727T211548Z-5d626101ec34-report.campaign-report.json",
+        "sha256": "189b4372c40e7c122651799e8eea4fd1eac1c4881d8ed9853cd5114b63f4b167",
+        "size": 6797
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T211548Z-5d626101ec34/terminal-summary.json",
+        "sha256": "783afc860e920b1c7e1a41e5497783f539d6e419c4fbb1b7b8d4eec1cf5e1eb9",
+        "size": 7229
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T225808Z-e25c3248067b/discovery-only-qualification-report.json",
+        "sha256": "4f24e6d575a74371a7ea053e022b87807ea0bb6bc1329a5ae49a8f4b390a5db0",
+        "size": 5009
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T225808Z-e25c3248067b/terminal-summary.json",
+        "sha256": "4f24e6d575a74371a7ea053e022b87807ea0bb6bc1329a5ae49a8f4b390a5db0",
+        "size": 5009
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T232042Z-11c5edd2d9da/printer_v1.pre-campaign.backup.sqlite3",
+        "sha256": "92dd025b8f1cfd69ccea115bea36ca627776172488b647c6e8b26574b1ff0c01",
+        "size": 14589952
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T232042Z-11c5edd2d9da/printer_v1.restore-rehearsal.sqlite3",
+        "sha256": "92dd025b8f1cfd69ccea115bea36ca627776172488b647c6e8b26574b1ff0c01",
+        "size": 14589952
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T232042Z-11c5edd2d9da/reports/20260727T232042Z-11c5edd2d9da-report.campaign-report.json",
+        "sha256": "0b00d31458cecdbcf07eb5bb2b61e2ce9e97849d5a028d8c4d43222ed3b5e351",
+        "size": 3045
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T232042Z-11c5edd2d9da/terminal-summary.json",
+        "sha256": "a48ca23670e6f9cdbbb7fde0355ad2a9aafebb7f02ed8f0bb3f41e7ce3616d9d",
+        "size": 1565
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T235023Z-390455e31060/printer_v1.pre-campaign.backup.sqlite3",
+        "sha256": "a48acd01fc9015faff2aa56e0621b115991a13c6a369110cb8a9bc7a6e12d8f0",
+        "size": 14778368
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T235023Z-390455e31060/printer_v1.restore-rehearsal.sqlite3",
+        "sha256": "a48acd01fc9015faff2aa56e0621b115991a13c6a369110cb8a9bc7a6e12d8f0",
+        "size": 14778368
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T235023Z-390455e31060/reports/20260727T235023Z-390455e31060-report.campaign-report.json",
+        "sha256": "46766d20b368df4c3ffd4fe10840aef8a835d0423711b69c57a463db7872fdad",
+        "size": 3075
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T235023Z-390455e31060/terminal-summary.json",
+        "sha256": "f215903393f78b85c214b1b2d6c48c43af88e491a729f01766b86691c0314ed6",
+        "size": 1582
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260728T174735Z-5c86dd14b245/printer_v1.pre-campaign.backup.sqlite3",
+        "sha256": "a241247a756e5dc3880fa42408b2cb73d580fd11767bb591136d8be7c2cafff7",
+        "size": 15519744
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260728T174735Z-5c86dd14b245/printer_v1.restore-rehearsal.sqlite3",
+        "sha256": "a241247a756e5dc3880fa42408b2cb73d580fd11767bb591136d8be7c2cafff7",
+        "size": 15519744
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260728T174735Z-5c86dd14b245/reports/20260728T174735Z-5c86dd14b245-report.campaign-report.json",
+        "sha256": "6e15c7f84f3bd125937b3996242b9f430a554502dd4403d5f0bec602791c52cc",
+        "size": 2454
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260728T174735Z-5c86dd14b245/terminal-summary.json",
+        "sha256": "6ec2e335415c3cc528676ed873e455bf0971d3ca6099af4fd311fe7392dfe3d4",
+        "size": 1717
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260728T202147Z-3c2735e39266/printer_v1.pre-campaign.backup.sqlite3",
+        "sha256": "dd5ecc835bf21e91a01470000d2d1738a271acbe20a8c1d9539594f30aa28aea",
+        "size": 15622144
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260728T202147Z-3c2735e39266/printer_v1.restore-rehearsal.sqlite3",
+        "sha256": "dd5ecc835bf21e91a01470000d2d1738a271acbe20a8c1d9539594f30aa28aea",
+        "size": 15622144
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260728T202147Z-3c2735e39266/reports/20260728T202147Z-3c2735e39266-report.campaign-report.json",
+        "sha256": "9ccb8e1a8b96e98d29732134e25e61ce155ff933ec0db04897b2a72c485c36fc",
+        "size": 17791
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260728T202147Z-3c2735e39266/terminal-summary.json",
+        "sha256": "d0af1b354a40d3b218a5dd8b442891c5c322e2e003727a0fde84fde9ad45a356",
+        "size": 22766
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260728T212231Z-80579a4adeb8/printer_v1.pre-campaign.backup.sqlite3",
+        "sha256": "6b63a30fca36bac52ce6af418a0cfcbe9b1711b5671baeaef34add307460aa59",
+        "size": 15679488
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260728T212231Z-80579a4adeb8/printer_v1.restore-rehearsal.sqlite3",
+        "sha256": "6b63a30fca36bac52ce6af418a0cfcbe9b1711b5671baeaef34add307460aa59",
+        "size": 15679488
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260728T212231Z-80579a4adeb8/reports/20260728T212231Z-80579a4adeb8-report.campaign-report.json",
+        "sha256": "ac1c121ede3278cfe4477957190bee5e70821fea39270ed307035293c4db6fcd",
+        "size": 3474
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260728T212231Z-80579a4adeb8/terminal-summary.json",
+        "sha256": "a60593b529094fc504a7e7400d1d2ff0d3179b6ff6e3eb8d285f1c584d3e61ec",
+        "size": 1804
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260728T224158Z-6bf2c4fd8e7e/printer_v1.pre-campaign.backup.sqlite3",
+        "sha256": "d4f22680fa9358ab3a61dff4968839a7ae3bf0acdccd44d27850bcb71263ea56",
+        "size": 16433152
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260728T224158Z-6bf2c4fd8e7e/printer_v1.restore-rehearsal.sqlite3",
+        "sha256": "d4f22680fa9358ab3a61dff4968839a7ae3bf0acdccd44d27850bcb71263ea56",
+        "size": 16433152
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260728T224158Z-6bf2c4fd8e7e/reports/20260728T224158Z-6bf2c4fd8e7e-report.campaign-report.json",
+        "sha256": "8064ee6c80aea51a617137c213ecfc83257cfec780c5e3f6888cd3267d4e1849",
+        "size": 2508
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260728T224158Z-6bf2c4fd8e7e/terminal-summary.json",
+        "sha256": "b4b31fb7862dbb352593423606729d99aeb2566dc8760c94447eac780436133c",
+        "size": 1789
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260729T112042Z-81e91f2e16c9/printer_v1.pre-migration-048-049.backup.sqlite3",
+        "sha256": "4aecba119fb9b02436999a9813bc14364c0fa188b6c2957768e146346a32f872",
+        "size": 16494592
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260729T124351Z-05896a69446d/baseline_counts.json",
+        "sha256": "e5c786ccc07e73c3e1111dcfb2c77e8a7658560ecec4c3dab7af2139b3364300",
+        "size": 3988
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260729T124351Z-05896a69446d/printer_v1.pre-stage-a-n2.backup.sqlite3",
+        "sha256": "e6748de305800fc65ce287ef00e72be0ba7910ae7766f8331280f35da4aa07df",
+        "size": 16826368
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260729T124351Z-05896a69446d/stage_a_inspection.json",
+        "sha256": "59eb79aecbd0863dd0f7fe2387f7b0a7eeacb9239f5da80cf8b087478c9a0294",
+        "size": 83112
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260729T124351Z-05896a69446d/stage_a_n2.log",
+        "sha256": "a57ea3d54c657043e1fb7683ad31fcd623f9def85f082656a8e2ea984fce53fd",
+        "size": 283
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260729T124351Z-05896a69446d/stage_a_n2_stderr.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "size": 0
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260729T124351Z-05896a69446d/stage_a_n2_stdout.json",
+        "sha256": "87eb3ded4ed9eb63f9ecdd6e83abacc47c0b5908f2786ff2560ed74d5575aa73",
+        "size": 3073
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260729T150838Z-final-post-repair-proof/preflight.json",
+        "sha256": "27a0724389928c04f25f68318a15a07c62ef954626282ea46ea8bb84e30493a1",
+        "size": 487
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260729T150838Z-final-post-repair-proof/printer_v1.pre-stage-a-n2.backup.sqlite3",
+        "sha256": "516e2b000eb8f2bd10341a5464bb2bcfb19ecf7986f7a011864ce7390b124d1a",
+        "size": 16867328
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260729T150838Z-final-post-repair-proof/stage-a-n2.replay.json",
+        "sha256": "2c5c3b18900cd6370a1814946d458205288d8e4b9ddc63e8ce95f38fa63c7c50",
+        "size": 8743
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260729T150838Z-final-post-repair-proof/stage-a-n2.stderr.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "size": 0
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260729T150838Z-final-post-repair-proof/stage-a-n2.stdout.json",
+        "sha256": "2c5c3b18900cd6370a1814946d458205288d8e4b9ddc63e8ce95f38fa63c7c50",
+        "size": 8743
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260729T150838Z-final-post-repair-proof/stage-a-n2.terminal-report.json",
+        "sha256": "2c5c3b18900cd6370a1814946d458205288d8e4b9ddc63e8ce95f38fa63c7c50",
+        "size": 8743
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260729T154828Z-post-mint-admission-repair-live-n2/printer_v1.pre-n2.backup.sqlite3",
+        "sha256": "08fb9d202bf60f258779041e85d79a5c65e789ea1bddb67745b218df588ba1db",
+        "size": 17018880
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260731T002406Z-7612696c7295/printer_v1.pre-campaign.backup.sqlite3",
+        "sha256": "e748ba505cb8c7d67b8feb3a09b97719a0f3560e41dfb9242570cff3157962e6",
+        "size": 64827392
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260731T002406Z-7612696c7295/printer_v1.restore-rehearsal.sqlite3",
+        "sha256": "e748ba505cb8c7d67b8feb3a09b97719a0f3560e41dfb9242570cff3157962e6",
+        "size": 64827392
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260731T002406Z-7612696c7295/terminal-summary.json",
+        "sha256": "183d438d5110c448da6fc134079aedb3bf20c7cbb6ce32f1fa0846073162a0ad",
+        "size": 6234
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260731T145230Z-2f345456ea78/printer_v1.pre-campaign.backup.sqlite3",
+        "sha256": "f36f3b3fd7c389018323c219b3ce9421e2006769de3db860593ce4b31415a511",
+        "size": 64901120
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260731T145230Z-2f345456ea78/printer_v1.restore-rehearsal.sqlite3",
+        "sha256": "f36f3b3fd7c389018323c219b3ce9421e2006769de3db860593ce4b31415a511",
+        "size": 64901120
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260731T145230Z-2f345456ea78/reports/20260731T145230Z-2f345456ea78-report.campaign-report.json",
+        "sha256": "592da4d41dbfea1aa5557af75b031812899e97522fbec224155352958a42a116",
+        "size": 31961
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260731T145230Z-2f345456ea78/terminal-summary.json",
+        "sha256": "2e1ccc4eed45d5594fe1f04f529f5480762cfe7ec241071164796137ed061dd0",
+        "size": 2084
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/first-authoritative-15m-read-only-forensic-audit.json",
+        "sha256": "bf83d9194f959ccf64b250ce6aa14e9ae8d371fc44dda652c0c0332a43378c4e",
+        "size": 365092
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/first-authoritative-window-15m-attempt.json",
+        "sha256": "dd079f82a361aa2364b4142384a0b472698759a861a507539939aab839011564",
+        "size": 427
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/operator-evidence-first-15m-20260731T002405Z/campaign-output.log",
+        "sha256": "23e713037d01623afec2ed4470361297635ff90ce634d3c9efabc734ef2d2739",
+        "size": 370
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/operator-evidence-first-15m-20260731T002405Z/final-summary.txt",
+        "sha256": "c7e116144ee5b76e5e3bb520d06675a8ffb845acf7b32dc13aedd78a8b7e0279",
+        "size": 18542
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/operator-evidence-first-15m-20260731T002405Z/post-terminal-preflight.json",
+        "sha256": "7440114fdd912bb9ca8f97eaba0d594c94b9338756196271a6d7495d0138c964",
+        "size": 3589
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/operator-evidence-first-15m-20260731T002405Z/post-terminal-report-only.json",
+        "sha256": "7abfd5c847f404812941b8060f681ba82356329cd488b326bbb77518db71f9ee",
+        "size": 6182
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/operator-evidence-first-15m-20260731T002405Z/post-terminal-status.json",
+        "sha256": "a1a822073d01e938d09407edbecd3e25155596d7e765e028f752a3cd22af9b6e",
+        "size": 2383
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/operator-evidence-first-15m-20260731T002405Z/preflight.json",
+        "sha256": "370da8f9bd838c5e7194fc667d24574b68787b2aab14e76aced90c535fa447df",
+        "size": 3589
+      },
+      {
+        "path": "/Users/Dtwo1/PrinterOperations/v2-9-8/post-accounting-repair-authoritative-window-15m-attempt.json",
+        "sha256": "6bb58474511527a7e2076a9e7b8096208b7018f4e4eb66dd219a26ba5cd2677b",
+        "size": 461
+      },
+      {
+        "path": "/Users/Dtwo1/Developer/MoneyPrinter/operator-runs/v2-9-7e-5-live-proof/V2_9_7E_5_LIVE_PROOF_RESULT.json",
+        "sha256": "a1e8a96ad1740781c42c77d7975d40958db2783b11f7023827e03ab6ac0e06fe",
+        "size": 1680
+      },
+      {
+        "path": "/Users/Dtwo1/Developer/MoneyPrinter/operator-runs/v2-9-7e-5-live-proof/run_v2_9_7e_5_live_proof.py",
+        "sha256": "ea93c0fc7c65efefaa145b8bd9eaf1157c8ef4f691bd520fdddfabbf443b553b",
+        "size": 15444
+      },
+      {
+        "path": "/Users/Dtwo1/Developer/MoneyPrinter/operator-runs/v2-9-7e-5a-decisive-reproof/V2_9_7E_5A_DECISIVE_REPROOF_RESULT.json",
+        "sha256": "f28ccbd8b0f06275b8a5168f85a95557d8a7a9c2905e46859328799f8abf2563",
+        "size": 4253
+      },
+      {
+        "path": "/Users/Dtwo1/Developer/MoneyPrinter/operator-runs/v2-9-7e-5a-decisive-reproof/run_v2_9_7e_5a_decisive_reproof.py",
+        "sha256": "db137f60794adbad7d6b9421325416441081de8ace3112ebb532f18379411f57",
+        "size": 25271
+      },
+      {
+        "path": "/Users/Dtwo1/Developer/MoneyPrinter/operator-runs/v2-9-7e-6-classification/V2_9_7E_6_CLASSIFICATION_RESULT.json",
+        "sha256": "8229dc8b6eb8fda02c64774ccf46d93382ae5d8e78cebb8786bff0102f96c522",
+        "size": 12431
+      },
+      {
+        "path": "/Users/Dtwo1/Developer/MoneyPrinter/operator-runs/v2-9-7e-6-classification/run_v2_9_7e_6_classification_capture.py",
+        "sha256": "ccbd1d82dab68349c66d7c51712ac86faabb194a3afa30954c0e139f6e00f1ba",
+        "size": 11939
+      },
+      {
+        "path": "/Users/Dtwo1/Developer/MoneyPrinter/operator-runs/v2-9-7e-6-final-proof/V2_9_7E_6_FINAL_PROOF_RESULT.json",
+        "sha256": "e82297e8799dcf3dea7c677453860710ad72c59f7b22b180be46ca99bec3e067",
+        "size": 4199
+      },
+      {
+        "path": "/Users/Dtwo1/Developer/MoneyPrinter/operator-runs/v2-9-7e-6-final-proof/run_v2_9_7e_6_final_proof.py",
+        "sha256": "d05f185c60da890a8f93d1f1edf8f4d6f187657a7289e94e126d403d0a8201cd",
+        "size": 25797
+      },
+      {
+        "path": "/Users/Dtwo1/Developer/MoneyPrinter/operator-runs/v2-9-8b-mig050-bounded-proof/CONTROLLING_EXECUTION",
+        "sha256": "d63f975ebc7a8f8c12ac74d20d44178fe7f3486260aa73aee924eef91745df2f",
+        "size": 55
+      },
+      {
+        "path": "/Users/Dtwo1/Developer/MoneyPrinter/operator-runs/v2-9-8b-mig050-bounded-proof/V2_9_8B_MIG050_BOUNDED_PROOF_20260801T144740Z_5df7a275/proof_summary.json",
+        "sha256": "a6598c06ae85d4388df4d7e809e67475adcb386cd094639a78e9f358d70cafec",
+        "size": 11454
+      },
+      {
+        "path": "/Users/Dtwo1/Developer/MoneyPrinter/operator-runs/v2-9-8b-mig050-bounded-proof/proof_summary.json",
+        "sha256": "948e4ad646a200158d48fd8295b2b3998aaff38bfe854b6f0a54c220e5406d92",
+        "size": 722
+      }
+    ],
+    "sha256": "edb900a534e00803e4411a9f7e931bd76ffc122587cb7b6c93acb4209d395e84"
+  },
+  "migration_git_blob_sha": "3a5bf6de05deb202316b6689a2d7f4206359e6e9",
+  "migration_path": "/Users/Dtwo1/Developer/MoneyPrinter/migrations/050_campaign_scheduler_ownership_scope.sql",
+  "one_attempt_only": true,
+  "pre_database_state": {
+    "active_counts": {
+      "campaign_runs": 0,
+      "campaign_scheduler_work": 0,
+      "campaign_supervision": 0,
+      "campaigns": 0,
+      "discovery_work": 0,
+      "factory_run_steps": 0,
+      "proof_supervision": 0,
+      "scheduler_jobs": 0
+    },
+    "baseline_counts": {
+      "printer_episodes": 59,
+      "printer_memory_retrieval_matches": 0,
+      "printer_memory_retrieval_queries": 10,
+      "printer_memory_windows": 162,
+      "printer_paper_audit_reports": 1,
+      "printer_paper_decision_audits": 0,
+      "printer_paper_decisions": 2,
+      "printer_paper_positions": 0,
+      "printer_paper_quote_evidence": 32,
+      "printer_paper_trade_audits": 0,
+      "printer_paper_trade_events": 0,
+      "printer_scheduler_jobs": 1365,
+      "printer_source_failures": 139,
+      "printer_source_requests": 1748,
+      "printer_source_responses": 1609
+    },
+    "canonical_migration_count": 50,
+    "canonical_migration_tip": "050_campaign_scheduler_ownership_scope.sql",
+    "duplicate_non_null_scheduler_job_ownership": 0,
+    "foreign_key_violation_count": 0,
+    "foreign_key_violations": [],
+    "integrity_check": [
+      "ok"
+    ],
+    "journal_mode": "delete",
+    "ledger_matches_canonical": false,
+    "locked_scheduler_jobs": 0,
+    "migration_count": 49,
+    "migration_ledger": [
+      "001_database_foundation.sql",
+      "002_source_registry_governor.sql",
+      "003_scheduler_resource_governor.sql",
+      "004_token_lifecycle_tracking_queue.sql",
+      "005_discovery_engine.sql",
+      "006_token_level_snapshot_system.sql",
+      "007_market_regime_engine.sql",
+      "008_solana_chain_heat_engine.sql",
+      "009_safety_rug_filter_engine.sql",
+      "010_liquidity_exit_engine.sql",
+      "011_trading_flow_engine.sql",
+      "012_chart_volatility_engine.sql",
+      "013_micro_event_engine.sql",
+      "014_episode_memory_engine.sql",
+      "015_memory_retrieval_similarity_engine.sql",
+      "016_paper_decision_engine.sql",
+      "017_paper_trade_monitor.sql",
+      "018_paper_audit_engine.sql",
+      "019_reporting_operator_review.sql",
+      "020_hardening_synthetic_validation.sql",
+      "021_repeatable_evidence_windows.sql",
+      "022_solana_safety_evidence.sql",
+      "023_paper_quote_evidence.sql",
+      "024_discovery_source_channel.sql",
+      "025_selection_batch.sql",
+      "026_selection_rotation_state.sql",
+      "027_source_failure_normalized_payload.sql",
+      "028_memory_factory_run_ledger.sql",
+      "029_composite_safety_evidence.sql",
+      "030_v2_9_proof_run_supervision.sql",
+      "031_operational_campaign_persistence.sql",
+      "032_campaign_ownership_schema.sql",
+      "033_operational_campaign_supervision.sql",
+      "034_discovery_persistence_reconciliation.sql",
+      "035_insufficient_pool_cycle_terminal_trigger.sql",
+      "036_pumpfun_finalized_origin_registry.sql",
+      "037_holder_reliability_budget_control.sql",
+      "038_holder_source_reporting_repair.sql",
+      "039_snapshot_readiness_contract_repair.sql",
+      "040_pumpswap_graduated_candidate_registry.sql",
+      "041_pilot_input_readiness_bundle.sql",
+      "042_held_to_15m_moderate_continuation.sql",
+      "043_graduated_market_floor_state.sql",
+      "044_memory_factory_run_operational_db_mode.sql",
+      "045_heartbeat_failure_evidence.sql",
+      "046_eligible_token_supply.sql",
+      "047_campaign_oneshot_linkage_binds.sql",
+      "048_candidate_acquisition_foundation.sql",
+      "049_candidate_acquisition_integration.sql"
+    ],
+    "migration_tip": "049_candidate_acquisition_integration.sql",
+    "ownership_contract_versions": [],
+    "query_only": 1,
+    "replacement_or_guard_residue": [],
+    "scheduler_indexes": {
+      "idx_campaign_work_owner": {
+        "origin": "c",
+        "partial": false,
+        "unique": false
+      },
+      "sqlite_autoindex_printer_memory_factory_campaign_scheduler_work_1": {
+        "origin": "pk",
+        "partial": false,
+        "unique": true
+      },
+      "sqlite_autoindex_printer_memory_factory_campaign_scheduler_work_2": {
+        "origin": "u",
+        "partial": false,
+        "unique": true
+      }
+    },
+    "scheduler_preserved_snapshot": {
+      "row_count": 0,
+      "rows": [],
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "scheduler_table_columns": [
+      "campaign_id",
+      "created_at",
+      "cycle_id",
+      "deadline_at",
+      "first_terminal_cause",
+      "run_id",
+      "scheduler_job_id",
+      "scheduler_work_id",
+      "source_failure_id",
+      "source_request_id",
+      "source_response_id",
+      "terminal_at",
+      "token_slot_id",
+      "updated_at",
+      "window_id",
+      "work_intent",
+      "work_state"
+    ],
+    "scheduler_table_sql": "CREATE TABLE printer_memory_factory_campaign_scheduler_work (\n    scheduler_work_id TEXT PRIMARY KEY,\n    campaign_id TEXT NOT NULL,\n    run_id TEXT NOT NULL,\n    cycle_id TEXT NOT NULL,\n    token_slot_id TEXT NOT NULL,\n    window_id TEXT NOT NULL,\n    work_intent TEXT NOT NULL,\n    deadline_at TEXT NOT NULL,\n    work_state TEXT NOT NULL CHECK (work_state IN (\n        'PENDING', 'RUNNING', 'COOLDOWN', 'SUCCEEDED', 'FAILED',\n        'SKIPPED', 'CANCELLED'\n    )),\n    scheduler_job_id INTEGER,\n    source_request_id INTEGER,\n    source_response_id INTEGER,\n    source_failure_id INTEGER,\n    first_terminal_cause TEXT,\n    terminal_at TEXT,\n    created_at TEXT NOT NULL,\n    updated_at TEXT NOT NULL,\n    UNIQUE (scheduler_work_id, window_id, token_slot_id, cycle_id, run_id, campaign_id),\n    FOREIGN KEY (window_id, token_slot_id, cycle_id, run_id, campaign_id)\n        REFERENCES printer_memory_factory_campaign_windows(\n            window_id, token_slot_id, cycle_id, run_id, campaign_id\n        ),\n    FOREIGN KEY (scheduler_job_id) REFERENCES printer_scheduler_jobs(id),\n    FOREIGN KEY (source_request_id) REFERENCES printer_source_requests(id),\n    FOREIGN KEY (source_response_id) REFERENCES printer_source_responses(id),\n    FOREIGN KEY (source_failure_id) REFERENCES printer_source_failures(id),\n    CHECK (source_response_id IS NULL OR source_request_id IS NOT NULL),\n    CHECK (source_failure_id IS NULL OR source_request_id IS NOT NULL),\n    CHECK (source_response_id IS NULL OR source_failure_id IS NULL),\n    CHECK (\n        (work_state IN ('PENDING', 'RUNNING', 'COOLDOWN')\n            AND first_terminal_cause IS NULL AND terminal_at IS NULL)\n        OR\n        (work_state IN ('SUCCEEDED', 'FAILED', 'SKIPPED', 'CANCELLED')\n            AND first_terminal_cause IS NOT NULL\n            AND length(trim(first_terminal_cause)) > 0 AND terminal_at IS NOT NULL)\n    )\n)",
+    "scheduler_triggers": [
+      "printer_campaign_work_identity_immutable",
+      "printer_campaign_work_provenance_insert"
+    ],
+    "supervision_rows": [
+      {
+        "campaign_id": "20260726T114155Z-95d9979a9302-campaign",
+        "cleanup_completed_at": "2026-07-26T14:03:35.964509+00:00",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260726T114155Z-95d9979a9302/campaign.lease.lock",
+        "lease_released_at": "2026-07-26T14:03:35.964509+00:00",
+        "supervision_id": "20260726T114155Z-95d9979a9302-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "FAILED"
+      },
+      {
+        "campaign_id": "20260726T141321Z-e762ecf7b374-campaign",
+        "cleanup_completed_at": "2026-07-26T14:15:27.721581+00:00",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260726T141321Z-e762ecf7b374/campaign.lease.lock",
+        "lease_released_at": "2026-07-26T14:15:27.721581+00:00",
+        "supervision_id": "20260726T141321Z-e762ecf7b374-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "FAILED"
+      },
+      {
+        "campaign_id": "20260726T172119Z-941d6d86aa56-campaign",
+        "cleanup_completed_at": "2026-07-26T17:23:24.138914+00:00",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260726T172119Z-941d6d86aa56/campaign.lease.lock",
+        "lease_released_at": "2026-07-26T17:23:24.138914+00:00",
+        "supervision_id": "20260726T172119Z-941d6d86aa56-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "COMPLETED"
+      },
+      {
+        "campaign_id": "20260727T001520Z-d513e21260b5-campaign",
+        "cleanup_completed_at": "2026-07-27T00:24:13.429887+00:00",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T001520Z-d513e21260b5/campaign.lease.lock",
+        "lease_released_at": "2026-07-27T00:24:13.429887+00:00",
+        "supervision_id": "20260727T001520Z-d513e21260b5-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "FAILED"
+      },
+      {
+        "campaign_id": "20260727T010656Z-0a54a31b6f2d-campaign",
+        "cleanup_completed_at": "2026-07-27T01:13:21.089108+00:00",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T010656Z-0a54a31b6f2d/campaign.lease.lock",
+        "lease_released_at": "2026-07-27T01:13:21.089108+00:00",
+        "supervision_id": "20260727T010656Z-0a54a31b6f2d-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "COMPLETED"
+      },
+      {
+        "campaign_id": "20260727T122827Z-095d68927784-campaign",
+        "cleanup_completed_at": "2026-07-27T12:33:42.737143+00:00",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T122827Z-095d68927784/campaign.lease.lock",
+        "lease_released_at": "2026-07-27T12:33:42.737143+00:00",
+        "supervision_id": "20260727T122827Z-095d68927784-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "COMPLETED"
+      },
+      {
+        "campaign_id": "20260727T124910Z-f6dc911b3efc-campaign",
+        "cleanup_completed_at": "2026-07-27T13:15:14.227223+00:00",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T124910Z-f6dc911b3efc/campaign.lease.lock",
+        "lease_released_at": "2026-07-27T13:15:14.227223+00:00",
+        "supervision_id": "20260727T124910Z-f6dc911b3efc-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "COMPLETED"
+      },
+      {
+        "campaign_id": "20260727T161750Z-95e40c3efae3-campaign",
+        "cleanup_completed_at": "2026-07-27T16:24:26.127090+00:00",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T161750Z-95e40c3efae3/campaign.lease.lock",
+        "lease_released_at": "2026-07-27T16:24:26.127090+00:00",
+        "supervision_id": "20260727T161750Z-95e40c3efae3-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "FAILED"
+      },
+      {
+        "campaign_id": "20260727T202052Z-d42812d31bd8-campaign",
+        "cleanup_completed_at": "2026-07-27T20:30:17.759910+00:00",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T202052Z-d42812d31bd8/campaign.lease.lock",
+        "lease_released_at": "2026-07-27T20:30:17.759910+00:00",
+        "supervision_id": "20260727T202052Z-d42812d31bd8-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "FAILED"
+      },
+      {
+        "campaign_id": "20260727T203044Z-7f8e098bf267-campaign",
+        "cleanup_completed_at": "2026-07-27T20:42:48.929360+00:00",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T203044Z-7f8e098bf267/campaign.lease.lock",
+        "lease_released_at": "2026-07-27T20:42:48.929360+00:00",
+        "supervision_id": "20260727T203044Z-7f8e098bf267-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "FAILED"
+      },
+      {
+        "campaign_id": "20260727T211548Z-5d626101ec34-campaign",
+        "cleanup_completed_at": "2026-07-27T21:21:15.917614+00:00",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T211548Z-5d626101ec34/campaign.lease.lock",
+        "lease_released_at": "2026-07-27T21:21:15.917614+00:00",
+        "supervision_id": "20260727T211548Z-5d626101ec34-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "COMPLETED"
+      },
+      {
+        "campaign_id": "20260727T232042Z-11c5edd2d9da-campaign",
+        "cleanup_completed_at": "2026-07-27T23:31:38.994942+00:00",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T232042Z-11c5edd2d9da/campaign.lease.lock",
+        "lease_released_at": "2026-07-27T23:31:38.994942+00:00",
+        "supervision_id": "20260727T232042Z-11c5edd2d9da-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "FAILED"
+      },
+      {
+        "campaign_id": "20260727T235023Z-390455e31060-campaign",
+        "cleanup_completed_at": "2026-07-28T00:12:09.306449+00:00",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260727T235023Z-390455e31060/campaign.lease.lock",
+        "lease_released_at": "2026-07-28T00:12:09.306449+00:00",
+        "supervision_id": "20260727T235023Z-390455e31060-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "COMPLETED"
+      },
+      {
+        "campaign_id": "20260728T174735Z-5c86dd14b245-campaign",
+        "cleanup_completed_at": "2026-07-28T17:54:10.528363+00:00",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260728T174735Z-5c86dd14b245/campaign.lease.lock",
+        "lease_released_at": "2026-07-28T17:54:10.528363+00:00",
+        "supervision_id": "20260728T174735Z-5c86dd14b245-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "COMPLETED"
+      },
+      {
+        "campaign_id": "20260728T202147Z-3c2735e39266-campaign",
+        "cleanup_completed_at": "2026-07-28T20:24:16.813951+00:00",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260728T202147Z-3c2735e39266/campaign.lease.lock",
+        "lease_released_at": "2026-07-28T20:24:16.813951+00:00",
+        "supervision_id": "20260728T202147Z-3c2735e39266-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "COMPLETED"
+      },
+      {
+        "campaign_id": "20260728T212231Z-80579a4adeb8-campaign",
+        "cleanup_completed_at": "2026-07-28T21:44:17.479395+00:00",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260728T212231Z-80579a4adeb8/campaign.lease.lock",
+        "lease_released_at": "2026-07-28T21:44:17.479395+00:00",
+        "supervision_id": "20260728T212231Z-80579a4adeb8-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "COMPLETED"
+      },
+      {
+        "campaign_id": "20260728T224158Z-6bf2c4fd8e7e-campaign",
+        "cleanup_completed_at": "2026-07-28T22:48:26.855322+00:00",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260728T224158Z-6bf2c4fd8e7e/campaign.lease.lock",
+        "lease_released_at": "2026-07-28T22:48:26.855322+00:00",
+        "supervision_id": "20260728T224158Z-6bf2c4fd8e7e-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "COMPLETED"
+      },
+      {
+        "campaign_id": "20260731T002406Z-7612696c7295-campaign",
+        "cleanup_completed_at": "2026-07-31T00:24:29.612374+00:00",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260731T002406Z-7612696c7295/campaign.lease.lock",
+        "lease_released_at": "2026-07-31T00:24:29.612374+00:00",
+        "supervision_id": "20260731T002406Z-7612696c7295-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "COMPLETED"
+      },
+      {
+        "campaign_id": "20260731T145230Z-2f345456ea78-campaign",
+        "cleanup_completed_at": "2026-07-31T15:07:59.921888+00:00",
+        "lease_lock_exists": false,
+        "lease_lock_path": "/Users/Dtwo1/PrinterOperations/v2-9-8/20260731T145230Z-2f345456ea78/campaign.lease.lock",
+        "lease_released_at": "2026-07-31T15:07:59.921888+00:00",
+        "supervision_id": "20260731T145230Z-2f345456ea78-supervision",
+        "supervision_state": "TERMINAL",
+        "terminal_status": "COMPLETED"
+      }
+    ]
+  },
+  "second_invocation_allowed": false,
+  "verified_backup": {
+    "exists": true,
+    "mtime_ns": 1785615863558238499,
+    "path": "/Users/Dtwo1/Developer/MoneyPrinter/operator-runs/v2-9-8b-authoritative-mig050/V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f/verified-backup/printer_v1-pre050.sqlite3",
+    "sha256": "e13c40892f0c14d4c07960e00218569a536c50c0fc27815049284c3dd2aff5c2",
+    "size": 65654784
+  }
+}

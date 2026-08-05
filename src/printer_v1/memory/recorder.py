@@ -209,7 +209,7 @@ def record_memory_fingerprint(db_path_or_conn: str | Path | sqlite3.Connection, 
     return write_fingerprint(
         db_path_or_conn,
         episode_id,
-        build_memory_fingerprint_payload(episode_payload),
+        build_memory_fingerprint_payload(episode_payload, episode_id=int(episode_id)),
         episode_payload["memory_quality_label"],
     )
 
