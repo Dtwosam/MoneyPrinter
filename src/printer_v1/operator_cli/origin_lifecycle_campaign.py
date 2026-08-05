@@ -1373,6 +1373,7 @@ class OriginToLifecycleCampaignDriver:
         continuous_four_hour: bool = False,
         four_hour_proof_mode: bool = False,
         operational_persistent_mode: bool = False,
+        operational_database_target_binding: Any | None = None,
         lifecycle_kwargs: dict[str, Any] | None = None,
         post_handoff_fault: str | None = None,
     ) -> OriginLifecycleResult:
@@ -1659,6 +1660,9 @@ class OriginToLifecycleCampaignDriver:
                 continuous_four_hour=continuous_four_hour,
                 four_hour_proof_mode=four_hour_proof_mode,
                 operational_persistent_mode=operational_persistent_mode,
+                operational_database_target_binding=(
+                    operational_database_target_binding
+                ),
                 max_selected_tokens=2,
                 campaign_id=command.campaign_id,
                 campaign_run_id=command.run_id,

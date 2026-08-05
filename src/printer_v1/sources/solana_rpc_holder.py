@@ -39,6 +39,10 @@ from printer_v1.sources.operational_source_contracts import (
     OFFICIAL_SOLANA_PUBLIC_RPC_URL,
     resolve_solana_rpc_configuration,
 )
+from printer_v1.sources.measured_transport import (
+    MeasuredTransportLedger,
+    TransportOperationIdentity,
+)
 
 
 SOLANA_RPC_SOURCE_NAME = "solana_rpc"
@@ -153,6 +157,9 @@ def build_solana_rpc_holder_transport(
     *,
     rpc_url: str | None = None,
     timeout_seconds: float = SOLANA_RPC_TIMEOUT_SECONDS,
+    measured_transport_ledger: MeasuredTransportLedger | None = None,
+    source_name: str = SOLANA_RPC_SOURCE_NAME,
+    endpoint_owner: str | None = None,
 ) -> Callable[[SourceAdapterContext], Mapping[str, Any]]:
     """Return a real HTTP transport that fetches holder concentration from Solana RPC.
 
@@ -169,7 +176,12 @@ def build_solana_rpc_holder_transport(
     def transport(context: SourceAdapterContext) -> Mapping[str, Any]:
         del context
         return _fetch_holder_data(
-            token_mint, rpc_url=endpoint, timeout_seconds=timeout_seconds
+            token_mint,
+            rpc_url=endpoint,
+            timeout_seconds=timeout_seconds,
+            measured_transport_ledger=measured_transport_ledger,
+            source_name=source_name,
+            endpoint_owner=endpoint_owner or redacted_solana_rpc_source(endpoint),
         )
 
     return transport
@@ -197,7 +209,17 @@ def _rpc_post(
     try:
         with url_request.urlopen(req, timeout=timeout_seconds) as response:
             raw = response.read(512_000)
-            data = json.loads(raw.decode("utf-8"))
+            try:
+                data = json.loads(raw.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                return {
+                    "fixture_status": "failure",
+                    "failure_type": "solana_rpc_malformed_response",
+                    "failure_message": str(exc),
+                    "rpc_method": method,
+                    "underlying_operation_count": 1,
+                    "_transport_response_bytes": len(raw),
+                }
             if not isinstance(data, dict):
                 return {
                     "fixture_status": "failure",
@@ -205,7 +227,9 @@ def _rpc_post(
                     "failure_message": f"RPC {method} returned non-object",
                     "rpc_method": method,
                     "underlying_operation_count": 1,
+                    "_transport_response_bytes": len(raw),
                 }
+            data["_transport_response_bytes"] = len(raw)
             return data
     except url_error.HTTPError as exc:
         code = int(exc.code)
@@ -222,6 +246,7 @@ def _rpc_post(
                 "retry_after": retry_after,
                 "rpc_method": method,
                 "underlying_operation_count": 1,
+                "_transport_response_bytes": 0,
             }
         if 500 <= code <= 599:
             return {
@@ -232,6 +257,7 @@ def _rpc_post(
                 "retry_after": retry_after,
                 "rpc_method": method,
                 "underlying_operation_count": 1,
+                "_transport_response_bytes": 0,
             }
         return {
             "fixture_status": "failure",
@@ -241,15 +267,7 @@ def _rpc_post(
             "retry_after": retry_after,
             "rpc_method": method,
             "underlying_operation_count": 1,
-        }
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        # Parser/decode defect — a payload problem, never backup-eligible.
-        return {
-            "fixture_status": "failure",
-            "failure_type": "solana_rpc_malformed_response",
-            "failure_message": str(exc),
-            "rpc_method": method,
-            "underlying_operation_count": 1,
+            "_transport_response_bytes": 0,
         }
     except (OSError, TimeoutError) as exc:
         # TLS/connection interruption or connect/read timeout. Transient and
@@ -262,6 +280,7 @@ def _rpc_post(
             ),
             "rpc_method": method,
             "underlying_operation_count": 1,
+            "_transport_response_bytes": 0,
         }
 
 
@@ -270,15 +289,53 @@ def _fetch_holder_data(
     *,
     rpc_url: str = SOLANA_PUBLIC_RPC_URL,
     timeout_seconds: float = SOLANA_RPC_TIMEOUT_SECONDS,
+    measured_transport_ledger: MeasuredTransportLedger | None = None,
+    source_name: str = SOLANA_RPC_SOURCE_NAME,
+    endpoint_owner: str | None = None,
 ) -> Mapping[str, Any]:
+    identities: list[TransportOperationIdentity] = []
+
+    def record(method: str, ordinal: int, response: Mapping[str, Any]) -> None:
+        result = "FAILED" if response.get("fixture_status") == "failure" else "COMPLETED"
+        identity = TransportOperationIdentity(
+            stage="HOLDER_SAFETY",
+            source_name=source_name,
+            endpoint_owner=endpoint_owner or redacted_solana_rpc_source(rpc_url),
+            governed_request_kind="holder_concentration_reference",
+            method_or_endpoint=method,
+            within_request_ordinal=ordinal,
+            target_category="TOKEN_MINT",
+            target_identity=token_mint,
+            response_bytes=int(
+                response.get("_transport_response_bytes")
+                if response.get("_transport_response_bytes") is not None
+                else len(
+                    json.dumps(dict(response), sort_keys=True, default=str).encode(
+                        "utf-8"
+                    )
+                )
+            ),
+            normalized_rows=0 if result == "FAILED" else 1,
+            result=result,
+        )
+        if measured_transport_ledger is not None:
+            measured_transport_ledger.record_transport(identity)
+        identities.append(identity)
+
     largest_resp = _rpc_post(
         rpc_url,
         "getTokenLargestAccounts",
         [token_mint, {"commitment": "finalized"}],
         timeout_seconds=timeout_seconds,
     )
+    record("getTokenLargestAccounts", 1, largest_resp)
     if largest_resp.get("fixture_status") == "failure":
-        return MappingProxyType({**dict(largest_resp), "commitment": "finalized"})
+        return MappingProxyType({
+            **dict(largest_resp),
+            "commitment": "finalized",
+            "transport_operation_identities": [item.as_dict() for item in identities],
+            "transport_operations_used": len(identities),
+        })
 
     supply_resp = _rpc_post(
         rpc_url,
@@ -286,11 +343,14 @@ def _fetch_holder_data(
         [token_mint, {"commitment": "finalized"}],
         timeout_seconds=timeout_seconds,
     )
+    record("getTokenSupply", 2, supply_resp)
     if supply_resp.get("fixture_status") == "failure":
         return MappingProxyType({
             **dict(supply_resp),
             "commitment": "finalized",
             "underlying_operation_count": 2,
+            "transport_operation_identities": [item.as_dict() for item in identities],
+            "transport_operations_used": len(identities),
         })
 
     return MappingProxyType(
@@ -306,6 +366,8 @@ def _fetch_holder_data(
                 int(supply_resp.get("result", {}).get("context", {}).get("slot") or 0),
             ) or None,
             "underlying_operation_count": 2,
+            "transport_operation_identities": [item.as_dict() for item in identities],
+            "transport_operations_used": len(identities),
         }
     )
 
@@ -443,6 +505,10 @@ def normalize_solana_rpc_holder_response(
             "commitment": str(payload.get("commitment") or "finalized"),
             "context_slot": payload.get("context_slot"),
             "underlying_operation_count": int(payload.get("underlying_operation_count") or 2),
+            "transport_operation_identities": list(
+                payload.get("transport_operation_identities") or []
+            ),
+            "transport_operations_used": payload.get("transport_operations_used"),
         }
         stale = bool(payload.get("fixture_stale"))
         return NormalizedSourceResult(
@@ -486,6 +552,10 @@ def normalize_solana_rpc_holder_response(
         "commitment": str(payload.get("commitment") or "finalized"),
         "context_slot": payload.get("context_slot"),
         "underlying_operation_count": int(payload.get("underlying_operation_count") or 2),
+        "transport_operation_identities": list(
+            payload.get("transport_operation_identities") or []
+        ),
+        "transport_operations_used": payload.get("transport_operations_used"),
     }
 
     stale = bool(payload.get("fixture_stale"))

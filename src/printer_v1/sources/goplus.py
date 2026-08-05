@@ -30,6 +30,10 @@ from printer_v1.sources.contracts import (
 from printer_v1.sources.operational_source_contracts import (
     GOPLUS_SOLANA_SECURITY_URL,
 )
+from printer_v1.sources.measured_transport import (
+    MeasuredTransportLedger,
+    TransportOperationIdentity,
+)
 
 
 GOPLUS_SOURCE_NAME = "goplus"
@@ -135,6 +139,7 @@ def build_goplus_token_safety_transport(
     token_mint: str,
     *,
     timeout_seconds: float = GOPLUS_TIMEOUT_SECONDS,
+    measured_transport_ledger: MeasuredTransportLedger | None = None,
 ) -> Callable[[SourceAdapterContext], Mapping[str, Any]]:
     """Return a real HTTP transport that fetches GoPlus token security data.
 
@@ -147,6 +152,34 @@ def build_goplus_token_safety_transport(
         del context
         payload = dict(_load_public_json(endpoint, timeout_seconds=timeout_seconds))
         payload["_requested_token_mint"] = token_mint
+        terminal_result = (
+            "RATE_LIMITED"
+            if payload.get("fixture_status") == "rate_limited"
+            else "FAILED"
+            if payload.get("fixture_status") == "failure"
+            else "COMPLETED"
+        )
+        identity = TransportOperationIdentity(
+            stage="HOLDER_SAFETY",
+            source_name=GOPLUS_SOURCE_NAME,
+            endpoint_owner="api.gopluslabs.io",
+            governed_request_kind="safety_reference",
+            method_or_endpoint="GET_TOKEN_SECURITY",
+            within_request_ordinal=1,
+            target_category="TOKEN_MINT",
+            target_identity=token_mint,
+            response_bytes=int(
+                payload.get("_transport_response_bytes")
+                if payload.get("_transport_response_bytes") is not None
+                else len(json.dumps(payload, sort_keys=True, default=str).encode("utf-8"))
+            ),
+            normalized_rows=0 if terminal_result != "COMPLETED" else 1,
+            result=terminal_result,
+        )
+        if measured_transport_ledger is not None:
+            measured_transport_ledger.record_transport(identity)
+        payload["transport_operation_identities"] = [identity.as_dict()]
+        payload["transport_operations_used"] = 1
         return MappingProxyType(payload)
 
     return transport
@@ -170,6 +203,7 @@ def normalize_goplus_payload(
             request_kind,
             str(payload.get("failure_type") or "goplus_fixture_failure"),
             str(payload.get("failure_message") or "GoPlus fixture failure"),
+            payload=payload,
         )
     if fixture_status == "rate_limited":
         retry_at = (
@@ -196,6 +230,12 @@ def normalize_goplus_payload(
                     "underlying_operation_count": measured_count,
                     "redacted_host": "api.gopluslabs.io",
                     "request_kind": request_kind,
+                    "transport_operation_identities": list(
+                        payload.get("transport_operation_identities") or []
+                    ),
+                    "transport_operations_used": payload.get(
+                        "transport_operations_used"
+                    ),
                 }
             ),
         )
@@ -208,6 +248,7 @@ def normalize_goplus_payload(
             request_kind,
             "goplus_api_error",
             f"GoPlus API returned code {code}: {payload.get('message', '')}",
+            payload=payload,
         )
 
     requested_mint = str(payload.get("_requested_token_mint") or "").strip()
@@ -229,6 +270,7 @@ def normalize_goplus_payload(
                 request_kind,
                 "goplus_target_mint_mismatch",
                 "GoPlus response did not contain the requested token mint",
+                payload=payload,
             )
         if matched_key is not None:
             token_data = dict(result_data[matched_key])
@@ -244,6 +286,7 @@ def normalize_goplus_payload(
             request_kind,
             "goplus_missing_token_data",
             "GoPlus response contained no token security data",
+            payload=payload,
         )
 
     stale = bool(payload.get("fixture_stale"))
@@ -253,6 +296,12 @@ def normalize_goplus_payload(
     normalized["source_name"] = GOPLUS_SOURCE_NAME
     normalized["request_kind"] = request_kind
     normalized["captured_at"] = datetime.now(timezone.utc).isoformat()
+    normalized["transport_operation_identities"] = list(
+        payload.get("transport_operation_identities") or []
+    )
+    normalized["transport_operations_used"] = payload.get(
+        "transport_operations_used"
+    )
     # Authoritative single-HTTP measured cost for holder-stage accounting.
     if "underlying_operation_count" not in normalized or normalized[
         "underlying_operation_count"
@@ -295,6 +344,8 @@ def _failure_result(
     request_kind: str,
     failure_type: str,
     failure_message: str,
+    *,
+    payload: Mapping[str, Any] | None = None,
 ) -> NormalizedSourceResult:
     return NormalizedSourceResult(
         source_name=GOPLUS_SOURCE_NAME,
@@ -303,6 +354,7 @@ def _failure_result(
         data_quality_label=DataQualityLabel.MISSING_CRITICAL_DATA,
         failure_type=failure_type,
         failure_message=failure_message,
+        normalized_payload=MappingProxyType(dict(payload or {})),
     )
 
 
@@ -315,32 +367,48 @@ def _load_public_json(endpoint: str, *, timeout_seconds: float) -> Mapping[str, 
     try:
         with url_request.urlopen(req, timeout=timeout_seconds) as response:
             raw_body = response.read(512_000)
-            data = json.loads(raw_body.decode("utf-8"))
+            try:
+                data = json.loads(raw_body.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                return MappingProxyType({
+                    "fixture_status": "failure",
+                    "failure_type": "goplus_transport_failure",
+                    "failure_message": str(exc),
+                    "_transport_response_bytes": len(raw_body),
+                })
             if isinstance(data, dict):
                 data["_source_status_code"] = getattr(response, "status", None)
+                data["_transport_response_bytes"] = len(raw_body)
                 return MappingProxyType(data)
             return MappingProxyType(
                 {
                     "fixture_status": "failure",
                     "failure_type": "goplus_non_object_payload",
                     "failure_message": "GoPlus returned non-object payload",
+                    "_transport_response_bytes": len(raw_body),
                 }
             )
     except url_error.HTTPError as exc:
         if exc.code == 429:
-            return MappingProxyType({"fixture_status": "rate_limited", "retry_after_seconds": 120})
+            return MappingProxyType({
+                "fixture_status": "rate_limited",
+                "retry_after_seconds": 120,
+                "_transport_response_bytes": 0,
+            })
         return MappingProxyType(
             {
                 "fixture_status": "failure",
                 "failure_type": "goplus_http_error",
                 "failure_message": f"GoPlus HTTP error {exc.code}",
+                "_transport_response_bytes": 0,
             }
         )
-    except (OSError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+    except (OSError, TimeoutError) as exc:
         return MappingProxyType(
             {
                 "fixture_status": "failure",
                 "failure_type": "goplus_transport_failure",
                 "failure_message": str(exc),
+                "_transport_response_bytes": 0,
             }
         )

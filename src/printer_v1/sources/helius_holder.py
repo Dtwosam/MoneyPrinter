@@ -100,6 +100,7 @@ def build_helius_holder_transport(
     *,
     api_key: str,
     timeout_seconds: float = SOLANA_RPC_TIMEOUT_SECONDS,
+    measured_transport_ledger=None,
 ) -> Callable[[SourceAdapterContext], Mapping[str, Any]]:
     """Build the sole fixed-host transport; the returned closure retries zero times."""
     key = str(api_key).strip()
@@ -110,7 +111,12 @@ def build_helius_holder_transport(
     def transport(context: SourceAdapterContext) -> Mapping[str, Any]:
         del context
         result = dict(_fetch_holder_data(
-            token_mint, rpc_url=rpc_url, timeout_seconds=timeout_seconds
+            token_mint,
+            rpc_url=rpc_url,
+            timeout_seconds=timeout_seconds,
+            source_name=HELIUS_SOURCE_NAME,
+            endpoint_owner=HELIUS_FIXED_MAINNET_HOST,
+            measured_transport_ledger=measured_transport_ledger,
         ))
         for field in ("failure_message", "retry_after"):
             if isinstance(result.get(field), str):

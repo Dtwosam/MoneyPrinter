@@ -29,6 +29,7 @@ Governance:
 from __future__ import annotations
 
 import sqlite3
+import inspect
 from typing import Any, Callable
 
 from printer_v1.sources.budget_accounting import count_recent_source_requests
@@ -70,6 +71,7 @@ def is_eligible_transient_solana_rpc_failure(execution: Any) -> bool:
 
 def build_default_solana_rpc_holder_backup_adapter(
     *, token_mint: str, timeout_seconds: float = 10.0,
+    measured_transport_ledger=None,
 ):
     """Build the fixed Helius Free adapter from an operator-owned key."""
     import os
@@ -84,6 +86,7 @@ def build_default_solana_rpc_holder_backup_adapter(
             token_mint,
             api_key=os.environ.get(HELIUS_API_KEY_ENV, ""),
             timeout_seconds=timeout_seconds,
+            measured_transport_ledger=measured_transport_ledger,
         )
     except HeliusHolderConfigurationError:
         def transport(_context):
@@ -92,6 +95,8 @@ def build_default_solana_rpc_holder_backup_adapter(
                 "failure_type": "helius_auth_missing",
                 "failure_message": "HELIUS_FREE_API_KEY_REQUIRED",
                 "underlying_operation_count": 0,
+                "transport_operation_identities": [],
+                "transport_operations_used": 0,
             }
     return build_helius_holder_adapter(enabled=True, fixture_transport=transport)
 
@@ -106,6 +111,7 @@ def execute_solana_rpc_holder_backup(
     backup_adapter_factory: Callable[..., Any],
     timeout_seconds: float,
     source_name: str = HELIUS_SOURCE_NAME,
+    measured_transport_ledger=None,
 ) -> Any:
     """Execute exactly one governed Helius Free holder request.
 
@@ -120,7 +126,19 @@ def execute_solana_rpc_holder_backup(
         request_key=f"{run_id}:{step_key}:context:holder_backup",
         payload={"token_mint": token_mint, "pair_address": pair_address},
     )
-    adapter = backup_adapter_factory(token_mint=token_mint, timeout_seconds=timeout_seconds)
+    kwargs = {
+        "token_mint": token_mint,
+        "timeout_seconds": timeout_seconds,
+        "measured_transport_ledger": measured_transport_ledger,
+    }
+    parameters = inspect.signature(backup_adapter_factory).parameters.values()
+    if not any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        or parameter.name == "measured_transport_ledger"
+        for parameter in parameters
+    ):
+        kwargs.pop("measured_transport_ledger")
+    adapter = backup_adapter_factory(**kwargs)
     return execute_source_request_with_governor(
         conn, request, adapter,
         recent_request_count=count_recent_source_requests(conn, source_name),

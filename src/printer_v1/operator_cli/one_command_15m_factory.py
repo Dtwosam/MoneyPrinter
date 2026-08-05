@@ -880,6 +880,7 @@ def _collect_preclose_context(
     cancellation_probe: Callable[[], str | None] | None = None,
     request_pacer: Any | None = None,
     preserve_partial_executions: bool = False,
+    holder_transport_ledger: Any | None = None,
 ) -> dict[str, Any]:
     """Collect a fixed, governed context bundle before the close snapshot.
 
@@ -933,6 +934,20 @@ def _collect_preclose_context(
         or build_default_solana_rpc_holder_backup_adapter
     )
 
+    def holder_factory_call(factory: Callable[..., Any], **kwargs: Any) -> Any:
+        """Pass the ledger only to factories that declare the repaired contract."""
+        import inspect
+
+        parameters = inspect.signature(factory).parameters.values()
+        accepts_ledger = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            or parameter.name == "measured_transport_ledger"
+            for parameter in parameters
+        )
+        if not accepts_ledger:
+            kwargs.pop("measured_transport_ledger", None)
+        return factory(**kwargs)
+
     def execute(source_name: str, request_kind: str, suffix: str, payload: dict[str, Any], adapter: Any) -> Any:
         from printer_v1.db.sqlite_write_contracts import release_write_transaction
 
@@ -979,12 +994,19 @@ def _collect_preclose_context(
     safety_adapter = require_concrete_adapter(
         "preclose_goplus_safety",
         (
-            safety_factory(token_mint=mint, timeout_seconds=timeout_seconds)
+            holder_factory_call(
+                safety_factory,
+                token_mint=mint,
+                timeout_seconds=timeout_seconds,
+                measured_transport_ledger=holder_transport_ledger,
+            )
             if safety_factory
             else build_goplus_adapter(
                 enabled=True,
                 fixture_transport=build_goplus_token_safety_transport(
-                    mint, timeout_seconds=timeout_seconds
+                    mint,
+                    timeout_seconds=timeout_seconds,
+                    measured_transport_ledger=holder_transport_ledger,
                 ),
             )
         ),
@@ -1075,12 +1097,19 @@ def _collect_preclose_context(
             holder_adapter = require_concrete_adapter(
                 "preclose_solana_rpc_holder_primary",
                 (
-                    holder_factory(token_mint=mint, timeout_seconds=timeout_seconds)
+                    holder_factory_call(
+                        holder_factory,
+                        token_mint=mint,
+                        timeout_seconds=timeout_seconds,
+                        measured_transport_ledger=holder_transport_ledger,
+                    )
                     if holder_factory
                     else build_solana_rpc_holder_adapter(
                         enabled=True,
                         fixture_transport=build_solana_rpc_holder_transport(
-                            mint, timeout_seconds=timeout_seconds
+                            mint,
+                            timeout_seconds=timeout_seconds,
+                            measured_transport_ledger=holder_transport_ledger,
                         ),
                     )
                 ),
@@ -1122,6 +1151,7 @@ def _collect_preclose_context(
                     backup_adapter_factory=holder_backup_adapter_factory,
                     timeout_seconds=timeout_seconds,
                     source_name=backup_source_name,
+                    measured_transport_ledger=holder_transport_ledger,
                 )
                 executions["holder_backup"] = backup_holder
                 if backup_holder.response_record is not None:
@@ -3863,6 +3893,7 @@ def run_one_command_15m_factory(
     project_root: str | Path | None = None,
     launch_provenance: Mapping[str, Any] | None = None,
     operational_persistent_mode: bool = False,
+    operational_database_target_binding: Any | None = None,
     lifecycle_ownership_context: Mapping[str, Any] | None = None,
     lifecycle_operation_observer: Callable[[Mapping[str, Any]], None] | None = None,
     _post_handoff_fault: str | None = None,
@@ -3899,9 +3930,84 @@ def run_one_command_15m_factory(
         from printer_v1.operator_cli.proof_db_schema_readiness import (
             CANONICAL_PERSISTENT_DB,
         )
+        from printer_v1.operator_cli.operational_database_target_binding import (
+            validate_operational_database_target_binding,
+        )
+        from printer_v1.db.migrate import (
+            canonical_migration_count,
+            canonical_migration_names,
+        )
         canonical = Path(CANONICAL_PERSISTENT_DB).resolve()
-        if path != canonical:
-            reasons.append("operational persistent mode requires the authoritative corpus")
+        if path != canonical and operational_database_target_binding is None:
+            reasons.append(
+                "operational persistent mode requires the authoritative corpus"
+            )
+        binding_expected = {
+            "authorized_pre_mutation_sha256": (
+                None
+                if operational_database_target_binding is None
+                else str(operational_database_target_binding.db_target_identity)
+                .removeprefix("sha256:")
+            ),
+            "durable_db_target_identity": (
+                None
+                if operational_database_target_binding is None
+                else operational_database_target_binding.db_target_identity
+            ),
+            "execution_id": (
+                None
+                if operational_database_target_binding is None
+                else operational_database_target_binding.execution_id
+            ),
+            "campaign_id": campaign_id,
+            "campaign_run_id": campaign_run_id,
+            "cycle_id": cycle_id,
+            "configuration_id": configuration_id,
+            "migration_count": canonical_migration_count(),
+            "migration_head": canonical_migration_names()[-1],
+            "authorization_consumed_once": True,
+            "invocation_count": 1,
+            "automatic_retry_allowed": False,
+            "manual_rerun_allowed": False,
+            "resume_allowed": False,
+            "restart_allowed": False,
+            "successor_allowed": False,
+        }
+        if (
+            operational_database_target_binding is not None
+            and operational_database_target_binding.target_kind
+            == "AUTHORIZED_DISPOSABLE_OPERATIONAL_PROOF"
+        ):
+            binding_expected["fixture_authorization"] = {
+                "resolved_db_path": operational_database_target_binding.resolved_db_path,
+                "authorized_pre_mutation_sha256": binding_expected[
+                    "authorized_pre_mutation_sha256"
+                ],
+                "authorization_id": operational_database_target_binding.authorization_id,
+                "authorization_marker_sha256": operational_database_target_binding.authorization_marker_sha256,
+                "application_marker_sha256": operational_database_target_binding.application_marker_sha256,
+                "execution_id": operational_database_target_binding.execution_id,
+                "campaign_id": operational_database_target_binding.campaign_id,
+                "campaign_run_id": operational_database_target_binding.campaign_run_id,
+                "cycle_id": operational_database_target_binding.cycle_id,
+                "configuration_id": operational_database_target_binding.configuration_id,
+                "migration_count": operational_database_target_binding.migration_count,
+                "migration_head": operational_database_target_binding.migration_head,
+                "allowed_invocation_count": 1,
+                "automatic_retry_allowed": False,
+                "manual_rerun_allowed": False,
+                "resume_allowed": False,
+                "restart_allowed": False,
+                "successor_allowed": False,
+            }
+        binding_reason = validate_operational_database_target_binding(
+            operational_database_target_binding,
+            actual_db_path=path,
+            canonical_authoritative_db_path=canonical,
+            expected=binding_expected,
+        )
+        if binding_reason is not None:
+            reasons.append(binding_reason)
     elif _is_persistent_db(path):
         reasons.append("persistent DB is forbidden in proof mode")
     # V2-5: the explicit three-token proof mode permits exactly three autonomous

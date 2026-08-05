@@ -1217,6 +1217,8 @@ class AuthoritativeLiveOperationalCampaignOwner:
         tracking_pair_by_mint: Mapping[str, str] | None = None,
         eligible_target: int = 2,
         permanent_memory_observation: bool = False,
+        holder_transport_identity_observer: Any | None = None,
+        holder_stage_evidence_sealer: Any | None = None,
     ) -> Any:
         """Shared pre-activation holder-eligibility funnel.
 
@@ -1266,6 +1268,14 @@ class AuthoritativeLiveOperationalCampaignOwner:
         budget_exhausted = False
         budget_exhaustion_reason: str | None = None
         holder_attempt_budget_trace: list[dict[str, Any]] = []
+        from printer_v1.sources.measured_transport import MeasuredTransportLedger
+        holder_transport_ledger = MeasuredTransportLedger(
+            campaign_id=campaign_id or None,
+            run_id=command.run_id,
+            cycle_id=cycle_id,
+            on_transport_recorded=holder_transport_identity_observer,
+        )
+        require_exact_holder_identities = holder_stage_evidence_sealer is not None
         persist_ledger(
             connection, run_id=command.run_id, cycle_id=cycle_id,
             ledger=ledger, now=evaluated.isoformat(),
@@ -1424,6 +1434,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     # Holder-specific fail-closed mode: a later failure must
                     # carry the governed executions that already happened.
                     preserve_partial_executions=True,
+                    holder_transport_ledger=holder_transport_ledger,
                 )
                 holder_facts[proof.mint.lower()] = {
                     **_holder_eligibility_from_bundle(
@@ -1440,6 +1451,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     created_at=evaluated.isoformat(),
                     campaign_id=campaign_id or None,
                     candidate_ordinal=ordinal,
+                    require_exact_transport_identities=require_exact_holder_identities,
                 )
                 stage_governed += int(persist_result.governed_request_count)
                 stage_transports += int(persist_result.measured_transport_count)
@@ -1519,6 +1531,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             created_at=evaluated.isoformat(),
                             campaign_id=campaign_id or None,
                             candidate_ordinal=ordinal,
+                            require_exact_transport_identities=require_exact_holder_identities,
                         )
                     except HolderBundlePersistPartialError as persist_exc:
                         partial_result = persist_exc.partial
@@ -1599,6 +1612,20 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 continue
             seen_ids.add(rid)
             deduped_ids.append(rid)
+        holder_stage_status = "BLOCKED" if accounting_blocker else "COMPLETED"
+        holder_stage_cause = (
+            ";".join(accounting_reasons)
+            if accounting_reasons
+            else budget_exhaustion_reason
+        )
+        holder_stage_id = None
+        if holder_stage_evidence_sealer is not None:
+            sealed = holder_stage_evidence_sealer(
+                holder_transport_ledger,
+                holder_stage_status,
+                holder_stage_cause,
+            )
+            holder_stage_id = str(sealed.get("stage_id") or "") or None
         return HolderContextResult(
             holder_facts=holder_facts,
             ledger=ledger,
@@ -1617,6 +1644,12 @@ class AuthoritativeLiveOperationalCampaignOwner:
             ledger_before_holder=ledger_before_holder,
             ledger_after_holder=ledger,
             holder_attempt_budget_trace=tuple(holder_attempt_budget_trace),
+            transport_identities=tuple(
+                identity.as_dict() for identity in holder_transport_ledger.transports
+            ),
+            holder_stage_id=holder_stage_id,
+            holder_stage_terminal_status=holder_stage_status,
+            holder_stage_first_terminal_cause=holder_stage_cause,
         )
 
     def run(self, *, mode: str, **kwargs: Any) -> Any:
@@ -1670,6 +1703,8 @@ class AuthoritativeLiveOperationalCampaignOwner:
         pre_holder_accounting_projection: (
             Callable[[], Mapping[str, Any]] | None
         ) = None,
+        holder_stage_evidence_sealer: Callable[[Any, str, str | None], Mapping[str, Any]] | None = None,
+        operational_database_target_binding: Any | None = None,
     ) -> Any:
         """Run one authoritative live two-token operational-natural campaign.
 
@@ -1693,6 +1728,32 @@ class AuthoritativeLiveOperationalCampaignOwner:
         the campaign blocks with ``BLOCKED_INSUFFICIENT_GRADUATED_POOL``.
         """
         lk = dict(lifecycle_kwargs or {})
+        if fifteen_minute_only:
+            from printer_v1.db.migrate import (
+                canonical_migration_count,
+                canonical_migration_names,
+            )
+            from printer_v1.operator_cli.operational_database_target_binding import (
+                validate_bound_operational_invocation,
+            )
+            from printer_v1.operator_cli.proof_db_schema_readiness import (
+                CANONICAL_PERSISTENT_DB,
+            )
+            binding_reason = validate_bound_operational_invocation(
+                operational_database_target_binding,
+                actual_db_path=command.db_path,
+                canonical_authoritative_db_path=CANONICAL_PERSISTENT_DB,
+                migration_count=canonical_migration_count(),
+                migration_head=canonical_migration_names()[-1],
+                execution_id=selection_seed,
+                campaign_id=command.campaign_id,
+                campaign_run_id=command.run_id,
+                cycle_id=cycle_id,
+                configuration_id=command.configuration_id,
+                durable_db_target_identity=command.db_target_identity,
+            )
+            if binding_reason is not None:
+                raise LiveOperationalError(binding_reason, "database target binding")
         # Structural exclusion at the live owner boundary: fixture proof plans and
         # predeclared dispositions can never enter operational mode.
         for forbidden in (
@@ -2124,6 +2185,8 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     supply is not None
                     and bool(supply.diagnostics.get("permanent_availability"))
                 ),
+                holder_transport_identity_observer=transport_identity_observer,
+                holder_stage_evidence_sealer=holder_stage_evidence_sealer,
             )
             holder_facts = dict(holder_result.holder_facts)
             ledger = holder_result.ledger
@@ -2177,7 +2240,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     holder_context = _holder_observation_context(fact)
                     holder_actually_eligible = bool(
                         holder_context["fully_eligible"]
-                    )
+                    ) and not bool(holder_result.accounting_blocker)
                     holder_condition = str(holder_context["holder_condition"])
                     holder_evidence_status = str(
                         holder_context["holder_evidence_status"]
@@ -2744,6 +2807,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
             continuous_four_hour=not fifteen_minute_only,
             four_hour_proof_mode=not fifteen_minute_only,
             operational_persistent_mode=fifteen_minute_only,
+            operational_database_target_binding=(
+                operational_database_target_binding
+            ),
             lifecycle_kwargs=lk,
         )
         if (

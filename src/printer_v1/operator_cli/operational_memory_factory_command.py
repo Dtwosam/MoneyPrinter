@@ -2267,6 +2267,47 @@ def _run_operational_campaign(
         execution_id=execution_id, paths=paths, preflight=preflight,
         backup=backup, now=now, operator_approved=operator_approved, policy=policy,
     )
+    from printer_v1.operator_cli.operational_database_target_binding import (
+        AUTHORIZED_DISPOSABLE_OPERATIONAL_PROOF,
+        PRODUCTION_AUTHORITATIVE,
+        build_operational_database_target_binding,
+    )
+    from printer_v1.operator_cli.proof_db_schema_readiness import (
+        CANONICAL_PERSISTENT_DB,
+    )
+    authorization = dict(preflight.get("git_provenance_authorization") or {})
+    authorization_id = str(authorization.get("authorization_id") or execution_id)
+    authorization_marker_sha256 = str(
+        authorization.get("manifest_sha256")
+        or campaign_evidence_sha256({"authorization_id": authorization_id})
+    )
+    application_marker_sha256 = str(
+        authorization.get("marker_sha256") or authorization_marker_sha256
+    )
+    target_kind = (
+        PRODUCTION_AUTHORITATIVE
+        if Path(AUTHORITATIVE_DB).resolve() == Path(CANONICAL_PERSISTENT_DB).resolve()
+        else AUTHORIZED_DISPOSABLE_OPERATIONAL_PROOF
+    )
+    operational_database_target_binding = build_operational_database_target_binding(
+        target_kind=target_kind,
+        resolved_db_path=AUTHORITATIVE_DB,
+        authorized_pre_mutation_sha256=str(preflight["database_sha256"]),
+        migration_count=int(
+            preflight.get("migration_count", canonical_migration_count())
+        ),
+        migration_head=str(
+            preflight.get("latest_migration", canonical_migration_names()[-1])
+        ),
+        authorization_id=authorization_id,
+        authorization_marker_sha256=authorization_marker_sha256,
+        application_marker_sha256=application_marker_sha256,
+        execution_id=execution_id,
+        campaign_id=command.campaign_id,
+        campaign_run_id=command.run_id,
+        cycle_id=cycle_id,
+        configuration_id=command.configuration_id,
+    )
     heartbeat: _CampaignHeartbeat | None = None
     initialized_factory_run_id: str | None = str(uuid.uuid4())
     factory_identity_retained = False
@@ -2334,6 +2375,51 @@ def _run_operational_campaign(
         # Owner side only. Action-local identities arrive via the measurement
         # observer, not by mirroring this sealed evidence block.
         campaign_units.ingest_stage_evidence(evidence)
+
+    def _seal_holder_stage(ledger, status: str, cause: str | None):
+        from printer_v1.sources.campaign_six_unit_accounting import (
+            build_campaign_stage_id,
+            seal_campaign_stage_evidence,
+        )
+        sequence = campaign_units.sealed_stage_count + 1
+        stage_id = build_campaign_stage_id(
+            campaign_id=command.campaign_id,
+            run_id=command.run_id,
+            cycle_id=cycle_id,
+            stage_kind="HOLDER_SAFETY",
+            stage_sequence=sequence,
+        )
+        zero_operation_evidence = None
+        ledger_for_seal = ledger
+        if not ledger.transports:
+            ledger_for_seal = None
+            zero_operation_evidence = {
+                "evidence_kind": "CAMPAIGN_SIX_UNIT_EVIDENCE_V1",
+                "phase": "PRE_OPERATION_NO_WORK",
+                "source_transport_attempted": False,
+                "source_governor_requests": 0,
+                "scheduler_work_exists": False,
+                "lifecycle_began": False,
+                "no_work_reason": cause or "HOLDER_STAGE_NO_ELIGIBLE_WORK",
+                "transport_operations": [],
+                "local_validations": 0,
+                "scheduler_work_items": 0,
+                "lifecycle_reservations": 0,
+            }
+        evidence = seal_campaign_stage_evidence(
+            stage_id=stage_id,
+            stage_kind="HOLDER_SAFETY",
+            stage_sequence=sequence,
+            stage_terminal_status=status,
+            stage_first_terminal_cause=cause,
+            campaign_id=command.campaign_id,
+            run_id=command.run_id,
+            cycle_id=cycle_id,
+            ledger=ledger_for_seal,
+            evidence=zero_operation_evidence,
+        )
+        _campaign_stage_evidence_sink(evidence)
+        return evidence
 
     def _observe_full_run_stage(record: Mapping[str, Any]) -> None:
         from printer_v1.sources.campaign_six_unit_accounting import (
@@ -2549,6 +2635,14 @@ def _run_operational_campaign(
                             action_local_transport_identities
                         ),
                     )
+                ),
+                holder_stage_evidence_sealer=(
+                    _seal_holder_stage
+                    if git_provenance_authorization is not None
+                    else None
+                ),
+                operational_database_target_binding=(
+                    operational_database_target_binding
                 ),
                 )
             finally:

@@ -673,6 +673,10 @@ class HolderBundlePersistResult:
     source_request_coverage: tuple[Mapping[str, Any], ...]
     accounting_blocker: bool
     accounting_blocker_reason: str | None
+    transport_identities: tuple[Mapping[str, Any], ...] = ()
+    holder_stage_id: str | None = None
+    holder_stage_terminal_status: str | None = None
+    holder_stage_first_terminal_cause: str | None = None
 
 
 class HolderBundlePersistPartialError(RuntimeError):
@@ -722,6 +726,10 @@ class HolderContextResult:
     ledger_before_holder: CampaignOperationLedger | None = None
     ledger_after_holder: CampaignOperationLedger | None = None
     holder_attempt_budget_trace: tuple[Mapping[str, Any], ...] = ()
+    transport_identities: tuple[Mapping[str, Any], ...] = ()
+    holder_stage_id: str | None = None
+    holder_stage_terminal_status: str | None = None
+    holder_stage_first_terminal_cause: str | None = None
 
     def as_holder_context_diagnostics(self) -> dict[str, Any]:
         return {
@@ -750,6 +758,12 @@ class HolderContextResult:
             "holder_attempt_budget_trace": [
                 dict(entry) for entry in self.holder_attempt_budget_trace
             ],
+            "transport_identities": [
+                dict(entry) for entry in self.transport_identities
+            ],
+            "holder_stage_id": self.holder_stage_id,
+            "holder_stage_terminal_status": self.holder_stage_terminal_status,
+            "holder_stage_first_terminal_cause": self.holder_stage_first_terminal_cause,
         }
 
 
@@ -786,6 +800,8 @@ def _holder_source_role(execution_key: str) -> str:
 
 def _measure_holder_transport_count(
     execution: Any,
+    *,
+    require_exact_identities: bool = False,
 ) -> tuple[int, bool, str | None]:
     """Return (count, accounting_complete, reason) from proven measured evidence.
 
@@ -801,14 +817,52 @@ def _measure_holder_transport_count(
         identities_raw, (str, bytes)
     ):
         identities = [item for item in identities_raw if isinstance(item, Mapping)]
+        if len(identities) != len(identities_raw):
+            return 0, False, "HOLDER_TRANSPORT_IDENTITY_MALFORMED"
         if identities:
+            keys: set[tuple[object, ...]] = set()
+            ordinals: set[int] = set()
+            expected_source = str(getattr(normalized, "source_name", "") or "")
+            expected_kind = str(getattr(normalized, "request_kind", "") or "")
+            expected_target = str(payload.get("token_mint") or "")
+            for raw in identities:
+                try:
+                    key = _measured_transport_identity_key(raw)
+                    ordinal = int(raw.get("within_request_ordinal"))
+                    response_bytes = int(raw.get("response_bytes"))
+                    normalized_rows = int(raw.get("normalized_rows"))
+                except (TypeError, ValueError) as exc:
+                    return 0, False, "HOLDER_TRANSPORT_IDENTITY_MALFORMED"
+                if key in keys or ordinal in ordinals:
+                    return 0, False, "HOLDER_TRANSPORT_IDENTITY_DUPLICATE"
+                keys.add(key)
+                ordinals.add(ordinal)
+                if (
+                    str(raw.get("stage") or "") != "HOLDER_SAFETY"
+                    or str(raw.get("source_name") or "") != expected_source
+                    or str(raw.get("governed_request_kind") or "") != expected_kind
+                    or str(raw.get("target_category") or "") != "TOKEN_MINT"
+                    or (
+                        expected_target
+                        and str(raw.get("target_identity") or "").lower()
+                        != expected_target.lower()
+                    )
+                    or not str(raw.get("endpoint_owner") or "").strip()
+                ):
+                    return 0, False, "HOLDER_TRANSPORT_IDENTITY_CORRESPONDENCE_MISMATCH"
+                if response_bytes < 0 or normalized_rows < 0:
+                    return 0, False, "HOLDER_TRANSPORT_IDENTITY_MEASURE_INVALID"
             used = payload.get("transport_operations_used")
             count = len(identities)
             if used is not None and int(used) != count:
                 return 0, False, "HOLDER_TRANSPORT_IDENTITY_COUNT_MISMATCH"
             return count, True, None
+        if payload.get("transport_operations_used") == 0:
+            return 0, True, None
         if payload.get("transport_operations_used"):
             return 0, False, "HOLDER_TRANSPORT_IDENTITIES_MISSING"
+    if require_exact_identities:
+        return 0, False, "HOLDER_TRANSPORT_IDENTITIES_MISSING"
     if "underlying_operation_count" in payload and payload[
         "underlying_operation_count"
     ] is not None:
@@ -1044,6 +1098,7 @@ def persist_bundle_attempts(
     created_at: str,
     campaign_id: str | None = None,
     candidate_ordinal: int = 1,
+    require_exact_transport_identities: bool = False,
 ) -> HolderBundlePersistResult:
     """Persist each distinct governed attempt; return IDs, coverage, accounting.
 
@@ -1070,6 +1125,8 @@ def persist_bundle_attempts(
     coverage: list[dict[str, Any]] = []
     accounting_blocker = False
     accounting_reasons: list[str] = []
+    transport_identities: list[Mapping[str, Any]] = []
+    transport_identity_keys: set[tuple[object, ...]] = set()
 
     for key, execution in distinct:
         # Capture the durable identity before any work that can raise, so a
@@ -1084,7 +1141,8 @@ def persist_bundle_attempts(
         # measurement is itself absent, invalid, negative, or contradictory.
         try:
             proven_count, proven_ok, _proven_reason = _measure_holder_transport_count(
-                execution
+                execution,
+                require_exact_identities=require_exact_transport_identities,
             )
         except Exception:  # pragma: no cover - unmeasurable execution record
             proven_count, proven_ok = 0, False
@@ -1102,6 +1160,23 @@ def persist_bundle_attempts(
                 campaign_id=campaign_id,
                 candidate_ordinal=candidate_ordinal,
             )
+            if require_exact_transport_identities:
+                operation_count, accounting_ok, exact_reason = (
+                    _measure_holder_transport_count(
+                        execution, require_exact_identities=True
+                    )
+                )
+                if not accounting_ok:
+                    reason = (
+                        f"{exact_reason}:request={request_id}"
+                        if exact_reason else "HOLDER_TRANSPORT_IDENTITIES_MISSING"
+                    )
+                    entry["terminal_status"] = "BLOCKED"
+                    entry["transport_identity_count"] = 0
+                else:
+                    # Provider failure/rate-limit is truthful holder context;
+                    # exact request accounting itself completed.
+                    entry["terminal_status"] = "COMPLETED"
         except Exception as exc:
             if request_id is not None:
                 if request_id not in request_ids:
@@ -1155,6 +1230,37 @@ def persist_bundle_attempts(
         if request_id is not None and request_id not in request_ids:
             request_ids.append(request_id)
         coverage.append(entry)
+        if accounting_ok:
+            payload = dict(
+                getattr(execution.normalized_result, "normalized_payload", None)
+                or {}
+            )
+            for item in payload.get("transport_operation_identities") or ():
+                raw = dict(item)
+                key_identity = _measured_transport_identity_key(raw)
+                if key_identity in transport_identity_keys:
+                    accounting_ok = False
+                    accounting_blocker = True
+                    operation_count = 0
+                    entry["terminal_status"] = "BLOCKED"
+                    entry["transport_identity_count"] = 0
+                    accounting_reasons.append(
+                        f"HOLDER_TRANSPORT_IDENTITY_DUPLICATE:request={request_id}"
+                    )
+                    break
+                if str(raw.get("target_identity") or "").lower() != mint.lower():
+                    accounting_ok = False
+                    accounting_blocker = True
+                    operation_count = 0
+                    entry["terminal_status"] = "BLOCKED"
+                    entry["transport_identity_count"] = 0
+                    accounting_reasons.append(
+                        "HOLDER_TRANSPORT_IDENTITY_CORRESPONDENCE_MISMATCH:"
+                        f"request={request_id}"
+                    )
+                    break
+                transport_identity_keys.add(key_identity)
+                transport_identities.append(raw)
         transports += int(operation_count)
         if not accounting_ok:
             accounting_blocker = True
@@ -1169,4 +1275,5 @@ def persist_bundle_attempts(
         source_request_coverage=tuple(coverage),
         accounting_blocker=accounting_blocker,
         accounting_blocker_reason=reason_text,
+        transport_identities=tuple(transport_identities),
     )

@@ -34,6 +34,14 @@ from printer_v1.operator_cli.window_15m_concrete_composition import (
     ordinary_window_15m_builder_identities,
     production_runtime_constructor_identities,
 )
+from printer_v1.operator_cli.continuous_proof_evidence_retention import (
+    capture_public_command_main,
+    extract_proof_diagnostics,
+    parse_final_child_terminal,
+    retain_required_artifacts,
+    terminal_truth_projection,
+    write_proof_diagnostic_artifacts,
+)
 
 import test_v2_9_7e_9_two_token_continuous_lifecycle as e9
 import test_v2_9_8b_token_slot_id_exact_public_composition as base
@@ -406,19 +414,15 @@ class ContinuousWrapperToMemoryProof(unittest.TestCase):
                         os.environ.pop(k, None)
                     else:
                         os.environ[k] = str(v)
-                try:
-                    rc = public_command.main(["run", "--operator-approved"])
-                except SystemExit as exc:
-                    rc = int(exc.code or 0)
-                except Exception as exc:
-                    Path(stderr_path).write_text(
-                        f"{type(exc).__name__}:{exc}\n", encoding="utf-8"
-                    )
-                    rc = 1
-            Path(stdout_path).write_text(
-                json.dumps({"child_returncode": rc}, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
+                rc = capture_public_command_main(
+                    public_command.main,
+                    ["run", "--operator-approved"],
+                    stdout_path=stdout_path,
+                    stderr_path=stderr_path,
+                    launcher_metadata_path=(
+                        Path(stdout_path).parent / "child-launcher-metadata.json"
+                    ),
+                )
             return {"returncode": int(rc), "pid": os.getpid()}
 
         # Wrapper continuous path.
@@ -441,6 +445,20 @@ class ContinuousWrapperToMemoryProof(unittest.TestCase):
         self.assertEqual(1, len(child_invocations))
         self.assertEqual(0, result.get("automatic_retries", 0) if isinstance(result.get("automatic_retries"), int) else 0)
         self.assertTrue((app / auth_id / "application-marker.json").is_file())
+        child_stdout_path = app / auth_id / "child-stdout.txt"
+        child_terminal = parse_final_child_terminal(
+            child_stdout_path.read_text(encoding="utf-8")
+        )
+        (app / auth_id / "child-terminal.json").write_text(
+            json.dumps(
+                terminal_truth_projection(child_terminal),
+                indent=2,
+                sort_keys=True,
+                default=str,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
 
         # Zero unhandled external network escapes (frozen known hosts are allowed).
         self.assertEqual([], network_hits)
@@ -520,7 +538,8 @@ class ContinuousWrapperToMemoryProof(unittest.TestCase):
         RETAINED_PROOF_ROOT.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         retained = RETAINED_PROOF_ROOT / f"{PROOF_EXECUTION_ID}_{stamp}"
-        retained.mkdir(parents=True, exist_ok=False)
+        retention_staging = root / "retention-staging"
+        retention_staging.mkdir(parents=True, exist_ok=False)
 
         proof_summary = {
             "proof_execution_id": PROOF_EXECUTION_ID,
@@ -564,14 +583,13 @@ class ContinuousWrapperToMemoryProof(unittest.TestCase):
                 if elapsed > 0:
                     proof_summary.setdefault("window_elapsed", []).append(elapsed)
 
-        summary_path = retained / "proof_summary.json"
+        summary_path = retention_staging / "proof-summary.json"
         summary_path.write_text(
             json.dumps(proof_summary, indent=2, sort_keys=True, default=str) + "\n"
         )
-        terminal_path = retained / "wrapper_terminal.json"
+        terminal_path = app / auth_id / "wrapper-terminal.json"
         terminal_src = app / auth_id / "wrapper-terminal.json"
-        if terminal_src.is_file():
-            terminal_path.write_bytes(terminal_src.read_bytes())
+        self.assertTrue(terminal_src.is_file())
 
         # Core continuous-path assertions that must always hold.
         self.assertEqual(1, len(child_invocations))
@@ -603,17 +621,27 @@ class ContinuousWrapperToMemoryProof(unittest.TestCase):
         for elapsed in proof_summary.get("window_elapsed") or []:
             self.assertGreaterEqual(elapsed, 900.0)
 
-        # Record artifact hashes for closeout.
-        hashes = {
-            "proof_summary": _sha256(summary_path),
-            "wrapper_terminal": (
-                _sha256(terminal_path) if terminal_path.is_file() else None
-            ),
-            "retained_dir": str(retained),
-        }
-        (retained / "artifact_hashes.json").write_text(
-            json.dumps(hashes, indent=2, sort_keys=True) + "\n"
+        report_reference = child_terminal.get("report") or {}
+        campaign_report_path = Path(str(report_reference.get("artifact_path") or ""))
+        self.assertTrue(campaign_report_path.is_file())
+        campaign_report = json.loads(campaign_report_path.read_text(encoding="utf-8"))
+        diagnostic_paths = write_proof_diagnostic_artifacts(
+            extract_proof_diagnostics(campaign_report),
+            output_directory=retention_staging,
         )
+        artifact_sources = {
+            "child-stdout.txt": app / auth_id / "child-stdout.txt",
+            "child-stderr.txt": app / auth_id / "child-stderr.txt",
+            "child-terminal.json": app / auth_id / "child-terminal.json",
+            "wrapper-terminal.json": terminal_path,
+            "campaign-terminal-report.json": campaign_report_path,
+            "proof-summary.json": summary_path,
+            **diagnostic_paths,
+        }
+        hashes = retain_required_artifacts(
+            artifact_sources, retained_directory=retained
+        )
+        hashes["retained_dir"] = str(retained)
         # Stash paths on the test case for external readers.
         ContinuousWrapperToMemoryProof.last_retained = retained  # type: ignore[attr-defined]
         ContinuousWrapperToMemoryProof.last_hashes = hashes  # type: ignore[attr-defined]
