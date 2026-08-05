@@ -18,7 +18,7 @@
 | Baseline branch | `agent/v2-9-8b-window-15m-end-to-end-readiness-unified-repair` |
 | Baseline HEAD | `12c3c3ed077a4f298bcb84da3979794ce57da3a3` |
 | Repair branch | `agent/v2-9-8b-window-15m-a-to-z-deterministic-readiness-repair` |
-| Final commit | `29d5d3f2738d10431790c78a87dc0f17ff40f9e0` |
+| Final commit | `aaac92154cffa02124e7225322382002d544babb` (amended tip; if a docs-only follow-up exists, use `git rev-parse HEAD` on this branch) |
 | Commit message | `Repair WINDOW_15M A-to-Z deterministic readiness` |
 
 ## Authoritative DB before/after identity
