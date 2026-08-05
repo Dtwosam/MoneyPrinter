@@ -42,6 +42,7 @@ from printer_v1.discovery.combined_executor import (
     FixturePumpSwapProof,
     PUMPSWAP_PROGRAM_ID,
 )
+from printer_v1.discovery.memory_observation_activation import AdmissionAuthority
 from printer_v1.discovery.direct_migration_discovery import (
     run_direct_migration_discovery,
 )
@@ -74,6 +75,10 @@ LOCATOR_ONLY_NO_GRADUATION_PROOF = "LOCATOR_ONLY_NO_GRADUATION_PROOF"
 BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL = (
     "BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL"
 )
+CANDIDATE_SUPPLY_READY = "CANDIDATE_SUPPLY_READY"
+BLOCKED_INSUFFICIENT_ELIGIBLE_CANDIDATE_POOL = (
+    "BLOCKED_INSUFFICIENT_ELIGIBLE_CANDIDATE_POOL"
+)
 
 # V2-9.7E.46B / V2-9.8B.6 shared production+pilot graduated-supply depth.
 # Candidate-supply transport ceilings follow the measured budget architecture.
@@ -95,6 +100,128 @@ class GraduatedSupplyError(RuntimeError):
     """Fail-closed graduated-supply composition fault."""
 
 
+@dataclass(frozen=True)
+class SourceSpecificCandidateAdmission:
+    """One selected candidate with its carried, source-specific authority."""
+
+    mint: str
+    pool_address: str
+    market_identity: str
+    admission_authority: AdmissionAuthority
+    nomination_source: str
+    lineage_state: str
+    present_pool_confirmed: bool
+    origin_proof: FixtureOriginProof | None = None
+    pumpswap_proof: FixturePumpSwapProof | None = None
+
+    @property
+    def confirmed(self) -> bool:
+        return bool(self.present_pool_confirmed)
+
+    @property
+    def origin_route(self) -> str:
+        if self.origin_proof is not None:
+            return str(self.origin_proof.origin_route)
+        return self.admission_authority.value
+
+    @property
+    def bonding_curve(self) -> str:
+        """Legacy direct-Pump curve; market candidates carry the present pool."""
+        if self.origin_proof is not None:
+            return str(self.origin_proof.bonding_curve)
+        return self.pool_address
+
+    @property
+    def signature(self) -> str:
+        return "" if self.origin_proof is None else str(self.origin_proof.signature)
+
+    @property
+    def slot(self) -> int:
+        return 0 if self.origin_proof is None else int(self.origin_proof.slot)
+
+
+def _source_specific_admission_for(
+    item: Mapping[str, Any],
+) -> SourceSpecificCandidateAdmission:
+    """Validate carried authority without consulting the migration registry."""
+    mint = str(item.get("mint") or "").strip()
+    pool = str(item.get("pool") or item.get("pumpswap_pool") or "").strip()
+    market_identity = str(item.get("market_identity") or "").strip()
+    if not mint or not pool:
+        raise GraduatedSupplyError("CANDIDATE_PRESENT_POOL_IDENTITY_MISSING")
+    if not market_identity or not market_identity.endswith(f":{pool}"):
+        raise GraduatedSupplyError(
+            f"CANDIDATE_PRESENT_POOL_IDENTITY_MISMATCH:{mint}"
+        )
+    try:
+        authority = AdmissionAuthority(
+            str(item.get("admission_authority") or "DIRECT_PUMP_PUMPSWAP")
+        )
+    except ValueError as exc:
+        raise GraduatedSupplyError(
+            f"CANDIDATE_ADMISSION_AUTHORITY_UNSUPPORTED:{mint}"
+        ) from exc
+    nomination_source = str(
+        item.get("nomination_source") or item.get("provenance") or ""
+    ).strip()
+    lineage_state = str(item.get("lineage_state") or "UNKNOWN_ORIGIN")
+    present_pool_confirmed = item.get("exact_present_pool_confirmed") is True
+    if authority is AdmissionAuthority.MARKET_PRESENT_POOL:
+        if nomination_source not in {"dexscreener", "geckoterminal"}:
+            raise GraduatedSupplyError(
+                f"MARKET_CANDIDATE_NOMINATION_SOURCE_UNSUPPORTED:{mint}"
+            )
+        if not present_pool_confirmed:
+            raise GraduatedSupplyError(
+                f"MARKET_CANDIDATE_PRESENT_POOL_UNCONFIRMED:{mint}"
+            )
+        if lineage_state not in {"UNKNOWN_ORIGIN", "NON_PUMP_POOL_CONFIRMED"}:
+            raise GraduatedSupplyError(
+                f"MARKET_CANDIDATE_UNSUPPORTED_LINEAGE_CLAIM:{mint}"
+            )
+        return SourceSpecificCandidateAdmission(
+            mint=mint,
+            pool_address=pool,
+            market_identity=market_identity,
+            admission_authority=authority,
+            nomination_source=nomination_source,
+            lineage_state=lineage_state,
+            present_pool_confirmed=True,
+        )
+
+    carried = item.get("direct_pump_evidence")
+    if not isinstance(carried, Mapping):
+        raise GraduatedSupplyError(f"DIRECT_PUMP_EVIDENCE_MISSING:{mint}")
+    if (
+        str(carried.get("mint") or "") != mint
+        or str(carried.get("pool") or "") != pool
+        or str(carried.get("pumpswap_program_id") or "") != PUMPSWAP_PROGRAM_ID
+        or carried.get("confirmed") is not True
+        or not str(carried.get("migration_signature") or "").strip()
+    ):
+        raise GraduatedSupplyError(f"DIRECT_PUMP_EVIDENCE_MISMATCH:{mint}")
+    row = {
+        "mint_identity": mint,
+        "migration_signature": carried["migration_signature"],
+        "graduation_slot": carried.get("graduation_slot"),
+        "graduation_block_time": carried.get("graduation_block_time"),
+        "pumpswap_pool": pool,
+    }
+    origin = _origin_proof_for(row)
+    pumpswap = _graduation_proof_for(row)
+    return SourceSpecificCandidateAdmission(
+        mint=mint,
+        pool_address=pool,
+        market_identity=market_identity,
+        admission_authority=authority,
+        nomination_source=nomination_source or "direct_pump_migration",
+        lineage_state="PUMP_GRADUATION_CONFIRMED",
+        present_pool_confirmed=True,
+        origin_proof=origin,
+        pumpswap_proof=pumpswap,
+    )
+
+
 def derive_bonding_curve(mint: str) -> str:
     """Derive the real Pump bonding-curve PDA for ``mint`` (no fabrication)."""
     return derive_program_address((b"bonding-curve", _b58decode(mint)), PUMP_PROGRAM_ID)
@@ -106,7 +233,7 @@ class GraduatedSupply:
 
     ready: bool
     terminal: str
-    graduated_supply: tuple[FixtureOriginProof, ...]
+    graduated_supply: tuple[Any, ...]
     graduation_proofs: Mapping[str, FixturePumpSwapProof]
     candidate_a: Mapping[str, Any] | None
     candidate_b: Mapping[str, Any] | None
@@ -115,14 +242,14 @@ class GraduatedSupply:
     discovery_report: Mapping[str, Any]
     front_door_report: Mapping[str, Any]
     diagnostics: Mapping[str, Any] = field(default_factory=dict)
-    holder_reserve_supply: tuple[FixtureOriginProof, ...] = ()
+    holder_reserve_supply: tuple[Any, ...] = ()
     holder_reserve_candidates: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "ready": self.ready,
             "terminal": self.terminal,
-            "selected_mints": sorted(self.graduation_proofs),
+            "selected_mints": [proof.mint for proof in self.graduated_supply],
             "holder_reserve_mints": [
                 proof.mint for proof in self.holder_reserve_supply
             ],
@@ -253,6 +380,7 @@ def run_fresh_profile_locator(
     report: dict[str, Any] = {
         "request_key": request_key,
         "request_id": None,
+        "response_id": None,
         "source_requests": 0,
         "source_request_ids": [],
         "source_request_coverage": [],
@@ -274,6 +402,11 @@ def run_fresh_profile_locator(
             recent_request_count=0,
         )
         request_id = int(execution.request_record.id)
+        response_id = (
+            None
+            if execution.response_record is None
+            else int(execution.response_record.id)
+        )
         result = execution.normalized_result
         payload = result.normalized_payload or {}
         transport_identity_count = 0
@@ -297,6 +430,16 @@ def run_fresh_profile_locator(
                     f"TRANSPORT_IDENTITY_MEASUREMENT_FAILED:{exc}"
                 )
                 transport_identity_count = 0
+        from printer_v1.discovery.memory_observation_activation import (
+            transport_identity_key_from_mapping,
+        )
+        transport_identity_keys = []
+        for identity in tuple(measured_ledger.transports):
+            raw = identity.as_dict() if hasattr(identity, "as_dict") else identity
+            if isinstance(raw, Mapping):
+                transport_identity_keys.append(
+                    list(transport_identity_key_from_mapping(raw))
+                )
         pairs = (
             list(payload.get("pairs") or ())
             if isinstance(payload, Mapping)
@@ -312,6 +455,7 @@ def run_fresh_profile_locator(
                 else f"DEXSCREENER_FRESH_LOCATOR|{request_key}"
             ),
             "transport_identity_count": transport_identity_count,
+            "transport_identity_keys": transport_identity_keys,
             "normalized_member_count": len(pairs),
             "terminal_status": "COMPLETED",
         }
@@ -325,6 +469,7 @@ def run_fresh_profile_locator(
             report = {
                 "request_key": request_key,
                 "request_id": request_id,
+                "response_id": response_id,
                 "source_requests": 1,
                 "source_request_ids": [request_id],
                 "source_request_coverage": [coverage_entry],
@@ -346,6 +491,7 @@ def run_fresh_profile_locator(
             report = {
                 "request_key": request_key,
                 "request_id": request_id,
+                "response_id": response_id,
                 "source_requests": 1,
                 "source_request_ids": [request_id],
                 "source_request_coverage": [coverage_entry],
@@ -388,6 +534,7 @@ def run_fresh_profile_locator(
             report = {
                 "request_key": request_key,
                 "request_id": request_id,
+                "response_id": response_id,
                 "source_requests": 1,
                 "source_request_ids": [request_id],
                 "source_request_coverage": [coverage_entry],
@@ -626,6 +773,7 @@ def build_graduated_supply(
     if persistent.eligible_reserve:
         reserve = [
             {
+                **dict(c),
                 "mint": c["mint"],
                 "pool": c.get("pumpswap_pool") or c.get("pool"),
                 "market_identity": c.get("market_identity"),
@@ -665,46 +813,41 @@ def build_graduated_supply(
     candidate_a = authority_dict.get("candidate_a")
     candidate_b = authority_dict.get("candidate_b")
 
-    connection = sqlite3.connect(str(db_path))
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
-    supply: list[FixtureOriginProof] = []
-    reserve_supply: list[FixtureOriginProof] = []
+    supply: list[SourceSpecificCandidateAdmission] = []
+    reserve_supply: list[SourceSpecificCandidateAdmission] = []
     reserve_candidates: dict[str, Mapping[str, Any]] = {}
     proofs: dict[str, FixturePumpSwapProof] = {}
-    try:
-        for item in reserve:
-            mint = str(item["mint"])
-            row = lookup_graduated_candidate(connection, mint)
-            if row is None:  # pragma: no cover - registry guarantees the row
-                raise GraduatedSupplyError(f"SELECTED_MINT_NOT_IN_REGISTRY:{mint}")
-            proof = _origin_proof_for(row)
-            reserve_supply.append(proof)
-            reserve_candidates[mint.lower()] = dict(item)
-            proofs[mint] = _graduation_proof_for(row)
-        selected_mints = {str(item["mint"]).lower() for item in selected}
-        supply = [
-            proof for proof in reserve_supply
-            if proof.mint.lower() in selected_mints
-        ]
-        if authority.ready and len(supply) >= required_token_capacity:
-            # Preserve authority order for the two selected mints.
-            ordered: list[FixtureOriginProof] = []
-            for item in selected:
-                mint = str(item["mint"]).lower()
-                for proof in supply:
-                    if proof.mint.lower() == mint and proof not in ordered:
-                        ordered.append(proof)
-                        break
-            supply = ordered[:required_token_capacity]
-    finally:
-        connection.close()
+    for item in reserve:
+        admission = _source_specific_admission_for(item)
+        reserve_supply.append(admission)
+        reserve_candidates[admission.mint.lower()] = dict(item)
+        if admission.pumpswap_proof is not None:
+            proofs[admission.mint] = admission.pumpswap_proof
+    selected_mints = {str(item["mint"]).lower() for item in selected}
+    supply = [
+        proof for proof in reserve_supply
+        if proof.mint.lower() in selected_mints
+    ]
+    if authority.ready and len(supply) >= required_token_capacity:
+        # Preserve authority order for the two selected mints.
+        ordered: list[SourceSpecificCandidateAdmission] = []
+        for item in selected:
+            mint = str(item["mint"]).lower()
+            for proof in supply:
+                if proof.mint.lower() == mint and proof not in ordered:
+                    ordered.append(proof)
+                    break
+        supply = ordered[:required_token_capacity]
 
     ready = bool(authority.ready) and len(supply) == required_token_capacity
     terminal = (
-        "GRADUATED_SUPPLY_READY"
+        (CANDIDATE_SUPPLY_READY if permanent_availability else "GRADUATED_SUPPLY_READY")
         if ready
-        else BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL
+        else (
+            BLOCKED_INSUFFICIENT_ELIGIBLE_CANDIDATE_POOL
+            if permanent_availability
+            else BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL
+        )
     )
     diagnostics = dict(persistent.diagnostics)
     diagnostics.update(

@@ -208,9 +208,10 @@ class FrontDoorCandidate:
     liquidity: LiquidityEvidence
     eligible: bool
     rejection: str | None
+    direct_pump_evidence: Mapping[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "mint": self.mint,
             "pool": self.pumpswap_pool,
             "market_identity": self.market_identity,
@@ -220,7 +221,14 @@ class FrontDoorCandidate:
             "liquidity": self.liquidity.to_dict(),
             "eligible": self.eligible,
             "rejection": self.rejection,
+            "admission_authority": "DIRECT_PUMP_PUMPSWAP",
+            "nomination_source": "direct_pump_migration",
+            "lineage_state": "PUMP_GRADUATION_CONFIRMED",
+            "exact_present_pool_confirmed": True,
         }
+        if self.direct_pump_evidence is not None:
+            result["direct_pump_evidence"] = dict(self.direct_pump_evidence)
+        return result
 
 
 # --------------------------------------------------------------------------- #
@@ -1313,6 +1321,15 @@ def run_graduated_liquidity_front_door(
                 liquidity=liquidity,
                 eligible=eligible,
                 rejection=rejection,
+                direct_pump_evidence={
+                    "mint": mint,
+                    "pool": pool,
+                    "migration_signature": str(row["migration_signature"]),
+                    "graduation_slot": row["graduation_slot"],
+                    "graduation_block_time": graduation_block_time,
+                    "pumpswap_program_id": str(row["pumpswap_program_id"]),
+                    "confirmed": True,
+                },
             )
             candidates.append(candidate)
             if eligible:

@@ -900,11 +900,23 @@ def _graduated_admission(
         materialized, limit=max(len(materialized), 1)
     )
     decisions = tuple(
-        (proof, _classify_graduation(proof, graduation=graduation_proofs.get(proof.mint)))
+        (
+            proof,
+            (
+                "CANDIDATE_PRESENT_POOL_ELIGIBLE"
+                if getattr(proof, "admission_authority", None) is not None
+                and bool(getattr(proof, "present_pool_confirmed", False))
+                else _classify_graduation(
+                    proof, graduation=graduation_proofs.get(proof.mint)
+                )
+            ),
+        )
         for proof in deduped
     )
     graduated = tuple(
-        proof for proof, state in decisions if state == GRADUATION_ELIGIBLE
+        proof
+        for proof, state in decisions
+        if state in {GRADUATION_ELIGIBLE, "CANDIDATE_PRESENT_POOL_ELIGIBLE"}
     )[:candidate_cap]
     return graduated, decisions
 
@@ -968,24 +980,38 @@ def _finalized_holder_candidates(proofs: Any, *, limit: int) -> tuple[Any, ...]:
     eligible = []
     seen: set[tuple[str, str]] = set()
     for proof in proofs:
-        identity = (str(proof.mint).lower(), str(proof.bonding_curve))
+        source_specific = getattr(proof, "admission_authority", None) is not None
+        identity = (
+            str(proof.mint).lower(),
+            str(
+                getattr(proof, "pool_address", "")
+                if source_specific
+                else proof.bonding_curve
+            ),
+        )
         if (
             not bool(proof.confirmed)
             or not identity[0]
             or not identity[1]
-            or not str(proof.signature)
-            or int(proof.slot) < 0
+            or (not source_specific and not str(proof.signature))
+            or (not source_specific and int(proof.slot) < 0)
             or identity in seen
         ):
             continue
         seen.add(identity)
         eligible.append(proof)
-    return tuple(sorted(
-        eligible,
-        key=lambda proof: (
-            proof.mint.lower(), proof.bonding_curve, proof.signature, int(proof.slot),
-        ),
-    )[:limit])
+    if any(getattr(proof, "admission_authority", None) is not None for proof in eligible):
+        # Source-specific reserves are already frozen by the neutral selection
+        # authority; slot order must not become a provenance signal.
+        return tuple(eligible[:limit])
+    return tuple(
+        sorted(
+            eligible,
+            key=lambda proof: (
+                proof.mint.lower(), proof.bonding_curve, proof.signature, int(proof.slot),
+            ),
+        )[:limit]
+    )
 
 
 def _holder_eligibility_from_bundle(
@@ -1199,14 +1225,15 @@ def _build_frozen_memory_activation_set(
     """Project the exact freeze authority into the typed activation contract."""
     from printer_v1.discovery.memory_observation_activation import (
         ActivationPurpose,
+        AdmissionAuthority,
         EvidenceRole,
         FrozenMemoryActivationCandidate,
         FrozenMemoryActivationSet,
         ManifestRequestEntry,
         MemoryObservationActivationError,
-        REQUIRED_EVIDENCE_ROLES,
         RetainedEvidenceReference,
         TrackingFeasibility,
+        required_evidence_roles_for_candidate,
     )
 
     manifest_by_id = {
@@ -1319,8 +1346,46 @@ def _build_frozen_memory_activation_set(
                 "RETAINED_EVIDENCE_REFERENCE_INCOMPLETE", mint
             )
 
+        try:
+            admission_authority = AdmissionAuthority(
+                str(item.get("admission_authority") or "DIRECT_PUMP_PUMPSWAP")
+            )
+        except ValueError as exc:
+            raise MemoryObservationActivationError(
+                "ADMISSION_AUTHORITY_UNSUPPORTED", mint
+            ) from exc
+        claims_pump = admission_authority is AdmissionAuthority.DIRECT_PUMP_PUMPSWAP
+        role_contract = FrozenMemoryActivationCandidate(
+            slot_ordinal=ordinal,
+            mint=mint,
+            pool=pool,
+            market_identity=str(item.get("market_identity") or ""),
+            lifecycle_identity="PRESENT_POOL_CONFIRMED",
+            activation_route=admission_authority.value,
+            provenance=str(item.get("provenance") or ""),
+            memory_observation_eligible=True,
+            fully_eligible=False,
+            holder_condition="UNKNOWN",
+            holder_evidence_status="UNKNOWN",
+            future_action_eligibility="BLOCKED_OR_UNKNOWN",
+            evidence_expires_at=str(item.get("evidence_expires_at") or frozen_at),
+            liquidity_observed_at=retained_time or frozen_at,
+            tracking_feasibility=TrackingFeasibility(
+                eligible=True,
+                reason_code="ROLE_MATRIX_ONLY",
+                tracking_queue_id=None,
+                tracking_queue_status=None,
+                requalification_required=False,
+                cooldown_until=None,
+                assessed_at=frozen_at,
+            ),
+            retained_evidence_references=(),
+            admission_authority=admission_authority,
+            claims_pump_origin=claims_pump,
+            claims_pumpswap_graduation=claims_pump,
+        )
         role_refs: list[Any] = []
-        for role in REQUIRED_EVIDENCE_ROLES:
+        for role in required_evidence_roles_for_candidate(role_contract):
             req_raw, resp_raw, fail_raw = _role_ids_from_candidate(
                 item, liquidity, role.value
             )
@@ -1387,8 +1452,14 @@ def _build_frozen_memory_activation_set(
             mint=mint,
             pool=pool,
             market_identity=str(item.get("market_identity") or ""),
-            lifecycle_identity=GRADUATED_LIFECYCLE,
-            activation_route=str(item.get("activation_route") or "GRADUATION_NATIVE"),
+            lifecycle_identity=(
+                GRADUATED_LIFECYCLE
+                if claims_pump
+                else "PRESENT_POOL_CONFIRMED"
+            ),
+            activation_route=str(
+                item.get("activation_route") or admission_authority.value
+            ),
             provenance=str(item.get("provenance") or ""),
             memory_observation_eligible=(
                 item.get("memory_observation_eligible") is True
@@ -1427,6 +1498,9 @@ def _build_frozen_memory_activation_set(
                 assessed_at=str(item.get("tracking_assessed_at") or frozen_at),
             ),
             retained_evidence_references=tuple(role_refs),
+            admission_authority=admission_authority,
+            claims_pump_origin=claims_pump,
+            claims_pumpswap_graduation=claims_pump,
         )
 
     selected = tuple(
@@ -2350,8 +2424,14 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 permanent_memory_observation=permanent_mode,
                 ledger=ledger,
             )
+            admission_inputs = (
+                graduated_supply_proofs
+                if permanent_mode
+                else tuple(acquisition.origin_proofs)
+                + graduated_supply_proofs
+            )
             graduated_candidates, graduation_decisions = _graduated_admission(
-                tuple(acquisition.origin_proofs) + graduated_supply_proofs,
+                admission_inputs,
                 graduation_proofs=dict(fixtures.pumpswap_proofs),
                 candidate_cap=candidate_cap,
             )
@@ -2394,7 +2474,11 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 supply_terminal_cause = _graduated_supply_terminal_cause(supply)
                 pre_lifecycle_admission = {
                     "required_token_capacity": 2,
-                    "graduated_candidate_count": len(graduated_candidates),
+                    (
+                        "candidate_count"
+                        if permanent_mode
+                        else "graduated_candidate_count"
+                    ): len(graduated_candidates),
                     "holder_eligible_count": 0,
                     "terminal_classification": supply_terminal_cause,
                     "shortage_classification": supply_diag.get(
@@ -3314,7 +3398,11 @@ class AuthoritativeLiveOperationalCampaignOwner:
         )
         pre_lifecycle_admission = {
             "required_token_capacity": 2,
-            "graduated_candidate_count": len(graduated_candidates),
+            (
+                "candidate_count"
+                if permanent_mode
+                else "graduated_candidate_count"
+            ): len(graduated_candidates),
             "holder_eligible_count": sum(
                 1 for fact in holder_facts.values() if fact.get("eligible")
             ),
@@ -3358,7 +3446,17 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     "slot_ordinal": ordinal,
                     "mint": proof.mint,
                     "pool": str(
-                        supply.holder_reserve_candidates[proof.mint.lower()]["pool"]
+                        (
+                            supply.holder_reserve_candidates.get(
+                                proof.mint.lower(), {}
+                            ).get("pool")
+                            or getattr(
+                                fixtures.pumpswap_proofs.get(proof.mint),
+                                "pool_address",
+                                None,
+                            )
+                            or proof.bonding_curve
+                        )
                     ),
                 }
                 for ordinal, proof in enumerate(graduated_candidates, start=1)
@@ -3430,7 +3528,11 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     "stopped_before_lifecycle": True,
                     "pilot_input_readiness": readiness_bundle,
                     "atomic_two_slot_ready": atomic_ready,
-                    "graduated_candidate_count": len(graduated_candidates),
+                    (
+                        "candidate_count"
+                        if permanent_mode
+                        else "graduated_candidate_count"
+                    ): len(graduated_candidates),
                     "holder_eligible_count": holder_eligible,
                     "holder_facts": holder_facts,
                     "eligible_alternates": eligible_alternates,
@@ -3441,7 +3543,11 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     "pending_or_running_run_steps": 0,
                     "running_jobs_after_stop": 0,
                     "full_pilot_admission": admission,
-                    "graduated_supply_diagnostics": (
+                    (
+                        "candidate_supply_diagnostics"
+                        if permanent_mode
+                        else "graduated_supply_diagnostics"
+                    ): (
                         dict(supply.diagnostics) if supply is not None else {}
                     ),
                     "pre_lifecycle_admission": pre_lifecycle_admission,

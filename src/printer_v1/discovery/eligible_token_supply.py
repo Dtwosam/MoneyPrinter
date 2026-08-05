@@ -461,6 +461,7 @@ def _candidate_from_front_door_item(item: Mapping[str, Any]) -> dict[str, Any]:
     pool = str(item.get("pool") or item.get("pumpswap_pool") or "")
     liquidity_evidence = dict(liquidity)
     return {
+        **dict(item),
         "mint": mint,
         "pool": pool,
         "pumpswap_pool": pool,
@@ -480,8 +481,9 @@ def _candidate_from_front_door_item(item: Mapping[str, Any]) -> dict[str, Any]:
         "evidence_expires_at": item.get("evidence_expires_at"),
         "eligible": bool(item.get("eligible")),
         "rejection": item.get("rejection"),
-        "source_path": (
-            f"graduated_registry_or_migration:{item.get('provenance') or 'UNKNOWN'}"
+        "source_path": str(
+            item.get("source_path")
+            or f"candidate_admission:{item.get('provenance') or 'UNKNOWN'}"
         ),
     }
 
@@ -854,6 +856,7 @@ def run_persistent_eligible_token_supply(
                     if not mint or mint in campaign_eligible:
                         continue
                     cand = {
+                        **dict(promo),
                         "mint": mint,
                         "pool": str(promo.get("pool") or ""),
                         "pumpswap_pool": str(promo.get("pool") or ""),
@@ -1286,6 +1289,22 @@ def run_persistent_eligible_token_supply(
                 _candidate_from_front_door_item(c)
                 for c in (front_door.get("candidates") or [])
             ]
+            direct_by_mint = {
+                str(item.get("mint") or ""): dict(item)
+                for item in (discovery.get("candidate_mix") or ())
+                if isinstance(item, Mapping)
+            }
+            for candidate in batch_candidates:
+                direct = direct_by_mint.get(str(candidate.get("mint") or ""))
+                if direct is None:
+                    continue
+                candidate["retained_evidence"] = dict(
+                    direct.get("retained_evidence") or {}
+                )
+                candidate["admission_authority"] = "DIRECT_PUMP_PUMPSWAP"
+                candidate["nomination_source"] = "direct_pump_migration"
+                candidate["lineage_state"] = "PUMP_GRADUATION_CONFIRMED"
+                candidate["exact_present_pool_confirmed"] = True
             for candidate in batch_candidates:
                 disposition = tracking_dispositions.get(str(candidate["mint"]))
                 if disposition is not None:
@@ -1493,6 +1512,7 @@ def run_persistent_eligible_token_supply(
                 if not mint or mint in campaign_eligible:
                     continue
                 cand = {
+                    **dict(promo),
                     "mint": mint,
                     "pool": str(promo.get("pool") or ""),
                     "pumpswap_pool": str(promo.get("pool") or ""),

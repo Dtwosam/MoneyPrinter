@@ -2294,6 +2294,12 @@ def load_retained_market_evidence(
         provenance = json.loads(str(row["source_provenance_json"] or "{}"))
     except (TypeError, ValueError, json.JSONDecodeError):
         provenance = {}
+    if isinstance(provenance, Mapping):
+        # Preserve the exact governed market owner alongside the factual payload;
+        # retained activation must not rediscover or guess this lineage.
+        for key in ("source", "source_name", "request_id", "response_id"):
+            if evidence.get(key) is None and provenance.get(key) is not None:
+                evidence[key] = provenance.get(key)
     expiry = row["evidence_expires_at"] or evidence.get("liquidity_evidence_expires_at")
     liquidity_usd = _coerce_liquidity_usd(evidence.get("liquidity_usd"))
     if liquidity_usd is None and isinstance(provenance, Mapping):
@@ -2318,12 +2324,14 @@ def load_retained_market_evidence(
             "evidence_expires_at": str(expiry),
             "fresh": False,
             "evidence": evidence,
+            "observed_at": str(row["observed_at"] or ""),
         }
     return {
         "liquidity_usd": liquidity_usd,
         "evidence_expires_at": str(expiry),
         "fresh": True,
         "evidence": evidence,
+        "observed_at": str(row["observed_at"] or ""),
         "passes_floor": float(liquidity_usd) >= SELECTION_FLOOR_USD,
     }
 
@@ -2450,6 +2458,14 @@ def promote_confirmed_with_retained_liquidity(
         "source_status": "COMPLETE",
         "outcome_category": "LIQUIDITY_EXACT_ABOVE_FLOOR",
         "detailed_reason": "AT_OR_ABOVE_3000_FLOOR_RETAINED",
+        "source_name": str(
+            evidence.get("source_name") or evidence.get("source") or ""
+        ),
+        "source_request_id": evidence.get("request_id"),
+        "source_response_id": evidence.get("response_id"),
+        "liquidity_observed_at": str(
+            evidence.get("observed_at") or retained.get("observed_at") or now
+        ),
     }
     for layer, reason in (
         (MARKET_READY, "EXACT_POOL_CURRENT_AND_LIQUIDITY_FLOOR_PASS"),
@@ -2501,6 +2517,12 @@ def promote_confirmed_with_retained_liquidity(
         "eligible": True,
         "rejection": None,
         "future_action_eligibility": "BLOCKED_OR_UNKNOWN",
+        "admission_authority": "MARKET_PRESENT_POOL",
+        "nomination_source": str(
+            evidence.get("source_name") or evidence.get("source") or ""
+        ),
+        "lineage_state": "UNKNOWN_ORIGIN",
+        "exact_present_pool_confirmed": True,
     }
 
 

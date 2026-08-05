@@ -19,6 +19,13 @@ class ActivationPurpose(str, Enum):
     MEMORY_OBSERVATION = "MEMORY_OBSERVATION"
 
 
+class AdmissionAuthority(str, Enum):
+    """The exact source-specific authority admitting one frozen candidate."""
+
+    MARKET_PRESENT_POOL = "MARKET_PRESENT_POOL"
+    DIRECT_PUMP_PUMPSWAP = "DIRECT_PUMP_PUMPSWAP"
+
+
 class EvidenceRole(str, Enum):
     ORIGIN_LINEAGE = "ORIGIN_LINEAGE"
     PUMPSWAP_CONFIRMATION = "PUMPSWAP_CONFIRMATION"
@@ -101,6 +108,24 @@ class FrozenMemoryActivationCandidate:
     liquidity_observed_at: str
     tracking_feasibility: TrackingFeasibility
     retained_evidence_references: tuple[RetainedEvidenceReference, ...]
+    # Compatibility defaults preserve the historical direct-Pump fixtures while
+    # production projection now supplies these fields explicitly per slot.
+    admission_authority: AdmissionAuthority = AdmissionAuthority.DIRECT_PUMP_PUMPSWAP
+    claims_pump_origin: bool = True
+    claims_pumpswap_graduation: bool = True
+
+
+def required_evidence_roles_for_candidate(
+    candidate: FrozenMemoryActivationCandidate,
+) -> tuple[EvidenceRole, ...]:
+    """Return the retained role matrix asserted by this candidate's authority."""
+    roles: list[EvidenceRole] = []
+    if candidate.claims_pump_origin:
+        roles.append(EvidenceRole.ORIGIN_LINEAGE)
+    if candidate.claims_pumpswap_graduation:
+        roles.append(EvidenceRole.PUMPSWAP_CONFIRMATION)
+    roles.append(EvidenceRole.MARKET_OBSERVATION)
+    return tuple(roles)
 
 
 @dataclass(frozen=True)
@@ -296,6 +321,29 @@ def _payload_matches_target(
         return str(value) == target
 
     return contains(payload, mint) and contains(payload, pool)
+
+
+def _payload_confirms_solana(raw: object) -> bool:
+    """Require an explicit Solana chain/network fact in retained market data."""
+    try:
+        payload = json.loads(str(raw or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+
+    def confirms(value: Any) -> bool:
+        if isinstance(value, Mapping):
+            for key, item in value.items():
+                if str(key).casefold() in {"chain", "chainid", "network"}:
+                    if str(item).casefold() in {"solana", "solana-mainnet"}:
+                        return True
+                if confirms(item):
+                    return True
+            return False
+        if isinstance(value, (list, tuple)):
+            return any(confirms(item) for item in value)
+        return False
+
+    return confirms(payload)
 
 
 def _retained_observation_time_matches(
@@ -640,6 +688,23 @@ def validate_memory_activation_set(
     for candidate in activation.selected:
         mint = _require_identity(candidate.mint, code="ACTIVATION_MINT_MISSING")
         pool = _require_identity(candidate.pool, code="ACTIVATION_POOL_MISSING")
+        if mint in {
+            "So11111111111111111111111111111111111111112",
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        }:
+            raise MemoryObservationActivationError("INFRASTRUCTURE_MINT_EXCLUDED")
+        if candidate.admission_authority is AdmissionAuthority.MARKET_PRESENT_POOL:
+            if candidate.claims_pump_origin or candidate.claims_pumpswap_graduation:
+                raise MemoryObservationActivationError(
+                    "MARKET_ADMISSION_PUMP_CLAIM_WITHOUT_DIRECT_AUTHORITY"
+                )
+        elif candidate.admission_authority is AdmissionAuthority.DIRECT_PUMP_PUMPSWAP:
+            if not candidate.claims_pump_origin or not candidate.claims_pumpswap_graduation:
+                raise MemoryObservationActivationError(
+                    "DIRECT_PUMP_ADMISSION_CLAIMS_INCOMPLETE"
+                )
+        else:  # pragma: no cover - enum construction normally prevents this
+            raise MemoryObservationActivationError("ADMISSION_AUTHORITY_UNSUPPORTED")
         _require_identity(candidate.market_identity, code="ACTIVATION_MARKET_IDENTITY_MISSING")
         _require_identity(candidate.lifecycle_identity, code="ACTIVATION_LIFECYCLE_IDENTITY_MISSING")
         if not candidate.market_identity.endswith(f":{pool}"):
@@ -678,12 +743,17 @@ def validate_memory_activation_set(
             reference.evidence_role
             for reference in candidate.retained_evidence_references
         }
-        for required_role in REQUIRED_EVIDENCE_ROLES:
+        required_roles = required_evidence_roles_for_candidate(candidate)
+        for required_role in required_roles:
             if required_role not in roles_present:
                 raise MemoryObservationActivationError(
                     "RETAINED_EVIDENCE_ROLE_MISSING",
                     f"{mint}:{required_role.value}",
                 )
+        if roles_present != set(required_roles):
+            raise MemoryObservationActivationError(
+                "RETAINED_EVIDENCE_ROLE_NOT_ASSERTED", mint
+            )
         if len(roles_present) != len(candidate.retained_evidence_references):
             raise MemoryObservationActivationError(
                 "RETAINED_EVIDENCE_ROLE_DUPLICATE", mint
@@ -765,6 +835,22 @@ def validate_memory_activation_set(
                 pool=pool,
             ):
                 raise MemoryObservationActivationError("RETAINED_RESPONSE_TARGET_MISMATCH")
+            if reference.evidence_role is EvidenceRole.MARKET_OBSERVATION:
+                if reference.source_name not in {"dexscreener", "geckoterminal"}:
+                    raise MemoryObservationActivationError(
+                        "MARKET_ADMISSION_SOURCE_UNSUPPORTED",
+                        reference.source_name,
+                    )
+                if (
+                    candidate.admission_authority
+                    is AdmissionAuthority.MARKET_PRESENT_POOL
+                    and not _payload_confirms_solana(
+                        value(response, "normalized_payload_json", 6)
+                    )
+                ):
+                    raise MemoryObservationActivationError(
+                        "MARKET_ADMISSION_SOLANA_CONFIRMATION_MISSING"
+                    )
             if not _retained_observation_time_matches(
                 connection,
                 mint=mint,
@@ -829,6 +915,7 @@ def role_reference_for_candidate(
 
 
 __all__ = [
+    "AdmissionAuthority",
     "ActivationPurpose",
     "EvidenceRole",
     "FrozenMemoryActivationCandidate",
@@ -841,6 +928,7 @@ __all__ = [
     "TrackingFeasibility",
     "measure_source_row_ids",
     "reconcile_activation_source_rows",
+    "required_evidence_roles_for_candidate",
     "role_reference_for_candidate",
     "transport_identity_key_from_mapping",
     "transport_identity_keys_from_payload",

@@ -1719,6 +1719,14 @@ class CombinedPumpfunCampaignExecutor:
         linked: set[tuple[int, int]] = set()
         link_ordinal = 0
         for candidate in activation.selected:
+            market_authority = (
+                candidate.admission_authority.value == "MARKET_PRESENT_POOL"
+            )
+            retained_venue = (
+                candidate.market_identity.rsplit(":", 2)[-2]
+                if market_authority and candidate.market_identity.count(":") >= 2
+                else PUMPSWAP_VENUE
+            )
             for reference_ordinal, reference in enumerate(
                 candidate.retained_evidence_references, start=1
             ):
@@ -1761,14 +1769,16 @@ class CombinedPumpfunCampaignExecutor:
                 elif true_provenance in {"TRENDING_PUMPFUN", "TOP_PUMPFUN"}:
                     channel = true_provenance
                 else:
-                    # Unknown truthful provenance still must use a lawful
-                    # channel label without inventing slot-based latestness.
-                    channel = "TOP_PUMPFUN"
+                    # Migration 034 constrains the historical channel column to
+                    # four legacy labels. ACTIVE_PUMPFUN is storage vocabulary
+                    # only; factual provenance below remains UNKNOWN_ORIGIN and
+                    # carries no Pump/PumpSwap claim.
+                    channel = "ACTIVE_PUMPFUN" if market_authority else "TOP_PUMPFUN"
                 factual = {
                     "network": "solana",
                     "mint": candidate.mint,
                     "pool": candidate.pool,
-                    "venue": PUMPSWAP_VENUE,
+                    "venue": retained_venue,
                     "observed_at": reference.observed_at,
                     "evidence_role": reference.evidence_role.value,
                     "evidence_reuse_kind": (
@@ -1813,14 +1823,18 @@ class CombinedPumpfunCampaignExecutor:
                         mint=candidate.mint,
                         pool=candidate.pool,
                         quote_mint="",
-                        venue=PUMPSWAP_VENUE,
+                        venue=retained_venue,
                         observed_at=reference.observed_at,
                         raw_payload_hash=reference.raw_payload_hash,
                         source_request_id=int(reference.source_request_id),
                         source_response_id=int(reference.source_response_id),
                         source_failure_id=None,
                         work_id=work_id,
-                        pumpfun_origin_status="PUMPFUN_ORIGIN_CONFIRMED",
+                        pumpfun_origin_status=(
+                            "UNKNOWN_ORIGIN"
+                            if market_authority
+                            else "PUMPFUN_ORIGIN_CONFIRMED"
+                        ),
                         lifecycle=candidate.lifecycle_identity,
                         origin_route=candidate.activation_route,
                     )
@@ -2558,6 +2572,15 @@ class CombinedPumpfunCampaignExecutor:
             memory_by_mint = {
                 item.mint: item for item in fixtures.memory_activation_set.selected
             }
+        market_authority_mints = {
+            mint
+            for mint, item in memory_by_mint.items()
+            if item.admission_authority.value == "MARKET_PRESENT_POOL"
+        }
+        for candidate in merged.values():
+            if candidate.mint in market_authority_mints:
+                candidate.origin_state = "NOT_CLAIMED"
+                candidate.pumpswap_state = "NOT_CLAIMED"
 
         for candidate in already_confirmed:
             # V2-9.7E.45: label the confirmed-origin evidence source by activation
@@ -2619,6 +2642,7 @@ class CombinedPumpfunCampaignExecutor:
             candidate
             for candidate in merged.values()
             if candidate.origin_state != "CONFIRMED"
+            and candidate.mint not in market_authority_mints
         ]
         secondary.sort(key=lambda item: _token_identity(item.mint))
         ranked = sorted(
@@ -2726,6 +2750,7 @@ class CombinedPumpfunCampaignExecutor:
             candidate
             for candidate in merged.values()
             if candidate.mint in fixtures.pumpswap_proofs
+            and candidate.mint not in market_authority_mints
         ]
         claimed.sort(key=lambda item: _token_identity(item.mint))
         # V2-9.7E.41: graduation is a per-MINT fact (one migration claim per mint,
@@ -2839,6 +2864,17 @@ class CombinedPumpfunCampaignExecutor:
         del command
         eligible: list[_Merged] = []
         for candidate in merged.values():
+            frozen_authority = None
+            if fixtures.memory_activation_set is not None:
+                frozen_authority = next(
+                    (
+                        item.admission_authority.value
+                        for item in fixtures.memory_activation_set.selected
+                        if item.mint == candidate.mint
+                    ),
+                    None,
+                )
+            market_authority = frozen_authority == "MARKET_PRESENT_POOL"
             failed = None
             for gate in GATE_ORDER:
                 if gate == "OWNERSHIP":
@@ -2851,7 +2887,7 @@ class CombinedPumpfunCampaignExecutor:
                     if not candidate.mint or not candidate.market_identity:
                         failed = gate
                 elif gate == "PUMPFUN_ORIGIN":
-                    if candidate.origin_state != "CONFIRMED":
+                    if not market_authority and candidate.origin_state != "CONFIRMED":
                         failed = gate
                 elif gate == "LIFECYCLE_MARKET":
                     # V2-9.7E.41 graduation-only tracking law. A candidate is
@@ -2862,12 +2898,16 @@ class CombinedPumpfunCampaignExecutor:
                     # PUMP_MIGRATION_OBSERVED without confirmation,
                     # PUMP_LIFECYCLE_UNKNOWN, DISCOVERED_UNPAIRED) fails closed and
                     # remains discovery-only. Age is never a substitute.
-                    if (
+                    if market_authority:
+                        if (
+                            candidate.lifecycle != "PRESENT_POOL_CONFIRMED"
+                            or not candidate.market_identity
+                        ):
+                            failed = gate
+                    elif (
                         candidate.lifecycle != GRADUATED_LIFECYCLE
                         or candidate.pumpswap_state != "CONFIRMED"
-                        or not candidate.market_identity.startswith(
-                            PUMPSWAP_MARKET_PREFIX
-                        )
+                        or not candidate.market_identity.startswith(PUMPSWAP_MARKET_PREFIX)
                     ):
                         failed = gate
                 elif gate == "TRACKING_HANDOFF":
@@ -3098,12 +3138,23 @@ class CombinedPumpfunCampaignExecutor:
             raise CombinedDiscoveryError("HANDOFF_CEILING")
         if usage.scheduler_work + 2 > INTAKE_SCHEDULER_WORK:
             raise CombinedDiscoveryError("SCHEDULER_WORK_CEILING")
+        authority_by_mint = {
+            item.mint: item.admission_authority.value
+            for item in (
+                self.fixtures.memory_activation_set.selected
+                if self.fixtures.memory_activation_set is not None
+                else ()
+            )
+        }
         for candidate in selected:
             if not candidate.mint or not candidate.market_identity:
                 raise CombinedDiscoveryError(
                     "HANDOFF_PREFLIGHT_FAILED", "selected candidate missing market identity"
                 )
-            if candidate.origin_state != "CONFIRMED":
+            if (
+                authority_by_mint.get(candidate.mint) != "MARKET_PRESENT_POOL"
+                and candidate.origin_state != "CONFIRMED"
+            ):
                 raise CombinedDiscoveryError(
                     "HANDOFF_PREFLIGHT_FAILED", "selected candidate lacks confirmed origin"
                 )

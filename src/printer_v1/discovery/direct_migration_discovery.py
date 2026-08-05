@@ -398,6 +398,9 @@ def run_direct_migration_discovery(
     forbidden: dict[str, int] = {}
     intake: dict[str, Any] = {}
     stage_started = False
+    last_direct_evidence: dict[str, int | None] = {}
+    origin_evidence_by_signature: dict[str, dict[str, int | None]] = {}
+    pumpswap_evidence_by_mint: dict[str, dict[str, int | None]] = {}
 
     def _execute_direct_request(
         *,
@@ -405,7 +408,7 @@ def run_direct_migration_discovery(
         request_key: str,
         payload: Mapping[str, Any],
     ):
-        nonlocal migration_request_count, stage_started
+        nonlocal migration_request_count, stage_started, last_direct_evidence
         stage_started = True
         adapter = build_direct_pump_migration_adapter(
             enabled=True,
@@ -425,11 +428,13 @@ def run_direct_migration_discovery(
         stage_request_ids.append(rid)
         migration_request_count += 1
         transport_count = 0
+        transport_keys: list[list[object]] = []
         measurement_failed = False
         payload = execution.normalized_result.normalized_payload or {}
         if isinstance(payload, Mapping):
             try:
                 before = measured_ledger.source_transport_operations
+                before_len = len(tuple(measured_ledger.transports))
                 record_payload_transports(
                     measured_ledger,
                     payload,
@@ -438,6 +443,15 @@ def run_direct_migration_discovery(
                 transport_count = int(
                     measured_ledger.source_transport_operations - before
                 )
+                from printer_v1.discovery.memory_observation_activation import (
+                    transport_identity_key_from_mapping,
+                )
+                for identity in tuple(measured_ledger.transports)[before_len:]:
+                    raw = identity.as_dict() if hasattr(identity, "as_dict") else identity
+                    if isinstance(raw, Mapping):
+                        transport_keys.append(
+                            list(transport_identity_key_from_mapping(raw))
+                        )
             except MeasuredTransportError:
                 measurement_failed = True
                 transport_count = 0
@@ -465,12 +479,26 @@ def run_direct_migration_discovery(
                     else f"DIRECT_MIGRATION_INTAKE|{migration_request_count}"
                 ),
                 "transport_identity_count": transport_count,
+                "transport_identity_keys": transport_keys,
                 "normalized_member_count": members,
                 "terminal_status": (
                     "BLOCKED" if failed or measurement_failed else "COMPLETED"
                 ),
             }
         )
+        last_direct_evidence = {
+            "source_request_id": rid,
+            "source_response_id": (
+                None
+                if execution.response_record is None
+                else int(execution.response_record.id)
+            ),
+            "source_failure_id": (
+                None
+                if execution.failure_record is None
+                else int(execution.failure_record.id)
+            ),
+        }
         return execution.normalized_result
 
     def _governed_migration() -> dict[str, Any]:
@@ -522,6 +550,7 @@ def run_direct_migration_discovery(
                 },
             )
             operation_count += 1
+            origin_evidence_by_signature[signature] = dict(last_direct_evidence)
             # Transports already measured in _execute_direct_request coverage path.
             if (
                 tx.source_status not in {SourceStatus.COMPLETE, SourceStatus.PARTIAL}
@@ -574,11 +603,13 @@ def run_direct_migration_discovery(
         stage_request_ids.append(rid)
         pumpswap_request_count += 1
         transport_count = 0
+        transport_keys: list[list[object]] = []
         measurement_failed = False
         payload = execution.normalized_result.normalized_payload or {}
         if isinstance(payload, Mapping):
             try:
                 before = measured_ledger.source_transport_operations
+                before_len = len(tuple(measured_ledger.transports))
                 record_payload_transports(
                     measured_ledger,
                     payload,
@@ -587,6 +618,15 @@ def run_direct_migration_discovery(
                 transport_count = int(
                     measured_ledger.source_transport_operations - before
                 )
+                from printer_v1.discovery.memory_observation_activation import (
+                    transport_identity_key_from_mapping,
+                )
+                for identity in tuple(measured_ledger.transports)[before_len:]:
+                    raw = identity.as_dict() if hasattr(identity, "as_dict") else identity
+                    if isinstance(raw, Mapping):
+                        transport_keys.append(
+                            list(transport_identity_key_from_mapping(raw))
+                        )
             except MeasuredTransportError:
                 measurement_failed = True
                 transport_count = 0
@@ -607,12 +647,26 @@ def run_direct_migration_discovery(
                     else f"DIRECT_MIGRATION_VERIFY|{pumpswap_request_count}"
                 ),
                 "transport_identity_count": transport_count,
+                "transport_identity_keys": transport_keys,
                 "normalized_member_count": 1 if not failed else 0,
                 "terminal_status": (
                     "BLOCKED" if failed or measurement_failed else "COMPLETED"
                 ),
             }
         )
+        pumpswap_evidence_by_mint[mint] = {
+            "source_request_id": rid,
+            "source_response_id": (
+                None
+                if execution.response_record is None
+                else int(execution.response_record.id)
+            ),
+            "source_failure_id": (
+                None
+                if execution.failure_record is None
+                else int(execution.failure_record.id)
+            ),
+        }
         return execution.normalized_result
 
     stage_terminal_status = "COMPLETED"
@@ -681,6 +735,14 @@ def run_direct_migration_discovery(
                 "transport_operations_used": int(measured_ops),
                 "response_bytes": int(meta["response_bytes"] or 0),
                 "normalized_rows": int(meta["normalized_rows"] or 0),
+                "retained_evidence": {
+                    "ORIGIN_LINEAGE": dict(
+                        origin_evidence_by_signature.get(signature) or {}
+                    ),
+                    "PUMPSWAP_CONFIRMATION": dict(
+                        pumpswap_evidence_by_mint.get(mint) or {}
+                    ),
+                },
             }
             if not verified:
                 record["failure_type"] = vres.failure_type
@@ -851,6 +913,15 @@ def run_direct_migration_discovery(
                 # (DUMP/CONSOLIDATION/DECAY/REVIVAL) are never derived in discovery.
                 category = PERSISTED_GRADUATED_CHANNEL
                 persisted_count += 1
+            current_verification = next(
+                (
+                    record
+                    for record in verifications
+                    if str(record.get("mint") or "") == mint
+                    and record.get("verified") is True
+                ),
+                None,
+            )
             mix.append(
                 {
                     "mint": mint,
@@ -859,6 +930,22 @@ def run_direct_migration_discovery(
                     "category": category,
                     "lifecycle_state": str(row["lifecycle_state"]),
                     "graduation_block_time": int(row["graduation_block_time"]),
+                    "admission_authority": "DIRECT_PUMP_PUMPSWAP",
+                    "nomination_source": "direct_pump_migration",
+                    "lineage_state": "PUMP_GRADUATION_CONFIRMED",
+                    "exact_present_pool_confirmed": True,
+                    "direct_pump_evidence": {
+                        "mint": mint,
+                        "pool": str(row["pumpswap_pool"]),
+                        "migration_signature": str(row["migration_signature"]),
+                        "graduation_slot": row["graduation_slot"],
+                        "graduation_block_time": int(row["graduation_block_time"]),
+                        "pumpswap_program_id": str(row["pumpswap_program_id"]),
+                        "confirmed": True,
+                    },
+                    "retained_evidence": dict(
+                        (current_verification or {}).get("retained_evidence") or {}
+                    ),
                 }
             )
 

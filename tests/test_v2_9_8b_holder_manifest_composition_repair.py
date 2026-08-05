@@ -728,7 +728,7 @@ class TestCampaignHolderManifestWiring:
                 graduated_supply=supply,
             )
             life = result.lifecycle
-            diag = life.get("graduated_supply_diagnostics") or {}
+            diag = life.get("candidate_supply_diagnostics") or {}
             holder_ids = list(diag.get("holder_source_request_ids") or ())
             holder_cov = list(diag.get("holder_source_request_coverage") or ())
             holder_ctx = diag.get("holder_context") or {}
@@ -900,7 +900,7 @@ class TestCampaignHolderManifestWiring:
             )
             life = result.lifecycle
             assert life.get("pilot_input_readiness") is None
-            diag = life.get("graduated_supply_diagnostics") or {}
+            diag = life.get("candidate_supply_diagnostics") or {}
             recon = diag.get("campaign_source_request_reconciliation") or {}
             assert recon.get("status") == "BLOCKED"
             blockers = recon.get("stage_accounting_blockers") or []
@@ -959,7 +959,7 @@ class TestCampaignHolderManifestWiring:
                 graduated_supply=supply,
             )
             life = result.lifecycle
-            diag = life.get("graduated_supply_diagnostics") or {}
+            diag = life.get("candidate_supply_diagnostics") or {}
             holder_ctx = diag.get("holder_context") or {}
             assert holder_ctx.get("accounting_blocker") is False
             recon = diag.get("campaign_source_request_reconciliation") or {}
@@ -1019,7 +1019,7 @@ class TestCampaignHolderManifestWiring:
                 graduated_supply=supply,
             )
             life = result.lifecycle
-            diag = life.get("graduated_supply_diagnostics") or {}
+            diag = life.get("candidate_supply_diagnostics") or {}
             holder_ctx = diag.get("holder_context") or {}
             assert holder_ctx.get("accounting_blocker") is False
             recon = diag.get("campaign_source_request_reconciliation") or {}
@@ -1089,7 +1089,7 @@ class TestCampaignHolderManifestWiring:
                 },
                 graduated_supply=supply,
             )
-            diag = result.lifecycle.get("graduated_supply_diagnostics") or {}
+            diag = result.lifecycle.get("candidate_supply_diagnostics") or {}
             recon = diag.get("campaign_source_request_reconciliation") or {}
             holder_ids = set(diag.get("holder_source_request_ids") or ())
             assert holder_ids

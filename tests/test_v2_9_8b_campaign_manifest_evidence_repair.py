@@ -492,7 +492,7 @@ class TestAssembleAndCampaignPath:
             assert recon.get("missing_from_manifest") or recon.get(
                 "missing_stage_reported_coverage"
             ) is not None
-            diag = life.get("graduated_supply_diagnostics") or {}
+            diag = life.get("candidate_supply_diagnostics") or {}
             assert diag.get("campaign_source_request_reconciliation")
         finally:
             base.tearDown()
@@ -545,7 +545,7 @@ class TestAssembleAndCampaignPath:
                 graduated_supply=supply,
             )
             life = result.lifecycle
-            diag = life.get("graduated_supply_diagnostics") or {}
+            diag = life.get("candidate_supply_diagnostics") or {}
             recon = diag.get("campaign_source_request_reconciliation") or {}
             assert recon.get("status") == "OK"
             # This legacy fixture has request coverage but intentionally no
