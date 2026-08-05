@@ -135,6 +135,12 @@ def create_campaign_run(
             (_required(run_id, "run_id"), _required(campaign_id, "campaign_id"),
              run_ordinal, authoritative_run_id, proof_supervision_id, timestamp, timestamp),
         )
+    try:
+        from printer_v1.operator_cli.action_local_mutation_recorder import emit_insert
+
+        emit_insert("printer_memory_factory_campaign_runs", run_id)
+    except Exception:
+        pass
 
 
 def bind_authoritative_run_id(
@@ -186,6 +192,14 @@ def bind_authoritative_run_id(
                 raise CampaignOwnershipError(
                     "authoritative_run_id bind failed compare-and-update"
                 )
+            try:
+                from printer_v1.operator_cli.action_local_mutation_recorder import (
+                    emit_update,
+                )
+
+                emit_update("printer_memory_factory_campaign_runs", campaign_run)
+            except Exception:
+                pass
             return StateTransitionResult(
                 campaign_run, str(row[1]), str(row[1]), None, None, True
             )

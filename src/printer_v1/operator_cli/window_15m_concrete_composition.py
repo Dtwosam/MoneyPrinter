@@ -160,7 +160,14 @@ def require_concrete_adapter(
 
     if expected_request_kind is not None:
         allowed = _adapter_allowed_request_kinds(adapter)
-        if allowed is not None and str(expected_request_kind) not in allowed:
+        # When a request kind is required, absence of a canonical allowed-kind
+        # contract must fail — never silently pass.
+        if allowed is None:
+            raise ConcreteCompositionError(
+                f"REQUIRED_ADAPTER_REQUEST_KIND_CONTRACT_MISSING:{label}"
+                f":kind={expected_request_kind!r}"
+            )
+        if str(expected_request_kind) not in allowed:
             raise ConcreteCompositionError(
                 f"REQUIRED_ADAPTER_REQUEST_KIND_UNSUPPORTED:{label}"
                 f":kind={expected_request_kind!r}"
@@ -173,6 +180,7 @@ def require_factory_output(
     factory: Callable[..., Any] | None,
     *,
     expected_source_name: str | None = None,
+    expected_request_kind: str | None = None,
     require_enabled: bool = True,
     require_transport: bool = True,
     factory_kwargs: Mapping[str, Any] | None = None,
@@ -196,6 +204,7 @@ def require_factory_output(
         label,
         built,
         expected_source_name=expected_source_name,
+        expected_request_kind=expected_request_kind,
         require_enabled=require_enabled,
         require_transport=require_transport,
     )
@@ -231,7 +240,10 @@ def _adapter_allowed_request_kinds(adapter: object) -> frozenset[str] | None:
 
 @dataclass(frozen=True)
 class CompositionBuilderSpec:
-    """One reachable ordinary-path builder for the readiness matrix."""
+    """One ordinary WINDOW_15M dependency owned by the shared composition registry.
+
+    Consumed by both concrete preflight and production runtime construction.
+    """
 
     label: str
     owner: str
@@ -239,6 +251,8 @@ class CompositionBuilderSpec:
     request_kind: str
     transport_builder: str
     adapter_builder: str
+    transport_mandatory: bool = True
+    validation_mode: str = "production"  # "production" | "fixture"
 
 
 # Runtime-derived composition registry of ordinary WINDOW_15M default
@@ -899,6 +913,61 @@ def ordinary_window_15m_builder_identities() -> tuple[str, ...]:
     return tuple(spec.label for spec in COMPOSITION_MATRIX)
 
 
+def construct_ordinary_window_15m_dependency(
+    label: str,
+    *,
+    timeout_seconds: float = 5.0,
+    environment: Mapping[str, str] | None = None,
+) -> object:
+    """Construct one registered ordinary-path dependency from the shared owner.
+
+    Used by production runtime and preflight so constructors are not duplicated.
+    """
+    builders = dict(
+        window_15m_preflight_builders(
+            timeout_seconds=timeout_seconds,
+            environment=environment,
+        )
+    )
+    if label not in builders:
+        raise ConcreteCompositionError(
+            f"COMPOSITION_REGISTRY_UNKNOWN_LABEL:{label}"
+        )
+    return builders[label]()
+
+
+def production_runtime_default_constructors(
+    *,
+    timeout_seconds: float = 5.0,
+    environment: Mapping[str, str] | None = None,
+) -> dict[str, Callable[[], object]]:
+    """Return labeled zero-I/O constructors production uses for ordinary defaults.
+
+    Identity set equals ``ordinary_window_15m_builder_identities()``.
+    """
+    return {
+        label: builder
+        for label, builder in window_15m_preflight_builders(
+            timeout_seconds=timeout_seconds,
+            environment=environment,
+        )
+    }
+
+
+def production_runtime_constructor_identities(
+    *,
+    timeout_seconds: float = 5.0,
+    environment: Mapping[str, str] | None = None,
+) -> tuple[str, ...]:
+    """Ordered constructor identities production runtime receives from the owner."""
+    return tuple(
+        production_runtime_default_constructors(
+            timeout_seconds=timeout_seconds,
+            environment=environment,
+        ).keys()
+    )
+
+
 __all__ = [
     "COMPOSITION_MATRIX",
     "PREFLIGHT_MINT",
@@ -910,8 +979,11 @@ __all__ = [
     "ConcreteCompositionError",
     "ProductionFixtureAdapter",
     "composition_matrix_as_dicts",
+    "construct_ordinary_window_15m_dependency",
     "ordinary_window_15m_builder_identities",
     "ordinary_window_15m_composition_registry",
+    "production_runtime_constructor_identities",
+    "production_runtime_default_constructors",
     "require_concrete_adapter",
     "require_concrete_transport",
     "require_factory_output",

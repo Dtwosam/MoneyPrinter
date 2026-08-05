@@ -148,8 +148,14 @@ def assert_runtime_dependency_preflight(
         issues.append("CANONICAL_PACKAGE_IMPORT_FAILED")
     if repository_root is not None and package_path:
         root = Path(repository_root).resolve()
-        if root not in Path(package_path).parents and Path(package_path) != root:
-            issues.append("CANONICAL_PACKAGE_NOT_RESOLVED_FROM_REPOSITORY")
+        package_parent = Path(package_path)
+        if root not in package_parent.parents and package_parent != root:
+            # Enforce package-under-repo only for full source checkouts that
+            # themselves contain src/printer_v1. Disposable evidence-only
+            # worktrees bind authorization Git without vendoring the package.
+            checkout_pkg = root / "src" / "printer_v1"
+            if checkout_pkg.is_dir() or (root / "printer_v1").is_dir():
+                issues.append("CANONICAL_PACKAGE_NOT_RESOLVED_FROM_REPOSITORY")
 
     dependencies: list[dict[str, Any]] = []
     for module_name, minimum in required:

@@ -185,6 +185,7 @@ _ACTION_RUN_CONTEXT: dict[str, Any] = {
     "cycle_id": None,
     "execution_id": None,
     "action_local_baseline": None,
+    "mutation_recorder": None,
 }
 
 
@@ -553,17 +554,20 @@ def _resolve_git_provenance_authorization(
 
 def build_activation_preflight(
     *,
-    db_path: str | Path = AUTHORITATIVE_DB,
+    db_path: str | Path | None = None,
     repository_root: str | Path | None = None,
     git_provenance_authorization: ValidatedGitProvenanceAuthorization | None = None,
 ) -> dict[str, Any]:
     """Run the complete read-only, zero-source activation preflight."""
-    path = Path(db_path).resolve()
-    if path != AUTHORITATIVE_DB or not path.is_file():
+    # Resolve the live module constant at call time so disposable proof patches
+    # to AUTHORITATIVE_DB are observed (function defaults would freeze import-time path).
+    expected = Path(AUTHORITATIVE_DB).resolve()
+    path = Path(db_path).resolve() if db_path is not None else expected
+    if path != expected or not path.is_file():
         _preflight_fail(
             "database_target",
-            "only data/printer_v1.sqlite3 is allowed "
-            f"(resolved={path} expected={AUTHORITATIVE_DB})",
+            "only the configured authoritative operational database is allowed "
+            f"(resolved={path} expected={expected})",
         )
     sidecars = [
         str(Path(f"{path}{suffix}"))
@@ -2217,11 +2221,15 @@ def _run_operational_campaign(
     from printer_v1.operator_cli.action_local_terminal_truth import (
         capture_action_local_baseline,
     )
+    from printer_v1.operator_cli.action_local_mutation_recorder import (
+        install_action_local_mutation_recorder,
+    )
 
     _ACTION_RUN_CONTEXT["execution_id"] = execution_id
     _ACTION_RUN_CONTEXT["action_local_baseline"] = capture_action_local_baseline(
         AUTHORITATIVE_DB
     )
+    _ACTION_RUN_CONTEXT["mutation_recorder"] = install_action_local_mutation_recorder()
     paths = _artifact_paths(execution_id)
     paths["root"].mkdir(parents=True, exist_ok=False)
     paths["reports"].mkdir()
@@ -2391,15 +2399,33 @@ def _run_operational_campaign(
         heartbeat.start()
         active_owner = owner or AuthoritativeLiveOperationalCampaignOwner()
         # One immutable Solana endpoint owner for preflight parity and runtime.
+        # Default constructors come from the same ordinary WINDOW_15M composition
+        # registry used by concrete preflight — not a parallel builder list.
+        from printer_v1.operator_cli.window_15m_concrete_composition import (
+            construct_ordinary_window_15m_dependency,
+            production_runtime_default_constructors,
+        )
+
         solana_rpc = resolve_solana_rpc_configuration()
-        active_pump = pump_transport or OneShotUrllibPumpTransport(solana_rpc.url)
-        active_secondary = secondary_transport or OneShotUrllibSecondaryTransport()
+        runtime_constructors = production_runtime_default_constructors(
+            timeout_seconds=5.0,
+            environment=os.environ,
+        )
+        if pump_transport is not None:
+            active_pump = pump_transport
+        else:
+            active_pump = runtime_constructors["pump_origin_solana_rpc_transport"]()
+        if secondary_transport is not None:
+            active_secondary = secondary_transport
+        else:
+            active_secondary = runtime_constructors[
+                "secondary_discovery_http_transport"
+            ]()
         if migration_transport is None:
-            from printer_v1.sources.direct_pump_migration import (
-                build_direct_pump_migration_transport,
-            )
-            migration_transport = build_direct_pump_migration_transport(
-                rpc_url=solana_rpc.url,
+            migration_transport = construct_ordinary_window_15m_dependency(
+                "direct_pump_finalized_migration_transport",
+                timeout_seconds=5.0,
+                environment=os.environ,
             )
 
         def cancellation_probe() -> str | None:
@@ -4493,6 +4519,12 @@ def main(argv: Iterable[str] | None = None) -> int:
     _ACTION_RUN_CONTEXT["cycle_id"] = None
     _ACTION_RUN_CONTEXT["execution_id"] = None
     _ACTION_RUN_CONTEXT["action_local_baseline"] = None
+    _ACTION_RUN_CONTEXT["mutation_recorder"] = None
+    from printer_v1.operator_cli.action_local_mutation_recorder import (
+        clear_action_local_mutation_recorder,
+    )
+
+    clear_action_local_mutation_recorder()
     try:
         if args.mode != "report-only" and (
             args.campaign_id is not None or args.run_id is not None
@@ -4558,6 +4590,14 @@ def main(argv: Iterable[str] | None = None) -> int:
         if args.mode in campaign_modes and (
             action_run_id is not None or action_campaign_id is not None
         ):
+            mutation_recorder = _ACTION_RUN_CONTEXT.get("mutation_recorder")
+            inserted_ids = None
+            updated_ids = None
+            auth_write_count = None
+            if mutation_recorder is not None:
+                inserted_ids = mutation_recorder.inserted_row_ids()
+                updated_ids = mutation_recorder.updated_row_ids()
+                auth_write_count = mutation_recorder.authoritative_write_count()
             truth = build_action_local_terminal_truth(
                 AUTHORITATIVE_DB,
                 baseline=baseline,
@@ -4570,6 +4610,9 @@ def main(argv: Iterable[str] | None = None) -> int:
                 run_id=str(action_run_id) if action_run_id else None,
                 cycle_id=str(action_cycle_id) if action_cycle_id else None,
                 first_terminal_cause=f"{type(exc).__name__}:{exc}",
+                owner_emitted_inserted_row_ids=inserted_ids,
+                owner_emitted_updated_row_ids=updated_ids,
+                authoritative_write_count=auth_write_count,
             )
             envelope = merge_action_local_into_exception_envelope(
                 {

@@ -267,6 +267,19 @@ def create_campaign(
                 provenance_json, created_at,
             ),
         )
+        try:
+            from printer_v1.operator_cli.action_local_mutation_recorder import (
+                emit_insert,
+            )
+
+            emit_insert("printer_memory_factory_campaigns", campaign_id)
+            emit_insert(
+                "printer_memory_factory_campaign_configurations",
+                configuration_id,
+            )
+        except Exception:
+            # Mutation recording is best-effort and must never break ownership.
+            pass
         connection.commit()
         return _campaign_record(connection, campaign_id)
     except CampaignPersistenceError:
