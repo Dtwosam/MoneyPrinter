@@ -19,9 +19,10 @@ by tests.
 - Starting tracked worktree: clean.
 - Repair branch:
   `agent/v2-9-8b-window-15m-retained-evidence-exactness-repair`
-- Final commit:
-  `ee9231a266d9533bb22e1f8fd0c2ddc131f48ba9`
+- Implementation commit:
+  `c74fae4ca39e7cb6f325ef96494cc1727141af83`
   (`Repair WINDOW_15M retained evidence exactness`).
+- Closeout identity is recorded on this branch tip; the repair content SHA is the implementation commit above.
 - Python environment: repository `.venv`.
 - No active Printer/database process or authoritative-database handle was found
   before or after implementation.
