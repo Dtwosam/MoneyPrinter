@@ -17,7 +17,7 @@ PASS requires one uninterrupted wrapper→operational child→activation preflig
 | Fact | Value |
 |---|---|
 | Baseline HEAD | `c363879023d6f66ef02ec4b14079e8c737020550` |
-| Final commit | *(this closeout commit; see `git log -1` on branch)* |
+| Final commit | `4fca7518bf73d64e49b8163c1aef4e38dca372f4` |
 | Branch | `agent/v2-9-8b-window-15m-continuous-supply-evidence-repair` |
 | Ancestry | Created from baseline; no foreign worktree |
 
