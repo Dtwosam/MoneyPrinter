@@ -9,7 +9,7 @@ if text.count(old_import) != 1:
     raise SystemExit("child terminal test hashlib import anchor mismatch")
 text = text.replace(old_import, new_import, 1)
 old_env = '''    env = {\n        "PRINTER_V1_APPLICATION_MARKER_PATH": str(marker.resolve()),\n        CHILD_TERMINAL_ENV_VAR: str(terminal.resolve()),\n    }\n'''
-new_env = '''    env = {\n        "PRINTER_V1_APPLICATION_MARKER_PATH": str(marker.resolve()),\n        "PRINTER_V1_APPLICATION_MARKER_SHA256": hashlib.sha256(\n            marker.read_bytes()\n        ).hexdigest(),\n        CHILD_TERMINAL_ENV_VAR: str(terminal.resolve()),\n    }\n'''
+new_env = '''    manifest = root / "git-provenance-manifest.json"\n    manifest.write_text(\n        json.dumps({"authorization_id": "AUTH_TEST"}, sort_keys=True) + "\\n",\n        encoding="utf-8",\n    )\n    env = {\n        "PRINTER_V1_GIT_PROVENANCE_MANIFEST_PATH": str(manifest.resolve()),\n        "PRINTER_V1_GIT_PROVENANCE_MANIFEST_SHA256": hashlib.sha256(\n            manifest.read_bytes()\n        ).hexdigest(),\n        "PRINTER_V1_APPLICATION_MARKER_PATH": str(marker.resolve()),\n        "PRINTER_V1_APPLICATION_MARKER_SHA256": hashlib.sha256(\n            marker.read_bytes()\n        ).hexdigest(),\n        CHILD_TERMINAL_ENV_VAR: str(terminal.resolve()),\n    }\n'''
 if text.count(old_env) != 1:
     raise SystemExit("child terminal test marker environment anchor mismatch")
 text = text.replace(old_env, new_env, 1)
