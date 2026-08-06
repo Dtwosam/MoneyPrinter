@@ -15,7 +15,7 @@ import socket
 import subprocess
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from printer_v1.operator_cli.git_provenance_authorization_manifest import (
     APPLICATION_MARKER_SCHEMA_VERSION,
@@ -28,6 +28,20 @@ from printer_v1.operator_cli.git_provenance_authorization_manifest import (
     compute_allowed_file_set_sha256,
     validate_git_provenance_authorization,
 )
+
+
+def _digest_records(manifest: dict) -> list:
+    records = list(manifest["files"])
+    for entry in manifest.get("historical_authorization_evidence") or []:
+        records.append(
+            {
+                "package_kind": entry["evidence_class"],
+                "path": entry["path"],
+                "sha256": entry["sha256"],
+                "size": entry["size"],
+            }
+        )
+    return records
 
 
 AUTH_ID = "V2_9_8B_WINDOW_15M_AUTH_IGNORED_TEST"
@@ -62,9 +76,13 @@ class Fixture:
 
         self.auth_root = f"{AUTHORIZATION_PACKAGE_ROOT}/{AUTH_ID}"
         self.mig_root = f"{MIGRATION_PACKAGE_ROOT}/{MIG_ID}"
+        issued = datetime.now(timezone.utc)
         self.authorization = {
             "authorization_id": AUTH_ID,
             "verdict": "V2_9_8B_WINDOW_15M_TEST_FINAL_AUTHORIZATION_PASS",
+            "authorized_at": issued.isoformat(),
+            "expires_at": (issued + timedelta(hours=12)).isoformat(),
+            "validity_seconds": 43200,
             "authorized_git": {"branch": self.branch, "head": self.head},
             "authorized_command": {
                 "mode": "run",
@@ -80,6 +98,16 @@ class Fixture:
                 "main_window": "WINDOW_15M",
                 "selective_1h_continuation": False,
             },
+            "authoritative_database": {
+                "path": "/tmp/testonly-printer-v1-ignored.sqlite3",
+                "sha256": "b" * 64,
+                "size": 1,
+                "inode": 1,
+                "mtime_ns": 1,
+                "migration_count": 52,
+                "migration_head": "052_memory_observation_eligibility_layers.sql",
+            },
+            "prior_authorizations_non_reusable": [],
         }
         self.files = []
         self.add(
@@ -131,6 +159,7 @@ class Fixture:
             "migration_execution_id": MIG_ID,
             "created_at": datetime(2026, 8, 1, tzinfo=timezone.utc).isoformat(),
             "files": copy.deepcopy(self.files),
+            "historical_authorization_evidence": [],
         }
         self.manifest_path = self.external / "manifest.json"
         self.marker_path = self.external / "marker.json"
@@ -176,7 +205,7 @@ class Fixture:
             "authorization_sha256": _sha((self.repo / auth_path).read_bytes()),
             "manifest_sha256": self.manifest_sha,
             "allowed_file_set_sha256": compute_allowed_file_set_sha256(
-                self.manifest["files"]
+                _digest_records(self.manifest)
             ),
             "repository_branch": self.branch,
             "repository_head": self.head,
@@ -563,9 +592,13 @@ class CurrentVsHistoricalTrustBoundaryTests(unittest.TestCase):
         head = git("rev-parse", "HEAD").stdout.strip().lower()
         branch = git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
 
+        issued = datetime.now(timezone.utc)
         authorization = {
             "authorization_id": AUTH_ID,
             "verdict": "V2_9_8B_WINDOW_15M_TEST_FINAL_AUTHORIZATION_PASS",
+            "authorized_at": issued.isoformat(),
+            "expires_at": (issued + timedelta(hours=12)).isoformat(),
+            "validity_seconds": 43200,
             "authorized_git": {"branch": branch, "head": head},
             "authorized_command": {
                 "mode": "run",
@@ -581,6 +614,16 @@ class CurrentVsHistoricalTrustBoundaryTests(unittest.TestCase):
                 "main_window": "WINDOW_15M",
                 "selective_1h_continuation": False,
             },
+            "authoritative_database": {
+                "path": "/tmp/testonly-printer-v1-trust.sqlite3",
+                "sha256": "c" * 64,
+                "size": 1,
+                "inode": 1,
+                "mtime_ns": 1,
+                "migration_count": 52,
+                "migration_head": "052_memory_observation_eligibility_layers.sql",
+            },
+            "prior_authorizations_non_reusable": [],
         }
 
         files = []
@@ -649,6 +692,7 @@ class CurrentVsHistoricalTrustBoundaryTests(unittest.TestCase):
             "migration_execution_id": MIG_ID,
             "created_at": datetime(2026, 8, 1, tzinfo=timezone.utc).isoformat(),
             "files": copy.deepcopy(files),
+            "historical_authorization_evidence": [],
         }
         manifest_path = external / "manifest.json"
         marker_path = external / "marker.json"
@@ -664,7 +708,9 @@ class CurrentVsHistoricalTrustBoundaryTests(unittest.TestCase):
             ).isoformat(),
             "authorization_sha256": _sha((repo / auth_path).read_bytes()),
             "manifest_sha256": manifest_sha,
-            "allowed_file_set_sha256": compute_allowed_file_set_sha256(files),
+            "allowed_file_set_sha256": compute_allowed_file_set_sha256(
+                _digest_records(manifest)
+            ),
             "repository_branch": branch,
             "repository_head": head,
             "command": {"mode": "run", "operator_approved": True},

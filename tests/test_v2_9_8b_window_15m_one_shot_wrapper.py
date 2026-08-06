@@ -192,6 +192,7 @@ class Fixture:
             # database before consuming anything, so the fixture must bind the
             # real file honestly rather than assert a convenient fiction.
             "authoritative_database": live_authoritative_database_binding(),
+            "prior_authorizations_non_reusable": [],
         }
         self.authorization_path.write_text(
             json.dumps(payload, indent=2, sort_keys=True) + "\n",

@@ -107,7 +107,17 @@ class _Fixture:
         )
         self.manifest_path.write_bytes(manifest_bytes)
         self.manifest_sha256 = _sha256_bytes(manifest_bytes)
-        self.file_set_sha256 = compute_allowed_file_set_sha256(self.manifest["files"])
+        digest_records = list(self.manifest["files"])
+        for entry in self.manifest.get("historical_authorization_evidence") or []:
+            digest_records.append(
+                {
+                    "package_kind": entry["evidence_class"],
+                    "path": entry["path"],
+                    "sha256": entry["sha256"],
+                    "size": entry["size"],
+                }
+            )
+        self.file_set_sha256 = compute_allowed_file_set_sha256(digest_records)
 
         self.marker = self._build_marker()
         self.marker_path = self.external / "application_started.json"
@@ -176,6 +186,7 @@ class _Fixture:
                 "migration_count": 52,
                 "migration_head": "052_memory_observation_eligibility_layers.sql",
             },
+            "prior_authorizations_non_reusable": [],
         }
 
     def _build_manifest(self) -> dict:
@@ -191,6 +202,7 @@ class _Fixture:
             "migration_execution_id": MIG_ID,
             "created_at": datetime(2026, 8, 1, tzinfo=timezone.utc).isoformat(),
             "files": copy.deepcopy(self.files),
+            "historical_authorization_evidence": [],
         }
 
     def _build_marker(self) -> dict:

@@ -42,6 +42,8 @@ from printer_v1.operator_cli.git_provenance_authorization_manifest import (
     PreparedGitProvenanceAuthorization,
     ValidatedGitProvenanceAuthorization,
     compute_allowed_file_set_sha256,
+    enumerate_historical_authorization_evidence,
+    extract_approved_historical_authorization_ids,
     validate_git_provenance_authorization,
     validate_git_provenance_manifest_pre_marker,
 )
@@ -303,7 +305,13 @@ def build_manifest_bytes(
     authorization_sha256: str,
     created_at: str | None = None,
 ) -> tuple[dict[str, Any], bytes]:
-    """Build deterministic manifest bytes from two exact current packages."""
+    """Build deterministic Manifest V2 bytes from current packages plus approved H.
+
+    Historical authorization trust comes only from the current final
+    authorization document field ``prior_authorizations_non_reusable``. Directory
+    discovery never invents or broadens that set. Historical package bytes are
+    never edited or moved into the current package.
+    """
     root = Path(repository_root).resolve()
     authorization_path, document, authorization_id, migration_execution_id = (
         _resolve_authorization(
@@ -311,6 +319,9 @@ def build_manifest_bytes(
             authorization_file=authorization_file,
             authorization_sha256=authorization_sha256,
         )
+    )
+    approved_historical_ids = extract_approved_historical_authorization_ids(
+        document, current_authorization_id=authorization_id
     )
     branch = str(document["authorized_git"]["branch"])
     head = str(document["authorized_git"]["head"])
@@ -321,6 +332,13 @@ def build_manifest_bytes(
         _enumerate_package(root, authorization_root, AUTHORIZATION_PACKAGE_KIND)
     )
     files.sort(key=lambda item: item["path"])
+    historical = list(
+        enumerate_historical_authorization_evidence(
+            repository_root=root,
+            current_authorization_id=authorization_id,
+            approved_historical_authorization_ids=approved_historical_ids,
+        )
+    )
     relative_authorization = authorization_path.relative_to(root).as_posix()
     payload = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
@@ -334,6 +352,7 @@ def build_manifest_bytes(
         "migration_execution_id": migration_execution_id,
         "created_at": created_at or _utc_now(),
         "files": files,
+        "historical_authorization_evidence": historical,
     }
     return payload, _canonical_json_bytes(payload)
 
@@ -561,6 +580,61 @@ def _select_child_python(
     return str(lexical)
 
 
+def _cleanup_pre_marker_staging(staging_dir: Path) -> str | None:
+    """Clean only the exact invocation staging directory before marker creation.
+
+    Returns a secondary cleanup blocker message, or None on success. Never uses
+    ``shutil.rmtree``. Never implies authorization consumption. Deletes only
+    known invocation-owned regular files (``git-provenance-manifest.json``).
+    Unexpected entries cause cleanup to delete nothing and report a secondary
+    blocker while the original pre-marker exception remains controlling.
+    """
+    if os.path.islink(staging_dir):
+        return "staging path is a symlink; cleanup refused"
+    if not staging_dir.exists():
+        return None
+    if not staging_dir.is_dir():
+        return "staging path is not a directory; cleanup refused"
+    try:
+        entries = list(os.scandir(staging_dir))
+    except OSError as exc:
+        return f"staging directory could not be listed: {exc}"
+
+    allowed_names = frozenset({"git-provenance-manifest.json"})
+    unexpected = sorted(
+        entry.name for entry in entries if entry.name not in allowed_names
+    )
+    if unexpected:
+        return (
+            "unexpected staging entries preserved; cleanup refused: "
+            + ", ".join(unexpected)
+        )
+
+    for entry in entries:
+        if entry.is_symlink() or os.path.islink(entry.path):
+            return (
+                f"staging entry is a symlink; cleanup refused: {entry.name}"
+            )
+        try:
+            mode = entry.stat(follow_symlinks=False).st_mode
+        except OSError as exc:
+            return f"staging entry could not be inspected: {entry.name}: {exc}"
+        if not stat.S_ISREG(mode):
+            return (
+                f"staging entry is not a regular file; cleanup refused: {entry.name}"
+            )
+        try:
+            os.unlink(entry.path)
+        except OSError as exc:
+            return f"staging file could not be deleted: {entry.name}: {exc}"
+
+    try:
+        staging_dir.rmdir()
+    except OSError as exc:
+        return f"empty staging directory could not be removed: {exc}"
+    return None
+
+
 def apply_authorization_once(
     *,
     authorization_file: str | Path,
@@ -581,7 +655,13 @@ def apply_authorization_once(
         validate_git_provenance_authorization
     ),
 ) -> dict[str, Any]:
-    """Consume one authorization and launch at most one ordinary run child."""
+    """Apply one authorization and launch at most one ordinary run child.
+
+    Authorization consumption occurs only after successful create-once write of
+    ``APPLICATION_ROOT/<authorization_id>/application-marker.json``. A failure
+    before marker creation is ``UNCONSUMED_PRE_MARKER_BLOCKED`` and never
+    implies consumption.
+    """
     if operator_approved is not True:
         raise OneShotWrapperError("explicit operator approval is required")
     root = Path(repository_root or _repository_root()).resolve()
@@ -703,45 +783,57 @@ def apply_authorization_once(
             f"{type(exc).__name__}:{exc}"
         ) from exc
 
+    # Pre-marker staging: failures before create-once marker write leave the
+    # authorization unconsumed (UNCONSUMED_PRE_MARKER_BLOCKED). Cleanup operates
+    # only on this exact invocation staging path and never touches sibling
+    # staging directories or canonical historical application evidence.
     staging_dir = app_root / ".staging" / f"{authorization_id}-{uuid.uuid4().hex}"
-    staging_dir.mkdir(parents=True, exist_ok=False)
-    staging_manifest = staging_dir / "git-provenance-manifest.json"
-    manifest_payload, manifest_bytes = build_manifest_bytes(
-        repository_root=root,
-        authorization_file=authorization_file,
-        authorization_sha256=authorization_sha256,
-        created_at=created_at,
-    )
-    _write_exclusive(staging_manifest, manifest_bytes)
-    manifest_sha256 = _sha256_bytes(manifest_bytes)
-    prepared = pre_marker_validator(
-        repository_root=root,
-        manifest_path=str(staging_manifest.resolve()),
-        manifest_sha256=manifest_sha256,
-    )
+    staging_active = False
+    try:
+        staging_dir.mkdir(parents=True, exist_ok=False)
+        staging_active = True
+        staging_manifest = staging_dir / "git-provenance-manifest.json"
+        manifest_payload, manifest_bytes = build_manifest_bytes(
+            repository_root=root,
+            authorization_file=authorization_file,
+            authorization_sha256=authorization_sha256,
+            created_at=created_at,
+        )
+        _write_exclusive(staging_manifest, manifest_bytes)
+        manifest_sha256 = _sha256_bytes(manifest_bytes)
+        prepared = pre_marker_validator(
+            repository_root=root,
+            manifest_path=str(staging_manifest.resolve()),
+            manifest_sha256=manifest_sha256,
+        )
 
-    canonical_dir.mkdir(parents=True, exist_ok=False)
-    try:
-        canonical_dir.chmod(0o700)
-    except OSError:
-        pass
-    manifest_path = canonical_dir / "git-provenance-manifest.json"
-    os.replace(staging_manifest, manifest_path)
-    _fsync_directory(canonical_dir)
-    # Best-effort, non-recursive removal of the now-empty future staging
-    # directory only. ``rmdir`` refuses to delete a non-empty directory, so no
-    # staging evidence is ever recursively removed; a residual directory is a
-    # benign efficiency residue that never consumes an authorization, launches a
-    # second child, or overwrites the first terminal cause. The historical
-    # incident staging directory lives under a different application root and is
-    # never targeted.
-    try:
-        staging_dir.rmdir()
-    except OSError:
-        pass
-    _make_read_only(manifest_path)
-    if _sha256_file(manifest_path) != manifest_sha256:
-        raise OneShotWrapperError("published manifest SHA-256 mismatch")
+        canonical_dir.mkdir(parents=True, exist_ok=False)
+        try:
+            canonical_dir.chmod(0o700)
+        except OSError:
+            pass
+        manifest_path = canonical_dir / "git-provenance-manifest.json"
+        os.replace(staging_manifest, manifest_path)
+        _fsync_directory(canonical_dir)
+        # Best-effort empty rmdir after successful manifest promotion. Non-empty
+        # directories are left untouched (no recursive delete).
+        try:
+            staging_dir.rmdir()
+        except OSError:
+            pass
+        staging_active = False
+        _make_read_only(manifest_path)
+        if _sha256_file(manifest_path) != manifest_sha256:
+            raise OneShotWrapperError("published manifest SHA-256 mismatch")
+    except Exception as original:
+        if staging_active:
+            secondary = _cleanup_pre_marker_staging(staging_dir)
+            if secondary is not None:
+                raise OneShotWrapperError(
+                    f"UNCONSUMED_PRE_MARKER_BLOCKED: {type(original).__name__}: "
+                    f"{original}; secondary_staging_cleanup_blocker: {secondary}"
+                ) from original
+        raise
 
     marker_payload, marker_bytes = build_marker_bytes(
         prepared, consumed_at=consumed_at

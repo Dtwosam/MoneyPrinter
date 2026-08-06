@@ -36,16 +36,19 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 import subprocess
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Collection, Iterable, Mapping
 
 
 GIT_COMMAND_TIMEOUT_SECONDS = 5.0
 
-MANIFEST_SCHEMA_VERSION = "PRINTER_V1_GIT_PROVENANCE_MANIFEST_V1"
+MANIFEST_SCHEMA_VERSION = "PRINTER_V1_GIT_PROVENANCE_MANIFEST_V2"
 APPLICATION_MARKER_SCHEMA_VERSION = "PRINTER_V1_APPLICATION_MARKER_V1"
 
 MIGRATION_PACKAGE_KIND = "MIGRATION_050_EVIDENCE"
 AUTHORIZATION_PACKAGE_KIND = "WINDOW_15M_AUTHORIZATION_EVIDENCE"
+HISTORICAL_AUTHORIZATION_EVIDENCE_CLASS = (
+    "HISTORICAL_WINDOW_15M_AUTHORIZATION_EVIDENCE"
+)
 PACKAGE_KINDS = (MIGRATION_PACKAGE_KIND, AUTHORIZATION_PACKAGE_KIND)
 
 OPERATOR_RUNS_ROOT = "operator-runs"
@@ -54,6 +57,25 @@ AUTHORIZATION_PACKAGE_ROOT = "operator-runs/v2-9-8b-window-15m-final-authorizati
 
 REQUIRED_MAIN_WINDOW = "WINDOW_15M"
 REQUIRED_COMMAND_MODE = "run"
+
+# Diagnostic-only disposition vocabulary. Never creates trust or reuse authority.
+TERMINAL_DISPOSITION_VOCABULARY = frozenset(
+    {
+        "CONSUMED_CHILD_EXITED_ZERO",
+        "CONSUMED_CHILD_EXITED_NONZERO",
+        "CONSUMED_CHILD_START_FAILED",
+        "CONSUMED_CHILD_NOT_STARTED",
+        "BLOCKED_UNCONSUMED_SUPERSEDED",
+        "PERMANENTLY_CONSUMED_PRESERVED",
+        "DISPOSITION_NOT_AVAILABLE",
+    }
+)
+DEFAULT_TERMINAL_DISPOSITION = "DISPOSITION_NOT_AVAILABLE"
+# Named policy dispositions assigned by approved closeout/design only.
+_POLICY_TERMINAL_DISPOSITIONS = {
+    "V2_9_8B_WINDOW_15M_AUTH_20260806T005252Z": "BLOCKED_UNCONSUMED_SUPERSEDED",
+    "V2_9_8B_WINDOW_15M_AUTH_20260805T224959Z": "PERMANENTLY_CONSUMED_PRESERVED",
+}
 
 _MANIFEST_KEYS = frozenset(
     {
@@ -65,12 +87,24 @@ _MANIFEST_KEYS = frozenset(
         "migration_execution_id",
         "created_at",
         "files",
+        "historical_authorization_evidence",
     }
 )
 _MANIFEST_AUTHORIZATION_FILE_KEYS = frozenset({"path", "sha256"})
 _MANIFEST_REPOSITORY_KEYS = frozenset({"branch", "head"})
 _COMMAND_KEYS = frozenset({"mode", "operator_approved"})
 _MANIFEST_FILE_KEYS = frozenset({"path", "sha256", "size", "package_kind"})
+_HISTORICAL_EVIDENCE_KEYS = frozenset(
+    {
+        "path",
+        "sha256",
+        "size",
+        "evidence_class",
+        "authorization_id",
+        "terminal_disposition",
+    }
+)
+_SAFE_AUTHORIZATION_ID = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 _MARKER_KEYS = frozenset(
     {
@@ -106,6 +140,85 @@ _GLOB_CHARACTERS = ("*", "?", "[")
 
 class GitProvenanceAuthorizationError(RuntimeError):
     """Fail-closed Git-provenance authorization manifest error."""
+
+
+def require_safe_authorization_id(value: Any, *, label: str) -> str:
+    """Validate the existing safe authorization-ID law."""
+    if type(value) is not str or not value or _SAFE_AUTHORIZATION_ID.fullmatch(value) is None:
+        raise GitProvenanceAuthorizationError(f"{label} is malformed")
+    if any(character in value for character in _GLOB_CHARACTERS):
+        raise GitProvenanceAuthorizationError(f"{label} must not contain glob characters")
+    if "/" in value or "\\" in value:
+        raise GitProvenanceAuthorizationError(f"{label} must not contain path separators")
+    return value
+
+
+def validate_prior_authorizations_non_reusable(
+    raw: Any,
+    *,
+    current_authorization_id: str,
+) -> tuple[str, ...]:
+    """Validate the historical-authorization trust root from the current package.
+
+    Trust comes only from this explicit declaration. Directory discovery never
+    creates or broadens the approved historical authorization ID set.
+    """
+    current = require_safe_authorization_id(
+        current_authorization_id, label="current authorization_id"
+    )
+    if not isinstance(raw, list):
+        raise GitProvenanceAuthorizationError(
+            "prior_authorizations_non_reusable must be an array"
+        )
+    if len(raw) == 0:
+        return ()
+    validated: list[str] = []
+    seen: set[str] = set()
+    for index, item in enumerate(raw):
+        label = f"prior_authorizations_non_reusable[{index}]"
+        if type(item) is not str or not item:
+            raise GitProvenanceAuthorizationError(
+                f"{label} must be a non-empty string"
+            )
+        auth_id = require_safe_authorization_id(item, label=label)
+        if auth_id == current:
+            raise GitProvenanceAuthorizationError(
+                "prior_authorizations_non_reusable must not include the current "
+                "authorization_id"
+            )
+        if auth_id in seen:
+            raise GitProvenanceAuthorizationError(
+                f"prior_authorizations_non_reusable contains a duplicate id: {auth_id}"
+            )
+        seen.add(auth_id)
+        validated.append(auth_id)
+    if validated != sorted(validated):
+        raise GitProvenanceAuthorizationError(
+            "prior_authorizations_non_reusable must be lexicographically sorted"
+        )
+    return tuple(validated)
+
+
+def extract_approved_historical_authorization_ids(
+    document: Mapping[str, Any],
+    *,
+    current_authorization_id: str,
+) -> tuple[str, ...]:
+    """Extract and validate the approved historical-ID trust root from a document."""
+    if "prior_authorizations_non_reusable" not in document:
+        raise GitProvenanceAuthorizationError(
+            "final authorization document is missing prior_authorizations_non_reusable"
+        )
+    return validate_prior_authorizations_non_reusable(
+        document.get("prior_authorizations_non_reusable"),
+        current_authorization_id=current_authorization_id,
+    )
+
+
+def _terminal_disposition_for(authorization_id: str) -> str:
+    return _POLICY_TERMINAL_DISPOSITIONS.get(
+        authorization_id, DEFAULT_TERMINAL_DISPOSITION
+    )
 
 
 
@@ -615,7 +728,8 @@ def _normalize_sidecar_paths(paths: Iterable[str]) -> set[str]:
 
 def _reconcile_evidence_sets(
     *,
-    manifest_paths: set[str],
+    current_manifest_paths: set[str],
+    historical_paths: set[str],
     visible_paths: set[str],
     ignored_paths: set[str],
     tracked_paths: set[str],
@@ -623,13 +737,25 @@ def _reconcile_evidence_sets(
     current_package_roots: tuple[str, str],
     sidecar_untracked_paths: Iterable[str],
 ) -> None:
+    """Reconcile complete operator-runs inventory against T, M, and H.
+
+    M (current_manifest_paths) is current-only and is the only set used for
+    current-package equality (C == M). U = M ∪ H is the untracked allowlist.
+    Never pass U into current-package equality checks.
+    """
+    m_paths = set(current_manifest_paths)
+    h_paths = set(historical_paths)
+    allowlist_u = m_paths | h_paths
+    t_paths = set(tracked_paths)
+    f_paths = set(inventory_paths)
+
     effective_visible = visible_paths - _normalize_sidecar_paths(
         sidecar_untracked_paths
     )
 
     overlaps = {
-        "tracked and visible untracked": tracked_paths & effective_visible,
-        "tracked and ignored untracked": tracked_paths & ignored_paths,
+        "tracked and visible untracked": t_paths & effective_visible,
+        "tracked and ignored untracked": t_paths & ignored_paths,
         "visible and ignored untracked": effective_visible & ignored_paths,
     }
     for label, overlap in overlaps.items():
@@ -639,30 +765,38 @@ def _reconcile_evidence_sets(
                 + ", ".join(sorted(overlap))
             )
 
-    unexpected_visible = effective_visible - manifest_paths
+    if m_paths & h_paths:
+        raise GitProvenanceAuthorizationError(
+            "duplicate path across current files and historical authorization "
+            "evidence: "
+            + ", ".join(sorted(m_paths & h_paths))
+        )
+
+    unexpected_visible = effective_visible - allowlist_u
     if unexpected_visible:
         raise GitProvenanceAuthorizationError(
             "unexpected untracked repository file not covered by manifest: "
             + ", ".join(sorted(unexpected_visible))
         )
 
-    unexpected_ignored = ignored_paths - manifest_paths
+    unexpected_ignored = ignored_paths - allowlist_u
     if unexpected_ignored:
         raise GitProvenanceAuthorizationError(
             "unexpected ignored operator-runs file not covered by manifest: "
             + ", ".join(sorted(unexpected_ignored))
         )
 
-    tracked_manifest = tracked_paths & manifest_paths
-    if tracked_manifest:
+    tracked_allowlist_overlap = t_paths & allowlist_u
+    if tracked_allowlist_overlap:
         raise GitProvenanceAuthorizationError(
-            "current manifest file is tracked instead of untracked: "
-            + ", ".join(sorted(tracked_manifest))
+            "untracked allowlist path is tracked instead of untracked: "
+            + ", ".join(sorted(tracked_allowlist_overlap))
         )
 
+    current_inventory = _current_package_inventory(f_paths, current_package_roots)
     tracked_current = {
         path
-        for path in tracked_paths
+        for path in t_paths
         if any(_is_beneath_root(path, root) for root in current_package_roots)
     }
     if tracked_current:
@@ -671,21 +805,28 @@ def _reconcile_evidence_sets(
             + ", ".join(sorted(tracked_current))
         )
 
-    missing_manifest = manifest_paths - inventory_paths
-    if missing_manifest:
+    missing_current_manifest = m_paths - f_paths
+    if missing_current_manifest:
         raise GitProvenanceAuthorizationError(
             "manifest file is absent from the complete operator-runs inventory: "
-            + ", ".join(sorted(missing_manifest))
+            + ", ".join(sorted(missing_current_manifest))
+        )
+    missing_historical = h_paths - f_paths
+    if missing_historical:
+        raise GitProvenanceAuthorizationError(
+            "historical authorization evidence is absent from the complete "
+            "operator-runs inventory: "
+            + ", ".join(sorted(missing_historical))
         )
 
-    ignored_outside_inventory = ignored_paths - inventory_paths
+    ignored_outside_inventory = ignored_paths - f_paths
     if ignored_outside_inventory:
         raise GitProvenanceAuthorizationError(
             "ignored operator-runs path is absent from the filesystem inventory: "
             + ", ".join(sorted(ignored_outside_inventory))
         )
 
-    tracked_outside_inventory = tracked_paths - inventory_paths
+    tracked_outside_inventory = t_paths - f_paths
     if tracked_outside_inventory:
         raise GitProvenanceAuthorizationError(
             "tracked historical operator-runs path is absent from the filesystem "
@@ -693,54 +834,279 @@ def _reconcile_evidence_sets(
             + ", ".join(sorted(tracked_outside_inventory))
         )
 
-    classified_manifest = (effective_visible & manifest_paths) | (
-        ignored_paths & manifest_paths
+    classified_allowlist = (effective_visible & allowlist_u) | (
+        ignored_paths & allowlist_u
     )
-    unclassified = manifest_paths - classified_manifest
+    unclassified = allowlist_u - classified_allowlist
     if unclassified:
         raise GitProvenanceAuthorizationError(
             "manifest file is neither visible nor ignored untracked: "
             + ", ".join(sorted(unclassified))
         )
 
-    current_inventory = _current_package_inventory(
-        inventory_paths, current_package_roots
-    )
-    missing_current = manifest_paths - current_inventory
+    # Current-package equality uses M only. Historical paths must never satisfy
+    # current-package identity.
+    missing_current = m_paths - current_inventory
     if missing_current:
         raise GitProvenanceAuthorizationError(
             "current evidence package is missing a manifest file: "
             + ", ".join(sorted(missing_current))
         )
-    unexpected_current = current_inventory - manifest_paths
+    unexpected_current = current_inventory - m_paths
     if unexpected_current:
         raise GitProvenanceAuthorizationError(
             "unexpected file exists inside a current evidence package: "
             + ", ".join(sorted(unexpected_current))
         )
+    if current_inventory != m_paths:
+        raise GitProvenanceAuthorizationError(
+            "current package inventory does not equal current manifest file set"
+        )
 
-    expected_inventory = tracked_paths | manifest_paths
-    unexplained_inventory = inventory_paths - expected_inventory
+    historical_in_current = h_paths & current_inventory
+    if historical_in_current:
+        raise GitProvenanceAuthorizationError(
+            "historical authorization evidence path lies inside a current package: "
+            + ", ".join(sorted(historical_in_current))
+        )
+
+    expected_inventory = t_paths | m_paths | h_paths
+    unexplained_inventory = f_paths - expected_inventory
     if unexplained_inventory:
         raise GitProvenanceAuthorizationError(
-            "unexpected operator-runs filesystem file is neither tracked history "
-            "nor current manifest evidence: "
+            "unexpected operator-runs filesystem file is neither tracked history, "
+            "current manifest evidence, nor approved historical authorization "
+            "evidence: "
             + ", ".join(sorted(unexplained_inventory))
         )
 
-    missing_inventory = expected_inventory - inventory_paths
+    missing_inventory = expected_inventory - f_paths
     if missing_inventory:
         raise GitProvenanceAuthorizationError(
-            "tracked-history/current-manifest path is absent from operator-runs "
-            "inventory: "
+            "tracked-history/current-manifest/historical path is absent from "
+            "operator-runs inventory: "
             + ", ".join(sorted(missing_inventory))
         )
 
-    if inventory_paths != expected_inventory:
+    if f_paths != expected_inventory:
         raise GitProvenanceAuthorizationError(
             "complete operator-runs inventory does not equal tracked history plus "
-            "the current manifest file set"
+            "current manifest files plus approved historical authorization evidence"
         )
+
+
+def enumerate_historical_authorization_evidence(
+    *,
+    repository_root: str | Path,
+    current_authorization_id: str,
+    approved_historical_authorization_ids: Collection[str],
+    tracked_operator_runs_paths: set[str] | None = None,
+    git_executable: str = "git",
+    timeout_seconds: float = GIT_COMMAND_TIMEOUT_SECONDS,
+    runner: Callable[..., Any] = subprocess.run,
+) -> tuple[dict[str, Any], ...]:
+    """Return exact approved historical authorization file records (sorted by path).
+
+    Trust is declaration, not discovery. Only IDs in
+    ``approved_historical_authorization_ids`` may contribute untracked rows to
+    ``H``. Unknown package directories containing regular files block.
+    """
+    if not 0 < timeout_seconds <= GIT_COMMAND_TIMEOUT_SECONDS:
+        raise GitProvenanceAuthorizationError(
+            "Git provenance timeout is outside the fixed ceiling"
+        )
+    root = Path(repository_root).resolve()
+    if not root.is_dir():
+        raise GitProvenanceAuthorizationError("repository root is unavailable")
+
+    current_id = require_safe_authorization_id(
+        current_authorization_id, label="current authorization_id"
+    )
+    approved = validate_prior_authorizations_non_reusable(
+        list(approved_historical_authorization_ids),
+        current_authorization_id=current_id,
+    )
+    approved_set = set(approved)
+
+    operator_root = root / OPERATOR_RUNS_ROOT
+    if os.path.islink(operator_root) or not operator_root.is_dir():
+        raise GitProvenanceAuthorizationError(
+            "operator-runs evidence root is unavailable or is a symlink"
+        )
+    auth_package_root = root / AUTHORIZATION_PACKAGE_ROOT
+    if os.path.islink(auth_package_root):
+        raise GitProvenanceAuthorizationError(
+            "authorization package root must not be a symlink"
+        )
+    if not auth_package_root.is_dir():
+        # No package root means no historical packages and no unlisted residue.
+        if approved:
+            return ()
+        return ()
+
+    if tracked_operator_runs_paths is None:
+        tracked = _tracked_operator_runs_paths(
+            root,
+            git_executable=git_executable,
+            timeout_seconds=timeout_seconds,
+            runner=runner,
+        )
+    else:
+        tracked = set(tracked_operator_runs_paths)
+
+    records: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+
+    try:
+        package_entries = sorted(
+            os.scandir(auth_package_root), key=lambda entry: entry.name
+        )
+    except OSError as exc:
+        raise GitProvenanceAuthorizationError(
+            f"authorization package root could not be read: {exc}"
+        ) from exc
+
+    for entry in package_entries:
+        package_relative = f"{AUTHORIZATION_PACKAGE_ROOT}/{entry.name}"
+        if entry.is_symlink():
+            raise GitProvenanceAuthorizationError(
+                f"authorization package directory is a symlink: {package_relative}"
+            )
+        try:
+            mode = entry.stat(follow_symlinks=False).st_mode
+        except OSError as exc:
+            raise GitProvenanceAuthorizationError(
+                f"authorization package directory could not be inspected: "
+                f"{package_relative}"
+            ) from exc
+        if not stat.S_ISDIR(mode):
+            # Non-directory under the package root is unexpected inventory.
+            if not stat.S_ISREG(mode):
+                raise GitProvenanceAuthorizationError(
+                    f"authorization package root contains a non-regular entry: "
+                    f"{package_relative}"
+                )
+            raise GitProvenanceAuthorizationError(
+                f"authorization package root contains a non-package file: "
+                f"{package_relative}"
+            )
+        try:
+            package_id = require_safe_authorization_id(
+                entry.name, label="historical authorization package directory"
+            )
+        except GitProvenanceAuthorizationError as exc:
+            raise GitProvenanceAuthorizationError(
+                f"authorization package directory name is not a safe "
+                f"authorization id: {package_relative}"
+            ) from exc
+
+        if package_id == current_id:
+            # Current package is owned exclusively by files[].
+            continue
+
+        package_dir = Path(entry.path)
+        package_files = _inventory_authorization_package_files(
+            root=root, package_dir=package_dir, package_id=package_id
+        )
+        untracked_files = [
+            item for item in package_files if item["path"] not in tracked
+        ]
+        if package_id not in approved_set:
+            if untracked_files:
+                raise GitProvenanceAuthorizationError(
+                    "unapproved historical authorization package contains "
+                    "untracked files not covered by the trust root: "
+                    + ", ".join(item["path"] for item in untracked_files)
+                )
+            # Fully tracked unapproved package remains trusted through T only.
+            continue
+
+        disposition = _terminal_disposition_for(package_id)
+        for item in untracked_files:
+            path = item["path"]
+            if path in seen_paths:
+                raise GitProvenanceAuthorizationError(
+                    f"duplicate historical authorization evidence path: {path}"
+                )
+            seen_paths.add(path)
+            records.append(
+                {
+                    "path": path,
+                    "sha256": item["sha256"],
+                    "size": item["size"],
+                    "evidence_class": HISTORICAL_AUTHORIZATION_EVIDENCE_CLASS,
+                    "authorization_id": package_id,
+                    "terminal_disposition": disposition,
+                }
+            )
+
+    records.sort(key=lambda record: record["path"])
+    return tuple(records)
+
+
+def _inventory_authorization_package_files(
+    *,
+    root: Path,
+    package_dir: Path,
+    package_id: str,
+) -> list[dict[str, Any]]:
+    """Recursively inventory regular files under one authorization package."""
+    prefix = f"{AUTHORIZATION_PACKAGE_ROOT}/{package_id}/"
+    collected: list[dict[str, Any]] = []
+    stack = [package_dir]
+    while stack:
+        directory = stack.pop()
+        try:
+            entries = sorted(os.scandir(directory), key=lambda item: item.name)
+        except OSError as exc:
+            raise GitProvenanceAuthorizationError(
+                f"historical authorization package could not be read: {package_id}"
+            ) from exc
+        for entry in entries:
+            path = Path(entry.path)
+            try:
+                relative = path.relative_to(root).as_posix()
+            except ValueError as exc:
+                raise GitProvenanceAuthorizationError(
+                    "historical authorization package entry resolves outside the "
+                    "repository"
+                ) from exc
+            if entry.is_symlink():
+                raise GitProvenanceAuthorizationError(
+                    f"historical authorization package contains a symlink: {relative}"
+                )
+            try:
+                mode = entry.stat(follow_symlinks=False).st_mode
+            except OSError as exc:
+                raise GitProvenanceAuthorizationError(
+                    f"historical authorization package entry could not be "
+                    f"inspected: {relative}"
+                ) from exc
+            if stat.S_ISDIR(mode):
+                stack.append(path)
+                continue
+            if not stat.S_ISREG(mode):
+                raise GitProvenanceAuthorizationError(
+                    f"historical authorization package contains a non-regular "
+                    f"entry: {relative}"
+                )
+            normalized = _normalize_git_path(
+                relative, label="historical authorization inventory"
+            )
+            if not normalized.startswith(prefix):
+                raise GitProvenanceAuthorizationError(
+                    f"historical authorization path is outside its package root: "
+                    f"{normalized}"
+                )
+            collected.append(
+                {
+                    "path": normalized,
+                    "sha256": _sha256_file(path),
+                    "size": path.stat().st_size,
+                }
+            )
+    collected.sort(key=lambda item: item["path"])
+    return collected
 
 
 def _validate_repository_relative_path(raw_path: Any, *, package_root: str) -> str:
@@ -819,7 +1185,7 @@ def _validate_authorization_document(
     authorization_id: str,
     branch: str,
     head: str,
-) -> tuple[str, dict[str, Any]]:
+) -> tuple[str, dict[str, Any], tuple[str, ...]]:
     reference = manifest["authorization_file"]
     if not isinstance(reference, Mapping):
         raise GitProvenanceAuthorizationError("authorization_file must be an object")
@@ -853,6 +1219,9 @@ def _validate_authorization_document(
         raise GitProvenanceAuthorizationError(
             "final authorization document authorization_id mismatch"
         )
+    approved_historical_ids = extract_approved_historical_authorization_ids(
+        document, current_authorization_id=authorization_id
+    )
     # Temporal validity is mandatory before the document can stage or authorize
     # consumption. Uses the same central max-age policy as the one-shot wrapper.
     try:
@@ -942,7 +1311,7 @@ def _validate_authorization_document(
         policy.get("selective_1h_continuation"),
         label="campaign selective_1h_continuation",
     )
-    return actual_sha256, database
+    return actual_sha256, database, approved_historical_ids
 
 
 def _validate_files(
@@ -996,6 +1365,141 @@ def _validate_files(
         )
         ordered.append(normalized)
     return tuple(ordered)
+
+
+def _validate_historical_authorization_evidence(
+    manifest: Mapping[str, Any],
+    *,
+    root: Path,
+    authorization_id: str,
+    approved_historical_authorization_ids: Collection[str],
+    tracked_paths: set[str],
+    current_manifest_paths: set[str],
+) -> tuple[str, ...]:
+    """Validate historical_authorization_evidence[] exact records."""
+    historical = manifest.get("historical_authorization_evidence")
+    if not isinstance(historical, list):
+        raise GitProvenanceAuthorizationError(
+            "historical_authorization_evidence must be an array"
+        )
+    approved = set(
+        validate_prior_authorizations_non_reusable(
+            list(approved_historical_authorization_ids),
+            current_authorization_id=authorization_id,
+        )
+    )
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for entry in historical:
+        if not isinstance(entry, Mapping):
+            raise GitProvenanceAuthorizationError(
+                "historical authorization evidence entry must be an object"
+            )
+        _require_keys(
+            entry,
+            _HISTORICAL_EVIDENCE_KEYS,
+            label="historical authorization evidence entry",
+        )
+        if entry.get("evidence_class") != HISTORICAL_AUTHORIZATION_EVIDENCE_CLASS:
+            raise GitProvenanceAuthorizationError(
+                "historical authorization evidence_class is invalid"
+            )
+        hist_auth_id = require_safe_authorization_id(
+            entry.get("authorization_id"),
+            label="historical authorization_id",
+        )
+        if hist_auth_id == authorization_id:
+            raise GitProvenanceAuthorizationError(
+                "historical authorization evidence claims the current authorization id"
+            )
+        if hist_auth_id not in approved:
+            raise GitProvenanceAuthorizationError(
+                "historical authorization evidence authorization_id is not in the "
+                f"approved trust root: {hist_auth_id}"
+            )
+        package_root = f"{AUTHORIZATION_PACKAGE_ROOT}/{hist_auth_id}"
+        normalized = _validate_repository_relative_path(
+            entry["path"], package_root=package_root
+        )
+        # Path package segment must equal authorization_id.
+        relative_tail = normalized[len(AUTHORIZATION_PACKAGE_ROOT) + 1 :]
+        package_segment = relative_tail.split("/", 1)[0]
+        if package_segment != hist_auth_id:
+            raise GitProvenanceAuthorizationError(
+                "historical authorization evidence authorization_id does not match "
+                "the package directory segment"
+            )
+        if normalized in seen:
+            raise GitProvenanceAuthorizationError(
+                f"duplicate historical authorization evidence path: {normalized}"
+            )
+        if normalized in current_manifest_paths:
+            raise GitProvenanceAuthorizationError(
+                f"duplicate path across current files and historical evidence: "
+                f"{normalized}"
+            )
+        if normalized in tracked_paths:
+            raise GitProvenanceAuthorizationError(
+                f"historical authorization evidence path is tracked at HEAD: "
+                f"{normalized}"
+            )
+        seen.add(normalized)
+        size = entry["size"]
+        if type(size) is not int or type(size) is bool or size < 0:
+            raise GitProvenanceAuthorizationError(
+                "historical authorization evidence size must be a non-negative integer"
+            )
+        expected_sha256 = _require_hex64(
+            entry["sha256"], label="historical authorization evidence sha256"
+        )
+        disposition = entry.get("terminal_disposition")
+        if (
+            type(disposition) is not str
+            or not disposition
+            or disposition not in TERMINAL_DISPOSITION_VOCABULARY
+        ):
+            raise GitProvenanceAuthorizationError(
+                "historical authorization terminal_disposition is invalid"
+            )
+        _validate_repository_file(
+            normalized,
+            root=root,
+            expected_sha256=expected_sha256,
+            expected_size=size,
+        )
+        ordered.append(normalized)
+    if ordered != sorted(ordered):
+        raise GitProvenanceAuthorizationError(
+            "historical_authorization_evidence must be sorted by path"
+        )
+    return tuple(ordered)
+
+
+def _allowed_file_digest_records(
+    manifest: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Map current files and historical evidence into allowlist digest records."""
+    records: list[dict[str, Any]] = []
+    for entry in manifest["files"]:
+        records.append(
+            {
+                "package_kind": entry["package_kind"],
+                "path": entry["path"],
+                "sha256": entry["sha256"],
+                "size": entry["size"],
+            }
+        )
+    historical = manifest.get("historical_authorization_evidence") or []
+    for entry in historical:
+        records.append(
+            {
+                "package_kind": entry["evidence_class"],
+                "path": entry["path"],
+                "sha256": entry["sha256"],
+                "size": entry["size"],
+            }
+        )
+    return records
 
 
 def _validate_marker(
@@ -1128,7 +1632,11 @@ def validate_git_provenance_manifest_pre_marker(
             "manifest HEAD does not match live Git state"
         )
 
-    authorization_sha256, authoritative_database = _validate_authorization_document(
+    (
+        authorization_sha256,
+        authoritative_database,
+        approved_historical_ids,
+    ) = _validate_authorization_document(
         manifest,
         root=root,
         authorization_id=authorization_id,
@@ -1136,12 +1644,43 @@ def validate_git_provenance_manifest_pre_marker(
         head=head,
     )
 
-    allowed_paths = _validate_files(
+    current_paths = _validate_files(
         manifest,
         root=root,
         authorization_id=authorization_id,
         migration_execution_id=migration_execution_id,
     )
+    tracked_paths = _tracked_operator_runs_paths(
+        root,
+        git_executable=git_executable,
+        timeout_seconds=timeout_seconds,
+        runner=runner,
+    )
+    historical_paths = _validate_historical_authorization_evidence(
+        manifest,
+        root=root,
+        authorization_id=authorization_id,
+        approved_historical_authorization_ids=approved_historical_ids,
+        tracked_paths=tracked_paths,
+        current_manifest_paths=set(current_paths),
+    )
+    # Completeness: the canonical owner must agree that every untracked file
+    # under approved/unapproved packages is exactly the H set declared here.
+    expected_historical = enumerate_historical_authorization_evidence(
+        repository_root=root,
+        current_authorization_id=authorization_id,
+        approved_historical_authorization_ids=approved_historical_ids,
+        tracked_operator_runs_paths=tracked_paths,
+        git_executable=git_executable,
+        timeout_seconds=timeout_seconds,
+        runner=runner,
+    )
+    expected_historical_paths = tuple(item["path"] for item in expected_historical)
+    if historical_paths != expected_historical_paths:
+        raise GitProvenanceAuthorizationError(
+            "historical_authorization_evidence does not match the approved "
+            "historical authorization inventory"
+        )
 
     visible_paths = _visible_untracked_paths(
         root,
@@ -1155,19 +1694,14 @@ def validate_git_provenance_manifest_pre_marker(
         timeout_seconds=timeout_seconds,
         runner=runner,
     )
-    tracked_paths = _tracked_operator_runs_paths(
-        root,
-        git_executable=git_executable,
-        timeout_seconds=timeout_seconds,
-        runner=runner,
-    )
     inventory_paths = _inventory_operator_runs(root)
     current_package_roots = (
         f"{MIGRATION_PACKAGE_ROOT}/{migration_execution_id}",
         f"{AUTHORIZATION_PACKAGE_ROOT}/{authorization_id}",
     )
     _reconcile_evidence_sets(
-        manifest_paths=set(allowed_paths),
+        current_manifest_paths=set(current_paths),
+        historical_paths=set(historical_paths),
         visible_paths=visible_paths,
         ignored_paths=ignored_paths,
         tracked_paths=tracked_paths,
@@ -1176,16 +1710,19 @@ def validate_git_provenance_manifest_pre_marker(
         sidecar_untracked_paths=sidecar_untracked_paths,
     )
 
-    allowed_file_set_sha256 = compute_allowed_file_set_sha256(manifest["files"])
+    allowed_untracked_paths = tuple(sorted(set(current_paths) | set(historical_paths)))
+    allowed_file_set_sha256 = compute_allowed_file_set_sha256(
+        _allowed_file_digest_records(manifest)
+    )
     return PreparedGitProvenanceAuthorization(
-        allowed_untracked_paths=allowed_paths,
+        allowed_untracked_paths=allowed_untracked_paths,
         authorization_id=authorization_id,
         authorization_sha256=authorization_sha256,
         manifest_sha256=actual_manifest_sha256,
         allowed_file_set_sha256=allowed_file_set_sha256,
         repository_branch=branch,
         repository_head=head,
-        file_count=len(allowed_paths),
+        file_count=len(allowed_untracked_paths),
         authoritative_database=authoritative_database,
     )
 
@@ -1249,13 +1786,20 @@ __all__ = [
     "APPLICATION_MARKER_SCHEMA_VERSION",
     "AUTHORIZATION_PACKAGE_KIND",
     "AUTHORIZATION_PACKAGE_ROOT",
+    "DEFAULT_TERMINAL_DISPOSITION",
     "GitProvenanceAuthorizationError",
+    "HISTORICAL_AUTHORIZATION_EVIDENCE_CLASS",
     "MANIFEST_SCHEMA_VERSION",
     "MIGRATION_PACKAGE_KIND",
     "MIGRATION_PACKAGE_ROOT",
     "PreparedGitProvenanceAuthorization",
+    "TERMINAL_DISPOSITION_VOCABULARY",
     "ValidatedGitProvenanceAuthorization",
     "compute_allowed_file_set_sha256",
+    "enumerate_historical_authorization_evidence",
+    "extract_approved_historical_authorization_ids",
+    "require_safe_authorization_id",
     "validate_git_provenance_authorization",
     "validate_git_provenance_manifest_pre_marker",
+    "validate_prior_authorizations_non_reusable",
 ]
