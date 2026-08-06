@@ -6,15 +6,18 @@ cp .ci/window15m_checkpoint1/append_review_tests.py /tmp/append_review_tests.py
 cp .ci/window15m_checkpoint1/append_call_order_test.py /tmp/append_call_order_test.py
 cp .ci/window15m_checkpoint1/append_marker_sha_binding_test.py /tmp/append_marker_sha_binding_test.py
 cp .ci/window15m_checkpoint1/append_terminal_truth_failure_test.py /tmp/append_terminal_truth_failure_test.py
+cp .ci/window15m_checkpoint1/append_unknown_terminal_truth_test.py /tmp/append_unknown_terminal_truth_test.py
 cp .ci/window15m_checkpoint1/apply_repair.py /tmp/apply_repair.py
 cp .ci/window15m_checkpoint1/fix_applicator.py /tmp/fix_applicator.py
 cp .ci/window15m_checkpoint1/apply_review_fix.py /tmp/apply_review_fix.py
 cp .ci/window15m_checkpoint1/apply_call_order_fix.py /tmp/apply_call_order_fix.py
 cp .ci/window15m_checkpoint1/apply_marker_sha_binding_fix.py /tmp/apply_marker_sha_binding_fix.py
 cp .ci/window15m_checkpoint1/apply_terminal_truth_failure_fix.py /tmp/apply_terminal_truth_failure_fix.py
+cp .ci/window15m_checkpoint1/apply_unknown_terminal_truth_fix.py /tmp/apply_unknown_terminal_truth_fix.py
 cp .ci/window15m_checkpoint1/write_closeout.py /tmp/write_closeout.py
 cp .ci/window15m_checkpoint1/append_preexisting_notes.py /tmp/append_preexisting_notes.py
 cp .ci/window15m_checkpoint1/append_terminal_truth_note.py /tmp/append_terminal_truth_note.py
+cp .ci/window15m_checkpoint1/append_unknown_terminal_truth_note.py /tmp/append_unknown_terminal_truth_note.py
 
 git fetch --no-tags origin "$DESIGN_SHA"
 git checkout --detach "$DESIGN_SHA"
@@ -99,6 +102,19 @@ test "$code" -ne 0
 grep -q 'TERMINAL_TRUTH_RECONSTRUCTION_FAILED' /tmp/terminal-truth-red.log
 
 python /tmp/apply_terminal_truth_failure_fix.py
+python /tmp/append_unknown_terminal_truth_test.py
+
+set +e
+python -m pytest \
+  tests/test_v2_9_8b_window_15m_child_terminal_propagation.py::test_terminal_truth_reconstruction_failure_preserves_unknown_operational_facts \
+  -q > /tmp/unknown-truth-red.log 2>&1
+code=$?
+set -e
+cat /tmp/unknown-truth-red.log
+test "$code" -ne 0
+grep -q 'test_terminal_truth_reconstruction_failure_preserves_unknown_operational_facts' /tmp/unknown-truth-red.log
+
+python /tmp/apply_unknown_terminal_truth_fix.py
 
 set -o pipefail
 python -m pytest \
@@ -140,6 +156,7 @@ export NEAREST_TEST_SUMMARY="$(tail -n 1 /tmp/nearest-tests.log)"
 python /tmp/write_closeout.py
 python /tmp/append_preexisting_notes.py
 python /tmp/append_terminal_truth_note.py
+python /tmp/append_unknown_terminal_truth_note.py
 
 git config user.name "ChatGPT Checkpoint CI"
 git config user.email "actions@users.noreply.github.com"
