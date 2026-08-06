@@ -27,13 +27,16 @@ jobs:
           cp .ci/window15m_checkpoint1/append_review_tests.py /tmp/append_review_tests.py
           cp .ci/window15m_checkpoint1/append_call_order_test.py /tmp/append_call_order_test.py
           cp .ci/window15m_checkpoint1/append_marker_sha_binding_test.py /tmp/append_marker_sha_binding_test.py
+          cp .ci/window15m_checkpoint1/append_terminal_truth_failure_test.py /tmp/append_terminal_truth_failure_test.py
           cp .ci/window15m_checkpoint1/apply_repair.py /tmp/apply_repair.py
           cp .ci/window15m_checkpoint1/fix_applicator.py /tmp/fix_applicator.py
           cp .ci/window15m_checkpoint1/apply_review_fix.py /tmp/apply_review_fix.py
           cp .ci/window15m_checkpoint1/apply_call_order_fix.py /tmp/apply_call_order_fix.py
           cp .ci/window15m_checkpoint1/apply_marker_sha_binding_fix.py /tmp/apply_marker_sha_binding_fix.py
+          cp .ci/window15m_checkpoint1/apply_terminal_truth_failure_fix.py /tmp/apply_terminal_truth_failure_fix.py
           cp .ci/window15m_checkpoint1/write_closeout.py /tmp/write_closeout.py
           cp .ci/window15m_checkpoint1/append_preexisting_notes.py /tmp/append_preexisting_notes.py
+          cp .ci/window15m_checkpoint1/append_terminal_truth_note.py /tmp/append_terminal_truth_note.py
 
       - name: Reset executable tree to exact rolling design tip
         run: |
@@ -132,6 +135,25 @@ jobs:
       - name: Apply exact marker SHA binding fix
         run: python /tmp/apply_marker_sha_binding_fix.py
 
+      - name: Add terminal-truth reconstruction failure regression
+        run: python /tmp/append_terminal_truth_failure_test.py
+
+      - name: Verify terminal-truth reconstruction RED
+        shell: bash
+        run: |
+          set +e
+          python -m pytest \
+            tests/test_v2_9_8b_window_15m_child_terminal_propagation.py::test_terminal_truth_reconstruction_failure_preserves_primary_child_cause \
+            -q > /tmp/terminal-truth-red.log 2>&1
+          code=$?
+          set -e
+          cat /tmp/terminal-truth-red.log
+          test "$code" -ne 0
+          grep -q 'TERMINAL_TRUTH_RECONSTRUCTION_FAILED' /tmp/terminal-truth-red.log
+
+      - name: Apply terminal-truth reconstruction preservation fix
+        run: python /tmp/apply_terminal_truth_failure_fix.py
+
       - name: Run focused child and wrapper tests
         shell: bash
         run: |
@@ -182,6 +204,7 @@ jobs:
           export NEAREST_TEST_SUMMARY="$(tail -n 1 /tmp/nearest-tests.log)"
           python /tmp/write_closeout.py
           python /tmp/append_preexisting_notes.py
+          python /tmp/append_terminal_truth_note.py
 
       - name: Create clean checkpoint commit from design tip
         shell: bash
