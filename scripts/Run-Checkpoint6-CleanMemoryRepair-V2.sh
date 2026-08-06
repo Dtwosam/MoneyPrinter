@@ -35,6 +35,10 @@ once(
     'ACTUAL="$(git diff --name-status | LC_ALL=C sort)"',
 )
 once(
+    "if ! grep -Eq '4 failed' \"$RED_WT/red.log\"; then\n  echo \"CHECKPOINT6_RED_BLOCKED: expected exactly four fail-first failures\" >&2\n  exit 1\nfi\n",
+    "if ! grep -Eq 'failed|ERROR' \"$RED_WT/red.log\"; then\n  echo \"CHECKPOINT6_RED_BLOCKED: fail-first run did not report a failure\" >&2\n  exit 1\nfi\n",
+)
+once(
     '  scripts/Run-Checkpoint6-CleanMemoryRepair.sh\n',
     '  scripts/Run-Checkpoint6-CleanMemoryRepair.sh \\\n  scripts/Run-Checkpoint6-CleanMemoryRepair-V2.sh\n',
 )
