@@ -4693,12 +4693,35 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
 
     clear_action_local_mutation_recorder()
+    from printer_v1.operator_cli.window_15m_child_terminal import (
+        CHILD_TERMINAL_ENV_VAR,
+        resolve_child_terminal_binding,
+        write_child_terminal_envelope,
+    )
+    child_terminal_binding = None
     try:
         if args.mode != "report-only" and (
             args.campaign_id is not None or args.run_id is not None
         ):
             raise OperationalMemoryFactoryError(
                 "campaign-id/run-id are only valid for report-only"
+            )
+        # Preserve the original direct-run fail-closed classification when no
+        # wrapper provenance bindings exist. A valid wrapper supplies all four
+        # values; only then establish reporting before their deeper validation
+        # so a provenance mismatch can still emit structured terminal evidence.
+        provenance_binding_values = tuple(
+            os.environ.get(name) for name in GIT_PROVENANCE_MANIFEST_ENV_VARS
+        )
+        if args.mode == "run" and not any(provenance_binding_values):
+            raise OperationalMemoryFactoryError(
+                "ordinary run requires external one-shot wrapper authorization"
+            )
+        if args.mode == "run" and all(provenance_binding_values):
+            child_terminal_binding = resolve_child_terminal_binding(os.environ)
+        elif args.mode != "run" and os.environ.get(CHILD_TERMINAL_ENV_VAR):
+            raise OperationalMemoryFactoryError(
+                "child terminal binding is accepted only for ordinary run"
             )
         # Read the four external manifest/marker bindings once and all-or-none.
         # Ordinary run is application-wrapper-only; auxiliary modes preserve
@@ -4707,6 +4730,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         if args.mode == "run" and git_provenance_authorization is None:
             raise OperationalMemoryFactoryError(
                 "ordinary run requires external one-shot wrapper authorization"
+            )
+        if args.mode == "run" and child_terminal_binding is None:
+            raise OperationalMemoryFactoryError(
+                "ordinary run child terminal binding requires complete wrapper provenance"
             )
         if args.mode == "preflight-only":
             result = build_activation_preflight(
@@ -4738,6 +4765,14 @@ def main(argv: Iterable[str] | None = None) -> int:
                 campaign_id=args.campaign_id,
                 run_id=args.run_id,
             )
+        if args.mode == "run" and child_terminal_binding is not None:
+            write_child_terminal_envelope(
+                binding=child_terminal_binding,
+                source=result,
+                mode="run",
+                exit_code=0,
+                success=True,
+            )
         print(json.dumps(result, indent=2, sort_keys=True, default=str))
         return 0
     except Exception as exc:
@@ -4758,43 +4793,82 @@ def main(argv: Iterable[str] | None = None) -> int:
         if args.mode in campaign_modes and (
             action_run_id is not None or action_campaign_id is not None
         ):
-            mutation_recorder = _ACTION_RUN_CONTEXT.get("mutation_recorder")
-            inserted_ids = None
-            updated_ids = None
-            auth_write_count = None
-            if mutation_recorder is not None:
-                inserted_ids = mutation_recorder.inserted_row_ids()
-                updated_ids = mutation_recorder.updated_row_ids()
-                auth_write_count = mutation_recorder.authoritative_write_count()
-            truth = build_action_local_terminal_truth(
-                AUTHORITATIVE_DB,
-                baseline=baseline,
-                execution_id=(
-                    str(action_execution_id) if action_execution_id else None
-                ),
-                campaign_id=(
-                    str(action_campaign_id) if action_campaign_id else None
-                ),
-                run_id=str(action_run_id) if action_run_id else None,
-                cycle_id=str(action_cycle_id) if action_cycle_id else None,
-                first_terminal_cause=f"{type(exc).__name__}:{exc}",
-                owner_emitted_inserted_row_ids=inserted_ids,
-                owner_emitted_updated_row_ids=updated_ids,
-                authoritative_write_count=auth_write_count,
-            )
-            envelope = merge_action_local_into_exception_envelope(
-                {
+            try:
+                mutation_recorder = _ACTION_RUN_CONTEXT.get("mutation_recorder")
+                inserted_ids = None
+                updated_ids = None
+                auth_write_count = None
+                if mutation_recorder is not None:
+                    inserted_ids = mutation_recorder.inserted_row_ids()
+                    updated_ids = mutation_recorder.updated_row_ids()
+                    auth_write_count = mutation_recorder.authoritative_write_count()
+                truth = build_action_local_terminal_truth(
+                    AUTHORITATIVE_DB,
+                    baseline=baseline,
+                    execution_id=(
+                        str(action_execution_id) if action_execution_id else None
+                    ),
+                    campaign_id=(
+                        str(action_campaign_id) if action_campaign_id else None
+                    ),
+                    run_id=str(action_run_id) if action_run_id else None,
+                    cycle_id=str(action_cycle_id) if action_cycle_id else None,
+                    first_terminal_cause=f"{type(exc).__name__}:{exc}",
+                    owner_emitted_inserted_row_ids=inserted_ids,
+                    owner_emitted_updated_row_ids=updated_ids,
+                    authoritative_write_count=auth_write_count,
+                )
+                envelope = merge_action_local_into_exception_envelope(
+                    {
+                        "status": "OPERATIONAL_COMMAND_BLOCKED",
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc),
+                        "mode": args.mode,
+                        "action_run_id": action_run_id,
+                        "scheduler_runtime_calls": 0,
+                        "restart_created": False,
+                        "successor_created": False,
+                        "terminal_truth_status": "RECONSTRUCTED",
+                        "secondary_terminal_truth_error": None,
+                    },
+                    truth,
+                )
+            except Exception as truth_exc:
+                # Preserve the original campaign failure as the controlling cause.
+                # A secondary terminal-truth reconstruction failure must not erase
+                # it or prevent the child-owned terminal artifact from being written.
+                envelope = {
                     "status": "OPERATIONAL_COMMAND_BLOCKED",
                     "error_type": type(exc).__name__,
                     "error_message": str(exc),
                     "mode": args.mode,
+                    "execution_id": action_execution_id,
+                    "campaign_id": action_campaign_id,
                     "action_run_id": action_run_id,
-                    "scheduler_runtime_calls": 0,
+                    "cycle_id": action_cycle_id,
+                    "campaign_source_calls": None,
+                    "source_calls": None,
+                    "scheduler_runtime_calls": None,
+                    "database_writes": None,
+                    "database_identity_after": None,
+                    "lifecycle_started": None,
+                    "cleanup_complete": None,
+                    "lease_released": None,
+                    "active_locked_work": None,
+                    "failure_phase": (
+                        "CAMPAIGN_PHASE_UNKNOWN_TERMINAL_TRUTH_RECONSTRUCTION_FAILED"
+                    ),
+                    "database_mutation_known": False,
+                    "database_mutation_status": (
+                        "UNKNOWN_TERMINAL_TRUTH_RECONSTRUCTION_FAILED"
+                    ),
                     "restart_created": False,
                     "successor_created": False,
-                },
-                truth,
-            )
+                    "terminal_truth_status": "RECONSTRUCTION_FAILED",
+                    "secondary_terminal_truth_error": (
+                        f"{type(truth_exc).__name__}:{truth_exc}"
+                    ),
+                }
         elif args.mode in campaign_modes:
             envelope = {
                 "status": "OPERATIONAL_COMMAND_BLOCKED",
@@ -4810,6 +4884,10 @@ def main(argv: Iterable[str] | None = None) -> int:
                 "database_mutation_status": "PROVEN_ZERO_NO_CAMPAIGN_ACTION_IDENTITY",
                 "restart_created": False,
                 "successor_created": False,
+                "terminal_truth_status": (
+                    "PROVEN_ZERO_NO_CAMPAIGN_ACTION_IDENTITY"
+                ),
+                "secondary_terminal_truth_error": None,
             }
         else:
             envelope = {
@@ -4826,7 +4904,24 @@ def main(argv: Iterable[str] | None = None) -> int:
                 "database_mutation_status": "PROVEN_ZERO_NO_CAMPAIGN_ACTION_IDENTITY",
                 "restart_created": False,
                 "successor_created": False,
+                "terminal_truth_status": (
+                    "PROVEN_ZERO_NO_CAMPAIGN_ACTION_IDENTITY"
+                ),
+                "secondary_terminal_truth_error": None,
             }
+        if args.mode == "run" and child_terminal_binding is not None:
+            try:
+                write_child_terminal_envelope(
+                    binding=child_terminal_binding,
+                    source=envelope,
+                    mode="run",
+                    exit_code=1,
+                    success=False,
+                )
+            except Exception as terminal_exc:
+                envelope["child_terminal_write_status"] = (
+                    f"FAILED:{type(terminal_exc).__name__}"
+                )
         print(json.dumps(envelope, sort_keys=True, default=str), file=sys.stderr)
         return 1
 

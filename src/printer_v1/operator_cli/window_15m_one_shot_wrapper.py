@@ -51,6 +51,11 @@ from printer_v1.sources.operational_source_contracts import (
     SolanaRpcConfigurationError,
     validate_window_15m_source_configuration,
 )
+from printer_v1.operator_cli.window_15m_child_terminal import (
+    CHILD_TERMINAL_ENV_VAR,
+    ChildTerminalError,
+    read_child_terminal_envelope,
+)
 
 
 WRAPPER_SCHEMA_VERSION = "PRINTER_V1_WINDOW_15M_ONE_SHOT_WRAPPER_V1"
@@ -804,6 +809,7 @@ def apply_authorization_once(
     child_env_preview = dict(parent_env)
     for name in BINDING_ENV_VARS:
         child_env_preview.pop(name, None)
+    child_env_preview.pop(CHILD_TERMINAL_ENV_VAR, None)
     try:
         validate_window_15m_source_configuration(child_env_preview)
     except SolanaRpcConfigurationError as exc:
@@ -911,6 +917,7 @@ def apply_authorization_once(
     terminal_path = canonical_dir / "wrapper-terminal.json"
     stdout_path = canonical_dir / "child-stdout.txt"
     stderr_path = canonical_dir / "child-stderr.txt"
+    child_terminal_path = canonical_dir / "child-terminal.json"
 
     marker_created = False
     child_attempted = False
@@ -943,12 +950,14 @@ def apply_authorization_once(
         child_env = dict(parent)
         for name in BINDING_ENV_VARS:
             child_env.pop(name, None)
+        child_env.pop(CHILD_TERMINAL_ENV_VAR, None)
         child_env.update(
             {
                 BINDING_ENV_VARS[0]: str(manifest_path.resolve()),
                 BINDING_ENV_VARS[1]: manifest_sha256,
                 BINDING_ENV_VARS[2]: str(marker_path.resolve()),
                 BINDING_ENV_VARS[3]: marker_sha256,
+                CHILD_TERMINAL_ENV_VAR: str(child_terminal_path.resolve()),
             }
         )
         launcher = process_launcher or _default_process_launcher
@@ -966,6 +975,19 @@ def apply_authorization_once(
         if type(returncode) is not int:
             raise OneShotWrapperError("child launcher returned invalid return code")
         pid = launched.get("pid")
+        child_terminal_error = None
+        child_terminal = None
+        try:
+            child_terminal = read_child_terminal_envelope(
+                child_terminal_path,
+                expected_authorization_id=authorization_id,
+                expected_marker_path=marker_path,
+                expected_marker_sha256=marker_sha256,
+                expected_exit_code=int(returncode),
+            )
+        except ChildTerminalError as terminal_exc:
+            child_terminal_error = f"{type(terminal_exc).__name__}:{terminal_exc}"
+        child_terminal_valid = child_terminal is not None
         terminal = {
             "schema_version": WRAPPER_SCHEMA_VERSION,
             "authorization_id": authorization_id,
@@ -985,6 +1007,30 @@ def apply_authorization_once(
             "process_start_error": None,
             "stdout": _file_identity(stdout_path),
             "stderr": _file_identity(stderr_path),
+            "child_terminal": _file_identity(child_terminal_path),
+            "child_terminal_valid": child_terminal_valid,
+            "child_terminal_error": child_terminal_error,
+            "child_terminal_envelope": child_terminal,
+            "child_first_terminal_cause": (
+                None if child_terminal is None
+                else child_terminal.get("first_terminal_cause")
+            ),
+            "child_failure_phase": (
+                None if child_terminal is None
+                else child_terminal.get("failure_phase")
+            ),
+            "child_cleanup_complete": (
+                None if child_terminal is None
+                else child_terminal.get("cleanup_complete")
+            ),
+            "child_lease_released": (
+                None if child_terminal is None
+                else child_terminal.get("lease_released")
+            ),
+            "child_active_locked_work": (
+                None if child_terminal is None
+                else child_terminal.get("active_locked_work")
+            ),
             "automatic_retries": 0,
             "manual_reruns": 0,
             "resumes": 0,
@@ -992,12 +1038,20 @@ def apply_authorization_once(
             "successors": 0,
             "parent_environment_mutated": False,
             "terminal_classification": (
-                "CHILD_EXITED_ZERO" if returncode == 0 else "CHILD_EXITED_NONZERO"
+                ("CHILD_EXITED_ZERO" if returncode == 0 else "CHILD_EXITED_NONZERO")
+                if child_terminal_valid
+                else (
+                    "CHILD_EXITED_ZERO_TERMINAL_INVALID"
+                    if returncode == 0
+                    else "CHILD_EXITED_NONZERO_TERMINAL_INVALID"
+                )
             ),
         }
         _write_terminal(terminal_path, terminal)
         _make_read_only(stdout_path)
         _make_read_only(stderr_path)
+        if child_terminal_path.is_file():
+            _make_read_only(child_terminal_path)
         return terminal
     except Exception as exc:
         marker_created = marker_created or marker_path.exists()
@@ -1057,7 +1111,11 @@ def main(argv: list[str] | None = None) -> int:
             operator_approved=args.operator_approved,
         )
         print(json.dumps(result, indent=2, sort_keys=True))
-        return 0 if result.get("child_exit_code") == 0 else 1
+        return 0 if (
+            result.get("child_exit_code") == 0
+            and result.get("child_terminal_valid") is True
+            and result.get("terminal_classification") == "CHILD_EXITED_ZERO"
+        ) else 1
     except Exception as exc:
         blocked: dict[str, Any] = {
             "status": "WINDOW_15M_ONE_SHOT_WRAPPER_BLOCKED",

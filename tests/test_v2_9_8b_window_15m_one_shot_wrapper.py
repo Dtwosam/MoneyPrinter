@@ -14,6 +14,10 @@ from unittest import mock
 
 from printer_v1.operator_cli import operational_memory_factory_command as command
 from printer_v1.operator_cli import window_15m_one_shot_wrapper as wrapper
+from printer_v1.operator_cli.window_15m_child_terminal import (
+    resolve_child_terminal_binding,
+    write_child_terminal_envelope,
+)
 from printer_v1.operator_cli.git_provenance_authorization_manifest import (
     GitProvenanceAuthorizationError,
     validate_git_provenance_authorization,
@@ -221,6 +225,23 @@ class Fixture:
                 raise raises
             kwargs["stdout_path"].write_text("child stdout\n", encoding="utf-8")
             kwargs["stderr_path"].write_text("child stderr\n", encoding="utf-8")
+            binding = resolve_child_terminal_binding(kwargs["env"])
+            source = (
+                {"status": "OPERATIONAL_COMMAND_COMPLETE"}
+                if returncode == 0
+                else {
+                    "status": "OPERATIONAL_COMMAND_BLOCKED",
+                    "error_type": "FixtureChildError",
+                    "error_message": "fixture nonzero child",
+                }
+            )
+            write_child_terminal_envelope(
+                binding=binding,
+                source=source,
+                mode="run",
+                exit_code=returncode,
+                success=returncode == 0,
+            )
             return {"returncode": returncode, "pid": 4242}
 
         return calls, launch
@@ -582,6 +603,92 @@ class WrapperImplementationTests(unittest.TestCase):
                 authorization_sha256=self.fx.authorization_sha256,
                 created_at="2026-08-01T20:00:00+00:00",
             )
+
+
+    def test_27_child_terminal_binding_is_supplied_and_projected(self):
+        calls = []
+
+        def launch(**kwargs):
+            calls.append(kwargs)
+            terminal_path = Path(
+                kwargs["env"]["PRINTER_V1_WINDOW_15M_CHILD_TERMINAL_PATH"]
+            )
+            marker_path = Path(
+                kwargs["env"]["PRINTER_V1_APPLICATION_MARKER_PATH"]
+            )
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            payload = {
+                "schema_version": "PRINTER_V1_WINDOW_15M_CHILD_TERMINAL_V1",
+                "created_at": "2026-08-06T15:00:00+00:00",
+                "authorization_id": marker["authorization_id"],
+                "marker_path": str(marker_path.resolve()),
+                "marker_sha256": _sha(marker_path),
+                "mode": "run",
+                "status": "OPERATIONAL_COMMAND_BLOCKED",
+                "success": False,
+                "process_exit_code": 1,
+                "terminal_category": "OPERATIONAL_COMMAND_BLOCKED",
+                "first_terminal_cause": "HolderBudgetError:TEST_IDENTITY_BLOCK",
+                "failure_phase": "CAMPAIGN_PRE_LIFECYCLE",
+                "execution_id": "exec-test",
+                "campaign_id": "campaign-test",
+                "run_id": "run-test",
+                "cycle_id": "cycle-test",
+                "supervision_id": "supervision-test",
+                "marker_consumed": True,
+                "lifecycle_started": False,
+                "cleanup_complete": True,
+                "lease_released": True,
+                "active_locked_work": {"scheduler_locked": 0},
+                "database_identity_after": {
+                    "path": "/tmp/disposable.sqlite3",
+                    "exists": True,
+                    "sha256": "a" * 64,
+                    "size": 4096,
+                    "inode": 1,
+                    "mtime_ns": 2,
+                },
+                "source_calls": 10,
+                "scheduler_runtime_calls": 0,
+                "database_writes": 12,
+                "terminal_report_path": None,
+                "terminal_report_sha256": None,
+                "terminal_truth_status": "RECONSTRUCTED",
+                "secondary_terminal_truth_error": None,
+            }
+            terminal_path.write_text(
+                json.dumps(payload, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            kwargs["stdout_path"].write_text("", encoding="utf-8")
+            kwargs["stderr_path"].write_text(
+                "conflicting-stderr-cause-that-must-not-be-parsed\n",
+                encoding="utf-8",
+            )
+            return {"returncode": 1, "pid": 4242}
+
+        result = self.apply(process_launcher=launch)
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(result["child_terminal_valid"])
+        self.assertEqual(
+            result["child_first_terminal_cause"],
+            "HolderBudgetError:TEST_IDENTITY_BLOCK",
+        )
+        self.assertNotIn("conflicting-stderr", json.dumps(result))
+        self.assertEqual(result["terminal_classification"], "CHILD_EXITED_NONZERO")
+
+    def test_28_missing_child_terminal_is_explicitly_invalid(self):
+        def launch(**kwargs):
+            kwargs["stdout_path"].write_text("", encoding="utf-8")
+            kwargs["stderr_path"].write_text("plain stderr\n", encoding="utf-8")
+            return {"returncode": 1, "pid": 4242}
+
+        result = self.apply(process_launcher=launch)
+        self.assertFalse(result["child_terminal_valid"])
+        self.assertEqual(
+            result["terminal_classification"],
+            "CHILD_EXITED_NONZERO_TERMINAL_INVALID",
+        )
 
 def _exec_dir_name() -> str:
     return "Scripts" if os.name == "nt" else "bin"
