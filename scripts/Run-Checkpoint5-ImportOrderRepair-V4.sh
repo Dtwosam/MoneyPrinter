@@ -95,10 +95,32 @@ replace_exact(
     "extend final manifest for V4 runner",
 )
 
+manifest_normalization_anchor = '''replace_exact(
+    terminal_markers,
+    terminal_replacement,
+    "add explicit final disposition markers",
+)
+
+path.write_text(text, encoding="utf-8")
+'''
+manifest_normalization_replacement = '''replace_exact(
+    terminal_markers,
+    terminal_replacement,
+    "add explicit final disposition markers",
+)
+
 replace_exact(
     'actual = {line.rstrip() for line in completed.stdout.splitlines() if line.strip()}\n',
     'actual = {line.strip() for line in completed.stdout.splitlines() if line.strip()}\n',
     "normalize git status manifest spacing",
+)
+
+path.write_text(text, encoding="utf-8")
+'''
+replace_exact(
+    manifest_normalization_anchor,
+    manifest_normalization_replacement,
+    "insert manifest spacing normalization at generated-script layer",
 )
 
 path.write_text(text, encoding="utf-8")
