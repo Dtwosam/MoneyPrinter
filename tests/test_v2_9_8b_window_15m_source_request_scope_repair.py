@@ -53,12 +53,25 @@ EXEC_B = "20260806T120100Z-bbbbbbbbbbbb"
 
 
 def _coverage(rid, *, stage="PROTOCOL|1", transport=1, terminal="COMPLETED"):
+    keys = [
+        [
+            "PROTOCOL_CONFIRMATION",
+            "solana_rpc",
+            "pumpswap_pool_account_batch",
+            "getMultipleAccounts",
+            index + 1,
+            "source_request",
+            str(rid),
+        ]
+        for index in range(transport)
+    ]
     return {
         "source_request_id": rid,
         "source_name": "solana_rpc",
         "request_kind": "pumpswap_pool_account_batch",
         "logical_stage_id": stage,
         "transport_identity_count": transport,
+        "transport_identity_keys": keys,
         "normalized_member_count": 1 if transport else 0,
         "terminal_status": terminal,
     }

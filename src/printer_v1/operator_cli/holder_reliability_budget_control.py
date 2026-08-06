@@ -15,6 +15,10 @@ import time
 from typing import Any, Mapping, Sequence
 
 from printer_v1.sources.registry import SOURCE_REGISTRY
+from printer_v1.sources.measured_transport import (
+    MeasuredTransportError,
+    canonical_transport_identity_key,
+)
 
 
 OPERATION_CEILING = 45
@@ -217,36 +221,22 @@ def holder_attempt_admission(
     )
 
 
-def _measured_transport_identity_key(raw: Mapping[str, Any]) -> tuple[object, ...]:
-    return (
-        str(raw.get("stage") or ""),
-        str(raw.get("source_name") or ""),
-        str(raw.get("governed_request_kind") or ""),
-        str(raw.get("method_or_endpoint") or ""),
-        int(raw.get("within_request_ordinal") or 0),
-        str(raw.get("target_category") or ""),
-        None
-        if raw.get("target_identity") is None
-        else str(raw.get("target_identity")),
-    )
+def _measured_transport_identity_key(raw: Any) -> tuple[object, ...]:
+    try:
+        return canonical_transport_identity_key(raw)
+    except (MeasuredTransportError, TypeError, ValueError) as exc:
+        raise HolderBudgetError(
+            "PRE_HOLDER_MEASURED_TRANSPORT_IDENTITY_MALFORMED"
+        ) from exc
 
 
 def _exact_transport_keys(
-    identities: Sequence[Mapping[str, Any]],
+    identities: Sequence[Any],
 ) -> tuple[tuple[object, ...], ...]:
     keys: list[tuple[object, ...]] = []
     seen: set[tuple[object, ...]] = set()
     for raw in identities:
-        if not isinstance(raw, Mapping):
-            raise HolderBudgetError(
-                "PRE_HOLDER_MEASURED_TRANSPORT_IDENTITY_MALFORMED"
-            )
-        try:
-            key = _measured_transport_identity_key(raw)
-        except (TypeError, ValueError) as exc:
-            raise HolderBudgetError(
-                "PRE_HOLDER_MEASURED_TRANSPORT_IDENTITY_MALFORMED"
-            ) from exc
+        key = _measured_transport_identity_key(raw)
         if key in seen:
             raise HolderBudgetError(
                 "PRE_HOLDER_DUPLICATE_MEASURED_TRANSPORT_IDENTITY"
@@ -254,6 +244,49 @@ def _exact_transport_keys(
         seen.add(key)
         keys.append(key)
     return tuple(keys)
+
+
+PRE_HOLDER_MANIFEST_TRANSPORT_IDENTITIES_MISSING = (
+    "PRE_HOLDER_MANIFEST_TRANSPORT_IDENTITIES_MISSING"
+)
+PRE_HOLDER_MANIFEST_TRANSPORT_IDENTITY_COUNT_MISMATCH = (
+    "PRE_HOLDER_MANIFEST_TRANSPORT_IDENTITY_COUNT_MISMATCH"
+)
+PRE_HOLDER_MANIFEST_TRANSPORT_IDENTITY_MALFORMED = (
+    "PRE_HOLDER_MANIFEST_TRANSPORT_IDENTITY_MALFORMED"
+)
+PRE_HOLDER_DUPLICATE_MANIFEST_TRANSPORT_IDENTITY = (
+    "PRE_HOLDER_DUPLICATE_MANIFEST_TRANSPORT_IDENTITY"
+)
+PRE_HOLDER_MANIFEST_CAMPAIGN_IDENTITY_MISMATCH = (
+    "PRE_HOLDER_MANIFEST_CAMPAIGN_IDENTITY_MISMATCH"
+)
+PRE_HOLDER_CAMPAIGN_ACTION_IDENTITY_MISMATCH = (
+    "PRE_HOLDER_CAMPAIGN_ACTION_IDENTITY_MISMATCH"
+)
+PRE_HOLDER_MANIFEST_ACTION_IDENTITY_MISMATCH = (
+    "PRE_HOLDER_MANIFEST_ACTION_IDENTITY_MISMATCH"
+)
+MULTIPLE_PRE_HOLDER_TRANSPORT_IDENTITY_DEFECTS = (
+    "MULTIPLE_PRE_HOLDER_TRANSPORT_IDENTITY_DEFECTS"
+)
+MAX_PRE_HOLDER_IDENTITY_DETAIL = 20
+
+
+def _append_unique(values: list[str], value: str) -> None:
+    if value not in values:
+        values.append(value)
+
+
+def _bounded_transport_difference(
+    values: set[tuple[object, ...]],
+) -> dict[str, Any]:
+    ordered = sorted(values, key=repr)
+    return {
+        "count": len(ordered),
+        "keys": [list(key) for key in ordered[:MAX_PRE_HOLDER_IDENTITY_DETAIL]],
+        "truncated": len(ordered) > MAX_PRE_HOLDER_IDENTITY_DETAIL,
+    }
 
 
 def build_pre_holder_budget_snapshot(
@@ -264,12 +297,7 @@ def build_pre_holder_budget_snapshot(
     campaign_transport_identities: Sequence[Mapping[str, Any]],
     action_local_transport_identities: Sequence[Mapping[str, Any]],
 ) -> PreHolderBudgetSnapshot:
-    """Project request and measured-transport truth from canonical owners.
-
-    This function owns no accounting state. It freezes and reconciles the
-    Source Governor manifest, campaign six-unit owner, and action-local
-    measurement surface before holder work begins.
-    """
+    """Require exact manifest = campaign-owner = action-local identity truth."""
     campaign = str(campaign_id or "").strip()
     if not campaign:
         raise HolderBudgetError("PRE_HOLDER_CAMPAIGN_IDENTITY_MISSING")
@@ -278,7 +306,12 @@ def build_pre_holder_budget_snapshot(
         raise HolderBudgetError("PRE_HOLDER_DUPLICATE_GOVERNED_REQUEST_ID")
 
     manifest_ids: list[int] = []
-    manifest_transport_count = 0
+    manifest_keys: list[tuple[object, ...]] = []
+    manifest_seen: set[tuple[object, ...]] = set()
+    manifest_owners: list[dict[str, Any]] = []
+    manifest_declared_total = 0
+    categories: list[str] = []
+
     for raw in request_manifest:
         if not isinstance(raw, Mapping) or raw.get("source_request_id") is None:
             raise HolderBudgetError("PRE_HOLDER_REQUEST_MANIFEST_MALFORMED")
@@ -290,48 +323,123 @@ def build_pre_holder_budget_snapshot(
                 "PRE_HOLDER_REQUEST_CAMPAIGN_OWNERSHIP_MISSING",
                 detail={"source_request_id": rid},
             )
-        if "transport_identity_count" not in raw:
-            raise HolderBudgetError(
-                "PRE_HOLDER_TRANSPORT_COUNT_WITHOUT_IDENTITIES",
-                detail={"source_request_id": rid},
-            )
         try:
-            count = int(raw["transport_identity_count"])
-        except (TypeError, ValueError) as exc:
+            declared = int(raw["transport_identity_count"])
+        except (KeyError, TypeError, ValueError) as exc:
             raise HolderBudgetError(
-                "PRE_HOLDER_TRANSPORT_COUNT_WITHOUT_IDENTITIES",
+                PRE_HOLDER_MANIFEST_TRANSPORT_IDENTITY_COUNT_MISMATCH,
                 detail={"source_request_id": rid},
             ) from exc
-        if count < 0:
-            raise HolderBudgetError(
-                "PRE_HOLDER_TRANSPORT_COUNT_WITHOUT_IDENTITIES",
-                detail={"source_request_id": rid},
+        manifest_declared_total += declared
+        if "transport_identity_keys" not in raw:
+            _append_unique(
+                categories, PRE_HOLDER_MANIFEST_TRANSPORT_IDENTITIES_MISSING
             )
-        manifest_transport_count += count
+            raw_keys: Sequence[Any] = ()
+        else:
+            candidate_keys = raw.get("transport_identity_keys")
+            if not isinstance(candidate_keys, (list, tuple)) or isinstance(
+                candidate_keys, (str, bytes)
+            ):
+                _append_unique(
+                    categories, PRE_HOLDER_MANIFEST_TRANSPORT_IDENTITY_MALFORMED
+                )
+                raw_keys = ()
+            else:
+                raw_keys = candidate_keys
+        request_keys: list[tuple[object, ...]] = []
+        request_seen: set[tuple[object, ...]] = set()
+        for raw_key in raw_keys:
+            try:
+                key = canonical_transport_identity_key(raw_key)
+            except (MeasuredTransportError, TypeError, ValueError):
+                _append_unique(
+                    categories, PRE_HOLDER_MANIFEST_TRANSPORT_IDENTITY_MALFORMED
+                )
+                continue
+            if key in request_seen or key in manifest_seen:
+                _append_unique(
+                    categories, PRE_HOLDER_DUPLICATE_MANIFEST_TRANSPORT_IDENTITY
+                )
+                continue
+            request_seen.add(key)
+            manifest_seen.add(key)
+            request_keys.append(key)
+            manifest_keys.append(key)
+            manifest_owners.append(
+                {
+                    "transport_identity_key": list(key),
+                    "source_request_id": rid,
+                    "logical_stage_id": stage_id,
+                    "source_name": str(raw.get("source_name") or ""),
+                    "request_kind": str(raw.get("request_kind") or ""),
+                }
+            )
+        if declared != len(request_keys):
+            _append_unique(
+                categories, PRE_HOLDER_MANIFEST_TRANSPORT_IDENTITY_COUNT_MISMATCH
+            )
+
     if len(manifest_ids) != len(set(manifest_ids)):
         raise HolderBudgetError("PRE_HOLDER_DUPLICATE_GOVERNED_REQUEST_ID")
     if set(manifest_ids) != set(request_ids):
         raise HolderBudgetError("PRE_HOLDER_REQUEST_MANIFEST_MISMATCH")
+    if manifest_declared_total != len(manifest_keys):
+        _append_unique(
+            categories, PRE_HOLDER_MANIFEST_TRANSPORT_IDENTITY_COUNT_MISMATCH
+        )
 
     campaign_keys = _exact_transport_keys(campaign_transport_identities)
     action_local_keys = _exact_transport_keys(action_local_transport_identities)
-    if manifest_transport_count != len(campaign_keys):
-        raise HolderBudgetError(
-            "PRE_HOLDER_TRANSPORT_COUNT_WITHOUT_IDENTITIES",
-            detail={
-                "manifest_transport_count": manifest_transport_count,
-                "campaign_identity_count": len(campaign_keys),
-            },
+    m_set = set(manifest_keys)
+    c_set = set(campaign_keys)
+    a_set = set(action_local_keys)
+    if m_set != c_set:
+        _append_unique(categories, PRE_HOLDER_MANIFEST_CAMPAIGN_IDENTITY_MISMATCH)
+    if c_set != a_set:
+        _append_unique(categories, PRE_HOLDER_CAMPAIGN_ACTION_IDENTITY_MISMATCH)
+    if m_set != a_set:
+        _append_unique(categories, PRE_HOLDER_MANIFEST_ACTION_IDENTITY_MISMATCH)
+
+    if categories:
+        code = (
+            categories[0]
+            if len(categories) == 1
+            else MULTIPLE_PRE_HOLDER_TRANSPORT_IDENTITY_DEFECTS
         )
-    if set(campaign_keys) != set(action_local_keys):
-        raise HolderBudgetError(
-            "PRE_HOLDER_STAGE_CAMPAIGN_RECONCILIATION_MISMATCH"
-        )
+        mismatched_manifest_keys = (m_set - c_set) | (m_set - a_set)
+        mismatched_manifest_owners = [
+            item
+            for item in manifest_owners
+            if tuple(item["transport_identity_key"]) in mismatched_manifest_keys
+        ]
+        detail = {
+            "categories": tuple(categories),
+            "manifest_declared_transport_count": manifest_declared_total,
+            "manifest_identity_count": len(manifest_keys),
+            "campaign_identity_count": len(campaign_keys),
+            "action_local_identity_count": len(action_local_keys),
+            "M_minus_C": _bounded_transport_difference(m_set - c_set),
+            "C_minus_M": _bounded_transport_difference(c_set - m_set),
+            "M_minus_A": _bounded_transport_difference(m_set - a_set),
+            "A_minus_M": _bounded_transport_difference(a_set - m_set),
+            "C_minus_A": _bounded_transport_difference(c_set - a_set),
+            "A_minus_C": _bounded_transport_difference(a_set - c_set),
+            "manifest_identity_owners": sorted(
+                mismatched_manifest_owners,
+                key=lambda item: repr(item["transport_identity_key"]),
+            )[:MAX_PRE_HOLDER_IDENTITY_DETAIL],
+            "manifest_identity_owners_truncated": (
+                len(mismatched_manifest_owners) > MAX_PRE_HOLDER_IDENTITY_DETAIL
+            ),
+        }
+        raise HolderBudgetError(code, detail=detail)
+
     return PreHolderBudgetSnapshot(
         governed_request_ids=tuple(sorted(request_ids)),
-        measured_transport_identity_keys=tuple(sorted(campaign_keys, key=repr)),
+        measured_transport_identity_keys=tuple(sorted(manifest_keys, key=repr)),
         governed_request_count=len(request_ids),
-        measured_transport_count=len(campaign_keys),
+        measured_transport_count=len(manifest_keys),
         zero_transport_operations=COMBINED_ZERO_TRANSPORT_VALIDATION,
         reserved_snapshot_operations=REQUIRED_DEX_SNAPSHOT_RESERVATION,
         reserved_snapshot_completion_operations=(
