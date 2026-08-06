@@ -1833,9 +1833,12 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     break
             else:
                 ledger.admit_candidate(now=evaluated)
+            # Resolve source-honest observation time before maturation and
+            # before any holder provider transport.
+            observed_at_utc = self._resolve_holder_maturation_observed_at(proof)
             maturation = schedule_maturation(
                 connection, run_id=command.run_id, cycle_id=cycle_id,
-                mint=proof.mint, observed_at=str(proof.block_time),
+                mint=proof.mint, observed_at=observed_at_utc,
                 now=evaluated.isoformat(), deadline_at=deadline.isoformat(),
             )
             if maturation["work_state"] != "DUE":
@@ -3627,6 +3630,39 @@ class AuthoritativeLiveOperationalCampaignOwner:
         return result
 
     @staticmethod
+    def _resolve_holder_maturation_observed_at(proof: Any) -> str:
+        """Resolve a source-honest ISO observation time for holder maturation.
+
+        SourceSpecificCandidateAdmission uses its validated temporal context.
+        Legacy FixtureOriginProof converts its exact positive block_time to UTC
+        ISO. Unsupported carriers fail closed before schedule_maturation or
+        holder transport. No duck-typed block_time default is used.
+        """
+        from printer_v1.operator_cli.graduated_supply_front_door import (
+            GraduatedSupplyError,
+            SourceSpecificCandidateAdmission,
+            _epoch_to_utc_iso,
+            _require_positive_graduation_epoch,
+        )
+
+        if isinstance(proof, SourceSpecificCandidateAdmission):
+            return str(proof.temporal_context.admission_observed_at_utc)
+        if isinstance(proof, FixtureOriginProof):
+            try:
+                epoch = _require_positive_graduation_epoch(
+                    proof.block_time, mint=str(proof.mint)
+                )
+            except GraduatedSupplyError as exc:
+                message = str(exc)
+                code = message.split(":", 1)[0]
+                raise LiveOperationalError(code, str(proof.mint)) from exc
+            return _epoch_to_utc_iso(epoch)
+        raise LiveOperationalError(
+            "UNSUPPORTED_CANDIDATE_TEMPORAL_AUTHORITY",
+            type(proof).__name__,
+        )
+
+    @staticmethod
     def _full_pilot_graduation_diagnostics(
         *,
         graduation_decisions: Sequence[tuple[Any, str]],
@@ -3637,12 +3673,22 @@ class AuthoritativeLiveOperationalCampaignOwner:
         admitted: int | None = None,
         candidate_cap: int | None = None,
     ) -> dict[str, Any]:
-        """Honest graduation, channel and category diagnostics for the report.
+        """Honest candidate-admission diagnostics for the report.
 
-        Age is context, never eligibility. The origin create age is reported as
-        context; the eligibility decision is graduation only. Pair / post-graduation
-        age is not fetched at admission and is reported as an explicit unknown.
+        Outer key remains ``full_pilot_admission`` for compatibility. Contents
+        distinguish source authority honestly: direct Pump/PumpSwap candidates
+        keep graduation temporal evidence; market present-pool candidates report
+        retained market observation time with no Pump-origin claim. Age is
+        context, never eligibility.
         """
+        from printer_v1.discovery.memory_observation_activation import (
+            AdmissionAuthority,
+        )
+        from printer_v1.operator_cli.graduated_supply_front_door import (
+            CandidateTemporalAuthority,
+            SourceSpecificCandidateAdmission,
+        )
+
         graduation_proofs = dict(getattr(fixtures, "pumpswap_proofs", {}) or {})
         records: list[dict[str, Any]] = []
         state_counts: dict[str, int] = {
@@ -3651,10 +3697,70 @@ class AuthoritativeLiveOperationalCampaignOwner:
             GRADUATION_AMBIGUOUS_MARKET: 0,
             GRADUATION_FAILED: 0,
             GRADUATION_MARKET_IDENTITY_INVALID: 0,
+            "CANDIDATE_PRESENT_POOL_ELIGIBLE": 0,
+            "GRADUATION_ELIGIBLE": 0,
         }
         latest_graduated = 0
         non_latest_graduated = 0
+        market_present_pool_count = 0
+        direct_pump_pumpswap_count = 0
+        source_specific_universe = False
+
         for proof, state in graduation_decisions:
+            if isinstance(proof, SourceSpecificCandidateAdmission):
+                source_specific_universe = True
+                temporal = proof.temporal_context
+                authority = proof.admission_authority
+                is_market = authority is AdmissionAuthority.MARKET_PRESENT_POOL
+                is_direct = authority is AdmissionAuthority.DIRECT_PUMP_PUMPSWAP
+                if is_market:
+                    market_present_pool_count += 1
+                    admission_state = "CANDIDATE_PRESENT_POOL_ELIGIBLE"
+                    pump_origin_claimed = False
+                    token_age_context = "UNKNOWN_NOT_CLAIMED"
+                elif is_direct:
+                    direct_pump_pumpswap_count += 1
+                    admission_state = "GRADUATION_ELIGIBLE"
+                    pump_origin_claimed = True
+                    token_age_context = "AGE_IS_CONTEXT_NOT_ELIGIBILITY"
+                    latest_graduated += 1
+                else:
+                    admission_state = state
+                    pump_origin_claimed = False
+                    token_age_context = "AGE_IS_CONTEXT_NOT_ELIGIBILITY"
+                state_counts[admission_state] = (
+                    state_counts.get(admission_state, 0) + 1
+                )
+                records.append(
+                    {
+                        "mint_identity": proof.mint.lower(),
+                        "admission_authority": authority.value,
+                        "admission_state": admission_state,
+                        "selectable": True,
+                        "temporal_authority": temporal.temporal_authority.value,
+                        "admission_observed_at_utc": (
+                            temporal.admission_observed_at_utc
+                        ),
+                        "pump_origin_claimed": pump_origin_claimed,
+                        "pump_origin_block_time_epoch": (
+                            temporal.pump_origin_block_time_epoch
+                        ),
+                        "market_identity": proof.market_identity,
+                        "token_age_context": token_age_context,
+                        # Compatibility aliases (source-honest values).
+                        "graduation_state": admission_state,
+                        "origin_block_time_epoch": (
+                            temporal.pump_origin_block_time_epoch
+                        ),
+                        "post_graduation_age_context": (
+                            "UNKNOWN_NOT_CLAIMED"
+                            if is_market
+                            else "UNKNOWN_NOT_FETCHED_AT_ADMISSION"
+                        ),
+                    }
+                )
+                continue
+
             state_counts[state] = state_counts.get(state, 0) + 1
             graduation = graduation_proofs.get(proof.mint)
             market_identity = (
@@ -3666,31 +3772,115 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 # A direct-origin graduated candidate is a newly-graduated latest
                 # token; secondary-discovered graduated tokens are non-latest.
                 latest_graduated += 1
+                direct_pump_pumpswap_count += 1
+            epoch = (
+                int(proof.block_time)
+                if isinstance(proof, FixtureOriginProof)
+                else None
+            )
             records.append(
                 {
                     "mint_identity": proof.mint.lower(),
-                    "graduation_state": state,
+                    "admission_authority": "DIRECT_PUMP_PUMPSWAP",
+                    "admission_state": state,
                     "selectable": state == GRADUATION_ELIGIBLE,
-                    "origin_block_time_epoch": int(proof.block_time),
+                    "temporal_authority": (
+                        CandidateTemporalAuthority.DIRECT_PUMP_GRADUATION_TIME.value
+                        if epoch is not None and epoch > 0
+                        else None
+                    ),
+                    "admission_observed_at_utc": (
+                        datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
+                        if epoch is not None and epoch > 0
+                        else None
+                    ),
+                    "pump_origin_claimed": True,
+                    "pump_origin_block_time_epoch": epoch,
                     "market_identity": market_identity,
                     "token_age_context": "AGE_IS_CONTEXT_NOT_ELIGIBILITY",
+                    "graduation_state": state,
+                    "origin_block_time_epoch": epoch,
                     "post_graduation_age_context": (
                         "UNKNOWN_NOT_FETCHED_AT_ADMISSION"
                     ),
                 }
             )
-        graduated_count = state_counts[GRADUATION_ELIGIBLE]
+
+        graduated_count = (
+            state_counts.get(GRADUATION_ELIGIBLE, 0)
+            + state_counts.get("GRADUATION_ELIGIBLE", 0)
+        )
+        candidate_admitted_count = (
+            market_present_pool_count + direct_pump_pumpswap_count
+            if source_specific_universe
+            else graduated_count
+        )
+        if admitted is not None and not source_specific_universe:
+            graduated_admitted = admitted
+        elif admitted is not None:
+            graduated_admitted = admitted
+        else:
+            graduated_admitted = candidate_admitted_count
         blocked_channels = {
             "GECKO_TRENDING_TOP": "SKIPPED_BLOCKED_CONTRACT",
             "SOLANA_TRACKER_TRENDING_TOP": "SKIPPED_BLOCKED_CONTRACT",
             "PUMPPORTAL_MIGRATION_FEED": "SKIPPED_BLOCKED_CONTRACT",
         }
+        if source_specific_universe:
+            return {
+                "eligibility_rule": (
+                    "SOURCE_SPECIFIC_PRESENT_POOL_OR_DIRECT_PUMP"
+                ),
+                "candidate_universe": len(graduation_decisions),
+                "candidate_admitted_count": (
+                    admitted
+                    if admitted is not None
+                    else candidate_admitted_count
+                ),
+                "market_present_pool_count": market_present_pool_count,
+                "direct_pump_pumpswap_count": direct_pump_pumpswap_count,
+                # Compatibility counts: include lawful market nominees.
+                "graduated_candidate_count": (
+                    admitted
+                    if admitted is not None
+                    else candidate_admitted_count
+                ),
+                "graduated_available": candidate_admitted_count,
+                "graduated_admitted": graduated_admitted,
+                "candidate_cap": candidate_cap,
+                "graduation_state_counts": state_counts,
+                "latest_vs_non_latest": {
+                    "LATEST_GRADUATED": latest_graduated,
+                    "NON_LATEST_GRADUATED": non_latest_graduated,
+                    "MARKET_PRESENT_POOL": market_present_pool_count,
+                },
+                "candidates": tuple(records),
+                "channel_counts": {
+                    "LATEST_PUMPFUN_PENDING_DISCOVERY": len(
+                        acquisition.origin_proofs
+                    ),
+                    "GECKO_TRENDING_ENRICH": len(enrichment.gecko_ops),
+                    "TRACKER_ENRICH": len(enrichment.tracker_ops),
+                    "DEXSCREENER_ENRICH": len(enrichment.dexscreener_ops),
+                    "PUMPSWAP_CONFIRMED": direct_pump_pumpswap_count,
+                    "MARKET_PRESENT_POOL": market_present_pool_count,
+                },
+                "blocked_channels": blocked_channels,
+                "staged_pending_discovery_this_cycle": staged_now,
+                "note": (
+                    "Source-specific admission: direct Pump/PumpSwap candidates "
+                    "use exact graduation time; market present-pool nominees use "
+                    "retained market observation time. Age is context only. "
+                    "Market nominees make no Pump origin, migration, or "
+                    "graduation claim."
+                ),
+            }
         return {
             "eligibility_rule": "GRADUATION_ONLY",
             "candidate_universe": len(graduation_decisions),
             "graduated_candidate_count": graduated_count,
             "graduated_available": graduated_count,
-            "graduated_admitted": graduated_count if admitted is None else admitted,
+            "graduated_admitted": graduated_admitted,
             "candidate_cap": candidate_cap,
             "graduation_state_counts": state_counts,
             "latest_vs_non_latest": {

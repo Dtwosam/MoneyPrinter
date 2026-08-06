@@ -33,6 +33,8 @@ lifecycle or memory work.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 import sqlite3
 from typing import Any, Callable, Mapping, Sequence
@@ -100,6 +102,98 @@ class GraduatedSupplyError(RuntimeError):
     """Fail-closed graduated-supply composition fault."""
 
 
+class CandidateTemporalAuthority(str, Enum):
+    """Source-honest temporal authority for one admitted candidate."""
+
+    DIRECT_PUMP_GRADUATION_TIME = "DIRECT_PUMP_GRADUATION_TIME"
+    RETAINED_MARKET_OBSERVATION_TIME = "RETAINED_MARKET_OBSERVATION_TIME"
+
+
+@dataclass(frozen=True)
+class CandidateTemporalContext:
+    """Immutable, validated temporal context owned by one candidate admission."""
+
+    temporal_authority: CandidateTemporalAuthority
+    admission_observed_at_utc: str
+    pump_origin_block_time_epoch: int | None
+
+
+def _epoch_to_utc_iso(epoch: int) -> str:
+    """Convert a positive Unix epoch seconds value to timezone-aware UTC ISO."""
+    return datetime.fromtimestamp(int(epoch), tz=timezone.utc).isoformat()
+
+
+def _require_positive_graduation_epoch(raw: object, *, mint: str) -> int:
+    """Fail closed when direct Pump graduation/migration time is unusable."""
+    if raw is None or (isinstance(raw, str) and not str(raw).strip()):
+        raise GraduatedSupplyError(
+            f"DIRECT_CANDIDATE_GRADUATION_TIME_MISSING:{mint}"
+        )
+    try:
+        if type(raw) is bool:
+            raise ValueError("boolean is not a graduation epoch")
+        epoch = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise GraduatedSupplyError(
+            f"DIRECT_CANDIDATE_GRADUATION_TIME_INVALID:{mint}"
+        ) from exc
+    if epoch <= 0:
+        raise GraduatedSupplyError(
+            f"DIRECT_CANDIDATE_GRADUATION_TIME_INVALID:{mint}"
+        )
+    return epoch
+
+
+def _market_observation_time_utc(item: Mapping[str, Any], *, mint: str) -> str:
+    """Source market observation time only from retained market evidence fields.
+
+    Accepts top-level ``liquidity_observed_at`` or nested
+    ``liquidity.liquidity_observed_at``. Never falls back to now, evaluation
+    time, request time, evidence expiry, or DB/file timestamps.
+    """
+    raw = item.get("liquidity_observed_at")
+    if raw is None or (isinstance(raw, str) and not str(raw).strip()):
+        liquidity = item.get("liquidity")
+        if isinstance(liquidity, Mapping):
+            raw = liquidity.get("liquidity_observed_at")
+    if raw is None or (isinstance(raw, str) and not str(raw).strip()):
+        raise GraduatedSupplyError(
+            f"MARKET_CANDIDATE_OBSERVATION_TIME_MISSING:{mint}"
+        )
+    text = str(raw).strip()
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise GraduatedSupplyError(
+            f"MARKET_CANDIDATE_OBSERVATION_TIME_INVALID:{mint}"
+        ) from exc
+    if parsed.tzinfo is None:
+        raise GraduatedSupplyError(
+            f"MARKET_CANDIDATE_OBSERVATION_TIME_INVALID:{mint}"
+        )
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
+def _direct_temporal_context(*, graduation_epoch: int) -> CandidateTemporalContext:
+    return CandidateTemporalContext(
+        temporal_authority=CandidateTemporalAuthority.DIRECT_PUMP_GRADUATION_TIME,
+        admission_observed_at_utc=_epoch_to_utc_iso(graduation_epoch),
+        pump_origin_block_time_epoch=int(graduation_epoch),
+    )
+
+
+def _market_temporal_context(
+    item: Mapping[str, Any], *, mint: str
+) -> CandidateTemporalContext:
+    return CandidateTemporalContext(
+        temporal_authority=(
+            CandidateTemporalAuthority.RETAINED_MARKET_OBSERVATION_TIME
+        ),
+        admission_observed_at_utc=_market_observation_time_utc(item, mint=mint),
+        pump_origin_block_time_epoch=None,
+    )
+
+
 @dataclass(frozen=True)
 class SourceSpecificCandidateAdmission:
     """One selected candidate with its carried, source-specific authority."""
@@ -111,6 +205,7 @@ class SourceSpecificCandidateAdmission:
     nomination_source: str
     lineage_state: str
     present_pool_confirmed: bool
+    temporal_context: CandidateTemporalContext
     origin_proof: FixtureOriginProof | None = None
     pumpswap_proof: FixturePumpSwapProof | None = None
 
@@ -179,6 +274,7 @@ def _source_specific_admission_for(
             raise GraduatedSupplyError(
                 f"MARKET_CANDIDATE_UNSUPPORTED_LINEAGE_CLAIM:{mint}"
             )
+        temporal = _market_temporal_context(item, mint=mint)
         return SourceSpecificCandidateAdmission(
             mint=mint,
             pool_address=pool,
@@ -187,6 +283,7 @@ def _source_specific_admission_for(
             nomination_source=nomination_source,
             lineage_state=lineage_state,
             present_pool_confirmed=True,
+            temporal_context=temporal,
         )
 
     carried = item.get("direct_pump_evidence")
@@ -200,11 +297,15 @@ def _source_specific_admission_for(
         or not str(carried.get("migration_signature") or "").strip()
     ):
         raise GraduatedSupplyError(f"DIRECT_PUMP_EVIDENCE_MISMATCH:{mint}")
+    graduation_epoch = _require_positive_graduation_epoch(
+        carried.get("graduation_block_time"), mint=mint
+    )
+    temporal = _direct_temporal_context(graduation_epoch=graduation_epoch)
     row = {
         "mint_identity": mint,
         "migration_signature": carried["migration_signature"],
         "graduation_slot": carried.get("graduation_slot"),
-        "graduation_block_time": carried.get("graduation_block_time"),
+        "graduation_block_time": graduation_epoch,
         "pumpswap_pool": pool,
     }
     origin = _origin_proof_for(row)
@@ -217,6 +318,7 @@ def _source_specific_admission_for(
         nomination_source=nomination_source or "direct_pump_migration",
         lineage_state="PUMP_GRADUATION_CONFIRMED",
         present_pool_confirmed=True,
+        temporal_context=temporal,
         origin_proof=origin,
         pumpswap_proof=pumpswap,
     )

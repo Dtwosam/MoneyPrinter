@@ -629,6 +629,7 @@ def _supply_candidate(mint, pool, *, source, authority, direct_evidence=None):
         "memory_observation_eligible": True,
         "eligible": True,
         "evidence_expires_at": EXPIRES,
+        "liquidity_observed_at": NOW,
         "liquidity": {
             "status": "LIQUIDITY_PROVEN",
             "liquidity_usd": 12_000.0,
@@ -636,6 +637,7 @@ def _supply_candidate(mint, pool, *, source, authority, direct_evidence=None):
             "pool": pool,
             "source_request_id": 11,
             "source_response_id": 21,
+            "liquidity_observed_at": NOW,
         },
         "direct_pump_evidence": direct_evidence,
     }
