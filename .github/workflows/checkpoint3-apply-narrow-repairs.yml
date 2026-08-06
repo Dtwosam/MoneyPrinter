@@ -1,9 +1,9 @@
 name: Apply Checkpoint 3 narrow repairs
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/v2-9-8b-window-15m-checkpoint-3-discovery-selection-accounting
+      - master
 
 permissions:
   contents: write
