@@ -45,12 +45,11 @@ from printer_v1.operator_cli.authoritative_live_operational_campaign import (
 from printer_v1.operator_cli.graduated_supply_front_door import (
     OPERATIONAL_GRADUATED_SUPPLY_KWARGS,
 )
-from printer_v1.operator_cli.campaign_ownership import create_campaign_run
 from printer_v1.operator_cli.campaign_persistence import (
     DB_MODE_OPERATIONAL_PERSISTENT,
     build_authorization_marker_payload,
     campaign_evidence_sha256,
-    create_campaign,
+    create_operational_campaign_graph,
 )
 from printer_v1.operator_cli.campaign_supervision import (
     acquire_campaign_supervision,
@@ -1023,44 +1022,43 @@ def _create_campaign_command(
                 **dict(authorization_runtime_facts),
             )
         )
-    created = create_campaign(
+    expected_database_path = (
+        authorization_runtime_facts["authorized_db_path"]
+        if authorization_runtime_facts is not None
+        else preflight["database_path"]
+    )
+    expected_database_sha256 = (
+        authorization_runtime_facts["authorized_pre_mutation_sha256"]
+        if authorization_runtime_facts is not None
+        else preflight["database_sha256"]
+    )
+    expected_migration_count = (
+        authorization_runtime_facts["migration_count"]
+        if authorization_runtime_facts is not None
+        else preflight["migration_count"]
+    )
+    expected_migration_head = (
+        authorization_runtime_facts["migration_head"]
+        if authorization_runtime_facts is not None
+        else preflight["latest_migration"]
+    )
+    created = create_operational_campaign_graph(
         AUTHORITATIVE_DB,
         campaign_id=campaign_id,
         configuration_id=configuration_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
         configuration=configuration,
         launch_provenance=preflight["git_provenance"],
-        db_mode=DB_MODE_OPERATIONAL_PERSISTENT,
         db_target_identity=target_identity,
         policy_version=POLICY_VERSION,
-        campaign_state="DRAFT",
+        expected_database_path=expected_database_path,
+        expected_database_sha256=str(expected_database_sha256),
+        expected_migration_count=int(expected_migration_count),
+        expected_migration_head=str(expected_migration_head),
+        run_ordinal=1,
+        now=now,
     )
-    connection = sqlite3.connect(AUTHORITATIVE_DB)
-    connection.execute("PRAGMA foreign_keys=ON")
-    try:
-        create_campaign_run(
-            connection, campaign_id=campaign_id, run_id=run_id,
-            run_ordinal=1, now=now,
-        )
-        with connection:
-            connection.execute(
-                """INSERT INTO printer_memory_factory_campaign_cycles(
-                       cycle_id,campaign_id,run_id,cycle_ordinal,cycle_state,
-                       created_at,updated_at
-                   ) VALUES (?,?,?,1,'PLANNED',?,?)""",
-                (cycle_id, campaign_id, run_id, now, now),
-            )
-            connection.execute(
-                "UPDATE printer_memory_factory_campaigns "
-                "SET campaign_state='RUNNING',updated_at=? WHERE campaign_id=?",
-                (now, campaign_id),
-            )
-            connection.execute(
-                "UPDATE printer_memory_factory_campaign_runs "
-                "SET run_state='RUNNING',updated_at=? WHERE run_id=?",
-                (now, run_id),
-            )
-    finally:
-        connection.close()
     # Publish the exact run identity so blocked-command counters stay action-local.
     _ACTION_RUN_CONTEXT["run_id"] = run_id
     _ACTION_RUN_CONTEXT["campaign_id"] = campaign_id
