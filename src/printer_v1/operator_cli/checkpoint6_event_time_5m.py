@@ -107,6 +107,8 @@ def _serialize_capture(
         int(item.snapshot_id) for item in capture.triggering_snapshots
     ]
     raw["source_provenance"] = source_provenance
+    raw["verdict"] = SupportCaptureVerdict.CAPTURE_SUPPORT.value
+    raw["future_main_window_outcome_used"] = False
     raw["support_only"] = True
     raw["main_outcome_memory"] = False
     raw["continuation_authority"] = False

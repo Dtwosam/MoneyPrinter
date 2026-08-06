@@ -36,7 +36,7 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +263,90 @@ def validate_5m_linkage_for_parent(
 
 
 # ---------------------------------------------------------------------------
+# Frozen event-time support validation
+# ---------------------------------------------------------------------------
+
+def _validate_support_capture(
+    support_capture: Mapping[str, Any] | None,
+    *,
+    token_id: int,
+    pair_id: int,
+    run_id: str | None,
+    snapshot_start_id: int | None,
+    snapshot_end_id: int | None,
+) -> tuple[dict[str, Any] | None, list[str]]:
+    if support_capture is None:
+        return None, []
+    frozen = dict(support_capture)
+    reasons: list[str] = []
+    if frozen.get("verdict") != "CAPTURE_SUPPORT":
+        reasons.append("support_capture verdict must be CAPTURE_SUPPORT")
+    if str(frozen.get("token_id") or "") != str(token_id):
+        reasons.append("support_capture token_id mismatch")
+    if str(frozen.get("pair_id") or "") != str(pair_id):
+        reasons.append("support_capture pair_id mismatch")
+    if run_id is not None and str(frozen.get("factory_run_id") or "") != str(run_id):
+        reasons.append("support_capture factory_run_id mismatch")
+    if frozen.get("containing_main_window_kind") != _WINDOW_15M:
+        reasons.append("support_capture containing main window must be WINDOW_15M")
+    trigger_time = str(frozen.get("trigger_time") or "")
+    evidence_cutoff = str(frozen.get("evidence_cutoff") or "")
+    if not trigger_time or evidence_cutoff != trigger_time:
+        reasons.append("support_capture evidence cutoff must equal trigger time")
+    try:
+        from printer_v1.scheduler.support_only_5m_capture import SupportTriggerFamily
+
+        SupportTriggerFamily(str(frozen.get("trigger_family") or ""))
+    except (TypeError, ValueError):
+        reasons.append("support_capture trigger family is not adopted")
+    scheduler_work_id = str(frozen.get("scheduler_work_id") or "")
+    try:
+        scheduler_job_id = int(frozen.get("scheduler_job_id"))
+    except (TypeError, ValueError):
+        scheduler_job_id = 0
+    if not scheduler_work_id or scheduler_job_id <= 0:
+        reasons.append("support_capture Scheduler identity missing")
+    try:
+        ids = [int(value) for value in (frozen.get("triggering_snapshot_ids") or ())]
+    except (TypeError, ValueError):
+        ids = []
+    if len(ids) < 2 or len(set(ids)) != len(ids):
+        reasons.append("support_capture requires at least two exact triggering snapshots")
+    if snapshot_start_id is not None and ids and ids[0] != int(snapshot_start_id):
+        reasons.append("support_capture snapshot_start_id mismatch")
+    if snapshot_end_id is not None and ids and ids[-1] != int(snapshot_end_id):
+        reasons.append("support_capture snapshot_end_id mismatch")
+    provenance = frozen.get("source_provenance")
+    if not isinstance(provenance, list) or len(provenance) < 2:
+        reasons.append("support_capture source provenance incomplete")
+    else:
+        for item in provenance:
+            if not isinstance(item, Mapping):
+                reasons.append("support_capture source provenance malformed")
+                continue
+            if (
+                not item.get("source_name")
+                or int(item.get("source_request_id") or 0) <= 0
+                or int(item.get("source_response_id") or 0) <= 0
+                or item.get("source_status") != "COMPLETE"
+                or item.get("data_quality_label") != "CLEAN_DATA"
+                or item.get("governor_approved") is not True
+                or item.get("traceable") is not True
+                or str(item.get("scheduler_work_id") or "") != scheduler_work_id
+            ):
+                reasons.append("support_capture source provenance is not clean/traceable")
+                break
+    for field in (
+        "campaign_id", "campaign_run_id", "cycle_id", "token_slot_id",
+        "mint_id", "pair_address", "root_15m_lifecycle_id",
+        "containing_main_window_id",
+    ):
+        if not str(frozen.get(field) or ""):
+            reasons.append(f"support_capture {field} missing")
+    return frozen, list(dict.fromkeys(reasons))
+
+
+# ---------------------------------------------------------------------------
 # Core operations
 # ---------------------------------------------------------------------------
 
@@ -285,6 +369,7 @@ def capture_5m_support_evidence(
     snapshot_end_id: int | None = None,
     run_id: str | None = None,
     tracking_lane: str | None = None,
+    support_capture: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write a WINDOW_5M_MICRO_EVENT row linked to a parent WINDOW_15M window.
 
@@ -343,6 +428,29 @@ def capture_5m_support_evidence(
                 "retrieval_from_5m_blocked": True,
                 "hard_locks": dict(_HARD_LOCKS),
                 "linkage_validation": linkage,
+            }
+
+        frozen_support, frozen_support_reasons = _validate_support_capture(
+            support_capture,
+            token_id=token_id,
+            pair_id=pair_id,
+            run_id=run_id,
+            snapshot_start_id=snapshot_start_id,
+            snapshot_end_id=snapshot_end_id,
+        )
+        if frozen_support_reasons:
+            return {
+                "lane_x8_capture_status": LANE_X8_STATUS_BLOCKED,
+                "captured": False,
+                "blocked_reasons": frozen_support_reasons,
+                "window_5m_id": None,
+                "parent_window_id": parent_window_id,
+                "token_id": token_id,
+                "pair_id": pair_id,
+                "do_not_train": True,
+                "5m_clean_memory_blocked": True,
+                "retrieval_from_5m_blocked": True,
+                "hard_locks": dict(_HARD_LOCKS),
             }
 
         resolved_start_at = opened_at_val
@@ -453,9 +561,26 @@ def capture_5m_support_evidence(
             "parent_window_id": parent_window_id,
             "parent_window_kind": _WINDOW_15M,
             "run_id": run_id,
+            "factory_run_id": run_id,
             "tracking_lane": tracking_lane,
             "same_opening_stream": snapshot_start_id is not None,
+            "support_only": True,
+            "continuation_authority": False,
+            "retrieval_authority": False,
+            "decision_authority": False,
+            "financial_authority": False,
         }
+        if frozen_support is not None:
+            for key in (
+                "campaign_id", "campaign_run_id", "cycle_id", "factory_run_id",
+                "token_slot_id", "token_id", "mint_id", "pair_id",
+                "pair_address", "root_15m_lifecycle_id",
+                "containing_main_window_id", "containing_main_window_kind",
+                "scheduler_work_id", "scheduler_job_id", "trigger_family",
+                "trigger_time", "evidence_cutoff", "triggering_snapshot_ids",
+                "source_provenance",
+            ):
+                ctx[key] = frozen_support.get(key)
 
         cur = conn.execute(
             """

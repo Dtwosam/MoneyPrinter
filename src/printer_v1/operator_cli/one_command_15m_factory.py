@@ -1751,6 +1751,41 @@ def _resolve_current_run_15m_source(
     return {"resolved": True, "reasons": [], "window": row, "consumed_ids": consumed}
 
 
+def _evaluate_event_time_5m_support_for_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    step: sqlite3.Row,
+    result: Mapping[str, Any],
+) -> dict[str, Any]:
+    from printer_v1.operator_cli.checkpoint6_event_time_5m import (
+        evaluate_event_time_5m_support_for_snapshot,
+    )
+
+    return evaluate_event_time_5m_support_for_snapshot(
+        conn, factory_run_id=run_id, step=step, result=result
+    )
+
+
+def _materialize_frozen_5m_support(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    close_step: sqlite3.Row,
+    parent_window_id: int,
+) -> dict[str, Any]:
+    from printer_v1.operator_cli.checkpoint6_event_time_5m import (
+        materialize_frozen_5m_support,
+    )
+
+    return materialize_frozen_5m_support(
+        conn,
+        factory_run_id=run_id,
+        close_step=close_step,
+        parent_window_id=parent_window_id,
+    )
+
+
 def _capture_same_stream_5m_support(
     conn: sqlite3.Connection,
     *,
@@ -2065,33 +2100,23 @@ def _natural_disposition_schedule(
     window_id: int,
     continuation_seconds: float,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Derive one token's operational-natural disposition from its own governed
-    15m evidence and enqueue only the permitted continuation / support-only 5m.
+    """Derive final-15m continuation without creating retrospective 5m support.
 
-    Token-local: every query is scoped to ``close_step``'s token, pair and lane
-    and to its own 15m memory window, so the outcome is identical regardless of
-    which token closed first.
+    Event-time support is evaluated and frozen by Scheduler-owned SNAPSHOT work.
+    This final-window owner remains the independent continuation authority only.
     """
     from printer_v1.operator_cli.authoritative_live_operational_campaign import (
         derive_natural_disposition,
     )
 
     disposition = derive_natural_disposition(conn, int(window_id))
+    support = {
+        "captured": False,
+        "verdict": "EVENT_TIME_SUPPORT_HANDLED_SEPARATELY",
+        "reason": "FINAL_15M_OUTCOME_NOT_SUPPORT_TRIGGER_AUTHORITY",
+        "window_5m_id": None,
+    }
     if disposition.should_continue:
-        support = _capture_same_stream_5m_support(
-            conn,
-            run_id=run_id,
-            close_step=close_step,
-            parent_window_id=int(window_id),
-        )
-        if support.get("window_5m_id") is None:
-            raise ValueError(
-                "same-stream 5m support capture blocked: "
-                + "; ".join(support.get("blocked_reasons", []))
-            )
-        # Support-only 5m trigger derived from observed micro-event evidence.
-        support["trigger_family"] = disposition.trigger_family
-        support["proof_evidence"] = disposition.evidence_label
         source = _resolve_current_run_15m_source(
             conn,
             run_id=run_id,
@@ -2119,12 +2144,6 @@ def _natural_disposition_schedule(
             )
         return support, continuation_plan
     reason = disposition.evidence_label
-    support = {
-        "captured": False,
-        "verdict": "VALID_NO_CAPTURE",
-        "reason": reason,
-        "window_5m_id": None,
-    }
     continuation_plan = {
         "enqueue_ok": False,
         "planned_jobs": 0,
@@ -4592,6 +4611,12 @@ def run_one_command_15m_factory(
                     first_window_checkpointed = True
                 _check_cancellation(cancellation_probe)
                 if result.get("ok"):
+                    if pending["step_kind"] == "SNAPSHOT" and _operational_natural(config):
+                        result["support_5m_event_time"] = (
+                            _evaluate_event_time_5m_support_for_snapshot(
+                                conn, run_id=run_id, step=pending, result=result
+                            )
+                        )
                     if pending["step_kind"] == "SNAPSHOT" and str(pending["step_key"]).endswith("_snapshot_00"):
                         captured = conn.execute(
                             "SELECT captured_at FROM printer_token_snapshots WHERE id=?",
@@ -4682,7 +4707,13 @@ def run_one_command_15m_factory(
                                     row_window_id = int(
                                         close_row["memory_window_id"]
                                     )
-                                    support, continuation_plan = (
+                                    support = _materialize_frozen_5m_support(
+                                        conn,
+                                        run_id=run_id,
+                                        close_step=close_row,
+                                        parent_window_id=row_window_id,
+                                    )
+                                    _, continuation_plan = (
                                         _natural_disposition_schedule(
                                             conn,
                                             run_id=run_id,

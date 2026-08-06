@@ -63,6 +63,87 @@ def _exact_identity(value: object, *, code: str) -> int:
     return resolved
 
 
+def _fingerprint_context(
+    window_context: Mapping[str, Any], episode_context: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Resolve the real categorical window context without inventing facts."""
+    merged = dict(window_context)
+    shared = window_context.get("shared_window_15m_context_evidence")
+    if not isinstance(shared, Mapping):
+        shared = window_context.get("shared_window_4h_context_evidence")
+    sections = shared.get("sections", {}) if isinstance(shared, Mapping) else {}
+    section_map = {
+        "market_regime": "market",
+        "solana_chain_heat": "chain_heat",
+        "safety_rug": "safety",
+        "liquidity_exit_realism": "liquidity_exit",
+        "trading_flow": "trading_flow",
+        "chart_volatility": "chart_volatility",
+    }
+    if isinstance(sections, Mapping):
+        for source_name, destination in section_map.items():
+            section = sections.get(source_name)
+            if not isinstance(section, Mapping):
+                continue
+            labels = section.get("labels")
+            if not isinstance(labels, Mapping):
+                continue
+            destination_payload = merged.get(destination)
+            destination_payload = (
+                dict(destination_payload)
+                if isinstance(destination_payload, Mapping)
+                else {}
+            )
+            destination_payload.update(dict(labels))
+            merged[destination] = destination_payload
+
+    labels = window_context.get("context_labels")
+    if isinstance(labels, Mapping):
+        categorical_targets = {
+            "market_regime_label": "market",
+            "chain_heat_label": "chain_heat",
+            "safety_status_label": "safety",
+            "rug_risk_label": "safety",
+            "liquidity_state_label": "liquidity_exit",
+            "exit_realism_label": "liquidity_exit",
+            "realism_gate_label": "liquidity_exit",
+            "flow_direction_label": "trading_flow",
+            "flow_pressure_label": "trading_flow",
+            "trend_structure_label": "chart_volatility",
+            "volatility_label": "chart_volatility",
+            "candle_path_label": "chart_volatility",
+        }
+        for field, destination in categorical_targets.items():
+            value = labels.get(field)
+            if value is None:
+                continue
+            destination_payload = merged.get(destination)
+            destination_payload = (
+                dict(destination_payload)
+                if isinstance(destination_payload, Mapping)
+                else {}
+            )
+            destination_payload[field] = value
+            merged[destination] = destination_payload
+        micro = {
+            field: labels.get(field)
+            for field in ("micro_event_state_label", "held_to_15m_result_label")
+            if labels.get(field) is not None
+        }
+        if micro and not merged.get("micro_events"):
+            merged["micro_events"] = [micro]
+        for field in ("token_age_bucket", "pair_age_bucket", "discovery_label"):
+            if merged.get(field) is None and labels.get(field) is not None:
+                merged[field] = labels[field]
+
+    # Episode context is provenance metadata. Overlay it without discarding the
+    # richer source-window condition context.
+    merged.update(
+        {key: value for key, value in episode_context.items() if value is not None}
+    )
+    return merged
+
+
 def _fingerprint_payload(
     connection: sqlite3.Connection,
     *,
@@ -85,7 +166,8 @@ def _fingerprint_payload(
 
     window_context = _load_json(window["supporting_context_json"])
     episode_context = _load_json(episode["supporting_context_json"])
-    tracking_lane = window_context.get("tracking_lane")
+    fingerprint_context = _fingerprint_context(window_context, episode_context)
+    tracking_lane = fingerprint_context.get("tracking_lane")
     if not tracking_lane:
         token = connection.execute(
             "SELECT token_status FROM printer_tokens WHERE id=?", (token_id,)
@@ -109,10 +191,10 @@ def _fingerprint_payload(
             },
             "outcome_label": episode["episode_outcome_label"] or window["outcome_label"],
             "memory_quality_label": "CLEAN_MEMORY",
-            "supporting_context": episode_context or window_context,
-            "token_age_bucket": (episode_context or window_context).get("token_age_bucket"),
-            "pair_age_bucket": (episode_context or window_context).get("pair_age_bucket"),
-            "discovery_label": (episode_context or window_context).get("discovery_label"),
+            "supporting_context": fingerprint_context,
+            "token_age_bucket": fingerprint_context.get("token_age_bucket"),
+            "pair_age_bucket": fingerprint_context.get("pair_age_bucket"),
+            "discovery_label": fingerprint_context.get("discovery_label"),
         },
         episode_id=episode_id,
     )
@@ -142,6 +224,11 @@ def _validate_complete_pair(
         or int(fingerprint["do_not_train"]) != 0
     ):
         raise CleanObjectIntegrityError("CLEAN_OBJECT_QUALITY_MISMATCH")
+    expected_outcome = str(window["outcome_label"] or "").strip()
+    if not expected_outcome or expected_outcome == "OUTCOME_UNKNOWN":
+        raise CleanObjectIntegrityError("CLEAN_OBJECT_OUTCOME_UNKNOWN")
+    if str(episode["episode_outcome_label"] or "").strip() != expected_outcome:
+        raise CleanObjectIntegrityError("CLEAN_OBJECT_OUTCOME_MISMATCH")
     payload = _load_json(fingerprint["fingerprint_payload_json"])
     expected = {
         "episode_id": int(episode["id"]),
@@ -156,6 +243,8 @@ def _validate_complete_pair(
             raise CleanObjectIntegrityError("FINGERPRINT_IDENTITY_MISMATCH", field)
     if str(payload.get("window_kind")) != str(window["window_kind"]):
         raise CleanObjectIntegrityError("FINGERPRINT_IDENTITY_MISMATCH", "window_kind")
+    if str(payload.get("outcome_label") or "").strip() != expected_outcome:
+        raise CleanObjectIntegrityError("FINGERPRINT_OUTCOME_MISMATCH")
 
 
 def promote_clean_object(
@@ -185,6 +274,11 @@ def promote_clean_object(
         gate_failures = _gate_window(window)
         if gate_failures:
             raise CleanObjectIntegrityError("WINDOW_NOT_CLEAN_PROMOTION_ELIGIBLE", "; ".join(gate_failures))
+        outcome_label = str(window["outcome_label"] or "").strip()
+        if not outcome_label or outcome_label == "OUTCOME_UNKNOWN":
+            raise CleanObjectIntegrityError(
+                "WINDOW_OUTCOME_NOT_CLEAN_PROMOTION_ELIGIBLE"
+            )
 
         episodes = connection.execute(
             """SELECT id,memory_window_id,token_id,pair_id,episode_kind,
@@ -247,15 +341,17 @@ def promote_clean_object(
             """INSERT INTO printer_episodes(
                    memory_window_id,token_id,pair_id,episode_kind,episode_status,
                    memory_status,data_quality_label,do_not_train,window_kind,
-                   memory_quality_label,supporting_context_json,created_at,updated_at
+                   memory_quality_label,episode_outcome_label,supporting_context_json,
+                   created_at,updated_at
                ) VALUES (?,?,?,?,'COMPLETE','CLEAN_MEMORY','CLEAN_DATA',0,?,
-                         'CLEAN_MEMORY',?,?,?)""",
+                         'CLEAN_MEMORY',?,?,?,?)""",
             (
                 int(window_id),
                 int(window["token_id"]),
                 int(window["pair_id"]),
                 f"{window['window_kind']}_CLEAN_MEMORY",
                 str(window["window_kind"]),
+                outcome_label,
                 episode_context,
                 now,
                 now,

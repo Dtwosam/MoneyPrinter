@@ -106,9 +106,9 @@ class _Base(unittest.TestCase):
             INSERT INTO printer_memory_windows (
                 token_id, pair_id, window_kind, opened_at, closed_at,
                 memory_status, data_quality_label, do_not_train,
-                window_status, memory_quality_label,
+                window_status, memory_quality_label, outcome_label,
                 supporting_context_json, created_by_phase, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'lane_e2o', ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'NO_PUMP', ?, 'lane_e2o', ?, ?)
             """,
             (
                 token_id, pair_id, window_kind, _NOW, _NOW,
