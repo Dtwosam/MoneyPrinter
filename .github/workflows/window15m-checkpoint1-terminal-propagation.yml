@@ -33,6 +33,7 @@ jobs:
           cp .ci/window15m_checkpoint1/apply_call_order_fix.py /tmp/apply_call_order_fix.py
           cp .ci/window15m_checkpoint1/apply_marker_sha_binding_fix.py /tmp/apply_marker_sha_binding_fix.py
           cp .ci/window15m_checkpoint1/write_closeout.py /tmp/write_closeout.py
+          cp .ci/window15m_checkpoint1/append_preexisting_notes.py /tmp/append_preexisting_notes.py
 
       - name: Reset executable tree to exact rolling design tip
         run: |
@@ -180,6 +181,7 @@ jobs:
           export NEW_TEST_SUMMARY="$(tail -n 1 /tmp/new-tests.log)"
           export NEAREST_TEST_SUMMARY="$(tail -n 1 /tmp/nearest-tests.log)"
           python /tmp/write_closeout.py
+          python /tmp/append_preexisting_notes.py
 
       - name: Create clean checkpoint commit from design tip
         shell: bash
