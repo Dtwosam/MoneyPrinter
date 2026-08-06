@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BRANCH='agent/v2-9-8b-window-15m-checkpoint-6-collection-clean-memory-closeout'
+ROOT="$(git rev-parse --show-toplevel)"
+TMP="$(mktemp -t Run-Checkpoint6-CleanMemoryRepair.XXXXXX.sh)"
+trap 'rm -f "$TMP"' EXIT
+
+git -C "$ROOT" fetch origin "$BRANCH"
+git -C "$ROOT" show "origin/$BRANCH:scripts/Run-Checkpoint6-CleanMemoryRepair.sh" > "$TMP"
+
+python3 - "$TMP" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+text = p.read_text(encoding="utf-8")
+
+def once(old: str, new: str) -> None:
+    global text
+    count = text.count(old)
+    if count != 1:
+        raise SystemExit(f"CHECKPOINT6_V2_WRAPPER_BLOCKED: expected once, found {count}: {old[:80]!r}")
+    text = text.replace(old, new, 1)
+
+once(
+    'rm -f scripts/Run-Checkpoint6-CleanMemoryRepair.sh',
+    'rm -f scripts/Run-Checkpoint6-CleanMemoryRepair.sh scripts/Run-Checkpoint6-CleanMemoryRepair-V2.sh',
+)
+once(
+    "EXPECTED=$'M\\tsrc/printer_v1/memory/clean_object_promotion.py\\nM\\tsrc/printer_v1/operator_cli/lane_x8_5m_support_integration.py\\nM\\tsrc/printer_v1/operator_cli/one_command_15m_factory.py\\nD\\tscripts/Run-Checkpoint6-CleanMemoryRepair.sh\\nM\\ttests/test_post_rc_lane_e2z_clean_memory_creation.py'",
+    "EXPECTED=$'M\\tsrc/printer_v1/memory/clean_object_promotion.py\\nM\\tsrc/printer_v1/operator_cli/lane_x8_5m_support_integration.py\\nM\\tsrc/printer_v1/operator_cli/one_command_15m_factory.py\\nD\\tscripts/Run-Checkpoint6-CleanMemoryRepair-V2.sh\\nD\\tscripts/Run-Checkpoint6-CleanMemoryRepair.sh\\nM\\ttests/test_post_rc_lane_e2z_clean_memory_creation.py'",
+)
+once(
+    'ACTUAL="$(git status --short | sed -E \'s/^(.)(.) /\\1\\2\\t/\' | sed $\'s/^M \\t/M\\t/; s/^D \\t/D\\t/\' | LC_ALL=C sort)"',
+    'ACTUAL="$(git diff --name-status | LC_ALL=C sort)"',
+)
+once(
+    '  scripts/Run-Checkpoint6-CleanMemoryRepair.sh\n',
+    '  scripts/Run-Checkpoint6-CleanMemoryRepair.sh \\\n  scripts/Run-Checkpoint6-CleanMemoryRepair-V2.sh\n',
+)
+p.write_text(text, encoding="utf-8")
+PY
+
+chmod +x "$TMP"
+bash "$TMP"
