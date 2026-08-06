@@ -965,12 +965,30 @@ def test_build_graduated_supply_mixed_slots_preserve_temporal_authority(
             AssertionError("post-selection registry lookup")
         ),
     )
+    from printer_v1.discovery.permanent_discovery_availability import (
+        build_campaign_source_request_scope,
+    )
+
+    execution_id = "20260806T000000Z-temporal-mixed"
+    scope = build_campaign_source_request_scope(
+        execution_id=execution_id,
+        campaign_id="camp-temporal-mixed",
+        run_id="run-temporal-mixed",
+        cycle_id="cycle-temporal-mixed",
+    )
     result = build_graduated_supply(
         ":memory:",
         cycle_seed="temporal-mixed-seed",
         migration_transport=lambda _: {},
         permanent_availability=True,
         required_token_capacity=2,
+        campaign_source_request_scope=scope,
+        discovery_request_key_prefix=scope.request_key_root,
+        front_door_request_key_prefix=scope.request_key_root,
+        campaign_id=scope.campaign_id,
+        execution_id=scope.execution_id,
+        run_id=scope.run_id,
+        cycle_id=scope.cycle_id,
     )
     assert result.ready is True
     by_authority = {

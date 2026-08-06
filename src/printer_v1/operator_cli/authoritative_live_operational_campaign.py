@@ -2281,6 +2281,10 @@ class AuthoritativeLiveOperationalCampaignOwner:
         # owners verbatim (no new gate, score, ranking, selector or provider).
         supply = graduated_supply
         if supply is None and migration_transport is not None:
+            from printer_v1.discovery.permanent_discovery_availability import (
+                build_campaign_source_request_scope,
+                validate_campaign_source_request_scope,
+            )
             from printer_v1.operator_cli.graduated_supply_front_door import (
                 build_graduated_supply,
             )
@@ -2298,6 +2302,34 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 "run_id": command.run_id,
                 "cycle_id": cycle_id,
             })
+            # Permanent operational mode owns one typed request-key root for
+            # every discovery and front-door stage. Construct it only from the
+            # exact invocation identities (never wall-clock, UUID, DB, or
+            # provider output).
+            if bool(supply_kwargs.get("permanent_availability")):
+                scope = build_campaign_source_request_scope(
+                    execution_id=selection_seed,
+                    campaign_id=command.campaign_id,
+                    run_id=command.run_id,
+                    cycle_id=cycle_id,
+                )
+                try:
+                    scope = validate_campaign_source_request_scope(
+                        scope,
+                        execution_id=selection_seed,
+                        campaign_id=command.campaign_id,
+                        run_id=command.run_id,
+                        cycle_id=cycle_id,
+                    )
+                except ValueError as exc:
+                    raise LiveOperationalError(str(exc), "campaign source request scope") from exc
+                supply_kwargs["campaign_source_request_scope"] = scope
+                supply_kwargs["discovery_request_key_prefix"] = (
+                    scope.request_key_root
+                )
+                supply_kwargs["front_door_request_key_prefix"] = (
+                    scope.request_key_root
+                )
             # Stages emit sealed evidence into the campaign owner as each stage
             # terminalizes. Do not re-ingest discovery evidence after return
             # (prevents double ingestion and captures shortage-path stages).
@@ -2567,6 +2599,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
             if permanent_mode and pre_holder_accounting_projection is not None:
                 from printer_v1.discovery.permanent_discovery_availability import (
                     assemble_and_reconcile_campaign_source_requests,
+                    format_source_request_reconciliation_detail,
                 )
                 from printer_v1.operator_cli.holder_reliability_budget_control import (
                     build_ledger_from_exact_counts,
@@ -2574,25 +2607,43 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 )
 
                 prefixes = []
-                for key in ("discovery_request_key_prefix", "request_key_prefix"):
+                scope_root = supply.diagnostics.get("request_key_root")
+                if scope_root:
+                    prefixes.append(str(scope_root))
+                for key in (
+                    "discovery_request_key_prefix",
+                    "front_door_request_key_prefix",
+                    "request_key_prefix",
+                ):
                     value = supply.diagnostics.get(key)
-                    if value:
+                    if value and str(value) not in prefixes:
                         prefixes.append(str(value))
                 pre_holder_reconciliation = (
                     assemble_and_reconcile_campaign_source_requests(
                         connection,
                         diagnostics=supply.diagnostics,
                         request_key_prefixes=prefixes,
+                        request_key_root=(
+                            str(scope_root) if scope_root else None
+                        ),
+                        campaign_source_request_scope=supply.diagnostics.get(
+                            "campaign_source_request_scope"
+                        ),
                     )
                 )
                 if pre_holder_reconciliation.get("status") != "OK":
+                    detail = str(
+                        pre_holder_reconciliation.get("terminal_detail")
+                        or format_source_request_reconciliation_detail(
+                            pre_holder_reconciliation
+                        )
+                        or pre_holder_reconciliation.get("categorical_detail")
+                        or pre_holder_reconciliation.get("blocker")
+                        or "PRE_HOLDER_RECONCILIATION_BLOCKED"
+                    )
                     raise LiveOperationalError(
                         "CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH",
-                        str(
-                            pre_holder_reconciliation.get("categorical_detail")
-                            or pre_holder_reconciliation.get("blocker")
-                            or "PRE_HOLDER_RECONCILIATION_BLOCKED"
-                        ),
+                        detail,
                     )
                 projection = dict(pre_holder_accounting_projection())
                 pre_holder_snapshot = build_pre_holder_budget_snapshot(
@@ -2970,19 +3021,30 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 # Prefer stage-reported durable IDs + explicit discovery request
                 # key prefixes. Do not scrape the whole DB by campaign/run id
                 # alone — that can pull unrelated holder/other rows and false
-                # reconciliation mismatches.
+                # reconciliation mismatches. Permanent operational mode uses the
+                # typed invocation root only.
                 prefixes = []
+                scope_root = supply.diagnostics.get("request_key_root")
+                if scope_root:
+                    prefixes.append(str(scope_root))
                 for key in (
                     "discovery_request_key_prefix",
+                    "front_door_request_key_prefix",
                     "request_key_prefix",
                 ):
                     value = supply.diagnostics.get(key)
-                    if value:
+                    if value and str(value) not in prefixes:
                         prefixes.append(str(value))
                 recon = assemble_and_reconcile_campaign_source_requests(
                     connection,
                     diagnostics=supply.diagnostics,
                     request_key_prefixes=prefixes,
+                    request_key_root=(
+                        str(scope_root) if scope_root else None
+                    ),
+                    campaign_source_request_scope=supply.diagnostics.get(
+                        "campaign_source_request_scope"
+                    ),
                 )
                 supply.diagnostics[
                     "campaign_source_request_reconciliation"

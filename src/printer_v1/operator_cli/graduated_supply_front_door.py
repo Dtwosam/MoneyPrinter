@@ -797,6 +797,7 @@ def build_graduated_supply(
     permanent_availability: bool = False,
     run_geckoterminal_nomination: bool = False,
     enable_geckoterminal_reconciliation: bool = True,
+    campaign_source_request_scope: Any | None = None,
 ) -> GraduatedSupply:
     """Compose discovery + front door via persistent multi-round supply loop.
 
@@ -810,6 +811,10 @@ def build_graduated_supply(
     two eligible ``$3K+`` candidates exist
     after governed exhaustion, ``ready`` is False and ``terminal`` is
     ``BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL`` with an exhaustion certificate.
+
+    Permanent operational mode requires a typed
+    ``campaign_source_request_scope`` and refuses legacy static request-key
+    defaults before any provider I/O.
     """
     if not cycle_seed or not str(cycle_seed).strip():
         raise GraduatedSupplyError("MISSING_CYCLE_SEED")
@@ -818,6 +823,52 @@ def build_graduated_supply(
         DEFAULT_DISCOVERY_OPERATION_BUDGET,
         run_persistent_eligible_token_supply,
     )
+    from printer_v1.discovery.permanent_discovery_availability import (
+        CAMPAIGN_SOURCE_REQUEST_SCOPE_REQUIRED,
+        inspect_preexisting_source_request_scope_collision,
+        validate_campaign_source_request_scope,
+        validate_permanent_operational_request_prefixes,
+    )
+
+    scope_obj = None
+    active_discovery_prefix = str(discovery_request_key_prefix)
+    active_front_door_prefix = str(front_door_request_key_prefix)
+    if permanent_availability:
+        if campaign_source_request_scope is None:
+            raise GraduatedSupplyError(CAMPAIGN_SOURCE_REQUEST_SCOPE_REQUIRED)
+        try:
+            scope_obj = validate_campaign_source_request_scope(
+                campaign_source_request_scope,
+                execution_id=execution_id,
+                campaign_id=campaign_id,
+                run_id=run_id,
+                cycle_id=cycle_id,
+            )
+            validate_permanent_operational_request_prefixes(
+                request_key_root=scope_obj.request_key_root,
+                discovery_request_key_prefix=active_discovery_prefix,
+                front_door_request_key_prefix=active_front_door_prefix,
+            )
+        except ValueError as exc:
+            raise GraduatedSupplyError(str(exc)) from exc
+        # Collision gate: any pre-existing durable row under this root blocks
+        # before the first supply provider request.
+        import sqlite3
+
+        collision_connection = sqlite3.connect(str(db_path))
+        try:
+            collision = inspect_preexisting_source_request_scope_collision(
+                collision_connection,
+                request_key_root=scope_obj.request_key_root,
+            )
+        finally:
+            collision_connection.close()
+        if collision.get("status") != "OK":
+            raise GraduatedSupplyError(
+                str(collision.get("detail") or collision.get("blocker"))
+            )
+        active_discovery_prefix = scope_obj.request_key_root
+        active_front_door_prefix = scope_obj.request_key_root
 
     persistent = run_persistent_eligible_token_supply(
         db_path,
@@ -838,8 +889,8 @@ def build_graduated_supply(
         reverify_on_transient=reverify_on_transient,
         reverify_settle_seconds=reverify_settle_seconds,
         front_door_max_candidates=front_door_max_candidates,
-        discovery_request_key_prefix=discovery_request_key_prefix,
-        front_door_request_key_prefix=front_door_request_key_prefix,
+        discovery_request_key_prefix=active_discovery_prefix,
+        front_door_request_key_prefix=active_front_door_prefix,
         batch_seq=batch_seq,
         run_locator=run_locator,
         required_token_capacity=required_token_capacity,
@@ -974,8 +1025,15 @@ def build_graduated_supply(
             ),
             "shortage_classification": persistent.shortage_classification,
             "discovery_rounds": persistent.discovery_rounds,
+            "discovery_request_key_prefix": active_discovery_prefix,
+            "front_door_request_key_prefix": active_front_door_prefix,
+            "request_key_prefix": active_front_door_prefix,
         }
     )
+    if scope_obj is not None:
+        diagnostics["campaign_source_request_scope"] = scope_obj.as_dict()
+        diagnostics["request_scope_version"] = scope_obj.scope_version
+        diagnostics["request_key_root"] = scope_obj.request_key_root
     return GraduatedSupply(
         ready=ready,
         terminal=terminal,

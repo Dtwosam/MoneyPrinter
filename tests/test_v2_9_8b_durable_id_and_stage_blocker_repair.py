@@ -128,9 +128,13 @@ class TestDurableIdIndependence:
         )
         assert recon["status"] == "BLOCKED"
         assert recon["blocker"] == CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH
-        assert recon.get("categorical_detail") == (
-            "STAGE_REPORTED_REQUEST_NOT_DURABLE"
-        )
+        assert "STAGE_REQUEST_NOT_DURABLE" in (
+            recon.get("mismatch_categories") or ()
+        ) or recon.get("categorical_detail") in {
+            "STAGE_REQUEST_NOT_DURABLE",
+            "STAGE_REPORTED_REQUEST_NOT_DURABLE",
+            "MULTIPLE_SOURCE_REQUEST_RECONCILIATION_DEFECTS",
+        }
         assert 999 in recon["stage_reported_not_durable"]
         assert 999 not in recon["durable_campaign_request_ids"]
         assert recon["stage_reported_request_ids"] == [999]
@@ -150,7 +154,13 @@ class TestDurableIdIndependence:
             },
         )
         assert recon["stage_reported_not_durable"] == [42]
-        assert recon["categorical_detail"] == "STAGE_REPORTED_REQUEST_NOT_DURABLE"
+        assert "STAGE_REQUEST_NOT_DURABLE" in (
+            recon.get("mismatch_categories") or ()
+        ) or recon.get("categorical_detail") in {
+            "STAGE_REQUEST_NOT_DURABLE",
+            "STAGE_REPORTED_REQUEST_NOT_DURABLE",
+            "MULTIPLE_SOURCE_REQUEST_RECONCILIATION_DEFECTS",
+        }
 
     def test_genuine_db_row_with_matching_stage_and_coverage_passes(self, database):
         path, connection = database

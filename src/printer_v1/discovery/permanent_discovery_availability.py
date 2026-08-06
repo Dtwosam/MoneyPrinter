@@ -13,6 +13,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 import json
 import math
+import re
 import sqlite3
 from typing import Any, Mapping, Sequence
 
@@ -3457,6 +3458,453 @@ CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH = (
     "CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH"
 )
 
+# ---------------------------------------------------------------------------
+# Invocation-scoped source-request ownership (V2-9.8B WINDOW_15M scope repair)
+# ---------------------------------------------------------------------------
+
+PRINTER_V1_CAMPAIGN_SOURCE_REQUEST_SCOPE_V1 = (
+    "PRINTER_V1_CAMPAIGN_SOURCE_REQUEST_SCOPE_V1"
+)
+LEGACY_STATIC_REQUEST_KEY_ROOT = "v2-9-7e-44"
+CAMPAIGN_SOURCE_REQUEST_KEY_ROOT_TEMPLATE_PREFIX = "v2-9-8b-window15m-"
+MAX_CAMPAIGN_SOURCE_REQUEST_KEY_ROOT_LENGTH = 180
+MAX_RECONCILIATION_DETAIL_IDS = 20
+
+CAMPAIGN_SOURCE_REQUEST_SCOPE_REQUIRED = (
+    "CAMPAIGN_SOURCE_REQUEST_SCOPE_REQUIRED"
+)
+CAMPAIGN_SOURCE_REQUEST_SCOPE_INVALID = (
+    "CAMPAIGN_SOURCE_REQUEST_SCOPE_INVALID"
+)
+CAMPAIGN_SOURCE_REQUEST_SCOPE_IDENTITY_MISMATCH = (
+    "CAMPAIGN_SOURCE_REQUEST_SCOPE_IDENTITY_MISMATCH"
+)
+CAMPAIGN_SOURCE_REQUEST_SCOPE_PREFIX_MISMATCH = (
+    "CAMPAIGN_SOURCE_REQUEST_SCOPE_PREFIX_MISMATCH"
+)
+LEGACY_STATIC_REQUEST_SCOPE_BLOCKED_OPERATIONALLY = (
+    "LEGACY_STATIC_REQUEST_SCOPE_BLOCKED_OPERATIONALLY"
+)
+CAMPAIGN_SOURCE_REQUEST_SCOPE_ALREADY_EXISTS = (
+    "CAMPAIGN_SOURCE_REQUEST_SCOPE_ALREADY_EXISTS"
+)
+
+# Exact reconciliation failure categories (stable terminal detail tokens).
+DURABLE_REQUEST_NOT_STAGE_REPORTED = "DURABLE_REQUEST_NOT_STAGE_REPORTED"
+DURABLE_REQUEST_NOT_MANIFESTED = "DURABLE_REQUEST_NOT_MANIFESTED"
+STAGE_REQUEST_NOT_DURABLE = "STAGE_REQUEST_NOT_DURABLE"
+STAGE_REQUEST_NOT_MANIFESTED = "STAGE_REQUEST_NOT_MANIFESTED"
+MANIFEST_REQUEST_NOT_DURABLE = "MANIFEST_REQUEST_NOT_DURABLE"
+DUPLICATE_COVERAGE_REQUEST_ID = "DUPLICATE_COVERAGE_REQUEST_ID"
+DUPLICATE_DURABLE_REQUEST_ID = "DUPLICATE_DURABLE_REQUEST_ID"
+STAGE_OWNERSHIP_GAP = "STAGE_OWNERSHIP_GAP"
+STAGE_ACCOUNTING_BLOCKER = "STAGE_ACCOUNTING_BLOCKER"
+CURRENT_STAGE_REQUEST_OUTSIDE_CAMPAIGN_SCOPE = (
+    "CURRENT_STAGE_REQUEST_OUTSIDE_CAMPAIGN_SCOPE"
+)
+MULTIPLE_SOURCE_REQUEST_RECONCILIATION_DEFECTS = (
+    "MULTIPLE_SOURCE_REQUEST_RECONCILIATION_DEFECTS"
+)
+
+_PRINTABLE_ASCII_ROOT_RE = re.compile(r"^[\x21-\x7E]+$")
+
+
+@dataclass(frozen=True)
+class CampaignSourceRequestScope:
+    """Immutable invocation-local durable source-request ownership contract."""
+
+    scope_version: str
+    request_key_root: str
+    execution_id: str
+    campaign_id: str
+    run_id: str
+    cycle_id: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "scope_version": self.scope_version,
+            "request_key_root": self.request_key_root,
+            "execution_id": self.execution_id,
+            "campaign_id": self.campaign_id,
+            "run_id": self.run_id,
+            "cycle_id": self.cycle_id,
+        }
+
+
+def derive_campaign_source_request_key_root(execution_id: str) -> str:
+    """Canonical root: ``v2-9-8b-window15m-<execution_id>``."""
+    return (
+        f"{CAMPAIGN_SOURCE_REQUEST_KEY_ROOT_TEMPLATE_PREFIX}"
+        f"{str(execution_id).strip()}"
+    )
+
+
+def build_campaign_source_request_scope(
+    *,
+    execution_id: str,
+    campaign_id: str,
+    run_id: str,
+    cycle_id: str,
+    scope_version: str = PRINTER_V1_CAMPAIGN_SOURCE_REQUEST_SCOPE_V1,
+) -> CampaignSourceRequestScope:
+    """Construct the typed scope from exact invocation identities."""
+    return CampaignSourceRequestScope(
+        scope_version=str(scope_version),
+        request_key_root=derive_campaign_source_request_key_root(execution_id),
+        execution_id=str(execution_id).strip(),
+        campaign_id=str(campaign_id).strip(),
+        run_id=str(run_id).strip(),
+        cycle_id=str(cycle_id).strip(),
+    )
+
+
+def _coerce_campaign_source_request_scope(
+    scope: CampaignSourceRequestScope | Mapping[str, Any] | None,
+) -> CampaignSourceRequestScope | None:
+    if scope is None:
+        return None
+    if isinstance(scope, CampaignSourceRequestScope):
+        return scope
+    if not isinstance(scope, Mapping):
+        raise ValueError(CAMPAIGN_SOURCE_REQUEST_SCOPE_INVALID)
+    try:
+        return CampaignSourceRequestScope(
+            scope_version=str(scope.get("scope_version") or "").strip(),
+            request_key_root=str(scope.get("request_key_root") or "").strip(),
+            execution_id=str(scope.get("execution_id") or "").strip(),
+            campaign_id=str(scope.get("campaign_id") or "").strip(),
+            run_id=str(scope.get("run_id") or "").strip(),
+            cycle_id=str(scope.get("cycle_id") or "").strip(),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(CAMPAIGN_SOURCE_REQUEST_SCOPE_INVALID) from exc
+
+
+def _is_valid_request_key_root_token(root: str) -> bool:
+    if not root:
+        return False
+    if len(root) > MAX_CAMPAIGN_SOURCE_REQUEST_KEY_ROOT_LENGTH:
+        return False
+    if any(ch.isspace() for ch in root):
+        return False
+    if "/" in root or "\\" in root:
+        return False
+    if not _PRINTABLE_ASCII_ROOT_RE.match(root):
+        return False
+    return True
+
+
+def request_key_belongs_to_root(request_key: str, request_key_root: str) -> bool:
+    """True when ``request_key`` equals or is derived under ``request_key_root``."""
+    key = str(request_key or "")
+    root = str(request_key_root or "")
+    if not key or not root:
+        return False
+    return key == root or key.startswith(f"{root}")
+
+
+def validate_campaign_source_request_scope(
+    scope: CampaignSourceRequestScope | Mapping[str, Any] | None,
+    *,
+    execution_id: str | None = None,
+    campaign_id: str | None = None,
+    run_id: str | None = None,
+    cycle_id: str | None = None,
+) -> CampaignSourceRequestScope:
+    """Validate typed scope; raise ValueError with a stable blocker code."""
+    coerced = _coerce_campaign_source_request_scope(scope)
+    if coerced is None:
+        raise ValueError(CAMPAIGN_SOURCE_REQUEST_SCOPE_REQUIRED)
+
+    if coerced.scope_version != PRINTER_V1_CAMPAIGN_SOURCE_REQUEST_SCOPE_V1:
+        raise ValueError(CAMPAIGN_SOURCE_REQUEST_SCOPE_INVALID)
+
+    identities = (
+        coerced.execution_id,
+        coerced.campaign_id,
+        coerced.run_id,
+        coerced.cycle_id,
+    )
+    if any(not value for value in identities):
+        raise ValueError(CAMPAIGN_SOURCE_REQUEST_SCOPE_INVALID)
+
+    if not _is_valid_request_key_root_token(coerced.request_key_root):
+        raise ValueError(CAMPAIGN_SOURCE_REQUEST_SCOPE_INVALID)
+
+    expected_root = derive_campaign_source_request_key_root(coerced.execution_id)
+    if coerced.request_key_root != expected_root:
+        raise ValueError(CAMPAIGN_SOURCE_REQUEST_SCOPE_INVALID)
+
+    if (
+        coerced.request_key_root == LEGACY_STATIC_REQUEST_KEY_ROOT
+        or coerced.request_key_root.startswith(LEGACY_STATIC_REQUEST_KEY_ROOT)
+    ):
+        raise ValueError(LEGACY_STATIC_REQUEST_SCOPE_BLOCKED_OPERATIONALLY)
+
+    expected = {
+        "execution_id": execution_id,
+        "campaign_id": campaign_id,
+        "run_id": run_id,
+        "cycle_id": cycle_id,
+    }
+    actual = {
+        "execution_id": coerced.execution_id,
+        "campaign_id": coerced.campaign_id,
+        "run_id": coerced.run_id,
+        "cycle_id": coerced.cycle_id,
+    }
+    for key, expected_value in expected.items():
+        if expected_value is None:
+            continue
+        if str(expected_value).strip() != actual[key]:
+            raise ValueError(CAMPAIGN_SOURCE_REQUEST_SCOPE_IDENTITY_MISMATCH)
+
+    return coerced
+
+
+def validate_permanent_operational_request_prefixes(
+    *,
+    request_key_root: str,
+    discovery_request_key_prefix: str,
+    front_door_request_key_prefix: str,
+) -> None:
+    """Permanent operational mode may only use the typed root as both prefixes."""
+    discovery = str(discovery_request_key_prefix or "").strip()
+    front_door = str(front_door_request_key_prefix or "").strip()
+    root = str(request_key_root or "").strip()
+    for prefix in (discovery, front_door):
+        if (
+            prefix == LEGACY_STATIC_REQUEST_KEY_ROOT
+            or prefix.startswith(f"{LEGACY_STATIC_REQUEST_KEY_ROOT}")
+        ):
+            raise ValueError(LEGACY_STATIC_REQUEST_SCOPE_BLOCKED_OPERATIONALLY)
+    if discovery != root or front_door != root:
+        raise ValueError(CAMPAIGN_SOURCE_REQUEST_SCOPE_PREFIX_MISMATCH)
+
+
+def inspect_preexisting_source_request_scope_collision(
+    connection: sqlite3.Connection,
+    *,
+    request_key_root: str,
+    max_ids: int = MAX_RECONCILIATION_DETAIL_IDS,
+) -> dict[str, Any]:
+    """Block when any durable row already owns the invocation root."""
+    root = str(request_key_root or "").strip()
+    if not root:
+        raise ValueError(CAMPAIGN_SOURCE_REQUEST_SCOPE_INVALID)
+    try:
+        rows = connection.execute(
+            """
+            SELECT id, request_key
+            FROM printer_source_requests
+            WHERE request_key = ? OR request_key LIKE ?
+            ORDER BY id ASC
+            """,
+            (root, f"{root}%"),
+        ).fetchall()
+    except sqlite3.OperationalError as exc:
+        # Ephemeral fixture DBs (for example bare ``:memory:`` without
+        # migrations) have no source-request table. Treat as zero collision;
+        # production authoritative DBs always carry the table.
+        if "no such table" not in str(exc).lower():
+            raise
+        rows = []
+    ids: list[int] = []
+    for row in rows:
+        ids.append(int(row[0] if not hasattr(row, "keys") else row["id"]))
+    truncated = len(ids) > int(max_ids)
+    bounded = ids[: int(max_ids)]
+    if ids:
+        return {
+            "status": "BLOCKED",
+            "blocker": CAMPAIGN_SOURCE_REQUEST_SCOPE_ALREADY_EXISTS,
+            "count": len(ids),
+            "request_ids": bounded,
+            "truncated": truncated,
+            "request_key_root": root,
+            "detail": (
+                f"{CAMPAIGN_SOURCE_REQUEST_SCOPE_ALREADY_EXISTS}"
+                f":count={len(ids)}"
+                f":ids={','.join(str(x) for x in bounded)}"
+                + (":truncated=1" if truncated else ":truncated=0")
+            ),
+        }
+    return {
+        "status": "OK",
+        "blocker": None,
+        "count": 0,
+        "request_ids": [],
+        "truncated": False,
+        "request_key_root": root,
+        "detail": None,
+    }
+
+
+def _bounded_id_token(ids: Sequence[int], *, max_ids: int = MAX_RECONCILIATION_DETAIL_IDS) -> str:
+    ordered = sorted({int(x) for x in ids})
+    truncated = len(ordered) > max_ids
+    shown = ordered[:max_ids]
+    ids_part = ",".join(str(x) for x in shown)
+    return (
+        f"count={len(ordered)}:ids={ids_part}"
+        f":truncated={'1' if truncated else '0'}"
+    )
+
+
+def format_source_request_reconciliation_detail(
+    reconciliation: Mapping[str, Any],
+    *,
+    max_ids: int = MAX_RECONCILIATION_DETAIL_IDS,
+) -> str:
+    """Deterministic compact terminal detail for reconciliation failures."""
+    categories = list(reconciliation.get("mismatch_categories") or ())
+    if not categories:
+        single = str(
+            reconciliation.get("categorical_detail")
+            or reconciliation.get("blocker")
+            or CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH
+        )
+        categories = [single]
+    category_id_map: dict[str, Sequence[int]] = {
+        DURABLE_REQUEST_NOT_STAGE_REPORTED: list(
+            reconciliation.get("durable_only_not_stage")
+            or reconciliation.get("durable_not_stage_reported")
+            or ()
+        ),
+        DURABLE_REQUEST_NOT_MANIFESTED: list(
+            reconciliation.get("missing_from_manifest") or ()
+        ),
+        STAGE_REQUEST_NOT_DURABLE: list(
+            reconciliation.get("stage_only_not_durable")
+            or reconciliation.get("stage_reported_not_durable")
+            or ()
+        ),
+        STAGE_REQUEST_NOT_MANIFESTED: list(
+            reconciliation.get("missing_stage_reported_coverage") or ()
+        ),
+        MANIFEST_REQUEST_NOT_DURABLE: list(
+            reconciliation.get("extra_in_manifest") or ()
+        ),
+        DUPLICATE_COVERAGE_REQUEST_ID: list(
+            reconciliation.get("duplicate_coverage_request_ids")
+            or reconciliation.get("duplicate_request_ids")
+            or ()
+        ),
+        DUPLICATE_DURABLE_REQUEST_ID: list(
+            reconciliation.get("duplicate_durable_request_ids") or ()
+        ),
+        STAGE_OWNERSHIP_GAP: list(
+            reconciliation.get("stage_ownership_gaps") or ()
+        ),
+        CURRENT_STAGE_REQUEST_OUTSIDE_CAMPAIGN_SCOPE: list(
+            reconciliation.get("out_of_scope_stage_request_ids") or ()
+        ),
+    }
+    parts: list[str] = []
+    for category in categories:
+        if category == MULTIPLE_SOURCE_REQUEST_RECONCILIATION_DEFECTS:
+            continue
+        if category == STAGE_ACCOUNTING_BLOCKER:
+            blockers = reconciliation.get("stage_accounting_blockers") or ()
+            parts.append(
+                f"{STAGE_ACCOUNTING_BLOCKER}:count={len(list(blockers))}"
+            )
+            continue
+        ids = category_id_map.get(str(category)) or ()
+        if ids:
+            parts.append(f"{category}:{_bounded_id_token(ids, max_ids=max_ids)}")
+        else:
+            parts.append(str(category))
+    if not parts:
+        return str(
+            reconciliation.get("blocker")
+            or CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH
+        )
+    if len(parts) == 1:
+        return parts[0]
+    return (
+        f"{MULTIPLE_SOURCE_REQUEST_RECONCILIATION_DEFECTS}|"
+        + ";".join(parts)
+    )
+
+
+def classify_campaign_source_request_reconciliation_defects(
+    reconciliation: Mapping[str, Any],
+) -> list[str]:
+    """Ordered exact categories for every failed reconciliation relation."""
+    categories: list[str] = []
+    if reconciliation.get("out_of_scope_stage_request_ids"):
+        categories.append(CURRENT_STAGE_REQUEST_OUTSIDE_CAMPAIGN_SCOPE)
+    if reconciliation.get("durable_only_not_stage") or reconciliation.get(
+        "durable_not_stage_reported"
+    ):
+        categories.append(DURABLE_REQUEST_NOT_STAGE_REPORTED)
+    if reconciliation.get("missing_from_manifest"):
+        categories.append(DURABLE_REQUEST_NOT_MANIFESTED)
+    if reconciliation.get("stage_only_not_durable") or reconciliation.get(
+        "stage_reported_not_durable"
+    ):
+        categories.append(STAGE_REQUEST_NOT_DURABLE)
+    if reconciliation.get("missing_stage_reported_coverage"):
+        categories.append(STAGE_REQUEST_NOT_MANIFESTED)
+    if reconciliation.get("extra_in_manifest"):
+        categories.append(MANIFEST_REQUEST_NOT_DURABLE)
+    if reconciliation.get("duplicate_coverage_request_ids"):
+        categories.append(DUPLICATE_COVERAGE_REQUEST_ID)
+    elif reconciliation.get("duplicate_request_ids") and not reconciliation.get(
+        "duplicate_durable_request_ids"
+    ):
+        categories.append(DUPLICATE_COVERAGE_REQUEST_ID)
+    if reconciliation.get("duplicate_durable_request_ids"):
+        categories.append(DUPLICATE_DURABLE_REQUEST_ID)
+    if reconciliation.get("stage_ownership_gaps"):
+        categories.append(STAGE_OWNERSHIP_GAP)
+    if reconciliation.get("stage_accounting_blockers"):
+        categories.append(STAGE_ACCOUNTING_BLOCKER)
+    # Preserve order uniqueness.
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for item in categories:
+        if item in seen:
+            continue
+        seen.add(item)
+        ordered.append(item)
+    return ordered
+
+
+def load_scoped_stage_request_membership(
+    connection: sqlite3.Connection,
+    *,
+    request_key_root: str,
+    stage_request_ids: Sequence[int],
+) -> dict[str, list[int]]:
+    """Classify stage-reported IDs relative to the invocation root."""
+    root = str(request_key_root or "").strip()
+    proven: list[int] = []
+    out_of_scope: list[int] = []
+    not_durable: list[int] = []
+    for rid in sorted({int(x) for x in stage_request_ids}):
+        row = connection.execute(
+            """
+            SELECT id, request_key FROM printer_source_requests
+            WHERE id = ?
+            """,
+            (rid,),
+        ).fetchone()
+        if row is None:
+            not_durable.append(rid)
+            continue
+        key = str(row[1] if not hasattr(row, "keys") else row["request_key"])
+        if request_key_belongs_to_root(key, root):
+            proven.append(rid)
+        else:
+            out_of_scope.append(rid)
+    return {
+        "known_stage_request_ids_proven_durable": proven,
+        "out_of_scope_stage_request_ids": out_of_scope,
+        "stage_request_ids_not_durable": not_durable,
+    }
+
 
 def build_campaign_source_request_manifest(
     entries: Sequence[Mapping[str, Any]],
@@ -3725,27 +4173,69 @@ def load_durable_campaign_source_request_ids(
     *,
     request_key_prefixes: Sequence[str],
     known_request_ids: Sequence[int] | None = None,
+    request_key_root: str | None = None,
+    enforce_request_key_root: bool = False,
 ) -> list[int]:
     """Load database-proven durable Source Governor request IDs.
 
     Stage-reported IDs are never copied into the durable set. Each candidate
     ID must exist as a row in ``printer_source_requests``. Request-key prefix
     lookup may add other genuine durable IDs for the invocation.
+
+    When ``enforce_request_key_root`` is True (permanent operational scope),
+    only rows whose ``request_key`` belongs to ``request_key_root`` enter ``D``.
+    Historical rows under other roots never contaminate the current durable set.
     """
     ids: set[int] = set()
+    root = str(request_key_root or "").strip() or None
+    prefixes = list(request_key_prefixes or ())
+    if root and root not in prefixes:
+        prefixes = [root, *prefixes]
+
     candidates = sorted({int(rid) for rid in (known_request_ids or ())})
     if candidates:
         placeholders = ",".join("?" * len(candidates))
         rows = connection.execute(
             f"""
-            SELECT id FROM printer_source_requests
+            SELECT id, request_key FROM printer_source_requests
             WHERE id IN ({placeholders})
             ORDER BY id ASC
             """,
             tuple(candidates),
         ).fetchall()
         for row in rows:
+            rid = int(row[0] if not hasattr(row, "keys") else row["id"])
+            key = str(
+                row[1] if not hasattr(row, "keys") else row["request_key"]
+            )
+            if enforce_request_key_root and root:
+                if request_key_belongs_to_root(key, root):
+                    ids.add(rid)
+            else:
+                ids.add(rid)
+    for prefix in prefixes:
+        if not prefix:
+            continue
+        rows = connection.execute(
+            """
+            SELECT id FROM printer_source_requests
+            WHERE request_key = ? OR request_key LIKE ?
+            ORDER BY id ASC
+            """,
+            (str(prefix), f"{prefix}%"),
+        ).fetchall()
+        for row in rows:
             ids.add(int(row[0] if not hasattr(row, "keys") else row["id"]))
+    return sorted(ids)
+
+
+def load_prefix_lookup_request_ids(
+    connection: sqlite3.Connection,
+    *,
+    request_key_prefixes: Sequence[str],
+) -> list[int]:
+    """Durable IDs discovered solely by request-key prefix lookup."""
+    ids: set[int] = set()
     for prefix in request_key_prefixes:
         if not prefix:
             continue
@@ -3884,6 +4374,11 @@ def assemble_and_reconcile_campaign_source_requests(
     request_key_prefixes: Sequence[str] | None = None,
     extra_manifest_entries: Sequence[Mapping[str, Any]] | None = None,
     stage_accounting_blockers: Sequence[str] | None = None,
+    request_key_root: str | None = None,
+    request_scope_version: str | None = None,
+    campaign_source_request_scope: (
+        CampaignSourceRequestScope | Mapping[str, Any] | None
+    ) = None,
 ) -> dict[str, Any]:
     """Build durable IDs + stage-reported IDs + real coverage and reconcile.
 
@@ -3896,6 +4391,32 @@ def assemble_and_reconcile_campaign_source_requests(
     ``printer_source_requests`` row is proven.
     """
     diag = dict(diagnostics or {})
+    scope_obj: CampaignSourceRequestScope | None = None
+    scope_raw = campaign_source_request_scope or diag.get(
+        "campaign_source_request_scope"
+    )
+    if scope_raw is not None:
+        try:
+            scope_obj = _coerce_campaign_source_request_scope(scope_raw)
+        except ValueError:
+            scope_obj = None
+    root = str(
+        request_key_root
+        or (scope_obj.request_key_root if scope_obj is not None else "")
+        or diag.get("request_key_root")
+        or ""
+    ).strip() or None
+    scope_version = str(
+        request_scope_version
+        or (scope_obj.scope_version if scope_obj is not None else "")
+        or diag.get("request_scope_version")
+        or ""
+    ).strip() or None
+    prefixes = list(request_key_prefixes or ())
+    if root and root not in prefixes:
+        prefixes = [root, *prefixes]
+    enforce_root = bool(root)
+
     coverage = collect_stage_source_request_coverage(diag)
     if extra_manifest_entries:
         for item in extra_manifest_entries:
@@ -3904,17 +4425,38 @@ def assemble_and_reconcile_campaign_source_requests(
                 coverage.append(normalized)
     stage_reported_raw = collect_stage_reported_request_ids(diag)
     stage_reported = sorted({int(x) for x in stage_reported_raw})
+
+    membership: dict[str, list[int]] = {
+        "known_stage_request_ids_proven_durable": [],
+        "out_of_scope_stage_request_ids": [],
+        "stage_request_ids_not_durable": [],
+    }
+    if enforce_root and root is not None:
+        membership = load_scoped_stage_request_membership(
+            connection,
+            request_key_root=root,
+            stage_request_ids=stage_reported,
+        )
     # Independent durable set: only database-proven IDs (plus prefix lookup).
     durable = load_durable_campaign_source_request_ids(
         connection,
-        request_key_prefixes=list(request_key_prefixes or ()),
+        request_key_prefixes=prefixes,
         known_request_ids=stage_reported,
+        request_key_root=root,
+        enforce_request_key_root=enforce_root,
+    )
+    prefix_lookup_ids = load_prefix_lookup_request_ids(
+        connection,
+        request_key_prefixes=prefixes if prefixes else ((root,) if root else ()),
     )
     recon = reconcile_campaign_source_requests(
         durable_request_ids=durable,
         manifest_entries=coverage,
         stage_reported_request_ids=stage_reported,
         stage_reported_request_ids_raw=stage_reported_raw,
+        out_of_scope_stage_request_ids=membership.get(
+            "out_of_scope_stage_request_ids"
+        ),
     )
     # Generic all-stage accounting-blocker collector.
     stage_blockers = collect_stage_accounting_blockers(diag)
@@ -3935,18 +4477,48 @@ def assemble_and_reconcile_campaign_source_requests(
     recon["durable_not_stage_reported"] = list(
         recon.get("durable_only_not_stage") or ()
     )
+    recon["request_scope_version"] = scope_version
+    recon["request_key_root"] = root
+    recon["prefix_lookup_request_ids"] = list(prefix_lookup_ids)
+    recon["known_stage_request_ids_proven_durable"] = list(
+        membership.get("known_stage_request_ids_proven_durable") or ()
+    )
+    recon["out_of_scope_stage_request_ids"] = list(
+        membership.get("out_of_scope_stage_request_ids") or ()
+    )
+    if recon.get("out_of_scope_stage_request_ids"):
+        recon = dict(recon)
+        recon["status"] = "BLOCKED"
+        recon["blocker"] = CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH
     if recon.get("stage_only_not_durable"):
         recon = dict(recon)
         recon["status"] = "BLOCKED"
         recon["blocker"] = CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH
-        recon["categorical_detail"] = "STAGE_REPORTED_REQUEST_NOT_DURABLE"
     if stage_blockers:
         recon = dict(recon)
         recon["status"] = "BLOCKED"
         recon["blocker"] = CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH
         recon["stage_accounting_blockers"] = stage_blockers
-        if not recon.get("categorical_detail"):
-            recon["categorical_detail"] = "STAGE_ACCOUNTING_BLOCKER"
+    categories = classify_campaign_source_request_reconciliation_defects(recon)
+    if recon.get("status") != "OK":
+        if len(categories) > 1:
+            recon["categorical_detail"] = (
+                MULTIPLE_SOURCE_REQUEST_RECONCILIATION_DEFECTS
+            )
+        elif len(categories) == 1:
+            recon["categorical_detail"] = categories[0]
+        else:
+            recon["categorical_detail"] = (
+                CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH
+            )
+    else:
+        recon["categorical_detail"] = None
+    recon["mismatch_categories"] = categories
+    recon["terminal_detail"] = (
+        None
+        if recon.get("status") == "OK"
+        else format_source_request_reconciliation_detail(recon)
+    )
     recon["campaign_source_request_count"] = int(recon.get("request_count") or 0)
     recon["campaign_transport_operation_count"] = int(
         recon.get("transport_identity_count_total") or 0
@@ -3961,9 +4533,26 @@ def assemble_and_reconcile_campaign_source_requests(
         "status": recon.get("status"),
         "blocker": recon.get("blocker"),
         "categorical_detail": recon.get("categorical_detail"),
+        "mismatch_categories": list(categories),
+        "terminal_detail": recon.get("terminal_detail"),
+        "request_scope_version": scope_version,
+        "request_key_root": root,
+        "prefix_lookup_request_ids": list(prefix_lookup_ids),
+        "known_stage_request_ids_proven_durable": list(
+            recon.get("known_stage_request_ids_proven_durable") or ()
+        ),
+        "out_of_scope_stage_request_ids": list(
+            recon.get("out_of_scope_stage_request_ids") or ()
+        ),
         "missing_from_manifest": recon.get("missing_from_manifest"),
         "extra_in_manifest": recon.get("extra_in_manifest"),
         "duplicate_request_ids": recon.get("duplicate_request_ids"),
+        "duplicate_coverage_request_ids": recon.get(
+            "duplicate_coverage_request_ids"
+        ),
+        "duplicate_durable_request_ids": recon.get(
+            "duplicate_durable_request_ids"
+        ),
         "missing_stage_reported_coverage": recon.get(
             "missing_stage_reported_coverage"
         ),
@@ -3988,6 +4577,7 @@ def reconcile_campaign_source_requests(
     manifest_entries: Sequence[Mapping[str, Any]],
     stage_reported_request_ids: Sequence[int] | None = None,
     stage_reported_request_ids_raw: Sequence[int] | None = None,
+    out_of_scope_stage_request_ids: Sequence[int] | None = None,
 ) -> dict[str, Any]:
     """Require durable IDs == stage-reported IDs == coverage manifest IDs."""
     durable = sorted({int(x) for x in durable_request_ids})
@@ -4008,8 +4598,15 @@ def reconcile_campaign_source_requests(
     manifest_set = set(manifest_ids)
     missing_from_manifest = sorted(durable_set - manifest_set)
     extra_in_manifest = sorted(manifest_set - durable_set)
+    out_of_scope = sorted(
+        {int(x) for x in (out_of_scope_stage_request_ids or ())}
+    )
+    out_of_scope_set = set(out_of_scope)
     missing_stage_reported_coverage = sorted(stage_set - manifest_set)
-    stage_only_not_durable = sorted(stage_set - durable_set)
+    # Out-of-scope stage IDs are durable rows under a foreign root — they are
+    # not "non-durable". Categorize them separately and exclude from
+    # STAGE_REQUEST_NOT_DURABLE.
+    stage_only_not_durable = sorted(stage_set - durable_set - out_of_scope_set)
     durable_only_not_stage = sorted(durable_set - stage_set)
     stage_ownership_gaps = [
         entry["source_request_id"]
@@ -4024,6 +4621,7 @@ def reconcile_campaign_source_requests(
         and not stage_only_not_durable
         and not durable_only_not_stage
         and not stage_ownership_gaps
+        and not out_of_scope
         and len(list(durable_request_ids)) == len(set(int(x) for x in durable_request_ids))
     )
     duplicate_durable: list[int] = []
@@ -4048,8 +4646,10 @@ def reconcile_campaign_source_requests(
         or stage_only_not_durable
         or durable_only_not_stage
         or stage_ownership_gaps
+        or out_of_scope
     ):
         ok = False
+    duplicate_coverage = list(built.get("duplicate_request_ids") or ())
     return {
         "status": "OK" if ok else "BLOCKED",
         "blocker": None if ok else CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH,
@@ -4062,11 +4662,13 @@ def reconcile_campaign_source_requests(
         "stage_only_not_durable": stage_only_not_durable,
         "durable_only_not_stage": durable_only_not_stage,
         "stage_ownership_gaps": stage_ownership_gaps,
+        "out_of_scope_stage_request_ids": out_of_scope,
         "manifest": built["manifest"],
         "request_count": len(manifest_ids),
         "transport_identity_count_total": built.get("transport_identity_count_total", 0),
-        "duplicate_request_ids": list(built.get("duplicate_request_ids") or ())
-        + duplicate_durable,
+        "duplicate_request_ids": list(duplicate_coverage) + list(duplicate_durable),
+        "duplicate_coverage_request_ids": list(duplicate_coverage),
+        "duplicate_durable_request_ids": list(duplicate_durable),
         "invariant": (
             "set(durable request IDs) == set(stage-reported request IDs) == "
             "set(coverage manifest request IDs)"
@@ -4649,19 +5251,46 @@ __all__ = [
     "PoolReconciliation",
     "StageBudget",
     "CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH",
+    "PRINTER_V1_CAMPAIGN_SOURCE_REQUEST_SCOPE_V1",
+    "LEGACY_STATIC_REQUEST_KEY_ROOT",
+    "CAMPAIGN_SOURCE_REQUEST_SCOPE_REQUIRED",
+    "CAMPAIGN_SOURCE_REQUEST_SCOPE_INVALID",
+    "CAMPAIGN_SOURCE_REQUEST_SCOPE_IDENTITY_MISMATCH",
+    "CAMPAIGN_SOURCE_REQUEST_SCOPE_PREFIX_MISMATCH",
+    "LEGACY_STATIC_REQUEST_SCOPE_BLOCKED_OPERATIONALLY",
+    "CAMPAIGN_SOURCE_REQUEST_SCOPE_ALREADY_EXISTS",
+    "DURABLE_REQUEST_NOT_STAGE_REPORTED",
+    "DURABLE_REQUEST_NOT_MANIFESTED",
+    "STAGE_REQUEST_NOT_DURABLE",
+    "STAGE_REQUEST_NOT_MANIFESTED",
+    "MANIFEST_REQUEST_NOT_DURABLE",
+    "DUPLICATE_COVERAGE_REQUEST_ID",
+    "DUPLICATE_DURABLE_REQUEST_ID",
+    "STAGE_OWNERSHIP_GAP",
+    "STAGE_ACCOUNTING_BLOCKER",
+    "CURRENT_STAGE_REQUEST_OUTSIDE_CAMPAIGN_SCOPE",
+    "MULTIPLE_SOURCE_REQUEST_RECONCILIATION_DEFECTS",
+    "CampaignSourceRequestScope",
     "assemble_and_reconcile_campaign_source_requests",
     "build_campaign_source_request_manifest",
+    "build_campaign_source_request_scope",
     "build_source_request_coverage_manifest",
+    "classify_campaign_source_request_reconciliation_defects",
     "classify_exact_pool_liquidity_prefilter",
     "collect_stage_accounting_blockers",
     "collect_stage_reported_request_ids",
     "collect_stage_source_request_coverage",
+    "derive_campaign_source_request_key_root",
+    "format_source_request_reconciliation_detail",
     "freeze_eligible_reserve",
+    "inspect_preexisting_source_request_scope_collision",
     "interleave_candidate_observations",
     "load_durable_campaign_source_request_ids",
     "load_exact_market_states",
     "load_liquidity_unknown_candidates",
+    "load_prefix_lookup_request_ids",
     "load_retained_market_evidence",
+    "load_scoped_stage_request_membership",
     "merge_candidate_observations",
     "merge_protocol_confirmation_reports",
     "observation_reserve_depth_status",
@@ -4671,6 +5300,9 @@ __all__ = [
     "record_exact_market_transition",
     "record_fresh_pool_nominations",
     "reconcile_campaign_source_requests",
+    "request_key_belongs_to_root",
+    "validate_campaign_source_request_scope",
+    "validate_permanent_operational_request_prefixes",
     "reconcile_pool_identity",
     "resolve_dexscreener_mint_batch",
     "resolve_liquidity_evidence_expiry",
