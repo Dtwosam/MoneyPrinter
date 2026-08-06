@@ -1,0 +1,32 @@
+name: WINDOW_15M Checkpoint 2 preflight initialization proof
+
+on:
+  push:
+    branches:
+      - agent/v2-9-8b-window-15m-checkpoint-2-preflight-initialization-harness
+
+permissions:
+  contents: write
+
+jobs:
+  checkpoint-2-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      BASE_SHA: 0deba3c06d72499899b9c21bf9e71c89d5c8057c
+      STAGED_BRANCH: agent/v2-9-8b-window-15m-checkpoint-2-preflight-initialization-staged
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Native authenticated checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf ./* ./.??* 2>/dev/null || true
+          git clone --no-tags \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" .
+          git checkout "${GITHUB_SHA}"
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+
+      - name: Run exact offline Checkpoint 2 proof
+        shell: bash
+        run: bash .ci/window15m_checkpoint2/run_proof.sh
