@@ -1289,10 +1289,14 @@ def run_dexscreener_batch_market_resolution(
                     report["source_failure_ids"].append(int(gt_execution.failure_record.id))
                 gt_payload = gt_result.normalized_payload or {}
                 gt_transport_count = 0
+                gt_transport_keys: list[list[object]] = []
                 gt_measurement_failed = False
                 if isinstance(gt_payload, Mapping):
                     try:
                         before_gt = measured_ledger.source_transport_operations
+                        before_gt_len = len(
+                            list(getattr(measured_ledger, "transports", ()) or ())
+                        )
                         record_payload_transports(
                             measured_ledger,
                             gt_payload,
@@ -1300,6 +1304,9 @@ def run_dexscreener_batch_market_resolution(
                         )
                         gt_transport_count = int(
                             measured_ledger.source_transport_operations - before_gt
+                        )
+                        gt_transport_keys = _transport_identity_keys_from_ledger_delta(
+                            measured_ledger, before_count=before_gt_len
                         )
                     except Exception as gt_exc:
                         gt_measurement_failed = True
@@ -1331,6 +1338,7 @@ def run_dexscreener_batch_market_resolution(
                             else f"GECKOTERMINAL_RECONCILIATION|{fallback_index}"
                         ),
                         "transport_identity_count": gt_transport_count,
+                        "transport_identity_keys": gt_transport_keys,
                         "normalized_member_count": len(gt_pairs),
                         "terminal_status": (
                             "BLOCKED"
@@ -3151,36 +3159,19 @@ def _transport_identity_keys_from_ledger_delta(
     *,
     before_count: int,
 ) -> list[list[object]]:
-    """Serialize newly recorded ledger transport identities for one request."""
+    """Serialize one request's newly measured identities using the canonical key."""
+    from printer_v1.sources.measured_transport import (
+        MeasuredTransportError,
+        canonical_transport_identity_key,
+    )
+
     transports = list(getattr(ledger, "transports", ()) or ())
     keys: list[list[object]] = []
     for identity in transports[before_count:]:
-        if hasattr(identity, "as_dict"):
-            raw = identity.as_dict()
-        elif isinstance(identity, Mapping):
-            raw = dict(identity)
-        else:
-            continue
-        keys.append(
-            [
-                str(raw.get("stage") or ""),
-                str(raw.get("source_name") or ""),
-                str(raw.get("endpoint_owner") or ""),
-                str(raw.get("governed_request_kind") or ""),
-                str(raw.get("method_or_endpoint") or ""),
-                int(raw.get("within_request_ordinal") or 0),
-                str(raw.get("target_category") or ""),
-                None
-                if raw.get("target_identity") is None
-                else str(raw.get("target_identity")),
-                int(raw.get("response_bytes") or 0),
-                int(raw.get("normalized_rows") or 0),
-                str(raw.get("result") or "ATTEMPTED"),
-                None
-                if raw.get("reserved_from") is None
-                else str(raw.get("reserved_from")),
-            ]
-        )
+        try:
+            keys.append(list(canonical_transport_identity_key(identity)))
+        except MeasuredTransportError:
+            raise
     return keys
 
 
@@ -3505,6 +3496,13 @@ CURRENT_STAGE_REQUEST_OUTSIDE_CAMPAIGN_SCOPE = (
 MULTIPLE_SOURCE_REQUEST_RECONCILIATION_DEFECTS = (
     "MULTIPLE_SOURCE_REQUEST_RECONCILIATION_DEFECTS"
 )
+SOURCE_REQUEST_TRANSPORT_IDENTITIES_MISSING = "SOURCE_REQUEST_TRANSPORT_IDENTITIES_MISSING"
+SOURCE_REQUEST_TRANSPORT_IDENTITY_COUNT_MISMATCH = "SOURCE_REQUEST_TRANSPORT_IDENTITY_COUNT_MISMATCH"
+SOURCE_REQUEST_TRANSPORT_IDENTITY_MALFORMED = "SOURCE_REQUEST_TRANSPORT_IDENTITY_MALFORMED"
+SOURCE_REQUEST_DUPLICATE_TRANSPORT_IDENTITY = "SOURCE_REQUEST_DUPLICATE_TRANSPORT_IDENTITY"
+CAMPAIGN_DUPLICATE_TRANSPORT_IDENTITY_OWNERSHIP = (
+    "CAMPAIGN_DUPLICATE_TRANSPORT_IDENTITY_OWNERSHIP"
+)
 
 _PRINTABLE_ASCII_ROOT_RE = re.compile(r"^[\x21-\x7E]+$")
 
@@ -3810,6 +3808,21 @@ def format_source_request_reconciliation_detail(
                 f"{STAGE_ACCOUNTING_BLOCKER}:count={len(list(blockers))}"
             )
             continue
+        transport_blockers = [
+            item for item in reconciliation.get("transport_identity_blockers") or ()
+            if isinstance(item, Mapping) and str(item.get("code") or "") == str(category)
+        ]
+        if transport_blockers:
+            ids = [
+                int(item.get("source_request_id") or 0)
+                for item in transport_blockers
+                if int(item.get("source_request_id") or 0) > 0
+            ]
+            parts.append(
+                f"{category}:{_bounded_id_token(ids, max_ids=max_ids)}"
+                if ids else f"{category}:count={len(transport_blockers)}"
+            )
+            continue
         ids = category_id_map.get(str(category)) or ()
         if ids:
             parts.append(f"{category}:{_bounded_id_token(ids, max_ids=max_ids)}")
@@ -3861,6 +3874,9 @@ def classify_campaign_source_request_reconciliation_defects(
         categories.append(STAGE_OWNERSHIP_GAP)
     if reconciliation.get("stage_accounting_blockers"):
         categories.append(STAGE_ACCOUNTING_BLOCKER)
+    for blocker in reconciliation.get("transport_identity_blockers") or ():
+        if isinstance(blocker, Mapping) and blocker.get("code"):
+            categories.append(str(blocker["code"]))
     # Preserve order uniqueness.
     seen: set[str] = set()
     ordered: list[str] = []
@@ -3903,6 +3919,125 @@ def load_scoped_stage_request_membership(
         "known_stage_request_ids_proven_durable": proven,
         "out_of_scope_stage_request_ids": out_of_scope,
         "stage_request_ids_not_durable": not_durable,
+    }
+
+
+def validate_campaign_transport_identity_manifest(
+    entries: Sequence[Mapping[str, Any]],
+    *,
+    require_exact: bool,
+) -> dict[str, Any]:
+    """Validate and canonicalize exact per-request transport identity ownership."""
+    from printer_v1.sources.measured_transport import (
+        MeasuredTransportError,
+        canonical_transport_identity_key,
+    )
+
+    manifest: list[dict[str, Any]] = []
+    blockers: list[dict[str, Any]] = []
+    owners_by_key: dict[tuple[object, ...], dict[str, Any]] = {}
+    ordered_keys: list[tuple[object, ...]] = []
+    declared_total = 0
+
+    def _block(code: str, owner: Mapping[str, Any], **detail: Any) -> None:
+        blockers.append({
+            "code": code,
+            "source_request_id": int(owner.get("source_request_id") or 0),
+            "logical_stage_id": str(owner.get("logical_stage_id") or ""),
+            **detail,
+        })
+
+    for raw in entries:
+        if not isinstance(raw, Mapping) or raw.get("source_request_id") is None:
+            continue
+        entry = dict(raw)
+        owner = {
+            "source_request_id": int(entry["source_request_id"]),
+            "logical_stage_id": str(entry.get("logical_stage_id") or ""),
+            "source_name": str(entry.get("source_name") or ""),
+            "request_kind": str(entry.get("request_kind") or ""),
+        }
+        try:
+            declared = int(entry.get("transport_identity_count") or 0)
+        except (TypeError, ValueError):
+            declared = 0
+            if require_exact:
+                _block(SOURCE_REQUEST_TRANSPORT_IDENTITY_COUNT_MISMATCH, owner)
+        declared_total += declared
+        present = bool(
+            entry.get(
+                "_transport_identity_keys_present",
+                "transport_identity_keys" in entry,
+            )
+        )
+        raw_keys = entry.get("transport_identity_keys")
+        canonical: list[tuple[object, ...]] = []
+        within: set[tuple[object, ...]] = set()
+        if raw_keys is None:
+            raw_keys = ()
+        if not isinstance(raw_keys, (list, tuple)) or isinstance(raw_keys, (str, bytes)):
+            if require_exact:
+                _block(SOURCE_REQUEST_TRANSPORT_IDENTITY_MALFORMED, owner)
+            raw_keys = ()
+        for raw_key in raw_keys:
+            try:
+                key = canonical_transport_identity_key(raw_key)
+            except (MeasuredTransportError, TypeError, ValueError):
+                if require_exact:
+                    _block(SOURCE_REQUEST_TRANSPORT_IDENTITY_MALFORMED, owner)
+                continue
+            if key in within:
+                if require_exact:
+                    _block(
+                        SOURCE_REQUEST_DUPLICATE_TRANSPORT_IDENTITY,
+                        owner,
+                        transport_identity_key=list(key),
+                    )
+                continue
+            within.add(key)
+            canonical.append(key)
+        if require_exact and not present:
+            _block(SOURCE_REQUEST_TRANSPORT_IDENTITIES_MISSING, owner)
+        if require_exact and declared != len(canonical):
+            _block(
+                SOURCE_REQUEST_TRANSPORT_IDENTITY_COUNT_MISMATCH,
+                owner,
+                declared_count=declared,
+                exact_key_count=len(canonical),
+            )
+        for key in canonical:
+            prior = owners_by_key.get(key)
+            if prior is not None:
+                if require_exact:
+                    _block(
+                        CAMPAIGN_DUPLICATE_TRANSPORT_IDENTITY_OWNERSHIP,
+                        owner,
+                        transport_identity_key=list(key),
+                        first_owner=dict(prior),
+                        duplicate_owner=dict(owner),
+                    )
+                continue
+            owners_by_key[key] = dict(owner)
+            ordered_keys.append(key)
+        entry["transport_identity_keys"] = [list(key) for key in canonical]
+        entry.pop("_transport_identity_keys_present", None)
+        manifest.append(entry)
+
+    owners = [
+        {"transport_identity_key": list(key), **owners_by_key[key]}
+        for key in sorted(owners_by_key, key=repr)
+    ]
+    status = "BLOCKED" if require_exact and blockers else "OK"
+    return {
+        "status": status,
+        "transport_identity_completeness_status": (
+            status if require_exact else "LEGACY_UNCHECKED"
+        ),
+        "transport_identity_count_total": declared_total,
+        "transport_identity_keys": [list(key) for key in sorted(ordered_keys, key=repr)],
+        "transport_identity_owners": owners,
+        "transport_identity_blockers": blockers,
+        "manifest": manifest,
     }
 
 
@@ -4012,6 +4147,7 @@ def _normalize_stage_coverage_entry(raw: Mapping[str, Any]) -> dict[str, Any] | 
         "transport_identity_count": transport_count,
         "normalized_member_count": member_count,
         "transport_identity_keys": transport_keys,
+        "_transport_identity_keys_present": "transport_identity_keys" in raw,
     }
 
 
@@ -4484,6 +4620,12 @@ def assemble_and_reconcile_campaign_source_requests(
             normalized = _normalize_stage_coverage_entry(dict(item))
             if normalized is not None:
                 coverage.append(normalized)
+    transport_identity_validation = validate_campaign_transport_identity_manifest(
+        coverage,
+        require_exact=enforce_root,
+    )
+    if enforce_root:
+        coverage = list(transport_identity_validation["manifest"])
     stage_reported_raw = collect_stage_reported_request_ids(diag)
     stage_reported = sorted({int(x) for x in stage_reported_raw})
 
@@ -4521,6 +4663,21 @@ def assemble_and_reconcile_campaign_source_requests(
             "out_of_scope_stage_request_ids"
         ),
     )
+    recon["transport_identity_completeness_status"] = (
+        transport_identity_validation["transport_identity_completeness_status"]
+    )
+    recon["transport_identity_keys"] = list(
+        transport_identity_validation["transport_identity_keys"]
+    )
+    recon["transport_identity_owners"] = list(
+        transport_identity_validation["transport_identity_owners"]
+    )
+    recon["transport_identity_blockers"] = list(
+        transport_identity_validation["transport_identity_blockers"]
+    )
+    if transport_identity_validation["status"] != "OK":
+        recon["status"] = "BLOCKED"
+        recon["blocker"] = CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH
     # Generic all-stage accounting-blocker collector.
     stage_blockers = collect_stage_accounting_blockers(diag)
     if stage_accounting_blockers:
@@ -4623,6 +4780,12 @@ def assemble_and_reconcile_campaign_source_requests(
         "stage_reported_not_durable": recon.get("stage_reported_not_durable"),
         "durable_not_stage_reported": recon.get("durable_not_stage_reported"),
         "stage_accounting_blockers": recon.get("stage_accounting_blockers") or [],
+        "transport_identity_completeness_status": recon.get(
+            "transport_identity_completeness_status"
+        ),
+        "transport_identity_keys": list(recon.get("transport_identity_keys") or ()),
+        "transport_identity_owners": list(recon.get("transport_identity_owners") or ()),
+        "transport_identity_blockers": list(recon.get("transport_identity_blockers") or ()),
         "coverage_request_ids": coverage_ids,
         "durable_campaign_request_ids": list(
             recon.get("durable_campaign_request_ids") or ()

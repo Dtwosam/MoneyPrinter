@@ -150,6 +150,68 @@ class TransportOperationIdentity:
         }
 
 
+
+def canonical_transport_identity_key(identity: Any) -> tuple[object, ...]:
+    """Return the single canonical transport identity key used across Printer.
+
+    The key intentionally excludes mutable measurements and presentation fields.
+    Historical twelve-field serialized keys remain readable and are projected
+    onto the approved seven-field identity shape.
+    """
+    if isinstance(identity, TransportOperationIdentity):
+        raw: Any = identity.as_dict()
+    else:
+        raw = identity
+
+    if isinstance(raw, Mapping):
+        values = (
+            raw.get("stage"),
+            raw.get("source_name"),
+            raw.get("governed_request_kind"),
+            raw.get("method_or_endpoint"),
+            raw.get("within_request_ordinal"),
+            raw.get("target_category"),
+            raw.get("target_identity"),
+        )
+    elif isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+        parts = list(raw)
+        if len(parts) == 7:
+            values = tuple(parts)
+        elif len(parts) == 12:
+            # Historical durable key:
+            # stage, source, endpoint_owner, request_kind, method, ordinal,
+            # target_category, target_identity, bytes, rows, result, reservation.
+            values = (
+                parts[0], parts[1], parts[3], parts[4], parts[5], parts[6], parts[7]
+            )
+        else:
+            raise MeasuredTransportError("TRANSPORT_IDENTITY_MALFORMED")
+    else:
+        raise MeasuredTransportError("TRANSPORT_IDENTITY_MALFORMED")
+
+    stage, source, request_kind, method, ordinal_raw, target_category, target = values
+    required = (stage, source, request_kind, method, target_category)
+    if any(not str(value or "").strip() for value in required):
+        raise MeasuredTransportError("TRANSPORT_IDENTITY_MALFORMED")
+    if isinstance(ordinal_raw, bool):
+        raise MeasuredTransportError("TRANSPORT_IDENTITY_MALFORMED")
+    try:
+        ordinal = int(ordinal_raw)
+    except (TypeError, ValueError) as exc:
+        raise MeasuredTransportError("TRANSPORT_IDENTITY_MALFORMED") from exc
+    if ordinal < 0:
+        raise MeasuredTransportError("TRANSPORT_IDENTITY_MALFORMED")
+    return (
+        str(stage),
+        str(source),
+        str(request_kind),
+        str(method),
+        ordinal,
+        str(target_category),
+        None if target is None else str(target),
+    )
+
+
 @dataclass
 class MeasuredTransportLedger:
     """In-memory ledger for one campaign stage or discovery attempt.
@@ -180,20 +242,7 @@ class MeasuredTransportLedger:
         stage_ceiling: int | None = None,
         byte_ceiling: int | None = None,
     ) -> None:
-        key = (
-            identity.stage,
-            identity.source_name,
-            identity.endpoint_owner,
-            identity.governed_request_kind,
-            identity.method_or_endpoint,
-            identity.within_request_ordinal,
-            identity.target_category,
-            identity.target_identity,
-            int(identity.response_bytes),
-            int(identity.normalized_rows),
-            identity.result,
-            identity.reserved_from,
-        )
+        key = canonical_transport_identity_key(identity)
         if key in self._seen_keys:
             raise MeasuredTransportError("DUPLICATE_TRANSPORT_IDENTITY")
         ceiling = (

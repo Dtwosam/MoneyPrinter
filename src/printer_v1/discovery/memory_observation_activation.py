@@ -17,6 +17,7 @@ from typing import Any, Mapping, Sequence
 from printer_v1.discovery.permanent_discovery_availability import (
     SOLANA_INFRASTRUCTURE_MINTS,
 )
+from printer_v1.sources.measured_transport import canonical_transport_identity_key
 
 
 class ActivationPurpose(str, Enum):
@@ -149,21 +150,8 @@ class FrozenMemoryActivationSet:
 def transport_identity_key_from_mapping(
     raw: Mapping[str, Any],
 ) -> tuple[object, ...]:
-    """Serialize one measured transport identity into the exact durable key."""
-    return (
-        str(raw.get("stage") or ""),
-        str(raw.get("source_name") or ""),
-        str(raw.get("endpoint_owner") or ""),
-        str(raw.get("governed_request_kind") or ""),
-        str(raw.get("method_or_endpoint") or ""),
-        int(raw.get("within_request_ordinal") or 0),
-        str(raw.get("target_category") or ""),
-        None if raw.get("target_identity") is None else str(raw.get("target_identity")),
-        int(raw.get("response_bytes") or 0),
-        int(raw.get("normalized_rows") or 0),
-        str(raw.get("result") or "ATTEMPTED"),
-        None if raw.get("reserved_from") is None else str(raw.get("reserved_from")),
-    )
+    """Delegate durable transport identity serialization to the canonical owner."""
+    return canonical_transport_identity_key(raw)
 
 
 def transport_identity_keys_from_payload(
