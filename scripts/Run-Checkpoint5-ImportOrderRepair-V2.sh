@@ -130,7 +130,7 @@ replace_exact(
     "add explicit stale-test disposition marker",
 )
 
-path.write_text(text, encoding="utf-8", newline="\n")
+path.write_text(text, encoding="utf-8")
 PY
 
 chmod +x "$TMP_SCRIPT"
