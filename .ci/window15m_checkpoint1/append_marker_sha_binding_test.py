@@ -15,8 +15,8 @@ text = text.replace(old_env, new_env, 1)
 needle = '''            expected_marker_path=marker,\n            expected_exit_code='''
 replacement = '''            expected_marker_path=marker,\n            expected_marker_sha256=hashlib.sha256(\n                marker.read_bytes()\n            ).hexdigest(),\n            expected_exit_code='''
 count = text.count(needle)
-if count < 5:
-    raise SystemExit(f"expected multiple reader call anchors, found {count}")
+if count != 3:
+    raise SystemExit(f"expected exactly three reader call anchors, found {count}")
 text = text.replace(needle, replacement)
 addition = r'''
 
