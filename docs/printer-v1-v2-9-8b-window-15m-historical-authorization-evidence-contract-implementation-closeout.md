@@ -8,6 +8,7 @@
 | Baseline branch | `agent/v2-9-8b-window-15m-historical-authorization-trust-root-design-revision` |
 | Baseline full HEAD | `a80673db2187bc394872acd1941385307fe7e155` |
 | Implementation branch | `agent/v2-9-8b-window-15m-historical-authorization-evidence-contract-implementation` |
+| Final full HEAD | `b8f08d59e28e3a40a4d65474a418f0e5c7180979` |
 | Controlling design | R2 historical authorization trust root design |
 
 ## 1. Verdict
