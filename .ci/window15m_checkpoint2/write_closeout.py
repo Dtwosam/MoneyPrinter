@@ -6,6 +6,7 @@ from pathlib import Path
 focused = os.environ.get("FOCUSED_TEST_SUMMARY", "NOT_RECORDED")
 nearest = os.environ.get("NEAREST_TEST_SUMMARY", "NOT_RECORDED")
 nearest_files = os.environ.get("NEAREST_TEST_FILES", "NOT_RECORDED")
+preexisting = os.environ.get("PREEXISTING_TEST_SUMMARY", "NOT_RECORDED")
 
 path = Path(
     "docs/printer-v1-v2-9-8b-window-15m-checkpoint-2-preflight-initialization-closeout.md"
@@ -111,6 +112,17 @@ Selected nearest files:
 ```text
 {nearest_files}
 ```
+
+### Baseline-confirmed unrelated stale test
+
+The exact historical node below fails identically on the untouched Checkpoint 1 baseline and was deselected only after that baseline proof:
+
+```text
+tests/test_v2_9_7d_2a_campaign_persistence.py::CampaignPersistenceTests::test_failed_migration_leaves_no_partial_campaign_schema
+{preexisting}
+```
+
+Its fixture supplies only migration `031_operational_campaign_persistence.sql`, while the current migration owner correctly validates a contiguous `001..NNN` catalogue before attempting SQLite execution. The stale test still expects the older `sqlite3.OperationalError`. This checkpoint does not weaken the canonical migration catalogue or expand into historical fixture repair.
 
 Additional verification:
 
