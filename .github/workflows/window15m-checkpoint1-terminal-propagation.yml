@@ -26,10 +26,12 @@ jobs:
           cp .ci/window15m_checkpoint1/write_tests.py /tmp/write_tests.py
           cp .ci/window15m_checkpoint1/append_review_tests.py /tmp/append_review_tests.py
           cp .ci/window15m_checkpoint1/append_call_order_test.py /tmp/append_call_order_test.py
+          cp .ci/window15m_checkpoint1/append_marker_sha_binding_test.py /tmp/append_marker_sha_binding_test.py
           cp .ci/window15m_checkpoint1/apply_repair.py /tmp/apply_repair.py
           cp .ci/window15m_checkpoint1/fix_applicator.py /tmp/fix_applicator.py
           cp .ci/window15m_checkpoint1/apply_review_fix.py /tmp/apply_review_fix.py
           cp .ci/window15m_checkpoint1/apply_call_order_fix.py /tmp/apply_call_order_fix.py
+          cp .ci/window15m_checkpoint1/apply_marker_sha_binding_fix.py /tmp/apply_marker_sha_binding_fix.py
           cp .ci/window15m_checkpoint1/write_closeout.py /tmp/write_closeout.py
 
       - name: Reset executable tree to exact rolling design tip
@@ -52,7 +54,7 @@ jobs:
           apply_migrations(Path("data/printer_v1.sqlite3"))
           PY
 
-      - name: Write Checkpoint 1 regression tests
+      - name: Write initial Checkpoint 1 regression tests
         run: |
           python /tmp/write_tests.py
           python /tmp/append_review_tests.py
@@ -109,6 +111,25 @@ jobs:
 
       - name: Apply provenance reporting-binding call-order fix
         run: python /tmp/apply_call_order_fix.py
+
+      - name: Add exact marker SHA binding regression
+        run: python /tmp/append_marker_sha_binding_test.py
+
+      - name: Verify marker SHA binding RED
+        shell: bash
+        run: |
+          set +e
+          python -m pytest \
+            tests/test_v2_9_8b_window_15m_child_terminal_propagation.py::test_child_binding_rejects_marker_drift_from_wrapper_validated_sha \
+            -q > /tmp/marker-sha-red.log 2>&1
+          code=$?
+          set -e
+          cat /tmp/marker-sha-red.log
+          test "$code" -ne 0
+          grep -q 'DID NOT RAISE' /tmp/marker-sha-red.log
+
+      - name: Apply exact marker SHA binding fix
+        run: python /tmp/apply_marker_sha_binding_fix.py
 
       - name: Run focused child and wrapper tests
         shell: bash
