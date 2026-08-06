@@ -28,7 +28,7 @@ once(
 )
 once(
     "EXPECTED=$'M\\tsrc/printer_v1/memory/clean_object_promotion.py\\nM\\tsrc/printer_v1/operator_cli/lane_x8_5m_support_integration.py\\nM\\tsrc/printer_v1/operator_cli/one_command_15m_factory.py\\nD\\tscripts/Run-Checkpoint6-CleanMemoryRepair.sh\\nM\\ttests/test_post_rc_lane_e2z_clean_memory_creation.py'",
-    "EXPECTED=$'M\\tsrc/printer_v1/memory/clean_object_promotion.py\\nM\\tsrc/printer_v1/operator_cli/lane_x8_5m_support_integration.py\\nM\\tsrc/printer_v1/operator_cli/one_command_15m_factory.py\\nD\\tscripts/Run-Checkpoint6-CleanMemoryRepair-V2.sh\\nD\\tscripts/Run-Checkpoint6-CleanMemoryRepair.sh\\nM\\ttests/test_post_rc_lane_e2z_clean_memory_creation.py'",
+    "EXPECTED=$'M\\tsrc/printer_v1/memory/clean_object_promotion.py\\nM\\tsrc/printer_v1/operator_cli/checkpoint6_event_time_5m.py\\nM\\tsrc/printer_v1/operator_cli/lane_x8_5m_support_integration.py\\nM\\tsrc/printer_v1/operator_cli/one_command_15m_factory.py\\nD\\tscripts/Run-Checkpoint6-CleanMemoryRepair-V2.sh\\nD\\tscripts/Run-Checkpoint6-CleanMemoryRepair.sh\\nM\\ttests/test_post_rc_lane_e2z_clean_memory_creation.py'",
 )
 once(
     'ACTUAL="$(git status --short | sed -E \'s/^(.)(.) /\\1\\2\\t/\' | sed $\'s/^M \\t/M\\t/; s/^D \\t/D\\t/\' | LC_ALL=C sort)"',
@@ -37,6 +37,14 @@ once(
 once(
     "if ! grep -Eq '4 failed' \"$RED_WT/red.log\"; then\n  echo \"CHECKPOINT6_RED_BLOCKED: expected exactly four fail-first failures\" >&2\n  exit 1\nfi\n",
     "if ! grep -Eq 'failed|ERROR' \"$RED_WT/red.log\"; then\n  echo \"CHECKPOINT6_RED_BLOCKED: fail-first run did not report a failure\" >&2\n  exit 1\nfi\n",
+)
+once(
+    'print("CHECKPOINT6_EXACT_REPAIR_EDIT_PASS")\nPY',
+    '''support_helper = "src/printer_v1/operator_cli/checkpoint6_event_time_5m.py"\nreplace_once(\n    support_helper,\n    '    raw["support_only"] = True\\n',\n    '    raw["verdict"] = SupportCaptureVerdict.CAPTURE_SUPPORT.value\\n'\n    '    raw["future_main_window_outcome_used"] = False\\n'\n    '    raw["support_only"] = True\\n',\n)\n\nprint("CHECKPOINT6_EXACT_REPAIR_EDIT_PASS")\nPY''',
+)
+once(
+    'git add \\\n  src/printer_v1/memory/clean_object_promotion.py \\\n',
+    'git add \\\n  src/printer_v1/memory/clean_object_promotion.py \\\n  src/printer_v1/operator_cli/checkpoint6_event_time_5m.py \\\n',
 )
 once(
     '  scripts/Run-Checkpoint6-CleanMemoryRepair.sh\n',
