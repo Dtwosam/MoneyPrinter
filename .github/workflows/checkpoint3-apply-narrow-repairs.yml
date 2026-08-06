@@ -1,0 +1,77 @@
+name: Apply Checkpoint 3 narrow repairs
+
+on:
+  push:
+    branches:
+      - agent/v2-9-8b-window-15m-checkpoint-3-discovery-selection-accounting
+
+permissions:
+  contents: write
+
+jobs:
+  apply-repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/v2-9-8b-window-15m-checkpoint-3-discovery-selection-accounting
+          fetch-depth: 0
+
+      - name: Apply exact guarded substitutions
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          combined = Path("src/printer_v1/discovery/combined_executor.py")
+          text = combined.read_text(encoding="utf-8")
+
+          replacements = [
+              (
+                  '''                "HANDOFF_DURING_SECOND",\n                "FIRST_15M_JOB_FAILED",''',
+                  '''                "HANDOFF_DURING_SECOND",\n                "PAIR_TOKEN_IDENTITY_MISMATCH",\n                "FIRST_15M_JOB_FAILED",''',
+              ),
+              (
+                  '''        if "direct" in fixtures.provider_failures_injected:\n            fail_id = self._store_failure(\n                connection,\n                usage,\n                source_name="solana_rpc",\n                request_kind="pumpfun_create_event_subscription",\n                failure_type=fixtures.provider_failures_injected["direct"],\n                now=now,\n            )\n            req = self._governed_request(\n                connection,\n                usage,\n                source_name="solana_rpc",\n                request_kind="pumpfun_create_event_subscription",\n                now=now,\n            )''',
+                  '''        if "direct" in fixtures.provider_failures_injected:\n            req = self._governed_request(\n                connection,\n                usage,\n                source_name="solana_rpc",\n                request_kind="pumpfun_create_event_subscription",\n                now=now,\n            )\n            fail_id = self._store_failure(\n                connection,\n                usage,\n                source_name="solana_rpc",\n                request_kind="pumpfun_create_event_subscription",\n                failure_type=fixtures.provider_failures_injected["direct"],\n                now=now,\n            )''',
+              ),
+              (
+                  '''        pair_row = connection.execute(\n            "SELECT id FROM printer_pairs WHERE pair_address = ?",\n            (pool,),\n        ).fetchone()\n        if pair_row is None:\n            cursor = connection.execute(\n                """\n                INSERT INTO printer_pairs(token_id, pair_address, base_token_mint)\n                VALUES (?, ?, ?)\n                """,\n                (token_id, pool, mint),\n            )\n            pair_id = int(cursor.lastrowid)\n        else:\n            pair_id = int(pair_row["id"])''',
+                  '''        pair_row = connection.execute(\n            "SELECT id, token_id, base_token_mint "\n            "FROM printer_pairs WHERE pair_address = ?",\n            (pool,),\n        ).fetchone()\n        if pair_row is None:\n            cursor = connection.execute(\n                """\n                INSERT INTO printer_pairs(token_id, pair_address, base_token_mint)\n                VALUES (?, ?, ?)\n                """,\n                (token_id, pool, mint),\n            )\n            pair_id = int(cursor.lastrowid)\n        else:\n            if (\n                int(pair_row["token_id"]) != token_id\n                or str(pair_row["base_token_mint"]) != mint\n            ):\n                raise CombinedDiscoveryError("PAIR_TOKEN_IDENTITY_MISMATCH")\n            pair_id = int(pair_row["id"])''',
+              ),
+          ]
+
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"combined_executor guarded replacement count={count}")
+              text = text.replace(old, new, 1)
+          combined.write_text(text, encoding="utf-8")
+
+          permanent = Path(
+              "src/printer_v1/discovery/permanent_discovery_availability.py"
+          )
+          text = permanent.read_text(encoding="utf-8")
+          old = '    return key == root or key.startswith(f"{root}")'
+          new = '    return key == root or key.startswith(f"{root}-")'
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(
+                  f"permanent_discovery guarded replacement count={count}"
+              )
+          permanent.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
+
+      - name: Remove one-shot workflow and commit
+        shell: bash
+        run: |
+          rm -f .github/workflows/checkpoint3-apply-narrow-repairs.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/printer_v1/discovery/combined_executor.py \
+                  src/printer_v1/discovery/permanent_discovery_availability.py \
+                  .github/workflows/checkpoint3-apply-narrow-repairs.yml
+          git diff --cached --check
+          git commit -m "Repair Checkpoint 3 discovery selection accounting"
+          git push origin HEAD:agent/v2-9-8b-window-15m-checkpoint-3-discovery-selection-accounting
