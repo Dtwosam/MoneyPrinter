@@ -4184,13 +4184,21 @@ def load_durable_campaign_source_request_ids(
 
     When ``enforce_request_key_root`` is True (permanent operational scope),
     only rows whose ``request_key`` belongs to ``request_key_root`` enter ``D``.
-    Historical rows under other roots never contaminate the current durable set.
+    The root filter applies to **both** known-ID lookup and prefix lookup so no
+    foreign-root row can enter ``D`` through any path.
     """
     ids: set[int] = set()
     root = str(request_key_root or "").strip() or None
     prefixes = list(request_key_prefixes or ())
     if root and root not in prefixes:
         prefixes = [root, *prefixes]
+
+    def _accept(rid: int, key: str) -> None:
+        if enforce_request_key_root and root:
+            if request_key_belongs_to_root(key, root):
+                ids.add(rid)
+            return
+        ids.add(rid)
 
     candidates = sorted({int(rid) for rid in (known_request_ids or ())})
     if candidates:
@@ -4208,24 +4216,24 @@ def load_durable_campaign_source_request_ids(
             key = str(
                 row[1] if not hasattr(row, "keys") else row["request_key"]
             )
-            if enforce_request_key_root and root:
-                if request_key_belongs_to_root(key, root):
-                    ids.add(rid)
-            else:
-                ids.add(rid)
+            _accept(rid, key)
     for prefix in prefixes:
         if not prefix:
             continue
         rows = connection.execute(
             """
-            SELECT id FROM printer_source_requests
+            SELECT id, request_key FROM printer_source_requests
             WHERE request_key = ? OR request_key LIKE ?
             ORDER BY id ASC
             """,
             (str(prefix), f"{prefix}%"),
         ).fetchall()
         for row in rows:
-            ids.add(int(row[0] if not hasattr(row, "keys") else row["id"]))
+            rid = int(row[0] if not hasattr(row, "keys") else row["id"])
+            key = str(
+                row[1] if not hasattr(row, "keys") else row["request_key"]
+            )
+            _accept(rid, key)
     return sorted(ids)
 
 
@@ -4233,22 +4241,37 @@ def load_prefix_lookup_request_ids(
     connection: sqlite3.Connection,
     *,
     request_key_prefixes: Sequence[str],
+    request_key_root: str | None = None,
+    enforce_request_key_root: bool = False,
 ) -> list[int]:
-    """Durable IDs discovered solely by request-key prefix lookup."""
+    """Durable IDs discovered solely by request-key prefix lookup.
+
+    When ``enforce_request_key_root`` is True, only rows belonging to
+    ``request_key_root`` are returned (never foreign-root contamination).
+    """
     ids: set[int] = set()
+    root = str(request_key_root or "").strip() or None
     for prefix in request_key_prefixes:
         if not prefix:
             continue
         rows = connection.execute(
             """
-            SELECT id FROM printer_source_requests
+            SELECT id, request_key FROM printer_source_requests
             WHERE request_key = ? OR request_key LIKE ?
             ORDER BY id ASC
             """,
             (str(prefix), f"{prefix}%"),
         ).fetchall()
         for row in rows:
-            ids.add(int(row[0] if not hasattr(row, "keys") else row["id"]))
+            rid = int(row[0] if not hasattr(row, "keys") else row["id"])
+            key = str(
+                row[1] if not hasattr(row, "keys") else row["request_key"]
+            )
+            if enforce_request_key_root and root:
+                if request_key_belongs_to_root(key, root):
+                    ids.add(rid)
+            else:
+                ids.add(rid)
     return sorted(ids)
 
 
@@ -4389,33 +4412,71 @@ def assemble_and_reconcile_campaign_source_requests(
 
     Stage-reported IDs are never treated as durable until a
     ``printer_source_requests`` row is proven.
+
+    When either ``campaign_source_request_scope`` or ``request_key_root`` is
+    supplied (argument or diagnostics), scoped enforcement is active: a valid
+    typed scope is required, prefix lookup uses exactly
+    ``[scope.request_key_root]``, and foreign prefixes/roots fail closed with a
+    stable scope blocker before set reconciliation.
     """
     diag = dict(diagnostics or {})
-    scope_obj: CampaignSourceRequestScope | None = None
-    scope_raw = campaign_source_request_scope or diag.get(
-        "campaign_source_request_scope"
+    scope_input = (
+        campaign_source_request_scope
+        if campaign_source_request_scope is not None
+        else diag.get("campaign_source_request_scope")
     )
-    if scope_raw is not None:
-        try:
-            scope_obj = _coerce_campaign_source_request_scope(scope_raw)
-        except ValueError:
-            scope_obj = None
-    root = str(
-        request_key_root
-        or (scope_obj.request_key_root if scope_obj is not None else "")
-        or diag.get("request_key_root")
-        or ""
-    ).strip() or None
-    scope_version = str(
-        request_scope_version
-        or (scope_obj.scope_version if scope_obj is not None else "")
-        or diag.get("request_scope_version")
-        or ""
-    ).strip() or None
-    prefixes = list(request_key_prefixes or ())
-    if root and root not in prefixes:
-        prefixes = [root, *prefixes]
-    enforce_root = bool(root)
+    explicit_root_param = (
+        str(request_key_root).strip() if request_key_root is not None else ""
+    ) or None
+    diagnostic_root = str(diag.get("request_key_root") or "").strip() or None
+    scoped_enforcement = (
+        scope_input is not None
+        or explicit_root_param is not None
+        or diagnostic_root is not None
+    )
+
+    scope_obj: CampaignSourceRequestScope | None = None
+    root: str | None = None
+    scope_version: str | None = None
+    prefixes: list[str]
+    enforce_root: bool
+
+    if scoped_enforcement:
+        # Fail closed: do not catch invalid scope and continue unscoped.
+        if scope_input is None:
+            raise ValueError(CAMPAIGN_SOURCE_REQUEST_SCOPE_REQUIRED)
+        scope_obj = validate_campaign_source_request_scope(scope_input)
+        root = scope_obj.request_key_root
+        scope_version = scope_obj.scope_version
+        if explicit_root_param is not None and explicit_root_param != root:
+            raise ValueError(CAMPAIGN_SOURCE_REQUEST_SCOPE_PREFIX_MISMATCH)
+        if diagnostic_root is not None and diagnostic_root != root:
+            raise ValueError(CAMPAIGN_SOURCE_REQUEST_SCOPE_PREFIX_MISMATCH)
+        if (
+            request_scope_version is not None
+            and str(request_scope_version).strip()
+            and str(request_scope_version).strip() != scope_version
+        ):
+            raise ValueError(CAMPAIGN_SOURCE_REQUEST_SCOPE_INVALID)
+        caller_prefixes = [
+            str(p).strip()
+            for p in (request_key_prefixes or ())
+            if str(p).strip()
+        ]
+        for prefix in caller_prefixes:
+            if prefix != root:
+                raise ValueError(CAMPAIGN_SOURCE_REQUEST_SCOPE_PREFIX_MISMATCH)
+        # Canonical prefix set only — never merge foreign caller prefixes.
+        prefixes = [root]
+        enforce_root = True
+    else:
+        # Legacy unscoped fixture path: multi-prefix behavior retained.
+        prefixes = [
+            str(p).strip()
+            for p in (request_key_prefixes or ())
+            if str(p).strip()
+        ]
+        enforce_root = False
 
     coverage = collect_stage_source_request_coverage(diag)
     if extra_manifest_entries:
@@ -4447,7 +4508,9 @@ def assemble_and_reconcile_campaign_source_requests(
     )
     prefix_lookup_ids = load_prefix_lookup_request_ids(
         connection,
-        request_key_prefixes=prefixes if prefixes else ((root,) if root else ()),
+        request_key_prefixes=prefixes if prefixes else (),
+        request_key_root=root,
+        enforce_request_key_root=enforce_root,
     )
     recon = reconcile_campaign_source_requests(
         durable_request_ids=durable,
