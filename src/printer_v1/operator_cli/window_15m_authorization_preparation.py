@@ -32,6 +32,7 @@ from printer_v1.operator_cli.git_provenance_authorization_manifest import (
     validate_git_provenance_manifest_pre_marker,
 )
 from printer_v1.operator_cli.window_15m_one_shot_wrapper import (
+    APPLICATION_ROOT,
     OneShotWrapperError,
     _resolve_authorization,
     build_manifest_bytes,
@@ -42,21 +43,128 @@ class AuthorizationPreparationError(RuntimeError):
     """Fail-closed non-consuming preparation parity error."""
 
 
+def _path_is_or_inside(candidate: Path, boundary: Path) -> bool:
+    """Return True when candidate is boundary or a strict descendant."""
+    if candidate == boundary:
+        return True
+    try:
+        return candidate.is_relative_to(boundary)
+    except (ValueError, AttributeError):
+        return False
+
+
+def _validate_temp_parent(
+    *,
+    temporary_parent: str | Path,
+    repository_root: Path,
+    application_root: Path,
+) -> Path:
+    """Resolve and validate the temporary parent before any directory creation.
+
+    Blocks when the parent is unavailable, a symlink, inside the repository, or
+    inside the application root.
+    """
+    raw = Path(os.path.expanduser(os.fspath(temporary_parent)))
+    if os.path.islink(raw):
+        raise AuthorizationPreparationError(
+            "temporary preparation parent must not be a symlink"
+        )
+    if not raw.exists() or not raw.is_dir():
+        raise AuthorizationPreparationError(
+            "temporary preparation parent is unavailable"
+        )
+    # Reject symlink ancestors that would launder placement under a boundary.
+    walked = raw
+    for _ in range(len(raw.parts) + 2):
+        if os.path.islink(walked):
+            raise AuthorizationPreparationError(
+                "temporary preparation parent path contains a symlink component"
+            )
+        if walked.parent == walked:
+            break
+        walked = walked.parent
+
+    resolved = raw.resolve()
+    if os.path.islink(resolved):
+        raise AuthorizationPreparationError(
+            "temporary preparation parent must not be a symlink"
+        )
+    if not resolved.is_dir():
+        raise AuthorizationPreparationError(
+            "temporary preparation parent is unavailable"
+        )
+    if _path_is_or_inside(resolved, repository_root):
+        raise AuthorizationPreparationError(
+            "temporary preparation parent must live outside the repository"
+        )
+    if _path_is_or_inside(resolved, application_root):
+        raise AuthorizationPreparationError(
+            "temporary preparation parent must live outside APPLICATION_ROOT"
+        )
+    return resolved
+
+
+def _validate_created_temp_dir(
+    created: Path,
+    *,
+    repository_root: Path,
+    application_root: Path,
+    temporary_parent: Path,
+) -> Path:
+    """Revalidate the created temporary directory before any write."""
+    if os.path.islink(created):
+        raise AuthorizationPreparationError(
+            "temporary preparation directory must not be a symlink"
+        )
+    if not created.is_dir():
+        raise AuthorizationPreparationError(
+            "temporary preparation directory is unavailable"
+        )
+    resolved = created.resolve()
+    if not _path_is_or_inside(resolved, temporary_parent):
+        raise AuthorizationPreparationError(
+            "temporary preparation directory escaped its validated parent"
+        )
+    if _path_is_or_inside(resolved, repository_root):
+        raise AuthorizationPreparationError(
+            "temporary preparation directory must live outside the repository"
+        )
+    if _path_is_or_inside(resolved, application_root):
+        raise AuthorizationPreparationError(
+            "temporary preparation directory must live outside APPLICATION_ROOT"
+        )
+    return resolved
+
+
 def prepare_git_provenance_authorization_parity(
     *,
     repository_root: str | Path,
     authorization_file: str | Path,
     authorization_sha256: str,
     created_at: str | None = None,
+    application_root: str | Path | None = None,
+    temporary_parent: str | Path | None = None,
 ) -> dict[str, Any]:
     """Build and pre-marker-validate using exact production functions only.
 
-    Temporary manifest bytes are written outside the repository and outside any
-    application root. The temporary directory is removed in ``finally``.
+    Temporary manifest bytes are written only beneath a validated temporary
+    parent that is outside the repository and outside APPLICATION_ROOT. The
+    temporary directory is removed in ``finally``.
     """
     root = Path(repository_root).resolve()
     if not root.is_dir():
         raise AuthorizationPreparationError("repository root is unavailable")
+
+    # Canonical application-root identity for containment. The directory need
+    # not exist yet; only its resolved path identity is used to refuse temp
+    # placement under APPLICATION_ROOT.
+    app_root = Path(
+        os.path.expanduser(os.fspath(application_root or APPLICATION_ROOT))
+    ).resolve()
+    if _path_is_or_inside(app_root, root):
+        raise AuthorizationPreparationError(
+            "application root must live outside the repository"
+        )
 
     try:
         authorization_path, document, authorization_id, _migration_id = (
@@ -90,18 +198,28 @@ def prepare_git_provenance_authorization_parity(
                 f"manifest construction blocked: {exc}"
             ) from exc
 
-        # NamedTemporaryDirectory parent is the process temp root, never the
-        # repository or APPLICATION_ROOT.
-        temp_dir = tempfile.mkdtemp(prefix="printer-v1-window15m-prep-")
-        temp_root = Path(temp_dir)
-        if temp_root == root or root in temp_root.parents:
-            raise AuthorizationPreparationError(
-                "temporary preparation directory must live outside the repository"
-            )
-        if temp_root.is_relative_to(root):
-            raise AuthorizationPreparationError(
-                "temporary preparation directory must live outside the repository"
-            )
+        proposed_parent = (
+            temporary_parent
+            if temporary_parent is not None
+            else Path(tempfile.gettempdir())
+        )
+        validated_parent = _validate_temp_parent(
+            temporary_parent=proposed_parent,
+            repository_root=root,
+            application_root=app_root,
+        )
+        # Create only after the parent has been proven safe.
+        temp_dir = tempfile.mkdtemp(
+            prefix="printer-v1-window15m-prep-",
+            dir=str(validated_parent),
+        )
+        temp_root = _validate_created_temp_dir(
+            Path(temp_dir),
+            repository_root=root,
+            application_root=app_root,
+            temporary_parent=validated_parent,
+        )
+
         manifest_path = temp_root / "git-provenance-manifest.json"
         with manifest_path.open("xb") as handle:
             handle.write(manifest_bytes)

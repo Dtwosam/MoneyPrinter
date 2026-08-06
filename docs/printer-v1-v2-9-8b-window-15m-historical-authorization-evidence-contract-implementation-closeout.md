@@ -8,8 +8,11 @@
 | Baseline branch | `agent/v2-9-8b-window-15m-historical-authorization-trust-root-design-revision` |
 | Baseline full HEAD | `a80673db2187bc394872acd1941385307fe7e155` |
 | Implementation branch | `agent/v2-9-8b-window-15m-historical-authorization-evidence-contract-implementation` |
-| Final full HEAD | `6a5be245ac6c30f6ebf49505adc5afc98a33356a` |
+| Atomic implementation commit | `6a5be245ac6c30f6ebf49505adc5afc98a33356a` |
+| Follow-up repair baseline | `92881743d0b34c0afcd1224480782f3f7f82ea87` |
 | Controlling design | R2 historical authorization trust root design |
+
+Readiness lanes must resolve and bind the **live branch tip** after any follow-up repair. Do not treat the atomic implementation commit as the final branch tip if later identity/closeout commits exist on the branch.
 
 ## 1. Verdict
 

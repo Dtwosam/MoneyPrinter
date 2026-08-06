@@ -635,6 +635,62 @@ def _cleanup_pre_marker_staging(staging_dir: Path) -> str | None:
     return None
 
 
+def _cleanup_invocation_empty_canonical(canonical_dir: Path) -> str | None:
+    """Remove an empty canonical directory created by this invocation only.
+
+    Uses ``rmdir`` exclusively. Never recursively deletes. Never removes a
+    pre-existing, non-empty, or marker-bearing directory. Never implies
+    consumption. Returns a secondary cleanup blocker message, or None.
+    """
+    if os.path.islink(canonical_dir):
+        return "canonical path is a symlink; cleanup refused"
+    if not canonical_dir.exists():
+        return None
+    if not canonical_dir.is_dir():
+        return "canonical path is not a directory; cleanup refused"
+    marker = canonical_dir / "application-marker.json"
+    if marker.exists() or os.path.lexists(marker):
+        return "canonical directory contains a marker; cleanup refused"
+    try:
+        entries = list(os.scandir(canonical_dir))
+    except OSError as exc:
+        return f"canonical directory could not be listed: {exc}"
+    if entries:
+        return (
+            "canonical directory is not empty; cleanup refused: "
+            + ", ".join(sorted(entry.name for entry in entries))
+        )
+    try:
+        canonical_dir.rmdir()
+    except OSError as exc:
+        return f"empty canonical directory could not be removed: {exc}"
+    return None
+
+
+def _attach_secondary_cleanup_blocker(original: BaseException, *, field: str, message: str) -> None:
+    """Attach a secondary cleanup blocker without replacing the original cause.
+
+    The original exception type and message remain controlling. The secondary
+    message is stored on the named attribute and, when available, as an
+    exception note.
+    """
+    existing = getattr(original, field, None)
+    if existing:
+        combined = f"{existing}; {message}"
+    else:
+        combined = message
+    try:
+        setattr(original, field, combined)
+    except Exception:
+        pass
+    add_note = getattr(original, "add_note", None)
+    if callable(add_note):
+        try:
+            add_note(f"{field}: {message}")
+        except Exception:
+            pass
+
+
 def apply_authorization_once(
     *,
     authorization_file: str | Path,
@@ -789,6 +845,7 @@ def apply_authorization_once(
     # staging directories or canonical historical application evidence.
     staging_dir = app_root / ".staging" / f"{authorization_id}-{uuid.uuid4().hex}"
     staging_active = False
+    canonical_created_by_invocation = False
     try:
         staging_dir.mkdir(parents=True, exist_ok=False)
         staging_active = True
@@ -808,6 +865,7 @@ def apply_authorization_once(
         )
 
         canonical_dir.mkdir(parents=True, exist_ok=False)
+        canonical_created_by_invocation = True
         try:
             canonical_dir.chmod(0o700)
         except OSError:
@@ -826,13 +884,24 @@ def apply_authorization_once(
         if _sha256_file(manifest_path) != manifest_sha256:
             raise OneShotWrapperError("published manifest SHA-256 mismatch")
     except Exception as original:
+        # Preserve the original exception type and message as the controlling
+        # blocker. Cleanup outcomes are attached only as secondary attributes.
         if staging_active:
             secondary = _cleanup_pre_marker_staging(staging_dir)
             if secondary is not None:
-                raise OneShotWrapperError(
-                    f"UNCONSUMED_PRE_MARKER_BLOCKED: {type(original).__name__}: "
-                    f"{original}; secondary_staging_cleanup_blocker: {secondary}"
-                ) from original
+                _attach_secondary_cleanup_blocker(
+                    original,
+                    field="secondary_staging_cleanup_blocker",
+                    message=secondary,
+                )
+        if canonical_created_by_invocation:
+            secondary_canonical = _cleanup_invocation_empty_canonical(canonical_dir)
+            if secondary_canonical is not None:
+                _attach_secondary_cleanup_blocker(
+                    original,
+                    field="secondary_canonical_cleanup_blocker",
+                    message=secondary_canonical,
+                )
         raise
 
     marker_payload, marker_bytes = build_marker_bytes(
@@ -990,20 +1059,26 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0 if result.get("child_exit_code") == 0 else 1
     except Exception as exc:
+        blocked: dict[str, Any] = {
+            "status": "WINDOW_15M_ONE_SHOT_WRAPPER_BLOCKED",
+            "error_type": type(exc).__name__,
+            "error_message": str(exc),
+            "automatic_retries": 0,
+            "manual_reruns": 0,
+            "resumes": 0,
+            "restarts": 0,
+            "successors": 0,
+        }
+        # Secondary cleanup evidence only — never replaces the original cause.
+        for field in (
+            "secondary_staging_cleanup_blocker",
+            "secondary_canonical_cleanup_blocker",
+        ):
+            secondary = getattr(exc, field, None)
+            if secondary is not None:
+                blocked[field] = secondary
         print(
-            json.dumps(
-                {
-                    "status": "WINDOW_15M_ONE_SHOT_WRAPPER_BLOCKED",
-                    "error_type": type(exc).__name__,
-                    "error_message": str(exc),
-                    "automatic_retries": 0,
-                    "manual_reruns": 0,
-                    "resumes": 0,
-                    "restarts": 0,
-                    "successors": 0,
-                },
-                sort_keys=True,
-            ),
+            json.dumps(blocked, sort_keys=True),
             file=sys.stderr,
         )
         return 2

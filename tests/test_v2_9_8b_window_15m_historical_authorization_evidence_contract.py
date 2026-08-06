@@ -712,6 +712,8 @@ class HistoricalEvidenceContractTests(unittest.TestCase):
             authorization_file=self.fx.authorization_path,
             authorization_sha256=self.fx.authorization_sha256,
             created_at="2026-08-06T12:00:00+00:00",
+            application_root=self.fx.app,
+            temporary_parent=self.fx.external,
         )
         self.assertEqual(summary["manifest_sha256"], prepared.manifest_sha256)
         self.assertEqual(
@@ -763,12 +765,16 @@ class HistoricalEvidenceContractTests(unittest.TestCase):
             observed["staging"] = staging_dir
             raise GitProvenanceAuthorizationError("forced pre-marker block")
 
-        with self.assertRaises(wrapper.OneShotWrapperError) as ctx:
+        with self.assertRaises(GitProvenanceAuthorizationError) as ctx:
             self._apply(pre_marker_validator=validator)
-        message = str(ctx.exception)
-        self.assertIn("UNCONSUMED_PRE_MARKER_BLOCKED", message)
-        self.assertIn("secondary_staging_cleanup_blocker", message)
-        self.assertIn("forced pre-marker block", message)
+        exc = ctx.exception
+        # Original exception type and message remain controlling.
+        self.assertEqual(type(exc).__name__, "GitProvenanceAuthorizationError")
+        self.assertEqual(str(exc), "forced pre-marker block")
+        self.assertIn(
+            "unexpected staging entries",
+            getattr(exc, "secondary_staging_cleanup_blocker", ""),
+        )
         staging_dir = observed["staging"]
         self.assertTrue(staging_dir.is_dir())
         self.assertTrue((staging_dir / "stray.txt").is_file())
