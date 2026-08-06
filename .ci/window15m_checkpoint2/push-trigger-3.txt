@@ -1,0 +1,1 @@
+Trigger after bounded diagnostic publishing was registered.
