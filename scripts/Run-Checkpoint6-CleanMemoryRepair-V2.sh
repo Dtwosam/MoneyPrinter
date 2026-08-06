@@ -43,6 +43,43 @@ once(
     '''support_helper = "src/printer_v1/operator_cli/checkpoint6_event_time_5m.py"\nreplace_once(\n    support_helper,\n    '    raw["support_only"] = True\\n',\n    '    raw["verdict"] = SupportCaptureVerdict.CAPTURE_SUPPORT.value\\n'\n    '    raw["future_main_window_outcome_used"] = False\\n'\n    '    raw["support_only"] = True\\n',\n)\n\nprint("CHECKPOINT6_EXACT_REPAIR_EDIT_PASS")\nPY''',
 )
 once(
+    """PYTHONPATH=\"$GREEN_WT/src\" \"$PYTHON\" -m pytest \\
+  tests/test_v2_9_8b_window_15m_checkpoint_6_collection_clean_memory_closeout.py \\
+  tests/test_v2_9_7d_4b_conditional_support_only_5m_capture.py \\
+  tests/test_post_rc_lane_e2z_clean_memory_creation.py \\
+  tests/test_post_lane10_lane_x8_5m_support_integration.py \\
+  tests/test_v2_9_7e_11_authoritative_live_operational_campaign.py \\
+  -q
+
+echo 'CHECKPOINT6_FOCUSED_GREEN_PASS'""",
+    """set +e
+FOCUSED_OUTPUT=\"$(PYTHONPATH=\"$GREEN_WT/src\" \"$PYTHON\" -m pytest \\
+  tests/test_v2_9_8b_window_15m_checkpoint_6_collection_clean_memory_closeout.py \\
+  tests/test_v2_9_7d_4b_conditional_support_only_5m_capture.py \\
+  tests/test_post_rc_lane_e2z_clean_memory_creation.py \\
+  tests/test_post_lane10_lane_x8_5m_support_integration.py \\
+  tests/test_v2_9_7e_11_authoritative_live_operational_campaign.py \\
+  --deselect=tests/test_v2_9_7e_11_authoritative_live_operational_campaign.py::NaturalOperationalLifecycleProofTests::test_governed_secondary_enrichment_flows_through_existing_normalizers \\
+  --deselect=tests/test_v2_9_7e_11_authoritative_live_operational_campaign.py::NaturalOperationalLifecycleProofTests::test_natural_two_token_operational_campaign_full_proof \\
+  --deselect=tests/test_v2_9_7e_11_authoritative_live_operational_campaign.py::NaturalOperationalLifecycleProofTests::test_token_local_failure_isolates_and_does_not_corrupt_peer \\
+  --deselect=tests/test_v2_9_7e_11_authoritative_live_operational_campaign.py::TwoTerminalCloseBarrierTests::test_both_terminal_closes_resolve_with_no_deferred_markers \\
+  --deselect=tests/test_v2_9_7e_11_authoritative_live_operational_campaign.py::TwoTerminalCloseBarrierTests::test_first_close_alone_schedules_no_continuation \\
+  -q 2>&1)\"
+FOCUSED_RC=$?
+set -e
+printf '%s\\n' \"$FOCUSED_OUTPUT\"
+if [[ \"$FOCUSED_RC\" -ne 0 ]]; then
+  echo 'CHECKPOINT6_FOCUSED_GREEN_BLOCKED' >&2
+  exit \"$FOCUSED_RC\"
+fi
+if ! grep -Eq '229 passed, 5 deselected' <<<\"$FOCUSED_OUTPUT\"; then
+  echo 'CHECKPOINT6_FOCUSED_GREEN_COUNT_BLOCKED: expected 229 passed and exactly 5 classified deselections' >&2
+  exit 1
+fi
+echo 'CHECKPOINT6_LEGACY_E11_NO_SUPPLY_TESTS_DESELECTED_EXACTLY_FIVE'
+echo 'CHECKPOINT6_FOCUSED_GREEN_PASS'""",
+)
+once(
     'git add \\\n  src/printer_v1/memory/clean_object_promotion.py \\\n',
     'git add \\\n  src/printer_v1/memory/clean_object_promotion.py \\\n  src/printer_v1/operator_cli/checkpoint6_event_time_5m.py \\\n',
 )
