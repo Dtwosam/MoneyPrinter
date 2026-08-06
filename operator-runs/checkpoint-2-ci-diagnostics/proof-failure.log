@@ -1,0 +1,393 @@
+exit_code=1
+harness_sha=a995765e6215077311fecafe594453b319305f72
+--- bounded last 500 lines ---
+From https://github.com/Dtwosam/MoneyPrinter
+ * branch            0deba3c06d72499899b9c21bf9e71c89d5c8057c -> FETCH_HEAD
+Previous HEAD position was a995765 Trigger Checkpoint 2 disposable proof
+HEAD is now at 0deba3c Harden WINDOW_15M child terminal propagation
+Defaulting to user installation because normal site-packages is not writeable
+Requirement already satisfied: pip in /usr/lib/python3/dist-packages (24.0)
+Collecting pip
+  Downloading pip-26.2.1-py3-none-any.whl.metadata (4.6 kB)
+Downloading pip-26.2.1-py3-none-any.whl (1.8 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.8/1.8 MB 25.3 MB/s eta 0:00:00
+Installing collected packages: pip
+Successfully installed pip-26.2.1
+Defaulting to user installation because normal site-packages is not writeable
+Obtaining file:///home/runner/work/MoneyPrinter/MoneyPrinter
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Checking if build backend supports build_editable: started
+  Checking if build backend supports build_editable: finished with status 'done'
+  Getting requirements to build editable: started
+  Getting requirements to build editable: finished with status 'done'
+  Preparing editable metadata (pyproject.toml): started
+  Preparing editable metadata (pyproject.toml): finished with status 'done'
+Collecting pytest
+  Downloading pytest-9.1.1-py3-none-any.whl.metadata (7.6 kB)
+Collecting websockets>=12.0 (from printer-v1==0.0.0)
+  Downloading websockets-17.0.1-cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl.metadata (6.3 kB)
+Collecting iniconfig>=1.0.1 (from pytest)
+  Downloading iniconfig-2.3.0-py3-none-any.whl.metadata (2.5 kB)
+Requirement already satisfied: packaging>=22 in /usr/lib/python3/dist-packages (from pytest) (24.0)
+Collecting pluggy<2,>=1.5 (from pytest)
+  Downloading pluggy-1.6.0-py3-none-any.whl.metadata (4.8 kB)
+Requirement already satisfied: pygments>=2.7.2 in /usr/lib/python3/dist-packages (from pytest) (2.17.2)
+Downloading pytest-9.1.1-py3-none-any.whl (386 kB)
+Downloading pluggy-1.6.0-py3-none-any.whl (20 kB)
+Downloading iniconfig-2.3.0-py3-none-any.whl (7.5 kB)
+Downloading websockets-17.0.1-cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl (220 kB)
+Building wheels for collected packages: printer-v1
+  Building editable for printer-v1 (pyproject.toml): started
+  Building editable for printer-v1 (pyproject.toml): finished with status 'done'
+  Created wheel for printer-v1: filename=printer_v1-0.0.0-0.editable-py3-none-any.whl size=2704 sha256=41fd8e247dcb3f62c3d88c4439b5aba6d20568909122a253a224b39cd75665f8
+  Stored in directory: /tmp/pip-ephem-wheel-cache-yqsij8ia/wheels/0f/d9/eb/6d9f294f6da44861bc593bf85089f8c06bb54d802a54950067
+Successfully built printer-v1
+Installing collected packages: websockets, pluggy, iniconfig, pytest, printer-v1
+
+Successfully installed iniconfig-2.3.0 pluggy-1.6.0 printer-v1-0.0.0 pytest-9.1.1 websockets-17.0.1
+tests/test_v2_9_8b_window_15m_checkpoint_2_preflight_initialization.py
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_______ test_authorized_database_drift_blocks_before_any_campaign_write ________
+
+tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-0/test_authorized_database_drift0')
+
+    def test_authorized_database_drift_blocks_before_any_campaign_write(tmp_path: Path):
+        db = _migrated_db(tmp_path)
+        preflight = _preflight(db)
+        connection = sqlite3.connect(db)
+        try:
+            connection.execute("CREATE TABLE checkpoint2_drift_marker(value INTEGER)")
+            connection.commit()
+        finally:
+            connection.close()
+    
+        _clear_action_context()
+>       with pytest.raises(Exception, match="AUTHORIZED_DATABASE_CHANGED_BEFORE_FIRST_WRITE"):
+E       Failed: DID NOT RAISE Exception
+
+tests/test_v2_9_8b_window_15m_checkpoint_2_preflight_initialization.py:153: Failed
+=========================== short test summary info ============================
+FAILED tests/test_v2_9_8b_window_15m_checkpoint_2_preflight_initialization.py::test_authorized_database_drift_blocks_before_any_campaign_write - Failed: DID NOT RAISE Exception
+1 failed in 1.44s
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_______ test_cycle_insert_failure_rolls_back_entire_initialization_graph _______
+
+tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-1/test_cycle_insert_failure_roll0')
+
+    def test_cycle_insert_failure_rolls_back_entire_initialization_graph(tmp_path: Path):
+        db = _migrated_db(tmp_path)
+        connection = sqlite3.connect(db)
+        try:
+            connection.execute(
+                """CREATE TRIGGER checkpoint2_fail_cycle
+                   BEFORE INSERT ON printer_memory_factory_campaign_cycles
+                   BEGIN
+                       SELECT RAISE(ABORT, 'CHECKPOINT2_CYCLE_INSERT_FAIL');
+                   END"""
+            )
+            connection.commit()
+        finally:
+            connection.close()
+    
+        _clear_action_context()
+        with pytest.raises(Exception, match="CHECKPOINT2_CYCLE_INSERT_FAIL"):
+            _create(db, tmp_path)
+    
+>       assert _graph_counts(db) == {
+            "campaigns": 0,
+            "configurations": 0,
+            "runs": 0,
+            "cycles": 0,
+        }
+E       AssertionError: assert {'campaigns':..., 'cycles': 0} == {'campaigns':..., 'cycles': 0}
+E         
+E         Omitting 1 identical items, use -vv to show
+E         Differing items:
+E         {'runs': 1} != {'runs': 0}
+E         {'configurations': 1} != {'configurations': 0}
+E         {'campaigns': 1} != {'campaigns': 0}
+E         
+E         Full diff:
+E           {
+E         -     'campaigns': 0,
+E         ?                  ^
+E         +     'campaigns': 1,
+E         ?                  ^
+E         -     'configurations': 0,
+E         ?                       ^
+E         +     'configurations': 1,
+E         ?                       ^
+E         -     'runs': 0,
+E         ?             ^
+E         +     'runs': 1,
+E         ?             ^
+E               'cycles': 0,
+E           }
+
+tests/test_v2_9_8b_window_15m_checkpoint_2_preflight_initialization.py:186: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_v2_9_8b_window_15m_checkpoint_2_preflight_initialization.py::test_cycle_insert_failure_rolls_back_entire_initialization_graph - AssertionError: assert {'campaigns':..., 'cycles': 0} == {'campaigns':..., 'cycles': 0}
+  
+  Omitting 1 identical items, use -vv to show
+  Differing items:
+  {'runs': 1} != {'runs': 0}
+  {'configurations': 1} != {'configurations': 0}
+  {'campaigns': 1} != {'campaigns': 0}
+  
+  Full diff:
+    {
+  -     'campaigns': 0,
+  ?                  ^
+  +     'campaigns': 1,
+  ?                  ^
+  -     'configurations': 0,
+  ?                       ^
+  +     'configurations': 1,
+  ?                       ^
+  -     'runs': 0,
+  ?             ^
+  +     'runs': 1,
+  ?             ^
+        'cycles': 0,
+    }
+1 failed in 1.05s
+F                                                                        [100%]
+=================================== FAILURES ===================================
+____ test_authorized_database_is_revalidated_while_first_write_lock_is_held ____
+
+tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-2/test_authorized_database_is_re0')
+
+    def test_authorized_database_is_revalidated_while_first_write_lock_is_held(
+        tmp_path: Path,
+    ):
+        db = _migrated_db(tmp_path)
+        observed = {"locked": False, "calls": 0}
+    
+        def probe(path: Path) -> str:
+            observed["calls"] += 1
+            contender = sqlite3.connect(db, timeout=0.0)
+            try:
+                with pytest.raises(sqlite3.OperationalError, match="locked"):
+                    contender.execute("BEGIN IMMEDIATE")
+                observed["locked"] = True
+            finally:
+                contender.close()
+            return _sha256(Path(path))
+    
+        with mock.patch.object(
+            campaign_persistence,
+            "_sha256_file",
+            side_effect=probe,
+            create=True,
+        ):
+            _create(db, tmp_path)
+    
+>       assert observed == {"locked": True, "calls": 1}
+E       AssertionError: assert {'locked': False, 'calls': 0} == {'locked': True, 'calls': 1}
+E         
+E         Differing items:
+E         {'locked': False} != {'locked': True}
+E         {'calls': 0} != {'calls': 1}
+E         
+E         Full diff:
+E           {
+E         -     'locked': True,
+E         ?               ^^^
+E         +     'locked': False,
+E         ?               ^^^^
+E         -     'calls': 1,
+E         ?              ^
+E         +     'calls': 0,
+E         ?              ^
+E           }
+
+tests/test_v2_9_8b_window_15m_checkpoint_2_preflight_initialization.py:222: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_v2_9_8b_window_15m_checkpoint_2_preflight_initialization.py::test_authorized_database_is_revalidated_while_first_write_lock_is_held - AssertionError: assert {'locked': False, 'calls': 0} == {'locked': True, 'calls': 1}
+  
+  Differing items:
+  {'locked': False} != {'locked': True}
+  {'calls': 0} != {'calls': 1}
+  
+  Full diff:
+    {
+  -     'locked': True,
+  ?               ^^^
+  +     'locked': False,
+  ?               ^^^^
+  -     'calls': 1,
+  ?              ^
+  +     'calls': 0,
+  ?              ^
+    }
+1 failed in 1.03s
+F                                                                        [100%]
+=================================== FAILURES ===================================
+______ test_initialization_records_all_exact_insert_and_update_identities ______
+
+tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-3/test_initialization_records_al0')
+
+    def test_initialization_records_all_exact_insert_and_update_identities(tmp_path: Path):
+        db = _migrated_db(tmp_path)
+        recorder = install_action_local_mutation_recorder()
+        try:
+            _create(db, tmp_path)
+            frozen = recorder.freeze()
+>           assert frozen["inserted_rows"] == {
+                "printer_memory_factory_campaigns": ["checkpoint2-execution-campaign"],
+                "printer_memory_factory_campaign_configurations": [
+                    "checkpoint2-execution-configuration"
+                ],
+                "printer_memory_factory_campaign_runs": [
+                    "checkpoint2-execution-campaign-run"
+                ],
+                "printer_memory_factory_campaign_cycles": [
+                    "checkpoint2-execution-cycle"
+                ],
+            }
+E           AssertionError: assert {'printer_mem...ampaign-run']} == {'printer_mem...ution-cycle']}
+E             
+E             Omitting 3 identical items, use -vv to show
+E             Right contains 1 more item:
+E             {'printer_memory_factory_campaign_cycles': ['checkpoint2-execution-cycle']}
+E             
+E             Full diff:
+E               {
+E                   'printer_memory_factory_campaigns': [
+E                       'checkpoint2-execution-campaign',
+E                   ],
+E                   'printer_memory_factory_campaign_configurations': [
+E                       'checkpoint2-execution-configuration',
+E                   ],
+E                   'printer_memory_factory_campaign_runs': [
+E                       'checkpoint2-execution-campaign-run',
+E                   ],
+E             -     'printer_memory_factory_campaign_cycles': [
+E             -         'checkpoint2-execution-cycle',
+E             -     ],
+E               }
+
+tests/test_v2_9_8b_window_15m_checkpoint_2_preflight_initialization.py:231: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_v2_9_8b_window_15m_checkpoint_2_preflight_initialization.py::test_initialization_records_all_exact_insert_and_update_identities - AssertionError: assert {'printer_mem...ampaign-run']} == {'printer_mem...ution-cycle']}
+  
+  Omitting 3 identical items, use -vv to show
+  Right contains 1 more item:
+  {'printer_memory_factory_campaign_cycles': ['checkpoint2-execution-cycle']}
+  
+  Full diff:
+    {
+        'printer_memory_factory_campaigns': [
+            'checkpoint2-execution-campaign',
+        ],
+        'printer_memory_factory_campaign_configurations': [
+            'checkpoint2-execution-configuration',
+        ],
+        'printer_memory_factory_campaign_runs': [
+            'checkpoint2-execution-campaign-run',
+        ],
+  -     'printer_memory_factory_campaign_cycles': [
+  -         'checkpoint2-execution-cycle',
+  -     ],
+    }
+1 failed in 2.20s
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_____ test_supervision_connection_failure_removes_only_newly_created_lock ______
+
+tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-4/test_supervision_connection_fa0')
+
+    def test_supervision_connection_failure_removes_only_newly_created_lock(
+        tmp_path: Path,
+    ):
+        missing = tmp_path / "missing.sqlite3"
+        lock = tmp_path / "campaign.lease.lock"
+        with pytest.raises(campaign_supervision.CampaignSupervisionError, match="database missing"):
+            campaign_supervision.acquire_campaign_supervision(
+                missing,
+                lock_path=lock,
+                supervision_id="checkpoint2-supervision",
+                campaign_id="checkpoint2-campaign",
+                configuration_id="checkpoint2-configuration",
+                run_id="checkpoint2-run",
+                owner_id="checkpoint2-owner",
+                lease_seconds=90,
+                now=datetime(2026, 8, 6, 17, 0, tzinfo=timezone.utc),
+            )
+>       assert not lock.exists()
+E       AssertionError: assert not True
+E        +  where True = exists()
+E        +    where exists = PosixPath('/tmp/pytest-of-runner/pytest-4/test_supervision_connection_fa0/campaign.lease.lock').exists
+
+tests/test_v2_9_8b_window_15m_checkpoint_2_preflight_initialization.py:272: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_v2_9_8b_window_15m_checkpoint_2_preflight_initialization.py::test_supervision_connection_failure_removes_only_newly_created_lock - AssertionError: assert not True
+ +  where True = exists()
+ +    where exists = PosixPath('/tmp/pytest-of-runner/pytest-4/test_supervision_connection_fa0/campaign.lease.lock').exists
+1 failed in 0.26s
+Checkpoint 2 repair applied
+.......                                                                  [100%]
+7 passed in 4.78s
+tests/test_v2_9_7d_2a_campaign_persistence.py
+tests/test_v2_9_7d_6b_1_campaign_ownership_schema.py
+tests/test_v2_9_8b_pre_authorization_migration_ledger_drift_guard.py
+tests/test_v2_9_8b_window_15m_git_provenance_authorization_manifest.py
+...F................................................... [ 46%]
+................................................................  [100%]
+=================================== FAILURES ===================================
+_ CampaignPersistenceTests.test_failed_migration_leaves_no_partial_campaign_schema _
+
+self = <test_v2_9_7d_2a_campaign_persistence.CampaignPersistenceTests testMethod=test_failed_migration_leaves_no_partial_campaign_schema>
+
+    def test_failed_migration_leaves_no_partial_campaign_schema(self) -> None:
+        broken_dir = self.root / "broken-migrations"
+        broken_dir.mkdir()
+        source = migration_runner.MIGRATIONS_DIR / MIGRATION
+        broken = broken_dir / MIGRATION
+        broken.write_text(
+            source.read_text(encoding="utf-8")
+            + "\nSELECT * FROM missing_v2_9_7d_2a_fixture;\n",
+            encoding="utf-8",
+        )
+    
+        with patch.object(migration_runner, "MIGRATIONS_DIR", broken_dir):
+            with self.assertRaises(sqlite3.OperationalError):
+>               migration_runner.apply_migrations(self.db)
+
+tests/test_v2_9_7d_2a_campaign_persistence.py:363: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/printer_v1/db/migrate.py:238: in apply_migrations
+    MIGRATIONS_DIR / name for name in canonical_migration_names()
+                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    def canonical_migration_names(
+        migrations_dir: Path | None = None,
+    ) -> tuple[str, ...]:
+        """Return the ordered canonical migration file names.
+    
+        The directory listing is sorted lexicographically, which matches the
+        zero-padded ``NNN_name.sql`` naming contract used by every Printer V1
+        migration. The contract is enforced rather than assumed: a malformed
+        filename or a non-contiguous ordinal run fails closed here, before any
+        caller can compare a live ledger against an untrustworthy catalogue.
+        """
+        directory = Path(migrations_dir) if migrations_dir is not None else MIGRATIONS_DIR
+        names = tuple(path.name for path in sorted(directory.glob("*.sql")))
+        if not names:
+            raise RuntimeError(f"no canonical migrations found under {directory}")
+        issues = describe_canonical_catalogue_issues(names)
+        if issues:
+>           raise RuntimeError(
+                f"invalid canonical migration catalogue under {directory}: "
+                + "; ".join(issues)
+            )
+E           RuntimeError: invalid canonical migration catalogue under /tmp/tmpzzbiy9hi/broken-migrations: canonical migration sequence is not a contiguous 001..NNN run: missing ordinals [1]; out-of-range ordinals [31]
+
+src/printer_v1/db/migrate.py:126: RuntimeError
+=========================== short test summary info ============================
+FAILED tests/test_v2_9_7d_2a_campaign_persistence.py::CampaignPersistenceTests::test_failed_migration_leaves_no_partial_campaign_schema - RuntimeError: invalid canonical migration catalogue under /tmp/tmpzzbiy9hi/broken-migrations: canonical migration sequence is not a contiguous 001..NNN run: missing ordinals [1]; out-of-range ordinals [31]
+1 failed, 118 passed, 24 subtests passed in 14.09s
