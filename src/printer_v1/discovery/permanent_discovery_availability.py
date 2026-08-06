@@ -3598,7 +3598,7 @@ def request_key_belongs_to_root(request_key: str, request_key_root: str) -> bool
     root = str(request_key_root or "")
     if not key or not root:
         return False
-    return key == root or key.startswith(f"{root}")
+    return key == root or key.startswith(f"{root}-")
 
 
 def validate_campaign_source_request_scope(

@@ -13,14 +13,6 @@ from printer_v1.discovery.contracts import (
 )
 from printer_v1.discovery.discovery import process_discovery_payload
 from printer_v1.discovery.parser import normalize_candidates, normalize_candidate
-from printer_v1.discovery.checkpoint3_guards import install_checkpoint3_guards
-
-
-# Package-local, idempotent installation of the three deterministic Checkpoint 3
-# repairs. Direct submodule imports execute this package initializer first.
-install_checkpoint3_guards()
-
-
 __all__ = [
     "DiscoveryCandidateLabel",
     "DiscoveryOutputAction",

@@ -1868,19 +1868,21 @@ class CombinedPumpfunCampaignExecutor:
         self._set_diagnostic_stage("DISCOVERY_WORK_GOVERNED_EXECUTION")
         self._inject_diagnostic_fault("DISCOVERY_WORK_GOVERNED_EXECUTION")
         if "direct" in fixtures.provider_failures_injected:
+            # Checkpoint 3: persist the governed request identity before the
+            # linked provider failure so request/failure causality is durable.
+            req = self._governed_request(
+                connection,
+                usage,
+                source_name="solana_rpc",
+                request_kind="pumpfun_create_event_subscription",
+                now=now,
+            )
             fail_id = self._store_failure(
                 connection,
                 usage,
                 source_name="solana_rpc",
                 request_kind="pumpfun_create_event_subscription",
                 failure_type=fixtures.provider_failures_injected["direct"],
-                now=now,
-            )
-            req = self._governed_request(
-                connection,
-                usage,
-                source_name="solana_rpc",
-                request_kind="pumpfun_create_event_subscription",
                 now=now,
             )
             link_discovery_work_source(
@@ -3199,6 +3201,32 @@ class CombinedPumpfunCampaignExecutor:
         fixtures = self.fixtures
         mint = candidate.mint
         pool = candidate.market_identity.rsplit(":", 1)[-1]
+
+        # Checkpoint 3: an existing pair address may be reused only when its
+        # canonical token owner is this mint. A nullable legacy base-token field
+        # is accepted only when canonical token_id ownership still matches.
+        existing_pair_owner = connection.execute(
+            "SELECT token_id, base_token_mint "
+            "FROM printer_pairs WHERE pair_address = ?",
+            (pool,),
+        ).fetchone()
+        if existing_pair_owner is not None:
+            existing_token_owner = connection.execute(
+                "SELECT id FROM printer_tokens WHERE token_mint = ?",
+                (mint,),
+            ).fetchone()
+            base_token_mint = existing_pair_owner["base_token_mint"]
+            if (
+                existing_token_owner is None
+                or int(existing_pair_owner["token_id"])
+                != int(existing_token_owner["id"])
+                or (
+                    base_token_mint is not None
+                    and str(base_token_mint) != mint
+                )
+            ):
+                raise CombinedDiscoveryError("PAIR_TOKEN_IDENTITY_MISMATCH")
+
         token_row = connection.execute(
             "SELECT id FROM printer_tokens WHERE token_mint = ?",
             (mint,),
