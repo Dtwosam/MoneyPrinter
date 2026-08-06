@@ -50,6 +50,15 @@ replace_exact(
     "close unique outer V3 heredoc delimiter",
 )
 
+replace_exact(
+    'echo "CHECKPOINT5_PREEXISTING_STALE_TEST_CONFIRMED"\n\n'
+    'ACTUAL_HEAD="$(git rev-parse HEAD)"\n',
+    'echo "CHECKPOINT5_PREEXISTING_STALE_TEST_CONFIRMED"\n'
+    'rm -f "$TMP/preexisting-stale-test.log"\n\n'
+    'ACTUAL_HEAD="$(git rev-parse HEAD)"\n',
+    "remove temporary stale-test log before manifest inspection",
+)
+
 runner_removal = '''v3_runner = Path({this_runner!r})
 if not v3_runner.is_file():
     raise SystemExit("V3 repair runner is unexpectedly missing")
@@ -84,6 +93,12 @@ replace_exact(
     '}}\n'
     "'''\n",
     "extend final manifest for V4 runner",
+)
+
+replace_exact(
+    'actual = {line.rstrip() for line in completed.stdout.splitlines() if line.strip()}\n',
+    'actual = {line.strip() for line in completed.stdout.splitlines() if line.strip()}\n',
+    "normalize git status manifest spacing",
 )
 
 path.write_text(text, encoding="utf-8")
