@@ -24,8 +24,9 @@ jobs:
           rm -rf ./* ./.??* 2>/dev/null || true
           git clone --no-tags \
             "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" .
-          git checkout "${GITHUB_SHA}"
-          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          git fetch --no-tags origin "${GITHUB_HEAD_REF}"
+          git checkout -B "${GITHUB_HEAD_REF}" FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
 
       - name: Run exact offline Checkpoint 2 proof
         shell: bash
