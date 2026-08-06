@@ -4,6 +4,7 @@ set -euo pipefail
 cp .ci/window15m_checkpoint2/write_tests.py /tmp/checkpoint2_write_tests.py
 cp .ci/window15m_checkpoint2/apply_repair.py /tmp/checkpoint2_apply_repair.py
 cp .ci/window15m_checkpoint2/write_closeout.py /tmp/checkpoint2_write_closeout.py
+cp .ci/window15m_checkpoint2/add_wal_gate.py /tmp/checkpoint2_add_wal_gate.py
 
 git fetch --no-tags origin "$BASE_SHA"
 git checkout --detach "$BASE_SHA"
@@ -22,9 +23,11 @@ apply_migrations(Path("data/printer_v1.sqlite3"))
 PY
 
 python /tmp/checkpoint2_write_tests.py
+python /tmp/checkpoint2_add_wal_gate.py test
 
 red_nodes=(
   "tests/test_v2_9_8b_window_15m_checkpoint_2_preflight_initialization.py::test_authorized_database_drift_blocks_before_any_campaign_write"
+  "tests/test_v2_9_8b_window_15m_checkpoint_2_preflight_initialization.py::test_wal_logical_drift_blocks_when_main_file_sha_is_unchanged"
   "tests/test_v2_9_8b_window_15m_checkpoint_2_preflight_initialization.py::test_cycle_insert_failure_rolls_back_entire_initialization_graph"
   "tests/test_v2_9_8b_window_15m_checkpoint_2_preflight_initialization.py::test_authorized_database_is_revalidated_while_first_write_lock_is_held"
   "tests/test_v2_9_8b_window_15m_checkpoint_2_preflight_initialization.py::test_initialization_records_all_exact_insert_and_update_identities"
@@ -58,6 +61,7 @@ grep -q "missing ordinals \[1\]" /tmp/checkpoint2-preexisting.log
 grep -q "out-of-range ordinals \[31\]" /tmp/checkpoint2-preexisting.log
 
 python /tmp/checkpoint2_apply_repair.py
+python /tmp/checkpoint2_add_wal_gate.py repair
 
 set -o pipefail
 python -m pytest \
@@ -91,6 +95,7 @@ export NEAREST_TEST_SUMMARY="$(tail -n 1 /tmp/checkpoint2-nearest.log)"
 export NEAREST_TEST_FILES="$(cat /tmp/checkpoint2-nearest-files.log)"
 export PREEXISTING_TEST_SUMMARY="$(tail -n 1 /tmp/checkpoint2-preexisting.log)"
 python /tmp/checkpoint2_write_closeout.py
+python /tmp/checkpoint2_add_wal_gate.py closeout
 
 git config user.name "ChatGPT Checkpoint CI"
 git config user.email "actions@users.noreply.github.com"
