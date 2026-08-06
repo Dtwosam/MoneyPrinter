@@ -360,10 +360,14 @@ def _member_pool_identities(member: Mapping[str, Any]) -> set[str]:
     return pools
 
 
-def _member_base_mint_identities(member: Mapping[str, Any]) -> set[str]:
-    """Accepted base/target mint fields on one normalized market member."""
+def _member_explicit_base_mint_identities(member: Mapping[str, Any]) -> set[str]:
+    """Explicit base/target mint fields only (never candidate_mint / quote).
+
+    ``candidate_mint`` is orientation-gated for DexScreener and is resolved by
+    ``_classify_dexscreener_member_target``, not by this collector.
+    """
     mints: set[str] = set()
-    for key in ("base_mint", "token_mint", "candidate_mint", "mint"):
+    for key in ("base_mint", "token_mint", "mint"):
         text = _text(member.get(key))
         if text:
             mints.add(text)
@@ -399,6 +403,11 @@ def _member_base_mint_identities(member: Mapping[str, Any]) -> set[str]:
     return mints
 
 
+def _member_base_mint_identities(member: Mapping[str, Any]) -> set[str]:
+    """Accepted base/target mint fields on non-DexScreener market members."""
+    return set(_member_explicit_base_mint_identities(member))
+
+
 def _member_quote_mint_identities(member: Mapping[str, Any]) -> set[str]:
     """Accepted quote/infrastructure mint fields on one market member."""
     mints: set[str] = set()
@@ -430,6 +439,65 @@ def _member_quote_mint_identities(member: Mapping[str, Any]) -> set[str]:
                     raw_id = raw_id[len("solana_") :]
                 mints.add(raw_id)
     return mints
+
+
+def _classify_dexscreener_member_target(
+    member: Mapping[str, Any], *, mint: str
+) -> str:
+    """Classify target mint side on one DexScreener normalized pair member.
+
+    Returns one of:
+    - ``base``: target is an accepted base identity on this member
+    - ``quote_only``: target appears only as quote (including FAIL orientation
+      candidate_mint that mirrors the quote side)
+    - ``orientation_conflict``: contradictory orientation / base fields
+    - ``none``: target not bound as base or quote on this member
+
+    ``candidate_mint`` is accepted as base only when orientation status is
+    ``PASS``, the candidate is non-empty, and it agrees with the explicit base
+    identity. FAIL/missing/contradictory orientation never promotes quote-side
+    ``candidate_mint`` into base identities.
+    """
+    explicit_bases = _member_explicit_base_mint_identities(member)
+    if len(explicit_bases) > 1:
+        return "orientation_conflict"
+
+    explicit_base = next(iter(explicit_bases)) if explicit_bases else ""
+    quote_mints = _member_quote_mint_identities(member)
+    candidate = _text(member.get("candidate_mint"))
+    status = _text(member.get("candidate_pair_orientation_status")).upper()
+    reason = _text(member.get("candidate_pair_orientation_reason")).upper()
+
+    # PASS while reason claims mismatch is contradictory metadata.
+    if status == "PASS" and reason and "MISMATCH" in reason:
+        return "orientation_conflict"
+
+    accepted_base: set[str] = set(explicit_bases)
+
+    if status == "PASS":
+        if not candidate:
+            # Orientation claims PASS without a candidate mint identity.
+            return "orientation_conflict"
+        if candidate in quote_mints and candidate not in explicit_bases:
+            # PASS must never promote a quote-only candidate to base.
+            return "orientation_conflict"
+        if explicit_base:
+            if candidate != explicit_base:
+                return "orientation_conflict"
+            accepted_base.add(candidate)
+        else:
+            # PASS candidate requires an agreeing explicit base field.
+            return "orientation_conflict"
+    # FAIL, missing, empty, or any non-PASS status: never add candidate_mint
+    # to base identities. Explicit base fields remain authoritative alone.
+
+    if mint in accepted_base and mint in quote_mints:
+        return "orientation_conflict"
+    if mint in accepted_base:
+        return "base"
+    if mint in quote_mints:
+        return "quote_only"
+    return "none"
 
 
 def _member_confirms_solana(member: Mapping[str, Any]) -> bool:
@@ -530,13 +598,32 @@ def _require_market_response_member_binding(
     exact_matches: list[Mapping[str, Any]] = []
     mint_pool_without_solana: list[Mapping[str, Any]] = []
     quote_only_pool_hits = 0
+    orientation_conflict_hits = 0
 
     for member in members:
         member_pools = _member_pool_identities(member)
         if pool not in member_pools:
             continue
+
+        if source_name == "dexscreener":
+            side = _classify_dexscreener_member_target(member, mint=mint)
+            if side == "orientation_conflict":
+                orientation_conflict_hits += 1
+                continue
+            if side == "base":
+                if _member_confirms_solana(member):
+                    exact_matches.append(member)
+                else:
+                    mint_pool_without_solana.append(member)
+            elif side == "quote_only":
+                quote_only_pool_hits += 1
+            continue
+
         base_mints = _member_base_mint_identities(member)
         quote_mints = _member_quote_mint_identities(member)
+        if mint in base_mints and mint in quote_mints:
+            orientation_conflict_hits += 1
+            continue
         if mint in base_mints:
             if _member_confirms_solana(member):
                 exact_matches.append(member)
@@ -545,6 +632,12 @@ def _require_market_response_member_binding(
         elif mint in quote_mints:
             quote_only_pool_hits += 1
 
+    # Orientation conflicts are fail-closed and take precedence over weaker
+    # no-match / quote-only outcomes for the same pool-matching member set.
+    if orientation_conflict_hits:
+        raise MemoryObservationActivationError(
+            "MARKET_RESPONSE_ORIENTATION_CONFLICT", f"{mint}:{pool}"
+        )
     if len(exact_matches) > 1:
         raise MemoryObservationActivationError(
             "MARKET_RESPONSE_CONFLICTING_MEMBER_MATCHES",
