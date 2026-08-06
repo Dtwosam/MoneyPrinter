@@ -418,8 +418,9 @@ def acquire_campaign_supervision(
         "updated_at": heartbeat,
     }
     _write_new_lock(lock, payload)
-    connection = _connect(db_path)
+    connection: sqlite3.Connection | None = None
     try:
+        connection = _connect(db_path)
         _begin_immediate(connection)
         graph = connection.execute(
             """SELECT c.campaign_state,r.run_state
@@ -458,13 +459,21 @@ def acquire_campaign_supervision(
         )
         connection.commit()
     except (sqlite3.Error, CampaignSupervisionError) as exc:
-        connection.rollback()
-        lock.unlink(missing_ok=True)
+        if connection is not None:
+            connection.rollback()
+        try:
+            lock.unlink(missing_ok=True)
+        except OSError as cleanup_exc:
+            exc.add_note(
+                "new supervision lock cleanup failed: "
+                f"{type(cleanup_exc).__name__}:{cleanup_exc}"
+            )
         if isinstance(exc, CampaignSupervisionError):
             raise
         raise CampaignSupervisionError(str(exc)) from exc
     finally:
-        connection.close()
+        if connection is not None:
+            connection.close()
     return inspect_campaign_supervision(
         db_path, **identities, now=instant
     )
