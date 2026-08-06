@@ -64,7 +64,10 @@ python -m pytest \
   tests/test_v2_9_8b_window_15m_checkpoint_2_preflight_initialization.py \
   -q | tee /tmp/checkpoint2-focused.log
 
-mapfile -t nearest_tests < <(
+nearest_tests=()
+while IFS= read -r test_file; do
+  nearest_tests+=("$test_file")
+done < <(
   find tests -maxdepth 1 -type f -name 'test_*.py' | sort | grep -E \
     '(operational_memory_factory|campaign_persistence|campaign_ownership|campaign_supervision|operational_campaign_recovery|git_provenance_authorization|pre_authorization_migration|operational_database_target_binding|window_15m_concrete_composition)'
 )
