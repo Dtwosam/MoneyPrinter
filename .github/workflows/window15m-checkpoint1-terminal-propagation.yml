@@ -25,6 +25,7 @@ jobs:
         run: |
           cp .ci/window15m_checkpoint1/write_tests.py /tmp/write_tests.py
           cp .ci/window15m_checkpoint1/apply_repair.py /tmp/apply_repair.py
+          cp .ci/window15m_checkpoint1/fix_applicator.py /tmp/fix_applicator.py
           cp .ci/window15m_checkpoint1/write_closeout.py /tmp/write_closeout.py
 
       - name: Reset executable tree to exact rolling design tip
@@ -64,7 +65,9 @@ jobs:
           grep -q 'PRINTER_V1_WINDOW_15M_CHILD_TERMINAL_PATH' /tmp/red.log
 
       - name: Apply narrow reporting-only repair
-        run: python /tmp/apply_repair.py
+        run: |
+          python /tmp/fix_applicator.py
+          python /tmp/apply_repair.py
 
       - name: Run focused child and wrapper tests
         shell: bash
