@@ -38,6 +38,15 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e . pytest
 
+      - name: Create disposable migrated fixture database
+        run: |
+          mkdir -p data
+          python - <<'PY'
+          from pathlib import Path
+          from printer_v1.db import apply_migrations
+          apply_migrations(Path("data/printer_v1.sqlite3"))
+          PY
+
       - name: Write Checkpoint 1 regression tests
         run: python /tmp/write_tests.py
 
