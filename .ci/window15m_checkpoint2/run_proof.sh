@@ -43,6 +43,20 @@ for index in "${!red_nodes[@]}"; do
   test "$(grep -c 'FAILED' "$log")" -ge 1
 done
 
+# Confirm one unrelated stale historical node against the untouched baseline.
+# Its fixture supplies only migration 031, while the current migration owner
+# correctly requires a contiguous 001..NNN catalogue before SQLite execution.
+preexisting_node="tests/test_v2_9_7d_2a_campaign_persistence.py::CampaignPersistenceTests::test_failed_migration_leaves_no_partial_campaign_schema"
+set +e
+python -m pytest "$preexisting_node" -q > /tmp/checkpoint2-preexisting.log 2>&1
+preexisting_code=$?
+set -e
+cat /tmp/checkpoint2-preexisting.log
+test "$preexisting_code" -ne 0
+grep -q "invalid canonical migration catalogue" /tmp/checkpoint2-preexisting.log
+grep -q "missing ordinals \[1\]" /tmp/checkpoint2-preexisting.log
+grep -q "out-of-range ordinals \[31\]" /tmp/checkpoint2-preexisting.log
+
 python /tmp/checkpoint2_apply_repair.py
 
 set -o pipefail
@@ -56,7 +70,8 @@ mapfile -t nearest_tests < <(
 )
 test "${#nearest_tests[@]}" -gt 0
 printf '%s\n' "${nearest_tests[@]}" | tee /tmp/checkpoint2-nearest-files.log
-python -m pytest "${nearest_tests[@]}" -q | tee /tmp/checkpoint2-nearest.log
+python -m pytest "${nearest_tests[@]}" -q \
+  --deselect "$preexisting_node" | tee /tmp/checkpoint2-nearest.log
 
 python -m py_compile \
   src/printer_v1/operator_cli/campaign_persistence.py \
@@ -71,6 +86,7 @@ git diff --check
 export FOCUSED_TEST_SUMMARY="$(tail -n 1 /tmp/checkpoint2-focused.log)"
 export NEAREST_TEST_SUMMARY="$(tail -n 1 /tmp/checkpoint2-nearest.log)"
 export NEAREST_TEST_FILES="$(cat /tmp/checkpoint2-nearest-files.log)"
+export PREEXISTING_TEST_SUMMARY="$(tail -n 1 /tmp/checkpoint2-preexisting.log)"
 python /tmp/checkpoint2_write_closeout.py
 
 git config user.name "ChatGPT Checkpoint CI"
