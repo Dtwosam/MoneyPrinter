@@ -1,12 +1,12 @@
 name: WINDOW_15M Checkpoint 1 final verification
 
 on:
-  pull_request:
+  push:
     branches:
-      - agent/v2-9-8b-window-15m-checkpoint-1-terminal-propagation-staged
+      - agent/v2-9-8b-window-15m-checkpoint-1-final-verification-harness
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   final-verification:
@@ -15,23 +15,22 @@ jobs:
     env:
       DESIGN_SHA: f1b404ad6463ffab883b5d56133b56a5b45a470c
       CHECKPOINT_SHA: 0deba3c06d72499899b9c21bf9e71c89d5c8057c
+      RESULT_BRANCH: agent/v2-9-8b-window-15m-checkpoint-1-final-verification-result
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Native authenticated checkout
+      - name: Native authenticated checkout of exact candidate
         shell: bash
         run: |
           set -euo pipefail
           rm -rf ./* ./.??* 2>/dev/null || true
           git clone --no-tags \
             "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" .
-          git fetch --no-tags origin "${GITHUB_HEAD_REF}"
-          git checkout -B "${GITHUB_HEAD_REF}" FETCH_HEAD
-          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
-          test "$(git rev-parse HEAD^)" = "$CHECKPOINT_SHA"
+          git checkout "${GITHUB_SHA}"
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          git checkout --detach "$CHECKPOINT_SHA"
+          test "$(git rev-parse HEAD)" = "$CHECKPOINT_SHA"
           git merge-base --is-ancestor "$DESIGN_SHA" "$CHECKPOINT_SHA"
           test "$(git rev-list --count "$DESIGN_SHA..$CHECKPOINT_SHA")" = "1"
-          changed="$(git diff --name-only "$CHECKPOINT_SHA..HEAD")"
-          test "$changed" = ".github/workflows/window15m-checkpoint1-final-verification.yml"
 
       - name: Install focused test dependencies
         run: |
@@ -92,5 +91,40 @@ jobs:
           test "$(git diff --name-only "$DESIGN_SHA..$CHECKPOINT_SHA" | wc -l | tr -d ' ')" = "6"
           ! git diff --name-only "$DESIGN_SHA..$CHECKPOINT_SHA" | grep -E '(^|/)(migrations|scripts)/'
           ! git diff --unified=0 "$DESIGN_SHA..$CHECKPOINT_SHA" | grep '^+' | grep -E 'urlopen\(|requests\.(get|post)|httpx\.|Start-PrinterV1|OperatorApproved'
-          echo "FOCUSED=$(tail -n 1 /tmp/focused.log)"
-          echo "NEIGHBORS=$(tail -n 1 /tmp/neighbors.log)"
+
+      - name: Publish immutable verification evidence branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          focused="$(tail -n 1 /tmp/focused.log)"
+          neighbors="$(tail -n 1 /tmp/neighbors.log)"
+          workflow_source_sha="${GITHUB_SHA}"
+          rm -f data/printer_v1.sqlite3
+          git config user.name "ChatGPT Checkpoint Verification"
+          git config user.email "actions@users.noreply.github.com"
+          git checkout -B "$RESULT_BRANCH" "$CHECKPOINT_SHA"
+          mkdir -p docs
+          cat > docs/printer-v1-v2-9-8b-window-15m-checkpoint-1-final-verification-evidence.md <<EOF
+          # WINDOW_15M Checkpoint 1 Final Verification Evidence
+
+          - workflow source SHA: \`$workflow_source_sha\`
+          - design baseline: \`$DESIGN_SHA\`
+          - checkpoint candidate: \`$CHECKPOINT_SHA\`
+          - ancestry: exactly one commit above design baseline
+          - candidate changed-file count: 6
+          - focused tests: \`$focused\`
+          - neighboring tests: \`$neighbors\`
+          - changed-module compilation: PASS
+          - git diff check: PASS
+          - migration/script/provider-command scan: PASS
+          - authorization created or consumed: false
+          - provider/runtime execution: false
+          - authoritative database used: false
+
+          Verdict: \`V2_9_8B_WINDOW_15M_CHECKPOINT_1_FINAL_VERIFICATION_PASS\`
+          EOF
+          git add docs/printer-v1-v2-9-8b-window-15m-checkpoint-1-final-verification-evidence.md
+          git diff --cached --check
+          git commit -m "Verify WINDOW_15M Checkpoint 1 candidate"
+          git push --force origin "$RESULT_BRANCH"
+          git rev-parse HEAD
