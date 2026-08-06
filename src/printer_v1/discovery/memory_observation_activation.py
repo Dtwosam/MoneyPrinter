@@ -14,6 +14,10 @@ import json
 import sqlite3
 from typing import Any, Mapping, Sequence
 
+from printer_v1.discovery.permanent_discovery_availability import (
+    SOLANA_INFRASTRUCTURE_MINTS,
+)
+
 
 class ActivationPurpose(str, Enum):
     MEMORY_OBSERVATION = "MEMORY_OBSERVATION"
@@ -308,6 +312,11 @@ def _require_identity(value: object, *, code: str) -> str:
 def _payload_matches_target(
     raw: object, *, mint: str, pool: str
 ) -> bool:
+    """Whole-payload recursive membership for non-market retained roles only.
+
+    MARKET_OBSERVATION must use exact same-member binding via
+    ``_require_market_response_member_binding`` instead.
+    """
     try:
         payload = json.loads(str(raw or "{}"))
     except (TypeError, ValueError, json.JSONDecodeError):
@@ -323,27 +332,246 @@ def _payload_matches_target(
     return contains(payload, mint) and contains(payload, pool)
 
 
-def _payload_confirms_solana(raw: object) -> bool:
-    """Require an explicit Solana chain/network fact in retained market data."""
+_SOLANA_CHAIN_VALUES = frozenset({"solana", "solana-mainnet", "sol"})
+_CHAIN_IDENTITY_KEYS = frozenset({"chain", "chainid", "network"})
+
+
+def _text(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _mapping_identity(value: object) -> Mapping[str, Any] | None:
+    return value if isinstance(value, Mapping) else None
+
+
+def _member_pool_identities(member: Mapping[str, Any]) -> set[str]:
+    """Accepted pool/pair fields on one normalized market member."""
+    pools: set[str] = set()
+    for key in ("pair_address", "pairAddress", "pool", "pool_address", "address"):
+        text = _text(member.get(key))
+        if text:
+            pools.add(text)
+    attrs = _mapping_identity(member.get("attributes"))
+    if attrs is not None:
+        for key in ("address", "pair_address", "pairAddress", "pool_address"):
+            text = _text(attrs.get(key))
+            if text:
+                pools.add(text)
+    return pools
+
+
+def _member_base_mint_identities(member: Mapping[str, Any]) -> set[str]:
+    """Accepted base/target mint fields on one normalized market member."""
+    mints: set[str] = set()
+    for key in ("base_mint", "token_mint", "candidate_mint", "mint"):
+        text = _text(member.get(key))
+        if text:
+            mints.add(text)
+    base = _mapping_identity(member.get("baseToken"))
+    if base is not None:
+        text = _text(base.get("address"))
+        if text:
+            mints.add(text)
+    attrs = _mapping_identity(member.get("attributes"))
+    if attrs is not None:
+        for key in (
+            "base_token_address",
+            "baseTokenAddress",
+            "token_mint",
+            "base_mint",
+        ):
+            text = _text(attrs.get(key))
+            if text:
+                mints.add(text)
+    rels = _mapping_identity(member.get("relationships"))
+    if rels is not None:
+        base_rel = _mapping_identity(rels.get("base_token"))
+        base_data = (
+            _mapping_identity(base_rel.get("data")) if base_rel is not None else None
+        )
+        if base_data is not None:
+            raw_id = _text(base_data.get("id"))
+            if raw_id:
+                # GeckoTerminal relationship ids are often ``solana_<mint>``.
+                if raw_id.startswith("solana_"):
+                    raw_id = raw_id[len("solana_") :]
+                mints.add(raw_id)
+    return mints
+
+
+def _member_quote_mint_identities(member: Mapping[str, Any]) -> set[str]:
+    """Accepted quote/infrastructure mint fields on one market member."""
+    mints: set[str] = set()
+    for key in ("quote_mint", "quoteMint"):
+        text = _text(member.get(key))
+        if text:
+            mints.add(text)
+    quote = _mapping_identity(member.get("quoteToken"))
+    if quote is not None:
+        text = _text(quote.get("address"))
+        if text:
+            mints.add(text)
+    attrs = _mapping_identity(member.get("attributes"))
+    if attrs is not None:
+        for key in ("quote_token_address", "quoteTokenAddress", "quote_mint"):
+            text = _text(attrs.get(key))
+            if text:
+                mints.add(text)
+    rels = _mapping_identity(member.get("relationships"))
+    if rels is not None:
+        quote_rel = _mapping_identity(rels.get("quote_token"))
+        quote_data = (
+            _mapping_identity(quote_rel.get("data")) if quote_rel is not None else None
+        )
+        if quote_data is not None:
+            raw_id = _text(quote_data.get("id"))
+            if raw_id:
+                if raw_id.startswith("solana_"):
+                    raw_id = raw_id[len("solana_") :]
+                mints.add(raw_id)
+    return mints
+
+
+def _member_confirms_solana(member: Mapping[str, Any]) -> bool:
+    """True only when this exact member carries Solana chain/network identity."""
+    for key, item in member.items():
+        if str(key).casefold() in _CHAIN_IDENTITY_KEYS:
+            if str(item).casefold() in _SOLANA_CHAIN_VALUES:
+                return True
+    attrs = _mapping_identity(member.get("attributes"))
+    if attrs is not None:
+        for key, item in attrs.items():
+            if str(key).casefold() in _CHAIN_IDENTITY_KEYS:
+                if str(item).casefold() in _SOLANA_CHAIN_VALUES:
+                    return True
+    rels = _mapping_identity(member.get("relationships"))
+    if rels is not None:
+        network_rel = _mapping_identity(rels.get("network"))
+        network_data = (
+            _mapping_identity(network_rel.get("data"))
+            if network_rel is not None
+            else None
+        )
+        if network_data is not None:
+            if str(network_data.get("id") or "").casefold() in _SOLANA_CHAIN_VALUES:
+                return True
+    resource_id = _text(member.get("id"))
+    if resource_id.startswith("solana_"):
+        return True
+    return False
+
+
+def _member_looks_like_identity_carrier(member: Mapping[str, Any]) -> bool:
+    """Detect a single-member retained envelope carrying pool + mint identity."""
+    return bool(_member_pool_identities(member) and (
+        _member_base_mint_identities(member) or _member_quote_mint_identities(member)
+    ))
+
+
+def _extract_market_members(
+    payload: Mapping[str, Any], *, source_name: str
+) -> tuple[list[Mapping[str, Any]] | None, str | None]:
+    """Return source-contract members or an unsupported-shape blocker code."""
+    pairs = payload.get("pairs")
+    if isinstance(pairs, list):
+        members = [item for item in pairs if isinstance(item, Mapping)]
+        # Empty list is a lawful no-match shape, not an unsupported contract.
+        return members, None
+
+    if source_name == "geckoterminal":
+        data = payload.get("data")
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, Mapping)], None
+        if isinstance(data, Mapping):
+            return [data], None
+
+    # Single-member retained envelope used by historical fixtures and direct
+    # Pump market rows that store one bound identity object without a pairs key.
+    if "pairs" not in payload and _member_looks_like_identity_carrier(payload):
+        return [payload], None
+
+    return None, "MARKET_RESPONSE_UNSUPPORTED_SHAPE"
+
+
+def _require_market_response_member_binding(
+    raw: object,
+    *,
+    mint: str,
+    pool: str,
+    source_name: str,
+    require_solana: bool,
+) -> None:
+    """Fail-closed exact same-member mint/pool/(Solana) binding for market evidence.
+
+    Whole-payload recursive membership is intentionally not used: mint, pool,
+    and Solana identity must belong to one supported normalized response member.
+    """
+    if source_name not in {"dexscreener", "geckoterminal"}:
+        raise MemoryObservationActivationError(
+            "MARKET_ADMISSION_SOURCE_UNSUPPORTED", source_name
+        )
     try:
         payload = json.loads(str(raw or "{}"))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return False
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise MemoryObservationActivationError(
+            "MARKET_RESPONSE_UNSUPPORTED_SHAPE"
+        ) from exc
+    if not isinstance(payload, Mapping):
+        raise MemoryObservationActivationError("MARKET_RESPONSE_UNSUPPORTED_SHAPE")
 
-    def confirms(value: Any) -> bool:
-        if isinstance(value, Mapping):
-            for key, item in value.items():
-                if str(key).casefold() in {"chain", "chainid", "network"}:
-                    if str(item).casefold() in {"solana", "solana-mainnet"}:
-                        return True
-                if confirms(item):
-                    return True
-            return False
-        if isinstance(value, (list, tuple)):
-            return any(confirms(item) for item in value)
-        return False
+    members, shape_blocker = _extract_market_members(
+        payload, source_name=source_name
+    )
+    if shape_blocker is not None or members is None:
+        raise MemoryObservationActivationError(
+            shape_blocker or "MARKET_RESPONSE_UNSUPPORTED_SHAPE"
+        )
 
-    return confirms(payload)
+    exact_matches: list[Mapping[str, Any]] = []
+    mint_pool_without_solana: list[Mapping[str, Any]] = []
+    quote_only_pool_hits = 0
+
+    for member in members:
+        member_pools = _member_pool_identities(member)
+        if pool not in member_pools:
+            continue
+        base_mints = _member_base_mint_identities(member)
+        quote_mints = _member_quote_mint_identities(member)
+        if mint in base_mints:
+            if _member_confirms_solana(member):
+                exact_matches.append(member)
+            else:
+                mint_pool_without_solana.append(member)
+        elif mint in quote_mints:
+            quote_only_pool_hits += 1
+
+    if len(exact_matches) > 1:
+        raise MemoryObservationActivationError(
+            "MARKET_RESPONSE_CONFLICTING_MEMBER_MATCHES",
+            f"{mint}:{pool}:{len(exact_matches)}",
+        )
+    if len(exact_matches) == 1:
+        return
+    if mint_pool_without_solana:
+        if require_solana:
+            raise MemoryObservationActivationError(
+                "MARKET_ADMISSION_SOLANA_CONFIRMATION_MISSING"
+            )
+        # Direct Pump market rows may omit chain when exact mint+pool already
+        # bind on one member; still reject ambiguous multi-member hits above.
+        if len(mint_pool_without_solana) == 1:
+            return
+        raise MemoryObservationActivationError(
+            "MARKET_RESPONSE_CONFLICTING_MEMBER_MATCHES",
+            f"{mint}:{pool}:{len(mint_pool_without_solana)}",
+        )
+    if quote_only_pool_hits:
+        raise MemoryObservationActivationError(
+            "MARKET_RESPONSE_TARGET_IS_QUOTE_ONLY", mint
+        )
+    raise MemoryObservationActivationError(
+        "MARKET_RESPONSE_NO_EXACT_MEMBER_MATCH", f"{mint}:{pool}"
+    )
 
 
 def _retained_observation_time_matches(
@@ -688,10 +916,7 @@ def validate_memory_activation_set(
     for candidate in activation.selected:
         mint = _require_identity(candidate.mint, code="ACTIVATION_MINT_MISSING")
         pool = _require_identity(candidate.pool, code="ACTIVATION_POOL_MISSING")
-        if mint in {
-            "So11111111111111111111111111111111111111112",
-            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-        }:
+        if mint in SOLANA_INFRASTRUCTURE_MINTS:
             raise MemoryObservationActivationError("INFRASTRUCTURE_MINT_EXCLUDED")
         if candidate.admission_authority is AdmissionAuthority.MARKET_PRESENT_POOL:
             if candidate.claims_pump_origin or candidate.claims_pumpswap_graduation:
@@ -829,28 +1054,23 @@ def validate_memory_activation_set(
                 or value(response, "response_hash", 5) != reference.raw_payload_hash
             ):
                 raise MemoryObservationActivationError("RETAINED_RESPONSE_CONTRACT_MISMATCH")
-            if not _payload_matches_target(
+            if reference.evidence_role is EvidenceRole.MARKET_OBSERVATION:
+                _require_market_response_member_binding(
+                    value(response, "normalized_payload_json", 6),
+                    mint=mint,
+                    pool=pool,
+                    source_name=reference.source_name,
+                    require_solana=(
+                        candidate.admission_authority
+                        is AdmissionAuthority.MARKET_PRESENT_POOL
+                    ),
+                )
+            elif not _payload_matches_target(
                 value(response, "normalized_payload_json", 6),
                 mint=mint,
                 pool=pool,
             ):
                 raise MemoryObservationActivationError("RETAINED_RESPONSE_TARGET_MISMATCH")
-            if reference.evidence_role is EvidenceRole.MARKET_OBSERVATION:
-                if reference.source_name not in {"dexscreener", "geckoterminal"}:
-                    raise MemoryObservationActivationError(
-                        "MARKET_ADMISSION_SOURCE_UNSUPPORTED",
-                        reference.source_name,
-                    )
-                if (
-                    candidate.admission_authority
-                    is AdmissionAuthority.MARKET_PRESENT_POOL
-                    and not _payload_confirms_solana(
-                        value(response, "normalized_payload_json", 6)
-                    )
-                ):
-                    raise MemoryObservationActivationError(
-                        "MARKET_ADMISSION_SOLANA_CONFIRMATION_MISSING"
-                    )
             if not _retained_observation_time_matches(
                 connection,
                 mint=mint,
