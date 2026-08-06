@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 path = Path("tests/test_v2_9_8b_window_15m_child_terminal_propagation.py")
 text = path.read_text(encoding="utf-8")
@@ -12,12 +13,25 @@ new_env = '''    env = {\n        "PRINTER_V1_APPLICATION_MARKER_PATH": str(mark
 if text.count(old_env) != 1:
     raise SystemExit("child terminal test marker environment anchor mismatch")
 text = text.replace(old_env, new_env, 1)
-needle = '''            expected_marker_path=marker,\n            expected_exit_code='''
-replacement = '''            expected_marker_path=marker,\n            expected_marker_sha256=hashlib.sha256(\n                marker.read_bytes()\n            ).hexdigest(),\n            expected_exit_code='''
-count = text.count(needle)
-if count != 3:
-    raise SystemExit(f"expected exactly three reader call anchors, found {count}")
-text = text.replace(needle, replacement)
+pattern = re.compile(
+    r'(?P<indent>^[ \t]*)expected_marker_path=marker,\n'
+    r'(?P=indent)expected_exit_code=',
+    re.MULTILINE,
+)
+
+def add_expected_sha(match: re.Match[str]) -> str:
+    indent = match.group("indent")
+    return (
+        f"{indent}expected_marker_path=marker,\n"
+        f"{indent}expected_marker_sha256=hashlib.sha256(\n"
+        f"{indent}    marker.read_bytes()\n"
+        f"{indent}).hexdigest(),\n"
+        f"{indent}expected_exit_code="
+    )
+
+text, count = pattern.subn(add_expected_sha, text)
+if count != 9:
+    raise SystemExit(f"expected exactly nine reader call anchors, found {count}")
 addition = r'''
 
 
