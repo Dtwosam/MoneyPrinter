@@ -140,26 +140,21 @@ jobs:
             tests/test_v2_9_8b_window_15m_one_shot_wrapper.py \
             -q | tee /tmp/new-tests.log
 
-      - name: Run nearest operational terminal tests
+      - name: Run exact neighboring terminal suites
         shell: bash
         run: |
           set -o pipefail
-          mapfile -t selected < <(
-            grep -lE \
-              'build_action_local_terminal_truth|merge_action_local_into_exception_envelope|unified_terminal_closure|finalize_campaign_terminal|terminal_safety' \
-              tests/test_*.py \
-              | grep -vE 'child_terminal_propagation|one_shot_wrapper' \
-              | sort \
-              | head -n 20 \
-              || true
-          )
-          printf 'Selected nearest tests (%s):\n' "${#selected[@]}" | tee /tmp/nearest-tests.log
-          if [ "${#selected[@]}" -gt 0 ]; then
-            printf '%s\n' "${selected[@]}" | tee -a /tmp/nearest-tests.log
-            python -m pytest "${selected[@]}" -q | tee -a /tmp/nearest-tests.log
-          else
-            echo 'No content-matched nearest terminal tests found' | tee -a /tmp/nearest-tests.log
-          fi
+          python -m pytest \
+            tests/test_v2_9_8b_18_heartbeat_terminalization_repair.py \
+            tests/test_v2_9_8b_accounting_exact_identity_report_only_repair.py \
+            tests/test_v2_9_8b_c12_c14_authorization_marker_lease_evidence_conformance_repair.py \
+            tests/test_v2_9_8b_c12_c14_durable_cleanup_timestamp_and_replay_reconstruction_repair.py \
+            tests/test_v2_9_8b_campaign_accounting_terminal_enforcement.py \
+            tests/test_v2_9_8b_end_to_end_pre_lifecycle_failure_propagation.py \
+            tests/test_v2_9_8b_full_run_accounting_semantics_correction.py \
+            tests/test_v2_9_8b_full_run_accounting_terminal_evidence.py \
+            tests/test_v2_9_8b_full_run_wiring_integration.py \
+            -q | tee /tmp/nearest-tests.log
 
       - name: Compile and diff checks
         run: |
