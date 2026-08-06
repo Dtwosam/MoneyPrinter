@@ -1,0 +1,1 @@
+GitHub-hosted runner retrigger only. The prior run failed before checkout because actions download service was unavailable. No proof or repair logic changed.
