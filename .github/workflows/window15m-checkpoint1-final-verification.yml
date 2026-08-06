@@ -1,0 +1,96 @@
+name: WINDOW_15M Checkpoint 1 final verification
+
+on:
+  pull_request:
+    branches:
+      - agent/v2-9-8b-window-15m-checkpoint-1-terminal-propagation-staged
+
+permissions:
+  contents: read
+
+jobs:
+  final-verification:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DESIGN_SHA: f1b404ad6463ffab883b5d56133b56a5b45a470c
+      CHECKPOINT_SHA: 0deba3c06d72499899b9c21bf9e71c89d5c8057c
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Native authenticated checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf ./* ./.??* 2>/dev/null || true
+          git clone --no-tags \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" .
+          git fetch --no-tags origin "${GITHUB_HEAD_REF}"
+          git checkout -B "${GITHUB_HEAD_REF}" FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          test "$(git rev-parse HEAD^)" = "$CHECKPOINT_SHA"
+          git merge-base --is-ancestor "$DESIGN_SHA" "$CHECKPOINT_SHA"
+          test "$(git rev-list --count "$DESIGN_SHA..$CHECKPOINT_SHA")" = "1"
+          changed="$(git diff --name-only "$CHECKPOINT_SHA..HEAD")"
+          test "$changed" = ".github/workflows/window15m-checkpoint1-final-verification.yml"
+
+      - name: Install focused test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . pytest
+
+      - name: Create disposable migrated fixture database
+        run: |
+          mkdir -p data
+          python - <<'PY'
+          from pathlib import Path
+          from printer_v1.db import apply_migrations
+          apply_migrations(Path("data/printer_v1.sqlite3"))
+          PY
+
+      - name: Run focused terminal propagation tests
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest \
+            tests/test_v2_9_8b_window_15m_child_terminal_propagation.py \
+            tests/test_v2_9_8b_window_15m_one_shot_wrapper.py \
+            -q | tee /tmp/focused.log
+
+      - name: Run exact neighboring terminal tests
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest \
+            tests/test_v2_9_8b_18_heartbeat_terminalization_repair.py \
+            tests/test_v2_9_8b_accounting_exact_identity_report_only_repair.py \
+            tests/test_v2_9_8b_c12_c14_authorization_marker_lease_evidence_conformance_repair.py \
+            tests/test_v2_9_8b_c12_c14_durable_cleanup_timestamp_and_replay_reconstruction_repair.py \
+            tests/test_v2_9_8b_campaign_accounting_terminal_enforcement.py \
+            tests/test_v2_9_8b_end_to_end_pre_lifecycle_failure_propagation.py \
+            tests/test_v2_9_8b_full_run_accounting_semantics_correction.py \
+            tests/test_v2_9_8b_full_run_accounting_terminal_evidence.py \
+            tests/test_v2_9_8b_full_run_wiring_integration.py \
+            --deselect=tests/test_v2_9_8b_accounting_exact_identity_report_only_repair.py::test_ordinary_disposable_two_token_window_15m_regression \
+            --deselect='tests/test_v2_9_8b_campaign_accounting_terminal_enforcement.py::test_post_handoff_fault_compensation_terminalizes_to_zero_active_work[LIFECYCLE_SELECTION_BATCH_CREATION]' \
+            --deselect='tests/test_v2_9_8b_campaign_accounting_terminal_enforcement.py::test_post_handoff_fault_compensation_terminalizes_to_zero_active_work[EXECUTOR_JOB_CANCELLATION]' \
+            --deselect='tests/test_v2_9_8b_campaign_accounting_terminal_enforcement.py::test_post_handoff_fault_compensation_terminalizes_to_zero_active_work[AFTER_FIRST_RUN_STEP_AND_SCHEDULER_COMMIT]' \
+            --deselect='tests/test_v2_9_8b_campaign_accounting_terminal_enforcement.py::test_post_handoff_fault_compensation_terminalizes_to_zero_active_work[AFTER_FIRST_TOKEN_SNAPSHOT_COMMIT]' \
+            --deselect='tests/test_v2_9_8b_campaign_accounting_terminal_enforcement.py::test_post_handoff_fault_compensation_terminalizes_to_zero_active_work[AFTER_FIRST_LIFECYCLE_WINDOW_COMMIT]' \
+            --deselect='tests/test_v2_9_8b_campaign_accounting_terminal_enforcement.py::test_post_handoff_fault_compensation_terminalizes_to_zero_active_work[AFTER_POST_ACTIVATION_15M_STATE_COMMIT]' \
+            --deselect=tests/test_v2_9_8b_campaign_accounting_terminal_enforcement.py::test_normal_success_two_slots_two_window_15m_jobs \
+            -q | tee /tmp/neighbors.log
+
+      - name: Compile and scope verification
+        shell: bash
+        run: |
+          python -m py_compile \
+            src/printer_v1/operator_cli/window_15m_child_terminal.py \
+            src/printer_v1/operator_cli/window_15m_one_shot_wrapper.py \
+            src/printer_v1/operator_cli/operational_memory_factory_command.py \
+            src/printer_v1/operator_cli/action_local_terminal_truth.py
+          git diff --check "$DESIGN_SHA..$CHECKPOINT_SHA"
+          test "$(git diff --name-only "$DESIGN_SHA..$CHECKPOINT_SHA" | wc -l | tr -d ' ')" = "6"
+          ! git diff --name-only "$DESIGN_SHA..$CHECKPOINT_SHA" | grep -E '(^|/)(migrations|scripts)/'
+          ! git diff --unified=0 "$DESIGN_SHA..$CHECKPOINT_SHA" | grep '^+' | grep -E 'urlopen\(|requests\.(get|post)|httpx\.|Start-PrinterV1|OperatorApproved'
+          echo "FOCUSED=$(tail -n 1 /tmp/focused.log)"
+          echo "NEIGHBORS=$(tail -n 1 /tmp/neighbors.log)"
