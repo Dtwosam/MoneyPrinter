@@ -2,7 +2,7 @@
 set -euo pipefail
 
 BRANCH="agent/v2-9-8b-window-15m-checkpoint-5-scheduler-ownership-lifecycle-activation"
-EXPECTED_HEAD="0119fd1e4f45ee5249d637abece1033297acb7d3"
+HARNESS_BASE="0119fd1e4f45ee5249d637abece1033297acb7d3"
 BASELINE="421e409628a0db443f1c417835a9d5b06bbdc834"
 FULL_PROOF_HEAD="d6a08a5b49bab54fe705237dbee0ce148a33cee6"
 
@@ -17,18 +17,14 @@ fi
 git -C "$ROOT" fetch origin "$BRANCH"
 REMOTE_HEAD="$(git -C "$ROOT" rev-parse "origin/$BRANCH")"
 
-if [[ "$REMOTE_HEAD" != "$EXPECTED_HEAD" ]]; then
-  echo "Unexpected remote head: $REMOTE_HEAD" >&2
-  echo "Expected: $EXPECTED_HEAD" >&2
-  exit 1
-fi
-
+git -C "$ROOT" merge-base --is-ancestor "$HARNESS_BASE" "$REMOTE_HEAD"
 git -C "$ROOT" merge-base --is-ancestor "$BASELINE" "$REMOTE_HEAD"
 
 CHANGED_SINCE_FULL_PROOF="$(
   git -C "$ROOT" diff --name-only "$FULL_PROOF_HEAD..$REMOTE_HEAD"
 )"
-if [[ "$CHANGED_SINCE_FULL_PROOF" != "scripts/Run-Checkpoint5-ImportOrderRepair-V4.sh" ]]; then
+EXPECTED_HARNESS_FILES=$'scripts/Run-Checkpoint5-ImportOrderRepair-V4.sh\nscripts/Run-Checkpoint5-ImportOrderRepair-V5.sh'
+if [[ "$CHANGED_SINCE_FULL_PROOF" != "$EXPECTED_HARNESS_FILES" ]]; then
   echo "Source/test drift since full focused proof" >&2
   printf '%s\n' "$CHANGED_SINCE_FULL_PROOF" >&2
   exit 1
