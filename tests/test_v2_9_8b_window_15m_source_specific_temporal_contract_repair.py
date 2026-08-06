@@ -297,6 +297,126 @@ def test_direct_missing_zero_negative_or_invalid_time_blocks(bad):
     )
 
 
+@pytest.mark.parametrize(
+    "bad",
+    (
+        1.5,
+        1.0,
+        "1700000000",
+        float("inf"),
+        float("-inf"),
+        float("nan"),
+        10**100,
+    ),
+)
+def test_direct_non_integer_and_nonconvertible_epochs_fail_closed(bad):
+    """No coercion: floats, digit-strings, inf/nan, and oversized ints are invalid."""
+    item = _direct_item(PUMP_MINT, PUMP_POOL, graduation_block_time=bad)
+    with pytest.raises(GraduatedSupplyError) as exc:
+        _source_specific_admission_for(item)
+    assert str(exc.value) == (
+        f"DIRECT_CANDIDATE_GRADUATION_TIME_INVALID:{PUMP_MINT}"
+    )
+
+
+def test_direct_positive_integer_epoch_remains_exact_no_truncation():
+    exact = 1_700_000_001
+    admission = _source_specific_admission_for(
+        _direct_item(PUMP_MINT, PUMP_POOL, graduation_block_time=exact)
+    )
+    assert admission.temporal_context.pump_origin_block_time_epoch == exact
+    assert admission.temporal_context.pump_origin_block_time_epoch is exact or (
+        admission.temporal_context.pump_origin_block_time_epoch == exact
+        and type(admission.temporal_context.pump_origin_block_time_epoch) is int
+    )
+    assert admission.origin_proof is not None
+    assert admission.origin_proof.block_time == exact
+    # Prove no float truncation path: nearby float would have been rejected.
+    with pytest.raises(GraduatedSupplyError) as exc:
+        _source_specific_admission_for(
+            _direct_item(
+                PUMP_MINT, PUMP_POOL, graduation_block_time=float(exact)
+            )
+        )
+    assert "DIRECT_CANDIDATE_GRADUATION_TIME_INVALID" in str(exc.value)
+
+
+def test_invalid_direct_time_blocks_before_holder_transport(monkeypatch):
+    provider_calls: list[object] = []
+
+    def boom(*args, **kwargs):
+        provider_calls.append(1)
+        raise AssertionError("holder provider must not run")
+
+    monkeypatch.setattr(
+        "printer_v1.operator_cli.one_command_15m_factory._collect_preclose_context",
+        boom,
+    )
+    with pytest.raises(GraduatedSupplyError) as exc:
+        _source_specific_admission_for(
+            _direct_item(PUMP_MINT, PUMP_POOL, graduation_block_time=1.0)
+        )
+    assert "DIRECT_CANDIDATE_GRADUATION_TIME_INVALID" in str(exc.value)
+    assert provider_calls == []
+
+
+@pytest.mark.parametrize(
+    "bad_block_time",
+    (10**100, 1.5, "1700000000", 0, -5),
+)
+def test_legacy_holder_resolver_stable_typed_blocker_for_invalid_block_time(
+    bad_block_time,
+):
+    """Legacy FixtureOriginProof path exposes stable LiveOperationalError codes."""
+    from dataclasses import replace
+
+    base = _legacy_origin(block_time=DIRECT_EPOCH_A)
+    # Dataclass does not runtime-type-check; inject untrusted values deliberately.
+    proof = replace(base, block_time=bad_block_time)  # type: ignore[arg-type]
+    with pytest.raises(LiveOperationalError) as exc:
+        AuthoritativeLiveOperationalCampaignOwner._resolve_holder_maturation_observed_at(
+            proof
+        )
+    assert exc.value.code in {
+        "DIRECT_CANDIDATE_GRADUATION_TIME_INVALID",
+        "DIRECT_CANDIDATE_GRADUATION_TIME_MISSING",
+    }
+    assert exc.value.detail == PUMP_MINT
+
+
+def test_market_temporal_behavior_unchanged_after_direct_validation_harden():
+    admission = _source_specific_admission_for(
+        _market_item(FAILED_MINT, FAILED_POOL, observed_at=MARKET_OBS_A)
+    )
+    assert (
+        admission.temporal_context.temporal_authority
+        is CandidateTemporalAuthority.RETAINED_MARKET_OBSERVATION_TIME
+    )
+    assert admission.temporal_context.admission_observed_at_utc == MARKET_OBS_A
+    assert admission.temporal_context.pump_origin_block_time_epoch is None
+    assert not hasattr(admission, "block_time")
+
+
+def test_mixed_market_direct_behavior_unchanged_after_direct_validation_harden():
+    market = _source_specific_admission_for(
+        _market_item(DEX_MINT, DEX_POOL, observed_at=MARKET_OBS_A)
+    )
+    direct = _source_specific_admission_for(
+        _direct_item(PUMP_MINT, PUMP_POOL, graduation_block_time=DIRECT_EPOCH_A)
+    )
+    assert (
+        market.temporal_context.temporal_authority
+        is CandidateTemporalAuthority.RETAINED_MARKET_OBSERVATION_TIME
+    )
+    assert (
+        direct.temporal_context.temporal_authority
+        is CandidateTemporalAuthority.DIRECT_PUMP_GRADUATION_TIME
+    )
+    assert market.temporal_context.pump_origin_block_time_epoch is None
+    assert direct.temporal_context.pump_origin_block_time_epoch == DIRECT_EPOCH_A
+    assert market.temporal_context.admission_observed_at_utc == MARKET_OBS_A
+
+
 # ---------------------------------------------------------------------------
 # 10–12 Shared holder maturation resolver
 # ---------------------------------------------------------------------------

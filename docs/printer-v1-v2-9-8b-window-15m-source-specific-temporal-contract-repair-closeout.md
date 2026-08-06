@@ -21,12 +21,18 @@ This is implementation, focused disposable proof, and closeout only.
 | Required baseline branch | `agent/v2-9-8b-window-15m-source-specific-temporal-contract-design` |
 | Required full starting HEAD | `caf86d885265b0f5ec8d1cb1581c9d4af1ded8d0` |
 | Repair branch | `agent/v2-9-8b-window-15m-source-specific-temporal-contract-repair` |
-| Final full HEAD | `39be235248cf002cd52bcfecc198494302e4fe13` |
+| Atomic implementation commit | `65eae92177c443b19fbffa126480a61e5fbcfc09` |
+| Focused follow-up baseline | `1f1869dec15fe3d87456bec3748aa87dd9ce47c6` |
 | Design controlling document | `docs/printer-v1-v2-9-8b-window-15m-source-specific-temporal-contract-design.md` |
 | Consumed authorization | `V2_9_8B_WINDOW_15M_AUTH_20260806T103951Z` |
 | Failed execution | `20260806T105403Z-cde8a9b58daf` |
 | First terminal cause | `AttributeError:'SourceSpecificCandidateAdmission' object has no attribute 'block_time'` |
 | Commit subject | `Repair source-specific candidate temporal contract` |
+
+The live final branch tip must be resolved and reported externally after the
+final commit on a branch. Do not attempt to commit the SHA of the commit
+currently being created into the same document as a self-referential
+`Final full HEAD` field.
 
 Starting tracked tree and index were clean. Existing untracked operational
 evidence packages (Migration-050 and prior/current authorization packages)

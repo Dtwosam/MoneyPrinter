@@ -124,24 +124,28 @@ def _epoch_to_utc_iso(epoch: int) -> str:
 
 
 def _require_positive_graduation_epoch(raw: object, *, mint: str) -> int:
-    """Fail closed when direct Pump graduation/migration time is unusable."""
+    """Fail closed unless ``raw`` is an exact positive integer Unix epoch.
+
+    Accepts only ``type(raw) is int`` and ``raw > 0``. Booleans, floats
+    (including ``1.0``), strings, Decimal, null, zero and negative values fail
+    closed. Does not coerce via ``int(raw)``. Before return, proves the epoch is
+    convertible with ``datetime.fromtimestamp(raw, tz=timezone.utc)``.
+    """
     if raw is None or (isinstance(raw, str) and not str(raw).strip()):
         raise GraduatedSupplyError(
             f"DIRECT_CANDIDATE_GRADUATION_TIME_MISSING:{mint}"
         )
-    try:
-        if type(raw) is bool:
-            raise ValueError("boolean is not a graduation epoch")
-        epoch = int(raw)
-    except (TypeError, ValueError) as exc:
-        raise GraduatedSupplyError(
-            f"DIRECT_CANDIDATE_GRADUATION_TIME_INVALID:{mint}"
-        ) from exc
-    if epoch <= 0:
+    if type(raw) is not int or raw <= 0:
         raise GraduatedSupplyError(
             f"DIRECT_CANDIDATE_GRADUATION_TIME_INVALID:{mint}"
         )
-    return epoch
+    try:
+        datetime.fromtimestamp(raw, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError) as exc:
+        raise GraduatedSupplyError(
+            f"DIRECT_CANDIDATE_GRADUATION_TIME_INVALID:{mint}"
+        ) from exc
+    return raw
 
 
 def _market_observation_time_utc(item: Mapping[str, Any], *, mint: str) -> str:
