@@ -25,9 +25,11 @@ jobs:
         run: |
           cp .ci/window15m_checkpoint1/write_tests.py /tmp/write_tests.py
           cp .ci/window15m_checkpoint1/append_review_tests.py /tmp/append_review_tests.py
+          cp .ci/window15m_checkpoint1/append_call_order_test.py /tmp/append_call_order_test.py
           cp .ci/window15m_checkpoint1/apply_repair.py /tmp/apply_repair.py
           cp .ci/window15m_checkpoint1/fix_applicator.py /tmp/fix_applicator.py
           cp .ci/window15m_checkpoint1/apply_review_fix.py /tmp/apply_review_fix.py
+          cp .ci/window15m_checkpoint1/apply_call_order_fix.py /tmp/apply_call_order_fix.py
           cp .ci/window15m_checkpoint1/write_closeout.py /tmp/write_closeout.py
 
       - name: Reset executable tree to exact rolling design tip
@@ -54,6 +56,7 @@ jobs:
         run: |
           python /tmp/write_tests.py
           python /tmp/append_review_tests.py
+          python /tmp/append_call_order_test.py
 
       - name: Verify primary RED on controlling baseline
         shell: bash
@@ -91,6 +94,22 @@ jobs:
       - name: Apply strict envelope trust-boundary review fix
         run: python /tmp/apply_review_fix.py
 
+      - name: Verify provenance call-order RED
+        shell: bash
+        run: |
+          set +e
+          python -m pytest \
+            tests/test_v2_9_8b_window_15m_child_terminal_propagation.py::test_provenance_validation_failure_writes_structured_child_terminal \
+            -q > /tmp/call-order-red.log 2>&1
+          code=$?
+          set -e
+          cat /tmp/call-order-red.log
+          test "$code" -ne 0
+          grep -Eq 'child terminal is missing|FileNotFoundError' /tmp/call-order-red.log
+
+      - name: Apply provenance reporting-binding call-order fix
+        run: python /tmp/apply_call_order_fix.py
+
       - name: Run focused child and wrapper tests
         shell: bash
         run: |
@@ -105,18 +124,20 @@ jobs:
         run: |
           set -o pipefail
           mapfile -t selected < <(
-            find tests -maxdepth 1 -type f -name 'test_*.py' \
-              | grep -E '(action_local_terminal|unified_terminal|terminal_truth|operational.*exception|campaign_terminal)' \
-              | grep -v 'child_terminal_propagation' \
+            grep -lE \
+              'build_action_local_terminal_truth|merge_action_local_into_exception_envelope|unified_terminal_closure|finalize_campaign_terminal|terminal_safety' \
+              tests/test_*.py \
+              | grep -vE 'child_terminal_propagation|one_shot_wrapper' \
               | sort \
-              | head -n 12 \
+              | head -n 20 \
               || true
           )
-          if [ "${#selected[@]}" -eq 0 ]; then
-            echo '0 nearest terminal test files selected' | tee /tmp/nearest-tests.log
+          printf 'Selected nearest tests (%s):\n' "${#selected[@]}" | tee /tmp/nearest-tests.log
+          if [ "${#selected[@]}" -gt 0 ]; then
+            printf '%s\n' "${selected[@]}" | tee -a /tmp/nearest-tests.log
+            python -m pytest "${selected[@]}" -q | tee -a /tmp/nearest-tests.log
           else
-            printf 'Selected nearest tests:\n%s\n' "${selected[*]}"
-            python -m pytest "${selected[@]}" -q | tee /tmp/nearest-tests.log
+            echo 'No content-matched nearest terminal tests found' | tee -a /tmp/nearest-tests.log
           fi
 
       - name: Compile and diff checks
