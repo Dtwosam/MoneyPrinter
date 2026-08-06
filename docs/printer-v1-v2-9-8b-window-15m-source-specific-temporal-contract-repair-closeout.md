@@ -21,7 +21,7 @@ This is implementation, focused disposable proof, and closeout only.
 | Required baseline branch | `agent/v2-9-8b-window-15m-source-specific-temporal-contract-design` |
 | Required full starting HEAD | `caf86d885265b0f5ec8d1cb1581c9d4af1ded8d0` |
 | Repair branch | `agent/v2-9-8b-window-15m-source-specific-temporal-contract-repair` |
-| Final full HEAD | `03cd69f3de0efad6b87afa56af5f2ced0bd0a34a` |
+| Final full HEAD | `39be235248cf002cd52bcfecc198494302e4fe13` |
 | Design controlling document | `docs/printer-v1-v2-9-8b-window-15m-source-specific-temporal-contract-design.md` |
 | Consumed authorization | `V2_9_8B_WINDOW_15M_AUTH_20260806T103951Z` |
 | Failed execution | `20260806T105403Z-cde8a9b58daf` |
