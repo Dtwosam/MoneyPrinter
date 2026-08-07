@@ -42,6 +42,10 @@ from printer_v1.sources.pumpswap_pool_account_batch import (
 )
 from printer_v1.sources.dexscreener import build_dexscreener_adapter
 from printer_v1.sources.geckoterminal import build_geckoterminal_adapter
+from printer_v1.sources.measured_transport import (
+    MeasuredTransportLedger,
+    canonical_transport_identity_key,
+)
 
 
 _GOV = OwnerPort(SOURCE_GOVERNOR_OWNER, True)
@@ -419,14 +423,24 @@ def run_checkpoint8_real_consumer_compatibility(runtime: Any) -> dict[str, Any]:
         observed = None
         accepted = False
         detail = None
+        holder_ledger = None
         try:
-            adapter = output(
-                token_mint=first_mint,
-                pool_address=first_pool,
-                input_mint=payload.get("input_mint"),
-                output_mint=payload.get("output_mint"),
-                timeout_seconds=1.0,
-            )
+            factory_kwargs = {
+                "token_mint": first_mint,
+                "pool_address": first_pool,
+                "input_mint": payload.get("input_mint"),
+                "output_mint": payload.get("output_mint"),
+                "timeout_seconds": 1.0,
+            }
+            if label == "preclose_goplus_safety":
+                holder_ledger = MeasuredTransportLedger(
+                    campaign_id="checkpoint8-real-consumer-campaign",
+                    run_id="checkpoint8-real-consumer-run",
+                    cycle_id="checkpoint8-real-consumer-cycle",
+                )
+                factory_kwargs["measured_transport_ledger"] = holder_ledger
+
+            adapter = output(**factory_kwargs)
             observed = adapter.execute(
                 _context(
                     source_name,
@@ -436,6 +450,55 @@ def run_checkpoint8_real_consumer_compatibility(runtime: Any) -> dict[str, Any]:
                 )
             )
             accepted = _accepted_source_result(observed)
+
+            if accepted and label == "preclose_goplus_safety":
+                payload_identities = list(
+                    observed.normalized_payload.get(
+                        "transport_operation_identities"
+                    )
+                    or ()
+                )
+                identity_ok = (
+                    holder_ledger is not None
+                    and len(holder_ledger.transports) == 1
+                    and len(payload_identities) == 1
+                )
+                if identity_ok:
+                    ledger_identity = holder_ledger.transports[0]
+                    payload_identity = payload_identities[0]
+                    identity_ok = (
+                        canonical_transport_identity_key(
+                            ledger_identity
+                        )
+                        == canonical_transport_identity_key(
+                            payload_identity
+                        )
+                        and ledger_identity.stage == "HOLDER_SAFETY"
+                        and ledger_identity.source_name == "goplus"
+                        and ledger_identity.endpoint_owner
+                        == "api.gopluslabs.io"
+                        and ledger_identity.governed_request_kind
+                        == "safety_reference"
+                        and ledger_identity.method_or_endpoint
+                        == "GET_TOKEN_SECURITY"
+                        and ledger_identity.within_request_ordinal == 1
+                        and ledger_identity.target_category
+                        == "TOKEN_MINT"
+                        and ledger_identity.target_identity
+                        == first_mint
+                        and ledger_identity.response_bytes > 0
+                        and ledger_identity.normalized_rows == 1
+                        and ledger_identity.result == "COMPLETED"
+                        and observed.normalized_payload.get(
+                            "transport_operations_used"
+                        )
+                        == 1
+                    )
+                if not identity_ok:
+                    accepted = False
+                    detail = (
+                        "CHECKPOINT8_GOPLUS_MEASURED_IDENTITY_MISMATCH"
+                    )
         except Exception as exc:
             detail = f"{type(exc).__name__}:{exc}"
         rows.append(

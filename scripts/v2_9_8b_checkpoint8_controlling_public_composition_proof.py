@@ -1039,19 +1039,73 @@ class _Checkpoint8DeterministicFixture:
                 },
             )
         if self.route == "lifecycle.context_adapter_factories.goplus":
-            target_mint = str(kwargs.get("token_mint") or first["mint"])
-            return build_fixture_source_adapter(
-                "goplus",
-                fixture_payload={
-                    "token_mint": target_mint,
-                    "mint_authority": None,
-                    "freeze_authority": None,
-                    "metadata_mutable": False,
-                    "total_supply": "1000000000",
-                    "top_10_holders": [{"percent": "3"} for _ in range(10)],
-                    "lp_info": [{"locked": True}],
-                    "risk_flags": [],
-                },
+            from printer_v1.sources.goplus import build_goplus_adapter
+            from printer_v1.sources.measured_transport import (
+                TransportOperationIdentity,
+            )
+
+            target_mint = str(
+                kwargs.get("token_mint")
+                or (args[0] if args else "")
+            ).strip()
+            if (
+                not target_mint
+                or _checkpoint8_candidate_for_mint(target_mint) is None
+            ):
+                raise Checkpoint8ControllingProofError(
+                    "CHECKPOINT8_GOPLUS_FIXTURE_TARGET_MISSING"
+                )
+
+            holder_ledger = kwargs.get("measured_transport_ledger")
+            fixture_payload = {
+                "token_mint": target_mint,
+                "mint_authority": None,
+                "freeze_authority": None,
+                "metadata_mutable": False,
+                "total_supply": "1000000000",
+                "top_10_holders": [{"percent": "3"} for _ in range(10)],
+                "lp_info": [{"locked": True}],
+                "risk_flags": [],
+            }
+
+            def transport(_context):
+                self._count()
+                response_bytes = len(
+                    json.dumps(
+                        fixture_payload,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                )
+                identity = TransportOperationIdentity(
+                    stage="HOLDER_SAFETY",
+                    source_name="goplus",
+                    endpoint_owner="api.gopluslabs.io",
+                    governed_request_kind="safety_reference",
+                    method_or_endpoint="GET_TOKEN_SECURITY",
+                    within_request_ordinal=1,
+                    target_category="TOKEN_MINT",
+                    target_identity=target_mint,
+                    response_bytes=response_bytes,
+                    normalized_rows=1,
+                    result="COMPLETED",
+                )
+                if holder_ledger is not None:
+                    holder_ledger.record_transport(identity)
+
+                return {
+                    **fixture_payload,
+                    "_requested_token_mint": target_mint,
+                    "transport_operation_identities": [
+                        identity.as_dict()
+                    ],
+                    "transport_operations_used": 1,
+                    "underlying_operation_count": 1,
+                }
+
+            return build_goplus_adapter(
+                enabled=True,
+                fixture_transport=transport,
             )
         if self.route == "lifecycle.context_adapter_factories.jupiter_quote":
             return build_fixture_source_adapter(

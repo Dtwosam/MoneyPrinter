@@ -31,7 +31,15 @@ from printer_v1.operator_cli.window_15m_concrete_composition import (
 )
 from printer_v1.sources.dexscreener import build_dexscreener_adapter
 from printer_v1.sources.geckoterminal import build_geckoterminal_adapter
-from printer_v1.sources.measured_transport import identities_from_payload
+from printer_v1.sources.measured_transport import (
+    MeasuredTransportLedger,
+    canonical_transport_identity_key,
+    identities_from_payload,
+)
+from printer_v1.sources.contracts import build_governed_source_request
+from printer_v1.sources.governed_execution import (
+    execute_source_request_with_governor,
+)
 from printer_v1.sources.pumpswap import build_pumpswap_adapter
 
 
@@ -402,3 +410,83 @@ def test_checkpoint8_lifecycle_market_fixture_is_exact_target_aware(tmp_path):
             )
 
     assert tripwire.attempt_count == 0
+
+
+
+def test_checkpoint8_goplus_fixture_records_exact_holder_measured_identity(
+    tmp_path: Path,
+) -> None:
+    harness = _load_harness("dtw48-goplus-holder-identity")
+    prepared = _prepared(harness, tmp_path)
+    materialized = proof.materialize_disposable_public_composition_execution(
+        prepared.runtime
+    )
+
+    candidate = harness._checkpoint8_candidate_records()[0]
+    mint = candidate["mint"]
+
+    holder_ledger = MeasuredTransportLedger(
+        campaign_id="dtw48-green-campaign",
+        run_id="dtw48-green-run",
+        cycle_id="dtw48-green-cycle",
+    )
+
+    factory = materialized.lifecycle_kwargs[
+        "context_adapter_factories"
+    ]["goplus"]
+
+    adapter = factory(
+        token_mint=mint,
+        timeout_seconds=1.0,
+        measured_transport_ledger=holder_ledger,
+    )
+
+    request = build_governed_source_request(
+        "goplus",
+        "safety_reference",
+        request_key="dtw48-green:goplus-holder",
+        payload={"token_mint": mint},
+    )
+
+    tripwire = harness.Checkpoint8NetworkTripwire()
+    with tripwire:
+        execution = execute_source_request_with_governor(
+            prepared.runtime.plan.resolved_db_path,
+            request,
+            adapter,
+            recent_request_count=0,
+        )
+
+    result = execution.normalized_result
+    payload = dict(result.normalized_payload)
+
+    assert tripwire.attempt_count == 0
+    assert result.source_status.value == "COMPLETE"
+    assert result.data_quality_label.value == "CLEAN_DATA"
+    assert payload["token_mint"].lower() == mint.lower()
+    assert payload["transport_operations_used"] == 1
+    assert payload["underlying_operation_count"] == 1
+
+    payload_identities = identities_from_payload(payload)
+    assert len(holder_ledger.transports) == 1
+    assert len(payload_identities) == 1
+
+    ledger_identity = holder_ledger.transports[0]
+    payload_identity = payload_identities[0]
+
+    assert (
+        canonical_transport_identity_key(ledger_identity)
+        == canonical_transport_identity_key(payload_identity)
+    )
+
+    assert ledger_identity.stage == "HOLDER_SAFETY"
+    assert ledger_identity.source_name == "goplus"
+    assert ledger_identity.endpoint_owner == "api.gopluslabs.io"
+    assert ledger_identity.governed_request_kind == "safety_reference"
+    assert ledger_identity.method_or_endpoint == "GET_TOKEN_SECURITY"
+    assert ledger_identity.within_request_ordinal == 1
+    assert ledger_identity.target_category == "TOKEN_MINT"
+    assert ledger_identity.target_identity == mint
+    assert ledger_identity.response_bytes > 0
+    assert ledger_identity.normalized_rows == 1
+    assert ledger_identity.result == "COMPLETED"
