@@ -2700,6 +2700,21 @@ def _run_operational_campaign(
         raise OperationalMemoryFactoryError(
             "DISPOSABLE_PROOF_EXTERNAL_AUTHORIZATION_CONFLICT"
         )
+    if disposable_proof is not None and any(
+        value is not None
+        for value in (
+            pump_transport,
+            secondary_transport,
+            migration_transport,
+        )
+    ):
+        raise OperationalMemoryFactoryError(
+            "DISPOSABLE_PROOF_EXTERNAL_TRANSPORT_OVERRIDE_FORBIDDEN"
+        )
+    if disposable_proof is not None and owner is not None:
+        raise OperationalMemoryFactoryError(
+            "DISPOSABLE_PROOF_EXTERNAL_OWNER_OVERRIDE_FORBIDDEN"
+        )
     # The manifest/marker compatibility exception applies only to the ordinary
     # WINDOW_15M run. Selective-1h never receives the C8 proof capability.
     if policy.selective_1h_continuation and disposable_proof is not None:
@@ -2777,13 +2792,6 @@ def _run_operational_campaign(
         if disposable_proof is not None and prepared_proof is not None
         else None
     )
-    if owner_bridge is not None:
-        # Exact owner inputs now exist, but campaign mutation remains locked
-        # until the next C8 RED proves the real authoritative owner invocation
-        # consumes this bridge with zero production fallback.
-        raise OperationalMemoryFactoryError(
-            "DISPOSABLE_PROOF_OWNER_INVOCATION_NOT_YET_PROVEN"
-        )
     paths = _artifact_paths(
         execution_id,
         artifact_root=active_artifact_root,
@@ -2791,8 +2799,8 @@ def _run_operational_campaign(
     paths["root"].mkdir(parents=True, exist_ok=False)
     paths["reports"].mkdir()
     backup = operational_backup_restore_preflight(
-        AUTHORITATIVE_DB,
-        expected_source_path=AUTHORITATIVE_DB,
+        active_db,
+        expected_source_path=active_db,
         expected_source_identity=f"sha256:{preflight['database_sha256']}",
         backup_path=paths["backup"],
         disposable_restore_root=paths["root"],
@@ -2800,9 +2808,20 @@ def _run_operational_campaign(
     )
     now = _iso()
     command, cycle_id = _create_campaign_command(
-        execution_id=execution_id, paths=paths, preflight=preflight,
-        backup=backup, now=now, operator_approved=operator_approved, policy=policy,
+        execution_id=execution_id,
+        paths=paths,
+        preflight=preflight,
+        backup=backup,
+        now=now,
+        operator_approved=operator_approved,
+        policy=policy,
         authorization_runtime_facts=authorization_runtime_facts,
+        disposable_proof_binding=(
+            owner_bridge.proof_binding
+            if owner_bridge is not None
+            else None
+        ),
+        db_path=active_db,
     )
     from printer_v1.operator_cli.operational_database_target_binding import (
         AUTHORIZED_DISPOSABLE_OPERATIONAL_PROOF,
@@ -2813,36 +2832,58 @@ def _run_operational_campaign(
         CANONICAL_PERSISTENT_DB,
     )
     authorization = dict(authorization_runtime_facts or {})
-    target_kind = (
-        PRODUCTION_AUTHORITATIVE
-        if Path(AUTHORITATIVE_DB).resolve() == Path(CANONICAL_PERSISTENT_DB).resolve()
-        else AUTHORIZED_DISPOSABLE_OPERATIONAL_PROOF
-    )
-    operational_database_target_binding = None if not authorization else build_operational_database_target_binding(
-        target_kind=target_kind,
-        resolved_db_path=AUTHORITATIVE_DB,
-        authorized_pre_mutation_sha256=str(
-            authorization["authorized_pre_mutation_sha256"]
-        ),
-        migration_count=int(authorization["migration_count"]),
-        migration_head=str(authorization["migration_head"]),
-        authorization_id=str(authorization["authorization_id"]),
-        authorization_marker_sha256=str(authorization["manifest_sha256"]),
-        application_marker_sha256=str(authorization["application_marker_sha256"]),
-        execution_id=execution_id,
-        campaign_id=command.campaign_id,
-        campaign_run_id=command.run_id,
-        cycle_id=cycle_id,
-        configuration_id=command.configuration_id,
-        authorization_consumed_once=authorization["authorization_consumed_once"],
-        invocation_count=int(authorization["invocation_count"]),
-        allowed_invocation_count=int(authorization["allowed_invocation_count"]),
-        automatic_retry_allowed=authorization["automatic_retry_allowed"],
-        manual_rerun_allowed=authorization["manual_rerun_allowed"],
-        resume_allowed=authorization["resume_allowed"],
-        restart_allowed=authorization["restart_allowed"],
-        successor_allowed=authorization["successor_allowed"],
-    )
+    if owner_bridge is None:
+        target_kind = (
+            PRODUCTION_AUTHORITATIVE
+            if Path(AUTHORITATIVE_DB).resolve()
+            == Path(CANONICAL_PERSISTENT_DB).resolve()
+            else AUTHORIZED_DISPOSABLE_OPERATIONAL_PROOF
+        )
+        operational_database_target_binding = (
+            None
+            if not authorization
+            else build_operational_database_target_binding(
+                target_kind=target_kind,
+                resolved_db_path=AUTHORITATIVE_DB,
+                authorized_pre_mutation_sha256=str(
+                    authorization["authorized_pre_mutation_sha256"]
+                ),
+                migration_count=int(authorization["migration_count"]),
+                migration_head=str(authorization["migration_head"]),
+                authorization_id=str(authorization["authorization_id"]),
+                authorization_marker_sha256=str(
+                    authorization["manifest_sha256"]
+                ),
+                application_marker_sha256=str(
+                    authorization["application_marker_sha256"]
+                ),
+                execution_id=execution_id,
+                campaign_id=command.campaign_id,
+                campaign_run_id=command.run_id,
+                cycle_id=cycle_id,
+                configuration_id=command.configuration_id,
+                authorization_consumed_once=authorization[
+                    "authorization_consumed_once"
+                ],
+                invocation_count=int(authorization["invocation_count"]),
+                allowed_invocation_count=int(
+                    authorization["allowed_invocation_count"]
+                ),
+                automatic_retry_allowed=authorization[
+                    "automatic_retry_allowed"
+                ],
+                manual_rerun_allowed=authorization[
+                    "manual_rerun_allowed"
+                ],
+                resume_allowed=authorization["resume_allowed"],
+                restart_allowed=authorization["restart_allowed"],
+                successor_allowed=authorization["successor_allowed"],
+            )
+        )
+    else:
+        operational_database_target_binding = (
+            owner_bridge.operational_database_target_binding
+        )
     heartbeat: _CampaignHeartbeat | None = None
     initialized_factory_run_id: str | None = str(uuid.uuid4())
     factory_identity_retained = False
@@ -3048,26 +3089,46 @@ def _run_operational_campaign(
             production_runtime_default_constructors,
         )
 
-        solana_rpc = resolve_solana_rpc_configuration()
-        runtime_constructors = production_runtime_default_constructors(
-            timeout_seconds=5.0,
-            environment=os.environ,
-        )
-        if pump_transport is not None:
-            active_pump = pump_transport
-        else:
-            active_pump = runtime_constructors["pump_origin_solana_rpc_transport"]()
-        if secondary_transport is not None:
-            active_secondary = secondary_transport
-        else:
-            active_secondary = runtime_constructors[
-                "secondary_discovery_http_transport"
-            ]()
-        if migration_transport is None:
-            migration_transport = construct_ordinary_window_15m_dependency(
-                "direct_pump_finalized_migration_transport",
+        if owner_bridge is None:
+            solana_rpc = resolve_solana_rpc_configuration()
+            runtime_constructors = production_runtime_default_constructors(
                 timeout_seconds=5.0,
                 environment=os.environ,
+            )
+            if pump_transport is not None:
+                active_pump = pump_transport
+            else:
+                active_pump = runtime_constructors[
+                    "pump_origin_solana_rpc_transport"
+                ]()
+            if secondary_transport is not None:
+                active_secondary = secondary_transport
+            else:
+                active_secondary = runtime_constructors[
+                    "secondary_discovery_http_transport"
+                ]()
+            if migration_transport is None:
+                active_migration = construct_ordinary_window_15m_dependency(
+                    "direct_pump_finalized_migration_transport",
+                    timeout_seconds=5.0,
+                    environment=os.environ,
+                )
+            else:
+                active_migration = migration_transport
+            bridge_graduated_supply_kwargs = dict(
+                OPERATIONAL_GRADUATED_SUPPLY_KWARGS
+            )
+            bridge_lifecycle_kwargs: dict[str, Any] = {}
+        else:
+            active_pump = owner_bridge.pump_transport
+            active_secondary = owner_bridge.secondary_transport
+            active_migration = owner_bridge.migration_transport
+            bridge_graduated_supply_kwargs = dict(
+                owner_bridge.graduated_supply_kwargs
+            )
+            bridge_lifecycle_kwargs = dict(owner_bridge.lifecycle_kwargs)
+            bridge_lifecycle_kwargs["context_adapter_factories"] = dict(
+                owner_bridge.lifecycle_kwargs["context_adapter_factories"]
             )
 
         def cancellation_probe() -> str | None:
@@ -3077,7 +3138,10 @@ def _run_operational_campaign(
                     hb_failure.get("suggested_terminal_cause")
                     or "LEASE_RENEWAL_UNCONFIRMED"
                 )
-            connection = _read_only()
+            connection = _read_only(
+                active_db,
+                expected_path=active_db,
+            )
             try:
                 row = connection.execute(
                     """SELECT supervision_state,cancellation_reason
@@ -3132,6 +3196,7 @@ def _run_operational_campaign(
                 evaluated_at=now,
                 backup_path=paths["backup"],
                 lifecycle_kwargs={
+                    **bridge_lifecycle_kwargs,
                     "factory_run_id": initialized_factory_run_id,
                     "total_duration_seconds": policy.duration_seconds,
                     "launch_provenance": preflight["git_provenance"],
@@ -3156,10 +3221,8 @@ def _run_operational_campaign(
                     "lifecycle_operation_observer": _observe_lifecycle_operation,
                     "full_run_stage_observer": _observe_full_run_stage,
                 },
-                migration_transport=migration_transport,
-                graduated_supply_kwargs=dict(
-                    OPERATIONAL_GRADUATED_SUPPLY_KWARGS
-                ),
+                migration_transport=active_migration,
+                graduated_supply_kwargs=bridge_graduated_supply_kwargs,
                 fifteen_minute_only=True,
                 accounting_stage_evidence_sink=_campaign_stage_evidence_sink,
                 transport_identity_observer=_observe_transport_identity,
@@ -3181,6 +3244,11 @@ def _run_operational_campaign(
                 ),
                 operational_database_target_binding=(
                     operational_database_target_binding
+                ),
+                disposable_public_composition_proof_binding=(
+                    owner_bridge.disposable_public_composition_proof_binding
+                    if owner_bridge is not None
+                    else None
                 ),
                 )
             finally:
