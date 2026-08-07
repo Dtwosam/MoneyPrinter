@@ -112,6 +112,7 @@ def execute_solana_rpc_holder_backup(
     timeout_seconds: float,
     source_name: str = HELIUS_SOURCE_NAME,
     measured_transport_ledger=None,
+    request_key_prefix: str | None = None,
 ) -> Any:
     """Execute exactly one governed Helius Free holder request.
 
@@ -120,10 +121,12 @@ def execute_solana_rpc_holder_backup(
     execution result; the caller decides which holder attempt feeds the
     composite (at most one holder contribution).
     """
+    explicit_prefix = str(request_key_prefix or "").strip()
+    request_prefix = explicit_prefix or f"{run_id}:{step_key}:context"
     request = build_governed_source_request(
         source_name,
         HOLDER_REQUEST_KIND,
-        request_key=f"{run_id}:{step_key}:context:holder_backup",
+        request_key=f"{request_prefix}:holder_backup",
         payload={"token_mint": token_mint, "pair_address": pair_address},
     )
     kwargs = {

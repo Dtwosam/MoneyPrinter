@@ -881,6 +881,7 @@ def _collect_preclose_context(
     request_pacer: Any | None = None,
     preserve_partial_executions: bool = False,
     holder_transport_ledger: Any | None = None,
+    request_key_prefix: str | None = None,
 ) -> dict[str, Any]:
     """Collect a fixed, governed context bundle before the close snapshot.
 
@@ -917,7 +918,9 @@ def _collect_preclose_context(
     factories = adapter_factories or {}
     mint = str(step["token_mint"])
     pair = str(step["pair_address"])
-    request_prefix = f"{step['run_id']}:{step['step_key']}:context"
+    legacy_request_prefix = f"{step['run_id']}:{step['step_key']}:context"
+    explicit_request_prefix = str(request_key_prefix or "").strip()
+    request_prefix = explicit_request_prefix or legacy_request_prefix
     # E.24: the sole backup is the fixed Helius Free mainnet endpoint. Tests may
     # inject the new key or the historical fixture key; production has no
     # endpoint override, retry, or rotation.
@@ -1152,6 +1155,7 @@ def _collect_preclose_context(
                     timeout_seconds=timeout_seconds,
                     source_name=backup_source_name,
                     measured_transport_ledger=holder_transport_ledger,
+                    request_key_prefix=request_prefix,
                 )
                 executions["holder_backup"] = backup_holder
                 if backup_holder.response_record is not None:

@@ -1754,6 +1754,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
         permanent_memory_observation: bool = False,
         holder_transport_identity_observer: Any | None = None,
         holder_stage_evidence_sealer: Any | None = None,
+        campaign_request_key_root: str | None = None,
     ) -> Any:
         """Shared pre-activation holder-eligibility funnel.
 
@@ -1811,6 +1812,12 @@ class AuthoritativeLiveOperationalCampaignOwner:
             on_transport_recorded=holder_transport_identity_observer,
         )
         require_exact_holder_identities = holder_stage_evidence_sealer is not None
+        campaign_root = str(campaign_request_key_root or "").strip()
+        if permanent_memory_observation and not campaign_root:
+            raise LiveOperationalError(
+                "CAMPAIGN_SOURCE_REQUEST_SCOPE_ROOT_MISSING",
+                "holder eligibility",
+            )
         persist_ledger(
             connection, run_id=command.run_id, cycle_id=cycle_id,
             ledger=ledger, now=evaluated.isoformat(),
@@ -1977,6 +1984,11 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     # carry the governed executions that already happened.
                     preserve_partial_executions=True,
                     holder_transport_ledger=holder_transport_ledger,
+                    request_key_prefix=(
+                        f"{campaign_root}-holder-{ordinal}-context"
+                        if campaign_root
+                        else None
+                    ),
                 )
                 holder_facts[proof.mint.lower()] = {
                     **_holder_eligibility_from_bundle(
@@ -2798,6 +2810,11 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 ),
                 holder_transport_identity_observer=transport_identity_observer,
                 holder_stage_evidence_sealer=holder_stage_evidence_sealer,
+                campaign_request_key_root=(
+                    str(supply.diagnostics.get("request_key_root") or "").strip()
+                    if supply is not None
+                    else None
+                ),
             )
             holder_facts = dict(holder_result.holder_facts)
             ledger = holder_result.ledger
