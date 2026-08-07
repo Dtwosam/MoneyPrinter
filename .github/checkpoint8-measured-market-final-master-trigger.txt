@@ -1,1 +1,2 @@
 Disposable trigger for the registered DTW-46 offline repair workflow. Do not merge.
+Synchronize after workflow registration on master.
