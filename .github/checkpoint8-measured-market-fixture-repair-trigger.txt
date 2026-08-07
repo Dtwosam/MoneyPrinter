@@ -1,2 +1,2 @@
 Disposable trigger for the DTW-46 offline measured-market fixture repair. Do not merge.
-Synchronize after master workflow registration.
+Synchronize after registered master workflow activation.
