@@ -1,0 +1,167 @@
+name: Checkpoint 8 Post-Policy-Overlay Re-proof
+
+on:
+  pull_request:
+    branches:
+      - agent/v2-9-8b-window-15m-checkpoint-8-post-policy-overlay-reproof-authorization
+    types: [opened]
+
+permissions:
+  contents: read
+
+env:
+  CHECKPOINT8_APPROVED_HEAD: aa0499bb60783b789b6f3bf436735ab2f4b7a3e8
+  CHECKPOINT8_PROOF_ID: C8_REPROOF_AFTER_POLICY_OVERLAY_REPAIR_20260807
+
+jobs:
+  checkpoint8-post-policy-overlay-reproof:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact authorized proof HEAD
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CHECKPOINT8_APPROVED_HEAD }}
+          fetch-depth: 1
+
+      - name: Verify immutable authorized checkout
+        run: |
+          test "$(git rev-parse HEAD)" = "$CHECKPOINT8_APPROVED_HEAD"
+          test -z "$(git status --porcelain --untracked-files=no)"
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Printer V1
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Execute exactly one fresh controlling proof
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src
+        run: |
+          set -uo pipefail
+          PROOF_ROOT="$RUNNER_TEMP/checkpoint8-post-policy-overlay-reproof"
+          HARNESS_LOG="$RUNNER_TEMP/checkpoint8-harness.log"
+          mkdir -p "$PROOF_ROOT"
+
+          set +e
+          python scripts/v2_9_8b_checkpoint8_controlling_public_composition_proof.py \
+            --proof-root "$PROOF_ROOT" \
+            --proof-id "$CHECKPOINT8_PROOF_ID" \
+            --expected-head "$CHECKPOINT8_APPROVED_HEAD" \
+            >"$HARNESS_LOG" 2>&1
+          HARNESS_RC=$?
+          set -e
+
+          cp "$HARNESS_LOG" "$PROOF_ROOT/harness.log"
+          printf '%s\n' "$HARNESS_RC" > "$PROOF_ROOT/harness_exit_code.txt"
+
+          if [ "$HARNESS_RC" -ne 0 ]; then
+            echo "CHECKPOINT8_CONTROLLING_PROOF_FAILED_RC=$HARNESS_RC"
+            cat "$HARNESS_LOG"
+            exit "$HARNESS_RC"
+          fi
+
+      - name: Gate success inspection on frozen campaign pass
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "checkpoint8-post-policy-overlay-reproof"
+          path = root / "checkpoint8-controlling-proof-summary.json"
+          if not path.is_file():
+              raise SystemExit("CHECKPOINT8_FROZEN_SUMMARY_MISSING")
+          summary = json.loads(path.read_text())
+          if summary.get("git_head") != os.environ["CHECKPOINT8_APPROVED_HEAD"]:
+              raise SystemExit("CHECKPOINT8_FROZEN_HEAD_MISMATCH")
+          if summary.get("proof_id") != os.environ["CHECKPOINT8_PROOF_ID"]:
+              raise SystemExit("CHECKPOINT8_FROZEN_PROOF_ID_MISMATCH")
+          if summary.get("campaign_pass") is not True:
+              raise SystemExit(
+                  "CHECKPOINT8_CAMPAIGN_NOT_PASS:" + str(summary.get("campaign_acceptance_verdict"))
+              )
+          if summary.get("campaign_acceptance_verdict") != "CAMPAIGN_PASS":
+              raise SystemExit(
+                  "CHECKPOINT8_CAMPAIGN_VERDICT_NOT_PASS:" + str(summary.get("campaign_acceptance_verdict"))
+              )
+          print("CHECKPOINT8_FROZEN_CAMPAIGN_PASS_CONFIRMED")
+          PY
+
+      - name: Run independent inspection after campaign pass only
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src
+        run: |
+          set -uo pipefail
+          PROOF_ROOT="$RUNNER_TEMP/checkpoint8-post-policy-overlay-reproof"
+          INSPECTOR_LOG="$RUNNER_TEMP/checkpoint8-inspector.log"
+
+          set +e
+          python scripts/v2_9_8b_checkpoint8_independent_inspection.py \
+            --proof-dir "$PROOF_ROOT" \
+            >"$INSPECTOR_LOG" 2>&1
+          INSPECTOR_RC=$?
+          set -e
+
+          cp "$INSPECTOR_LOG" "$PROOF_ROOT/inspector.log"
+          printf '%s\n' "$INSPECTOR_RC" > "$PROOF_ROOT/inspector_exit_code.txt"
+
+          if [ "$INSPECTOR_RC" -ne 0 ]; then
+            echo "CHECKPOINT8_INDEPENDENT_INSPECTION_FAILED_RC=$INSPECTOR_RC"
+            cat "$INSPECTOR_LOG"
+            exit "$INSPECTOR_RC"
+          fi
+
+      - name: Verify final Checkpoint 8 acceptance
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "checkpoint8-post-policy-overlay-reproof"
+          summary = json.loads((root / "checkpoint8-controlling-proof-summary.json").read_text())
+          inspection = json.loads((root / "checkpoint8-independent-inspection.json").read_text())
+
+          assert summary["git_head"] == os.environ["CHECKPOINT8_APPROVED_HEAD"]
+          assert summary["proof_id"] == os.environ["CHECKPOINT8_PROOF_ID"]
+          assert summary["campaign_pass"] is True
+          assert summary["campaign_acceptance_verdict"] == "CAMPAIGN_PASS"
+          assert summary["network_attempt_count"] == 0
+          assert summary["fixture_transport_operation_count"] > 0
+          assert summary["replay_zero_work"] is True
+          assert inspection["pass"] is True
+          assert inspection["verdict"] == "CHECKPOINT8_INDEPENDENT_INSPECTION_PASS"
+
+          result = {
+              "approved_head": os.environ["CHECKPOINT8_APPROVED_HEAD"],
+              "proof_id": os.environ["CHECKPOINT8_PROOF_ID"],
+              "campaign_id": summary["campaign_id"],
+              "run_id": summary["run_id"],
+              "campaign_acceptance_verdict": summary["campaign_acceptance_verdict"],
+              "network_attempt_count": summary["network_attempt_count"],
+              "fixture_transport_operation_count": summary["fixture_transport_operation_count"],
+              "independent_inspection_verdict": inspection["verdict"],
+              "harness_exit_code": 0,
+              "inspector_exit_code": 0,
+          }
+          (root / "checkpoint8-proof-workflow-result.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n"
+          )
+          print("V2_9_8B_WINDOW_15M_CHECKPOINT_8_REPROOF_AND_INSPECTION_PASS")
+          PY
+
+      - name: Upload frozen proof evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkpoint8-post-policy-overlay-reproof-aa0499bb
+          path: ${{ runner.temp }}/checkpoint8-post-policy-overlay-reproof
+          if-no-files-found: error
+          retention-days: 30
