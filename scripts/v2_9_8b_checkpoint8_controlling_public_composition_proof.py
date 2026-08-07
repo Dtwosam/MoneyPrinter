@@ -537,6 +537,40 @@ def _checkpoint8_market_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _checkpoint8_measured_market_payload(
+    payload: dict[str, Any],
+    *,
+    stage: str,
+    source_name: str,
+    governed_request_kind: str,
+    method_or_endpoint: str,
+    target_category: str,
+    target_identity: str | None,
+) -> dict[str, Any]:
+    response_bytes = int(payload.get("response_bytes") or 0)
+    normalized_rows = int(payload.get("normalized_rows") or 0)
+    identity = build_transport_identity(
+        stage=stage,
+        source_name=source_name,
+        endpoint_owner=source_name,
+        governed_request_kind=governed_request_kind,
+        method_or_endpoint=method_or_endpoint,
+        within_request_ordinal=1,
+        target_category=target_category,
+        target_identity=target_identity,
+        response_bytes=response_bytes,
+        normalized_rows=normalized_rows,
+    )
+    return {
+        **payload,
+        **measured_payload_fields(
+            (identity,),
+            response_bytes=response_bytes,
+            normalized_rows=normalized_rows,
+        ),
+    }
+
+
 def _checkpoint8_gecko_pool_body(candidate: dict[str, Any]) -> dict[str, Any]:
     row = _checkpoint8_market_candidate(candidate)
     return {
@@ -853,26 +887,59 @@ class _Checkpoint8DeterministicFixture:
         if self.route == "graduated_supply.locator_transport":
             context = args[0] if args else kwargs.get("context")
             del context
-            return _checkpoint8_dex_payload(candidates)
+            return _checkpoint8_measured_market_payload(
+                _checkpoint8_dex_payload(candidates),
+                stage="DEXSCREENER_DISCOVERY",
+                source_name="dexscreener",
+                governed_request_kind="dexscreener_fresh_profiles",
+                method_or_endpoint="GET /token-profiles/latest/v1",
+                target_category="network",
+                target_identity="solana",
+            )
 
         if self.route == "graduated_supply.dexscreener_batch_transport_factory":
             requested = tuple(str(item) for item in (args[0] if args else kwargs.get("token_mints") or ()))
             chosen = tuple(row for row in candidates if row["mint"] in requested)
+            target_identity = ",".join(sorted(requested))
             return self._nested_transport(
-                lambda _context, chosen=chosen: _checkpoint8_dex_payload(chosen)
+                lambda _context, chosen=chosen, target_identity=target_identity: _checkpoint8_measured_market_payload(
+                    _checkpoint8_dex_payload(chosen),
+                    stage="MINT_MARKET_BATCH",
+                    source_name="dexscreener",
+                    governed_request_kind="candidate_market_batch",
+                    method_or_endpoint="GET /tokens/v1/solana/{mint_batch}",
+                    target_category="mint_batch",
+                    target_identity=target_identity,
+                )
             )
 
         if self.route == "graduated_supply.geckoterminal_nomination_transport":
             context = args[0] if args else kwargs.get("context")
             del context
-            return _checkpoint8_gecko_list_payload(candidates)
+            return _checkpoint8_measured_market_payload(
+                _checkpoint8_gecko_list_payload(candidates),
+                stage="FRESH_POOL_NOMINATION",
+                source_name="geckoterminal",
+                governed_request_kind="geckoterminal_new_pool_discovery",
+                method_or_endpoint="GET /api/v2/networks/solana/new_pools",
+                target_category="network",
+                target_identity="solana",
+            )
 
         if self.route == "graduated_supply.geckoterminal_reconciliation_transport_factory":
             mint = str(args[0] if args else kwargs.get("token_mint") or "")
             candidate = _checkpoint8_candidate_for_mint(mint)
             chosen = () if candidate is None else (candidate,)
             return self._nested_transport(
-                lambda _context, chosen=chosen: _checkpoint8_gecko_list_payload(chosen)
+                lambda _context, chosen=chosen, mint=mint: _checkpoint8_measured_market_payload(
+                    _checkpoint8_gecko_list_payload(chosen),
+                    stage="MINT_MARKET_BATCH",
+                    source_name="geckoterminal",
+                    governed_request_kind="candidate_market_batch",
+                    method_or_endpoint="GET /api/v2/networks/solana/tokens/{mint}/pools",
+                    target_category="token_mint",
+                    target_identity=mint,
+                )
             )
 
         from printer_v1.sources.governed_execution import build_fixture_source_adapter

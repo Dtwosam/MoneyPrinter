@@ -25,6 +25,9 @@ from printer_v1.operator_cli.window_15m_concrete_composition import (
     COMPOSITION_MATRIX,
     ordinary_window_15m_builder_identities,
 )
+from printer_v1.sources.dexscreener import build_dexscreener_adapter
+from printer_v1.sources.geckoterminal import build_geckoterminal_adapter
+from printer_v1.sources.measured_transport import identities_from_payload
 from printer_v1.sources.pumpswap import build_pumpswap_adapter
 
 
@@ -221,3 +224,52 @@ def test_checkpoint8_disposable_bridge_preserves_canonical_operational_supply_po
                 "permanent_availability": False,
             }
         )
+
+
+
+def test_checkpoint8_measured_market_fixture_identities_survive_real_adapters(tmp_path):
+    harness = _load_harness("dtw46-measured-market")
+    prepared = _prepared(harness, tmp_path)
+    m = proof.materialize_disposable_public_composition_execution(prepared.runtime)
+    mints = tuple(x["mint"] for x in harness._checkpoint8_candidate_records())
+
+    cases = [
+        (
+            build_dexscreener_adapter(enabled=True, fixture_transport=m.graduated_supply_kwargs["locator_transport"]),
+            _context("dexscreener", "dexscreener_fresh_profiles", payload={"chain":"solana","request_kind":"dexscreener_fresh_profiles"}, ordinal=90),
+            "DEXSCREENER_DISCOVERY", "dexscreener", "dexscreener_fresh_profiles",
+        ),
+        (
+            build_dexscreener_adapter(enabled=True, fixture_transport=m.graduated_supply_kwargs["dexscreener_batch_transport_factory"](mints)),
+            _context("dexscreener", "candidate_market_batch", payload={"chain":"solana","token_mints":list(mints)}, ordinal=91),
+            "MINT_MARKET_BATCH", "dexscreener", "candidate_market_batch",
+        ),
+        (
+            build_geckoterminal_adapter(enabled=True, fixture_transport=m.graduated_supply_kwargs["geckoterminal_nomination_transport"]),
+            _context("geckoterminal", "geckoterminal_new_pool_discovery", payload={"chain":"solana"}, ordinal=92),
+            "FRESH_POOL_NOMINATION", "geckoterminal", "geckoterminal_new_pool_discovery",
+        ),
+        (
+            build_geckoterminal_adapter(enabled=True, fixture_transport=m.graduated_supply_kwargs["geckoterminal_reconciliation_transport_factory"](mints[0])),
+            _context("geckoterminal", "candidate_market_batch", payload={"chain":"solana","token_mint":mints[0]}, ordinal=93),
+            "MINT_MARKET_BATCH", "geckoterminal", "candidate_market_batch",
+        ),
+    ]
+
+    tripwire = harness.Checkpoint8NetworkTripwire()
+    with tripwire:
+        for adapter, ctx, stage, source, kind in cases:
+            result = adapter.execute(ctx)
+            assert _accepted_source_result(result)
+            assert result.normalized_payload["transport_operations_used"] == 1
+            identities = identities_from_payload(result.normalized_payload)
+            assert len(identities) == 1
+            identity = identities[0]
+            assert identity.stage == stage
+            assert identity.source_name == source
+            assert identity.governed_request_kind == kind
+            assert identity.target_identity
+            assert identity.response_bytes > 0
+            assert identity.normalized_rows > 0
+
+    assert tripwire.attempt_count == 0
