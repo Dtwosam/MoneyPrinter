@@ -1,7 +1,7 @@
 name: Checkpoint 8 Measured Market Fixture Repair
 
 # Disposable PR-head trigger file. The actual offline repair job is owned by the
-# temporary base-branch workflow and this file is never merged.
+# temporary master-hosted workflow. This file is never merged.
 on:
   pull_request:
     branches:
@@ -9,49 +9,10 @@ on:
     types: [opened, synchronize]
 
 permissions:
-  contents: write
-
-env:
-  REPAIR_BRANCH: agent/v2-9-8b-window-15m-checkpoint-8-measured-market-fixture-audit-repair
-  EXPECTED_DESIGN_HEAD: e1c29324c923e4c5d2391a8e39b5ce51c4022886
+  contents: read
 
 jobs:
-  repair:
+  trigger-only:
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout exact repair design HEAD
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ env.REPAIR_BRANCH }}
-          fetch-depth: 2
-
-      - name: Verify repair baseline
-        run: |
-          test "$(git rev-parse HEAD)" = "$EXPECTED_DESIGN_HEAD"
-          test -z "$(git status --porcelain --untracked-files=no)"
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install Printer V1 and pytest
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e . pytest
-
-      - name: Apply exact measured-market fixture repair
-        run: |
-          echo "PR-head runner is disposable; base branch owns execution."
-
-      - name: Verify narrow diff
-        run: |
-          echo "No repair is committed from this disposable runner."
-
-      - name: Run minimum sufficient offline verification
-        run: |
-          echo "No-op trigger only."
-
-      - name: Commit repair only after GREEN
-        run: |
-          echo "No-op trigger only."
+      - run: echo "Disposable synchronize trigger only; no Printer execution."
