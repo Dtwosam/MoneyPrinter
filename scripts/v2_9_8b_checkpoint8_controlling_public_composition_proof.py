@@ -525,34 +525,158 @@ def _checkpoint8_candidate_records() -> tuple[dict[str, Any], ...]:
     return tuple(rows)
 
 
+def _checkpoint8_market_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **candidate,
+        "pool": str(candidate.get("pumpswap_pool") or candidate.get("pool") or ""),
+    }
+
+
 def _checkpoint8_gecko_pool_body(candidate: dict[str, Any]) -> dict[str, Any]:
+    row = _checkpoint8_market_candidate(candidate)
     return {
         "data": {
-            "id": f"solana_{candidate['pool']}",
+            "id": f"solana_{row['pool']}",
             "type": "pool",
             "attributes": {
-                "address": candidate["pool"],
-                "transactions": {"m5": {"buys": 6, "sells": 4}},
+                "address": row["pool"],
+                "base_token_price_usd": "1.0",
+                "reserve_in_usd": "10000",
+                "fdv_usd": "1000000",
+                "pool_created_at": "2026-08-07T11:00:00Z",
+                "volume_usd": {"m5": "500", "h1": "2000", "h24": "10000"},
+                "transactions": {
+                    "m5": {"buys": 6, "sells": 4},
+                    "h1": {"buys": 30, "sells": 20},
+                    "h24": {"buys": 280, "sells": 220},
+                },
+                "price_change_percentage": {"m5": "0.5", "h1": "1.0", "h24": "2.0"},
             },
             "relationships": {
-                "base_token": {
-                    "data": {
-                        "id": f"solana_{candidate['mint']}",
-                        "type": "token",
-                    }
-                },
+                "base_token": {"data": {"id": f"solana_{row['mint']}", "type": "token"}},
                 "quote_token": {
                     "data": {
-                        "id": (
-                            "solana_"
-                            "So11111111111111111111111111111111111111112"
-                        ),
+                        "id": "solana_So11111111111111111111111111111111111111112",
                         "type": "token",
                     }
                 },
                 "dex": {"data": {"id": "pump-fun", "type": "dex"}},
             },
         }
+    }
+
+
+def _checkpoint8_gecko_list_payload(candidates: tuple[dict[str, Any], ...]) -> dict[str, Any]:
+    return {
+        "data": [_checkpoint8_gecko_pool_body(item)["data"] for item in candidates],
+        "_source_status_code": 200,
+        "transport_operations_used": 1,
+        "response_bytes": 1024,
+        "normalized_rows": len(candidates),
+    }
+
+
+def _checkpoint8_dex_payload(candidates: tuple[dict[str, Any], ...]) -> dict[str, Any]:
+    pairs = []
+    for candidate in candidates:
+        row = _checkpoint8_market_candidate(candidate)
+        pairs.append(
+            {
+                "chainId": "solana",
+                "dexId": "pumpswap",
+                "pairAddress": row["pool"],
+                "baseToken": {"address": row["mint"], "symbol": "C8"},
+                "quoteToken": {
+                    "address": "So11111111111111111111111111111111111111112",
+                    "symbol": "SOL",
+                },
+                "priceUsd": "1.0",
+                "liquidity": {"usd": 10000.0},
+                "fdv": 1000000.0,
+                "marketCap": 900000.0,
+                "volume": {"m5": 500.0, "h1": 2000.0, "h24": 10000.0},
+                "txns": {
+                    "m5": {"buys": 6, "sells": 4},
+                    "h1": {"buys": 30, "sells": 20},
+                    "h24": {"buys": 280, "sells": 220},
+                },
+                "priceChange": {"m5": 0.5, "h1": 1.0, "h24": 2.0},
+                "pairCreatedAt": 1800000000000,
+            }
+        )
+    return {
+        "schemaVersion": "1.0",
+        "pairs": pairs,
+        "_source_status_code": 200,
+        "transport_operations_used": 1,
+        "response_bytes": 1024,
+        "normalized_rows": len(pairs),
+    }
+
+
+def _checkpoint8_candidate_for_mint(mint: str) -> dict[str, Any] | None:
+    target = str(mint or "")
+    return next(
+        (row for row in _checkpoint8_candidate_records() if row["mint"] == target),
+        None,
+    )
+
+
+def _checkpoint8_pumpswap_confirmation(candidate: dict[str, Any]) -> dict[str, Any]:
+    row = _checkpoint8_market_candidate(candidate)
+    return {
+        "pumpswap_confirmation": {
+            "confirmed": True,
+            "reason": "confirmed_pumpswap_pool",
+            "pool_address": row["pool"],
+            "expected_mint": row["mint"],
+            "program_id": PUMPSWAP_AMM_PROGRAM_ID,
+            "owner": PUMPSWAP_AMM_PROGRAM_ID,
+            "base_mint_offset": 43,
+        },
+        "migration_signature": candidate["migration_signature"],
+        "migration_block_time": candidate["migration_block_time"],
+        "migration_slot": candidate["migration_slot"],
+        "transport_operations_used": 1,
+        "response_bytes": 512,
+        "normalized_rows": 1,
+    }
+
+
+def _checkpoint8_pumpswap_account_value(candidate: dict[str, Any]) -> dict[str, Any]:
+    import base64
+
+    raw = bytearray(107)
+    raw[43:75] = _b58decode(candidate["mint"])
+    return {
+        "owner": PUMPSWAP_AMM_PROGRAM_ID,
+        "lamports": 1,
+        "executable": False,
+        "rentEpoch": 0,
+        "data": [base64.b64encode(bytes(raw)).decode("ascii"), "base64"],
+    }
+
+
+def _checkpoint8_account_batch_payload(context: Any) -> dict[str, Any]:
+    payload = getattr(getattr(context, "request", None), "payload", {}) or {}
+    addresses = list(payload.get("addresses") or ())
+    values = []
+    for address in addresses:
+        candidate = next(
+            (
+                row
+                for row in _checkpoint8_candidate_records()
+                if str(row.get("pumpswap_pool") or "") == str(address)
+            ),
+            None,
+        )
+        values.append(
+            None if candidate is None else _checkpoint8_pumpswap_account_value(candidate)
+        )
+    return {
+        "result": {"context": {"slot": 1700200}, "value": values},
+        "response_bytes": 1024,
+        "transport_operations_used": 1,
     }
 
 
@@ -590,7 +714,7 @@ def checkpoint8_success_fixture_response_semantics() -> dict[str, Any]:
 
 
 class _Checkpoint8DeterministicFixture:
-    """Zero-provider fixture with explicit route-shaped response contracts."""
+    """Zero-provider fixture with exact port-specific response contracts."""
 
     def __init__(self, route: str) -> None:
         self.route = str(route)
@@ -599,148 +723,254 @@ class _Checkpoint8DeterministicFixture:
     def _count(self) -> None:
         self.operation_count += 1
 
+    def _nested_transport(self, payload_builder):
+        parent = self
+
+        def transport(context):
+            parent._count()
+            return payload_builder(context)
+
+        return transport
+
     def __call__(self, *args, **kwargs):
         self._count()
-        if self.route != "top_level.migration_transport":
-            del args, kwargs
-            return self
-        context = args[0] if args else kwargs.get("context")
-        request = getattr(context, "request", None)
-        request_kind = str(getattr(request, "request_kind", "") or "")
-        payload = getattr(request, "payload", {}) or {}
         candidates = _checkpoint8_candidate_records()
-        if request_kind == DIRECT_MIGRATION_SIGNATURE_PAGE_REQUEST_KIND:
-            result = [
-                {
-                    "signature": row["migration_signature"],
-                    "slot": row["migration_slot"],
-                    "confirmationStatus": "finalized",
-                    "err": None,
+
+        if self.route == "top_level.migration_transport":
+            context = args[0] if args else kwargs.get("context")
+            request = getattr(context, "request", None)
+            request_kind = str(getattr(request, "request_kind", "") or "")
+            payload = getattr(request, "payload", {}) or {}
+            if request_kind == DIRECT_MIGRATION_SIGNATURE_PAGE_REQUEST_KIND:
+                result = [
+                    {
+                        "signature": row["migration_signature"],
+                        "slot": row["migration_slot"],
+                        "confirmationStatus": "finalized",
+                        "err": None,
+                    }
+                    for row in reversed(candidates)
+                ]
+            elif request_kind == DIRECT_MIGRATION_TRANSACTION_REQUEST_KIND:
+                signature = str(payload.get("signature") or "")
+                result = next(
+                    (
+                        row["migration_transaction"]
+                        for row in candidates
+                        if row["migration_signature"] == signature
+                    ),
+                    None,
+                )
+            else:
+                return {
+                    "fixture_status": "failure",
+                    "failure_type": "checkpoint8_direct_migration_request_kind_unsupported",
+                    "failure_message": f"unsupported request kind: {request_kind}",
+                    "response_bytes": 0,
+                    "transport_operations_used": 1,
                 }
-                for row in reversed(candidates)
-            ]
-        elif request_kind == DIRECT_MIGRATION_TRANSACTION_REQUEST_KIND:
-            signature = str(payload.get("signature") or "")
-            result = next(
-                (
-                    row["migration_transaction"]
-                    for row in candidates
-                    if row["migration_signature"] == signature
-                ),
-                None,
-            )
-        else:
             return {
-                "fixture_status": "failure",
-                "failure_type": "checkpoint8_direct_migration_request_kind_unsupported",
-                "failure_message": f"unsupported request kind: {request_kind}",
-                "response_bytes": 0,
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": result,
+                "response_bytes": 512,
                 "transport_operations_used": 1,
             }
-        return {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": result,
-            "response_bytes": 512,
-            "transport_operations_used": 1,
-        }
 
-    def execute(self, *args, **kwargs):
-        self._count()
-        del args, kwargs
-        candidates = _checkpoint8_candidate_records()
+        if self.route == "graduated_supply.verifier_transport_factory":
+            context = args[0] if len(args) == 1 and hasattr(args[0], "request") else None
+            if context is not None:
+                request_kind = str(context.request.request_kind)
+                if request_kind == "pumpswap_pool_account_batch":
+                    return _checkpoint8_account_batch_payload(context)
+                if request_kind == "pumpswap_onchain_pool_confirmation":
+                    mint = str((context.request.payload or {}).get("expected_mint") or "")
+                    candidate = _checkpoint8_candidate_for_mint(mint)
+                    if candidate is None:
+                        return {"fixture_status": "failure", "failure_type": "checkpoint8_candidate_missing"}
+                    return _checkpoint8_pumpswap_confirmation(candidate)
+            expected_mint = ""
+            if len(args) >= 2:
+                expected_mint = str(args[1] or "")
+            elif kwargs.get("expected_mint"):
+                expected_mint = str(kwargs["expected_mint"])
+            candidate = _checkpoint8_candidate_for_mint(expected_mint)
+            if candidate is None:
+                raise Checkpoint8ControllingProofError(
+                    "CHECKPOINT8_PUMPSWAP_FIXTURE_TARGET_MISSING"
+                )
+            return self._nested_transport(
+                lambda _context, candidate=candidate: _checkpoint8_pumpswap_confirmation(candidate)
+            )
+
+        if self.route == "graduated_supply.locator_transport":
+            context = args[0] if args else kwargs.get("context")
+            del context
+            return _checkpoint8_dex_payload(candidates)
+
+        if self.route == "graduated_supply.dexscreener_batch_transport_factory":
+            requested = tuple(str(item) for item in (args[0] if args else kwargs.get("token_mints") or ()))
+            chosen = tuple(row for row in candidates if row["mint"] in requested)
+            return self._nested_transport(
+                lambda _context, chosen=chosen: _checkpoint8_dex_payload(chosen)
+            )
+
+        if self.route == "graduated_supply.geckoterminal_nomination_transport":
+            context = args[0] if args else kwargs.get("context")
+            del context
+            return _checkpoint8_gecko_list_payload(candidates)
+
+        if self.route == "graduated_supply.geckoterminal_reconciliation_transport_factory":
+            mint = str(args[0] if args else kwargs.get("token_mint") or "")
+            candidate = _checkpoint8_candidate_for_mint(mint)
+            chosen = () if candidate is None else (candidate,)
+            return self._nested_transport(
+                lambda _context, chosen=chosen: _checkpoint8_gecko_list_payload(chosen)
+            )
+
+        from printer_v1.sources.governed_execution import build_fixture_source_adapter
+
+        first = candidates[0]
+        market = _checkpoint8_market_candidate(first)
+        if self.route == "lifecycle.snapshot_adapter_factory":
+            return build_fixture_source_adapter(
+                "dexscreener",
+                fixture_payload={
+                    "pairs": [
+                        {
+                            "chain": "solana",
+                            "token_mint": market["mint"],
+                            "pair_address": market["pool"],
+                            "price_usd": 1.0,
+                            "liquidity_usd": 10000.0,
+                            "volume_5m": 500.0,
+                            "volume_1h": 2000.0,
+                            "volume_24h": 10000.0,
+                            "txns_5m": 10,
+                            "txns_1h": 50,
+                            "txns_24h": 500,
+                            "buys_5m": 6,
+                            "sells_5m": 4,
+                            "buys_1h": 30,
+                            "sells_1h": 20,
+                            "buys_24h": 280,
+                            "sells_24h": 220,
+                            "price_change_5m": 0.5,
+                            "price_change_1h": 1.0,
+                            "price_change_24h": 2.0,
+                        }
+                    ]
+                },
+            )
+        if self.route == "lifecycle.fallback_snapshot_adapter_factory":
+            return build_fixture_source_adapter(
+                "geckoterminal",
+                fixture_payload={
+                    "pairs": [
+                        {
+                            "chain": "solana",
+                            "token_mint": market["mint"],
+                            "pair_address": market["pool"],
+                            "price_usd": 1.0,
+                            "liquidity_usd": 10000.0,
+                        }
+                    ]
+                },
+            )
         if self.route == "lifecycle.context_adapter_factories.coingecko":
-            return {
-                "captured_at": "2026-08-07T12:00:00+00:00",
-                "assets": {
-                    "bitcoin": {"price_usd": 65000, "change_24h": 1.0},
-                    "ethereum": {"price_usd": 3500, "change_24h": 1.0},
-                    "solana": {
-                        "price_usd": 150,
-                        "change_24h": 2.0,
-                        "volume_24h": 2_000_000_000,
+            return build_fixture_source_adapter(
+                "coingecko",
+                fixture_payload={
+                    "captured_at": "2026-08-07T12:00:00+00:00",
+                    "assets": {
+                        "bitcoin": {"price_usd": 65000, "change_24h": 1.0},
+                        "ethereum": {"price_usd": 3500, "change_24h": 1.0},
+                        "solana": {"price_usd": 150, "change_24h": 2.0, "volume_24h": 2000000000},
                     },
                 },
-            }
+            )
         if self.route == "lifecycle.context_adapter_factories.goplus":
-            return {
-                "token_mint": candidates[0]["mint"],
-                "mint_authority": None,
-                "freeze_authority": None,
-                "metadata_mutable": False,
-                "total_supply": "1000000000",
-                "top_10_holders": [{"percent": "3"} for _ in range(10)],
-                "lp_info": [{"locked": True}],
-                "risk_flags": [],
-            }
+            target_mint = str(kwargs.get("token_mint") or first["mint"])
+            return build_fixture_source_adapter(
+                "goplus",
+                fixture_payload={
+                    "token_mint": target_mint,
+                    "mint_authority": None,
+                    "freeze_authority": None,
+                    "metadata_mutable": False,
+                    "total_supply": "1000000000",
+                    "top_10_holders": [{"percent": "3"} for _ in range(10)],
+                    "lp_info": [{"locked": True}],
+                    "risk_flags": [],
+                },
+            )
         if self.route == "lifecycle.context_adapter_factories.jupiter_quote":
-            return {
-                "route_available": True,
-                "route_plan_present": True,
-                "slippage_bps": 50,
-                "price_impact_bps": 5,
-                "freshness_label": "QUOTE_FRESH",
-                "target_status": "TARGET_MATCH",
-                "paper_only_context": True,
-                "liquidity_context_label": "LIQUIDITY_CONTEXT_ACCEPTABLE",
-            }
-        if self.route in {
-            "lifecycle.context_adapter_factories.solana_rpc_holder",
-            "lifecycle.context_adapter_factories.helius_holder_backup",
-        }:
-            return {
-                "holder_count": 20,
-                "top_10_percent": 30.0,
-                "largest_holder_percent": 5.0,
-            }
-        if self.route in {
-            "lifecycle.snapshot_adapter_factory",
-            "lifecycle.fallback_snapshot_adapter_factory",
-        }:
-            return {
-                "pairs": [
-                    {
-                        "chain": "solana",
-                        "token_mint": row["mint"],
-                        "pair_address": row["pool"],
-                        "price_usd": 1.0,
-                        "liquidity_usd": 10000.0,
-                        "volume_5m": 500.0,
-                        "volume_1h": 2000.0,
-                        "volume_24h": 10000.0,
-                        "txns_5m": 10,
-                        "txns_1h": 50,
-                        "txns_24h": 500,
-                        "buys_5m": 6,
-                        "sells_5m": 4,
-                        "buys_1h": 30,
-                        "sells_1h": 20,
-                        "buys_24h": 280,
-                        "sells_24h": 220,
-                        "price_change_5m": 0.5,
-                        "price_change_1h": 1.0,
-                        "price_change_24h": 2.0,
-                    }
-                    for row in candidates
-                ]
-            }
-        return {"fixture_route": self.route, "status": "READY"}
+            return build_fixture_source_adapter(
+                "jupiter_quote",
+                fixture_payload={
+                    "route_available": True,
+                    "route_plan_present": True,
+                    "slippage_bps": 50,
+                    "price_impact_bps": 5,
+                    "freshness_label": "QUOTE_FRESH",
+                    "target_status": "TARGET_MATCH",
+                    "paper_only_context": True,
+                    "liquidity_context_label": "LIQUIDITY_CONTEXT_ACCEPTABLE",
+                    "input_mint": kwargs.get("input_mint"),
+                    "output_mint": kwargs.get("output_mint"),
+                },
+            )
+        if self.route == "lifecycle.context_adapter_factories.solana_rpc_holder":
+            return build_fixture_source_adapter(
+                "solana_rpc",
+                fixture_payload={
+                    "holder_count": 20,
+                    "top_10_percent": 30.0,
+                    "largest_holder_percent": 5.0,
+                },
+            )
+        if self.route == "lifecycle.context_adapter_factories.helius_holder_backup":
+            return build_fixture_source_adapter(
+                "helius_free",
+                fixture_payload={
+                    "holder_count": 20,
+                    "top_10_percent": 30.0,
+                    "largest_holder_percent": 5.0,
+                },
+            )
+
+        raise Checkpoint8ControllingProofError(
+            f"CHECKPOINT8_FIXTURE_PORT_UNSUPPORTED:{self.route}"
+        )
+
+    def execute(self, *args, **kwargs):
+        # Kept only for import/backward compatibility; real-consumer
+        # compatibility requires factory/transport ports above.
+        self._count()
+        del args, kwargs
+        raise Checkpoint8ControllingProofError(
+            f"CHECKPOINT8_GENERIC_EXECUTE_FORBIDDEN:{self.route}"
+        )
 
     def json_get(self, url, *args, **kwargs):
         self._count()
         del args, kwargs
         candidates = _checkpoint8_candidate_records()
         url_text = str(url)
-        if self.route == "top_level.secondary_transport":
-            if "trending_pools" in url_text:
-                return {"data": []}
-            if "token-profiles" in url_text:
-                return []
-            for candidate in candidates:
-                if candidate["pool"] in url_text:
-                    return _checkpoint8_gecko_pool_body(candidate)
+        if self.route != "top_level.secondary_transport":
+            raise Checkpoint8ControllingProofError(
+                f"CHECKPOINT8_JSON_GET_PORT_UNSUPPORTED:{self.route}"
+            )
+        if "trending_pools" in url_text:
             return {"data": []}
-        return {"fixture_route": self.route, "url": url_text, "data": []}
+        if "token-profiles" in url_text:
+            return []
+        if "dexscreener" in url_text:
+            return _checkpoint8_dex_payload(candidates)
+        for candidate in candidates:
+            if str(candidate.get("pumpswap_pool") or "") in url_text:
+                return _checkpoint8_gecko_pool_body(candidate)
+        return {"data": []}
 
     def json_rpc(self, method, params=None, *args, **kwargs):
         self._count()
@@ -749,28 +979,41 @@ class _Checkpoint8DeterministicFixture:
         if isinstance(method, dict):
             return {"fixture": True, "route": self.route}
         method_text = str(method)
-        if self.route == "top_level.pump_transport":
-            if method_text == "getSignaturesForAddress":
-                return [
-                    {
-                        "signature": row["signature"],
-                        "slot": row["slot"],
-                        "confirmationStatus": "finalized",
-                        "err": None,
-                    }
-                    for row in reversed(candidates)
-                ]
-            if method_text == "getTransaction":
-                signature = str((params or [""])[0])
-                for row in candidates:
-                    if row["signature"] == signature:
-                        return row["transaction"]
-                return None
-        return {
-            "fixture_route": self.route,
-            "method": method_text,
-            "result": [],
-        }
+        if self.route != "top_level.pump_transport":
+            raise Checkpoint8ControllingProofError(
+                f"CHECKPOINT8_JSON_RPC_PORT_UNSUPPORTED:{self.route}"
+            )
+        if method_text == "getSignaturesForAddress":
+            return [
+                {
+                    "signature": row["create_signature"],
+                    "slot": row["slot"],
+                    "confirmationStatus": "finalized",
+                    "err": None,
+                }
+                for row in reversed(candidates)
+            ]
+        if method_text == "getTransaction":
+            signature = str((params or [""])[0])
+            return next(
+                (
+                    row["create_transaction"]
+                    for row in candidates
+                    if row["create_signature"] == signature
+                ),
+                None,
+            )
+        raise Checkpoint8ControllingProofError(
+            f"CHECKPOINT8_PUMP_RPC_METHOD_UNSUPPORTED:{method_text}"
+        )
+
+
+def checkpoint8_real_consumer_compatibility_matrix(runtime):
+    from printer_v1.operator_cli.checkpoint8_real_consumer_compatibility import (
+        run_checkpoint8_real_consumer_compatibility,
+    )
+
+    return run_checkpoint8_real_consumer_compatibility(runtime)
 
 
 def _checkpoint8_route_by_label() -> dict[str, str]:
