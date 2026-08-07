@@ -554,6 +554,152 @@ def _resolve_git_provenance_authorization(
         ) from exc
 
 
+def _resolve_disposable_public_composition_targets(
+    disposable_proof: Any,
+) -> dict[str, Any]:
+    # Resolve only a fully validated C8 runtime capability.
+    from printer_v1.operator_cli.window_15m_disposable_public_composition_proof import (
+        DisposablePublicCompositionProofRuntime,
+        build_disposable_public_composition_proof_runtime,
+    )
+
+    if not isinstance(disposable_proof, DisposablePublicCompositionProofRuntime):
+        raise OperationalMemoryFactoryError(
+            "DISPOSABLE_PUBLIC_COMPOSITION_PROOF_RUNTIME_REQUIRED"
+        )
+    validated = build_disposable_public_composition_proof_runtime(
+        disposable_proof.plan,
+        disposable_proof.fixture_composition,
+        canonical_db_path=CANONICAL_PERSISTENT_DB,
+    )
+    if (
+        validated.fixture_composition_manifest_sha256
+        != disposable_proof.fixture_composition_manifest_sha256
+    ):
+        raise OperationalMemoryFactoryError(
+            "FIXTURE_COMPOSITION_MANIFEST_MISMATCH"
+        )
+    db_path = Path(validated.plan.resolved_db_path).resolve()
+    artifact_root = Path(validated.plan.resolved_artifact_root).resolve()
+    if db_path == Path(CANONICAL_PERSISTENT_DB).resolve():
+        raise OperationalMemoryFactoryError(
+            "CANONICAL_PRODUCTION_DB_FORBIDDEN"
+        )
+    return {
+        "db_path": str(db_path),
+        "artifact_root": str(artifact_root),
+        "fixture_composition_manifest_sha256": (
+            validated.fixture_composition_manifest_sha256
+        ),
+    }
+
+
+def build_disposable_public_composition_preflight(
+    disposable_proof: Any,
+    *,
+    repository_root: str | Path | None = None,
+) -> dict[str, Any]:
+    # Read-only C8 proof preflight. It never executes fixture builders.
+    targets = _resolve_disposable_public_composition_targets(disposable_proof)
+    plan = disposable_proof.plan
+    path = Path(targets["db_path"]).resolve()
+    if not path.is_file():
+        _preflight_fail("disposable_database_target", "proof DB is missing")
+    if _sha256(path) != str(plan.pre_mutation_db_sha256):
+        _preflight_fail("disposable_database_target", "proof DB SHA-256 drifted")
+    sidecars = [
+        str(Path(f"{path}{suffix}"))
+        for suffix in ("-wal", "-shm", "-journal")
+        if Path(f"{path}{suffix}").exists()
+    ]
+    if sidecars:
+        _preflight_fail(
+            "sqlite_sidecar_quiescence",
+            "SQLite sidecar state is not quiescent: " + ", ".join(sidecars),
+        )
+    root = (
+        Path(repository_root).resolve()
+        if repository_root is not None
+        else Path(__file__).resolve().parents[3]
+    )
+    try:
+        provenance = _capture_operational_git_provenance(root)
+    except GitProvenanceError as exc:
+        _preflight_fail("git_provenance", str(exc))
+    try:
+        connection = sqlite3.connect(
+            f"file:{path.as_posix()}?mode=ro", uri=True, timeout=0.0
+        )
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only=ON")
+        migrations = tuple(
+            str(row[0])
+            for row in connection.execute(
+                "SELECT version FROM printer_schema_migrations ORDER BY version"
+            ).fetchall()
+        )
+        integrity = tuple(
+            str(row[0])
+            for row in connection.execute("PRAGMA integrity_check").fetchall()
+        )
+        foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchall()
+        active = _active_counts(connection)
+        locked = _locked_capability_counts(connection)
+    except sqlite3.Error as exc:
+        _preflight_fail("disposable_database", str(exc))
+    finally:
+        try:
+            connection.close()
+        except Exception:
+            pass
+    ledger = validate_migration_ledger(migrations)
+    if not ledger["matches"]:
+        _preflight_fail(
+            "migration_ledger",
+            "; ".join(describe_migration_ledger_mismatch(migrations)),
+        )
+    if len(migrations) != int(plan.migration_count) or migrations[-1] != str(
+        plan.migration_head
+    ):
+        _preflight_fail("migration_ledger", "proof migration identity drifted")
+    if integrity != ("ok",):
+        _preflight_fail("database_integrity", repr(integrity))
+    if foreign_keys:
+        _preflight_fail("foreign_keys", f"{len(foreign_keys)} violation(s)")
+    if any(active.values()):
+        _preflight_fail("active_operational_state", f"active counts={dict(active)}")
+    if any(locked.values()):
+        _preflight_fail("locked_capability_baseline", f"locked counts={dict(locked)}")
+    return {
+        "status": "V2_9_8B_DISPOSABLE_PUBLIC_COMPOSITION_PREFLIGHT_READY",
+        "database_path": str(path),
+        "database_sha256": str(plan.pre_mutation_db_sha256),
+        "migration_count": len(migrations),
+        "canonical_migration_count": canonical_migration_count(),
+        "latest_migration": migrations[-1],
+        "latest_canonical_migration": canonical_migration_names()[-1],
+        "integrity": "ok",
+        "foreign_key_violations": 0,
+        "active_counts": active,
+        "locked_capability_counts": locked,
+        "git_provenance": provenance,
+        "git_provenance_authorization": None,
+        "fixture_composition_preflight": {
+            "status": "READY",
+            "labels": list(disposable_proof.fixture_composition.labels),
+            "builder_count": len(disposable_proof.fixture_composition.labels),
+            "fixture_composition_manifest_sha256": (
+                disposable_proof.fixture_composition_manifest_sha256
+            ),
+            "provider_fallback_allowed": False,
+            "external_requests": 0,
+        },
+        "source_calls": 0,
+        "scheduler_runtime_calls": 0,
+        "database_writes": 0,
+    }
+
+
 def build_activation_preflight(
     *,
     db_path: str | Path | None = None,
@@ -922,7 +1068,24 @@ def _create_campaign_command(
     operator_approved: bool,
     policy: _OperationalCampaignPolicy = _NORMAL_CAMPAIGN_POLICY,
     authorization_runtime_facts: Mapping[str, Any] | None = None,
+    disposable_proof_binding: Any | None = None,
+    db_path: str | Path | None = None,
 ) -> tuple[AbstractCampaignCommand, str]:
+    target_db = (
+        Path(db_path).resolve() if db_path is not None else AUTHORITATIVE_DB
+    )
+    if authorization_runtime_facts is not None and disposable_proof_binding is not None:
+        raise OperationalMemoryFactoryError(
+            "DISPOSABLE_PROOF_EXTERNAL_AUTHORIZATION_CONFLICT"
+        )
+    if (
+        disposable_proof_binding is None
+        and db_path is not None
+        and target_db != AUTHORITATIVE_DB
+    ):
+        raise OperationalMemoryFactoryError(
+            "NON_PROOF_DATABASE_TARGET_OVERRIDE_FORBIDDEN"
+        )
     campaign_id = f"{execution_id}-campaign"
     configuration_id = f"{execution_id}-configuration"
     run_id = f"{execution_id}-campaign-run"
@@ -939,17 +1102,6 @@ def _create_campaign_command(
         failures=FAILURE_CEILING,
     )
     target_identity = f"sha256:{preflight['database_sha256']}"
-    authorization_marker = build_authorization_marker_payload(
-        marker_id=f"{execution_id}-authorization-marker",
-        execution_id=execution_id,
-        campaign_id=campaign_id,
-        configuration_id=configuration_id,
-        run_id=run_id,
-        policy_version=POLICY_VERSION,
-        db_target_identity=target_identity,
-        launch_git_provenance=preflight["git_provenance"],
-        operator_approved=operator_approved,
-    )
     configuration = {
         "execution_id": execution_id,
         "campaign_id": campaign_id,
@@ -958,10 +1110,6 @@ def _create_campaign_command(
         "policy_version": POLICY_VERSION,
         "db_target_identity": target_identity,
         "operator_approved": operator_approved is True,
-        "authorization_marker": authorization_marker,
-        "authorization_marker_sha256": campaign_evidence_sha256(
-            authorization_marker
-        ),
         "token_capacity": TOKEN_CAPACITY,
         "ceilings": asdict(ceilings),
         "main_window": MAIN_WINDOW,
@@ -991,31 +1139,85 @@ def _create_campaign_command(
             "governed_requests_per_token": policy.governed_requests_per_token,
             "scheduler_rows": policy.scheduler_row_ceiling,
             "reserved_mandatory_close_steps": (
-                TOKEN_CAPACITY * 2 if policy.selective_1h_continuation else TOKEN_CAPACITY
+                TOKEN_CAPACITY * 2
+                if policy.selective_1h_continuation
+                else TOKEN_CAPACITY
             ),
         },
     }
-    if authorization_runtime_facts is not None:
+    if disposable_proof_binding is None:
+        authorization_marker = build_authorization_marker_payload(
+            marker_id=f"{execution_id}-authorization-marker",
+            execution_id=execution_id,
+            campaign_id=campaign_id,
+            configuration_id=configuration_id,
+            run_id=run_id,
+            policy_version=POLICY_VERSION,
+            db_target_identity=target_identity,
+            launch_git_provenance=preflight["git_provenance"],
+            operator_approved=operator_approved,
+        )
+        configuration["authorization_marker"] = authorization_marker
+        configuration["authorization_marker_sha256"] = campaign_evidence_sha256(
+            authorization_marker
+        )
+    if disposable_proof_binding is not None:
+        from printer_v1.operator_cli.operational_database_target_binding import (
+            build_disposable_public_composition_proof_expectation,
+            validate_disposable_public_composition_proof_invocation,
+        )
+
+        if target_db == Path(CANONICAL_PERSISTENT_DB).resolve():
+            raise OperationalMemoryFactoryError(
+                "DISPOSABLE_PROOF_CANONICAL_DB_FORBIDDEN"
+            )
+        expectation = build_disposable_public_composition_proof_expectation(
+            disposable_proof_binding
+        )
+        reason = validate_disposable_public_composition_proof_invocation(
+            disposable_proof_binding,
+            expectation=expectation,
+            actual_db_path=target_db,
+            canonical_authoritative_db_path=CANONICAL_PERSISTENT_DB,
+            execution_id=execution_id,
+            campaign_id=campaign_id,
+            campaign_run_id=run_id,
+            cycle_id=cycle_id,
+            configuration_id=configuration_id,
+            durable_db_target_identity=target_identity,
+            fixture_composition_manifest_sha256=str(
+                disposable_proof_binding.fixture_composition_manifest_sha256
+            ),
+        )
+        if reason is not None:
+            raise OperationalMemoryFactoryError(reason)
+        if str(preflight.get("database_sha256") or "") != str(
+            disposable_proof_binding.pre_mutation_db_sha256
+        ):
+            raise OperationalMemoryFactoryError(
+                "DISPOSABLE_PROOF_DB_SHA256_MISMATCH"
+            )
+        configuration["cycle_id"] = cycle_id
+        configuration["operational_database_target_expectation"] = expectation
+    elif authorization_runtime_facts is not None:
         from printer_v1.operator_cli.operational_database_target_binding import (
             AUTHORIZED_DISPOSABLE_OPERATIONAL_PROOF,
             PRODUCTION_AUTHORITATIVE,
             build_durable_operational_database_target_expectation,
         )
-        from printer_v1.operator_cli.proof_db_schema_readiness import (
-            CANONICAL_PERSISTENT_DB,
-        )
 
         target_kind = (
             PRODUCTION_AUTHORITATIVE
-            if Path(AUTHORITATIVE_DB).resolve()
-            == Path(CANONICAL_PERSISTENT_DB).resolve()
+            if target_db == Path(CANONICAL_PERSISTENT_DB).resolve()
             else AUTHORIZED_DISPOSABLE_OPERATIONAL_PROOF
         )
         configuration["cycle_id"] = cycle_id
         configuration["operational_database_target_expectation"] = (
             build_durable_operational_database_target_expectation(
                 target_kind=target_kind,
-                resolved_db_path=str(authorization_runtime_facts["authorized_db_path"]),
+                resolved_db_path=str(
+                    authorization_runtime_facts["authorized_db_path"]
+                ),
                 durable_db_target_identity=target_identity,
                 execution_id=execution_id,
                 campaign_id=campaign_id,
@@ -1025,28 +1227,25 @@ def _create_campaign_command(
                 **dict(authorization_runtime_facts),
             )
         )
-    expected_database_path = (
-        authorization_runtime_facts["authorized_db_path"]
-        if authorization_runtime_facts is not None
-        else preflight["database_path"]
-    )
-    expected_database_sha256 = (
-        authorization_runtime_facts["authorized_pre_mutation_sha256"]
-        if authorization_runtime_facts is not None
-        else preflight["database_sha256"]
-    )
-    expected_migration_count = (
-        authorization_runtime_facts["migration_count"]
-        if authorization_runtime_facts is not None
-        else preflight["migration_count"]
-    )
-    expected_migration_head = (
-        authorization_runtime_facts["migration_head"]
-        if authorization_runtime_facts is not None
-        else preflight["latest_migration"]
-    )
+    if disposable_proof_binding is not None:
+        expected_database_path = disposable_proof_binding.resolved_db_path
+        expected_database_sha256 = disposable_proof_binding.pre_mutation_db_sha256
+        expected_migration_count = disposable_proof_binding.migration_count
+        expected_migration_head = disposable_proof_binding.migration_head
+    elif authorization_runtime_facts is not None:
+        expected_database_path = authorization_runtime_facts["authorized_db_path"]
+        expected_database_sha256 = authorization_runtime_facts[
+            "authorized_pre_mutation_sha256"
+        ]
+        expected_migration_count = authorization_runtime_facts["migration_count"]
+        expected_migration_head = authorization_runtime_facts["migration_head"]
+    else:
+        expected_database_path = preflight["database_path"]
+        expected_database_sha256 = preflight["database_sha256"]
+        expected_migration_count = preflight["migration_count"]
+        expected_migration_head = preflight["latest_migration"]
     created = create_operational_campaign_graph(
-        AUTHORITATIVE_DB,
+        target_db,
         campaign_id=campaign_id,
         configuration_id=configuration_id,
         run_id=run_id,
@@ -1062,7 +1261,6 @@ def _create_campaign_command(
         run_ordinal=1,
         now=now,
     )
-    # Publish the exact run identity so blocked-command counters stay action-local.
     _ACTION_RUN_CONTEXT["run_id"] = run_id
     _ACTION_RUN_CONTEXT["campaign_id"] = campaign_id
     _ACTION_RUN_CONTEXT["cycle_id"] = cycle_id
@@ -1070,7 +1268,7 @@ def _create_campaign_command(
     return (
         AbstractCampaignCommand(
             mode=CAMPAIGN_MODE,
-            db_path=AUTHORITATIVE_DB,
+            db_path=target_db,
             db_target_identity=target_identity,
             campaign_id=campaign_id,
             configuration_id=configuration_id,
@@ -2336,14 +2534,21 @@ def _run_operational_campaign(
             "DISPOSABLE_PROOF_EXTERNAL_AUTHORIZATION_CONFLICT"
         )
     # The manifest/marker compatibility exception applies only to the ordinary
-    # WINDOW_15M run. Selective-1h never receives the exact-file allowlist.
-    preflight = (
-        build_selective_1h_preflight()
-        if policy.selective_1h_continuation
-        else build_activation_preflight(
+    # WINDOW_15M run. Selective-1h never receives the C8 proof capability.
+    if policy.selective_1h_continuation and disposable_proof is not None:
+        raise OperationalMemoryFactoryError(
+            "DISPOSABLE_PROOF_POLICY_UNSUPPORTED"
+        )
+    if policy.selective_1h_continuation:
+        preflight = build_selective_1h_preflight()
+    elif disposable_proof is not None:
+        preflight = build_disposable_public_composition_preflight(
+            disposable_proof
+        )
+    else:
+        preflight = build_activation_preflight(
             git_provenance_authorization=git_provenance_authorization
         )
-    )
     from printer_v1.operator_cli.operational_database_target_binding import (
         validate_authorized_database_preflight,
         validated_authorization_runtime_facts,

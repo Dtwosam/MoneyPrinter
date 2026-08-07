@@ -102,6 +102,14 @@ class Window15MFixtureComposition:
 
 
 @dataclass(frozen=True)
+class DisposablePublicCompositionProofRuntime:
+    # Validated C8 runtime capability. It owns no authorization truth.
+    plan: DisposablePublicCompositionProofPlan
+    fixture_composition: Window15MFixtureComposition
+    fixture_composition_manifest_sha256: str
+
+
+@dataclass(frozen=True)
 class DisposablePublicCompositionProofBinding:
     binding_schema_version: str
     proof_schema_version: str
@@ -350,6 +358,45 @@ def validate_disposable_public_composition_proof_plan(
     return plan
 
 
+def build_disposable_public_composition_proof_runtime(
+    plan: DisposablePublicCompositionProofPlan,
+    fixture_composition: Window15MFixtureComposition,
+    *,
+    canonical_db_path: str | Path,
+) -> DisposablePublicCompositionProofRuntime:
+    # Bind the validated plan to the exact zero-provider fixture registry.
+    validated_plan = validate_disposable_public_composition_proof_plan(
+        plan,
+        canonical_db_path=canonical_db_path,
+        expected_composition_labels=ordinary_window_15m_builder_identities(),
+    )
+    validated_composition = validate_window_15m_fixture_composition(
+        fixture_composition,
+        expected_labels=ordinary_window_15m_builder_identities(),
+    )
+    if validated_plan.composition_labels != validated_composition.labels:
+        raise DisposablePublicCompositionProofError(
+            "FIXTURE_COMPOSITION_REGISTRY_IDENTITY_MISMATCH"
+        )
+    if validated_plan.composition_registry_sha256 != _labels_sha256(
+        validated_composition.labels
+    ):
+        raise DisposablePublicCompositionProofError(
+            "FIXTURE_COMPOSITION_REGISTRY_HASH_MISMATCH"
+        )
+    if validated_composition.provider_fallback_allowed is not False:
+        raise DisposablePublicCompositionProofError(
+            "FIXTURE_PROVIDER_FALLBACK_FORBIDDEN"
+        )
+    return DisposablePublicCompositionProofRuntime(
+        plan=validated_plan,
+        fixture_composition=validated_composition,
+        fixture_composition_manifest_sha256=(
+            validated_composition.fixture_composition_manifest_sha256
+        ),
+    )
+
+
 def build_disposable_public_composition_proof_binding(
     plan: DisposablePublicCompositionProofPlan,
     *,
@@ -455,10 +502,12 @@ __all__ = [
     "DisposablePublicCompositionProofBinding",
     "DisposablePublicCompositionProofError",
     "DisposablePublicCompositionProofPlan",
+    "DisposablePublicCompositionProofRuntime",
     "PROOF_SCHEMA_VERSION",
     "Window15MFixtureComposition",
     "build_disposable_public_composition_proof_binding",
     "build_disposable_public_composition_proof_plan",
+    "build_disposable_public_composition_proof_runtime",
     "build_window_15m_fixture_composition",
     "mark_checkpoint8_fixture_builder",
     "validate_disposable_public_composition_proof_binding",

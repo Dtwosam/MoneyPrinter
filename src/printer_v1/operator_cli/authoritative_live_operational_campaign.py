@@ -1588,6 +1588,74 @@ def build_live_geckoterminal_base_adapter_factory(
     return factory
 
 
+def _validate_fifteen_minute_database_target_binding(
+    *,
+    command: Any,
+    cycle_id: str,
+    selection_seed: str,
+    operational_database_target_binding: Any | None,
+    disposable_public_composition_proof_binding: Any | None,
+    durable_expectation: Mapping[str, Any] | None,
+    canonical_authoritative_db_path: str | Path,
+) -> str | None:
+    # Production binding has precedence and keeps its existing law unchanged.
+    from printer_v1.db.migrate import (
+        canonical_migration_count,
+        canonical_migration_names,
+    )
+    from printer_v1.operator_cli.operational_database_target_binding import (
+        validate_bound_operational_invocation,
+        validate_disposable_public_composition_proof_invocation,
+    )
+
+    if operational_database_target_binding is not None:
+        return validate_bound_operational_invocation(
+            operational_database_target_binding,
+            actual_db_path=command.db_path,
+            canonical_authoritative_db_path=canonical_authoritative_db_path,
+            migration_count=canonical_migration_count(),
+            migration_head=canonical_migration_names()[-1],
+            execution_id=selection_seed,
+            campaign_id=command.campaign_id,
+            campaign_run_id=command.run_id,
+            cycle_id=cycle_id,
+            configuration_id=command.configuration_id,
+            durable_db_target_identity=command.db_target_identity,
+            durable_expectation=durable_expectation,
+        )
+    if disposable_public_composition_proof_binding is not None:
+        return validate_disposable_public_composition_proof_invocation(
+            disposable_public_composition_proof_binding,
+            expectation=durable_expectation,
+            actual_db_path=command.db_path,
+            canonical_authoritative_db_path=canonical_authoritative_db_path,
+            execution_id=selection_seed,
+            campaign_id=command.campaign_id,
+            campaign_run_id=command.run_id,
+            cycle_id=cycle_id,
+            configuration_id=command.configuration_id,
+            durable_db_target_identity=command.db_target_identity,
+            fixture_composition_manifest_sha256=str(
+                disposable_public_composition_proof_binding
+                .fixture_composition_manifest_sha256
+            ),
+        )
+    return validate_bound_operational_invocation(
+        None,
+        actual_db_path=command.db_path,
+        canonical_authoritative_db_path=canonical_authoritative_db_path,
+        migration_count=canonical_migration_count(),
+        migration_head=canonical_migration_names()[-1],
+        execution_id=selection_seed,
+        campaign_id=command.campaign_id,
+        campaign_run_id=command.run_id,
+        cycle_id=cycle_id,
+        configuration_id=command.configuration_id,
+        durable_db_target_identity=command.db_target_identity,
+        durable_expectation=durable_expectation,
+    )
+
+
 class AuthoritativeLiveOperationalCampaignOwner:
     """Sole internal live origin→lifecycle composition entry point (DI-only)."""
 
@@ -2179,6 +2247,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
         ) = None,
         holder_stage_evidence_sealer: Callable[[Any, str, str | None], Mapping[str, Any]] | None = None,
         operational_database_target_binding: Any | None = None,
+        disposable_public_composition_proof_binding: Any | None = None,
     ) -> Any:
         """Run one authoritative live two-token operational-natural campaign.
 
@@ -2203,13 +2272,8 @@ class AuthoritativeLiveOperationalCampaignOwner:
         """
         lk = dict(lifecycle_kwargs or {})
         if fifteen_minute_only:
-            from printer_v1.db.migrate import (
-                canonical_migration_count,
-                canonical_migration_names,
-            )
             from printer_v1.operator_cli.operational_database_target_binding import (
                 load_durable_operational_database_target_expectation,
-                validate_bound_operational_invocation,
             )
             from printer_v1.operator_cli.proof_db_schema_readiness import (
                 CANONICAL_PERSISTENT_DB,
@@ -2221,22 +2285,23 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 cycle_id=cycle_id,
                 configuration_id=command.configuration_id,
             )
-            binding_reason = validate_bound_operational_invocation(
-                operational_database_target_binding,
-                actual_db_path=command.db_path,
-                canonical_authoritative_db_path=CANONICAL_PERSISTENT_DB,
-                migration_count=canonical_migration_count(),
-                migration_head=canonical_migration_names()[-1],
-                execution_id=selection_seed,
-                campaign_id=command.campaign_id,
-                campaign_run_id=command.run_id,
+            binding_reason = _validate_fifteen_minute_database_target_binding(
+                command=command,
                 cycle_id=cycle_id,
-                configuration_id=command.configuration_id,
-                durable_db_target_identity=command.db_target_identity,
+                selection_seed=selection_seed,
+                operational_database_target_binding=(
+                    operational_database_target_binding
+                ),
+                disposable_public_composition_proof_binding=(
+                    disposable_public_composition_proof_binding
+                ),
                 durable_expectation=durable_expectation,
+                canonical_authoritative_db_path=CANONICAL_PERSISTENT_DB,
             )
             if binding_reason is not None:
-                raise LiveOperationalError(binding_reason, "database target binding")
+                raise LiveOperationalError(
+                    binding_reason, "database target binding"
+                )
         # Structural exclusion at the live owner boundary: fixture proof plans and
         # predeclared dispositions can never enter operational mode.
         for forbidden in (
