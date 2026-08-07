@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 import socket
 import sqlite3
+import struct
 from types import SimpleNamespace
 from typing import Any
 
@@ -33,6 +34,20 @@ from printer_v1.operator_cli import (
 )
 from printer_v1.operator_cli.window_15m_concrete_composition import (
     ordinary_window_15m_builder_identities,
+)
+
+from printer_v1.sources.pumpfun_direct import (
+    ASSOCIATED_TOKEN_PROGRAM_ID,
+    CREATE_DISCRIMINATOR,
+    EVENT_AUTHORITY_ID,
+    GLOBAL_ID,
+    MINT_AUTHORITY_ID,
+    PUMP_PROGRAM_ID,
+    RENT_SYSVAR_ID,
+    SYSTEM_PROGRAM_ID,
+    TOKEN_METADATA_PROGRAM_ID,
+    TOKEN_PROGRAM_ID,
+    derive_program_address,
 )
 
 
@@ -200,27 +215,379 @@ _PROTECTED_CAPABILITY_TABLES = (
 )
 
 
+
+_B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+_CHECKPOINT8_INFRASTRUCTURE_MINTS = frozenset(
+    {
+        "11111111111111111111111111111111",
+        "So11111111111111111111111111111111111111112",
+        "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    }
+)
+
+_CHECKPOINT8_PAYLOAD_CONTRACT_BY_LABEL = {
+    "pump_origin_solana_rpc_transport": "pump_finalized_create_signature_page_and_transactions",
+    "direct_pump_finalized_migration_transport": "pump_finalized_migration_rpc",
+    "exact_pump_pumpswap_graduation_verifier_transport": "pumpswap_onchain_graduation_confirmation",
+    "secondary_discovery_http_transport": "secondary_gecko_dex_enrichment",
+    "pumpswap_migration_pool_confirmation": "pumpswap_pool_confirmation",
+    "pumpswap_account_batch_transport": "pumpswap_account_batch_rpc",
+    "dexscreener_fresh_profiles_discovery": "dexscreener_fresh_profiles",
+    "dexscreener_mint_batch_discovery": "dexscreener_two_mint_market_batch",
+    "geckoterminal_fresh_nomination": "geckoterminal_fresh_pool_nomination",
+    "geckoterminal_token_pools_discovery": "geckoterminal_two_mint_pool_batch",
+    "unknown_liquidity_backup_dex_to_gecko": "geckoterminal_unknown_liquidity_backup",
+    "unknown_liquidity_backup_gecko_to_dex": "dexscreener_unknown_liquidity_backup",
+    "lifecycle_exact_pair_dexscreener_primary": "dexscreener_exact_pair_snapshot",
+    "lifecycle_exact_pair_geckoterminal_fallback": "geckoterminal_exact_pair_snapshot",
+    "preclose_coingecko_market_chain": "coingecko_broad_market_context",
+    "preclose_goplus_safety": "goplus_sol_token_safety",
+    "preclose_jupiter_entry_quote": "jupiter_paper_entry_quote",
+    "preclose_jupiter_exit_quote": "jupiter_paper_exit_quote",
+    "preclose_solana_rpc_holder_primary": "solana_rpc_holder_distribution",
+    "preclose_helius_holder_backup": "helius_holder_distribution_backup",
+}
+
+
+def _b58encode(value: bytes) -> str:
+    number = int.from_bytes(value, "big")
+    encoded = ""
+    while number:
+        number, remainder = divmod(number, 58)
+        encoded = _B58_ALPHABET[remainder] + encoded
+    leading = len(value) - len(value.lstrip(bytes(1)))
+    return "1" * leading + (encoded or "")
+
+
+def _b58decode(value: str) -> bytes:
+    number = 0
+    for character in value:
+        number = number * 58 + _B58_ALPHABET.index(character)
+    raw = (
+        number.to_bytes((number.bit_length() + 7) // 8, "big")
+        if number
+        else b""
+    )
+    leading = len(value) - len(value.lstrip("1"))
+    return bytes(leading) + raw
+
+
+def _fixture_pubkey(label: str) -> tuple[str, bytes]:
+    raw = hashlib.sha256(label.encode("utf-8")).digest()
+    return _b58encode(raw), raw
+
+
+def _fixture_signature(label: str) -> str:
+    return _b58encode(hashlib.sha512(label.encode("utf-8")).digest())
+
+
+def _borsh_string(value: str) -> bytes:
+    encoded = value.encode("utf-8")
+    return struct.pack("<I", len(encoded)) + encoded
+
+
+def _checkpoint8_create_transaction(
+    *,
+    label: str,
+    slot: int,
+    block_time: int,
+) -> dict[str, Any]:
+    signature = _fixture_signature(f"signature:{label}")
+    mint, mint_raw = _fixture_pubkey(f"mint:{label}")
+    creator_raw = hashlib.sha256(f"creator:{label}".encode("utf-8")).digest()
+    user, _ = _fixture_pubkey(f"user:{label}")
+    curve = derive_program_address(
+        (b"bonding-curve", mint_raw),
+        PUMP_PROGRAM_ID,
+    )
+    associated_curve = derive_program_address(
+        (_b58decode(curve), _b58decode(TOKEN_PROGRAM_ID), mint_raw),
+        ASSOCIATED_TOKEN_PROGRAM_ID,
+    )
+    metadata = derive_program_address(
+        (b"metadata", _b58decode(TOKEN_METADATA_PROGRAM_ID), mint_raw),
+        TOKEN_METADATA_PROGRAM_ID,
+    )
+    data = (
+        CREATE_DISCRIMINATOR
+        + _borsh_string(f"Checkpoint 8 {label}")
+        + _borsh_string("C8")
+        + _borsh_string(f"https://fixture.invalid/{label}.json")
+        + creator_raw
+    )
+    keys = [
+        mint,
+        MINT_AUTHORITY_ID,
+        curve,
+        associated_curve,
+        GLOBAL_ID,
+        TOKEN_METADATA_PROGRAM_ID,
+        metadata,
+        user,
+        SYSTEM_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID,
+        RENT_SYSVAR_ID,
+        EVENT_AUTHORITY_ID,
+        PUMP_PROGRAM_ID,
+    ]
+    return {
+        "version": 0,
+        "slot": slot,
+        "blockTime": block_time,
+        "meta": {
+            "err": None,
+            "loadedAddresses": {"writable": [], "readonly": []},
+            "innerInstructions": [],
+        },
+        "transaction": {
+            "signatures": [signature],
+            "message": {
+                "accountKeys": keys,
+                "instructions": [
+                    {
+                        "programIdIndex": 13,
+                        "accounts": list(range(14)),
+                        "data": _b58encode(data),
+                    }
+                ],
+            },
+        },
+    }
+
+
+def _checkpoint8_candidate_records() -> tuple[dict[str, Any], ...]:
+    rows = []
+    for ordinal, label in enumerate(("alpha", "bravo")):
+        slot = 1_700_000 + ordinal
+        block_time = 1_800_000_000 + ordinal * 60
+        transaction = _checkpoint8_create_transaction(
+            label=label,
+            slot=slot,
+            block_time=block_time,
+        )
+        mint = transaction["transaction"]["message"]["accountKeys"][0]
+        curve = transaction["transaction"]["message"]["accountKeys"][2]
+        signature = transaction["transaction"]["signatures"][0]
+        rows.append(
+            {
+                "label": label,
+                "mint": mint,
+                "pool": curve,
+                "signature": signature,
+                "slot": slot,
+                "block_time": block_time,
+                "transaction": transaction,
+            }
+        )
+    return tuple(rows)
+
+
+def _checkpoint8_gecko_pool_body(candidate: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "data": {
+            "id": f"solana_{candidate['pool']}",
+            "type": "pool",
+            "attributes": {
+                "address": candidate["pool"],
+                "transactions": {"m5": {"buys": 6, "sells": 4}},
+            },
+            "relationships": {
+                "base_token": {
+                    "data": {
+                        "id": f"solana_{candidate['mint']}",
+                        "type": "token",
+                    }
+                },
+                "quote_token": {
+                    "data": {
+                        "id": (
+                            "solana_"
+                            "So11111111111111111111111111111111111111112"
+                        ),
+                        "type": "token",
+                    }
+                },
+                "dex": {"data": {"id": "pump-fun", "type": "dex"}},
+            },
+        }
+    }
+
+
+def checkpoint8_success_fixture_response_semantics() -> dict[str, Any]:
+    labels = tuple(ordinary_window_15m_builder_identities())
+    candidates = _checkpoint8_candidate_records()
+    contract_labels = tuple(_CHECKPOINT8_PAYLOAD_CONTRACT_BY_LABEL)
+    candidate_mints = tuple(row["mint"] for row in candidates)
+    infrastructure_count = sum(
+        1 for mint in candidate_mints if mint in _CHECKPOINT8_INFRASTRUCTURE_MINTS
+    )
+    all_contracts = (
+        contract_labels == labels
+        and all(
+            bool(_CHECKPOINT8_PAYLOAD_CONTRACT_BY_LABEL.get(label))
+            for label in labels
+        )
+    )
+    return {
+        "ready": (
+            len(labels) == 20
+            and len(candidates) == 2
+            and len(set(candidate_mints)) == 2
+            and infrastructure_count == 0
+            and all_contracts
+        ),
+        "labels": labels,
+        "candidate_count": len(candidates),
+        "candidate_mints": candidate_mints,
+        "infrastructure_mint_count": infrastructure_count,
+        "all_routes_have_explicit_payload_contracts": all_contracts,
+        "payload_contracts": dict(_CHECKPOINT8_PAYLOAD_CONTRACT_BY_LABEL),
+    }
+
+
+
 class _Checkpoint8DeterministicFixture:
-    """Zero-I/O fixture value for one canonical C8 DI route."""
+    """Zero-provider fixture with explicit route-shaped response contracts."""
 
     def __init__(self, route: str) -> None:
         self.route = str(route)
+        self.operation_count = 0
+
+    def _count(self) -> None:
+        self.operation_count += 1
 
     def __call__(self, *args, **kwargs):
+        self._count()
         del args, kwargs
         return self
 
     def execute(self, *args, **kwargs):
+        self._count()
         del args, kwargs
-        return self
+        candidates = _checkpoint8_candidate_records()
+        if self.route == "lifecycle.context_adapter_factories.coingecko":
+            return {
+                "captured_at": "2026-08-07T12:00:00+00:00",
+                "assets": {
+                    "bitcoin": {"price_usd": 65000, "change_24h": 1.0},
+                    "ethereum": {"price_usd": 3500, "change_24h": 1.0},
+                    "solana": {
+                        "price_usd": 150,
+                        "change_24h": 2.0,
+                        "volume_24h": 2_000_000_000,
+                    },
+                },
+            }
+        if self.route == "lifecycle.context_adapter_factories.goplus":
+            return {
+                "token_mint": candidates[0]["mint"],
+                "mint_authority": None,
+                "freeze_authority": None,
+                "metadata_mutable": False,
+                "total_supply": "1000000000",
+                "top_10_holders": [{"percent": "3"} for _ in range(10)],
+                "lp_info": [{"locked": True}],
+                "risk_flags": [],
+            }
+        if self.route == "lifecycle.context_adapter_factories.jupiter_quote":
+            return {
+                "route_available": True,
+                "route_plan_present": True,
+                "slippage_bps": 50,
+                "price_impact_bps": 5,
+                "freshness_label": "QUOTE_FRESH",
+                "target_status": "TARGET_MATCH",
+                "paper_only_context": True,
+                "liquidity_context_label": "LIQUIDITY_CONTEXT_ACCEPTABLE",
+            }
+        if self.route in {
+            "lifecycle.context_adapter_factories.solana_rpc_holder",
+            "lifecycle.context_adapter_factories.helius_holder_backup",
+        }:
+            return {
+                "holder_count": 20,
+                "top_10_percent": 30.0,
+                "largest_holder_percent": 5.0,
+            }
+        if self.route in {
+            "lifecycle.snapshot_adapter_factory",
+            "lifecycle.fallback_snapshot_adapter_factory",
+        }:
+            return {
+                "pairs": [
+                    {
+                        "chain": "solana",
+                        "token_mint": row["mint"],
+                        "pair_address": row["pool"],
+                        "price_usd": 1.0,
+                        "liquidity_usd": 10000.0,
+                        "volume_5m": 500.0,
+                        "volume_1h": 2000.0,
+                        "volume_24h": 10000.0,
+                        "txns_5m": 10,
+                        "txns_1h": 50,
+                        "txns_24h": 500,
+                        "buys_5m": 6,
+                        "sells_5m": 4,
+                        "buys_1h": 30,
+                        "sells_1h": 20,
+                        "buys_24h": 280,
+                        "sells_24h": 220,
+                        "price_change_5m": 0.5,
+                        "price_change_1h": 1.0,
+                        "price_change_24h": 2.0,
+                    }
+                    for row in candidates
+                ]
+            }
+        return {"fixture_route": self.route, "status": "READY"}
 
-    def json_get(self, *args, **kwargs):
+    def json_get(self, url, *args, **kwargs):
+        self._count()
         del args, kwargs
-        return self
+        candidates = _checkpoint8_candidate_records()
+        url_text = str(url)
+        if self.route == "top_level.secondary_transport":
+            if "trending_pools" in url_text:
+                return {"data": []}
+            if "token-profiles" in url_text:
+                return []
+            for candidate in candidates:
+                if candidate["pool"] in url_text:
+                    return _checkpoint8_gecko_pool_body(candidate)
+            return {"data": []}
+        return {"fixture_route": self.route, "url": url_text, "data": []}
 
-    def json_rpc(self, *args, **kwargs):
+    def json_rpc(self, method, params=None, *args, **kwargs):
+        self._count()
         del args, kwargs
-        return self
+        candidates = _checkpoint8_candidate_records()
+        if isinstance(method, dict):
+            return {"fixture": True, "route": self.route}
+        method_text = str(method)
+        if self.route == "top_level.pump_transport":
+            if method_text == "getSignaturesForAddress":
+                return [
+                    {
+                        "signature": row["signature"],
+                        "slot": row["slot"],
+                        "confirmationStatus": "finalized",
+                        "err": None,
+                    }
+                    for row in reversed(candidates)
+                ]
+            if method_text == "getTransaction":
+                signature = str((params or [""])[0])
+                for row in candidates:
+                    if row["signature"] == signature:
+                        return row["transaction"]
+                return None
+        return {
+            "fixture_route": self.route,
+            "method": method_text,
+            "result": [],
+        }
 
 
 def _checkpoint8_route_by_label() -> dict[str, str]:
@@ -421,8 +788,17 @@ def prepare_checkpoint8_controlling_entry(
             "CHECKPOINT8_FIXTURE_MATERIALIZATION_MISMATCH"
         )
 
+    semantics = checkpoint8_success_fixture_response_semantics()
+    if semantics["ready"] is not True:
+        raise Checkpoint8ControllingProofError(
+            "CHECKPOINT8_FIXTURE_RESPONSE_SEMANTICS_NOT_READY"
+        )
+
     pre_run_evidence = {
         "db_path": str(db_path.resolve()),
+        "fixture_response_semantics_ready": True,
+        "fixture_candidate_count": semantics["candidate_count"],
+        "fixture_candidate_mints": list(semantics["candidate_mints"]),
         "db_sha256": db_sha256,
         "artifact_root": str(artifact_root.resolve()),
         "migration_count": canonical_migration_count(),
@@ -444,6 +820,31 @@ def prepare_checkpoint8_controlling_entry(
         proof_root=root,
         runtime=runtime,
         pre_run_evidence=pre_run_evidence,
+    )
+
+
+
+def execute_checkpoint8_public_sequence(
+    prepared,
+    *,
+    git_head: str,
+):
+    """Fail closed until the separate one-shot execution slice is GREEN."""
+    del git_head
+    evidence = getattr(prepared, "pre_run_evidence", None)
+    if not isinstance(evidence, dict):
+        raise Checkpoint8ControllingProofError(
+            "CHECKPOINT8_FIXTURE_RESPONSE_SEMANTICS_NOT_READY"
+        )
+    if (
+        evidence.get("fixture_response_semantics_ready") is not True
+        or int(evidence.get("fixture_candidate_count") or 0) != 2
+    ):
+        raise Checkpoint8ControllingProofError(
+            "CHECKPOINT8_FIXTURE_RESPONSE_SEMANTICS_NOT_READY"
+        )
+    raise Checkpoint8ControllingProofError(
+        "CHECKPOINT8_EXECUTION_ENTRY_NOT_YET_WIRED"
     )
 
 
