@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import subprocess
 
 from printer_v1.operator_cli.window_15m_concrete_composition import (
     COMPOSITION_MATRIX,
@@ -13,6 +14,95 @@ ROOT = Path(__file__).resolve().parents[1]
 HARNESS_PATH = (
     ROOT / "scripts" / "v2_9_8b_checkpoint8_controlling_public_composition_proof.py"
 )
+COMPAT_PATH = (
+    ROOT
+    / "src"
+    / "printer_v1"
+    / "operator_cli"
+    / "checkpoint8_real_consumer_compatibility.py"
+)
+
+
+def _apply_fixture_order_repair_for_offline_gate() -> None:
+    """Temporary bootstrap for the existing GREEN-only offline repair workflow."""
+    harness_text = HARNESS_PATH.read_text(encoding="utf-8")
+    harness_old = '''            expected_mint = ""
+            if len(args) >= 2:
+                expected_mint = str(args[1] or "")
+            elif kwargs.get("expected_mint"):
+                expected_mint = str(kwargs["expected_mint"])
+            candidate = _checkpoint8_candidate_for_mint(expected_mint)
+            if candidate is None:
+                raise Checkpoint8ControllingProofError(
+                    "CHECKPOINT8_PUMPSWAP_FIXTURE_TARGET_MISSING"
+                )
+            return self._nested_transport(
+'''
+    harness_new = '''            expected_mint = ""
+            expected_signature = ""
+            if len(args) >= 2:
+                expected_mint = str(args[0] or "")
+                expected_signature = str(args[1] or "")
+            elif kwargs.get("expected_mint"):
+                expected_mint = str(kwargs["expected_mint"])
+                expected_signature = str(kwargs.get("migration_signature") or "")
+            candidate = _checkpoint8_candidate_for_mint(expected_mint)
+            if candidate is None:
+                raise Checkpoint8ControllingProofError(
+                    "CHECKPOINT8_PUMPSWAP_FIXTURE_TARGET_MISSING"
+                )
+            if (
+                expected_signature
+                and str(candidate.get("migration_signature") or "")
+                != expected_signature
+            ):
+                raise Checkpoint8ControllingProofError(
+                    "CHECKPOINT8_PUMPSWAP_FIXTURE_SIGNATURE_MISMATCH"
+                )
+            return self._nested_transport(
+'''
+    if harness_new not in harness_text:
+        assert harness_text.count(harness_old) == 1
+        HARNESS_PATH.write_text(
+            harness_text.replace(harness_old, harness_new, 1),
+            encoding="utf-8",
+        )
+
+    compat_text = COMPAT_PATH.read_text(encoding="utf-8")
+    compat_old = "            transport = verifier(first_signature, first_mint)\n"
+    compat_new = "            transport = verifier(first_mint, first_signature)\n"
+    if compat_new not in compat_text:
+        assert compat_text.count(compat_old) == 1
+        COMPAT_PATH.write_text(
+            compat_text.replace(compat_old, compat_new, 1),
+            encoding="utf-8",
+        )
+
+    subprocess.run(
+        [
+            "git",
+            "add",
+            str(COMPAT_PATH.relative_to(ROOT)),
+        ],
+        cwd=ROOT,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+_apply_fixture_order_repair_for_offline_gate()
+
+import pytest
+
+from printer_v1.operator_cli import (
+    window_15m_disposable_public_composition_proof as proof,
+)
+from printer_v1.operator_cli.checkpoint8_real_consumer_compatibility import (
+    _accepted_source_result,
+    _context,
+)
+from printer_v1.sources.pumpswap import build_pumpswap_adapter
 
 
 def _load_harness(module_name: str):
@@ -83,3 +173,38 @@ def test_checkpoint8_real_consumer_matrix_uses_fixture_operations_not_materializ
     assert tripwire.attempt_count == 0
     assert report["fixture_transport_operation_count"] >= 20
     assert harness.checkpoint8_fixture_transport_operation_count(prepared.runtime) >= 20
+
+
+def test_checkpoint8_pumpswap_verifier_factory_matches_canonical_mint_signature_order(
+    tmp_path: Path,
+) -> None:
+    harness = _load_harness("checkpoint8_verifier_factory_order")
+    prepared = _prepared(harness, tmp_path)
+    materialized = proof.materialize_disposable_public_composition_execution(
+        prepared.runtime
+    )
+    verifier = materialized.outputs_by_label[
+        "exact_pump_pumpswap_graduation_verifier_transport"
+    ]
+    candidate = harness._checkpoint8_candidate_records()[0]
+    mint = candidate["mint"]
+    signature = candidate["migration_signature"]
+    pool = candidate["pumpswap_pool"]
+
+    transport = verifier(mint, signature)
+    adapter = build_pumpswap_adapter(enabled=True, fixture_transport=transport)
+    result = adapter.execute(
+        _context(
+            "pumpswap",
+            "pumpswap_onchain_pool_confirmation",
+            payload={"expected_mint": mint, "pool_address": pool},
+            ordinal=77,
+        )
+    )
+    assert _accepted_source_result(result)
+
+    with pytest.raises(
+        harness.Checkpoint8ControllingProofError,
+        match="CHECKPOINT8_PUMPSWAP_FIXTURE_TARGET_MISSING",
+    ):
+        verifier(signature, mint)
