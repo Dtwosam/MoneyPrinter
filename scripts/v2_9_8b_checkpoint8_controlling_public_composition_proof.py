@@ -72,6 +72,11 @@ from printer_v1.sources.pump_contracts import (
     TOKEN_2022_PROGRAM_ID,
     WSOL_MINT,
 )
+from printer_v1.sources.measured_transport import (
+    build_transport_identity,
+    measured_payload_fields,
+    pumpswap_verification_transport_count,
+)
 
 
 _ATTEMPT_SENTINEL_NAME = "checkpoint8-controlling-attempt.json"
@@ -486,7 +491,7 @@ def _checkpoint8_candidate_records() -> tuple[dict[str, Any], ...]:
     rows = []
     for ordinal, label in enumerate(("alpha", "bravo")):
         create_slot = 1_700_000 + ordinal
-        create_block_time = 1_800_000_000 + ordinal * 60
+        create_block_time = 1_786_000_000 + ordinal * 60
         create_transaction = _checkpoint8_create_transaction(
             label=label, slot=create_slot, block_time=create_block_time
         )
@@ -624,6 +629,39 @@ def _checkpoint8_candidate_for_mint(mint: str) -> dict[str, Any] | None:
 
 def _checkpoint8_pumpswap_confirmation(candidate: dict[str, Any]) -> dict[str, Any]:
     row = _checkpoint8_market_candidate(candidate)
+    account_keys = tuple(
+        candidate["migration_transaction"]["transaction"]["message"]["accountKeys"]
+    )
+    identities = (
+        build_transport_identity(
+            stage="PUMPSWAP_EXACT_VERIFICATION",
+            source_name="solana_rpc",
+            endpoint_owner="solana",
+            governed_request_kind="pumpswap_signature_pool_resolution",
+            method_or_endpoint="getTransaction",
+            within_request_ordinal=1,
+            target_category="migration_signature",
+            target_identity=candidate["migration_signature"],
+            response_bytes=256,
+            normalized_rows=1,
+        ),
+        build_transport_identity(
+            stage="PUMPSWAP_EXACT_VERIFICATION",
+            source_name="solana_rpc",
+            endpoint_owner="solana",
+            governed_request_kind="pumpswap_signature_pool_resolution",
+            method_or_endpoint="getMultipleAccounts",
+            within_request_ordinal=2,
+            target_category="account_batch",
+            target_identity=row["mint"],
+            response_bytes=256,
+            normalized_rows=len(account_keys),
+        ),
+    )
+    measured = measured_payload_fields(identities)
+    measured["expected_transport_operations"] = pumpswap_verification_transport_count(
+        len(account_keys)
+    )
     return {
         "pumpswap_confirmation": {
             "confirmed": True,
@@ -637,9 +675,7 @@ def _checkpoint8_pumpswap_confirmation(candidate: dict[str, Any]) -> dict[str, A
         "migration_signature": candidate["migration_signature"],
         "migration_block_time": candidate["migration_block_time"],
         "migration_slot": candidate["migration_slot"],
-        "transport_operations_used": 1,
-        "response_bytes": 512,
-        "normalized_rows": 1,
+        **measured,
     }
 
 

@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import importlib.util
+from datetime import datetime, timezone
 from pathlib import Path
+import sqlite3
 
 import pytest
 
 from printer_v1.operator_cli import (
     window_15m_disposable_public_composition_proof as proof,
+)
+from printer_v1.discovery.direct_migration_discovery import (
+    run_direct_migration_discovery,
 )
 from printer_v1.operator_cli.checkpoint8_real_consumer_compatibility import (
     _accepted_source_result,
@@ -128,3 +133,52 @@ def test_checkpoint8_pumpswap_verifier_factory_matches_canonical_mint_signature_
         match="CHECKPOINT8_PUMPSWAP_FIXTURE_TARGET_MISSING",
     ):
         verifier(signature, mint)
+
+def test_checkpoint8_direct_migration_fixture_reconciles_and_persists_two_candidates(
+    tmp_path: Path,
+) -> None:
+    harness = _load_harness("checkpoint8_direct_migration_accounting")
+    prepared = _prepared(harness, tmp_path)
+    materialized = proof.materialize_disposable_public_composition_execution(
+        prepared.runtime
+    )
+    tripwire = harness.Checkpoint8NetworkTripwire()
+    with tripwire:
+        report = run_direct_migration_discovery(
+            prepared.runtime.plan.resolved_db_path,
+            migration_transport=materialized.top_level_transports["migration_transport"],
+            verifier_transport_factory=materialized.graduated_supply_kwargs[
+                "verifier_transport_factory"
+            ],
+            now=datetime.now(timezone.utc).isoformat(),
+            request_key_prefix="checkpoint8-direct-migration-accounting",
+            max_candidates=2,
+            collection_rounds=1,
+            settle_seconds=0.0,
+            reverify_on_transient=False,
+            reverify_settle_seconds=0.0,
+        )
+
+    assert tripwire.attempt_count == 0
+    assert report["status"] == "COMPLETE"
+    assert report["confirmed_count"] == 2
+    ledger = report["source_operation_ledger"]
+    assert ledger["operation_accounting_reconciled"] is True
+    assert ledger["source_requests"] == 5
+    assert ledger["identity_transport_operations"] == 7
+    assert ledger["transport_operations"] == 7
+
+    now_epoch = int(datetime.now(timezone.utc).timestamp())
+    for candidate in harness._checkpoint8_candidate_records():
+        assert int(candidate["migration_block_time"]) <= now_epoch + 300
+
+    connection = sqlite3.connect(prepared.runtime.plan.resolved_db_path)
+    try:
+        count = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM printer_pumpswap_graduated_candidate_registry"
+            ).fetchone()[0]
+        )
+    finally:
+        connection.close()
+    assert count == 2
