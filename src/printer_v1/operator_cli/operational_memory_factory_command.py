@@ -4558,6 +4558,7 @@ def _load_exact_terminal_summary(
     campaign_id: str,
     run_id: str,
     configuration_id: str,
+    artifact_root: str | Path | None = None,
 ) -> dict[str, Any] | None:
     """Load terminal-summary only when all identities exactly match.
 
@@ -4570,7 +4571,8 @@ def _load_exact_terminal_summary(
     execution_id = str(configuration.get("execution_id") or "").strip()
     if not execution_id:
         return None
-    summary_path = (ARTIFACT_ROOT / execution_id / "terminal-summary.json").resolve()
+    summary_root = Path(artifact_root or ARTIFACT_ROOT).resolve()
+    summary_path = (summary_root / execution_id / "terminal-summary.json").resolve()
     if not summary_path.is_file():
         return None
     try:
@@ -4718,6 +4720,7 @@ def report_only(
             campaign_id=resolved_campaign,
             run_id=resolved_run,
             configuration_id=resolved_configuration_id,
+            artifact_root=replay_artifact_root,
         )
         if summary is None:
             # Report missing and summary absent/mismatched: primary block reason
@@ -4973,39 +4976,72 @@ def report_only(
     expected_owner_hash = hashlib.sha256(_canonical(owner_evidence)).hexdigest()
     expected_action_hash = hashlib.sha256(_canonical(action_evidence)).hexdigest()
     marker_evidence = full_run.get("authorization_and_invocation") or {}
-    authorization_marker = marker_evidence.get("authorization_marker")
-    invocation_marker = marker_evidence.get("invocation_marker")
-    # Marker digests share exactly one canonical owner with creation and
-    # acceptance: ``campaign_evidence_sha256`` (sorted keys, compact separators,
-    # ``ensure_ascii=True``). Replay must not re-serialize markers locally, or a
-    # valid non-ASCII lease-lock path would hash to different bytes and falsely
-    # block. The owner/action/body digests keep their own local canonical form
-    # (``ensure_ascii=False``) because creation hashes them the same way.
-    expected_authorization_hash = (
-        campaign_evidence_sha256(authorization_marker)
-        if isinstance(authorization_marker, Mapping) else None
+    from printer_v1.operator_cli.campaign_full_run_accounting import (
+        EVIDENCE_MODE_DISPOSABLE_PUBLIC_COMPOSITION_PROOF,
     )
-    expected_invocation_hash = (
-        campaign_evidence_sha256(invocation_marker)
-        if isinstance(invocation_marker, Mapping) else None
-    )
+    evidence_mode = str(marker_evidence.get("evidence_mode") or "")
     body = dict(full_run)
     body_hashes = dict(hashes)
     body_hashes.pop("report_body_sha256", None)
     body["hashes"] = body_hashes
     expected_body_hash = hashlib.sha256(_canonical(body)).hexdigest()
-    if (
+
+    common_hash_mismatch = bool(
         hashes.get("owner_evidence_sha256") != expected_owner_hash
         or hashes.get("action_local_evidence_sha256") != expected_action_hash
-        or hashes.get("authorization_marker_sha256")
-        != expected_authorization_hash
-        or hashes.get("invocation_marker_sha256") != expected_invocation_hash
-        or hashes.get("authorization_marker_sha256")
-        == full_identity.get("factory_config_hash")
-        or hashes.get("invocation_marker_sha256")
-        == full_identity.get("factory_config_hash")
         or hashes.get("report_body_sha256") != expected_body_hash
-    ):
+    )
+    if evidence_mode == EVIDENCE_MODE_DISPOSABLE_PUBLIC_COMPOSITION_PROOF:
+        proof_expectation = marker_evidence.get("proof_expectation")
+        proof_invocation_evidence = marker_evidence.get(
+            "proof_invocation_evidence"
+        )
+        expected_proof_expectation_hash = (
+            campaign_evidence_sha256(proof_expectation)
+            if isinstance(proof_expectation, Mapping)
+            else None
+        )
+        expected_proof_invocation_hash = (
+            campaign_evidence_sha256(proof_invocation_evidence)
+            if isinstance(proof_invocation_evidence, Mapping)
+            else None
+        )
+        mode_hash_mismatch = bool(
+            hashes.get("proof_expectation_sha256")
+            != expected_proof_expectation_hash
+            or hashes.get("proof_invocation_evidence_sha256")
+            != expected_proof_invocation_hash
+            or hashes.get("authorization_marker_sha256") not in (None, "")
+            or hashes.get("invocation_marker_sha256") not in (None, "")
+            or hashes.get("proof_expectation_sha256")
+            == full_identity.get("factory_config_hash")
+            or hashes.get("proof_invocation_evidence_sha256")
+            == full_identity.get("factory_config_hash")
+        )
+    else:
+        authorization_marker = marker_evidence.get("authorization_marker")
+        invocation_marker = marker_evidence.get("invocation_marker")
+        expected_authorization_hash = (
+            campaign_evidence_sha256(authorization_marker)
+            if isinstance(authorization_marker, Mapping)
+            else None
+        )
+        expected_invocation_hash = (
+            campaign_evidence_sha256(invocation_marker)
+            if isinstance(invocation_marker, Mapping)
+            else None
+        )
+        mode_hash_mismatch = bool(
+            hashes.get("authorization_marker_sha256")
+            != expected_authorization_hash
+            or hashes.get("invocation_marker_sha256")
+            != expected_invocation_hash
+            or hashes.get("authorization_marker_sha256")
+            == full_identity.get("factory_config_hash")
+            or hashes.get("invocation_marker_sha256")
+            == full_identity.get("factory_config_hash")
+        )
+    if common_hash_mismatch or mode_hash_mismatch:
         return _report_only_zero_work({
             "status": "REPLAY_BLOCKED",
             "requested_identity": identity["requested_identity"],
@@ -5080,7 +5116,7 @@ def report_only(
         from printer_v1.operator_cli.campaign_full_run_accounting import (
             OperationalLifecycleOwnershipContext,
             durable_cleanup_release_timestamps_valid,
-            load_authorization_invocation_evidence,
+            load_invocation_authority_evidence,
         )
         replay_context = OperationalLifecycleOwnershipContext(
             campaign_id=resolved_campaign,
@@ -5089,7 +5125,7 @@ def report_only(
             configuration_id=resolved_configuration_id,
             factory_run_id=str(full_identity.get("factory_run_id") or ""),
         )
-        durable_markers = load_authorization_invocation_evidence(
+        durable_markers = load_invocation_authority_evidence(
             verification,
             context=replay_context,
             execution_id=str(full_identity.get("execution_id") or ""),
@@ -5170,15 +5206,26 @@ def report_only(
         == str(full_identity.get("factory_run_id") or "")
         else None
     )
+    evidence_hash_keys = (
+        (
+            "proof_expectation_sha256",
+            "proof_invocation_evidence_sha256",
+        )
+        if evidence_mode == EVIDENCE_MODE_DISPOSABLE_PUBLIC_COMPOSITION_PROOF
+        else (
+            "authorization_marker_sha256",
+            "invocation_marker_sha256",
+        )
+    )
     factory_config_reconstruction_exact = bool(
         durable_factory_config_hash
         and durable_factory_config_hash
         == str(full_identity.get("factory_config_hash") or "")
         and durable_factory_config_hash == str(marker_factory_config_hash or "")
-        and str(hashes.get("authorization_marker_sha256") or "")
-        != durable_factory_config_hash
-        and str(hashes.get("invocation_marker_sha256") or "")
-        != durable_factory_config_hash
+        and all(
+            str(hashes.get(key) or "") != durable_factory_config_hash
+            for key in evidence_hash_keys
+        )
     )
     durable_markers["factory_config_hash"] = durable_factory_config_hash
     if (

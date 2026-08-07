@@ -85,6 +85,11 @@ VERDICT_PASS = "CAMPAIGN_PASS"
 VERDICT_HONEST_BLOCKED = "HONEST_BLOCKED"
 VERDICT_BLOCKED_UNSAFE = "BLOCKED_UNSAFE"
 
+EVIDENCE_MODE_AUTHORIZED_OPERATIONAL = "AUTHORIZED_OPERATIONAL"
+EVIDENCE_MODE_DISPOSABLE_PUBLIC_COMPOSITION_PROOF = (
+    "DISPOSABLE_PUBLIC_COMPOSITION_PROOF"
+)
+
 # Clean-memory promotion is only lawful for a fully clean window.
 _CLEAN_MEMORY_STATUS = "CLEAN_MEMORY"
 _CLEAN_DATA_LABEL = "CLEAN_DATA"
@@ -298,6 +303,264 @@ def load_authorization_invocation_evidence(
             and binding_count == 1
             and campaign_binding_history_count == 1
         ),
+    }
+
+
+def load_invocation_authority_evidence(
+    connection: sqlite3.Connection,
+    *,
+    context: "OperationalLifecycleOwnershipContext",
+    execution_id: str,
+    supervision_id: str,
+) -> dict[str, Any]:
+    """Load production authorization or C8 proof authority from durable owners.
+
+    Dispatch is owned only by the configuration-owned database target kind.
+    """
+    from printer_v1.db.migrate import (
+        canonical_migration_count,
+        canonical_migration_names,
+    )
+    from printer_v1.operator_cli.operational_database_target_binding import (
+        DISPOSABLE_PUBLIC_COMPOSITION_PROOF,
+        DISPOSABLE_PUBLIC_COMPOSITION_PROOF_EXPECTATION_VERSION,
+    )
+    from printer_v1.operator_cli.proof_db_schema_readiness import (
+        CANONICAL_PERSISTENT_DB,
+    )
+
+    connection.row_factory = sqlite3.Row
+    config_row = connection.execute(
+        "SELECT cfg.configuration_hash,cfg.configuration_json,c.db_target_identity "
+        "FROM printer_memory_factory_campaign_configurations AS cfg "
+        "JOIN printer_memory_factory_campaigns AS c "
+        "ON c.campaign_id=cfg.campaign_id "
+        "WHERE cfg.campaign_id=? AND cfg.configuration_id=?",
+        (context.campaign_id, context.configuration_id),
+    ).fetchone()
+    configuration = (
+        None
+        if config_row is None
+        else _load_json_object(config_row["configuration_json"])
+    )
+    expectation = (
+        None
+        if not isinstance(configuration, Mapping)
+        else configuration.get("operational_database_target_expectation")
+    )
+    if (
+        not isinstance(expectation, Mapping)
+        or str(expectation.get("target_kind") or "")
+        != DISPOSABLE_PUBLIC_COMPOSITION_PROOF
+    ):
+        production = load_authorization_invocation_evidence(
+            connection,
+            context=context,
+            execution_id=execution_id,
+            supervision_id=supervision_id,
+        )
+        production["evidence_mode"] = EVIDENCE_MODE_AUTHORIZED_OPERATIONAL
+        return production
+
+    proof_expectation = dict(expectation)
+    supervision_rows = connection.execute(
+        "SELECT supervision_id,campaign_id,configuration_id,run_id,owner_id,"
+        "lease_lock_path,created_at,supervision_state,terminal_status,"
+        "cleanup_completed_at,lease_released_at "
+        "FROM printer_memory_factory_campaign_supervision "
+        "WHERE campaign_id=? ORDER BY created_at,supervision_id",
+        (context.campaign_id,),
+    ).fetchall()
+    exact_supervision_rows = [
+        row
+        for row in supervision_rows
+        if str(row["supervision_id"]) == str(supervision_id)
+        and str(row["campaign_id"]) == context.campaign_id
+        and str(row["configuration_id"]) == context.configuration_id
+        and str(row["run_id"]) == context.campaign_run_id
+    ]
+    binding_rows = connection.execute(
+        "SELECT campaign_id,run_id,authoritative_run_id "
+        "FROM printer_memory_factory_campaign_runs "
+        "WHERE campaign_id=? ORDER BY run_id",
+        (context.campaign_id,),
+    ).fetchall()
+    exact_binding_rows = [
+        row
+        for row in binding_rows
+        if str(row["run_id"]) == context.campaign_run_id
+        and str(row["authoritative_run_id"] or "") == context.factory_run_id
+    ]
+    campaign_binding_history_count = sum(
+        1 for row in binding_rows if row["authoritative_run_id"] is not None
+    )
+
+    forbidden_expectation_keys = [
+        str(key)
+        for key in proof_expectation
+        if str(key).startswith("authorization")
+        or str(key) == "application_marker_sha256"
+    ]
+    configuration_has_authorization = bool(
+        isinstance(configuration, Mapping)
+        and (
+            "authorization_marker" in configuration
+            or "authorization_marker_sha256" in configuration
+        )
+    )
+    reuse_fields = (
+        "provider_execution_allowed",
+        "automatic_retry_allowed",
+        "manual_rerun_allowed",
+        "resume_allowed",
+        "restart_allowed",
+        "successor_allowed",
+    )
+    no_provider_or_reuse = all(
+        proof_expectation.get(field) is False for field in reuse_fields
+    )
+
+    expected_runtime = {
+        "execution_id": str(execution_id),
+        "campaign_id": context.campaign_id,
+        "campaign_run_id": context.campaign_run_id,
+        "cycle_id": context.cycle_id,
+        "configuration_id": context.configuration_id,
+        "durable_db_target_identity": (
+            None if config_row is None else str(config_row["db_target_identity"])
+        ),
+    }
+    runtime_identity_exact = all(
+        str(proof_expectation.get(field) or "") == str(value or "")
+        for field, value in expected_runtime.items()
+    )
+    expected_sha = str(proof_expectation.get("pre_mutation_db_sha256") or "")
+    expected_db_identity = str(
+        proof_expectation.get("durable_db_target_identity") or ""
+    )
+    proof_db_path = Path(
+        str(proof_expectation.get("resolved_db_path") or "")
+    ).resolve()
+    canonical_db_path = Path(CANONICAL_PERSISTENT_DB).resolve()
+    migration_exact = bool(
+        int(proof_expectation.get("migration_count", -1))
+        == canonical_migration_count()
+        and str(proof_expectation.get("migration_head") or "")
+        == canonical_migration_names()[-1]
+    )
+    proof_expectation_exact = bool(
+        proof_expectation.get("expectation_version")
+        == DISPOSABLE_PUBLIC_COMPOSITION_PROOF_EXPECTATION_VERSION
+        and proof_expectation.get("target_kind")
+        == DISPOSABLE_PUBLIC_COMPOSITION_PROOF
+        and runtime_identity_exact
+        and expected_sha
+        and expected_db_identity == f"sha256:{expected_sha}"
+        and proof_db_path != canonical_db_path
+        and migration_exact
+    )
+
+    exact_supervision = (
+        dict(exact_supervision_rows[0])
+        if len(exact_supervision_rows) == 1
+        else None
+    )
+    proof_invocation_evidence = {
+        "evidence_kind": "DISPOSABLE_PUBLIC_COMPOSITION_PROOF_INVOCATION_EVIDENCE_V1",
+        "proof_id": proof_expectation.get("proof_id"),
+        "proof_schema_version": proof_expectation.get("proof_schema_version"),
+        "execution_id": str(execution_id),
+        "campaign_id": context.campaign_id,
+        "campaign_run_id": context.campaign_run_id,
+        "cycle_id": context.cycle_id,
+        "configuration_id": context.configuration_id,
+        "supervision_id": str(supervision_id),
+        "factory_run_id": context.factory_run_id,
+        "durable_db_target_identity": expected_db_identity,
+        "fixture_composition_manifest_sha256": proof_expectation.get(
+            "fixture_composition_manifest_sha256"
+        ),
+        "supervision": exact_supervision,
+        "factory_binding_count": len(exact_binding_rows),
+        "campaign_factory_binding_history_count": campaign_binding_history_count,
+    }
+    proof_invocation_identity_exact = bool(
+        exact_supervision is not None
+        and str(exact_supervision.get("campaign_id") or "")
+        == context.campaign_id
+        and str(exact_supervision.get("configuration_id") or "")
+        == context.configuration_id
+        and str(exact_supervision.get("run_id") or "")
+        == context.campaign_run_id
+        and str(exact_supervision.get("supervision_id") or "")
+        == str(supervision_id)
+        and runtime_identity_exact
+    )
+    proof_supervision_factory_correspondence_exact = bool(
+        proof_invocation_identity_exact
+        and len(exact_supervision_rows) == 1
+        and len(supervision_rows) == 1
+        and len(exact_binding_rows) == 1
+        and campaign_binding_history_count == 1
+    )
+    proof_no_authorization_facts = bool(
+        not forbidden_expectation_keys and not configuration_has_authorization
+    )
+    manifest = str(
+        proof_expectation.get("fixture_composition_manifest_sha256") or ""
+    )
+    registry = str(proof_expectation.get("composition_registry_sha256") or "")
+    proof_manifest_exact = bool(
+        len(manifest) == 64
+        and all(ch in "0123456789abcdef" for ch in manifest)
+        and len(registry) == 64
+        and all(ch in "0123456789abcdef" for ch in registry)
+        and proof_invocation_evidence[
+            "fixture_composition_manifest_sha256"
+        ] == manifest
+    )
+
+    proof_expectation_sha256 = campaign_evidence_sha256(proof_expectation)
+    proof_invocation_evidence_sha256 = campaign_evidence_sha256(
+        proof_invocation_evidence
+    )
+    return {
+        "evidence_mode": EVIDENCE_MODE_DISPOSABLE_PUBLIC_COMPOSITION_PROOF,
+        "factory_config_hash": None,
+        "campaign_configuration_hash": (
+            None if config_row is None else str(config_row["configuration_hash"])
+        ),
+        "authorization_marker": None,
+        "expected_authorization_marker": None,
+        "authorization_marker_sha256": None,
+        "stored_authorization_marker_sha256": None,
+        "authorization_count": 0,
+        "exact_authorization_count": 0,
+        "invocation_marker": None,
+        "invocation_marker_sha256": None,
+        "invocation_count": len(exact_supervision_rows),
+        "supervision_history_count": len(supervision_rows),
+        "additional_supervision_history_count": max(
+            0, len(supervision_rows) - 1
+        ),
+        "factory_binding_count": len(exact_binding_rows),
+        "campaign_factory_binding_history_count": (
+            campaign_binding_history_count
+        ),
+        "proof_expectation": proof_expectation,
+        "proof_expectation_sha256": proof_expectation_sha256,
+        "proof_invocation_evidence": proof_invocation_evidence,
+        "proof_invocation_evidence_sha256": (
+            proof_invocation_evidence_sha256
+        ),
+        "proof_expectation_exact": proof_expectation_exact,
+        "proof_invocation_identity_exact": proof_invocation_identity_exact,
+        "proof_supervision_factory_correspondence_exact": (
+            proof_supervision_factory_correspondence_exact
+        ),
+        "proof_no_authorization_facts": proof_no_authorization_facts,
+        "proof_no_provider_or_reuse_permission": no_provider_or_reuse,
+        "proof_manifest_exact": proof_manifest_exact,
     }
 
 
@@ -872,6 +1135,10 @@ def evaluate_campaign_acceptance_gate(
     quality_consistent = bool(
         report.get("quality_consistency", {}).get("consistent", False)
     )
+    proof_mode = (
+        markers.get("evidence_mode")
+        == EVIDENCE_MODE_DISPOSABLE_PUBLIC_COMPOSITION_PROOF
+    )
 
     checks = {
         "exactly_one_authorization_marker": (
@@ -985,8 +1252,20 @@ def evaluate_campaign_acceptance_gate(
         and bool(accounting.get("action_local_evidence"))
         and bool(accounting.get("campaign_scheduler_work_rows"))
         and bool(accounting.get("sealed_stage_diagnostics"))
-        and isinstance(markers.get("authorization_marker"), Mapping)
-        and isinstance(markers.get("invocation_marker"), Mapping)
+        and (
+            (
+                proof_mode
+                and isinstance(markers.get("proof_expectation"), Mapping)
+                and isinstance(
+                    markers.get("proof_invocation_evidence"), Mapping
+                )
+            )
+            or (
+                not proof_mode
+                and isinstance(markers.get("authorization_marker"), Mapping)
+                and isinstance(markers.get("invocation_marker"), Mapping)
+            )
+        )
         and all(
             key in safety
             for key in (
@@ -1085,11 +1364,21 @@ def evaluate_campaign_acceptance_gate(
         "marker_and_evidence_hashes_present": all(
             len(str(report.get("hashes", {}).get(key) or "")) == 64
             for key in (
-                "owner_evidence_sha256",
-                "action_local_evidence_sha256",
-                "report_body_sha256",
-                "authorization_marker_sha256",
-                "invocation_marker_sha256",
+                (
+                    "owner_evidence_sha256",
+                    "action_local_evidence_sha256",
+                    "report_body_sha256",
+                    "proof_expectation_sha256",
+                    "proof_invocation_evidence_sha256",
+                )
+                if proof_mode
+                else (
+                    "owner_evidence_sha256",
+                    "action_local_evidence_sha256",
+                    "report_body_sha256",
+                    "authorization_marker_sha256",
+                    "invocation_marker_sha256",
+                )
             )
         ),
         "authorization_marker_digest_exact": bool(
@@ -1112,6 +1401,43 @@ def evaluate_campaign_acceptance_gate(
             != report.get("identity", {}).get("factory_config_hash")
         ),
     }
+
+    if proof_mode:
+        for authorization_check in (
+            "exactly_one_authorization_marker",
+            "authorization_supervision_binding_correspondence_exact",
+            "marker_payload_identities_exact",
+            "authorization_marker_digest_exact",
+            "invocation_marker_digest_exact",
+            "configuration_hash_not_substituted_as_marker",
+        ):
+            checks.pop(authorization_check, None)
+        checks.update(
+            {
+                "proof_expectation_exact": (
+                    markers.get("proof_expectation_exact") is True
+                ),
+                "proof_invocation_identity_exact": (
+                    markers.get("proof_invocation_identity_exact") is True
+                ),
+                "proof_supervision_factory_correspondence_exact": (
+                    markers.get(
+                        "proof_supervision_factory_correspondence_exact"
+                    ) is True
+                ),
+                "proof_no_authorization_facts": (
+                    markers.get("proof_no_authorization_facts") is True
+                ),
+                "proof_no_provider_or_reuse_permission": (
+                    markers.get(
+                        "proof_no_provider_or_reuse_permission"
+                    ) is True
+                ),
+                "proof_manifest_exact": (
+                    markers.get("proof_manifest_exact") is True
+                ),
+            }
+        )
 
     lifecycle_started = bool(reconciliation.get("lifecycle_started")) or (
         terminal_window_count > 0
@@ -2071,7 +2397,7 @@ def finalize_full_run_ownership_and_report(
         ),
         "scheduler_transition_coverage": action_local.scheduler_transition_coverage(),
     }
-    marker_evidence = load_authorization_invocation_evidence(
+    marker_evidence = load_invocation_authority_evidence(
         connection,
         context=context,
         execution_id=execution_id,
@@ -2173,13 +2499,34 @@ def finalize_full_run_ownership_and_report(
         "action_local_evidence_sha256": hashlib.sha256(
             canonical(report["full_run_accounting"]["action_local_evidence"])
         ).hexdigest(),
-        "authorization_marker_sha256": str(
-            marker_evidence.get("authorization_marker_sha256") or ""
-        ),
-        "invocation_marker_sha256": str(
-            marker_evidence.get("invocation_marker_sha256") or ""
-        ),
     }
+    if (
+        marker_evidence.get("evidence_mode")
+        == EVIDENCE_MODE_DISPOSABLE_PUBLIC_COMPOSITION_PROOF
+    ):
+        report["hashes"].update(
+            {
+                "proof_expectation_sha256": str(
+                    marker_evidence.get("proof_expectation_sha256") or ""
+                ),
+                "proof_invocation_evidence_sha256": str(
+                    marker_evidence.get(
+                        "proof_invocation_evidence_sha256"
+                    ) or ""
+                ),
+            }
+        )
+    else:
+        report["hashes"].update(
+            {
+                "authorization_marker_sha256": str(
+                    marker_evidence.get("authorization_marker_sha256") or ""
+                ),
+                "invocation_marker_sha256": str(
+                    marker_evidence.get("invocation_marker_sha256") or ""
+                ),
+            }
+        )
     report["hashes"]["report_body_sha256"] = hashlib.sha256(
         canonical(report)
     ).hexdigest()
@@ -2223,6 +2570,8 @@ def finalize_full_run_ownership_and_report(
 __all__ = [
     "BOUNDARY_SCHEDULER_ENQUEUE",
     "BOUNDARY_SOURCE_TRANSPORT",
+    "EVIDENCE_MODE_AUTHORIZED_OPERATIONAL",
+    "EVIDENCE_MODE_DISPOSABLE_PUBLIC_COMPOSITION_PROOF",
     "FullRunAccountingError",
     "OperationalLifecycleOwnershipContext",
     "PRECLOSE_CONTEXT_REQUEST_COUNT",
@@ -2237,6 +2586,7 @@ __all__ = [
     "evaluate_campaign_acceptance_gate",
     "evaluate_quality_consistency",
     "finalize_full_run_ownership_and_report",
+    "load_invocation_authority_evidence",
     "parse_durable_timestamp",
     "reservation_identities_for_step",
     "resolve_campaign_slot_terminal_disposition",
