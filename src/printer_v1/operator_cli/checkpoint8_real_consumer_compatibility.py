@@ -215,7 +215,7 @@ def run_checkpoint8_real_consumer_compatibility(runtime: Any) -> dict[str, Any]:
         accepted = False
         detail = None
         try:
-            transport = verifier(first_signature, first_mint)
+            transport = verifier(first_mint, first_signature)
             adapter = build_pumpswap_adapter(enabled=True, fixture_transport=transport)
             observed = adapter.execute(
                 _context(

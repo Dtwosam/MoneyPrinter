@@ -790,14 +790,25 @@ class _Checkpoint8DeterministicFixture:
                         return {"fixture_status": "failure", "failure_type": "checkpoint8_candidate_missing"}
                     return _checkpoint8_pumpswap_confirmation(candidate)
             expected_mint = ""
+            expected_signature = ""
             if len(args) >= 2:
-                expected_mint = str(args[1] or "")
+                expected_mint = str(args[0] or "")
+                expected_signature = str(args[1] or "")
             elif kwargs.get("expected_mint"):
                 expected_mint = str(kwargs["expected_mint"])
+                expected_signature = str(kwargs.get("migration_signature") or "")
             candidate = _checkpoint8_candidate_for_mint(expected_mint)
             if candidate is None:
                 raise Checkpoint8ControllingProofError(
                     "CHECKPOINT8_PUMPSWAP_FIXTURE_TARGET_MISSING"
+                )
+            if (
+                expected_signature
+                and str(candidate.get("migration_signature") or "")
+                != expected_signature
+            ):
+                raise Checkpoint8ControllingProofError(
+                    "CHECKPOINT8_PUMPSWAP_FIXTURE_SIGNATURE_MISMATCH"
                 )
             return self._nested_transport(
                 lambda _context, candidate=candidate: _checkpoint8_pumpswap_confirmation(candidate)
