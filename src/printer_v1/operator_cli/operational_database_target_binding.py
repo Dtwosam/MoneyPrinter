@@ -18,6 +18,12 @@ PRODUCTION_AUTHORITATIVE = "PRODUCTION_AUTHORITATIVE"
 AUTHORIZED_DISPOSABLE_OPERATIONAL_PROOF = (
     "AUTHORIZED_DISPOSABLE_OPERATIONAL_PROOF"
 )
+DISPOSABLE_PUBLIC_COMPOSITION_PROOF = (
+    "DISPOSABLE_PUBLIC_COMPOSITION_PROOF"
+)
+DISPOSABLE_PUBLIC_COMPOSITION_PROOF_EXPECTATION_VERSION = (
+    "DISPOSABLE_PUBLIC_COMPOSITION_PROOF_EXPECTATION_V1"
+)
 ALLOWED_OPERATIONAL_DATABASE_TARGET_KINDS = frozenset(
     {PRODUCTION_AUTHORITATIVE, AUTHORIZED_DISPOSABLE_OPERATIONAL_PROOF}
 )
@@ -425,6 +431,140 @@ def validate_operational_database_target_binding(
     return None
 
 
+def build_disposable_public_composition_proof_expectation(
+    binding: Any,
+) -> dict[str, Any]:
+    """Build durable C8 proof truth without fabricated authorization facts."""
+    required = (
+        "proof_schema_version",
+        "proof_id",
+        "resolved_db_path",
+        "pre_mutation_db_sha256",
+        "migration_count",
+        "migration_head",
+        "composition_registry_sha256",
+        "provider_execution_allowed",
+        "automatic_retry_allowed",
+        "manual_rerun_allowed",
+        "resume_allowed",
+        "restart_allowed",
+        "successor_allowed",
+        "execution_id",
+        "campaign_id",
+        "campaign_run_id",
+        "cycle_id",
+        "configuration_id",
+        "db_target_identity",
+        "fixture_composition_manifest_sha256",
+    )
+    if any(not hasattr(binding, field) for field in required):
+        raise ValueError("DISPOSABLE_PUBLIC_COMPOSITION_PROOF_BINDING_INCOMPLETE")
+    return {
+        "expectation_version": DISPOSABLE_PUBLIC_COMPOSITION_PROOF_EXPECTATION_VERSION,
+        "target_kind": DISPOSABLE_PUBLIC_COMPOSITION_PROOF,
+        "proof_schema_version": str(binding.proof_schema_version),
+        "proof_id": str(binding.proof_id),
+        "resolved_db_path": str(Path(binding.resolved_db_path).resolve()),
+        "pre_mutation_db_sha256": str(binding.pre_mutation_db_sha256),
+        "migration_count": int(binding.migration_count),
+        "migration_head": str(binding.migration_head),
+        "composition_registry_sha256": str(binding.composition_registry_sha256),
+        "provider_execution_allowed": binding.provider_execution_allowed,
+        "automatic_retry_allowed": binding.automatic_retry_allowed,
+        "manual_rerun_allowed": binding.manual_rerun_allowed,
+        "resume_allowed": binding.resume_allowed,
+        "restart_allowed": binding.restart_allowed,
+        "successor_allowed": binding.successor_allowed,
+        "execution_id": str(binding.execution_id),
+        "campaign_id": str(binding.campaign_id),
+        "campaign_run_id": str(binding.campaign_run_id),
+        "cycle_id": str(binding.cycle_id),
+        "configuration_id": str(binding.configuration_id),
+        "durable_db_target_identity": str(binding.db_target_identity),
+        "fixture_composition_manifest_sha256": str(binding.fixture_composition_manifest_sha256),
+    }
+
+
+def validate_disposable_public_composition_proof_invocation(
+    binding: Any,
+    *,
+    expectation: Mapping[str, Any] | None,
+    actual_db_path: str | Path,
+    canonical_authoritative_db_path: str | Path,
+    execution_id: str,
+    campaign_id: str,
+    campaign_run_id: str,
+    cycle_id: str,
+    configuration_id: str,
+    durable_db_target_identity: str,
+    fixture_composition_manifest_sha256: str,
+) -> str | None:
+    """Validate C8 proof truth without consulting authorization fields."""
+    if not isinstance(expectation, Mapping):
+        return "DISPOSABLE_PROOF_EXPECTATION_MISSING"
+    expected = dict(expectation)
+    if expected.get("expectation_version") != DISPOSABLE_PUBLIC_COMPOSITION_PROOF_EXPECTATION_VERSION:
+        return "DISPOSABLE_PROOF_EXPECTATION_VERSION_MISMATCH"
+    if expected.get("target_kind") != DISPOSABLE_PUBLIC_COMPOSITION_PROOF:
+        return "DISPOSABLE_PROOF_TARGET_KIND_MISMATCH"
+    if any(str(key).startswith("authorization") for key in expected) or "application_marker_sha256" in expected:
+        return "DISPOSABLE_PROOF_AUTHORIZATION_FACT_FORBIDDEN"
+
+    actual = Path(actual_db_path).resolve()
+    canonical = Path(canonical_authoritative_db_path).resolve()
+    bound_path = Path(str(getattr(binding, "resolved_db_path", ""))).resolve()
+    expected_path = Path(str(expected.get("resolved_db_path") or "")).resolve()
+    if actual == canonical or bound_path == canonical or expected_path == canonical:
+        return "DISPOSABLE_PROOF_CANONICAL_DB_FORBIDDEN"
+    if actual != bound_path or actual != expected_path:
+        return "DISPOSABLE_PROOF_DB_PATH_MISMATCH"
+
+    expected_pairs = {
+        "proof_schema_version": getattr(binding, "proof_schema_version", None),
+        "proof_id": getattr(binding, "proof_id", None),
+        "pre_mutation_db_sha256": getattr(binding, "pre_mutation_db_sha256", None),
+        "migration_count": getattr(binding, "migration_count", None),
+        "migration_head": getattr(binding, "migration_head", None),
+        "composition_registry_sha256": getattr(binding, "composition_registry_sha256", None),
+        "execution_id": execution_id,
+        "campaign_id": campaign_id,
+        "campaign_run_id": campaign_run_id,
+        "cycle_id": cycle_id,
+        "configuration_id": configuration_id,
+        "durable_db_target_identity": durable_db_target_identity,
+        "fixture_composition_manifest_sha256": fixture_composition_manifest_sha256,
+    }
+    binding_runtime = {
+        "execution_id": getattr(binding, "execution_id", None),
+        "campaign_id": getattr(binding, "campaign_id", None),
+        "campaign_run_id": getattr(binding, "campaign_run_id", None),
+        "cycle_id": getattr(binding, "cycle_id", None),
+        "configuration_id": getattr(binding, "configuration_id", None),
+        "durable_db_target_identity": getattr(binding, "db_target_identity", None),
+        "fixture_composition_manifest_sha256": getattr(binding, "fixture_composition_manifest_sha256", None),
+    }
+    for field, runtime_value in expected_pairs.items():
+        if str(expected.get(field)) != str(runtime_value):
+            return "DISPOSABLE_PROOF_EXPECTATION_IDENTITY_MISMATCH"
+        if field in binding_runtime and str(binding_runtime[field]) != str(runtime_value):
+            return "DISPOSABLE_PROOF_BINDING_OWNERSHIP_MISMATCH"
+
+    if str(getattr(binding, "db_target_identity", "")) != f"sha256:{getattr(binding, 'pre_mutation_db_sha256', '')}":
+        return "DISPOSABLE_PROOF_DB_TARGET_IDENTITY_MISMATCH"
+
+    for field in (
+        "provider_execution_allowed",
+        "automatic_retry_allowed",
+        "manual_rerun_allowed",
+        "resume_allowed",
+        "restart_allowed",
+        "successor_allowed",
+    ):
+        if getattr(binding, field, None) is not False or expected.get(field) is not False:
+            return "DISPOSABLE_PROOF_REUSE_OR_PROVIDER_POLICY_MISMATCH"
+    return None
+
+
 def validate_bound_operational_invocation(
     binding: OperationalDatabaseTargetBinding | None,
     *,
@@ -503,14 +643,18 @@ def validate_bound_operational_invocation(
 __all__ = [
     "ALLOWED_OPERATIONAL_DATABASE_TARGET_KINDS",
     "AUTHORIZED_DISPOSABLE_OPERATIONAL_PROOF",
+    "DISPOSABLE_PUBLIC_COMPOSITION_PROOF",
+    "DISPOSABLE_PUBLIC_COMPOSITION_PROOF_EXPECTATION_VERSION",
     "OperationalDatabaseTargetBinding",
     "OPERATIONAL_DATABASE_TARGET_BINDING_VERSION",
     "PRODUCTION_AUTHORITATIVE",
+    "build_disposable_public_composition_proof_expectation",
     "build_operational_database_target_binding",
     "build_durable_operational_database_target_expectation",
     "load_durable_operational_database_target_expectation",
     "validated_authorization_runtime_facts",
     "validate_authorized_database_preflight",
+    "validate_disposable_public_composition_proof_invocation",
     "validate_operational_database_target_binding",
     "validate_bound_operational_invocation",
 ]

@@ -2331,6 +2331,10 @@ def _run_operational_campaign(
     """Run one fixed-policy campaign through the canonical V2-9.8B owner."""
     if not operator_approved:
         raise OperationalMemoryFactoryError("explicit operator approval is required")
+    if disposable_proof is not None and git_provenance_authorization is not None:
+        raise OperationalMemoryFactoryError(
+            "DISPOSABLE_PROOF_EXTERNAL_AUTHORIZATION_CONFLICT"
+        )
     # The manifest/marker compatibility exception applies only to the ordinary
     # WINDOW_15M run. Selective-1h never receives the exact-file allowlist.
     preflight = (

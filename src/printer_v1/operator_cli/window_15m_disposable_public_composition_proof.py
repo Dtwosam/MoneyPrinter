@@ -92,6 +92,16 @@ class DisposablePublicCompositionProofPlan:
 
 
 @dataclass(frozen=True)
+class Window15MFixtureComposition:
+    """Exact offline implementation map for the ordinary 15m registry."""
+
+    labels: tuple[str, ...]
+    builders: dict[str, Any]
+    fixture_composition_manifest_sha256: str
+    provider_fallback_allowed: bool = False
+
+
+@dataclass(frozen=True)
 class DisposablePublicCompositionProofBinding:
     binding_schema_version: str
     proof_schema_version: str
@@ -114,6 +124,121 @@ class DisposablePublicCompositionProofBinding:
     configuration_id: str
     db_target_identity: str
     fixture_composition_manifest_sha256: str
+
+
+def mark_checkpoint8_fixture_builder(
+    builder: Any,
+    *,
+    label: str,
+) -> Any:
+    """Mark one callable as an explicit C8 zero-provider fixture builder."""
+    if not callable(builder):
+        raise DisposablePublicCompositionProofError(
+            f"FIXTURE_BUILDER_NOT_CALLABLE:{label}"
+        )
+    expected_label = str(label or "").strip()
+    if not expected_label:
+        raise DisposablePublicCompositionProofError("FIXTURE_BUILDER_LABEL_MISSING")
+    setattr(builder, "_printer_checkpoint8_fixture_builder", True)
+    setattr(builder, "_printer_checkpoint8_fixture_label", expected_label)
+    return builder
+
+
+def _fixture_manifest_sha256(labels: Sequence[str]) -> str:
+    payload = {
+        "proof_schema_version": PROOF_SCHEMA_VERSION,
+        "labels": list(labels),
+        "provider_fallback_allowed": False,
+    }
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def build_window_15m_fixture_composition(
+    builders: Any,
+) -> Window15MFixtureComposition:
+    """Build one exact full-registry fixture map with no production fallback."""
+    if not hasattr(builders, "keys"):
+        raise DisposablePublicCompositionProofError(
+            "FIXTURE_COMPOSITION_REGISTRY_IDENTITY_MISMATCH"
+        )
+    expected = tuple(ordinary_window_15m_builder_identities())
+    observed = tuple(str(label) for label in builders.keys())
+    if observed != expected:
+        raise DisposablePublicCompositionProofError(
+            "FIXTURE_COMPOSITION_REGISTRY_IDENTITY_MISMATCH"
+        )
+
+    normalized: dict[str, Any] = {}
+    for label in expected:
+        builder = builders[label]
+        if (
+            not callable(builder)
+            or getattr(builder, "_printer_checkpoint8_fixture_builder", False)
+            is not True
+            or str(getattr(builder, "_printer_checkpoint8_fixture_label", ""))
+            != label
+        ):
+            raise DisposablePublicCompositionProofError(
+                f"FIXTURE_BUILDER_NOT_EXPLICIT:{label}"
+            )
+        normalized[label] = builder
+
+    return Window15MFixtureComposition(
+        labels=expected,
+        builders=normalized,
+        fixture_composition_manifest_sha256=_fixture_manifest_sha256(expected),
+        provider_fallback_allowed=False,
+    )
+
+
+def validate_window_15m_fixture_composition(
+    composition: Window15MFixtureComposition,
+    *,
+    expected_labels: Iterable[str],
+) -> Window15MFixtureComposition:
+    """Validate exact fixture coverage without invoking a single builder."""
+    if not isinstance(composition, Window15MFixtureComposition):
+        raise DisposablePublicCompositionProofError(
+            "FIXTURE_COMPOSITION_TYPE_INVALID"
+        )
+    expected = tuple(str(label) for label in expected_labels)
+    canonical = tuple(ordinary_window_15m_builder_identities())
+    if expected != canonical or composition.labels != canonical:
+        raise DisposablePublicCompositionProofError(
+            "FIXTURE_COMPOSITION_REGISTRY_IDENTITY_MISMATCH"
+        )
+    if tuple(composition.builders.keys()) != canonical:
+        raise DisposablePublicCompositionProofError(
+            "FIXTURE_COMPOSITION_REGISTRY_IDENTITY_MISMATCH"
+        )
+    if composition.provider_fallback_allowed is not False:
+        raise DisposablePublicCompositionProofError(
+            "FIXTURE_PROVIDER_FALLBACK_FORBIDDEN"
+        )
+    if composition.fixture_composition_manifest_sha256 != _fixture_manifest_sha256(canonical):
+        raise DisposablePublicCompositionProofError(
+            "FIXTURE_COMPOSITION_MANIFEST_MISMATCH"
+        )
+    for label in canonical:
+        builder = composition.builders[label]
+        if (
+            not callable(builder)
+            or getattr(builder, "_printer_checkpoint8_fixture_builder", False)
+            is not True
+            or str(getattr(builder, "_printer_checkpoint8_fixture_label", ""))
+            != label
+        ):
+            raise DisposablePublicCompositionProofError(
+                f"FIXTURE_BUILDER_NOT_EXPLICIT:{label}"
+            )
+    return composition
 
 
 def build_disposable_public_composition_proof_plan(
@@ -331,8 +456,12 @@ __all__ = [
     "DisposablePublicCompositionProofError",
     "DisposablePublicCompositionProofPlan",
     "PROOF_SCHEMA_VERSION",
+    "Window15MFixtureComposition",
     "build_disposable_public_composition_proof_binding",
     "build_disposable_public_composition_proof_plan",
+    "build_window_15m_fixture_composition",
+    "mark_checkpoint8_fixture_builder",
     "validate_disposable_public_composition_proof_binding",
     "validate_disposable_public_composition_proof_plan",
+    "validate_window_15m_fixture_composition",
 ]
