@@ -1,0 +1,431 @@
+{
+  "campaign_acceptance_verdict": "HONEST_BLOCKED",
+  "campaign_id": "20260807T203017Z-6fa6b33284fd-campaign",
+  "campaign_pass": false,
+  "fixture_composition_manifest_sha256": "e476f245c96019aa749ca3f8713af8f2a90913848005fb2b7749f473a712d811",
+  "fixture_transport_operation_count": 29,
+  "frozen_evidence_sha256": "78e352d0596d027d3c4fb016411a29672e03d535a9c903cea84b0d23a5feaa6b",
+  "git_head": "432821130796729f7b0276f9800363ab3e61bf28",
+  "network_attempt_count": 0,
+  "network_attempts": [],
+  "post_run_evidence": {
+    "db_sha256": "4784d8ed8236c84fa78f64fbe53724bc32cadadd8548b48939d9f8011b6b8c3b",
+    "foreign_key_violations": 0,
+    "integrity_check": "ok",
+    "longer_window_counts": {
+      "WINDOW_12H": 0,
+      "WINDOW_1H": 0,
+      "WINDOW_24H": 0,
+      "WINDOW_4H": 0
+    },
+    "protected_capability_counts": {
+      "printer_memory_retrieval_matches": 0,
+      "printer_memory_retrieval_queries": 0,
+      "printer_paper_decisions": 0,
+      "printer_paper_positions": 0,
+      "printer_paper_trade_audits": 0,
+      "printer_paper_trade_events": 0
+    },
+    "protected_capability_deltas": {
+      "printer_memory_retrieval_matches": 0,
+      "printer_memory_retrieval_queries": 0,
+      "printer_paper_decisions": 0,
+      "printer_paper_positions": 0,
+      "printer_paper_trade_audits": 0,
+      "printer_paper_trade_events": 0
+    }
+  },
+  "pre_run_evidence": {
+    "artifact_root": "/Users/Dtwo1/PrinterProofs/C8_REPROOF_AFTER_DTW49_20260807_20260807T203014Z_43282113/checkpoint8-artifacts",
+    "composition_registry_sha256": "1c81edeeb374a121fdf9bdd5210990370b51380ea385cba2dda707128e2ed42b",
+    "db_path": "/Users/Dtwo1/PrinterProofs/C8_REPROOF_AFTER_DTW49_20260807_20260807T203014Z_43282113/checkpoint8-controlling-proof.sqlite3",
+    "db_sha256": "dcb1a2a51df5788fe3fae7232491b8f1f97229f6ba32c67504a0a8380aee58ba",
+    "fixture_candidate_count": 4,
+    "fixture_candidate_mints": [
+      "5aNJBy3n3AjsGZ2qvQFKfV6BhKSTQU6MXxN2sjGu8nei",
+      "Hx7d5gD9Lt23A7BQkBxiE6rnfFuw9ARsHSLGN6Acvcbb",
+      "5dqWELD3TqMDw8BHmi7wcKXrEhuvwNqeCDLCYQGijHut",
+      "yLbgqeghdHBurT2M9eLJi39RMwwRvqg9fLQJCxfusoP"
+    ],
+    "fixture_composition_manifest_sha256": "e476f245c96019aa749ca3f8713af8f2a90913848005fb2b7749f473a712d811",
+    "fixture_response_semantics_ready": true,
+    "foreign_key_violations": 0,
+    "git_head": "432821130796729f7b0276f9800363ab3e61bf28",
+    "integrity_check": "ok",
+    "migration_count": 52,
+    "migration_head": "052_memory_observation_eligibility_layers.sql",
+    "network_attempt_count": 0,
+    "protected_capability_counts": {
+      "printer_memory_retrieval_matches": 0,
+      "printer_memory_retrieval_queries": 0,
+      "printer_paper_decisions": 0,
+      "printer_paper_positions": 0,
+      "printer_paper_trade_audits": 0,
+      "printer_paper_trade_events": 0
+    }
+  },
+  "proof_id": "C8_REPROOF_AFTER_DTW49_20260807",
+  "replay_zero_work": true,
+  "report_only": {
+    "block_reason": "FULL_RUN_EVIDENCE_MISSING",
+    "database_writes": 0,
+    "fallback_used": false,
+    "mode": "REPORT_ONLY",
+    "replay_new_scheduler_calls": 0,
+    "replay_new_source_calls": 0,
+    "requested_identity": {
+      "campaign_id": "20260807T203017Z-6fa6b33284fd-campaign",
+      "run_id": "20260807T203017Z-6fa6b33284fd-campaign-run"
+    },
+    "scheduler_runtime_calls": 0,
+    "source_calls": 0,
+    "status": "REPLAY_BLOCKED"
+  },
+  "run_id": "",
+  "sentinel_path": "/Users/Dtwo1/PrinterProofs/C8_REPROOF_AFTER_DTW49_20260807_20260807T203014Z_43282113/checkpoint8-controlling-attempt.json",
+  "summary_schema": "CHECKPOINT8_CONTROLLING_PROOF_SUMMARY_V1",
+  "terminal": {
+    "accountable_stage_started": true,
+    "accounting_error": null,
+    "accounting_required": true,
+    "accounting_status": "SIX_UNIT_ACCOUNTING_COMPLETE",
+    "activation_terminal_status": "CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH",
+    "blocked_supply_reason": "CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH",
+    "campaign_acceptance_verdict": "HONEST_BLOCKED",
+    "campaign_id": "20260807T203017Z-6fa6b33284fd-campaign",
+    "campaign_pass": false,
+    "campaign_scheduler_calls": 0,
+    "campaign_source_calls": 16,
+    "cancellation_reason": null,
+    "cleanup": {
+      "active_owned_work_after": 0,
+      "automatic_retries": 0,
+      "campaign_id": "20260807T203017Z-6fa6b33284fd-campaign",
+      "cancelled_campaign_work": 0,
+      "cancelled_discovery_work": 0,
+      "cancelled_scheduler_jobs": 0,
+      "cancelled_windows": 0,
+      "cleanup_completed": true,
+      "cleanup_completed_at": "2026-08-07T20:30:27.239885+00:00",
+      "configuration_id": "20260807T203017Z-6fa6b33284fd-configuration",
+      "first_terminal_cause": "CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH",
+      "idempotent_replay": false,
+      "lease_released": true,
+      "lease_released_at": "2026-08-07T20:30:27.239885+00:00",
+      "new_child_work_allowed": false,
+      "owner_id": "20260807T203017Z-6fa6b33284fd-owner",
+      "restart_created": false,
+      "resume_created": false,
+      "run_id": "20260807T203017Z-6fa6b33284fd-campaign-run",
+      "successor_created": false,
+      "supervision_id": "20260807T203017Z-6fa6b33284fd-supervision",
+      "terminal_status": "FAILED",
+      "terminalized_cycles": 1,
+      "terminalized_discovery_batches": 0
+    },
+    "execution_id": "20260807T203017Z-6fa6b33284fd",
+    "failure_evidence_required": true,
+    "fault_details": {},
+    "first_terminal_cause": "CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH",
+    "lifecycle_started": false,
+    "reconciliation": {
+      "active_work": {
+        "active_job_details": [],
+        "active_jobs": 0,
+        "active_work_details": [],
+        "active_work_rows": 0,
+        "attributable_job_counts": {
+          "campaign_scheduler_work_jobs": 0,
+          "discovery_jobs": 0,
+          "factory_run_step_jobs": 0
+        },
+        "clean_terminal": true,
+        "jobs_by_status": {},
+        "locked_job_ids": [],
+        "pending_or_running_run_steps": 0,
+        "scope": {
+          "campaign_id": "20260807T203017Z-6fa6b33284fd-campaign",
+          "cycle_id": "20260807T203017Z-6fa6b33284fd-cycle",
+          "factory_run_id": null,
+          "run_id": "20260807T203017Z-6fa6b33284fd-campaign-run"
+        },
+        "terminal_work_with_active_job": 0
+      },
+      "cancelled_jobs": 0,
+      "clean_terminal": true,
+      "discovery_parity": {
+        "cancelled_active_work": 0,
+        "job_actions": {},
+        "scope": {
+          "campaign_id": "20260807T203017Z-6fa6b33284fd-campaign",
+          "cycle_id": "20260807T203017Z-6fa6b33284fd-cycle",
+          "run_id": "20260807T203017Z-6fa6b33284fd-campaign-run"
+        },
+        "terminal_work_with_active_job": 0,
+        "work_rows": 0
+      },
+      "factory_run": "not_found",
+      "lifecycle_started": false,
+      "new_state": "TERMINAL_BLOCKED",
+      "pre_lifecycle_dispositions": [],
+      "reconciled": true,
+      "records": {
+        "campaign": "already_terminal",
+        "cycle": "already_terminal",
+        "run": "already_terminal"
+      },
+      "restart_created": false,
+      "successor_created": false,
+      "terminal_cause": "CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH",
+      "windows": {}
+    },
+    "report": {
+      "artifact_count": 1,
+      "artifact_created": true,
+      "artifact_path": "/Users/Dtwo1/PrinterProofs/C8_REPROOF_AFTER_DTW49_20260807_20260807T203014Z_43282113/checkpoint8-artifacts/20260807T203017Z-6fa6b33284fd/reports/20260807T203017Z-6fa6b33284fd-report.campaign-report.json",
+      "artifacts": [
+        "20260807T203017Z-6fa6b33284fd-report.campaign-report.json"
+      ],
+      "blocked_supply": {
+        "blocked_supply_reason": "CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH",
+        "candidates": [
+          {
+            "current_eligibility_status": "ELIGIBLE_FRESH",
+            "current_liquidity_evidence": {
+              "detailed_reason": "AT_OR_ABOVE_3000_FLOOR",
+              "failure_type": null,
+              "liquidity_usd": 10000.0,
+              "mint": "5aNJBy3n3AjsGZ2qvQFKfV6BhKSTQU6MXxN2sjGu8nei",
+              "outcome_category": "LIQUIDITY_EXACT_ABOVE_FLOOR",
+              "pool": "8Dekc3AoJchx4ZxENPP1M6HmgAi83FmZNQnv3enwKurq",
+              "reason": "AT_OR_ABOVE_3000_FLOOR",
+              "source_channel": "dexscreener_exact_pool_market",
+              "source_failure_id": null,
+              "source_request_id": 12,
+              "source_response_id": 12,
+              "source_status": "COMPLETE",
+              "status": "LIQUIDITY_PROVEN"
+            },
+            "eligibility_result": "eligible",
+            "historical_reserve_evidence": null,
+            "liquidity": 10000.0,
+            "liquidity_detailed_reason": "AT_OR_ABOVE_3000_FLOOR",
+            "liquidity_outcome_category": "LIQUIDITY_EXACT_ABOVE_FLOOR",
+            "liquidity_reason": "AT_OR_ABOVE_3000_FLOOR",
+            "liquidity_source_lineage": {
+              "failure_type": null,
+              "source_channel": "dexscreener_exact_pool_market",
+              "source_failure_id": null,
+              "source_request_id": 12,
+              "source_response_id": 12
+            },
+            "liquidity_source_status": "COMPLETE",
+            "liquidity_status": "LIQUIDITY_PROVEN",
+            "market_cap": null,
+            "migration_evidence": {
+              "migration_provenance": null,
+              "migration_signature": null
+            },
+            "mint": "5aNJBy3n3AjsGZ2qvQFKfV6BhKSTQU6MXxN2sjGu8nei",
+            "pool_confirmation": {
+              "confirmed": true,
+              "lifecycle_state": "PUMPSWAP_GRADUATED_CONFIRMED",
+              "market_identity": "solana-mainnet:pumpswap:8Dekc3AoJchx4ZxENPP1M6HmgAi83FmZNQnv3enwKurq",
+              "pool": "8Dekc3AoJchx4ZxENPP1M6HmgAi83FmZNQnv3enwKurq"
+            },
+            "rejection_or_exclusion_reason": null,
+            "source_path": "graduated_registry_or_migration:LATEST_GRADUATED",
+            "stage_reached": "MARKET_ELIGIBLE"
+          },
+          {
+            "current_eligibility_status": "ELIGIBLE_FRESH",
+            "current_liquidity_evidence": {
+              "detailed_reason": "AT_OR_ABOVE_3000_FLOOR",
+              "failure_type": null,
+              "liquidity_usd": 10000.0,
+              "mint": "5dqWELD3TqMDw8BHmi7wcKXrEhuvwNqeCDLCYQGijHut",
+              "outcome_category": "LIQUIDITY_EXACT_ABOVE_FLOOR",
+              "pool": "4wdeaEC5kZhZ93AoZ76HKDSq1sSS7uKHsotQo3G5ggSV",
+              "reason": "AT_OR_ABOVE_3000_FLOOR",
+              "source_channel": "dexscreener_exact_pool_market",
+              "source_failure_id": null,
+              "source_request_id": 12,
+              "source_response_id": 12,
+              "source_status": "COMPLETE",
+              "status": "LIQUIDITY_PROVEN"
+            },
+            "eligibility_result": "eligible",
+            "historical_reserve_evidence": null,
+            "liquidity": 10000.0,
+            "liquidity_detailed_reason": "AT_OR_ABOVE_3000_FLOOR",
+            "liquidity_outcome_category": "LIQUIDITY_EXACT_ABOVE_FLOOR",
+            "liquidity_reason": "AT_OR_ABOVE_3000_FLOOR",
+            "liquidity_source_lineage": {
+              "failure_type": null,
+              "source_channel": "dexscreener_exact_pool_market",
+              "source_failure_id": null,
+              "source_request_id": 12,
+              "source_response_id": 12
+            },
+            "liquidity_source_status": "COMPLETE",
+            "liquidity_status": "LIQUIDITY_PROVEN",
+            "market_cap": null,
+            "migration_evidence": {
+              "migration_provenance": null,
+              "migration_signature": null
+            },
+            "mint": "5dqWELD3TqMDw8BHmi7wcKXrEhuvwNqeCDLCYQGijHut",
+            "pool_confirmation": {
+              "confirmed": true,
+              "lifecycle_state": "PUMPSWAP_GRADUATED_CONFIRMED",
+              "market_identity": "solana-mainnet:pumpswap:4wdeaEC5kZhZ93AoZ76HKDSq1sSS7uKHsotQo3G5ggSV",
+              "pool": "4wdeaEC5kZhZ93AoZ76HKDSq1sSS7uKHsotQo3G5ggSV"
+            },
+            "rejection_or_exclusion_reason": null,
+            "source_path": "graduated_registry_or_migration:LATEST_GRADUATED",
+            "stage_reached": "MARKET_ELIGIBLE"
+          },
+          {
+            "current_eligibility_status": "ELIGIBLE_FRESH",
+            "current_liquidity_evidence": {
+              "detailed_reason": "AT_OR_ABOVE_3000_FLOOR",
+              "failure_type": null,
+              "liquidity_usd": 10000.0,
+              "mint": "Hx7d5gD9Lt23A7BQkBxiE6rnfFuw9ARsHSLGN6Acvcbb",
+              "outcome_category": "LIQUIDITY_EXACT_ABOVE_FLOOR",
+              "pool": "7CQEubcAzwy3Nhh1v9QXYyD4vXp6JgwdRZYkybbfdRFs",
+              "reason": "AT_OR_ABOVE_3000_FLOOR",
+              "source_channel": "dexscreener_exact_pool_market",
+              "source_failure_id": null,
+              "source_request_id": 12,
+              "source_response_id": 12,
+              "source_status": "COMPLETE",
+              "status": "LIQUIDITY_PROVEN"
+            },
+            "eligibility_result": "eligible",
+            "historical_reserve_evidence": null,
+            "liquidity": 10000.0,
+            "liquidity_detailed_reason": "AT_OR_ABOVE_3000_FLOOR",
+            "liquidity_outcome_category": "LIQUIDITY_EXACT_ABOVE_FLOOR",
+            "liquidity_reason": "AT_OR_ABOVE_3000_FLOOR",
+            "liquidity_source_lineage": {
+              "failure_type": null,
+              "source_channel": "dexscreener_exact_pool_market",
+              "source_failure_id": null,
+              "source_request_id": 12,
+              "source_response_id": 12
+            },
+            "liquidity_source_status": "COMPLETE",
+            "liquidity_status": "LIQUIDITY_PROVEN",
+            "market_cap": null,
+            "migration_evidence": {
+              "migration_provenance": null,
+              "migration_signature": null
+            },
+            "mint": "Hx7d5gD9Lt23A7BQkBxiE6rnfFuw9ARsHSLGN6Acvcbb",
+            "pool_confirmation": {
+              "confirmed": true,
+              "lifecycle_state": "PUMPSWAP_GRADUATED_CONFIRMED",
+              "market_identity": "solana-mainnet:pumpswap:7CQEubcAzwy3Nhh1v9QXYyD4vXp6JgwdRZYkybbfdRFs",
+              "pool": "7CQEubcAzwy3Nhh1v9QXYyD4vXp6JgwdRZYkybbfdRFs"
+            },
+            "rejection_or_exclusion_reason": null,
+            "source_path": "graduated_registry_or_migration:LATEST_GRADUATED",
+            "stage_reached": "MARKET_ELIGIBLE"
+          },
+          {
+            "current_eligibility_status": "ELIGIBLE_FRESH",
+            "current_liquidity_evidence": {
+              "detailed_reason": "AT_OR_ABOVE_3000_FLOOR",
+              "failure_type": null,
+              "liquidity_usd": 10000.0,
+              "mint": "yLbgqeghdHBurT2M9eLJi39RMwwRvqg9fLQJCxfusoP",
+              "outcome_category": "LIQUIDITY_EXACT_ABOVE_FLOOR",
+              "pool": "DzcRJDUUw31QJjSWGedEmYxysBMh5sPc9Sb3JKcJbCov",
+              "reason": "AT_OR_ABOVE_3000_FLOOR",
+              "source_channel": "dexscreener_exact_pool_market",
+              "source_failure_id": null,
+              "source_request_id": 12,
+              "source_response_id": 12,
+              "source_status": "COMPLETE",
+              "status": "LIQUIDITY_PROVEN"
+            },
+            "eligibility_result": "eligible",
+            "historical_reserve_evidence": null,
+            "liquidity": 10000.0,
+            "liquidity_detailed_reason": "AT_OR_ABOVE_3000_FLOOR",
+            "liquidity_outcome_category": "LIQUIDITY_EXACT_ABOVE_FLOOR",
+            "liquidity_reason": "AT_OR_ABOVE_3000_FLOOR",
+            "liquidity_source_lineage": {
+              "failure_type": null,
+              "source_channel": "dexscreener_exact_pool_market",
+              "source_failure_id": null,
+              "source_request_id": 12,
+              "source_response_id": 12
+            },
+            "liquidity_source_status": "COMPLETE",
+            "liquidity_status": "LIQUIDITY_PROVEN",
+            "market_cap": null,
+            "migration_evidence": {
+              "migration_provenance": null,
+              "migration_signature": null
+            },
+            "mint": "yLbgqeghdHBurT2M9eLJi39RMwwRvqg9fLQJCxfusoP",
+            "pool_confirmation": {
+              "confirmed": true,
+              "lifecycle_state": "PUMPSWAP_GRADUATED_CONFIRMED",
+              "market_identity": "solana-mainnet:pumpswap:DzcRJDUUw31QJjSWGedEmYxysBMh5sPc9Sb3JKcJbCov",
+              "pool": "DzcRJDUUw31QJjSWGedEmYxysBMh5sPc9Sb3JKcJbCov"
+            },
+            "rejection_or_exclusion_reason": null,
+            "source_path": "graduated_registry_or_migration:LATEST_GRADUATED",
+            "stage_reached": "MARKET_ELIGIBLE"
+          }
+        ],
+        "candidates_observed": 4,
+        "candidates_validated": 4,
+        "eligible_candidates": 4,
+        "exhaustion_certificate": null,
+        "required_token_capacity": 2,
+        "shortage_classification": null
+      },
+      "blocked_supply_reason": "CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH",
+      "campaign_id": "20260807T203017Z-6fa6b33284fd-campaign",
+      "campaign_scheduler_calls": 0,
+      "campaign_source_calls": 16,
+      "candidates_observed": 4,
+      "candidates_validated": 4,
+      "configuration_id": "20260807T203017Z-6fa6b33284fd-configuration",
+      "eligible_candidates": 4,
+      "exhaustion_certificate": null,
+      "report_hash": "aad9f1e8959939f97c51cddeba83bed59faf7239bd08f6d80f90f289011bd3de",
+      "report_id": "20260807T203017Z-6fa6b33284fd-report",
+      "report_rows": 1,
+      "required_token_capacity": 2,
+      "scheduler_calls": 0,
+      "shortage_classification": null,
+      "six_unit_totals": {
+        "LIFECYCLE_RESERVED_TRANSPORT_OPERATION": 0,
+        "LOCAL_VALIDATION_STEP": 4,
+        "NORMALIZED_SOURCE_ROWS": 128,
+        "SCHEDULER_WORK_ITEM": 0,
+        "SOURCE_RESPONSE_BYTES": 9211,
+        "SOURCE_TRANSPORT_OPERATION": 20
+      },
+      "source_calls": 16
+    },
+    "required_token_capacity": 2,
+    "restart_created": false,
+    "run_status": "NOT_STARTED",
+    "stage_evidence_count": 5,
+    "stage_evidences": [],
+    "stage_observer_state": {
+      "completed": false,
+      "failure": null,
+      "invoked": false,
+      "returned_none": false
+    },
+    "status": "OPERATIONAL_CAMPAIGN_PRE_LIFECYCLE_TERMINAL",
+    "successor_created": false
+  }
+}

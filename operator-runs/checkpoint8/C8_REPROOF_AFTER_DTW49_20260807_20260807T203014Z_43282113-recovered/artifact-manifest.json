@@ -1,0 +1,42 @@
+{
+  "authorization_head": "432821130796729f7b0276f9800363ab3e61bf28",
+  "files": [
+    {
+      "relative_path": "checkpoint8-artifacts/20260807T203017Z-6fa6b33284fd/printer_v1.pre-campaign.backup.sqlite3",
+      "sha256": "dcb1a2a51df5788fe3fae7232491b8f1f97229f6ba32c67504a0a8380aee58ba",
+      "size_bytes": 2756608
+    },
+    {
+      "relative_path": "checkpoint8-artifacts/20260807T203017Z-6fa6b33284fd/printer_v1.restore-rehearsal.sqlite3",
+      "sha256": "dcb1a2a51df5788fe3fae7232491b8f1f97229f6ba32c67504a0a8380aee58ba",
+      "size_bytes": 2756608
+    },
+    {
+      "relative_path": "checkpoint8-artifacts/20260807T203017Z-6fa6b33284fd/reports/20260807T203017Z-6fa6b33284fd-report.campaign-report.json",
+      "sha256": "aad9f1e8959939f97c51cddeba83bed59faf7239bd08f6d80f90f289011bd3de",
+      "size_bytes": 99942
+    },
+    {
+      "relative_path": "checkpoint8-artifacts/20260807T203017Z-6fa6b33284fd/terminal-summary.json",
+      "sha256": "edeb2f65d554233a27340696732a88c5f4eed2dcfe271deff378bb7d438e2a1f",
+      "size_bytes": 14088
+    },
+    {
+      "relative_path": "checkpoint8-controlling-attempt.json",
+      "sha256": "3e70c5d4dfdbe2195cbb8060c0579c8010e8d5b7fff72482689b3f5104606922",
+      "size_bytes": 176
+    },
+    {
+      "relative_path": "checkpoint8-controlling-proof-summary.json",
+      "sha256": "b5b2f900dc7e41aba60e687c6d1f51460d587940057793901ab8fb266fb04b8f",
+      "size_bytes": 18399
+    },
+    {
+      "relative_path": "checkpoint8-controlling-proof.sqlite3",
+      "sha256": "4784d8ed8236c84fa78f64fbe53724bc32cadadd8548b48939d9f8011b6b8c3b",
+      "size_bytes": 2936832
+    }
+  ],
+  "proof_id": "C8_REPROOF_AFTER_DTW49_20260807",
+  "schema": "CHECKPOINT8_POST_DTW49_RECOVERED_ARTIFACT_MANIFEST_V1"
+}
