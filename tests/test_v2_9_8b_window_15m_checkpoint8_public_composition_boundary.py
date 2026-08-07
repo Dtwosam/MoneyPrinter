@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from printer_v1.db.migrate import canonical_migration_count, canonical_migration_names
 from printer_v1.operator_cli import operational_memory_factory_command as command
 from printer_v1.operator_cli.proof_db_schema_readiness import CANONICAL_PERSISTENT_DB
 from printer_v1.operator_cli.window_15m_concrete_composition import (
@@ -30,8 +31,8 @@ def _build_plan(tmp_path: Path):
         proof_id="checkpoint8-boundary-red",
         db_path=db_path,
         db_sha256=hashlib.sha256(db_path.read_bytes()).hexdigest(),
-        migration_count=52,
-        migration_head="052_campaign_report_artifact_identity.sql",
+        migration_count=canonical_migration_count(),
+        migration_head=canonical_migration_names()[-1],
         artifact_root=artifact_root,
         composition_labels=labels,
         provider_execution_allowed=False,
