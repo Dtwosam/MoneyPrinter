@@ -261,9 +261,9 @@ _CHECKPOINT8_PAYLOAD_CONTRACT_BY_LABEL = {
     "pumpswap_migration_pool_confirmation": "pumpswap_pool_confirmation",
     "pumpswap_account_batch_transport": "pumpswap_account_batch_rpc",
     "dexscreener_fresh_profiles_discovery": "dexscreener_fresh_profiles",
-    "dexscreener_mint_batch_discovery": "dexscreener_two_mint_market_batch",
+    "dexscreener_mint_batch_discovery": "dexscreener_mint_market_batch",
     "geckoterminal_fresh_nomination": "geckoterminal_fresh_pool_nomination",
-    "geckoterminal_token_pools_discovery": "geckoterminal_two_mint_pool_batch",
+    "geckoterminal_token_pools_discovery": "geckoterminal_mint_pool_batch",
     "unknown_liquidity_backup_dex_to_gecko": "geckoterminal_unknown_liquidity_backup",
     "unknown_liquidity_backup_gecko_to_dex": "dexscreener_unknown_liquidity_backup",
     "lifecycle_exact_pair_dexscreener_primary": "dexscreener_exact_pair_snapshot",
@@ -489,7 +489,7 @@ def _checkpoint8_migrate_transaction(
 
 def _checkpoint8_candidate_records() -> tuple[dict[str, Any], ...]:
     rows = []
-    for ordinal, label in enumerate(("alpha", "bravo")):
+    for ordinal, label in enumerate(("alpha", "bravo", "charlie", "delta")):
         create_slot = 1_700_000 + ordinal
         create_block_time = 1_786_000_000 + ordinal * 60
         create_transaction = _checkpoint8_create_transaction(
@@ -661,6 +661,30 @@ def _checkpoint8_candidate_for_mint(mint: str) -> dict[str, Any] | None:
     )
 
 
+def _checkpoint8_lifecycle_candidate(
+    *, token_mint: str = "", pool_address: str = ""
+) -> dict[str, Any]:
+    mint = str(token_mint or "")
+    pool = str(pool_address or "")
+    if not mint and not pool:
+        raise Checkpoint8ControllingProofError(
+            "CHECKPOINT8_LIFECYCLE_FIXTURE_TARGET_MISSING"
+        )
+    matches = []
+    for row in _checkpoint8_candidate_records():
+        market = _checkpoint8_market_candidate(row)
+        if mint and market["mint"] != mint:
+            continue
+        if pool and market["pool"] != pool:
+            continue
+        matches.append(row)
+    if len(matches) != 1:
+        raise Checkpoint8ControllingProofError(
+            "CHECKPOINT8_LIFECYCLE_FIXTURE_TARGET_MISMATCH"
+        )
+    return matches[0]
+
+
 def _checkpoint8_pumpswap_confirmation(candidate: dict[str, Any]) -> dict[str, Any]:
     row = _checkpoint8_market_candidate(candidate)
     account_keys = tuple(
@@ -768,8 +792,8 @@ def checkpoint8_success_fixture_response_semantics() -> dict[str, Any]:
     return {
         "ready": (
             len(labels) == 20
-            and len(candidates) == 2
-            and len(set(candidate_mints)) == 2
+            and len(candidates) == 4
+            and len(set(candidate_mints)) == 4
             and infrastructure_count == 0
             and all_contracts
         ),
@@ -945,13 +969,28 @@ class _Checkpoint8DeterministicFixture:
         from printer_v1.sources.governed_execution import build_fixture_source_adapter
 
         first = candidates[0]
-        market = _checkpoint8_market_candidate(first)
-        if self.route == "lifecycle.snapshot_adapter_factory":
-            return build_fixture_source_adapter(
-                "dexscreener",
-                fixture_payload={
-                    "pairs": [
-                        {
+        if self.route in {
+            "lifecycle.snapshot_adapter_factory",
+            "lifecycle.fallback_snapshot_adapter_factory",
+        }:
+            target_mint = str(
+                kwargs.get("token_mint")
+                or (args[0] if len(args) > 0 else "")
+            )
+            target_pool = str(
+                kwargs.get("pool_address")
+                or (args[1] if len(args) > 1 else "")
+            )
+            target = _checkpoint8_lifecycle_candidate(
+                token_mint=target_mint,
+                pool_address=target_pool,
+            )
+            market = _checkpoint8_market_candidate(target)
+            if self.route == "lifecycle.snapshot_adapter_factory":
+                return build_fixture_source_adapter(
+                    "dexscreener",
+                    fixture_payload={
+                        "pairs": [{
                             "chain": "solana",
                             "token_mint": market["mint"],
                             "pair_address": market["pool"],
@@ -972,23 +1011,19 @@ class _Checkpoint8DeterministicFixture:
                             "price_change_5m": 0.5,
                             "price_change_1h": 1.0,
                             "price_change_24h": 2.0,
-                        }
-                    ]
-                },
-            )
-        if self.route == "lifecycle.fallback_snapshot_adapter_factory":
+                        }]
+                    },
+                )
             return build_fixture_source_adapter(
                 "geckoterminal",
                 fixture_payload={
-                    "pairs": [
-                        {
-                            "chain": "solana",
-                            "token_mint": market["mint"],
-                            "pair_address": market["pool"],
-                            "price_usd": 1.0,
-                            "liquidity_usd": 10000.0,
-                        }
-                    ]
+                    "pairs": [{
+                        "chain": "solana",
+                        "token_mint": market["mint"],
+                        "pair_address": market["pool"],
+                        "price_usd": 1.0,
+                        "liquidity_usd": 10000.0,
+                    }]
                 },
             )
         if self.route == "lifecycle.context_adapter_factories.coingecko":
@@ -1586,7 +1621,7 @@ def execute_checkpoint8_public_sequence(
         )
     if (
         evidence.get("fixture_response_semantics_ready") is not True
-        or int(evidence.get("fixture_candidate_count") or 0) != 2
+        or int(evidence.get("fixture_candidate_count") or 0) != 4
     ):
         raise Checkpoint8ControllingProofError(
             "CHECKPOINT8_FIXTURE_RESPONSE_SEMANTICS_NOT_READY"

@@ -13,6 +13,10 @@ from printer_v1.operator_cli import (
 )
 from printer_v1.operator_cli.graduated_supply_front_door import (
     OPERATIONAL_GRADUATED_SUPPLY_KWARGS,
+    build_graduated_supply,
+)
+from printer_v1.discovery.permanent_discovery_availability import (
+    build_campaign_source_request_scope,
 )
 from printer_v1.discovery.direct_migration_discovery import (
     run_direct_migration_discovery,
@@ -271,5 +275,130 @@ def test_checkpoint8_measured_market_fixture_identities_survive_real_adapters(tm
             assert identity.target_identity
             assert identity.response_bytes > 0
             assert identity.normalized_rows > 0
+
+    assert tripwire.attempt_count == 0
+
+
+
+def test_checkpoint8_permanent_four_reserve_carries_direct_evidence_and_exact_budget(tmp_path):
+    harness = _load_harness("dtw47-four-reserve-green")
+    prepared = _prepared(harness, tmp_path)
+    materialized = proof.materialize_disposable_public_composition_execution(
+        prepared.runtime
+    )
+
+    execution_id = "dtw47-green-execution"
+    campaign_id = "dtw47-green-campaign"
+    run_id = "dtw47-green-run"
+    cycle_id = "dtw47-green-cycle"
+
+    kwargs = operational_command._merge_disposable_graduated_supply_kwargs(
+        materialized.graduated_supply_kwargs
+    )
+    scope = build_campaign_source_request_scope(
+        execution_id=execution_id,
+        campaign_id=campaign_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
+    )
+    kwargs.update(
+        execution_id=execution_id,
+        campaign_id=campaign_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
+        campaign_source_request_scope=scope,
+        discovery_request_key_prefix=scope.request_key_root,
+        front_door_request_key_prefix=scope.request_key_root,
+    )
+
+    tripwire = harness.Checkpoint8NetworkTripwire()
+    with tripwire:
+        supply = build_graduated_supply(
+            prepared.runtime.plan.resolved_db_path,
+            cycle_seed=execution_id,
+            migration_transport=materialized.top_level_transports[
+                "migration_transport"
+            ],
+            now=datetime.now(timezone.utc).isoformat(),
+            **kwargs,
+        )
+
+    assert tripwire.attempt_count == 0
+    assert supply.ready is True
+    assert supply.terminal == "CANDIDATE_SUPPLY_READY"
+    assert len(supply.holder_reserve_supply) == 4
+    assert len(supply.graduated_supply) == 2
+
+    diagnostics = dict(supply.diagnostics)
+    assert diagnostics["required_token_capacity"] == 4
+    assert diagnostics["eligible_reserve_count"] == 4
+    assert diagnostics["discovery_source_requests"] == 9
+    assert diagnostics["direct_migration_protocol_confirmation_requests"] == 4
+    assert diagnostics["last_stop_reason"] == "ELIGIBLE_CAPACITY_MET"
+
+    assert len(supply.holder_reserve_candidates) == 4
+    for candidate in supply.holder_reserve_candidates.values():
+        evidence = candidate.get("direct_pump_evidence")
+        assert isinstance(evidence, dict)
+        assert evidence["mint"] == candidate["mint"]
+        assert evidence["pool"] == candidate["pool"]
+        assert evidence["confirmed"] is True
+
+
+def test_checkpoint8_lifecycle_market_fixture_is_exact_target_aware(tmp_path):
+    harness = _load_harness("dtw47-lifecycle-target")
+    prepared = _prepared(harness, tmp_path)
+    materialized = proof.materialize_disposable_public_composition_execution(
+        prepared.runtime
+    )
+    candidates = harness._checkpoint8_candidate_records()
+    assert len(candidates) == 4
+
+    primary = materialized.lifecycle_kwargs["snapshot_adapter_factory"]
+    fallback = materialized.lifecycle_kwargs[
+        "fallback_snapshot_adapter_factory"
+    ]
+
+    tripwire = harness.Checkpoint8NetworkTripwire()
+    with tripwire:
+        for ordinal, candidate in enumerate(candidates[:2], start=120):
+            mint = candidate["mint"]
+            pool = candidate["pumpswap_pool"]
+
+            for factory, source in (
+                (primary, "dexscreener"),
+                (fallback, "geckoterminal"),
+            ):
+                adapter = factory(
+                    token_mint=mint,
+                    pool_address=pool,
+                    timeout_seconds=1.0,
+                )
+                result = adapter.execute(
+                    _context(
+                        source,
+                        "pair_market_snapshot",
+                        payload={
+                            "token_mint": mint,
+                            "pool_address": pool,
+                        },
+                        ordinal=ordinal,
+                    )
+                )
+                assert _accepted_source_result(result)
+                pairs = list(result.normalized_payload.get("pairs") or ())
+                assert len(pairs) == 1
+                assert pairs[0]["token_mint"] == mint
+                assert pairs[0]["pair_address"] == pool
+
+        with pytest.raises(
+            harness.Checkpoint8ControllingProofError,
+            match="CHECKPOINT8_LIFECYCLE_FIXTURE_TARGET_MISMATCH",
+        ):
+            primary(
+                token_mint=candidates[0]["mint"],
+                pool_address=candidates[1]["pumpswap_pool"],
+                timeout_seconds=1.0,
+            )
 
     assert tripwire.attempt_count == 0

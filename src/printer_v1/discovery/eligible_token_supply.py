@@ -720,6 +720,7 @@ def run_persistent_eligible_token_supply(
     permanent_market_reports: list[dict[str, Any]] = []
     stage_budget = StageBudget.permanent_discovery_default()
     protocol_stage_charged = False
+    direct_protocol_confirmation_calls = 0
     protocol_confirmation_outcomes: list[dict[str, Any]] = []
     protocol_report: dict[str, Any] = {}
     work_queues: dict[str, list[dict[str, str]]] = {
@@ -1165,16 +1166,18 @@ def run_persistent_eligible_token_supply(
                 # Protocol and market stages may both be open; residual market
                 # capacity is not stranded by protocol accounting.
                 if not protocol_stage_charged:
-                    protocol_calls = max(
-                        0,
-                        int(
-                            (discovery.get("source_operation_ledger") or {}).get(
-                                "source_requests"
-                            )
-                            or 0
-                        )
-                        - 1,
+                    coverage = discovery.get("source_request_coverage") or ()
+                    protocol_calls = sum(
+                        1
+                        for row in coverage
+                        if isinstance(row, Mapping)
+                        and str(row.get("source_name") or "") == "pumpswap"
+                        and str(row.get("request_kind") or "")
+                        == "pumpswap_signature_pool_resolution"
+                        and "DIRECT_MIGRATION_VERIFY"
+                        in str(row.get("logical_stage_id") or "")
                     )
+                    direct_protocol_confirmation_calls = protocol_calls
                     if protocol_calls:
                         try:
                             stage_budget.consume(
@@ -1301,6 +1304,9 @@ def run_persistent_eligible_token_supply(
                 candidate["retained_evidence"] = dict(
                     direct.get("retained_evidence") or {}
                 )
+                carried_direct = direct.get("direct_pump_evidence")
+                if isinstance(carried_direct, Mapping):
+                    candidate["direct_pump_evidence"] = dict(carried_direct)
                 candidate["admission_authority"] = "DIRECT_PUMP_PUMPSWAP"
                 candidate["nomination_source"] = "direct_pump_migration"
                 candidate["lineage_state"] = "PUMP_GRADUATION_CONFIRMED"
@@ -1984,6 +1990,9 @@ def run_persistent_eligible_token_supply(
             "discovery_source_requests": int(
                 (discovery.get("source_operation_ledger") or {}).get("source_requests")
                 or 0
+            ),
+            "direct_migration_protocol_confirmation_requests": (
+                direct_protocol_confirmation_calls
             ),
             "front_door_liquidity_requests": fresh_market_checks,
             "stage_local_source_requests": ops_used,

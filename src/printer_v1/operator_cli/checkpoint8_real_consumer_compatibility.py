@@ -133,7 +133,7 @@ def run_checkpoint8_real_consumer_compatibility(runtime: Any) -> dict[str, Any]:
     outputs = materialized.outputs_by_label
     rows: list[dict[str, Any]] = []
 
-    # Derive the two candidate identities through the real Pump-origin consumer.
+    # Derive the four reserve identities through the real Pump-origin consumer.
     pump_output = outputs["pump_origin_solana_rpc_transport"]
     before = _operation_count(pump_output)
     acquisition = LivePumpOriginAdapter(pump_output).acquire(
@@ -146,7 +146,7 @@ def run_checkpoint8_real_consumer_compatibility(runtime: Any) -> dict[str, Any]:
             spec=specs["pump_origin_solana_rpc_transport"],
             output=pump_output,
             before=before,
-            accepted=len(origins) == 2 and len({item.mint for item in origins}) == 2,
+            accepted=len(origins) == 4 and len({item.mint for item in origins}) == 4,
             observed=origins,
             detail=f"origins={len(origins)}",
         )
@@ -188,7 +188,7 @@ def run_checkpoint8_real_consumer_compatibility(runtime: Any) -> dict[str, Any]:
             before=before,
             accepted=(
                 _accepted_source_result(page)
-                and len(migration_by_mint) == 2
+                and len(migration_by_mint) == 4
                 and set(migration_by_mint) == set(mints)
             ),
             observed=page,

@@ -65,7 +65,7 @@ def test_checkpoint8_restored_migration_fixture_passes_real_adapter_contract(
     assert page.source_status is SourceStatus.COMPLETE
     assert page.failure_type is None
     signatures = list(page.normalized_payload["signatures"])
-    assert len(signatures) == 2
+    assert len(signatures) == 4
 
     observed_mints: set[str] = set()
     observed_pools: set[str] = set()
@@ -86,8 +86,8 @@ def test_checkpoint8_restored_migration_fixture_passes_real_adapter_contract(
         observed_mints.add(str(token["mint"]))
         observed_pools.add(str(token["pool_address"]))
 
-    assert len(observed_mints) == 2
-    assert len(observed_pools) == 2
+    assert len(observed_mints) == 4
+    assert len(observed_pools) == 4
     assert not (observed_mints & observed_pools)
 
 

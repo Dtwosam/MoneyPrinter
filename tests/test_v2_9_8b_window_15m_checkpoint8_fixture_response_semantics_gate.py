@@ -25,15 +25,15 @@ def _load_harness(module_name: str):
     return module
 
 
-def test_success_fixture_response_semantics_cover_exact_twenty_labels_and_two_candidates() -> None:
+def test_success_fixture_response_semantics_cover_exact_twenty_labels_and_four_reserve_candidates() -> None:
     harness = _load_harness("checkpoint8_fixture_response_semantics")
     summary = harness.checkpoint8_success_fixture_response_semantics()
     expected = tuple(ordinary_window_15m_builder_identities())
     assert summary["ready"] is True
     assert tuple(summary["labels"]) == expected
     assert len(expected) == 20
-    assert summary["candidate_count"] == 2
-    assert len(set(summary["candidate_mints"])) == 2
+    assert summary["candidate_count"] == 4
+    assert len(set(summary["candidate_mints"])) == 4
     assert summary["infrastructure_mint_count"] == 0
     assert summary["all_routes_have_explicit_payload_contracts"] is True
 
@@ -58,7 +58,7 @@ def test_top_level_fixture_transports_return_payloads_not_fixture_self(tmp_path:
         byte_ceiling=1_000_000,
     )
     assert isinstance(page, list)
-    assert len(page) == 2
+    assert len(page) == 4
     assert page is not pump
 
     body = secondary.json_get(
@@ -83,7 +83,7 @@ def test_pre_run_evidence_blocks_execution_until_fixture_response_semantics_are_
         git_head="b" * 40,
     )
     assert prepared.pre_run_evidence["fixture_response_semantics_ready"] is True
-    assert prepared.pre_run_evidence["fixture_candidate_count"] == 2
+    assert prepared.pre_run_evidence["fixture_candidate_count"] == 4
 
     prepared.pre_run_evidence["fixture_response_semantics_ready"] = False
     monkeypatch.setattr(
