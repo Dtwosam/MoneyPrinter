@@ -257,9 +257,11 @@ def test_governance_projection_requires_exact_owners_cleanup_and_no_reuse() -> N
         inspector.validate_checkpoint8_governance_projection(broken)
 
 
-def test_frozen_safety_requires_zero_network_replay_downstream_and_long_windows() -> None:
+def test_frozen_safety_requires_zero_network_replay_downstream_and_long_windows(
+    tmp_path: Path,
+) -> None:
     inspector = _load_inspector("checkpoint8_inspector_frozen_safety")
-    _proof_dir, _db_path, payload = _write_frozen_fixture(Path(pytest.ensuretemp("checkpoint8_frozen_safety")))
+    _proof_dir, _db_path, payload = _write_frozen_fixture(tmp_path)
     result = inspector.validate_checkpoint8_frozen_safety(payload)
     assert result["campaign_pass"] is True
     assert result["acceptance_pass"] is True
