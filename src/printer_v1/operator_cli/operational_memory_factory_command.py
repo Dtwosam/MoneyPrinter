@@ -2682,6 +2682,24 @@ def _holder_stage_evidence_sealer_required(
     )
 
 
+def _merge_disposable_graduated_supply_kwargs(
+    fixture_overrides: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Overlay proof dependencies without replacing canonical operational policy."""
+    overrides = dict(fixture_overrides)
+    policy_collisions = sorted(
+        set(overrides).intersection(OPERATIONAL_GRADUATED_SUPPLY_KWARGS)
+    )
+    if policy_collisions:
+        raise OperationalMemoryFactoryError(
+            "DISPOSABLE_PROOF_OPERATIONAL_SUPPLY_POLICY_OVERRIDE_FORBIDDEN:"
+            + ",".join(policy_collisions)
+        )
+    merged = dict(OPERATIONAL_GRADUATED_SUPPLY_KWARGS)
+    merged.update(overrides)
+    return merged
+
+
 def _run_operational_campaign(
     *,
     policy: _OperationalCampaignPolicy,
@@ -3123,8 +3141,10 @@ def _run_operational_campaign(
             active_pump = owner_bridge.pump_transport
             active_secondary = owner_bridge.secondary_transport
             active_migration = owner_bridge.migration_transport
-            bridge_graduated_supply_kwargs = dict(
-                owner_bridge.graduated_supply_kwargs
+            bridge_graduated_supply_kwargs = (
+                _merge_disposable_graduated_supply_kwargs(
+                    owner_bridge.graduated_supply_kwargs
+                )
             )
             bridge_lifecycle_kwargs = dict(owner_bridge.lifecycle_kwargs)
             bridge_lifecycle_kwargs["context_adapter_factories"] = dict(

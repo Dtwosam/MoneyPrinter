@@ -8,7 +8,11 @@ import sqlite3
 import pytest
 
 from printer_v1.operator_cli import (
+    operational_memory_factory_command as operational_command,
     window_15m_disposable_public_composition_proof as proof,
+)
+from printer_v1.operator_cli.graduated_supply_front_door import (
+    OPERATIONAL_GRADUATED_SUPPLY_KWARGS,
 )
 from printer_v1.discovery.direct_migration_discovery import (
     run_direct_migration_discovery,
@@ -182,3 +186,38 @@ def test_checkpoint8_direct_migration_fixture_reconciles_and_persists_two_candid
     finally:
         connection.close()
     assert count == 2
+
+def test_checkpoint8_disposable_bridge_preserves_canonical_operational_supply_policy(
+    tmp_path: Path,
+) -> None:
+    harness = _load_harness("checkpoint8_bridge_policy_overlay")
+    prepared = _prepared(harness, tmp_path)
+    materialized = proof.materialize_disposable_public_composition_execution(
+        prepared.runtime
+    )
+
+    merged = operational_command._merge_disposable_graduated_supply_kwargs(
+        materialized.graduated_supply_kwargs
+    )
+
+    for key, value in OPERATIONAL_GRADUATED_SUPPLY_KWARGS.items():
+        assert merged[key] == value, key
+    assert merged["permanent_availability"] is True
+    assert merged["run_locator"] is True
+    assert merged["run_geckoterminal_nomination"] is True
+    for key, value in materialized.graduated_supply_kwargs.items():
+        assert merged[key] is value, key
+
+    with pytest.raises(
+        operational_command.OperationalMemoryFactoryError,
+        match=(
+            "DISPOSABLE_PROOF_OPERATIONAL_SUPPLY_POLICY_OVERRIDE_FORBIDDEN:"
+            "permanent_availability"
+        ),
+    ):
+        operational_command._merge_disposable_graduated_supply_kwargs(
+            {
+                **materialized.graduated_supply_kwargs,
+                "permanent_availability": False,
+            }
+        )
