@@ -333,6 +333,21 @@ class _PreparedDisposablePublicCompositionExecution:
     materialized: Any
 
 
+@dataclass(frozen=True)
+class _DisposablePublicCompositionOwnerBridge:
+    proof_binding: Any
+    pump_transport: Any
+    secondary_transport: Any
+    migration_transport: Any
+    graduated_supply_kwargs: dict[str, Any]
+    lifecycle_kwargs: dict[str, Any]
+    operational_database_target_binding: Any | None
+    disposable_public_composition_proof_binding: Any
+    db_path: Path
+    artifact_root: Path
+    provider_fallback_allowed: bool = False
+
+
 def _is_campaign_run_identity(candidate: str, *, campaign_run_id: str | None = None) -> bool:
     """True when a candidate identity is campaign-run shaped, not factory UUID."""
     value = str(candidate or "").strip()
@@ -636,6 +651,104 @@ def _prepare_disposable_public_composition_execution(
         db_path=Path(targets["db_path"]).resolve(),
         artifact_root=Path(targets["artifact_root"]).resolve(),
         materialized=materialized,
+    )
+
+
+def _build_disposable_public_composition_owner_bridge(
+    *,
+    disposable_proof: Any,
+    prepared_proof: _PreparedDisposablePublicCompositionExecution,
+    execution_id: str,
+) -> _DisposablePublicCompositionOwnerBridge:
+    # Build invocation-bound C8 owner inputs from the already validated,
+    # materialized proof capability. This helper cannot run a campaign.
+    from printer_v1.operator_cli.window_15m_disposable_public_composition_proof import (
+        DisposablePublicCompositionProofRuntime,
+        build_disposable_public_composition_proof_binding,
+    )
+
+    if not isinstance(disposable_proof, DisposablePublicCompositionProofRuntime):
+        raise OperationalMemoryFactoryError(
+            "DISPOSABLE_PUBLIC_COMPOSITION_PROOF_RUNTIME_REQUIRED"
+        )
+    execution = str(execution_id or "").strip()
+    if not execution:
+        raise OperationalMemoryFactoryError(
+            "DISPOSABLE_PROOF_EXECUTION_ID_REQUIRED"
+        )
+
+    plan = disposable_proof.plan
+    materialized = prepared_proof.materialized
+    db_path = Path(prepared_proof.db_path).resolve()
+    artifact_root = Path(prepared_proof.artifact_root).resolve()
+
+    if db_path != Path(plan.resolved_db_path).resolve():
+        raise OperationalMemoryFactoryError(
+            "DISPOSABLE_PROOF_DB_PATH_MISMATCH"
+        )
+    if artifact_root != Path(plan.resolved_artifact_root).resolve():
+        raise OperationalMemoryFactoryError(
+            "DISPOSABLE_PROOF_ARTIFACT_ROOT_MISMATCH"
+        )
+    if (
+        materialized.fixture_composition_manifest_sha256
+        != disposable_proof.fixture_composition_manifest_sha256
+    ):
+        raise OperationalMemoryFactoryError(
+            "FIXTURE_COMPOSITION_MANIFEST_MISMATCH"
+        )
+    if materialized.provider_fallback_allowed is not False:
+        raise OperationalMemoryFactoryError(
+            "FIXTURE_PROVIDER_FALLBACK_FORBIDDEN"
+        )
+
+    campaign_id = f"{execution}-campaign"
+    campaign_run_id = f"{execution}-campaign-run"
+    cycle_id = f"{execution}-cycle"
+    configuration_id = f"{execution}-configuration"
+    db_target_identity = f"sha256:{plan.pre_mutation_db_sha256}"
+
+    binding = build_disposable_public_composition_proof_binding(
+        plan,
+        execution_id=execution,
+        campaign_id=campaign_id,
+        campaign_run_id=campaign_run_id,
+        cycle_id=cycle_id,
+        configuration_id=configuration_id,
+        db_target_identity=db_target_identity,
+        fixture_composition_manifest_sha256=(
+            disposable_proof.fixture_composition_manifest_sha256
+        ),
+    )
+
+    top_level = dict(materialized.top_level_transports)
+    required_top_level = {
+        "pump_transport",
+        "secondary_transport",
+        "migration_transport",
+    }
+    if set(top_level) != required_top_level:
+        raise OperationalMemoryFactoryError(
+            "FIXTURE_TOP_LEVEL_TRANSPORT_IDENTITY_MISMATCH"
+        )
+
+    lifecycle_kwargs = dict(materialized.lifecycle_kwargs)
+    lifecycle_kwargs["context_adapter_factories"] = dict(
+        lifecycle_kwargs["context_adapter_factories"]
+    )
+
+    return _DisposablePublicCompositionOwnerBridge(
+        proof_binding=binding,
+        pump_transport=top_level["pump_transport"],
+        secondary_transport=top_level["secondary_transport"],
+        migration_transport=top_level["migration_transport"],
+        graduated_supply_kwargs=dict(materialized.graduated_supply_kwargs),
+        lifecycle_kwargs=lifecycle_kwargs,
+        operational_database_target_binding=None,
+        disposable_public_composition_proof_binding=binding,
+        db_path=db_path,
+        artifact_root=artifact_root,
+        provider_fallback_allowed=False,
     )
 
 
@@ -2655,11 +2768,21 @@ def _run_operational_campaign(
         active_db
     )
     _ACTION_RUN_CONTEXT["mutation_recorder"] = install_action_local_mutation_recorder()
-    if disposable_proof is not None:
-        # This slice intentionally stops before artifact/campaign mutation. The
-        # next C8 slice must explicitly wire materialized DI into the real owner.
+    owner_bridge = (
+        _build_disposable_public_composition_owner_bridge(
+            disposable_proof=disposable_proof,
+            prepared_proof=prepared_proof,
+            execution_id=execution_id,
+        )
+        if disposable_proof is not None and prepared_proof is not None
+        else None
+    )
+    if owner_bridge is not None:
+        # Exact owner inputs now exist, but campaign mutation remains locked
+        # until the next C8 RED proves the real authoritative owner invocation
+        # consumes this bridge with zero production fallback.
         raise OperationalMemoryFactoryError(
-            "DISPOSABLE_PROOF_COORDINATOR_DI_NOT_WIRED"
+            "DISPOSABLE_PROOF_OWNER_INVOCATION_NOT_YET_PROVEN"
         )
     paths = _artifact_paths(
         execution_id,
