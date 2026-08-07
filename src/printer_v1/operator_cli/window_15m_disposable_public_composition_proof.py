@@ -121,6 +121,17 @@ class DisposablePublicCompositionExecutionBindings:
 
 
 @dataclass(frozen=True)
+class DisposablePublicCompositionMaterializedExecution:
+    # Explicit fixture-built values routed only through existing DI seams.
+    outputs_by_label: dict[str, Any]
+    top_level_transports: dict[str, Any]
+    graduated_supply_kwargs: dict[str, Any]
+    lifecycle_kwargs: dict[str, Any]
+    fixture_composition_manifest_sha256: str
+    provider_fallback_allowed: bool = False
+
+
+@dataclass(frozen=True)
 class DisposablePublicCompositionProofBinding:
     binding_schema_version: str
     proof_schema_version: str
@@ -161,6 +172,39 @@ def mark_checkpoint8_fixture_builder(
     setattr(builder, "_printer_checkpoint8_fixture_builder", True)
     setattr(builder, "_printer_checkpoint8_fixture_label", expected_label)
     return builder
+
+
+def mark_checkpoint8_fixture_output(
+    output: Any,
+    *,
+    label: str,
+) -> Any:
+    # Mark a built C8 value explicitly while preserving object identity.
+    expected_label = str(label or "").strip()
+    if not expected_label:
+        raise DisposablePublicCompositionProofError(
+            "FIXTURE_OUTPUT_LABEL_MISSING"
+        )
+    if output is None:
+        raise DisposablePublicCompositionProofError(
+            f"FIXTURE_OUTPUT_NOT_EXPLICIT:{expected_label}"
+        )
+    try:
+        labels = set(
+            getattr(output, "_printer_checkpoint8_fixture_output_labels", ())
+        )
+        labels.add(expected_label)
+        setattr(output, "_printer_checkpoint8_fixture_output", True)
+        setattr(
+            output,
+            "_printer_checkpoint8_fixture_output_labels",
+            frozenset(labels),
+        )
+    except Exception as exc:
+        raise DisposablePublicCompositionProofError(
+            f"FIXTURE_OUTPUT_NOT_MARKABLE:{expected_label}"
+        ) from exc
+    return output
 
 
 def _fixture_manifest_sha256(labels: Sequence[str]) -> str:
@@ -552,6 +596,116 @@ def build_disposable_public_composition_execution_bindings(
     )
 
 
+def materialize_disposable_public_composition_execution(
+    runtime: DisposablePublicCompositionProofRuntime,
+) -> DisposablePublicCompositionMaterializedExecution:
+    # Execute every explicit fixture builder exactly once, then route built
+    # values only through the existing production DI seams.
+    bindings = build_disposable_public_composition_execution_bindings(runtime)
+    composition = runtime.fixture_composition
+
+    outputs_by_label: dict[str, Any] = {}
+    output_by_route: dict[str, Any] = {}
+
+    for label in bindings.registry_labels:
+        builder = composition.builders[label]
+        try:
+            built = builder()
+        except DisposablePublicCompositionProofError:
+            raise
+        except Exception as exc:
+            raise DisposablePublicCompositionProofError(
+                f"FIXTURE_BUILDER_RAISED:{label}:{type(exc).__name__}"
+            ) from exc
+
+        marked = bool(
+            getattr(built, "_printer_checkpoint8_fixture_output", False)
+        )
+        marked_labels = set(
+            getattr(
+                built,
+                "_printer_checkpoint8_fixture_output_labels",
+                (),
+            )
+        )
+        if not marked or label not in marked_labels:
+            raise DisposablePublicCompositionProofError(
+                f"FIXTURE_OUTPUT_NOT_EXPLICIT:{label}"
+            )
+
+        outputs_by_label[label] = built
+        route = bindings.route_by_label[label]
+        if route in output_by_route and output_by_route[route] is not built:
+            raise DisposablePublicCompositionProofError(
+                f"FIXTURE_ROUTE_OUTPUT_CONFLICT:{route}"
+            )
+        output_by_route.setdefault(route, built)
+
+    def routed(route: str) -> Any:
+        if route not in output_by_route:
+            raise DisposablePublicCompositionProofError(
+                f"FIXTURE_EXECUTION_ROUTE_UNMAPPED:{route}"
+            )
+        return output_by_route[route]
+
+    top_level = {
+        key: outputs_by_label[label]
+        for key, label in bindings.top_level_transport_labels.items()
+    }
+    graduated = {
+        "verifier_transport_factory": routed(
+            "graduated_supply.verifier_transport_factory"
+        ),
+        "locator_transport": routed(
+            "graduated_supply.locator_transport"
+        ),
+        "dexscreener_batch_transport_factory": routed(
+            "graduated_supply.dexscreener_batch_transport_factory"
+        ),
+        "geckoterminal_nomination_transport": routed(
+            "graduated_supply.geckoterminal_nomination_transport"
+        ),
+        "geckoterminal_reconciliation_transport_factory": routed(
+            "graduated_supply.geckoterminal_reconciliation_transport_factory"
+        ),
+    }
+    lifecycle = {
+        "snapshot_adapter_factory": routed(
+            "lifecycle.snapshot_adapter_factory"
+        ),
+        "fallback_snapshot_adapter_factory": routed(
+            "lifecycle.fallback_snapshot_adapter_factory"
+        ),
+        "context_adapter_factories": {
+            "coingecko": routed(
+                "lifecycle.context_adapter_factories.coingecko"
+            ),
+            "goplus": routed(
+                "lifecycle.context_adapter_factories.goplus"
+            ),
+            "jupiter_quote": routed(
+                "lifecycle.context_adapter_factories.jupiter_quote"
+            ),
+            "solana_rpc_holder": routed(
+                "lifecycle.context_adapter_factories.solana_rpc_holder"
+            ),
+            "helius_holder_backup": routed(
+                "lifecycle.context_adapter_factories.helius_holder_backup"
+            ),
+        },
+    }
+    return DisposablePublicCompositionMaterializedExecution(
+        outputs_by_label=outputs_by_label,
+        top_level_transports=top_level,
+        graduated_supply_kwargs=graduated,
+        lifecycle_kwargs=lifecycle,
+        fixture_composition_manifest_sha256=(
+            bindings.fixture_composition_manifest_sha256
+        ),
+        provider_fallback_allowed=False,
+    )
+
+
 def build_disposable_public_composition_proof_binding(
     plan: DisposablePublicCompositionProofPlan,
     *,
@@ -655,6 +809,7 @@ def validate_disposable_public_composition_proof_binding(
 __all__ = [
     "BINDING_SCHEMA_VERSION",
     "DisposablePublicCompositionExecutionBindings",
+    "DisposablePublicCompositionMaterializedExecution",
     "DisposablePublicCompositionProofBinding",
     "DisposablePublicCompositionProofError",
     "DisposablePublicCompositionProofPlan",
@@ -663,10 +818,12 @@ __all__ = [
     "Window15MFixtureComposition",
     "build_disposable_public_composition_execution_bindings",
     "build_disposable_public_composition_proof_binding",
+    "materialize_disposable_public_composition_execution",
     "build_disposable_public_composition_proof_plan",
     "build_disposable_public_composition_proof_runtime",
     "build_window_15m_fixture_composition",
     "mark_checkpoint8_fixture_builder",
+    "mark_checkpoint8_fixture_output",
     "validate_disposable_public_composition_proof_binding",
     "validate_disposable_public_composition_proof_plan",
     "validate_window_15m_fixture_composition",

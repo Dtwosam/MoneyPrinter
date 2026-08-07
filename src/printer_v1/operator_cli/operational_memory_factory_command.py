@@ -326,6 +326,13 @@ class OperationalMemoryFactoryError(RuntimeError):
     """Fail-closed public command fault."""
 
 
+@dataclass(frozen=True)
+class _PreparedDisposablePublicCompositionExecution:
+    db_path: Path
+    artifact_root: Path
+    materialized: Any
+
+
 def _is_campaign_run_identity(candidate: str, *, campaign_run_id: str | None = None) -> bool:
     """True when a candidate identity is campaign-run shaped, not factory UUID."""
     value = str(candidate or "").strip()
@@ -382,13 +389,21 @@ def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
     ).fetchone() is not None
 
 
-def _read_only(path: Path | None = None) -> sqlite3.Connection:
-    # Resolve against the live module constant so tests can patch AUTHORITATIVE_DB
-    # without being defeated by a function-default binding at import time.
-    target = Path(path).resolve() if path is not None else AUTHORITATIVE_DB.resolve()
-    expected = AUTHORITATIVE_DB.resolve()
+def _read_only(
+    path: str | Path | None = None,
+    *,
+    expected_path: str | Path | None = None,
+) -> sqlite3.Connection:
+    # Production defaults to AUTHORITATIVE_DB. C8 may supply one exact already-
+    # validated disposable target; arbitrary mismatched paths still fail closed.
+    expected = (
+        Path(expected_path).resolve()
+        if expected_path is not None
+        else AUTHORITATIVE_DB.resolve()
+    )
+    target = Path(path).resolve() if path is not None else expected
     if target != expected or not target.is_file():
-        raise OperationalMemoryFactoryError("authoritative database target mismatch")
+        raise OperationalMemoryFactoryError("database target mismatch")
     connection = sqlite3.connect(
         f"file:{target.as_posix()}?mode=ro", uri=True, timeout=0.0
     )
@@ -592,6 +607,36 @@ def _resolve_disposable_public_composition_targets(
             validated.fixture_composition_manifest_sha256
         ),
     }
+
+
+def _prepare_disposable_public_composition_execution(
+    disposable_proof: Any,
+) -> _PreparedDisposablePublicCompositionExecution:
+    # Materialize only after the proof plan/registry boundary is validated.
+    from printer_v1.operator_cli.window_15m_disposable_public_composition_proof import (
+        materialize_disposable_public_composition_execution,
+    )
+
+    targets = _resolve_disposable_public_composition_targets(disposable_proof)
+    materialized = materialize_disposable_public_composition_execution(
+        disposable_proof
+    )
+    if materialized.provider_fallback_allowed is not False:
+        raise OperationalMemoryFactoryError(
+            "FIXTURE_PROVIDER_FALLBACK_FORBIDDEN"
+        )
+    if (
+        materialized.fixture_composition_manifest_sha256
+        != targets["fixture_composition_manifest_sha256"]
+    ):
+        raise OperationalMemoryFactoryError(
+            "FIXTURE_COMPOSITION_MANIFEST_MISMATCH"
+        )
+    return _PreparedDisposablePublicCompositionExecution(
+        db_path=Path(targets["db_path"]).resolve(),
+        artifact_root=Path(targets["artifact_root"]).resolve(),
+        materialized=materialized,
+    )
 
 
 def build_disposable_public_composition_preflight(
@@ -1046,8 +1091,17 @@ def build_selective_1h_preflight(
     }
 
 
-def _artifact_paths(execution_id: str) -> dict[str, Path]:
-    root = (ARTIFACT_ROOT / execution_id).resolve()
+def _artifact_paths(
+    execution_id: str,
+    *,
+    artifact_root: str | Path | None = None,
+) -> dict[str, Path]:
+    base = (
+        Path(artifact_root).resolve()
+        if artifact_root is not None
+        else ARTIFACT_ROOT.resolve()
+    )
+    root = (base / execution_id).resolve()
     return {
         "root": root,
         "backup": root / "printer_v1.pre-campaign.backup.sqlite3",
@@ -2549,19 +2603,37 @@ def _run_operational_campaign(
         preflight = build_activation_preflight(
             git_provenance_authorization=git_provenance_authorization
         )
+    prepared_proof = (
+        _prepare_disposable_public_composition_execution(disposable_proof)
+        if disposable_proof is not None
+        else None
+    )
+    active_db = (
+        prepared_proof.db_path
+        if prepared_proof is not None
+        else AUTHORITATIVE_DB
+    )
+    active_artifact_root = (
+        prepared_proof.artifact_root
+        if prepared_proof is not None
+        else ARTIFACT_ROOT
+    )
+
     from printer_v1.operator_cli.operational_database_target_binding import (
         validate_authorized_database_preflight,
         validated_authorization_runtime_facts,
     )
     authorization_runtime_facts = (
         None
-        if policy.selective_1h_continuation
-        else validated_authorization_runtime_facts(git_provenance_authorization)
+        if policy.selective_1h_continuation or disposable_proof is not None
+        else validated_authorization_runtime_facts(
+            git_provenance_authorization
+        )
     )
     if authorization_runtime_facts is not None:
         validate_authorized_database_preflight(
             authorization_runtime_facts,
-            actual_db_path=AUTHORITATIVE_DB,
+            actual_db_path=active_db,
             preflight=preflight,
         )
     execution_id = (
@@ -2580,10 +2652,19 @@ def _run_operational_campaign(
 
     _ACTION_RUN_CONTEXT["execution_id"] = execution_id
     _ACTION_RUN_CONTEXT["action_local_baseline"] = capture_action_local_baseline(
-        AUTHORITATIVE_DB
+        active_db
     )
     _ACTION_RUN_CONTEXT["mutation_recorder"] = install_action_local_mutation_recorder()
-    paths = _artifact_paths(execution_id)
+    if disposable_proof is not None:
+        # This slice intentionally stops before artifact/campaign mutation. The
+        # next C8 slice must explicitly wire materialized DI into the real owner.
+        raise OperationalMemoryFactoryError(
+            "DISPOSABLE_PROOF_COORDINATOR_DI_NOT_WIRED"
+        )
+    paths = _artifact_paths(
+        execution_id,
+        artifact_root=active_artifact_root,
+    )
     paths["root"].mkdir(parents=True, exist_ok=False)
     paths["reports"].mkdir()
     backup = operational_backup_restore_preflight(
