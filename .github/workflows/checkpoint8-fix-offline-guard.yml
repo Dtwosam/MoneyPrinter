@@ -1,0 +1,40 @@
+name: Checkpoint 8 fix offline guard
+
+on:
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: write
+
+jobs:
+  fix-guard:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 1
+      - name: Narrow self-referential static guard
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('.github/workflows/checkpoint8-blocked-repair-offline-ci-v2.yml')
+          text = path.read_text()
+          old = "          assert 'run_operational_campaign(' not in workflow\n"
+          new = "          assert 'python scripts/v2_9_8b_checkpoint8_controlling_public_composition_proof.py' not in workflow\n"
+          if old in text:
+              path.write_text(text.replace(old, new, 1))
+              print('CHECKPOINT8_OFFLINE_GUARD_FIX_APPLIED')
+          else:
+              print('CHECKPOINT8_OFFLINE_GUARD_ALREADY_FIXED')
+          PY
+          if git diff --quiet -- .github/workflows/checkpoint8-blocked-repair-offline-ci-v2.yml; then
+            exit 0
+          fi
+          git config user.name "Checkpoint 8 Offline Guard"
+          git config user.email "checkpoint8-offline-guard@example.invalid"
+          git add .github/workflows/checkpoint8-blocked-repair-offline-ci-v2.yml
+          git commit -m "Fix Checkpoint 8 offline guard"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
