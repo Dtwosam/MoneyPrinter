@@ -11,6 +11,7 @@ subsequent Checkpoint 8 harness-wiring slice is proven.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -18,6 +19,7 @@ from pathlib import Path
 import socket
 import sqlite3
 import struct
+import subprocess
 from types import SimpleNamespace
 from typing import Any
 
@@ -34,6 +36,11 @@ from printer_v1.operator_cli import (
 )
 from printer_v1.operator_cli.window_15m_concrete_composition import (
     ordinary_window_15m_builder_identities,
+)
+
+from printer_v1.operator_cli.operational_memory_factory_command import (
+    report_only,
+    run_operational_campaign,
 )
 
 from printer_v1.sources.pumpfun_direct import (
@@ -824,13 +831,168 @@ def prepare_checkpoint8_controlling_entry(
 
 
 
+
+def validate_checkpoint8_git_entry(
+    repo_root: str | Path,
+    *,
+    expected_head: str,
+) -> str:
+    """Require the exact approved HEAD and a clean tracked worktree."""
+    root = Path(repo_root).expanduser().resolve()
+    if not (root / ".git").exists() and not (root / ".git").is_file():
+        # Worktrees use a .git file, ordinary repos use a .git directory.
+        raise Checkpoint8ControllingProofError(
+            "CHECKPOINT8_GIT_REPOSITORY_MISSING"
+        )
+
+    expected = _validate_preparation_git_head(expected_head)
+    try:
+        actual = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            text=True,
+        ).strip().lower()
+        tracked_status = subprocess.check_output(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            cwd=root,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise Checkpoint8ControllingProofError(
+            "CHECKPOINT8_GIT_ENTRY_VALIDATION_FAILED"
+        ) from exc
+
+    if actual != expected:
+        raise Checkpoint8ControllingProofError(
+            "CHECKPOINT8_GIT_HEAD_MISMATCH"
+        )
+    if tracked_status.strip():
+        raise Checkpoint8ControllingProofError(
+            "CHECKPOINT8_TRACKED_WORKTREE_NOT_CLEAN"
+        )
+    return actual
+
+
+def _checkpoint8_materialized_fixture_objects(runtime) -> tuple[Any, ...]:
+    materialized = proof.materialize_disposable_public_composition_execution(
+        runtime
+    )
+    unique: list[Any] = []
+    seen: set[int] = set()
+    for output in materialized.outputs_by_label.values():
+        identity = id(output)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        unique.append(output)
+    return tuple(unique)
+
+
+def checkpoint8_fixture_transport_operation_count(runtime) -> int:
+    """Count actual calls made through unique shared C8 fixture objects."""
+    return sum(
+        int(getattr(output, "operation_count", 0) or 0)
+        for output in _checkpoint8_materialized_fixture_objects(runtime)
+    )
+
+
+def _checkpoint8_replay_zero_work(replay: Any) -> bool:
+    if not isinstance(replay, dict):
+        return False
+    zero_keys = (
+        "source_calls",
+        "scheduler_runtime_calls",
+        "database_writes",
+        "replay_new_source_calls",
+        "replay_new_scheduler_calls",
+        "replay_database_writes",
+    )
+    return all(int(replay.get(key, 0) or 0) == 0 for key in zero_keys)
+
+
+def _checkpoint8_longer_window_counts(
+    connection: sqlite3.Connection,
+) -> dict[str, int]:
+    locked = ("WINDOW_1H", "WINDOW_4H", "WINDOW_12H", "WINDOW_24H")
+    table = "printer_memory_windows"
+    exists = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone()
+    if exists is None:
+        return {label: 0 for label in locked}
+
+    columns = [
+        str(row[1])
+        for row in connection.execute(
+            f'PRAGMA table_info("{table}")'
+        ).fetchall()
+    ]
+    if not columns:
+        raise Checkpoint8ControllingProofError(
+            "CHECKPOINT8_MEMORY_WINDOW_SCHEMA_UNREADABLE"
+        )
+
+    where = " OR ".join(
+        f'CAST("{column}" AS TEXT)=?'
+        for column in columns
+    )
+    counts: dict[str, int] = {}
+    for label in locked:
+        params = tuple(label for _ in columns)
+        counts[label] = int(
+            connection.execute(
+                f'SELECT COUNT(*) FROM "{table}" WHERE {where}',
+                params,
+            ).fetchone()[0]
+        )
+    return counts
+
+
+def _checkpoint8_post_run_evidence(prepared) -> dict[str, Any]:
+    db_path = Path(prepared.runtime.plan.resolved_db_path).resolve()
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.execute("PRAGMA foreign_keys = ON")
+        integrity_check = str(
+            connection.execute("PRAGMA integrity_check").fetchone()[0]
+        )
+        foreign_key_violations = len(
+            connection.execute("PRAGMA foreign_key_check").fetchall()
+        )
+        current_protected = _protected_capability_counts(connection)
+        baseline = dict(
+            prepared.pre_run_evidence.get(
+                "protected_capability_counts",
+                {},
+            )
+        )
+        protected_deltas = {
+            table: int(current_protected.get(table, 0))
+            - int(baseline.get(table, 0))
+            for table in sorted(set(current_protected) | set(baseline))
+        }
+        longer_window_counts = _checkpoint8_longer_window_counts(connection)
+    finally:
+        connection.close()
+
+    return {
+        "db_sha256": _sha256_file(db_path),
+        "integrity_check": integrity_check,
+        "foreign_key_violations": foreign_key_violations,
+        "protected_capability_counts": current_protected,
+        "protected_capability_deltas": protected_deltas,
+        "longer_window_counts": longer_window_counts,
+    }
+
+
 def execute_checkpoint8_public_sequence(
     prepared,
     *,
     git_head: str,
 ):
-    """Fail closed until the separate one-shot execution slice is GREEN."""
-    del git_head
+    """Consume the one-shot entitlement around one public run and one replay."""
+    head = _validate_preparation_git_head(git_head)
     evidence = getattr(prepared, "pre_run_evidence", None)
     if not isinstance(evidence, dict):
         raise Checkpoint8ControllingProofError(
@@ -843,16 +1005,213 @@ def execute_checkpoint8_public_sequence(
         raise Checkpoint8ControllingProofError(
             "CHECKPOINT8_FIXTURE_RESPONSE_SEMANTICS_NOT_READY"
         )
-    raise Checkpoint8ControllingProofError(
-        "CHECKPOINT8_EXECUTION_ENTRY_NOT_YET_WIRED"
+    if str(evidence.get("git_head") or "").lower() != head:
+        raise Checkpoint8ControllingProofError(
+            "CHECKPOINT8_PREPARED_GIT_HEAD_MISMATCH"
+        )
+
+    sentinel_path = claim_controlling_attempt_sentinel(
+        prepared.proof_root,
+        proof_id=prepared.runtime.plan.proof_id,
+        git_head=head,
     )
+
+    tripwire = Checkpoint8NetworkTripwire()
+    with tripwire:
+        terminal = run_operational_campaign(
+            operator_approved=True,
+            disposable_proof=prepared.runtime,
+        )
+
+        if not isinstance(terminal, dict):
+            raise Checkpoint8ControllingProofError(
+                "CHECKPOINT8_TERMINAL_RESULT_INVALID"
+            )
+        report = terminal.get("report")
+        report = report if isinstance(report, dict) else {}
+        campaign_id = str(
+            terminal.get("campaign_id")
+            or report.get("campaign_id")
+            or ""
+        ).strip()
+        run_id = str(
+            report.get("run_id")
+            or terminal.get("run_id")
+            or ""
+        ).strip()
+        if not campaign_id or not run_id:
+            raise Checkpoint8ControllingProofError(
+                "CHECKPOINT8_TERMINAL_IDENTITY_MISSING"
+            )
+
+        replay = report_only(
+            campaign_id=campaign_id,
+            run_id=run_id,
+            db_path=Path(
+                prepared.runtime.plan.resolved_db_path
+            ).resolve(),
+            artifact_root=Path(
+                prepared.runtime.plan.resolved_artifact_root
+            ).resolve(),
+        )
+
+    return SimpleNamespace(
+        sentinel_path=sentinel_path,
+        terminal=terminal,
+        replay=replay,
+        network_attempt_count=tripwire.attempt_count,
+        network_attempts=tuple(
+            {
+                "operation": attempt.operation,
+                "target": attempt.target,
+            }
+            for attempt in tripwire.attempts
+        ),
+    )
+
+
+def freeze_checkpoint8_controlling_proof_summary(
+    prepared,
+    sequence,
+) -> Path:
+    """Freeze the one-shot result and post-run safety evidence exactly once."""
+    sentinel_path = Path(sequence.sentinel_path).resolve()
+    if not sentinel_path.is_file():
+        raise Checkpoint8ControllingProofError(
+            "CHECKPOINT8_CONTROLLING_ATTEMPT_SENTINEL_MISSING"
+        )
+
+    operation_count = checkpoint8_fixture_transport_operation_count(
+        prepared.runtime
+    )
+    if operation_count <= 0:
+        raise Checkpoint8ControllingProofError(
+            "CHECKPOINT8_FIXTURE_TRANSPORT_OPERATION_COUNT_REQUIRED"
+        )
+
+    network_attempt_count = int(sequence.network_attempt_count)
+    if network_attempt_count != 0:
+        raise Checkpoint8ControllingProofError(
+            "CHECKPOINT8_NETWORK_ATTEMPTS_MUST_BE_ZERO"
+        )
+
+    replay_zero_work = _checkpoint8_replay_zero_work(sequence.replay)
+    if not replay_zero_work:
+        raise Checkpoint8ControllingProofError(
+            "CHECKPOINT8_REPORT_ONLY_REPLAY_MUST_BE_ZERO_WORK"
+        )
+
+    post_run = _checkpoint8_post_run_evidence(prepared)
+    if (
+        post_run["integrity_check"] != "ok"
+        or int(post_run["foreign_key_violations"]) != 0
+    ):
+        raise Checkpoint8ControllingProofError(
+            "CHECKPOINT8_POST_RUN_DB_INTEGRITY_FAILED"
+        )
+
+    terminal = dict(sequence.terminal)
+    report = terminal.get("report")
+    report = report if isinstance(report, dict) else {}
+    campaign_id = str(
+        terminal.get("campaign_id")
+        or report.get("campaign_id")
+        or ""
+    ).strip()
+    run_id = str(
+        report.get("run_id")
+        or terminal.get("run_id")
+        or ""
+    ).strip()
+
+    payload: dict[str, Any] = {
+        "summary_schema": "CHECKPOINT8_CONTROLLING_PROOF_SUMMARY_V1",
+        "proof_id": prepared.runtime.plan.proof_id,
+        "git_head": str(prepared.pre_run_evidence["git_head"]),
+        "campaign_id": campaign_id,
+        "run_id": run_id,
+        "campaign_acceptance_verdict": terminal.get(
+            "campaign_acceptance_verdict"
+        ),
+        "campaign_pass": bool(terminal.get("campaign_pass")),
+        "fixture_composition_manifest_sha256": (
+            prepared.runtime.fixture_composition_manifest_sha256
+        ),
+        "fixture_transport_operation_count": operation_count,
+        "network_attempt_count": network_attempt_count,
+        "network_attempts": list(sequence.network_attempts),
+        "replay_zero_work": replay_zero_work,
+        "pre_run_evidence": dict(prepared.pre_run_evidence),
+        "post_run_evidence": post_run,
+        "terminal": terminal,
+        "report_only": dict(sequence.replay),
+        "sentinel_path": str(sentinel_path),
+    }
+
+    digest_input = json.dumps(
+        payload,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    payload["frozen_evidence_sha256"] = hashlib.sha256(
+        digest_input
+    ).hexdigest()
+
+    summary_path = (
+        Path(prepared.proof_root).resolve()
+        / "checkpoint8-controlling-proof-summary.json"
+    )
+    try:
+        with summary_path.open("x", encoding="utf-8") as handle:
+            json.dump(
+                payload,
+                handle,
+                ensure_ascii=True,
+                indent=2,
+                sort_keys=True,
+            )
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+    except FileExistsError as exc:
+        raise Checkpoint8ControllingProofError(
+            "CHECKPOINT8_FROZEN_SUMMARY_ALREADY_EXISTS"
+        ) from exc
+    return summary_path
 
 
 def main(argv: list[str] | None = None) -> int:
-    del argv
-    raise Checkpoint8ControllingProofError(
-        "CHECKPOINT8_CONTROLLING_PROOF_ENTRY_NOT_YET_WIRED"
+    parser = argparse.ArgumentParser(
+        description=(
+            "One-shot Checkpoint 8 disposable public-composition proof harness"
+        )
     )
+    parser.add_argument("--proof-root", required=True)
+    parser.add_argument("--proof-id", required=True)
+    parser.add_argument("--expected-head", required=True)
+    args = parser.parse_args(argv)
+
+    repo_root = Path(__file__).resolve().parents[1]
+    git_head = validate_checkpoint8_git_entry(
+        repo_root,
+        expected_head=args.expected_head,
+    )
+    prepared = prepare_checkpoint8_controlling_entry(
+        args.proof_root,
+        proof_id=args.proof_id,
+        git_head=git_head,
+    )
+    sequence = execute_checkpoint8_public_sequence(
+        prepared,
+        git_head=git_head,
+    )
+    summary_path = freeze_checkpoint8_controlling_proof_summary(
+        prepared,
+        sequence,
+    )
+    print(str(summary_path))
+    return 0
 
 
 if __name__ == "__main__":

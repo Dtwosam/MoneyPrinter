@@ -122,12 +122,12 @@ def test_entry_preparation_does_not_consume_controlling_attempt(tmp_path: Path) 
     assert not (tmp_path / "checkpoint8-controlling-attempt.json").exists()
 
 
-def test_fixture_entry_slice_still_cannot_start_controlling_campaign() -> None:
-    source = HARNESS_PATH.read_text(encoding="utf-8")
-    assert "run_operational_campaign(" not in source
-    assert "report_only(" not in source
-    assert "CHECKPOINT8_CONTROLLING_PROOF_ENTRY_NOT_YET_WIRED" in source
-    signature = inspect.signature(
-        _load_harness("checkpoint8_fixture_entry_import_safe").main
+def test_fixture_entry_preparation_itself_cannot_start_controlling_campaign() -> None:
+    harness = _load_harness("checkpoint8_fixture_entry_import_safe")
+    preparation_source = inspect.getsource(
+        harness.prepare_checkpoint8_controlling_entry
     )
+    assert "run_operational_campaign(" not in preparation_source
+    assert "report_only(" not in preparation_source
+    signature = inspect.signature(harness.main)
     assert "argv" in signature.parameters
