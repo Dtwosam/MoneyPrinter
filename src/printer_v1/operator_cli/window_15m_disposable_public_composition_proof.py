@@ -110,6 +110,17 @@ class DisposablePublicCompositionProofRuntime:
 
 
 @dataclass(frozen=True)
+class DisposablePublicCompositionExecutionBindings:
+    # Immutable zero-I/O map from canonical labels to existing DI seams.
+    registry_labels: tuple[str, ...]
+    route_by_label: dict[str, str]
+    top_level_transport_labels: dict[str, str]
+    unmapped_labels: tuple[str, ...]
+    fixture_composition_manifest_sha256: str
+    provider_fallback_allowed: bool = False
+
+
+@dataclass(frozen=True)
 class DisposablePublicCompositionProofBinding:
     binding_schema_version: str
     proof_schema_version: str
@@ -397,6 +408,150 @@ def build_disposable_public_composition_proof_runtime(
     )
 
 
+_EXECUTION_ROUTE_BY_LABEL: tuple[tuple[str, str], ...] = (
+    ("pump_origin_solana_rpc_transport", "top_level.pump_transport"),
+    ("direct_pump_finalized_migration_transport", "top_level.migration_transport"),
+    (
+        "exact_pump_pumpswap_graduation_verifier_transport",
+        "graduated_supply.verifier_transport_factory",
+    ),
+    ("secondary_discovery_http_transport", "top_level.secondary_transport"),
+    (
+        "pumpswap_migration_pool_confirmation",
+        "graduated_supply.verifier_transport_factory",
+    ),
+    (
+        "pumpswap_account_batch_transport",
+        "graduated_supply.verifier_transport_factory",
+    ),
+    (
+        "dexscreener_fresh_profiles_discovery",
+        "graduated_supply.locator_transport",
+    ),
+    (
+        "dexscreener_mint_batch_discovery",
+        "graduated_supply.dexscreener_batch_transport_factory",
+    ),
+    (
+        "geckoterminal_fresh_nomination",
+        "graduated_supply.geckoterminal_nomination_transport",
+    ),
+    (
+        "geckoterminal_token_pools_discovery",
+        "graduated_supply.geckoterminal_reconciliation_transport_factory",
+    ),
+    (
+        "unknown_liquidity_backup_dex_to_gecko",
+        "graduated_supply.geckoterminal_reconciliation_transport_factory",
+    ),
+    (
+        "unknown_liquidity_backup_gecko_to_dex",
+        "graduated_supply.dexscreener_batch_transport_factory",
+    ),
+    (
+        "lifecycle_exact_pair_dexscreener_primary",
+        "lifecycle.snapshot_adapter_factory",
+    ),
+    (
+        "lifecycle_exact_pair_geckoterminal_fallback",
+        "lifecycle.fallback_snapshot_adapter_factory",
+    ),
+    (
+        "preclose_coingecko_market_chain",
+        "lifecycle.context_adapter_factories.coingecko",
+    ),
+    (
+        "preclose_goplus_safety",
+        "lifecycle.context_adapter_factories.goplus",
+    ),
+    (
+        "preclose_jupiter_entry_quote",
+        "lifecycle.context_adapter_factories.jupiter_quote",
+    ),
+    (
+        "preclose_jupiter_exit_quote",
+        "lifecycle.context_adapter_factories.jupiter_quote",
+    ),
+    (
+        "preclose_solana_rpc_holder_primary",
+        "lifecycle.context_adapter_factories.solana_rpc_holder",
+    ),
+    (
+        "preclose_helius_holder_backup",
+        "lifecycle.context_adapter_factories.helius_holder_backup",
+    ),
+)
+
+_TOP_LEVEL_TRANSPORT_LABELS = {
+    "pump_transport": "pump_origin_solana_rpc_transport",
+    "secondary_transport": "secondary_discovery_http_transport",
+    "migration_transport": "direct_pump_finalized_migration_transport",
+}
+
+
+def build_disposable_public_composition_execution_bindings(
+    runtime: DisposablePublicCompositionProofRuntime,
+) -> DisposablePublicCompositionExecutionBindings:
+    # Plan exact fixture-to-DI routing without invoking any fixture builder.
+    if not isinstance(runtime, DisposablePublicCompositionProofRuntime):
+        raise DisposablePublicCompositionProofError(
+            "DISPOSABLE_PUBLIC_COMPOSITION_PROOF_RUNTIME_REQUIRED"
+        )
+
+    canonical = tuple(ordinary_window_15m_builder_identities())
+    composition = runtime.fixture_composition
+
+    if runtime.plan.composition_labels != canonical:
+        raise DisposablePublicCompositionProofError(
+            "FIXTURE_COMPOSITION_REGISTRY_IDENTITY_MISMATCH"
+        )
+    if runtime.plan.composition_registry_sha256 != _labels_sha256(canonical):
+        raise DisposablePublicCompositionProofError(
+            "FIXTURE_COMPOSITION_REGISTRY_HASH_MISMATCH"
+        )
+    if composition.labels != canonical or tuple(composition.builders.keys()) != canonical:
+        raise DisposablePublicCompositionProofError(
+            "FIXTURE_COMPOSITION_REGISTRY_IDENTITY_MISMATCH"
+        )
+    expected_manifest = _fixture_manifest_sha256(canonical)
+    if (
+        composition.fixture_composition_manifest_sha256 != expected_manifest
+        or runtime.fixture_composition_manifest_sha256 != expected_manifest
+    ):
+        raise DisposablePublicCompositionProofError(
+            "FIXTURE_COMPOSITION_MANIFEST_MISMATCH"
+        )
+    if composition.provider_fallback_allowed is not False:
+        raise DisposablePublicCompositionProofError(
+            "FIXTURE_PROVIDER_FALLBACK_FORBIDDEN"
+        )
+
+    route_labels = tuple(label for label, _ in _EXECUTION_ROUTE_BY_LABEL)
+    if route_labels != canonical:
+        raise DisposablePublicCompositionProofError(
+            "FIXTURE_EXECUTION_ROUTE_REGISTRY_MISMATCH"
+        )
+    route_by_label = dict(_EXECUTION_ROUTE_BY_LABEL)
+    unmapped = tuple(label for label in canonical if label not in route_by_label)
+    if unmapped:
+        raise DisposablePublicCompositionProofError(
+            "FIXTURE_EXECUTION_ROUTE_UNMAPPED:" + ",".join(unmapped)
+        )
+    if any(not str(route).strip() for route in route_by_label.values()):
+        raise DisposablePublicCompositionProofError(
+            "FIXTURE_EXECUTION_ROUTE_EMPTY"
+        )
+
+    return DisposablePublicCompositionExecutionBindings(
+        registry_labels=canonical,
+        route_by_label=route_by_label,
+        top_level_transport_labels=dict(_TOP_LEVEL_TRANSPORT_LABELS),
+        unmapped_labels=(),
+        fixture_composition_manifest_sha256=expected_manifest,
+        provider_fallback_allowed=False,
+    )
+
+
 def build_disposable_public_composition_proof_binding(
     plan: DisposablePublicCompositionProofPlan,
     *,
@@ -499,12 +654,14 @@ def validate_disposable_public_composition_proof_binding(
 
 __all__ = [
     "BINDING_SCHEMA_VERSION",
+    "DisposablePublicCompositionExecutionBindings",
     "DisposablePublicCompositionProofBinding",
     "DisposablePublicCompositionProofError",
     "DisposablePublicCompositionProofPlan",
     "DisposablePublicCompositionProofRuntime",
     "PROOF_SCHEMA_VERSION",
     "Window15MFixtureComposition",
+    "build_disposable_public_composition_execution_bindings",
     "build_disposable_public_composition_proof_binding",
     "build_disposable_public_composition_proof_plan",
     "build_disposable_public_composition_proof_runtime",
