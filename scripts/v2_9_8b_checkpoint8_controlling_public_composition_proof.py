@@ -57,6 +57,22 @@ from printer_v1.sources.pumpfun_direct import (
     derive_program_address,
 )
 
+from printer_v1.sources.direct_pump_migration import (
+    SIGNATURE_PAGE_REQUEST_KIND as DIRECT_MIGRATION_SIGNATURE_PAGE_REQUEST_KIND,
+    TRANSACTION_REQUEST_KIND as DIRECT_MIGRATION_TRANSACTION_REQUEST_KIND,
+)
+from printer_v1.sources.pump_contracts import (
+    PUMP_EVENT_AUTHORITY_ID,
+    PUMP_GLOBAL_ID,
+    PUMP_MIGRATE_DISCRIMINATOR,
+    PUMP_WITHDRAW_AUTHORITY_ID,
+    PUMPSWAP_AMM_PROGRAM_ID,
+    PUMPSWAP_EVENT_AUTHORITY_ID,
+    PUMPSWAP_GLOBAL_CONFIG_ID,
+    TOKEN_2022_PROGRAM_ID,
+    WSOL_MINT,
+)
+
 
 _ATTEMPT_SENTINEL_NAME = "checkpoint8-controlling-attempt.json"
 
@@ -363,28 +379,147 @@ def _checkpoint8_create_transaction(
     }
 
 
+def _checkpoint8_ata(*, owner: str, token_program: str, mint: str) -> str:
+    return derive_program_address(
+        (_b58decode(owner), _b58decode(token_program), _b58decode(mint)),
+        ASSOCIATED_TOKEN_PROGRAM_ID,
+    )
+
+
+def _checkpoint8_migrate_transaction(
+    *,
+    label: str,
+    mint: str,
+    signature: str,
+    slot: int,
+    block_time: int,
+) -> tuple[dict[str, Any], str]:
+    mint_raw = _b58decode(mint)
+    user, _ = _fixture_pubkey(f"migration-user:{label}")
+    bonding_curve = derive_program_address((b"bonding-curve", mint_raw), PUMP_PROGRAM_ID)
+    associated_bonding_curve = _checkpoint8_ata(
+        owner=bonding_curve, token_program=TOKEN_PROGRAM_ID, mint=mint
+    )
+    pool_authority = derive_program_address((b"pool-authority", mint_raw), PUMP_PROGRAM_ID)
+    pumpswap_pool = derive_program_address(
+        (
+            b"pool",
+            (0).to_bytes(2, "little"),
+            _b58decode(pool_authority),
+            mint_raw,
+            _b58decode(WSOL_MINT),
+        ),
+        PUMPSWAP_AMM_PROGRAM_ID,
+    )
+    pool_authority_mint = _checkpoint8_ata(
+        owner=pool_authority, token_program=TOKEN_PROGRAM_ID, mint=mint
+    )
+    pool_authority_wsol = _checkpoint8_ata(
+        owner=pool_authority, token_program=TOKEN_PROGRAM_ID, mint=WSOL_MINT
+    )
+    lp_mint = derive_program_address(
+        (b"pool_lp_mint", _b58decode(pumpswap_pool)), PUMPSWAP_AMM_PROGRAM_ID
+    )
+    user_pool_token_account = _checkpoint8_ata(
+        owner=user, token_program=TOKEN_2022_PROGRAM_ID, mint=lp_mint
+    )
+    pool_base_token_account = _checkpoint8_ata(
+        owner=pumpswap_pool, token_program=TOKEN_PROGRAM_ID, mint=mint
+    )
+    pool_quote_token_account = _checkpoint8_ata(
+        owner=pumpswap_pool, token_program=TOKEN_PROGRAM_ID, mint=WSOL_MINT
+    )
+    accounts = [
+        PUMP_GLOBAL_ID,
+        PUMP_WITHDRAW_AUTHORITY_ID,
+        mint,
+        bonding_curve,
+        associated_bonding_curve,
+        user,
+        SYSTEM_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
+        PUMPSWAP_AMM_PROGRAM_ID,
+        pumpswap_pool,
+        pool_authority,
+        pool_authority_mint,
+        pool_authority_wsol,
+        PUMPSWAP_GLOBAL_CONFIG_ID,
+        WSOL_MINT,
+        lp_mint,
+        user_pool_token_account,
+        pool_base_token_account,
+        pool_quote_token_account,
+        TOKEN_2022_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID,
+        PUMPSWAP_EVENT_AUTHORITY_ID,
+        PUMP_EVENT_AUTHORITY_ID,
+        PUMP_PROGRAM_ID,
+        RENT_SYSVAR_ID,
+    ]
+    transaction = {
+        "version": 0,
+        "slot": slot,
+        "blockTime": block_time,
+        "meta": {
+            "err": None,
+            "loadedAddresses": {"writable": [], "readonly": []},
+            "innerInstructions": [],
+        },
+        "transaction": {
+            "signatures": [signature],
+            "message": {
+                "accountKeys": accounts,
+                "instructions": [
+                    {
+                        "programIdIndex": 23,
+                        "accounts": list(range(25)),
+                        "data": _b58encode(PUMP_MIGRATE_DISCRIMINATOR),
+                    }
+                ],
+            },
+        },
+    }
+    return transaction, pumpswap_pool
+
+
 def _checkpoint8_candidate_records() -> tuple[dict[str, Any], ...]:
     rows = []
     for ordinal, label in enumerate(("alpha", "bravo")):
-        slot = 1_700_000 + ordinal
-        block_time = 1_800_000_000 + ordinal * 60
-        transaction = _checkpoint8_create_transaction(
-            label=label,
-            slot=slot,
-            block_time=block_time,
+        create_slot = 1_700_000 + ordinal
+        create_block_time = 1_800_000_000 + ordinal * 60
+        create_transaction = _checkpoint8_create_transaction(
+            label=label, slot=create_slot, block_time=create_block_time
         )
-        mint = transaction["transaction"]["message"]["accountKeys"][0]
-        curve = transaction["transaction"]["message"]["accountKeys"][2]
-        signature = transaction["transaction"]["signatures"][0]
+        mint = create_transaction["transaction"]["message"]["accountKeys"][0]
+        bonding_curve = create_transaction["transaction"]["message"]["accountKeys"][2]
+        create_signature = create_transaction["transaction"]["signatures"][0]
+        migration_signature = _fixture_signature(f"migration-signature:{label}")
+        migration_slot = create_slot + 100
+        migration_block_time = create_block_time + 600
+        migration_transaction, pumpswap_pool = _checkpoint8_migrate_transaction(
+            label=label,
+            mint=mint,
+            signature=migration_signature,
+            slot=migration_slot,
+            block_time=migration_block_time,
+        )
         rows.append(
             {
                 "label": label,
                 "mint": mint,
-                "pool": curve,
-                "signature": signature,
-                "slot": slot,
-                "block_time": block_time,
-                "transaction": transaction,
+                "pool": bonding_curve,
+                "bonding_curve": bonding_curve,
+                "pumpswap_pool": pumpswap_pool,
+                "signature": create_signature,
+                "create_signature": create_signature,
+                "slot": create_slot,
+                "block_time": create_block_time,
+                "transaction": create_transaction,
+                "create_transaction": create_transaction,
+                "migration_signature": migration_signature,
+                "migration_slot": migration_slot,
+                "migration_block_time": migration_block_time,
+                "migration_transaction": migration_transaction,
             }
         )
     return tuple(rows)
@@ -466,8 +601,49 @@ class _Checkpoint8DeterministicFixture:
 
     def __call__(self, *args, **kwargs):
         self._count()
-        del args, kwargs
-        return self
+        if self.route != "top_level.migration_transport":
+            del args, kwargs
+            return self
+        context = args[0] if args else kwargs.get("context")
+        request = getattr(context, "request", None)
+        request_kind = str(getattr(request, "request_kind", "") or "")
+        payload = getattr(request, "payload", {}) or {}
+        candidates = _checkpoint8_candidate_records()
+        if request_kind == DIRECT_MIGRATION_SIGNATURE_PAGE_REQUEST_KIND:
+            result = [
+                {
+                    "signature": row["migration_signature"],
+                    "slot": row["migration_slot"],
+                    "confirmationStatus": "finalized",
+                    "err": None,
+                }
+                for row in reversed(candidates)
+            ]
+        elif request_kind == DIRECT_MIGRATION_TRANSACTION_REQUEST_KIND:
+            signature = str(payload.get("signature") or "")
+            result = next(
+                (
+                    row["migration_transaction"]
+                    for row in candidates
+                    if row["migration_signature"] == signature
+                ),
+                None,
+            )
+        else:
+            return {
+                "fixture_status": "failure",
+                "failure_type": "checkpoint8_direct_migration_request_kind_unsupported",
+                "failure_message": f"unsupported request kind: {request_kind}",
+                "response_bytes": 0,
+                "transport_operations_used": 1,
+            }
+        return {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": result,
+            "response_bytes": 512,
+            "transport_operations_used": 1,
+        }
 
     def execute(self, *args, **kwargs):
         self._count()
@@ -986,6 +1162,59 @@ def _checkpoint8_post_run_evidence(prepared) -> dict[str, Any]:
     }
 
 
+def extract_checkpoint8_terminal_identity(
+    terminal: dict[str, Any],
+) -> tuple[str, str]:
+    if not isinstance(terminal, dict):
+        raise Checkpoint8ControllingProofError("CHECKPOINT8_TERMINAL_RESULT_INVALID")
+    report = terminal.get("report")
+    report = report if isinstance(report, dict) else {}
+    cleanup = terminal.get("cleanup")
+    cleanup = cleanup if isinstance(cleanup, dict) else {}
+    reconciliation = terminal.get("reconciliation")
+    reconciliation = reconciliation if isinstance(reconciliation, dict) else {}
+    active_work = reconciliation.get("active_work")
+    active_work = active_work if isinstance(active_work, dict) else {}
+    active_scope = active_work.get("scope")
+    active_scope = active_scope if isinstance(active_scope, dict) else {}
+    discovery = reconciliation.get("discovery_parity")
+    discovery = discovery if isinstance(discovery, dict) else {}
+    discovery_scope = discovery.get("scope")
+    discovery_scope = discovery_scope if isinstance(discovery_scope, dict) else {}
+    exhaustion = report.get("exhaustion_certificate")
+    exhaustion = exhaustion if isinstance(exhaustion, dict) else {}
+
+    campaign_values = {
+        str(value).strip()
+        for value in (
+            terminal.get("campaign_id"),
+            report.get("campaign_id"),
+            cleanup.get("campaign_id"),
+            active_scope.get("campaign_id"),
+            discovery_scope.get("campaign_id"),
+            exhaustion.get("campaign_id"),
+        )
+        if value not in (None, "")
+    }
+    run_values = {
+        str(value).strip()
+        for value in (
+            terminal.get("run_id"),
+            report.get("run_id"),
+            cleanup.get("run_id"),
+            active_scope.get("run_id"),
+            discovery_scope.get("run_id"),
+            exhaustion.get("run_id"),
+        )
+        if value not in (None, "")
+    }
+    if len(campaign_values) > 1 or len(run_values) > 1:
+        raise Checkpoint8ControllingProofError("CHECKPOINT8_TERMINAL_IDENTITY_CONFLICT")
+    if len(campaign_values) != 1 or len(run_values) != 1:
+        raise Checkpoint8ControllingProofError("CHECKPOINT8_TERMINAL_IDENTITY_MISSING")
+    return next(iter(campaign_values)), next(iter(run_values))
+
+
 def execute_checkpoint8_public_sequence(
     prepared,
     *,
@@ -1027,22 +1256,7 @@ def execute_checkpoint8_public_sequence(
             raise Checkpoint8ControllingProofError(
                 "CHECKPOINT8_TERMINAL_RESULT_INVALID"
             )
-        report = terminal.get("report")
-        report = report if isinstance(report, dict) else {}
-        campaign_id = str(
-            terminal.get("campaign_id")
-            or report.get("campaign_id")
-            or ""
-        ).strip()
-        run_id = str(
-            report.get("run_id")
-            or terminal.get("run_id")
-            or ""
-        ).strip()
-        if not campaign_id or not run_id:
-            raise Checkpoint8ControllingProofError(
-                "CHECKPOINT8_TERMINAL_IDENTITY_MISSING"
-            )
+        campaign_id, run_id = extract_checkpoint8_terminal_identity(terminal)
 
         replay = report_only(
             campaign_id=campaign_id,
