@@ -2305,6 +2305,18 @@ def build_pre_holder_accounting_projection(
     }
 
 
+def _holder_stage_evidence_sealer_required(
+    *,
+    git_provenance_authorization: ValidatedGitProvenanceAuthorization | None,
+    disposable_proof: Any | None,
+) -> bool:
+    """True when accountable holder work must be sealed into campaign ownership."""
+    return bool(
+        git_provenance_authorization is not None
+        or disposable_proof is not None
+    )
+
+
 def _run_operational_campaign(
     *,
     policy: _OperationalCampaignPolicy,
@@ -2314,6 +2326,7 @@ def _run_operational_campaign(
     secondary_transport: Any | None = None,
     migration_transport: Any | None = None,
     git_provenance_authorization: ValidatedGitProvenanceAuthorization | None = None,
+    disposable_proof: Any | None = None,
 ) -> dict[str, Any]:
     """Run one fixed-policy campaign through the canonical V2-9.8B owner."""
     if not operator_approved:
@@ -2747,7 +2760,10 @@ def _run_operational_campaign(
                 ),
                 holder_stage_evidence_sealer=(
                     _seal_holder_stage
-                    if git_provenance_authorization is not None
+                    if _holder_stage_evidence_sealer_required(
+                        git_provenance_authorization=git_provenance_authorization,
+                        disposable_proof=disposable_proof,
+                    )
                     else None
                 ),
                 operational_database_target_binding=(
@@ -3122,8 +3138,14 @@ def run_operational_campaign(
     secondary_transport: Any | None = None,
     migration_transport: Any | None = None,
     git_provenance_authorization: ValidatedGitProvenanceAuthorization | None = None,
+    disposable_proof: Any | None = None,
 ) -> dict[str, Any]:
-    """Run one bounded persistent 15m-only production campaign."""
+    """Run one bounded persistent 15m-only production campaign.
+
+    ``disposable_proof`` is a Checkpoint-8 proof-only capability. This boundary
+    slice exposes and threads its identity without weakening default production
+    authorization behavior.
+    """
     return _run_operational_campaign(
         policy=_NORMAL_CAMPAIGN_POLICY,
         operator_approved=operator_approved,
@@ -3132,6 +3154,7 @@ def run_operational_campaign(
         secondary_transport=secondary_transport,
         migration_transport=migration_transport,
         git_provenance_authorization=git_provenance_authorization,
+        disposable_proof=disposable_proof,
     )
 
 
