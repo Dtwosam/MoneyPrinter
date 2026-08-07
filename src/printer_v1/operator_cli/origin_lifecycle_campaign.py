@@ -1374,6 +1374,7 @@ class OriginToLifecycleCampaignDriver:
         four_hour_proof_mode: bool = False,
         operational_persistent_mode: bool = False,
         operational_database_target_binding: Any | None = None,
+        disposable_public_composition_proof_binding: Any | None = None,
         lifecycle_kwargs: dict[str, Any] | None = None,
         post_handoff_fault: str | None = None,
     ) -> OriginLifecycleResult:
@@ -1662,6 +1663,9 @@ class OriginToLifecycleCampaignDriver:
                 operational_persistent_mode=operational_persistent_mode,
                 operational_database_target_binding=(
                     operational_database_target_binding
+                ),
+                disposable_public_composition_proof_binding=(
+                    disposable_public_composition_proof_binding
                 ),
                 max_selected_tokens=2,
                 campaign_id=command.campaign_id,

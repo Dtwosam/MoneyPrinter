@@ -3750,6 +3750,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
             operational_database_target_binding=(
                 operational_database_target_binding
             ),
+            disposable_public_composition_proof_binding=(
+                disposable_public_composition_proof_binding
+            ),
             lifecycle_kwargs=lk,
         )
         if (

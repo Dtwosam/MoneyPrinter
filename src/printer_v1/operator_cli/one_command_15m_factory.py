@@ -3972,6 +3972,7 @@ def run_one_command_15m_factory(
     launch_provenance: Mapping[str, Any] | None = None,
     operational_persistent_mode: bool = False,
     operational_database_target_binding: Any | None = None,
+    disposable_public_composition_proof_binding: Any | None = None,
     lifecycle_ownership_context: Mapping[str, Any] | None = None,
     lifecycle_operation_observer: Callable[[Mapping[str, Any]], None] | None = None,
     _post_handoff_fault: str | None = None,
@@ -4009,19 +4010,21 @@ def run_one_command_15m_factory(
             CANONICAL_PERSISTENT_DB,
         )
         from printer_v1.operator_cli.operational_database_target_binding import (
+            DISPOSABLE_PUBLIC_COMPOSITION_PROOF_EXPECTATION_VERSION,
+            build_disposable_public_composition_proof_expectation,
             load_durable_operational_database_target_expectation,
             validate_bound_operational_invocation,
+            validate_disposable_public_composition_proof_invocation,
         )
         from printer_v1.db.migrate import (
             canonical_migration_count,
             canonical_migration_names,
         )
         canonical = Path(CANONICAL_PERSISTENT_DB).resolve()
-        if path != canonical and operational_database_target_binding is None:
-            reasons.append(
-                "operational persistent mode requires the authoritative corpus"
-            )
-        binding_expected = (
+        ownership_ready = all(
+            (campaign_id, campaign_run_id, cycle_id, configuration_id)
+        )
+        durable_loaded = (
             load_durable_operational_database_target_expectation(
                 path,
                 campaign_id=str(campaign_id or ""),
@@ -4029,23 +4032,94 @@ def run_one_command_15m_factory(
                 cycle_id=str(cycle_id or ""),
                 configuration_id=str(configuration_id or ""),
             )
-            if all((campaign_id, campaign_run_id, cycle_id, configuration_id))
+            if ownership_ready
             else None
         )
-        binding_reason = validate_bound_operational_invocation(
-            operational_database_target_binding,
-            actual_db_path=path,
-            canonical_authoritative_db_path=canonical,
-            migration_count=canonical_migration_count(),
-            migration_head=canonical_migration_names()[-1],
-            campaign_id=campaign_id,
-            campaign_run_id=campaign_run_id,
-            cycle_id=cycle_id,
-            configuration_id=configuration_id,
-            durable_expectation=binding_expected,
-        )
-        if binding_reason is not None:
-            reasons.append(binding_reason)
+        if operational_database_target_binding is not None:
+            # Production binding has precedence and keeps existing law.
+            binding_reason = validate_bound_operational_invocation(
+                operational_database_target_binding,
+                actual_db_path=path,
+                canonical_authoritative_db_path=canonical,
+                migration_count=canonical_migration_count(),
+                migration_head=canonical_migration_names()[-1],
+                campaign_id=campaign_id,
+                campaign_run_id=campaign_run_id,
+                cycle_id=cycle_id,
+                configuration_id=configuration_id,
+                durable_expectation=durable_loaded,
+            )
+            if binding_reason is not None:
+                reasons.append(binding_reason)
+        elif disposable_public_composition_proof_binding is not None:
+            # Sole non-corpus alternative: already-owned C8 disposable binding.
+            if (
+                isinstance(durable_loaded, dict)
+                and durable_loaded.get("expectation_version")
+                == DISPOSABLE_PUBLIC_COMPOSITION_PROOF_EXPECTATION_VERSION
+            ):
+                disposable_expectation = durable_loaded
+            else:
+                disposable_expectation = (
+                    build_disposable_public_composition_proof_expectation(
+                        disposable_public_composition_proof_binding
+                    )
+                )
+            disposable_reason = validate_disposable_public_composition_proof_invocation(
+                disposable_public_composition_proof_binding,
+                expectation=disposable_expectation,
+                actual_db_path=path,
+                canonical_authoritative_db_path=canonical,
+                execution_id=str(
+                    getattr(
+                        disposable_public_composition_proof_binding,
+                        "execution_id",
+                        "",
+                    )
+                    or ""
+                ),
+                campaign_id=str(campaign_id or ""),
+                campaign_run_id=str(campaign_run_id or ""),
+                cycle_id=str(cycle_id or ""),
+                configuration_id=str(configuration_id or ""),
+                durable_db_target_identity=str(
+                    getattr(
+                        disposable_public_composition_proof_binding,
+                        "db_target_identity",
+                        "",
+                    )
+                    or ""
+                ),
+                fixture_composition_manifest_sha256=str(
+                    getattr(
+                        disposable_public_composition_proof_binding,
+                        "fixture_composition_manifest_sha256",
+                        "",
+                    )
+                    or ""
+                ),
+            )
+            if disposable_reason is not None:
+                reasons.append(disposable_reason)
+        else:
+            if path != canonical:
+                reasons.append(
+                    "operational persistent mode requires the authoritative corpus"
+                )
+            binding_reason = validate_bound_operational_invocation(
+                None,
+                actual_db_path=path,
+                canonical_authoritative_db_path=canonical,
+                migration_count=canonical_migration_count(),
+                migration_head=canonical_migration_names()[-1],
+                campaign_id=campaign_id,
+                campaign_run_id=campaign_run_id,
+                cycle_id=cycle_id,
+                configuration_id=configuration_id,
+                durable_expectation=durable_loaded,
+            )
+            if binding_reason is not None:
+                reasons.append(binding_reason)
     elif _is_persistent_db(path):
         reasons.append("persistent DB is forbidden in proof mode")
     # V2-5: the explicit three-token proof mode permits exactly three autonomous
