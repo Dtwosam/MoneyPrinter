@@ -503,8 +503,6 @@ def build_operational_budget_preflight(
         issues.append("ZERO_TRANSPORT_VALIDATION_DRIFT")
     if constants["holder_worst_case_transport_operations"] != 5:
         issues.append("HOLDER_WORST_CASE_TRANSPORT_DRIFT")
-    # Optional outer campaign ceilings are reported only; they must not silently
-    # override the admission operation ledger.
     outer = {
         "discovery_request_ceiling": discovery_request_ceiling,
         "governed_15m_request_ceiling": governed_15m_request_ceiling,
@@ -1018,7 +1016,6 @@ def _holder_logical_stage_id(
 
 
 
-
 def _persist_one_holder_attempt(
     connection: sqlite3.Connection,
     *,
@@ -1071,11 +1068,21 @@ def _persist_one_holder_attempt(
             accounting_reason = f"{measure_reason}:request={request_id}"
         operation_count = 0
 
+    transport_identity_keys: list[list[object]] = []
+    identities_raw = payload.get("transport_operation_identities")
+    if accounting_ok and isinstance(identities_raw, Sequence) and not isinstance(
+        identities_raw, (str, bytes)
+    ):
+        transport_identity_keys = [
+            list(_measured_transport_identity_key(item))
+            for item in identities_raw
+            if isinstance(item, Mapping)
+        ]
+
     source_failed = _holder_source_failed(execution)
     terminal_status = "BLOCKED" if (not accounting_ok or source_failed) else "COMPLETED"
     member_count = 0
     if accounting_ok and not source_failed:
-        # One normalized holder/safety contribution when evidence is present.
         if payload:
             member_count = 1
 
@@ -1093,6 +1100,7 @@ def _persist_one_holder_attempt(
         ),
         "terminal_status": terminal_status,
         "transport_identity_count": int(operation_count),
+        "transport_identity_keys": transport_identity_keys,
         "normalized_member_count": int(member_count),
     }
 
@@ -1192,6 +1200,7 @@ def _blocked_coverage_entry(
         ),
         "terminal_status": "BLOCKED",
         "transport_identity_count": int(transport_identity_count),
+        "transport_identity_keys": [],
         "normalized_member_count": 0,
     }
 
@@ -1237,22 +1246,16 @@ def persist_bundle_attempts(
     transport_identity_keys: set[tuple[object, ...]] = set()
 
     for key, execution in distinct:
-        # Capture the durable identity before any work that can raise, so a
-        # governed request row can never vanish from IDs or coverage.
         try:
             request_id: int | None = int(execution.request_record.id)
-        except Exception:  # pragma: no cover - no durable identity exists
+        except Exception:
             request_id = None
-        # Measure the transport count from authoritative measured metadata
-        # before any evidence-table operation that may raise, so a proven count
-        # survives a later persistence failure. Zero is used only when the
-        # measurement is itself absent, invalid, negative, or contradictory.
         try:
             proven_count, proven_ok, _proven_reason = _measure_holder_transport_count(
                 execution,
                 require_exact_identities=require_exact_transport_identities,
             )
-        except Exception:  # pragma: no cover - unmeasurable execution record
+        except Exception:
             proven_count, proven_ok = 0, False
         if not proven_ok:
             proven_count = 0
@@ -1281,9 +1284,8 @@ def persist_bundle_attempts(
                     )
                     entry["terminal_status"] = "BLOCKED"
                     entry["transport_identity_count"] = 0
+                    entry["transport_identity_keys"] = []
                 else:
-                    # Provider failure/rate-limit is truthful holder context;
-                    # exact request accounting itself completed.
                     entry["terminal_status"] = "COMPLETED"
         except Exception as exc:
             if request_id is not None:
@@ -1309,9 +1311,6 @@ def persist_bundle_attempts(
                 f"HOLDER_BUNDLE_PERSIST_FAILED:{type(exc).__name__}"
                 f":request={request_id}"
             )
-            # An incomplete attempt is never a completed one, and it never
-            # contributed a normalized member. The transport counts already
-            # proven from the preserved real executions are kept exactly.
             blocked_coverage = []
             for item in coverage:
                 blocked = dict(item)
@@ -1352,6 +1351,7 @@ def persist_bundle_attempts(
                     operation_count = 0
                     entry["terminal_status"] = "BLOCKED"
                     entry["transport_identity_count"] = 0
+                    entry["transport_identity_keys"] = []
                     accounting_reasons.append(
                         f"HOLDER_TRANSPORT_IDENTITY_DUPLICATE:request={request_id}"
                     )
@@ -1362,6 +1362,7 @@ def persist_bundle_attempts(
                     operation_count = 0
                     entry["terminal_status"] = "BLOCKED"
                     entry["transport_identity_count"] = 0
+                    entry["transport_identity_keys"] = []
                     accounting_reasons.append(
                         "HOLDER_TRANSPORT_IDENTITY_CORRESPONDENCE_MISMATCH:"
                         f"request={request_id}"
