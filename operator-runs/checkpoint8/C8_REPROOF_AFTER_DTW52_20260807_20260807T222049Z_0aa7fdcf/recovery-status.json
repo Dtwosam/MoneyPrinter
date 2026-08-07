@@ -1,0 +1,36 @@
+{
+  "status": "FROZEN_BLOCKED_EVIDENCE_PRESERVED",
+  "proof_id": "C8_REPROOF_AFTER_DTW52_20260807",
+  "authorization_sha": "0aa7fdcfacdd7f28ae0883b045ee66be17c76f09",
+  "harness_exit_code": 0,
+  "campaign_acceptance_verdict": "BLOCKED_UNSAFE",
+  "campaign_pass": false,
+  "first_terminal_cause": "COMPLETED_CLEAN_OR_DIRTY_RESULTS_REPORTED",
+  "clean_memory_outcome_pass": true,
+  "first_acceptance_law_blocker": {
+    "check": "owner_action_local_equal_non_vacuous",
+    "mismatch_reason": "LOCAL_VALIDATION_STEP:UNIT_IDENTITY_SET_MISMATCH",
+    "detail": {
+      "LOCAL_VALIDATION_STEP": {
+        "action_local_count": 89,
+        "owner_count": 93,
+        "identity_sets_equal": false,
+        "unit_block_reason": "UNIT_IDENTITY_SET_MISMATCH"
+      }
+    }
+  },
+  "second_acceptance_law_blocker": {
+    "check": "reservation_attempt_outcomes_complete",
+    "value": false
+  },
+  "report_only": {
+    "status": "REPLAY_BLOCKED",
+    "block_reason": "FULL_RUN_REPAIRED_EVIDENCE_INVALID",
+    "source_calls": 0,
+    "scheduler_runtime_calls": 0,
+    "database_writes": 0
+  },
+  "no_retry": true,
+  "no_production_code_change": true,
+  "dtw34_status": "In Progress"
+}

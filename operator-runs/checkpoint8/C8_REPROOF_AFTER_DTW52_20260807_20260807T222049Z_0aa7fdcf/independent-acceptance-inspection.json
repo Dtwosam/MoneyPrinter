@@ -1,0 +1,708 @@
+{
+  "checks": {
+    "zero_provider_network_attempts": {
+      "ok": true,
+      "detail": {
+        "network_attempt_count": 0,
+        "network_attempts": []
+      }
+    },
+    "sentinel_exactly_one_attempt": {
+      "ok": true,
+      "detail": {
+        "attempt_ordinal": 1,
+        "git_head": "0aa7fdcfacdd7f28ae0883b045ee66be17c76f09",
+        "proof_id": "C8_REPROOF_AFTER_DTW52_20260807",
+        "sentinel_schema": "CHECKPOINT8_CONTROLLING_ATTEMPT_V1"
+      }
+    },
+    "campaign_acceptance": {
+      "ok": false,
+      "detail": {
+        "term_verdict": "BLOCKED_UNSAFE",
+        "full_verdict": "BLOCKED_UNSAFE",
+        "ca_pass": false,
+        "ca_verdict": "BLOCKED_UNSAFE"
+      }
+    },
+    "campaign_pass_flag": {
+      "ok": false,
+      "detail": {
+        "campaign_pass": false,
+        "full": null
+      }
+    },
+    "clean_memory_outcome_pass": {
+      "ok": true,
+      "detail": {
+        "term": true,
+        "cmo": true,
+        "blocker_categories": [],
+        "windows": [
+          {
+            "data_quality_label": "CLEAN_DATA",
+            "do_not_train": 0,
+            "episode_id": 1,
+            "fingerprint_id": 1,
+            "memory_quality_label": "PARTIAL_MEMORY",
+            "memory_status": "PARTIAL_MEMORY",
+            "pair_id": 2,
+            "token_id": 2,
+            "window_id": 1,
+            "window_status": "WINDOW_CLOSED"
+          },
+          {
+            "data_quality_label": "CLEAN_DATA",
+            "do_not_train": 0,
+            "episode_id": 2,
+            "fingerprint_id": 2,
+            "memory_quality_label": "PARTIAL_MEMORY",
+            "memory_status": "PARTIAL_MEMORY",
+            "pair_id": 1,
+            "token_id": 1,
+            "window_id": 2,
+            "window_status": "WINDOW_CLOSED"
+          }
+        ]
+      }
+    },
+    "exactly_two_selected_tokens": {
+      "ok": true,
+      "detail": {
+        "selected_token_count": 2,
+        "selected_tokens": [
+          {
+            "cadence": {
+              "actual_snapshot_steps": 8,
+              "cadence_policy": "WINDOW_15M_AUTHORITATIVE_CADENCE",
+              "close_scheduler_job_ids": [
+                28
+              ],
+              "close_step_ids": [
+                18
+              ],
+              "coverage_status": "COMPLETE",
+              "expected_snapshot_steps": 8,
+              "minimum_required_observations": 9,
+              "missing_snapshot_steps": 0,
+              "planned_snapshot_steps": 8,
+              "snapshot_ids": [
+                2,
+                4,
+                6,
+                8,
+                10,
+                12,
+                14,
+                16
+              ],
+              "snapshot_scheduler_job_ids": [
+                12,
+                21,
+                22,
+                23,
+                24,
+                25,
+                26,
+                27
+              ],
+              "snapshot_step_ids": [
+                2,
+                11,
+                12,
+                13,
+                14,
+                15,
+                16,
+                17
+              ],
+              "succeeded_close_count": 1,
+              "target_snapshot_interval_seconds": 120,
+              "tracking_lane": "TRACK_NORMAL"
+            },
+            "campaign_window_id": "20260807T222050Z-8920d5ab5652-cycle:window:1",
+            "memory_window_id": 2,
+            "memory_window_row_id": 2,
+            "pair_address": "7CQEubcAzwy3Nhh1v9QXYyD4vXp6JgwdRZYkybbfdRFs",
+            "pair_id": 1,
+            "token_id": 1,
+            "token_mint": "Hx7d5gD9Lt23A7BQkBxiE6rnfFuw9ARsHSLGN6Acvcbb",
+            "token_slot_id": "slot-20260807T222050Z-8920d5ab5652-cycle-1",
+            "tracking_lane": "TRACK_NORMAL"
+          },
+          {
+            "cadence": {
+              "actual_snapshot_steps": 8,
+              "cadence_policy": "WINDOW_15M_AUTHORITATIVE_CADENCE",
+              "close_scheduler_job_ids": [
+                20
+              ],
+              "close_step_ids": [
+                10
+              ],
+              "coverage_status": "COMPLETE",
+              "expected_snapshot_steps": 8,
+              "minimum_required_observations": 9,
+              "missing_snapshot_steps": 0,
+              "planned_snapshot_steps": 8,
+              "snapshot_ids": [
+                1,
+                3,
+                5,
+                7,
+                9,
+                11,
+                13,
+                15
+              ],
+              "snapshot_scheduler_job_ids": [
+                11,
+                13,
+                14,
+                15,
+                16,
+                17,
+                18,
+                19
+              ],
+              "snapshot_step_ids": [
+                1,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9
+              ],
+              "succeeded_close_count": 1,
+              "target_snapshot_interval_seconds": 120,
+              "tracking_lane": "TRACK_NORMAL"
+            },
+            "campaign_window_id": "20260807T222050Z-8920d5ab5652-cycle:window:2",
+            "memory_window_id": 1,
+            "memory_window_row_id": 1,
+            "pair_address": "4wdeaEC5kZhZ93AoZ76HKDSq1sSS7uKHsotQo3G5ggSV",
+            "pair_id": 2,
+            "token_id": 2,
+            "token_mint": "5dqWELD3TqMDw8BHmi7wcKXrEhuvwNqeCDLCYQGijHut",
+            "token_slot_id": "slot-20260807T222050Z-8920d5ab5652-cycle-2",
+            "tracking_lane": "TRACK_NORMAL"
+          }
+        ],
+        "terminal_window_count": 2,
+        "terminal_window_ids": [
+          "20260807T222050Z-8920d5ab5652-cycle:window:1",
+          "20260807T222050Z-8920d5ab5652-cycle:window:2"
+        ]
+      }
+    },
+    "exactly_two_terminal_windows": {
+      "ok": true,
+      "detail": {
+        "terminal_window_count": 2,
+        "terminal_window_ids": [
+          "20260807T222050Z-8920d5ab5652-cycle:window:1",
+          "20260807T222050Z-8920d5ab5652-cycle:window:2"
+        ]
+      }
+    },
+    "db_integrity_ok": {
+      "ok": true,
+      "detail": "ok"
+    },
+    "zero_fk_violations": {
+      "ok": true,
+      "detail": 0
+    },
+    "window_count": {
+      "ok": true,
+      "detail": {
+        "count": 2,
+        "kinds_sample": [
+          "WINDOW_15M",
+          "WINDOW_CLOSED",
+          "{\"approved_mint\": \"5dqWELD3TqMDw8BHmi7wcKXrEhuvwNqeCDLCYQGijHut\", \"context_freshness_report\": {\"all_context_fresh_enough\": true, \"context_blocking_reasons\": [], \"context_details\": {\"chain_heat\": {\"attached_snapshot_id\": 17, \"context_blocker_reason\": null, \"context_captured_at\": \"2026-08-07T22:36:02.148725+00:00\", \"context_freshness_label\": \"CONTEXT_FRESH\", \"context_role\": \"MAIN_WINDOW_CONTEXT\", \"context_row_id\": 2, \"context_table\": \"printer_solana_chain_heat_snapshots\", \"context_target_status\": \"CONTEXT_TARGET_MATCH\", \"context_type\": \"chain_heat\", \"data_quality_label\": \"MISSING_CRITICAL_DATA\", \"expected_snapshot_id\": 17, \"source_status\": \"PARTIAL\", \"window_end_at\": \"2026-08-07T22:36:02.148725+00:00\", \"window_start_at\": \"2026-08-07T22:21:00.295492+00:00\"}, \"chart_volatility\": {\"attached_snapshot_id\": 17, \"context_blocker_reason\": null, \"context_captured_at\": \"2026-08-07T22:36:02.148725+00:00\", \"context_freshness_label\": \"CONTEXT_FRESH\", \"context_role\": \"MAIN_WINDOW_CONTEXT\", \"context_row_id\": 1, \"context_table\": \"printer_chart_volatility_snapshots\", \"context_target_status\": \"CONTEXT_TARGET_MATCH\", \"context_type\": \"chart_volatility\", \"data_quality_label\": \"CLEAN_DATA\", \"expected_snapshot_id\": 17, \"source_status\": \"COMPLETE\", \"window_end_at\": \"2026-08-07T22:36:02.148725+00:00\", \"window_start_at\": \"2026-08-07T22:21:00.295492+00:00\"}, \"liquidity_exit\": {\"attached_snapshot_id\": 17, \"context_blocker_reason\": null, \"context_captured_at\": \"2026-08-07T22:36:02.148725+00:00\", \"context_freshness_label\": \"CONTEXT_FRESH\", \"context_role\": \"MAIN_WINDOW_CONTEXT\", \"context_row_id\": 1, \"context_table\": \"printer_liquidity_exit_snapshots\", \"context_target_status\": \"CONTEXT_TARGET_MATCH\", \"context_type\": \"liquidity_exit\", \"data_quality_label\": \"CLEAN_DATA\", \"expected_snapshot_id\": 17, \"source_status\": \"COMPLETE\", \"window_end_at\": \"2026-08-07T22:36:02.148725+00:00\", \"window_start_at\": \"2026-08-07T22:21:00.295492+00:00\"}, \"market\": {\"attached_snapshot_id\": 17, \"context_blocker_reason\": null, \"context_captured_at\": \"2026-08-07T22:36:02.148725+00:00\", \"context_freshness_label\": \"CONTEXT_FRESH\", \"context_role\": \"MAIN_WINDOW_CONTEXT\", \"context_row_id\": 2, \"context_table\": \"printer_market_regime_snapshots\", \"context_target_status\": \"CONTEXT_TARGET_MATCH\", \"context_type\": \"market\", \"data_quality_label\": \"MISSING_CRITICAL_DATA\", \"expected_snapshot_id\": 17, \"source_status\": \"PARTIAL\", \"window_end_at\": \"2026-08-07T22:36:02.148725+00:00\", \"window_start_at\": \"2026-08-07T22:21:00.295492+00:00\"}, \"micro_event\": {\"attached_snapshot_id\": 17, \"context_blocker_reason\": null, \"context_captured_at\": \"2026-08-07T22:36:02.148725+00:00\", \"context_freshness_label\": \"CONTEXT_FRESH\", \"context_role\": \"SUPPORT_MICRO_EVENT\", \"context_row_id\": 1, \"context_table\": \"printer_micro_events\", \"context_target_status\": \"CONTEXT_TARGET_MATCH\", \"context_type\": \"micro_event\", \"data_quality_label\": \"MISSING_CRITICAL_DATA\", \"expected_snapshot_id\": 17, \"source_status\": \"PARTIAL\", \"window_end_at\": \"2026-08-07T22:36:02.148725+00:00\", \"window_start_at\": \"2026-08-07T22:21:00.295492+00:00\"}, \"safety\": {\"attached_snapshot_id\": 17, \"context_blocker_reason\": null, \"context_captured_at\": \"2026-08-07T22:36:02.148725+00:00\", \"context_freshness_label\": \"CONTEXT_FRESH\", \"context_role\": \"MAIN_WINDOW_CONTEXT\", \"context_row_id\": 1, \"context_table\": \"printer_safety_rug_snapshots\", \"context_target_status\": \"CONTEXT_TARGET_MATCH\", \"context_type\": \"safety\", \"data_quality_label\": \"MISSING_CRITICAL_DATA\", \"expected_snapshot_id\": 17, \"source_status\": \"PARTIAL\", \"window_end_at\": \"2026-08-07T22:36:02.148725+00:00\", \"window_start_at\": \"2026-08-07T22:21:00.295492+00:00\"}, \"trading_flow\": {\"attached_snapshot_id\": 17, \"context_blocker_reason\": null, \"context_captured_at\": \"2026-08-07T22:36:02.148725+00:00\", \"context_freshness_label\": \"CONTEXT_FRESH\", \"context_role\": \"MAIN_WINDOW_CONTEXT\", \"context_row_id\": 1, \"context_table\": \"printer_trading_flow_snapshots\", \"context_target_status\": \"CONTEXT_TARGET_MATCH\", \"context_type\": \"trading_flow\", \"data_quality_label\": \"CLEAN_DATA\", \"expected_snapshot_id\": 17, \"source_status\": \"COMPLETE\", \"window_end_at\": \"2026-08-07T22:36:02.148725+00:00\", \"window_start_at\": \"2026-08-07T22:21:00.295492+00:00\"}}, \"context_freshness_tolerance_minutes\": 10, \"context_target_mismatch_count\": 0, \"missing_or_unknown_context_count\": 0, \"stale_context_count\": 0}, \"context_labels\": {\"candle_path_label\": \"PATH_CHOPPY_NOISE\", \"chain_heat_label\": \"SOLANA_WARM\", \"chain_heat_payload_quality_label\": \"CHAIN_HEAT_CONTEXT_CLEAN\", \"chain_heat_transition_label\": \"SOLANA_TRANSITION_UNKNOWN\", \"chart_memory_gate_label\": \"CHART_CONTEXT_ACCEPTABLE\", \"chart_payload_quality_label\": \"CHART_CONTEXT_CLEAN\", \"drawdown_recovery_label\": \"DRAWDOWN_NONE\", \"effective_safety_context_result\": \"SAFETY_CONTEXT_ACCEPTABLE\", \"entry_realism_label\": \"ENTRY_ROUTE_AVAILABLE\", \"exit_realism_label\": \"EXIT_ROUTE_AVAILABLE\", \"flow_direction_label\": \"FLOW_EXHAUSTION\", \"flow_memory_gate_label\": \"FLOW_CONTEXT_CAUTION\", \"flow_pressure_label\": \"PRESSURE_MODERATE_INFLOW\", \"held_to_15m_result_label\": \"HELD_TO_15M_CONSOLIDATED\", \"imbalance_label\": \"IMBALANCE_BUY_HEAVY\", \"liquidity_state_label\": \"LIQUIDITY_CONTEXT_ACCEPTABLE\", \"market_payload_quality_label\": \"MARKET_CONTEXT_CLEAN\", \"market_regime_label\": \"CHOPPY\", \"market_transition_label\": \"UNKNOWN_TRANSITION\", \"micro_event_state_label\": \"NO_MICRO_EVENT\", \"momentum_label\": \"MOMENTUM_STABLE\", \"price_impact_context_label\": \"PRICE_IMPACT_ACCEPTABLE\", \"range_behavior_label\": \"RANGE_COMPRESSING\", \"raw_safety_action_label\": null, \"raw_safety_context_label\": \"SAFETY_UNKNOWN\", \"raw_safety_contract_label\": \"SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY\", \"realism_gate_label\": \"REALISM_CONTEXT_CAUTION\", \"rug_risk_label\": \"RUG_RISK_ACCEPTABLE_FOR_15M\", \"safety_action_label\": \"SAFETY_CONTEXT_ACCEPTABLE\", \"safety_status_label\": \"SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY\", \"slippage_context_label\": \"SLIPPAGE_ACCEPTABLE\", \"trading_flow_payload_quality_label\": \"TRADING_FLOW_CONTEXT_PARTIAL\", \"trend_structure_label\": \"TREND_SIDEWAYS\", \"tx_activity_label\": \"TX_ACTIVITY_WEAK\", \"volatility_label\": \"VOLATILITY_LOW\", \"volume_activity_label\": \"VOLUME_WEAK\", \"wallet_participation_label\": \"WALLETS_UNKNOWN\"}, \"context_quality_reviewed\": true, \"context_row_ids\": {\"chain_heat\": 2, \"chart_volatility\": 1, \"liquidity_exit\": 1, \"market\": 2, \"micro_event\": 1, \"safety\": 1, \"trading_flow\": 1}, \"created_by\": \"lane_e2o\", \"derived_window_context\": {\"chart_context\": {\"candle_count\": 9, \"captured_at\": \"2026-08-07T22:36:02.148725+00:00\", \"consecutive_green_candles\": 0, \"consecutive_red_candles\": 0, \"data_quality_label\": \"CLEAN_DATA\", \"flat_candle_count\": 8, \"green_candle_count\": 0, \"high_to_close_fade_percent\": 0.0, \"higher_high_count\": 0, \"largest_green_candle_percent\": 0.0, \"largest_red_candle_percent\": 0.0, \"lower_low_count\": 0, \"max_drawdown_percent\": 0.0, \"max_runup_percent\": 0.0, \"open_to_low_drop_percent\": 0.0, \"pair_id\": 2, \"price_change_percent\": 0.0, \"price_close\": 1.0, \"price_high\": 1.0, \"price_low\": 1.0, \"price_open\": 1.0, \"range_high\": 1.0, \"range_low\": 1.0, \"range_width_percent\": 0.0, \"recovery_from_low_percent\": 0.0, \"red_candle_count\": 0, \"round_trip_percent\": null, \"source_status\": \"COMPLETE\", \"token_id\": 2, \"volatility_percent\": 0.0, \"window_end_at\": \"2026-08-07T22:36:02.148725+00:00\", \"window_start_at\": \"2026-08-07T22:21:00.295492+00:00\"}, \"chart_labels\": {\"candle_path_label\": \"PATH_CHOPPY_NOISE\", \"chart_memory_gate_label\": \"CHART_CONTEXT_ACCEPTABLE\", \"chart_payload_quality_label\": \"CHART_CONTEXT_CLEAN\", \"drawdown_recovery_label\": \"DRAWDOWN_NONE\", \"momentum_label\": \"MOMENTUM_STABLE\", \"range_behavior_label\": \"RANGE_COMPRESSING\", \"trend_structure_label\": \"TREND_SIDEWAYS\", \"volatility_label\": \"VOLATILITY_LOW\"}, \"coverage_policy_used\": \"WINDOW_15M_TRACKED_SPACED_6_SNAPSHOT_POLICY\", \"derived\": true, \"held_outcome_context\": {\"data_quality_label\": \"CLEAN_DATA\", \"detected_at\": \"2026-08-07T22:36:02.148725+00:00\", \"event_window_end_at\": \"2026-08-07T22:36:02.148725+00:00\", \"event_window_start_at\": \"2026-08-07T22:21:00.295492+00:00\", \"held_to_15m_liquidity_usd\": 10000.0, \"held_to_15m_price_change_percent\": 0.0, \"high_to_end_fade_percent\": 0.0, \"hold_check_15m_at\": \"2026-08-07T22:36:00.295492+00:00\", \"liquidity_change_5m_percent\": 0.0, \"liquidity_end_usd\": 10000.0, \"liquidity_start_usd\": 10000.0, \"max_drawdown_5m_percent\": 0.0, \"pair_id\": 2, \"price_change_5m_percent\": 0.0, \"price_end\": 1.0, \"price_high\": 1.0, \"price_low\": 1.0, \"price_start\": 1.0, \"source_status\": \"COMPLETE\", \"token_id\": 2, \"txns_5m\": 10, \"volume_5m\": 500.0, \"wick_percent\": null}, \"held_outcome_labels\": {\"held_to_15m_result_label\": \"HELD_TO_15M_CONSOLIDATED\", \"late_buy_trap_label\": \"NO_LATE_BUY_TRAP\", \"micro_event_memory_gate_label\": \"MICRO_EVENT_IGNORE\", \"micro_event_move_label\": \"MOVE_NO_CLEAR_EVENT\", \"micro_event_payload_quality_label\": \"MICRO_EVENT_CONTEXT_PARTIAL\", \"micro_event_state_label\": \"NO_MICRO_EVENT\", \"micro_exit_realism_label\": \"MICRO_EXIT_UNKNOWN\"}, \"snapshot_ids\": [1, 3, 5, 7, 9, 11, 13, 15, 17], \"source\": \"stored_token_snapshots\", \"window_kind\": \"WINDOW_15M\"}, \"e2q_audit_status\": \"PARTIAL_MEMORY\", \"e2q_audited\": true, \"e2q_audited_by\": \"lane_e2q\", \"memory_build_evidence_overlays\": {\"entry_quote_evidence_applied\": true, \"entry_quote_evidence_row_id\": 1, \"evidence_blockers\": [], \"exit_quote_evidence_applied\": true, \"exit_quote_evidence_row_id\": 2, \"hard_blocking_safety_fields\": [], \"observed_risk_fields\": [], \"safety_15m_memory_policy_label\": \"SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY\", \"safety_composite_id\": 1, \"safety_context_report\": {\"effective_safety_context_result\": \"SAFETY_CONTEXT_ACCEPTABLE\", \"raw_safety_action_label\": null, \"raw_safety_context_label\": \"SAFETY_UNKNOWN\", \"raw_safety_contract_label\": \"SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY\", \"window_kind\": \"WINDOW_15M\"}, \"safety_evidence_applied\": true, \"safety_evidence_row_id\": 1, \"source_coverage_pending_fields\": [\"liquidity_lock_or_burn_label\"]}, \"outcome_label\": \"CONSOLIDATION\", \"remaining_blockers\": [], \"shared_window_15m_context_evidence\": {\"blockers\": [], \"clean_memory_context_ready\": true, \"closing_evidence_allowance_seconds\": 0, \"closing_evidence_cutoff_at\": \"2026-08-07T22:36:02.148725+00:00\", \"downstream_unlocks\": {\"audits\": false, \"buy_sell_hold\": false, \"paper_decisions\": false, \"pnl\": false, \"positions\": false, \"retrieval\": false, \"trades\": false}, \"evidence_duration_seconds\": 901, \"non_ledger_snapshot_ids\": [], \"pair_id\": 2, \"sections\": {\"chart_volatility\": {\"blockers\": [], \"can_support_clean_memory\": true, \"labels\": {\"candle_path_label\": \"PATH_CHOPPY_NOISE\", \"chart_memory_gate_label\": \"CHART_CONTEXT_ACCEPTABLE\", \"chart_payload_quality_label\": \"CHART_CONTEXT_CLEAN\", \"drawdown_recovery_label\": \"DRAWDOWN_NONE\", \"momentum_label\": \"MOMENTUM_STABLE\", \"range_behavior_label\": \"RANGE_COMPRESSING\", \"trend_structure_label\": \"TREND_SIDEWAYS\", \"volatility_label\": \"VOLATILITY_LOW\"}, \"payload\": {\"candle_count\": 9, \"captured_at\": \"2026-08-07T22:36:02.148725+00:00\", \"consecutive_green_candles\": 0, \"consecutive_red_candles\": 0, \"data_quality_label\": \"CLEAN_DATA\", \"flat_candle_count\": 8, \"green_candle_count\": 0, \"high_to_close_fade_percent\": 0.0, \"higher_high_count\": 0, \"largest_green_candle_percent\": 0.0, \"largest_red_candle_percent\": 0.0, \"lower_low_count\": 0, \"max_drawdown_percent\": 0.0, \"max_runup_percent\": 0.0, \"open_to_low_drop_percent\": 0.0, \"pair_id\": 2, \"price_change_percent\": 0.0, \"price_close\": 1.0, \"price_high\": 1.0, \"price_low\": 1.0, \"price_open\": 1.0, \"range_high\": 1.0, \"range_low\": 1.0, \"range_width_percent\": 0.0, \"recovery_from_low_percent\": 0.0, \"red_candle_count\": 0, \"round_trip_percent\": null, \"source_status\": \"COMPLETE\", \"token_id\": 2, \"volatility_percent\": 0.0, \"window_end_at\": \"2026-08-07T22:36:02.148725+00:00\", \"window_start_at\": \"2026-08-07T22:21:00.295492+00:00\"}, \"source_snapshot_ids\": [1, 3, 5, 7, 9, 11, 13, 15, 17], \"source_traces\": [{\"source_name\": \"dexscreener\", \"source_request_id\": 17, \"source_response_id\": 17, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 19, \"source_response_id\": 19, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 21, \"source_response_id\": 21, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 23, \"source_response_id\": 23, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 25, \"source_response_id\": 25, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 27, \"source_response_id\": 27, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 29, \"source_response_id\": 29, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 31, \"source_response_id\": 31, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 37, \"source_response_id\": 37, \"source_trace_clean\": true}], \"status\": \"READY\"}, \"liquidity_exit_realism\": {\"blockers\": [], \"can_support_clean_memory\": true, \"entry_quote\": {\"created_at\": \"2026-08-07 22:36:02\", \"data_quality_label\": \"CLEAN_DATA\", \"entry_realism_label\": \"ENTRY_ROUTE_AVAILABLE\", \"evidence_captured_at\": \"2026-08-07T22:36:02.055623+00:00\", \"evidence_window_id\": null, \"exit_realism_label\": \"EXIT_UNKNOWN\", \"freshness_label\": \"QUOTE_FRESH\", \"id\": 1, \"liquidity_context_label\": \"LIQUIDITY_CONTEXT_ACCEPTABLE\", \"memory_window_id\": null, \"pair_id\": 2, \"paper_only_context\": 1, \"price_impact_context_label\": \"PRICE_IMPACT_ACCEPTABLE\", \"quote_context_label\": \"QUOTE_ROUTE_AVAILABLE\", \"quote_direction\": \"ENTRY\", \"quote_evidence_role\": \"ENTRY_QUOTE_CONTEXT\", \"quote_failure_label\": null, \"quote_purpose\": \"PAPER_REALISM_ONLY\", \"route_available_label\": \"ROUTE_AVAILABLE\", \"slippage_context_label\": \"SLIPPAGE_ACCEPTABLE\", \"snapshot_id\": 17, \"source_failure_id\": null, \"source_name\": \"jupiter_quote\", \"source_request_id\": 35, \"source_response_id\": 35, \"source_status\": \"COMPLETE\", \"target_status\": \"TARGET_MATCH\", \"token_id\": 2}, \"exit_quote\": {\"created_at\": \"2026-08-07 22:36:02\", \"data_quality_label\": \"CLEAN_DATA\", \"entry_realism_label\": \"ENTRY_UNKNOWN\", \"evidence_captured_at\": \"2026-08-07T22:36:02.088391+00:00\", \"evidence_window_id\": null, \"exit_realism_label\": \"EXIT_ROUTE_AVAILABLE\", \"freshness_label\": \"QUOTE_FRESH\", \"id\": 2, \"liquidity_context_label\": \"LIQUIDITY_CONTEXT_ACCEPTABLE\", \"memory_window_id\": null, \"pair_id\": 2, \"paper_only_context\": 1, \"price_impact_context_label\": \"PRICE_IMPACT_ACCEPTABLE\", \"quote_context_label\": \"QUOTE_ROUTE_AVAILABLE\", \"quote_direction\": \"EXIT\", \"quote_evidence_role\": \"EXIT_QUOTE_CONTEXT\", \"quote_failure_label\": null, \"quote_purpose\": \"PAPER_REALISM_ONLY\", \"route_available_label\": \"ROUTE_AVAILABLE\", \"slippage_context_label\": \"SLIPPAGE_ACCEPTABLE\", \"snapshot_id\": 17, \"source_failure_id\": null, \"source_name\": \"jupiter_quote\", \"source_request_id\": 36, \"source_response_id\": 36, \"source_status\": \"COMPLETE\", \"target_status\": \"TARGET_MATCH\", \"token_id\": 2}, \"labels\": {\"entry_realism_label\": \"ENTRY_ROUTE_AVAILABLE\", \"exit_realism_label\": \"EXIT_ROUTE_AVAILABLE\", \"liquidity_state_label\": \"LIQUIDITY_CONTEXT_ACCEPTABLE\", \"price_impact_context_label\": \"PRICE_IMPACT_ACCEPTABLE\", \"slippage_context_label\": \"SLIPPAGE_ACCEPTABLE\"}, \"status\": \"READY\"}, \"market_regime\": {\"blockers\": [], \"can_support_clean_memory\": true, \"labels\": {\"market_payload_quality_label\": \"MARKET_CONTEXT_CLEAN\", \"market_regime_label\": \"CHOPPY\", \"market_transition_label\": \"UNKNOWN_TRANSITION\"}, \"row\": {\"btc_change_1h\": null, \"btc_change_24h\": 1.0, \"btc_change_7d\": null, \"btc_price_usd\": 65000.0, \"captured_at\": \"2026-08-07T22:36:02.019486+00:00\", \"created_at\": \"2026-08-07 22:36:02\", \"data_quality_label\": \"CLEAN_DATA\", \"eth_change_24h\": 1.0, \"eth_change_7d\": null, \"eth_price_usd\": 3500.0, \"fear_greed_label\": null, \"fear_greed_previous_label\": null, \"fear_greed_previous_value\": null, \"fear_greed_value\": null, \"id\": 1, \"market_payload_quality_label\": \"MARKET_CONTEXT_CLEAN\", \"market_regime_label\": \"CHOPPY\", \"market_transition_label\": \"UNKNOWN_TRANSITION\", \"normalized_market_payload_json\": \"{\\\"attached_pair_id\\\": 2, \\\"attached_token_id\\\": 2, \\\"btc_change_1h\\\": null, \\\"btc_change_24h\\\": 1.0, \\\"btc_change_7d\\\": null, \\\"btc_price_usd\\\": 65000.0, \\\"captured_at\\\": \\\"2026-08-07T22:36:02.019486+00:00\\\", \\\"data_quality_label\\\": \\\"CLEAN_DATA\\\", \\\"eth_change_24h\\\": 1.0, \\\"eth_change_7d\\\": null, \\\"eth_price_usd\\\": 3500.0, \\\"fear_greed_label\\\": null, \\\"fear_greed_previous_label\\\": null, \\\"fear_greed_previous_value\\\": null, \\\"fear_greed_value\\\": null, \\\"market_payload_quality_label\\\": \\\"MARKET_CONTEXT_CLEAN\\\", \\\"market_regime_label\\\": \\\"CHOPPY\\\", \\\"market_transition_label\\\": \\\"UNKNOWN_TRANSITION\\\", \\\"raw_market_payload_json\\\": \\\"{\\\\\\\"assets\\\\\\\": {\\\\\\\"bitcoin\\\\\\\": {\\\\\\\"change_24h\\\\\\\": 1.0, \\\\\\\"price_usd\\\\\\\": 65000}, \\\\\\\"ethereum\\\\\\\": {\\\\\\\"change_24h\\\\\\\": 1.0, \\\\\\\"price_usd\\\\\\\": 3500}, \\\\\\\"solana\\\\\\\": {\\\\\\\"change_24h\\\\\\\": 2.0, \\\\\\\"price_usd\\\\\\\": 150, \\\\\\\"volume_24h\\\\\\\": 2000000000}}, \\\\\\\"attached_pair_id\\\\\\\": 2, \\\\\\\"attached_token_id\\\\\\\": 2, \\\\\\\"captured_at\\\\\\\": \\\\\\\"2026-08-07T22:36:02.019486+00:00\\\\\\\", \\\\\\\"data_quality_label\\\\\\\": \\\\\\\"CLEAN_DATA\\\\\\\", \\\\\\\"governed_context_request_kind\\\\\\\": \\\\\\\"broad_market_context\\\\\\\", \\\\\\\"governed_context_source\\\\\\\": \\\\\\\"coingecko\\\\\\\", \\\\\\\"pair_address\\\\\\\": \\\\\\\"4wdeaEC5kZhZ93AoZ76HKDSq1sSS7uKHsotQo3G5ggSV\\\\\\\", \\\\\\\"snapshot_captured_at\\\\\\\": \\\\\\\"2026-08-07T22:36:02.148725+00:00\\\\\\\", \\\\\\\"snapshot_id\\\\\\\": 17, \\\\\\\"source_request_id\\\\\\\": 33, \\\\\\\"source_response_id\\\\\\\": 33, \\\\\\\"source_status\\\\\\\": \\\\\\\"COMPLETE\\\\\\\", \\\\\\\"token_mint\\\\\\\": \\\\\\\"5dqWELD3TqMDw8BHmi7wcKXrEhuvwNqeCDLCYQGijHut\\\\\\\"}\\\", \\\"snapshot_id\\\": 17, \\\"sol_change_1h\\\": null, \\\"sol_change_24h\\\": 2.0, \\\"sol_change_7d\\\": null, \\\"sol_price_usd\\\": 150.0, \\\"sol_volume_24h\\\": 2000000000.0, \\\"solana_dex_volume_context\\\": null, \\\"solana_tvl_usd\\\": null, \\\"source_request_id\\\": 33, \\\"source_response_id\\\": 33, \\\"source_status\\\": \\\"COMPLETE\\\", \\\"stablecoin_context\\\": null, \\\"tracked_solana_hot_pair_count\\\": null, \\\"tracked_solana_meme_liquidity\\\": null, \\\"tracked_solana_meme_volume\\\": null, \\\"tracked_solana_new_pair_count\\\": null}\", \"raw_market_payload_json\": \"{\\\"assets\\\": {\\\"bitcoin\\\": {\\\"change_24h\\\": 1.0, \\\"price_usd\\\": 65000}, \\\"ethereum\\\": {\\\"change_24h\\\": 1.0, \\\"price_usd\\\": 3500}, \\\"solana\\\": {\\\"change_24h\\\": 2.0, \\\"price_usd\\\": 150, \\\"volume_24h\\\": 2000000000}}, \\\"attached_pair_id\\\": 2, \\\"attached_token_id\\\": 2, \\\"captured_at\\\": \\\"2026-08-07T22:36:02.019486+00:00\\\", \\\"data_quality_label\\\": \\\"CLEAN_DATA\\\", \\\"governed_context_request_kind\\\": \\\"broad_market_context\\\", \\\"governed_context_source\\\": \\\"coingecko\\\", \\\"pair_address\\\": \\\"4wdeaEC5kZhZ93AoZ76HKDSq1sSS7uKHsotQo3G5ggSV\\\", \\\"snapshot_captured_at\\\": \\\"2026-08-07T22:36:02.148725+00:00\\\", \\\"snapshot_id\\\": 17, \\\"source_request_id\\\": 33, \\\"source_response_id\\\": 33, \\\"source_status\\\": \\\"COMPLETE\\\", \\\"token_mint\\\": \\\"5dqWELD3TqMDw8BHmi7wcKXrEhuvwNqeCDLCYQGijHut\\\"}\", \"sol_change_1h\": null, \"sol_change_24h\": 2.0, \"sol_change_7d\": null, \"sol_price_usd\": 150.0, \"sol_volume_24h\": 2000000000.0, \"solana_dex_volume_context\": null, \"solana_tvl_usd\": null, \"source_name\": null, \"source_request_id\": 33, \"source_response_id\": 33, \"source_status\": \"COMPLETE\", \"stablecoin_context\": null, \"tracked_solana_hot_pair_count\": null, \"tracked_solana_meme_liquidity\": null, \"tracked_solana_meme_volume\": null, \"tracked_solana_new_pair_count\": null}, \"status\": \"READY\"}, \"safety_rug\": {\"blockers\": [], \"can_support_clean_memory\": true, \"effective_context\": {\"effective_safety_context_result\": \"SAFETY_CONTEXT_ACCEPTABLE\", \"raw_safety_action_label\": null, \"raw_safety_context_label\": \"SAFETY_UNKNOWN\", \"raw_safety_contract_label\": \"SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY\", \"window_kind\": \"WINDOW_15M\"}, \"labels\": {\"effective_safety_context_result\": \"SAFETY_CONTEXT_ACCEPTABLE\", \"raw_safety_action_label\": null, \"raw_safety_context_label\": \"SAFETY_UNKNOWN\", \"raw_safety_contract_label\": \"SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY\", \"safety_action_label\": \"SAFETY_CONTEXT_ACCEPTABLE\", \"safety_status_label\": \"SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY\"}, \"policy\": {\"hard_blocking_safety_fields\": [], \"observed_risk_fields\": [], \"resolved_safety_fields\": [\"mint_authority_status\", \"freeze_authority_status\", \"metadata_mutability_status\", \"supply_sanity_label\", \"token_program_label\", \"holder_concentration_label\", \"known_risk_flag_label\"], \"safety_15m_memory_policy_label\": \"SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY\", \"safety_acceptable_for_15m_memory\": true, \"source_coverage_pending_fields\": [\"liquidity_lock_or_burn_label\"], \"unresolved_safety_fields\": []}, \"row\": {\"blockers_json\": \"[]\", \"conflicts_json\": \"[]\", \"contributions\": [{\"captured_at\": \"2026-08-07T22:36:02.023417+00:00\", \"composite_id\": 1, \"created_at\": \"2026-08-07 22:36:02\", \"data_quality_label\": \"CLEAN_DATA\", \"evidence_category\": \"TOKEN_SAFETY\", \"fields_supplied_json\": \"{\\\"freeze_authority_status\\\": \\\"FREEZE_AUTHORITY_DISABLED\\\", \\\"holder_concentration_label\\\": \\\"HOLDER_CONCENTRATION_HEALTHY\\\", \\\"holder_condition_reason\\\": \\\"HOLDER_CONDITION_MEASURED\\\", \\\"holder_measurement_basis\\\": \\\"GOPLUS_TOP_TEN_REPORTED_PERCENT\\\", \\\"holder_measurement_limitations\\\": [\\\"TOKEN_ACCOUNTS_ARE_NOT_PROVEN_BENEFICIAL_OWNERS\\\", \\\"RELATED_WALLETS_ARE_NOT_CLUSTERED\\\", \\\"POOL_VAULT_BURN_AND_PROGRAM_ACCOUNTS_ARE_NOT_IDENTIFIED_OR_EXCLUDED\\\"], \\\"known_risk_flag_label\\\": \\\"NO_KNOWN_RISK_FLAGS\\\", \\\"liquidity_lock_or_burn_label\\\": \\\"LIQUIDITY_LOCK_OR_BURN_UNKNOWN\\\", \\\"metadata_mutability_status\\\": \\\"METADATA_IMMUTABLE\\\", \\\"mint_authority_status\\\": \\\"MINT_AUTHORITY_RENOUNCED\\\", \\\"provider_risk_field\\\": \\\"risk_flags\\\", \\\"provider_risk_value\\\": [], \\\"supply_sanity_label\\\": \\\"SUPPLY_SANITY_OK\\\", \\\"token_program_label\\\": \\\"SPL_TOKEN_OR_TOKEN_2022_VERIFIED\\\", \\\"top_10_holder_percent\\\": 30.0}\", \"freshness_label\": \"SAFETY_EVIDENCE_FRESH\", \"id\": 1, \"pair_address\": \"4wdeaEC5kZhZ93AoZ76HKDSq1sSS7uKHsotQo3G5ggSV\", \"rejection_reason\": null, \"source_failure_id\": null, \"source_name\": \"goplus\", \"source_request_id\": 34, \"source_response_id\": 34, \"source_status\": \"COMPLETE\", \"target_status\": \"TARGET_MATCH\", \"token_mint\": \"5dqWELD3TqMDw8BHmi7wcKXrEhuvwNqeCDLCYQGijHut\"}], \"created_at\": \"2026-08-07 22:36:02\", \"data_quality_label\": \"CLEAN_DATA\", \"evidence_captured_at\": \"2026-08-07T22:36:02.148725+00:00\", \"field_bindings_json\": \"{\\\"freeze_authority_status\\\": \\\"goplus\\\", \\\"holder_concentration_label\\\": \\\"goplus\\\", \\\"known_risk_flag_label\\\": \\\"goplus\\\", \\\"liquidity_lock_or_burn_label\\\": \\\"goplus\\\", \\\"metadata_mutability_status\\\": \\\"goplus\\\", \\\"mint_authority_status\\\": \\\"goplus\\\", \\\"supply_sanity_label\\\": \\\"goplus\\\", \\\"token_program_label\\\": \\\"goplus\\\"}\", \"freeze_authority_status\": \"FREEZE_AUTHORITY_DISABLED\", \"freshness_label\": \"SAFETY_EVIDENCE_FRESH\", \"holder_concentration_label\": \"HOLDER_CONCENTRATION_HEALTHY\", \"id\": 1, \"known_risk_flag_label\": \"NO_KNOWN_RISK_FLAGS\", \"liquidity_lock_or_burn_label\": \"LIQUIDITY_LOCK_OR_BURN_UNKNOWN\", \"memory_window_id\": null, \"metadata_mutability_status\": \"METADATA_IMMUTABLE\", \"mint_authority_status\": \"MINT_AUTHORITY_RENOUNCED\", \"optional_unknowns_json\": \"[\\\"liquidity_lock_or_burn_label\\\"]\", \"pair_address\": \"4wdeaEC5kZhZ93AoZ76HKDSq1sSS7uKHsotQo3G5ggSV\", \"pair_id\": 2, \"paper_only_context\": 1, \"policy_version\": \"V2_4_1_COMPOSITE_SAFETY_V1\", \"provenance_complete\": 1, \"safety_context_label\": \"SAFETY_UNKNOWN\", \"safety_contract_label\": \"SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY\", \"snapshot_id\": 17, \"source_status\": \"COMPLETE\", \"supply_sanity_label\": \"SUPPLY_SANITY_OK\", \"target_status\": \"TARGET_MATCH\", \"token_id\": 2, \"token_mint\": \"5dqWELD3TqMDw8BHmi7wcKXrEhuvwNqeCDLCYQGijHut\", \"token_program_label\": \"SPL_TOKEN_OR_TOKEN_2022_VERIFIED\"}, \"status\": \"READY\"}, \"solana_chain_heat\": {\"blockers\": [], \"can_support_clean_memory\": true, \"labels\": {\"chain_heat_label\": \"SOLANA_WARM\", \"chain_heat_payload_quality_label\": \"CHAIN_HEAT_CONTEXT_CLEAN\", \"chain_heat_transition_label\": \"SOLANA_TRANSITION_UNKNOWN\"}, \"row\": {\"activity_label\": \"ACTIVITY_ELEVATED\", \"captured_at\": \"2026-08-07T22:36:02.019486+00:00\", \"chain_heat_label\": \"SOLANA_WARM\", \"chain_heat_payload_quality_label\": \"CHAIN_HEAT_CONTEXT_CLEAN\", \"congestion_label\": \"CONGESTION_UNKNOWN\", \"created_at\": \"2026-08-07 22:36:02\", \"data_quality_label\": \"CLEAN_DATA\", \"id\": 1, \"liquidity_label\": \"LIQUIDITY_UNKNOWN\", \"normalized_chain_heat_payload_json\": \"{\\\"activity_label\\\": \\\"ACTIVITY_ELEVATED\\\", \\\"attached_pair_id\\\": 2, \\\"attached_token_id\\\": 2, \\\"captured_at\\\": \\\"2026-08-07T22:36:02.019486+00:00\\\", \\\"chain_heat_label\\\": \\\"SOLANA_WARM\\\", \\\"chain_heat_payload_quality_label\\\": \\\"CHAIN_HEAT_CONTEXT_CLEAN\\\", \\\"congestion_label\\\": \\\"CONGESTION_UNKNOWN\\\", \\\"data_quality_label\\\": \\\"CLEAN_DATA\\\", \\\"liquidity_label\\\": \\\"LIQUIDITY_UNKNOWN\\\", \\\"raw_chain_heat_payload_json\\\": \\\"{\\\\\\\"assets\\\\\\\": {\\\\\\\"bitcoin\\\\\\\": {\\\\\\\"change_24h\\\\\\\": 1.0, \\\\\\\"price_usd\\\\\\\": 65000}, \\\\\\\"ethereum\\\\\\\": {\\\\\\\"change_24h\\\\\\\": 1.0, \\\\\\\"price_usd\\\\\\\": 3500}, \\\\\\\"solana\\\\\\\": {\\\\\\\"change_24h\\\\\\\": 2.0, \\\\\\\"price_usd\\\\\\\": 150, \\\\\\\"volume_24h\\\\\\\": 2000000000}}, \\\\\\\"attached_pair_id\\\\\\\": 2, \\\\\\\"attached_token_id\\\\\\\": 2, \\\\\\\"captured_at\\\\\\\": \\\\\\\"2026-08-07T22:36:02.019486+00:00\\\\\\\", \\\\\\\"data_quality_label\\\\\\\": \\\\\\\"CLEAN_DATA\\\\\\\", \\\\\\\"governed_context_request_kind\\\\\\\": \\\\\\\"broad_market_context\\\\\\\", \\\\\\\"governed_context_source\\\\\\\": \\\\\\\"coingecko\\\\\\\", \\\\\\\"pair_address\\\\\\\": \\\\\\\"4wdeaEC5kZhZ93AoZ76HKDSq1sSS7uKHsotQo3G5ggSV\\\\\\\", \\\\\\\"snapshot_captured_at\\\\\\\": \\\\\\\"2026-08-07T22:36:02.148725+00:00\\\\\\\", \\\\\\\"snapshot_id\\\\\\\": 17, \\\\\\\"source_request_id\\\\\\\": 33, \\\\\\\"source_response_id\\\\\\\": 33, \\\\\\\"source_status\\\\\\\": \\\\\\\"COMPLETE\\\\\\\", \\\\\\\"token_mint\\\\\\\": \\\\\\\"5dqWELD3TqMDw8BHmi7wcKXrEhuvwNqeCDLCYQGijHut\\\\\\\"}\\\", \\\"snapshot_id\\\": 17, \\\"sol_change_1h\\\": null, \\\"sol_change_24h\\\": 2.0, \\\"sol_change_7d\\\": null, \\\"sol_price_usd\\\": 150.0, \\\"sol_volume_24h\\\": 2000000000.0, \\\"solana_active_addresses\\\": null, \\\"solana_congestion_context\\\": null, \\\"solana_dex_volume_24h\\\": null, \\\"solana_hot_pair_count\\\": null, \\\"solana_meme_failed_pair_count\\\": null, \\\"solana_meme_graduation_count\\\": null, \\\"solana_meme_liquidity_usd\\\": null, \\\"solana_meme_new_pair_count\\\": null, \\\"solana_meme_volume_24h\\\": null, \\\"solana_new_token_count\\\": null, \\\"solana_priority_fee_context\\\": null, \\\"solana_stablecoin_supply\\\": null, \\\"solana_tvl_usd\\\": null, \\\"solana_tx_count_24h\\\": null, \\\"source_request_id\\\": 33, \\\"source_response_id\\\": 33, \\\"source_status\\\": \\\"COMPLETE\\\"}\", \"raw_chain_heat_payload_json\": \"{\\\"assets\\\": {\\\"bitcoin\\\": {\\\"change_24h\\\": 1.0, \\\"price_usd\\\": 65000}, \\\"ethereum\\\": {\\\"change_24h\\\": 1.0, \\\"price_usd\\\": 3500}, \\\"solana\\\": {\\\"change_24h\\\": 2.0, \\\"price_usd\\\": 150, \\\"volume_24h\\\": 2000000000}}, \\\"attached_pair_id\\\": 2, \\\"attached_token_id\\\": 2, \\\"captured_at\\\": \\\"2026-08-07T22:36:02.019486+00:00\\\", \\\"data_quality_label\\\": \\\"CLEAN_DATA\\\", \\\"governed_context_request_kind\\\": \\\"broad_market_context\\\", \\\"governed_context_source\\\": \\\"coingecko\\\", \\\"pair_address\\\": \\\"4wdeaEC5kZhZ93AoZ76HKDSq1sSS7uKHsotQo3G5ggSV\\\", \\\"snapshot_captured_at\\\": \\\"2026-08-07T22:36:02.148725+00:00\\\", \\\"snapshot_id\\\": 17, \\\"source_request_id\\\": 33, \\\"source_response_id\\\": 33, \\\"source_status\\\": \\\"COMPLETE\\\", \\\"token_mint\\\": \\\"5dqWELD3TqMDw8BHmi7wcKXrEhuvwNqeCDLCYQGijHut\\\"}\", \"sol_change_1h\": null, \"sol_change_24h\": 2.0, \"sol_change_7d\": null, \"sol_price_usd\": 150.0, \"sol_volume_24h\": 2000000000.0, \"solana_active_addresses\": null, \"solana_congestion_context\": null, \"solana_dex_volume_24h\": null, \"solana_hot_pair_count\": null, \"solana_meme_failed_pair_count\": null, \"solana_meme_graduation_count\": null, \"solana_meme_liquidity_usd\": null, \"solana_meme_new_pair_count\": null, \"solana_meme_volume_24h\": null, \"solana_new_token_count\": null, \"solana_priority_fee_context\": null, \"solana_stablecoin_supply\": null, \"solana_tvl_usd\": null, \"solana_tx_count_24h\": null, \"source_name\": null, \"source_request_id\": 33, \"source_response_id\": 33, \"source_status\": \"COMPLETE\"}, \"status\": \"READY\"}, \"trading_flow\": {\"blockers\": [], \"can_support_clean_memory\": true, \"labels\": {\"flow_direction_label\": \"FLOW_EXHAUSTION\", \"flow_memory_gate_label\": \"FLOW_CONTEXT_CAUTION\", \"flow_pressure_label\": \"PRESSURE_MODERATE_INFLOW\", \"imbalance_label\": \"IMBALANCE_BUY_HEAVY\", \"trading_flow_payload_quality_label\": \"TRADING_FLOW_CONTEXT_PARTIAL\", \"tx_activity_label\": \"TX_ACTIVITY_WEAK\", \"volume_activity_label\": \"VOLUME_WEAK\", \"wallet_participation_label\": \"WALLETS_UNKNOWN\"}, \"payload\": {\"buy_volume_15m\": null, \"buy_volume_1h\": null, \"buy_volume_24h\": null, \"buy_volume_4h\": null, \"buy_volume_5m\": null, \"buys_15m\": null, \"buys_1h\": 30, \"buys_24h\": 280, \"buys_4h\": null, \"buys_5m\": 6, \"captured_at\": \"2026-08-07T22:36:02.148725+00:00\", \"chain\": \"solana\", \"data_quality_label\": \"CLEAN_DATA\", \"liquidity_usd\": 10000.0, \"new_wallets_15m\": null, \"new_wallets_5m\": null, \"pair_address\": \"4wdeaEC5kZhZ93AoZ76HKDSq1sSS7uKHsotQo3G5ggSV\", \"pair_id\": 2, \"price_usd\": 1.0, \"repeat_wallets_15m\": null, \"repeat_wallets_5m\": null, \"request_kind\": \"pair_market_snapshot\", \"sell_volume_15m\": null, \"sell_volume_1h\": null, \"sell_volume_24h\": null, \"sell_volume_4h\": null, \"sell_volume_5m\": null, \"sells_15m\": null, \"sells_1h\": 20, \"sells_24h\": 220, \"sells_4h\": null, \"sells_5m\": 4, \"source_name\": \"dexscreener\", \"source_request_id\": 37, \"source_response_id\": 37, \"source_status\": \"COMPLETE\", \"token_id\": 2, \"token_mint\": \"5dqWELD3TqMDw8BHmi7wcKXrEhuvwNqeCDLCYQGijHut\", \"txns_15m\": null, \"txns_1h\": 50, \"txns_24h\": 500, \"txns_4h\": null, \"txns_5m\": 10, \"unique_wallets_15m\": null, \"unique_wallets_1h\": null, \"unique_wallets_24h\": null, \"unique_wallets_5m\": null, \"volume_15m\": null, \"volume_1h\": 2000.0, \"volume_24h\": 10000.0, \"volume_4h\": null, \"volume_5m\": 500.0}, \"source_snapshot_id\": 17, \"source_trace\": {\"source_name\": \"dexscreener\", \"source_request_id\": 37, \"source_response_id\": 37, \"source_trace_clean\": true}, \"status\": \"READY\"}}, \"snapshot_end_id\": 17, \"snapshot_ids\": [1, 3, 5, 7, 9, 11, 13, 15, 17], \"snapshot_source_traces\": [{\"source_name\": \"dexscreener\", \"source_request_id\": 17, \"source_response_id\": 17, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 19, \"source_response_id\": 19, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 21, \"source_response_id\": 21, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 23, \"source_response_id\": 23, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 25, \"source_response_id\": 25, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 27, \"source_response_id\": 27, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 29, \"source_response_id\": 29, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 31, \"source_response_id\": 31, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 37, \"source_response_id\": 37, \"source_trace_clean\": true}], \"snapshot_start_id\": 1, \"token_id\": 2, \"window_end_at\": \"2026-08-07T22:36:02.148725+00:00\", \"window_kind\": \"WINDOW_15M\", \"window_start_at\": \"2026-08-07T22:21:00.295492+00:00\", \"writes_performed\": false}, \"snapshot_id\": 17, \"snapshot_mode\": \"FIRST_15M_CYCLE\", \"tracking_lane\": \"TRACK_NORMAL\", \"window_5m_support_role\": \"SUPPORT_ONLY_NOT_MAIN_EVIDENCE\"}",
+          "WINDOW_15M",
+          "WINDOW_CLOSED",
+          "{\"approved_mint\": \"Hx7d5gD9Lt23A7BQkBxiE6rnfFuw9ARsHSLGN6Acvcbb\", \"context_freshness_report\": {\"all_context_fresh_enough\": true, \"context_blocking_reasons\": [], \"context_details\": {\"chain_heat\": {\"attached_snapshot_id\": 18, \"context_blocker_reason\": null, \"context_captured_at\": \"2026-08-07T22:36:02.430328+00:00\", \"context_freshness_label\": \"CONTEXT_FRESH\", \"context_role\": \"MAIN_WINDOW_CONTEXT\", \"context_row_id\": 4, \"context_table\": \"printer_solana_chain_heat_snapshots\", \"context_target_status\": \"CONTEXT_TARGET_MATCH\", \"context_type\": \"chain_heat\", \"data_quality_label\": \"MISSING_CRITICAL_DATA\", \"expected_snapshot_id\": 18, \"source_status\": \"PARTIAL\", \"window_end_at\": \"2026-08-07T22:36:02.430328+00:00\", \"window_start_at\": \"2026-08-07T22:21:00.365196+00:00\"}, \"chart_volatility\": {\"attached_snapshot_id\": 18, \"context_blocker_reason\": null, \"context_captured_at\": \"2026-08-07T22:36:02.430328+00:00\", \"context_freshness_label\": \"CONTEXT_FRESH\", \"context_role\": \"MAIN_WINDOW_CONTEXT\", \"context_row_id\": 2, \"context_table\": \"printer_chart_volatility_snapshots\", \"context_target_status\": \"CONTEXT_TARGET_MATCH\", \"context_type\": \"chart_volatility\", \"data_quality_label\": \"CLEAN_DATA\", \"expected_snapshot_id\": 18, \"source_status\": \"COMPLETE\", \"window_end_at\": \"2026-08-07T22:36:02.430328+00:00\", \"window_start_at\": \"2026-08-07T22:21:00.365196+00:00\"}, \"liquidity_exit\": {\"attached_snapshot_id\": 18, \"context_blocker_reason\": null, \"context_captured_at\": \"2026-08-07T22:36:02.430328+00:00\", \"context_freshness_label\": \"CONTEXT_FRESH\", \"context_role\": \"MAIN_WINDOW_CONTEXT\", \"context_row_id\": 2, \"context_table\": \"printer_liquidity_exit_snapshots\", \"context_target_status\": \"CONTEXT_TARGET_MATCH\", \"context_type\": \"liquidity_exit\", \"data_quality_label\": \"CLEAN_DATA\", \"expected_snapshot_id\": 18, \"source_status\": \"COMPLETE\", \"window_end_at\": \"2026-08-07T22:36:02.430328+00:00\", \"window_start_at\": \"2026-08-07T22:21:00.365196+00:00\"}, \"market\": {\"attached_snapshot_id\": 18, \"context_blocker_reason\": null, \"context_captured_at\": \"2026-08-07T22:36:02.430328+00:00\", \"context_freshness_label\": \"CONTEXT_FRESH\", \"context_role\": \"MAIN_WINDOW_CONTEXT\", \"context_row_id\": 4, \"context_table\": \"printer_market_regime_snapshots\", \"context_target_status\": \"CONTEXT_TARGET_MATCH\", \"context_type\": \"market\", \"data_quality_label\": \"MISSING_CRITICAL_DATA\", \"expected_snapshot_id\": 18, \"source_status\": \"PARTIAL\", \"window_end_at\": \"2026-08-07T22:36:02.430328+00:00\", \"window_start_at\": \"2026-08-07T22:21:00.365196+00:00\"}, \"micro_event\": {\"attached_snapshot_id\": 18, \"context_blocker_reason\": null, \"context_captured_at\": \"2026-08-07T22:36:02.430328+00:00\", \"context_freshness_label\": \"CONTEXT_FRESH\", \"context_role\": \"SUPPORT_MICRO_EVENT\", \"context_row_id\": 2, \"context_table\": \"printer_micro_events\", \"context_target_status\": \"CONTEXT_TARGET_MATCH\", \"context_type\": \"micro_event\", \"data_quality_label\": \"MISSING_CRITICAL_DATA\", \"expected_snapshot_id\": 18, \"source_status\": \"PARTIAL\", \"window_end_at\": \"2026-08-07T22:36:02.430328+00:00\", \"window_start_at\": \"2026-08-07T22:21:00.365196+00:00\"}, \"safety\": {\"attached_snapshot_id\": 18, \"context_blocker_reason\": null, \"context_captured_at\": \"2026-08-07T22:36:02.430328+00:00\", \"context_freshness_label\": \"CONTEXT_FRESH\", \"context_role\": \"MAIN_WINDOW_CONTEXT\", \"context_row_id\": 2, \"context_table\": \"printer_safety_rug_snapshots\", \"context_target_status\": \"CONTEXT_TARGET_MATCH\", \"context_type\": \"safety\", \"data_quality_label\": \"MISSING_CRITICAL_DATA\", \"expected_snapshot_id\": 18, \"source_status\": \"PARTIAL\", \"window_end_at\": \"2026-08-07T22:36:02.430328+00:00\", \"window_start_at\": \"2026-08-07T22:21:00.365196+00:00\"}, \"trading_flow\": {\"attached_snapshot_id\": 18, \"context_blocker_reason\": null, \"context_captured_at\": \"2026-08-07T22:36:02.430328+00:00\", \"context_freshness_label\": \"CONTEXT_FRESH\", \"context_role\": \"MAIN_WINDOW_CONTEXT\", \"context_row_id\": 2, \"context_table\": \"printer_trading_flow_snapshots\", \"context_target_status\": \"CONTEXT_TARGET_MATCH\", \"context_type\": \"trading_flow\", \"data_quality_label\": \"CLEAN_DATA\", \"expected_snapshot_id\": 18, \"source_status\": \"COMPLETE\", \"window_end_at\": \"2026-08-07T22:36:02.430328+00:00\", \"window_start_at\": \"2026-08-07T22:21:00.365196+00:00\"}}, \"context_freshness_tolerance_minutes\": 10, \"context_target_mismatch_count\": 0, \"missing_or_unknown_context_count\": 0, \"stale_context_count\": 0}, \"context_labels\": {\"candle_path_label\": \"PATH_CHOPPY_NOISE\", \"chain_heat_label\": \"SOLANA_WARM\", \"chain_heat_payload_quality_label\": \"CHAIN_HEAT_CONTEXT_CLEAN\", \"chain_heat_transition_label\": \"SOLANA_TRANSITION_UNKNOWN\", \"chart_memory_gate_label\": \"CHART_CONTEXT_ACCEPTABLE\", \"chart_payload_quality_label\": \"CHART_CONTEXT_CLEAN\", \"drawdown_recovery_label\": \"DRAWDOWN_NONE\", \"effective_safety_context_result\": \"SAFETY_CONTEXT_ACCEPTABLE\", \"entry_realism_label\": \"ENTRY_ROUTE_AVAILABLE\", \"exit_realism_label\": \"EXIT_ROUTE_AVAILABLE\", \"flow_direction_label\": \"FLOW_EXHAUSTION\", \"flow_memory_gate_label\": \"FLOW_CONTEXT_CAUTION\", \"flow_pressure_label\": \"PRESSURE_MODERATE_INFLOW\", \"held_to_15m_result_label\": \"HELD_TO_15M_CONSOLIDATED\", \"imbalance_label\": \"IMBALANCE_BUY_HEAVY\", \"liquidity_state_label\": \"LIQUIDITY_CONTEXT_ACCEPTABLE\", \"market_payload_quality_label\": \"MARKET_CONTEXT_CLEAN\", \"market_regime_label\": \"CHOPPY\", \"market_transition_label\": \"UNKNOWN_TRANSITION\", \"micro_event_state_label\": \"NO_MICRO_EVENT\", \"momentum_label\": \"MOMENTUM_STABLE\", \"price_impact_context_label\": \"PRICE_IMPACT_ACCEPTABLE\", \"range_behavior_label\": \"RANGE_COMPRESSING\", \"raw_safety_action_label\": null, \"raw_safety_context_label\": \"SAFETY_UNKNOWN\", \"raw_safety_contract_label\": \"SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY\", \"realism_gate_label\": \"REALISM_CONTEXT_CAUTION\", \"rug_risk_label\": \"RUG_RISK_ACCEPTABLE_FOR_15M\", \"safety_action_label\": \"SAFETY_CONTEXT_ACCEPTABLE\", \"safety_status_label\": \"SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY\", \"slippage_context_label\": \"SLIPPAGE_ACCEPTABLE\", \"trading_flow_payload_quality_label\": \"TRADING_FLOW_CONTEXT_PARTIAL\", \"trend_structure_label\": \"TREND_SIDEWAYS\", \"tx_activity_label\": \"TX_ACTIVITY_WEAK\", \"volatility_label\": \"VOLATILITY_LOW\", \"volume_activity_label\": \"VOLUME_WEAK\", \"wallet_participation_label\": \"WALLETS_UNKNOWN\"}, \"context_quality_reviewed\": true, \"context_row_ids\": {\"chain_heat\": 4, \"chart_volatility\": 2, \"liquidity_exit\": 2, \"market\": 4, \"micro_event\": 2, \"safety\": 2, \"trading_flow\": 2}, \"created_by\": \"lane_e2o\", \"derived_window_context\": {\"chart_context\": {\"candle_count\": 9, \"captured_at\": \"2026-08-07T22:36:02.430328+00:00\", \"consecutive_green_candles\": 0, \"consecutive_red_candles\": 0, \"data_quality_label\": \"CLEAN_DATA\", \"flat_candle_count\": 8, \"green_candle_count\": 0, \"high_to_close_fade_percent\": 0.0, \"higher_high_count\": 0, \"largest_green_candle_percent\": 0.0, \"largest_red_candle_percent\": 0.0, \"lower_low_count\": 0, \"max_drawdown_percent\": 0.0, \"max_runup_percent\": 0.0, \"open_to_low_drop_percent\": 0.0, \"pair_id\": 1, \"price_change_percent\": 0.0, \"price_close\": 1.0, \"price_high\": 1.0, \"price_low\": 1.0, \"price_open\": 1.0, \"range_high\": 1.0, \"range_low\": 1.0, \"range_width_percent\": 0.0, \"recovery_from_low_percent\": 0.0, \"red_candle_count\": 0, \"round_trip_percent\": null, \"source_status\": \"COMPLETE\", \"token_id\": 1, \"volatility_percent\": 0.0, \"window_end_at\": \"2026-08-07T22:36:02.430328+00:00\", \"window_start_at\": \"2026-08-07T22:21:00.365196+00:00\"}, \"chart_labels\": {\"candle_path_label\": \"PATH_CHOPPY_NOISE\", \"chart_memory_gate_label\": \"CHART_CONTEXT_ACCEPTABLE\", \"chart_payload_quality_label\": \"CHART_CONTEXT_CLEAN\", \"drawdown_recovery_label\": \"DRAWDOWN_NONE\", \"momentum_label\": \"MOMENTUM_STABLE\", \"range_behavior_label\": \"RANGE_COMPRESSING\", \"trend_structure_label\": \"TREND_SIDEWAYS\", \"volatility_label\": \"VOLATILITY_LOW\"}, \"coverage_policy_used\": \"WINDOW_15M_TRACKED_SPACED_6_SNAPSHOT_POLICY\", \"derived\": true, \"held_outcome_context\": {\"data_quality_label\": \"CLEAN_DATA\", \"detected_at\": \"2026-08-07T22:36:02.430328+00:00\", \"event_window_end_at\": \"2026-08-07T22:36:02.430328+00:00\", \"event_window_start_at\": \"2026-08-07T22:21:00.365196+00:00\", \"held_to_15m_liquidity_usd\": 10000.0, \"held_to_15m_price_change_percent\": 0.0, \"high_to_end_fade_percent\": 0.0, \"hold_check_15m_at\": \"2026-08-07T22:36:00.365196+00:00\", \"liquidity_change_5m_percent\": 0.0, \"liquidity_end_usd\": 10000.0, \"liquidity_start_usd\": 10000.0, \"max_drawdown_5m_percent\": 0.0, \"pair_id\": 1, \"price_change_5m_percent\": 0.0, \"price_end\": 1.0, \"price_high\": 1.0, \"price_low\": 1.0, \"price_start\": 1.0, \"source_status\": \"COMPLETE\", \"token_id\": 1, \"txns_5m\": 10, \"volume_5m\": 500.0, \"wick_percent\": null}, \"held_outcome_labels\": {\"held_to_15m_result_label\": \"HELD_TO_15M_CONSOLIDATED\", \"late_buy_trap_label\": \"NO_LATE_BUY_TRAP\", \"micro_event_memory_gate_label\": \"MICRO_EVENT_IGNORE\", \"micro_event_move_label\": \"MOVE_NO_CLEAR_EVENT\", \"micro_event_payload_quality_label\": \"MICRO_EVENT_CONTEXT_PARTIAL\", \"micro_event_state_label\": \"NO_MICRO_EVENT\", \"micro_exit_realism_label\": \"MICRO_EXIT_UNKNOWN\"}, \"snapshot_ids\": [2, 4, 6, 8, 10, 12, 14, 16, 18], \"source\": \"stored_token_snapshots\", \"window_kind\": \"WINDOW_15M\"}, \"e2q_audit_status\": \"PARTIAL_MEMORY\", \"e2q_audited\": true, \"e2q_audited_by\": \"lane_e2q\", \"memory_build_evidence_overlays\": {\"entry_quote_evidence_applied\": true, \"entry_quote_evidence_row_id\": 3, \"evidence_blockers\": [], \"exit_quote_evidence_applied\": true, \"exit_quote_evidence_row_id\": 4, \"hard_blocking_safety_fields\": [], \"observed_risk_fields\": [], \"safety_15m_memory_policy_label\": \"SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY\", \"safety_composite_id\": 2, \"safety_context_report\": {\"effective_safety_context_result\": \"SAFETY_CONTEXT_ACCEPTABLE\", \"raw_safety_action_label\": null, \"raw_safety_context_label\": \"SAFETY_UNKNOWN\", \"raw_safety_contract_label\": \"SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY\", \"window_kind\": \"WINDOW_15M\"}, \"safety_evidence_applied\": true, \"safety_evidence_row_id\": 2, \"source_coverage_pending_fields\": [\"liquidity_lock_or_burn_label\"]}, \"outcome_label\": \"CONSOLIDATION\", \"remaining_blockers\": [], \"shared_window_15m_context_evidence\": {\"blockers\": [], \"clean_memory_context_ready\": true, \"closing_evidence_allowance_seconds\": 0, \"closing_evidence_cutoff_at\": \"2026-08-07T22:36:02.430328+00:00\", \"downstream_unlocks\": {\"audits\": false, \"buy_sell_hold\": false, \"paper_decisions\": false, \"pnl\": false, \"positions\": false, \"retrieval\": false, \"trades\": false}, \"evidence_duration_seconds\": 902, \"non_ledger_snapshot_ids\": [], \"pair_id\": 1, \"sections\": {\"chart_volatility\": {\"blockers\": [], \"can_support_clean_memory\": true, \"labels\": {\"candle_path_label\": \"PATH_CHOPPY_NOISE\", \"chart_memory_gate_label\": \"CHART_CONTEXT_ACCEPTABLE\", \"chart_payload_quality_label\": \"CHART_CONTEXT_CLEAN\", \"drawdown_recovery_label\": \"DRAWDOWN_NONE\", \"momentum_label\": \"MOMENTUM_STABLE\", \"range_behavior_label\": \"RANGE_COMPRESSING\", \"trend_structure_label\": \"TREND_SIDEWAYS\", \"volatility_label\": \"VOLATILITY_LOW\"}, \"payload\": {\"candle_count\": 9, \"captured_at\": \"2026-08-07T22:36:02.430328+00:00\", \"consecutive_green_candles\": 0, \"consecutive_red_candles\": 0, \"data_quality_label\": \"CLEAN_DATA\", \"flat_candle_count\": 8, \"green_candle_count\": 0, \"high_to_close_fade_percent\": 0.0, \"higher_high_count\": 0, \"largest_green_candle_percent\": 0.0, \"largest_red_candle_percent\": 0.0, \"lower_low_count\": 0, \"max_drawdown_percent\": 0.0, \"max_runup_percent\": 0.0, \"open_to_low_drop_percent\": 0.0, \"pair_id\": 1, \"price_change_percent\": 0.0, \"price_close\": 1.0, \"price_high\": 1.0, \"price_low\": 1.0, \"price_open\": 1.0, \"range_high\": 1.0, \"range_low\": 1.0, \"range_width_percent\": 0.0, \"recovery_from_low_percent\": 0.0, \"red_candle_count\": 0, \"round_trip_percent\": null, \"source_status\": \"COMPLETE\", \"token_id\": 1, \"volatility_percent\": 0.0, \"window_end_at\": \"2026-08-07T22:36:02.430328+00:00\", \"window_start_at\": \"2026-08-07T22:21:00.365196+00:00\"}, \"source_snapshot_ids\": [2, 4, 6, 8, 10, 12, 14, 16, 18], \"source_traces\": [{\"source_name\": \"dexscreener\", \"source_request_id\": 18, \"source_response_id\": 18, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 20, \"source_response_id\": 20, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 22, \"source_response_id\": 22, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 24, \"source_response_id\": 24, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 26, \"source_response_id\": 26, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 28, \"source_response_id\": 28, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 30, \"source_response_id\": 30, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 32, \"source_response_id\": 32, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 42, \"source_response_id\": 42, \"source_trace_clean\": true}], \"status\": \"READY\"}, \"liquidity_exit_realism\": {\"blockers\": [], \"can_support_clean_memory\": true, \"entry_quote\": {\"created_at\": \"2026-08-07 22:36:02\", \"data_quality_label\": \"CLEAN_DATA\", \"entry_realism_label\": \"ENTRY_ROUTE_AVAILABLE\", \"evidence_captured_at\": \"2026-08-07T22:36:02.336757+00:00\", \"evidence_window_id\": null, \"exit_realism_label\": \"EXIT_UNKNOWN\", \"freshness_label\": \"QUOTE_FRESH\", \"id\": 3, \"liquidity_context_label\": \"LIQUIDITY_CONTEXT_ACCEPTABLE\", \"memory_window_id\": null, \"pair_id\": 1, \"paper_only_context\": 1, \"price_impact_context_label\": \"PRICE_IMPACT_ACCEPTABLE\", \"quote_context_label\": \"QUOTE_ROUTE_AVAILABLE\", \"quote_direction\": \"ENTRY\", \"quote_evidence_role\": \"ENTRY_QUOTE_CONTEXT\", \"quote_failure_label\": null, \"quote_purpose\": \"PAPER_REALISM_ONLY\", \"route_available_label\": \"ROUTE_AVAILABLE\", \"slippage_context_label\": \"SLIPPAGE_ACCEPTABLE\", \"snapshot_id\": 18, \"source_failure_id\": null, \"source_name\": \"jupiter_quote\", \"source_request_id\": 40, \"source_response_id\": 40, \"source_status\": \"COMPLETE\", \"target_status\": \"TARGET_MATCH\", \"token_id\": 1}, \"exit_quote\": {\"created_at\": \"2026-08-07 22:36:02\", \"data_quality_label\": \"CLEAN_DATA\", \"entry_realism_label\": \"ENTRY_UNKNOWN\", \"evidence_captured_at\": \"2026-08-07T22:36:02.369401+00:00\", \"evidence_window_id\": null, \"exit_realism_label\": \"EXIT_ROUTE_AVAILABLE\", \"freshness_label\": \"QUOTE_FRESH\", \"id\": 4, \"liquidity_context_label\": \"LIQUIDITY_CONTEXT_ACCEPTABLE\", \"memory_window_id\": null, \"pair_id\": 1, \"paper_only_context\": 1, \"price_impact_context_label\": \"PRICE_IMPACT_ACCEPTABLE\", \"quote_context_label\": \"QUOTE_ROUTE_AVAILABLE\", \"quote_direction\": \"EXIT\", \"quote_evidence_role\": \"EXIT_QUOTE_CONTEXT\", \"quote_failure_label\": null, \"quote_purpose\": \"PAPER_REALISM_ONLY\", \"route_available_label\": \"ROUTE_AVAILABLE\", \"slippage_context_label\": \"SLIPPAGE_ACCEPTABLE\", \"snapshot_id\": 18, \"source_failure_id\": null, \"source_name\": \"jupiter_quote\", \"source_request_id\": 41, \"source_response_id\": 41, \"source_status\": \"COMPLETE\", \"target_status\": \"TARGET_MATCH\", \"token_id\": 1}, \"labels\": {\"entry_realism_label\": \"ENTRY_ROUTE_AVAILABLE\", \"exit_realism_label\": \"EXIT_ROUTE_AVAILABLE\", \"liquidity_state_label\": \"LIQUIDITY_CONTEXT_ACCEPTABLE\", \"price_impact_context_label\": \"PRICE_IMPACT_ACCEPTABLE\", \"slippage_context_label\": \"SLIPPAGE_ACCEPTABLE\"}, \"status\": \"READY\"}, \"market_regime\": {\"blockers\": [], \"can_support_clean_memory\": true, \"labels\": {\"market_payload_quality_label\": \"MARKET_CONTEXT_CLEAN\", \"market_regime_label\": \"CHOPPY\", \"market_transition_label\": \"UNKNOWN_TRANSITION\"}, \"row\": {\"btc_change_1h\": null, \"btc_change_24h\": 1.0, \"btc_change_7d\": null, \"btc_price_usd\": 65000.0, \"captured_at\": \"2026-08-07T22:36:02.300394+00:00\", \"created_at\": \"2026-08-07 22:36:02\", \"data_quality_label\": \"CLEAN_DATA\", \"eth_change_24h\": 1.0, \"eth_change_7d\": null, \"eth_price_usd\": 3500.0, \"fear_greed_label\": null, \"fear_greed_previous_label\": null, \"fear_greed_previous_value\": null, \"fear_greed_value\": null, \"id\": 3, \"market_payload_quality_label\": \"MARKET_CONTEXT_CLEAN\", \"market_regime_label\": \"CHOPPY\", \"market_transition_label\": \"UNKNOWN_TRANSITION\", \"normalized_market_payload_json\": \"{\\\"attached_pair_id\\\": 1, \\\"attached_token_id\\\": 1, \\\"btc_change_1h\\\": null, \\\"btc_change_24h\\\": 1.0, \\\"btc_change_7d\\\": null, \\\"btc_price_usd\\\": 65000.0, \\\"captured_at\\\": \\\"2026-08-07T22:36:02.300394+00:00\\\", \\\"data_quality_label\\\": \\\"CLEAN_DATA\\\", \\\"eth_change_24h\\\": 1.0, \\\"eth_change_7d\\\": null, \\\"eth_price_usd\\\": 3500.0, \\\"fear_greed_label\\\": null, \\\"fear_greed_previous_label\\\": null, \\\"fear_greed_previous_value\\\": null, \\\"fear_greed_value\\\": null, \\\"market_payload_quality_label\\\": \\\"MARKET_CONTEXT_CLEAN\\\", \\\"market_regime_label\\\": \\\"CHOPPY\\\", \\\"market_transition_label\\\": \\\"UNKNOWN_TRANSITION\\\", \\\"raw_market_payload_json\\\": \\\"{\\\\\\\"assets\\\\\\\": {\\\\\\\"bitcoin\\\\\\\": {\\\\\\\"change_24h\\\\\\\": 1.0, \\\\\\\"price_usd\\\\\\\": 65000}, \\\\\\\"ethereum\\\\\\\": {\\\\\\\"change_24h\\\\\\\": 1.0, \\\\\\\"price_usd\\\\\\\": 3500}, \\\\\\\"solana\\\\\\\": {\\\\\\\"change_24h\\\\\\\": 2.0, \\\\\\\"price_usd\\\\\\\": 150, \\\\\\\"volume_24h\\\\\\\": 2000000000}}, \\\\\\\"attached_pair_id\\\\\\\": 1, \\\\\\\"attached_token_id\\\\\\\": 1, \\\\\\\"captured_at\\\\\\\": \\\\\\\"2026-08-07T22:36:02.300394+00:00\\\\\\\", \\\\\\\"data_quality_label\\\\\\\": \\\\\\\"CLEAN_DATA\\\\\\\", \\\\\\\"governed_context_request_kind\\\\\\\": \\\\\\\"broad_market_context\\\\\\\", \\\\\\\"governed_context_source\\\\\\\": \\\\\\\"coingecko\\\\\\\", \\\\\\\"pair_address\\\\\\\": \\\\\\\"7CQEubcAzwy3Nhh1v9QXYyD4vXp6JgwdRZYkybbfdRFs\\\\\\\", \\\\\\\"snapshot_captured_at\\\\\\\": \\\\\\\"2026-08-07T22:36:02.430328+00:00\\\\\\\", \\\\\\\"snapshot_id\\\\\\\": 18, \\\\\\\"source_request_id\\\\\\\": 38, \\\\\\\"source_response_id\\\\\\\": 38, \\\\\\\"source_status\\\\\\\": \\\\\\\"COMPLETE\\\\\\\", \\\\\\\"token_mint\\\\\\\": \\\\\\\"Hx7d5gD9Lt23A7BQkBxiE6rnfFuw9ARsHSLGN6Acvcbb\\\\\\\"}\\\", \\\"snapshot_id\\\": 18, \\\"sol_change_1h\\\": null, \\\"sol_change_24h\\\": 2.0, \\\"sol_change_7d\\\": null, \\\"sol_price_usd\\\": 150.0, \\\"sol_volume_24h\\\": 2000000000.0, \\\"solana_dex_volume_context\\\": null, \\\"solana_tvl_usd\\\": null, \\\"source_request_id\\\": 38, \\\"source_response_id\\\": 38, \\\"source_status\\\": \\\"COMPLETE\\\", \\\"stablecoin_context\\\": null, \\\"tracked_solana_hot_pair_count\\\": null, \\\"tracked_solana_meme_liquidity\\\": null, \\\"tracked_solana_meme_volume\\\": null, \\\"tracked_solana_new_pair_count\\\": null}\", \"raw_market_payload_json\": \"{\\\"assets\\\": {\\\"bitcoin\\\": {\\\"change_24h\\\": 1.0, \\\"price_usd\\\": 65000}, \\\"ethereum\\\": {\\\"change_24h\\\": 1.0, \\\"price_usd\\\": 3500}, \\\"solana\\\": {\\\"change_24h\\\": 2.0, \\\"price_usd\\\": 150, \\\"volume_24h\\\": 2000000000}}, \\\"attached_pair_id\\\": 1, \\\"attached_token_id\\\": 1, \\\"captured_at\\\": \\\"2026-08-07T22:36:02.300394+00:00\\\", \\\"data_quality_label\\\": \\\"CLEAN_DATA\\\", \\\"governed_context_request_kind\\\": \\\"broad_market_context\\\", \\\"governed_context_source\\\": \\\"coingecko\\\", \\\"pair_address\\\": \\\"7CQEubcAzwy3Nhh1v9QXYyD4vXp6JgwdRZYkybbfdRFs\\\", \\\"snapshot_captured_at\\\": \\\"2026-08-07T22:36:02.430328+00:00\\\", \\\"snapshot_id\\\": 18, \\\"source_request_id\\\": 38, \\\"source_response_id\\\": 38, \\\"source_status\\\": \\\"COMPLETE\\\", \\\"token_mint\\\": \\\"Hx7d5gD9Lt23A7BQkBxiE6rnfFuw9ARsHSLGN6Acvcbb\\\"}\", \"sol_change_1h\": null, \"sol_change_24h\": 2.0, \"sol_change_7d\": null, \"sol_price_usd\": 150.0, \"sol_volume_24h\": 2000000000.0, \"solana_dex_volume_context\": null, \"solana_tvl_usd\": null, \"source_name\": null, \"source_request_id\": 38, \"source_response_id\": 38, \"source_status\": \"COMPLETE\", \"stablecoin_context\": null, \"tracked_solana_hot_pair_count\": null, \"tracked_solana_meme_liquidity\": null, \"tracked_solana_meme_volume\": null, \"tracked_solana_new_pair_count\": null}, \"status\": \"READY\"}, \"safety_rug\": {\"blockers\": [], \"can_support_clean_memory\": true, \"effective_context\": {\"effective_safety_context_result\": \"SAFETY_CONTEXT_ACCEPTABLE\", \"raw_safety_action_label\": null, \"raw_safety_context_label\": \"SAFETY_UNKNOWN\", \"raw_safety_contract_label\": \"SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY\", \"window_kind\": \"WINDOW_15M\"}, \"labels\": {\"effective_safety_context_result\": \"SAFETY_CONTEXT_ACCEPTABLE\", \"raw_safety_action_label\": null, \"raw_safety_context_label\": \"SAFETY_UNKNOWN\", \"raw_safety_contract_label\": \"SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY\", \"safety_action_label\": \"SAFETY_CONTEXT_ACCEPTABLE\", \"safety_status_label\": \"SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY\"}, \"policy\": {\"hard_blocking_safety_fields\": [], \"observed_risk_fields\": [], \"resolved_safety_fields\": [\"mint_authority_status\", \"freeze_authority_status\", \"metadata_mutability_status\", \"supply_sanity_label\", \"token_program_label\", \"holder_concentration_label\", \"known_risk_flag_label\"], \"safety_15m_memory_policy_label\": \"SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY\", \"safety_acceptable_for_15m_memory\": true, \"source_coverage_pending_fields\": [\"liquidity_lock_or_burn_label\"], \"unresolved_safety_fields\": []}, \"row\": {\"blockers_json\": \"[]\", \"conflicts_json\": \"[]\", \"contributions\": [{\"captured_at\": \"2026-08-07T22:36:02.304350+00:00\", \"composite_id\": 2, \"created_at\": \"2026-08-07 22:36:02\", \"data_quality_label\": \"CLEAN_DATA\", \"evidence_category\": \"TOKEN_SAFETY\", \"fields_supplied_json\": \"{\\\"freeze_authority_status\\\": \\\"FREEZE_AUTHORITY_DISABLED\\\", \\\"holder_concentration_label\\\": \\\"HOLDER_CONCENTRATION_HEALTHY\\\", \\\"holder_condition_reason\\\": \\\"HOLDER_CONDITION_MEASURED\\\", \\\"holder_measurement_basis\\\": \\\"GOPLUS_TOP_TEN_REPORTED_PERCENT\\\", \\\"holder_measurement_limitations\\\": [\\\"TOKEN_ACCOUNTS_ARE_NOT_PROVEN_BENEFICIAL_OWNERS\\\", \\\"RELATED_WALLETS_ARE_NOT_CLUSTERED\\\", \\\"POOL_VAULT_BURN_AND_PROGRAM_ACCOUNTS_ARE_NOT_IDENTIFIED_OR_EXCLUDED\\\"], \\\"known_risk_flag_label\\\": \\\"NO_KNOWN_RISK_FLAGS\\\", \\\"liquidity_lock_or_burn_label\\\": \\\"LIQUIDITY_LOCK_OR_BURN_UNKNOWN\\\", \\\"metadata_mutability_status\\\": \\\"METADATA_IMMUTABLE\\\", \\\"mint_authority_status\\\": \\\"MINT_AUTHORITY_RENOUNCED\\\", \\\"provider_risk_field\\\": \\\"risk_flags\\\", \\\"provider_risk_value\\\": [], \\\"supply_sanity_label\\\": \\\"SUPPLY_SANITY_OK\\\", \\\"token_program_label\\\": \\\"SPL_TOKEN_OR_TOKEN_2022_VERIFIED\\\", \\\"top_10_holder_percent\\\": 30.0}\", \"freshness_label\": \"SAFETY_EVIDENCE_FRESH\", \"id\": 2, \"pair_address\": \"7CQEubcAzwy3Nhh1v9QXYyD4vXp6JgwdRZYkybbfdRFs\", \"rejection_reason\": null, \"source_failure_id\": null, \"source_name\": \"goplus\", \"source_request_id\": 39, \"source_response_id\": 39, \"source_status\": \"COMPLETE\", \"target_status\": \"TARGET_MATCH\", \"token_mint\": \"Hx7d5gD9Lt23A7BQkBxiE6rnfFuw9ARsHSLGN6Acvcbb\"}], \"created_at\": \"2026-08-07 22:36:02\", \"data_quality_label\": \"CLEAN_DATA\", \"evidence_captured_at\": \"2026-08-07T22:36:02.430328+00:00\", \"field_bindings_json\": \"{\\\"freeze_authority_status\\\": \\\"goplus\\\", \\\"holder_concentration_label\\\": \\\"goplus\\\", \\\"known_risk_flag_label\\\": \\\"goplus\\\", \\\"liquidity_lock_or_burn_label\\\": \\\"goplus\\\", \\\"metadata_mutability_status\\\": \\\"goplus\\\", \\\"mint_authority_status\\\": \\\"goplus\\\", \\\"supply_sanity_label\\\": \\\"goplus\\\", \\\"token_program_label\\\": \\\"goplus\\\"}\", \"freeze_authority_status\": \"FREEZE_AUTHORITY_DISABLED\", \"freshness_label\": \"SAFETY_EVIDENCE_FRESH\", \"holder_concentration_label\": \"HOLDER_CONCENTRATION_HEALTHY\", \"id\": 2, \"known_risk_flag_label\": \"NO_KNOWN_RISK_FLAGS\", \"liquidity_lock_or_burn_label\": \"LIQUIDITY_LOCK_OR_BURN_UNKNOWN\", \"memory_window_id\": null, \"metadata_mutability_status\": \"METADATA_IMMUTABLE\", \"mint_authority_status\": \"MINT_AUTHORITY_RENOUNCED\", \"optional_unknowns_json\": \"[\\\"liquidity_lock_or_burn_label\\\"]\", \"pair_address\": \"7CQEubcAzwy3Nhh1v9QXYyD4vXp6JgwdRZYkybbfdRFs\", \"pair_id\": 1, \"paper_only_context\": 1, \"policy_version\": \"V2_4_1_COMPOSITE_SAFETY_V1\", \"provenance_complete\": 1, \"safety_context_label\": \"SAFETY_UNKNOWN\", \"safety_contract_label\": \"SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY\", \"snapshot_id\": 18, \"source_status\": \"COMPLETE\", \"supply_sanity_label\": \"SUPPLY_SANITY_OK\", \"target_status\": \"TARGET_MATCH\", \"token_id\": 1, \"token_mint\": \"Hx7d5gD9Lt23A7BQkBxiE6rnfFuw9ARsHSLGN6Acvcbb\", \"token_program_label\": \"SPL_TOKEN_OR_TOKEN_2022_VERIFIED\"}, \"status\": \"READY\"}, \"solana_chain_heat\": {\"blockers\": [], \"can_support_clean_memory\": true, \"labels\": {\"chain_heat_label\": \"SOLANA_WARM\", \"chain_heat_payload_quality_label\": \"CHAIN_HEAT_CONTEXT_CLEAN\", \"chain_heat_transition_label\": \"SOLANA_TRANSITION_UNKNOWN\"}, \"row\": {\"activity_label\": \"ACTIVITY_ELEVATED\", \"captured_at\": \"2026-08-07T22:36:02.300394+00:00\", \"chain_heat_label\": \"SOLANA_WARM\", \"chain_heat_payload_quality_label\": \"CHAIN_HEAT_CONTEXT_CLEAN\", \"congestion_label\": \"CONGESTION_UNKNOWN\", \"created_at\": \"2026-08-07 22:36:02\", \"data_quality_label\": \"CLEAN_DATA\", \"id\": 3, \"liquidity_label\": \"LIQUIDITY_UNKNOWN\", \"normalized_chain_heat_payload_json\": \"{\\\"activity_label\\\": \\\"ACTIVITY_ELEVATED\\\", \\\"attached_pair_id\\\": 1, \\\"attached_token_id\\\": 1, \\\"captured_at\\\": \\\"2026-08-07T22:36:02.300394+00:00\\\", \\\"chain_heat_label\\\": \\\"SOLANA_WARM\\\", \\\"chain_heat_payload_quality_label\\\": \\\"CHAIN_HEAT_CONTEXT_CLEAN\\\", \\\"congestion_label\\\": \\\"CONGESTION_UNKNOWN\\\", \\\"data_quality_label\\\": \\\"CLEAN_DATA\\\", \\\"liquidity_label\\\": \\\"LIQUIDITY_UNKNOWN\\\", \\\"raw_chain_heat_payload_json\\\": \\\"{\\\\\\\"assets\\\\\\\": {\\\\\\\"bitcoin\\\\\\\": {\\\\\\\"change_24h\\\\\\\": 1.0, \\\\\\\"price_usd\\\\\\\": 65000}, \\\\\\\"ethereum\\\\\\\": {\\\\\\\"change_24h\\\\\\\": 1.0, \\\\\\\"price_usd\\\\\\\": 3500}, \\\\\\\"solana\\\\\\\": {\\\\\\\"change_24h\\\\\\\": 2.0, \\\\\\\"price_usd\\\\\\\": 150, \\\\\\\"volume_24h\\\\\\\": 2000000000}}, \\\\\\\"attached_pair_id\\\\\\\": 1, \\\\\\\"attached_token_id\\\\\\\": 1, \\\\\\\"captured_at\\\\\\\": \\\\\\\"2026-08-07T22:36:02.300394+00:00\\\\\\\", \\\\\\\"data_quality_label\\\\\\\": \\\\\\\"CLEAN_DATA\\\\\\\", \\\\\\\"governed_context_request_kind\\\\\\\": \\\\\\\"broad_market_context\\\\\\\", \\\\\\\"governed_context_source\\\\\\\": \\\\\\\"coingecko\\\\\\\", \\\\\\\"pair_address\\\\\\\": \\\\\\\"7CQEubcAzwy3Nhh1v9QXYyD4vXp6JgwdRZYkybbfdRFs\\\\\\\", \\\\\\\"snapshot_captured_at\\\\\\\": \\\\\\\"2026-08-07T22:36:02.430328+00:00\\\\\\\", \\\\\\\"snapshot_id\\\\\\\": 18, \\\\\\\"source_request_id\\\\\\\": 38, \\\\\\\"source_response_id\\\\\\\": 38, \\\\\\\"source_status\\\\\\\": \\\\\\\"COMPLETE\\\\\\\", \\\\\\\"token_mint\\\\\\\": \\\\\\\"Hx7d5gD9Lt23A7BQkBxiE6rnfFuw9ARsHSLGN6Acvcbb\\\\\\\"}\\\", \\\"snapshot_id\\\": 18, \\\"sol_change_1h\\\": null, \\\"sol_change_24h\\\": 2.0, \\\"sol_change_7d\\\": null, \\\"sol_price_usd\\\": 150.0, \\\"sol_volume_24h\\\": 2000000000.0, \\\"solana_active_addresses\\\": null, \\\"solana_congestion_context\\\": null, \\\"solana_dex_volume_24h\\\": null, \\\"solana_hot_pair_count\\\": null, \\\"solana_meme_failed_pair_count\\\": null, \\\"solana_meme_graduation_count\\\": null, \\\"solana_meme_liquidity_usd\\\": null, \\\"solana_meme_new_pair_count\\\": null, \\\"solana_meme_volume_24h\\\": null, \\\"solana_new_token_count\\\": null, \\\"solana_priority_fee_context\\\": null, \\\"solana_stablecoin_supply\\\": null, \\\"solana_tvl_usd\\\": null, \\\"solana_tx_count_24h\\\": null, \\\"source_request_id\\\": 38, \\\"source_response_id\\\": 38, \\\"source_status\\\": \\\"COMPLETE\\\"}\", \"raw_chain_heat_payload_json\": \"{\\\"assets\\\": {\\\"bitcoin\\\": {\\\"change_24h\\\": 1.0, \\\"price_usd\\\": 65000}, \\\"ethereum\\\": {\\\"change_24h\\\": 1.0, \\\"price_usd\\\": 3500}, \\\"solana\\\": {\\\"change_24h\\\": 2.0, \\\"price_usd\\\": 150, \\\"volume_24h\\\": 2000000000}}, \\\"attached_pair_id\\\": 1, \\\"attached_token_id\\\": 1, \\\"captured_at\\\": \\\"2026-08-07T22:36:02.300394+00:00\\\", \\\"data_quality_label\\\": \\\"CLEAN_DATA\\\", \\\"governed_context_request_kind\\\": \\\"broad_market_context\\\", \\\"governed_context_source\\\": \\\"coingecko\\\", \\\"pair_address\\\": \\\"7CQEubcAzwy3Nhh1v9QXYyD4vXp6JgwdRZYkybbfdRFs\\\", \\\"snapshot_captured_at\\\": \\\"2026-08-07T22:36:02.430328+00:00\\\", \\\"snapshot_id\\\": 18, \\\"source_request_id\\\": 38, \\\"source_response_id\\\": 38, \\\"source_status\\\": \\\"COMPLETE\\\", \\\"token_mint\\\": \\\"Hx7d5gD9Lt23A7BQkBxiE6rnfFuw9ARsHSLGN6Acvcbb\\\"}\", \"sol_change_1h\": null, \"sol_change_24h\": 2.0, \"sol_change_7d\": null, \"sol_price_usd\": 150.0, \"sol_volume_24h\": 2000000000.0, \"solana_active_addresses\": null, \"solana_congestion_context\": null, \"solana_dex_volume_24h\": null, \"solana_hot_pair_count\": null, \"solana_meme_failed_pair_count\": null, \"solana_meme_graduation_count\": null, \"solana_meme_liquidity_usd\": null, \"solana_meme_new_pair_count\": null, \"solana_meme_volume_24h\": null, \"solana_new_token_count\": null, \"solana_priority_fee_context\": null, \"solana_stablecoin_supply\": null, \"solana_tvl_usd\": null, \"solana_tx_count_24h\": null, \"source_name\": null, \"source_request_id\": 38, \"source_response_id\": 38, \"source_status\": \"COMPLETE\"}, \"status\": \"READY\"}, \"trading_flow\": {\"blockers\": [], \"can_support_clean_memory\": true, \"labels\": {\"flow_direction_label\": \"FLOW_EXHAUSTION\", \"flow_memory_gate_label\": \"FLOW_CONTEXT_CAUTION\", \"flow_pressure_label\": \"PRESSURE_MODERATE_INFLOW\", \"imbalance_label\": \"IMBALANCE_BUY_HEAVY\", \"trading_flow_payload_quality_label\": \"TRADING_FLOW_CONTEXT_PARTIAL\", \"tx_activity_label\": \"TX_ACTIVITY_WEAK\", \"volume_activity_label\": \"VOLUME_WEAK\", \"wallet_participation_label\": \"WALLETS_UNKNOWN\"}, \"payload\": {\"buy_volume_15m\": null, \"buy_volume_1h\": null, \"buy_volume_24h\": null, \"buy_volume_4h\": null, \"buy_volume_5m\": null, \"buys_15m\": null, \"buys_1h\": 30, \"buys_24h\": 280, \"buys_4h\": null, \"buys_5m\": 6, \"captured_at\": \"2026-08-07T22:36:02.430328+00:00\", \"chain\": \"solana\", \"data_quality_label\": \"CLEAN_DATA\", \"liquidity_usd\": 10000.0, \"new_wallets_15m\": null, \"new_wallets_5m\": null, \"pair_address\": \"7CQEubcAzwy3Nhh1v9QXYyD4vXp6JgwdRZYkybbfdRFs\", \"pair_id\": 1, \"price_usd\": 1.0, \"repeat_wallets_15m\": null, \"repeat_wallets_5m\": null, \"request_kind\": \"pair_market_snapshot\", \"sell_volume_15m\": null, \"sell_volume_1h\": null, \"sell_volume_24h\": null, \"sell_volume_4h\": null, \"sell_volume_5m\": null, \"sells_15m\": null, \"sells_1h\": 20, \"sells_24h\": 220, \"sells_4h\": null, \"sells_5m\": 4, \"source_name\": \"dexscreener\", \"source_request_id\": 42, \"source_response_id\": 42, \"source_status\": \"COMPLETE\", \"token_id\": 1, \"token_mint\": \"Hx7d5gD9Lt23A7BQkBxiE6rnfFuw9ARsHSLGN6Acvcbb\", \"txns_15m\": null, \"txns_1h\": 50, \"txns_24h\": 500, \"txns_4h\": null, \"txns_5m\": 10, \"unique_wallets_15m\": null, \"unique_wallets_1h\": null, \"unique_wallets_24h\": null, \"unique_wallets_5m\": null, \"volume_15m\": null, \"volume_1h\": 2000.0, \"volume_24h\": 10000.0, \"volume_4h\": null, \"volume_5m\": 500.0}, \"source_snapshot_id\": 18, \"source_trace\": {\"source_name\": \"dexscreener\", \"source_request_id\": 42, \"source_response_id\": 42, \"source_trace_clean\": true}, \"status\": \"READY\"}}, \"snapshot_end_id\": 18, \"snapshot_ids\": [2, 4, 6, 8, 10, 12, 14, 16, 18], \"snapshot_source_traces\": [{\"source_name\": \"dexscreener\", \"source_request_id\": 18, \"source_response_id\": 18, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 20, \"source_response_id\": 20, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 22, \"source_response_id\": 22, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 24, \"source_response_id\": 24, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 26, \"source_response_id\": 26, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 28, \"source_response_id\": 28, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 30, \"source_response_id\": 30, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 32, \"source_response_id\": 32, \"source_trace_clean\": true}, {\"source_name\": \"dexscreener\", \"source_request_id\": 42, \"source_response_id\": 42, \"source_trace_clean\": true}], \"snapshot_start_id\": 2, \"token_id\": 1, \"window_end_at\": \"2026-08-07T22:36:02.430328+00:00\", \"window_kind\": \"WINDOW_15M\", \"window_start_at\": \"2026-08-07T22:21:00.365196+00:00\", \"writes_performed\": false}, \"snapshot_id\": 18, \"snapshot_mode\": \"FIRST_15M_CYCLE\", \"tracking_lane\": \"TRACK_NORMAL\", \"window_5m_support_role\": \"SUPPORT_ONLY_NOT_MAIN_EVIDENCE\"}"
+        ]
+      }
+    },
+    "zero_longer_windows": {
+      "ok": true,
+      "detail": {
+        "WINDOW_12H": 0,
+        "WINDOW_1H": 0,
+        "WINDOW_24H": 0,
+        "WINDOW_4H": 0
+      }
+    },
+    "episodes_present": {
+      "ok": true,
+      "detail": {
+        "db_episodes": 2,
+        "cmo_episode_ids": [
+          1,
+          2
+        ],
+        "fingerprint_ids": [
+          1,
+          2
+        ]
+      }
+    },
+    "fingerprints_present": {
+      "ok": true,
+      "detail": {
+        "db_fps": 2,
+        "cmo_fps": [
+          1,
+          2
+        ]
+      }
+    },
+    "two_token_slots": {
+      "ok": true,
+      "detail": [
+        {
+          "mint_identity": "Hx7d5gD9Lt23A7BQkBxiE6rnfFuw9ARsHSLGN6Acvcbb",
+          "token_state": "COOLDOWN",
+          "first_terminal_cause": "OWNED_TERMINAL_WINDOW_COOLDOWN",
+          "slot_ordinal": 1,
+          "lifecycle_identity": "PUMPSWAP_GRADUATED_CONFIRMED"
+        },
+        {
+          "mint_identity": "5dqWELD3TqMDw8BHmi7wcKXrEhuvwNqeCDLCYQGijHut",
+          "token_state": "COOLDOWN",
+          "first_terminal_cause": "OWNED_TERMINAL_WINDOW_COOLDOWN",
+          "slot_ordinal": 2,
+          "lifecycle_identity": "PUMPSWAP_GRADUATED_CONFIRMED"
+        }
+      ]
+    },
+    "cleanup_complete": {
+      "ok": true,
+      "detail": {
+        "cleanup_completed": true,
+        "lease_released": true
+      }
+    },
+    "lease_released": {
+      "ok": true,
+      "detail": {
+        "lease_released": true,
+        "lease_lock_absent": true
+      }
+    },
+    "zero_active_residue": {
+      "ok": true,
+      "detail": {
+        "active_owned_work_after": 0,
+        "automatic_retries": 0,
+        "campaign_id": "20260807T222050Z-8920d5ab5652-campaign",
+        "cancelled_campaign_work": 0,
+        "cancelled_discovery_work": 0,
+        "cancelled_scheduler_jobs": 0,
+        "cancelled_windows": 0,
+        "cleanup_completed": true,
+        "cleanup_completed_at": "2026-08-07T22:36:02.493822+00:00",
+        "configuration_id": "20260807T222050Z-8920d5ab5652-configuration",
+        "first_terminal_cause": "COMPLETED_CLEAN_OR_DIRTY_RESULTS_REPORTED",
+        "idempotent_replay": false,
+        "lease_released": true,
+        "lease_released_at": "2026-08-07T22:36:02.493822+00:00",
+        "new_child_work_allowed": false,
+        "owner_id": "20260807T222050Z-8920d5ab5652-owner",
+        "restart_created": false,
+        "resume_created": false,
+        "run_id": "20260807T222050Z-8920d5ab5652-campaign-run",
+        "successor_created": false,
+        "supervision_id": "20260807T222050Z-8920d5ab5652-supervision",
+        "terminal_status": "COMPLETED",
+        "terminalized_cycles": 1,
+        "terminalized_discovery_batches": 1
+      }
+    },
+    "reconciliation_clean": {
+      "ok": true,
+      "detail": {
+        "clean_terminal": true,
+        "reconciled": true,
+        "terminal_cause": "COMPLETED_CLEAN_OR_DIRTY_RESULTS_REPORTED"
+      }
+    },
+    "six_unit_present": {
+      "ok": true,
+      "detail": {
+        "LIFECYCLE_RESERVED_TRANSPORT_OPERATION": 28,
+        "LOCAL_VALIDATION_STEP": 93,
+        "NORMALIZED_SOURCE_ROWS": 128,
+        "SCHEDULER_WORK_ITEM": 28,
+        "SOURCE_RESPONSE_BYTES": 9211,
+        "SOURCE_TRANSPORT_OPERATION": 46
+      }
+    },
+    "source_request_recon_ok": {
+      "ok": true,
+      "detail": {
+        "status": "OK",
+        "blocker": null,
+        "transport_identity": "OK"
+      }
+    },
+    "replay_zero_work_flag": {
+      "ok": true,
+      "detail": {
+        "replay_zero_work": true,
+        "report_only_keys": [
+          "block_reason",
+          "database_writes",
+          "fallback_used",
+          "mode",
+          "replay_new_scheduler_calls",
+          "replay_new_source_calls",
+          "requested_identity",
+          "scheduler_runtime_calls",
+          "source_calls",
+          "status"
+        ]
+      }
+    },
+    "report_only_zero_work_counts": {
+      "ok": true,
+      "detail": {
+        "source_calls": 0,
+        "scheduler_runtime_calls": 0,
+        "database_writes": 0,
+        "replay_new_source_calls": 0,
+        "replay_new_scheduler_calls": 0,
+        "replay_database_writes": 0
+      }
+    },
+    "zero_protected_deltas": {
+      "ok": true,
+      "detail": {
+        "printer_memory_retrieval_matches": 0,
+        "printer_memory_retrieval_queries": 0,
+        "printer_paper_decisions": 0,
+        "printer_paper_positions": 0,
+        "printer_paper_trade_audits": 0,
+        "printer_paper_trade_events": 0
+      }
+    },
+    "no_retry_restart_resume_successor": {
+      "ok": true,
+      "detail": {
+        "restart": false,
+        "successor": false,
+        "automatic_retries": 0
+      }
+    },
+    "acceptance_checks_all_true": {
+      "ok": false,
+      "detail": {
+        "pass": false,
+        "verdict": "BLOCKED_UNSAFE",
+        "failing_checks": [
+          "owner_action_local_equal_non_vacuous",
+          "reservation_attempt_outcomes_complete"
+        ]
+      }
+    },
+    "e2q_clean_windows": {
+      "ok": true,
+      "detail": {
+        "e2q_ids": [
+          1,
+          2
+        ],
+        "dirty": [],
+        "windows": [
+          {
+            "data_quality_label": "CLEAN_DATA",
+            "do_not_train": 0,
+            "episode_id": 1,
+            "fingerprint_id": 1,
+            "memory_quality_label": "PARTIAL_MEMORY",
+            "memory_status": "PARTIAL_MEMORY",
+            "pair_id": 2,
+            "token_id": 2,
+            "window_id": 1,
+            "window_status": "WINDOW_CLOSED"
+          },
+          {
+            "data_quality_label": "CLEAN_DATA",
+            "do_not_train": 0,
+            "episode_id": 2,
+            "fingerprint_id": 2,
+            "memory_quality_label": "PARTIAL_MEMORY",
+            "memory_status": "PARTIAL_MEMORY",
+            "pair_id": 1,
+            "token_id": 1,
+            "window_id": 2,
+            "window_status": "WINDOW_CLOSED"
+          }
+        ]
+      }
+    },
+    "both_windows_campaign_owned": {
+      "ok": true,
+      "detail": true
+    }
+  },
+  "blockers": [
+    {
+      "name": "campaign_acceptance",
+      "detail": {
+        "term_verdict": "BLOCKED_UNSAFE",
+        "full_verdict": "BLOCKED_UNSAFE",
+        "ca_pass": false,
+        "ca_verdict": "BLOCKED_UNSAFE"
+      }
+    },
+    {
+      "name": "campaign_pass_flag",
+      "detail": {
+        "campaign_pass": false,
+        "full": null
+      }
+    },
+    {
+      "name": "acceptance_checks_all_true",
+      "detail": {
+        "pass": false,
+        "verdict": "BLOCKED_UNSAFE",
+        "failing_checks": [
+          "owner_action_local_equal_non_vacuous",
+          "reservation_attempt_outcomes_complete"
+        ]
+      }
+    }
+  ],
+  "campaign_id": "20260807T222050Z-8920d5ab5652-campaign",
+  "run_id": "20260807T222050Z-8920d5ab5652-campaign-run",
+  "verdict": "BLOCKED_UNSAFE",
+  "full_verdict": "BLOCKED_UNSAFE",
+  "clean_memory_outcome_pass": true,
+  "selected_tokens": [
+    {
+      "cadence": {
+        "actual_snapshot_steps": 8,
+        "cadence_policy": "WINDOW_15M_AUTHORITATIVE_CADENCE",
+        "close_scheduler_job_ids": [
+          28
+        ],
+        "close_step_ids": [
+          18
+        ],
+        "coverage_status": "COMPLETE",
+        "expected_snapshot_steps": 8,
+        "minimum_required_observations": 9,
+        "missing_snapshot_steps": 0,
+        "planned_snapshot_steps": 8,
+        "snapshot_ids": [
+          2,
+          4,
+          6,
+          8,
+          10,
+          12,
+          14,
+          16
+        ],
+        "snapshot_scheduler_job_ids": [
+          12,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27
+        ],
+        "snapshot_step_ids": [
+          2,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17
+        ],
+        "succeeded_close_count": 1,
+        "target_snapshot_interval_seconds": 120,
+        "tracking_lane": "TRACK_NORMAL"
+      },
+      "campaign_window_id": "20260807T222050Z-8920d5ab5652-cycle:window:1",
+      "memory_window_id": 2,
+      "memory_window_row_id": 2,
+      "pair_address": "7CQEubcAzwy3Nhh1v9QXYyD4vXp6JgwdRZYkybbfdRFs",
+      "pair_id": 1,
+      "token_id": 1,
+      "token_mint": "Hx7d5gD9Lt23A7BQkBxiE6rnfFuw9ARsHSLGN6Acvcbb",
+      "token_slot_id": "slot-20260807T222050Z-8920d5ab5652-cycle-1",
+      "tracking_lane": "TRACK_NORMAL"
+    },
+    {
+      "cadence": {
+        "actual_snapshot_steps": 8,
+        "cadence_policy": "WINDOW_15M_AUTHORITATIVE_CADENCE",
+        "close_scheduler_job_ids": [
+          20
+        ],
+        "close_step_ids": [
+          10
+        ],
+        "coverage_status": "COMPLETE",
+        "expected_snapshot_steps": 8,
+        "minimum_required_observations": 9,
+        "missing_snapshot_steps": 0,
+        "planned_snapshot_steps": 8,
+        "snapshot_ids": [
+          1,
+          3,
+          5,
+          7,
+          9,
+          11,
+          13,
+          15
+        ],
+        "snapshot_scheduler_job_ids": [
+          11,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19
+        ],
+        "snapshot_step_ids": [
+          1,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9
+        ],
+        "succeeded_close_count": 1,
+        "target_snapshot_interval_seconds": 120,
+        "tracking_lane": "TRACK_NORMAL"
+      },
+      "campaign_window_id": "20260807T222050Z-8920d5ab5652-cycle:window:2",
+      "memory_window_id": 1,
+      "memory_window_row_id": 1,
+      "pair_address": "4wdeaEC5kZhZ93AoZ76HKDSq1sSS7uKHsotQo3G5ggSV",
+      "pair_id": 2,
+      "token_id": 2,
+      "token_mint": "5dqWELD3TqMDw8BHmi7wcKXrEhuvwNqeCDLCYQGijHut",
+      "token_slot_id": "slot-20260807T222050Z-8920d5ab5652-cycle-2",
+      "tracking_lane": "TRACK_NORMAL"
+    }
+  ],
+  "terminal_window_ids": [
+    "20260807T222050Z-8920d5ab5652-cycle:window:1",
+    "20260807T222050Z-8920d5ab5652-cycle:window:2"
+  ],
+  "slots": [
+    {
+      "mint_identity": "Hx7d5gD9Lt23A7BQkBxiE6rnfFuw9ARsHSLGN6Acvcbb",
+      "token_state": "COOLDOWN",
+      "first_terminal_cause": "OWNED_TERMINAL_WINDOW_COOLDOWN",
+      "slot_ordinal": 1,
+      "lifecycle_identity": "PUMPSWAP_GRADUATED_CONFIRMED"
+    },
+    {
+      "mint_identity": "5dqWELD3TqMDw8BHmi7wcKXrEhuvwNqeCDLCYQGijHut",
+      "token_state": "COOLDOWN",
+      "first_terminal_cause": "OWNED_TERMINAL_WINDOW_COOLDOWN",
+      "slot_ordinal": 2,
+      "lifecycle_identity": "PUMPSWAP_GRADUATED_CONFIRMED"
+    }
+  ],
+  "cmo": {
+    "blocked_window_ids": [],
+    "blocker_categories": [],
+    "clean_memory_outcome_pass": true,
+    "dirty_or_audit_only_window_ids": [],
+    "e2q_clean_candidate_window_ids": [
+      1,
+      2
+    ],
+    "episode_ids": [
+      1,
+      2
+    ],
+    "expected_window_ids": [
+      2,
+      1
+    ],
+    "fingerprint_ids": [
+      1,
+      2
+    ],
+    "unrelated_promotion_count": 0,
+    "windows": [
+      {
+        "data_quality_label": "CLEAN_DATA",
+        "do_not_train": 0,
+        "episode_id": 1,
+        "fingerprint_id": 1,
+        "memory_quality_label": "PARTIAL_MEMORY",
+        "memory_status": "PARTIAL_MEMORY",
+        "pair_id": 2,
+        "token_id": 2,
+        "window_id": 1,
+        "window_status": "WINDOW_CLOSED"
+      },
+      {
+        "data_quality_label": "CLEAN_DATA",
+        "do_not_train": 0,
+        "episode_id": 2,
+        "fingerprint_id": 2,
+        "memory_quality_label": "PARTIAL_MEMORY",
+        "memory_status": "PARTIAL_MEMORY",
+        "pair_id": 1,
+        "token_id": 1,
+        "window_id": 2,
+        "window_status": "WINDOW_CLOSED"
+      }
+    ]
+  },
+  "six_unit_totals": {
+    "LIFECYCLE_RESERVED_TRANSPORT_OPERATION": 28,
+    "LOCAL_VALIDATION_STEP": 93,
+    "NORMALIZED_SOURCE_ROWS": 128,
+    "SCHEDULER_WORK_ITEM": 28,
+    "SOURCE_RESPONSE_BYTES": 9211,
+    "SOURCE_TRANSPORT_OPERATION": 46
+  },
+  "replay": {
+    "block_reason": "FULL_RUN_REPAIRED_EVIDENCE_INVALID",
+    "database_writes": 0,
+    "fallback_used": false,
+    "mode": "REPORT_ONLY",
+    "replay_new_scheduler_calls": 0,
+    "replay_new_source_calls": 0,
+    "requested_identity": {
+      "campaign_id": "20260807T222050Z-8920d5ab5652-campaign",
+      "run_id": "20260807T222050Z-8920d5ab5652-campaign-run"
+    },
+    "scheduler_runtime_calls": 0,
+    "source_calls": 0,
+    "status": "REPLAY_BLOCKED"
+  },
+  "frozen_evidence_sha256": "9b79feb912e6ac4f7a7a3247aa436718718d7511b7353515724ddcc4f455e866",
+  "network_attempt_count": 0,
+  "sentinel": {
+    "attempt_ordinal": 1,
+    "git_head": "0aa7fdcfacdd7f28ae0883b045ee66be17c76f09",
+    "proof_id": "C8_REPROOF_AFTER_DTW52_20260807",
+    "sentinel_schema": "CHECKPOINT8_CONTROLLING_ATTEMPT_V1"
+  }
+}
