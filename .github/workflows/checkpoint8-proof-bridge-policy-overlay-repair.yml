@@ -1,0 +1,113 @@
+name: Checkpoint 8 Proof Bridge Policy Overlay Repair
+
+on:
+  pull_request:
+    branches:
+      - agent/v2-9-8b-window-15m-checkpoint-8-proof-bridge-policy-overlay-audit-repair
+    types: [opened]
+
+permissions:
+  contents: write
+
+env:
+  REPAIR_BRANCH: agent/v2-9-8b-window-15m-checkpoint-8-proof-bridge-policy-overlay-audit-repair
+  EXPECTED_DESIGN_HEAD: 2b85d4c8b3b77498fb6dde45a9c60300616f35aa
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact repair design HEAD
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.REPAIR_BRANCH }}
+          fetch-depth: 2
+
+      - name: Verify repair baseline
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_DESIGN_HEAD"
+          test -z "$(git status --porcelain --untracked-files=no)"
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Printer V1 and pytest
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . pytest
+
+      - name: Apply exact proof-bridge policy overlay repair
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          command_path = Path('src/printer_v1/operator_cli/operational_memory_factory_command.py')
+          text = command_path.read_text(encoding='utf-8')
+
+          helper_anchor = '''def _holder_stage_evidence_sealer_required(\n    *,\n    git_provenance_authorization: ValidatedGitProvenanceAuthorization | None,\n    disposable_proof: Any | None,\n) -> bool:\n    """True when accountable holder work must be sealed into campaign ownership."""\n    return bool(\n        git_provenance_authorization is not None\n        or disposable_proof is not None\n    )\n\n\n'''
+          helper_replacement = helper_anchor + '''def _merge_disposable_graduated_supply_kwargs(\n    fixture_overrides: Mapping[str, Any],\n) -> dict[str, Any]:\n    """Overlay proof dependencies without replacing canonical operational policy."""\n    overrides = dict(fixture_overrides)\n    policy_collisions = sorted(\n        set(overrides).intersection(OPERATIONAL_GRADUATED_SUPPLY_KWARGS)\n    )\n    if policy_collisions:\n        raise OperationalMemoryFactoryError(\n            "DISPOSABLE_PROOF_OPERATIONAL_SUPPLY_POLICY_OVERRIDE_FORBIDDEN:"\n            + ",".join(policy_collisions)\n        )\n    merged = dict(OPERATIONAL_GRADUATED_SUPPLY_KWARGS)\n    merged.update(overrides)\n    return merged\n\n\n'''
+          if text.count(helper_anchor) != 1:
+              raise SystemExit(f'helper anchor count={text.count(helper_anchor)}')
+          text = text.replace(helper_anchor, helper_replacement, 1)
+
+          old_assignment = '''            bridge_graduated_supply_kwargs = dict(\n                owner_bridge.graduated_supply_kwargs\n            )\n'''
+          new_assignment = '''            bridge_graduated_supply_kwargs = (\n                _merge_disposable_graduated_supply_kwargs(\n                    owner_bridge.graduated_supply_kwargs\n                )\n            )\n'''
+          if text.count(old_assignment) != 1:
+              raise SystemExit(f'bridge assignment anchor count={text.count(old_assignment)}')
+          command_path.write_text(
+              text.replace(old_assignment, new_assignment, 1),
+              encoding='utf-8',
+          )
+
+          test_path = Path('tests/test_v2_9_8b_window_15m_checkpoint8_real_consumer_compatibility.py')
+          text = test_path.read_text(encoding='utf-8')
+          import_anchor = '''from printer_v1.operator_cli import (\n    window_15m_disposable_public_composition_proof as proof,\n)\n'''
+          import_replacement = '''from printer_v1.operator_cli import (\n    operational_memory_factory_command as operational_command,\n    window_15m_disposable_public_composition_proof as proof,\n)\nfrom printer_v1.operator_cli.graduated_supply_front_door import (\n    OPERATIONAL_GRADUATED_SUPPLY_KWARGS,\n)\n'''
+          if text.count(import_anchor) != 1:
+              raise SystemExit(f'test import anchor count={text.count(import_anchor)}')
+          text = text.replace(import_anchor, import_replacement, 1)
+
+          addition = '''\n\ndef test_checkpoint8_disposable_bridge_preserves_canonical_operational_supply_policy(\n    tmp_path: Path,\n) -> None:\n    harness = _load_harness("checkpoint8_bridge_policy_overlay")\n    prepared = _prepared(harness, tmp_path)\n    materialized = proof.materialize_disposable_public_composition_execution(\n        prepared.runtime\n    )\n\n    merged = operational_command._merge_disposable_graduated_supply_kwargs(\n        materialized.graduated_supply_kwargs\n    )\n\n    for key, value in OPERATIONAL_GRADUATED_SUPPLY_KWARGS.items():\n        assert merged[key] == value, key\n    assert merged["permanent_availability"] is True\n    assert merged["run_locator"] is True\n    assert merged["run_geckoterminal_nomination"] is True\n    for key, value in materialized.graduated_supply_kwargs.items():\n        assert merged[key] is value, key\n\n    with pytest.raises(\n        operational_command.OperationalMemoryFactoryError,\n        match=(\n            "DISPOSABLE_PROOF_OPERATIONAL_SUPPLY_POLICY_OVERRIDE_FORBIDDEN:"\n            "permanent_availability"\n        ),\n    ):\n        operational_command._merge_disposable_graduated_supply_kwargs(\n            {\n                **materialized.graduated_supply_kwargs,\n                "permanent_availability": False,\n            }\n        )\n'''
+          marker = 'test_checkpoint8_disposable_bridge_preserves_canonical_operational_supply_policy'
+          if marker in text:
+              raise SystemExit('bridge policy regression already present')
+          test_path.write_text(text.rstrip() + addition.rstrip() + '\n', encoding='utf-8')
+          PY
+
+      - name: Verify narrow diff
+        run: |
+          git diff --check
+          python - <<'PY'
+          import subprocess
+          expected = {
+              'src/printer_v1/operator_cli/operational_memory_factory_command.py',
+              'tests/test_v2_9_8b_window_15m_checkpoint8_real_consumer_compatibility.py',
+          }
+          changed = set(
+              subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines()
+          )
+          assert changed == expected, (changed, expected)
+          assert not any(path.startswith('src/printer_v1/discovery/') for path in changed)
+          PY
+
+      - name: Run minimum sufficient offline verification
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src
+        run: |
+          python -m py_compile src/printer_v1/operator_cli/operational_memory_factory_command.py
+          python -m py_compile tests/test_v2_9_8b_window_15m_checkpoint8_real_consumer_compatibility.py
+          python -m pytest -q tests/test_v2_9_8b_window_15m_checkpoint8_real_consumer_compatibility.py
+          python -m pytest -q tests/test_v2_9_8b_window_15m_checkpoint8_*.py
+          git diff --check
+
+      - name: Commit repair only after GREEN
+        run: |
+          git config user.name "Printer V1 Repair Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add \
+            src/printer_v1/operator_cli/operational_memory_factory_command.py \
+            tests/test_v2_9_8b_window_15m_checkpoint8_real_consumer_compatibility.py
+          git commit -m "Repair Checkpoint 8 operational supply policy overlay"
+          git push origin HEAD:"$REPAIR_BRANCH"
