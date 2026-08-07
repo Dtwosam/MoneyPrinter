@@ -29,7 +29,9 @@ from datetime import datetime, timezone
 import hashlib
 import importlib
 import json
+import os
 from pathlib import Path
+import tempfile
 import sqlite3
 import sys
 from typing import Any, Iterable, Mapping
@@ -1203,20 +1205,10 @@ def write_campaign_terminal_report(
         _assert_report_six_unit_evidence(report)
     canonical = _canonical_json(report)
     report_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-    try:
-        persisted = persist_terminal_report(
-            db_path,
-            report_id=report_id,
-            campaign_id=campaign_id,
-            configuration_id=configuration_id,
-            report=report,
-            now=now,
-        )
-    except CampaignPersistenceError as exc:
-        raise TerminalClosureError(f"campaign report persistence blocked: {exc}") from exc
-    if str(persisted.get("report_hash")) != report_hash:
-        raise TerminalClosureError("persisted campaign report hash mismatch")
 
+    # Checkpoint 7: the exact artifact must exist before the authoritative
+    # REPORT_TERMINAL row is committed. New artifacts are written to an exact
+    # sibling temporary file, fsynced, and atomically replaced into place.
     directory = Path(report_directory)
     directory.mkdir(parents=True, exist_ok=True)
     artifact = directory / f"{report_id}{REPORT_ARTIFACT_SUFFIX}"
@@ -1228,8 +1220,63 @@ def write_campaign_terminal_report(
                 "durable campaign report artifact already differs"
             )
     else:
-        artifact.write_text(canonical, encoding="utf-8")
+        fd, temporary_name = tempfile.mkstemp(
+            prefix=f".{artifact.name}.",
+            suffix=".tmp",
+            dir=str(directory),
+        )
+        os.close(fd)
+        temporary_artifact = Path(temporary_name)
+        try:
+            temporary_artifact.write_text(canonical, encoding="utf-8")
+            with temporary_artifact.open("rb") as stream:
+                os.fsync(stream.fileno())
+            os.replace(temporary_artifact, artifact)
+        except OSError as exc:
+            try:
+                temporary_artifact.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise TerminalClosureError(
+                f"campaign report artifact write blocked: {exc}"
+            ) from exc
         artifact_created = True
+
+    try:
+        persisted = persist_terminal_report(
+            db_path,
+            report_id=report_id,
+            campaign_id=campaign_id,
+            configuration_id=configuration_id,
+            report=report,
+            now=now,
+        )
+    except Exception as exc:
+        # Compensate only an artifact created by this invocation. A
+        # pre-existing exact artifact is never removed.
+        if artifact_created:
+            try:
+                artifact.unlink()
+            except OSError:
+                pass
+        if isinstance(exc, CampaignPersistenceError):
+            raise TerminalClosureError(
+                f"campaign report persistence blocked: {exc}"
+            ) from exc
+        raise
+    if str(persisted.get("report_hash")) != report_hash:
+        raise TerminalClosureError("persisted campaign report hash mismatch")
+
+    try:
+        final_artifact = artifact.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise TerminalClosureError(
+            f"durable campaign report artifact readback blocked: {exc}"
+        ) from exc
+    if final_artifact != canonical:
+        raise TerminalClosureError(
+            "durable campaign report artifact differs after persistence"
+        )
     written = sorted(
         path.name for path in directory.glob(f"*{REPORT_ARTIFACT_SUFFIX}")
     )

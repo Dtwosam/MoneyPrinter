@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import sqlite3
 import sys
@@ -39,6 +40,8 @@ from printer_v1.operator_cli.abstract_campaign_command import (
 )
 from printer_v1.operator_cli.authoritative_live_operational_campaign import (
     AuthoritativeLiveOperationalCampaignOwner,
+    LiveOperationalError,
+    LiveTransportError,
     OneShotUrllibPumpTransport,
     OneShotUrllibSecondaryTransport,
 )
@@ -1476,6 +1479,24 @@ def _latest_campaign_source_total(
         return None
 
 
+_SAFE_INITIALIZED_TERMINAL_CODE = re.compile(r"^[A-Z][A-Z0-9_]{1,127}$")
+
+
+def _safe_initialized_exception_terminal_cause(
+    exc: BaseException,
+) -> str | None:
+    """Return only a bounded categorical code from owned live exceptions."""
+    if not isinstance(exc, (LiveOperationalError, LiveTransportError)):
+        return None
+    code = getattr(exc, "code", None)
+    if not isinstance(code, str):
+        return None
+    candidate = code.strip()
+    if _SAFE_INITIALIZED_TERMINAL_CODE.fullmatch(candidate) is None:
+        return None
+    return candidate
+
+
 def _terminalize_initialized_failure(
     *,
     original_exception: BaseException,
@@ -1496,6 +1517,8 @@ def _terminalize_initialized_failure(
     supplied_cause = str(
         heartbeat_evidence.get("terminal_cause")
         or getattr(original_exception, "terminal_cause", "")
+        or _safe_initialized_exception_terminal_cause(original_exception)
+        or ""
     ).strip()
     original_cause = supplied_cause or (
         f"OPERATIONAL_CAMPAIGN_FAILED:{type(original_exception).__name__}"
@@ -1569,6 +1592,49 @@ def _terminalize_initialized_failure(
         lifecycle={},
         required_token_capacity=TOKEN_CAPACITY,
     )
+    cleanup_identity_exact = all(
+        str(cleanup.get(field) or "") == str(getattr(command, field))
+        for field in (
+            "supervision_id",
+            "campaign_id",
+            "configuration_id",
+            "run_id",
+            "owner_id",
+        )
+    )
+    cleanup_proven = bool(
+        cleanup_identity_exact
+        and cleanup.get("cleanup_completed") is True
+        and cleanup.get("lease_released") is True
+        and type(cleanup.get("active_owned_work_after")) is int
+        and int(cleanup.get("active_owned_work_after")) == 0
+    )
+    if not cleanup_proven:
+        terminal = {
+            "status": "OPERATIONAL_CAMPAIGN_TERMINAL_FAILURE",
+            "execution_id": execution_id,
+            "campaign_id": command.campaign_id,
+            "first_terminal_cause": cause,
+            "original_exception_type": type(original_exception).__name__,
+            "reconciliation": dict(reconciliation),
+            "cleanup": dict(cleanup),
+            "accounting_status": "NOT_FINALIZED_CLEANUP_UNPROVEN",
+            "report_written": False,
+            "report_block_reason": "TERMINAL_CLEANUP_UNPROVEN",
+            "closure_errors": tuple(closure_errors),
+            "restart_created": False,
+            "successor_created": False,
+            "campaign_source_calls": reporting.get("campaign_source_calls"),
+            "campaign_scheduler_calls": reporting.get("campaign_scheduler_calls"),
+        }
+        try:
+            paths["summary"].write_text(
+                json.dumps(terminal, indent=2, sort_keys=True, default=str) + "\n",
+                encoding="utf-8",
+            )
+        except BaseException as exc:
+            closure_errors.append(f"summary:{type(exc).__name__}:{exc}")
+        return terminal
     stage_evidence = accounting_evidence or reporting.get("six_unit_evidence")
     owner_has_evidence = bool(
         accounting_owner is not None
@@ -4276,6 +4342,19 @@ def report_only(
             "report_rows": 1,
             "fallback_used": False,
             "block_reason": "REPLAY_BLOCKED",
+            "source_calls": 0,
+            "scheduler_runtime_calls": 0,
+            "database_writes": 0,
+        })
+
+    if replay.get("artifact_matches") is not True:
+        return _report_only_zero_work({
+            "mode": "REPORT_ONLY",
+            "status": "REPLAY_BLOCKED",
+            "requested_identity": identity["requested_identity"],
+            "report_rows": 1,
+            "fallback_used": False,
+            "block_reason": "TERMINAL_REPORT_ARTIFACT_MISMATCH",
             "source_calls": 0,
             "scheduler_runtime_calls": 0,
             "database_writes": 0,

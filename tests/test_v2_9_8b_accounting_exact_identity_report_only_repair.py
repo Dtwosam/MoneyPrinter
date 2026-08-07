@@ -1376,7 +1376,7 @@ def _seed_campaign_with_report(
                    ) VALUES (?,?,?,'TERMINAL','REPORT_TERMINAL',?,?,?)""",
                 (report_id, campaign_id, configuration_id, body, digest, now),
             )
-            (report_dir / f"{report_id}.json").write_text(body + "\n", encoding="utf-8")
+            (report_dir / f"{report_id}.campaign-report.json").write_text(body, encoding="utf-8")
         conn.commit()
     finally:
         conn.close()
