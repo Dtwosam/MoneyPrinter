@@ -82,7 +82,7 @@ jobs:
           marker = 'test_checkpoint8_direct_migration_fixture_reconciles_and_persists_two_candidates'
           if marker in text:
               raise SystemExit('direct migration accounting regression already present')
-          test_path.write_text(text.rstrip() + addition + '\n', encoding='utf-8')
+          test_path.write_text(text.rstrip() + addition.rstrip() + '\n', encoding='utf-8')
           PY
 
       - name: Verify narrow diff
