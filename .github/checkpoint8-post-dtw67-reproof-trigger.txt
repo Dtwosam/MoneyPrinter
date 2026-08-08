@@ -1,0 +1,4 @@
+DTW-68 one-shot Checkpoint 8 proof trigger.
+Approved immutable proof HEAD: 7584b846fbe0fa79e8c9ce6fe35dfacbf7e07575
+Proof ID: C8_REPROOF_AFTER_DTW67_20260808
+This marker is inert and exists only to create the single pull-request-open trigger.
