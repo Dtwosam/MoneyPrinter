@@ -1,0 +1,23 @@
+name: DTW-86 Focused TDD
+
+on:
+  push:
+    branches:
+      - agent/v2-9-8b-post-dtw85-memory-observation-activation-route-repair-implementation
+
+permissions:
+  contents: read
+
+jobs:
+  focused-red-green:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install project
+        run: python -m pip install -e .
+      - name: Focused pilot-input readiness suite
+        run: python -m unittest tests/test_v2_9_7e_45_pilot_input_readiness.py
