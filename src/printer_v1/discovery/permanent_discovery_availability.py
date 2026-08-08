@@ -4942,6 +4942,62 @@ def load_liquidity_unknown_candidates(
     return out
 
 
+def _seal_unknown_liquidity_backup_stage_evidence(
+    *,
+    ledger: Any,
+    stage_evidence_sink: Any | None,
+    campaign_id: str | None,
+    run_id: str | None,
+    cycle_id: str | None,
+    stage_sequence: int,
+    terminal_status: str,
+    first_terminal_cause: str | None,
+    sealed_at: str,
+    source_request_id: int,
+    source_request_coverage: Mapping[str, Any],
+    measurement_failed: bool,
+) -> dict[str, Any] | None:
+    """Seal real backup transports into the campaign owner without invention."""
+    if (
+        stage_evidence_sink is None
+        or measurement_failed
+        or int(getattr(ledger, "source_transport_operations", 0) or 0) == 0
+    ):
+        return None
+    if not all(str(value or "").strip() for value in (campaign_id, run_id, cycle_id)):
+        raise ValueError("UNKNOWN_LIQUIDITY_BACKUP_STAGE_REQUIRES_CAMPAIGN_RUN_CYCLE")
+
+    from printer_v1.sources.campaign_six_unit_accounting import (
+        build_campaign_stage_id,
+        seal_campaign_stage_evidence,
+    )
+
+    sequence = int(stage_sequence)
+    sealed = seal_campaign_stage_evidence(
+        ledger=ledger,
+        stage_id=build_campaign_stage_id(
+            campaign_id=str(campaign_id),
+            run_id=str(run_id),
+            cycle_id=str(cycle_id),
+            stage_kind="UNKNOWN_LIQUIDITY_BACKUP",
+            stage_sequence=sequence,
+        ),
+        stage_kind="UNKNOWN_LIQUIDITY_BACKUP",
+        stage_sequence=sequence,
+        stage_terminal_status=str(terminal_status),
+        stage_first_terminal_cause=first_terminal_cause,
+        campaign_id=str(campaign_id),
+        run_id=str(run_id),
+        cycle_id=str(cycle_id),
+        sealed_at=sealed_at,
+    )
+    sealed = dict(sealed)
+    sealed["source_request_ids"] = [int(source_request_id)]
+    sealed["source_request_coverage"] = [dict(source_request_coverage)]
+    stage_evidence_sink(sealed)
+    return sealed
+
+
 def run_bounded_unknown_liquidity_backup(
     connection: sqlite3.Connection,
     *,
@@ -4953,6 +5009,8 @@ def run_bounded_unknown_liquidity_backup(
     request_key_prefix: str = "unknown-liq-backup",
     dexscreener_transport_factory: Any | None = None,
     geckoterminal_transport_factory: Any | None = None,
+    transport_identity_observer: Any | None = None,
+    stage_evidence_sink: Any | None = None,
     max_backups: int | None = None,
 ) -> dict[str, Any]:
     """One lawful opposite-source exact-pool backup for LIQUIDITY_UNKNOWN rows.
@@ -4987,6 +5045,7 @@ def run_bounded_unknown_liquidity_backup(
         "source_response_ids": [],
         "source_failure_ids": [],
         "source_request_coverage": [],
+        "sealed_stage_evidence_blocks": [],
         "source_requests": 0,
         "transport_operations": 0,
         "outcomes": [],
@@ -5110,6 +5169,7 @@ def run_bounded_unknown_liquidity_backup(
             campaign_id=campaign_id,
             run_id=run_id,
             cycle_id=cycle_id,
+            on_transport_recorded=transport_identity_observer,
         )
         execution = execute_source_request_with_governor(
             connection,
@@ -5182,13 +5242,35 @@ def run_bounded_unknown_liquidity_backup(
             or result.source_status != SourceStatus.COMPLETE
             or measurement_failed
         )
+        if shared_fail:
+            coverage["terminal_status"] = "BLOCKED"
+        sealed_stage = _seal_unknown_liquidity_backup_stage_evidence(
+            ledger=stage_ledger,
+            stage_evidence_sink=stage_evidence_sink,
+            campaign_id=campaign_id,
+            run_id=run_id,
+            cycle_id=cycle_id,
+            stage_sequence=attempted,
+            terminal_status=str(coverage["terminal_status"]),
+            first_terminal_cause=(
+                str(result.failure_type or "UNKNOWN_LIQUIDITY_BACKUP_SOURCE_UNAVAILABLE")
+                if shared_fail
+                else None
+            ),
+            sealed_at=now,
+            source_request_id=rid,
+            source_request_coverage=coverage,
+            measurement_failed=measurement_failed,
+        )
+        if sealed_stage is not None:
+            report["sealed_stage_evidence_blocks"].append(sealed_stage)
+
         outcome_label = "LIQUIDITY_UNKNOWN"
         liquidity_usd = None
         quote_mint = str(cand.get("quote_mint") or "")
         venue = str(cand.get("venue") or "")
         base_mint = str(cand.get("base_mint") or mint)
         if shared_fail:
-            coverage["terminal_status"] = "BLOCKED"
             outcome_label = "LIQUIDITY_UNKNOWN"
             report["still_unknown"] += 1
             # Measurement failure: preserve request ID, do not invent transport,

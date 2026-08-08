@@ -822,6 +822,8 @@ def run_persistent_eligible_token_supply(
                     dexscreener_transport_factory=(
                         dexscreener_batch_transport_factory
                     ),
+                    transport_identity_observer=transport_identity_observer,
+                    stage_evidence_sink=stage_evidence_sink,
                 )
                 ops_used += int(liquidity_backup_report.get("source_requests") or 0)
             else:
