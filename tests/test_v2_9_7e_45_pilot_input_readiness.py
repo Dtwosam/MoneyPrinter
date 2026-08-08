@@ -8,8 +8,11 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 from printer_v1.db import apply_migrations
+from printer_v1.discovery.memory_observation_activation import AdmissionAuthority
+from printer_v1.operator_cli import authoritative_live_operational_campaign as live_campaign
 from printer_v1.operator_cli.pilot_input_readiness import (
     BLOCKED_ACTIVATION,
     BLOCKED_HOLDER,
@@ -347,6 +350,15 @@ class PilotInputReadinessTests(unittest.TestCase):
             [item["admission_authority"] for item in ordered],
             ["DIRECT_PUMP_PUMPSWAP", "DIRECT_PUMP_PUMPSWAP"],
         )
+
+    def test_campaign_projection_uses_frozen_admission_authority_exactly(self) -> None:
+        projector = getattr(live_campaign, "_readiness_admission_authority", None)
+        self.assertTrue(callable(projector))
+        market = SimpleNamespace(admission_authority=AdmissionAuthority.MARKET_PRESENT_POOL)
+        direct = SimpleNamespace(admission_authority=AdmissionAuthority.DIRECT_PUMP_PUMPSWAP)
+        self.assertEqual(projector(market), "MARKET_PRESENT_POOL")
+        self.assertEqual(projector(direct), "DIRECT_PUMP_PUMPSWAP")
+        self.assertIsNone(projector(None))
 
     def test_build_raises_when_gate_unmet(self) -> None:
         with self.assertRaises(PilotInputReadinessError) as ctx:
