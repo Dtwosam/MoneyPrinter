@@ -1,0 +1,150 @@
+name: DTW-58 Independent Inspector GREEN 3
+
+on:
+  pull_request:
+    branches:
+      - tmp/dtw58-implementation-orchestration
+    types: [opened]
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  TARGET_BRANCH: agent/v2-9-8b-window-15m-checkpoint-8-dtw58-independent-inspector-implementation
+  RED_HEAD: 3c6217bdd9f2abcd2f06eb7cffb80efd7ec91100
+  SCRIPT: scripts/v2_9_8b_checkpoint8_independent_inspection.py
+  DTW57_TEST: tests/test_v2_9_8b_window_15m_checkpoint8_dtw57_durable_reconstruction_red.py
+  COMPLETION_TEST: tests/test_v2_9_8b_window_15m_checkpoint8_independent_inspection_completion.py
+  INTEGRATION_TEST: tests/test_v2_9_8b_window_15m_checkpoint8_independent_inspection_integration.py
+
+jobs:
+  implement-and-verify:
+    if: github.event.pull_request.head.ref == 'tmp/dtw58-implementation-trigger3'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout orchestration payload
+        uses: actions/checkout@v4
+        with:
+          ref: tmp/dtw58-implementation-orchestration
+          path: orchestration
+          fetch-depth: 1
+
+      - name: Reassemble decode and compile implementation patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat orchestration/.github/dtw58_patch.part1 \
+              orchestration/.github/dtw58_patch.part2 \
+              orchestration/.github/dtw58_patch.part3 \
+              orchestration/.github/dtw58_patch.part4 > /tmp/dtw58_patch.b64
+          test "$(wc -c < /tmp/dtw58_patch.b64)" -eq 10508
+          base64 -d /tmp/dtw58_patch.b64 | gzip -d > /tmp/dtw58_patch.py
+          echo '37cfd0a203f75117b5aaecff0593732508ab6933a981af0dc417bf7267698db2  /tmp/dtw58_patch.py' | sha256sum -c -
+          python -m py_compile /tmp/dtw58_patch.py
+
+      - name: Checkout exact DTW-58 target
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TARGET_BRANCH }}
+          path: target
+          fetch-depth: 10
+
+      - name: Verify immutable RED starting head
+        shell: bash
+        working-directory: target
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$RED_HEAD"
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install focused test dependencies
+        shell: bash
+        working-directory: target
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . pytest
+
+      - name: Apply DTW-58 inspector-only implementation
+        shell: bash
+        working-directory: target
+        run: |
+          set -euo pipefail
+          python /tmp/dtw58_patch.py
+
+      - name: Verify inspector-only scope and compile
+        shell: bash
+        working-directory: target
+        run: |
+          set -euo pipefail
+          FILES="$(git diff --name-only)"
+          test "$FILES" = "$SCRIPT"
+          git diff --check
+          python -m py_compile "$SCRIPT"
+
+      - name: Run focused DTW-58 GREEN set
+        shell: bash
+        working-directory: target
+        env:
+          PYTHONPATH: ${{ github.workspace }}/target/src
+        run: |
+          set -euo pipefail
+          pytest -q "$DTW57_TEST" "$COMPLETION_TEST" "$INTEGRATION_TEST"
+
+      - name: Inspect consumed DTW-54 frozen artifact read-only
+        shell: bash
+        working-directory: target
+        env:
+          PYTHONPATH: ${{ github.workspace }}/target/src
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl -L --fail --silent --show-error \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/9014056017/zip" \
+            -o /tmp/dtw54-frozen.zip
+          rm -rf /tmp/dtw54-frozen /home/runner/work/_temp/checkpoint8-post-dtw53-reproof
+          mkdir -p /tmp/dtw54-frozen /home/runner/work/_temp/checkpoint8-post-dtw53-reproof
+          unzip -q /tmp/dtw54-frozen.zip -d /tmp/dtw54-frozen
+          cp /tmp/dtw54-frozen/checkpoint8-controlling-proof.sqlite3 \
+            /home/runner/work/_temp/checkpoint8-post-dtw53-reproof/checkpoint8-controlling-proof.sqlite3
+          cp -a /tmp/dtw54-frozen/checkpoint8-artifacts \
+            /home/runner/work/_temp/checkpoint8-post-dtw53-reproof/checkpoint8-artifacts
+          python "$SCRIPT" --proof-dir /tmp/dtw54-frozen > /tmp/dtw54-inspection.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path('/tmp/dtw54-inspection.json').read_text())
+          assert result['pass'] is True
+          assert result['verdict'] == 'CHECKPOINT8_INDEPENDENT_INSPECTION_PASS'
+          assert result['graph_projection']['exact_two_terminal_window_15m'] is True
+          assert result['graph_projection']['both_clean_memory'] is True
+          assert result['graph_projection']['both_fingerprints_present'] is True
+          assert result['governance_projection']['source_governor_exact'] is True
+          assert result['governance_projection']['central_scheduler_exact'] is True
+          print('DTW58_CONSUMED_DTW54_FROZEN_ARTIFACT_INSPECTION_PASS')
+          PY
+
+      - name: Recheck scope after all verification
+        shell: bash
+        working-directory: target
+        run: |
+          set -euo pipefail
+          test "$(git diff --name-only)" = "$SCRIPT"
+          git diff --check
+
+      - name: Commit verified DTW-58 implementation
+        shell: bash
+        working-directory: target
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$SCRIPT"
+          git commit -m "Implement DTW-58 durable inspector reconstruction"
+          git push origin "HEAD:$TARGET_BRANCH"
