@@ -877,15 +877,15 @@ def test_representative_real_schema_fixture_should_pass_full_independent_inspect
             "CURRENT_FACTORY_RUN_IDENTITY_CONFLICT",
         ),
         (
-            "campaign_window_memory_mismatch",
+            "campaign_window_memory_binding_missing",
             lambda proof_dir, db_path: _replace_row(
                 db_path,
                 "printer_memory_factory_campaign_windows",
                 "window_id",
                 "campaign-window-1",
-                {"memory_window_row_id": 102},
+                {"memory_window_row_id": None},
             ),
-            "CAMPAIGN_MEMORY_WINDOW_IDENTITY_MISMATCH",
+            "CAMPAIGN_MEMORY_WINDOW_BINDING_MISSING",
         ),
         (
             "clean_episode_missing",
@@ -918,12 +918,10 @@ def test_representative_real_schema_fixture_should_pass_full_independent_inspect
         ),
         (
             "scheduler_join_missing",
-            lambda proof_dir, db_path: _replace_row(
+            lambda proof_dir, db_path: _mutate_db(
                 db_path,
-                "printer_memory_factory_campaign_scheduler_work",
-                "scheduler_work_id",
-                "lifecycle-work-1",
-                {"scheduler_job_id": 2},
+                "DELETE FROM printer_memory_factory_campaign_scheduler_work "
+                "WHERE scheduler_work_id='lifecycle-work-1'",
             ),
             "SCHEDULER_JOIN_MISMATCH",
         ),
