@@ -1084,6 +1084,27 @@ def _holder_observation_context(
     }
 
 
+
+def _readiness_admission_authority(activation_candidate: Any | None) -> str | None:
+    """Project canonical frozen admission authority without inference."""
+    if activation_candidate is None:
+        return None
+    from printer_v1.discovery.memory_observation_activation import AdmissionAuthority
+
+    raw = getattr(activation_candidate, "admission_authority", None)
+    if raw is None:
+        raise LiveOperationalError(
+            "MEMORY_OBSERVATION_ADMISSION_AUTHORITY_MISSING"
+        )
+    value = getattr(raw, "value", raw)
+    try:
+        return AdmissionAuthority(str(value)).value
+    except ValueError as exc:
+        raise LiveOperationalError(
+            "MEMORY_OBSERVATION_ADMISSION_AUTHORITY_UNSUPPORTED",
+            str(value),
+        ) from exc
+
 def _owned_transport_keys_for_request(
     manifest_entry: Mapping[str, Any],
 ) -> tuple[tuple[object, ...], ...]:
@@ -3372,6 +3393,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         future_action_eligibility=str(
                             item.get("future_action_eligibility")
                             or "BLOCKED_OR_UNKNOWN"
+                        ),
+                        admission_authority=_readiness_admission_authority(
+                            activation_candidate
                         ),
                         slot_ordinal=(
                             None
