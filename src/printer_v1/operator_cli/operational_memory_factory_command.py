@@ -2969,6 +2969,9 @@ def _run_operational_campaign(
         elif isinstance(identity, Mapping):
             action_local_transport_identities.append(dict(identity))
 
+    def _observe_local_validation_identity(identity: Any) -> None:
+        action_local_ledger.observe_local_validation(identity)
+
     def _campaign_stage_evidence_sink(evidence: Mapping[str, Any]) -> None:
         # Owner side only. Action-local identities arrive via the measurement
         # observer, not by mirroring this sealed evidence block.
@@ -3250,6 +3253,9 @@ def _run_operational_campaign(
                 fifteen_minute_only=True,
                 accounting_stage_evidence_sink=_campaign_stage_evidence_sink,
                 transport_identity_observer=_observe_transport_identity,
+                local_validation_identity_observer=(
+                    _observe_local_validation_identity
+                ),
                 pre_holder_accounting_projection=lambda: (
                     build_pre_holder_accounting_projection(
                         campaign_units=campaign_units,

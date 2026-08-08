@@ -794,6 +794,7 @@ def build_graduated_supply(
     tracking_precheck: bool = False,
     stage_evidence_sink: Callable[[Mapping[str, Any]], None] | None = None,
     transport_identity_observer: Callable[[Any], None] | None = None,
+    local_validation_identity_observer: Callable[[Any], None] | None = None,
     permanent_availability: bool = False,
     run_geckoterminal_nomination: bool = False,
     enable_geckoterminal_reconciliation: bool = True,
@@ -911,6 +912,7 @@ def build_graduated_supply(
         stage_evidence_sink=stage_evidence_sink,
         # Pre-seal verification observer (independent of sealed-stage handoff).
         transport_identity_observer=transport_identity_observer,
+        local_validation_identity_observer=local_validation_identity_observer,
         permanent_availability=permanent_availability,
         run_geckoterminal_nomination=run_geckoterminal_nomination,
         enable_geckoterminal_reconciliation=(

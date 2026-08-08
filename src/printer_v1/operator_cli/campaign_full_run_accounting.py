@@ -103,6 +103,92 @@ def _require(value: Any, label: str) -> str:
     return text
 
 
+def project_lifecycle_reservation_outcomes(
+    *,
+    transport_records: Sequence[Mapping[str, Any]],
+    reserved_count: int,
+    owned_lifecycle_stage_ids: Sequence[str],
+    factory_run_id: str,
+) -> dict[str, Any]:
+    """Project lifecycle reservation outcomes without campaign-scope leakage.
+
+    Campaign-wide transports remain untouched. Only transports owned by the two
+    sealed WINDOW_15M lifecycle stages participate here, and every such attempt
+    must carry an exact reservation linkage to the authoritative factory run.
+    """
+    reserved = int(reserved_count)
+    if reserved < 0:
+        raise FullRunAccountingError("negative lifecycle reservation count")
+    factory = _require(factory_run_id, "factory_run_id")
+    stage_ids = {
+        str(value).strip()
+        for value in owned_lifecycle_stage_ids
+        if str(value).strip()
+    }
+
+    attempted = 0
+    succeeded = 0
+    failed = 0
+    malformed_linkage_count = 0
+    duplicate_reservation_linkage_count = 0
+    unexpected_outcome_count = 0
+    seen_links: set[str] = set()
+
+    for item in transport_records:
+        if not isinstance(item, Mapping):
+            continue
+        if str(item.get("stage") or "") not in stage_ids:
+            continue
+        attempted += 1
+        link = str(item.get("reserved_from") or "").strip()
+        prefix = f"{factory}:"
+        valid_link = link.startswith(prefix)
+        if valid_link:
+            remainder = link[len(prefix):]
+            parts = remainder.rsplit(":reservation:", 1)
+            valid_link = (
+                len(parts) == 2
+                and bool(parts[0].strip())
+                and parts[1].isdigit()
+                and int(parts[1]) > 0
+            )
+        if not valid_link:
+            malformed_linkage_count += 1
+        elif link in seen_links:
+            duplicate_reservation_linkage_count += 1
+            malformed_linkage_count += 1
+        else:
+            seen_links.add(link)
+
+        result = str(item.get("result") or "")
+        if result == "SUCCEEDED":
+            succeeded += 1
+        elif result == "FAILED":
+            failed += 1
+        else:
+            unexpected_outcome_count += 1
+
+    complete = bool(
+        stage_ids
+        and reserved >= attempted > 0
+        and attempted == succeeded + failed
+        and malformed_linkage_count == 0
+        and unexpected_outcome_count == 0
+    )
+    return {
+        "reserved": reserved,
+        "attempted": attempted,
+        "succeeded": succeeded,
+        "failed": failed,
+        "malformed_linkage_count": malformed_linkage_count,
+        "duplicate_reservation_linkage_count": (
+            duplicate_reservation_linkage_count
+        ),
+        "unexpected_outcome_count": unexpected_outcome_count,
+        "complete": complete,
+    }
+
+
 def _load_json_object(raw: Any) -> dict[str, Any] | None:
     try:
         value = json.loads(str(raw))
@@ -950,6 +1036,28 @@ def build_full_run_terminal_report(
         scheduler_ownership.get("all_lifecycle_jobs_succeeded", False)
     )
     transport_records = list(owner_evidence.get("transport_operations") or [])
+    sealed_stage_diagnostics = list(
+        owner_evidence.get("sealed_stage_diagnostics")
+        or reconciliation.get("diagnostics", {}).get(
+            "sealed_stage_diagnostics", []
+        )
+    )
+    lifecycle_stage_ids = [
+        str(item.get("stage_id") or "")
+        for item in sealed_stage_diagnostics
+        if str(item.get("stage_kind") or "")
+        in {"WINDOW_15M_SLOT_1", "WINDOW_15M_SLOT_2"}
+    ]
+    source_operation_outcomes = project_lifecycle_reservation_outcomes(
+        transport_records=transport_records,
+        reserved_count=int(
+            dict(six_unit_totals or {}).get(
+                "LIFECYCLE_RESERVED_TRANSPORT_OPERATION", 0
+            )
+        ),
+        owned_lifecycle_stage_ids=lifecycle_stage_ids,
+        factory_run_id=context.factory_run_id,
+    )
     validation_families = sorted({
         str(item.get("validation_kind") or "")
         for item in (owner_evidence.get("local_validation_identities") or [])
@@ -997,31 +1105,11 @@ def build_full_run_terminal_report(
             "owner_evidence": dict(owner_evidence),
             "action_local_evidence": dict(action_local_evidence),
             "expected_stage_manifest": list(REQUIRED_LIFECYCLE_STAGE_KINDS),
-            "sealed_stage_diagnostics": list(
-                owner_evidence.get("sealed_stage_diagnostics")
-                or reconciliation.get("diagnostics", {}).get(
-                    "sealed_stage_diagnostics", []
-                )
-            ),
+            "sealed_stage_diagnostics": sealed_stage_diagnostics,
             "six_unit_totals": {key: int(value) for key, value in dict(
                 six_unit_totals or {}
             ).items()},
-            "source_operation_outcomes": {
-                "reserved": int(
-                    dict(six_unit_totals or {}).get(
-                        "LIFECYCLE_RESERVED_TRANSPORT_OPERATION", 0
-                    )
-                ),
-                "attempted": len(transport_records),
-                "succeeded": sum(
-                    1 for item in transport_records
-                    if str(item.get("result") or "") == "SUCCEEDED"
-                ),
-                "failed": sum(
-                    1 for item in transport_records
-                    if str(item.get("result") or "") == "FAILED"
-                ),
-            },
+            "source_operation_outcomes": source_operation_outcomes,
             "named_validation_families": validation_families,
             "owner_action_local_reconciliation": dict(reconciliation),
             "scheduler_attribution": scheduler_attribution,
@@ -1338,6 +1426,18 @@ def evaluate_campaign_acceptance_gate(
             and int(accounting.get("source_operation_outcomes", {}).get("attempted") or 0)
             == int(accounting.get("source_operation_outcomes", {}).get("succeeded") or 0)
             + int(accounting.get("source_operation_outcomes", {}).get("failed") or 0)
+            and int(
+                accounting.get("source_operation_outcomes", {}).get(
+                    "malformed_linkage_count"
+                )
+                or 0
+            ) == 0
+            and int(
+                accounting.get("source_operation_outcomes", {}).get(
+                    "unexpected_outcome_count"
+                )
+                or 0
+            ) == 0
         ),
         "required_named_validation_families_present": {
             "SELECTION_HANDOFF_VALIDATED",

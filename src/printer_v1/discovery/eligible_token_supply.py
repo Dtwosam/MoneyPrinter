@@ -569,6 +569,7 @@ def run_persistent_eligible_token_supply(
     tracking_precheck: bool = False,
     stage_evidence_sink: Callable[[Mapping[str, Any]], None] | None = None,
     transport_identity_observer: Callable[[Any], None] | None = None,
+    local_validation_identity_observer: Callable[[Any], None] | None = None,
     permanent_availability: bool = False,
     run_geckoterminal_nomination: bool = False,
     enable_geckoterminal_reconciliation: bool = True,
@@ -644,7 +645,11 @@ def run_persistent_eligible_token_supply(
 
     # --- Migration discovery (once at campaign start) -----------------------
     discovery_stage_kwargs: dict[str, Any] = {}
-    if stage_evidence_sink is not None or transport_identity_observer is not None:
+    if (
+        stage_evidence_sink is not None
+        or transport_identity_observer is not None
+        or local_validation_identity_observer is not None
+    ):
         discovery_stage_kwargs = {
             "campaign_id": campaign_id,
             "run_id": run_id,
@@ -656,6 +661,10 @@ def run_persistent_eligible_token_supply(
         if transport_identity_observer is not None:
             discovery_stage_kwargs["transport_identity_observer"] = (
                 transport_identity_observer
+            )
+        if local_validation_identity_observer is not None:
+            discovery_stage_kwargs["local_validation_identity_observer"] = (
+                local_validation_identity_observer
             )
     discovery = run_direct_migration_discovery(
         db_path,

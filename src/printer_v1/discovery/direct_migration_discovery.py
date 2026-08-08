@@ -318,6 +318,7 @@ def run_direct_migration_discovery(
     reverify_settle_seconds: float = 0.0,
     stage_evidence_sink: Callable[[Mapping[str, Any]], None] | None = None,
     transport_identity_observer: Callable[[Any], None] | None = None,
+    local_validation_identity_observer: Callable[[Any], None] | None = None,
     campaign_id: str | None = None,
     run_id: str | None = None,
     cycle_id: str | None = None,
@@ -832,14 +833,15 @@ def run_direct_migration_discovery(
                 if record.get("verified")
                 else f"PUMPSWAP_GRADUATION_{str(record.get('failure_type') or 'FAILED').upper()}"
             )
-            migration_validation_identities.append(
-                LocalValidationIdentity(
-                    stage_id=stage_id_for_validations,
-                    subject_identity=subject,
-                    validation_kind=kind,
-                    validation_ordinal=index,
-                )
+            validation_identity = LocalValidationIdentity(
+                stage_id=stage_id_for_validations,
+                subject_identity=subject,
+                validation_kind=kind,
+                validation_ordinal=index,
             )
+            migration_validation_identities.append(validation_identity)
+            if local_validation_identity_observer is not None:
+                local_validation_identity_observer(validation_identity)
         measured_ledger.record_local_validation(
             local_validations + len(migration_validation_identities)
         )

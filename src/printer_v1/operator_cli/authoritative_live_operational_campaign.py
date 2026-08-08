@@ -2254,6 +2254,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
         transport_identity_observer: (
             Callable[[Any], None] | None
         ) = None,
+        local_validation_identity_observer: (
+            Callable[[Any], None] | None
+        ) = None,
         pre_holder_accounting_projection: (
             Callable[[], Mapping[str, Any]] | None
         ) = None,
@@ -2417,6 +2420,10 @@ class AuthoritativeLiveOperationalCampaignOwner:
             if transport_identity_observer is not None:
                 supply_kwargs["transport_identity_observer"] = (
                     transport_identity_observer
+                )
+            if local_validation_identity_observer is not None:
+                supply_kwargs["local_validation_identity_observer"] = (
+                    local_validation_identity_observer
                 )
             supply = build_graduated_supply(
                 command.db_path,
