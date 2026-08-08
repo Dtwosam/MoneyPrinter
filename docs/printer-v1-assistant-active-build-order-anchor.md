@@ -13,115 +13,55 @@ It does not replace:
 - `docs/printer-v1-current-state-memory-growth-audit.md`; or
 - `docs/printer-v1-memory-growth-build-order-v2.md`.
 
-Inside that source stack, `docs/printer-v1-memory-growth-build-order-v2.md` remains the active memory-growth build order. It is not the sole source of truth. Current lane position must also follow later committed audits, designs, implementations, proofs, closeouts, and explicit build-order reconciliations.
-
-Current reconciliation:
-
-`docs/printer-v1-v2-9-8b-post-checkpoint-8-active-roadmap-current-state-reconciliation.md`
-
-Verdict:
-
-`V2_9_8B_POST_CHECKPOINT_8_ACTIVE_ROADMAP_CURRENT_STATE_RECONCILIATION_PASS`
+Inside that stack, `docs/printer-v1-memory-growth-build-order-v2.md` remains the active memory-growth build order, not the sole source of truth. Later committed audits, designs, implementations, proofs, closeouts, and reconciliations control current lane position.
 
 ## Current state
 
-V2-9.8B rolling ordinary `WINDOW_15M` blocker-readiness hardening is complete through Checkpoint 8.
+Checkpoint 8 controlling proof and independent inspection passed on immutable proof HEAD `7584b846fbe0fa79e8c9ce6fe35dfacbf7e07575` and closed at `8629f8da9392b958f6716c9155afdc567a797f16`.
 
-Checkpoint 8 controlling proof:
+Post-C8 roadmap/current-state reconciliation passed at `6cbf22945d5429c993d1c9acf50f1d3cb70cf585`.
 
-- approved immutable proof HEAD `7584b846fbe0fa79e8c9ce6fe35dfacbf7e07575`;
-- proof ID `C8_REPROOF_AFTER_DTW67_20260808`;
-- Actions run `31239317931`, job `93057459320`;
-- controlling campaign `CAMPAIGN_PASS`;
-- mandatory independent inspection `CHECKPOINT8_INDEPENDENT_INSPECTION_PASS`;
-- artifact ID `9016671724`;
-- zero network attempts;
-- zero protected-capability deltas;
-- zero `WINDOW_1H/WINDOW_4H/WINDOW_12H/WINDOW_24H`;
-- exactly one authorization-consuming attempt and no retry/rerun/resume/restart/successor.
+The post-C8 authoritative `WINDOW_15M` operational re-readiness sequence is now complete:
 
-Checkpoint 8 closeout commit:
+- DTW-70 static/fresh audit identified local-lineage and staging-classification blockers;
+- DTW-71 classified all historical staging, proved zero untracked-path collisions, and non-destructively aligned the Mac checkout;
+- exact proven local operational baseline: `cd0a422d84a0076dd03ba34f1a764fc8795f6aaf`;
+- local branch: `agent/v2-9-8b-post-c8-operational-window15m-rereadiness-audit`;
+- authoritative DB SHA-256: `7380f9b4c172c218e6c9ab1fed996a06fcdeb90ff67f2b414d805f280403d54e`;
+- migrations `52/52`, integrity `ok`, FK violations `0`, no SQLite sidecars;
+- all inspected campaign/factory/discovery/Scheduler state is terminal-only;
+- zero-I/O concrete-composition preflight PASS;
+- all seven staging entries classified, zero ambiguous, no historical authorization reusable.
 
-`8629f8da9392b958f6716c9155afdc567a797f16`
+Controlling closeout:
 
-The rolling readiness-hardening tracker and Checkpoint 8 are closed PASS. The older post-migration C1-C15 and candidate-acquisition “next task” pointers are historical and must not be revived as current execution instructions.
+`docs/printer-v1-v2-9-8b-post-c8-local-operational-lineage-staging-reconciliation-closeout.md`
+
+Verdict:
+
+`V2_9_8B_POST_C8_LOCAL_OPERATIONAL_LINEAGE_STAGING_RECONCILIATION_PASS`
 
 ## Exact next permitted lane
 
 ```text
-V2-9.8B Post-Checkpoint-8 Authoritative WINDOW_15M Operational Re-Readiness Audit
+V2-9.8B Post-C8 Fresh WINDOW_15M One-Use Authorization Preparation and Independent Review
 ```
 
-Lane type: audit/readiness only.
+This is an authorization-preparation lane, not runtime permission.
 
-The lane must freshly establish the authoritative local operational state before any new authorization can be considered.
+Required order:
 
-Required fresh read-only facts include:
+1. design/specify the fresh one-use authorization package against the exact current reviewed lineage;
+2. create exactly one fresh authorization only after explicit operator approval;
+3. independently review exact branch/HEAD, clean tracked/index state, authoritative DB identity, temporal validity, launch-chain identities, no-current-authority state, `WINDOW_15M`-only policy, selective-1h false, and no retry/rerun/resume/restart/successor;
+4. close the authorization lane;
+5. only after that may the operator separately invoke the one-shot wrapper exactly once.
 
-1. exact local controlling branch and full HEAD;
-2. tracked/index cleanliness and explicit untracked evidence classification;
-3. repository migration catalogue versus authoritative DB migration ledger;
-4. authoritative DB SHA-256, size/inode, sidecars, integrity and FK state;
-5. zero non-terminal campaign/run/supervision/factory/window/discovery/Scheduler work and zero active locks;
-6. exact current/historical classification of every one-shot authorization and application marker;
-7. no ambiguous partial application or reusable stale authority;
-8. current wrapper/manifest/marker/source-configuration launch path is statically valid;
-9. main window remains `WINDOW_15M`, selective 1h false, no retry/restart/resume/successor;
-10. all longer-window, retrieval, decision, position, trade, audit and PnL locks remain inactive.
-
-Historical evidence is not a substitute for the fresh local snapshot.
-
-## Latest substantiated historical authoritative baseline
-
-The latest authoritative operational attempt currently substantiated by retained operator evidence is:
-
-- authorization `V2_9_8B_WINDOW_15M_AUTH_20260806T131011Z`;
-- branch `agent/v2-9-8b-window-15m-fresh-authorization-after-source-request-scope-enforcement`;
-- HEAD `7defc2945c42053d9c770ebc66248d27c63ff4a3`;
-- execution `20260806T131312Z-829382105482`;
-- first terminal cause `HolderBudgetError:PRE_HOLDER_TRANSPORT_COUNT_WITHOUT_IDENTITIES:campaign_identity_count=5,manifest_transport_count=9`;
-- cleanup complete, lease released, zero active/locked Scheduler residue;
-- post-attempt DB SHA-256 `7380f9b4c172c218e6c9ab1fed996a06fcdeb90ff67f2b414d805f280403d54e`;
-- DB size `69328896`, inode `1230526`;
-- historical migration count/head `52 / 052_memory_observation_eligibility_layers.sql`;
-- historical integrity/FK `ok / 0`.
-
-These are historical facts only. They must be remeasured read-only before operational readiness can PASS.
-
-Earlier package `V2_9_8B_WINDOW_15M_AUTH_20260806T005252Z` was explicitly classified `BLOCKED_UNCONSUMED_SUPERSEDED`; it is not reusable. Consumed authorizations remain permanently non-reusable.
+No historical authorization package may be reused.
 
 ## Repository lineage rule
 
-Do not assume the default `master` branch is the controlling operational lineage.
-
-At the post-C8 reconciliation, `master` and the Checkpoint closeout lineage were diverged. A future authorization may bind only the exact branch/HEAD proven by the fresh operational re-readiness audit. No merge/rebase is implied by this anchor.
-
-## Lane boundaries
-
-Allowed in the next audit:
-
-- static inspection;
-- read-only Git/evidence/database inspection;
-- existing artifact review;
-- zero-I/O focused validation when needed;
-- audit documentation.
-
-Not allowed:
-
-- authorization creation or consumption;
-- wrapper application;
-- providers, RPC, WebSockets or source fetching;
-- Source Governor or Central Scheduler runtime;
-- campaign execution;
-- authoritative DB mutation;
-- memory generation or promotion;
-- `WINDOW_1H`, `WINDOW_4H`, `WINDOW_12H`, `WINDOW_24H` activation;
-- retrieval;
-- paper decisions, BUY/SELL/HOLD, positions, trade events, paper-trade audits or PnL;
-- wallets, private keys, signing, real funds, live execution or paid APIs;
-- scoring, ranking, confidence, weighting, embeddings or vectors.
-
-`WINDOW_5M_MICRO_EVENT` remains support-only and never independently unlocks retrieval, decisions, BUY, positions or PnL.
+Do not assume default `master` is controlling. Future authorization may bind only an exact freshly reviewed branch/HEAD descended from the proven post-C8 lineage. Any tracked change after a readiness review requires exact-head re-review.
 
 ## Permanent restrictions
 
@@ -139,19 +79,16 @@ Printer V1 remains:
 - no dirty memory used for retrieval or decisions;
 - no retrieval before its explicit approved lane;
 - no paper decisions before their explicit approved lane;
-- no BUY/SELL/HOLD unlock before its explicit approved lane;
-- no paper positions, trade events, paper trade audits, or PnL before their explicit approved lanes.
+- no BUY/SELL/HOLD before its explicit approved lane;
+- no paper positions, trade events, paper-trade audits, or PnL before their explicit approved lanes;
+- no `WINDOW_1H`, `WINDOW_4H`, `WINDOW_12H`, or `WINDOW_24H` activation before explicit approved lanes.
+
+`WINDOW_5M_MICRO_EVENT` remains support-only and cannot independently unlock outcome memory, retrieval, decisions, positions, trades, or PnL.
 
 ## Assistant execution rule
 
-For every major V2 section preserve:
+Preserve the V2 sequence: audit/readiness -> design/specification -> implementation if approved -> bounded proof/test -> closeout.
 
-1. audit/readiness review;
-2. design/specification;
-3. implementation, if approved;
-4. bounded proof/test;
-5. closeout.
+Use minimum sufficient risk-based verification. Broad/full suites belong at major closeout, pre-live-proof, releases/checkpoints, or broad architectural changes, not every step.
 
-Use minimum sufficient risk-based verification. Do not run broad suites after every prompt. Reserve broad/full suites for major lane closeout, pre-live-proof validation, releases/checkpoints, and broad architectural changes. Document unrelated pre-existing failures rather than widening scope automatically.
-
-Assistants must never move from Checkpoint 8 PASS directly into authorization or runtime. The current next step is the fresh read-only authoritative operational re-readiness audit above.
+Do not create or consume a fresh authorization, invoke the wrapper, contact providers, mutate the authoritative DB, generate memory, or unlock downstream financial capabilities without the explicit approved lane and operator authorization.
