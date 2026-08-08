@@ -170,6 +170,9 @@ class PilotInputReadinessTests(unittest.TestCase):
             BLOCKED_ACTIVATION,
         )
 
+    def test_readiness_candidate_exposes_optional_admission_authority_context(self) -> None:
+        self.assertIn("admission_authority", ReadinessCandidate.__dataclass_fields__)
+
     def test_build_raises_when_gate_unmet(self) -> None:
         with self.assertRaises(PilotInputReadinessError) as ctx:
             self._build(persisted=_persisted(holder_eligible=False))
