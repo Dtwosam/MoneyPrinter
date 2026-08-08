@@ -73,6 +73,24 @@ class MigrationLedgerDriftGuardError(RuntimeError):
     """Fail-closed pre-authorization migration-ledger drift fault."""
 
 
+def validate_package_binding_shape(binding: Mapping[str, Any]) -> dict[str, Any]:
+    """Require the exact canonical authoritative-database binding key set."""
+    if not isinstance(binding, Mapping):
+        raise MigrationLedgerDriftGuardError(
+            "authoritative_database binding must be a mapping"
+        )
+    expected = set(PACKAGE_BINDING_FIELDS)
+    actual = set(binding)
+    if actual != expected:
+        missing = sorted(expected - actual)
+        extra = sorted(actual - expected)
+        raise MigrationLedgerDriftGuardError(
+            "authoritative_database must contain the exact required fields "
+            f"(missing={missing} extra={extra})"
+        )
+    return dict(binding)
+
+
 @dataclass(frozen=True)
 class GuardResult:
     """Structured PASS/BLOCKED outcome of one guard inspection."""
@@ -422,12 +440,26 @@ def evaluate_migration_ledger_drift(
 
     binding_report: dict[str, Any] | None = None
     if package_binding is not None:
-        binding_report, binding_blockers = _review_package_binding(
-            package_binding=package_binding,
-            repository=repository,
-            database=database,
-        )
-        blockers.extend(binding_blockers)
+        try:
+            exact_binding = validate_package_binding_shape(package_binding)
+        except MigrationLedgerDriftGuardError as exc:
+            blockers.append(_blocker("package_binding_invalid", str(exc)))
+            binding_report = {
+                "claimed": (
+                    dict(package_binding)
+                    if isinstance(package_binding, Mapping)
+                    else None
+                ),
+                "observed": None,
+                "honest": False,
+            }
+        else:
+            binding_report, binding_blockers = _review_package_binding(
+                package_binding=exact_binding,
+                repository=repository,
+                database=database,
+            )
+            blockers.extend(binding_blockers)
 
     status = "PASS" if not blockers else "BLOCKED"
     return GuardResult(
@@ -550,7 +582,7 @@ def package_binding_from_document(document: Mapping[str, Any]) -> dict[str, Any]
         raise MigrationLedgerDriftGuardError(
             f"authorization package has no {PACKAGE_DB_BINDING_KEY!r} binding"
         )
-    return dict(binding)
+    return validate_package_binding_shape(binding)
 
 
 def load_package_binding(authorization_file: str | Path) -> dict[str, Any]:
@@ -651,4 +683,5 @@ __all__ = [
     "package_binding_from_document",
     "main",
     "present_sidecars",
+    "validate_package_binding_shape",
 ]
