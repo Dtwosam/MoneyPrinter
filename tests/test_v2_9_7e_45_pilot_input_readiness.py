@@ -15,6 +15,9 @@ from printer_v1.operator_cli.pilot_input_readiness import (
     BLOCKED_HOLDER,
     BLOCKED_MARKET,
     BLOCKED_SELECTION,
+    READINESS_PURPOSE_FUTURE_ACTION,
+    READINESS_PURPOSE_MEMORY_OBSERVATION,
+    READINESS_READY,
     PilotInputReadinessError,
     ReadinessCandidate,
     build_pilot_input_ready_bundle,
@@ -172,6 +175,178 @@ class PilotInputReadinessTests(unittest.TestCase):
 
     def test_readiness_candidate_exposes_optional_admission_authority_context(self) -> None:
         self.assertIn("admission_authority", ReadinessCandidate.__dataclass_fields__)
+
+    def test_memory_observation_accepts_truthful_market_present_pool_authority(self) -> None:
+        latest = _latest(
+            activation_route="MARKET_PRESENT_POOL",
+            admission_authority="MARKET_PRESENT_POOL",
+            holder_eligible=False,
+            memory_observation_eligible=True,
+        )
+        persisted = _persisted(
+            activation_route="MARKET_PRESENT_POOL",
+            admission_authority="MARKET_PRESENT_POOL",
+            holder_eligible=False,
+            memory_observation_eligible=True,
+        )
+        self.assertEqual(
+            evaluate_readiness_gates(
+                latest,
+                persisted,
+                discovery_universe_evaluated=True,
+                readiness_purpose=READINESS_PURPOSE_MEMORY_OBSERVATION,
+            ),
+            READINESS_READY,
+        )
+
+    def test_memory_observation_accepts_truthful_direct_authority_with_carried_route(self) -> None:
+        latest = _latest(
+            admission_authority="DIRECT_PUMP_PUMPSWAP",
+            holder_eligible=False,
+            memory_observation_eligible=True,
+        )
+        persisted = _persisted(
+            admission_authority="DIRECT_PUMP_PUMPSWAP",
+            holder_eligible=False,
+            memory_observation_eligible=True,
+        )
+        self.assertEqual(
+            evaluate_readiness_gates(
+                latest,
+                persisted,
+                discovery_universe_evaluated=True,
+                readiness_purpose=READINESS_PURPOSE_MEMORY_OBSERVATION,
+            ),
+            READINESS_READY,
+        )
+
+    def test_memory_observation_legacy_candidate_keeps_legacy_route_behavior(self) -> None:
+        latest = _latest(holder_eligible=False, memory_observation_eligible=True)
+        persisted = _persisted(holder_eligible=False, memory_observation_eligible=True)
+        self.assertEqual(
+            evaluate_readiness_gates(
+                latest,
+                persisted,
+                discovery_universe_evaluated=True,
+                readiness_purpose=READINESS_PURPOSE_MEMORY_OBSERVATION,
+            ),
+            READINESS_READY,
+        )
+
+    def test_memory_observation_unknown_authority_fails_closed(self) -> None:
+        latest = _latest(
+            admission_authority="UNKNOWN_AUTHORITY",
+            holder_eligible=False,
+            memory_observation_eligible=True,
+        )
+        persisted = _persisted(
+            admission_authority="DIRECT_PUMP_PUMPSWAP",
+            holder_eligible=False,
+            memory_observation_eligible=True,
+        )
+        self.assertEqual(
+            evaluate_readiness_gates(
+                latest,
+                persisted,
+                discovery_universe_evaluated=True,
+                readiness_purpose=READINESS_PURPOSE_MEMORY_OBSERVATION,
+            ),
+            BLOCKED_ACTIVATION,
+        )
+
+    def test_memory_observation_contradictory_authority_route_fails_closed(self) -> None:
+        latest = _latest(
+            activation_route="GRADUATION_NATIVE",
+            admission_authority="MARKET_PRESENT_POOL",
+            holder_eligible=False,
+            memory_observation_eligible=True,
+        )
+        persisted = _persisted(
+            admission_authority="DIRECT_PUMP_PUMPSWAP",
+            holder_eligible=False,
+            memory_observation_eligible=True,
+        )
+        self.assertEqual(
+            evaluate_readiness_gates(
+                latest,
+                persisted,
+                discovery_universe_evaluated=True,
+                readiness_purpose=READINESS_PURPOSE_MEMORY_OBSERVATION,
+            ),
+            BLOCKED_ACTIVATION,
+        )
+
+    def test_holder_false_is_memory_context_only_but_future_action_still_blocks(self) -> None:
+        latest = _latest(
+            activation_route="MARKET_PRESENT_POOL",
+            admission_authority="MARKET_PRESENT_POOL",
+            holder_eligible=False,
+            memory_observation_eligible=True,
+        )
+        persisted = _persisted(
+            activation_route="MARKET_PRESENT_POOL",
+            admission_authority="MARKET_PRESENT_POOL",
+            holder_eligible=False,
+            memory_observation_eligible=True,
+        )
+        self.assertEqual(
+            evaluate_readiness_gates(
+                latest,
+                persisted,
+                discovery_universe_evaluated=True,
+                readiness_purpose=READINESS_PURPOSE_MEMORY_OBSERVATION,
+            ),
+            READINESS_READY,
+        )
+        self.assertEqual(
+            evaluate_readiness_gates(
+                latest,
+                persisted,
+                discovery_universe_evaluated=True,
+                readiness_purpose=READINESS_PURPOSE_FUTURE_ACTION,
+            ),
+            BLOCKED_HOLDER,
+        )
+
+    def test_future_action_does_not_inherit_market_present_pool_route(self) -> None:
+        latest = _latest(
+            activation_route="MARKET_PRESENT_POOL",
+            admission_authority="MARKET_PRESENT_POOL",
+        )
+        persisted = _persisted(
+            activation_route="MARKET_PRESENT_POOL",
+            admission_authority="MARKET_PRESENT_POOL",
+        )
+        self.assertEqual(
+            evaluate_readiness_gates(
+                latest,
+                persisted,
+                discovery_universe_evaluated=True,
+                readiness_purpose=READINESS_PURPOSE_FUTURE_ACTION,
+            ),
+            BLOCKED_ACTIVATION,
+        )
+
+    def test_bundle_surface_preserves_order_and_admission_authority(self) -> None:
+        latest = _latest(
+            admission_authority="DIRECT_PUMP_PUMPSWAP",
+            memory_observation_eligible=True,
+        )
+        persisted = _persisted(
+            admission_authority="DIRECT_PUMP_PUMPSWAP",
+            memory_observation_eligible=True,
+        )
+        bundle = self._build(
+            latest=latest,
+            persisted=persisted,
+            readiness_purpose=READINESS_PURPOSE_MEMORY_OBSERVATION,
+        )
+        ordered = bundle["ordered_selected_candidates"]
+        self.assertEqual([item["mint"] for item in ordered], [latest.mint, persisted.mint])
+        self.assertEqual(
+            [item["admission_authority"] for item in ordered],
+            ["DIRECT_PUMP_PUMPSWAP", "DIRECT_PUMP_PUMPSWAP"],
+        )
 
     def test_build_raises_when_gate_unmet(self) -> None:
         with self.assertRaises(PilotInputReadinessError) as ctx:
