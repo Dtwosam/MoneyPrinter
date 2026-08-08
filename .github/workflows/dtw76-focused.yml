@@ -1,0 +1,22 @@
+name: DTW-76 focused binding-shape proof
+
+on:
+  pull_request:
+    branches:
+      - agent/v2-9-8b-post-c8-authorization-exact-binding-repair-design
+
+permissions:
+  contents: read
+
+jobs:
+  focused-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run focused DTW-76 tests
+        env:
+          PYTHONPATH: src
+        run: python tests/test_dtw76_authorization_binding_shape.py
