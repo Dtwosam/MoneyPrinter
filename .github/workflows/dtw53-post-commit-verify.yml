@@ -1,0 +1,76 @@
+name: DTW-53 post-commit verification
+
+on:
+  pull_request:
+    branches: [master]
+    types: [opened]
+
+permissions:
+  contents: read
+
+env:
+  REPAIR_BRANCH: agent/v2-9-8b-window-15m-checkpoint-8-measured-market-fixture-audit-repair
+  EXPECTED_HEAD: e01b282ff22e159a807146321371a3cd6af0c12c
+  RED_HEAD: a95cc280b0cfa88cf64acb8d8cc3446f8b2ad8a8
+  TEST_FILE: tests/test_v2_9_8b_window_15m_checkpoint8_dtw53_final_acceptance_accounting.py
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.REPAIR_BRANCH }}
+          fetch-depth: 12
+
+      - name: Verify immutable implementation head and scope
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain)"
+          printf '%s\n' \
+            src/printer_v1/discovery/direct_migration_discovery.py \
+            src/printer_v1/discovery/eligible_token_supply.py \
+            src/printer_v1/operator_cli/authoritative_live_operational_campaign.py \
+            src/printer_v1/operator_cli/campaign_full_run_accounting.py \
+            src/printer_v1/operator_cli/graduated_supply_front_door.py \
+            src/printer_v1/operator_cli/operational_memory_factory_command.py \
+            | sort > /tmp/expected.txt
+          git diff --name-only "$RED_HEAD" "$EXPECTED_HEAD" | sort > /tmp/actual.txt
+          diff -u /tmp/expected.txt /tmp/actual.txt
+          git diff --check "$RED_HEAD" "$EXPECTED_HEAD"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install local package and pytest
+        run: python -m pip install -e . pytest
+
+      - name: Compile exact changed production files
+        run: |
+          python -m py_compile \
+            src/printer_v1/discovery/direct_migration_discovery.py \
+            src/printer_v1/discovery/eligible_token_supply.py \
+            src/printer_v1/operator_cli/graduated_supply_front_door.py \
+            src/printer_v1/operator_cli/authoritative_live_operational_campaign.py \
+            src/printer_v1/operator_cli/operational_memory_factory_command.py \
+            src/printer_v1/operator_cli/campaign_full_run_accounting.py
+
+      - name: Re-run DTW-53 regression
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src
+        run: python -m pytest -q "$TEST_FILE"
+
+      - name: Re-run focused compatibility set
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src
+        run: |
+          python -m pytest -q \
+            tests/test_v2_9_8b_full_run_accounting_semantics_correction.py \
+            tests/test_v2_9_8b_full_run_accounting_terminal_evidence.py \
+            tests/test_v2_9_8b_full_run_wiring_integration.py \
+            tests/test_v2_9_8b_multi_round_market_batch_six_unit_sequencing.py \
+            tests/test_v2_9_8b_window_15m_checkpoint8_blocked_proof_repair.py \
+            tests/test_v2_9_8b_window_15m_checkpoint8_disposable_binding_factory_preflight.py \
+            tests/test_v2_9_8b_window_15m_checkpoint8_execution_entry_freeze.py \
+            tests/test_v2_9_8b_window_15m_checkpoint8_fail_closed_boundary.py
