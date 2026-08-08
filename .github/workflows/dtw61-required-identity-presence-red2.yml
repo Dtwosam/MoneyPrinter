@@ -1,0 +1,74 @@
+name: DTW-61 Required Identity Presence RED 2
+
+on:
+  pull_request:
+    branches:
+      - tmp/dtw61-red2-orchestration
+    types: [opened]
+
+permissions:
+  contents: read
+
+env:
+  DESIGN_HEAD: 90893fbbc0cfe5406e07a99ae26c9a84deaccb09
+  RED_HEAD: e2121a495ec757897caeda5570e7b6697b591385
+  BASE_FIXTURE: tests/test_v2_9_8b_window_15m_checkpoint8_dtw57_durable_reconstruction_red.py
+  RED_TEST: tests/test_v2_9_8b_window_15m_checkpoint8_dtw61_required_identity_presence_red.py
+
+jobs:
+  deterministic-red:
+    if: github.event.pull_request.head.ref == 'tmp/dtw61-red2-trigger'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact corrected RED head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RED_HEAD }}
+          fetch-depth: 5
+
+      - name: Verify corrected test-only RED state
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$RED_HEAD"
+          FILES="$(git diff --name-only "$DESIGN_HEAD" "$RED_HEAD")"
+          test "$(printf '%s\n' "$FILES" | sort)" = "$(printf '%s\n%s\n' "$BASE_FIXTURE" "$RED_TEST" | sort)"
+          test -z "$(git diff --name-only "$DESIGN_HEAD" "$RED_HEAD" -- src scripts)"
+          git diff --check "$DESIGN_HEAD" "$RED_HEAD"
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install focused dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . pytest
+
+      - name: Compile corrected RED fixture
+        shell: bash
+        run: python -m py_compile "$BASE_FIXTURE" "$RED_TEST"
+
+      - name: Execute accepted DTW-61 RED only
+        shell: bash
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src
+        run: |
+          set -uo pipefail
+          set +e
+          pytest -q "$RED_TEST" 2>&1 | tee /tmp/dtw61-red2.log
+          RC=${PIPESTATUS[0]}
+          set -e
+          echo "DTW61_PYTEST_RC=$RC"
+          test "$RC" -ne 0
+          if grep -Eq "ERROR at setup|ERROR collecting|SyntaxError|sqlite3\.IntegrityError" /tmp/dtw61-red2.log; then
+            echo "DTW61_INVALID_RED_SETUP_OR_FIXTURE_ERROR"
+            exit 1
+          fi
+          grep -Eq "19 failed, 2 passed|2 passed, 19 failed" /tmp/dtw61-red2.log
+          grep -q "TERMINAL_REPORT_IDENTITY_MISSING" /tmp/dtw61-red2.log
+          grep -q "REPORT_REPLAY_IDENTITY_MISSING" /tmp/dtw61-red2.log
+          grep -q "REPORT_REPLAY_PROOF_EXPECTATION_IDENTITY_MISSING" /tmp/dtw61-red2.log
+          echo "DTW61_ACCEPTED_RED_OBSERVED"
