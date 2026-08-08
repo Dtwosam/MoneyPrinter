@@ -1,0 +1,67 @@
+name: DTW-86 Apply Projection Wiring
+
+on:
+  push:
+    branches:
+      - agent/v2-9-8b-post-dtw85-memory-observation-activation-route-repair-implementation
+
+permissions:
+  contents: write
+
+jobs:
+  apply-projection:
+    if: github.event.head_commit.message == 'Add temporary DTW-86 projection patch workflow'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/v2-9-8b-post-dtw85-memory-observation-activation-route-repair-implementation
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply exact guarded production wiring
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/printer_v1/operator_cli/authoritative_live_operational_campaign.py')
+          text = path.read_text()
+
+          helper_anchor = '\ndef _owned_transport_keys_for_request('
+          if text.count(helper_anchor) != 1:
+              raise SystemExit(f'helper anchor count={text.count(helper_anchor)}')
+          helper = '''\n\ndef _readiness_admission_authority(activation_candidate: Any | None) -> str | None:\n    \"\"\"Project canonical frozen admission authority without inference.\"\"\"\n    if activation_candidate is None:\n        return None\n    from printer_v1.discovery.memory_observation_activation import AdmissionAuthority\n\n    raw = getattr(activation_candidate, \"admission_authority\", None)\n    if raw is None:\n        raise LiveOperationalError(\n            \"MEMORY_OBSERVATION_ADMISSION_AUTHORITY_MISSING\"\n        )\n    value = getattr(raw, \"value\", raw)\n    try:\n        return AdmissionAuthority(str(value)).value\n    except ValueError as exc:\n        raise LiveOperationalError(\n            \"MEMORY_OBSERVATION_ADMISSION_AUTHORITY_UNSUPPORTED\",\n            str(value),\n        ) from exc\n'''
+          text = text.replace(helper_anchor, helper + helper_anchor, 1)
+
+          carrier_anchor = '''                        future_action_eligibility=str(\n                            item.get(\"future_action_eligibility\")\n                            or \"BLOCKED_OR_UNKNOWN\"\n                        ),\n                        slot_ordinal=(\n'''
+          if text.count(carrier_anchor) != 1:
+              raise SystemExit(f'carrier anchor count={text.count(carrier_anchor)}')
+          carrier_replacement = '''                        future_action_eligibility=str(\n                            item.get(\"future_action_eligibility\")\n                            or \"BLOCKED_OR_UNKNOWN\"\n                        ),\n                        admission_authority=_readiness_admission_authority(\n                            activation_candidate\n                        ),\n                        slot_ordinal=(\n'''
+          text = text.replace(carrier_anchor, carrier_replacement, 1)
+          path.write_text(text)
+          PY
+      - name: Install project
+        run: python -m pip install -e .
+      - name: Focused GREEN proof
+        run: python -m unittest tests/test_v2_9_7e_45_pilot_input_readiness.py
+      - name: Verify exact production diff and no registry recheck
+        run: |
+          git diff --check
+          git diff -- src/printer_v1/operator_cli/authoritative_live_operational_campaign.py
+          if git diff -- src/printer_v1/operator_cli/authoritative_live_operational_campaign.py | grep -E '^\+.*(lookup_graduated_candidate|export_graduated_candidates|pumpswap_graduated_candidate_registry)' ; then
+            echo 'Forbidden registry recheck introduced'
+            exit 1
+          fi
+      - name: Remove temporary implementation workflows
+        run: |
+          rm -f .github/workflows/dtw86-apply-projection.yml
+          rm -f .github/workflows/dtw86-focused-tdd.yml
+      - name: Commit production wiring
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/printer_v1/operator_cli/authoritative_live_operational_campaign.py .github/workflows
+          git commit -m 'Implement DTW-86 operational authority projection'
+          git push origin HEAD:agent/v2-9-8b-post-dtw85-memory-observation-activation-route-repair-implementation
