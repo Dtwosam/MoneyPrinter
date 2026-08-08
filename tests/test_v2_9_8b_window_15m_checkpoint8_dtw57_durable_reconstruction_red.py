@@ -59,7 +59,12 @@ def _write_summary(proof_dir: Path, payload: dict) -> None:
     )
 
 
-def _insert_base_graph(connection: sqlite3.Connection, artifact_root: Path) -> dict:
+def _insert_base_graph(
+    connection: sqlite3.Connection,
+    artifact_root: Path,
+    *,
+    terminal_identity_omit_field: str | None = None,
+) -> dict:
     connection.execute("PRAGMA foreign_keys = ON")
 
     connection.execute(
@@ -611,6 +616,13 @@ def _insert_base_graph(connection: sqlite3.Connection, artifact_root: Path) -> d
         "campaign_acceptance_verdict": "CAMPAIGN_PASS",
         "campaign_pass": True,
     }
+    terminal_full_run_terminal_evidence = {
+        **full_run_terminal_evidence,
+        "identity": dict(identity),
+    }
+    if terminal_identity_omit_field is not None:
+        assert terminal_identity_omit_field in terminal_full_run_terminal_evidence["identity"]
+        terminal_full_run_terminal_evidence["identity"].pop(terminal_identity_omit_field)
     report_payload = {
         "report_kind": "TERMINAL",
         "campaign_acceptance_verdict": "CAMPAIGN_PASS",
@@ -625,7 +637,7 @@ def _insert_base_graph(connection: sqlite3.Connection, artifact_root: Path) -> d
             "supervision_id": SUPERVISION_ID,
             "report_id": "report-c8",
         },
-        "full_run_terminal_evidence": full_run_terminal_evidence,
+        "full_run_terminal_evidence": terminal_full_run_terminal_evidence,
         "restart_created": False,
         "successor_created": False,
     }
@@ -661,7 +673,11 @@ def _insert_base_graph(connection: sqlite3.Connection, artifact_root: Path) -> d
     }
 
 
-def _build_fixture(tmp_path: Path) -> tuple[Path, Path, dict]:
+def _build_fixture(
+    tmp_path: Path,
+    *,
+    terminal_identity_omit_field: str | None = None,
+) -> tuple[Path, Path, dict]:
     proof_dir = tmp_path / "proof"
     proof_dir.mkdir()
     artifact_root = proof_dir / "checkpoint8-artifacts"
@@ -671,7 +687,11 @@ def _build_fixture(tmp_path: Path) -> tuple[Path, Path, dict]:
 
     connection = sqlite3.connect(db_path)
     try:
-        details = _insert_base_graph(connection, artifact_root)
+        details = _insert_base_graph(
+            connection,
+            artifact_root,
+            terminal_identity_omit_field=terminal_identity_omit_field,
+        )
         violations = connection.execute("PRAGMA foreign_key_check").fetchall()
         assert violations == []
         connection.commit()

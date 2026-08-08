@@ -121,8 +121,10 @@ def test_terminal_report_required_identity_field_missing_fails_closed(
     field: str,
 ) -> None:
     inspector = _load_inspector(f"dtw61_terminal_{field}")
-    proof_dir, db_path, _summary = BASE._build_fixture(tmp_path)
-    _rewrite_terminal_report_without_identity_field(proof_dir, db_path, field)
+    proof_dir, _db_path, _summary = BASE._build_fixture(
+        tmp_path,
+        terminal_identity_omit_field=field,
+    )
 
     with pytest.raises(
         inspector.Checkpoint8IndependentInspectionError,
