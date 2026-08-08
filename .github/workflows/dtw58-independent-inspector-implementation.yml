@@ -1,0 +1,123 @@
+name: DTW-58 Independent Inspector Implementation GREEN
+
+on:
+  pull_request:
+    branches:
+      - tmp/dtw58-implementation-orchestration
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  implement-and-verify:
+    if: github.event.pull_request.head.ref == 'tmp/dtw58-implementation-trigger'
+    runs-on: ubuntu-24.04
+    env:
+      TARGET_BRANCH: agent/v2-9-8b-window-15m-checkpoint-8-dtw58-independent-inspector-implementation
+      RED_HEAD: 3c6217bdd9f2abcd2f06eb7cffb80efd7ec91100
+      SCRIPT: scripts/v2_9_8b_checkpoint8_independent_inspection.py
+      DTW57_TEST: tests/test_v2_9_8b_window_15m_checkpoint8_dtw57_durable_reconstruction_red.py
+      COMPLETION_TEST: tests/test_v2_9_8b_window_15m_checkpoint8_independent_inspection_completion.py
+      INTEGRATION_TEST: tests/test_v2_9_8b_window_15m_checkpoint8_independent_inspection_integration.py
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout exact DTW-58 target
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 10
+
+      - name: Verify immutable RED starting head
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$RED_HEAD"
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install focused test dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . pytest
+
+      - name: Apply DTW-58 inspector-only implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/dtw58_patch.b64 <<'B64'
+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
+B64
+          base64 -d /tmp/dtw58_patch.b64 | gzip -d > /tmp/dtw58_patch.py
+          python /tmp/dtw58_patch.py
+
+      - name: Verify inspector-only scope and compile
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILES="$(git diff --name-only)"
+          test "$FILES" = "$SCRIPT"
+          git diff --check
+          python -m py_compile "$SCRIPT"
+
+      - name: Run focused DTW-58 GREEN set
+        shell: bash
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src
+        run: |
+          set -euo pipefail
+          pytest -q "$DTW57_TEST" "$COMPLETION_TEST" "$INTEGRATION_TEST"
+
+      - name: Inspect consumed DTW-54 frozen artifact read-only
+        shell: bash
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src
+        run: |
+          set -euo pipefail
+          curl -L --fail --silent --show-error \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/9014056017/zip" \
+            -o /tmp/dtw54-frozen.zip
+          rm -rf /tmp/dtw54-frozen /home/runner/work/_temp/checkpoint8-post-dtw53-reproof
+          mkdir -p /tmp/dtw54-frozen /home/runner/work/_temp/checkpoint8-post-dtw53-reproof
+          unzip -q /tmp/dtw54-frozen.zip -d /tmp/dtw54-frozen
+          cp /tmp/dtw54-frozen/checkpoint8-controlling-proof.sqlite3 \
+            /home/runner/work/_temp/checkpoint8-post-dtw53-reproof/checkpoint8-controlling-proof.sqlite3
+          cp -a /tmp/dtw54-frozen/checkpoint8-artifacts \
+            /home/runner/work/_temp/checkpoint8-post-dtw53-reproof/checkpoint8-artifacts
+          python "$SCRIPT" --proof-dir /tmp/dtw54-frozen > /tmp/dtw54-inspection.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path('/tmp/dtw54-inspection.json').read_text())
+          assert result['pass'] is True
+          assert result['verdict'] == 'CHECKPOINT8_INDEPENDENT_INSPECTION_PASS'
+          assert result['graph_projection']['exact_two_terminal_window_15m'] is True
+          assert result['graph_projection']['both_clean_memory'] is True
+          assert result['graph_projection']['both_fingerprints_present'] is True
+          assert result['governance_projection']['source_governor_exact'] is True
+          assert result['governance_projection']['central_scheduler_exact'] is True
+          print('DTW58_CONSUMED_DTW54_FROZEN_ARTIFACT_INSPECTION_PASS')
+          PY
+
+      - name: Recheck scope after all verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git diff --name-only)" = "$SCRIPT"
+          git diff --check
+
+      - name: Commit verified DTW-58 implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$SCRIPT"
+          git commit -m "Implement DTW-58 durable inspector reconstruction"
+          git push origin "HEAD:$TARGET_BRANCH"
