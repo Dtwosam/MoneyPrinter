@@ -33,17 +33,11 @@ def _frozen_summary() -> dict:
     return json.loads(FROZEN_SUMMARY.read_text(encoding="utf-8"))
 
 
-def _direct_migration_owner_validations() -> list[dict]:
-    summary = _frozen_summary()
-    owner = (
-        summary["terminal"]["full_run_campaign_acceptance"]
-        ["reconciliation"]["owner_evidence"]
+def _frozen_local_validation_mismatch() -> dict:
+    return dict(
+        _frozen_summary()["terminal"]["full_run_campaign_acceptance"]
+        ["reconciliation"]["unit_results"]["LOCAL_VALIDATION_STEP"]
     )
-    return [
-        dict(item)
-        for item in owner["local_validation_identities"]
-        if str(item.get("validation_kind")) == "PUMPSWAP_GRADUATION_VERIFIED"
-    ]
 
 
 def _transport(
@@ -111,13 +105,11 @@ def _reservation_fixture(*, malformed_lifecycle_link: bool = False):
 
 
 def test_dtw53_red_a_direct_migration_validation_observer_surface() -> None:
-    owner_validations = _direct_migration_owner_validations()
-    assert len(owner_validations) == 4
-    assert {item["validation_ordinal"] for item in owner_validations} == {1, 2, 3, 4}
-    assert all(
-        item["stage_id"].endswith("|DIRECT_MIGRATION|1")
-        for item in owner_validations
-    )
+    frozen = _frozen_local_validation_mismatch()
+    assert frozen["action_local_count"] == 89
+    assert frozen["owner_count"] == 93
+    assert frozen["identity_sets_equal"] is False
+    assert frozen["unit_block_reason"] == "UNIT_IDENTITY_SET_MISMATCH"
 
     required = "local_validation_identity_observer"
     assert required in inspect.signature(run_direct_migration_discovery).parameters
