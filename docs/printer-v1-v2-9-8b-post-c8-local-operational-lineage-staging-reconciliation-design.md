@@ -14,8 +14,9 @@ The DTW-70 blocker is an environment/evidence alignment problem, not a newly pro
 
 - local Mac branch: `agent/v2-9-8b-window-15m-fresh-authorization-after-source-request-scope-enforcement`;
 - local Mac HEAD: `7defc2945c42053d9c770ebc66248d27c63ff4a3`;
-- approved remote target branch: `agent/v2-9-8b-post-c8-operational-window15m-rereadiness-audit`;
-- approved remote target HEAD for this design: `cd0a422d84a0076dd03ba34f1a764fc8795f6aaf`;
+- immutable remote alignment target branch: `agent/v2-9-8b-post-c8-operational-window15m-rereadiness-target`;
+- immutable target HEAD: `cd0a422d84a0076dd03ba34f1a764fc8795f6aaf`;
+- the working DTW-71 design branch may advance independently and must not be used as the checkout target;
 - ancestry: local HEAD is an ancestor of the post-C8 lineage; target is 215 commits ahead after the DTW-70 closeout;
 - authoritative DB fresh SHA-256: `7380f9b4c172c218e6c9ab1fed996a06fcdeb90ff67f2b414d805f280403d54e`;
 - DB migration/integrity/FK checks PASS;
@@ -26,8 +27,8 @@ The DTW-70 blocker is an environment/evidence alignment problem, not a newly pro
 
 Before any worktree switch:
 
-1. fetch only the approved remote target branch;
-2. verify fetched target HEAD equals the approved target SHA;
+1. fetch only the immutable remote alignment target branch;
+2. verify fetched target HEAD equals `cd0a422d84a0076dd03ba34f1a764fc8795f6aaf`;
 3. verify current local HEAD is an ancestor of target;
 4. compute the exact intersection between current untracked files and paths tracked by target;
 5. if any collision exists, STOP without checkout;
@@ -41,7 +42,7 @@ No files are moved, deleted, staged, committed, reset, cleaned or rewritten in P
 
 If and only if untracked collision count is zero and staging evidence is fully classified:
 
-- switch to a new local branch named exactly `agent/v2-9-8b-post-c8-operational-window15m-rereadiness-audit` tracking the fetched remote branch;
+- switch to a new local branch named exactly `agent/v2-9-8b-post-c8-operational-window15m-rereadiness-target` tracking the fetched immutable remote target;
 - do not move the old local branch pointer;
 - do not use `git reset --hard`, `git clean`, stash, force checkout, or deletion;
 - leave `operator-runs/`, authoritative DB, and `~/PrinterOperations` evidence intact.
@@ -52,7 +53,8 @@ If a local branch with that name already exists but does not equal the approved 
 
 After switch:
 
-- exact branch name and HEAD equal approved target;
+- exact branch name is `agent/v2-9-8b-post-c8-operational-window15m-rereadiness-target`;
+- HEAD equals `cd0a422d84a0076dd03ba34f1a764fc8795f6aaf`;
 - tracked/index clean;
 - untracked evidence preserved;
 - authoritative DB SHA remains exactly `7380f9b4c172c218e6c9ab1fed996a06fcdeb90ff67f2b414d805f280403d54e`;
@@ -60,7 +62,7 @@ After switch:
 - migration ledger still matches 52/52 and integrity/FK remain clean;
 - factory-run states and all other operational surfaces show no active work;
 - staging classification remains evidence-only and no current authorization authority exists;
-- zero-I/O concrete composition preflight may be run only after the exact post-C8 branch is active.
+- zero-I/O concrete composition preflight may be run only after the exact post-C8 target branch is active.
 
 ## Staging classification law
 
