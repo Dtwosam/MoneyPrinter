@@ -24,6 +24,8 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from printer_v1.discovery.memory_observation_activation import AdmissionAuthority
+
 SELECTION_FLOOR_USD = 3000.0
 LAWFUL_ROUTES = frozenset({"GRADUATION_NATIVE", "PUMP_CREATE"})
 
@@ -81,6 +83,32 @@ def _canonical(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
+def _memory_observation_activation_route_is_lawful(
+    candidate: ReadinessCandidate,
+) -> bool:
+    """Validate MEMORY_OBSERVATION route against canonical source authority.
+
+    Legacy candidates without explicit source-specific authority retain the
+    historical route law. Explicit source-specific authority is parsed through
+    the canonical ``AdmissionAuthority`` enum and must agree with the truthful
+    carried route. Direct Pump/PumpSwap authority keeps its genuine legacy
+    carrier route; market-present authority uses its exact authority route.
+    """
+    route = str(candidate.activation_route or "").strip()
+    raw_authority = candidate.admission_authority
+    if raw_authority is None or not str(raw_authority).strip():
+        return route in LAWFUL_ROUTES
+    try:
+        authority = AdmissionAuthority(str(raw_authority).strip())
+    except ValueError:
+        return False
+    if authority is AdmissionAuthority.MARKET_PRESENT_POOL:
+        return route == authority.value
+    if authority is AdmissionAuthority.DIRECT_PUMP_PUMPSWAP:
+        return route in LAWFUL_ROUTES
+    return False
+
+
 def evaluate_readiness_gates(
     latest: ReadinessCandidate | None,
     persisted: ReadinessCandidate | None,
@@ -112,13 +140,17 @@ def evaluate_readiness_gates(
             if candidate.memory_observation_eligible is not True:
                 return BLOCKED_MEMORY_OBSERVATION
         # Holder eligibility is context only for memory observation readiness.
+        for candidate in (latest, persisted):
+            if not _memory_observation_activation_route_is_lawful(candidate):
+                return BLOCKED_ACTIVATION
     else:
         for candidate in (latest, persisted):
             if not candidate.holder_eligible:
                 return BLOCKED_HOLDER
-    for candidate in (latest, persisted):
-        if candidate.activation_route not in LAWFUL_ROUTES:
-            return BLOCKED_ACTIVATION
+        # FUTURE_ACTION retains the historical route law unchanged.
+        for candidate in (latest, persisted):
+            if candidate.activation_route not in LAWFUL_ROUTES:
+                return BLOCKED_ACTIVATION
     return READINESS_READY
 
 
