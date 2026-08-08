@@ -1,2 +1,3 @@
 DTW-58 temporary orchestration trigger. Do not merge.
 Synchronize trigger after workflow registration.
+Trigger check after minimal workflow added to base.
