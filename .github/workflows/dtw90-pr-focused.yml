@@ -1,0 +1,23 @@
+name: DTW-90 Focused Migration TDD
+
+on:
+  pull_request:
+    branches:
+      - agent/v2-9-8b-dtw90-focused-tdd-runner-base
+
+permissions:
+  contents: read
+
+jobs:
+  focused-migration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install project
+        run: python -m pip install -e .
+      - name: DTW-90 migration 053 tests
+        run: python -m unittest tests/test_dtw90_pilot_input_readiness_route_migration.py
