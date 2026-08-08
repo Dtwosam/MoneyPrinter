@@ -66,11 +66,6 @@ try {
     & $Python -m printer_v1.operator_cli.pre_authorization_migration_ledger_guard prepare --db-path $Db --migrations-dir (Join-Path $Repo 'migrations') 1> $GuardOut 2> $GuardErr
     if ($LASTEXITCODE -ne 0) { Fail "migration/DB guard failed; see $GuardErr" }
 
-    $PreflightOut = Join-Path $Evidence 'preflight_stdout.json'
-    $PreflightErr = Join-Path $Evidence 'preflight_stderr.txt'
-    & pwsh -NoProfile -File (Join-Path $Repo 'scripts/Start-PrinterV1-MemoryFactory.ps1') -Mode preflight-only -OperatorApproved 1> $PreflightOut 2> $PreflightErr
-    if ($LASTEXITCODE -ne 0) { Fail "zero-runtime preflight failed; see $PreflightErr" }
-
     $env:PRINTER_DTW93_REPO = $Repo
     $env:PRINTER_DTW93_AUTH_BRANCH = $AuthBranch
     $env:PRINTER_DTW93_AUTH_HEAD = $AuthHead
@@ -93,13 +88,30 @@ import subprocess
 import sys
 
 from printer_v1.operator_cli.authorization_temporal_validity import validate_authorization_temporal_validity
+from printer_v1.operator_cli.git_provenance_authorization_manifest import validate_git_provenance_manifest_pre_marker
+from printer_v1.operator_cli.holder_reliability_budget_control import build_operational_budget_preflight
+from printer_v1.operator_cli.operational_memory_factory_command import (
+    ADMISSION_OPERATION_CEILING,
+    DISCOVERY_REQUEST_CEILING,
+    GOVERNED_15M_REQUEST_CEILING,
+    GOVERNED_REQUESTS_PER_TOKEN,
+    _active_counts,
+    _locked_capability_counts,
+    _read_only,
+    _validate_locked_baseline,
+)
 from printer_v1.operator_cli.pre_authorization_migration_ledger_guard import (
     PACKAGE_BINDING_FIELDS,
     assert_migration_ledger_ready,
     package_binding_from_document,
 )
+from printer_v1.operator_cli.readiness_source_contract_preflight import build_readiness_source_contract_preflight
+from printer_v1.operator_cli.unified_terminal_closure import assert_runtime_dependency_preflight
+from printer_v1.operator_cli.window_15m_concrete_composition import (
+    run_window_15m_concrete_composition_preflight,
+    window_15m_preflight_builders,
+)
 from printer_v1.operator_cli.window_15m_one_shot_wrapper import build_manifest_bytes
-from printer_v1.operator_cli.git_provenance_authorization_manifest import validate_git_provenance_manifest_pre_marker
 
 repo = Path(os.environ['PRINTER_DTW93_REPO']).resolve()
 branch = os.environ['PRINTER_DTW93_AUTH_BRANCH']
@@ -167,6 +179,62 @@ try:
     observed_db = {key: prepare.database.get(key) for key in PACKAGE_BINDING_FIELDS}
     if observed_db != expected_db:
         raise RuntimeError('authoritative DB identity differs from the DTW92 frozen binding')
+
+    phase = 'READINESS_NON_GIT'
+    source = build_readiness_source_contract_preflight()
+    if source.get('status') != 'READY':
+        raise RuntimeError(f'source contract is not READY: {source!r}')
+
+    concrete_composition = run_window_15m_concrete_composition_preflight(
+        repository_root=str(repo),
+        timeout_seconds=5.0,
+    )
+    dependency = assert_runtime_dependency_preflight(
+        repository_root=repo,
+        adapter_builders=window_15m_preflight_builders(timeout_seconds=5.0),
+    )
+    if dependency.status != 'READY':
+        raise RuntimeError(f'runtime dependency is not READY: {dependency.to_dict()!r}')
+
+    budget = build_operational_budget_preflight(
+        admission_operation_ceiling=ADMISSION_OPERATION_CEILING,
+        discovery_request_ceiling=DISCOVERY_REQUEST_CEILING,
+        governed_15m_request_ceiling=GOVERNED_15M_REQUEST_CEILING,
+        governed_requests_per_token=GOVERNED_REQUESTS_PER_TOKEN,
+    )
+    if budget.get('status') != 'READY':
+        raise RuntimeError(f'holder budget is not READY: {budget!r}')
+
+    connection = _read_only(db)
+    try:
+        active = _active_counts(connection)
+        locked = _locked_capability_counts(connection)
+        historical_audit = int(
+            connection.execute(
+                'SELECT COUNT(*) FROM printer_paper_audit_reports WHERE paper_position_id IS NULL'
+            ).fetchone()[0]
+        )
+    finally:
+        connection.close()
+    if any(active.values()):
+        raise RuntimeError(f'active operational state is nonzero: {dict(active)}')
+    _validate_locked_baseline(locked)
+    if historical_audit != 1:
+        raise RuntimeError(f'expected exactly 1 historical null-position paper audit row, found {historical_audit}')
+
+    readiness_non_git = {
+        'status': 'READY',
+        'source_contract_status': source['status'],
+        'source_contract_external_requests': source.get('external_requests'),
+        'concrete_composition_status': concrete_composition.get('status'),
+        'dependency_status': dependency.status,
+        'holder_budget_status': budget['status'],
+        'active_counts': dict(active),
+        'historical_paper_audit_rows_preserved': historical_audit,
+        'source_calls': 0,
+        'scheduler_runtime_calls': 0,
+        'database_writes': 0,
+    }
 
     phase = 'HISTORY_RECONCILIATION'
     report_text = report.read_text(encoding='utf-8')
@@ -285,6 +353,7 @@ try:
         'historical_non_reusable_authorization_count': len(history),
         'migration_guard_prepare': prepare.verdict,
         'migration_guard_review': review.verdict,
+        'readiness_non_git': readiness_non_git,
         'temporal_status': temporal['status'],
         'pre_marker_manifest_sha256': manifest_sha,
         'pre_marker_allowed_file_count': prepared.file_count,
