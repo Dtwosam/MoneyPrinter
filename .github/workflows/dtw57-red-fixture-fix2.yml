@@ -1,0 +1,191 @@
+name: DTW-57 RED Fixture Fix 2
+
+on:
+  pull_request:
+    branches:
+      - tmp/dtw57-red-fix2-orchestration
+    types: [opened]
+
+permissions:
+  contents: write
+
+env:
+  TARGET_BRANCH: agent/v2-9-8b-window-15m-checkpoint-8-dtw57-independent-inspector-red
+  BAD_HEAD: a4d220138e4273482430c7b26981337ce20405f7
+  GOOD_FIXTURE_HEAD: 5b16371ee2373e81a163ad664f8730845b2ee901
+  TEST_FILE: tests/test_v2_9_8b_window_15m-checkpoint-8-dtw57-independent-inspector-red.py
+
+jobs:
+  fix-test-only:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout target RED branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 0
+
+      - name: Restore good fixture and apply exact patch
+        run: |
+          set -euo pipefail
+          TEST_FILE='tests/test_v2_9_8b_window_15m_checkpoint8_dtw57_durable_reconstruction_red.py'
+          test "$(git rev-parse HEAD)" = "$BAD_HEAD"
+          git show "$GOOD_FIXTURE_HEAD:$TEST_FILE" > "$TEST_FILE"
+          cat > /tmp/dtw57.patch <<'PATCH'
+          --- a/tests/test_v2_9_8b_window_15m_checkpoint8_dtw57_durable_reconstruction_red.py
+          +++ b/tests/test_v2_9_8b_window_15m_checkpoint8_dtw57_durable_reconstruction_red.py
+          @@ -779,6 +779,57 @@
+                   connection.close()
+           
+           
+          +def _replace_row(
+          +    db_path: Path,
+          +    table: str,
+          +    key_column: str,
+          +    key_value,
+          +    updates: dict,
+          +) -> None:
+          +    connection = sqlite3.connect(db_path)
+          +    connection.row_factory = sqlite3.Row
+          +    try:
+          +        connection.execute("PRAGMA foreign_keys = OFF")
+          +        row = connection.execute(
+          +            f'SELECT * FROM "{table}" WHERE "{key_column}"=?',
+          +            (key_value,),
+          +        ).fetchone()
+          +        assert row is not None
+          +        payload = dict(row)
+          +        payload.update(updates)
+          +        connection.execute(
+          +            f'DELETE FROM "{table}" WHERE "{key_column}"=?',
+          +            (key_value,),
+          +        )
+          +        columns = tuple(payload)
+          +        placeholders = ",".join("?" for _ in columns)
+          +        column_sql = ",".join(f'"{column}"' for column in columns)
+          +        connection.execute(
+          +            f'INSERT INTO "{table}" ({column_sql}) VALUES ({placeholders})',
+          +            tuple(payload[column] for column in columns),
+          +        )
+          +        connection.commit()
+          +    finally:
+          +        connection.close()
+          +
+          +
+          +def _delete_clean_episode_chain(db_path: Path, episode_id: int) -> None:
+          +    connection = sqlite3.connect(db_path)
+          +    try:
+          +        connection.execute("PRAGMA foreign_keys = OFF")
+          +        connection.execute(
+          +            "DELETE FROM printer_memory_fingerprints WHERE episode_id=?",
+          +            (episode_id,),
+          +        )
+          +        connection.execute(
+          +            "DELETE FROM printer_episodes WHERE id=?",
+          +            (episode_id,),
+          +        )
+          +        connection.commit()
+          +    finally:
+          +        connection.close()
+          +
+          +
+           def _mutate_summary(proof_dir: Path, mutate) -> None:
+               path = proof_dir / "checkpoint8-controlling-proof-summary.json"
+               payload = json.loads(path.read_text(encoding="utf-8"))
+          @@ -806,11 +857,12 @@
+               [
+                   (
+                       "missing_factory_binding",
+          -            lambda proof_dir, db_path: _mutate_db(
+          +            lambda proof_dir, db_path: _replace_row(
+                           db_path,
+          -                "UPDATE printer_memory_factory_campaign_runs "
+          -                "SET authoritative_run_id=NULL WHERE run_id=?",
+          -                (CAMPAIGN_RUN_ID,),
+          +                "printer_memory_factory_campaign_runs",
+          +                "run_id",
+          +                CAMPAIGN_RUN_ID,
+          +                {"authoritative_run_id": None},
+                       ),
+                       "CURRENT_FACTORY_RUN_BINDING_MISSING",
+                   ),
+          @@ -826,18 +878,20 @@
+                   ),
+                   (
+                       "campaign_window_memory_mismatch",
+          -            lambda proof_dir, db_path: _mutate_db(
+          +            lambda proof_dir, db_path: _replace_row(
+                           db_path,
+          -                "UPDATE printer_memory_factory_campaign_windows "
+          -                "SET memory_window_row_id=102 WHERE window_id='campaign-window-1'",
+          +                "printer_memory_factory_campaign_windows",
+          +                "window_id",
+          +                "campaign-window-1",
+          +                {"memory_window_row_id": 102},
+                       ),
+                       "CAMPAIGN_MEMORY_WINDOW_IDENTITY_MISMATCH",
+                   ),
+                   (
+                       "clean_episode_missing",
+          -            lambda proof_dir, db_path: _mutate_db(
+          +            lambda proof_dir, db_path: _delete_clean_episode_chain(
+                           db_path,
+          -                "DELETE FROM printer_episodes WHERE id=201",
+          +                201,
+                       ),
+                       "CLEAN_EPISODE_CARDINALITY_MISMATCH",
+                   ),
+          @@ -864,20 +918,23 @@
+                   ),
+                   (
+                       "scheduler_join_missing",
+          -            lambda proof_dir, db_path: _mutate_db(
+          +            lambda proof_dir, db_path: _replace_row(
+                           db_path,
+          -                "UPDATE printer_memory_factory_campaign_scheduler_work "
+          -                "SET scheduler_job_id=999 WHERE scheduler_work_id='lifecycle-work-1'",
+          +                "printer_memory_factory_campaign_scheduler_work",
+          +                "scheduler_work_id",
+          +                "lifecycle-work-1",
+          +                {"scheduler_job_id": 2},
+                       ),
+                       "SCHEDULER_JOIN_MISMATCH",
+                   ),
+                   (
+                       "lifecycle_factory_run_mismatch",
+          -            lambda proof_dir, db_path: _mutate_db(
+          +            lambda proof_dir, db_path: _replace_row(
+                           db_path,
+          -                "UPDATE printer_memory_factory_campaign_scheduler_work "
+          -                "SET factory_run_id=? WHERE scheduler_work_id='lifecycle-work-1'",
+          -                (ALT_FACTORY_RUN_ID,),
+          +                "printer_memory_factory_campaign_scheduler_work",
+          +                "scheduler_work_id",
+          +                "lifecycle-work-1",
+          +                {"factory_run_id": ALT_FACTORY_RUN_ID},
+                       ),
+                       "LIFECYCLE_FACTORY_RUN_IDENTITY_MISMATCH",
+                   ),
+          PATCH
+          sed -i 's/^          //' /tmp/dtw57.patch
+          git apply --check /tmp/dtw57.patch
+          git apply /tmp/dtw57.patch
+
+      - name: Verify one-file scope and compile
+        run: |
+          set -euo pipefail
+          TEST_FILE='tests/test_v2_9_8b_window_15m_checkpoint8_dtw57_durable_reconstruction_red.py'
+          FILES="$(git diff --name-only)"
+          test "$FILES" = "$TEST_FILE"
+          git diff --check
+          python -m py_compile "$TEST_FILE"
+
+      - name: Commit corrected RED fixture
+        run: |
+          set -euo pipefail
+          TEST_FILE='tests/test_v2_9_8b_window_15m_checkpoint8_dtw57_durable_reconstruction_red.py'
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$TEST_FILE"
+          git commit -m "Repair DTW-57 RED negative fixtures"
+          git push origin "HEAD:$TARGET_BRANCH"
