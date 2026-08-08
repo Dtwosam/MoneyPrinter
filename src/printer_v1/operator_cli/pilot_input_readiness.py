@@ -68,6 +68,7 @@ class ReadinessCandidate:
     memory_observation_eligible: bool = False
     holder_condition: str = "UNKNOWN"
     future_action_eligibility: str = "BLOCKED_OR_UNKNOWN"
+    admission_authority: str | None = None
     slot_ordinal: int | None = None
     tracking_eligible: bool | None = None
     tracking_reason: str | None = None
@@ -129,6 +130,7 @@ def _candidate_surface(candidate: ReadinessCandidate) -> dict[str, Any]:
         "liquidity_usd": candidate.liquidity_usd,
         "liquidity_observed_at": candidate.liquidity_observed_at,
         "activation_route": candidate.activation_route,
+        "admission_authority": candidate.admission_authority,
         "provenance": candidate.provenance,
         "holder_eligible": bool(candidate.holder_eligible),
         "memory_observation_eligible": bool(candidate.memory_observation_eligible),
