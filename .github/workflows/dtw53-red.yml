@@ -1,0 +1,59 @@
+name: DTW-53 deterministic RED
+
+on:
+  pull_request:
+    branches:
+      - master
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+
+env:
+  REPAIR_BRANCH: agent/v2-9-8b-window-15m-checkpoint-8-measured-market-fixture-audit-repair
+  EXPECTED_DESIGN_HEAD: 8d71bc82cb2586a593d21064f4726f2c4bc00d48
+  TEST_FILE: tests/test_v2_9_8b_window_15m_checkpoint8_dtw53_final_acceptance_accounting.py
+
+jobs:
+  red:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repair branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.REPAIR_BRANCH }}
+          fetch-depth: 10
+
+      - name: Verify test-only RED delta
+        run: |
+          changed="$(git diff --name-only "$EXPECTED_DESIGN_HEAD" HEAD)"
+          test "$changed" = "$TEST_FILE"
+          test -z "$(git diff --name-only "$EXPECTED_DESIGN_HEAD" HEAD -- src/printer_v1)"
+          git diff --check "$EXPECTED_DESIGN_HEAD" HEAD
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Printer V1 and pytest
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . pytest
+
+      - name: Compile RED regression
+        run: python -m py_compile "$TEST_FILE"
+
+      - name: Demonstrate deterministic RED
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src
+        run: |
+          set +e
+          python -m pytest -q "$TEST_FILE" > /tmp/dtw53-red.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/dtw53-red.log
+          test "$status" -ne 0
+          grep -q "local_validation_identity_observer" /tmp/dtw53-red.log
+          grep -q "DTW53 lifecycle reservation outcome projector missing" /tmp/dtw53-red.log
+          grep -q "3 failed" /tmp/dtw53-red.log
