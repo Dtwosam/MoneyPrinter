@@ -1,0 +1,40 @@
+name: V2-9.8B first-hour lifecycle focused TDD
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compile changed policy and focused tests
+        run: |
+          python -m py_compile \
+            src/printer_v1/scheduler/token_local_continuation.py \
+            tests/test_v2_9_7d_4a_token_local_selective_continuation.py \
+            tests/test_v2_9_8b_operational_selective_1h.py
+
+      - name: Pure first-hour continuation policy proof
+        env:
+          PYTHONPATH: src
+        run: python tests/test_v2_9_7d_4a_token_local_selective_continuation.py
+
+      - name: Operational first-hour offline proof
+        env:
+          PYTHONPATH: src
+        run: python tests/test_v2_9_8b_operational_selective_1h.py
