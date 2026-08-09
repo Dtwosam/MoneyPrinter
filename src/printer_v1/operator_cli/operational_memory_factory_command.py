@@ -29,6 +29,7 @@ from printer_v1.db.migrate import (
     describe_migration_ledger_mismatch,
     validate_migration_ledger,
 )
+from printer_v1.db.sqlite_write_contracts import DEFAULT_OPERATIONAL_BUSY_TIMEOUT_MS
 from printer_v1.operator_cli.abstract_campaign_command import (
     CAMPAIGN_MODE,
     CENTRAL_SCHEDULER_OWNER,
@@ -133,6 +134,10 @@ SELECTIVE_1H_SCHEDULER_ROW_CEILING = 82
 SELECTIVE_1H_CONTINUATION_SECONDS = 2_700
 LEASE_SECONDS = 90
 HEARTBEAT_SECONDS = 30
+CANCELLATION_PROBE_SQLITE_BUSY_TIMEOUT_SECONDS = (
+    DEFAULT_OPERATIONAL_BUSY_TIMEOUT_MS / 1000.0
+)
+CANCELLATION_PROBE_SQLITE_LOCKED = "CANCELLATION_PROBE_SQLITE_LOCKED"
 FREE_PUBLIC_SOLANA_RPC = OFFICIAL_SOLANA_PUBLIC_RPC_URL
 ARTIFACT_ROOT = Path.home() / "PrinterOperations" / "v2-9-8"
 AUTHORITATIVE_DB = Path(CANONICAL_PERSISTENT_DB).resolve()
@@ -408,6 +413,7 @@ def _read_only(
     path: str | Path | None = None,
     *,
     expected_path: str | Path | None = None,
+    timeout_seconds: float = 0.0,
 ) -> sqlite3.Connection:
     # Production defaults to AUTHORITATIVE_DB. C8 may supply one exact already-
     # validated disposable target; arbitrary mismatched paths still fail closed.
@@ -420,11 +426,59 @@ def _read_only(
     if target != expected or not target.is_file():
         raise OperationalMemoryFactoryError("database target mismatch")
     connection = sqlite3.connect(
-        f"file:{target.as_posix()}?mode=ro", uri=True, timeout=0.0
+        f"file:{target.as_posix()}?mode=ro",
+        uri=True,
+        timeout=max(0.0, float(timeout_seconds)),
     )
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA query_only=ON")
     return connection
+
+
+def _sqlite_busy_or_locked(exc: sqlite3.OperationalError) -> bool:
+    raw = str(exc).lower()
+    return "locked" in raw or "busy" in raw
+
+
+def _read_campaign_supervision_cancellation_reason(
+    path: str | Path,
+    *,
+    expected_path: str | Path,
+    supervision_id: str,
+    campaign_id: str,
+    run_id: str,
+    busy_timeout_seconds: float = CANCELLATION_PROBE_SQLITE_BUSY_TIMEOUT_SECONDS,
+) -> str | None:
+    """Read cancellation state with bounded tolerance for a legitimate writer."""
+    try:
+        connection = _read_only(
+            path,
+            expected_path=expected_path,
+            timeout_seconds=busy_timeout_seconds,
+        )
+        try:
+            row = connection.execute(
+                """SELECT supervision_state,cancellation_reason
+                   FROM printer_memory_factory_campaign_supervision
+                   WHERE supervision_id=? AND campaign_id=? AND run_id=?""",
+                (supervision_id, campaign_id, run_id),
+            ).fetchone()
+        finally:
+            connection.close()
+    except sqlite3.OperationalError as exc:
+        if _sqlite_busy_or_locked(exc):
+            return CANCELLATION_PROBE_SQLITE_LOCKED
+        raise
+    if row is None:
+        return "CAMPAIGN_SUPERVISION_MISSING"
+    if row["supervision_state"] == "STOPPING":
+        return str(
+            row["cancellation_reason"]
+            or "OPERATOR_REQUESTED_COOPERATIVE_STOP"
+        )
+    if row["supervision_state"] == "TERMINAL":
+        return "CAMPAIGN_SUPERVISION_TERMINAL"
+    return None
 
 
 def _active_counts(connection: sqlite3.Connection) -> dict[str, int]:
@@ -3165,29 +3219,13 @@ def _run_operational_campaign(
                     hb_failure.get("suggested_terminal_cause")
                     or "LEASE_RENEWAL_UNCONFIRMED"
                 )
-            connection = _read_only(
+            return _read_campaign_supervision_cancellation_reason(
                 active_db,
                 expected_path=active_db,
+                supervision_id=command.supervision_id,
+                campaign_id=command.campaign_id,
+                run_id=command.run_id,
             )
-            try:
-                row = connection.execute(
-                    """SELECT supervision_state,cancellation_reason
-                       FROM printer_memory_factory_campaign_supervision
-                       WHERE supervision_id=? AND campaign_id=? AND run_id=?""",
-                    (command.supervision_id, command.campaign_id, command.run_id),
-                ).fetchone()
-            finally:
-                connection.close()
-            if row is None:
-                return "CAMPAIGN_SUPERVISION_MISSING"
-            if row["supervision_state"] == "STOPPING":
-                return str(
-                    row["cancellation_reason"]
-                    or "OPERATOR_REQUESTED_COOPERATIVE_STOP"
-                )
-            if row["supervision_state"] == "TERMINAL":
-                return "CAMPAIGN_SUPERVISION_TERMINAL"
-            return None
 
         def retain_factory_run_id(factory_run_id: str) -> None:
             nonlocal initialized_factory_run_id, factory_identity_retained
