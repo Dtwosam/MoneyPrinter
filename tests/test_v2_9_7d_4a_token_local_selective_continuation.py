@@ -78,10 +78,15 @@ class TokenLocalSelectiveContinuationTests(unittest.TestCase):
             tokens=(a or self.a, b or self.b),
         )
 
-    def test_only_token_a_continues_15m_to_1h(self) -> None:
-        result = self._evaluate(b=replace(self.b, learning_need=None))
-        self.assertEqual(result[0].verdict, ContinuationVerdict.CONTINUE_TO_WINDOW_1H)
-        self.assertEqual(result[1].verdict, ContinuationVerdict.STOP_AFTER_WINDOW_15M)
+    def test_both_tokens_continue_15m_to_1h_without_learning_need_gate(self) -> None:
+        result = self._evaluate(
+            a=replace(self.a, learning_need=None),
+            b=replace(self.b, learning_need=None),
+        )
+        self.assertEqual(
+            [item.verdict for item in result],
+            [ContinuationVerdict.CONTINUE_TO_WINDOW_1H] * 2,
+        )
 
     def test_only_token_b_continues_1h_to_4h(self) -> None:
         a = replace(_token("A", stage="1h_to_4h"), learning_need=None)
@@ -90,14 +95,14 @@ class TokenLocalSelectiveContinuationTests(unittest.TestCase):
         self.assertEqual(result[0].verdict, ContinuationVerdict.STOP_AFTER_WINDOW_1H)
         self.assertEqual(result[1].verdict, ContinuationVerdict.CONTINUE_TO_WINDOW_4H)
 
-    def test_both_tokens_stop_cleanly_after_15m(self) -> None:
+    def test_both_tokens_continue_cleanly_after_15m_without_learning_need(self) -> None:
         result = self._evaluate(
             a=replace(self.a, learning_need=None),
             b=replace(self.b, learning_need=None),
         )
         self.assertEqual(
             [item.verdict for item in result],
-            [ContinuationVerdict.STOP_AFTER_WINDOW_15M] * 2,
+            [ContinuationVerdict.CONTINUE_TO_WINDOW_1H] * 2,
         )
 
     def test_one_token_blocks_while_the_other_continues(self) -> None:
