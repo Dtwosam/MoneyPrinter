@@ -19,4 +19,18 @@ jobs:
         with:
           python-version: '3.12'
       - name: Focused regression test
-        run: python -m unittest discover -s tests -p 'test_v2_9_8b_post_dtw94_holder_projection.py' -v
+        id: focused_test
+        shell: bash
+        run: |
+          set +e
+          python -m unittest discover -s tests -p 'test_v2_9_8b_post_dtw94_holder_projection.py' -v > dtw94-focused-test.txt 2>&1
+          rc=$?
+          cat dtw94-focused-test.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit "$rc"
+      - name: Upload focused test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dtw94-holder-projection-focused-output
+          path: dtw94-focused-test.txt
