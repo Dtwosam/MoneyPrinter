@@ -1,0 +1,61 @@
+name: V2-9.8B first-hour alignment implementation patcher
+
+on:
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: contains(github.event.pull_request.title, 'APPLY implementation')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout implementation branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+      - name: Apply exact reporting-only patch
+        env:
+          TARGET_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/printer_v1/operator_cli/operational_selective_1h.py')
+          text = path.read_text(encoding='utf-8')
+          if 'FIRST_HOUR_CONTINUATION_BLOCKED = "FIRST_HOUR_CONTINUATION_BLOCKED"' in text:
+              print('implementation already applied')
+              raise SystemExit(0)
+
+          old_constants = '''ZERO_ELIGIBLE_CONTINUATIONS = "ZERO_ELIGIBLE_CONTINUATIONS"\nONE_CONTINUATION = "ONE_CONTINUATION"\nTWO_CONTINUATIONS = "TWO_CONTINUATIONS"\nEVALUATION_BLOCKED_SYSTEM_DEFECT = "EVALUATION_BLOCKED_SYSTEM_DEFECT"\nEVALUATION_NOT_REACHED = "EVALUATION_NOT_REACHED"\n'''
+          new_constants = '''ZERO_ELIGIBLE_CONTINUATIONS = "ZERO_ELIGIBLE_CONTINUATIONS"\nONE_CONTINUATION = "ONE_CONTINUATION"\nTWO_CONTINUATIONS = "TWO_CONTINUATIONS"\nONE_CONTINUATION_ONE_BLOCK = "ONE_CONTINUATION_ONE_BLOCK"\nFIRST_HOUR_CONTINUATION_BLOCKED = "FIRST_HOUR_CONTINUATION_BLOCKED"\nEVALUATION_BLOCKED_SYSTEM_DEFECT = "EVALUATION_BLOCKED_SYSTEM_DEFECT"\nEVALUATION_NOT_REACHED = "EVALUATION_NOT_REACHED"\n\n\ndef _classify_standard_first_hour_outcome(\n    *,\n    decision_set_complete: bool,\n    persistence_consistent: bool,\n    continue_count: int,\n    stop_count: int,\n    block_count: int,\n) -> str:\n    \"\"\"Classify a complete standard-first-hour decision set truthfully.\n\n    WINDOW_15M -> WINDOW_1H has no normal behavior-driven STOP path after the\n    standard-first-hour policy amendment. Any STOP in a complete new-policy\n    decision set is therefore an integration/system defect, not a benign\n    zero-eligibility outcome.\n    \"\"\"\n    if not decision_set_complete or not persistence_consistent:\n        return EVALUATION_BLOCKED_SYSTEM_DEFECT\n    if stop_count != 0:\n        return EVALUATION_BLOCKED_SYSTEM_DEFECT\n    if continue_count == 2 and block_count == 0:\n        return TWO_CONTINUATIONS\n    if continue_count == 1 and block_count == 1:\n        return ONE_CONTINUATION_ONE_BLOCK\n    if continue_count == 0 and block_count == 2:\n        return FIRST_HOUR_CONTINUATION_BLOCKED\n    return EVALUATION_BLOCKED_SYSTEM_DEFECT\n'''
+          if text.count(old_constants) != 1:
+              raise SystemExit('constant block drift: expected exactly one match')
+          text = text.replace(old_constants, new_constants, 1)
+
+          old_classification = '''    if decision_set_complete and persistence_consistent:\n        selective_outcome = (\n            ZERO_ELIGIBLE_CONTINUATIONS\n            if continue_count == 0\n            else ONE_CONTINUATION\n            if continue_count == 1\n            else TWO_CONTINUATIONS\n            if continue_count == 2\n            else EVALUATION_BLOCKED_SYSTEM_DEFECT\n        )\n'''
+          new_classification = '''    if decision_set_complete and persistence_consistent:\n        selective_outcome = _classify_standard_first_hour_outcome(\n            decision_set_complete=decision_set_complete,\n            persistence_consistent=persistence_consistent,\n            continue_count=continue_count,\n            stop_count=stop_count,\n            block_count=block_count,\n        )\n'''
+          if text.count(old_classification) != 1:
+              raise SystemExit('report classification drift: expected exactly one match')
+          text = text.replace(old_classification, new_classification, 1)
+
+          old_zero = '        "zero_continuation": selective_outcome == ZERO_ELIGIBLE_CONTINUATIONS,\n'
+          new_zero = '        "zero_continuation": decision_set_complete and continue_count == 0,\n'
+          if text.count(old_zero) != 1:
+              raise SystemExit('zero_continuation field drift: expected exactly one match')
+          text = text.replace(old_zero, new_zero, 1)
+
+          path.write_text(text, encoding='utf-8')
+          PY
+          python -m py_compile src/printer_v1/operator_cli/operational_selective_1h.py
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if git diff --quiet; then
+            exit 0
+          fi
+          git add src/printer_v1/operator_cli/operational_selective_1h.py
+          git commit -m 'Align standard first-hour operational reporting'
+          git push origin HEAD:${TARGET_BRANCH}
