@@ -265,26 +265,26 @@ def _evaluate_token(
     assert transition is not None
     continue_verdict, stop_verdict, allowed_needs = transition
 
-    if not token.token_budget_available:
-        return _result(
-            token,
-            ContinuationVerdict.BLOCK_CONTINUATION,
-            ("token_budget_exhausted",),
-        )
-
     # Post-DTW100 first-hour lifecycle amendment: once a token has passed every
-    # hard operational/evidence/identity/safety/continuity/budget gate above,
-    # WINDOW_15M -> WINDOW_1H is standard observation. A 15m outcome or
-    # learning-need label has no authority to stop the remaining first hour.
+    # hard operational/evidence/identity/safety/continuity gate above, the only
+    # remaining first-hour resource gate is the bounded token budget. A 15m
+    # outcome or learning-need label has no authority to stop observation.
     if transition_key == _FIRST_HOUR_TRANSITION:
+        if not token.token_budget_available:
+            return _result(
+                token,
+                ContinuationVerdict.BLOCK_CONTINUATION,
+                ("token_budget_exhausted",),
+            )
         return _result(
             token,
             ContinuationVerdict.CONTINUE_TO_WINDOW_1H,
             ("standard_first_hour_lifecycle",),
         )
 
-    # Later windows remain selective. Do not weaken the established 1h -> 4h
-    # learning-need gate as part of the first-hour amendment.
+    # Later windows remain selective. Preserve the established 1h -> 4h
+    # decision order exactly: no learning need is a normal stop; an applicable
+    # need then still requires available token budget.
     if token.learning_need is None:
         return _result(token, stop_verdict, ("no_unresolved_learning_need",))
     try:
@@ -300,6 +300,12 @@ def _evaluate_token(
             token,
             ContinuationVerdict.BLOCK_CONTINUATION,
             ("learning_need_not_applicable_to_transition",),
+        )
+    if not token.token_budget_available:
+        return _result(
+            token,
+            ContinuationVerdict.BLOCK_CONTINUATION,
+            ("token_budget_exhausted",),
         )
     return _result(token, continue_verdict, ("all_continuation_requirements_met",))
 
