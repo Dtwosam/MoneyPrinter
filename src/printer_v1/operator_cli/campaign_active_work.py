@@ -52,6 +52,11 @@ def _job_has_exact_scope_owner(
     A factory run-step alone cannot establish ``cycle_id`` and is therefore not
     an exact campaign owner.  Exact ownership comes from the rows that durably
     carry campaign, run, cycle, and Scheduler-job identity together.
+
+    ``printer_pre_lifecycle_discovery_refresh_waits`` is such an owner: it binds
+    a *future-dated PENDING* ``DISCOVERY_REFRESH`` job to the exact campaign,
+    run and cycle before the job is due, so safe stop can capture and cancel it.
+    It is ownership evidence only — it never implies that discovery work exists.
     """
     sources = (
         ("printer_discovery_work", "scheduler_job_id"),
@@ -62,6 +67,10 @@ def _job_has_exact_scope_owner(
         (
             "printer_discovery_selected_item_links",
             "first_window_15m_scheduler_job_id",
+        ),
+        (
+            "printer_pre_lifecycle_discovery_refresh_waits",
+            "scheduler_job_id",
         ),
     )
     for table, job_column in sources:
@@ -108,6 +117,7 @@ def campaign_scoped_job_ids(
         "factory_run_step_jobs": set(),
         "discovery_jobs": set(),
         "campaign_scheduler_work_jobs": set(),
+        "pre_lifecycle_refresh_wait_jobs": set(),
     }
     if factory_run_id and _table_exists(connection, "printer_memory_factory_run_steps"):
         groups["factory_run_step_jobs"] = _job_ids(
@@ -167,6 +177,28 @@ def campaign_scoped_job_ids(
                 f"{ownership_contract_clause}",
                 tuple(params),
             )
+    if _table_exists(
+        connection, "printer_pre_lifecycle_discovery_refresh_waits"
+    ) and (campaign_id or run_id or cycle_id):
+        clauses = []
+        params = []
+        for column, value in (
+            ("campaign_id", campaign_id),
+            ("run_id", run_id),
+            ("cycle_id", cycle_id),
+        ):
+            if value:
+                clauses.append(f"{column} = ?")
+                params.append(value)
+        # A WAITING (or CLAIMED) wait makes its Scheduler job visible to
+        # campaign active-work accounting while it is still merely PENDING.
+        groups["pre_lifecycle_refresh_wait_jobs"] = _job_ids(
+            connection,
+            "SELECT scheduler_job_id FROM "
+            "printer_pre_lifecycle_discovery_refresh_waits "
+            f"WHERE ({' OR '.join(clauses)})",
+            tuple(params),
+        )
     if exact_scope and _table_exists(
         connection, "printer_discovery_selected_item_links"
     ):
@@ -293,6 +325,30 @@ def campaign_active_work_report(
             ).fetchone()[0]
         )
 
+    active_refresh_waits = 0
+    if _table_exists(
+        connection, "printer_pre_lifecycle_discovery_refresh_waits"
+    ) and (campaign_id or run_id or cycle_id):
+        clauses = []
+        params = []
+        for column, value in (
+            ("campaign_id", campaign_id),
+            ("run_id", run_id),
+            ("cycle_id", cycle_id),
+        ):
+            if value:
+                clauses.append(f"{column} = ?")
+                params.append(value)
+        active_refresh_waits = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM "
+                "printer_pre_lifecycle_discovery_refresh_waits "
+                f"WHERE ({' OR '.join(clauses)}) "
+                "AND wait_state IN ('WAITING','CLAIMED')",
+                tuple(params),
+            ).fetchone()[0]
+        )
+
     pending_run_steps = 0
     if factory_run_id and _table_exists(
         connection, "printer_memory_factory_run_steps"
@@ -323,11 +379,13 @@ def campaign_active_work_report(
         "active_work_details": active_work_rows,
         "terminal_work_with_active_job": terminal_work_with_active_job,
         "pending_or_running_run_steps": pending_run_steps,
+        "active_pre_lifecycle_refresh_waits": active_refresh_waits,
         "clean_terminal": (
             not active
             and not active_work_rows
             and terminal_work_with_active_job == 0
             and pending_run_steps == 0
+            and active_refresh_waits == 0
         ),
     }
 

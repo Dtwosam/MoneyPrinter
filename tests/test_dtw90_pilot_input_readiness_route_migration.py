@@ -99,8 +99,13 @@ class DTW90Migration053Proof(unittest.TestCase):
 
     def test_canonical_ledger_advances_to_053(self) -> None:
         names = canonical_migration_names()
-        self.assertEqual(canonical_migration_count(), 53)
-        self.assertEqual(names[-1], MIGRATION_053)
+        # DTW90's durable claim is that 053 landed at ordinal 53 and applies
+        # cleanly. The catalogue is forward-only, so later lanes append beyond
+        # it (V2-9.8B Post-DTW98 added 054). Anchor 053 exactly by position and
+        # keep the live count exact rather than frozen at this lane's head.
+        self.assertEqual(names[52], MIGRATION_053)
+        self.assertEqual(canonical_migration_count(), len(names))
+        self.assertGreaterEqual(canonical_migration_count(), 53)
         tmp, _path, connection = self._fresh_db()
         try:
             applied = [
@@ -111,8 +116,8 @@ class DTW90Migration053Proof(unittest.TestCase):
             ]
             report = validate_migration_ledger(applied)
             self.assertTrue(report["matches"], report)
-            self.assertEqual(report["applied_count"], 53)
-            self.assertEqual(report["latest_applied"], MIGRATION_053)
+            self.assertEqual(report["applied_count"], len(names))
+            self.assertEqual(applied[52], MIGRATION_053)
             self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
             self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
         finally:

@@ -48,6 +48,10 @@ from printer_v1.operator_cli.origin_lifecycle_campaign import (
     OriginToLifecycleCampaignDriver,
     materialize_origin_activated_batch,
 )
+from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
+    PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS,
+    acquisition_deadline_at as pre_lifecycle_acquisition_deadline_at,
+)
 from printer_v1.scheduler.scheduler import ACTIVE_STATUS_VALUES, cancel_job
 from printer_v1.scheduler.snapshot_maturity import (
     SNAPSHOT_MATURITY_SECONDS,
@@ -2307,6 +2311,14 @@ class AuthoritativeLiveOperationalCampaignOwner:
         holder_stage_evidence_sealer: Callable[[Any, str, str | None], Mapping[str, Any]] | None = None,
         operational_database_target_binding: Any | None = None,
         disposable_public_composition_proof_binding: Any | None = None,
+        # V2-9.8B Post-DTW98 bounded pre-lifecycle temporal acquisition. The
+        # horizon is explicit and separate from ``ceilings.duration_seconds``:
+        # it never borrows lifecycle/WINDOW_15M time. ``None`` for the owner
+        # preserves the existing immediate-terminalization behaviour exactly.
+        pre_lifecycle_acquisition_seconds: int = (
+            PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS
+        ),
+        pre_lifecycle_temporal_refresh_owner: Any | None = None,
     ) -> Any:
         """Run one authoritative live two-token operational-natural campaign.
 
@@ -2468,6 +2480,21 @@ class AuthoritativeLiveOperationalCampaignOwner:
             if local_validation_identity_observer is not None:
                 supply_kwargs["local_validation_identity_observer"] = (
                     local_validation_identity_observer
+                )
+            # V2-9.8B Post-DTW98: bind the *acquisition* horizon at the supply
+            # boundary. The audit proved the eligible-supply loop previously ran
+            # with no deadline at all because the lifecycle deadline was only
+            # computed after supply returned. This horizon is its own bounded
+            # envelope, not a share of the post-supply lifecycle duration.
+            if pre_lifecycle_temporal_refresh_owner is not None:
+                supply_kwargs["deadline_at"] = pre_lifecycle_acquisition_deadline_at(
+                    evaluated_at,
+                    acquisition_duration_seconds=int(
+                        pre_lifecycle_acquisition_seconds
+                    ),
+                )
+                supply_kwargs["temporal_refresh_owner"] = (
+                    pre_lifecycle_temporal_refresh_owner
                 )
             supply = build_graduated_supply(
                 command.db_path,

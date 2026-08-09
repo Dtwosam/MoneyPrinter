@@ -44,6 +44,24 @@ from printer_v1.discovery.graduated_liquidity_front_door import (
     SELECTION_FLOOR_USD,
     run_graduated_liquidity_front_door,
 )
+from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
+    ACQUISITION_DEADLINE_EXHAUSTED,
+    CANCELLED as TEMPORAL_CANCELLED,
+    CURRENT_UNIVERSE_EXHAUSTED_TERMINAL,
+    CURRENT_UNIVERSE_EXHAUSTED_WAITING,
+    CURRENT_UNIVERSE_EXHAUSTION_REASONS,
+    NO_LAWFUL_REFRESH_WINDOW,
+    PRE_LIFECYCLE_ACQUISITION_DURATION_EXHAUSTED,
+    PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS,
+    REFRESH_COMPLETED,
+    REFRESH_SOURCE_FAILURE,
+    SOURCE_BUDGET_EXHAUSTED as TEMPORAL_SOURCE_BUDGET_EXHAUSTED,
+    SUPERVISION_FAILED as TEMPORAL_SUPERVISION_FAILED,
+    UNSAFE_SCHEDULER_STATE,
+    WAITING_FOR_ELIGIBLE_SUPPLY,
+    AcquisitionLedger,
+    TemporalRefreshOutcome,
+)
 from printer_v1.discovery.permanent_discovery_availability import (
     StageBudget,
     order_canonical_inventory_fairly,
@@ -305,6 +323,10 @@ class ExhaustionCertificate:
     discovery_rounds: int
     certificate_version: str = CERTIFICATE_VERSION
     created_at: str = field(default_factory=_utc_now_iso)
+    #: Present only when a bounded pre-lifecycle temporal acquisition ran. It
+    #: distinguishes an instantaneous universe exhaustion inside a live horizon
+    #: from a genuine terminal exhaustion after the horizon closed.
+    pre_lifecycle_acquisition: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -351,6 +373,11 @@ class ExhaustionCertificate:
             "discovery_rounds": self.discovery_rounds,
             "certificate_version": self.certificate_version,
             "created_at": self.created_at,
+            "pre_lifecycle_acquisition": (
+                None
+                if self.pre_lifecycle_acquisition is None
+                else dict(self.pre_lifecycle_acquisition)
+            ),
         }
 
 
@@ -590,6 +617,11 @@ def run_persistent_eligible_token_supply(
     required_token_capacity: int = REQUIRED_TOKEN_CAPACITY,
     discovery_operation_budget: int = DEFAULT_DISCOVERY_OPERATION_BUDGET,
     deadline_at: str | None = None,
+    # V2-9.8B Post-DTW98 bounded pre-lifecycle temporal acquisition. Default
+    # ``None`` preserves every existing non-operational consumer's behaviour:
+    # without an owner, current-universe exhaustion stays terminal exactly as
+    # before. This service never calls the Scheduler itself.
+    temporal_refresh_owner: Any | None = None,
     campaign_id: str | None = None,
     execution_id: str | None = None,
     run_id: str | None = None,
@@ -1130,15 +1162,147 @@ def run_persistent_eligible_token_supply(
         revalidate_mints = {
             str(r["mint_identity"]) for r in prior_reserve
         } & inventory_mints
+        revalidation_focus_pending = bool(revalidate_mints)
+        # Durable last-successful evidence by mint. Seeded from the prior
+        # reserve and extended with post-wait retained candidates so a retained
+        # candidate that fails revalidation is removed truthfully.
+        prior_by_mint: dict[str, Mapping[str, Any]] = {
+            str(row["mint_identity"]): row for row in prior_reserve
+        }
 
         max_rounds = max(
             1,
             (len(inventory_mints) // max(1, front_door_max_candidates)) + 3,
         )
 
+        # --- bounded pre-lifecycle temporal acquisition (design §§2,6,7) ----
+        acquisition_ledger: AcquisitionLedger | None = None
+        if temporal_refresh_owner is not None:
+            acquisition_ledger = AcquisitionLedger(
+                started_at=now,
+                acquisition_deadline_at=str(
+                    deadline_at
+                    or _utc_now_iso()
+                ),
+                acquisition_duration_seconds=(
+                    PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS
+                ),
+                refresh_interval_seconds=int(
+                    getattr(temporal_refresh_owner, "refresh_interval_seconds", 600)
+                ),
+            )
+
+        def _temporal_stop_reason(status: str) -> str:
+            """Map one owner outcome onto the fail-closed terminal precedence."""
+            return {
+                TEMPORAL_SUPERVISION_FAILED: "CAMPAIGN_SUPERVISION_FAILED",
+                TEMPORAL_CANCELLED: "OPERATOR_SAFE_STOP_REQUESTED",
+                UNSAFE_SCHEDULER_STATE: "UNSAFE_SCHEDULER_OWNERSHIP_STATE",
+                REFRESH_SOURCE_FAILURE: "SOURCE_AVAILABILITY_FAILURE_DURING_REFRESH",
+                TEMPORAL_SOURCE_BUDGET_EXHAUSTED: (
+                    "DISCOVERY_OPERATION_BUDGET_EXHAUSTED"
+                ),
+                ACQUISITION_DEADLINE_EXHAUSTED: (
+                    PRE_LIFECYCLE_ACQUISITION_DURATION_EXHAUSTED
+                ),
+                NO_LAWFUL_REFRESH_WINDOW: (
+                    PRE_LIFECYCLE_ACQUISITION_DURATION_EXHAUSTED
+                ),
+            }.get(status, status)
+
+        def _request_temporal_refresh(universe_state: str) -> bool:
+            """Ask the orchestration owner for one lawful refresh opportunity.
+
+            Returns ``True`` only when a claimed refresh completed and the loop
+            may lawfully continue. Never calls a provider, the Scheduler, or a
+            timer directly; never resets the cumulative discovery budget.
+            """
+            nonlocal ops_used, last_stop_reason, max_rounds
+            nonlocal provider_failures, revalidation_focus_pending
+            nonlocal inventory_rows, inventory_mints
+            if temporal_refresh_owner is None or acquisition_ledger is None:
+                last_stop_reason = universe_state
+                return False
+            depth_before = len(campaign_eligible)
+            outcome = temporal_refresh_owner.request_temporal_refresh(
+                reserve_depth=depth_before,
+                required_capacity=int(required_token_capacity),
+                universe_state=universe_state,
+                source_operations_remaining=_ops_remaining(),
+                provider_terminal_failure=bool(channels_unavailable),
+                now=_utc_now_iso(),
+            )
+            if not isinstance(outcome, TemporalRefreshOutcome):
+                last_stop_reason = UNSAFE_SCHEDULER_STATE
+                return False
+            acquisition_ledger.record(outcome)
+            # Cumulative accounting: refresh operations are added to the same
+            # invocation's usage. The budget is never reset after waiting.
+            ops_used += int(outcome.source_operations)
+            # Provider failures are recorded as exact facts, not as a running
+            # tally: the canonical recount below is the single authority and
+            # would otherwise overwrite a plain increment.
+            for index in range(int(outcome.provider_failures)):
+                provider_failure_facts.add(
+                    (
+                        "pre_lifecycle_temporal_refresh",
+                        str(outcome.wait_id or "unknown-wait"),
+                        f"refresh-{outcome.refresh_ordinal}-{index}",
+                    )
+                )
+            provider_failures = len(provider_failure_facts)
+            for channel in outcome.channels_unavailable:
+                if channel not in channels_unavailable:
+                    channels_unavailable.append(channel)
+
+            if outcome.status == WAITING_FOR_ELIGIBLE_SUPPLY:
+                # Nonterminal: the wait is durably owned and published. The
+                # loop stops here without a shortage terminal.
+                last_stop_reason = WAITING_FOR_ELIGIBLE_SUPPLY
+                return False
+            if outcome.status != REFRESH_COMPLETED:
+                last_stop_reason = _temporal_stop_reason(outcome.status)
+                return False
+
+            # Design §7 — nothing retained may count until it is revalidated.
+            retained = sorted(campaign_eligible)
+            for mint in retained:
+                prior_by_mint.setdefault(mint, dict(campaign_eligible[mint]))
+                mark_reserve_status(
+                    connection,
+                    mint,
+                    status=ELIGIBLE_STALE,
+                    now=now,
+                    exclusion_reason=None,
+                )
+                evaluated_mints.discard(mint)
+                del campaign_eligible[mint]
+            acquisition_ledger.revalidation_outcomes.append(
+                {
+                    "refresh_ordinal": outcome.refresh_ordinal,
+                    "retained_candidates_marked_stale": list(retained),
+                    "reserve_depth_before_revalidation": depth_before,
+                }
+            )
+            revalidate_mints.clear()
+            revalidate_mints.update(retained)
+            revalidation_focus_pending = bool(retained)
+            connection.commit()
+
+            # Newly reachable identities become visible through the canonical
+            # inventory owner; no old rejected candidate is relabelled as new.
+            inventory_rows = export_graduated_candidates(connection)
+            inventory_mints = {str(r["mint_identity"]) for r in inventory_rows}
+            remaining = len(inventory_mints - evaluated_mints)
+            max_rounds = discovery_rounds + max(
+                1, (remaining // max(1, front_door_max_candidates)) + 3
+            )
+            return True
+
         while len(campaign_eligible) < required_token_capacity:
             if discovery_rounds >= max_rounds:
-                last_stop_reason = "ALL_REACHABLE_CANDIDATES_EVALUATED"
+                if _request_temporal_refresh("ALL_REACHABLE_CANDIDATES_EVALUATED"):
+                    continue
                 break
             if _ops_remaining() <= 0:
                 last_stop_reason = "DISCOVERY_OPERATION_BUDGET_EXHAUSTED"
@@ -1152,13 +1316,16 @@ def run_persistent_eligible_token_supply(
             # Build exclude set: already evaluated this campaign.
             # For the first pass after prior-reserve load, allow revalidation of
             # stale reserve mints even if not yet in evaluated set.
-            if discovery_rounds == 0 and revalidate_mints:
+            if revalidation_focus_pending and revalidate_mints:
                 batch_focus = revalidate_mints - evaluated_mints
             else:
                 batch_focus = set()
 
             if not unexplored and not batch_focus:
-                last_stop_reason = "NO_ADDITIONAL_UNIQUE_CANDIDATES_REACHABLE"
+                if _request_temporal_refresh(
+                    "NO_ADDITIONAL_UNIQUE_CANDIDATES_REACHABLE"
+                ):
+                    continue
                 break
 
             # Cap the evaluation batch by remaining discovery ops so a round
@@ -1203,7 +1370,10 @@ def run_persistent_eligible_token_supply(
                     if str(row["mint_identity"]) not in evaluated_mints
                 ][:30]
                 if not permanent_rows:
-                    last_stop_reason = "ALL_REACHABLE_CANDIDATES_EVALUATED"
+                    if _request_temporal_refresh(
+                        "ALL_REACHABLE_CANDIDATES_EVALUATED"
+                    ):
+                        continue
                     break
                 # Charge migration protocol ops once, without sealing market.
                 # Protocol and market stages may both be open; residual market
@@ -1398,15 +1568,22 @@ def run_persistent_eligible_token_supply(
                 if market_channel not in channels_unavailable:
                     channels_unavailable.append(market_channel)
             if not batch_candidates and not unexplored:
-                last_stop_reason = "NO_ADDITIONAL_UNIQUE_CANDIDATES_REACHABLE"
+                if _request_temporal_refresh(
+                    "NO_ADDITIONAL_UNIQUE_CANDIDATES_REACHABLE"
+                ):
+                    continue
                 break
             if not batch_candidates:
                 # Exclude set may have over-constrained revalidation focus; clear
                 # focus and continue with pure unexplored walk.
                 if batch_focus:
                     revalidate_mints.clear()
+                    revalidation_focus_pending = False
                     continue
-                last_stop_reason = "NO_ADDITIONAL_UNIQUE_CANDIDATES_REACHABLE"
+                if _request_temporal_refresh(
+                    "NO_ADDITIONAL_UNIQUE_CANDIDATES_REACHABLE"
+                ):
+                    continue
                 break
 
             round_seen: set[str] = set()
@@ -1450,10 +1627,7 @@ def run_persistent_eligible_token_supply(
                     # remove it from capacity and durable fresh status.
                     if mint in campaign_eligible:
                         del campaign_eligible[mint]
-                    prior = next(
-                        (r for r in prior_reserve if str(r["mint_identity"]) == mint),
-                        None,
-                    )
+                    prior = prior_by_mint.get(mint)
                     if prior is not None:
                         cand["historical_reserve_evidence"] = {
                             "liquidity_usd": prior.get("liquidity_usd"),
@@ -1483,11 +1657,13 @@ def run_persistent_eligible_token_supply(
             # After first revalidation pass, clear focus so remaining unexplored
             # inventory is walked in subsequent rounds.
             revalidate_mints.clear()
+            revalidation_focus_pending = False
 
             # If batch returned only already-evaluated or empty net progress and
-            # no unexplored left, stop.
+            # no unexplored left, stop — unless a lawful future refresh remains.
             if not _unexplored():
-                last_stop_reason = "ALL_REACHABLE_CANDIDATES_EVALUATED"
+                if _request_temporal_refresh("ALL_REACHABLE_CANDIDATES_EVALUATED"):
+                    continue
                 break
 
         # Refresh inventory size after discovery (new confirms).
@@ -1713,6 +1889,12 @@ def run_persistent_eligible_token_supply(
         if ready:
             terminal = GRADUATED_SUPPLY_READY
             last_stop_reason = "ELIGIBLE_CAPACITY_MET"
+        elif last_stop_reason == WAITING_FOR_ELIGIBLE_SUPPLY:
+            # Design §8.6 — current-universe exhaustion with a lawful, durably
+            # owned future refresh is a nonterminal acquisition state. No
+            # shortage classification and no exhaustion certificate is emitted,
+            # because no shortage has been proven.
+            terminal = WAITING_FOR_ELIGIBLE_SUPPLY
         else:
             terminal = BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL
             all_channels_exhausted = (
@@ -1790,6 +1972,24 @@ def run_persistent_eligible_token_supply(
                     or (duration_remaining is not None and duration_remaining <= 0)
                 ),
             )
+            if acquisition_ledger is not None:
+                # Design §8 — controlling temporal terminals override the
+                # instantaneous-universe classification, fail-closed and in
+                # order. A closed acquisition horizon is duration exhaustion,
+                # never "true market supply shortage".
+                if last_stop_reason == PRE_LIFECYCLE_ACQUISITION_DURATION_EXHAUSTED:
+                    shortage = DURATION_EXHAUSTION
+                elif last_stop_reason == "SOURCE_AVAILABILITY_FAILURE_DURING_REFRESH":
+                    shortage = SOURCE_AVAILABILITY_FAILURE
+                elif (
+                    shortage == TRUE_MARKET_SUPPLY_SHORTAGE
+                    and acquisition_ledger.remaining_seconds(_utc_now_iso()) > 0
+                    and acquisition_ledger.opportunities_scheduled > 0
+                ):
+                    # One instantaneous universe exhaustion inside a live
+                    # horizon is never a proven true market shortage.
+                    shortage = DURATION_EXHAUSTION
+                acquisition_ledger.controlling_shortage_classification = shortage
             certificate = ExhaustionCertificate(
                 certificate_id=(
                     f"exh-{execution_id or campaign_id or uuid.uuid4().hex[:12]}"
@@ -1830,6 +2030,11 @@ def run_persistent_eligible_token_supply(
                 shortage_classification=shortage,
                 discovery_rounds=discovery_rounds,
                 created_at=now,
+                pre_lifecycle_acquisition=(
+                    None
+                    if acquisition_ledger is None
+                    else acquisition_ledger.to_dict(now=_utc_now_iso())
+                ),
             )
             persist_exhaustion_certificate(connection, certificate)
             connection.commit()
@@ -2021,6 +2226,11 @@ def run_persistent_eligible_token_supply(
             "discovery_operations_remaining": _ops_remaining(),
             "last_stop_reason": last_stop_reason,
             "shortage_classification": shortage,
+            "pre_lifecycle_acquisition": (
+                None
+                if acquisition_ledger is None
+                else acquisition_ledger.to_dict(now=_utc_now_iso())
+            ),
             "required_token_capacity": required_token_capacity,
             "eligible_reserve_count": len(eligible_list),
             "cooldown_skips": cooldown_skips,

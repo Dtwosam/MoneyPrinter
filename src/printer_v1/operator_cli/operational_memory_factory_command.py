@@ -30,6 +30,9 @@ from printer_v1.db.migrate import (
     validate_migration_ledger,
 )
 from printer_v1.db.sqlite_write_contracts import DEFAULT_OPERATIONAL_BUSY_TIMEOUT_MS
+from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
+    PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS,
+)
 from printer_v1.operator_cli.abstract_campaign_command import (
     CAMPAIGN_MODE,
     CENTRAL_SCHEDULER_OWNER,
@@ -205,6 +208,14 @@ class _OperationalCampaignPolicy:
     governed_requests_per_token: int
     scheduler_row_ceiling: int
     locked_windows: tuple[str, ...]
+    # V2-9.8B Post-DTW98: bounded pre-lifecycle acquisition horizon. It is
+    # separate from ``duration_seconds`` (the post-supply operational/lifecycle
+    # envelope) and from the 900s WINDOW_15M evidence window. It raises no
+    # source-operation or financial ceiling; it only makes the total one-shot
+    # wall-time envelope explicit instead of hidden.
+    pre_lifecycle_acquisition_duration_seconds: int = (
+        PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS
+    )
 
 
 _NORMAL_CAMPAIGN_POLICY = _OperationalCampaignPolicy(
@@ -1123,6 +1134,12 @@ def build_activation_preflight(
             "campaigns": 1,
             "cycles": 1,
             "duration_seconds": TOTAL_DURATION_SECONDS,
+            "pre_lifecycle_acquisition_duration_seconds": (
+                PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS
+            ),
+            "total_wall_time_envelope_seconds": (
+                PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS + TOTAL_DURATION_SECONDS
+            ),
             "discovery_requests": DISCOVERY_REQUEST_CEILING,
             "governed_15m_requests": GOVERNED_15M_REQUEST_CEILING,
             "governed_requests_per_token": GOVERNED_REQUESTS_PER_TOKEN,
@@ -1333,6 +1350,17 @@ def _create_campaign_command(
         "operator_approved": operator_approved is True,
         "token_capacity": TOKEN_CAPACITY,
         "ceilings": asdict(ceilings),
+        # Explicit bounded pre-lifecycle acquisition horizon (design §1). The
+        # lifecycle deadline still starts from the real post-acquisition time
+        # and keeps its own envelope; this value only makes the longer possible
+        # total wall time visible in the immutable campaign configuration.
+        "pre_lifecycle_acquisition_duration_seconds": (
+            policy.pre_lifecycle_acquisition_duration_seconds
+        ),
+        "total_wall_time_envelope_seconds": (
+            policy.pre_lifecycle_acquisition_duration_seconds
+            + policy.duration_seconds
+        ),
         "main_window": MAIN_WINDOW,
         "main_window_seconds": MAIN_WINDOW_SECONDS,
         "continuous_first_hour": bool(policy.selective_1h_continuation),
