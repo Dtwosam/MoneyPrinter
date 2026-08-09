@@ -13,55 +13,64 @@ It does not replace:
 - `docs/printer-v1-current-state-memory-growth-audit.md`; or
 - `docs/printer-v1-memory-growth-build-order-v2.md`.
 
-Inside that stack, `docs/printer-v1-memory-growth-build-order-v2.md` remains the active memory-growth build order, not the sole source of truth. Later committed audits, designs, implementations, proofs, closeouts, and reconciliations control current lane position.
+Inside that stack, `docs/printer-v1-memory-growth-build-order-v2.md` is the active memory-growth build order, not the sole source of truth. Later committed audits, designs, implementations, proofs, closeouts, and reconciliations control current lane position.
 
-## Current state
+## Current durable state
 
-Checkpoint 8 controlling proof and independent inspection passed on immutable proof HEAD `7584b846fbe0fa79e8c9ce6fe35dfacbf7e07575` and closed at `8629f8da9392b958f6716c9155afdc567a797f16`.
+V2-9.8B has progressed beyond the older Post-C8 authorization-preparation state formerly recorded here.
 
-Post-C8 roadmap/current-state reconciliation passed at `6cbf22945d5429c993d1c9acf50f1d3cb70cf585`.
+Durable current anchors include:
 
-The post-C8 authoritative `WINDOW_15M` operational re-readiness sequence is now complete:
+- DTW100 `WINDOW_15M` campaign closeout: `059f4fad26d508b09cc361bc267049adc3cdb9ce`;
+- post-DTW100 E2Q audit closeout: `b07a946d56886d923129b3eacade775f19f58d71`;
+- post-DTW100 selective-1h operational rereadiness audit: `13aa70b3bc91def711a64d8f46ed6fa0b98dc488`;
+- post-DTW100 15m trajectory-classification audit: `b976538d3e7a9c7c2173b8751e19eef3295c0d04`;
+- first-hour lifecycle policy design commit begins at `04668c7204e0d56f1df7b56dfcd1eaa8d50be921` on branch `agent/v2-9-8b-post-dtw100-first-hour-lifecycle-policy-design`.
 
-- DTW-70 static/fresh audit identified local-lineage and staging-classification blockers;
-- DTW-71 classified all historical staging, proved zero untracked-path collisions, and non-destructively aligned the Mac checkout;
-- exact proven local operational baseline: `cd0a422d84a0076dd03ba34f1a764fc8795f6aaf`;
-- local branch: `agent/v2-9-8b-post-c8-operational-window15m-rereadiness-audit`;
-- authoritative DB SHA-256: `7380f9b4c172c218e6c9ab1fed996a06fcdeb90ff67f2b414d805f280403d54e`;
-- migrations `52/52`, integrity `ok`, FK violations `0`, no SQLite sidecars;
-- all inspected campaign/factory/discovery/Scheduler state is terminal-only;
-- zero-I/O concrete-composition preflight PASS;
-- all seven staging entries classified, zero ambiguous, no historical authorization reusable.
+DTW97 is permanently consumed and must not be rerun. DTW100 is already closed. No historical authorization may be reused.
 
-Controlling closeout:
+## Active first-hour policy amendment
 
-`docs/printer-v1-v2-9-8b-post-c8-local-operational-lineage-staging-reconciliation-closeout.md`
+For future bounded main-lifecycle operations, `WINDOW_15M -> WINDOW_1H` is no longer a behavior/outcome-qualified selective transition.
 
-Verdict:
-
-`V2_9_8B_POST_C8_LOCAL_OPERATIONAL_LINEAGE_STAGING_RECONCILIATION_PASS`
-
-## Exact next permitted lane
+Every token validly activated into the bounded main tracking lifecycle is committed to first-hour observation:
 
 ```text
-V2-9.8B Post-C8 Fresh WINDOW_15M One-Use Authorization Preparation and Independent Review
+activation
+-> same exact token/pair tracked from t=0
+-> WINDOW_15M closes as the first main-memory checkpoint
+-> observation continues through the remaining first hour
+-> WINDOW_1H closes at the full first-hour horizon
 ```
 
-This is an authorization-preparation lane, not runtime permission.
+The 15m checkpoint does not decide whether the token deserves the remaining first-hour observation. `NO_PUMP`, `CONSOLIDATION`, pump/dump/dead/revival labels, final 15m direction, profitability, scoring, ranking, confidence, weighting, and `WINDOW_5M_MICRO_EVENT` have no authority to stop or authorize that first-hour observation.
 
-Required order:
+This policy supersedes older active-stack wording that made 15m->1h continuation depend on a 15m outcome/learning-need gate. Historical selective-1h documents remain preserved as historical evidence.
 
-1. design/specify the fresh one-use authorization package against the exact current reviewed lineage;
-2. create exactly one fresh authorization only after explicit operator approval;
-3. independently review exact branch/HEAD, clean tracked/index state, authoritative DB identity, temporal validity, launch-chain identities, no-current-authority state, `WINDOW_15M`-only policy, selective-1h false, and no retry/rerun/resume/restart/successor;
-4. close the authorization lane;
-5. only after that may the operator separately invoke the one-shot wrapper exactly once.
+Observation continuation remains fail-closed on operational validity: exact token/mint/pair/lifecycle identity, closed 15m boundary, tracking continuity, campaign state, cancellation/terminal state, Source Governor ownership, Central Scheduler ownership, DB/lease/integrity health, bounded campaign/token resources, and one-shot execution authority.
 
-No historical authorization package may be reused.
+Memory quality remains separate. Continuing observation must never relabel dirty/blocked 15m evidence as clean. `WINDOW_1H` is independently audited from its exact first-hour evidence. Dirty memory remains barred from retrieval and decisions.
 
-## Repository lineage rule
+Selectivity begins after 1h. `WINDOW_1H -> WINDOW_4H` and later approved transitions remain selective. `WINDOW_12H` and `WINDOW_24H` remain locked.
 
-Do not assume default `master` is controlling. Future authorization may bind only an exact freshly reviewed branch/HEAD descended from the proven post-C8 lineage. Any tracked change after a readiness review requires exact-head re-review.
+Controlling design:
+
+- `docs/printer-v1-v2-9-8b-post-dtw100-first-hour-lifecycle-policy-design.md`
+
+## Current lane sequence
+
+The approved sequence is:
+
+1. first-hour lifecycle policy design/source-stack amendment;
+2. minimal implementation;
+3. focused offline proof and closeout;
+4. return to the separate post-DTW100 one-use first-hour authorization/wrapper integration design;
+5. authorization implementation/proof and fresh rereadiness;
+6. fresh exact-HEAD one-use authorization preparation and independent review;
+7. exactly one separately operator-started first-hour operational proof;
+8. independent runtime closeout.
+
+The current policy-design/implementation/proof work does not authorize step 4 or later automatically.
 
 ## Permanent restrictions
 
@@ -81,9 +90,9 @@ Printer V1 remains:
 - no paper decisions before their explicit approved lane;
 - no BUY/SELL/HOLD before its explicit approved lane;
 - no paper positions, trade events, paper-trade audits, or PnL before their explicit approved lanes;
-- no `WINDOW_1H`, `WINDOW_4H`, `WINDOW_12H`, or `WINDOW_24H` activation before explicit approved lanes.
+- no 4h/12h/24h activation before explicit approved lanes.
 
-`WINDOW_5M_MICRO_EVENT` remains support-only and cannot independently unlock outcome memory, retrieval, decisions, positions, trades, or PnL.
+`WINDOW_5M_MICRO_EVENT` remains support-only and cannot independently create a main outcome, start/stop the first-hour lifecycle, unlock retrieval, authorize decisions, or create positions/trades/PnL.
 
 ## Assistant execution rule
 
@@ -91,4 +100,4 @@ Preserve the V2 sequence: audit/readiness -> design/specification -> implementat
 
 Use minimum sufficient risk-based verification. Broad/full suites belong at major closeout, pre-live-proof, releases/checkpoints, or broad architectural changes, not every step.
 
-Do not create or consume a fresh authorization, invoke the wrapper, contact providers, mutate the authoritative DB, generate memory, or unlock downstream financial capabilities without the explicit approved lane and operator authorization.
+Do not create or consume a fresh authorization, invoke a live wrapper, contact providers, mutate the authoritative DB, generate operational memory, or unlock downstream financial capabilities during this policy implementation/proof lane.
