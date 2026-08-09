@@ -31,8 +31,9 @@ jobs:
           if text.count(start) != 1:
               raise SystemExit(f'embedded patch start count={text.count(start)}')
           body = text.split(start, 1)[1].split(end, 1)[0]
-          if body.count("''').replace(") != 1:
-              raise SystemExit(f"helper close-paren token count={body.count(\"''').replace(\")}")
+          bad_close_count = body.count("''').replace(")
+          if bad_close_count != 1:
+              raise SystemExit('helper close-paren token count=%d' % bad_close_count)
           body = body.replace("''').replace(", "'''.replace(", 1)
           exec(compile(textwrap.dedent(body), str(helper), 'exec'), {})
           PY
