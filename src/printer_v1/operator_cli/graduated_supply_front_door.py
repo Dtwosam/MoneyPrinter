@@ -807,6 +807,7 @@ def build_graduated_supply(
     run_geckoterminal_nomination: bool = False,
     enable_geckoterminal_reconciliation: bool = True,
     campaign_source_request_scope: Any | None = None,
+    temporal_refresh_owner: Any | None = None,
 ) -> GraduatedSupply:
     """Compose discovery + front door via persistent multi-round supply loop.
 
@@ -926,6 +927,11 @@ def build_graduated_supply(
         enable_geckoterminal_reconciliation=(
             enable_geckoterminal_reconciliation
         ),
+        # V2-9.8B Post-DTW99: forward the campaign's bounded pre-lifecycle
+        # temporal refresh owner unchanged. The service already declares this
+        # parameter; the front door previously dropped it, which raised
+        # TypeError at this seam and consumed a one-use authorization.
+        temporal_refresh_owner=temporal_refresh_owner,
     )
 
     discovery = dict(persistent.discovery_report)
