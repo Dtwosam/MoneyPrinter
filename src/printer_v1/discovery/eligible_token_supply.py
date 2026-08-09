@@ -855,6 +855,9 @@ def run_persistent_eligible_token_supply(
                     ),
                     stage_evidence_sink=stage_evidence_sink,
                     transport_identity_observer=transport_identity_observer,
+                    local_validation_identity_observer=(
+                        local_validation_identity_observer
+                    ),
                     stage_sequence=1,
                     request_key_prefix=f"{discovery_request_key_prefix}-protocol",
                 )
@@ -1505,6 +1508,9 @@ def run_persistent_eligible_token_supply(
                 ),
                 stage_evidence_sink=stage_evidence_sink,
                 transport_identity_observer=transport_identity_observer,
+                local_validation_identity_observer=(
+                    local_validation_identity_observer
+                ),
                 stage_sequence=2,
                 request_key_prefix=f"{discovery_request_key_prefix}-protocol-residual",
             )

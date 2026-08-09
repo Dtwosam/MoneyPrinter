@@ -2579,6 +2579,7 @@ def process_protocol_confirmation_queue(
     request_key_prefix: str = "protocol-account-batch",
     stage_evidence_sink: Any | None = None,
     transport_identity_observer: Any | None = None,
+    local_validation_identity_observer: Any | None = None,
     stage_sequence: int = 1,
 ) -> dict[str, Any]:
     """Process ABOVE_FLOOR protocol-due rows via governed getMultipleAccounts.
@@ -2761,6 +2762,9 @@ def process_protocol_confirmation_queue(
                 )
                 for item in local_validation_identities
             ]
+            if local_validation_identity_observer is not None:
+                for validation in bound_validations:
+                    local_validation_identity_observer(validation)
             first_cause = None
             terminal_status = "COMPLETED"
             if shared_source_failures:
