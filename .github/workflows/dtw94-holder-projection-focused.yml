@@ -1,0 +1,22 @@
+name: DTW94 holder projection focused TDD
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    if: github.base_ref == 'agent/v2-9-8b-dtw94-holder-projection-tdd-runner-base'
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: src
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Focused regression test
+        run: python -m unittest discover -s tests -p 'test_v2_9_8b_post_dtw94_holder_projection.py' -v
