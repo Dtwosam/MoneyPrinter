@@ -494,11 +494,36 @@ class PreLifecycleTemporalRefreshOwner:
         connection.commit()
 
         # 11. Only now may discovery work exist.
-        # Each refresh opportunity is its own bounded discovery batch:
-        # printer_discovery_work is UNIQUE (discovery_batch_id, work_type), so
-        # reusing one batch across ordinals would silently collide rather than
-        # record two honestly distinct stages.
+        # A cycle owns exactly one discovery batch (UNIQUE on cycle_id), so the
+        # resolver create-or-reuses that one batch through the shared canonical
+        # derivation rather than minting a colliding second batch.
         batch_id = self._discovery_batch_resolver(connection, woke_at, ordinal)
+        # printer_discovery_work is UNIQUE (discovery_batch_id, work_type). Fail
+        # closed *before* consuming the claim if this cycle's refresh work slot
+        # is already owned, instead of letting the insert collide after the job
+        # is RUNNING. This never steals or rewrites another owner's work row.
+        if self._work_slot_taken(connection, batch_id=str(batch_id)):
+            self._terminalize_claimed_job_without_work(
+                connection,
+                wait_id=wait_id,
+                job_id=int(job_id),
+                cause="PRE_LIFECYCLE_REFRESH_WORK_SLOT_TAKEN",
+                now=woke_at,
+            )
+            return TemporalRefreshOutcome(
+                status=UNSAFE_SCHEDULER_STATE,
+                wait_id=wait_id,
+                scheduler_job_id=int(job_id),
+                refresh_ordinal=ordinal,
+                scheduled_for=scheduled_for,
+                claimed=True,
+                reserve_depth_before=reserve_depth,
+                reserve_depth_after=reserve_depth,
+                detail=(
+                    f"discovery work slot ({batch_id}, {REFRESH_WORK_TYPE}) "
+                    "is already owned"
+                ),
+            )
         work_id = f"work:{REFRESH_WORK_TYPE}:{wait_id}"
         insert_discovery_work(
             connection,
@@ -608,6 +633,10 @@ class PreLifecycleTemporalRefreshOwner:
             source_operations=source_operations,
             provider_failures=provider_failures,
             channels_unavailable=channels_unavailable,
+            promoted_observation_eligible=tuple(
+                dict(item)
+                for item in (stage.get("promoted_observation_eligible") or ())
+            ),
             reserve_depth_before=reserve_depth,
             reserve_depth_after=reserve_depth,
             detail="bounded Source-Governed refresh stage completed",
@@ -639,6 +668,46 @@ class PreLifecycleTemporalRefreshOwner:
             raise PreLifecycleTemporalRefreshError(
                 "PRE_LIFECYCLE_REFRESH_CLAIMED_IDENTITY_MISMATCH"
             )
+
+    def _work_slot_taken(
+        self, connection: sqlite3.Connection, *, batch_id: str
+    ) -> bool:
+        return (
+            connection.execute(
+                "SELECT 1 FROM printer_discovery_work "
+                "WHERE discovery_batch_id=? AND work_type=? LIMIT 1",
+                (batch_id, REFRESH_WORK_TYPE),
+            ).fetchone()
+            is not None
+        )
+
+    def _terminalize_claimed_job_without_work(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        wait_id: str,
+        job_id: int,
+        cause: str,
+        now: str,
+    ) -> None:
+        """Fail a claimed job that never became discovery work.
+
+        ``max_retries=0`` forbids a COOLDOWN re-arm, so the campaign is left
+        with zero active Scheduler or wait residue and no orphan work row.
+        """
+        fail_job(connection, job_id=int(job_id), error=cause, max_retries=0)
+        terminalize_refresh_wait(
+            connection,
+            wait_id=wait_id,
+            wait_state="FAILED",
+            first_terminal_cause=cause,
+            now=now,
+        )
+        connection.commit()
+        self._publish(
+            "FAILED", wait_id=wait_id, scheduler_job_id=int(job_id),
+            first_terminal_cause=cause,
+        )
 
     def cancel_pending_wait(
         self,

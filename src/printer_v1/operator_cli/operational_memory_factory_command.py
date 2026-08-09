@@ -20,7 +20,7 @@ import sqlite3
 import sys
 import threading
 import time
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 import uuid
 
 from printer_v1.db.migrate import (
@@ -362,6 +362,12 @@ class _DisposablePublicCompositionOwnerBridge:
     db_path: Path
     artifact_root: Path
     provider_fallback_allowed: bool = False
+    # Approved-owner transports for the pre-lifecycle temporal refresh stage.
+    # Production leaves them None so the governed adapters build their own real
+    # free/public transports; disposable composition proofs inject fixtures here
+    # to exercise the real production refresh boundary without network access.
+    geckoterminal_nomination_transport: Any | None = None
+    protocol_account_batch_transport: Any | None = None
 
 
 def _is_campaign_run_identity(candidate: str, *, campaign_run_id: str | None = None) -> bool:
@@ -1535,6 +1541,125 @@ def _create_campaign_command(
             lease_lock_path=paths["lock"],
         ),
         cycle_id,
+    )
+
+
+def _build_pre_lifecycle_temporal_refresh_owner(
+    *,
+    command: AbstractCampaignCommand,
+    cycle_id: str,
+    cycle_cutoff: str,
+    evaluated_at: str,
+    execution_id: str,
+    acquisition_seconds: int,
+    lifecycle_duration_seconds: int,
+    heartbeat: "_CampaignHeartbeat | None",
+    cancellation_probe: Callable[[], str | None],
+    stage_evidence_sink: Callable[[Mapping[str, Any]], None] | None = None,
+    transport_identity_observer: Callable[[Any], None] | None = None,
+    local_validation_identity_observer: Callable[[Any], None] | None = None,
+    geckoterminal_nomination_transport: Any | None = None,
+    protocol_account_batch_transport: Any | None = None,
+) -> "PreLifecycleTemporalRefreshOwner":
+    """Compose the ordinary WINDOW_15M pre-lifecycle temporal refresh owner.
+
+    Everything it needs already exists and is reused verbatim:
+
+    * the exact authorized campaign/run/cycle/supervision identities;
+    * the canonical Source Governor and Central Scheduler owner ports;
+    * the existing heartbeat failure event as the prompt abort boundary, and
+      the existing cancellation probe as the supervision/safe-stop probe;
+    * the existing approved discovery/source owners as the refresh stage;
+    * the one canonical per-cycle discovery batch derivation.
+
+    No second discovery engine, provider, adapter, gate or selector is created,
+    and no retry/restart/resume/successor path is introduced.
+    """
+    from printer_v1.discovery.pre_lifecycle_refresh_composition import (
+        build_cycle_discovery_batch_resolver,
+        build_pre_lifecycle_refresh_stage,
+    )
+    from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
+        acquisition_deadline_at,
+    )
+    from printer_v1.operator_cli.authoritative_live_operational_campaign import (
+        operational_discovery_batch_identity_inputs,
+    )
+    from printer_v1.operator_cli.pre_lifecycle_temporal_refresh_owner import (
+        PreLifecycleTemporalRefreshOwner,
+        bounded_interruptible_wait,
+    )
+
+    contract_versions, git_identity = (
+        operational_discovery_batch_identity_inputs()
+    )
+    failure_event = heartbeat.failure_event if heartbeat is not None else None
+
+    def supervision_probe() -> dict[str, Any]:
+        """Map the existing heartbeat/cancellation boundary onto the contract."""
+        heartbeat_failed = bool(
+            failure_event is not None and failure_event.is_set()
+        )
+        cause = cancellation_probe()
+        return {
+            # A failed lease is a supervision failure, not a cancellation.
+            "supervision_active": not heartbeat_failed,
+            "cancellation_requested": bool(cause) and not heartbeat_failed,
+            "observed_cause": cause,
+        }
+
+    def waiter(seconds: float) -> bool:
+        # One bounded interruptible suspension of this already-authorized
+        # child. The heartbeat's own failure event aborts it immediately; the
+        # cooperative cancellation flag is re-read at wake, bounded by the
+        # canonical 600s refresh interval. No polling loop is introduced.
+        return bounded_interruptible_wait(seconds, failure_event)
+
+    return PreLifecycleTemporalRefreshOwner(
+        command.db_path,
+        campaign_id=command.campaign_id,
+        run_id=command.run_id,
+        cycle_id=cycle_id,
+        supervision_id=command.supervision_id,
+        source_governor=OwnerPort(SOURCE_GOVERNOR_OWNER, True),
+        central_scheduler=OwnerPort(CENTRAL_SCHEDULER_OWNER, True),
+        acquisition_deadline_at=acquisition_deadline_at(
+            evaluated_at, acquisition_duration_seconds=int(acquisition_seconds)
+        ),
+        # Refresh discovery work is bounded by the campaign's own lifecycle
+        # envelope, measured from the real post-acquisition instant.
+        work_deadline_at=_iso(
+            datetime.fromisoformat(evaluated_at.replace("Z", "+00:00"))
+            + timedelta(
+                seconds=int(acquisition_seconds) + int(lifecycle_duration_seconds)
+            )
+        ),
+        refresh_stage=build_pre_lifecycle_refresh_stage(
+            request_key_prefix=execution_id,
+            geckoterminal_nomination_transport=(
+                geckoterminal_nomination_transport
+            ),
+            protocol_account_batch_transport=protocol_account_batch_transport,
+            stage_evidence_sink=stage_evidence_sink,
+            transport_identity_observer=transport_identity_observer,
+            local_validation_identity_observer=(
+                local_validation_identity_observer
+            ),
+        ),
+        discovery_batch_resolver=build_cycle_discovery_batch_resolver(
+            campaign_id=command.campaign_id,
+            configuration_id=command.configuration_id,
+            run_id=command.run_id,
+            cycle_id=cycle_id,
+            cycle_cutoff=cycle_cutoff,
+            policy_version=command.policy_version,
+            provider_contract_versions=contract_versions,
+            git_provenance_identity=git_identity,
+            campaign_selection_seed=execution_id,
+        ),
+        supervision_probe=supervision_probe,
+        waiter=waiter,
+        abort_event=failure_event,
     )
 
 
@@ -3255,6 +3380,44 @@ def _run_operational_campaign(
                 run_id=command.run_id,
             )
 
+        # V2-9.8B Post-DTW98 — the ordinary WINDOW_15M temporal acquisition owner.
+        #
+        # Exactly one owner, bound to this authorized campaign/run/cycle/
+        # supervision, the same Source Governor and Central Scheduler ports the
+        # campaign already uses, and the same 900s horizon recorded in the
+        # immutable configuration. Without it the supply service keeps its old
+        # immediate-terminal behaviour, which is precisely the DTW98 defect.
+        pre_lifecycle_temporal_refresh_owner = (
+            _build_pre_lifecycle_temporal_refresh_owner(
+                command=command,
+                cycle_id=cycle_id,
+                cycle_cutoff=now,
+                evaluated_at=now,
+                execution_id=execution_id,
+                acquisition_seconds=(
+                    policy.pre_lifecycle_acquisition_duration_seconds
+                ),
+                lifecycle_duration_seconds=policy.duration_seconds,
+                heartbeat=heartbeat,
+                cancellation_probe=cancellation_probe,
+                stage_evidence_sink=_campaign_stage_evidence_sink,
+                transport_identity_observer=_observe_transport_identity,
+                local_validation_identity_observer=(
+                    _observe_local_validation_identity
+                ),
+                geckoterminal_nomination_transport=(
+                    owner_bridge.geckoterminal_nomination_transport
+                    if owner_bridge is not None
+                    else None
+                ),
+                protocol_account_batch_transport=(
+                    owner_bridge.protocol_account_batch_transport
+                    if owner_bridge is not None
+                    else None
+                ),
+            )
+        )
+
         def retain_factory_run_id(factory_run_id: str) -> None:
             nonlocal initialized_factory_run_id, factory_identity_retained
             candidate = str(factory_run_id).strip()
@@ -3345,6 +3508,12 @@ def _run_operational_campaign(
                     owner_bridge.disposable_public_composition_proof_binding
                     if owner_bridge is not None
                     else None
+                ),
+                pre_lifecycle_acquisition_seconds=(
+                    policy.pre_lifecycle_acquisition_duration_seconds
+                ),
+                pre_lifecycle_temporal_refresh_owner=(
+                    pre_lifecycle_temporal_refresh_owner
                 ),
                 )
             finally:

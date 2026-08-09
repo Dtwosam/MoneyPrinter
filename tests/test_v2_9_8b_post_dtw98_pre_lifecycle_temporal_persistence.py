@@ -185,7 +185,14 @@ class _TemporalBase(unittest.TestCase):
     def _create_batch(self) -> str:
         # printer_discovery_batches is UNIQUE per cycle_id: exactly one exact
         # campaign/run/cycle batch exists, and the temporal refresh reuses it.
-        batch_id = f"batch:{CAMPAIGN}:{CYCLE}"
+        # Use the one canonical derivation both production writers share.
+        from printer_v1.discovery.combined_executor import (
+            canonical_cycle_discovery_batch_id,
+        )
+
+        batch_id = canonical_cycle_discovery_batch_id(
+            campaign_id=CAMPAIGN, run_id=RUN, cycle_id=CYCLE
+        )
         insert_discovery_batch(
             self.connection,
             discovery_batch_id=batch_id,

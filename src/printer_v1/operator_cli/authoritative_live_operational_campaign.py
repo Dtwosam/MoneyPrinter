@@ -1704,6 +1704,24 @@ def _validate_fifteen_minute_database_target_binding(
     )
 
 
+def operational_discovery_batch_identity_inputs() -> tuple[dict[str, str], str]:
+    """The provider-contract versions and git identity of this campaign's batch.
+
+    They are invocation-independent constants of the live operational owner, so
+    the ordinary command can build a pre-lifecycle discovery-batch resolver that
+    derives *byte-identical* canonical batch payload to the one the combined
+    discovery executor will later derive from ``CombinedDiscoveryFixtures``.
+    Both callers read them here so the two can never drift apart.
+    """
+    return (
+        {
+            "direct": CONTRACT_VERSION,
+            "geckoterminal": _sd.SECONDARY_DISCOVERY_CONTRACT_VERSION,
+        },
+        f"live-operational:{CONTRACT_VERSION}",
+    )
+
+
 class AuthoritativeLiveOperationalCampaignOwner:
     """Sole internal live origin→lifecycle composition entry point (DI-only)."""
 
@@ -1766,15 +1784,15 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 receipt_time=evaluated_at,
                 active_pools=[proof.bonding_curve for proof in acquisition.origin_proofs],
             )
+        batch_contract_versions, batch_git_identity = (
+            operational_discovery_batch_identity_inputs()
+        )
         fixtures = CombinedDiscoveryFixtures(
             cycle_id=cycle_id,
             cycle_cutoff=cycle_cutoff,
             campaign_selection_seed=selection_seed,
-            provider_contract_versions={
-                "direct": CONTRACT_VERSION,
-                "geckoterminal": _sd.SECONDARY_DISCOVERY_CONTRACT_VERSION,
-            },
-            git_provenance_identity=f"live-operational:{CONTRACT_VERSION}",
+            provider_contract_versions=batch_contract_versions,
+            git_provenance_identity=batch_git_identity,
             evaluated_at=evaluated_at,
             direct_observations=acquisition.origin_proofs,
             gecko_ops=enrichment.gecko_ops,

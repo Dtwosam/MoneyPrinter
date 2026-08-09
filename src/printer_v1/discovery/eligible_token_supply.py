@@ -565,6 +565,35 @@ def _candidate_rejection_reason(candidate: Mapping[str, Any]) -> str:
     return str(rejection or candidate.get("liquidity_reason") or "UNKNOWN_REJECTION")
 
 
+def _protocol_promotion_candidate(promo: Mapping[str, Any]) -> dict[str, Any]:
+    """The one admission shape for a protocol-confirmed retained-liquidity row.
+
+    Shared verbatim by the campaign-start early protocol pass and the bounded
+    pre-lifecycle temporal refresh, so a refreshed promotion is admitted through
+    exactly the existing path and no second gate can drift into existence.
+    """
+    return {
+        **dict(promo),
+        "mint": str(promo.get("mint") or ""),
+        "pool": str(promo.get("pool") or ""),
+        "pumpswap_pool": str(promo.get("pool") or ""),
+        "market_identity": str(
+            promo.get("market_identity")
+            or f"solana-mainnet:pumpswap:{promo.get('pool')}"
+        ),
+        "provenance": "FRESH_AGGREGATOR_PROTOCOL_CONFIRMED",
+        "liquidity_usd": promo.get("liquidity_usd"),
+        "liquidity_status": "LIQUIDITY_PROVEN",
+        "liquidity": dict(promo.get("liquidity") or {}),
+        "evidence_expires_at": promo.get("evidence_expires_at"),
+        "eligible": True,
+        "rejection": None,
+        "memory_observation_eligible": True,
+        "future_action_eligibility": "BLOCKED_OR_UNKNOWN",
+        "source_path": "retained_liquidity_protocol_promotion",
+    }
+
+
 def _candidate_liquidity_lineage(candidate: Mapping[str, Any]) -> dict[str, Any]:
     liquidity = candidate.get("liquidity")
     evidence = dict(liquidity) if isinstance(liquidity, Mapping) else {}
@@ -931,26 +960,7 @@ def run_persistent_eligible_token_supply(
                     mint = str(promo.get("mint") or "")
                     if not mint or mint in campaign_eligible:
                         continue
-                    cand = {
-                        **dict(promo),
-                        "mint": mint,
-                        "pool": str(promo.get("pool") or ""),
-                        "pumpswap_pool": str(promo.get("pool") or ""),
-                        "market_identity": str(
-                            promo.get("market_identity")
-                            or f"solana-mainnet:pumpswap:{promo.get('pool')}"
-                        ),
-                        "provenance": "FRESH_AGGREGATOR_PROTOCOL_CONFIRMED",
-                        "liquidity_usd": promo.get("liquidity_usd"),
-                        "liquidity_status": "LIQUIDITY_PROVEN",
-                        "liquidity": dict(promo.get("liquidity") or {}),
-                        "evidence_expires_at": promo.get("evidence_expires_at"),
-                        "eligible": True,
-                        "rejection": None,
-                        "memory_observation_eligible": True,
-                        "future_action_eligibility": "BLOCKED_OR_UNKNOWN",
-                        "source_path": "retained_liquidity_protocol_promotion",
-                    }
+                    cand = _protocol_promotion_candidate(promo)
                     campaign_eligible[mint] = cand
                     evaluated_mints.add(mint)
                     all_candidates.append(cand)
@@ -1289,8 +1299,31 @@ def run_persistent_eligible_token_supply(
             revalidation_focus_pending = bool(retained)
             connection.commit()
 
-            # Newly reachable identities become visible through the canonical
-            # inventory owner; no old rejected candidate is relabelled as new.
+            # Newly reachable identities become visible two lawful ways, both
+            # owned by their existing owners: through the canonical graduated
+            # inventory, and through the protocol-confirmation owner's retained
+            # liquidity promotions. No old rejected candidate is relabelled as
+            # new, and no new gate is applied to either route.
+            for promo in outcome.promoted_observation_eligible:
+                mint = str(promo.get("mint") or "")
+                if not mint or mint in campaign_eligible:
+                    continue
+                if mint in retained:
+                    # A retained candidate must revalidate through the front
+                    # door; a refresh promotion never restores it silently.
+                    continue
+                # Admitted through exactly the campaign-start promotion path.
+                # It deliberately does not write the durable eligible reserve:
+                # that persistence belongs to the front-door admission owner,
+                # and a protocol promotion has no graduated-registry row to
+                # reference. Mirroring the existing path is what keeps a second
+                # admission gate from drifting into existence here.
+                cand = _protocol_promotion_candidate(promo)
+                campaign_eligible[mint] = cand
+                evaluated_mints.add(mint)
+                all_candidates.append(cand)
+            connection.commit()
+
             inventory_rows = export_graduated_candidates(connection)
             inventory_mints = {str(r["mint_identity"]) for r in inventory_rows}
             remaining = len(inventory_mints - evaluated_mints)

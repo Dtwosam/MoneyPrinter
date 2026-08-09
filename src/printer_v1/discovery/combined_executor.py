@@ -467,6 +467,112 @@ def derive_cycle_selection_seed(
     return _sha256_text(material)
 
 
+def resolve_campaign_selection_seed(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    configuration_id: str,
+    fallback: str,
+) -> str:
+    """The campaign selection seed, resolved exactly once for every writer.
+
+    The persisted immutable configuration wins when it carries a seed; the
+    invocation's own selection seed is the fallback. Both the combined discovery
+    executor and the pre-lifecycle temporal refresh resolve through here so the
+    canonical discovery-batch payload cannot diverge between them.
+    """
+    row = connection.execute(
+        "SELECT configuration_json FROM "
+        "printer_memory_factory_campaign_configurations "
+        "WHERE campaign_id = ? AND configuration_id = ?",
+        (campaign_id, configuration_id),
+    ).fetchone()
+    configured = ""
+    if row is not None:
+        try:
+            configured = str(
+                (json.loads(row["configuration_json"]) or {}).get(
+                    "campaign_selection_seed"
+                )
+                or ""
+            ).strip()
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            configured = ""
+    seed = configured or str(fallback or "").strip()
+    if not seed:
+        raise CombinedDiscoveryError("MISSING_SELECTION_SEED")
+    return seed
+
+
+def canonical_cycle_discovery_batch_id(
+    *, campaign_id: str, run_id: str, cycle_id: str
+) -> str:
+    """The one canonical discovery-batch identity for an exact cycle.
+
+    ``printer_discovery_batches`` is UNIQUE on ``cycle_id``: a cycle owns exactly
+    one batch. Every writer must therefore derive the identity here rather than
+    inventing its own, or the second writer collides instead of reusing.
+    """
+    return f"discovery-batch:{campaign_id}:{run_id}:{cycle_id}"
+
+
+def ensure_cycle_discovery_batch(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    configuration_id: str,
+    run_id: str,
+    cycle_id: str,
+    cycle_cutoff: str,
+    policy_version: str,
+    provider_contract_versions: Mapping[str, Any],
+    git_provenance_identity: str,
+    campaign_selection_seed: str,
+    pump_continuity_state: str = "UNKNOWN",
+    batch_state: str = "DISCOVERING",
+    now: str | None = None,
+) -> str:
+    """Create-or-reuse the exact cycle's discovery batch, and return its id.
+
+    ``insert_discovery_batch`` is idempotent for a byte-identical canonical
+    payload, so whichever lawful owner reaches the cycle first creates the batch
+    and every later owner reuses it. ``batch_state`` is deliberately outside the
+    canonical hash, so a pre-lifecycle writer and the combined executor agree.
+
+    This is the single derivation shared by the combined discovery executor and
+    the pre-lifecycle temporal refresh. Duplicating it would reintroduce the
+    ``UNIQUE (cycle_id)`` collision the shared helper exists to prevent.
+    """
+    discovery_batch_id = canonical_cycle_discovery_batch_id(
+        campaign_id=campaign_id, run_id=run_id, cycle_id=cycle_id
+    )
+    cycle_seed = derive_cycle_selection_seed(
+        campaign_selection_seed=campaign_selection_seed,
+        campaign_id=campaign_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
+        discovery_batch_id=discovery_batch_id,
+    )
+    insert_discovery_batch(
+        connection,
+        discovery_batch_id=discovery_batch_id,
+        campaign_id=campaign_id,
+        configuration_id=configuration_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
+        cycle_cutoff=cycle_cutoff,
+        policy_version=policy_version,
+        provider_contract_versions=dict(provider_contract_versions),
+        git_provenance_identity=git_provenance_identity,
+        campaign_selection_seed_identity=_sha256_text(campaign_selection_seed),
+        cycle_seed_hash=_sha256_text(cycle_seed),
+        pump_continuity_state=pump_continuity_state,
+        batch_state=batch_state,
+        now=now,
+    )
+    return discovery_batch_id
+
+
 def _fisher_yates(items: Sequence[Any], seed_hex: str) -> list[Any]:
     ordered = list(items)
     counter = 0
@@ -860,11 +966,21 @@ class CombinedPumpfunCampaignExecutor:
             configuration = json.loads(row["configuration_json"])
         except json.JSONDecodeError as exc:
             raise CombinedDiscoveryError("SHARED_CONFIGURATION_MISMATCH") from exc
+        # Resolved through the shared owner so the pre-lifecycle temporal
+        # refresh derives byte-identical batch identity for this cycle.
         seed = str(
             configuration.get("campaign_selection_seed")
             or fixtures.campaign_selection_seed
             or ""
         ).strip()
+        _shared_seed = resolve_campaign_selection_seed(
+            connection,
+            campaign_id=campaign_id,
+            configuration_id=configuration_id,
+            fallback=str(fixtures.campaign_selection_seed or ""),
+        )
+        if seed and _shared_seed != seed:
+            raise CombinedDiscoveryError("SHARED_SELECTION_SEED_MISMATCH")
         if not seed:
             raise CombinedDiscoveryError("MISSING_SELECTION_SEED")
 
@@ -878,7 +994,9 @@ class CombinedPumpfunCampaignExecutor:
         if cycle is None:
             raise CombinedDiscoveryError("OWNERSHIP_MISMATCH")
 
-        discovery_batch_id = f"discovery-batch:{campaign_id}:{run_id}:{cycle_id}"
+        discovery_batch_id = canonical_cycle_discovery_batch_id(
+            campaign_id=campaign_id, run_id=run_id, cycle_id=cycle_id
+        )
         self._set_diagnostic_stage(
             "DISCOVERY_BATCH_CREATE",
             discovery_batch_id=discovery_batch_id,
@@ -892,11 +1010,12 @@ class CombinedPumpfunCampaignExecutor:
         )
         cycle_seed_hash = _sha256_text(cycle_seed)
 
-        # Discovery batch
+        # Discovery batch. Create-or-reuse through the one shared derivation: a
+        # lawful pre-lifecycle temporal refresh may already own this cycle's
+        # batch, and the canonical payload is identical either way.
         self._mark_persistence("DISCOVERY_BATCH_CREATE", "discovery_batch")
-        insert_discovery_batch(
+        ensure_cycle_discovery_batch(
             connection,
-            discovery_batch_id=discovery_batch_id,
             campaign_id=campaign_id,
             configuration_id=configuration_id,
             run_id=run_id,
@@ -905,8 +1024,7 @@ class CombinedPumpfunCampaignExecutor:
             policy_version=command.policy_version,
             provider_contract_versions=dict(fixtures.provider_contract_versions),
             git_provenance_identity=fixtures.git_provenance_identity,
-            campaign_selection_seed_identity=_sha256_text(seed),
-            cycle_seed_hash=cycle_seed_hash,
+            campaign_selection_seed=seed,
             pump_continuity_state="UNKNOWN",
             batch_state="DISCOVERING",
             now=now,

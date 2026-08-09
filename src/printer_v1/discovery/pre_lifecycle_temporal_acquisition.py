@@ -147,6 +147,10 @@ class TemporalRefreshOutcome:
     source_operations: int = 0
     provider_failures: int = 0
     channels_unavailable: tuple[str, ...] = ()
+    #: Rows the existing protocol-confirmation owner promoted during the
+    #: refresh. They are carried, never judged: admission remains the supply
+    #: service's existing promotion path, and this owner adds no gate.
+    promoted_observation_eligible: tuple[Mapping[str, Any], ...] = ()
     reserve_depth_before: int = 0
     reserve_depth_after: int = 0
     detail: str = ""
@@ -170,6 +174,9 @@ class TemporalRefreshOutcome:
             "source_operations": self.source_operations,
             "provider_failures": self.provider_failures,
             "channels_unavailable": list(self.channels_unavailable),
+            "promoted_observation_eligible_count": len(
+                self.promoted_observation_eligible
+            ),
             "reserve_depth_before": self.reserve_depth_before,
             "reserve_depth_after": self.reserve_depth_after,
             "detail": self.detail,
