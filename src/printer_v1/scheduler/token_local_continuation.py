@@ -1,7 +1,12 @@
-"""Pure token-local selective continuation policy for V2-9.7D.4A.
+"""Pure token-local continuation policy for V2-9.7D.4A / V2-9.8B.
 
 The policy evaluates exactly two already-materialised campaign token records.
 It does not fetch, schedule, persist, mutate, or create a successor window.
+
+Post-DTW100 policy amendment: WINDOW_15M -> WINDOW_1H is the standard bounded
+first-hour lifecycle for every otherwise-valid activated token. Outcome or
+learning-need labels do not qualify that transition. WINDOW_1H -> WINDOW_4H
+remains selective and learning-need-gated.
 """
 
 from __future__ import annotations
@@ -45,11 +50,13 @@ class ContinuationLearningNeed(StrEnum):
     LIQUIDITY_DETERIORATION = "LIQUIDITY_DETERIORATION"
 
 
+_FIRST_HOUR_TRANSITION = (
+    MemoryWindowKind.WINDOW_15M,
+    MemoryWindowKind.WINDOW_1H,
+)
+
 _ALLOWED_TRANSITIONS = {
-    (
-        MemoryWindowKind.WINDOW_15M,
-        MemoryWindowKind.WINDOW_1H,
-    ): (
+    _FIRST_HOUR_TRANSITION: (
         ContinuationVerdict.CONTINUE_TO_WINDOW_1H,
         ContinuationVerdict.STOP_AFTER_WINDOW_15M,
         frozenset(
@@ -218,7 +225,8 @@ def _evaluate_token(
             (*blocked, "unsupported_window_transition"),
         )
 
-    transition = _ALLOWED_TRANSITIONS.get((predecessor_kind, successor_kind))
+    transition_key = (predecessor_kind, successor_kind)
+    transition = _ALLOWED_TRANSITIONS.get(transition_key)
     if transition is None:
         blocked.append("unsupported_window_transition")
 
@@ -256,6 +264,27 @@ def _evaluate_token(
 
     assert transition is not None
     continue_verdict, stop_verdict, allowed_needs = transition
+
+    if not token.token_budget_available:
+        return _result(
+            token,
+            ContinuationVerdict.BLOCK_CONTINUATION,
+            ("token_budget_exhausted",),
+        )
+
+    # Post-DTW100 first-hour lifecycle amendment: once a token has passed every
+    # hard operational/evidence/identity/safety/continuity/budget gate above,
+    # WINDOW_15M -> WINDOW_1H is standard observation. A 15m outcome or
+    # learning-need label has no authority to stop the remaining first hour.
+    if transition_key == _FIRST_HOUR_TRANSITION:
+        return _result(
+            token,
+            ContinuationVerdict.CONTINUE_TO_WINDOW_1H,
+            ("standard_first_hour_lifecycle",),
+        )
+
+    # Later windows remain selective. Do not weaken the established 1h -> 4h
+    # learning-need gate as part of the first-hour amendment.
     if token.learning_need is None:
         return _result(token, stop_verdict, ("no_unresolved_learning_need",))
     try:
@@ -271,12 +300,6 @@ def _evaluate_token(
             token,
             ContinuationVerdict.BLOCK_CONTINUATION,
             ("learning_need_not_applicable_to_transition",),
-        )
-    if not token.token_budget_available:
-        return _result(
-            token,
-            ContinuationVerdict.BLOCK_CONTINUATION,
-            ("token_budget_exhausted",),
         )
     return _result(token, continue_verdict, ("all_continuation_requirements_met",))
 
