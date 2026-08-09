@@ -79,8 +79,38 @@ _LOCKED_DOWNSTREAM = {
 ZERO_ELIGIBLE_CONTINUATIONS = "ZERO_ELIGIBLE_CONTINUATIONS"
 ONE_CONTINUATION = "ONE_CONTINUATION"
 TWO_CONTINUATIONS = "TWO_CONTINUATIONS"
+ONE_CONTINUATION_ONE_BLOCK = "ONE_CONTINUATION_ONE_BLOCK"
+FIRST_HOUR_CONTINUATION_BLOCKED = "FIRST_HOUR_CONTINUATION_BLOCKED"
 EVALUATION_BLOCKED_SYSTEM_DEFECT = "EVALUATION_BLOCKED_SYSTEM_DEFECT"
 EVALUATION_NOT_REACHED = "EVALUATION_NOT_REACHED"
+
+
+def _classify_standard_first_hour_outcome(
+    *,
+    decision_set_complete: bool,
+    persistence_consistent: bool,
+    continue_count: int,
+    stop_count: int,
+    block_count: int,
+) -> str:
+    """Classify a complete standard-first-hour decision set truthfully.
+
+    WINDOW_15M -> WINDOW_1H has no normal behavior-driven STOP path after the
+    standard-first-hour policy amendment. Any STOP in a complete new-policy
+    decision set is therefore an integration/system defect, not a benign
+    zero-eligibility outcome.
+    """
+    if not decision_set_complete or not persistence_consistent:
+        return EVALUATION_BLOCKED_SYSTEM_DEFECT
+    if stop_count != 0:
+        return EVALUATION_BLOCKED_SYSTEM_DEFECT
+    if continue_count == 2 and block_count == 0:
+        return TWO_CONTINUATIONS
+    if continue_count == 1 and block_count == 1:
+        return ONE_CONTINUATION_ONE_BLOCK
+    if continue_count == 0 and block_count == 2:
+        return FIRST_HOUR_CONTINUATION_BLOCKED
+    return EVALUATION_BLOCKED_SYSTEM_DEFECT
 
 
 class Selective1hError(ValueError):
@@ -949,14 +979,12 @@ def summarize_selective_1h_reporting(
     )
     persistence_consistent = counts_by_kind[WINDOW_1H] == continue_count
     if decision_set_complete and persistence_consistent:
-        selective_outcome = (
-            ZERO_ELIGIBLE_CONTINUATIONS
-            if continue_count == 0
-            else ONE_CONTINUATION
-            if continue_count == 1
-            else TWO_CONTINUATIONS
-            if continue_count == 2
-            else EVALUATION_BLOCKED_SYSTEM_DEFECT
+        selective_outcome = _classify_standard_first_hour_outcome(
+            decision_set_complete=decision_set_complete,
+            persistence_consistent=persistence_consistent,
+            continue_count=continue_count,
+            stop_count=stop_count,
+            block_count=block_count,
         )
     elif token_plans or (
         selective_authorized
@@ -987,7 +1015,7 @@ def summarize_selective_1h_reporting(
         "actual_persisted_window_1h_count": counts_by_kind[WINDOW_1H],
         "selective_1h_outcome": selective_outcome,
         "selective_1h_authorized": selective_authorized,
-        "zero_continuation": selective_outcome == ZERO_ELIGIBLE_CONTINUATIONS,
+        "zero_continuation": decision_set_complete and continue_count == 0,
         "locked_downstream": dict(_LOCKED_DOWNSTREAM),
         "restart_created": False,
         "successor_created": False,
