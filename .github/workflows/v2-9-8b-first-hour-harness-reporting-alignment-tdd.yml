@@ -6,6 +6,9 @@ on:
 permissions:
   contents: read
 
+env:
+  PYTHONPATH: src
+
 jobs:
   focused:
     runs-on: ubuntu-latest
