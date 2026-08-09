@@ -1046,12 +1046,31 @@ def _holder_eligibility_from_bundle(
     return attempted[-1] if attempted else goplus
 
 
+def _holder_condition_passes(
+    fact: Mapping[str, Any] | None,
+) -> bool:
+    """True only when usable holder evidence carries a favorable condition."""
+    holder_fact = dict(fact or {})
+    if not bool(holder_fact.get("eligible")):
+        return False
+    label = str(
+        holder_fact.get("holder_condition")
+        or holder_fact.get("holder_concentration_label")
+        or "HOLDER_CONCENTRATION_UNKNOWN"
+    )
+    return label in {
+        "HOLDER_CONCENTRATION_PASS",
+        "HOLDER_CONCENTRATION_HEALTHY",
+    }
+
+
 def _holder_observation_context(
     fact: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     """Convert truthful holder evidence into memory-only contextual fields."""
     holder_fact = dict(fact or {})
-    holder_actually_eligible = bool(holder_fact.get("eligible"))
+    holder_evidence_usable = bool(holder_fact.get("eligible"))
+    holder_actually_eligible = _holder_condition_passes(holder_fact)
     if not holder_fact:
         holder_condition = "UNKNOWN"
         holder_evidence_status = "SOURCE_UNAVAILABLE_OR_INCOMPLETE"
@@ -1069,7 +1088,7 @@ def _holder_observation_context(
         )
         holder_evidence_status = (
             "COMPLETE"
-            if holder_actually_eligible
+            if holder_evidence_usable
             else str(
                 holder_fact.get("holder_evidence_status")
                 or holder_fact.get("reason")
@@ -3363,7 +3382,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     )
                     # Record actual holder eligibility; never force True for
                     # legacy gates. Memory path already admitted without it.
-                    actual_holder = bool(fact.get("eligible"))
+                    actual_holder = _holder_condition_passes(fact)
                     holder_label = str(
                         fact.get("holder_concentration_label")
                         or item.get("holder_condition")
