@@ -113,8 +113,26 @@ class StandardFirstHourHarnessReportingAlignmentTests(unittest.TestCase):
     def test_episode_only_predecessor_still_fails_closed(self) -> None:
         fx = Selective1hFixture()
         try:
-            fx.prepare_eligible(token_id=1, window_id=311, outcome="DUMP", promote=True)
-            fx.prepare_eligible(token_id=2, window_id=312, outcome="SLOW_BLEED", promote=True)
+            for token_id, window_id, outcome in (
+                (1, 311, "DUMP"),
+                (2, 312, "SLOW_BLEED"),
+            ):
+                fx.prepare_eligible(
+                    token_id=token_id,
+                    window_id=window_id,
+                    outcome=outcome,
+                    promote=False,
+                )
+                episode_id = fx.insert_episode(
+                    window_id=window_id,
+                    token_id=token_id,
+                    pair_id=token_id,
+                )
+                fingerprint_count = fx.connection.execute(
+                    "SELECT COUNT(*) FROM printer_memory_fingerprints WHERE episode_id=?",
+                    (episode_id,),
+                ).fetchone()[0]
+                self.assertEqual(int(fingerprint_count), 0)
             result = fx.evaluate()
             self.assertEqual(result["continue_count"], 0)
             self.assertEqual(result["block_count"], 2)
