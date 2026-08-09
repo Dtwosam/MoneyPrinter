@@ -990,6 +990,14 @@ def build_mint_market_batch_logical_identity(
     }
 
 
+def _bounded_geckoterminal_fallback_limit(*, unresolved_count: int, max_fallbacks: int | None) -> int:
+    if type(unresolved_count) is not int or unresolved_count < 0:
+        raise ValueError("INVALID_RECONCILIATION_FALLBACK_CAP")
+    if max_fallbacks is not None and (type(max_fallbacks) is not int or max_fallbacks < 0):
+        raise ValueError("INVALID_RECONCILIATION_FALLBACK_CAP")
+    return min(6, unresolved_count, 6 if max_fallbacks is None else max_fallbacks)
+
+
 def run_dexscreener_batch_market_resolution(
     connection: sqlite3.Connection,
     *,
@@ -1001,6 +1009,7 @@ def run_dexscreener_batch_market_resolution(
     transport_factory: Any | None = None,
     geckoterminal_transport_factory: Any | None = None,
     enable_geckoterminal_fallback: bool = False,
+    max_geckoterminal_fallbacks: int | None = None,
     before_geckoterminal_request: Any | None = None,
     recent_request_count: int = 0,
     run_id: str | None = None,
@@ -1114,6 +1123,7 @@ def run_dexscreener_batch_market_resolution(
         "source_failure_ids": [],
         "source_request_coverage": [],
         "calls_by_stage": {"market_batching": 0, "reconciliation": 0},
+        "reconciliation_fallback_suppressed_count": 0,
         "provider_failures": 0,
         "accounting_blocker": False,
         "accounting_blocker_reason": None,
@@ -1251,7 +1261,16 @@ def run_dexscreener_batch_market_resolution(
                 build_geckoterminal_token_pools_transport,
             )
 
-            for fallback_index, mint in enumerate(unresolved_for_fallback[:6], 1):
+            fallback_limit = _bounded_geckoterminal_fallback_limit(
+                unresolved_count=len(unresolved_for_fallback),
+                max_fallbacks=max_geckoterminal_fallbacks,
+            )
+            report["reconciliation_fallback_suppressed_count"] += (
+                len(unresolved_for_fallback) - fallback_limit
+            )
+            for fallback_index, mint in enumerate(
+                unresolved_for_fallback[:fallback_limit], 1
+            ):
                 if before_geckoterminal_request is not None:
                     before_geckoterminal_request()
                 gt_transport = (

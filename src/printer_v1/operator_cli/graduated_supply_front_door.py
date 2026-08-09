@@ -756,6 +756,14 @@ def run_fresh_profile_locator(
     return report
 
 
+def _compose_graduated_supply_ready(
+    *, persistent_ready: bool, authority_ready: bool, supply_count: int,
+    required_token_capacity: int, permanent_availability: bool,
+) -> bool:
+    selection_ready = bool(authority_ready) and int(supply_count) == int(required_token_capacity)
+    return selection_ready and (not permanent_availability or bool(persistent_ready))
+
+
 def build_graduated_supply(
     db_path: str | Path,
     *,
@@ -998,7 +1006,13 @@ def build_graduated_supply(
                     break
         supply = ordered[:required_token_capacity]
 
-    ready = bool(authority.ready) and len(supply) == required_token_capacity
+    ready = _compose_graduated_supply_ready(
+        persistent_ready=bool(persistent.ready),
+        authority_ready=bool(authority.ready),
+        supply_count=len(supply),
+        required_token_capacity=required_token_capacity,
+        permanent_availability=permanent_availability,
+    )
     terminal = (
         (CANDIDATE_SUPPLY_READY if permanent_availability else "GRADUATED_SUPPLY_READY")
         if ready

@@ -108,6 +108,35 @@ class EligibleTokenSupplyError(RuntimeError):
     """Fail-closed eligible-token-supply fault."""
 
 
+def _validate_reconciliation_stage_charge(*, offered: int, actual: int) -> int:
+    if type(offered) is not int or offered < 0 or type(actual) is not int or actual < 0 or actual > offered:
+        raise EligibleTokenSupplyError("RECONCILIATION_STAGE_CAPACITY_OVERRUN")
+    return actual
+
+
+def _apply_permanent_shortage_precedence(
+    *, shortage: str, last_stop_reason: str | None,
+    tracking_dispositions: Mapping[str, Mapping[str, Any]],
+    provider_failures: int, channels_unavailable: Sequence[str],
+    liquidity_source_unavailable: int, liquidity_stale_or_rate_limited: int,
+    liquidity_malformed_or_partial: int, true_budget_exhausted: bool,
+    duration_exhausted: bool,
+) -> str:
+    if liquidity_source_unavailable > 0: return SOURCE_AVAILABILITY_FAILURE
+    if liquidity_stale_or_rate_limited > 0: return STALE_EVIDENCE_SHORTAGE
+    if liquidity_malformed_or_partial > 0: return SOURCE_VISIBILITY_SHORTAGE
+    if provider_failures > 0 and channels_unavailable: return SOURCE_AVAILABILITY_FAILURE
+    if last_stop_reason == "DISCOVERY_OPERATION_BUDGET_EXHAUSTED" and true_budget_exhausted:
+        return BUDGET_EXHAUSTION
+    if duration_exhausted or last_stop_reason == "CAMPAIGN_DURATION_EXHAUSTED":
+        return DURATION_EXHAUSTION
+    if last_stop_reason == "LAWFUL_WORK_REMAINING_WITH_CAPACITY":
+        return DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE
+    if any(not bool(x.get("eligible_for_evidence")) for x in tracking_dispositions.values()):
+        return TRACKING_STATE_CAPACITY_BLOCKED
+    return shortage
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -1227,6 +1256,7 @@ def run_persistent_eligible_token_supply(
                     stage_sequence=market_stage_sequence,
                     kind="round",
                 )
+                reconciliation_offer = stage_budget.available("reconciliation")
                 permanent_report = run_dexscreener_batch_market_resolution(
                     connection,
                     inventory_rows=permanent_rows,
@@ -1237,6 +1267,7 @@ def run_persistent_eligible_token_supply(
                     enable_geckoterminal_fallback=(
                         enable_geckoterminal_reconciliation
                     ),
+                    max_geckoterminal_fallbacks=reconciliation_offer,
                     before_geckoterminal_request=(
                         (lambda: _pace_live_geckoterminal())
                         if geckoterminal_reconciliation_transport_factory is None
@@ -1253,26 +1284,12 @@ def run_persistent_eligible_token_supply(
                     stage_sequence=market_stage_sequence,
                 )
                 permanent_market_reports.append(permanent_report)
-                reconciliation_calls = int(
-                    permanent_report.get("calls_by_stage", {}).get(
-                        "reconciliation", 0
-                    )
+                reconciliation_calls = _validate_reconciliation_stage_charge(
+                    offered=reconciliation_offer,
+                    actual=int(permanent_report.get("calls_by_stage", {}).get("reconciliation", 0)),
                 )
                 if reconciliation_calls:
-                    try:
-                        stage_budget.consume(
-                            "reconciliation", reconciliation_calls
-                        )
-                    except ValueError:
-                        # Spend only what remains; do not invent budget.
-                        remaining_recon = stage_budget.available("reconciliation")
-                        if remaining_recon > 0:
-                            stage_budget.consume(
-                                "reconciliation", remaining_recon
-                            )
-                        else:
-                            last_stop_reason = "DISCOVERY_OPERATION_BUDGET_EXHAUSTED"
-                            break
+                    stage_budget.consume("reconciliation", reconciliation_calls)
                 front_door = {
                     "candidates": permanent_report["candidates"],
                     "market_calls": int(
@@ -1758,40 +1775,21 @@ def run_persistent_eligible_token_supply(
                     LIQUIDITY_RESPONSE_MALFORMED_OR_PARTIAL, 0
                 ),
             )
-            # Source-evidence failures take precedence over a budget consumed by
-            # those failed operations. Healthy evidence may still exhaust budget.
-            # Candidate-local migrate rejects are intentionally absent from
-            # provider_failures / channels_unavailable.
-            if liquidity_outcome_counts.get(LIQUIDITY_SOURCE_UNAVAILABLE, 0) > 0:
-                shortage = SOURCE_AVAILABILITY_FAILURE
-            elif liquidity_outcome_counts.get(
-                LIQUIDITY_SOURCE_RATE_LIMITED_OR_STALE, 0
-            ) > 0:
-                shortage = STALE_EVIDENCE_SHORTAGE
-            elif liquidity_outcome_counts.get(
-                LIQUIDITY_RESPONSE_MALFORMED_OR_PARTIAL, 0
-            ) > 0:
-                shortage = SOURCE_VISIBILITY_SHORTAGE
-            elif provider_failures > 0 and channels_unavailable:
-                shortage = SOURCE_AVAILABILITY_FAILURE
-            elif last_stop_reason == "DISCOVERY_OPERATION_BUDGET_EXHAUSTED" and (
-                true_flat_exhausted or true_stage_exhausted
-            ):
-                shortage = BUDGET_EXHAUSTION
-            elif last_stop_reason == "CAMPAIGN_DURATION_EXHAUSTED":
-                shortage = DURATION_EXHAUSTION
-            elif any(
-                not bool(item.get("eligible_for_evidence"))
-                for item in tracking_dispositions.values()
-            ):
-                shortage = TRACKING_STATE_CAPACITY_BLOCKED
-            elif all_channels_exhausted and len(eligible_list) < required_token_capacity:
-                if len(evaluated_mints) == 0:
-                    shortage = SOURCE_VISIBILITY_SHORTAGE
-                else:
-                    shortage = TRUE_MARKET_SUPPLY_SHORTAGE
-            elif last_stop_reason == "LAWFUL_WORK_REMAINING_WITH_CAPACITY":
-                shortage = DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE
+            shortage = _apply_permanent_shortage_precedence(
+                shortage=shortage,
+                last_stop_reason=last_stop_reason,
+                tracking_dispositions=tracking_dispositions,
+                provider_failures=provider_failures,
+                channels_unavailable=sorted(set(channels_unavailable)),
+                liquidity_source_unavailable=liquidity_outcome_counts.get(LIQUIDITY_SOURCE_UNAVAILABLE, 0),
+                liquidity_stale_or_rate_limited=liquidity_outcome_counts.get(LIQUIDITY_SOURCE_RATE_LIMITED_OR_STALE, 0),
+                liquidity_malformed_or_partial=liquidity_outcome_counts.get(LIQUIDITY_RESPONSE_MALFORMED_OR_PARTIAL, 0),
+                true_budget_exhausted=bool(true_flat_exhausted or true_stage_exhausted),
+                duration_exhausted=bool(
+                    last_stop_reason == "CAMPAIGN_DURATION_EXHAUSTED"
+                    or (duration_remaining is not None and duration_remaining <= 0)
+                ),
+            )
             certificate = ExhaustionCertificate(
                 certificate_id=(
                     f"exh-{execution_id or campaign_id or uuid.uuid4().hex[:12]}"

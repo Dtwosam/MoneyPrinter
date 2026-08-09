@@ -861,6 +861,10 @@ def _graduated_supply_terminal_cause(supply: Any | None) -> str:
     return classification
 
 
+def _project_supply_exhaustion_certificate(supply_diagnostics: Mapping[str, Any]) -> Any | None:
+    return supply_diagnostics.get("exhaustion_certificate")
+
+
 def _classify_graduation(proof: Any, *, graduation: Any) -> str:
     """Classify one confirmed-origin candidate under the graduation-only law.
 
@@ -3607,6 +3611,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
             "shortage_classification": supply_diagnostics.get(
                 "shortage_classification"
             ),
+            "exhaustion_certificate": _project_supply_exhaustion_certificate(supply_diagnostics),
             "provider_failures": supply_diagnostics.get("provider_failures", 0),
             "pre_source_tracking_exclusions": supply_diagnostics.get(
                 "pre_source_tracking_exclusions", 0
@@ -3753,6 +3758,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         "campaign_scheduler_calls": 0,
                         "required_token_capacity": 2,
                         "blocked_supply_reason": terminal,
+                        "exhaustion_certificate": _project_supply_exhaustion_certificate(supply_diagnostics),
                         "shortage_classification": supply_diagnostics.get(
                             "shortage_classification"
                         ),
