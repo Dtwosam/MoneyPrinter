@@ -498,10 +498,13 @@ class PreLifecycleTemporalRefreshOwner:
         # resolver create-or-reuses that one batch through the shared canonical
         # derivation rather than minting a colliding second batch.
         batch_id = self._discovery_batch_resolver(connection, woke_at, ordinal)
-        # printer_discovery_work is UNIQUE (discovery_batch_id, work_type). Fail
-        # closed *before* consuming the claim if this cycle's refresh work slot
-        # is already owned, instead of letting the insert collide after the job
-        # is RUNNING. This never steals or rewrites another owner's work row.
+        # printer_discovery_work is UNIQUE (discovery_batch_id, work_type). The
+        # claim has already been consumed by this point (claim-at-work-start
+        # requires it), so if this cycle's refresh work slot is already owned we
+        # fail closed *before creating any discovery work or issuing any source
+        # request*: this owner's own claimed job and wait row are terminalized
+        # as PRE_LIFECYCLE_REFRESH_WORK_SLOT_TAKEN and no active residue is
+        # left. It never steals, rewrites or overwrites another owner's row.
         if self._work_slot_taken(connection, batch_id=str(batch_id)):
             self._terminalize_claimed_job_without_work(
                 connection,
