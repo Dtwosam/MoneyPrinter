@@ -10,7 +10,7 @@ permissions:
 jobs:
   focused:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 8
     steps:
       - name: Checkout PR head
         uses: actions/checkout@v4
@@ -27,14 +27,14 @@ jobs:
           python -m py_compile \
             src/printer_v1/scheduler/token_local_continuation.py \
             tests/test_v2_9_7d_4a_token_local_selective_continuation.py \
-            tests/test_v2_9_8b_operational_selective_1h.py
+            tests/test_post_dtw100_first_hour_lifecycle_policy.py
 
       - name: Pure first-hour continuation policy proof
         env:
           PYTHONPATH: src
         run: python tests/test_v2_9_7d_4a_token_local_selective_continuation.py
 
-      - name: Operational first-hour offline proof
+      - name: First-hour adapter-policy composition proof
         env:
           PYTHONPATH: src
-        run: python tests/test_v2_9_8b_operational_selective_1h.py
+        run: python tests/test_post_dtw100_first_hour_lifecycle_policy.py
