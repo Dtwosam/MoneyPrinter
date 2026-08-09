@@ -1,0 +1,39 @@
+name: V2-9.8B first-hour episode-only test patcher
+
+on:
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: contains(github.event.pull_request.title, 'APPLY episode-only test')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout implementation branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+      - name: Apply exact test-only correction
+        env:
+          TARGET_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('tests/test_v2_9_8b_standard_first_hour_harness_reporting_alignment.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''    def test_episode_only_predecessor_still_fails_closed(self) -> None:\n        fx = Selective1hFixture()\n        try:\n            fx.prepare_eligible(token_id=1, window_id=311, outcome="DUMP", promote=True)\n            fx.prepare_eligible(token_id=2, window_id=312, outcome="SLOW_BLEED", promote=True)\n            result = fx.evaluate()\n            self.assertEqual(result["continue_count"], 0)\n            self.assertEqual(result["block_count"], 2)\n            self.assertTrue(\n                all(\n                    plan["verdict"] == ContinuationVerdict.BLOCK_CONTINUATION\n                    for plan in result["token_plans"]\n                )\n            )\n        finally:\n            fx.close()\n'''
+          new = '''    def test_episode_only_predecessor_still_fails_closed(self) -> None:\n        fx = Selective1hFixture()\n        try:\n            for token_id, window_id, outcome in (\n                (1, 311, "DUMP"),\n                (2, 312, "SLOW_BLEED"),\n            ):\n                fx.prepare_eligible(\n                    token_id=token_id,\n                    window_id=window_id,\n                    outcome=outcome,\n                    promote=False,\n                )\n                episode_id = fx.insert_episode(\n                    window_id=window_id,\n                    token_id=token_id,\n                    pair_id=token_id,\n                )\n                fingerprint_count = fx.connection.execute(\n                    "SELECT COUNT(*) FROM printer_memory_fingerprints WHERE episode_id=?",\n                    (episode_id,),\n                ).fetchone()[0]\n                self.assertEqual(int(fingerprint_count), 0)\n            result = fx.evaluate()\n            self.assertEqual(result["continue_count"], 0)\n            self.assertEqual(result["block_count"], 2)\n            self.assertTrue(\n                all(\n                    plan["verdict"] == ContinuationVerdict.BLOCK_CONTINUATION\n                    for plan in result["token_plans"]\n                )\n            )\n        finally:\n            fx.close()\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f'test drift: expected exactly one match, found {text.count(old)}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          PYTHONPATH=src python -m py_compile tests/test_v2_9_8b_standard_first_hour_harness_reporting_alignment.py
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tests/test_v2_9_8b_standard_first_hour_harness_reporting_alignment.py
+          git commit -m 'Correct episode-only first-hour proof fixture'
+          git push origin HEAD:${TARGET_BRANCH}
