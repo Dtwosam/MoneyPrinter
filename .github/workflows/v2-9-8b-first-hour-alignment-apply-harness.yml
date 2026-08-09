@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   patch:
-    if: contains(github.event.pull_request.title, 'APPLY harness')
+    if: contains(github.event.pull_request.title, 'APPLY episode-only test')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout implementation branch
@@ -16,62 +16,25 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
-      - name: Apply exact stale-harness alignment
+      - name: Correct episode-only proof fixture
         env:
           TARGET_BRANCH: ${{ github.event.pull_request.head.ref }}
         run: |
           python - <<'PY'
           from pathlib import Path
-
-          path = Path('tests/test_v2_9_8b_operational_selective_1h.py')
+          path = Path('tests/test_v2_9_8b_standard_first_hour_harness_reporting_alignment.py')
           text = path.read_text(encoding='utf-8')
-
-          replacements = []
-          replacements.append((
-          '''        episode_id = None\n        if promote:\n            episode_id = self.insert_episode(\n                window_id=window_id, token_id=token_id, pair_id=token_id\n            )\n''',
-          '''        episode_id = None\n        if promote:\n            promotion = create_clean_memory_from_window(\n                self.db,\n                window_id,\n                operator_approved=True,\n                individual_promotion=True,\n            )\n            if promotion["e2z_status"] not in {\n                E2Z_STATUS_CREATED, E2Z_STATUS_ALREADY_EXISTS\n            }:\n                raise AssertionError(\n                    f"canonical fixture promotion failed: {promotion}"\n                )\n            episode_id = int(promotion["episode_id"])\n'''))
-
-          replacements.append((
-          '''    def test_zero_eligible_tokens_zero_continuation(self) -> None:\n        # Both windows exist but ordinary outcomes → STOP, no CONTINUE.\n        self.fx.prepare_eligible(token_id=1, window_id=101, outcome="CONSOLIDATION")\n        self.fx.prepare_eligible(token_id=2, window_id=102, outcome="NO_PUMP")\n        before = self.fx.locked_counts()\n        result = self.fx.evaluate()\n        self.assertEqual(result["continue_count"], 0)\n        self.assertEqual(result["stop_count"], 2)\n        self.assertFalse(should_continue_token(result, token_id=1))\n        self.assertFalse(should_continue_token(result, token_id=2))\n        self.assertEqual(self.fx.locked_counts(), before)\n        windows_1h = self.fx.connection.execute(\n            "SELECT COUNT(*) FROM printer_memory_factory_campaign_windows "\n            "WHERE window_kind='WINDOW_1H'"\n        ).fetchone()[0]\n        self.assertEqual(int(windows_1h), 0)\n''',
-          '''    def test_quiet_tokens_continue_through_standard_first_hour(self) -> None:\n        self.fx.prepare_eligible(token_id=1, window_id=101, outcome="CONSOLIDATION")\n        self.fx.prepare_eligible(token_id=2, window_id=102, outcome="NO_PUMP")\n        before = self.fx.locked_counts()\n        result = self.fx.evaluate()\n        self.assertEqual(result["continue_count"], 2)\n        self.assertEqual(result["stop_count"], 0)\n        self.assertEqual(result["block_count"], 0)\n        self.assertTrue(should_continue_token(result, token_id=1))\n        self.assertTrue(should_continue_token(result, token_id=2))\n        self.assertEqual(self.fx.locked_counts(), before)\n        windows_1h = self.fx.connection.execute(\n            "SELECT COUNT(*) FROM printer_memory_factory_campaign_windows "\n            "WHERE window_kind='WINDOW_1H'"\n        ).fetchone()[0]\n        self.assertEqual(int(windows_1h), 2)\n'''))
-
-          replacements.append((
-          '''    def test_one_eligible_token_exactly_one_continuation(self) -> None:\n        self.fx.prepare_eligible(token_id=1, window_id=111, outcome="SHORT_TERM_PUMP")\n        self.fx.prepare_eligible(token_id=2, window_id=112, outcome="CONSOLIDATION")\n        result = self.fx.evaluate()\n        self.assertEqual(result["continue_count"], 1)\n        self.assertTrue(should_continue_token(result, token_id=1))\n        self.assertFalse(should_continue_token(result, token_id=2))\n        plans = {p["token_row_id"]: p for p in result["token_plans"]}\n        self.assertEqual(\n            plans[1]["verdict"], ContinuationVerdict.CONTINUE_TO_WINDOW_1H\n        )\n        self.assertEqual(\n            plans[2]["verdict"], ContinuationVerdict.STOP_AFTER_WINDOW_15M\n        )\n        self.assertIsNotNone(plans[1]["campaign_window_1h_id"])\n        self.assertIsNone(plans[2]["campaign_window_1h_id"])\n''',
-          '''    def test_mixed_outcomes_both_continue_through_standard_first_hour(self) -> None:\n        self.fx.prepare_eligible(token_id=1, window_id=111, outcome="SHORT_TERM_PUMP")\n        self.fx.prepare_eligible(token_id=2, window_id=112, outcome="CONSOLIDATION")\n        result = self.fx.evaluate()\n        self.assertEqual(result["continue_count"], 2)\n        self.assertTrue(should_continue_token(result, token_id=1))\n        self.assertTrue(should_continue_token(result, token_id=2))\n        plans = {p["token_row_id"]: p for p in result["token_plans"]}\n        self.assertEqual(\n            plans[1]["verdict"], ContinuationVerdict.CONTINUE_TO_WINDOW_1H\n        )\n        self.assertEqual(\n            plans[2]["verdict"], ContinuationVerdict.CONTINUE_TO_WINDOW_1H\n        )\n        self.assertIsNotNone(plans[1]["campaign_window_1h_id"])\n        self.assertIsNotNone(plans[2]["campaign_window_1h_id"])\n'''))
-
-          replacements.append((
-          '''        self.fx.prepare_eligible(token_id=1, window_id=173, outcome="CONSOLIDATION")\n        self.fx.prepare_eligible(token_id=2, window_id=174, outcome="NO_PUMP")\n        self.fx.evaluate()\n        selective = load_selective_1h_reporting(\n            str(self.fx.db), campaign_id="campaign-1h", run_id="run-1h"\n        )\n        self.assertEqual(selective["selective_1h_outcome"], "ZERO_ELIGIBLE_CONTINUATIONS")\n        self.assertTrue(selective["zero_continuation"])\n        self.assertEqual(selective["actual_persisted_window_1h_count"], 0)\n''',
-          '''        self.fx.prepare_eligible(\n            token_id=1, window_id=173, outcome="CONSOLIDATION", promote=False\n        )\n        self.fx.prepare_eligible(\n            token_id=2, window_id=174, outcome="NO_PUMP", promote=False\n        )\n        self.fx.evaluate()\n        selective = load_selective_1h_reporting(\n            str(self.fx.db), campaign_id="campaign-1h", run_id="run-1h"\n        )\n        self.assertEqual(\n            selective["selective_1h_outcome"], "FIRST_HOUR_CONTINUATION_BLOCKED"\n        )\n        self.assertTrue(selective["zero_continuation"])\n        self.assertEqual(selective["actual_persisted_window_1h_count"], 0)\n'''))
-
-          replacements.append((
-          '''            payload["selective_1h"]["selective_1h_outcome"],\n            "ZERO_ELIGIBLE_CONTINUATIONS",\n''',
-          '''            payload["selective_1h"]["selective_1h_outcome"],\n            "FIRST_HOUR_CONTINUATION_BLOCKED",\n'''))
-          replacements.append((
-          '''            replay["report"]["selective_1h"]["selective_1h_outcome"],\n            "ZERO_ELIGIBLE_CONTINUATIONS",\n''',
-          '''            replay["report"]["selective_1h"]["selective_1h_outcome"],\n            "FIRST_HOUR_CONTINUATION_BLOCKED",\n'''))
-
-          replacements.append((
-          '''                "e2q_audit_status": "E2Q_AUDIT_CLEAN_CANDIDATE",\n                "snapshot_ids": [1, 2],\n            }\n''',
-          '''                "e2q_audit_status": "E2Q_AUDIT_CLEAN_CANDIDATE",\n                "snapshot_ids": [1, 2],\n                "tracking_lane": "TRACK_NORMAL",\n            }\n'''))
-          replacements.append((
-          '''                    memory_status,data_quality_label,window_status,\n                    memory_quality_label,do_not_train,supporting_context_json\n                ) VALUES (201,1,1,'WINDOW_1H',?,?,?,?,1,2,'PARTIAL_MEMORY',\n                    'CLEAN_DATA','WINDOW_CLOSED','PARTIAL_MEMORY',0,?)''',
-          '''                    memory_status,data_quality_label,window_status,\n                    memory_quality_label,outcome_label,do_not_train,supporting_context_json\n                ) VALUES (201,1,1,'WINDOW_1H',?,?,?,?,1,2,'PARTIAL_MEMORY',\n                    'CLEAN_DATA','WINDOW_CLOSED','PARTIAL_MEMORY','CONSOLIDATION',0,?)'''))
-
-          for old, new in replacements:
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f'harness drift: expected one match, found {count} for {old[:80]!r}')
-              text = text.replace(old, new, 1)
-
-          path.write_text(text, encoding='utf-8')
+          old = '''    def test_episode_only_predecessor_still_fails_closed(self) -> None:\n        fx = Selective1hFixture()\n        try:\n            fx.prepare_eligible(token_id=1, window_id=311, outcome="DUMP", promote=True)\n            fx.prepare_eligible(token_id=2, window_id=312, outcome="SLOW_BLEED", promote=True)\n            result = fx.evaluate()\n            self.assertEqual(result["continue_count"], 0)\n            self.assertEqual(result["block_count"], 2)\n            self.assertTrue(\n                all(\n                    plan["verdict"] == ContinuationVerdict.BLOCK_CONTINUATION\n                    for plan in result["token_plans"]\n                )\n            )\n        finally:\n            fx.close()\n'''
+          new = '''    def test_episode_only_predecessor_still_fails_closed(self) -> None:\n        fx = Selective1hFixture()\n        try:\n            for token_id, window_id, outcome in (\n                (1, 311, "DUMP"),\n                (2, 312, "SLOW_BLEED"),\n            ):\n                fx.prepare_eligible(\n                    token_id=token_id,\n                    window_id=window_id,\n                    outcome=outcome,\n                    promote=False,\n                )\n                episode_id = fx.insert_episode(\n                    window_id=window_id,\n                    token_id=token_id,\n                    pair_id=token_id,\n                )\n                fingerprint_count = fx.connection.execute(\n                    "SELECT COUNT(*) FROM printer_memory_fingerprints WHERE episode_id=?",\n                    (episode_id,),\n                ).fetchone()[0]\n                self.assertEqual(int(fingerprint_count), 0)\n            result = fx.evaluate()\n            self.assertEqual(result["continue_count"], 0)\n            self.assertEqual(result["block_count"], 2)\n            self.assertTrue(\n                all(\n                    plan["verdict"] == ContinuationVerdict.BLOCK_CONTINUATION\n                    for plan in result["token_plans"]\n                )\n            )\n        finally:\n            fx.close()\n'''
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'test drift: expected exactly one match, found {count}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
           PY
-          PYTHONPATH=src python -m py_compile tests/test_v2_9_8b_operational_selective_1h.py
+          PYTHONPATH=src python -m py_compile tests/test_v2_9_8b_standard_first_hour_harness_reporting_alignment.py
           git diff --check
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          if git diff --quiet; then
-            exit 0
-          fi
-          git add tests/test_v2_9_8b_operational_selective_1h.py
-          git commit -m 'Align first-hour operational proof harness'
+          git add tests/test_v2_9_8b_standard_first_hour_harness_reporting_alignment.py
+          git commit -m 'Correct episode-only first-hour proof fixture'
           git push origin HEAD:${TARGET_BRANCH}
