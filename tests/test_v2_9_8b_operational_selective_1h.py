@@ -642,39 +642,39 @@ class OperationalSelective1hTests(unittest.TestCase):
         self.assertFalse(evidence["gate_accepted"])
         self.assertIn("safety_source_trace_missing", evidence["reasons"])
 
-    def test_zero_eligible_tokens_zero_continuation(self) -> None:
-        # Both windows exist but ordinary outcomes → STOP, no CONTINUE.
+    def test_no_pump_and_consolidation_continue_through_first_hour(self) -> None:
+        # Outcome labels are diagnostic; both valid activated tokens continue.
         self.fx.prepare_eligible(token_id=1, window_id=101, outcome="CONSOLIDATION")
         self.fx.prepare_eligible(token_id=2, window_id=102, outcome="NO_PUMP")
         before = self.fx.locked_counts()
         result = self.fx.evaluate()
-        self.assertEqual(result["continue_count"], 0)
-        self.assertEqual(result["stop_count"], 2)
-        self.assertFalse(should_continue_token(result, token_id=1))
-        self.assertFalse(should_continue_token(result, token_id=2))
+        self.assertEqual(result["continue_count"], 2)
+        self.assertEqual(result["stop_count"], 0)
+        self.assertTrue(should_continue_token(result, token_id=1))
+        self.assertTrue(should_continue_token(result, token_id=2))
         self.assertEqual(self.fx.locked_counts(), before)
         windows_1h = self.fx.connection.execute(
             "SELECT COUNT(*) FROM printer_memory_factory_campaign_windows "
             "WHERE window_kind='WINDOW_1H'"
         ).fetchone()[0]
-        self.assertEqual(int(windows_1h), 0)
+        self.assertEqual(int(windows_1h), 2)
 
-    def test_one_eligible_token_exactly_one_continuation(self) -> None:
+    def test_mixed_outcomes_both_continue_through_first_hour(self) -> None:
         self.fx.prepare_eligible(token_id=1, window_id=111, outcome="SHORT_TERM_PUMP")
         self.fx.prepare_eligible(token_id=2, window_id=112, outcome="CONSOLIDATION")
         result = self.fx.evaluate()
-        self.assertEqual(result["continue_count"], 1)
+        self.assertEqual(result["continue_count"], 2)
         self.assertTrue(should_continue_token(result, token_id=1))
-        self.assertFalse(should_continue_token(result, token_id=2))
+        self.assertTrue(should_continue_token(result, token_id=2))
         plans = {p["token_row_id"]: p for p in result["token_plans"]}
         self.assertEqual(
             plans[1]["verdict"], ContinuationVerdict.CONTINUE_TO_WINDOW_1H
         )
         self.assertEqual(
-            plans[2]["verdict"], ContinuationVerdict.STOP_AFTER_WINDOW_15M
+            plans[2]["verdict"], ContinuationVerdict.CONTINUE_TO_WINDOW_1H
         )
         self.assertIsNotNone(plans[1]["campaign_window_1h_id"])
-        self.assertIsNone(plans[2]["campaign_window_1h_id"])
+        self.assertIsNotNone(plans[2]["campaign_window_1h_id"])
 
     def test_two_eligible_tokens_fair_bounded_continuation(self) -> None:
         self.fx.prepare_eligible(token_id=1, window_id=121, outcome="DUMP")
@@ -1092,24 +1092,24 @@ class OperationalSelective1hTests(unittest.TestCase):
         self.assertFalse(report["locked_downstream"]["retrieval_activated"])
         self.assertFalse(report["locked_downstream"]["window_4h_enabled"])
 
-    def test_zero_continuation_canonical_report_and_zero_source_replay(self) -> None:
+    def test_first_hour_canonical_report_and_zero_source_replay(self) -> None:
         self.fx.prepare_eligible(token_id=1, window_id=173, outcome="CONSOLIDATION")
         self.fx.prepare_eligible(token_id=2, window_id=174, outcome="NO_PUMP")
         self.fx.evaluate()
         selective = load_selective_1h_reporting(
             str(self.fx.db), campaign_id="campaign-1h", run_id="run-1h"
         )
-        self.assertEqual(selective["selective_1h_outcome"], "ZERO_ELIGIBLE_CONTINUATIONS")
-        self.assertTrue(selective["zero_continuation"])
-        self.assertEqual(selective["actual_persisted_window_1h_count"], 0)
+        self.assertEqual(selective["selective_1h_outcome"], "TWO_CONTINUATIONS")
+        self.assertFalse(selective["zero_continuation"])
+        self.assertEqual(selective["actual_persisted_window_1h_count"], 2)
         payload = build_campaign_terminal_report(
             campaign_id="campaign-1h",
             configuration_id="config-1h",
             run_id="run-1h",
             cycle_id="cycle-1h",
-            report_id="report-selective-zero",
+            report_id="report-first-hour",
             factory_run_id="factory-run-1",
-            execution_id="execution-selective-zero",
+            execution_id="execution-first-hour",
             terminal_status="COMPLETED",
             terminal_cause="COMPLETED_CLEAN_OR_DIRTY_RESULTS_REPORTED",
             run_status="COMPLETED",
@@ -1137,13 +1137,13 @@ class OperationalSelective1hTests(unittest.TestCase):
         )
         self.assertEqual(
             payload["selective_1h"]["selective_1h_outcome"],
-            "ZERO_ELIGIBLE_CONTINUATIONS",
+            "TWO_CONTINUATIONS",
         )
         report_dir = Path(self.fx.tmp.name) / "reports"
         write_campaign_terminal_report(
             self.fx.db,
             report_dir,
-            report_id="report-selective-zero",
+            report_id="report-first-hour",
             campaign_id="campaign-1h",
             configuration_id="config-1h",
             report=payload,
@@ -1151,7 +1151,7 @@ class OperationalSelective1hTests(unittest.TestCase):
         replay = replay_campaign_terminal_report(
             self.fx.db,
             report_dir,
-            report_id="report-selective-zero",
+            report_id="report-first-hour",
             campaign_id="campaign-1h",
             configuration_id="config-1h",
         )
@@ -1165,7 +1165,7 @@ class OperationalSelective1hTests(unittest.TestCase):
         )
         self.assertEqual(
             replay["report"]["selective_1h"]["selective_1h_outcome"],
-            "ZERO_ELIGIBLE_CONTINUATIONS",
+            "TWO_CONTINUATIONS",
         )
 
     def test_reporting_distinguishes_not_reached_and_system_defect(self) -> None:
