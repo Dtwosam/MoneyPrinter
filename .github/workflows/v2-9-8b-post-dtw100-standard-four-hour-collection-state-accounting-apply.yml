@@ -33,7 +33,18 @@ jobs:
         run: |
           git fetch origin agent/v2-9-8b-post-dtw100-standard-four-hour-collection-state-accounting-apply-base --depth=1
           git show FETCH_HEAD:.github/scripts/apply_standard_four_hour_collection_state_accounting.py > /tmp/apply_standard_four_hour_collection_state_accounting.py
+          git show FETCH_HEAD:.github/scripts/fix_standard_four_hour_collection_failure_branches.py > /tmp/fix_standard_four_hour_collection_failure_branches.py
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('/tmp/apply_standard_four_hour_collection_state_accounting.py')
+          text = path.read_text()
+          marker = '# 9. Extend both token-local failure branches to reconcile exact long lifecycle only.'
+          if marker not in text:
+              raise SystemExit('primary patcher terminal-section marker missing')
+          path.write_text(text.split(marker, 1)[0] + '\npath.write_text(text)\n')
+          PY
           python /tmp/apply_standard_four_hour_collection_state_accounting.py
+          python /tmp/fix_standard_four_hour_collection_failure_branches.py
           test "$(git diff --name-only)" = "src/printer_v1/operator_cli/one_command_15m_factory.py"
           git diff --check
       - name: Compile
