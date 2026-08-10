@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -93,6 +94,17 @@ class StandardAuthorizationFixture:
         path = self.external / "manifest.json"
         path.write_bytes(data)
         return payload, path, hashlib.sha256(data).hexdigest()
+
+    def make_fake_venv_python(self) -> Path:
+        venv = self.repo / ".venv"
+        bindir = venv / ("Scripts" if os.name == "nt" else "bin")
+        bindir.mkdir(parents=True)
+        (venv / "pyvenv.cfg").write_text("home = fixture\n", encoding="utf-8")
+        python_name = "python.exe" if os.name == "nt" else "python"
+        executable = bindir / python_name
+        executable.write_text("fixture interpreter\n", encoding="utf-8")
+        executable.chmod(0o755)
+        return executable
 
     def close(self) -> None:
         self.tmp.cleanup()
@@ -286,6 +298,59 @@ class StandardFourHourActivationAuthorizationTests(unittest.TestCase):
                 "--operator-approved",
             ],
         )
+
+    def test_standard_wrapper_consumes_once_and_launches_only_standard_child(self) -> None:
+        fx = StandardAuthorizationFixture()
+        launches: list[list[str]] = []
+        try:
+            child_python = fx.make_fake_venv_python()
+            app_root = fx.external / "applications"
+
+            def launcher(*, command, cwd, env, stdout_path, stderr_path):
+                launches.append(list(command))
+                binding = child_terminal.resolve_child_terminal_binding(env)
+                child_terminal.write_child_terminal_envelope(
+                    binding=binding,
+                    source={"status": "OPERATIONAL_COMMAND_COMPLETE"},
+                    mode="standard-four-hour-run",
+                    exit_code=0,
+                    success=True,
+                )
+                return {"returncode": 0, "pid": 1234}
+
+            result = wrapper.apply_authorization_once(
+                authorization_file=fx.authorization_path,
+                authorization_sha256=fx.authorization_sha256,
+                operator_approved=True,
+                repository_root=fx.repo,
+                application_root=app_root,
+                python_executable=child_python,
+                process_launcher=launcher,
+                migration_ledger_guard=lambda **_: None,
+                pre_launch_check=lambda **_: None,
+            )
+            self.assertEqual(result["child_exit_code"], 0)
+            self.assertTrue(result["child_terminal_valid"])
+            self.assertEqual(len(launches), 1)
+            self.assertEqual(launches[0], wrapper.build_child_command(str(child_python)))
+            self.assertEqual(
+                launches[0][-2:], ["standard-four-hour-run", "--operator-approved"]
+            )
+            with self.assertRaises(wrapper.StandardFourHourOneShotWrapperError):
+                wrapper.apply_authorization_once(
+                    authorization_file=fx.authorization_path,
+                    authorization_sha256=fx.authorization_sha256,
+                    operator_approved=True,
+                    repository_root=fx.repo,
+                    application_root=app_root,
+                    python_executable=child_python,
+                    process_launcher=launcher,
+                    migration_ledger_guard=lambda **_: None,
+                    pre_launch_check=lambda **_: None,
+                )
+            self.assertEqual(len(launches), 1)
+        finally:
+            fx.close()
 
 
 if __name__ == "__main__":
