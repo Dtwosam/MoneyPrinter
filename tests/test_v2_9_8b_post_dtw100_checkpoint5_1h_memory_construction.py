@@ -58,7 +58,7 @@ class Checkpoint5FirstHourMemoryConstructionTests(unittest.TestCase):
             """INSERT INTO printer_memory_factory_run_steps(
                 id,run_id,step_key,step_kind,step_status,token_id,pair_id,
                 token_mint,pair_address,tracking_lane,snapshot_id,scheduled_for
-            ) VALUES (?,'factory-run-1',?,?,?,?,1,1,'mint-1','pair-1',
+            ) VALUES (?,'factory-run-1',?,?,?,1,1,'mint-1','pair-1',
                 'TRACK_NORMAL',?,?)""",
             (
                 step_id,
