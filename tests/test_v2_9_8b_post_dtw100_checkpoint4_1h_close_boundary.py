@@ -225,7 +225,13 @@ class Checkpoint4FirstHourCloseBoundaryTests(unittest.TestCase):
             )
             campaign = self._campaign_window(fx, 1)
             self.assertEqual(int(campaign["memory_window_row_id"]), memory_window_id)
-            self.assertEqual(str(campaign["window_state"]), "CLOSE_PENDING")
+            self.assertEqual(str(campaign["window_state"]), "NO_PROMOTION")
+            slot_state = fx.connection.execute(
+                """SELECT token_state FROM printer_memory_factory_campaign_token_slots
+                   WHERE campaign_id='campaign-1h' AND run_id='run-1h'
+                     AND cycle_id='cycle-1h' AND token_row_id=1"""
+            ).fetchone()[0]
+            self.assertEqual(str(slot_state), "WINDOW_1H_CLOSED")
         finally:
             fx.close()
 

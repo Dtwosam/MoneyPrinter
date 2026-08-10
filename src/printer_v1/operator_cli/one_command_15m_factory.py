@@ -2800,29 +2800,61 @@ def _mark_owned_continuation_window_close_pending(
     return str(transitioned.current_state)
 
 
+def _classify_owned_1h_terminal_state(
+    conn: sqlite3.Connection, *, memory_window_row_id: int,
+) -> str:
+    """Classify campaign terminal state from authoritative first-hour memory truth."""
+    memory = conn.execute(
+        """SELECT id,window_kind,data_quality_label,do_not_train
+           FROM printer_memory_windows WHERE id=?""",
+        (int(memory_window_row_id),),
+    ).fetchone()
+    if memory is None or str(memory["window_kind"]) != "WINDOW_1H":
+        raise ValueError("WINDOW_1H terminal classification target mismatch")
+    clean_episode = conn.execute(
+        """SELECT id FROM printer_episodes
+           WHERE memory_window_id=?
+             AND episode_kind='WINDOW_1H_CLEAN_MEMORY'
+             AND memory_status='CLEAN_MEMORY'
+             AND data_quality_label='CLEAN_DATA'
+             AND do_not_train=0
+           ORDER BY id LIMIT 1""",
+        (int(memory_window_row_id),),
+    ).fetchone()
+    if clean_episode is not None:
+        return "CLEAN_PROMOTED"
+    if int(memory["do_not_train"] or 0) != 0 or str(
+        memory["data_quality_label"] or ""
+    ) != "CLEAN_DATA":
+        return "DIRTY"
+    return "NO_PROMOTION"
+
+
 def _bind_owned_continuation_memory_window_at_close(
     conn: sqlite3.Connection,
     *,
     scheduler_job_id: int,
     memory_window_row_id: int,
 ) -> int | None:
-    """Bind the genuine 1h row to its exact campaign window before Scheduler success."""
+    """Atomically bind and terminally reconcile one successful first-hour close."""
     window = _owned_continuation_window_for_job(
         conn, scheduler_job_id=int(scheduler_job_id)
     )
     if window is None:
         return None
-    state = str(window["window_state"])
-    if state != "CLOSE_PENDING":
-        raise ValueError(
-            f"WINDOW_1H close bind requires CLOSE_PENDING; found {state}"
-        )
-    from printer_v1.operator_cli.campaign_ownership import bind_window_memory_row_id
+    terminal_state = _classify_owned_1h_terminal_state(
+        conn, memory_window_row_id=int(memory_window_row_id)
+    )
+    from printer_v1.operator_cli.operational_selective_1h import (
+        reconcile_1h_terminal_lifecycle,
+    )
 
-    bind_window_memory_row_id(
+    reconcile_1h_terminal_lifecycle(
         conn,
-        window_id=str(window["window_id"]),
+        campaign_window_1h_id=str(window["window_id"]),
         memory_window_row_id=int(memory_window_row_id),
+        terminal_state=terminal_state,
+        terminal_cause=f"window_1h_closed_{terminal_state.lower()}",
     )
     return int(memory_window_row_id)
 
@@ -2834,23 +2866,23 @@ def _terminalize_owned_continuation_window(
     terminal_state: str,
     terminal_cause: str,
 ) -> str | None:
-    """Fail closed one exact first-hour campaign window without touching its peer."""
+    """Fail/cancel one exact first-hour lifecycle without touching its peer."""
     window = _owned_continuation_window_for_job(
         conn, scheduler_job_id=int(scheduler_job_id)
     )
     if window is None:
         return None
-    from printer_v1.operator_cli.campaign_ownership import transition_state
+    from printer_v1.operator_cli.operational_selective_1h import (
+        reconcile_1h_terminal_lifecycle,
+    )
 
-    transitioned = transition_state(
+    reconciled = reconcile_1h_terminal_lifecycle(
         conn,
-        record_kind="window",
-        identity=str(window["window_id"]),
-        expected_state=str(window["window_state"]),
-        new_state=str(terminal_state),
+        campaign_window_1h_id=str(window["window_id"]),
+        terminal_state=str(terminal_state),
         terminal_cause=str(terminal_cause),
     )
-    return str(transitioned.current_state)
+    return str(reconciled["window_state"])
 
 
 def _cancel_owned_continuation_windows_for_run(
@@ -2874,18 +2906,18 @@ def _cancel_owned_continuation_windows_for_run(
     changed = 0
     if not rows:
         return changed
-    from printer_v1.operator_cli.campaign_ownership import transition_state
+    from printer_v1.operator_cli.operational_selective_1h import (
+        reconcile_1h_terminal_lifecycle,
+    )
 
     for row in rows:
         state = str(row["window_state"])
         if state not in active_states:
             continue
-        transition_state(
+        reconcile_1h_terminal_lifecycle(
             conn,
-            record_kind="window",
-            identity=str(row["window_id"]),
-            expected_state=state,
-            new_state="CANCELLED",
+            campaign_window_1h_id=str(row["window_id"]),
+            terminal_state="CANCELLED",
             terminal_cause=str(terminal_cause),
         )
         changed += 1
