@@ -5494,7 +5494,9 @@ def run_one_command_15m_factory(
                     run_id=run_id, step=pending,
                 )
                 _cancel_pending_for_token(conn, run_id, token_id, TOKEN_LOCAL_CANCELLED)
-                if str(pending["step_kind"]) == "CONTINUATION_SNAPSHOT":
+                if str(pending["step_kind"]) in {
+                    "CONTINUATION_SNAPSHOT", "CONTINUATION_CLOSE"
+                }:
                     _terminalize_owned_continuation_window(
                         conn,
                         scheduler_job_id=job_id,
