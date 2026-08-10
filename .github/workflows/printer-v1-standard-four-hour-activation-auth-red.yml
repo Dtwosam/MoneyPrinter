@@ -14,11 +14,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: c477f49d19e14ace4b2faeffe97de189180dc55c
+          ref: b19b122dc13cbf4bbc802bca3a0223dce7256f32
           fetch-depth: 0
       - name: Assert exact RED head
         run: |
-          test "$(git rev-parse HEAD)" = "c477f49d19e14ace4b2faeffe97de189180dc55c"
+          test "$(git rev-parse HEAD)" = "b19b122dc13cbf4bbc802bca3a0223dce7256f32"
           test -z "$(git status --porcelain)"
       - uses: actions/setup-python@v5
         with:
