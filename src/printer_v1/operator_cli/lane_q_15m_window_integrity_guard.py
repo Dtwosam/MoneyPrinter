@@ -72,6 +72,7 @@ LANE_Q_NAME: str = "Lane Q — Real-Time 15m Window Integrity Guard"
 
 _MIN_ELAPSED_BY_WINDOW: dict[str, float] = {
     "WINDOW_15M": 900.0,
+    "WINDOW_1H": 2_700.0,
     "WINDOW_4H": 10_800.0,
 }
 # Backward-compatible public 15m contract used by existing callers/tests.

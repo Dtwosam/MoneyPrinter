@@ -331,15 +331,26 @@ def run_e2z_pipeline(
 
     before = _snapshot_counts(db_path_str)
 
-    # Step 1: E2X eligibility — all WINDOW_15M candidates, then optional scope.
-    e2x_report = build_e2x_15m_clean_memory_eligibility_report(
-        db_path, operator_approved=True
-    )
-    e2x_status = e2x_report.get("e2x_status", _E2X_STATUS_BLOCKED)
-    all_eligible_ids: list[int] = list(e2x_report.get("review_candidate_ids", []))
-    if explicit_scope is not None:
-        scope_set = set(explicit_scope)
-        all_eligible_ids = [wid for wid in all_eligible_ids if wid in scope_set]
+    # Step 1: global/backlog mode remains E2X-owned and WINDOW_15M-specific.
+    # Explicit operational scope already names the exact windows; those ids enter
+    # the individual Lane Q/U2/E2Z integrity path directly rather than being
+    # silently dropped by E2X's intentionally 15m-only population query.
+    if explicit_scope is None:
+        e2x_report = build_e2x_15m_clean_memory_eligibility_report(
+            db_path, operator_approved=True
+        )
+        e2x_status = e2x_report.get("e2x_status", _E2X_STATUS_BLOCKED)
+        all_eligible_ids: list[int] = list(
+            e2x_report.get("review_candidate_ids", [])
+        )
+    else:
+        e2x_status = "NOT_APPLICABLE_EXPLICIT_WINDOW_SCOPE"
+        e2x_report = {
+            "e2x_status": e2x_status,
+            "review_candidate_ids": list(explicit_scope),
+            "explicit_window_scope": True,
+        }
+        all_eligible_ids = list(explicit_scope)
 
     # Step 2: Lane Q guard for scoped E2X-eligible windows — runs before E2Y so
     #         coverage can be persisted regardless of same-pair grouping outcome.
@@ -434,6 +445,7 @@ def run_e2z_pipeline(
             wid,
             operator_approved=True,
             individual_promotion=True,
+            lane_q_report=lane_q_guard,
         )
         status = result.get("e2z_status")
         episode_id = result.get("episode_id")

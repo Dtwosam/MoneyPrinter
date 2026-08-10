@@ -2279,6 +2279,113 @@ def _natural_disposition_schedule(
     return support, continuation_plan
 
 
+
+def _derive_and_persist_first_hour_outcome(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    token_id: int,
+    pair_id: int,
+    window_id: int,
+    current_close_snapshot_id: int,
+) -> dict[str, Any]:
+    """Classify the complete first-hour path from exact current-run evidence only."""
+    target = conn.execute(
+        """SELECT id,token_id,pair_id,window_kind,supporting_context_json
+           FROM printer_memory_windows WHERE id=?""",
+        (int(window_id),),
+    ).fetchone()
+    if target is None:
+        raise ValueError("WINDOW_1H_OUTCOME_TARGET_MISSING")
+    if (
+        int(target["token_id"]) != int(token_id)
+        or int(target["pair_id"]) != int(pair_id)
+        or str(target["window_kind"]) != "WINDOW_1H"
+    ):
+        raise ValueError("WINDOW_1H_OUTCOME_TARGET_IDENTITY_MISMATCH")
+
+    ledger_rows = conn.execute(
+        """SELECT snapshot_id
+           FROM printer_memory_factory_run_steps
+           WHERE run_id=? AND token_id=? AND pair_id=?
+             AND step_kind IN ('SNAPSHOT','WINDOW_CLOSE','CONTINUATION_SNAPSHOT')
+             AND step_status='SUCCEEDED' AND snapshot_id IS NOT NULL
+           ORDER BY scheduled_for,id""",
+        (str(run_id), int(token_id), int(pair_id)),
+    ).fetchall()
+    snapshot_ids: list[int] = []
+    seen: set[int] = set()
+    for row in ledger_rows:
+        sid = int(row["snapshot_id"])
+        if sid not in seen:
+            seen.add(sid)
+            snapshot_ids.append(sid)
+    close_sid = int(current_close_snapshot_id)
+    if close_sid not in seen:
+        snapshot_ids.append(close_sid)
+        seen.add(close_sid)
+    if len(snapshot_ids) < 2:
+        raise ValueError("WINDOW_1H_OUTCOME_INSUFFICIENT_CURRENT_RUN_SNAPSHOTS")
+
+    placeholders = ",".join("?" for _ in snapshot_ids)
+    snapshots = conn.execute(
+        f"""SELECT * FROM printer_token_snapshots
+            WHERE id IN ({placeholders})
+            ORDER BY captured_at,id""",
+        tuple(snapshot_ids),
+    ).fetchall()
+    if len(snapshots) != len(snapshot_ids):
+        raise ValueError("WINDOW_1H_OUTCOME_SNAPSHOT_IDENTITY_INCOMPLETE")
+    ordered: list[dict[str, Any]] = []
+    ordered_ids: list[int] = []
+    for row in snapshots:
+        if int(row["token_id"]) != int(token_id) or int(row["pair_id"]) != int(pair_id):
+            raise ValueError("WINDOW_1H_OUTCOME_SNAPSHOT_IDENTITY_MISMATCH")
+        ordered.append(dict(row))
+        ordered_ids.append(int(row["id"]))
+    if close_sid not in ordered_ids:
+        raise ValueError("WINDOW_1H_OUTCOME_CURRENT_CLOSE_SNAPSHOT_MISSING")
+
+    from printer_v1.memory.outcomes import classify_episode_outcome
+
+    outcome = classify_episode_outcome("WINDOW_1H", ordered)
+    outcome_label = str(outcome.value)
+    try:
+        context = json.loads(str(target["supporting_context_json"] or "{}"))
+    except json.JSONDecodeError as exc:
+        raise ValueError("WINDOW_1H_OUTCOME_SUPPORTING_CONTEXT_MALFORMED") from exc
+    context.update(
+        {
+            "full_first_hour_outcome_snapshot_ids": ordered_ids,
+            "full_first_hour_outcome_snapshot_count": len(ordered_ids),
+            "full_first_hour_outcome_path_start_at": str(ordered[0]["captured_at"]),
+            "full_first_hour_outcome_path_end_at": str(ordered[-1]["captured_at"]),
+            "full_first_hour_outcome_source": "EXACT_CURRENT_RUN_MAIN_LIFECYCLE",
+        }
+    )
+    updated = conn.execute(
+        """UPDATE printer_memory_windows
+           SET outcome_label=?,supporting_context_json=?,updated_at=?
+           WHERE id=? AND token_id=? AND pair_id=? AND window_kind='WINDOW_1H'""",
+        (
+            outcome_label,
+            _json(context),
+            _iso(),
+            int(window_id),
+            int(token_id),
+            int(pair_id),
+        ),
+    )
+    if int(updated.rowcount or 0) != 1:
+        raise ValueError("WINDOW_1H_OUTCOME_TARGET_UPDATE_FAILED")
+    return {
+        "outcome_label": outcome_label,
+        "snapshot_ids": ordered_ids,
+        "snapshot_count": len(ordered_ids),
+        "path_start_at": str(ordered[0]["captured_at"]),
+        "path_end_at": str(ordered[-1]["captured_at"]),
+    }
+
 def _execute_continuation_close(
     conn: sqlite3.Connection,
     step: sqlite3.Row,
@@ -2359,6 +2466,14 @@ def _execute_continuation_close(
     if window_id is None:
         result.update(ok=False, blocked_reason="1h close produced no window")
         return result
+    result["full_first_hour_outcome"] = _derive_and_persist_first_hour_outcome(
+        conn,
+        run_id=str(step["run_id"]),
+        token_id=int(step["token_id"]),
+        pair_id=int(step["pair_id"]),
+        window_id=int(window_id),
+        current_close_snapshot_id=int(result["snapshot_id"]),
+    )
     result["window_audit"] = audit_15m_memory_window(conn, int(window_id))
     conn.commit()
     result["memory_pipeline"] = run_e2z_pipeline(

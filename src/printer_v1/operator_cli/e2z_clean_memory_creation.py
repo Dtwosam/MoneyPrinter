@@ -247,11 +247,18 @@ def create_clean_memory_from_window(
             )
 
         gate_failures = _gate_window(win_row)
-        if win_row["window_kind"] == "WINDOW_4H":
-            valid_ids = (lane_q_report or {}).get("valid_window_ids", [])
-            if window_id not in valid_ids:
+        if win_row["window_kind"] in {"WINDOW_1H", "WINDOW_4H"}:
+            lane_q = lane_q_report or {}
+            valid_ids = list(lane_q.get("valid_window_ids", []))
+            blocked_ids = list(lane_q.get("blocked_window_ids", []))
+            lane_q_passed = (
+                lane_q.get("lane_q_guard_status") == "LANE_Q_GUARD_COMPLETED"
+                and window_id in valid_ids
+                and window_id not in blocked_ids
+            )
+            if not lane_q_passed:
                 gate_failures.append(
-                    "WINDOW_4H requires an explicit passed Lane Q report"
+                    f"{win_row['window_kind']} requires an explicit passed Lane Q report"
                 )
         if gate_failures:
             return _blocked(gate_failures, db_path_str, window_id)
