@@ -18,21 +18,19 @@ jobs:
           ref: agent/v2-9-8b-post-dtw100-standard-four-hour-activation-slice-a-apply-base
           fetch-depth: 0
 
-      - name: Preserve patcher and checkout exact RED head
+      - name: Preserve patchers and checkout exact RED head
         shell: bash
         run: |
           set -euo pipefail
           cp scripts/apply_standard_four_hour_activation_slice_a.py /tmp/apply_activation_slice_a.py
+          cp scripts/apply_standard_four_hour_activation_slice_a_correction.py /tmp/apply_activation_slice_a_correction.py
           git checkout --detach a49efc683b8e07da52fc7f8f47451ba0d8748190
           test "$(git rev-parse HEAD)" = "a49efc683b8e07da52fc7f8f47451ba0d8748190"
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Apply approved activation slice A patch
-        run: python /tmp/apply_activation_slice_a.py
+      - name: Apply approved activation slice A patch and authority correction
+        run: |
+          python /tmp/apply_activation_slice_a.py
+          python /tmp/apply_activation_slice_a_correction.py
 
       - name: Assert exact patch scope
         shell: bash
@@ -48,7 +46,9 @@ jobs:
             src/printer_v1/operator_cli/git_provenance_authorization_manifest.py \
             src/printer_v1/operator_cli/window_15m_child_terminal.py \
             src/printer_v1/snapshots/cadence_policy.py \
+            src/printer_v1/snapshots/lifecycle_continuity.py \
             tests/test_v2_9_8b_post_dtw100_standard_four_hour_policy_capacity.py \
+            tests/test_v2_9_8b_post_dtw100_standard_four_hour_campaign_planning.py \
             tests/test_v2_9_8b_post_dtw100_standard_four_hour_eligible_subset.py \
             | sort > /tmp/expected-files.txt
           diff -u /tmp/expected-files.txt /tmp/actual-files.txt
@@ -66,7 +66,9 @@ jobs:
             src/printer_v1/operator_cli/git_provenance_authorization_manifest.py \
             src/printer_v1/operator_cli/window_15m_child_terminal.py \
             src/printer_v1/snapshots/cadence_policy.py \
-            tests/test_v2_9_8b_post_dtw100_standard_four_hour_operational_activation.py
+            src/printer_v1/snapshots/lifecycle_continuity.py \
+            tests/test_v2_9_8b_post_dtw100_standard_four_hour_operational_activation.py \
+            tests/test_v2_9_8b_post_dtw100_standard_four_hour_campaign_planning.py
 
       - name: Run activation GREEN contract
         run: |
@@ -99,6 +101,8 @@ jobs:
               assert get_policy("WINDOW_4H", lane).enabled_for_real_collection is True
               assert get_policy("WINDOW_12H", lane).enabled_for_real_collection is False
               assert get_policy("WINDOW_24H", lane).enabled_for_real_collection is False
+          assert FourHourExecutionAuthority.DISABLED.value == "DISABLED"
+          assert FourHourExecutionAuthority.PROOF.value == "PROOF"
           assert FourHourExecutionAuthority.STANDARD_CAMPAIGN.value == "STANDARD_CAMPAIGN"
           PY
           git diff --check
@@ -117,7 +121,13 @@ jobs:
             src/printer_v1/operator_cli/git_provenance_authorization_manifest.py \
             src/printer_v1/operator_cli/window_15m_child_terminal.py \
             src/printer_v1/snapshots/cadence_policy.py \
+            src/printer_v1/snapshots/lifecycle_continuity.py \
             tests/test_v2_9_8b_post_dtw100_standard_four_hour_policy_capacity.py \
+            tests/test_v2_9_8b_post-dtw100-standard-four-hour-campaign-planning.py
+          # Add the exact test paths explicitly; the line above intentionally fails if typo drift exists.
+          git reset tests/test_v2_9_8b_post-dtw100-standard-four-hour-campaign-planning.py 2>/dev/null || true
+          git add \
+            tests/test_v2_9_8b_post_dtw100_standard_four_hour_campaign_planning.py \
             tests/test_v2_9_8b_post_dtw100_standard_four_hour_eligible_subset.py
           git commit -m "Implement standard four-hour activation authority foundation"
           git push --force origin HEAD:refs/heads/agent/v2-9-8b-post-dtw100-standard-four-hour-activation-slice-a-candidate
