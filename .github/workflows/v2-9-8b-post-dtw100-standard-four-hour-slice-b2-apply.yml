@@ -20,8 +20,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Verify exact B2 RED baseline
+      - name: Verify disposable trigger and exact B2 RED parent
         run: |
+          echo "TRIGGER_HEAD=$(git rev-parse HEAD)"
+          echo "RED_PARENT=$(git rev-parse HEAD^)"
+          test "$(git rev-parse HEAD^)" = "9bb5fd2ef16cfd549434e01d8ea2538aa2856968"
+          test "$(git diff --name-only HEAD^ HEAD)" = ".github/v2-9-8b-post-dtw100-standard-four-hour-slice-b2-apply-trigger.txt"
+          git checkout 9bb5fd2ef16cfd549434e01d8ea2538aa2856968
           test "$(git rev-parse HEAD)" = "9bb5fd2ef16cfd549434e01d8ea2538aa2856968"
           test -z "$(git status --porcelain --untracked-files=no)"
       - name: Apply narrow B2 production patch
