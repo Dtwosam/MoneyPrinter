@@ -1,0 +1,47 @@
+name: Printer V1 standard 4h activation Slice C diagnostic
+
+on:
+  pull_request:
+    branches:
+      - agent/v2-9-8b-post-dtw100-standard-four-hour-activation-slice-c-apply-base
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose-hard-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout disposable apply base
+        uses: actions/checkout@v4
+        with:
+          ref: agent/v2-9-8b-post-dtw100-standard-four-hour-activation-slice-c-apply-base
+          fetch-depth: 0
+      - name: Preserve patchers and checkout exact RED head
+        run: |
+          set -euo pipefail
+          cp scripts/apply_standard_four_hour_activation_slice_c.py /tmp/apply_slice_c.py
+          cp scripts/apply_standard_four_hour_activation_slice_c_safety_cutoff.py /tmp/apply_slice_c_safety_cutoff.py
+          git checkout --detach 5430a48a1f683b6182b4664023dc6b1f21ead26e
+          test "$(git rev-parse HEAD)" = "5430a48a1f683b6182b4664023dc6b1f21ead26e"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply unchanged Slice C candidate patch
+        run: |
+          python /tmp/apply_slice_c.py
+          python /tmp/apply_slice_c_safety_cutoff.py
+          python -m pip install -e .
+      - name: Print exact continuation hard-gate verdicts
+        run: |
+          python - <<'PY'
+          import json
+          from tests.test_v2_9_8b_post_dtw100_standard_four_hour_activation_factory_barrier import StandardFourHourActivationFactoryBarrierTests
+          case = StandardFourHourActivationFactoryBarrierTests()
+          case.setUp()
+          try:
+              result = case._barrier()
+              print('BARRIER_RESULT=' + json.dumps(result, sort_keys=True, default=str))
+          finally:
+              case.tearDown()
+          PY
