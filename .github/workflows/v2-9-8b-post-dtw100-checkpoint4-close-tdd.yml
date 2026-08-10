@@ -11,7 +11,7 @@ env:
 
 jobs:
   patch:
-    if: contains(github.event.pull_request.title, 'APPLY checkpoint4 close')
+    if: contains(github.event.pull_request.title, 'APPLY checkpoint4 close boundary truth repair')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout implementation branch
@@ -36,14 +36,39 @@ jobs:
           git diff --check
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          if git diff --quiet; then
-            exit 0
-          fi
+          if git diff --quiet; then exit 0; fi
           git add \
             src/printer_v1/operator_cli/one_command_15m_factory.py \
             src/printer_v1/operator_cli/lane_e2o_1h_window_close.py \
             src/printer_v1/snapshots/cadence_policy.py
           git commit -m 'Enforce truthful first-hour close boundary'
+          git push origin HEAD:${TARGET_BRANCH}
+
+  patch_followup:
+    if: contains(github.event.pull_request.title, 'APPLY checkpoint4 close exception followup')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout implementation branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+      - name: Apply reviewed exception-path followup
+        env:
+          TARGET_BRANCH: ${{ github.event.pull_request.head.ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          git fetch origin "${BASE_REF}"
+          git show FETCH_HEAD:scripts/checkpoint4_close_exception_followup_patch.py > /tmp/checkpoint4_followup.py
+          python -m py_compile /tmp/checkpoint4_followup.py
+          python /tmp/checkpoint4_followup.py
+          python -m py_compile src/printer_v1/operator_cli/one_command_15m_factory.py
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if git diff --quiet; then exit 0; fi
+          git add src/printer_v1/operator_cli/one_command_15m_factory.py
+          git commit -m 'Cover first-hour close exception terminalization'
           git push origin HEAD:${TARGET_BRANCH}
 
   focused:
