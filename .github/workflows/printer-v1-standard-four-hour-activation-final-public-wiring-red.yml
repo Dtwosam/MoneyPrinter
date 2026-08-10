@@ -1,0 +1,45 @@
+name: Printer V1 standard 4h final public wiring RED
+
+on:
+  pull_request:
+    branches:
+      - agent/v2-9-8b-post-dtw100-standard-four-hour-activation-final-public-wiring-red-base
+
+permissions:
+  contents: read
+
+jobs:
+  red:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 941e8b5e190c2e7831b267911f5b5597c6096486
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e .
+      - name: Compile RED contract
+        run: |
+          python -m py_compile \
+            src/printer_v1/operator_cli/operational_memory_factory_command.py \
+            src/printer_v1/operator_cli/authoritative_live_operational_campaign.py \
+            tests/test_v2_9_8b_post_dtw100_standard_four_hour_activation_final_public_wiring.py
+      - name: Expected RED final public wiring contract
+        continue-on-error: true
+        run: python -m unittest -v tests.test_v2_9_8b_post_dtw100_standard_four_hour_activation_final_public_wiring
+      - name: Existing activation authorization control
+        run: python -m unittest -v tests.test_v2_9_8b_post_dtw100_standard_four_hour_activation_authorization
+      - name: Existing Slice C barrier control
+        run: python -m unittest -v tests.test_v2_9_8b_post_dtw100_standard_four_hour_activation_factory_barrier
+      - name: Preserve capability locks
+        run: |
+          python - <<'PY'
+          from printer_v1.snapshots.cadence_policy import get_policy
+          for lane in ('TRACK_FAST','TRACK_NORMAL'):
+              assert get_policy('WINDOW_4H', lane).enabled_for_real_collection is True
+              assert get_policy('WINDOW_12H', lane).enabled_for_real_collection is False
+              assert get_policy('WINDOW_24H', lane).enabled_for_real_collection is False
+          PY
+          git diff --check
