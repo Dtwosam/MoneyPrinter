@@ -98,38 +98,74 @@ def cumulative_lifecycle_budget(tracking_lane: str) -> dict[str, Any]:
     }
 
 
-def standard_two_token_lifecycle_budget(
+def standard_campaign_lifecycle_budget(
     tracking_lanes: tuple[str, str],
+    continuing_mask: tuple[bool, bool],
 ) -> dict[str, Any]:
-    """Derive the bounded two-token 15m+1h+4h campaign ceilings from policy."""
+    """Derive the two-token prefix plus only the eligible WINDOW_4H suffixes."""
     lanes = tuple(str(lane) for lane in tracking_lanes)
-    if len(lanes) != 2:
-        raise ValueError("standard four-hour campaign requires exactly two tracking lanes")
+    mask = tuple(continuing_mask)
+    if len(lanes) != 2 or len(mask) != 2:
+        raise ValueError("standard four-hour campaign requires exactly two lanes and two eligibility flags")
+    if any(type(flag) is not bool for flag in mask):
+        raise ValueError("standard four-hour eligibility mask must contain booleans")
+
     request_components: dict[str, int] = {"discovery": 2}
     scheduler_components: dict[str, int] = {}
-    for index, lane in enumerate(lanes, start=1):
-        lifecycle = cumulative_lifecycle_budget(lane)
+    for index, (lane, continues) in enumerate(zip(lanes, mask, strict=True), start=1):
         if lane not in REQUEST_CEILINGS:
             raise ValueError("TRACK_FAST or TRACK_NORMAL cadence policy required")
-        for name, value in lifecycle["request_components"].items():
-            if name == "discovery":
-                continue
-            request_components[f"token_{index}_{name}"] = int(value)
-        for name, value in lifecycle["scheduler_components"].items():
-            scheduler_components[f"token_{index}_{name}"] = int(value)
+        fifteen = get_policy("WINDOW_15M", lane)
+        one_hour = get_policy("WINDOW_1H", lane)
+        if fifteen is None or one_hour is None:
+            raise ValueError("15m and 1h cadence policies required")
+        request_components[f"token_{index}_window_15m_snapshots"] = int(
+            fifteen.minimum_required_snapshots
+        )
+        request_components[f"token_{index}_window_15m_context"] = 5
+        request_components[f"token_{index}_window_1h_snapshots"] = int(
+            one_hour.minimum_required_snapshots
+        )
+        scheduler_components[f"token_{index}_discovery_handoff"] = 1
+        scheduler_components[f"token_{index}_window_15m"] = int(
+            fifteen.minimum_required_snapshots
+        )
+        scheduler_components[f"token_{index}_window_1h"] = int(
+            one_hour.minimum_required_snapshots
+        )
+        if continues:
+            phase = runtime_budget(lane)
+            request_components[f"token_{index}_window_4h_phase"] = int(
+                phase["phase_request_ceiling"]
+            )
+            scheduler_components[f"token_{index}_window_4h_phase"] = int(
+                phase["phase_scheduler_ceiling"]
+            )
+
+    continuation_count = sum(1 for flag in mask if flag)
     return {
         "tracking_lanes": lanes,
+        "continuing_mask": mask,
+        "continuation_count": continuation_count,
         "request_components": request_components,
         "request_ceiling": sum(request_components.values()),
         "scheduler_components": scheduler_components,
         "scheduler_ceiling": sum(scheduler_components.values()),
         "automatic_retries": 0,
         "endpoint_rotation": False,
-        "real_collection_enabled": all(
-            bool(runtime_budget(lane)["enabled_for_real_collection"]) for lane in lanes
+        "real_collection_enabled": bool(continuation_count) and all(
+            bool(runtime_budget(lane)["enabled_for_real_collection"])
+            for lane, continues in zip(lanes, mask, strict=True)
+            if continues
         ),
     }
 
+
+def standard_two_token_lifecycle_budget(
+    tracking_lanes: tuple[str, str],
+) -> dict[str, Any]:
+    """Compatibility wrapper for the historical both-eligible standard plan."""
+    return standard_campaign_lifecycle_budget(tracking_lanes, (True, True))
 
 def require_projected_capacity(
     *, current: int, projected: int, ceiling: int, label: str,
@@ -431,6 +467,216 @@ def plan_current_run_4h(
     )
 
 
+STANDARD_FOUR_HOUR_ELIGIBILITY_CONTRACT_VERSION = "STANDARD_4H_ELIGIBILITY_V1"
+
+
+def _normalize_standard_4h_eligible_slots(
+    candidates: Sequence[Mapping[str, Any]],
+    eligible_token_slot_ids: Sequence[str] | None,
+) -> tuple[tuple[str, str], set[str]]:
+    if len(candidates) != 2:
+        raise ValueError("standard four-hour campaign requires exactly two candidates")
+    candidate_ids = tuple(str(candidate["token_slot_id"]).strip() for candidate in candidates)
+    if any(not slot_id for slot_id in candidate_ids) or len(set(candidate_ids)) != 2:
+        raise ValueError("standard four-hour campaign requires two distinct token-slot identities")
+    if eligible_token_slot_ids is None:
+        return (candidate_ids[0], candidate_ids[1]), set(candidate_ids)
+    if isinstance(eligible_token_slot_ids, (str, bytes)):
+        raise ValueError("eligible_token_slot_ids must be a sequence of slot identities")
+    requested = tuple(str(slot_id).strip() for slot_id in eligible_token_slot_ids)
+    if any(not slot_id for slot_id in requested) or len(requested) != len(set(requested)):
+        raise ValueError("eligible token-slot identities must be distinct and non-empty")
+    if not set(requested).issubset(set(candidate_ids)):
+        raise ValueError("eligible token-slot identity is not owned by this campaign")
+    return (candidate_ids[0], candidate_ids[1]), set(requested)
+
+
+def _campaign_slot_identity_rows(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    run_id: str,
+    cycle_id: str,
+) -> list[sqlite3.Row]:
+    rows = connection.execute(
+        """SELECT token_slot_id,token_row_id,pair_row_id,mint_identity,pair_identity,
+                  lifecycle_identity,slot_ordinal
+           FROM printer_memory_factory_campaign_token_slots
+           WHERE campaign_id=? AND run_id=? AND cycle_id=?
+           ORDER BY slot_ordinal""",
+        (campaign_id, run_id, cycle_id),
+    ).fetchall()
+    if len(rows) != 2 or {int(row["slot_ordinal"]) for row in rows} != {1, 2}:
+        raise ValueError("standard four-hour eligibility requires the exact two campaign slots")
+    return list(rows)
+
+
+def load_standard_four_hour_eligibility_manifests(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    run_id: str,
+    cycle_id: str,
+    factory_run_id: str,
+) -> dict[str, dict[str, Any]] | None:
+    """Return the exact durable two-slot standard-4h manifest, or None if absent."""
+    slot_rows = _campaign_slot_identity_rows(
+        connection,
+        campaign_id=campaign_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
+    )
+    close_by_slot: dict[str, sqlite3.Row] = {}
+    present: dict[str, dict[str, Any]] = {}
+    for slot in slot_rows:
+        slot_id = str(slot["token_slot_id"])
+        closes = connection.execute(
+            """SELECT id,token_id,pair_id,tracking_lane,memory_window_id,result_json
+               FROM printer_memory_factory_run_steps
+               WHERE run_id=? AND token_id=? AND pair_id=?
+                 AND step_kind='CONTINUATION_CLOSE' AND step_status='SUCCEEDED'
+               ORDER BY id""",
+            (factory_run_id, int(slot["token_row_id"]), int(slot["pair_row_id"])),
+        ).fetchall()
+        if len(closes) > 1:
+            raise ValueError(f"ambiguous successful first-hour close for {slot_id}")
+        if not closes:
+            continue
+        close = closes[0]
+        close_by_slot[slot_id] = close
+        try:
+            payload = json.loads(str(close["result_json"] or "{}"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid first-hour close result JSON for {slot_id}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError(f"invalid first-hour close result payload for {slot_id}")
+        manifest = payload.get("standard_four_hour_eligibility")
+        if manifest is not None:
+            if not isinstance(manifest, dict):
+                raise ValueError(f"invalid standard four-hour eligibility manifest for {slot_id}")
+            present[slot_id] = dict(manifest)
+
+    if not present:
+        return None
+    if len(present) != 2 or set(present) != {str(row["token_slot_id"]) for row in slot_rows}:
+        raise ValueError("partial standard four-hour eligibility manifest")
+
+    for slot in slot_rows:
+        slot_id = str(slot["token_slot_id"])
+        if slot_id not in close_by_slot:
+            raise ValueError(f"missing successful first-hour close for manifest slot {slot_id}")
+        manifest = present[slot_id]
+        eligible = manifest.get("eligible")
+        expected_verdict = "CONTINUE_TO_WINDOW_4H" if eligible is True else "BLOCK_CONTINUATION"
+        if type(eligible) is not bool:
+            raise ValueError(f"invalid eligibility boolean for {slot_id}")
+        if (
+            str(manifest.get("contract_version"))
+            != STANDARD_FOUR_HOUR_ELIGIBILITY_CONTRACT_VERSION
+            or str(manifest.get("campaign_id")) != str(campaign_id)
+            or str(manifest.get("campaign_run_id")) != str(run_id)
+            or str(manifest.get("cycle_id")) != str(cycle_id)
+            or str(manifest.get("token_slot_id")) != slot_id
+            or int(manifest.get("token_id", -1)) != int(slot["token_row_id"])
+            or int(manifest.get("pair_id", -1)) != int(slot["pair_row_id"])
+            or str(manifest.get("verdict")) != expected_verdict
+        ):
+            raise ValueError(f"standard four-hour eligibility manifest identity mismatch for {slot_id}")
+    return present
+
+
+def _persist_standard_four_hour_eligibility_manifests(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    run_id: str,
+    cycle_id: str,
+    factory_run_id: str,
+    candidates: Sequence[Mapping[str, Any]],
+    eligible_ids: set[str],
+) -> dict[str, dict[str, Any]]:
+    slot_rows = _campaign_slot_identity_rows(
+        connection,
+        campaign_id=campaign_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
+    )
+    slot_by_id = {str(row["token_slot_id"]): row for row in slot_rows}
+    candidate_ids = {str(candidate["token_slot_id"]) for candidate in candidates}
+    if candidate_ids != set(slot_by_id):
+        raise ValueError("standard four-hour manifest candidates do not cover exact campaign slots")
+
+    for candidate in candidates:
+        slot_id = str(candidate["token_slot_id"])
+        slot = slot_by_id[slot_id]
+        token_id = int(candidate["token_row_id"])
+        pair_id = int(candidate["pair_row_id"])
+        lane = str(candidate["tracking_lane"])
+        memory_window_id = int(candidate["memory_window_1h_id"])
+        if (
+            int(slot["token_row_id"]) != token_id
+            or int(slot["pair_row_id"]) != pair_id
+            or str(slot["mint_identity"]) != str(candidate["mint_identity"])
+            or str(slot["pair_identity"]) != str(candidate["pair_identity"])
+            or str(slot["lifecycle_identity"]) != str(candidate["lifecycle_identity"])
+        ):
+            raise ValueError(f"standard four-hour manifest slot identity mismatch for {slot_id}")
+        closes = connection.execute(
+            """SELECT id,token_id,pair_id,tracking_lane,memory_window_id,result_json
+               FROM printer_memory_factory_run_steps
+               WHERE run_id=? AND token_id=? AND pair_id=? AND tracking_lane=?
+                 AND step_kind='CONTINUATION_CLOSE' AND step_status='SUCCEEDED'
+               ORDER BY id""",
+            (factory_run_id, token_id, pair_id, lane),
+        ).fetchall()
+        if len(closes) != 1:
+            raise ValueError(f"exact successful first-hour close missing/ambiguous for {slot_id}")
+        close = closes[0]
+        if close["memory_window_id"] is None or int(close["memory_window_id"]) != memory_window_id:
+            raise ValueError(f"first-hour close memory identity mismatch for {slot_id}")
+        try:
+            payload = json.loads(str(close["result_json"] or "{}"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid first-hour close result JSON for {slot_id}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError(f"invalid first-hour close result payload for {slot_id}")
+        eligible = slot_id in eligible_ids
+        manifest = {
+            "contract_version": STANDARD_FOUR_HOUR_ELIGIBILITY_CONTRACT_VERSION,
+            "campaign_id": str(campaign_id),
+            "campaign_run_id": str(run_id),
+            "cycle_id": str(cycle_id),
+            "token_slot_id": slot_id,
+            "token_id": token_id,
+            "pair_id": pair_id,
+            "verdict": "CONTINUE_TO_WINDOW_4H" if eligible else "BLOCK_CONTINUATION",
+            "eligible": eligible,
+        }
+        existing = payload.get("standard_four_hour_eligibility")
+        if existing is not None and existing != manifest:
+            raise ValueError(f"standard four-hour eligibility manifest conflict for {slot_id}")
+        if existing is None:
+            payload["standard_four_hour_eligibility"] = manifest
+            connection.execute(
+                "UPDATE printer_memory_factory_run_steps SET result_json=?,updated_at=? WHERE id=?",
+                (json.dumps(payload, sort_keys=True), datetime.now(timezone.utc).isoformat(), int(close["id"])),
+            )
+
+    loaded = load_standard_four_hour_eligibility_manifests(
+        connection,
+        campaign_id=campaign_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
+        factory_run_id=factory_run_id,
+    )
+    if loaded is None:
+        raise ValueError("standard four-hour eligibility manifest write disappeared")
+    actual_eligible = {slot_id for slot_id, manifest in loaded.items() if manifest["eligible"] is True}
+    if actual_eligible != eligible_ids:
+        raise ValueError("standard four-hour eligibility manifest subset mismatch")
+    return loaded
+
+
 def _standard_campaign_4h_plan_state(
     connection: sqlite3.Connection,
     *,
@@ -439,7 +685,24 @@ def _standard_campaign_4h_plan_state(
     cycle_id: str,
     factory_run_id: str,
     candidates: Sequence[Mapping[str, Any]],
+    eligible_token_slot_ids: Sequence[str] | None = None,
 ) -> dict[str, Any]:
+    candidate_order, eligible_ids = _normalize_standard_4h_eligible_slots(
+        candidates, eligible_token_slot_ids
+    )
+    manifests = load_standard_four_hour_eligibility_manifests(
+        connection,
+        campaign_id=campaign_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
+        factory_run_id=factory_run_id,
+    )
+    if manifests is None:
+        raise ValueError("standard four-hour plan is missing durable eligibility manifest")
+    manifest_eligible = {slot_id for slot_id, manifest in manifests.items() if manifest["eligible"] is True}
+    if manifest_eligible != eligible_ids:
+        raise ValueError("standard four-hour requested subset differs from durable manifest")
+
     planned_by_slot: dict[str, int] = {}
     total_expected = 0
     for candidate in candidates:
@@ -448,6 +711,41 @@ def _standard_campaign_4h_plan_state(
         pair_id = int(candidate["pair_row_id"])
         lane = str(candidate["tracking_lane"])
         window_id = str(candidate["campaign_window_4h_id"])
+        if slot_id not in eligible_ids:
+            window_count = int(connection.execute(
+                """SELECT COUNT(*) FROM printer_memory_factory_campaign_windows
+                   WHERE campaign_id=? AND run_id=? AND cycle_id=? AND token_slot_id=?
+                     AND window_kind='WINDOW_4H'""",
+                (campaign_id, run_id, cycle_id, slot_id),
+            ).fetchone()[0])
+            step_count = int(connection.execute(
+                """SELECT COUNT(*) FROM printer_memory_factory_run_steps
+                   WHERE run_id=? AND token_id=? AND pair_id=? AND tracking_lane=?
+                     AND step_kind LIKE 'LONG_CONTINUATION_%'""",
+                (factory_run_id, token_id, pair_id, lane),
+            ).fetchone()[0])
+            owned_count = int(connection.execute(
+                """SELECT COUNT(*) FROM printer_memory_factory_campaign_scheduler_work
+                   WHERE campaign_id=? AND run_id=? AND cycle_id=? AND token_slot_id=?
+                     AND factory_run_id=? AND ownership_contract_version='V2_STAGE_SCOPED'
+                     AND work_scope='WINDOW_LIFECYCLE' AND stage_id='WINDOW_4H'""",
+                (campaign_id, run_id, cycle_id, slot_id, factory_run_id),
+            ).fetchone()[0])
+            slot = connection.execute(
+                """SELECT token_state FROM printer_memory_factory_campaign_token_slots
+                   WHERE campaign_id=? AND run_id=? AND cycle_id=? AND token_slot_id=?""",
+                (campaign_id, run_id, cycle_id, slot_id),
+            ).fetchone()
+            if (
+                window_count != 0
+                or step_count != 0
+                or owned_count != 0
+                or slot is None
+                or str(slot[0]) == "WINDOW_4H_CONTINUING"
+            ):
+                raise ValueError(f"ineligible slot has partial four-hour state: {slot_id}")
+            continue
+
         policy = get_policy(WINDOW_KIND, lane)
         if policy is None:
             raise ValueError(f"missing WINDOW_4H policy for {lane}")
@@ -461,11 +759,7 @@ def _standard_campaign_4h_plan_state(
                  AND window_id=? AND window_kind='WINDOW_4H'""",
             (campaign_id, run_id, cycle_id, slot_id, window_id),
         ).fetchone()
-        if (
-            window is None
-            or str(window[0]) != "PLANNED"
-            or window[1] is not None
-        ):
+        if window is None or str(window[0]) != "PLANNED" or window[1] is not None:
             raise ValueError(f"incomplete four-hour campaign window for {slot_id}")
         slot = connection.execute(
             """SELECT token_state FROM printer_memory_factory_campaign_token_slots
@@ -496,29 +790,20 @@ def _standard_campaign_4h_plan_state(
                WHERE cw.campaign_id=? AND cw.run_id=? AND cw.cycle_id=?
                  AND cw.token_slot_id=? AND cw.window_id=?
                  AND cw.ownership_contract_version='V2_STAGE_SCOPED'
-                 AND cw.work_scope='WINDOW_LIFECYCLE'
-                 AND cw.stage_id='WINDOW_4H'
+                 AND cw.work_scope='WINDOW_LIFECYCLE' AND cw.stage_id='WINDOW_4H'
                  AND cw.target_category='CAMPAIGN_WINDOW'
-                 AND cw.target_identity=cw.window_id
-                 AND cw.factory_run_id=?
+                 AND cw.target_identity=cw.window_id AND cw.factory_run_id=?
                  AND rs.run_id=? AND rs.token_id=? AND rs.pair_id=?
                  AND rs.tracking_lane=? AND cw.work_intent=rs.step_kind
                  AND rs.step_kind LIKE 'LONG_CONTINUATION_%'""",
             (
-                campaign_id,
-                run_id,
-                cycle_id,
-                slot_id,
-                window_id,
-                factory_run_id,
-                factory_run_id,
-                token_id,
-                pair_id,
-                lane,
+                campaign_id, run_id, cycle_id, slot_id, window_id, factory_run_id,
+                factory_run_id, token_id, pair_id, lane,
             ),
         ).fetchone()[0])
         if ownership_count != expected:
             raise ValueError(f"incomplete four-hour Scheduler ownership for {slot_id}")
+
     total_windows = int(connection.execute(
         """SELECT COUNT(*) FROM printer_memory_factory_campaign_windows
            WHERE campaign_id=? AND run_id=? AND cycle_id=? AND window_kind='WINDOW_4H'""",
@@ -536,7 +821,11 @@ def _standard_campaign_4h_plan_state(
              AND work_scope='WINDOW_LIFECYCLE' AND stage_id='WINDOW_4H'""",
         (campaign_id, run_id, cycle_id, factory_run_id),
     ).fetchone()[0])
-    if total_windows != 2 or total_steps != total_expected or total_owned != total_expected:
+    if (
+        total_windows != len(eligible_ids)
+        or total_steps != total_expected
+        or total_owned != total_expected
+    ):
         raise ValueError("partial_or_ambiguous_standard_four_hour_plan")
     later = int(connection.execute(
         """SELECT COUNT(*) FROM printer_memory_factory_campaign_windows
@@ -549,6 +838,9 @@ def _standard_campaign_4h_plan_state(
     return {
         "planned_by_slot": planned_by_slot,
         "planned_jobs": total_expected,
+        "continuation_count": len(eligible_ids),
+        "no_op": len(eligible_ids) == 0,
+        "eligible_token_slot_ids": [slot for slot in candidate_order if slot in eligible_ids],
     }
 
 
@@ -560,15 +852,13 @@ def plan_standard_campaign_4h_handoff(
     cycle_id: str,
     factory_run_id: str,
     candidates: Sequence[Mapping[str, Any]],
+    eligible_token_slot_ids: Sequence[str] | None = None,
     now: str | None = None,
 ) -> dict[str, Any]:
-    """Atomically compose B1 ownership, two-token 4h planning and Scheduler ownership.
-
-    This is offline campaign integration only. It does not enable real 4h
-    collection, perform source work, or create any 12h/24h successor.
-    """
-    if len(candidates) != 2:
-        raise ValueError("standard four-hour campaign requires exactly two candidates")
+    """Compose the exact eligible subset of the standard two-slot 4h campaign."""
+    candidate_order, eligible_ids = _normalize_standard_4h_eligible_slots(
+        candidates, eligible_token_slot_ids
+    )
     campaign_run = connection.execute(
         """SELECT authoritative_run_id FROM printer_memory_factory_campaign_runs
            WHERE campaign_id=? AND run_id=?""",
@@ -580,11 +870,22 @@ def plan_standard_campaign_4h_handoff(
         or str(campaign_run[0]) != str(factory_run_id)
     ):
         raise ValueError("campaign run/factory run identity mismatch")
-    lanes = tuple(str(candidate["tracking_lane"]) for candidate in candidates)
-    budget = standard_two_token_lifecycle_budget((lanes[0], lanes[1]))
-    if bool(budget["real_collection_enabled"]):
-        raise ValueError("B2 must not enable real WINDOW_4H collection")
 
+    lanes = tuple(str(candidate["tracking_lane"]) for candidate in candidates)
+    mask = tuple(slot_id in eligible_ids for slot_id in candidate_order)
+    budget = standard_campaign_lifecycle_budget(
+        (lanes[0], lanes[1]), (bool(mask[0]), bool(mask[1]))
+    )
+    if bool(budget["real_collection_enabled"]):
+        raise ValueError("eligible-subset repair must not enable real WINDOW_4H collection")
+
+    existing_manifests = load_standard_four_hour_eligibility_manifests(
+        connection,
+        campaign_id=campaign_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
+        factory_run_id=factory_run_id,
+    )
     existing_windows = int(connection.execute(
         """SELECT COUNT(*) FROM printer_memory_factory_campaign_windows
            WHERE campaign_id=? AND run_id=? AND cycle_id=? AND window_kind='WINDOW_4H'""",
@@ -601,7 +902,14 @@ def plan_standard_campaign_4h_handoff(
              AND stage_id='WINDOW_4H' AND work_scope='WINDOW_LIFECYCLE'""",
         (campaign_id, run_id, cycle_id, factory_run_id),
     ).fetchone()[0])
-    if existing_windows or existing_steps or existing_owned:
+
+    if existing_manifests is not None:
+        manifest_eligible = {
+            slot_id for slot_id, manifest in existing_manifests.items()
+            if manifest["eligible"] is True
+        }
+        if manifest_eligible != eligible_ids:
+            raise ValueError("requested standard four-hour subset differs from durable manifest")
         verified = _standard_campaign_4h_plan_state(
             connection,
             campaign_id=campaign_id,
@@ -609,34 +917,46 @@ def plan_standard_campaign_4h_handoff(
             cycle_id=cycle_id,
             factory_run_id=factory_run_id,
             candidates=candidates,
+            eligible_token_slot_ids=tuple(eligible_ids),
         )
-        return {
-            "planned": True,
-            "replay": True,
-            **verified,
-            "budget": budget,
-        }
+        return {"planned": True, "replay": True, **verified, "budget": budget}
 
+    if existing_windows or existing_steps or existing_owned:
+        raise ValueError("partial_or_ambiguous_standard_four_hour_plan_without_manifest")
     if connection.in_transaction:
         raise ValueError(
             "standard four-hour campaign planning requires a clean transaction boundary"
         )
+
     planned_by_slot: dict[str, int] = {}
     timestamp = now or datetime.now(timezone.utc).isoformat()
     connection.execute("BEGIN")
     try:
+        _persist_standard_four_hour_eligibility_manifests(
+            connection,
+            campaign_id=campaign_id,
+            run_id=run_id,
+            cycle_id=cycle_id,
+            factory_run_id=factory_run_id,
+            candidates=candidates,
+            eligible_ids=eligible_ids,
+        )
         handoff = campaign_ownership.persist_standard_four_hour_handoff_set(
             connection,
             campaign_id=campaign_id,
             run_id=run_id,
             cycle_id=cycle_id,
             candidates=candidates,
+            eligible_token_slot_ids=tuple(eligible_ids),
             now=timestamp,
         )
         if not handoff.get("persisted") or handoff.get("replay"):
-            raise ValueError("fresh B2 composition requires a fresh B1 handoff")
+            raise ValueError("fresh subset composition requires a fresh B1 handoff")
+
         for candidate in candidates:
             slot_id = str(candidate["token_slot_id"])
+            if slot_id not in eligible_ids:
+                continue
             window_id = str(candidate["campaign_window_4h_id"])
             token_id = int(candidate["token_row_id"])
             pair_id = int(candidate["pair_row_id"])
@@ -686,6 +1006,7 @@ def plan_standard_campaign_4h_handoff(
             cycle_id=cycle_id,
             factory_run_id=factory_run_id,
             candidates=candidates,
+            eligible_token_slot_ids=tuple(eligible_ids),
         )
         if verified["planned_by_slot"] != planned_by_slot:
             raise ValueError("standard four-hour planned-slot read-back mismatch")
@@ -694,13 +1015,7 @@ def plan_standard_campaign_4h_handoff(
         raise
     else:
         connection.commit()
-    return {
-        "planned": True,
-        "replay": False,
-        **verified,
-        "budget": budget,
-    }
-
+    return {"planned": True, "replay": False, **verified, "budget": budget}
 
 def close_current_run_4h(
     connection: sqlite3.Connection,

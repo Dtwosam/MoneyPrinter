@@ -981,19 +981,39 @@ def persist_standard_four_hour_handoff_set(
     run_id: str,
     cycle_id: str,
     candidates: Sequence[Mapping[str, Any]],
+    eligible_token_slot_ids: Sequence[str] | None = None,
     now: str | None = None,
 ) -> dict[str, Any]:
-    """Atomically persist the exact two-slot standard 1h -> 4h ownership handoff.
+    """Persist the exact eligible subset of the standard two-slot 1h -> 4h handoff.
 
-    Slice B1 owns campaign WINDOW_4H successor identity and token-slot
-    advancement only. It creates no Scheduler jobs and performs no source work.
-    The SAVEPOINT keeps this primitive composable inside the later B2
-    caller-owned transaction.
+    The campaign identity remains exactly two owned slots.  Only slots in the
+    explicit eligible subset receive WINDOW_4H ownership.  ``None`` preserves
+    the historical all-eligible caller contract.  This B1 primitive creates no
+    Scheduler jobs and performs no source work.
     """
     if len(candidates) != 2:
         raise CampaignOwnershipError(
             f"standard four-hour handoff requires exactly two candidates; found {len(candidates)}"
         )
+    candidate_ids = [
+        _required(candidate.get("token_slot_id"), "token_slot_id")
+        for candidate in candidates
+    ]
+    if len(set(candidate_ids)) != 2:
+        raise CampaignOwnershipError("standard four-hour candidates must own two distinct slots")
+    if eligible_token_slot_ids is None:
+        eligible_ids = set(candidate_ids)
+    else:
+        requested = [
+            _required(slot_id, "eligible_token_slot_id")
+            for slot_id in eligible_token_slot_ids
+        ]
+        if len(requested) != len(set(requested)):
+            raise CampaignOwnershipError("four-hour eligible token-slot set contains duplicates")
+        eligible_ids = set(requested)
+        if not eligible_ids.issubset(set(candidate_ids)):
+            raise CampaignOwnershipError("four-hour eligible token-slot set is not campaign-owned")
+
     campaign = _required(campaign_id, "campaign_id")
     run = _required(run_id, "run_id")
     cycle = _required(cycle_id, "cycle_id")
@@ -1031,24 +1051,18 @@ def persist_standard_four_hour_handoff_set(
                 "standard four-hour handoff requires the exact two-slot ownership set"
             )
         slot_by_id = {str(row[0]): row for row in slot_rows}
+        if set(candidate_ids) != set(slot_by_id):
+            raise CampaignOwnershipError(
+                "four-hour handoff candidates do not cover both token slots"
+            )
+
         prepared: list[dict[str, Any]] = []
-        candidate_slot_ids: set[str] = set()
         successor_ids: set[str] = set()
         handoff_modes: set[str] = set()
 
         for candidate in candidates:
             slot_id = _required(candidate.get("token_slot_id"), "token_slot_id")
-            if slot_id in candidate_slot_ids or slot_id not in slot_by_id:
-                raise CampaignOwnershipError(
-                    "four-hour handoff candidate token-slot set mismatch"
-                )
-            candidate_slot_ids.add(slot_id)
             slot = slot_by_id[slot_id]
-            state = str(slot[6])
-            if state not in {"WINDOW_1H_CLOSED", "WINDOW_4H_CONTINUING"}:
-                raise CampaignOwnershipError(
-                    f"pre-four-hour token state conflict for {slot_id}: {state}"
-                )
             try:
                 token_row_id = int(candidate.get("token_row_id"))
                 pair_row_id = int(candidate.get("pair_row_id"))
@@ -1069,11 +1083,7 @@ def persist_standard_four_hour_handoff_set(
                 candidate.get("campaign_window_4h_id"), "campaign_window_4h_id"
             )
             tracking_lane = _required(candidate.get("tracking_lane"), "tracking_lane")
-            if successor_id in successor_ids:
-                raise CampaignOwnershipError(
-                    "four-hour handoff successor identity is duplicated"
-                )
-            successor_ids.add(successor_id)
+            state = str(slot[6])
             if (
                 int(slot[1]) != token_row_id
                 or int(slot[2]) != pair_row_id
@@ -1084,6 +1094,44 @@ def persist_standard_four_hour_handoff_set(
                 raise CampaignOwnershipError(
                     f"four-hour handoff slot identity mismatch for {slot_id}"
                 )
+
+            slot_successors = connection.execute(
+                """SELECT window_id FROM printer_memory_factory_campaign_windows
+                   WHERE campaign_id=? AND run_id=? AND cycle_id=?
+                     AND token_slot_id=? AND window_kind='WINDOW_4H'
+                   ORDER BY window_id""",
+                (campaign, run, cycle, slot_id),
+            ).fetchall()
+            scoped_successor_ids = {str(row[0]) for row in slot_successors}
+            existing_named = connection.execute(
+                "SELECT token_slot_id FROM printer_memory_factory_campaign_windows WHERE window_id=?",
+                (successor_id,),
+            ).fetchone()
+
+            if slot_id not in eligible_ids:
+                if state == "WINDOW_4H_CONTINUING":
+                    raise CampaignOwnershipError(
+                        f"ineligible four-hour slot is already continuing: {slot_id}"
+                    )
+                if scoped_successor_ids:
+                    raise CampaignOwnershipError(
+                        f"ineligible four-hour slot has a successor: {slot_id}"
+                    )
+                if existing_named is not None:
+                    raise CampaignOwnershipError(
+                        f"ineligible four-hour successor identity is already owned: {successor_id}"
+                    )
+                continue
+
+            if state not in {"WINDOW_1H_CLOSED", "WINDOW_4H_CONTINUING"}:
+                raise CampaignOwnershipError(
+                    f"pre-four-hour token state conflict for {slot_id}: {state}"
+                )
+            if successor_id in successor_ids:
+                raise CampaignOwnershipError(
+                    "four-hour handoff successor identity is duplicated"
+                )
+            successor_ids.add(successor_id)
 
             predecessor = connection.execute(
                 """SELECT campaign_id, run_id, cycle_id, token_slot_id,
@@ -1187,14 +1235,6 @@ def persist_standard_four_hour_handoff_set(
                    WHERE window_id=?""",
                 (successor_id,),
             ).fetchone()
-            slot_successors = connection.execute(
-                """SELECT window_id FROM printer_memory_factory_campaign_windows
-                   WHERE campaign_id=? AND run_id=? AND cycle_id=?
-                     AND token_slot_id=? AND window_kind='WINDOW_4H'
-                   ORDER BY window_id""",
-                (campaign, run, cycle, slot_id),
-            ).fetchall()
-            scoped_successor_ids = {str(row[0]) for row in slot_successors}
             if existing is None:
                 if state != "WINDOW_1H_CLOSED" or scoped_successor_ids:
                     raise CampaignOwnershipError(
@@ -1237,11 +1277,7 @@ def persist_standard_four_hour_handoff_set(
                 }
             )
 
-        if candidate_slot_ids != set(slot_by_id):
-            raise CampaignOwnershipError(
-                "four-hour handoff candidates do not cover both token slots"
-            )
-        if len(handoff_modes) != 1:
+        if len(handoff_modes) > 1:
             raise CampaignOwnershipError(
                 "partial standard four-hour handoff cannot be replayed or completed"
             )
@@ -1286,7 +1322,10 @@ def persist_standard_four_hour_handoff_set(
                ORDER BY token_slot_id""",
             (campaign, run, cycle),
         ).fetchall()
-        if len(verify_rows) != 2 or {str(row[0]) for row in verify_rows} != successor_ids:
+        if (
+            len(verify_rows) != len(eligible_ids)
+            or {str(row[0]) for row in verify_rows} != successor_ids
+        ):
             raise CampaignOwnershipError(
                 "standard four-hour successor read-back count/identity mismatch"
             )
@@ -1316,15 +1355,24 @@ def persist_standard_four_hour_handoff_set(
                     f"standard four-hour token-state read-back mismatch for {item['token_slot_id']}"
                 )
 
-        replay = handoff_modes == {"REPLAY"}
-        connection.execute(
-            "RELEASE SAVEPOINT printer_standard_four_hour_handoff"
-        )
+        for slot_id in set(candidate_ids) - eligible_ids:
+            slot_state = connection.execute(
+                """SELECT token_state FROM printer_memory_factory_campaign_token_slots
+                   WHERE token_slot_id=? AND campaign_id=? AND run_id=? AND cycle_id=?""",
+                (slot_id, campaign, run, cycle),
+            ).fetchone()
+            if slot_state is None or str(slot_state[0]) == "WINDOW_4H_CONTINUING":
+                raise CampaignOwnershipError(
+                    f"ineligible four-hour token-state read-back mismatch for {slot_id}"
+                )
+
+        replay = bool(eligible_ids) and handoff_modes == {"REPLAY"}
+        connection.execute("RELEASE SAVEPOINT printer_standard_four_hour_handoff")
         savepoint_active = False
         return {
             "persisted": not replay,
             "replay": replay,
-            "continuation_count": 2,
+            "continuation_count": len(eligible_ids),
             "window_ids": sorted(successor_ids),
         }
     except sqlite3.Error as exc:

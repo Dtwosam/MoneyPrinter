@@ -4711,30 +4711,65 @@ def _standard_campaign_four_hour_terminal_validation(
     run_id: str | None,
     cycle_id: str | None,
 ) -> dict[str, Any]:
-    """Validate the exact B2 two-window WINDOW_4H campaign set categorically."""
+    """Validate standard 4h terminal truth against the durable eligible subset."""
     if not all((campaign_id, run_id, cycle_id, factory_run_id)):
         return {"enabled": False, "complete": True, "reasons": [], "per_token": []}
+
+    from printer_v1.operator_cli.one_token_4h_runtime import (
+        load_standard_four_hour_eligibility_manifests,
+    )
+
+    try:
+        manifests = load_standard_four_hour_eligibility_manifests(
+            conn,
+            campaign_id=str(campaign_id),
+            run_id=str(run_id),
+            cycle_id=str(cycle_id),
+            factory_run_id=str(factory_run_id),
+        )
+    except Exception as exc:
+        return {
+            "enabled": True,
+            "complete": False,
+            "reasons": [f"standard_four_hour_eligibility_manifest_invalid:{exc}"],
+            "per_token": [],
+            "expected_continuation_count": 0,
+            "window_count": 0,
+            "active_owned_four_hour_work": 0,
+            "nonterminal_owned_four_hour_windows": 0,
+        }
+
     windows = conn.execute(
         """SELECT w.*,s.slot_ordinal,s.token_state,s.token_row_id AS slot_token_row_id,
                   s.pair_row_id AS slot_pair_row_id
            FROM printer_memory_factory_campaign_windows AS w
            JOIN printer_memory_factory_campaign_token_slots AS s
              ON s.token_slot_id=w.token_slot_id
-            AND s.campaign_id=w.campaign_id
-            AND s.run_id=w.run_id
-            AND s.cycle_id=w.cycle_id
+            AND s.campaign_id=w.campaign_id AND s.run_id=w.run_id AND s.cycle_id=w.cycle_id
            WHERE w.campaign_id=? AND w.run_id=? AND w.cycle_id=?
              AND w.window_kind='WINDOW_4H'
            ORDER BY s.slot_ordinal,w.window_id""",
         (str(campaign_id), str(run_id), str(cycle_id)),
     ).fetchall()
-    if not windows:
+    if manifests is None and not windows:
         return {"enabled": False, "complete": True, "reasons": [], "per_token": []}
 
+    manifest_mode = manifests is not None
+    expected_slot_ids = (
+        {slot_id for slot_id, manifest in manifests.items() if manifest["eligible"] is True}
+        if manifests is not None
+        else {str(row["token_slot_id"]) for row in windows}
+    )
+    expected_continuation_count = len(expected_slot_ids) if manifest_mode else 2
     reasons: list[str] = []
-    if len(windows) != 2:
-        reasons.append(f"standard_window_4h_count:{len(windows)} expected=2")
-    if len({str(row["token_slot_id"]) for row in windows}) != len(windows):
+    actual_slot_ids = {str(row["token_slot_id"]) for row in windows}
+    if len(windows) != expected_continuation_count:
+        reasons.append(
+            f"standard_window_4h_count:{len(windows)} expected={expected_continuation_count}"
+        )
+    if manifest_mode and actual_slot_ids != expected_slot_ids:
+        reasons.append("standard_window_4h_slot_set_mismatch")
+    if len(actual_slot_ids) != len(windows):
         reasons.append("duplicate_standard_window_4h_slot_identity")
     if len({int(row["token_row_id"]) for row in windows}) != len(windows):
         reasons.append("duplicate_standard_window_4h_token_identity")
@@ -4743,37 +4778,36 @@ def _standard_campaign_four_hour_terminal_validation(
         "CLEAN_PROMOTED", "DIRTY", "NO_PROMOTION", "ALREADY_EXISTS_IDEMPOTENT"
     }
     per_token: list[dict[str, Any]] = []
+    expected_owned_total = 0
     for window in windows:
         window_reasons: list[str] = []
+        slot_id = str(window["token_slot_id"])
         token_id = int(window["token_row_id"])
         pair_id = int(window["pair_row_id"])
+        if manifest_mode and slot_id not in expected_slot_ids:
+            window_reasons.append("unexpected_4h_window_for_ineligible_slot")
         if (
             int(window["slot_token_row_id"]) != token_id
             or int(window["slot_pair_row_id"]) != pair_id
         ):
             window_reasons.append("slot_token_pair_identity_mismatch")
         owned = conn.execute(
-            """SELECT s.*,j.status AS scheduler_status,sw.work_state,
-                      sw.scheduler_work_id
+            """SELECT s.*,j.status AS scheduler_status,sw.work_state,sw.scheduler_work_id
                FROM printer_memory_factory_campaign_scheduler_work AS sw
                JOIN printer_memory_factory_run_steps AS s
                  ON s.scheduler_job_id=sw.scheduler_job_id
                JOIN printer_scheduler_jobs AS j ON j.id=sw.scheduler_job_id
                WHERE sw.campaign_id=? AND sw.run_id=? AND sw.cycle_id=?
-                 AND sw.factory_run_id=? AND sw.window_id=?
-                 AND sw.token_slot_id=?
+                 AND sw.factory_run_id=? AND sw.window_id=? AND sw.token_slot_id=?
                  AND sw.ownership_contract_version='V2_STAGE_SCOPED'
-                 AND sw.work_scope='WINDOW_LIFECYCLE'
-                 AND sw.stage_id='WINDOW_4H'
-                 AND sw.target_category='CAMPAIGN_WINDOW'
-                 AND sw.target_identity=sw.window_id
+                 AND sw.work_scope='WINDOW_LIFECYCLE' AND sw.stage_id='WINDOW_4H'
+                 AND sw.target_category='CAMPAIGN_WINDOW' AND sw.target_identity=sw.window_id
                  AND s.run_id=? AND s.token_id=? AND s.pair_id=?
                  AND s.step_kind IN ('LONG_CONTINUATION_SNAPSHOT','LONG_CONTINUATION_CLOSE')
                ORDER BY s.scheduled_for,s.id""",
             (
                 str(campaign_id), str(run_id), str(cycle_id), str(factory_run_id),
-                str(window["window_id"]), str(window["token_slot_id"]),
-                str(factory_run_id), token_id, pair_id,
+                str(window["window_id"]), slot_id, str(factory_run_id), token_id, pair_id,
             ),
         ).fetchall()
         lanes = {str(row["tracking_lane"]) for row in owned}
@@ -4783,12 +4817,16 @@ def _standard_campaign_four_hour_terminal_validation(
             expected = 0
         else:
             try:
-                expected = int(
-                    _cadence_get_policy("WINDOW_4H", lane).minimum_required_snapshots
-                )
+                policy = _cadence_get_policy("WINDOW_4H", lane)
+                if policy is None:
+                    raise ValueError("missing policy")
+                expected = int(policy.minimum_required_snapshots)
             except Exception:
                 expected = 0
                 window_reasons.append("missing_4h_cadence_policy")
+        expected_owned_total += expected
+        if expected and len(owned) != expected:
+            window_reasons.append(f"owned_4h_work_count:{len(owned)} expected={expected}")
         actual = sum(1 for row in owned if row["snapshot_id"] is not None)
         if expected and actual != expected:
             window_reasons.append(f"incomplete_4h_collection:{actual}/{expected}")
@@ -4808,7 +4846,10 @@ def _standard_campaign_four_hour_terminal_validation(
                 window_reasons.append(
                     f"owned_4h_close_campaign_work_not_succeeded:{close['work_state']}"
                 )
-        memory_id = int(window["memory_window_row_id"]) if window["memory_window_row_id"] is not None else None
+        memory_id = (
+            int(window["memory_window_row_id"])
+            if window["memory_window_row_id"] is not None else None
+        )
         if memory_id is None:
             window_reasons.append("missing_bound_4h_memory_window")
             physical = None
@@ -4860,7 +4901,7 @@ def _standard_campaign_four_hour_terminal_validation(
             {
                 "token_id": token_id,
                 "pair_id": pair_id,
-                "token_slot_id": str(window["token_slot_id"]),
+                "token_slot_id": slot_id,
                 "window_id": str(window["window_id"]),
                 "tracking_lane": lane,
                 "expected_snapshots": expected,
@@ -4873,6 +4914,56 @@ def _standard_campaign_four_hour_terminal_validation(
             }
         )
         reasons.extend(f"{window['window_id']}:{reason}" for reason in window_reasons)
+
+    if manifest_mode and manifests is not None:
+        for slot_id, manifest in manifests.items():
+            if manifest["eligible"] is True:
+                continue
+            token_id = int(manifest["token_id"])
+            pair_id = int(manifest["pair_id"])
+            long_count = int(conn.execute(
+                """SELECT COUNT(*) FROM printer_memory_factory_run_steps
+                   WHERE run_id=? AND token_id=? AND pair_id=?
+                     AND step_kind LIKE 'LONG_CONTINUATION_%'""",
+                (str(factory_run_id), token_id, pair_id),
+            ).fetchone()[0])
+            owned_count = int(conn.execute(
+                """SELECT COUNT(*) FROM printer_memory_factory_campaign_scheduler_work
+                   WHERE campaign_id=? AND run_id=? AND cycle_id=? AND factory_run_id=?
+                     AND token_slot_id=? AND ownership_contract_version='V2_STAGE_SCOPED'
+                     AND work_scope='WINDOW_LIFECYCLE' AND stage_id='WINDOW_4H'""",
+                (str(campaign_id), str(run_id), str(cycle_id), str(factory_run_id), slot_id),
+            ).fetchone()[0])
+            if long_count:
+                reasons.append(f"ineligible_slot_long_work:{slot_id}:{long_count}")
+            if owned_count:
+                reasons.append(f"ineligible_slot_owned_4h_work:{slot_id}:{owned_count}")
+
+    total_long = int(conn.execute(
+        """SELECT COUNT(*) FROM printer_memory_factory_run_steps
+           WHERE run_id=? AND step_kind LIKE 'LONG_CONTINUATION_%'""",
+        (str(factory_run_id),),
+    ).fetchone()[0])
+    total_owned = int(conn.execute(
+        """SELECT COUNT(*) FROM printer_memory_factory_campaign_scheduler_work
+           WHERE campaign_id=? AND run_id=? AND cycle_id=? AND factory_run_id=?
+             AND ownership_contract_version='V2_STAGE_SCOPED'
+             AND work_scope='WINDOW_LIFECYCLE' AND stage_id='WINDOW_4H'""",
+        (str(campaign_id), str(run_id), str(cycle_id), str(factory_run_id)),
+    ).fetchone()[0])
+    if manifest_mode:
+        if total_long != expected_owned_total:
+            reasons.append(f"standard_long_work_count:{total_long} expected={expected_owned_total}")
+        if total_owned != expected_owned_total:
+            reasons.append(f"standard_owned_4h_work_count:{total_owned} expected={expected_owned_total}")
+        later = int(conn.execute(
+            """SELECT COUNT(*) FROM printer_memory_factory_campaign_windows
+               WHERE campaign_id=? AND run_id=? AND cycle_id=?
+                 AND window_kind IN ('WINDOW_12H','WINDOW_24H')""",
+            (str(campaign_id), str(run_id), str(cycle_id)),
+        ).fetchone()[0])
+        if later:
+            reasons.append(f"unexpected_later_window_count:{later}")
 
     active_owned = int(conn.execute(
         """SELECT COUNT(*) FROM printer_memory_factory_campaign_scheduler_work
@@ -4897,11 +4988,12 @@ def _standard_campaign_four_hour_terminal_validation(
         "complete": not reasons,
         "reasons": reasons,
         "per_token": per_token,
+        "expected_continuation_count": expected_continuation_count,
+        "eligibility_manifest_present": manifest_mode,
         "active_owned_four_hour_work": active_owned,
         "nonterminal_owned_four_hour_windows": nonterminal_windows,
         "window_count": len(windows),
     }
-
 
 def _two_token_continuous_proof_validation(
     *,
