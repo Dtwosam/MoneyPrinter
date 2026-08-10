@@ -1,0 +1,81 @@
+name: Printer V1 standard 4h final public wiring independent proof
+
+on:
+  pull_request:
+    branches:
+      - agent/v2-9-8b-post-dtw100-standard-four-hour-activation-final-public-wiring-independent-proof-base
+
+permissions:
+  contents: read
+
+jobs:
+  exact-head-proof:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 99cb46d7c79a07992d0c69bb9ef27bcfcc87feaa
+          fetch-depth: 0
+      - name: Assert exact clean committed head
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "99cb46d7c79a07992d0c69bb9ef27bcfcc87feaa"
+          test -z "$(git status --porcelain)"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e .
+      - name: Compile exact affected files
+        run: |
+          python -m py_compile \
+            src/printer_v1/operator_cli/operational_memory_factory_command.py \
+            src/printer_v1/operator_cli/authoritative_live_operational_campaign.py \
+            tests/test_v2_9_8b_post_dtw100_standard_four_hour_activation_final_public_wiring.py
+      - name: Prove final public wiring contract
+        run: python -m unittest -v tests.test_v2_9_8b_post_dtw100_standard_four_hour_activation_final_public_wiring
+      - name: Prove activation authorization and factory barrier
+        run: |
+          python -m unittest -v \
+            tests.test_v2_9_8b_post_dtw100_standard_four_hour_activation_authorization \
+            tests.test_v2_9_8b_post_dtw100_standard_four_hour_activation_factory_barrier
+      - name: Prove public command and live-owner nearest regressions
+        run: |
+          python -m unittest -v \
+            tests.test_v2_9_8a_public_operational_command \
+            tests.test_v2_9_7e_11_authoritative_live_operational_campaign
+      - name: Prove policy and capability locks
+        run: |
+          python - <<'PY'
+          import inspect
+          from printer_v1.operator_cli import operational_memory_factory_command as command
+          from printer_v1.operator_cli import authoritative_live_operational_campaign as live
+          from printer_v1.snapshots.cadence_policy import get_policy
+
+          p = command.STANDARD_FOUR_HOUR_POLICY
+          assert p.policy_version == command.STANDARD_FOUR_HOUR_POLICY_VERSION
+          assert p.selective_1h_continuation is True
+          assert p.continuous_four_hour is True
+          assert p.standard_four_hour_campaign is True
+          assert p.locked_windows == ('WINDOW_12H','WINDOW_24H')
+          assert p.governed_request_ceiling == 230
+          assert p.scheduler_row_ceiling == 210
+          command_src = inspect.getsource(command._run_operational_campaign)
+          owner_src = inspect.getsource(live.AuthoritativeLiveOperationalCampaignOwner.run_operational)
+          assert 'build_standard_four_hour_preflight' in command_src
+          assert 'validated_authorization_runtime_facts' in command_src
+          assert 'standard_four_hour_campaign=policy.standard_four_hour_campaign' in command_src
+          assert '"standard_four_hour_campaign": (' in command_src
+          assert 'operational_persistent_mode=fifteen_minute_only' in owner_src
+          assert 'not fifteen_minute_only or standard_four_hour_campaign' in owner_src
+          assert 'not fifteen_minute_only and not standard_four_hour_campaign' in owner_src
+          for lane in ('TRACK_FAST','TRACK_NORMAL'):
+              assert get_policy('WINDOW_4H', lane).enabled_for_real_collection is True
+              assert get_policy('WINDOW_12H', lane).enabled_for_real_collection is False
+              assert get_policy('WINDOW_24H', lane).enabled_for_real_collection is False
+          PY
+      - name: Assert read-only tracked tree
+        run: |
+          set -euo pipefail
+          git diff --check
+          test -z "$(git status --porcelain)"
+          test "$(git rev-parse HEAD)" = "99cb46d7c79a07992d0c69bb9ef27bcfcc87feaa"
