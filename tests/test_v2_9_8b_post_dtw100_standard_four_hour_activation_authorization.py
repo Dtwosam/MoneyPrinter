@@ -31,7 +31,7 @@ class StandardAuthorizationFixture:
         self._git("init")
         self._git("config", "user.email", "tests@example.invalid")
         self._git("config", "user.name", "Standard 4h Tests")
-        (self.repo / ".gitignore").write_text("*.sqlite3\n", encoding="utf-8")
+        (self.repo / ".gitignore").write_text("*.sqlite3\n.venv/\n", encoding="utf-8")
         (self.repo / "tracked.txt").write_text("clean\n", encoding="utf-8")
         self._git("add", ".")
         self._git("commit", "-m", "baseline")
