@@ -1,3 +1,3 @@
 Disposable Slice C GREEN trigger only.
 Do not merge.
-Diagnostic rerun for authoritative first-hour gate facts.
+Rerun with exact physical 1h close safety cutoff.
