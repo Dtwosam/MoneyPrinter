@@ -1,4 +1,4 @@
-name: V2-9.8B checkpoint 1 atomic handoff active patcher
+name: V2-9.8B checkpoint 1 replay guard patcher
 
 on:
   pull_request:
@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   patch:
-    if: contains(github.event.pull_request.title, 'APPLY checkpoint1')
+    if: contains(github.event.pull_request.title, 'APPLY checkpoint1 replay guard')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout implementation branch
@@ -16,53 +16,35 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
-      - name: Apply reviewed checkpoint 1 repair
+      - name: Remove premature global handoff state guard
         env:
           TARGET_BRANCH: ${{ github.event.pull_request.head.ref }}
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
-          git fetch origin "${BASE_REF}"
-          git show FETCH_HEAD:.github/workflows/v2-9-8b-first-hour-alignment-apply-implementation.yml > /tmp/checkpoint1-source.yml
           python - <<'PY'
           from pathlib import Path
-          text = Path('/tmp/checkpoint1-source.yml').read_text(encoding='utf-8')
-          start = "          python - <<'PY'\n"
-          end = "\n          PY\n"
-          if text.count(start) != 1:
-              raise SystemExit('checkpoint patch source start marker drift')
-          body = text.split(start, 1)[1]
-          if end not in body:
-              raise SystemExit('checkpoint patch source end marker drift')
-          body = body.split(end, 1)[0]
-          output = []
-          in_embedded_literal = False
-          for line in body.splitlines():
-              if in_embedded_literal:
-                  output.append(line)
-                  if line.strip() == "'''":
-                      in_embedded_literal = False
-                  continue
-              normalized = line[10:] if line.startswith('          ') else line
-              output.append(normalized)
-              if ("= r'''" in normalized or "= '''" in normalized) and normalized.count("'''") % 2 == 1:
-                  in_embedded_literal = True
-          if in_embedded_literal:
-              raise SystemExit('unterminated embedded source literal')
-          Path('/tmp/checkpoint1_patch.py').write_text('\n'.join(output) + '\n', encoding='utf-8')
+          path = Path('src/printer_v1/operator_cli/operational_selective_1h.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''    allowed_pre_handoff_states = {
+        "SELECTED", "WINDOW_15M_ACTIVE", "WINDOW_15M_CLOSED"
+    }
+    for slot in slots:
+        token_state = str(slot.get("token_state") or "")
+        if token_state not in allowed_pre_handoff_states:
+            raise Selective1hError(
+                f"pre-handoff token state conflict for {slot['token_slot_id']}: {token_state}"
+            )
+
+'''
+          if text.count(old) != 1:
+              raise SystemExit(f'guard drift: expected one block, found {text.count(old)}')
+          path.write_text(text.replace(old, '', 1), encoding='utf-8')
           PY
-          python -m py_compile /tmp/checkpoint1_patch.py
-          python /tmp/checkpoint1_patch.py
           python -m py_compile \
             src/printer_v1/operator_cli/campaign_ownership.py \
             src/printer_v1/operator_cli/operational_selective_1h.py
           git diff --check
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          if git diff --quiet; then
-            exit 0
-          fi
-          git add \
-            src/printer_v1/operator_cli/campaign_ownership.py \
-            src/printer_v1/operator_cli/operational_selective_1h.py
-          git commit -m 'Repair atomic clean 15m to 1h handoff'
+          git add src/printer_v1/operator_cli/operational_selective_1h.py
+          git commit -m 'Preserve first-hour handoff replay idempotency'
           git push origin HEAD:${TARGET_BRANCH}
