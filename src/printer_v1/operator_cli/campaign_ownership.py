@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -2121,7 +2122,10 @@ def project_campaign_scheduler_work(
     timestamp = now or _utc_now()
 
     try:
-        with connection:
+        transaction_context = (
+            connection if not connection.in_transaction else nullcontext(connection)
+        )
+        with transaction_context:
             existing = connection.execute(
                 f"""SELECT work_state, first_terminal_cause, terminal_at,
                     {", ".join(_PROJECTION_IDENTITY_COLUMNS)}
