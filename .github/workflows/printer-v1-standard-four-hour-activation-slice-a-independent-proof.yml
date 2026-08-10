@@ -1,0 +1,101 @@
+name: Printer V1 standard 4h activation Slice A independent proof
+
+on:
+  pull_request:
+    branches:
+      - agent/v2-9-8b-post-dtw100-standard-four-hour-activation-slice-a-independent-proof-base
+
+permissions:
+  contents: read
+
+jobs:
+  exact-head-proof:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact production head
+        uses: actions/checkout@v4
+        with:
+          ref: 4a6ab45fab8b32c0ca976207020436598e49e8b1
+          fetch-depth: 0
+
+      - name: Assert exact clean head
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "4a6ab45fab8b32c0ca976207020436598e49e8b1"
+          test -z "$(git status --porcelain)"
+          test -z "$(git ls-files '.github/workflows/printer-v1-standard-four-hour-activation-slice-a-independent-proof.yml')"
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install project
+        run: python -m pip install -e .
+
+      - name: Compile directly affected modules
+        run: |
+          python -m py_compile \
+            src/printer_v1/operator_cli/operational_memory_factory_command.py \
+            src/printer_v1/operator_cli/one_token_4h_runtime.py \
+            src/printer_v1/operator_cli/operational_standard_4h.py \
+            src/printer_v1/operator_cli/standard_four_hour_one_shot_wrapper.py \
+            src/printer_v1/operator_cli/git_provenance_authorization_manifest.py \
+            src/printer_v1/operator_cli/window_15m_child_terminal.py \
+            src/printer_v1/snapshots/cadence_policy.py \
+            src/printer_v1/snapshots/lifecycle_continuity.py \
+            tests/test_v2_9_8b_post_dtw100_standard_four_hour_operational_activation.py \
+            tests/test_v2_9_8b_post_dtw100_standard_four_hour_campaign_planning.py
+
+      - name: Run exact-head activation contract
+        run: python -m unittest -v tests.test_v2_9_8b_post_dtw100_standard_four_hour_operational_activation
+
+      - name: Run exact-head directly affected regressions
+        run: |
+          python -m unittest -v \
+            tests.test_v2_9_8b_post_dtw100_standard_four_hour_eligible_subset \
+            tests.test_v2_9_8b_post_dtw100_standard_four_hour_campaign_handoff \
+            tests.test_v2_9_8b_post_dtw100_standard_four_hour_campaign_planning \
+            tests.test_v2_9_8b_post_dtw100_standard_four_hour_policy_capacity \
+            tests.test_v2_9_8b_post_dtw100_standard_four_hour_collection_state_accounting \
+            tests.test_v2_9_8b_post_dtw100_standard_four_hour_close_memory_terminal_reconciliation \
+            tests.test_v2_9_8b_window_15m_one_shot_wrapper.ChildInterpreterSelectorUnitTests \
+            tests.test_v2_9_8b_window_15m_one_shot_wrapper.LauncherShapeTests \
+            tests.test_v2_9_7d_4a_token_local_selective_continuation
+
+      - name: Assert capability and authority locks
+        run: |
+          python - <<'PY'
+          import sqlite3
+          from tests.test_v2_9_8b_post_dtw100_standard_four_hour_campaign_planning import StandardFourHourCampaignPlanningTests
+          from printer_v1.operator_cli import one_token_4h_runtime as four
+          from printer_v1.operator_cli import operational_memory_factory_command as command
+          from printer_v1.snapshots.cadence_policy import get_policy
+
+          assert command.STANDARD_FOUR_HOUR_MODE == "standard-four-hour-run"
+          assert command.STANDARD_FOUR_HOUR_POLICY.locked_windows == ("WINDOW_12H", "WINDOW_24H")
+          for lane in ("TRACK_FAST", "TRACK_NORMAL"):
+              assert get_policy("WINDOW_4H", lane).enabled_for_real_collection is True
+              assert get_policy("WINDOW_12H", lane).enabled_for_real_collection is False
+              assert get_policy("WINDOW_24H", lane).enabled_for_real_collection is False
+          fx, candidates = StandardFourHourCampaignPlanningTests()._prepared()
+          try:
+              try:
+                  four.plan_standard_campaign_4h_handoff(
+                      fx.connection,
+                      campaign_id="campaign-1h",
+                      run_id="run-1h",
+                      cycle_id="cycle-1h",
+                      factory_run_id="factory-run-1",
+                      candidates=candidates,
+                  )
+              except ValueError as exc:
+                  assert "explicit STANDARD_CAMPAIGN authority" in str(exc)
+              else:
+                  raise AssertionError("cadence=true unexpectedly granted standard planning authority")
+          finally:
+              fx.close()
+          PY
+          git diff --check
+          test -z "$(git status --porcelain)"
