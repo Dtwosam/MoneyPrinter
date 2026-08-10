@@ -20,14 +20,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Verify exact amended RED parent
+      - name: Verify exact final RED parent
         run: |
           echo "TRIGGER_HEAD=$(git rev-parse HEAD)"
           echo "RED_PARENT=$(git rev-parse HEAD^)"
-          test "$(git rev-parse HEAD^)" = "b9080a69430ea486fc81fe7d188d5b61bb82ce85"
+          test "$(git rev-parse HEAD^)" = "0fc4121e972c568845b6c66975c015d96aa4985b"
           test "$(git diff --name-only HEAD^ HEAD)" = ".github/v2-9-8b-post-dtw100-standard-four-hour-close-memory-terminal-implementation-trigger.txt"
-          git checkout b9080a69430ea486fc81fe7d188d5b61bb82ce85
-          test "$(git rev-parse HEAD)" = "b9080a69430ea486fc81fe7d188d5b61bb82ce85"
+          git checkout 0fc4121e972c568845b6c66975c015d96aa4985b
+          test "$(git rev-parse HEAD)" = "0fc4121e972c568845b6c66975c015d96aa4985b"
           test -z "$(git status --porcelain --untracked-files=no)"
       - name: Apply approved two-file repair
         run: |
