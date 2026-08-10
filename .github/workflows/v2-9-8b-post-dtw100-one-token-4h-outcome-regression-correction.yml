@@ -1,0 +1,42 @@
+name: V2-9.8B post-DTW100 one-token 4h outcome regression correction
+
+on:
+  pull_request:
+
+permissions:
+  contents: write
+
+env:
+  PYTHONPATH: src
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact RED parent
+        run: |
+          test "$(git rev-parse HEAD^)" = "b9080a69430ea486fc81fe7d188d5b61bb82ce85"
+          test "$(git diff --name-only HEAD^ HEAD)" = ".github/v2-9-8b-post-dtw100-one-token-4h-outcome-regression-correction-trigger.txt"
+          git checkout b9080a69430ea486fc81fe7d188d5b61bb82ce85
+      - name: Apply test-only correction
+        run: |
+          git fetch origin agent/v2-9-8b-post-dtw100-one-token-4h-outcome-regression-correction-base --depth=1
+          git show FETCH_HEAD:.github/scripts/apply_one_token_4h_outcome_regression_correction.py > /tmp/apply_test_fix.py
+          python /tmp/apply_test_fix.py
+          test "$(git diff --name-only)" = "tests/test_v2_8_1_one_token_4h_runtime.py"
+          git diff --check
+          python -m py_compile tests/test_v2_8_1_one_token_4h_runtime.py
+      - name: Commit test-only correction
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tests/test_v2_8_1_one_token_4h_runtime.py
+          git commit -m "Align one-token four-hour replay with outcome boundary"
+          git push origin HEAD:agent/v2-9-8b-post-dtw100-standard-four-hour-campaign-integration-implementation
