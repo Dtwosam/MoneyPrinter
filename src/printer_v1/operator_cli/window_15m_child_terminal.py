@@ -325,8 +325,8 @@ def build_child_terminal_envelope(
     exit_code: int,
     success: bool,
 ) -> dict[str, Any]:
-    if mode != "run":
-        raise ChildTerminalError("child terminal is valid only for ordinary run")
+    if mode not in CHILD_TERMINAL_MODE_SCHEMAS:
+        raise ChildTerminalError("child terminal mode is not authorized")
     if type(exit_code) is not int:
         raise ChildTerminalError("child terminal exit code must be an integer")
     if success is not (exit_code == 0):
@@ -386,7 +386,7 @@ def build_child_terminal_envelope(
         _find_key(source, "secondary_terminal_truth_error")
     )
     payload = {
-        "schema_version": CHILD_TERMINAL_SCHEMA_VERSION,
+        "schema_version": CHILD_TERMINAL_MODE_SCHEMAS[mode],
         "created_at": _utc_now(),
         "authorization_id": binding.authorization_id,
         "marker_path": str(binding.marker_path.resolve()),
@@ -554,6 +554,7 @@ def read_child_terminal_envelope(
     expected_marker_path: str | Path,
     expected_marker_sha256: str,
     expected_exit_code: int,
+    expected_mode: str = "run",
 ) -> dict[str, Any]:
     candidate = Path(path).expanduser()
     marker = Path(expected_marker_path).expanduser()
@@ -587,7 +588,10 @@ def read_child_terminal_envelope(
         raise ChildTerminalError(
             f"child terminal unknown fields: {','.join(unknown_fields)}"
         )
-    if payload.get("schema_version") != CHILD_TERMINAL_SCHEMA_VERSION:
+    expected_schema = CHILD_TERMINAL_MODE_SCHEMAS.get(expected_mode)
+    if expected_schema is None:
+        raise ChildTerminalError("expected child terminal mode is invalid")
+    if payload.get("schema_version") != expected_schema:
         raise ChildTerminalError("child terminal schema version is invalid")
     _validate_created_at(payload.get("created_at"))
     if payload.get("authorization_id") != expected_authorization_id:
@@ -610,7 +614,7 @@ def read_child_terminal_envelope(
         raise ChildTerminalError("child terminal marker SHA-256 binding mismatch")
     if _sha256_file(marker) != expected_marker_sha256:
         raise ChildTerminalError("application marker SHA-256 changed after validation")
-    if payload.get("mode") != "run":
+    if payload.get("mode") != expected_mode:
         raise ChildTerminalError("child terminal mode is invalid")
     if type(payload.get("process_exit_code")) is not int:
         raise ChildTerminalError("child terminal exit code is invalid")
@@ -694,6 +698,8 @@ __all__ = [
     "CHILD_TERMINAL_FIELDS",
     "CHILD_TERMINAL_FILENAME",
     "CHILD_TERMINAL_SCHEMA_VERSION",
+    "CHILD_TERMINAL_MODE_SCHEMAS",
+    "STANDARD_FOUR_HOUR_CHILD_TERMINAL_SCHEMA_VERSION",
     "TERMINAL_TRUTH_STATUSES",
     "ChildTerminalBinding",
     "ChildTerminalError",

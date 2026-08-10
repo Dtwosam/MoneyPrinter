@@ -73,6 +73,7 @@ from printer_v1.operator_cli.git_provenance import (
 )
 from printer_v1.operator_cli.git_provenance_authorization_manifest import (
     GitProvenanceAuthorizationError,
+    STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE,
     ValidatedGitProvenanceAuthorization,
     validate_git_provenance_authorization,
 )
@@ -193,7 +194,9 @@ GIT_PROVENANCE_MANIFEST_ENV_VARS = (
     "PRINTER_V1_APPLICATION_MARKER_PATH",
     "PRINTER_V1_APPLICATION_MARKER_SHA256",
 )
-GIT_PROVENANCE_MANIFEST_SUPPORTED_MODES = ("preflight-only", "run")
+GIT_PROVENANCE_MANIFEST_SUPPORTED_MODES = (
+    "preflight-only", "run", STANDARD_FOUR_HOUR_MODE
+)
 # Action-local run identity for blocked-command source accounting. Never inherit
 # a previous campaign's holder-ledger totals into a different public action.
 _ACTION_RUN_CONTEXT: dict[str, Any] = {
@@ -664,14 +667,17 @@ def _resolve_git_provenance_authorization(
         else AUTHORITATIVE_DB.parent.parent
     )
     try:
-        return validate_git_provenance_authorization(
-            repository_root=root,
-            manifest_path=present["PRINTER_V1_GIT_PROVENANCE_MANIFEST_PATH"],
-            manifest_sha256=present["PRINTER_V1_GIT_PROVENANCE_MANIFEST_SHA256"],
-            marker_path=present["PRINTER_V1_APPLICATION_MARKER_PATH"],
-            marker_sha256=present["PRINTER_V1_APPLICATION_MARKER_SHA256"],
-            sidecar_untracked_paths=AUTHORITATIVE_SQLITE_RUNTIME_SIDECARS,
-        )
+        validation_kwargs = {
+            "repository_root": root,
+            "manifest_path": present["PRINTER_V1_GIT_PROVENANCE_MANIFEST_PATH"],
+            "manifest_sha256": present["PRINTER_V1_GIT_PROVENANCE_MANIFEST_SHA256"],
+            "marker_path": present["PRINTER_V1_APPLICATION_MARKER_PATH"],
+            "marker_sha256": present["PRINTER_V1_APPLICATION_MARKER_SHA256"],
+            "sidecar_untracked_paths": AUTHORITATIVE_SQLITE_RUNTIME_SIDECARS,
+        }
+        if mode == STANDARD_FOUR_HOUR_MODE:
+            validation_kwargs["profile"] = STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE
+        return validate_git_provenance_authorization(**validation_kwargs)
     except GitProvenanceAuthorizationError as exc:
         raise OperationalMemoryFactoryError(
             f"git provenance manifest authorization rejected: {exc}"
@@ -5632,27 +5638,31 @@ def main(argv: Iterable[str] | None = None) -> int:
         provenance_binding_values = tuple(
             os.environ.get(name) for name in GIT_PROVENANCE_MANIFEST_ENV_VARS
         )
-        if args.mode == "run" and not any(provenance_binding_values):
+        wrapper_bound_modes = {"run", STANDARD_FOUR_HOUR_MODE}
+        if args.mode in wrapper_bound_modes and not any(provenance_binding_values):
+            label = "ordinary run" if args.mode == "run" else "standard four-hour run"
             raise OperationalMemoryFactoryError(
-                "ordinary run requires external one-shot wrapper authorization"
+                f"{label} requires external one-shot wrapper authorization"
             )
-        if args.mode == "run" and all(provenance_binding_values):
+        if args.mode in wrapper_bound_modes and all(provenance_binding_values):
             child_terminal_binding = resolve_child_terminal_binding(os.environ)
-        elif args.mode != "run" and os.environ.get(CHILD_TERMINAL_ENV_VAR):
+        elif args.mode not in wrapper_bound_modes and os.environ.get(CHILD_TERMINAL_ENV_VAR):
             raise OperationalMemoryFactoryError(
-                "child terminal binding is accepted only for ordinary run"
+                "child terminal binding is accepted only for one-shot wrapper run modes"
             )
         # Read the four external manifest/marker bindings once and all-or-none.
         # Ordinary run is application-wrapper-only; auxiliary modes preserve
         # their existing no-binding behavior.
         git_provenance_authorization = _resolve_git_provenance_authorization(args.mode)
-        if args.mode == "run" and git_provenance_authorization is None:
+        if args.mode in wrapper_bound_modes and git_provenance_authorization is None:
+            label = "ordinary run" if args.mode == "run" else "standard four-hour run"
             raise OperationalMemoryFactoryError(
-                "ordinary run requires external one-shot wrapper authorization"
+                f"{label} requires external one-shot wrapper authorization"
             )
-        if args.mode == "run" and child_terminal_binding is None:
+        if args.mode in wrapper_bound_modes and child_terminal_binding is None:
+            label = "ordinary run" if args.mode == "run" else "standard four-hour run"
             raise OperationalMemoryFactoryError(
-                "ordinary run child terminal binding requires complete wrapper provenance"
+                f"{label} child terminal binding requires complete wrapper provenance"
             )
         if args.mode == STANDARD_FOUR_HOUR_MODE:
             raise OperationalMemoryFactoryError(
@@ -5692,11 +5702,11 @@ def main(argv: Iterable[str] | None = None) -> int:
                 campaign_id=args.campaign_id,
                 run_id=args.run_id,
             )
-        if args.mode == "run" and child_terminal_binding is not None:
+        if args.mode in wrapper_bound_modes and child_terminal_binding is not None:
             write_child_terminal_envelope(
                 binding=child_terminal_binding,
                 source=result,
-                mode="run",
+                mode=args.mode,
                 exit_code=0,
                 success=True,
             )
@@ -5711,7 +5721,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         action_cycle_id = _ACTION_RUN_CONTEXT.get("cycle_id")
         action_execution_id = _ACTION_RUN_CONTEXT.get("execution_id")
         baseline = _ACTION_RUN_CONTEXT.get("action_local_baseline")
-        campaign_modes = {"run", SELECTIVE_1H_MODE}
+        campaign_modes = {"run", SELECTIVE_1H_MODE, STANDARD_FOUR_HOUR_MODE}
         from printer_v1.operator_cli.action_local_terminal_truth import (
             build_action_local_terminal_truth,
             merge_action_local_into_exception_envelope,
@@ -5836,12 +5846,12 @@ def main(argv: Iterable[str] | None = None) -> int:
                 ),
                 "secondary_terminal_truth_error": None,
             }
-        if args.mode == "run" and child_terminal_binding is not None:
+        if args.mode in {"run", STANDARD_FOUR_HOUR_MODE} and child_terminal_binding is not None:
             try:
                 write_child_terminal_envelope(
                     binding=child_terminal_binding,
                     source=envelope,
-                    mode="run",
+                    mode=args.mode,
                     exit_code=1,
                     success=False,
                 )

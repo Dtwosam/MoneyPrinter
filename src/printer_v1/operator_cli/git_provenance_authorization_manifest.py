@@ -65,7 +65,16 @@ class GitAuthorizationProfile:
     authorization_package_root: str
     authorization_package_kind: str
     manifest_schema_version: str
+    historical_authorization_package_roots: tuple[str, ...]
 
+
+ORDINARY_AUTHORIZATION_PROFILE = GitAuthorizationProfile(
+    command_mode=REQUIRED_COMMAND_MODE,
+    authorization_package_root=AUTHORIZATION_PACKAGE_ROOT,
+    authorization_package_kind=AUTHORIZATION_PACKAGE_KIND,
+    manifest_schema_version=MANIFEST_SCHEMA_VERSION,
+    historical_authorization_package_roots=(AUTHORIZATION_PACKAGE_ROOT,),
+)
 
 STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE = GitAuthorizationProfile(
     command_mode="standard-four-hour-run",
@@ -74,7 +83,21 @@ STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE = GitAuthorizationProfile(
     ),
     authorization_package_kind="STANDARD_FOUR_HOUR_AUTHORIZATION_EVIDENCE",
     manifest_schema_version="PRINTER_V1_GIT_PROVENANCE_MANIFEST_STANDARD_4H_V1",
+    historical_authorization_package_roots=(
+        AUTHORIZATION_PACKAGE_ROOT,
+        "operator-runs/v2-9-8b-standard-four-hour-final-authorization",
+    ),
 )
+
+
+def _resolved_profile(
+    profile: GitAuthorizationProfile | None,
+) -> GitAuthorizationProfile:
+    if profile is None:
+        return ORDINARY_AUTHORIZATION_PROFILE
+    if profile not in (ORDINARY_AUTHORIZATION_PROFILE, STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE):
+        raise GitProvenanceAuthorizationError("unsupported Git authorization profile")
+    return profile
 
 # Diagnostic-only disposition vocabulary. Never creates trust or reuse authority.
 TERMINAL_DISPOSITION_VOCABULARY = frozenset(
@@ -408,13 +431,15 @@ def _require_tz_aware(value: Any, *, label: str) -> None:
         raise GitProvenanceAuthorizationError(f"{label} must be timezone-aware")
 
 
-def _require_command(value: Any, *, label: str) -> None:
+def _require_command(
+    value: Any, *, label: str, required_mode: str = REQUIRED_COMMAND_MODE
+) -> None:
     if not isinstance(value, Mapping):
         raise GitProvenanceAuthorizationError(f"{label} must be an object")
     _require_keys(value, _COMMAND_KEYS, label=label)
-    if value.get("mode") != REQUIRED_COMMAND_MODE:
+    if value.get("mode") != required_mode:
         raise GitProvenanceAuthorizationError(
-            f"{label} mode must be {REQUIRED_COMMAND_MODE!r}"
+            f"{label} mode must be {required_mode!r}"
         )
     _require_true(value.get("operator_approved"), label=f"{label} operator_approved")
 
@@ -919,15 +944,17 @@ def enumerate_historical_authorization_evidence(
     current_authorization_id: str,
     approved_historical_authorization_ids: Collection[str],
     tracked_operator_runs_paths: set[str] | None = None,
+    authorization_package_roots: Collection[str] | None = None,
+    current_authorization_package_root: str = AUTHORIZATION_PACKAGE_ROOT,
     git_executable: str = "git",
     timeout_seconds: float = GIT_COMMAND_TIMEOUT_SECONDS,
     runner: Callable[..., Any] = subprocess.run,
 ) -> tuple[dict[str, Any], ...]:
-    """Return exact approved historical authorization file records (sorted by path).
+    """Return approved historical authorization evidence across explicit roots.
 
-    Trust is declaration, not discovery. Only IDs in
-    ``approved_historical_authorization_ids`` may contribute untracked rows to
-    ``H``. Unknown package directories containing regular files block.
+    Directory discovery never creates trust. Only IDs declared by the current
+    authorization may enter H. A single approved ID appearing untracked under
+    more than one allowed authorization root is ambiguous and fails closed.
     """
     if not 0 < timeout_seconds <= GIT_COMMAND_TIMEOUT_SECONDS:
         raise GitProvenanceAuthorizationError(
@@ -936,7 +963,6 @@ def enumerate_historical_authorization_evidence(
     root = Path(repository_root).resolve()
     if not root.is_dir():
         raise GitProvenanceAuthorizationError("repository root is unavailable")
-
     current_id = require_safe_authorization_id(
         current_authorization_id, label="current authorization_id"
     )
@@ -945,119 +971,133 @@ def enumerate_historical_authorization_evidence(
         current_authorization_id=current_id,
     )
     approved_set = set(approved)
+    roots = tuple(dict.fromkeys(authorization_package_roots or (AUTHORIZATION_PACKAGE_ROOT,)))
+    if not roots or any(not isinstance(item, str) or not item for item in roots):
+        raise GitProvenanceAuthorizationError("historical authorization roots are malformed")
+    if current_authorization_package_root not in roots:
+        raise GitProvenanceAuthorizationError(
+            "current authorization root must be included in historical scan roots"
+        )
 
     operator_root = root / OPERATOR_RUNS_ROOT
     if os.path.islink(operator_root) or not operator_root.is_dir():
         raise GitProvenanceAuthorizationError(
             "operator-runs evidence root is unavailable or is a symlink"
         )
-    auth_package_root = root / AUTHORIZATION_PACKAGE_ROOT
-    if os.path.islink(auth_package_root):
-        raise GitProvenanceAuthorizationError(
-            "authorization package root must not be a symlink"
-        )
-    if not auth_package_root.is_dir():
-        # No package root means no historical packages and no unlisted residue.
-        if approved:
-            return ()
-        return ()
-
-    if tracked_operator_runs_paths is None:
-        tracked = _tracked_operator_runs_paths(
+    tracked = (
+        _tracked_operator_runs_paths(
             root,
             git_executable=git_executable,
             timeout_seconds=timeout_seconds,
             runner=runner,
         )
-    else:
-        tracked = set(tracked_operator_runs_paths)
+        if tracked_operator_runs_paths is None
+        else set(tracked_operator_runs_paths)
+    )
 
     records: list[dict[str, Any]] = []
     seen_paths: set[str] = set()
-
-    try:
-        package_entries = sorted(
-            os.scandir(auth_package_root), key=lambda entry: entry.name
-        )
-    except OSError as exc:
-        raise GitProvenanceAuthorizationError(
-            f"authorization package root could not be read: {exc}"
-        ) from exc
-
-    for entry in package_entries:
-        package_relative = f"{AUTHORIZATION_PACKAGE_ROOT}/{entry.name}"
-        if entry.is_symlink():
+    approved_untracked_root: dict[str, str] = {}
+    for authorization_root in roots:
+        package_root_path = root / authorization_root
+        if os.path.islink(package_root_path):
             raise GitProvenanceAuthorizationError(
-                f"authorization package directory is a symlink: {package_relative}"
+                f"authorization package root must not be a symlink: {authorization_root}"
+            )
+        if not package_root_path.exists():
+            continue
+        if not package_root_path.is_dir():
+            raise GitProvenanceAuthorizationError(
+                f"authorization package root is not a directory: {authorization_root}"
             )
         try:
-            mode = entry.stat(follow_symlinks=False).st_mode
+            package_entries = sorted(
+                os.scandir(package_root_path), key=lambda entry: entry.name
+            )
         except OSError as exc:
             raise GitProvenanceAuthorizationError(
-                f"authorization package directory could not be inspected: "
-                f"{package_relative}"
-            ) from exc
-        if not stat.S_ISDIR(mode):
-            # Non-directory under the package root is unexpected inventory.
-            if not stat.S_ISREG(mode):
-                raise GitProvenanceAuthorizationError(
-                    f"authorization package root contains a non-regular entry: "
-                    f"{package_relative}"
-                )
-            raise GitProvenanceAuthorizationError(
-                f"authorization package root contains a non-package file: "
-                f"{package_relative}"
-            )
-        try:
-            package_id = require_safe_authorization_id(
-                entry.name, label="historical authorization package directory"
-            )
-        except GitProvenanceAuthorizationError as exc:
-            raise GitProvenanceAuthorizationError(
-                f"authorization package directory name is not a safe "
-                f"authorization id: {package_relative}"
+                f"authorization package root could not be read: {exc}"
             ) from exc
 
-        if package_id == current_id:
-            # Current package is owned exclusively by files[].
-            continue
-
-        package_dir = Path(entry.path)
-        package_files = _inventory_authorization_package_files(
-            root=root, package_dir=package_dir, package_id=package_id
-        )
-        untracked_files = [
-            item for item in package_files if item["path"] not in tracked
-        ]
-        if package_id not in approved_set:
-            if untracked_files:
+        for entry in package_entries:
+            package_relative = f"{authorization_root}/{entry.name}"
+            if entry.is_symlink():
                 raise GitProvenanceAuthorizationError(
-                    "unapproved historical authorization package contains "
-                    "untracked files not covered by the trust root: "
-                    + ", ".join(item["path"] for item in untracked_files)
+                    f"authorization package directory is a symlink: {package_relative}"
                 )
-            # Fully tracked unapproved package remains trusted through T only.
-            continue
-
-        disposition = _terminal_disposition_for(package_id)
-        for item in untracked_files:
-            path = item["path"]
-            if path in seen_paths:
+            try:
+                mode = entry.stat(follow_symlinks=False).st_mode
+            except OSError as exc:
                 raise GitProvenanceAuthorizationError(
-                    f"duplicate historical authorization evidence path: {path}"
+                    f"authorization package directory could not be inspected: {package_relative}"
+                ) from exc
+            if not stat.S_ISDIR(mode):
+                raise GitProvenanceAuthorizationError(
+                    f"authorization package root contains a non-package entry: {package_relative}"
                 )
-            seen_paths.add(path)
-            records.append(
-                {
-                    "path": path,
-                    "sha256": item["sha256"],
-                    "size": item["size"],
-                    "evidence_class": HISTORICAL_AUTHORIZATION_EVIDENCE_CLASS,
-                    "authorization_id": package_id,
-                    "terminal_disposition": disposition,
-                }
+            try:
+                package_id = require_safe_authorization_id(
+                    entry.name, label="historical authorization package directory"
+                )
+            except GitProvenanceAuthorizationError as exc:
+                raise GitProvenanceAuthorizationError(
+                    "authorization package directory name is not a safe authorization id: "
+                    + package_relative
+                ) from exc
+
+            package_dir = Path(entry.path)
+            package_files = _inventory_authorization_package_files(
+                root=root,
+                package_dir=package_dir,
+                package_id=package_id,
+                authorization_package_root=authorization_root,
             )
-
+            untracked_files = [
+                item for item in package_files if item["path"] not in tracked
+            ]
+            if package_id == current_id:
+                if authorization_root == current_authorization_package_root:
+                    continue
+                if untracked_files:
+                    raise GitProvenanceAuthorizationError(
+                        "current authorization id also appears under another authorization root"
+                    )
+                continue
+            if package_id not in approved_set:
+                if untracked_files:
+                    raise GitProvenanceAuthorizationError(
+                        "unapproved historical authorization package contains untracked files "
+                        "not covered by the trust root: "
+                        + ", ".join(item["path"] for item in untracked_files)
+                    )
+                continue
+            if not untracked_files:
+                continue
+            prior_root = approved_untracked_root.get(package_id)
+            if prior_root is not None and prior_root != authorization_root:
+                raise GitProvenanceAuthorizationError(
+                    "approved historical authorization id is ambiguous across roots: "
+                    + package_id
+                )
+            approved_untracked_root[package_id] = authorization_root
+            disposition = _terminal_disposition_for(package_id)
+            for item in untracked_files:
+                path = item["path"]
+                if path in seen_paths:
+                    raise GitProvenanceAuthorizationError(
+                        f"duplicate historical authorization evidence path: {path}"
+                    )
+                seen_paths.add(path)
+                records.append(
+                    {
+                        "path": path,
+                        "sha256": item["sha256"],
+                        "size": item["size"],
+                        "evidence_class": HISTORICAL_AUTHORIZATION_EVIDENCE_CLASS,
+                        "authorization_id": package_id,
+                        "terminal_disposition": disposition,
+                    }
+                )
     records.sort(key=lambda record: record["path"])
     return tuple(records)
 
@@ -1067,9 +1107,10 @@ def _inventory_authorization_package_files(
     root: Path,
     package_dir: Path,
     package_id: str,
+    authorization_package_root: str = AUTHORIZATION_PACKAGE_ROOT,
 ) -> list[dict[str, Any]]:
     """Recursively inventory regular files under one authorization package."""
-    prefix = f"{AUTHORIZATION_PACKAGE_ROOT}/{package_id}/"
+    prefix = f"{authorization_package_root}/{package_id}/"
     collected: list[dict[str, Any]] = []
     stack = [package_dir]
     while stack:
@@ -1086,8 +1127,7 @@ def _inventory_authorization_package_files(
                 relative = path.relative_to(root).as_posix()
             except ValueError as exc:
                 raise GitProvenanceAuthorizationError(
-                    "historical authorization package entry resolves outside the "
-                    "repository"
+                    "historical authorization package entry resolves outside the repository"
                 ) from exc
             if entry.is_symlink():
                 raise GitProvenanceAuthorizationError(
@@ -1097,24 +1137,21 @@ def _inventory_authorization_package_files(
                 mode = entry.stat(follow_symlinks=False).st_mode
             except OSError as exc:
                 raise GitProvenanceAuthorizationError(
-                    f"historical authorization package entry could not be "
-                    f"inspected: {relative}"
+                    f"historical authorization package entry could not be inspected: {relative}"
                 ) from exc
             if stat.S_ISDIR(mode):
                 stack.append(path)
                 continue
             if not stat.S_ISREG(mode):
                 raise GitProvenanceAuthorizationError(
-                    f"historical authorization package contains a non-regular "
-                    f"entry: {relative}"
+                    f"historical authorization package contains a non-regular entry: {relative}"
                 )
             normalized = _normalize_git_path(
                 relative, label="historical authorization inventory"
             )
             if not normalized.startswith(prefix):
                 raise GitProvenanceAuthorizationError(
-                    f"historical authorization path is outside its package root: "
-                    f"{normalized}"
+                    f"historical authorization path is outside its package root: {normalized}"
                 )
             collected.append(
                 {
@@ -1201,8 +1238,10 @@ def _validate_authorization_document(
     *,
     root: Path,
     authorization_id: str,
+    migration_execution_id: str,
     branch: str,
     head: str,
+    profile: GitAuthorizationProfile,
 ) -> tuple[str, dict[str, Any], tuple[str, ...]]:
     reference = manifest["authorization_file"]
     if not isinstance(reference, Mapping):
@@ -1211,12 +1250,12 @@ def _validate_authorization_document(
         reference, _MANIFEST_AUTHORIZATION_FILE_KEYS, label="authorization_file"
     )
     relative = _validate_repository_relative_path(
-        reference["path"], package_root=AUTHORIZATION_PACKAGE_ROOT
+        reference["path"], package_root=profile.authorization_package_root
     )
     expected_sha256 = _require_hex64(
         reference["sha256"], label="authorization_file sha256"
     )
-    prefix = f"{AUTHORIZATION_PACKAGE_ROOT}/{authorization_id}/"
+    prefix = f"{profile.authorization_package_root}/{authorization_id}/"
     if not relative.startswith(prefix):
         raise GitProvenanceAuthorizationError(
             "authorization_file is outside the authorization package"
@@ -1232,71 +1271,109 @@ def _validate_authorization_document(
             "referenced final authorization document SHA-256 mismatch"
         )
     document = _load_json_object(document_path, label="final authorization document")
-
     if document.get("authorization_id") != authorization_id:
         raise GitProvenanceAuthorizationError(
             "final authorization document authorization_id mismatch"
         )
+    if document.get("migration_execution_id") != migration_execution_id:
+        raise GitProvenanceAuthorizationError(
+            "final authorization migration_execution_id mismatch"
+        )
     approved_historical_ids = extract_approved_historical_authorization_ids(
         document, current_authorization_id=authorization_id
     )
-    # Temporal validity is mandatory before the document can stage or authorize
-    # consumption. Uses the same central max-age policy as the one-shot wrapper.
     try:
         from printer_v1.operator_cli.authorization_temporal_validity import (
             AuthorizationTemporalError,
             validate_authorization_temporal_validity,
         )
-
         validate_authorization_temporal_validity(document)
     except AuthorizationTemporalError as exc:
         raise GitProvenanceAuthorizationError(
             f"authorization temporal validity failed: {exc}"
         ) from exc
-    verdict = _require_str(document.get("verdict"), label="authorization verdict")
-    if not verdict.endswith("_PASS"):
-        raise GitProvenanceAuthorizationError(
-            "final authorization verdict is not PASS"
-        )
-    authorized_git = document.get("authorized_git")
-    if not isinstance(authorized_git, Mapping):
-        raise GitProvenanceAuthorizationError("authorized_git must be an object")
-    if authorized_git.get("branch") != branch:
-        raise GitProvenanceAuthorizationError(
-            "final authorization branch does not match live Git state"
-        )
-    if _require_head(
-        authorized_git.get("head"), label="authorization head"
-    ) != head:
-        raise GitProvenanceAuthorizationError(
-            "final authorization HEAD does not match live Git state"
-        )
-    command = document.get("authorized_command")
-    if not isinstance(command, Mapping):
-        raise GitProvenanceAuthorizationError("authorized_command must be an object")
-    if command.get("mode") != REQUIRED_COMMAND_MODE:
-        raise GitProvenanceAuthorizationError(
-            f"authorized command mode must be {REQUIRED_COMMAND_MODE!r}"
-        )
-    _require_true(
-        command.get("operator_approved"), label="authorized operator_approved"
-    )
-    if command.get("allowed_invocation_count") != 1 or type(
-        command.get("allowed_invocation_count")
-    ) is bool:
-        raise GitProvenanceAuthorizationError(
-            "authorized allowed_invocation_count must be exactly 1"
-        )
-    for flag in _MARKER_FALSE_FLAGS:
-        _require_false(command.get(flag), label=f"authorized {flag}")
+
     from printer_v1.operator_cli.pre_authorization_migration_ledger_guard import (
         PACKAGE_BINDING_FIELDS,
         MigrationLedgerDriftGuardError,
         package_binding_from_document,
     )
 
+    if profile == STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE:
+        try:
+            from printer_v1.operator_cli.standard_four_hour_one_shot_wrapper import (
+                StandardFourHourOneShotWrapperError,
+                validate_standard_four_hour_authorization_document,
+            )
+            validated_document = validate_standard_four_hour_authorization_document(document)
+        except StandardFourHourOneShotWrapperError as exc:
+            raise GitProvenanceAuthorizationError(
+                f"standard four-hour authorization document rejected: {exc}"
+            ) from exc
+        repository = validated_document["repository"]
+        if repository.get("branch") != branch:
+            raise GitProvenanceAuthorizationError(
+                "final authorization branch does not match live Git state"
+            )
+        if _require_head(repository.get("head"), label="authorization head") != head:
+            raise GitProvenanceAuthorizationError(
+                "final authorization HEAD does not match live Git state"
+            )
+        command = validated_document["authorized_command"]
+        _require_command(
+            command, label="authorized_command", required_mode=profile.command_mode
+        )
+        document_for_binding = validated_document
+    else:
+        verdict = _require_str(document.get("verdict"), label="authorization verdict")
+        if not verdict.endswith("_PASS"):
+            raise GitProvenanceAuthorizationError(
+                "final authorization verdict is not PASS"
+            )
+        authorized_git = document.get("authorized_git")
+        if not isinstance(authorized_git, Mapping):
+            raise GitProvenanceAuthorizationError("authorized_git must be an object")
+        if authorized_git.get("branch") != branch:
+            raise GitProvenanceAuthorizationError(
+                "final authorization branch does not match live Git state"
+            )
+        if _require_head(authorized_git.get("head"), label="authorization head") != head:
+            raise GitProvenanceAuthorizationError(
+                "final authorization HEAD does not match live Git state"
+            )
+        command = document.get("authorized_command")
+        if not isinstance(command, Mapping):
+            raise GitProvenanceAuthorizationError("authorized_command must be an object")
+        if command.get("mode") != profile.command_mode:
+            raise GitProvenanceAuthorizationError(
+                f"authorized command mode must be {profile.command_mode!r}"
+            )
+        _require_true(
+            command.get("operator_approved"), label="authorized operator_approved"
+        )
+        if command.get("allowed_invocation_count") != 1 or type(
+            command.get("allowed_invocation_count")
+        ) is bool:
+            raise GitProvenanceAuthorizationError(
+                "authorized allowed_invocation_count must be exactly 1"
+            )
+        for flag in _MARKER_FALSE_FLAGS:
+            _require_false(command.get(flag), label=f"authorized {flag}")
+        policy = document.get("campaign_policy")
+        if not isinstance(policy, Mapping):
+            raise GitProvenanceAuthorizationError("campaign_policy must be an object")
+        if policy.get("main_window") != REQUIRED_MAIN_WINDOW:
+            raise GitProvenanceAuthorizationError(
+                f"campaign main_window must be {REQUIRED_MAIN_WINDOW!r}"
+            )
+        _require_false(
+            policy.get("selective_1h_continuation"),
+            label="campaign selective_1h_continuation",
+        )
+        document_for_binding = document
+
     try:
-        database = package_binding_from_document(document)
+        database = package_binding_from_document(document_for_binding)
     except MigrationLedgerDriftGuardError as exc:
         raise GitProvenanceAuthorizationError(str(exc)) from exc
     if set(database) != set(PACKAGE_BINDING_FIELDS):
@@ -1318,17 +1395,6 @@ def _validate_authorization_document(
     database["migration_head"] = _require_str(
         database["migration_head"], label="authoritative_database migration_head"
     )
-    policy = document.get("campaign_policy")
-    if not isinstance(policy, Mapping):
-        raise GitProvenanceAuthorizationError("campaign_policy must be an object")
-    if policy.get("main_window") != REQUIRED_MAIN_WINDOW:
-        raise GitProvenanceAuthorizationError(
-            f"campaign main_window must be {REQUIRED_MAIN_WINDOW!r}"
-        )
-    _require_false(
-        policy.get("selective_1h_continuation"),
-        label="campaign selective_1h_continuation",
-    )
     return actual_sha256, database, approved_historical_ids
 
 
@@ -1338,12 +1404,14 @@ def _validate_files(
     root: Path,
     authorization_id: str,
     migration_execution_id: str,
+    profile: GitAuthorizationProfile,
 ) -> tuple[str, ...]:
     files = manifest["files"]
     if not isinstance(files, list) or not files:
         raise GitProvenanceAuthorizationError(
             "manifest files must be a non-empty array"
         )
+    valid_kinds = {MIGRATION_PACKAGE_KIND, profile.authorization_package_kind}
     seen: set[str] = set()
     ordered: list[str] = []
     for entry in files:
@@ -1351,14 +1419,15 @@ def _validate_files(
             raise GitProvenanceAuthorizationError("manifest file entry must be object")
         _require_keys(entry, _MANIFEST_FILE_KEYS, label="manifest file entry")
         package_kind = entry["package_kind"]
-        if package_kind not in PACKAGE_KINDS:
+        if package_kind not in valid_kinds:
             raise GitProvenanceAuthorizationError(
                 f"manifest file package_kind is invalid: {package_kind!r}"
             )
-        if package_kind == MIGRATION_PACKAGE_KIND:
-            package_root = f"{MIGRATION_PACKAGE_ROOT}/{migration_execution_id}"
-        else:
-            package_root = f"{AUTHORIZATION_PACKAGE_ROOT}/{authorization_id}"
+        package_root = (
+            f"{MIGRATION_PACKAGE_ROOT}/{migration_execution_id}"
+            if package_kind == MIGRATION_PACKAGE_KIND
+            else f"{profile.authorization_package_root}/{authorization_id}"
+        )
         normalized = _validate_repository_relative_path(
             entry["path"], package_root=package_root
         )
@@ -1376,10 +1445,7 @@ def _validate_files(
             entry["sha256"], label="manifest file sha256"
         )
         _validate_repository_file(
-            normalized,
-            root=root,
-            expected_sha256=expected_sha256,
-            expected_size=size,
+            normalized, root=root, expected_sha256=expected_sha256, expected_size=size
         )
         ordered.append(normalized)
     return tuple(ordered)
@@ -1393,8 +1459,8 @@ def _validate_historical_authorization_evidence(
     approved_historical_authorization_ids: Collection[str],
     tracked_paths: set[str],
     current_manifest_paths: set[str],
+    profile: GitAuthorizationProfile,
 ) -> tuple[str, ...]:
-    """Validate historical_authorization_evidence[] exact records."""
     historical = manifest.get("historical_authorization_evidence")
     if not isinstance(historical, list):
         raise GitProvenanceAuthorizationError(
@@ -1408,14 +1474,14 @@ def _validate_historical_authorization_evidence(
     )
     seen: set[str] = set()
     ordered: list[str] = []
+    root_by_authorization: dict[str, str] = {}
     for entry in historical:
         if not isinstance(entry, Mapping):
             raise GitProvenanceAuthorizationError(
                 "historical authorization evidence entry must be an object"
             )
         _require_keys(
-            entry,
-            _HISTORICAL_EVIDENCE_KEYS,
+            entry, _HISTORICAL_EVIDENCE_KEYS,
             label="historical authorization evidence entry",
         )
         if entry.get("evidence_class") != HISTORICAL_AUTHORIZATION_EVIDENCE_CLASS:
@@ -1423,43 +1489,40 @@ def _validate_historical_authorization_evidence(
                 "historical authorization evidence_class is invalid"
             )
         hist_auth_id = require_safe_authorization_id(
-            entry.get("authorization_id"),
-            label="historical authorization_id",
+            entry.get("authorization_id"), label="historical authorization_id"
         )
-        if hist_auth_id == authorization_id:
+        if hist_auth_id == authorization_id or hist_auth_id not in approved:
             raise GitProvenanceAuthorizationError(
-                "historical authorization evidence claims the current authorization id"
+                "historical authorization evidence authorization_id is not approved"
             )
-        if hist_auth_id not in approved:
+        raw_path = _require_str(entry.get("path"), label="historical authorization path")
+        matching_roots = [
+            auth_root
+            for auth_root in profile.historical_authorization_package_roots
+            if raw_path.startswith(f"{auth_root}/{hist_auth_id}/")
+        ]
+        if len(matching_roots) != 1:
             raise GitProvenanceAuthorizationError(
-                "historical authorization evidence authorization_id is not in the "
-                f"approved trust root: {hist_auth_id}"
+                "historical authorization evidence path does not bind one approved root"
             )
-        package_root = f"{AUTHORIZATION_PACKAGE_ROOT}/{hist_auth_id}"
+        authorization_root = matching_roots[0]
+        prior_root = root_by_authorization.get(hist_auth_id)
+        if prior_root is not None and prior_root != authorization_root:
+            raise GitProvenanceAuthorizationError(
+                "historical authorization id is ambiguous across authorization roots"
+            )
+        root_by_authorization[hist_auth_id] = authorization_root
+        package_root = f"{authorization_root}/{hist_auth_id}"
         normalized = _validate_repository_relative_path(
-            entry["path"], package_root=package_root
+            raw_path, package_root=package_root
         )
-        # Path package segment must equal authorization_id.
-        relative_tail = normalized[len(AUTHORIZATION_PACKAGE_ROOT) + 1 :]
-        package_segment = relative_tail.split("/", 1)[0]
-        if package_segment != hist_auth_id:
-            raise GitProvenanceAuthorizationError(
-                "historical authorization evidence authorization_id does not match "
-                "the package directory segment"
-            )
-        if normalized in seen:
+        if normalized in seen or normalized in current_manifest_paths:
             raise GitProvenanceAuthorizationError(
                 f"duplicate historical authorization evidence path: {normalized}"
             )
-        if normalized in current_manifest_paths:
-            raise GitProvenanceAuthorizationError(
-                f"duplicate path across current files and historical evidence: "
-                f"{normalized}"
-            )
         if normalized in tracked_paths:
             raise GitProvenanceAuthorizationError(
-                f"historical authorization evidence path is tracked at HEAD: "
-                f"{normalized}"
+                f"historical authorization evidence path is tracked at HEAD: {normalized}"
             )
         seen.add(normalized)
         size = entry["size"]
@@ -1480,10 +1543,7 @@ def _validate_historical_authorization_evidence(
                 "historical authorization terminal_disposition is invalid"
             )
         _validate_repository_file(
-            normalized,
-            root=root,
-            expected_sha256=expected_sha256,
-            expected_size=size,
+            normalized, root=root, expected_sha256=expected_sha256, expected_size=size
         )
         ordered.append(normalized)
     if ordered != sorted(ordered):
@@ -1530,53 +1590,32 @@ def _validate_marker(
     allowed_file_set_sha256: str,
     branch: str,
     head: str,
+    required_mode: str = REQUIRED_COMMAND_MODE,
 ) -> dict[str, Any]:
     marker = _load_json_object(marker_path, label="application marker")
     _require_keys(marker, _MARKER_KEYS, label="application marker")
     if marker.get("schema_version") != APPLICATION_MARKER_SCHEMA_VERSION:
-        raise GitProvenanceAuthorizationError(
-            "application marker schema_version is invalid"
-        )
+        raise GitProvenanceAuthorizationError("application marker schema_version is invalid")
     if marker.get("authorization_id") != authorization_id:
-        raise GitProvenanceAuthorizationError(
-            "application marker authorization_id mismatch"
-        )
+        raise GitProvenanceAuthorizationError("application marker authorization_id mismatch")
     _require_tz_aware(
         marker.get("authorization_consumed_at"),
         label="application marker authorization_consumed_at",
     )
-    if _require_hex64(
-        marker.get("authorization_sha256"), label="marker authorization_sha256"
-    ) != authorization_sha256:
-        raise GitProvenanceAuthorizationError(
-            "application marker authorization_sha256 mismatch"
-        )
-    if _require_hex64(
-        marker.get("manifest_sha256"), label="marker manifest_sha256"
-    ) != manifest_sha256:
-        raise GitProvenanceAuthorizationError(
-            "application marker manifest_sha256 mismatch"
-        )
-    if _require_hex64(
-        marker.get("allowed_file_set_sha256"), label="marker allowed_file_set_sha256"
-    ) != allowed_file_set_sha256:
-        raise GitProvenanceAuthorizationError(
-            "application marker allowed_file_set_sha256 mismatch"
-        )
+    if _require_hex64(marker.get("authorization_sha256"), label="marker authorization_sha256") != authorization_sha256:
+        raise GitProvenanceAuthorizationError("application marker authorization_sha256 mismatch")
+    if _require_hex64(marker.get("manifest_sha256"), label="marker manifest_sha256") != manifest_sha256:
+        raise GitProvenanceAuthorizationError("application marker manifest_sha256 mismatch")
+    if _require_hex64(marker.get("allowed_file_set_sha256"), label="marker allowed_file_set_sha256") != allowed_file_set_sha256:
+        raise GitProvenanceAuthorizationError("application marker allowed_file_set_sha256 mismatch")
     if marker.get("repository_branch") != branch:
-        raise GitProvenanceAuthorizationError(
-            "application marker repository_branch mismatch"
-        )
-    if _require_head(
-        marker.get("repository_head"), label="marker repository_head"
-    ) != head:
-        raise GitProvenanceAuthorizationError(
-            "application marker repository_head mismatch"
-        )
-    _require_command(marker.get("command"), label="application marker command")
-    if marker.get("allowed_invocation_count") != 1 or type(
-        marker.get("allowed_invocation_count")
-    ) is bool:
+        raise GitProvenanceAuthorizationError("application marker repository_branch mismatch")
+    if _require_head(marker.get("repository_head"), label="marker repository_head") != head:
+        raise GitProvenanceAuthorizationError("application marker repository_head mismatch")
+    _require_command(
+        marker.get("command"), label="application marker command", required_mode=required_mode
+    )
+    if marker.get("allowed_invocation_count") != 1 or type(marker.get("allowed_invocation_count")) is bool:
         raise GitProvenanceAuthorizationError(
             "application marker allowed_invocation_count must be exactly 1"
         )
@@ -1585,18 +1624,19 @@ def _validate_marker(
     return marker
 
 
-
 def validate_git_provenance_manifest_pre_marker(
     *,
     repository_root: str | Path,
     manifest_path: str,
     manifest_sha256: str,
+    profile: GitAuthorizationProfile | None = None,
     git_executable: str = "git",
     timeout_seconds: float = GIT_COMMAND_TIMEOUT_SECONDS,
     runner: Callable[..., Any] = subprocess.run,
     sidecar_untracked_paths: Iterable[str] = (),
 ) -> PreparedGitProvenanceAuthorization:
     """Validate the full manifest/Git/filesystem boundary before consumption."""
+    active_profile = _resolved_profile(profile)
     if not 0 < timeout_seconds <= GIT_COMMAND_TIMEOUT_SECONDS:
         raise GitProvenanceAuthorizationError(
             "Git provenance timeout is outside the fixed ceiling"
@@ -1604,75 +1644,58 @@ def validate_git_provenance_manifest_pre_marker(
     root = Path(repository_root).resolve()
     if not root.is_dir():
         raise GitProvenanceAuthorizationError("repository root is unavailable")
-
     manifest_file, actual_manifest_sha256 = _resolve_external_file(
         manifest_path, root=root, expected_sha256=manifest_sha256, label="manifest"
     )
     manifest = _load_json_object(manifest_file, label="manifest")
     _require_keys(manifest, _MANIFEST_KEYS, label="manifest")
-    if manifest.get("schema_version") != MANIFEST_SCHEMA_VERSION:
+    if manifest.get("schema_version") != active_profile.manifest_schema_version:
         raise GitProvenanceAuthorizationError("manifest schema_version is invalid")
     authorization_id = _require_str(
         manifest.get("authorization_id"), label="manifest authorization_id"
     )
     migration_execution_id = _require_str(
-        manifest.get("migration_execution_id"),
-        label="manifest migration_execution_id",
+        manifest.get("migration_execution_id"), label="manifest migration_execution_id"
     )
     _require_tz_aware(manifest.get("created_at"), label="manifest created_at")
-
     repository = manifest.get("repository")
     if not isinstance(repository, Mapping):
         raise GitProvenanceAuthorizationError("manifest repository must be an object")
     _require_keys(repository, _MANIFEST_REPOSITORY_KEYS, label="manifest repository")
-    manifest_branch = _require_str(
-        repository.get("branch"), label="manifest repository branch"
-    )
-    manifest_head = _require_head(
-        repository.get("head"), label="manifest repository head"
-    )
+    manifest_branch = _require_str(repository.get("branch"), label="manifest repository branch")
+    manifest_head = _require_head(repository.get("head"), label="manifest repository head")
     _require_command(
-        manifest.get("authorized_command"), label="manifest authorized_command"
+        manifest.get("authorized_command"),
+        label="manifest authorized_command",
+        required_mode=active_profile.command_mode,
     )
-
     branch, head = _live_repository_identity(
-        root,
-        git_executable=git_executable,
-        timeout_seconds=timeout_seconds,
-        runner=runner,
+        root, git_executable=git_executable, timeout_seconds=timeout_seconds, runner=runner
     )
-    if manifest_branch != branch:
+    if manifest_branch != branch or manifest_head != head:
         raise GitProvenanceAuthorizationError(
-            "manifest branch does not match live Git state"
+            "manifest repository identity does not match live Git state"
         )
-    if manifest_head != head:
-        raise GitProvenanceAuthorizationError(
-            "manifest HEAD does not match live Git state"
+    authorization_sha256, authoritative_database, approved_historical_ids = (
+        _validate_authorization_document(
+            manifest,
+            root=root,
+            authorization_id=authorization_id,
+            migration_execution_id=migration_execution_id,
+            branch=branch,
+            head=head,
+            profile=active_profile,
         )
-
-    (
-        authorization_sha256,
-        authoritative_database,
-        approved_historical_ids,
-    ) = _validate_authorization_document(
-        manifest,
-        root=root,
-        authorization_id=authorization_id,
-        branch=branch,
-        head=head,
     )
-
     current_paths = _validate_files(
         manifest,
         root=root,
         authorization_id=authorization_id,
         migration_execution_id=migration_execution_id,
+        profile=active_profile,
     )
     tracked_paths = _tracked_operator_runs_paths(
-        root,
-        git_executable=git_executable,
-        timeout_seconds=timeout_seconds,
-        runner=runner,
+        root, git_executable=git_executable, timeout_seconds=timeout_seconds, runner=runner
     )
     historical_paths = _validate_historical_authorization_evidence(
         manifest,
@@ -1681,14 +1704,15 @@ def validate_git_provenance_manifest_pre_marker(
         approved_historical_authorization_ids=approved_historical_ids,
         tracked_paths=tracked_paths,
         current_manifest_paths=set(current_paths),
+        profile=active_profile,
     )
-    # Completeness: the canonical owner must agree that every untracked file
-    # under approved/unapproved packages is exactly the H set declared here.
     expected_historical = enumerate_historical_authorization_evidence(
         repository_root=root,
         current_authorization_id=authorization_id,
         approved_historical_authorization_ids=approved_historical_ids,
         tracked_operator_runs_paths=tracked_paths,
+        authorization_package_roots=active_profile.historical_authorization_package_roots,
+        current_authorization_package_root=active_profile.authorization_package_root,
         git_executable=git_executable,
         timeout_seconds=timeout_seconds,
         runner=runner,
@@ -1696,26 +1720,18 @@ def validate_git_provenance_manifest_pre_marker(
     expected_historical_paths = tuple(item["path"] for item in expected_historical)
     if historical_paths != expected_historical_paths:
         raise GitProvenanceAuthorizationError(
-            "historical_authorization_evidence does not match the approved "
-            "historical authorization inventory"
+            "historical_authorization_evidence does not match the approved historical authorization inventory"
         )
-
     visible_paths = _visible_untracked_paths(
-        root,
-        git_executable=git_executable,
-        timeout_seconds=timeout_seconds,
-        runner=runner,
+        root, git_executable=git_executable, timeout_seconds=timeout_seconds, runner=runner
     )
     ignored_paths = _ignored_operator_runs_paths(
-        root,
-        git_executable=git_executable,
-        timeout_seconds=timeout_seconds,
-        runner=runner,
+        root, git_executable=git_executable, timeout_seconds=timeout_seconds, runner=runner
     )
     inventory_paths = _inventory_operator_runs(root)
     current_package_roots = (
         f"{MIGRATION_PACKAGE_ROOT}/{migration_execution_id}",
-        f"{AUTHORIZATION_PACKAGE_ROOT}/{authorization_id}",
+        f"{active_profile.authorization_package_root}/{authorization_id}",
     )
     _reconcile_evidence_sets(
         current_manifest_paths=set(current_paths),
@@ -1727,7 +1743,6 @@ def validate_git_provenance_manifest_pre_marker(
         current_package_roots=current_package_roots,
         sidecar_untracked_paths=sidecar_untracked_paths,
     )
-
     allowed_untracked_paths = tuple(sorted(set(current_paths) | set(historical_paths)))
     allowed_file_set_sha256 = compute_allowed_file_set_sha256(
         _allowed_file_digest_records(manifest)
@@ -1752,16 +1767,19 @@ def validate_git_provenance_authorization(
     manifest_sha256: str,
     marker_path: str,
     marker_sha256: str,
+    profile: GitAuthorizationProfile | None = None,
     git_executable: str = "git",
     timeout_seconds: float = GIT_COMMAND_TIMEOUT_SECONDS,
     runner: Callable[..., Any] = subprocess.run,
     sidecar_untracked_paths: Iterable[str] = (),
 ) -> ValidatedGitProvenanceAuthorization:
     """Validate an external manifest and marker and return an exact allowlist."""
+    active_profile = _resolved_profile(profile)
     prepared = validate_git_provenance_manifest_pre_marker(
         repository_root=repository_root,
         manifest_path=manifest_path,
         manifest_sha256=manifest_sha256,
+        profile=active_profile,
         git_executable=git_executable,
         timeout_seconds=timeout_seconds,
         runner=runner,
@@ -1780,8 +1798,8 @@ def validate_git_provenance_authorization(
         allowed_file_set_sha256=prepared.allowed_file_set_sha256,
         branch=prepared.repository_branch,
         head=prepared.repository_head,
+        required_mode=active_profile.command_mode,
     )
-
     return ValidatedGitProvenanceAuthorization(
         allowed_untracked_paths=prepared.allowed_untracked_paths,
         authorization_id=prepared.authorization_id,
@@ -1800,6 +1818,7 @@ def validate_git_provenance_authorization(
         authoritative_database=dict(prepared.authoritative_database),
     )
 
+
 __all__ = [
     "APPLICATION_MARKER_SCHEMA_VERSION",
     "AUTHORIZATION_PACKAGE_KIND",
@@ -1810,6 +1829,9 @@ __all__ = [
     "MANIFEST_SCHEMA_VERSION",
     "MIGRATION_PACKAGE_KIND",
     "MIGRATION_PACKAGE_ROOT",
+    "GitAuthorizationProfile",
+    "ORDINARY_AUTHORIZATION_PROFILE",
+    "STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE",
     "PreparedGitProvenanceAuthorization",
     "TERMINAL_DISPOSITION_VOCABULARY",
     "ValidatedGitProvenanceAuthorization",
