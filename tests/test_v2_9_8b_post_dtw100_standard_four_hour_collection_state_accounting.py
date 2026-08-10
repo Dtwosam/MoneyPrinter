@@ -227,7 +227,32 @@ class StandardFourHourCollectionStateAccountingTests(unittest.TestCase):
         self.assertIsNotNone(selector, "categorical WINDOW_4H fairness selector is missing")
         return selector(self.fx.connection, run_id="factory-run-1", now=now)
 
+    def _isolate_4h_fairness_scope(self) -> None:
+        """Remove unrelated pending fixture work so 4h fairness is the active scope."""
+        with self.fx.connection:
+            rows = self.fx.connection.execute(
+                """SELECT id,scheduler_job_id
+                   FROM printer_memory_factory_run_steps
+                   WHERE run_id='factory-run-1' AND step_status='PENDING'
+                     AND step_kind NOT LIKE 'LONG_CONTINUATION_%'"""
+            ).fetchall()
+            for row in rows:
+                self.fx.connection.execute(
+                    """UPDATE printer_memory_factory_run_steps
+                       SET step_status='CANCELLED',finished_at=?,updated_at=?
+                       WHERE id=?""",
+                    (_iso(T1H), _iso(T1H), int(row["id"])),
+                )
+                if row["scheduler_job_id"] is not None:
+                    self.fx.connection.execute(
+                        """UPDATE printer_scheduler_jobs
+                           SET status='CANCELLED',finished_at=?,updated_at=?
+                           WHERE id=? AND status='PENDING'""",
+                        (_iso(T1H), _iso(T1H), int(row["scheduler_job_id"])),
+                    )
+
     def _make_second_fast_snapshot_due(self) -> tuple[object, object]:
+        self._isolate_4h_fairness_scope()
         token1_open = self._step(1, "LONG_CONTINUATION_SNAPSHOT", index=0)
         token1_second = self._step(1, "LONG_CONTINUATION_SNAPSHOT", index=1)
         token2_open = self._step(2, "LONG_CONTINUATION_SNAPSHOT", index=0)
@@ -273,6 +298,7 @@ class StandardFourHourCollectionStateAccountingTests(unittest.TestCase):
         self.assertNotEqual(int(selected["id"]), int(token1_second["id"]))
 
     def test_due_long_close_preempts_due_ordinary_long_snapshot(self) -> None:
+        self._isolate_4h_fairness_scope()
         ordinary = self._step(2, "LONG_CONTINUATION_SNAPSHOT", index=0)
         close = self._step(1, "LONG_CONTINUATION_CLOSE")
         with self.fx.connection:
