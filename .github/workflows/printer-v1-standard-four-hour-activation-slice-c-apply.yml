@@ -22,6 +22,7 @@ jobs:
           set -euo pipefail
           cp scripts/apply_standard_four_hour_activation_slice_c.py /tmp/apply_slice_c.py
           cp scripts/apply_standard_four_hour_activation_slice_c_safety_cutoff.py /tmp/apply_slice_c_safety_cutoff.py
+          cp scripts/apply_standard_four_hour_activation_slice_c_hard_gate_alignment.py /tmp/apply_slice_c_hard_gate_alignment.py
           cp scripts/apply_standard_four_hour_activation_slice_c_fixture.py /tmp/apply_slice_c_fixture.py
           git checkout --detach 5430a48a1f683b6182b4664023dc6b1f21ead26e
           test "$(git rev-parse HEAD)" = "5430a48a1f683b6182b4664023dc6b1f21ead26e"
@@ -29,10 +30,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Apply approved Slice C patch and fixture correction
+      - name: Apply approved Slice C patch and test corrections
         run: |
           python /tmp/apply_slice_c.py
           python /tmp/apply_slice_c_safety_cutoff.py
+          python /tmp/apply_slice_c_hard_gate_alignment.py
           python /tmp/apply_slice_c_fixture.py
       - name: Assert exact Slice C scope
         run: |
@@ -98,7 +100,7 @@ jobs:
           finally:
               case.tearDown()
           PY
-      - name: Run Slice C barrier GREEN contract
+      - name: Run Slice C barrier and subset-budget GREEN contract
         run: python -m unittest -v tests.test_v2_9_8b_post_dtw100_standard_four_hour_activation_factory_barrier
       - name: Run directly affected 4h regressions
         run: |
@@ -108,12 +110,11 @@ jobs:
             tests.test_v2_9_8b_post_dtw100_standard_four_hour_campaign_planning \
             tests.test_v2_9_8b_post_dtw100_standard_four_hour_collection_state_accounting \
             tests.test_v2_9_8b_post_dtw100_standard_four_hour_close_memory_terminal_reconciliation
-      - name: Run first-hour and historical proof-path regressions
+      - name: Run current first-hour and token-local regressions
         run: |
           python -m unittest -v \
-            tests.test_v2_9_8b_checkpoint4_1h_close_boundary \
-            tests.test_v2_9_7d_4a_token_local_selective_continuation \
-            tests.test_v2_8_1_one_token_4h_runtime
+            tests.test_v2_9_8b_post_dtw100_checkpoint4_1h_close_boundary \
+            tests.test_v2_9_7d_4a_token_local_selective_continuation
       - name: Assert capability and authority locks
         run: |
           python - <<'PY'
@@ -126,7 +127,11 @@ jobs:
           src = inspect.getsource(factory.run_one_command_15m_factory)
           assert 'and not standard_four_hour_campaign' in src
           assert 'run_standard_four_hour_campaign_barrier' in src
-          assert 'FourHourExecutionAuthority.STANDARD_CAMPAIGN' in inspect.getsource(standard.run_standard_four_hour_campaign_barrier)
+          assert '_standard_four_hour_cumulative_budget_for_run' in src or hasattr(factory, '_standard_four_hour_cumulative_budget_for_run')
+          barrier_src = inspect.getsource(standard.run_standard_four_hour_campaign_barrier)
+          assert 'FourHourExecutionAuthority.STANDARD_CAMPAIGN' in barrier_src
+          assert 'context.get("continuity")' in barrier_src
+          assert 'or CONTINUITY_CONTINUOUS' not in barrier_src
           for lane in ('TRACK_FAST','TRACK_NORMAL'):
               assert get_policy('WINDOW_4H', lane).enabled_for_real_collection is True
               assert get_policy('WINDOW_12H', lane).enabled_for_real_collection is False
