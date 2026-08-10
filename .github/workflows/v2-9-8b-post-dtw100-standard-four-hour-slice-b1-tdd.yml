@@ -1,9 +1,7 @@
-name: V2-9.8B post-DTW100 standard four-hour Slice B1 apply-push
+name: V2-9.8B post-DTW100 standard four-hour Slice B1 apply
 
 on:
-  push:
-    branches:
-      - agent/v2-9-8b-post-dtw100-standard-four-hour-slice-b1-apply-base
+  pull_request:
 
 permissions:
   contents: write
@@ -17,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: agent/v2-9-8b-post-dtw100-standard-four-hour-campaign-integration-implementation
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
