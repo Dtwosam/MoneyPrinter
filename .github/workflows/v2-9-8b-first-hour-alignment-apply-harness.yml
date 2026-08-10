@@ -34,11 +34,24 @@ jobs:
           if end not in body:
               raise SystemExit('checkpoint patch source end marker drift')
           body = body.split(end, 1)[0]
-          lines = [line[10:] if line.startswith('          ') else line for line in body.splitlines()]
-          Path('/tmp/checkpoint1_patch.py').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          output = []
+          in_embedded_literal = False
+          for line in body.splitlines():
+              if in_embedded_literal:
+                  output.append(line)
+                  if line.strip() == "'''":
+                      in_embedded_literal = False
+                  continue
+              normalized = line[10:] if line.startswith('          ') else line
+              output.append(normalized)
+              if ("= r'''" in normalized or "= '''" in normalized) and normalized.count("'''") % 2 == 1:
+                  in_embedded_literal = True
+          if in_embedded_literal:
+              raise SystemExit('unterminated embedded source literal')
+          Path('/tmp/checkpoint1_patch.py').write_text('\n'.join(output) + '\n', encoding='utf-8')
           PY
+          python -m py_compile /tmp/checkpoint1_patch.py
           python /tmp/checkpoint1_patch.py
-          nl -ba src/printer_v1/operator_cli/campaign_ownership.py | sed -n '725,750p'
           python -m py_compile \
             src/printer_v1/operator_cli/campaign_ownership.py \
             src/printer_v1/operator_cli/operational_selective_1h.py
