@@ -1,3 +1,3 @@
 Disposable Slice B GREEN trigger only.
 Do not merge.
-Rerun after patcher-anchor normalization.
+Rerun after fixture venv visibility correction.
