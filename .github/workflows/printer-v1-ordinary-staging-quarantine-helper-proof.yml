@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 4e572fa2ab2b7d1fca21ed8328102f36cf7a0141
+          ref: 170a4af97ac1e32036aa1133fa97431f5d3c8927
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
@@ -38,6 +38,9 @@ jobs:
               assert value not in text, value
           assert 'os.rename(source, target)' in text
           assert 'EXPECTED_DB_SHA256' in text
+          assert 'QUARANTINE_PARENT' in text
+          assert 'quarantine_directory_creations' in text
+          assert 'quarantine_renames' in text
           assert 'deletions": 0' in text
           assert 'authoritative_database_writes": 0' in text
           assert 'source_calls": 0' in text
@@ -64,6 +67,6 @@ jobs:
       - name: Prove exact implementation-only net delta
         run: |
           set -euo pipefail
-          files="$(git diff --name-only 3395e0db1f3f2bd5e3e89fc26e4b5ba4ffeede0d..4e572fa2ab2b7d1fca21ed8328102f36cf7a0141)"
+          files="$(git diff --name-only 3395e0db1f3f2bd5e3e89fc26e4b5ba4ffeede0d..170a4af97ac1e32036aa1133fa97431f5d3c8927)"
           test "$files" = "scripts/Repair-PrinterV1-PostDTW100-OrdinaryStagingResidue.py"
-          git diff --check 3395e0db1f3f2bd5e3e89fc26e4b5ba4ffeede0d..4e572fa2ab2b7d1fca21ed8328102f36cf7a0141
+          git diff --check 3395e0db1f3f2bd5e3e89fc26e4b5ba4ffeede0d..170a4af97ac1e32036aa1133fa97431f5d3c8927
