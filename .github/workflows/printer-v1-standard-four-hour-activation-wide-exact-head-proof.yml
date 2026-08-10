@@ -14,12 +14,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 1e75e35b78ffa896153bd1264975dc1f419c77b0
+          ref: 28de1bc0c6437388e0e1392119a8731a34d580b6
           fetch-depth: 0
       - name: Assert exact clean activation head
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "1e75e35b78ffa896153bd1264975dc1f419c77b0"
+          test "$(git rev-parse HEAD)" = "28de1bc0c6437388e0e1392119a8731a34d580b6"
           test -z "$(git status --porcelain)"
       - uses: actions/setup-python@v5
         with:
@@ -97,4 +97,4 @@ jobs:
           set -euo pipefail
           git diff --check
           test -z "$(git status --porcelain)"
-          test "$(git rev-parse HEAD)" = "1e75e35b78ffa896153bd1264975dc1f419c77b0"
+          test "$(git rev-parse HEAD)" = "28de1bc0c6437388e0e1392119a8731a34d580b6"
