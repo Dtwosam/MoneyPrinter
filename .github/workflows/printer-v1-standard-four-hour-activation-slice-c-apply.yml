@@ -127,11 +127,14 @@ jobs:
           src = inspect.getsource(factory.run_one_command_15m_factory)
           assert 'and not standard_four_hour_campaign' in src
           assert 'run_standard_four_hour_campaign_barrier' in src
-          assert '_standard_four_hour_cumulative_budget_for_run' in src or hasattr(factory, '_standard_four_hour_cumulative_budget_for_run')
+          assert hasattr(factory, '_standard_four_hour_cumulative_budget_for_run')
           barrier_src = inspect.getsource(standard.run_standard_four_hour_campaign_barrier)
+          input_src = inspect.getsource(standard._continuation_input)
           assert 'FourHourExecutionAuthority.STANDARD_CAMPAIGN' in barrier_src
-          assert 'context.get("continuity")' in barrier_src
-          assert 'or CONTINUITY_CONTINUOUS' not in barrier_src
+          assert 'context.get("continuity")' in input_src
+          assert 'or CONTINUITY_CONTINUOUS' not in input_src
+          assert 'bool(safety.get("gate_accepted"))' in input_src
+          assert 'bool(safety.get("source_traces"))' in input_src
           for lane in ('TRACK_FAST','TRACK_NORMAL'):
               assert get_policy('WINDOW_4H', lane).enabled_for_real_collection is True
               assert get_policy('WINDOW_12H', lane).enabled_for_real_collection is False
