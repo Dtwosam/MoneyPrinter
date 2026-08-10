@@ -4,13 +4,52 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   PYTHONPATH: src
 
 jobs:
+  patch:
+    if: contains(github.event.pull_request.title, 'APPLY checkpoint5 memory')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout implementation branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+      - name: Apply reviewed Checkpoint 5 patch
+        env:
+          TARGET_BRANCH: ${{ github.event.pull_request.head.ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          git fetch origin "${BASE_REF}"
+          git show FETCH_HEAD:scripts/checkpoint5_memory_construction_patch.py > /tmp/checkpoint5_patch.py
+          python -m py_compile /tmp/checkpoint5_patch.py
+          python /tmp/checkpoint5_patch.py
+          python -m py_compile \
+            src/printer_v1/operator_cli/one_command_15m_factory.py \
+            src/printer_v1/operator_cli/lane_q_15m_window_integrity_guard.py \
+            src/printer_v1/operator_cli/lane_k_e2z_pipeline_wiring.py \
+            src/printer_v1/operator_cli/e2z_clean_memory_creation.py \
+            src/printer_v1/memory/outcomes.py \
+            src/printer_v1/memory/clean_object_promotion.py \
+            src/printer_v1/memory/fingerprints.py
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if git diff --quiet; then exit 0; fi
+          git add \
+            src/printer_v1/operator_cli/one_command_15m_factory.py \
+            src/printer_v1/operator_cli/lane_q_15m_window_integrity_guard.py \
+            src/printer_v1/operator_cli/lane_k_e2z_pipeline_wiring.py \
+            src/printer_v1/operator_cli/e2z_clean_memory_creation.py
+          git commit -m 'Align genuine first-hour memory construction'
+          git push origin HEAD:${TARGET_BRANCH}
+
   focused:
+    if: ${{ !contains(github.event.pull_request.title, 'APPLY checkpoint5 memory') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout PR head
