@@ -1,0 +1,62 @@
+name: Printer V1 ordinary staging residue audit helper proof
+
+on:
+  pull_request:
+    branches:
+      - agent/v2-9-8b-post-dtw100-ordinary-staging-residue-audit-proof-base
+
+permissions:
+  contents: read
+
+jobs:
+  helper-proof:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 57c3da1dc7c9adc94533cc69c14817bff1b6a1c1
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile helper
+        run: python -m py_compile scripts/Review-PrinterV1-PostDTW100-OrdinaryStagingResidue.py
+      - name: Prove read-only audit surface
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+
+          path = Path('scripts/Review-PrinterV1-PostDTW100-OrdinaryStagingResidue.py')
+          text = path.read_text(encoding='utf-8')
+          tree = ast.parse(text)
+          banned_text = (
+              'sqlite3.connect', 'apply_authorization_once', 'run_operational_campaign(',
+              'run_standard_four_hour_campaign(', 'os.unlink(', 'os.remove(',
+              'os.rename(', '.rmdir(', '.unlink(', '.write_text(', '.write_bytes(',
+              'shutil.rmtree', 'urllib', 'requests.',
+          )
+          for token in banned_text:
+              assert token not in text, token
+          assert 'cleanup_authorized": False' in text
+          assert 'filesystem_mutations": 0' in text
+          assert 'source_calls": 0' in text
+          assert 'scheduler_runtime_calls": 0' in text
+          assert 'authoritative_database_writes": 0' in text
+          allowed_commands = {'git', 'ps', 'lsof'}
+          commands = []
+          for node in ast.walk(tree):
+              if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'run':
+                  if node.args and isinstance(node.args[0], ast.List) and node.args[0].elts:
+                      first = node.args[0].elts[0]
+                      if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                          commands.append(first.value)
+          assert set(commands).issubset(allowed_commands), commands
+          print('read-only subprocess command families:', sorted(set(commands)))
+          PY
+      - name: Prove exact helper-only delta
+        run: |
+          set -euo pipefail
+          files="$(git diff --name-only ed396cd75a2d23accb95052cdbed00c51626170a..57c3da1dc7c9adc94533cc69c14817bff1b6a1c1)"
+          test "$files" = "scripts/Review-PrinterV1-PostDTW100-OrdinaryStagingResidue.py"
+          git diff --check ed396cd75a2d23accb95052cdbed00c51626170a..57c3da1dc7c9adc94533cc69c14817bff1b6a1c1
