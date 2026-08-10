@@ -123,17 +123,22 @@ class StandardFourHourOperationalActivationContracts(unittest.TestCase):
             campaign_id="campaign:standard-4h",
             configuration_id="config:standard-4h",
         )
-        result = module.evaluate_standard_four_hour_eligibility(
+        results = module.evaluate_standard_four_hour_eligibility(
             campaign=campaign,
             tokens=(
                 self._token("slot:1", "token:1", clean=True),
                 self._token("slot:2", "token:2", clean=False),
             ),
         )
-        self.assertEqual(result["eligible_token_slot_ids"], ("slot:1",))
-        self.assertEqual(result["continuation_count"], 1)
+        eligible = tuple(
+            result.token_slot_id
+            for result in results
+            if result.verdict.value == "CONTINUE_TO_WINDOW_4H"
+        )
+        self.assertEqual(eligible, ("slot:1",))
+        self.assertEqual(len(eligible), 1)
         self.assertEqual(
-            result["verdicts"],
+            {result.token_slot_id: result.verdict.value for result in results},
             {
                 "slot:1": "CONTINUE_TO_WINDOW_4H",
                 "slot:2": "BLOCK_CONTINUATION",
@@ -144,13 +149,22 @@ class StandardFourHourOperationalActivationContracts(unittest.TestCase):
         module = importlib.import_module(
             "printer_v1.operator_cli.operational_standard_4h"
         )
-        self.assertTrue(
-            hasattr(module, "StandardFourHourOperationalError")
+        self.assertTrue(hasattr(module, "StandardFourHourOperationalError"))
+        campaign = CampaignContinuationContext(
+            campaign_id="campaign:standard-4h",
+            configuration_id="config:standard-4h",
+        )
+        results = module.evaluate_standard_four_hour_eligibility(
+            campaign=campaign,
+            tokens=(
+                self._token("slot:1", "token:1", clean=True),
+                self._token("slot:2", "token:2", clean=False),
+            ),
         )
         # The post-DTW100 first-four-hour policy has only CONTINUE or BLOCK.
         self.assertNotIn(
             "STOP_AFTER_WINDOW_1H",
-            module.STANDARD_FOUR_HOUR_ALLOWED_VERDICTS,
+            {result.verdict.value for result in results},
         )
 
     def test_standard_one_shot_wrapper_is_distinct_from_ordinary_15m(self):
