@@ -1,0 +1,30 @@
+name: V2-9.8B post-DTW100 Slice B2 legacy 4h baseline
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONPATH: src
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact pre-B2 baseline
+        run: |
+          echo "HEAD=$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD)" = "ad9da64c3d2cbf646a5fdf0655c858e95b17f1fb"
+      - name: Run exact legacy failing test only
+        run: |
+          python -m unittest -v \
+            tests.test_v2_8_1_one_token_4h_runtime.OneToken4hRuntimeTests.test_clean_close_runs_e2q_lane_q_lane_k_and_is_idempotent
