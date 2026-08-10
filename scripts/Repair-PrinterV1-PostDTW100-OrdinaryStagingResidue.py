@@ -20,6 +20,7 @@ QUARANTINE_ROOT = (
     / "historical-wrapper-staging-quarantine"
     / "post-dtw100-ordinary-staging-residue"
 )
+QUARANTINE_PARENT = QUARANTINE_ROOT.parent
 EXPECTED_DB_SHA256 = "6ce0e27332427243cffd055c41de58408f46dbcd84d43a764bf1764915a176fb"
 EXPECTED_DB_SIZE = 76_435_456
 
@@ -255,6 +256,16 @@ def main() -> int:
         observed_names = sorted(entry.name for entry in os.scandir(STAGING_ROOT))
         expected_names = sorted(EXPECTED_STAGING)
         require(observed_names == expected_names, f"staging allowlist drifted: observed={observed_names}")
+        if QUARANTINE_PARENT.exists():
+            require(not os.path.islink(QUARANTINE_PARENT), "quarantine parent is a symlink")
+            require(QUARANTINE_PARENT.is_dir(), "quarantine parent is not a directory")
+            quarantine_parent_preexisting = True
+        else:
+            require(
+                not os.path.lexists(QUARANTINE_PARENT),
+                f"quarantine parent filesystem entry already exists: {QUARANTINE_PARENT}",
+            )
+            quarantine_parent_preexisting = False
         require(not QUARANTINE_ROOT.exists(), f"quarantine target already exists: {QUARANTINE_ROOT}")
         require(not os.path.lexists(QUARANTINE_ROOT), f"quarantine target filesystem entry already exists: {QUARANTINE_ROOT}")
 
@@ -266,7 +277,11 @@ def main() -> int:
 
         # All fail-closed validation is complete before the first filesystem mutation.
         phase = "CREATE_QUARANTINE_ROOT"
-        QUARANTINE_ROOT.mkdir(parents=True, exist_ok=False)
+        quarantine_directory_creations = 1
+        if not quarantine_parent_preexisting:
+            QUARANTINE_PARENT.mkdir(exist_ok=False)
+            quarantine_directory_creations += 1
+        QUARANTINE_ROOT.mkdir(exist_ok=False)
 
         phase = "ATOMIC_QUARANTINE_RENAMES"
         for name in expected_names:
@@ -307,6 +322,9 @@ def main() -> int:
                 "staging_root": str(STAGING_ROOT),
                 "staging_entries_after": [],
                 "quarantine_root": str(QUARANTINE_ROOT),
+                "quarantine_parent_preexisting": quarantine_parent_preexisting,
+                "quarantine_directory_creations": quarantine_directory_creations,
+                "quarantine_renames": len(expected_names),
                 "quarantine_entry_count": len(expected_names),
                 "quarantine_entries": expected_names,
                 "before_snapshots": before_snapshots,
@@ -317,7 +335,7 @@ def main() -> int:
                 "database_open_handles_after": handles_after,
                 "campaign_lease_locks_before": locks_before,
                 "campaign_lease_locks_after": locks_after,
-                "filesystem_mutations": 1 + len(expected_names),
+                "filesystem_mutations": quarantine_directory_creations + len(expected_names),
                 "deletions": 0,
                 "canonical_application_mutations": 0,
                 "authorization_package_mutations": 0,
