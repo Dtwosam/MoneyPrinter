@@ -26,6 +26,39 @@ jobs:
         run: |
           git fetch origin "${BASE_REF}"
           git show FETCH_HEAD:scripts/checkpoint3_collection_state_accounting_patch.py > /tmp/checkpoint3_patch.py
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('/tmp/checkpoint3_patch.py')
+          s = p.read_text()
+          old = '''def replace_once(old: str, new: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected one patch anchor, found {count}: {old[:100]!r}")
+              text = text.replace(old, new, 1)
+          '''
+          new = '''def replace_once(old: str, new: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected one patch anchor, found {count}: {old[:100]!r}")
+              text = text.replace(old, new, 1)
+
+          def replace_first(old: str, new: str) -> None:
+              global text
+              if old not in text:
+                  raise SystemExit(f"patch anchor missing: {old[:100]!r}")
+              text = text.replace(old, new, 1)
+          '''
+          if s.count(old) != 1:
+              raise SystemExit('replace_once helper rewrite anchor mismatch')
+          s = s.replace(old, new, 1)
+          needle = "replace_once(\n'''        if row[\"scheduler_job_id\"] is not None:\n"
+          if s.count(needle) != 2:
+              raise SystemExit(f'expected two cancellation anchors, found {s.count(needle)}')
+          s = s.replace(needle, "replace_first(\n'''        if row[\"scheduler_job_id\"] is not None:\n", 1)
+          p.write_text(s)
+          PY
           python -m py_compile /tmp/checkpoint3_patch.py
           python /tmp/checkpoint3_patch.py
           python -m py_compile \
