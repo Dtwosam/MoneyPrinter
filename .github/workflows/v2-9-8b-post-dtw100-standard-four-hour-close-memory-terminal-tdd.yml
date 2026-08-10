@@ -35,6 +35,7 @@ jobs:
             tests.test_v2_9_8b_post_dtw100_standard_four_hour_campaign_planning \
             tests.test_v2_9_8b_post_dtw100_standard_four_hour_collection_state_accounting \
             tests.test_v2_9_8b_post_dtw100_checkpoint4_1h_close_boundary \
+            tests.test_v2_9_8b_post_dtw100_checkpoint5_1h_memory_construction \
             tests.test_v2_8_1_one_token_4h_runtime
       - name: Preserve capability locks
         run: |
