@@ -170,6 +170,90 @@ class StandardFourHourCloseMemoryTerminalTests(unittest.TestCase):
         self.assertIsNotNone(validator, "standard two-window WINDOW_4H terminal validator is missing")
         return validator
 
+    def test_four_hour_outcome_uses_exact_full_current_run_path_before_promotion(self) -> None:
+        outcome_owner = getattr(factory, "_derive_and_persist_four_hour_outcome", None)
+        self.assertIsNotNone(outcome_owner, "full-path WINDOW_4H outcome owner is missing")
+
+        earlier = self.fx.connection.execute(
+            """SELECT id,snapshot_id FROM printer_memory_factory_run_steps
+               WHERE run_id='factory-run-1' AND token_id=1 AND pair_id=1
+                 AND step_kind IN ('SNAPSHOT','WINDOW_CLOSE','CONTINUATION_SNAPSHOT','CONTINUATION_CLOSE')
+                 AND step_status='SUCCEEDED' AND snapshot_id IS NOT NULL
+               ORDER BY scheduled_for,id"""
+        ).fetchall()
+        self.assertGreaterEqual(len(earlier), 1)
+        earlier_ids = [int(row["snapshot_id"]) for row in earlier]
+        with self.fx.connection:
+            for snapshot_id in earlier_ids:
+                self.fx.connection.execute(
+                    "UPDATE printer_token_snapshots SET price_usd=100.0 WHERE id=?",
+                    (snapshot_id,),
+                )
+
+            long_step = self.fx.connection.execute(
+                """SELECT * FROM printer_memory_factory_run_steps
+                   WHERE run_id='factory-run-1' AND token_id=1
+                     AND step_kind='LONG_CONTINUATION_SNAPSHOT'
+                   ORDER BY scheduled_for,id LIMIT 1"""
+            ).fetchone()
+            self.assertIsNotNone(long_step)
+            self.fx.connection.execute(
+                """INSERT INTO printer_token_snapshots(
+                    id,token_id,pair_id,captured_at,tracking_lane,snapshot_mode,
+                    source_status,data_quality_label,price_usd
+                ) VALUES (25001,1,1,?,'TRACK_FAST','TOKEN','COMPLETE','CLEAN_DATA',150.0)""",
+                (_iso(T1H + timedelta(hours=1)),),
+            )
+            self.fx.connection.execute(
+                """UPDATE printer_memory_factory_run_steps
+                   SET step_status='SUCCEEDED',snapshot_id=25001,updated_at=? WHERE id=?""",
+                (_iso(T1H + timedelta(hours=1)), int(long_step["id"])),
+            )
+            close = self._close_step(1)
+            self.fx.connection.execute(
+                """INSERT INTO printer_token_snapshots(
+                    id,token_id,pair_id,captured_at,tracking_lane,snapshot_mode,
+                    source_status,data_quality_label,price_usd
+                ) VALUES (25002,1,1,?,'TRACK_FAST','TOKEN','COMPLETE','CLEAN_DATA',200.0)""",
+                (_iso(T1H + timedelta(seconds=10_800)),),
+            )
+            # Historical/unowned token snapshot must never enter the current-run path.
+            self.fx.connection.execute(
+                """INSERT INTO printer_token_snapshots(
+                    id,token_id,pair_id,captured_at,tracking_lane,snapshot_mode,
+                    source_status,data_quality_label,price_usd
+                ) VALUES (25999,1,1,?,'TRACK_FAST','TOKEN','COMPLETE','CLEAN_DATA',1.0)""",
+                (_iso(T1H + timedelta(minutes=30)),),
+            )
+
+        memory_id = self._insert_physical_4h(1, clean=True)
+        with self.fx.connection:
+            self.fx.connection.execute(
+                "UPDATE printer_memory_windows SET outcome_label=NULL WHERE id=?",
+                (memory_id,),
+            )
+        report = outcome_owner(
+            self.fx.connection,
+            run_id='factory-run-1',
+            token_id=1,
+            pair_id=1,
+            window_id=memory_id,
+            current_close_snapshot_id=25002,
+        )
+        self.assertEqual(report["outcome_label"], "EXTENDED_PUMP")
+        self.assertIn(25001, report["snapshot_ids"])
+        self.assertIn(25002, report["snapshot_ids"])
+        self.assertTrue(set(earlier_ids).issubset(set(report["snapshot_ids"])))
+        self.assertNotIn(25999, report["snapshot_ids"])
+        row = self.fx.connection.execute(
+            "SELECT outcome_label,supporting_context_json FROM printer_memory_windows WHERE id=?",
+            (memory_id,),
+        ).fetchone()
+        self.assertEqual(str(row[0]), "EXTENDED_PUMP")
+        context = json.loads(str(row[1]))
+        self.assertEqual(context["full_four_hour_outcome_source"], "EXACT_CURRENT_RUN_MAIN_LIFECYCLE")
+        self.assertEqual(context["full_four_hour_outcome_snapshot_ids"], report["snapshot_ids"])
+
     def test_clean_created_binds_exact_window_and_closes_only_its_slot(self) -> None:
         self._set_close_pending(1)
         memory_id = self._insert_physical_4h(1, clean=True)
@@ -268,8 +352,9 @@ class StandardFourHourCloseMemoryTerminalTests(unittest.TestCase):
         self._set_close_pending(1)
         memory_id = self._insert_physical_4h(1, clean=True, pair_id=2)
         close = self._close_step(1)
+        binder = self._binder()
         with self.assertRaises(Exception):
-            self._binder()(
+            binder(
                 self.fx.connection,
                 scheduler_job_id=int(close["scheduler_job_id"]),
                 memory_window_row_id=memory_id,
