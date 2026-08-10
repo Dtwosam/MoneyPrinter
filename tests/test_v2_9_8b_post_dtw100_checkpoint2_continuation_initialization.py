@@ -30,6 +30,18 @@ class Checkpoint2ContinuationInitializationTests(unittest.TestCase):
     def _prepare_both(self) -> None:
         self.fx.prepare_eligible(token_id=1, window_id=401, outcome="CONSOLIDATION")
         self.fx.prepare_eligible(token_id=2, window_id=402, outcome="NO_PUMP")
+        # The historical Selective1hFixture predates the real close-ledger
+        # attachment contract. A successful DTW100-style close has the exact
+        # memory-window closing snapshot also bound to its WINDOW_CLOSE step.
+        with self.fx.connection:
+            for token_id in (1, 2):
+                self.fx.connection.execute(
+                    """UPDATE printer_memory_factory_run_steps
+                       SET snapshot_id=?
+                       WHERE run_id='factory-run-1' AND token_id=?
+                         AND step_kind='WINDOW_CLOSE'""",
+                    (5000 + token_id, token_id),
+                )
 
     def test_real_barrier_initializes_exact_owned_45m_schedule_for_both_tokens(self) -> None:
         self._prepare_both()
