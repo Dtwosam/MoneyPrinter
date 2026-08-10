@@ -694,6 +694,284 @@ def persist_immutable_object(
     return object_hash
 
 
+
+_PRE_1H_HANDOFF_TOKEN_STATES = frozenset(
+    {"SELECTED", "WINDOW_15M_ACTIVE", "WINDOW_15M_CLOSED"}
+)
+_PRE_1H_HANDOFF_NEXT_STATE = {
+    "SELECTED": "WINDOW_15M_ACTIVE",
+    "WINDOW_15M_ACTIVE": "WINDOW_15M_CLOSED",
+    "WINDOW_15M_CLOSED": "WINDOW_1H_CONTINUING",
+}
+
+
+def persist_standard_first_hour_handoff_set(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    configuration_id: str,
+    run_id: str,
+    cycle_id: str,
+    object_kind: str,
+    candidates: Sequence[Mapping[str, Any]],
+    now: str | None = None,
+) -> dict[str, Any]:
+    """Atomically persist one complete two-slot standard-first-hour handoff.
+
+    The first authoritative continuation decision set, any WINDOW_1H successors,
+    and token-slot advancement to WINDOW_1H_CONTINUING are one transaction. Any
+    ownership conflict rolls the whole handoff set back.
+    """
+    if len(candidates) != 2:
+        raise CampaignOwnershipError(
+            f"standard first-hour handoff requires exactly two candidates; found {len(candidates)}"
+        )
+    campaign = _required(campaign_id, "campaign_id")
+    configuration = _required(configuration_id, "configuration_id")
+    run = _required(run_id, "run_id")
+    cycle = _required(cycle_id, "cycle_id")
+    kind = _required(object_kind, "object_kind")
+    timestamp = now or _utc_now()
+
+    try:
+        with connection:
+            slot_rows = connection.execute(
+                """SELECT token_slot_id, token_row_id, pair_row_id, mint_identity,
+                          pair_identity, lifecycle_identity, token_state
+                   FROM printer_memory_factory_campaign_token_slots
+                   WHERE campaign_id=? AND run_id=? AND cycle_id=?
+                   ORDER BY slot_ordinal""",
+                (campaign, run, cycle),
+            ).fetchall()
+            if len(slot_rows) != 2:
+                raise CampaignOwnershipError(
+                    "standard first-hour handoff requires the exact two-slot ownership set"
+                )
+            slot_by_id = {str(row[0]): row for row in slot_rows}
+            prepared: list[dict[str, Any]] = []
+            candidate_slot_ids: set[str] = set()
+
+            for candidate in candidates:
+                object_id = _required(candidate.get("object_id"), "object_id")
+                payload_raw = candidate.get("payload")
+                info_raw = candidate.get("info")
+                if not isinstance(payload_raw, Mapping) or not isinstance(info_raw, Mapping):
+                    raise CampaignOwnershipError("handoff candidate payload/info must be mappings")
+                payload = dict(payload_raw)
+                info = dict(info_raw)
+                slot_id = _required(info.get("token_slot_id"), "token_slot_id")
+                if slot_id in candidate_slot_ids or slot_id not in slot_by_id:
+                    raise CampaignOwnershipError("handoff candidate token-slot set mismatch")
+                candidate_slot_ids.add(slot_id)
+                slot = slot_by_id[slot_id]
+                state = str(slot[6])
+                if state not in _PRE_1H_HANDOFF_TOKEN_STATES:
+                    raise CampaignOwnershipError(
+                        f"pre-handoff token state conflict for {slot_id}: {state}"
+                    )
+                if (
+                    int(slot[1]) != int(info["token_row_id"])
+                    or int(slot[2]) != int(info["pair_row_id"])
+                    or str(slot[3]) != str(info["mint_identity"])
+                    or str(slot[4]) != str(info["pair_identity"])
+                    or str(slot[5]) != str(info["lifecycle_identity"])
+                ):
+                    raise CampaignOwnershipError(
+                        f"handoff slot identity mismatch for {slot_id}"
+                    )
+
+                predecessor_id = _required(
+                    info.get("campaign_window_15m_id"),
+                    "campaign_window_15m_id",
+                )
+                predecessor = connection.execute(
+                    """SELECT campaign_id, run_id, cycle_id, token_slot_id,
+                              token_row_id, pair_row_id, window_kind, window_state,
+                              root_15m_lifecycle_identity, memory_window_row_id
+                       FROM printer_memory_factory_campaign_windows
+                       WHERE window_id=?""",
+                    (predecessor_id,),
+                ).fetchone()
+                if predecessor is None:
+                    raise CampaignOwnershipError(
+                        f"handoff predecessor missing for {slot_id}"
+                    )
+                if (
+                    str(predecessor[0]) != campaign
+                    or str(predecessor[1]) != run
+                    or str(predecessor[2]) != cycle
+                    or str(predecessor[3]) != slot_id
+                    or int(predecessor[4]) != int(info["token_row_id"])
+                    or int(predecessor[5]) != int(info["pair_row_id"])
+                    or str(predecessor[6]) != "WINDOW_15M"
+                    or str(predecessor[8]) != str(info["lifecycle_identity"])
+                    or predecessor[9] is None
+                    or int(predecessor[9]) != int(info["memory_window_15m_id"])
+                ):
+                    raise CampaignOwnershipError(
+                        f"handoff predecessor identity mismatch for {slot_id}"
+                    )
+
+                continue_ok = bool(candidate.get("continue_ok"))
+                if continue_ok and str(predecessor[7]) != "CLEAN_PROMOTED":
+                    raise CampaignOwnershipError(
+                        f"continuing predecessor is not CLEAN_PROMOTED for {slot_id}"
+                    )
+                if connection.execute(
+                    "SELECT 1 FROM printer_memory_factory_campaign_objects WHERE object_id=?",
+                    (object_id,),
+                ).fetchone() is not None:
+                    raise CampaignOwnershipError(
+                        f"first handoff evaluation object already exists: {object_id}"
+                    )
+
+                successor_id = payload.get("campaign_window_1h_id")
+                if continue_ok:
+                    successor_id = _required(successor_id, "campaign_window_1h_id")
+                    if connection.execute(
+                        "SELECT 1 FROM printer_memory_factory_campaign_windows WHERE window_id=?",
+                        (successor_id,),
+                    ).fetchone() is not None:
+                        raise CampaignOwnershipError(
+                            f"pre-existing WINDOW_1H conflicts with first handoff: {successor_id}"
+                        )
+                elif successor_id is not None:
+                    raise CampaignOwnershipError(
+                        "non-continuing handoff candidate cannot own WINDOW_1H"
+                    )
+
+                object_json, object_hash = canonical_object_payload(payload)
+                prepared.append(
+                    {
+                        "object_id": object_id,
+                        "object_json": object_json,
+                        "object_hash": object_hash,
+                        "payload": payload,
+                        "info": info,
+                        "continue_ok": continue_ok,
+                        "successor_id": successor_id,
+                        "initial_state": state,
+                    }
+                )
+
+            if candidate_slot_ids != set(slot_by_id):
+                raise CampaignOwnershipError("handoff candidates do not cover both token slots")
+
+            # Persist the complete immutable decision set only after every identity
+            # and state preflight passes.
+            for item in prepared:
+                info = item["info"]
+                _write(
+                    connection,
+                    """INSERT INTO printer_memory_factory_campaign_objects(
+                        object_id,object_kind,campaign_id,configuration_id,run_id,cycle_id,
+                        token_slot_id,window_id,scheduler_work_id,object_hash,object_json,
+                        authoritative_episode_id,safety_composite_id,lifecycle_event_id,created_at
+                    ) VALUES (?,?,?,?,?,?,?,?,NULL,?,?,?,NULL,NULL,?)""",
+                    (
+                        item["object_id"], kind, campaign, configuration, run, cycle,
+                        info["token_slot_id"], info["campaign_window_15m_id"],
+                        item["object_hash"], item["object_json"],
+                        info.get("authoritative_episode_id"), timestamp,
+                    ),
+                )
+
+            for item in prepared:
+                if not item["continue_ok"]:
+                    continue
+                info = item["info"]
+                successor_id = str(item["successor_id"])
+                _write(
+                    connection,
+                    """INSERT INTO printer_memory_factory_campaign_windows(
+                        window_id,campaign_id,run_id,cycle_id,token_slot_id,token_row_id,
+                        pair_row_id,window_kind,window_state,root_15m_lifecycle_identity,
+                        predecessor_window_id,containing_main_window_id,memory_window_row_id,
+                        checkpoint_cutoff,support_only,created_at,updated_at
+                    ) VALUES (?,?,?,?,?,?,?,'WINDOW_1H','PLANNED',?,?,NULL,NULL,?,0,?,?)""",
+                    (
+                        successor_id, campaign, run, cycle, info["token_slot_id"],
+                        int(info["token_row_id"]), int(info["pair_row_id"]),
+                        info["lifecycle_identity"], info["campaign_window_15m_id"],
+                        timestamp, timestamp, timestamp,
+                    ),
+                )
+                current = str(item["initial_state"])
+                while current != "WINDOW_1H_CONTINUING":
+                    next_state = _PRE_1H_HANDOFF_NEXT_STATE.get(current)
+                    if next_state is None:
+                        raise CampaignOwnershipError(
+                            f"no valid first-hour state path from {current}"
+                        )
+                    cursor = connection.execute(
+                        """UPDATE printer_memory_factory_campaign_token_slots
+                           SET token_state=?, updated_at=?
+                           WHERE token_slot_id=? AND campaign_id=? AND run_id=?
+                             AND cycle_id=? AND token_state=?""",
+                        (
+                            next_state, timestamp, info["token_slot_id"], campaign,
+                            run, cycle, current,
+                        ),
+                    )
+                    if cursor.rowcount != 1:
+                        raise CampaignOwnershipError(
+                            f"first-hour token-state compare-and-update failed for {info['token_slot_id']}"
+                        )
+                    current = next_state
+
+            # Read-back verification is inside the same transaction; any mismatch
+            # raises and rolls back objects, successor windows, and slot updates.
+            persisted_ids = {
+                str(row[0])
+                for row in connection.execute(
+                    """SELECT object_id FROM printer_memory_factory_campaign_objects
+                       WHERE campaign_id=? AND run_id=? AND cycle_id=? AND object_kind=?""",
+                    (campaign, run, cycle, kind),
+                ).fetchall()
+            }
+            expected_ids = {str(item["object_id"]) for item in prepared}
+            if persisted_ids != expected_ids:
+                raise CampaignOwnershipError(
+                    "first-hour immutable handoff object read-back mismatch"
+                )
+            for item in prepared:
+                if not item["continue_ok"]:
+                    continue
+                info = item["info"]
+                verify = connection.execute(
+                    """SELECT w.token_slot_id,w.token_row_id,w.pair_row_id,
+                              w.window_kind,w.window_state,w.root_15m_lifecycle_identity,
+                              w.predecessor_window_id,w.memory_window_row_id,s.token_state
+                       FROM printer_memory_factory_campaign_windows AS w
+                       JOIN printer_memory_factory_campaign_token_slots AS s
+                         ON s.token_slot_id=w.token_slot_id
+                       WHERE w.window_id=?""",
+                    (item["successor_id"],),
+                ).fetchone()
+                if (
+                    verify is None
+                    or str(verify[0]) != str(info["token_slot_id"])
+                    or int(verify[1]) != int(info["token_row_id"])
+                    or int(verify[2]) != int(info["pair_row_id"])
+                    or str(verify[3]) != "WINDOW_1H"
+                    or str(verify[4]) != "PLANNED"
+                    or str(verify[5]) != str(info["lifecycle_identity"])
+                    or str(verify[6]) != str(info["campaign_window_15m_id"])
+                    or verify[7] is not None
+                    or str(verify[8]) != "WINDOW_1H_CONTINUING"
+                ):
+                    raise CampaignOwnershipError(
+                        f"first-hour handoff read-back mismatch for {info['token_slot_id']}"
+                    )
+
+            return {
+                "persisted": True,
+                "object_ids": sorted(expected_ids),
+                "continuation_count": sum(1 for item in prepared if item["continue_ok"]),
+            }
+    except sqlite3.Error as exc:
+        raise CampaignOwnershipError(str(exc)) from exc
+
 def link_report_object(
     connection: sqlite3.Connection,
     *,

@@ -29,7 +29,7 @@ from printer_v1.operator_cli.campaign_ownership import (
     bind_authoritative_run_id,
     bind_window_memory_row_id,
     canonical_object_payload,
-    persist_immutable_object,
+    persist_standard_first_hour_handoff_set,
     persist_window,
     transition_state,
 )
@@ -466,6 +466,15 @@ def evaluate_selective_1h_for_cycle(
         raise Selective1hError(
             f"selective 1h requires exactly two token slots; found {len(slots)}"
         )
+    allowed_pre_handoff_states = {
+        "SELECTED", "WINDOW_15M_ACTIVE", "WINDOW_15M_CLOSED"
+    }
+    for slot in slots:
+        token_state = str(slot.get("token_state") or "")
+        if token_state not in allowed_pre_handoff_states:
+            raise Selective1hError(
+                f"pre-handoff token state conflict for {slot['token_slot_id']}: {token_state}"
+            )
 
     campaign_ctx = CampaignContinuationContext(
         campaign_id=campaign_id,
@@ -682,21 +691,9 @@ def evaluate_selective_1h_for_cycle(
             payload = persisted
             candidate["payload"] = persisted
         else:
-            info = candidate["info"]
-            persist_immutable_object(
-                connection,
-                object_id=object_id,
-                object_kind=CONTINUATION_OBJECT_KIND,
-                campaign_id=campaign_id,
-                configuration_id=configuration_id,
-                run_id=run_id,
-                cycle_id=cycle_id,
-                token_slot_id=info["token_slot_id"],
-                window_id=info["campaign_window_15m_id"],
-                payload=payload,
-                authoritative_episode_id=info["authoritative_episode_id"],
-                now=stamp,
-            )
+            # The complete first-evaluation set is persisted atomically below,
+            # together with any WINDOW_1H successors and token-state advancement.
+            pass
         objects.append(
             {
                 "object_id": object_id,
@@ -705,64 +702,22 @@ def evaluate_selective_1h_for_cycle(
             }
         )
 
-    # Continuation windows and token-slot advancement are side effects of only
-    # the first authoritative immutable evaluation.
+    # First-evaluation persistence is one canonical ownership transaction:
+    # both immutable decisions, every WINDOW_1H successor, and token-slot state.
     if first_evaluation:
-        for candidate in candidates:
-            if not candidate["continue_ok"]:
-                continue
-            info = candidate["info"]
-            window_1h_id = candidate["payload"]["campaign_window_1h_id"]
-            existing_1h = connection.execute(
-                "SELECT window_id FROM printer_memory_factory_campaign_windows "
-                "WHERE window_id=?",
-                (window_1h_id,),
-            ).fetchone()
-            if existing_1h is not None:
-                raise Selective1hError(
-                    "pre-existing WINDOW_1H conflicts with first continuation evaluation"
-                )
-            persist_window(
+        try:
+            persist_standard_first_hour_handoff_set(
                 connection,
-                window_id=window_1h_id,
                 campaign_id=campaign_id,
+                configuration_id=configuration_id,
                 run_id=run_id,
                 cycle_id=cycle_id,
-                token_slot_id=info["token_slot_id"],
-                token_row_id=info["token_row_id"],
-                pair_row_id=info["pair_row_id"],
-                window_kind=WINDOW_1H,
-                root_15m_lifecycle_identity=info["lifecycle_identity"],
-                predecessor_window_id=info["campaign_window_15m_id"],
-                checkpoint_cutoff=stamp,
+                object_kind=CONTINUATION_OBJECT_KIND,
+                candidates=candidates,
                 now=stamp,
             )
-            try:
-                transition_state(
-                    connection,
-                    record_kind="token_slot",
-                    identity=info["token_slot_id"],
-                    expected_state="SELECTED",
-                    new_state="WINDOW_15M_ACTIVE",
-                    now=stamp,
-                )
-            except CampaignOwnershipError:
-                pass
-            for expected, new_state in (
-                ("WINDOW_15M_ACTIVE", "WINDOW_15M_CLOSED"),
-                ("WINDOW_15M_CLOSED", "WINDOW_1H_CONTINUING"),
-            ):
-                try:
-                    transition_state(
-                        connection,
-                        record_kind="token_slot",
-                        identity=info["token_slot_id"],
-                        expected_state=expected,
-                        new_state=new_state,
-                        now=stamp,
-                    )
-                except CampaignOwnershipError:
-                    continue
+        except CampaignOwnershipError as exc:
+            raise Selective1hError(str(exc)) from exc
 
     plans: list[Selective1hTokenPlan] = []
     for candidate in candidates:
