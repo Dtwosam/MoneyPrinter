@@ -24,6 +24,7 @@ jobs:
           set -euo pipefail
           cp scripts/apply_standard_four_hour_activation_authorization_slice_b.py /tmp/apply_slice_b.py
           cp scripts/apply_standard_four_hour_activation_authorization_slice_b_command_binding.py /tmp/apply_slice_b_command_binding.py
+          cp scripts/normalize_standard_four_hour_activation_authorization_patcher.py /tmp/normalize_slice_b_patcher.py
           git checkout --detach b19b122dc13cbf4bbc802bca3a0223dce7256f32
           test "$(git rev-parse HEAD)" = "b19b122dc13cbf4bbc802bca3a0223dce7256f32"
           test -z "$(git status --porcelain)"
@@ -35,6 +36,7 @@ jobs:
 
       - name: Apply approved Slice B production patch
         run: |
+          python /tmp/normalize_slice_b_patcher.py /tmp/apply_slice_b.py
           python /tmp/apply_slice_b.py
           python /tmp/apply_slice_b_command_binding.py
 
