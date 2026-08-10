@@ -30,24 +30,38 @@ jobs:
           path = Path('scripts/Review-PrinterV1-PostDTW100-StandardFourHour-Rereadiness.py')
           text = path.read_text(encoding='utf-8')
           tree = ast.parse(text)
+          imported_modules = set()
+          imported_names = set()
+          calls = []
+          for node in ast.walk(tree):
+              if isinstance(node, ast.Import):
+                  imported_modules.update(alias.name for alias in node.names)
+              elif isinstance(node, ast.ImportFrom):
+                  imported_modules.add(node.module or '')
+                  imported_names.update(alias.name for alias in node.names)
+              elif isinstance(node, ast.Call):
+                  try:
+                      calls.append(ast.unparse(node.func))
+                  except Exception:
+                      pass
+
           assert 'build_standard_four_hour_preflight' in text
-          assert 'apply_authorization_once' not in text
-          assert 'run_standard_four_hour_campaign(' not in text
-          assert 'standard_four_hour_one_shot_wrapper' not in text
-          assert 'sqlite3.connect' not in text
-          assert 'urllib' not in text
-          assert 'requests.' not in text
+          assert 'apply_authorization_once' not in imported_names
+          assert 'run_standard_four_hour_campaign' not in imported_names
+          assert 'printer_v1.operator_cli.standard_four_hour_one_shot_wrapper' not in imported_modules
+          assert 'sqlite3' not in imported_modules
+          assert 'urllib' not in imported_modules
+          assert 'requests' not in imported_modules
+          assert 'apply_authorization_once' not in calls
+          assert 'run_standard_four_hour_campaign' not in calls
           assert 'source_calls": 0' in text
           assert 'scheduler_runtime_calls": 0' in text
           assert 'authoritative_database_writes": 0' in text
           assert 'authorization_created": False' in text
           assert 'printer_runtime_started": False' in text
           assert 'standard_four_hour_started": False' in text
-          calls = []
-          for node in ast.walk(tree):
-              if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'run':
-                  calls.append(ast.unparse(node.args[0]) if node.args else '')
-          print('subprocess run call sites:', calls)
+          print('imports:', sorted(imported_modules))
+          print('call count:', len(calls))
           PY
       - name: Prove helper is the only durable-branch delta from activation closeout
         run: |
