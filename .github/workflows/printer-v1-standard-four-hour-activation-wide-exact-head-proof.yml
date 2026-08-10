@@ -52,14 +52,19 @@ jobs:
           }
           missing = sorted(required - files)
           assert not missing, f'missing expected activation tests: {missing}'
+          checkpoints = sorted(Path('tests').glob('test_v2_9_8b_post_dtw100_checkpoint*.py'))
+          assert checkpoints, 'post-DTW100 checkpoint regression inventory is unexpectedly empty'
           print('standard-four-hour activation test files:', len(files))
+          print('post-DTW100 checkpoint test files:', len(checkpoints))
           for name in sorted(files):
               print(name)
+          for path in checkpoints:
+              print(path.name)
           PY
       - name: Prove all standard four-hour current-contract tests
         run: python -m unittest discover -s tests -p 'test_v2_9_8b_post_dtw100_standard_four_hour*.py' -v
-      - name: Prove directly affected first-hour current-contract tests
-        run: python -m unittest discover -s tests -p 'test_v2_9_8b_post_dtw100_first_hour*.py' -v
+      - name: Prove post-DTW100 lifecycle checkpoint regressions
+        run: python -m unittest discover -s tests -p 'test_v2_9_8b_post_dtw100_checkpoint*.py' -v
       - name: Prove token-local continuation regression
         run: python -m unittest -v tests.test_v2_9_7d_4a_token_local_selective_continuation
       - name: Prove activation policy and capability locks
