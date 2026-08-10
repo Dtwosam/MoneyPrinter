@@ -195,7 +195,7 @@ class Checkpoint5FirstHourMemoryConstructionTests(unittest.TestCase):
         self.assertEqual(result["lane_q_valid_window_ids"], [window_id])
         self.assertEqual(result["promoted_window_ids"], [window_id])
         episode = self.fx.connection.execute(
-            """SELECT id,episode_kind,window_kind,memory_status,outcome_label
+            """SELECT id,episode_kind,window_kind,memory_status,episode_outcome_label
                FROM printer_episodes WHERE memory_window_id=?""",
             (window_id,),
         ).fetchone()

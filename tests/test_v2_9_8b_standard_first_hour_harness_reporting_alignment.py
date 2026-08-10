@@ -11,6 +11,9 @@ from printer_v1.operator_cli.e2z_clean_memory_creation import (
     E2Z_STATUS_ALREADY_EXISTS,
     create_clean_memory_from_window,
 )
+from printer_v1.operator_cli.lane_q_15m_window_integrity_guard import (
+    guard_candidate_windows,
+)
 from printer_v1.operator_cli.operational_selective_1h import (
     FIRST_HOUR_CONTINUATION_BLOCKED,
     ONE_CONTINUATION_ONE_BLOCK,
@@ -22,6 +25,7 @@ from printer_v1.scheduler.token_local_continuation import ContinuationVerdict
 from tests.test_v2_9_8b_operational_selective_1h import (
     Selective1hFixture,
     T0,
+    T15,
     T1H,
     _iso,
 )
@@ -148,24 +152,19 @@ class StandardFirstHourHarnessReportingAlignmentTests(unittest.TestCase):
     def test_genuine_1h_clean_object_creates_episode_and_fingerprint_once(self) -> None:
         fx = Selective1hFixture()
         try:
+            snapshot_ids = list(range(3301, 3314))
             with fx.connection:
-                fx.connection.execute(
-                    """INSERT INTO printer_token_snapshots(
-                        id,token_id,pair_id,captured_at,tracking_lane,snapshot_mode,
-                        source_status,data_quality_label
-                    ) VALUES (3301,1,1,?,'TRACK_NORMAL','TOKEN','COMPLETE','CLEAN_DATA')""",
-                    (_iso(T0),),
-                )
-                fx.connection.execute(
-                    """INSERT INTO printer_token_snapshots(
-                        id,token_id,pair_id,captured_at,tracking_lane,snapshot_mode,
-                        source_status,data_quality_label
-                    ) VALUES (3302,1,1,?,'TRACK_NORMAL','TOKEN','COMPLETE','CLEAN_DATA')""",
-                    (_iso(T1H),),
-                )
+                for index, snapshot_id in enumerate(snapshot_ids):
+                    fx.connection.execute(
+                        """INSERT INTO printer_token_snapshots(
+                            id,token_id,pair_id,captured_at,tracking_lane,snapshot_mode,
+                            source_status,data_quality_label
+                        ) VALUES (?,1,1,?,'TRACK_NORMAL','TOKEN','COMPLETE','CLEAN_DATA')""",
+                        (snapshot_id, _iso(T15 + timedelta(seconds=225 * index))),
+                    )
                 ctx = {
-                    "snapshot_id": 3302,
-                    "snapshot_ids": [3301, 3302],
+                    "snapshot_id": snapshot_ids[-1],
+                    "snapshot_ids": snapshot_ids,
                     "e2q_audited": True,
                     "e2q_audited_by": "lane_e2q",
                     "e2q_audit_status": "E2Q_AUDIT_CLEAN_CANDIDATE",
@@ -177,22 +176,38 @@ class StandardFirstHourHarnessReportingAlignmentTests(unittest.TestCase):
                         window_start_at,window_end_at,snapshot_start_id,snapshot_end_id,
                         memory_status,data_quality_label,window_status,
                         memory_quality_label,outcome_label,do_not_train,supporting_context_json
-                    ) VALUES (3201,1,1,'WINDOW_1H',?,?,?,?,3301,3302,'PARTIAL_MEMORY',
+                    ) VALUES (3201,1,1,'WINDOW_1H',?,?,?,?,?,?,'PARTIAL_MEMORY',
                         'CLEAN_DATA','WINDOW_CLOSED','PARTIAL_MEMORY','CONSOLIDATION',0,?)""",
                     (
-                        _iso(T0),
+                        _iso(T15),
                         _iso(T1H),
-                        _iso(T0),
+                        _iso(T15),
                         _iso(T1H),
+                        snapshot_ids[0],
+                        snapshot_ids[-1],
                         json.dumps(ctx),
                     ),
                 )
+            lane_q = guard_candidate_windows(
+                fx.db,
+                [3201],
+                operator_approved=True,
+                production_mode=True,
+            )
             first = create_clean_memory_from_window(
-                fx.db, 3201, operator_approved=True, individual_promotion=True
+                fx.db,
+                3201,
+                operator_approved=True,
+                individual_promotion=True,
+                lane_q_report=lane_q,
             )
             self.assertEqual(first["e2z_status"], E2Z_STATUS_CREATED)
             second = create_clean_memory_from_window(
-                fx.db, 3201, operator_approved=True, individual_promotion=True
+                fx.db,
+                3201,
+                operator_approved=True,
+                individual_promotion=True,
+                lane_q_report=lane_q,
             )
             self.assertEqual(second["e2z_status"], E2Z_STATUS_ALREADY_EXISTS)
             self.assertEqual(first["episode_id"], second["episode_id"])

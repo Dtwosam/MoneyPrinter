@@ -38,6 +38,9 @@ from printer_v1.operator_cli.e2z_clean_memory_creation import (
     E2Z_STATUS_CREATED,
     create_clean_memory_from_window,
 )
+from printer_v1.operator_cli.lane_q_15m_window_integrity_guard import (
+    guard_candidate_windows,
+)
 from printer_v1.operator_cli.operational_selective_1h import (
     SELECTIVE_1H_POLICY_VERSION,
     bind_1h_memory_window,
@@ -981,27 +984,22 @@ class OperationalSelective1hTests(unittest.TestCase):
         self.assertTrue(gate["period_awareness"]["all_window_1h"])
 
     def test_e2z_promotes_clean_1h_once(self) -> None:
+        snapshot_ids = list(range(1, 14))
         with self.fx.connection:
-            self.fx.connection.execute(
-                """INSERT INTO printer_token_snapshots(
-                    id,token_id,pair_id,captured_at,tracking_lane,snapshot_mode,
-                    source_status,data_quality_label
-                ) VALUES (1,1,1,?,'TRACK_NORMAL','TOKEN','COMPLETE','CLEAN_DATA')""",
-                (_iso(T0),),
-            )
-            self.fx.connection.execute(
-                """INSERT INTO printer_token_snapshots(
-                    id,token_id,pair_id,captured_at,tracking_lane,snapshot_mode,
-                    source_status,data_quality_label
-                ) VALUES (2,1,1,?,'TRACK_NORMAL','TOKEN','COMPLETE','CLEAN_DATA')""",
-                (_iso(T1H),),
-            )
+            for index, snapshot_id in enumerate(snapshot_ids):
+                self.fx.connection.execute(
+                    """INSERT INTO printer_token_snapshots(
+                        id,token_id,pair_id,captured_at,tracking_lane,snapshot_mode,
+                        source_status,data_quality_label
+                    ) VALUES (?,1,1,?,'TRACK_NORMAL','TOKEN','COMPLETE','CLEAN_DATA')""",
+                    (snapshot_id, _iso(T15 + timedelta(seconds=225 * index))),
+                )
             ctx = {
-                "snapshot_id": 2,
+                "snapshot_id": snapshot_ids[-1],
                 "e2q_audited": True,
                 "e2q_audited_by": "lane_e2q",
                 "e2q_audit_status": "E2Q_AUDIT_CLEAN_CANDIDATE",
-                "snapshot_ids": [1, 2],
+                "snapshot_ids": snapshot_ids,
                 "tracking_lane": "TRACK_NORMAL",
             }
             self.fx.connection.execute(
@@ -1010,22 +1008,38 @@ class OperationalSelective1hTests(unittest.TestCase):
                     window_start_at,window_end_at,snapshot_start_id,snapshot_end_id,
                     memory_status,data_quality_label,window_status,
                     memory_quality_label,outcome_label,do_not_train,supporting_context_json
-                ) VALUES (201,1,1,'WINDOW_1H',?,?,?,?,1,2,'PARTIAL_MEMORY',
+                ) VALUES (201,1,1,'WINDOW_1H',?,?,?,?,?,?,'PARTIAL_MEMORY',
                     'CLEAN_DATA','WINDOW_CLOSED','PARTIAL_MEMORY','CONSOLIDATION',0,?)""",
                 (
-                    _iso(T0),
+                    _iso(T15),
                     _iso(T1H),
-                    _iso(T0),
+                    _iso(T15),
                     _iso(T1H),
+                    snapshot_ids[0],
+                    snapshot_ids[-1],
                     json.dumps(ctx),
                 ),
             )
+        lane_q = guard_candidate_windows(
+            self.fx.db,
+            [201],
+            operator_approved=True,
+            production_mode=True,
+        )
         first = create_clean_memory_from_window(
-            self.fx.db, 201, operator_approved=True, individual_promotion=True
+            self.fx.db,
+            201,
+            operator_approved=True,
+            individual_promotion=True,
+            lane_q_report=lane_q,
         )
         self.assertEqual(first["e2z_status"], E2Z_STATUS_CREATED)
         second = create_clean_memory_from_window(
-            self.fx.db, 201, operator_approved=True, individual_promotion=True
+            self.fx.db,
+            201,
+            operator_approved=True,
+            individual_promotion=True,
+            lane_q_report=lane_q,
         )
         self.assertEqual(second["e2z_status"], E2Z_STATUS_ALREADY_EXISTS)
         self.assertEqual(first["episode_id"], second["episode_id"])
