@@ -33,7 +33,9 @@ jobs:
         run: |
           git fetch origin agent/v2-9-8b-post-dtw100-standard-four-hour-slice-b2-apply-base --depth=1
           git show FETCH_HEAD:.github/scripts/apply_standard_four_hour_b2.py > /tmp/apply_standard_four_hour_b2.py
+          git show FETCH_HEAD:.github/scripts/fix_standard_four_hour_b2_outer_transaction.py > /tmp/fix_standard_four_hour_b2_outer_transaction.py
           python /tmp/apply_standard_four_hour_b2.py
+          python /tmp/fix_standard_four_hour_b2_outer_transaction.py
           test "$(git diff --name-only | sort)" = $'src/printer_v1/operator_cli/campaign_ownership.py\nsrc/printer_v1/operator_cli/one_token_4h_runtime.py'
           git diff --check
       - name: Compile
