@@ -1,1 +1,2 @@
 Disposable activation-wide exact-head proof trigger for aligned test candidate. Do not merge.
+Checkpoint regression inventory tightened after zero-test wildcard was rejected as evidence.
