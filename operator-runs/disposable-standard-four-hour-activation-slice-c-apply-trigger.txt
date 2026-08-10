@@ -1,3 +1,3 @@
 Disposable Slice C GREEN trigger only.
 Do not merge.
-Rerun with authoritative clean fingerprint, exact 1h close safety cutoff, fail-closed continuity, and subset-aware execution budget.
+Rerun unchanged hard-gate-aligned candidate after static verification target correction.
