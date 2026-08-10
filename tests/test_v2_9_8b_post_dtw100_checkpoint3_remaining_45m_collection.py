@@ -93,9 +93,12 @@ class Checkpoint3Remaining45mCollectionTests(unittest.TestCase):
         factory._update_step(
             self.fx.connection,
             int(step["id"]),
-            status="RUNNING",
-            attempt_increment=True,
+            "RUNNING",
+            {},
         )
+        # Before the Checkpoint-3 repair the campaign projection still says
+        # PENDING here.  The approved helper must synchronize from Scheduler truth.
+        self.assertEqual(self._work_state(job_id), "PENDING")
         factory._sync_owned_campaign_scheduler_job(
             self.fx.connection,
             scheduler_job_id=job_id,
@@ -138,8 +141,9 @@ class Checkpoint3Remaining45mCollectionTests(unittest.TestCase):
         executed = factory._execute_snapshot(
             self.fx.connection,
             step,
-            snapshot_adapter_factory=adapter_factory,
-            fallback_snapshot_adapter_factory=None,
+            adapter_factory=adapter_factory,
+            timeout_seconds=1.0,
+            fallback_adapter_factory=None,
         )
         snapshot_id = int(executed["snapshot_id"])
         snapshot = self.fx.connection.execute(
@@ -159,10 +163,8 @@ class Checkpoint3Remaining45mCollectionTests(unittest.TestCase):
         factory._update_step(
             self.fx.connection,
             int(step["id"]),
-            status="SUCCEEDED",
-            snapshot_id=snapshot_id,
-            result={"snapshot_id": snapshot_id},
-            finished=True,
+            "SUCCEEDED",
+            {"snapshot_id": snapshot_id},
         )
         complete_job(
             self.fx.connection,
@@ -191,8 +193,8 @@ class Checkpoint3Remaining45mCollectionTests(unittest.TestCase):
         factory._update_step(
             self.fx.connection,
             int(step["id"]),
-            status="RUNNING",
-            attempt_increment=True,
+            "RUNNING",
+            {},
         )
         factory._sync_owned_campaign_scheduler_job(
             self.fx.connection,
@@ -214,9 +216,9 @@ class Checkpoint3Remaining45mCollectionTests(unittest.TestCase):
         factory._update_step(
             self.fx.connection,
             int(step["id"]),
-            status="FAILED",
+            "FAILED",
+            {},
             error="checkpoint3_fixture_failure",
-            finished=True,
         )
         factory._sync_owned_campaign_scheduler_job(
             self.fx.connection,
@@ -226,6 +228,7 @@ class Checkpoint3Remaining45mCollectionTests(unittest.TestCase):
             self.fx.connection,
             "factory-run-1",
             1,
+            "checkpoint3_fixture_failure",
         )
         factory._terminalize_owned_continuation_window(
             self.fx.connection,
@@ -264,7 +267,7 @@ class Checkpoint3Remaining45mCollectionTests(unittest.TestCase):
         reservations = factory._lifecycle_reservation_records_for_step(
             run_id="factory-run-1",
             pending=step,
-            projected_requests=1,
+            projected_requests=factory._projected_requests_for_step(step),
         )
         self.assertEqual(len(reservations), 1)
         self.assertEqual(reservations[0]["boundary"], "LIFECYCLE_RESERVATION")
@@ -276,12 +279,12 @@ class Checkpoint3Remaining45mCollectionTests(unittest.TestCase):
             """SELECT * FROM printer_memory_factory_run_steps
                WHERE run_id='factory-run-1' AND token_id=1
                  AND step_kind='CONTINUATION_CLOSE'
-               ORDER BY id LIMIT 1"""
+               ORDER BY id LIMIT 1""",
         ).fetchone()
         close_reservations = factory._lifecycle_reservation_records_for_step(
             run_id="factory-run-1",
             pending=close,
-            projected_requests=1,
+            projected_requests=factory._projected_requests_for_step(close),
         )
         self.assertEqual(len(close_reservations), 1)
         self.assertEqual(
