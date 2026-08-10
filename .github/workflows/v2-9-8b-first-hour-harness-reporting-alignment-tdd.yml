@@ -1,49 +1,16 @@
-name: V2-9.8B post-DTW100 checkpoint 2 continuation TDD
+name: V2-9.8B post-DTW100 checkpoint 3 collection TDD
 
 on:
   pull_request:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   PYTHONPATH: src
 
 jobs:
-  patch:
-    if: contains(github.event.pull_request.title, 'APPLY checkpoint2 ownership')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout implementation branch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.ref }}
-          fetch-depth: 0
-      - name: Apply reviewed Checkpoint 2 patch
-        env:
-          TARGET_BRANCH: ${{ github.event.pull_request.head.ref }}
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
-        run: |
-          git fetch origin "${BASE_REF}"
-          git show FETCH_HEAD:scripts/checkpoint2_continuation_ownership_patch.py > /tmp/checkpoint2_patch.py
-          python -m py_compile /tmp/checkpoint2_patch.py
-          python /tmp/checkpoint2_patch.py
-          python -m py_compile \
-            src/printer_v1/operator_cli/one_command_15m_factory.py \
-            src/printer_v1/operator_cli/campaign_ownership.py \
-            src/printer_v1/operator_cli/operational_selective_1h.py
-          git diff --check
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          if git diff --quiet; then
-            exit 0
-          fi
-          git add src/printer_v1/operator_cli/one_command_15m_factory.py
-          git commit -m 'Bind first-hour Scheduler work to exact campaign windows'
-          git push origin HEAD:${TARGET_BRANCH}
-
   focused:
-    if: ${{ !contains(github.event.pull_request.title, 'APPLY checkpoint2 ownership') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout PR head
@@ -60,16 +27,21 @@ jobs:
             src/printer_v1/operator_cli/campaign_ownership.py \
             src/printer_v1/operator_cli/operational_selective_1h.py \
             src/printer_v1/operator_cli/one_command_15m_factory.py \
+            src/printer_v1/scheduler/scheduler.py \
             src/printer_v1/snapshots/lifecycle_continuity.py \
             src/printer_v1/snapshots/cadence_policy.py \
+            tests/test_v2_9_8b_post_dtw100_checkpoint3_remaining_45m_collection.py \
             tests/test_v2_9_8b_post_dtw100_checkpoint2_continuation_initialization.py \
             tests/test_v2_9_8b_post_dtw100_checkpoint1_15m_1h_handoff.py \
             tests/test_v2_9_8b_standard_first_hour_harness_reporting_alignment.py \
-            tests/test_v2_9_8b_operational_selective_1h.py
-      - name: Focused checkpoint 2 continuation proof
+            tests/test_v2_9_8b_operational_selective_1h.py \
+            tests/test_v2_9_8b_campaign_scheduler_ownership_schema_migration.py
+      - name: Focused checkpoint 3 collection proof
         run: |
           python -m unittest -v \
+            tests.test_v2_9_8b_post_dtw100_checkpoint3_remaining_45m_collection \
             tests.test_v2_9_8b_post_dtw100_checkpoint2_continuation_initialization \
             tests.test_v2_9_8b_post_dtw100_checkpoint1_15m_1h_handoff \
             tests.test_v2_9_8b_standard_first_hour_harness_reporting_alignment \
-            tests.test_v2_9_8b_operational_selective_1h
+            tests.test_v2_9_8b_operational_selective_1h \
+            tests.test_v2_9_8b_campaign_scheduler_ownership_schema_migration
