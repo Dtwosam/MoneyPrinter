@@ -10,6 +10,7 @@ import tempfile
 import unittest
 
 from printer_v1.db import apply_migrations
+from printer_v1.operator_cli import one_command_15m_factory as factory
 from printer_v1.operator_cli.one_token_4h_runtime import (
     close_current_run_4h,
     plan_current_run_4h,
@@ -239,6 +240,21 @@ class OneToken4hRuntimeTests(unittest.TestCase):
             (json.dumps(context, sort_keys=True), result["window_id"]),
         )
         self.conn.commit()
+        outcome_owner = getattr(factory, "_derive_and_persist_four_hour_outcome", None)
+        self.assertIsNotNone(
+            outcome_owner,
+            "canonical full-path WINDOW_4H outcome owner is missing",
+        )
+        outcome = outcome_owner(
+            self.conn,
+            run_id=run_id,
+            token_id=token_id,
+            pair_id=pair_id,
+            window_id=int(result["window_id"]),
+            current_close_snapshot_id=int(closing_id),
+        )
+        self.conn.commit()
+        self.assertNotEqual(outcome["outcome_label"], "OUTCOME_UNKNOWN")
         quality = run_4h_quality_gates(str(self.db), int(result["window_id"]))
         self.assertEqual(quality["lane_k_status"], "LANE_K_COMPLETED")
         self.assertEqual(quality["lane_q"]["valid_window_ids"], [result["window_id"]])
