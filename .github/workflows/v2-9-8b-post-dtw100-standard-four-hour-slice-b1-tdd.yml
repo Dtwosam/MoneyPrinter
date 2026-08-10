@@ -1,0 +1,33 @@
+name: V2-9.8B post-DTW100 standard four-hour Slice B1 TDD
+
+on:
+  pull_request:
+
+permissions:
+  contents: write
+
+env:
+  PYTHONPATH: src
+
+jobs:
+  focused:
+    if: ${{ !contains(github.event.pull_request.title, 'APPLY standard four-hour Slice B1') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile handoff owners
+        run: |
+          python -m py_compile \
+            src/printer_v1/operator_cli/campaign_ownership.py \
+            tests/test_v2_9_8b_post_dtw100_standard_four_hour_campaign_handoff.py
+      - name: Focused Slice B1 proof
+        run: |
+          python -m unittest -v \
+            tests.test_v2_9_8b_post_dtw100_standard_four_hour_campaign_handoff \
+            tests.test_v2_9_8b_post_dtw100_checkpoint6_1h_terminal_reconciliation \
+            tests.test_v2_9_8b_post_dtw100_checkpoint1_15m_1h_handoff
