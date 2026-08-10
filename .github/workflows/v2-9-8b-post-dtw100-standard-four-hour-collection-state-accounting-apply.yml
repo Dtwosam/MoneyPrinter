@@ -24,10 +24,10 @@ jobs:
         run: |
           echo "TRIGGER_HEAD=$(git rev-parse HEAD)"
           echo "RED_PARENT=$(git rev-parse HEAD^)"
-          test "$(git rev-parse HEAD^)" = "b6fecc12a65a117d5f6014d0316a9727eb905307"
+          test "$(git rev-parse HEAD^)" = "403169301eb2cd6f026457e7852d527806b2bac8"
           test "$(git diff --name-only HEAD^ HEAD)" = ".github/v2-9-8b-post-dtw100-standard-four-hour-collection-state-accounting-apply-trigger.txt"
-          git checkout b6fecc12a65a117d5f6014d0316a9727eb905307
-          test "$(git rev-parse HEAD)" = "b6fecc12a65a117d5f6014d0316a9727eb905307"
+          git checkout 403169301eb2cd6f026457e7852d527806b2bac8
+          test "$(git rev-parse HEAD)" = "403169301eb2cd6f026457e7852d527806b2bac8"
           test -z "$(git status --porcelain --untracked-files=no)"
       - name: Apply narrow one-file repair
         run: |
