@@ -1,3 +1,3 @@
 Disposable Slice C GREEN trigger only.
 Do not merge.
-Rerun with exact hard-gate diagnostic after physical 1h close safety-cutoff repair.
+Rerun with authoritative clean fingerprint fixture plus exact physical 1h close safety cutoff.
