@@ -161,6 +161,8 @@ _POLICIES: tuple[SnapshotCadencePolicy, ...] = (
         max_clean_snapshot_gap_seconds=240, window_close_interval_seconds=2700,
         minimum_required_snapshots=24, support_only=False,
         enabled_for_real_collection=True,
+        require_full_anchored_duration=True,
+        require_forced_closing_snapshot=True,
     ),
     SnapshotCadencePolicy(
         window_kind="WINDOW_1H", tracking_lane="TRACK_NORMAL",
@@ -169,6 +171,8 @@ _POLICIES: tuple[SnapshotCadencePolicy, ...] = (
         max_clean_snapshot_gap_seconds=480, window_close_interval_seconds=2700,
         minimum_required_snapshots=13, support_only=False,
         enabled_for_real_collection=True,
+        require_full_anchored_duration=True,
+        require_forced_closing_snapshot=True,
     ),
     # 4h / 12h / 24h — recognized but disabled for real collection.
     SnapshotCadencePolicy(

@@ -21,8 +21,10 @@ Integrity fields (Lane X12):
   missing_window_start_at — the correct honest outcome).
 
   _MIN_ELAPSED_SECONDS = 2700.0 (45-minute continuation phase minimum).
-  The writer does NOT block when elapsed < 2700s; it reports
-  lane_q_integrity_eligible=False so callers can see why Lane Q will block.
+  For predecessor-linked first-hour continuation, the actual closing snapshot
+  must reach the fixed 15m-close + 2700s deadline; an early closing observation
+  fails closed and creates no WINDOW_1H row. Legacy unlinked fixture behavior
+  remains separately reported through lane_q_integrity_eligible.
 
 Pair drift:
   The close module enforces that the closing snapshot's pair_id matches the
@@ -387,12 +389,54 @@ def close_1h_memory_window_from_snapshot(
     do_not_train = 0
     data_quality_label = E2O_1H_REQUIRED_QUALITY
     continuity_dict: dict[str, Any] | None = None
+    closing_snapshot_lateness_seconds: float | None = None
     if continuation_of_15m is not None:
         fifteen_close_at = (
             continuation_of_15m.get("closed_at")
             or continuation_of_15m.get("window_end_at")
         )
         deadline = compute_1h_continuation_deadline(fifteen_close_at)
+        if deadline is not None:
+            close_captured_at = str(row["captured_at"])
+            closing_snapshot_lateness_seconds = _compute_elapsed_seconds(
+                deadline.isoformat(), close_captured_at
+            )
+            if closing_snapshot_lateness_seconds is None:
+                return {
+                    "e2o_1h_status": E2O_1H_STATUS_BLOCKED,
+                    "created": False,
+                    "blocked_reasons": ["closing_snapshot_timestamp_unparseable"],
+                    "approved_mint": approved_mint,
+                    "snapshot_id": snapshot_id,
+                    "hard_locks": dict(_HARD_LOCKS),
+                    "paper_decisions_created": 0,
+                    "positions_created": 0,
+                    "pnl_created": 0,
+                    "memories_created": 0,
+                    "memory_windows_created": 0,
+                }
+            if closing_snapshot_lateness_seconds < -0.001:
+                return {
+                    "e2o_1h_status": E2O_1H_STATUS_BLOCKED,
+                    "created": False,
+                    "blocked_reasons": [
+                        "closing_snapshot_precedes_fixed_deadline: "
+                        f"offset={closing_snapshot_lateness_seconds:.3f}s"
+                    ],
+                    "closing_snapshot_lateness_seconds": round(
+                        closing_snapshot_lateness_seconds, 3
+                    ),
+                    "approved_mint": approved_mint,
+                    "snapshot_id": snapshot_id,
+                    "hard_locks": dict(_HARD_LOCKS),
+                    "paper_decisions_created": 0,
+                    "positions_created": 0,
+                    "pnl_created": 0,
+                    "memories_created": 0,
+                    "memory_windows_created": 0,
+                }
+            if closing_snapshot_lateness_seconds < 0:
+                closing_snapshot_lateness_seconds = 0.0
         one_h_link = {
             "run_id": continuation_of_15m.get("run_id"),
             "token_id": token_id,
@@ -463,6 +507,8 @@ def close_1h_memory_window_from_snapshot(
                 "linked_first_snapshot_id": resolved_snapshot_start_id,
                 "reuses_historical_window": False,
                 "interpolated_first_snapshot": False,
+                "observed_closing_snapshot_at": str(row["captured_at"]),
+                "closing_snapshot_lateness_seconds": closing_snapshot_lateness_seconds,
             }
             if continuity_dict is not None and continuation_of_15m is not None
             else None
@@ -491,6 +537,7 @@ def close_1h_memory_window_from_snapshot(
         "window_start_at": window_start_at,
         "window_end_at": window_end_at,
         "elapsed_seconds": elapsed_seconds,
+        "closing_snapshot_lateness_seconds": closing_snapshot_lateness_seconds,
         "lane_q_integrity_eligible": lane_q_integrity_eligible,
         "pair_drift_detected": pair_drift_detected,
         "do_not_train": do_not_train,

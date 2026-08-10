@@ -2654,6 +2654,64 @@ def _mark_owned_continuation_window_collecting(
     return str(transitioned.current_state)
 
 
+def _mark_owned_continuation_window_close_pending(
+    conn: sqlite3.Connection, *, scheduler_job_id: int, step_kind: str,
+) -> str | None:
+    """Advance the exact first-hour window when its real close job is claimed."""
+    if str(step_kind) != "CONTINUATION_CLOSE":
+        return None
+    window = _owned_continuation_window_for_job(
+        conn, scheduler_job_id=int(scheduler_job_id)
+    )
+    if window is None:
+        return None
+    state = str(window["window_state"])
+    if state == "CLOSE_PENDING":
+        return state
+    if state != "COLLECTING":
+        raise ValueError(
+            "WINDOW_1H close state conflict: expected COLLECTING/CLOSE_PENDING, "
+            f"found {state}"
+        )
+    from printer_v1.operator_cli.campaign_ownership import transition_state
+
+    transitioned = transition_state(
+        conn,
+        record_kind="window",
+        identity=str(window["window_id"]),
+        expected_state="COLLECTING",
+        new_state="CLOSE_PENDING",
+    )
+    return str(transitioned.current_state)
+
+
+def _bind_owned_continuation_memory_window_at_close(
+    conn: sqlite3.Connection,
+    *,
+    scheduler_job_id: int,
+    memory_window_row_id: int,
+) -> int | None:
+    """Bind the genuine 1h row to its exact campaign window before Scheduler success."""
+    window = _owned_continuation_window_for_job(
+        conn, scheduler_job_id=int(scheduler_job_id)
+    )
+    if window is None:
+        return None
+    state = str(window["window_state"])
+    if state != "CLOSE_PENDING":
+        raise ValueError(
+            f"WINDOW_1H close bind requires CLOSE_PENDING; found {state}"
+        )
+    from printer_v1.operator_cli.campaign_ownership import bind_window_memory_row_id
+
+    bind_window_memory_row_id(
+        conn,
+        window_id=str(window["window_id"]),
+        memory_window_row_id=int(memory_window_row_id),
+    )
+    return int(memory_window_row_id)
+
+
 def _terminalize_owned_continuation_window(
     conn: sqlite3.Connection,
     *,
@@ -4906,6 +4964,11 @@ def run_one_command_15m_factory(
                 scheduler_job_id=job_id,
                 step_kind=str(pending["step_kind"]),
             )
+            _mark_owned_continuation_window_close_pending(
+                conn,
+                scheduler_job_id=job_id,
+                step_kind=str(pending["step_kind"]),
+            )
             conn.commit()
             if lifecycle_operation_observer is not None:
                 lifecycle_operation_observer(
@@ -5299,6 +5362,20 @@ def run_one_command_15m_factory(
                     # registration fault still rolls back the SUCCEEDED update.
                     if result.get("campaign_window_registration") is not None:
                         _update_step(conn, int(pending["id"]), "SUCCEEDED", result)
+                    if str(pending["step_kind"]) == "CONTINUATION_CLOSE":
+                        memory_window_id = result.get("memory_window_id")
+                        if memory_window_id is None:
+                            raise ValueError(
+                                "CONTINUATION_CLOSE_SUCCEEDED_WITHOUT_MEMORY_WINDOW"
+                            )
+                        result["campaign_window_1h_binding"] = (
+                            _bind_owned_continuation_memory_window_at_close(
+                                conn,
+                                scheduler_job_id=job_id,
+                                memory_window_row_id=int(memory_window_id),
+                            )
+                        )
+                        _update_step(conn, int(pending["id"]), "SUCCEEDED", result)
                     complete_job(conn, job_id=job_id)
                     _sync_owned_campaign_scheduler_job(
                         conn, scheduler_job_id=job_id
@@ -5346,7 +5423,9 @@ def run_one_command_15m_factory(
                         run_id=run_id, step=pending,
                     )
                     _cancel_pending_for_token(conn, run_id, token_id, TOKEN_LOCAL_CANCELLED)
-                    if str(pending["step_kind"]) == "CONTINUATION_SNAPSHOT":
+                    if str(pending["step_kind"]) in {
+                        "CONTINUATION_SNAPSHOT", "CONTINUATION_CLOSE"
+                    }:
                         _terminalize_owned_continuation_window(
                             conn,
                             scheduler_job_id=job_id,
