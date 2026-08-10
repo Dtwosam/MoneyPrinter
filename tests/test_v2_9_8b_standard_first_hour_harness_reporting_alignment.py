@@ -154,6 +154,9 @@ class StandardFirstHourHarnessReportingAlignmentTests(unittest.TestCase):
         try:
             snapshot_ids = list(range(3301, 3314))
             with fx.connection:
+                fx.connection.execute(
+                    "UPDATE printer_tokens SET token_status='TRACK_NORMAL' WHERE id=1"
+                )
                 for index, snapshot_id in enumerate(snapshot_ids):
                     fx.connection.execute(
                         """INSERT INTO printer_token_snapshots(

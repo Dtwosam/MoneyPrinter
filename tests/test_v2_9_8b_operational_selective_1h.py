@@ -986,6 +986,9 @@ class OperationalSelective1hTests(unittest.TestCase):
     def test_e2z_promotes_clean_1h_once(self) -> None:
         snapshot_ids = list(range(1, 14))
         with self.fx.connection:
+            self.fx.connection.execute(
+                "UPDATE printer_tokens SET token_status='TRACK_NORMAL' WHERE id=1"
+            )
             for index, snapshot_id in enumerate(snapshot_ids):
                 self.fx.connection.execute(
                     """INSERT INTO printer_token_snapshots(
