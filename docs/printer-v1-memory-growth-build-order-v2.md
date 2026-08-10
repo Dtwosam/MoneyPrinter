@@ -879,8 +879,10 @@ honesty instead of raw row counts or profit claims.
 - Moves from isolated proof success toward bounded persistent corpus growth.
 - Makes discovery, selection, tracking, cooldown/archive, and rotation part of
   the same audited factory path.
-- Preserves selective continuation so source budget is spent on useful tokens,
-  not every timeframe for every token.
+- Preserves bounded continuation under the post-DTW100 amendment: every
+  otherwise-valid activated token is observed through the 4h checkpoint, while
+  hard evidence/identity/safety/continuity/resource gates remain fail-closed and
+  12h/24h continuation remains selective and separately locked.
 - Carries V2-9 reporting/safety/supervision/provenance observations into the
   next readiness audit instead of burying them.
 - Requires persistent corpus reporting before operational activation.
@@ -1748,7 +1750,7 @@ The command must:
 - Use Central Scheduler for jobs.
 - Preserve source failure visibility.
 - Preserve clean/dirty/blocked audit visibility.
-- Use selective continuation rather than every timeframe for every token.
+- Use the adopted standard first-four-hour lifecycle for otherwise-valid activated tokens; automatic continuation stops at 4h, and later 12h/24h windows remain selective and separately approved.
 - Target the authoritative persistent corpus DB only at V2-9.8A or later.
 - Never use the V2-9 proof launcher for operational campaigns.
 - Never automatically restart after terminal failure.

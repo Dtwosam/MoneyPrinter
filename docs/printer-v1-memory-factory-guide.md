@@ -108,8 +108,8 @@ operator starts bounded cycle
 -> governed collection
 -> conditional WINDOW_5M_MICRO_EVENT support
 -> main WINDOW_15M closeout
--> selective WINDOW_1H continuation
--> conditional WINDOW_4H continuation
+-> standard hard-gated WINDOW_1H continuation
+-> standard hard-gated WINDOW_4H continuation
 -> clean/dirty/blocked audit
 -> cooldown/archive
 -> candidate rotation
@@ -315,8 +315,8 @@ Suggested behavior:
 
 - first 15m snapshots every 5-10 minutes
 - open 15m main memory
-- open 1h only if token remains useful/eligible after 15m
-- slow down if activity fades
+- continue through the first hour and to the 4h checkpoint when hard operational/evidence gates remain valid; outcome or learning-need labels do not qualify continuation
+- cadence may slow after the opening period according to the approved Scheduler policy, but observation does not stop merely because activity fades
 
 ### TRACK_FAST
 
@@ -329,8 +329,8 @@ Suggested behavior:
 - first 15m snapshots every 1-3 minutes if source capacity allows
 - open 5m support evidence
 - open 15m main memory
-- continue to 1h if token survives and data remains useful
-- speed up around dumps, liquidity decay, revival, or exit danger
+- continue through the first hour and to the 4h checkpoint when hard operational/evidence gates remain valid; survival, outcome, or learning-need labels do not qualify continuation
+- speed up around dumps, liquidity decay, revival, or exit danger when the approved Scheduler policy allows
 
 TRACK_FAST is not a BUY signal.
 
@@ -342,10 +342,10 @@ Purpose:
 
 Suggested behavior:
 
-- only after useful early windows
-- eligible for 4h, 12h, or 24h tracking
-- not for every token
-- prioritize tokens that teach survival, revival, delayed dump, or full-cycle outcomes
+- applied only after the standard 4h checkpoint for later long-horizon learning
+- eligible for future 12h or 24h tracking only in their separately approved selective lanes
+- not every token proceeds beyond 4h
+- prioritize later-horizon lessons such as survival, revival, delayed dump, or full-cycle outcomes without turning the category into a score or ranking
 
 ### ARCHIVED
 
@@ -438,7 +438,7 @@ Role:
 - medium-term behavior
 - shows whether the token survived beyond the first hype cycle
 
-4h should start after 1h memory is clean and scheduler/source capacity is stable.
+Under the post-DTW100 standard-four-hour policy, every otherwise-valid activated token with a genuine eligible first-hour predecessor continues to the 4h checkpoint. Outcome and learning-need labels do not qualify that continuation. Real 4h collection still requires the later explicit campaign-integration/rereadiness activation gate; this policy statement alone does not enable runtime.
 
 ### WINDOW_12H
 
@@ -472,7 +472,7 @@ Memory Factory should activate windows in this order:
 4. 12h survival/revival/delayed-dump memory
 5. 24h full-cycle memory
 
-Do not activate all timeframes at once. Preserve selective continuation: not every token should receive every timeframe. Continue only when evidence quality, learning value, source budget, and token/pair continuity justify the next window.
+Do not activate all timeframes at once. The adopted bounded observation lifecycle is standard through the 4h checkpoint for otherwise-valid activated tokens: 15m and 1h outcome/learning-need labels do not decide whether observation continues. Hard evidence-quality, exact-identity, freshness, provenance, safety, continuity, Source Governor, Central Scheduler, cancellation, and bounded-resource gates still apply. Automatic continuation stops at 4h; 12h and 24h remain selective and locked until later explicit lanes.
 
 No timeframe is an action trigger. WINDOW_5M_MICRO_EVENT, WINDOW_15M,
 WINDOW_1H, WINDOW_4H, WINDOW_12H, and WINDOW_24H are evidence and outcome

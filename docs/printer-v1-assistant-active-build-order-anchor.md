@@ -51,11 +51,14 @@ Observation continuation remains fail-closed on operational validity: exact toke
 
 Memory quality remains separate. Continuing observation must never relabel dirty/blocked 15m evidence as clean. `WINDOW_1H` is independently audited from its exact first-hour evidence. Dirty memory remains barred from retrieval and decisions.
 
-Selectivity begins after 1h. `WINDOW_1H -> WINDOW_4H` and later approved transitions remain selective. `WINDOW_12H` and `WINDOW_24H` remain locked.
+The bounded observation lifecycle now extends through the 4h checkpoint. After a genuine eligible first-hour close, every otherwise-valid activated token continues to `WINDOW_4H`; 1h outcome, direction, profitability, trajectory class, manipulation label, and learning-need presence/absence have no authority to qualify that observation. Hard identity, evidence quality, freshness, provenance, safety, continuity, campaign health, cancellation, Source Governor, Central Scheduler, and bounded-resource gates remain fail-closed.
 
-Controlling design:
+Automatic continuation stops at `WINDOW_4H`. `WINDOW_12H` and `WINDOW_24H` remain selective and locked. `WINDOW_4H` real collection also remains disabled until the separately approved campaign-integration implementation, offline proof, closeout, and later operational rereadiness/activation gate pass.
+
+Controlling designs:
 
 - `docs/printer-v1-v2-9-8b-post-dtw100-first-hour-lifecycle-policy-design.md`
+- `docs/printer-v1-v2-9-8b-post-dtw100-standard-four-hour-lifecycle-policy-campaign-integration-design.md`
 
 ## Current lane sequence
 

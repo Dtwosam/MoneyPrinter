@@ -951,18 +951,22 @@ Every V2 major capability must follow this pattern:
 
 Every V2 lane must include Functionality Risks / Setbacks / Efficiency Blockers.
 
-The post-V2-9 operational Memory Factory program must preserve selective continuation:
+The post-V2-9 operational Memory Factory program must preserve bounded lifecycle continuation:
 
 - discovery -> selection -> tracking -> governed collection
 - conditional WINDOW_5M_MICRO_EVENT support
 - main WINDOW_15M closeout
-- selective WINDOW_1H continuation
-- conditional WINDOW_4H continuation
+- standard hard-gated WINDOW_1H continuation for otherwise-valid activated tokens
+- standard hard-gated WINDOW_4H continuation after a genuine eligible first-hour close
+- automatic continuation stops at the WINDOW_4H checkpoint
+- WINDOW_12H / WINDOW_24H remain selective and locked until later explicit lanes
 - clean/dirty/blocked audit
 - cooldown/archive
 - candidate rotation
 - persistent corpus reporting
 - safe stop
+
+The post-DTW100 standard-four-hour amendment removes behavior/outcome/learning-need qualification only from 15m->1h and 1h->4h observation. It does not weaken exact identity, evidence quality, freshness, provenance, safety, continuity, campaign health, cancellation, Source Governor, Central Scheduler, or bounded-resource gates. `WINDOW_4H` real collection remains locked until its later explicit activation/rereadiness lane.
 
 Do not track every timeframe for every token.
 
