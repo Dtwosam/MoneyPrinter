@@ -253,6 +253,8 @@ def compute_long_window_deadline(
 def build_long_window_continuation_plan(
     predecessor: Mapping[str, Any],
     successor_kind: str,
+    *,
+    allow_enabled_successor_planning: bool = False,
 ) -> dict[str, Any]:
     """Build an automatic, disabled long-window handoff from a resolved predecessor.
 
@@ -280,8 +282,12 @@ def build_long_window_continuation_plan(
         reasons.append("predecessor_not_terminally_closed")
     if _parse_ts(close_at) is None:
         reasons.append("missing_predecessor_close_timestamp")
-    if policy is not None and policy.enabled_for_real_collection:
-        reasons.append("successor_not_disabled_for_real_collection")
+    if (
+        policy is not None
+        and policy.enabled_for_real_collection
+        and not allow_enabled_successor_planning
+    ):
+        reasons.append("successor_enabled_without_explicit_planning_authority")
     deadline = compute_long_window_deadline(close_at, successor_kind, lane)
     return {
         "plan_ok": not reasons,
@@ -717,6 +723,7 @@ def resolve_current_run_long_predecessor(
     tracking_lane: str,
     successor_kind: str,
     current_close_step_id: int | None = None,
+    allow_enabled_successor_planning: bool = False,
 ) -> dict[str, Any]:
     """Resolve one exact, terminal, unused predecessor from the current run.
 
@@ -805,7 +812,11 @@ def resolve_current_run_long_predecessor(
         }
     row["run_id"] = run_id
     row["tracking_lane"] = tracking_lane
-    plan = build_long_window_continuation_plan(row, successor_kind)
+    plan = build_long_window_continuation_plan(
+        row,
+        successor_kind,
+        allow_enabled_successor_planning=allow_enabled_successor_planning,
+    )
     if not plan["plan_ok"]:
         return {
             "resolved": False,

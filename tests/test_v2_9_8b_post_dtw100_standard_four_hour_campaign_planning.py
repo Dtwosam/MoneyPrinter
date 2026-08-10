@@ -45,8 +45,34 @@ class StandardFourHourCampaignPlanningTests(unittest.TestCase):
             cycle_id="cycle-1h",
             factory_run_id="factory-run-1",
             candidates=candidates,
+            execution_authority=(
+                one_token_4h_runtime.FourHourExecutionAuthority.STANDARD_CAMPAIGN
+            ),
             now=_iso(T1H),
         )
+
+    def test_enabled_cadence_without_standard_authority_fails_closed(self) -> None:
+        fx, candidates = self._prepared()
+        try:
+            planner = one_token_4h_runtime.plan_standard_campaign_4h_handoff
+            with self.assertRaisesRegex(ValueError, "explicit STANDARD_CAMPAIGN authority"):
+                planner(
+                    fx.connection,
+                    campaign_id="campaign-1h",
+                    run_id="run-1h",
+                    cycle_id="cycle-1h",
+                    factory_run_id="factory-run-1",
+                    candidates=candidates,
+                    now=_iso(T1H),
+                )
+            self.assertEqual(
+                int(fx.connection.execute(
+                    "SELECT COUNT(*) FROM printer_memory_factory_campaign_windows WHERE window_kind='WINDOW_4H'"
+                ).fetchone()[0]),
+                0,
+            )
+        finally:
+            fx.close()
 
     def test_mixed_fast_normal_plans_exact_two_token_long_work_and_ownership(self) -> None:
         fx, candidates = self._prepared()
@@ -56,7 +82,7 @@ class StandardFourHourCampaignPlanningTests(unittest.TestCase):
             )
             self.assertEqual(int(budget["request_ceiling"]), 182)
             self.assertEqual(int(budget["scheduler_ceiling"]), 162)
-            self.assertFalse(bool(budget["real_collection_enabled"]))
+            self.assertTrue(bool(budget["real_collection_enabled"]))
 
             result = self._plan(fx, candidates)
             self.assertTrue(result["planned"])
@@ -132,7 +158,7 @@ class StandardFourHourCampaignPlanningTests(unittest.TestCase):
                 0,
             )
             for lane in ("TRACK_FAST", "TRACK_NORMAL"):
-                self.assertFalse(
+                self.assertTrue(
                     bool(one_token_4h_runtime.runtime_budget(lane)["enabled_for_real_collection"])
                 )
         finally:

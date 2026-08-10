@@ -81,9 +81,13 @@ class StandardFourHourPolicyCapacityTests(unittest.TestCase):
                 self.assertEqual(actual["automatic_retries"], 0)
                 self.assertFalse(actual["endpoint_rotation"])
 
-    def test_standard_policy_does_not_activate_real_4h_collection(self) -> None:
-        self.assertFalse(four_hour.runtime_budget("TRACK_FAST")["enabled_for_real_collection"])
-        self.assertFalse(four_hour.runtime_budget("TRACK_NORMAL")["enabled_for_real_collection"])
+    def test_standard_activation_enables_real_4h_collection_only(self) -> None:
+        self.assertTrue(four_hour.runtime_budget("TRACK_FAST")["enabled_for_real_collection"])
+        self.assertTrue(four_hour.runtime_budget("TRACK_NORMAL")["enabled_for_real_collection"])
+        from printer_v1.snapshots.cadence_policy import get_policy
+        for lane in ("TRACK_FAST", "TRACK_NORMAL"):
+            self.assertFalse(get_policy("WINDOW_12H", lane).enabled_for_real_collection)
+            self.assertFalse(get_policy("WINDOW_24H", lane).enabled_for_real_collection)
 
 
 if __name__ == "__main__":

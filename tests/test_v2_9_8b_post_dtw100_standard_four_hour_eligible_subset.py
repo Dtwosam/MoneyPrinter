@@ -43,6 +43,9 @@ class StandardFourHourEligibleSubsetTests(unittest.TestCase):
             factory_run_id="factory-run-1",
             candidates=self.candidates,
             eligible_token_slot_ids=eligible_slots,
+            execution_authority=(
+                one_token_4h_runtime.FourHourExecutionAuthority.STANDARD_CAMPAIGN
+            ),
             now=_iso(T1H),
         )
 
@@ -124,7 +127,10 @@ class StandardFourHourEligibleSubsetTests(unittest.TestCase):
             budget = budget_owner(lanes, mask)
             self.assertEqual(int(budget["request_ceiling"]), requests)
             self.assertEqual(int(budget["scheduler_ceiling"]), scheduler)
-            self.assertFalse(bool(budget["real_collection_enabled"]))
+            self.assertEqual(
+                bool(budget["real_collection_enabled"]),
+                bool(sum(mask)),
+            )
             self.assertEqual(int(budget["continuation_count"]), sum(mask))
 
         compatibility = one_token_4h_runtime.standard_two_token_lifecycle_budget(

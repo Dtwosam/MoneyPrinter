@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 import sqlite3
+from enum import StrEnum
 from typing import Any, Mapping, Sequence
 
 from printer_v1.operator_cli import campaign_ownership
@@ -40,6 +41,12 @@ CONTEXT_PLAN = {
     "closing": ("market_chain", "safety", "exit_quote"),
     "holder_fallback_max": 2,  # V2-9.6: 1 primary holder fallback + 1 backup RPC endpoint
 }
+
+
+class FourHourExecutionAuthority(StrEnum):
+    DISABLED = "DISABLED"
+    PROOF = "PROOF"
+    STANDARD_CAMPAIGN = "STANDARD_CAMPAIGN"
 
 
 def runtime_budget(tracking_lane: str) -> dict[str, Any]:
@@ -218,6 +225,7 @@ def _plan_token_4h_phase(
     tracking_lane: str,
     current_close_step_id: int | None = None,
     cumulative_scheduler_ceiling: int | None = None,
+    allow_enabled_successor_planning: bool = False,
 ) -> dict[str, Any]:
     """Plan/replay one exact token's existing WINDOW_4H phase primitives."""
     budget = runtime_budget(tracking_lane)
@@ -229,6 +237,7 @@ def _plan_token_4h_phase(
         tracking_lane=tracking_lane,
         successor_kind=WINDOW_KIND,
         current_close_step_id=current_close_step_id,
+        allow_enabled_successor_planning=allow_enabled_successor_planning,
     )
     if not resolved.get("resolved"):
         return {
@@ -387,15 +396,29 @@ def plan_current_run_4h(
     pair_address: str,
     tracking_lane: str,
     current_close_step_id: int | None = None,
+    execution_authority: FourHourExecutionAuthority | str = FourHourExecutionAuthority.DISABLED,
     explicit_proof_mode: bool = False,
     compressed_two_token_proof: bool = False,
     cumulative_scheduler_ceiling: int | None = None,
 ) -> dict[str, Any]:
     """Plan the exact policy-derived 4h jobs from this run's terminal 1h row."""
-    if not explicit_proof_mode:
+    try:
+        authority = FourHourExecutionAuthority(execution_authority)
+    except ValueError:
+        return {"planned": False, "blocked_reasons": ["invalid_4h_execution_authority"]}
+    if explicit_proof_mode:
+        if authority not in {FourHourExecutionAuthority.DISABLED, FourHourExecutionAuthority.PROOF}:
+            return {"planned": False, "blocked_reasons": ["conflicting_4h_execution_authority"]}
+        authority = FourHourExecutionAuthority.PROOF
+    if authority == FourHourExecutionAuthority.STANDARD_CAMPAIGN:
         return {
             "planned": False,
-            "blocked_reasons": ["WINDOW_4H real collection remains disabled"],
+            "blocked_reasons": ["standard_campaign_4h_planning_requires_campaign_composer"],
+        }
+    if authority != FourHourExecutionAuthority.PROOF:
+        return {
+            "planned": False,
+            "blocked_reasons": ["WINDOW_4H execution authority is disabled"],
         }
     selected = connection.execute(
         "SELECT selected_token_count FROM printer_memory_factory_runs WHERE run_id=?",
@@ -464,6 +487,7 @@ def plan_current_run_4h(
         cumulative_scheduler_ceiling=(
             cumulative_scheduler_ceiling if compressed_two_token_proof else None
         ),
+        allow_enabled_successor_planning=True,
     )
 
 
@@ -853,9 +877,18 @@ def plan_standard_campaign_4h_handoff(
     factory_run_id: str,
     candidates: Sequence[Mapping[str, Any]],
     eligible_token_slot_ids: Sequence[str] | None = None,
+    execution_authority: FourHourExecutionAuthority | str = FourHourExecutionAuthority.DISABLED,
     now: str | None = None,
 ) -> dict[str, Any]:
     """Compose the exact eligible subset of the standard two-slot 4h campaign."""
+    try:
+        authority = FourHourExecutionAuthority(execution_authority)
+    except ValueError as exc:
+        raise ValueError("invalid standard four-hour execution authority") from exc
+    if authority != FourHourExecutionAuthority.STANDARD_CAMPAIGN:
+        raise ValueError(
+            "standard four-hour campaign planning requires explicit STANDARD_CAMPAIGN authority"
+        )
     candidate_order, eligible_ids = _normalize_standard_4h_eligible_slots(
         candidates, eligible_token_slot_ids
     )
@@ -876,9 +909,6 @@ def plan_standard_campaign_4h_handoff(
     budget = standard_campaign_lifecycle_budget(
         (lanes[0], lanes[1]), (bool(mask[0]), bool(mask[1]))
     )
-    if bool(budget["real_collection_enabled"]):
-        raise ValueError("eligible-subset repair must not enable real WINDOW_4H collection")
-
     existing_manifests = load_standard_four_hour_eligibility_manifests(
         connection,
         campaign_id=campaign_id,
@@ -970,6 +1000,7 @@ def plan_standard_campaign_4h_handoff(
                 pair_address=str(candidate["pair_identity"]),
                 tracking_lane=lane,
                 cumulative_scheduler_ceiling=int(budget["scheduler_ceiling"]),
+                allow_enabled_successor_planning=True,
             )
             if not plan.get("planned") or plan.get("replay"):
                 raise ValueError(

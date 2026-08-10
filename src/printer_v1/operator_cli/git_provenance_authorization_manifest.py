@@ -58,6 +58,24 @@ AUTHORIZATION_PACKAGE_ROOT = "operator-runs/v2-9-8b-window-15m-final-authorizati
 REQUIRED_MAIN_WINDOW = "WINDOW_15M"
 REQUIRED_COMMAND_MODE = "run"
 
+
+@dataclass(frozen=True)
+class GitAuthorizationProfile:
+    command_mode: str
+    authorization_package_root: str
+    authorization_package_kind: str
+    manifest_schema_version: str
+
+
+STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE = GitAuthorizationProfile(
+    command_mode="standard-four-hour-run",
+    authorization_package_root=(
+        "operator-runs/v2-9-8b-standard-four-hour-final-authorization"
+    ),
+    authorization_package_kind="STANDARD_FOUR_HOUR_AUTHORIZATION_EVIDENCE",
+    manifest_schema_version="PRINTER_V1_GIT_PROVENANCE_MANIFEST_STANDARD_4H_V1",
+)
+
 # Diagnostic-only disposition vocabulary. Never creates trust or reuse authority.
 TERMINAL_DISPOSITION_VOCABULARY = frozenset(
     {

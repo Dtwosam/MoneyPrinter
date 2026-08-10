@@ -34,8 +34,8 @@ continuation snapshot):
 Rules enforced:
   - WINDOW_15M and genuine WINDOW_1H continuation are enabled main windows.
   - WINDOW_5M_MICRO_EVENT is support-only; never a main clean-memory window.
-  - WINDOW_4H / WINDOW_12H / WINDOW_24H have fixture-testable cadence
-    contracts but remain disabled for real collection.
+  - WINDOW_4H is enabled only through the explicit standard-four-hour
+    operational authority; WINDOW_12H / WINDOW_24H remain disabled.
   - Missing snapshots are reported, never interpolated.
   - Source/scheduler budget pressure must produce dirty/blocked coverage — it
     must never silently widen a clean-memory gap.
@@ -174,14 +174,14 @@ _POLICIES: tuple[SnapshotCadencePolicy, ...] = (
         require_full_anchored_duration=True,
         require_forced_closing_snapshot=True,
     ),
-    # 4h / 12h / 24h — recognized but disabled for real collection.
+    # 4h is explicitly operationally activated; 12h / 24h remain disabled.
     SnapshotCadencePolicy(
         window_kind="WINDOW_4H", tracking_lane="TRACK_FAST",
         asset_state="any", urgency_state="any",
         target_snapshot_interval_seconds=180, dirty_above_gap_seconds=225,
         max_clean_snapshot_gap_seconds=360, window_close_interval_seconds=10800,
         minimum_required_snapshots=61, support_only=False,
-        enabled_for_real_collection=False, max_missing_snapshots_for_dirty=1,
+        enabled_for_real_collection=True, max_missing_snapshots_for_dirty=1,
         block_gap_at_threshold=True, require_full_anchored_duration=True,
         require_forced_closing_snapshot=True,
     ),
@@ -191,7 +191,7 @@ _POLICIES: tuple[SnapshotCadencePolicy, ...] = (
         target_snapshot_interval_seconds=360, dirty_above_gap_seconds=450,
         max_clean_snapshot_gap_seconds=720, window_close_interval_seconds=10800,
         minimum_required_snapshots=31, support_only=False,
-        enabled_for_real_collection=False, max_missing_snapshots_for_dirty=1,
+        enabled_for_real_collection=True, max_missing_snapshots_for_dirty=1,
         block_gap_at_threshold=True, require_full_anchored_duration=True,
         require_forced_closing_snapshot=True,
     ),

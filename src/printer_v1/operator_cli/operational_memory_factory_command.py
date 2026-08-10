@@ -135,6 +135,13 @@ SELECTIVE_1H_GOVERNED_REQUEST_CEILING = 92
 SELECTIVE_1H_GOVERNED_REQUESTS_PER_TOKEN = 45
 SELECTIVE_1H_SCHEDULER_ROW_CEILING = 82
 SELECTIVE_1H_CONTINUATION_SECONDS = 2_700
+STANDARD_FOUR_HOUR_MODE = "standard-four-hour-run"
+STANDARD_FOUR_HOUR_PREFLIGHT_MODE = "standard-four-hour-preflight"
+STANDARD_FOUR_HOUR_POLICY_VERSION = "V2-9.8-STANDARD-4H-OPERATIONAL-V1"
+STANDARD_FOUR_HOUR_TOTAL_DURATION_SECONDS = 14_700
+STANDARD_FOUR_HOUR_GOVERNED_REQUEST_CEILING = 230
+STANDARD_FOUR_HOUR_GOVERNED_REQUESTS_PER_TOKEN = 114
+STANDARD_FOUR_HOUR_SCHEDULER_ROW_CEILING = 210
 LEASE_SECONDS = 90
 HEARTBEAT_SECONDS = 30
 CANCELLATION_PROBE_SQLITE_BUSY_TIMEOUT_SECONDS = (
@@ -216,6 +223,8 @@ class _OperationalCampaignPolicy:
     pre_lifecycle_acquisition_duration_seconds: int = (
         PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS
     )
+    continuous_four_hour: bool = False
+    standard_four_hour_campaign: bool = False
 
 
 _NORMAL_CAMPAIGN_POLICY = _OperationalCampaignPolicy(
@@ -235,6 +244,20 @@ _SELECTIVE_1H_PROOF_POLICY = _OperationalCampaignPolicy(
     governed_requests_per_token=SELECTIVE_1H_GOVERNED_REQUESTS_PER_TOKEN,
     scheduler_row_ceiling=SELECTIVE_1H_SCHEDULER_ROW_CEILING,
     locked_windows=("WINDOW_4H", "WINDOW_12H", "WINDOW_24H"),
+)
+STANDARD_FOUR_HOUR_POLICY = _OperationalCampaignPolicy(
+    mode=STANDARD_FOUR_HOUR_MODE,
+    duration_seconds=STANDARD_FOUR_HOUR_TOTAL_DURATION_SECONDS,
+    selective_1h_continuation=True,
+    governed_request_ceiling=STANDARD_FOUR_HOUR_GOVERNED_REQUEST_CEILING,
+    governed_requests_per_token=STANDARD_FOUR_HOUR_GOVERNED_REQUESTS_PER_TOKEN,
+    scheduler_row_ceiling=STANDARD_FOUR_HOUR_SCHEDULER_ROW_CEILING,
+    locked_windows=("WINDOW_12H", "WINDOW_24H"),
+    pre_lifecycle_acquisition_duration_seconds=(
+        PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS
+    ),
+    continuous_four_hour=True,
+    standard_four_hour_campaign=True,
 )
 
 # V2-9.8B.22 discovery-only qualification mode.
@@ -5547,9 +5570,10 @@ def report_only(
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Printer V1 bounded persistent 15m Memory Factory command. "
+            "Printer V1 bounded persistent Memory Factory command. "
             "Modes: preflight-only, run, selective-1h-preflight, "
-            "selective-1h-proof, status, cooperative-stop, recover-orphan, "
+            "selective-1h-proof, standard-four-hour-preflight, "
+            "standard-four-hour-run, status, cooperative-stop, recover-orphan, "
             "report-only, discovery-only. Candidate acquisition and cursor "
             "recovery are deferred and are not operational prerequisites."
         )
@@ -5558,7 +5582,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         "mode",
         choices=(
             "preflight-only", "run", SELECTIVE_1H_PREFLIGHT_MODE,
-            SELECTIVE_1H_MODE, "status", "cooperative-stop", "recover-orphan",
+            SELECTIVE_1H_MODE, STANDARD_FOUR_HOUR_PREFLIGHT_MODE,
+            STANDARD_FOUR_HOUR_MODE, "status", "cooperative-stop", "recover-orphan",
             "report-only", "discovery-only",
         ),
     )
@@ -5629,7 +5654,15 @@ def main(argv: Iterable[str] | None = None) -> int:
             raise OperationalMemoryFactoryError(
                 "ordinary run child terminal binding requires complete wrapper provenance"
             )
-        if args.mode == "preflight-only":
+        if args.mode == STANDARD_FOUR_HOUR_MODE:
+            raise OperationalMemoryFactoryError(
+                "standard four-hour run is not active until one-shot/factory authority integration passes"
+            )
+        if args.mode == STANDARD_FOUR_HOUR_PREFLIGHT_MODE:
+            result = build_activation_preflight(
+                git_provenance_authorization=git_provenance_authorization
+            )
+        elif args.mode == "preflight-only":
             result = build_activation_preflight(
                 git_provenance_authorization=git_provenance_authorization
             )
