@@ -38,6 +38,7 @@ jobs:
           Path('/tmp/checkpoint1_patch.py').write_text('\n'.join(lines) + '\n', encoding='utf-8')
           PY
           python /tmp/checkpoint1_patch.py
+          nl -ba src/printer_v1/operator_cli/campaign_ownership.py | sed -n '725,750p'
           python -m py_compile \
             src/printer_v1/operator_cli/campaign_ownership.py \
             src/printer_v1/operator_cli/operational_selective_1h.py
