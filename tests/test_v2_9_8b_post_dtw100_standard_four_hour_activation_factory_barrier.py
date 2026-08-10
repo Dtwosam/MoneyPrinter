@@ -1,0 +1,230 @@
+from __future__ import annotations
+
+import inspect
+import json
+import sqlite3
+import unittest
+
+from printer_v1.operator_cli import one_command_15m_factory as factory
+from printer_v1.operator_cli import one_token_4h_runtime as four
+from printer_v1.operator_cli import operational_standard_4h as standard
+from tests.test_v2_9_8b_post_dtw100_standard_four_hour_campaign_planning import (
+    StandardFourHourCampaignPlanningTests,
+    T1H,
+    _iso,
+)
+
+
+class StandardFourHourActivationFactoryBarrierTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.fx, self.candidates = StandardFourHourCampaignPlanningTests()._prepared()
+        self._attach_acceptable_safety(1, self.candidates[0])
+        self._attach_acceptable_safety(2, self.candidates[1])
+        self.fx.connection.commit()
+
+    def tearDown(self) -> None:
+        self.fx.close()
+
+    def _attach_acceptable_safety(self, ordinal: int, candidate: dict[str, object]) -> int:
+        connection = self.fx.connection
+        token_id = int(candidate["token_row_id"])
+        pair_id = int(candidate["pair_row_id"])
+        mint = str(candidate["mint_identity"])
+        pair = str(candidate["pair_identity"])
+        memory_window_id = int(candidate["memory_window_1h_id"])
+        snapshot_id = 12011 if ordinal == 1 else 12021
+        captured_at = _iso(T1H)
+        request_id = 9100 + ordinal
+        response_id = 9200 + ordinal
+        connection.execute(
+            """INSERT INTO printer_source_requests(
+                id,source_name,request_kind,requested_at,source_status,data_quality_label
+            ) VALUES (?,'goplus','SAFETY',?,'COMPLETE','CLEAN_DATA')""",
+            (request_id, captured_at),
+        )
+        connection.execute(
+            """INSERT INTO printer_source_responses(
+                id,source_request_id,source_name,received_at,source_status,data_quality_label
+            ) VALUES (?,?,'goplus',?,'COMPLETE','CLEAN_DATA')""",
+            (response_id, request_id, captured_at),
+        )
+        cursor = connection.execute(
+            """INSERT INTO printer_safety_evidence_composites(
+                token_id,pair_id,snapshot_id,memory_window_id,policy_version,
+                token_mint,pair_address,evidence_captured_at,source_status,
+                data_quality_label,target_status,freshness_label,
+                mint_authority_status,freeze_authority_status,
+                metadata_mutability_status,supply_sanity_label,
+                holder_concentration_label,liquidity_lock_or_burn_label,
+                known_risk_flag_label,token_program_label,
+                safety_context_label,safety_contract_label,
+                provenance_complete,conflicts_json,blockers_json,
+                optional_unknowns_json,field_bindings_json,paper_only_context
+            ) VALUES (?,?,?,?,? ,?,?,?,'COMPLETE','CLEAN_DATA','TARGET_MATCH',
+                'SAFETY_EVIDENCE_FRESH','MINT_AUTHORITY_RENOUNCED',
+                'FREEZE_AUTHORITY_DISABLED','METADATA_IMMUTABLE','SUPPLY_SANITY_OK',
+                'HOLDER_CONCENTRATION_HEALTHY','LIQUIDITY_LOCK_OR_BURN_UNKNOWN',
+                'KNOWN_RISK_FLAGS_UNKNOWN','SPL_TOKEN_OR_TOKEN_2022_VERIFIED',
+                'SAFETY_UNKNOWN','SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY',1,
+                '[]','[]','["liquidity_lock_or_burn_label"]','{}',1)""",
+            (
+                token_id,
+                pair_id,
+                snapshot_id,
+                memory_window_id,
+                f"standard-4h-policy-{ordinal}",
+                mint,
+                pair,
+                captured_at,
+            ),
+        )
+        composite_id = int(cursor.lastrowid)
+        connection.execute(
+            """INSERT INTO printer_safety_evidence_contributions(
+                composite_id,source_name,evidence_category,source_request_id,
+                source_response_id,captured_at,freshness_label,token_mint,
+                pair_address,fields_supplied_json,source_status,
+                data_quality_label,target_status
+            ) VALUES (?,'goplus','TOKEN_SAFETY',?,?,?,'SAFETY_EVIDENCE_FRESH',
+                ?,?,'{}','COMPLETE','CLEAN_DATA','TARGET_MATCH')""",
+            (composite_id, request_id, response_id, captured_at, mint, pair),
+        )
+        row = connection.execute(
+            "SELECT supporting_context_json FROM printer_memory_windows WHERE id=?",
+            (memory_window_id,),
+        ).fetchone()
+        context = json.loads(str(row[0] or "{}")) if row is not None else {}
+        overlays = dict(context.get("memory_build_evidence_overlays") or {})
+        overlays["safety_composite_id"] = composite_id
+        context["memory_build_evidence_overlays"] = overlays
+        connection.execute(
+            "UPDATE printer_memory_windows SET supporting_context_json=? WHERE id=?",
+            (json.dumps(context, sort_keys=True), memory_window_id),
+        )
+        return composite_id
+
+    def _barrier(self):
+        return standard.run_standard_four_hour_campaign_barrier(
+            self.fx.connection,
+            db_path=self.fx.db,
+            campaign_id="campaign-1h",
+            configuration_id="config-1h",
+            run_id="run-1h",
+            cycle_id="cycle-1h",
+            factory_run_id="factory-run-1",
+            now=_iso(T1H),
+        )
+
+    def _long_counts(self) -> tuple[int, int, int]:
+        connection = self.fx.connection
+        windows = int(connection.execute(
+            "SELECT COUNT(*) FROM printer_memory_factory_campaign_windows WHERE window_kind='WINDOW_4H'"
+        ).fetchone()[0])
+        steps = int(connection.execute(
+            "SELECT COUNT(*) FROM printer_memory_factory_run_steps WHERE step_kind LIKE 'LONG_CONTINUATION_%'"
+        ).fetchone()[0])
+        manifests = int(connection.execute(
+            """SELECT COUNT(*) FROM printer_memory_factory_run_steps
+               WHERE step_kind='CONTINUATION_CLOSE'
+                 AND result_json LIKE '%standard_four_hour_eligibility%'"""
+        ).fetchone()[0])
+        return windows, steps, manifests
+
+    def test_first_successful_close_waits_for_peer_without_four_hour_mutation(self) -> None:
+        self.fx.connection.execute(
+            """UPDATE printer_memory_factory_run_steps SET step_status='RUNNING'
+               WHERE run_id='factory-run-1' AND token_id=2
+                 AND step_kind='CONTINUATION_CLOSE'"""
+        )
+        self.fx.connection.commit()
+        before = self._long_counts()
+        result = self._barrier()
+        self.assertFalse(result["barrier_reached"])
+        self.assertEqual(result["status"], "AWAITING_PEER_FIRST_HOUR_CLOSE")
+        self.assertEqual(result["successful_first_hour_close_count"], 1)
+        self.assertEqual(self._long_counts(), before)
+        self.assertEqual(before, (0, 0, 0))
+
+    def test_second_successful_close_releases_both_eligible_plan_once(self) -> None:
+        result = self._barrier()
+        self.assertTrue(result["barrier_reached"])
+        self.assertEqual(result["eligible_token_slot_ids"], ["slot-1", "slot-2"])
+        self.assertEqual(result["continuation_count"], 2)
+        self.assertEqual(result["subset_budget"]["request_ceiling"], 182)
+        self.assertEqual(result["subset_budget"]["scheduler_ceiling"], 162)
+        self.assertEqual(self._long_counts(), (2, 92, 2))
+        replay = self._barrier()
+        self.assertTrue(replay["barrier_reached"])
+        self.assertEqual(replay["eligible_token_slot_ids"], ["slot-1", "slot-2"])
+        self.assertEqual(self._long_counts(), (2, 92, 2))
+
+    def test_one_hard_gate_blocked_continues_only_eligible_peer(self) -> None:
+        memory_window_id = int(self.candidates[1]["memory_window_1h_id"])
+        self.fx.connection.execute(
+            "UPDATE printer_memory_windows SET supporting_context_json='{}' WHERE id=?",
+            (memory_window_id,),
+        )
+        self.fx.connection.commit()
+        result = self._barrier()
+        self.assertTrue(result["barrier_reached"])
+        self.assertEqual(result["eligible_token_slot_ids"], ["slot-1"])
+        self.assertEqual(result["continuation_count"], 1)
+        verdicts = {row["token_slot_id"]: row["verdict"] for row in result["verdicts"]}
+        self.assertEqual(verdicts["slot-1"], "CONTINUE_TO_WINDOW_4H")
+        self.assertEqual(verdicts["slot-2"], "BLOCK_CONTINUATION")
+        self.assertEqual(result["subset_budget"]["request_ceiling"], 143)
+        self.assertEqual(result["subset_budget"]["scheduler_ceiling"], 128)
+        self.assertEqual(self._long_counts(), (1, 61, 2))
+
+    def test_zero_eligible_is_valid_manifested_noop(self) -> None:
+        for candidate in self.candidates:
+            self.fx.connection.execute(
+                "UPDATE printer_memory_windows SET supporting_context_json='{}' WHERE id=?",
+                (int(candidate["memory_window_1h_id"]),),
+            )
+        self.fx.connection.commit()
+        result = self._barrier()
+        self.assertTrue(result["barrier_reached"])
+        self.assertEqual(result["eligible_token_slot_ids"], [])
+        self.assertEqual(result["continuation_count"], 0)
+        self.assertEqual(result["subset_budget"]["request_ceiling"], 74)
+        self.assertEqual(result["subset_budget"]["scheduler_ceiling"], 64)
+        self.assertEqual(self._long_counts(), (0, 0, 2))
+
+    def test_failed_first_hour_peer_fails_closed_without_manufactured_manifest(self) -> None:
+        self.fx.connection.execute(
+            """UPDATE printer_memory_factory_run_steps SET step_status='FAILED'
+               WHERE run_id='factory-run-1' AND token_id=2
+                 AND step_kind='CONTINUATION_CLOSE'"""
+        )
+        self.fx.connection.commit()
+        with self.assertRaisesRegex(standard.StandardFourHourOperationalError, "first-hour close"):
+            self._barrier()
+        self.assertEqual(self._long_counts(), (0, 0, 0))
+
+    def test_factory_has_distinct_standard_authority_not_proof_flag(self) -> None:
+        parameters = inspect.signature(factory.run_one_command_15m_factory).parameters
+        self.assertIn("standard_four_hour_campaign", parameters)
+        self.assertIn("four_hour_proof_mode", parameters)
+        self.assertFalse(parameters["standard_four_hour_campaign"].default)
+        source = inspect.getsource(factory.run_one_command_15m_factory)
+        self.assertIn("standard_four_hour_campaign", source)
+        self.assertIn("run_standard_four_hour_campaign_barrier", source)
+        self.assertIn("not standard_four_hour_campaign", source)
+        self.assertNotIn(
+            "explicit_proof_mode=standard_four_hour_campaign",
+            source,
+        )
+
+    def test_barrier_uses_explicit_standard_campaign_authority(self) -> None:
+        source = inspect.getsource(standard.run_standard_four_hour_campaign_barrier)
+        self.assertIn("FourHourExecutionAuthority.STANDARD_CAMPAIGN", source)
+        self.assertIn("plan_standard_campaign_4h_handoff", source)
+        self.assertNotIn("plan_current_run_4h", source)
+        self.assertTrue(
+            four.runtime_budget("TRACK_FAST")["enabled_for_real_collection"]
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
