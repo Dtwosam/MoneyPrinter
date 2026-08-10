@@ -466,15 +466,6 @@ def evaluate_selective_1h_for_cycle(
         raise Selective1hError(
             f"selective 1h requires exactly two token slots; found {len(slots)}"
         )
-    allowed_pre_handoff_states = {
-        "SELECTED", "WINDOW_15M_ACTIVE", "WINDOW_15M_CLOSED"
-    }
-    for slot in slots:
-        token_state = str(slot.get("token_state") or "")
-        if token_state not in allowed_pre_handoff_states:
-            raise Selective1hError(
-                f"pre-handoff token state conflict for {slot['token_slot_id']}: {token_state}"
-            )
 
     campaign_ctx = CampaignContinuationContext(
         campaign_id=campaign_id,
