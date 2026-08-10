@@ -65,10 +65,12 @@ class Checkpoint1Clean15mTo1hHandoffTests(unittest.TestCase):
     def test_conflicting_slot_state_fails_before_any_handoff_side_effect(self) -> None:
         self.fx.prepare_eligible(token_id=1, window_id=311, outcome="DUMP")
         self.fx.prepare_eligible(token_id=2, window_id=312, outcome="CONSOLIDATION")
+        # Schema-valid but impossible before a first handoff evaluation: the slot
+        # already claims to be in 1h while no continuation object/window exists.
         with self.fx.connection:
             self.fx.connection.execute(
                 """UPDATE printer_memory_factory_campaign_token_slots
-                   SET token_state='FAILED'
+                   SET token_state='WINDOW_1H_CONTINUING'
                    WHERE token_slot_id='slot-1'"""
             )
 
