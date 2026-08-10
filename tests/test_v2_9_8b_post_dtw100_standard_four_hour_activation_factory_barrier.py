@@ -18,12 +18,55 @@ from tests.test_v2_9_8b_post_dtw100_standard_four_hour_campaign_planning import 
 class StandardFourHourActivationFactoryBarrierTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fx, self.candidates = StandardFourHourCampaignPlanningTests()._prepared()
+        self.fx.connection.execute(
+            "UPDATE printer_memory_factory_runs SET config_json=? WHERE run_id='factory-run-1'",
+            (json.dumps({
+                "standard_four_hour_campaign": True,
+                "campaign_id": "campaign-1h",
+                "campaign_run_id": "run-1h",
+                "cycle_id": "cycle-1h",
+            }, sort_keys=True),),
+        )
+        self._attach_authoritative_clean_fingerprint(self.candidates[0])
+        self._attach_authoritative_clean_fingerprint(self.candidates[1])
         self._attach_acceptable_safety(1, self.candidates[0])
         self._attach_acceptable_safety(2, self.candidates[1])
         self.fx.connection.commit()
 
     def tearDown(self) -> None:
         self.fx.close()
+
+    def _attach_authoritative_clean_fingerprint(self, candidate: dict[str, object]) -> int:
+        connection = self.fx.connection
+        memory_window_id = int(candidate["memory_window_1h_id"])
+        token_id = int(candidate["token_row_id"])
+        pair_id = int(candidate["pair_row_id"])
+        rows = connection.execute(
+            """SELECT id FROM printer_episodes
+               WHERE memory_window_id=? AND token_id=? AND pair_id=?
+                 AND episode_status='COMPLETE' AND memory_status='CLEAN_MEMORY'
+                 AND data_quality_label='CLEAN_DATA' AND do_not_train=0
+                 AND window_kind='WINDOW_1H' AND memory_quality_label='CLEAN_MEMORY'
+               ORDER BY id""",
+            (memory_window_id, token_id, pair_id),
+        ).fetchall()
+        self.assertEqual(len(rows), 1)
+        episode_id = int(rows[0][0])
+        payload = {
+            "episode_id": episode_id,
+            "window_id": memory_window_id,
+            "token_id": token_id,
+            "pair_id": pair_id,
+            "window_kind": "WINDOW_1H",
+        }
+        cursor = connection.execute(
+            """INSERT INTO printer_memory_fingerprints(
+                episode_id,fingerprint_kind,fingerprint_payload_json,
+                memory_status,data_quality_label,do_not_train
+            ) VALUES (?,'STATIC_CONDITION_SUMMARY',?,'CLEAN_MEMORY','CLEAN_DATA',0)""",
+            (episode_id, json.dumps(payload, sort_keys=True)),
+        )
+        return int(cursor.lastrowid)
 
     def _attach_acceptable_safety(self, ordinal: int, candidate: dict[str, object]) -> int:
         connection = self.fx.connection
@@ -97,6 +140,14 @@ class StandardFourHourActivationFactoryBarrierTests(unittest.TestCase):
         overlays = dict(context.get("memory_build_evidence_overlays") or {})
         overlays["safety_composite_id"] = composite_id
         context["memory_build_evidence_overlays"] = overlays
+        context["continuity"] = {
+            "stage": "15M_TO_1H",
+            "continuity_status": "CONTINUITY_CONTINUOUS",
+            "do_not_train": False,
+            "can_be_quality_memory": True,
+            "reasons": [],
+            "details": {},
+        }
         connection.execute(
             "UPDATE printer_memory_windows SET supporting_context_json=? WHERE id=?",
             (json.dumps(context, sort_keys=True), memory_window_id),
@@ -224,6 +275,82 @@ class StandardFourHourActivationFactoryBarrierTests(unittest.TestCase):
         self.assertTrue(
             four.runtime_budget("TRACK_FAST")["enabled_for_real_collection"]
         )
+
+    def test_missing_persisted_continuity_blocks_only_that_slot(self) -> None:
+        candidate = self.candidates[1]
+        window_id = int(candidate["memory_window_1h_id"])
+        row = self.fx.connection.execute(
+            "SELECT supporting_context_json FROM printer_memory_windows WHERE id=?",
+            (window_id,),
+        ).fetchone()
+        context = json.loads(str(row[0] or "{}"))
+        context.pop("continuity", None)
+        self.fx.connection.execute(
+            "UPDATE printer_memory_windows SET supporting_context_json=? WHERE id=?",
+            (json.dumps(context, sort_keys=True), window_id),
+        )
+        self.fx.connection.commit()
+        result = self._barrier()
+        self.assertEqual(result["eligible_token_slot_ids"], ["slot-1"])
+        verdicts = {row["token_slot_id"]: row for row in result["verdicts"]}
+        self.assertEqual(verdicts["slot-2"]["verdict"], "BLOCK_CONTINUATION")
+        self.assertIn(
+            "predecessor_continuity_not_eligible",
+            verdicts["slot-2"]["reasons"],
+        )
+
+    def test_standard_execution_budget_matches_both_eligible_manifest(self) -> None:
+        result = self._barrier()
+        budget = factory._standard_four_hour_cumulative_budget_for_run(
+            self.fx.connection, "factory-run-1"
+        )
+        self.assertEqual(budget["request_ceiling"], result["subset_budget"]["request_ceiling"])
+        self.assertEqual(budget["scheduler_ceiling"], result["subset_budget"]["scheduler_ceiling"])
+        self.assertEqual(budget["continuing_mask"], (True, True))
+
+    def test_standard_execution_budget_matches_one_eligible_manifest(self) -> None:
+        candidate = self.candidates[1]
+        self.fx.connection.execute(
+            "UPDATE printer_memory_windows SET supporting_context_json='{}' WHERE id=?",
+            (int(candidate["memory_window_1h_id"]),),
+        )
+        self.fx.connection.commit()
+        result = self._barrier()
+        budget = factory._standard_four_hour_cumulative_budget_for_run(
+            self.fx.connection, "factory-run-1"
+        )
+        self.assertEqual(result["eligible_token_slot_ids"], ["slot-1"])
+        self.assertEqual(budget["request_ceiling"], 143)
+        self.assertEqual(budget["scheduler_ceiling"], 128)
+        self.assertEqual(budget["continuing_mask"], (True, False))
+
+    def test_long_execution_fails_closed_when_durable_manifest_disappears(self) -> None:
+        self._barrier()
+        rows = self.fx.connection.execute(
+            """SELECT id,result_json FROM printer_memory_factory_run_steps
+               WHERE run_id='factory-run-1' AND step_kind='CONTINUATION_CLOSE'
+               ORDER BY id"""
+        ).fetchall()
+        self.assertEqual(len(rows), 2)
+        for row in rows:
+            payload = json.loads(str(row["result_json"] or "{}"))
+            payload.pop("standard_four_hour_eligibility", None)
+            self.fx.connection.execute(
+                "UPDATE printer_memory_factory_run_steps SET result_json=? WHERE id=?",
+                (json.dumps(payload, sort_keys=True), int(row["id"])),
+            )
+        step = self.fx.connection.execute(
+            """SELECT * FROM printer_memory_factory_run_steps
+               WHERE run_id='factory-run-1'
+                 AND step_kind LIKE 'LONG_CONTINUATION_%'
+               ORDER BY id LIMIT 1"""
+        ).fetchone()
+        self.fx.connection.commit()
+        with self.assertRaises(factory._GlobalStop) as caught:
+            factory._enforce_budgets_before_step(
+                self.fx.connection, "factory-run-1", step
+            )
+        self.assertEqual(caught.exception.scope, "STANDARD_FOUR_HOUR_SUBSET")
 
 
 if __name__ == "__main__":

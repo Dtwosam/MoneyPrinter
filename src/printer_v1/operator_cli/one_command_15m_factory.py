@@ -3727,6 +3727,70 @@ def _projected_requests_for_step(step: sqlite3.Row) -> int:
     return 1
 
 
+def _standard_four_hour_cumulative_budget_for_run(
+    conn: sqlite3.Connection, run_id: str,
+) -> dict[str, Any]:
+    """Resolve the exact standard 4h subset budget from durable campaign truth."""
+    config = _load_run_config(conn, run_id)
+    campaign_id = str(config.get("campaign_id") or "").strip()
+    campaign_run_id = str(config.get("campaign_run_id") or "").strip()
+    cycle_id = str(config.get("cycle_id") or "").strip()
+    if not all((campaign_id, campaign_run_id, cycle_id, run_id)):
+        raise ValueError("standard four-hour execution budget identity is incomplete")
+
+    from printer_v1.operator_cli.one_token_4h_runtime import (
+        load_standard_four_hour_eligibility_manifests,
+        standard_campaign_lifecycle_budget,
+    )
+
+    slots = conn.execute(
+        """SELECT token_slot_id,token_row_id,pair_row_id,slot_ordinal
+           FROM printer_memory_factory_campaign_token_slots
+           WHERE campaign_id=? AND run_id=? AND cycle_id=?
+           ORDER BY slot_ordinal""",
+        (campaign_id, campaign_run_id, cycle_id),
+    ).fetchall()
+    if len(slots) != 2 or {int(row["slot_ordinal"]) for row in slots} != {1, 2}:
+        raise ValueError("standard four-hour execution budget requires exact two campaign slots")
+
+    manifests = load_standard_four_hour_eligibility_manifests(
+        conn,
+        campaign_id=campaign_id,
+        run_id=campaign_run_id,
+        cycle_id=cycle_id,
+        factory_run_id=run_id,
+    )
+    if manifests is None:
+        raise ValueError("standard four-hour execution budget requires durable eligibility manifest")
+
+    lanes: list[str] = []
+    mask: list[bool] = []
+    for slot in slots:
+        slot_id = str(slot["token_slot_id"])
+        closes = conn.execute(
+            """SELECT tracking_lane FROM printer_memory_factory_run_steps
+               WHERE run_id=? AND token_id=? AND pair_id=?
+                 AND step_kind='CONTINUATION_CLOSE' AND step_status='SUCCEEDED'
+               ORDER BY id""",
+            (run_id, int(slot["token_row_id"]), int(slot["pair_row_id"])),
+        ).fetchall()
+        if len(closes) != 1:
+            raise ValueError(
+                f"standard four-hour execution budget close identity missing/ambiguous for {slot_id}"
+            )
+        manifest = manifests.get(slot_id)
+        if manifest is None or type(manifest.get("eligible")) is not bool:
+            raise ValueError(
+                f"standard four-hour execution budget manifest invalid for {slot_id}"
+            )
+        lanes.append(str(closes[0]["tracking_lane"]))
+        mask.append(bool(manifest["eligible"]))
+
+    return standard_campaign_lifecycle_budget(
+        (lanes[0], lanes[1]), (mask[0], mask[1])
+    )
+
+
 def _enforce_budgets_before_step(conn: sqlite3.Connection, run_id: str, step: sqlite3.Row) -> None:
     """Raise _GlobalStop if executing this step would breach a hard ceiling.
 
@@ -3743,7 +3807,17 @@ def _enforce_budgets_before_step(conn: sqlite3.Connection, run_id: str, step: sq
         )
         lane = str(step["tracking_lane"])
         phase = runtime_budget(lane)
-        cumulative = _cumulative_lifecycle_budget_for_run(conn, run_id, lane)
+        if bool(config.get("standard_four_hour_campaign")):
+            try:
+                cumulative = _standard_four_hour_cumulative_budget_for_run(
+                    conn, run_id
+                )
+            except ValueError as exc:
+                raise _GlobalStop(
+                    STOP_BUDGET, scope="STANDARD_FOUR_HOUR_SUBSET", detail=str(exc),
+                ) from exc
+        else:
+            cumulative = _cumulative_lifecycle_budget_for_run(conn, run_id, lane)
         phase_used = int(conn.execute(
             "SELECT COUNT(*) FROM printer_source_requests WHERE request_key LIKE ?",
             (f"{run_id}:%4h%",),
@@ -5462,6 +5536,7 @@ def run_one_command_15m_factory(
     continuous_first_hour: bool = False,
     continuous_four_hour: bool = False,
     four_hour_proof_mode: bool = False,
+    standard_four_hour_campaign: bool = False,
     selective_1h_continuation: bool = False,
     compressed_two_token_proof_plan: CompressedTwoTokenProofPlan | None = None,
     operational_natural_disposition: bool = False,
@@ -5638,6 +5713,23 @@ def run_one_command_15m_factory(
     # tokens. Normal mode stays capped at two. Four or more is always rejected.
     if compressed_two_token_proof_plan is not None and not continuous_first_hour:
         reasons.append("compressed two-token proof requires continuous first-hour mode")
+    if standard_four_hour_campaign:
+        if proof_mode:
+            reasons.append("standard four-hour campaign requires operational persistent mode")
+        if not operational_persistent_mode:
+            reasons.append("standard four-hour campaign requires operational persistent mode")
+        if four_hour_proof_mode:
+            reasons.append("standard four-hour campaign cannot use four_hour_proof_mode")
+        if compressed_two_token_proof_plan is not None or operational_natural_disposition:
+            reasons.append("standard four-hour campaign excludes historical proof dispositions")
+        if max_selected_tokens != 2:
+            reasons.append("standard four-hour campaign requires exactly two token slots")
+        if not selective_1h_continuation:
+            reasons.append("standard four-hour campaign requires standard first-hour continuation")
+        if not continuous_four_hour:
+            reasons.append("standard four-hour campaign requires continuous_four_hour")
+        if not all((campaign_id, campaign_run_id, cycle_id, configuration_id)):
+            reasons.append("standard four-hour campaign requires exact campaign ownership identities")
     # V2-9.7E.11: operational-natural two-token mode and the E.9 compressed proof
     # plan are structurally mutually exclusive (predeclared dispositions can never
     # enter operational mode).
@@ -5685,12 +5777,12 @@ def run_one_command_15m_factory(
     if not 1 <= max_source_requests <= _MAX_DISCOVERY_REQUESTS: reasons.append("max_source_requests must be 1 or 2")
     if continuous_four_hour and not continuous_first_hour:
         reasons.append("4h continuation requires the same-run continuous first-hour path")
-    if continuous_four_hour and not four_hour_proof_mode:
-        reasons.append("WINDOW_4H real collection remains disabled without explicit proof mode")
+    if continuous_four_hour and not four_hour_proof_mode and not standard_four_hour_campaign:
+        reasons.append("WINDOW_4H collection requires explicit proof or standard campaign authority")
     if selective_1h_continuation:
-        if continuous_four_hour or four_hour_proof_mode:
+        if (continuous_four_hour or four_hour_proof_mode) and not standard_four_hour_campaign:
             reasons.append(
-                "selective 1h continuation cannot enable 4h; 4h remains a separate locked lane"
+                "selective 1h continuation cannot enable 4h without standard campaign authority"
             )
         if not campaign_id or not campaign_run_id or not cycle_id:
             reasons.append(
@@ -5758,6 +5850,7 @@ def run_one_command_15m_factory(
         "continuous_first_hour": bool(effective_continuous_1h),
         "continuous_four_hour": bool(continuous_four_hour),
         "four_hour_proof_mode": bool(four_hour_proof_mode),
+        "standard_four_hour_campaign": bool(standard_four_hour_campaign),
         "compressed_two_token_proof_plan": (
             asdict(compressed_two_token_proof_plan)
             if compressed_two_token_proof_plan is not None else None
@@ -6411,7 +6504,11 @@ def run_one_command_15m_factory(
                                 }
                             result["support_5m"] = support
                             result["continuation_plan"] = continuation_plan
-                    elif pending["step_kind"] == "CONTINUATION_CLOSE" and continuous_four_hour:
+                    elif (
+                        pending["step_kind"] == "CONTINUATION_CLOSE"
+                        and continuous_four_hour
+                        and not standard_four_hour_campaign
+                    ):
                         from printer_v1.operator_cli.one_token_4h_runtime import plan_current_run_4h
                         window_id = result.get("memory_window_id")
                         if window_id is None:
@@ -6519,6 +6616,28 @@ def run_one_command_15m_factory(
                             config=config,
                             continuation_seconds=_continuation_seconds,
                         )
+                    if (
+                        pending["step_kind"] == "CONTINUATION_CLOSE"
+                        and standard_four_hour_campaign
+                    ):
+                        from printer_v1.operator_cli.operational_standard_4h import (
+                            run_standard_four_hour_campaign_barrier,
+                        )
+                        _check_cancellation(cancellation_probe)
+                        barrier = run_standard_four_hour_campaign_barrier(
+                            conn,
+                            db_path=str(path),
+                            campaign_id=str(campaign_id),
+                            configuration_id=str(configuration_id),
+                            run_id=str(campaign_run_id),
+                            cycle_id=str(cycle_id),
+                            factory_run_id=str(run_id),
+                        )
+                        result["standard_four_hour_barrier"] = barrier
+                        _update_step(
+                            conn, int(pending["id"]), "SUCCEEDED", result
+                        )
+                        conn.commit()
                 else:
                     # V2-5 token-local terminal failure: isolate this token,
                     # cancel only its remaining pending jobs, continue others.

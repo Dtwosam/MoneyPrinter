@@ -413,6 +413,7 @@ def load_authoritative_window_safety(
     cycle_id: str,
     token_slot_id: str,
     window_id: str,
+    memory_window_close_cutoff: str | None = None,
 ) -> dict[str, Any]:
     """Load the exact safety composite retained by one memory-window context.
 
@@ -525,7 +526,19 @@ def load_authoritative_window_safety(
         ):
             reasons.append("safety_memory_window_mismatch")
 
-        cutoff = _time(graph["checkpoint_cutoff"])
+        if memory_window_close_cutoff is not None:
+            authoritative_window_end = str(window.get("window_end_at") or "")
+            if (
+                not authoritative_window_end
+                or str(memory_window_close_cutoff) != authoritative_window_end
+            ):
+                raise CampaignAuthorityAdapterError(
+                    "memory-window safety cutoff must equal authoritative window_end_at"
+                )
+            cutoff_value = authoritative_window_end
+        else:
+            cutoff_value = str(graph["checkpoint_cutoff"])
+        cutoff = _time(cutoff_value)
         captured = _time(composite["evidence_captured_at"])
         age = (cutoff - captured).total_seconds() if cutoff and captured else None
         if age is None or age < 0 or age > MAX_AGE_SECONDS:
@@ -604,6 +617,12 @@ def load_authoritative_window_safety(
             "raw_composite": composite,
             "source_traces": traces,
             "reasons": list(dict.fromkeys(reasons)),
+            "evidence_cutoff": cutoff_value,
+            "evidence_cutoff_source": (
+                "MEMORY_WINDOW_END"
+                if memory_window_close_cutoff is not None
+                else "CAMPAIGN_CHECKPOINT"
+            ),
             "read_only": True,
         }
 
