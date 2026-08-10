@@ -2314,6 +2314,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
         graduated_supply_kwargs: Mapping[str, Any] | None = None,
         stop_before_lifecycle: bool = False,
         fifteen_minute_only: bool = False,
+        standard_four_hour_campaign: bool = False,
         accounting_stage_evidence_sink: (
             Callable[[Mapping[str, Any]], None] | None
         ) = None,
@@ -2360,6 +2361,13 @@ class AuthoritativeLiveOperationalCampaignOwner:
         the campaign blocks with ``BLOCKED_INSUFFICIENT_GRADUATED_POOL``.
         """
         lk = dict(lifecycle_kwargs or {})
+        if standard_four_hour_campaign and not fifteen_minute_only:
+            raise LiveOperationalError(
+                "STANDARD_FOUR_HOUR_REQUIRES_OPERATIONAL_PERSISTENT_MODE",
+                "standard four-hour campaign requires fifteen_minute_only persistent authority",
+            )
+        if standard_four_hour_campaign:
+            lk["standard_four_hour_campaign"] = True
         if fifteen_minute_only:
             from printer_v1.operator_cli.operational_database_target_binding import (
                 load_durable_operational_database_target_expectation,
@@ -3844,9 +3852,15 @@ class AuthoritativeLiveOperationalCampaignOwner:
             central_scheduler=central_scheduler,
             selection_seed=selection_seed,
             proof_mode=not fifteen_minute_only,
-            continuous_first_hour=not fifteen_minute_only,
-            continuous_four_hour=not fifteen_minute_only,
-            four_hour_proof_mode=not fifteen_minute_only,
+            continuous_first_hour=(
+                not fifteen_minute_only or standard_four_hour_campaign
+            ),
+            continuous_four_hour=(
+                not fifteen_minute_only or standard_four_hour_campaign
+            ),
+            four_hour_proof_mode=(
+                not fifteen_minute_only and not standard_four_hour_campaign
+            ),
             operational_persistent_mode=fifteen_minute_only,
             operational_database_target_binding=(
                 operational_database_target_binding

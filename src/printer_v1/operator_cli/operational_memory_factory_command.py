@@ -212,6 +212,7 @@ _ACTION_RUN_CONTEXT: dict[str, Any] = {
 @dataclass(frozen=True)
 class _OperationalCampaignPolicy:
     mode: str
+    policy_version: str
     duration_seconds: int
     selective_1h_continuation: bool
     governed_request_ceiling: int
@@ -232,6 +233,7 @@ class _OperationalCampaignPolicy:
 
 _NORMAL_CAMPAIGN_POLICY = _OperationalCampaignPolicy(
     mode="run",
+    policy_version=POLICY_VERSION,
     duration_seconds=TOTAL_DURATION_SECONDS,
     selective_1h_continuation=False,
     governed_request_ceiling=GOVERNED_15M_REQUEST_CEILING,
@@ -241,6 +243,7 @@ _NORMAL_CAMPAIGN_POLICY = _OperationalCampaignPolicy(
 )
 _SELECTIVE_1H_PROOF_POLICY = _OperationalCampaignPolicy(
     mode=SELECTIVE_1H_MODE,
+    policy_version=POLICY_VERSION,
     duration_seconds=SELECTIVE_1H_TOTAL_DURATION_SECONDS,
     selective_1h_continuation=True,
     governed_request_ceiling=SELECTIVE_1H_GOVERNED_REQUEST_CEILING,
@@ -250,6 +253,7 @@ _SELECTIVE_1H_PROOF_POLICY = _OperationalCampaignPolicy(
 )
 STANDARD_FOUR_HOUR_POLICY = _OperationalCampaignPolicy(
     mode=STANDARD_FOUR_HOUR_MODE,
+    policy_version=STANDARD_FOUR_HOUR_POLICY_VERSION,
     duration_seconds=STANDARD_FOUR_HOUR_TOTAL_DURATION_SECONDS,
     selective_1h_continuation=True,
     governed_request_ceiling=STANDARD_FOUR_HOUR_GOVERNED_REQUEST_CEILING,
@@ -1310,6 +1314,60 @@ def build_selective_1h_preflight(
     }
 
 
+def build_standard_four_hour_preflight(
+    *,
+    db_path: str | Path | None = None,
+    repository_root: str | Path | None = None,
+    git_provenance_authorization: ValidatedGitProvenanceAuthorization | None = None,
+) -> dict[str, Any]:
+    """Read-only preflight projection for one standard 15m -> 1h -> 4h campaign."""
+    base = build_activation_preflight(
+        db_path=db_path,
+        repository_root=repository_root,
+        git_provenance_authorization=git_provenance_authorization,
+    )
+    policy = STANDARD_FOUR_HOUR_POLICY
+    if AUTOMATIC_RETRIES != 0:
+        _preflight_fail("retry_policy", "automatic retries must remain zero")
+    if set(policy.locked_windows) != {"WINDOW_12H", "WINDOW_24H"}:
+        _preflight_fail(
+            "later_window_locks",
+            "standard four-hour operation must keep WINDOW_12H and WINDOW_24H locked",
+        )
+    return {
+        **base,
+        "mode": STANDARD_FOUR_HOUR_PREFLIGHT_MODE,
+        "status": "V2_9_8B_STANDARD_FOUR_HOUR_PREFLIGHT_READY",
+        "standard_four_hour_policy": {
+            "policy_version": policy.policy_version,
+            "campaigns": 1,
+            "cycles": 1,
+            "starting_token_maximum": TOKEN_CAPACITY,
+            "main_window": MAIN_WINDOW,
+            "main_window_seconds": MAIN_WINDOW_SECONDS,
+            "continuous_first_hour": True,
+            "continuous_four_hour": True,
+            "standard_four_hour_campaign": True,
+            "locked_windows": policy.locked_windows,
+            "automatic_retries": 0,
+            "restart_created": False,
+            "successor_created": False,
+        },
+        "standard_four_hour_ceilings": {
+            "duration_seconds": policy.duration_seconds,
+            "pre_lifecycle_acquisition_duration_seconds": (
+                policy.pre_lifecycle_acquisition_duration_seconds
+            ),
+            "governed_requests": policy.governed_request_ceiling,
+            "governed_requests_per_token": policy.governed_requests_per_token,
+            "scheduler_rows": policy.scheduler_row_ceiling,
+        },
+        "source_calls": 0,
+        "scheduler_runtime_calls": 0,
+        "database_writes": 0,
+    }
+
+
 def _artifact_paths(
     execution_id: str,
     *,
@@ -1380,7 +1438,7 @@ def _create_campaign_command(
         "campaign_id": campaign_id,
         "configuration_id": configuration_id,
         "run_id": run_id,
-        "policy_version": POLICY_VERSION,
+        "policy_version": policy.policy_version,
         "db_target_identity": target_identity,
         "operator_approved": operator_approved is True,
         "token_capacity": TOKEN_CAPACITY,
@@ -1399,7 +1457,8 @@ def _create_campaign_command(
         "main_window": MAIN_WINDOW,
         "main_window_seconds": MAIN_WINDOW_SECONDS,
         "continuous_first_hour": bool(policy.selective_1h_continuation),
-        "continuous_four_hour": False,
+        "continuous_four_hour": bool(policy.continuous_four_hour),
+        "standard_four_hour_campaign": bool(policy.standard_four_hour_campaign),
         "selective_1h_continuation": bool(policy.selective_1h_continuation),
         "command_mode": policy.mode,
         "locked_windows": policy.locked_windows,
@@ -1436,7 +1495,7 @@ def _create_campaign_command(
             campaign_id=campaign_id,
             configuration_id=configuration_id,
             run_id=run_id,
-            policy_version=POLICY_VERSION,
+            policy_version=policy.policy_version,
             db_target_identity=target_identity,
             launch_git_provenance=preflight["git_provenance"],
             operator_approved=operator_approved,
@@ -1537,7 +1596,7 @@ def _create_campaign_command(
         configuration=configuration,
         launch_provenance=preflight["git_provenance"],
         db_target_identity=target_identity,
-        policy_version=POLICY_VERSION,
+        policy_version=policy.policy_version,
         expected_database_path=expected_database_path,
         expected_database_sha256=str(expected_database_sha256),
         expected_migration_count=int(expected_migration_count),
@@ -1557,7 +1616,7 @@ def _create_campaign_command(
             campaign_id=campaign_id,
             configuration_id=configuration_id,
             configuration_hash=str(created["configuration_hash"]),
-            policy_version=POLICY_VERSION,
+            policy_version=policy.policy_version,
             token_capacity=TOKEN_CAPACITY,
             ceilings=ceilings,
             report_directory=paths["reports"],
@@ -2979,7 +3038,11 @@ def _run_operational_campaign(
         raise OperationalMemoryFactoryError(
             "DISPOSABLE_PROOF_POLICY_UNSUPPORTED"
         )
-    if policy.selective_1h_continuation:
+    if policy.standard_four_hour_campaign:
+        preflight = build_standard_four_hour_preflight(
+            git_provenance_authorization=git_provenance_authorization
+        )
+    elif policy.selective_1h_continuation:
         preflight = build_selective_1h_preflight()
     elif disposable_proof is not None:
         preflight = build_disposable_public_composition_preflight(
@@ -3011,7 +3074,13 @@ def _run_operational_campaign(
     )
     authorization_runtime_facts = (
         None
-        if policy.selective_1h_continuation or disposable_proof is not None
+        if (
+            disposable_proof is not None
+            or (
+                policy.selective_1h_continuation
+                and not policy.standard_four_hour_campaign
+            )
+        )
         else validated_authorization_runtime_facts(
             git_provenance_authorization
         )
@@ -3491,6 +3560,9 @@ def _run_operational_campaign(
                     "selective_1h_continuation": (
                         policy.selective_1h_continuation
                     ),
+                    "standard_four_hour_campaign": (
+                        policy.standard_four_hour_campaign
+                    ),
                     "configuration_id": command.configuration_id,
                     # Full-run ownership context + action-local operation observer
                     # propagate coordinator → owner → driver → factory.
@@ -3509,6 +3581,7 @@ def _run_operational_campaign(
                 migration_transport=active_migration,
                 graduated_supply_kwargs=bridge_graduated_supply_kwargs,
                 fifteen_minute_only=True,
+                standard_four_hour_campaign=policy.standard_four_hour_campaign,
                 accounting_stage_evidence_sink=_campaign_stage_evidence_sink,
                 transport_identity_observer=_observe_transport_identity,
                 local_validation_identity_observer=(
@@ -3860,8 +3933,10 @@ def _run_operational_campaign(
             "fault_details": dict(lifecycle.get("fault_details") or {}),
             "token_capacity": TOKEN_CAPACITY,
             "main_window": MAIN_WINDOW,
+            "policy_version": policy.policy_version,
             "selective_1h_continuation": policy.selective_1h_continuation,
-            "continuous_four_hour": False,
+            "continuous_four_hour": policy.continuous_four_hour,
+            "standard_four_hour_campaign": policy.standard_four_hour_campaign,
             "locked_windows": policy.locked_windows,
             "support_5m_only": True,
             "restart_created": False,
@@ -3931,6 +4006,27 @@ def run_operational_campaign(
         migration_transport=migration_transport,
         git_provenance_authorization=git_provenance_authorization,
         disposable_proof=disposable_proof,
+    )
+
+
+def run_standard_four_hour_campaign(
+    *,
+    operator_approved: bool,
+    git_provenance_authorization: ValidatedGitProvenanceAuthorization | None,
+    owner: Any | None = None,
+    pump_transport: Any | None = None,
+    secondary_transport: Any | None = None,
+    migration_transport: Any | None = None,
+) -> dict[str, Any]:
+    """Run one externally authorized production-persistent standard 4h campaign."""
+    return _run_operational_campaign(
+        policy=STANDARD_FOUR_HOUR_POLICY,
+        operator_approved=operator_approved,
+        owner=owner,
+        pump_transport=pump_transport,
+        secondary_transport=secondary_transport,
+        migration_transport=migration_transport,
+        git_provenance_authorization=git_provenance_authorization,
     )
 
 
@@ -5664,12 +5760,8 @@ def main(argv: Iterable[str] | None = None) -> int:
             raise OperationalMemoryFactoryError(
                 f"{label} child terminal binding requires complete wrapper provenance"
             )
-        if args.mode == STANDARD_FOUR_HOUR_MODE:
-            raise OperationalMemoryFactoryError(
-                "standard four-hour run is not active until one-shot/factory authority integration passes"
-            )
         if args.mode == STANDARD_FOUR_HOUR_PREFLIGHT_MODE:
-            result = build_activation_preflight(
+            result = build_standard_four_hour_preflight(
                 git_provenance_authorization=git_provenance_authorization
             )
         elif args.mode == "preflight-only":
@@ -5680,6 +5772,11 @@ def main(argv: Iterable[str] | None = None) -> int:
             result = build_selective_1h_preflight()
         elif args.mode == "run":
             result = run_operational_campaign(
+                operator_approved=args.operator_approved,
+                git_provenance_authorization=git_provenance_authorization,
+            )
+        elif args.mode == STANDARD_FOUR_HOUR_MODE:
+            result = run_standard_four_hour_campaign(
                 operator_approved=args.operator_approved,
                 git_provenance_authorization=git_provenance_authorization,
             )
