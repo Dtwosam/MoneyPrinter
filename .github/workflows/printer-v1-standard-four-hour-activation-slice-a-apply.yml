@@ -39,7 +39,7 @@ jobs:
         run: |
           set -euo pipefail
           git diff --check
-          git diff --name-only | sort > /tmp/actual-files.txt
+          { git diff --name-only; git ls-files --others --exclude-standard; } | sort -u > /tmp/actual-files.txt
           printf '%s\n' \
             src/printer_v1/operator_cli/operational_memory_factory_command.py \
             src/printer_v1/operator_cli/one_token_4h_runtime.py \
@@ -90,7 +90,7 @@ jobs:
         run: |
           python - <<'PY'
           from printer_v1.operator_cli import operational_memory_factory_command as command
-          from printer_v1.operator_cli.one_token_4h_runtime import FourHourExecutionAuthority, plan_current_run_4h
+          from printer_v1.operator_cli.one_token_4h_runtime import FourHourExecutionAuthority
           from printer_v1.snapshots.cadence_policy import get_policy
 
           assert command.STANDARD_FOUR_HOUR_MODE == "standard-four-hour-run"
