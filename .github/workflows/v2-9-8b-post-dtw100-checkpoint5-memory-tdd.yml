@@ -1,0 +1,46 @@
+name: V2-9.8B post-DTW100 checkpoint 5 memory TDD
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONPATH: src
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile checkpoint owners
+        run: |
+          python -m py_compile \
+            src/printer_v1/operator_cli/one_command_15m_factory.py \
+            src/printer_v1/operator_cli/lane_q_15m_window_integrity_guard.py \
+            src/printer_v1/operator_cli/lane_k_e2z_pipeline_wiring.py \
+            src/printer_v1/operator_cli/e2z_clean_memory_creation.py \
+            src/printer_v1/memory/outcomes.py \
+            src/printer_v1/memory/clean_object_promotion.py \
+            src/printer_v1/memory/fingerprints.py \
+            tests/test_v2_9_8b_post_dtw100_checkpoint5_1h_memory_construction.py
+      - name: Focused checkpoint 5 memory proof
+        run: |
+          python -m unittest -v \
+            tests.test_v2_9_8b_post_dtw100_checkpoint5_1h_memory_construction \
+            tests.test_v2_9_8b_post_dtw100_checkpoint4_1h_close_boundary \
+            tests.test_v2_9_8b_post_dtw100_checkpoint3_remaining_45m_collection \
+            tests.test_v2_9_8b_post_dtw100_checkpoint2_continuation_initialization \
+            tests.test_v2_9_8b_post_dtw100_checkpoint1_15m_1h_handoff \
+            tests.test_v2_9_8b_standard_first_hour_harness_reporting_alignment \
+            tests.test_v2_9_8b_operational_selective_1h \
+            tests.test_v2_9_8b_campaign_scheduler_ownership_schema_migration \
+            tests.test_v2_6_1_snapshot_cadence_continuity
