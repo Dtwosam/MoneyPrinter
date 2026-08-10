@@ -38,10 +38,15 @@ jobs:
           python -m unittest -v \
             tests.test_v2_9_8b_post_dtw100_standard_four_hour_activation_authorization \
             tests.test_v2_9_8b_post_dtw100_standard_four_hour_activation_factory_barrier
-      - name: Prove historical live-owner nearest regressions with required test import path
+      - name: Prove self-contained historical live-owner compatibility
         env:
           PYTHONPATH: tests
-        run: python -m unittest -v test_v2_9_7e_11_authoritative_live_operational_campaign
+        run: |
+          python -m unittest -v \
+            test_v2_9_7e_11_authoritative_live_operational_campaign.GovernorApprovalBeforeSecondaryTransportTests \
+            test_v2_9_7e_11_authoritative_live_operational_campaign.OperationalNegativeMatrixTests \
+            test_v2_9_7e_11_authoritative_live_operational_campaign.ReadinessFailClosedTests \
+            test_v2_9_7e_11_authoritative_live_operational_campaign.ReadinessOnlyModeTests
       - name: Prove policy and capability locks
         run: |
           python - <<'PY'
