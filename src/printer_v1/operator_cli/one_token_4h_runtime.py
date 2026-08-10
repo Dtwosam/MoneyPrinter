@@ -893,3 +893,174 @@ def run_4h_quality_gates(db_path: str, window_id: int) -> dict[str, Any]:
         lane_q_report=lane_q,
     )
     return {"lane_k_status": "LANE_K_COMPLETED", "e2q": e2q, "lane_q": lane_q, "memory": memory}
+
+
+def reconcile_4h_terminal_lifecycle(
+    connection: sqlite3.Connection,
+    *,
+    campaign_window_4h_id: str,
+    terminal_state: str,
+    terminal_cause: str,
+    memory_window_row_id: int,
+    now: str | None = None,
+) -> dict[str, Any]:
+    """Bind and terminalize one successful campaign WINDOW_4H without committing its caller."""
+    desired = str(terminal_state)
+    allowed = {
+        "CLEAN_PROMOTED", "DIRTY", "NO_PROMOTION", "ALREADY_EXISTS_IDEMPOTENT"
+    }
+    if desired not in allowed:
+        raise ValueError(f"unsupported successful WINDOW_4H terminal state: {desired}")
+    cause = str(terminal_cause).strip()
+    if not cause:
+        raise ValueError("WINDOW_4H successful terminal cause must be non-empty")
+    timestamp = str(now or _iso(datetime.now(timezone.utc)))
+    memory_id = int(memory_window_row_id)
+    started_outer = False
+    if not connection.in_transaction:
+        connection.execute("BEGIN")
+        started_outer = True
+    savepoint = "printer_window_4h_success_terminal"
+    connection.execute(f"SAVEPOINT {savepoint}")
+    try:
+        window = connection.execute(
+            """SELECT * FROM printer_memory_factory_campaign_windows
+               WHERE window_id=? AND window_kind='WINDOW_4H'""",
+            (str(campaign_window_4h_id),),
+        ).fetchone()
+        if window is None:
+            raise ValueError("WINDOW_4H successful campaign window missing")
+        slot = connection.execute(
+            """SELECT * FROM printer_memory_factory_campaign_token_slots
+               WHERE token_slot_id=? AND campaign_id=? AND run_id=? AND cycle_id=?""",
+            (
+                str(window["token_slot_id"]), str(window["campaign_id"]),
+                str(window["run_id"]), str(window["cycle_id"]),
+            ),
+        ).fetchone()
+        if slot is None:
+            raise ValueError("WINDOW_4H successful token slot missing")
+        if (
+            int(slot["token_row_id"]) != int(window["token_row_id"])
+            or int(slot["pair_row_id"]) != int(window["pair_row_id"])
+        ):
+            raise ValueError("WINDOW_4H successful slot token/pair mismatch")
+        memory = connection.execute(
+            """SELECT token_id,pair_id,window_kind FROM printer_memory_windows WHERE id=?""",
+            (memory_id,),
+        ).fetchone()
+        if (
+            memory is None
+            or int(memory["token_id"]) != int(window["token_row_id"])
+            or int(memory["pair_id"]) != int(window["pair_row_id"])
+            or str(memory["window_kind"]) != "WINDOW_4H"
+        ):
+            raise ValueError("WINDOW_4H successful physical memory identity mismatch")
+
+        window_state = str(window["window_state"])
+        slot_state = str(slot["token_state"])
+        existing_memory = window["memory_window_row_id"]
+        if window_state in allowed:
+            if not (
+                window_state == desired
+                and existing_memory is not None
+                and int(existing_memory) == memory_id
+                and str(window["first_terminal_cause"] or "") == cause
+                and window["terminal_at"] is not None
+                and slot_state == "WINDOW_4H_CLOSED"
+                and slot["first_terminal_cause"] is None
+                and slot["terminal_at"] is None
+            ):
+                raise ValueError("conflicting successful WINDOW_4H terminal replay")
+            connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+            return {
+                "window_id": str(window["window_id"]),
+                "window_state": desired,
+                "token_state": "WINDOW_4H_CLOSED",
+                "memory_window_row_id": memory_id,
+                "terminal_cause": cause,
+                "idempotent": True,
+            }
+        if window_state != "CLOSE_PENDING":
+            raise ValueError(
+                f"successful WINDOW_4H requires CLOSE_PENDING, found {window_state}"
+            )
+        if slot_state != "WINDOW_4H_CONTINUING":
+            raise ValueError(
+                f"successful WINDOW_4H requires WINDOW_4H_CONTINUING, found {slot_state}"
+            )
+        if window["first_terminal_cause"] is not None or slot["first_terminal_cause"] is not None:
+            raise ValueError("successful WINDOW_4H has conflicting first terminal cause")
+        if existing_memory is not None and int(existing_memory) != memory_id:
+            raise ValueError("successful WINDOW_4H memory row already bound differently")
+
+        auditing = connection.execute(
+            """UPDATE printer_memory_factory_campaign_windows
+               SET memory_window_row_id=?,window_state='AUDITING',updated_at=?
+               WHERE window_id=? AND window_state='CLOSE_PENDING'
+                 AND first_terminal_cause IS NULL
+                 AND (memory_window_row_id IS NULL OR memory_window_row_id=?)""",
+            (memory_id, timestamp, str(window["window_id"]), memory_id),
+        )
+        if auditing.rowcount != 1:
+            raise ValueError("WINDOW_4H successful bind/auditing compare-and-update failed")
+        terminal = connection.execute(
+            """UPDATE printer_memory_factory_campaign_windows
+               SET window_state=?,first_terminal_cause=?,terminal_at=?,updated_at=?
+               WHERE window_id=? AND window_state='AUDITING'
+                 AND memory_window_row_id=? AND first_terminal_cause IS NULL""",
+            (desired, cause, timestamp, timestamp, str(window["window_id"]), memory_id),
+        )
+        if terminal.rowcount != 1:
+            raise ValueError("WINDOW_4H successful terminal compare-and-update failed")
+        slot_update = connection.execute(
+            """UPDATE printer_memory_factory_campaign_token_slots
+               SET token_state='WINDOW_4H_CLOSED',updated_at=?
+               WHERE token_slot_id=? AND campaign_id=? AND run_id=? AND cycle_id=?
+                 AND token_state='WINDOW_4H_CONTINUING'
+                 AND first_terminal_cause IS NULL AND terminal_at IS NULL""",
+            (
+                timestamp, str(window["token_slot_id"]), str(window["campaign_id"]),
+                str(window["run_id"]), str(window["cycle_id"]),
+            ),
+        )
+        if slot_update.rowcount != 1:
+            raise ValueError("WINDOW_4H successful slot compare-and-update failed")
+        verify = connection.execute(
+            """SELECT w.window_state,w.memory_window_row_id,w.first_terminal_cause,
+                      w.terminal_at,s.token_state,s.first_terminal_cause,s.terminal_at
+               FROM printer_memory_factory_campaign_windows AS w
+               JOIN printer_memory_factory_campaign_token_slots AS s
+                 ON s.token_slot_id=w.token_slot_id
+                AND s.campaign_id=w.campaign_id
+                AND s.run_id=w.run_id
+                AND s.cycle_id=w.cycle_id
+               WHERE w.window_id=?""",
+            (str(window["window_id"]),),
+        ).fetchone()
+        if not (
+            verify is not None
+            and str(verify[0]) == desired
+            and int(verify[1]) == memory_id
+            and str(verify[2]) == cause
+            and verify[3] is not None
+            and str(verify[4]) == "WINDOW_4H_CLOSED"
+            and verify[5] is None
+            and verify[6] is None
+        ):
+            raise ValueError("WINDOW_4H successful terminal read-back mismatch")
+        connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+        return {
+            "window_id": str(window["window_id"]),
+            "window_state": desired,
+            "token_state": "WINDOW_4H_CLOSED",
+            "memory_window_row_id": memory_id,
+            "terminal_cause": cause,
+            "idempotent": False,
+        }
+    except Exception:
+        connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+        connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+        if started_outer and connection.in_transaction:
+            connection.rollback()
+        raise
