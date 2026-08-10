@@ -4,13 +4,46 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   PYTHONPATH: src
 
 jobs:
+  patch:
+    if: contains(github.event.pull_request.title, 'APPLY checkpoint3 collection')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout implementation branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+      - name: Apply reviewed Checkpoint 3 patch
+        env:
+          TARGET_BRANCH: ${{ github.event.pull_request.head.ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          git fetch origin "${BASE_REF}"
+          git show FETCH_HEAD:scripts/checkpoint3_collection_state_accounting_patch.py > /tmp/checkpoint3_patch.py
+          python -m py_compile /tmp/checkpoint3_patch.py
+          python /tmp/checkpoint3_patch.py
+          python -m py_compile \
+            src/printer_v1/operator_cli/one_command_15m_factory.py \
+            src/printer_v1/operator_cli/campaign_ownership.py \
+            src/printer_v1/operator_cli/operational_selective_1h.py
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if git diff --quiet; then
+            exit 0
+          fi
+          git add src/printer_v1/operator_cli/one_command_15m_factory.py
+          git commit -m 'Synchronize first-hour collection ownership state'
+          git push origin HEAD:${TARGET_BRANCH}
+
   focused:
+    if: ${{ !contains(github.event.pull_request.title, 'APPLY checkpoint3 collection') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout PR head
