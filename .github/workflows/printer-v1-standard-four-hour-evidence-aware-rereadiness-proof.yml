@@ -1,0 +1,87 @@
+name: Printer V1 standard 4h evidence-aware rereadiness proof
+
+on:
+  pull_request:
+    branches:
+      - agent/v2-9-8b-post-dtw100-standard-four-hour-evidence-aware-rereadiness-proof-base
+
+permissions:
+  contents: read
+
+jobs:
+  helper-proof:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 14d7a8f9ba687337c17b2db0b30be158f016c36e
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile helper
+        run: python -m py_compile scripts/Review-PrinterV1-PostDTW100-StandardFourHour-Rereadiness-AfterStagingRepair.py
+      - name: Prove audit-only evidence-aware surface
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+
+          path = Path('scripts/Review-PrinterV1-PostDTW100-StandardFourHour-Rereadiness-AfterStagingRepair.py')
+          text = path.read_text(encoding='utf-8')
+          tree = ast.parse(text)
+
+          forbidden = (
+              'ValidatedGitProvenanceAuthorization(',
+              'apply_authorization_once',
+              'build_standard_four_hour_preflight(',
+              'run_standard_four_hour_campaign(',
+              'sqlite3.connect',
+              'os.rename(',
+              'os.unlink(',
+              '.unlink(',
+              'shutil.rmtree',
+              '.write_text(',
+              '.write_bytes(',
+              'requests.',
+              'httpx',
+              'aiohttp',
+              'urllib',
+          )
+          for value in forbidden:
+              assert value not in text, value
+
+          found_visible = None
+          found_migration = None
+          for node in tree.body:
+              if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                  if node.target.id == 'EXPECTED_VISIBLE_UNTRACKED':
+                      found_visible = ast.literal_eval(node.value)
+                  elif node.target.id == 'EXPECTED_MIGRATION_PACKAGE':
+                      found_migration = ast.literal_eval(node.value)
+          assert found_visible is not None and len(found_visible) == 26
+          assert found_migration is not None and len(found_migration) == 12
+          assert sum(1 for p in found_visible if 'window-15m-final-authorization' in p) == 16
+          assert sum(1 for p in found_visible if 'authoritative-mig050' in p) == 10
+          assert 'disposable-restore/printer_v1-rehearsal.sqlite3' in found_migration
+          assert 'verified-backup/printer_v1-pre050.sqlite3' in found_migration
+          assert 'git_provenance_authorization_fabricated": False' in text
+          assert 'AUDIT_ONLY_NOT_RUNTIME_ALLOWLIST' in text
+          assert 'source_calls": 0' in text
+          assert 'scheduler_runtime_calls": 0' in text
+          assert 'authoritative_database_writes": 0' in text
+          assert 'filesystem_mutations": 0' in text
+          assert 'authorization_created": False' in text
+          assert 'standard_four_hour_started": False' in text
+          print('STATIC_EVIDENCE_AWARE_REREADINESS_HELPER_PASS')
+          PY
+      - name: Prove exact lane scope
+        run: |
+          set -euo pipefail
+          files="$(git diff --name-only 75abb21dfce462a744d0422f7413a47b393857aa..14d7a8f9ba687337c17b2db0b30be158f016c36e)"
+          expected="docs/printer-v1-v2-9-8b-post-dtw100-standard-four-hour-rereadiness-historical-evidence-provenance-audit.md
+docs/printer-v1-v2-9-8b-post-dtw100-standard-four-hour-rereadiness-historical-evidence-provenance-design.md
+scripts/Review-PrinterV1-PostDTW100-StandardFourHour-Rereadiness-AfterStagingRepair.py"
+          test "$files" = "$expected"
+          test -z "$(git diff --name-only 75abb21dfce462a744d0422f7413a47b393857aa..14d7a8f9ba687337c17b2db0b30be158f016c36e -- src/)"
+          git diff --check 75abb21dfce462a744d0422f7413a47b393857aa..14d7a8f9ba687337c17b2db0b30be158f016c36e
