@@ -1,0 +1,55 @@
+name: V2-9.8B post-DTW100 standard four-hour source stack
+
+on:
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: contains(github.event.pull_request.title, 'APPLY standard four-hour source stack')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout design branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+      - name: Apply reviewed source-stack amendment
+        env:
+          TARGET_BRANCH: ${{ github.event.pull_request.head.ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          git fetch origin "${BASE_REF}"
+          git show FETCH_HEAD:scripts/standard_four_hour_source_stack_patch.py > /tmp/source_stack_patch.py
+          python -m py_compile /tmp/source_stack_patch.py
+          python /tmp/source_stack_patch.py
+          git diff --check
+          python - <<'PY'
+          from pathlib import Path
+          required = {
+              'AGENTS.md': ['standard hard-gated WINDOW_4H continuation', 'automatic continuation stops at the WINDOW_4H checkpoint'],
+              'docs/printer-v1-memory-factory-guide.md': ['standard hard-gated WINDOW_4H continuation', 'Automatic continuation stops at 4h'],
+              'docs/printer-v1-memory-growth-build-order-v2.md': ['standard first-four-hour lifecycle', '12h/24h windows remain selective'],
+              'docs/printer-v1-assistant-active-build-order-anchor.md': ['bounded observation lifecycle now extends through the 4h checkpoint', 'WINDOW_4H` real collection also remains disabled'],
+          }
+          forbidden = ['live trading enabled', 'BUY unlocked', 'paper positions enabled']
+          for filename, needles in required.items():
+              text = Path(filename).read_text(encoding='utf-8')
+              for needle in needles:
+                  if needle not in text:
+                      raise SystemExit(f'{filename}: missing required amendment: {needle}')
+              lowered = text.lower()
+              for bad in forbidden:
+                  if bad.lower() in lowered:
+                      raise SystemExit(f'{filename}: unsafe unlock phrase: {bad}')
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add AGENTS.md \
+            docs/printer-v1-memory-factory-guide.md \
+            docs/printer-v1-memory-growth-build-order-v2.md \
+            docs/printer-v1-assistant-active-build-order-anchor.md
+          git commit -m 'Adopt standard four-hour lifecycle policy' 
+          git push origin HEAD:${TARGET_BRANCH}
