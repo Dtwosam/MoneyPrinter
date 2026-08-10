@@ -42,6 +42,17 @@ block = replace_once(
 adapter_text = adapter_text[:start] + block + adapter_text[end:]
 ADAPTER.write_text(adapter_text, encoding="utf-8")
 
+# Immediate patch-self-check: the optional long-window cutoff must exist only
+# on the exact window-safety owner, never on an earlier checkpoint helper.
+verified_text = ADAPTER.read_text(encoding="utf-8")
+verified_start = verified_text.find("def load_authoritative_window_safety(\n")
+verified_end = verified_text.find("\ndef build_4a_authority_facts(\n", verified_start)
+verified_block = verified_text[verified_start:verified_end]
+if "memory_window_close_cutoff: str | None = None" not in verified_block:
+    raise RuntimeError("window-safety cutoff API was not applied to exact owner")
+if verified_text.count("memory_window_close_cutoff: str | None = None") != 1:
+    raise RuntimeError("window-safety cutoff API leaked to another adapter owner")
+
 # Slice C supplies only the exact physical 1h window_end_at to that adapter.
 standard_text = STANDARD.read_text(encoding="utf-8")
 standard_text = replace_once(
