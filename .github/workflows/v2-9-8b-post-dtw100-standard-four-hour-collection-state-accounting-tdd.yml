@@ -1,0 +1,49 @@
+name: V2-9.8B post-DTW100 standard four-hour collection state accounting TDD
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONPATH: src
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact head and compile
+        run: |
+          echo "HEAD=$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          python -m py_compile \
+            src/printer_v1/operator_cli/one_command_15m_factory.py \
+            tests/test_v2_9_8b_post_dtw100_standard_four_hour_collection_state_accounting.py
+      - name: Run checkpoint and directly affected regressions
+        run: |
+          python -m unittest -v \
+            tests.test_v2_9_8b_post_dtw100_standard_four_hour_collection_state_accounting \
+            tests.test_v2_9_8b_post_dtw100_standard_four_hour_campaign_planning \
+            tests.test_v2_9_8b_post_dtw100_checkpoint3_remaining_45m_collection \
+            tests.test_v2_9_8b_campaign_scheduler_ownership_schema_migration
+      - name: Preserve capability locks
+        run: |
+          python - <<'PY'
+          from printer_v1.operator_cli.one_token_4h_runtime import runtime_budget
+          from printer_v1.snapshots.cadence_policy import get_policy
+          for lane in ('TRACK_FAST', 'TRACK_NORMAL'):
+              assert runtime_budget(lane)['enabled_for_real_collection'] is False
+              assert get_policy('WINDOW_4H', lane).enabled_for_real_collection is False
+          for window in ('WINDOW_12H', 'WINDOW_24H'):
+              for lane in ('TRACK_FAST', 'TRACK_NORMAL'):
+                  assert get_policy(window, lane).enabled_for_real_collection is False
+          PY
+          git diff --check
