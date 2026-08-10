@@ -1,0 +1,120 @@
+name: Printer V1 standard 4h activation Slice C independent proof
+
+on:
+  pull_request:
+    branches:
+      - agent/v2-9-8b-post-dtw100-standard-four-hour-activation-slice-c-independent-proof-base
+
+permissions:
+  contents: read
+
+jobs:
+  exact-head-proof:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact committed Slice C head
+        uses: actions/checkout@v4
+        with:
+          ref: c0b70501349a8e9696dd0d466fecbb9ea61f46d4
+          fetch-depth: 0
+      - name: Assert exact clean tracked head
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "c0b70501349a8e9696dd0d466fecbb9ea61f46d4"
+          test -z "$(git status --porcelain)"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e .
+      - name: Compile exact affected files
+        run: |
+          python -m py_compile \
+            src/printer_v1/operator_cli/campaign_authority_adapters.py \
+            src/printer_v1/operator_cli/one_command_15m_factory.py \
+            src/printer_v1/operator_cli/operational_standard_4h.py \
+            tests/test_v2_9_8b_post_dtw100_standard_four_hour_activation_factory_barrier.py
+      - name: Prove Slice C barrier and subset budgets
+        run: python -m unittest -v tests.test_v2_9_8b_post_dtw100_standard_four_hour_activation_factory_barrier
+      - name: Prove directly affected standard 4h integration
+        run: |
+          python -m unittest -v \
+            tests.test_v2_9_8b_post_dtw100_standard_four_hour_eligible_subset \
+            tests.test_v2_9_8b_post_dtw100_standard_four_hour_campaign_handoff \
+            tests.test_v2_9_8b_post_dtw100_standard_four_hour_campaign_planning \
+            tests.test_v2_9_8b_post_dtw100_standard_four_hour_collection_state_accounting \
+            tests.test_v2_9_8b_post_dtw100_standard_four_hour_close_memory_terminal_reconciliation
+      - name: Prove current first-hour and token-local contracts
+        run: |
+          python -m unittest -v \
+            tests.test_v2_9_8b_post_dtw100_checkpoint4_1h_close_boundary \
+            tests.test_v2_9_7d_4a_token_local_selective_continuation
+      - name: Prove safety cutoff and activation locks
+        run: |
+          python - <<'PY'
+          import inspect
+          from tests.test_v2_9_8b_post_dtw100_standard_four_hour_activation_factory_barrier import StandardFourHourActivationFactoryBarrierTests
+          from printer_v1.operator_cli.campaign_authority_adapters import load_authoritative_window_safety, CampaignAuthorityAdapterError
+          from printer_v1.operator_cli import one_command_15m_factory as factory
+          from printer_v1.operator_cli import operational_standard_4h as standard
+          from printer_v1.snapshots.cadence_policy import get_policy
+
+          case = StandardFourHourActivationFactoryBarrierTests()
+          case.setUp()
+          try:
+              c = case.candidates[0]
+              default = load_authoritative_window_safety(
+                  case.fx.db,
+                  campaign_id='campaign-1h', run_id='run-1h', cycle_id='cycle-1h',
+                  token_slot_id=str(c['token_slot_id']), window_id=str(c['campaign_window_1h_id']),
+              )
+              assert default['gate_accepted'] is False
+              assert default['evidence_cutoff_source'] == 'CAMPAIGN_CHECKPOINT'
+              row = case.fx.connection.execute(
+                  'SELECT window_end_at FROM printer_memory_windows WHERE id=?',
+                  (int(c['memory_window_1h_id']),),
+              ).fetchone()
+              close_cutoff = str(row[0])
+              exact = load_authoritative_window_safety(
+                  case.fx.db,
+                  campaign_id='campaign-1h', run_id='run-1h', cycle_id='cycle-1h',
+                  token_slot_id=str(c['token_slot_id']), window_id=str(c['campaign_window_1h_id']),
+                  memory_window_close_cutoff=close_cutoff,
+              )
+              assert exact['gate_accepted'] is True
+              assert exact['evidence_cutoff'] == close_cutoff
+              assert exact['evidence_cutoff_source'] == 'MEMORY_WINDOW_END'
+              try:
+                  load_authoritative_window_safety(
+                      case.fx.db,
+                      campaign_id='campaign-1h', run_id='run-1h', cycle_id='cycle-1h',
+                      token_slot_id=str(c['token_slot_id']), window_id=str(c['campaign_window_1h_id']),
+                      memory_window_close_cutoff='2099-01-01T00:00:00+00:00',
+                  )
+              except CampaignAuthorityAdapterError:
+                  pass
+              else:
+                  raise AssertionError('arbitrary safety cutoff accepted')
+          finally:
+              case.tearDown()
+
+          sig = inspect.signature(factory.run_one_command_15m_factory)
+          assert sig.parameters['standard_four_hour_campaign'].default is False
+          assert hasattr(factory, '_standard_four_hour_cumulative_budget_for_run')
+          input_src = inspect.getsource(standard._continuation_input)
+          barrier_src = inspect.getsource(standard.run_standard_four_hour_campaign_barrier)
+          assert 'context.get("continuity")' in input_src
+          assert 'or CONTINUITY_CONTINUOUS' not in input_src
+          assert 'bool(safety.get("gate_accepted"))' in input_src
+          assert 'bool(safety.get("source_traces"))' in input_src
+          assert 'FourHourExecutionAuthority.STANDARD_CAMPAIGN' in barrier_src
+          for lane in ('TRACK_FAST','TRACK_NORMAL'):
+              assert get_policy('WINDOW_4H', lane).enabled_for_real_collection is True
+              assert get_policy('WINDOW_12H', lane).enabled_for_real_collection is False
+              assert get_policy('WINDOW_24H', lane).enabled_for_real_collection is False
+          PY
+      - name: Assert proof remained read-only to tracked tree
+        run: |
+          set -euo pipefail
+          git diff --check
+          test -z "$(git status --porcelain)"
+          test "$(git rev-parse HEAD)" = "c0b70501349a8e9696dd0d466fecbb9ea61f46d4"
