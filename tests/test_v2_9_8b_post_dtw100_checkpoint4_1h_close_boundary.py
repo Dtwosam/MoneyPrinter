@@ -170,7 +170,12 @@ class Checkpoint4FirstHourCloseBoundaryTests(unittest.TestCase):
                 consumed_15m_window_ids=[],
             )
             self.assertEqual(result["e2o_1h_status"], E2O_1H_STATUS_BLOCKED)
-            self.assertIn("closing_snapshot_precedes_fixed_deadline", result["blocked_reasons"])
+            self.assertTrue(
+                any(
+                    str(reason).startswith("closing_snapshot_precedes_fixed_deadline")
+                    for reason in result["blocked_reasons"]
+                )
+            )
             count = int(
                 fx.connection.execute(
                     "SELECT COUNT(*) FROM printer_memory_windows WHERE window_kind='WINDOW_1H'"
