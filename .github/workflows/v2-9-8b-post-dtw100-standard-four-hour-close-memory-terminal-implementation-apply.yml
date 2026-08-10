@@ -34,6 +34,11 @@ jobs:
           git fetch origin agent/v2-9-8b-post-dtw100-standard-four-hour-close-memory-terminal-implementation-apply-base --depth=1
           git show FETCH_HEAD:.github/scripts/apply_standard_four_hour_close_memory_terminal_repair.py > /tmp/apply_standard_four_hour_close_memory_terminal_repair.py
           python /tmp/apply_standard_four_hour_close_memory_terminal_repair.py
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('src/printer_v1/operator_cli/one_token_4h_runtime.py')
+          p.write_text(p.read_text().rstrip() + '\n')
+          PY
           printf '%s\n' \
             src/printer_v1/operator_cli/one_command_15m_factory.py \
             src/printer_v1/operator_cli/one_token_4h_runtime.py > /tmp/expected.txt
