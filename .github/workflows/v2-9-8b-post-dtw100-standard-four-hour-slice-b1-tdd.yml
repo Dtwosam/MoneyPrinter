@@ -1,7 +1,9 @@
-name: V2-9.8B post-DTW100 standard four-hour Slice B1 TDD
+name: V2-9.8B post-DTW100 standard four-hour Slice B1 apply-push
 
 on:
-  pull_request:
+  push:
+    branches:
+      - agent/v2-9-8b-post-dtw100-standard-four-hour-slice-b1-apply-base
 
 permissions:
   contents: write
@@ -11,16 +13,19 @@ env:
 
 jobs:
   apply:
-    if: ${{ contains(github.event.pull_request.title, 'APPLY standard four-hour Slice B1') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: agent/v2-9-8b-post-dtw100-standard-four-hour-campaign-integration-implementation
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Verify exact implementation baseline
+        run: |
+          test "$(git rev-parse HEAD)" = "8b9b1226d641018857672b86dd08b154c0e4bde9"
+          test -z "$(git status --porcelain --untracked-files=no)"
       - name: Apply narrow B1 production patch
         run: |
           python - <<'PY'
@@ -428,4 +433,4 @@ def persist_standard_four_hour_handoff_set(
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src/printer_v1/operator_cli/campaign_ownership.py
           git commit -m "Implement standard four-hour campaign handoff"
-          git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
+          git push origin HEAD:agent/v2-9-8b-post-dtw100-standard-four-hour-campaign-integration-implementation
