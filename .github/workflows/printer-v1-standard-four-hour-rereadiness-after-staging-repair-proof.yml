@@ -1,0 +1,58 @@
+name: Printer V1 standard 4h rereadiness after staging repair proof
+
+on:
+  pull_request:
+    branches:
+      - agent/v2-9-8b-post-dtw100-standard-four-hour-rereadiness-after-staging-repair-proof-base
+
+permissions:
+  contents: read
+
+jobs:
+  wrapper-proof:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 75abb21dfce462a744d0422f7413a47b393857aa
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile unchanged base helper and branch-binding wrapper
+        run: |
+          python -m py_compile scripts/Review-PrinterV1-PostDTW100-StandardFourHour-Rereadiness.py
+          python -m py_compile scripts/Review-PrinterV1-PostDTW100-StandardFourHour-Rereadiness-AfterStagingRepair.py
+      - name: Prove wrapper changes only branch binding
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+
+          path = Path('scripts/Review-PrinterV1-PostDTW100-StandardFourHour-Rereadiness-AfterStagingRepair.py')
+          text = path.read_text(encoding='utf-8')
+          tree = ast.parse(text)
+          assert 'Review-PrinterV1-PostDTW100-StandardFourHour-Rereadiness.py' in text
+          assert 'agent/v2-9-8b-post-dtw100-standard-four-hour-rereadiness-after-staging-repair' in text
+          for forbidden in (
+              'sqlite3.connect', 'apply_authorization_once',
+              'run_standard_four_hour_campaign(', 'urllib', 'requests.',
+              'os.remove', 'os.unlink', 'shutil.rmtree',
+          ):
+              assert forbidden not in text, forbidden
+          calls = [
+              node for node in ast.walk(tree)
+              if isinstance(node, ast.Call)
+          ]
+          assert any(
+              isinstance(node.func, ast.Attribute)
+              and node.func.attr == 'exec_module'
+              for node in calls
+          )
+          PY
+      - name: Prove exact wrapper-only branch delta
+        run: |
+          set -euo pipefail
+          files="$(git diff --name-only aa4a4bd8a21ad8a9acdf53423be7b904a60bbec7..75abb21dfce462a744d0422f7413a47b393857aa)"
+          test "$files" = "scripts/Review-PrinterV1-PostDTW100-StandardFourHour-Rereadiness-AfterStagingRepair.py"
+          git diff --check aa4a4bd8a21ad8a9acdf53423be7b904a60bbec7..75abb21dfce462a744d0422f7413a47b393857aa
