@@ -97,6 +97,39 @@ def cumulative_lifecycle_budget(tracking_lane: str) -> dict[str, Any]:
     }
 
 
+def standard_two_token_lifecycle_budget(
+    tracking_lanes: tuple[str, str],
+) -> dict[str, Any]:
+    """Derive the bounded two-token 15m+1h+4h campaign ceilings from policy."""
+    lanes = tuple(str(lane) for lane in tracking_lanes)
+    if len(lanes) != 2:
+        raise ValueError("standard four-hour campaign requires exactly two tracking lanes")
+    request_components: dict[str, int] = {"discovery": 2}
+    scheduler_components: dict[str, int] = {}
+    for index, lane in enumerate(lanes, start=1):
+        lifecycle = cumulative_lifecycle_budget(lane)
+        if lane not in REQUEST_CEILINGS:
+            raise ValueError("TRACK_FAST or TRACK_NORMAL cadence policy required")
+        for name, value in lifecycle["request_components"].items():
+            if name == "discovery":
+                continue
+            request_components[f"token_{index}_{name}"] = int(value)
+        for name, value in lifecycle["scheduler_components"].items():
+            scheduler_components[f"token_{index}_{name}"] = int(value)
+    return {
+        "tracking_lanes": lanes,
+        "request_components": request_components,
+        "request_ceiling": sum(request_components.values()),
+        "scheduler_components": scheduler_components,
+        "scheduler_ceiling": sum(scheduler_components.values()),
+        "automatic_retries": 0,
+        "endpoint_rotation": False,
+        "real_collection_enabled": all(
+            bool(runtime_budget(lane)["enabled_for_real_collection"]) for lane in lanes
+        ),
+    }
+
+
 def require_projected_capacity(
     *, current: int, projected: int, ceiling: int, label: str,
 ) -> None:

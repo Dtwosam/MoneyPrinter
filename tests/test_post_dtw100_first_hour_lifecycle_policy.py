@@ -173,7 +173,7 @@ class FirstHourLifecycleCompositionTests(unittest.TestCase):
         self.assertIn("pair_identity_mismatch", identity_blocked[0].reasons)
         self.assertEqual(identity_blocked[1].verdict, ContinuationVerdict.CONTINUE_TO_WINDOW_1H)
 
-    def test_5m_support_cannot_authorize_first_hour_and_1h_to_4h_remains_selective(self) -> None:
+    def test_5m_support_cannot_authorize_main_lifecycle_and_1h_to_4h_is_standard(self) -> None:
         first = self._token(1, learning_need=None)
         second = self._token(2, learning_need=None)
 
@@ -214,10 +214,13 @@ class FirstHourLifecycleCompositionTests(unittest.TestCase):
         )
         self.assertEqual(
             [item.verdict for item in later],
-            [ContinuationVerdict.STOP_AFTER_WINDOW_1H] * 2,
+            [ContinuationVerdict.CONTINUE_TO_WINDOW_4H] * 2,
         )
         self.assertTrue(
-            all(item.reasons == ("no_unresolved_learning_need",) for item in later)
+            all(
+                item.reasons == ("standard_first_four_hour_lifecycle",)
+                for item in later
+            )
         )
 
 

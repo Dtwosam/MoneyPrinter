@@ -3,10 +3,10 @@
 The policy evaluates exactly two already-materialised campaign token records.
 It does not fetch, schedule, persist, mutate, or create a successor window.
 
-Post-DTW100 policy amendment: WINDOW_15M -> WINDOW_1H is the standard bounded
-first-hour lifecycle for every otherwise-valid activated token. Outcome or
-learning-need labels do not qualify that transition. WINDOW_1H -> WINDOW_4H
-remains selective and learning-need-gated.
+Post-DTW100 policy amendments: WINDOW_15M -> WINDOW_1H and
+WINDOW_1H -> WINDOW_4H are the standard bounded first-four-hour lifecycle for
+every otherwise-valid activated token. Outcome or learning-need labels do not
+qualify either transition. Automatic continuation stops at WINDOW_4H.
 """
 
 from __future__ import annotations
@@ -53,6 +53,13 @@ class ContinuationLearningNeed(StrEnum):
 _FIRST_HOUR_TRANSITION = (
     MemoryWindowKind.WINDOW_15M,
     MemoryWindowKind.WINDOW_1H,
+)
+_FIRST_FOUR_HOUR_TRANSITION = (
+    MemoryWindowKind.WINDOW_1H,
+    MemoryWindowKind.WINDOW_4H,
+)
+_STANDARD_OBSERVATION_TRANSITIONS = frozenset(
+    {_FIRST_HOUR_TRANSITION, _FIRST_FOUR_HOUR_TRANSITION}
 )
 
 _ALLOWED_TRANSITIONS = {
@@ -265,26 +272,32 @@ def _evaluate_token(
     assert transition is not None
     continue_verdict, stop_verdict, allowed_needs = transition
 
-    # Post-DTW100 first-hour lifecycle amendment: once a token has passed every
-    # hard operational/evidence/identity/safety/continuity gate above, the only
-    # remaining first-hour resource gate is the bounded token budget. A 15m
-    # outcome or learning-need label has no authority to stop observation.
-    if transition_key == _FIRST_HOUR_TRANSITION:
+    # Post-DTW100 standard observation amendments: once a token has passed every
+    # hard operational/evidence/identity/safety/continuity gate above, 15m->1h
+    # and 1h->4h are governed only by the remaining bounded token-resource gate.
+    # Outcome and learning-need labels have no authority to stop or promote
+    # observation within the first four hours.
+    if transition_key in _STANDARD_OBSERVATION_TRANSITIONS:
         if not token.token_budget_available:
             return _result(
                 token,
                 ContinuationVerdict.BLOCK_CONTINUATION,
                 ("token_budget_exhausted",),
             )
+        if transition_key == _FIRST_HOUR_TRANSITION:
+            return _result(
+                token,
+                ContinuationVerdict.CONTINUE_TO_WINDOW_1H,
+                ("standard_first_hour_lifecycle",),
+            )
         return _result(
             token,
-            ContinuationVerdict.CONTINUE_TO_WINDOW_1H,
-            ("standard_first_hour_lifecycle",),
+            ContinuationVerdict.CONTINUE_TO_WINDOW_4H,
+            ("standard_first_four_hour_lifecycle",),
         )
 
-    # Later windows remain selective. Preserve the established 1h -> 4h
-    # decision order exactly: no learning need is a normal stop; an applicable
-    # need then still requires available token budget.
+    # Any later approved transition remains selective. The learning-need
+    # vocabulary is intentionally retained for those future lanes.
     if token.learning_need is None:
         return _result(token, stop_verdict, ("no_unresolved_learning_need",))
     try:
