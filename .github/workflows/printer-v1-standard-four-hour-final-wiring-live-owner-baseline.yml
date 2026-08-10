@@ -1,0 +1,26 @@
+name: Printer V1 standard 4h final wiring live-owner baseline
+
+on:
+  pull_request:
+    branches:
+      - agent/v2-9-8b-post-dtw100-standard-four-hour-final-wiring-live-owner-baseline-base
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 941e8b5e190c2e7831b267911f5b5597c6096486
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e .
+      - name: Run identical historical live-owner suite on baseline
+        env:
+          PYTHONPATH: tests
+        run: python -m unittest -v test_v2_9_7e_11_authoritative_live_operational_campaign
