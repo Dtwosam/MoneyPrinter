@@ -25,11 +25,13 @@ Durable current anchors include:
 - post-DTW100 E2Q audit closeout: `b07a946d56886d923129b3eacade775f19f58d71`;
 - post-DTW100 selective-1h operational rereadiness audit: `13aa70b3bc91def711a64d8f46ed6fa0b98dc488`;
 - post-DTW100 15m trajectory-classification audit: `b976538d3e7a9c7c2173b8751e19eef3295c0d04`;
-- first-hour lifecycle policy design commit begins at `04668c7204e0d56f1df7b56dfcd1eaa8d50be921` on branch `agent/v2-9-8b-post-dtw100-first-hour-lifecycle-policy-design`.
+- first-hour lifecycle policy design commit begins at `04668c7204e0d56f1df7b56dfcd1eaa8d50be921` on branch `agent/v2-9-8b-post-dtw100-first-hour-lifecycle-policy-design`;
+- first-hour Checkpoint 1-6 offline-composition chain closes at `7c793dca805bccf79a8bbadaed2fb57e426c6b93`;
+- standard-four-hour current-state audit commit: `74bd2b48f4a1a0cd8d87e3696773d038ce59e2ca`.
 
 DTW97 is permanently consumed and must not be rerun. DTW100 is already closed. No historical authorization may be reused.
 
-## Active first-hour policy amendment
+## Active first-four-hour policy amendments
 
 For future bounded main-lifecycle operations, `WINDOW_15M -> WINDOW_1H` is no longer a behavior/outcome-qualified selective transition.
 
@@ -47,9 +49,9 @@ The 15m checkpoint does not decide whether the token deserves the remaining firs
 
 This policy supersedes older active-stack wording that made 15m->1h continuation depend on a 15m outcome/learning-need gate. Historical selective-1h documents remain preserved as historical evidence.
 
-Observation continuation remains fail-closed on operational validity: exact token/mint/pair/lifecycle identity, closed 15m boundary, tracking continuity, campaign state, cancellation/terminal state, Source Governor ownership, Central Scheduler ownership, DB/lease/integrity health, bounded campaign/token resources, and one-shot execution authority.
+Observation continuation remains fail-closed on operational validity: exact token/mint/pair/lifecycle identity, closed predecessor boundary, tracking continuity, campaign state, cancellation/terminal state, Source Governor ownership, Central Scheduler ownership, DB/lease/integrity health, bounded campaign/token resources, and one-shot execution authority.
 
-Memory quality remains separate. Continuing observation must never relabel dirty/blocked 15m evidence as clean. `WINDOW_1H` is independently audited from its exact first-hour evidence. Dirty memory remains barred from retrieval and decisions.
+Memory quality remains separate. Continuing observation must never relabel dirty/blocked predecessor evidence as clean. `WINDOW_1H` and `WINDOW_4H` remain independently audited from their exact evidence. Dirty memory remains barred from retrieval and decisions.
 
 The bounded observation lifecycle now extends through the 4h checkpoint. After a genuine eligible first-hour close, every otherwise-valid activated token continues to `WINDOW_4H`; 1h outcome, direction, profitability, trajectory class, manipulation label, and learning-need presence/absence have no authority to qualify that observation. Hard identity, evidence quality, freshness, provenance, safety, continuity, campaign health, cancellation, Source Governor, Central Scheduler, and bounded-resource gates remain fail-closed.
 
@@ -62,18 +64,20 @@ Controlling designs:
 
 ## Current lane sequence
 
-The approved sequence is:
+The first-hour Checkpoint 1-6 offline-composition chain is closed PASS. The standard-four-hour current-state audit and policy/campaign-integration design supersede the older plan to prepare a first-hour operational authorization next.
 
-1. first-hour lifecycle policy design/source-stack amendment;
-2. minimal implementation;
-3. focused offline proof and closeout;
-4. return to the separate post-DTW100 one-use first-hour authorization/wrapper integration design;
-5. authorization implementation/proof and fresh rereadiness;
-6. fresh exact-HEAD one-use authorization preparation and independent review;
-7. exactly one separately operator-started first-hour operational proof;
-8. independent runtime closeout.
+The approved sequence from here is:
 
-The current policy-design/implementation/proof work does not authorize step 4 or later automatically.
+1. close the standard-four-hour design/source-stack adoption;
+2. implement standard 1h->4h policy plus campaign/Scheduler/two-token integration behind offline/proof boundaries;
+3. run the focused offline composition proof and closeout;
+4. perform a separate standard-four-hour operational rereadiness review, including real-collection activation readiness and exact budget/capacity review;
+5. implement/prove the narrowly approved real-collection activation only if rereadiness passes;
+6. prepare a fresh exact-HEAD one-use authorization and independently review it;
+7. run exactly one separately operator-started bounded operational proof;
+8. perform independent runtime closeout before any further capability lane.
+
+No step authorizes the next automatically. Do not reuse DTW97, DTW100, or any historical authorization.
 
 ## Permanent restrictions
 
@@ -93,9 +97,9 @@ Printer V1 remains:
 - no paper decisions before their explicit approved lane;
 - no BUY/SELL/HOLD before its explicit approved lane;
 - no paper positions, trade events, paper-trade audits, or PnL before their explicit approved lanes;
-- no 4h/12h/24h activation before explicit approved lanes.
+- no 4h/12h/24h real-collection activation before explicit approved lanes.
 
-`WINDOW_5M_MICRO_EVENT` remains support-only and cannot independently create a main outcome, start/stop the first-hour lifecycle, unlock retrieval, authorize decisions, or create positions/trades/PnL.
+`WINDOW_5M_MICRO_EVENT` remains support-only and cannot independently create a main outcome, start/stop the first-four-hour lifecycle, unlock retrieval, authorize decisions, or create positions/trades/PnL.
 
 ## Assistant execution rule
 
@@ -103,4 +107,4 @@ Preserve the V2 sequence: audit/readiness -> design/specification -> implementat
 
 Use minimum sufficient risk-based verification. Broad/full suites belong at major closeout, pre-live-proof, releases/checkpoints, or broad architectural changes, not every step.
 
-Do not create or consume a fresh authorization, invoke a live wrapper, contact providers, mutate the authoritative DB, generate operational memory, or unlock downstream financial capabilities during this policy implementation/proof lane.
+Do not create or consume a fresh authorization, invoke a live wrapper, contact providers, mutate the authoritative DB, generate operational memory, or unlock downstream financial capabilities during the current standard-four-hour design/implementation/offline-proof program.
