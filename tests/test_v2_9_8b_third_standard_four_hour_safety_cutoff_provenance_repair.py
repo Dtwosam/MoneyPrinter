@@ -219,7 +219,7 @@ def _fixture_db(
             (2, "goplus", response_request_id),
         )
         conn.execute(
-            "INSERT INTO printer_safety_evidence_contributions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO printer_safety_evidence_contributions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 1,
                 13,
