@@ -30,7 +30,10 @@ Durable current anchors include:
 - standard-four-hour current-state audit commit: `74bd2b48f4a1a0cd8d87e3696773d038ce59e2ca`;
 - post-DTW100 standard-four-hour operational rereadiness closeout: `3b558d2af77ac469dd0d6c2f04e3993515988b2e`;
 - consumed standard-four-hour preflight runtime closeout: `b3a4e16f6791c007399f0079dd2d2ad8d710ef59`;
-- standard-four-hour preflight composition repair-scope audit: `30bbeca17f723e5c7cfe6da25f7ef73cc6191256`.
+- standard-four-hour preflight composition repair-scope audit: `30bbeca17f723e5c7cfe6da25f7ef73cc6191256`;
+- standard-four-hour preflight composition repair design: `f83d46d02e25a53e4ab8dd60ba8cec8414f1a741`;
+- standard-four-hour preflight composition repair implementation: `ca312c737e10b38cbb34e920eb419822913b7baf`;
+- standard-four-hour preflight composition repair closeout: `6e7fb3b6d8e9e332ef66f09051e8cdfe424f2b53`.
 
 DTW97 is permanently consumed and must not be rerun. DTW100 is already closed. No historical authorization may be reused.
 
@@ -50,18 +53,16 @@ Attempt identity:
 
 Independent runtime forensics classified the blocker as `COMMITTED_CODE_DEFECT`.
 
-The repair-scope audit established the complete two-boundary defect:
+The repair-scope audit established two adjacent composition defects. The approved repair is now implemented and closed:
 
-1. the live operational owner marks the standard-four-hour campaign correctly but also unconditionally injects the legacy `operational_natural_disposition=True` lifecycle option;
-2. the origin→lifecycle driver truthfully forwards that option into `run_one_command_15m_factory`;
-3. the factory's standard-four-hour preflight explicitly rejects historical operational-natural disposition semantics and requires `four_hour_proof_mode=False`;
-4. the inherited legacy operational-natural branch simultaneously requires terminal 4h proof mode;
-5. even if the legacy natural flag is merely removed, the generic `continuous_first_hour` preflight falls through to the historical one-autonomous-token rule, while standard-four-hour requires exactly two token slots;
-6. therefore both live-owner option ownership and factory preflight mode classification require one narrow coordinated repair design.
+1. standard-four-hour no longer inherits historical `operational_natural_disposition=True` from the live owner;
+2. factory `continuous_first_hour` preflight explicitly recognizes standard-four-hour before historical compressed/natural/one-token proof shapes;
+3. ordinary operational-natural behavior remains mode-scoped and preserved;
+4. historical one-token proof semantics were not widened;
+5. focused offline proof reaches a real factory run and both opening `WINDOW_15M` stage plans under the exact persistent two-token standard configuration;
+6. no authorization, provider runtime, authoritative DB mutation, operational memory, or downstream financial capability was created by the repair proof.
 
-`HOLDER_CONTEXT_BUDGET_EXHAUSTED` was observed during the bounded holder stage but is not the root blocker. Holder budget exhaustion remains bounded completion/context truth under the adopted memory-observation holder-decoupling law and must not be repaired by increasing budgets or re-gating memory admission on holder pass.
-
-Terminal cleanup completed, the lease was released, active work returned to zero, and no current-run memory window/episode/fingerprint or downstream retrieval/paper-financial capability was created.
+`HOLDER_CONTEXT_BUDGET_EXHAUSTED` observed in the consumed attempt remains bounded holder-context truth and was not the root blocker. Holder budgets and memory-observation holder-decoupling law were not changed.
 
 The consumed attempt must never be rerun or resumed.
 
@@ -81,7 +82,7 @@ activation
 
 The 15m checkpoint does not decide whether the token deserves the remaining first-hour observation. `NO_PUMP`, `CONSOLIDATION`, pump/dump/dead/revival labels, final 15m direction, profitability, scoring, ranking, confidence, weighting, and `WINDOW_5M_MICRO_EVENT` have no authority to stop or authorize that first-hour observation.
 
-This policy supersedes older active-stack wording that made 15m->1h continuation depend on a 15m outcome/learning-need gate. Historical selective-1h documents remain preserved as historical evidence.
+This policy supersedes older active-stack wording that made 15m→1h continuation depend on a 15m outcome/learning-need gate. Historical selective-1h documents remain preserved as historical evidence.
 
 Observation continuation remains fail-closed on operational validity: exact token/mint/pair/lifecycle identity, closed predecessor boundary, tracking continuity, campaign state, cancellation/terminal state, Source Governor ownership, Central Scheduler ownership, DB/lease/integrity health, bounded campaign/token resources, and one-shot execution authority.
 
@@ -98,47 +99,44 @@ Controlling designs:
 
 ## Current lane sequence
 
-The first standard-four-hour one-shot was consumed and safely closed blocked. The following read-only repair-scope audit is now closed PASS at `30bbeca17f723e5c7cfe6da25f7ef73cc6191256` with verdict:
-
-`V2_9_8B_POST_STANDARD_4H_PREFLIGHT_COMPOSITION_REPAIR_SCOPE_AUDIT_PASS_TWO_BOUNDARY_DEFECTS_DESIGN_REQUIRED`
-
-The current roadmap-compliant sequence is now:
+The consumed standard-four-hour attempt was safely closed blocked. The subsequent composition repair chain is now complete:
 
 1. read-only repair-scope audit — **COMPLETE PASS**;
-2. **design/specify the minimum two-boundary mode-scoped correction**;
-3. implement only the approved correction;
-4. run focused offline production-shaped proof showing the standard-four-hour path reaches factory-run creation and both first-15m lifecycle stages, while ordinary operational-natural behavior remains unchanged and invalid mixed configurations still fail closed;
-5. close the repair/proof with exact safety and capability-delta evidence;
-6. perform a fresh standard-four-hour operational rereadiness review;
+2. repair design/specification — **COMPLETE PASS** at `f83d46d02e25a53e4ab8dd60ba8cec8414f1a741`;
+3. narrow two-boundary implementation — **COMPLETE** at `ca312c737e10b38cbb34e920eb419822913b7baf`;
+4. focused offline production-shaped proof — **COMPLETE PASS**;
+5. repair/proof closeout — **COMPLETE PASS** at `6e7fb3b6d8e9e332ef66f09051e8cdfe424f2b53`;
+6. **fresh standard-four-hour operational rereadiness review**;
 7. only after rereadiness PASS, prepare a completely fresh exact-HEAD one-use authorization and independently review it;
-8. only after that review PASS, consider at most one new separately operator-started bounded standard-four-hour operational proof;
+8. only after authorization review PASS, consider at most one new separately operator-started bounded standard-four-hour operational proof;
 9. perform independent runtime closeout before any further capability lane.
 
 No step authorizes the next automatically. Do not reuse the consumed standard-four-hour authorization, DTW97, DTW100, or any historical authorization.
 
 ### Current lane boundary
 
-The immediate next lane is **design/specification only**:
+The immediate next lane is read-only operational rereadiness:
 
-`V2-9.8B Post-Standard-4H Preflight Composition Repair Design`
+`V2-9.8B Post-Standard-4H Operational Rereadiness After Preflight Composition Repair`
 
 Allowed now:
 
-- static inspection and existing artifact review needed to specify the repair;
-- design documentation;
-- exact caller/configuration matrix;
-- RED/GREEN test-plan specification;
-- risk, rollback, proof, and closeout criteria.
+- static inspection;
+- read-only authoritative DB inspection;
+- lease/integrity/active-work inspection;
+- exact Git/branch/HEAD verification;
+- existing artifact and authorization-history review;
+- Source Governor / Central Scheduler ownership and configuration review;
+- read-only checks of budgets, locked capabilities, one-shot readiness, and wrapper/profile binding;
+- rereadiness documentation and closeout.
 
 Not allowed now:
 
-- production code changes;
-- test execution that invokes runtime/source/Scheduler behavior;
-- source fetching or provider calls;
+- discovery/source fetching or provider calls;
 - Scheduler/runtime execution;
 - authoritative DB mutation;
 - memory generation;
-- new authorization preparation/application;
+- fresh authorization preparation/application before rereadiness PASS;
 - rerun/resume/restart/successor of the consumed attempt;
 - retrieval activation;
 - paper decisions;
@@ -146,12 +144,7 @@ Not allowed now:
 - positions, trade events, paper-trade audits, or PnL;
 - `WINDOW_12H` or `WINDOW_24H` activation.
 
-The audit currently justifies only two production repair surfaces for later implementation consideration:
-
-- `src/printer_v1/operator_cli/authoritative_live_operational_campaign.py`;
-- `src/printer_v1/operator_cli/one_command_15m_factory.py`.
-
-Do not broaden implementation unless the design or focused proof establishes a separate defect.
+The rereadiness lane must independently confirm that the repaired exact HEAD is operationally safe to bind to a future fresh authorization. If any new blocker is found, close rereadiness blocked and classify it rather than bypassing it.
 
 ## Permanent restrictions
 
@@ -169,7 +162,7 @@ Printer V1 remains:
 - no dirty memory used for retrieval or decisions;
 - no retrieval before its explicit approved lane;
 - no paper decisions before their explicit approved lane;
-- no BUY/SELL/HOLD before their explicit approved lane;
+- no BUY/SELL/HOLD before its explicit approved lane;
 - no paper positions, trade events, paper-trade audits, or PnL before their explicit approved lanes.
 
 `WINDOW_5M_MICRO_EVENT` remains support-only and cannot independently create a main outcome, start/stop the first-four-hour lifecycle, unlock retrieval, authorize decisions, or create positions/trades/PnL.
@@ -180,4 +173,4 @@ Preserve the V2 sequence: audit/readiness -> design/specification -> implementat
 
 Use minimum sufficient risk-based verification. Broad/full suites belong at major closeout, pre-live-proof, releases/checkpoints, or broad architectural changes, not every step.
 
-During the current repair-design lane, do not modify production code, create or consume an authorization, invoke a live wrapper, contact providers, mutate the authoritative DB, generate operational memory, or unlock downstream financial capabilities.
+During the current rereadiness lane, do not create or consume an authorization, invoke a live wrapper, contact providers, mutate the authoritative DB, generate operational memory, or unlock downstream financial capabilities. Rereadiness must close PASS before any fresh exact-HEAD one-use authorization is prepared.
