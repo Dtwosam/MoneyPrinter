@@ -30,6 +30,9 @@ from printer_v1.snapshots.lifecycle_continuity import (
     resolve_current_run_long_predecessor,
     terminally_block_long_continuation,
 )
+from printer_v1.sources.measured_transport import (
+    FIRST_HOUR_SAFETY_CONTEXT_REQUEST_COUNT,
+)
 
 
 WINDOW_KIND = "WINDOW_4H"
@@ -86,6 +89,7 @@ def cumulative_lifecycle_budget(tracking_lane: str) -> dict[str, Any]:
         "window_15m_snapshots": int(fifteen.minimum_required_snapshots),
         "window_15m_context": 5,
         "window_1h_snapshots": int(one_hour.minimum_required_snapshots),
+        "window_1h_safety_context": FIRST_HOUR_SAFETY_CONTEXT_REQUEST_COUNT,
         "window_4h_phase": int(phase["phase_request_ceiling"]),
     }
     scheduler_components = {
@@ -132,6 +136,9 @@ def standard_campaign_lifecycle_budget(
         request_components[f"token_{index}_window_15m_context"] = 5
         request_components[f"token_{index}_window_1h_snapshots"] = int(
             one_hour.minimum_required_snapshots
+        )
+        request_components[f"token_{index}_window_1h_safety_context"] = (
+            FIRST_HOUR_SAFETY_CONTEXT_REQUEST_COUNT
         )
         scheduler_components[f"token_{index}_discovery_handoff"] = 1
         scheduler_components[f"token_{index}_window_15m"] = int(
