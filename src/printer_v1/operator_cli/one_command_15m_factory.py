@@ -5746,7 +5746,12 @@ def run_one_command_15m_factory(
             "operational natural 15m-only mode requires operational persistent mode"
         )
     if continuous_first_hour:
-        if compressed_two_token_proof_plan is not None:
+        if standard_four_hour_campaign:
+            # The dedicated standard campaign checks above own the exact
+            # persistent two-token production shape. Do not reinterpret it
+            # as any historical compressed/natural/one-token proof mode.
+            pass
+        elif compressed_two_token_proof_plan is not None:
             try:
                 compressed_two_token_proof_plan.validate_shape()
             except ValueError as exc:

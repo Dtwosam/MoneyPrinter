@@ -2409,7 +2409,8 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 raise LiveOperationalError(
                     "FIXTURE_PLAN_REJECTED_OPERATIONALLY", forbidden
                 )
-        lk["operational_natural_disposition"] = True
+        if not standard_four_hour_campaign:
+            lk["operational_natural_disposition"] = True
 
         from printer_v1.operator_cli.durable_external_operation_log import (
             DurablePumpRpcTransport,
