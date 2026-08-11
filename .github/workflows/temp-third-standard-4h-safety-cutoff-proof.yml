@@ -1,0 +1,18 @@
+name: Temporary third standard-4h safety cutoff proof
+
+on:
+  push:
+    branches:
+      - agent/v2-9-8b-third-standard-4h-safety-cutoff-provenance-repair-implementation
+
+jobs:
+  focused-proof:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e .
+      - name: Run focused cutoff regression proof
+        run: PYTHONPATH=src python -m unittest discover -s tests -p 'test_v2_9_8b_third_standard_four_hour_safety_cutoff_provenance_repair.py' -v
