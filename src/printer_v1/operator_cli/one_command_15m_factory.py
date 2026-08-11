@@ -30,6 +30,7 @@ from printer_v1.scheduler.scheduler import (
     fail_job,
 )
 from printer_v1.sources.measured_transport import (
+    FIRST_HOUR_SAFETY_CONTEXT_REQUEST_COUNT,
     LIFECYCLE_RESERVED_OPERATIONS_BY_STEP_KIND,
     PRECLOSE_CONTEXT_REQUEST_COUNT,
 )
@@ -167,9 +168,13 @@ def _continuation_expected_snapshots(lane: str) -> int:
     return int(policy.minimum_required_snapshots)
 
 
+# The exact-pair 1h close also collects one fresh governed safety-only bundle,
+# so the per-token continuous ceiling must allow that worst-case reserve or
+# budget enforcement would reject the newly approved governed calls.
 _CONTINUOUS_MAX_REQUESTS_PER_TOKEN = (
     _MAX_GOVERNED_REQUESTS_PER_TOKEN
     + _continuation_expected_snapshots("TRACK_FAST")
+    + FIRST_HOUR_SAFETY_CONTEXT_REQUEST_COUNT
 )
 _CONTINUOUS_MAX_REQUESTS_RUN = _MAX_DISCOVERY_REQUESTS + _CONTINUOUS_MAX_REQUESTS_PER_TOKEN
 _CONTINUOUS_MAX_SCHEDULER_ROWS = (
@@ -2392,12 +2397,16 @@ def _execute_continuation_close(
     *,
     adapter_factory: Callable[..., Any],
     timeout_seconds: float,
+    context_adapter_factories: dict[str, Callable[..., Any]] | None = None,
     fallback_adapter_factory: Callable[..., Any] | None = None,
     cancellation_probe: Callable[[], str | None] | None = None,
 ) -> dict[str, Any]:
     """Persist the final 1h snapshot and close against the exact current-run 15m row."""
     _check_cancellation(cancellation_probe)
     from printer_v1.operator_cli.e2q_memory_window_audit import audit_15m_memory_window
+    from printer_v1.operator_cli.first_hour_safety_binding import (
+        attach_first_hour_safety_overlay,
+    )
     from printer_v1.operator_cli.lane_e2o_1h_window_close import (
         E2O_1H_STATUS_BLOCKED,
         E2O_1H_STATUS_CONTINUITY_BLOCKED,
@@ -2405,14 +2414,34 @@ def _execute_continuation_close(
     )
     from printer_v1.operator_cli.lane_k_e2z_pipeline_wiring import run_e2z_pipeline
 
+    # V2-9.8B first-hour safety provenance: the 30-minute safety freshness
+    # contract makes the earlier 15m composite unusable as first-hour authority,
+    # so this Scheduler-owned close collects its own fresh safety-only bundle
+    # through the existing governed collector before the final exact-pair
+    # snapshot. The collector remains the sole provider-call owner and keeps the
+    # holder primary plus single approved backup behaviour unchanged.
+    context_bundle = _collect_preclose_context(
+        conn, step, timeout_seconds=timeout_seconds,
+        adapter_factories=context_adapter_factories,
+        include=frozenset({"safety"}),
+        cancellation_probe=cancellation_probe,
+    )
     _check_cancellation(cancellation_probe)
     result = _execute_snapshot(
         conn, step, adapter_factory=adapter_factory, timeout_seconds=timeout_seconds,
         fallback_adapter_factory=fallback_adapter_factory,
     )
+    result["governed_context_collection"] = context_bundle["report"]
     _check_cancellation(cancellation_probe)
     if not result.get("ok"):
         return result
+    # Bind the fresh safety evidence/composite to the exact first-hour closing
+    # snapshot so its evaluated_at and snapshot linkage are the real close
+    # boundary the later 4h barrier reads.
+    result["governed_context_persistence"] = _persist_preclose_context(
+        conn, step=step, snapshot_id=int(result["snapshot_id"]),
+        context_bundle=context_bundle,
+    )
     first = conn.execute(
         """
         SELECT s.snapshot_id, ts.captured_at
@@ -2466,6 +2495,16 @@ def _execute_continuation_close(
     if window_id is None:
         result.update(ok=False, blocked_reason="1h close produced no window")
         return result
+    # The exact fresh safety composite must be bound into this exact WINDOW_1H
+    # before outcome derivation, audit, or E2Z observe the memory. This is
+    # fail-closed: no clean 1h object may exist without its safety authority.
+    result["first_hour_safety_binding"] = attach_first_hour_safety_overlay(
+        conn,
+        step=step,
+        memory_window_id=int(window_id),
+        closing_snapshot_id=int(result["snapshot_id"]),
+        persisted_context=result["governed_context_persistence"],
+    )
     result["full_first_hour_outcome"] = _derive_and_persist_first_hour_outcome(
         conn,
         run_id=str(step["run_id"]),
@@ -3443,7 +3482,10 @@ def _lifecycle_reservation_records_for_step(
         elif step_kind == "CONTINUATION_SNAPSHOT":
             family = "CONTINUATION_SNAPSHOT_OBSERVATION"
         elif step_kind == "CONTINUATION_CLOSE":
-            family = "CONTINUATION_CLOSE_OBSERVATION"
+            family = (
+                "CONTINUATION_CLOSE_OBSERVATION"
+                if reservation_index == 0 else "FIRST_HOUR_SAFETY_CONTEXT"
+            )
         elif step_kind == "LONG_CONTINUATION_CLOSE":
             family = "LONG_CONTINUATION_CLOSE_OBSERVATION"
         elif str(pending["step_key"]).endswith("_snapshot_000"):
@@ -6211,6 +6253,7 @@ def run_one_command_15m_factory(
                         pending,
                         adapter_factory=adapter_factory,
                         timeout_seconds=timeout_seconds,
+                        context_adapter_factories=context_adapter_factories,
                         fallback_adapter_factory=fallback_factory,
                         cancellation_probe=cancellation_probe,
                     )

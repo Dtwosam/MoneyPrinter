@@ -67,10 +67,12 @@ class StandardFourHourPolicyCapacityTests(unittest.TestCase):
             "standard two-token four-hour budget owner is missing",
         )
         budget = four_hour.standard_two_token_lifecycle_budget
+        # V2-9.8B first-hour safety provenance repair: +3 fresh governed safety
+        # transports per token at the exact 1h close; Scheduler unchanged.
         expected = {
-            ("TRACK_FAST", "TRACK_FAST"): (230, 210),
-            ("TRACK_FAST", "TRACK_NORMAL"): (182, 162),
-            ("TRACK_NORMAL", "TRACK_NORMAL"): (134, 114),
+            ("TRACK_FAST", "TRACK_FAST"): (236, 210),
+            ("TRACK_FAST", "TRACK_NORMAL"): (188, 162),
+            ("TRACK_NORMAL", "TRACK_NORMAL"): (140, 114),
         }
         for lanes, ceilings in expected.items():
             with self.subTest(lanes=lanes):

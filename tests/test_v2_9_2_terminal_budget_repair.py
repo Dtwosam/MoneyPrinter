@@ -188,9 +188,12 @@ class BudgetAccountingTests(unittest.TestCase):
         ).fetchone()
 
     def test_phase_and_policy_derived_cumulative_ceilings_are_exact(self) -> None:
+        # V2-9.8B first-hour safety provenance repair: the cumulative request
+        # ceiling gained the 3 fresh governed safety transports reserved by the
+        # exact 1h close. Phase and Scheduler ceilings are unchanged.
         expected = {
-            "TRACK_FAST": (69, 64, 116, 105),
-            "TRACK_NORMAL": (39, 34, 68, 57),
+            "TRACK_FAST": (69, 64, 119, 105),
+            "TRACK_NORMAL": (39, 34, 71, 57),
         }
         for lane, values in expected.items():
             with self.subTest(lane=lane):
@@ -315,7 +318,7 @@ class BudgetAccountingTests(unittest.TestCase):
         self.assertEqual(report["four_hour_phase_usage"]["source_requests"], 5)
         self.assertEqual(report["four_hour_phase_usage"]["source_request_ceiling"], 39)
         self.assertEqual(report["cumulative_lifecycle_usage"]["source_requests"], 17)
-        self.assertEqual(report["cumulative_lifecycle_usage"]["source_request_ceiling"], 68)
+        self.assertEqual(report["cumulative_lifecycle_usage"]["source_request_ceiling"], 71)
         self.assertTrue(report["cumulative_lifecycle_usage"]["policy_derived"])
 
     def test_final_report_overrides_stale_completed_reason_after_transport_failure(self) -> None:

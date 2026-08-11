@@ -1,5 +1,10 @@
 # Printer V1 V2-9.8B — Second Standard Four-Hour 1h→4h Safety/Provenance Repair Implementation Status
 
+> **SUPERSEDED.** This document is the historical partial/blocked checkpoint. The implementation was afterwards completed and proven; the controlling verdict is now
+> `V2_9_8B_SECOND_STANDARD_FOUR_HOUR_1H_TO_4H_SAFETY_PROVENANCE_REPAIR_IMPLEMENTATION_CLOSEOUT_PASS`
+> in `docs/printer-v1-v2-9-8b-second-standard-four-hour-1h-to-4h-safety-provenance-repair-implementation-closeout.md`.
+> The tooling blocker and "required canonical integration still unapplied" sections below no longer describe current state.
+
 ## Verdict
 
 `V2_9_8B_SECOND_STANDARD_FOUR_HOUR_1H_TO_4H_SAFETY_PROVENANCE_REPAIR_IMPLEMENTATION_PARTIAL_BLOCKED_TOOLING`

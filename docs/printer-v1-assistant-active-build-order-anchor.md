@@ -33,7 +33,8 @@ Durable anchors include:
 - second standard-four-hour runtime classification closeout: `623ea64657555341419fe92f000435e11ab52d5c`;
 - second-attempt 1h→4h safety/provenance repair-scope audit: `303227dd76b96b144dab75c11bf1cb827563babc`;
 - second-attempt 1h→4h safety/provenance repair design: `695fd3e53781b1faba13d21226f323d1e586cbb1`;
-- partial implementation status checkpoint: `81ca0385ac258c496df54e5034b94b4529de0a66`.
+- partial implementation status checkpoint: `81ca0385ac258c496df54e5034b94b4529de0a66`;
+- second-attempt 1h→4h safety/provenance repair implementation closeout: this commit.
 
 DTW97 remains permanently consumed. DTW100 remains closed. No historical authorization may be reused.
 
@@ -136,33 +137,45 @@ Current repair branch:
 
 `agent/v2-9-8b-second-standard-4h-safety-provenance-repair`
 
-Durable status verdict:
+Durable implementation verdict:
 
-`V2_9_8B_SECOND_STANDARD_FOUR_HOUR_1H_TO_4H_SAFETY_PROVENANCE_REPAIR_IMPLEMENTATION_PARTIAL_BLOCKED_TOOLING`
+`V2_9_8B_SECOND_STANDARD_FOUR_HOUR_1H_TO_4H_SAFETY_PROVENANCE_REPAIR_IMPLEMENTATION_CLOSEOUT_PASS`
 
-Implementation is **not complete**, bounded offline proof has **not passed**, and the branch is **not runnable or merge-ready**.
+Implementation is **complete** and the focused bounded offline proof **passes** on one exact HEAD. Closeout: `docs/printer-v1-v2-9-8b-second-standard-four-hour-1h-to-4h-safety-provenance-repair-implementation-closeout.md`.
 
 Completed implementation surfaces:
 
 - `src/printer_v1/operator_cli/first_hour_safety_binding.py` — exact source-free fail-closed first-hour safety-composite binding helper;
 - `src/printer_v1/sources/measured_transport.py` — `FIRST_HOUR_SAFETY_CONTEXT_REQUEST_COUNT = 3` and `CONTINUATION_CLOSE = 4` reservation capacity;
 - `src/printer_v1/operator_cli/one_token_4h_runtime.py` — explicit first-hour safety request components in one-token and standard campaign lifecycle budgets;
-- `tests/test_v2_9_8b_first_hour_safety_provenance_repair.py` — focused offline proof staged but not successfully executed.
+- `src/printer_v1/operator_cli/one_command_15m_factory.py` — Scheduler-owned `CONTINUATION_CLOSE` now collects safety-only governed context before the final exact-pair snapshot, persists it against that exact closing snapshot, binds the exact fresh composite into the produced `WINDOW_1H` before outcome/audit/E2Z, threads `context_adapter_factories`, raises the local continuous/selective ceilings, and labels the three first-hour safety reservations;
+- `src/printer_v1/operator_cli/operational_standard_4h.py` — `LIFECYCLE_REQUEST_OUTER_CEILING = 236`, Scheduler outer ceiling unchanged at `210`;
+- `tests/test_v2_9_8b_first_hour_safety_provenance_repair.py` — focused offline proof executed: `5 passed, 8 subtests passed`.
 
-Required canonical integration still unapplied:
+Confirmed budget truth:
 
-1. `src/printer_v1/operator_cli/one_command_15m_factory.py` must collect/persist fresh safety during `CONTINUATION_CLOSE`, bind the exact fresh composite to the produced 1h memory, thread the existing context adapter factories, update local continuous/selective request ceilings, and identify the three first-hour safety reservations;
-2. `src/printer_v1/operator_cli/operational_standard_4h.py` must change only `LIFECYCLE_REQUEST_OUTER_CEILING` from `230` to `236`; the Scheduler outer ceiling remains `210`.
+| lanes | 4h eligible | requests | Scheduler |
+|---|---|---:|---:|
+| FAST + FAST | both | 236 | 210 |
+| FAST + NORMAL | both | 188 | 162 |
+| NORMAL + NORMAL | both | 140 | 114 |
+| FAST + FAST | none | 98 | 82 |
 
-No implementation closeout may be written until those edits land on one exact HEAD and the focused bounded offline proof passes.
+`CONTINUATION_CLOSE` reserves exactly `4`: one exact-pair close observation plus three worst-case fresh 1h safety transports. No new Scheduler job was introduced. The unchanged B.2 consumer `load_authoritative_window_safety()` and the source-free `lane_e2o_1h_window_close.py` were not modified.
 
-## Tooling blocker truth
+## Tooling blocker resolved
 
-The GitHub connector available in this lane supports whole-file replacement but not a surgical line patch. `one_command_15m_factory.py` is a large canonical orchestration file, and connector reads of the whole file are truncated, so wholesale replacement from incomplete content was rejected as an unacceptable corruption/drift risk.
+The previously recorded connector/CI blocker no longer applies. The two remaining canonical edits were applied as surgical line edits in a writable local worktree, so no whole-file replacement and no temporary CI harness was required. This task created no temporary workflow, trigger, patch helper, PR, or CI artifact.
 
-Temporary GitHub Actions edit/proof harnesses were attempted only as offline tooling. Runs `31480678969` and `31481278895` failed before any runner step executed and exposed no usable execution logs. These are CI-startup/tooling failures, not repair-test failures and not evidence that the implementation passed or failed its tests.
+## Known unrelated pre-existing failures
 
-Temporary workflow/patch/trigger artifacts were removed. Temporary PR `#180` was closed unmerged. Its temporary CI-base branch was reset to the unchanged classification baseline. No temporary CI artifact remains in the repair branch diff.
+Three tests remain red on this branch for reasons unrelated to this repair, reproduced on the untouched parent HEAD `bf2e08d0df6b46574414b53d9b8baa637264ce6d`:
+
+- `test_v2_9_2_terminal_budget_repair.py::...::test_final_report_overrides_stale_completed_reason_after_transport_failure`
+- `test_v2_9_3_early_failure_accounting_repair.py::...::test_15m_tls_failure_is_primary_and_replay_is_zero_delta`
+- `test_v2_9_3_early_failure_accounting_repair.py::...::test_1h_tls_failure_is_primary_and_pre_four_hour`
+
+All three raise `GitProvenanceError: launch Git provenance fields are malformed` because those fixtures build a run config with no `git_provenance` payload. This is separate launch-provenance fixture/contract drift, owns its own future lane, and must not be read as a repair failure.
 
 ## Safety status during repair work
 
@@ -174,13 +187,11 @@ The frozen consumed launch branch remains immutable.
 
 ## Current lane boundary
 
-Remain inside:
+The implementation lane is now closed PASS. The next roadmap-compliant step is a **fresh operational rereadiness audit**, which this task did not perform and did not authorize.
 
-`SECOND_STANDARD_FOUR_HOUR_1H_TO_4H_SAFETY_PROVENANCE_REPAIR_IMPLEMENTATION`
+Allowed next work is only that fresh operational rereadiness. Nothing in this closeout authorizes runtime.
 
-Allowed next work is only completion of the two exact remaining canonical source edits plus minimum sufficient bounded offline proof and, if that proof passes, implementation closeout.
-
-Not allowed while the implementation verdict remains partial/blocked:
+Still not allowed:
 
 - provider/source fetching;
 - Central Scheduler runtime;

@@ -111,17 +111,22 @@ class StandardFourHourEligibleSubsetTests(unittest.TestCase):
             budget_owner,
             "prefix-plus-eligible-4h campaign budget owner is missing",
         )
+        # V2-9.8B first-hour safety provenance repair: each token's exact 1h
+        # close reserves 3 fresh governed safety transports, so every request
+        # ceiling gains 6. The 1h close happens regardless of 4h eligibility,
+        # so the reserve applies to every mask. Scheduler ceilings are unchanged
+        # because no new Scheduler job is introduced.
         cases = (
-            (("TRACK_FAST", "TRACK_FAST"), (False, False), 92, 82),
-            (("TRACK_FAST", "TRACK_FAST"), (True, False), 161, 146),
-            (("TRACK_FAST", "TRACK_FAST"), (True, True), 230, 210),
-            (("TRACK_FAST", "TRACK_NORMAL"), (False, False), 74, 64),
-            (("TRACK_FAST", "TRACK_NORMAL"), (True, False), 143, 128),
-            (("TRACK_FAST", "TRACK_NORMAL"), (False, True), 113, 98),
-            (("TRACK_FAST", "TRACK_NORMAL"), (True, True), 182, 162),
-            (("TRACK_NORMAL", "TRACK_NORMAL"), (False, False), 56, 46),
-            (("TRACK_NORMAL", "TRACK_NORMAL"), (True, False), 95, 80),
-            (("TRACK_NORMAL", "TRACK_NORMAL"), (True, True), 134, 114),
+            (("TRACK_FAST", "TRACK_FAST"), (False, False), 98, 82),
+            (("TRACK_FAST", "TRACK_FAST"), (True, False), 167, 146),
+            (("TRACK_FAST", "TRACK_FAST"), (True, True), 236, 210),
+            (("TRACK_FAST", "TRACK_NORMAL"), (False, False), 80, 64),
+            (("TRACK_FAST", "TRACK_NORMAL"), (True, False), 149, 128),
+            (("TRACK_FAST", "TRACK_NORMAL"), (False, True), 119, 98),
+            (("TRACK_FAST", "TRACK_NORMAL"), (True, True), 188, 162),
+            (("TRACK_NORMAL", "TRACK_NORMAL"), (False, False), 62, 46),
+            (("TRACK_NORMAL", "TRACK_NORMAL"), (True, False), 101, 80),
+            (("TRACK_NORMAL", "TRACK_NORMAL"), (True, True), 140, 114),
         )
         for lanes, mask, requests, scheduler in cases:
             budget = budget_owner(lanes, mask)
@@ -136,7 +141,7 @@ class StandardFourHourEligibleSubsetTests(unittest.TestCase):
         compatibility = one_token_4h_runtime.standard_two_token_lifecycle_budget(
             ("TRACK_FAST", "TRACK_NORMAL")
         )
-        self.assertEqual(int(compatibility["request_ceiling"]), 182)
+        self.assertEqual(int(compatibility["request_ceiling"]), 188)
         self.assertEqual(int(compatibility["scheduler_ceiling"]), 162)
 
     def test_only_normal_slot_continues_with_exact_manifest_and_ownership(self) -> None:
@@ -146,7 +151,7 @@ class StandardFourHourEligibleSubsetTests(unittest.TestCase):
         self.assertEqual(int(result["continuation_count"]), 1)
         self.assertEqual(int(result["planned_jobs"]), 31)
         self.assertEqual(result["planned_by_slot"], {"slot-2": 31})
-        self.assertEqual(int(result["budget"]["request_ceiling"]), 113)
+        self.assertEqual(int(result["budget"]["request_ceiling"]), 119)
         self.assertEqual(int(result["budget"]["scheduler_ceiling"]), 98)
         self.assertEqual(self._window_slots(), ["slot-2"])
         self.assertEqual(self._long_counts(), [(2, 31)])
@@ -206,7 +211,7 @@ class StandardFourHourEligibleSubsetTests(unittest.TestCase):
         self.assertTrue(second["replay"])
         self.assertEqual(int(second["planned_jobs"]), 61)
         self.assertEqual(second["planned_by_slot"], {"slot-1": 61})
-        self.assertEqual(int(second["budget"]["request_ceiling"]), 143)
+        self.assertEqual(int(second["budget"]["request_ceiling"]), 149)
         self.assertEqual(int(second["budget"]["scheduler_ceiling"]), 128)
         self.assertEqual(self._window_slots(), ["slot-1"])
         self.assertEqual(self._long_counts(), [(1, 61)])
@@ -220,7 +225,7 @@ class StandardFourHourEligibleSubsetTests(unittest.TestCase):
         self.assertEqual(int(result["continuation_count"]), 0)
         self.assertEqual(int(result["planned_jobs"]), 0)
         self.assertEqual(result["planned_by_slot"], {})
-        self.assertEqual(int(result["budget"]["request_ceiling"]), 74)
+        self.assertEqual(int(result["budget"]["request_ceiling"]), 80)
         self.assertEqual(int(result["budget"]["scheduler_ceiling"]), 64)
         self.assertEqual(self._window_slots(), [])
         self.assertEqual(self._long_counts(), [])

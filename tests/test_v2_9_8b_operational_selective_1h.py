@@ -1368,8 +1368,12 @@ class OperationalSelective1hTests(unittest.TestCase):
 
         self.assertEqual(factory._MAX_SNAPSHOTS_PER_TOKEN, 16)
         self.assertEqual(factory._continuation_expected_snapshots("TRACK_FAST"), 24)
-        self.assertEqual(factory._SELECTIVE_1H_MAX_REQUESTS_PER_TOKEN, 45)
-        self.assertEqual(factory._SELECTIVE_1H_MAX_REQUESTS_RUN, 92)
+        # V2-9.8B first-hour safety provenance repair: the exact-pair 1h close
+        # now also reserves its fresh governed safety-only bundle (3 worst-case
+        # transports), so the per-token ceiling is 45 + 3.
+        self.assertEqual(factory.FIRST_HOUR_SAFETY_CONTEXT_REQUEST_COUNT, 3)
+        self.assertEqual(factory._SELECTIVE_1H_MAX_REQUESTS_PER_TOKEN, 48)
+        self.assertEqual(factory._SELECTIVE_1H_MAX_REQUESTS_RUN, 98)
         self.assertEqual(factory._SELECTIVE_1H_MAX_SCHEDULER_ROWS, 82)
         self.assertTrue(
             factory._selective_1h_lifecycle(

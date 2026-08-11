@@ -80,7 +80,10 @@ class StandardFourHourCampaignPlanningTests(unittest.TestCase):
             budget = one_token_4h_runtime.standard_two_token_lifecycle_budget(
                 ("TRACK_FAST", "TRACK_NORMAL")
             )
-            self.assertEqual(int(budget["request_ceiling"]), 182)
+            # V2-9.8B first-hour safety provenance repair: +3 fresh governed
+            # safety transports per token at the exact 1h close. The Scheduler
+            # ceiling is unchanged because no new Scheduler job is introduced.
+            self.assertEqual(int(budget["request_ceiling"]), 188)
             self.assertEqual(int(budget["scheduler_ceiling"]), 162)
             self.assertTrue(bool(budget["real_collection_enabled"]))
 

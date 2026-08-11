@@ -256,9 +256,9 @@ class StandardFourHourOperationalActivationContracts(unittest.TestCase):
         self.assertFalse(none["real_collection_enabled"])
         self.assertTrue(one["real_collection_enabled"])
         self.assertTrue(both["real_collection_enabled"])
-        self.assertEqual((none["request_ceiling"], none["scheduler_ceiling"]), (74, 64))
-        self.assertEqual((one["request_ceiling"], one["scheduler_ceiling"]), (143, 128))
-        self.assertEqual((both["request_ceiling"], both["scheduler_ceiling"]), (182, 162))
+        self.assertEqual((none["request_ceiling"], none["scheduler_ceiling"]), (80, 64))
+        self.assertEqual((one["request_ceiling"], one["scheduler_ceiling"]), (149, 128))
+        self.assertEqual((both["request_ceiling"], both["scheduler_ceiling"]), (188, 162))
 
 
 if __name__ == "__main__":

@@ -286,10 +286,16 @@ class Checkpoint3Remaining45mCollectionTests(unittest.TestCase):
             pending=close,
             projected_requests=factory._projected_requests_for_step(close),
         )
-        self.assertEqual(len(close_reservations), 1)
+        # V2-9.8B first-hour safety provenance repair: the exact-pair close
+        # observation plus the worst-case fresh first-hour safety bundle.
+        self.assertEqual(len(close_reservations), 4)
         self.assertEqual(
             close_reservations[0]["operation_family"],
             "CONTINUATION_CLOSE_OBSERVATION",
+        )
+        self.assertEqual(
+            [record["operation_family"] for record in close_reservations[1:]],
+            ["FIRST_HOUR_SAFETY_CONTEXT"] * 3,
         )
 
 
