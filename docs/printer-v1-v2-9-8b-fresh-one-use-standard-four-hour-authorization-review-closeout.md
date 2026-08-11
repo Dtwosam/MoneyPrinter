@@ -14,7 +14,11 @@ This lane was independent review only. The authorization was **not** regenerated
 
 - review branch: `agent/v2-9-8b-independent-fresh-standard-4h-authorization-review-closeout`
 - review branch start point: exactly `0be6b4f7f56a501a40b2ef02521689ccaffb0ce9`
-- final review closeout SHA: recorded in the anchor and in this branch's commit (see "Closeout commit" below)
+- HEAD the review was evaluated at: exactly `0be6b4f7f56a501a40b2ef02521689ccaffb0ce9`
+- review closeout documentation commit: `d80c8dadfb054c6a959515f8fc58ae47821da7d5`
+- final closeout SHA: the tip of this review branch, which is the commit recording the line above
+
+The review branch contains **only** documentation changes. No source, no authorization, and no evidence file was modified on it.
 
 ## Authorization under review
 

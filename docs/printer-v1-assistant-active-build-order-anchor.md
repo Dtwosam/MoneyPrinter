@@ -278,7 +278,9 @@ Verdict:
 
 `V2_9_8B_FRESH_ONE_USE_STANDARD_FOUR_HOUR_AUTHORIZATION_REVIEW_CLOSEOUT_PASS`
 
-Review branch: `agent/v2-9-8b-independent-fresh-standard-4h-authorization-review-closeout` (started from exactly `0be6b4f7f56a501a40b2ef02521689ccaffb0ce9`)
+Review branch: `agent/v2-9-8b-independent-fresh-standard-4h-authorization-review-closeout` (started from, and evaluated at, exactly `0be6b4f7f56a501a40b2ef02521689ccaffb0ce9`)
+
+Review closeout documentation commit: `d80c8dadfb054c6a959515f8fc58ae47821da7d5`. The final closeout SHA is the tip of that review branch. The branch carries documentation only.
 
 Authorization identity:
 
