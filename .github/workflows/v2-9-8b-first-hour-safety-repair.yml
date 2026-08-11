@@ -1,0 +1,58 @@
+name: V2-9.8B first-hour safety repair
+
+on:
+  push:
+    branches:
+      - agent/v2-9-8b-second-standard-4h-safety-provenance-repair
+
+permissions:
+  contents: write
+
+jobs:
+  repair-and-proof:
+    if: >-
+      ${{ !contains(github.event.head_commit.message, '[repair-applied]') &&
+          !contains(github.event.head_commit.message, '[repair-cleanup]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@v4
+        with:
+          ref: agent/v2-9-8b-second-standard-4h-safety-provenance-repair
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Apply exact scoped repair
+        run: python scripts/apply_v2_9_8b_first_hour_safety_repair.py
+
+      - name: Compile touched Python modules
+        run: >-
+          python -m compileall -q
+          src/printer_v1/operator_cli/first_hour_safety_binding.py
+          src/printer_v1/operator_cli/one_command_15m_factory.py
+          src/printer_v1/operator_cli/one_token_4h_runtime.py
+          src/printer_v1/operator_cli/operational_standard_4h.py
+
+      - name: Run focused offline proof
+        env:
+          PYTHONPATH: src
+        run: >-
+          python -m unittest discover -s tests
+          -p 'test_v2_9_8b_first_hour_safety_provenance_repair.py' -v
+
+      - name: Commit exact implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm scripts/apply_v2_9_8b_first_hour_safety_repair.py
+          git add \
+            src/printer_v1/operator_cli/one_command_15m_factory.py \
+            src/printer_v1/operator_cli/operational_standard_4h.py
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Implement first-hour safety provenance repair [repair-applied]'
+          git push origin HEAD:agent/v2-9-8b-second-standard-4h-safety-provenance-repair
