@@ -526,6 +526,8 @@ def load_authoritative_window_safety(
         ):
             reasons.append("safety_memory_window_mismatch")
 
+        lifecycle_deadline: str | None = None
+        evidence_cutoff_source = "CAMPAIGN_CHECKPOINT"
         if memory_window_close_cutoff is not None:
             authoritative_window_end = str(window.get("window_end_at") or "")
             if (
@@ -535,7 +537,32 @@ def load_authoritative_window_safety(
                 raise CampaignAuthorityAdapterError(
                     "memory-window safety cutoff must equal authoritative window_end_at"
                 )
-            cutoff_value = authoritative_window_end
+            lifecycle_deadline = authoritative_window_end
+            closing_snapshot = (
+                connection.execute(
+                    "SELECT token_id,pair_id,captured_at FROM printer_token_snapshots WHERE id=?",
+                    (int(closing_snapshot_id),),
+                ).fetchone()
+                if closing_snapshot_id is not None
+                else None
+            )
+            if closing_snapshot is None:
+                reasons.append("closing_snapshot_missing")
+                cutoff_value = ""
+            else:
+                if (
+                    int(closing_snapshot["token_id"]) != int(graph["token_row_id"])
+                    or int(closing_snapshot["pair_id"]) != int(graph["pair_row_id"])
+                ):
+                    reasons.append("closing_snapshot_target_identity_mismatch")
+                observed_close = _time(closing_snapshot["captured_at"])
+                fixed_deadline = _time(authoritative_window_end)
+                if observed_close is None or fixed_deadline is None:
+                    reasons.append("closing_snapshot_cutoff_timestamp_invalid")
+                elif observed_close < fixed_deadline:
+                    reasons.append("closing_snapshot_precedes_lifecycle_deadline")
+                cutoff_value = str(closing_snapshot["captured_at"])
+            evidence_cutoff_source = "EXACT_CLOSING_SNAPSHOT"
         else:
             cutoff_value = str(graph["checkpoint_cutoff"])
         cutoff = _time(cutoff_value)
@@ -617,12 +644,9 @@ def load_authoritative_window_safety(
             "raw_composite": composite,
             "source_traces": traces,
             "reasons": list(dict.fromkeys(reasons)),
+            "lifecycle_deadline": lifecycle_deadline,
             "evidence_cutoff": cutoff_value,
-            "evidence_cutoff_source": (
-                "MEMORY_WINDOW_END"
-                if memory_window_close_cutoff is not None
-                else "CAMPAIGN_CHECKPOINT"
-            ),
+            "evidence_cutoff_source": evidence_cutoff_source,
             "read_only": True,
         }
 
