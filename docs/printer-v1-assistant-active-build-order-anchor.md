@@ -19,6 +19,8 @@ Inside that stack, `docs/printer-v1-memory-growth-build-order-v2.md` is the acti
 
 V2-9.8B has consumed two separately authorized standard-four-hour attempts. Neither is a successful 4h proof and neither authorization may ever be reused.
 
+A **third** standard-four-hour authorization has since been prepared and independently reviewed. It is **unconsumed** and approved for at most one canonical application while still temporally valid.
+
 Durable anchors include:
 
 - DTW100 `WINDOW_15M` campaign closeout: `059f4fad26d508b09cc361bc267049adc3cdb9ce`;
@@ -39,7 +41,9 @@ Durable anchors include:
 - second standard-four-hour public budget-authority repair-scope audit: `146261d41cdd5ac9a13054bd3e8237d78d98db83`;
 - second standard-four-hour public budget-authority repair design: `ba2843f0e26d67ad6175d27adce0ab63e30bb308`;
 - second standard-four-hour public budget-authority repair implementation closeout: `61647122d33cbf45f0e321a989f4ea14ca00b1b1`;
-- post-public-budget-authority-repair operational rereadiness closeout: **PASS** at `61647122d33cbf45f0e321a989f4ea14ca00b1b1`.
+- post-public-budget-authority-repair operational rereadiness closeout: **PASS** at `61647122d33cbf45f0e321a989f4ea14ca00b1b1`;
+- fresh one-use standard-four-hour authorization preparation HEAD: `0be6b4f7f56a501a40b2ef02521689ccaffb0ce9`;
+- independent fresh standard-four-hour authorization review closeout: **PASS** (see "Third standard-four-hour authorization" below).
 
 DTW97 remains permanently consumed. DTW100 remains closed. No historical authorization may be reused.
 
@@ -264,33 +268,72 @@ No Git-provenance authorization was fabricated. The historical rereadiness helpe
 
 No provider/source run, Central Scheduler runtime, authoritative DB mutation, memory generation, authorization creation/review/reuse, wrapper application, standard-four-hour run, or downstream financial action occurred in this rereadiness lane.
 
+## Third standard-four-hour authorization — PREPARED AND INDEPENDENTLY REVIEWED, UNCONSUMED
+
+Closeout:
+
+`docs/printer-v1-v2-9-8b-fresh-one-use-standard-four-hour-authorization-review-closeout.md`
+
+Verdict:
+
+`V2_9_8B_FRESH_ONE_USE_STANDARD_FOUR_HOUR_AUTHORIZATION_REVIEW_CLOSEOUT_PASS`
+
+Review branch: `agent/v2-9-8b-independent-fresh-standard-4h-authorization-review-closeout` (started from exactly `0be6b4f7f56a501a40b2ef02521689ccaffb0ce9`)
+
+Authorization identity:
+
+- ID: `V2_9_8B_STANDARD_4H_AUTH_20260811T135326Z`;
+- path: `operator-runs/v2-9-8b-standard-four-hour-final-authorization/V2_9_8B_STANDARD_4H_AUTH_20260811T135326Z/final_authorization.json` (untracked);
+- SHA-256: `446e50cf376e576bf308ceee254d025e8fa3221683c9e91e1dcc1f0d2976db36`;
+- frozen launch branch: `agent/v2-9-8b-fresh-one-use-standard-4h-authorization-preparation`;
+- exact launch HEAD: `0be6b4f7f56a501a40b2ef02521689ccaffb0ce9`;
+- authorized `2026-08-11T13:53:26.614842+00:00`, **expires `2026-08-12T01:53:26.614842+00:00`**, validity `43200`s.
+
+The authorization stays bound to the frozen preparation branch, **not** to the review-closeout branch.
+
+Durable review facts:
+
+- committed standard-four-hour validator PASS; schema, ID, branch, HEAD, mode `standard-four-hour-run`, operator-approved `true`, token capacity `2`, request ceiling `236`, Scheduler ceiling `210`, `WINDOW_12H`/`WINDOW_24H` locked, `allowed_invocation_count = 1`, retry/rerun/resume/restart/successor all `false` — all exact;
+- temporal validity re-evaluated live at review: `TEMPORALLY_VALID`, `42488`s remaining;
+- authoritative DB binding exact on all seven fields (`1ec5bfe3…2d73d1`, `79515648`, inode `1230526`, `mtime_ns` `1786414776320865281`, migrations `54`, head `054_pre_lifecycle_discovery_refresh_wait.sql`); integrity `ok`, FK violations `0`, no sidecars, no open handle; DB **byte-identical before and after**;
+- `prior_authorizations_non_reusable`: `18` IDs, sorted, unique, current excluded, both consumed standard-four-hour IDs present, each verified by exact identity/binding (file hashed, embedded ID parsed) rather than directory count;
+- manifest independently rebuilt in memory via committed `build_manifest_bytes(...)`: `848971c3e43ae6652b6f5d39acfa2c023856313eed8dca681a6ffe9e26a462ae`, byte-identical to expectation; the external preparation manifest was secondary hash evidence only;
+- allowed-file-set SHA-256 after pre-marker validation: `3a304d8ecb3aa2739a5c1762867df2465f4fa3a62136faa1bbe40040a4403865`, allowed paths `31`;
+- `operator-runs/` fully reconciled: `78` tracked + `29` untracked-visible + `2` git-ignored-but-allowed = `109`; no unexplained visible or ignored file; untracked-visible advanced `28` → `29` (sole addition: this authorization);
+- live pre-marker Git provenance PASS against the real branch/HEAD/worktree/inventory/migration package/authorization package/historical evidence, no check weakened;
+- the `31` Git-provenance fixture failures reproduce but are **root-caused** as one stale fixture `migration_execution_id` failing fail-closed (negative tests still block, only the message differs); the same validator passes live, so they are **not** a current-host provenance defect. Still unrepaired and unowned;
+- migration-ledger guard PASS in review/read-only mode: claimed == observed, `honest: true`, ledger digest `b2e26dd36cee8a8fff4839632bb95e02842ed970f6c0ff96ccf08620386ffd2d`, no mutation;
+- zero-I/O readiness under active egress and DB-write guards: source contract `READY` (external requests `0`, secret material `false`), concrete composition `READY` (`20` builders), runtime dependency `READY`, holder budget `READY` (source calls `0`); capacity `236 / 117 / 210`, Scheduler outer ceiling `210`, `CONTINUATION_CLOSE = 4`, first-hour safety transports `3`, 12h/24h locked; external provider requests `0`, Scheduler runtime calls `0`, authoritative DB writes `0`, campaign starts `0`;
+- **proven unconsumed**: no application-marker, no `child-terminal.json`, no canonical application directory for this authorization anywhere under `~/PrinterOperations`, no standard-four-hour child process, `0` DB rows referencing the authorization ID, no consumption timestamp, no staging residue. `apply_authorization_once(...)` was not called and the PowerShell/start wrapper was not invoked.
+
+The older consumed launch branch `agent/v2-9-8b-post-standard-4h-fresh-authorization-preparation` remains exactly `fdf5ea4c31afc9e62f1b9bc7263a44e32bfb33b7`. The frozen preparation branch was not committed to, edited, reset, merged, rebased, or moved.
+
 ## Current lane boundary
 
 Current branch:
 
-`agent/v2-9-8b-post-public-budget-authority-repair-operational-rereadiness`
+`agent/v2-9-8b-independent-fresh-standard-4h-authorization-review-closeout`
 
-The next roadmap-compliant lane is:
+The authorization is now **unconsumed but independently approved for at most one canonical application, while still temporally valid and while all launch-time checks still pass at consumption time**. It is not reusable and is not blanket permission.
 
-`FRESH_ONE_USE_STANDARD_FOUR_HOUR_AUTHORIZATION_PREPARATION`
+The only next permitted lane is:
 
-That next lane is **preparation-only** and is not unlocked automatically by the rereadiness closeout. The rereadiness closeout does not itself create or approve an authorization.
+`SEPARATELY_OPERATOR_STARTED_STANDARD_FOUR_HOUR_BOUNDED_ATTEMPT`
 
-It may prepare one fresh one-use standard-four-hour authorization bound to the then-current exact Git/DB/host evidence and the repaired `236/117/210` contract.
-
-It may not approve that authorization itself, start a run, or widen into an unrelated capability change. An independent authorization review and closeout must follow before any bounded standard-four-hour attempt may be considered.
+That lane is **not** unlocked automatically by this review closeout. It requires a separate explicit operator start, it must begin before `2026-08-12T01:53:26.614842+00:00`, and every launch-time check must pass again at that moment. After expiry this approval is void and a fresh preparation plus independent review cycle is required.
 
 Still not allowed:
 
-- authorization approval within the preparation lane;
-- provider/source fetching;
-- Central Scheduler runtime;
-- authoritative DB mutation;
-- memory generation;
-- new authorization creation/review;
-- reuse of either consumed authorization;
-- rerun/resume/restart/successor of either consumed attempt;
-- another standard-four-hour attempt;
+- consuming this authorization outside a separately operator-started attempt;
+- reuse of this authorization beyond its single permitted application;
+- creating another authorization;
+- provider/source fetching outside the operator-started attempt;
+- Central Scheduler runtime outside the operator-started attempt;
+- authoritative DB mutation outside the operator-started attempt;
+- memory generation outside the operator-started attempt;
+- reuse of any of the `18` historical authorizations;
+- rerun/resume/restart/successor of this or either consumed attempt;
+- a second standard-four-hour attempt from this authorization;
 - 12h/24h;
 - retrieval;
 - paper decisions;
@@ -306,9 +349,9 @@ repair-scope audit
 -> bounded offline proof/test
 -> closeout
 -> fresh operational rereadiness            <- CLOSED PASS
--> fresh one-use authorization preparation  <- next permitted lane
--> independent authorization review/closeout
--> only after independent authorization closeout may another bounded standard-four-hour attempt be considered
+-> fresh one-use authorization preparation  <- CLOSED
+-> independent authorization review/closeout <- CLOSED PASS here
+-> separately operator-started bounded standard-four-hour attempt <- next permitted lane
 ```
 
 No step authorizes the next automatically.
