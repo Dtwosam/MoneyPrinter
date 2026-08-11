@@ -1,9 +1,9 @@
 name: V2-9.8B first-hour safety repair candidate
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/v2-9-8b-first-hour-safety-repair-candidate
+      - agent/v2-9-8b-first-hour-safety-repair-ci-base-2
 
 permissions:
   contents: write
