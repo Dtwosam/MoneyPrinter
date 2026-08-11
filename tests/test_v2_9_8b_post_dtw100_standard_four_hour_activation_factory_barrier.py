@@ -201,7 +201,7 @@ class StandardFourHourActivationFactoryBarrierTests(unittest.TestCase):
         self.assertTrue(result["barrier_reached"])
         self.assertEqual(result["eligible_token_slot_ids"], ["slot-1", "slot-2"])
         self.assertEqual(result["continuation_count"], 2)
-        self.assertEqual(result["subset_budget"]["request_ceiling"], 182)
+        self.assertEqual(result["subset_budget"]["request_ceiling"], 188)
         self.assertEqual(result["subset_budget"]["scheduler_ceiling"], 162)
         self.assertEqual(self._long_counts(), (2, 92, 2))
         replay = self._barrier()
@@ -223,7 +223,7 @@ class StandardFourHourActivationFactoryBarrierTests(unittest.TestCase):
         verdicts = {row["token_slot_id"]: row["verdict"] for row in result["verdicts"]}
         self.assertEqual(verdicts["slot-1"], "CONTINUE_TO_WINDOW_4H")
         self.assertEqual(verdicts["slot-2"], "BLOCK_CONTINUATION")
-        self.assertEqual(result["subset_budget"]["request_ceiling"], 143)
+        self.assertEqual(result["subset_budget"]["request_ceiling"], 149)
         self.assertEqual(result["subset_budget"]["scheduler_ceiling"], 128)
         self.assertEqual(self._long_counts(), (1, 61, 2))
 
@@ -238,7 +238,7 @@ class StandardFourHourActivationFactoryBarrierTests(unittest.TestCase):
         self.assertTrue(result["barrier_reached"])
         self.assertEqual(result["eligible_token_slot_ids"], [])
         self.assertEqual(result["continuation_count"], 0)
-        self.assertEqual(result["subset_budget"]["request_ceiling"], 74)
+        self.assertEqual(result["subset_budget"]["request_ceiling"], 80)
         self.assertEqual(result["subset_budget"]["scheduler_ceiling"], 64)
         self.assertEqual(self._long_counts(), (0, 0, 2))
 
@@ -320,7 +320,7 @@ class StandardFourHourActivationFactoryBarrierTests(unittest.TestCase):
             self.fx.connection, "factory-run-1"
         )
         self.assertEqual(result["eligible_token_slot_ids"], ["slot-1"])
-        self.assertEqual(budget["request_ceiling"], 143)
+        self.assertEqual(budget["request_ceiling"], 149)
         self.assertEqual(budget["scheduler_ceiling"], 128)
         self.assertEqual(budget["continuing_mask"], (True, False))
 

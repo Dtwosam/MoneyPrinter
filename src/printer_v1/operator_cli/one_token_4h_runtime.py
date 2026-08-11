@@ -123,6 +123,9 @@ def standard_campaign_lifecycle_budget(
 
     request_components: dict[str, int] = {"discovery": 2}
     scheduler_components: dict[str, int] = {}
+    phase_request_ceiling = 0
+    phase_scheduler_ceiling = 0
+    phase_holder_fallback_ceiling = 0
     for index, (lane, continues) in enumerate(zip(lanes, mask, strict=True), start=1):
         if lane not in REQUEST_CEILINGS:
             raise ValueError("TRACK_FAST or TRACK_NORMAL cadence policy required")
@@ -149,6 +152,9 @@ def standard_campaign_lifecycle_budget(
         )
         if continues:
             phase = runtime_budget(lane)
+            phase_request_ceiling += int(phase["phase_request_ceiling"])
+            phase_scheduler_ceiling += int(phase["phase_scheduler_ceiling"])
+            phase_holder_fallback_ceiling += int(phase["holder_fallback_max"])
             request_components[f"token_{index}_window_4h_phase"] = int(
                 phase["phase_request_ceiling"]
             )
@@ -161,6 +167,9 @@ def standard_campaign_lifecycle_budget(
         "tracking_lanes": lanes,
         "continuing_mask": mask,
         "continuation_count": continuation_count,
+        "phase_request_ceiling": phase_request_ceiling,
+        "phase_scheduler_ceiling": phase_scheduler_ceiling,
+        "phase_holder_fallback_ceiling": phase_holder_fallback_ceiling,
         "request_components": request_components,
         "request_ceiling": sum(request_components.values()),
         "scheduler_components": scheduler_components,

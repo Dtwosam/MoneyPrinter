@@ -2792,6 +2792,82 @@ def _update_step(
 
 
 
+def _merge_standard_four_hour_barrier_result(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    step_id: int,
+    barrier: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Merge barrier truth into the authoritative successful 1h close payload."""
+    if not isinstance(barrier, Mapping):
+        raise ValueError(
+            "standard four-hour barrier result must be a mapping"
+        )
+
+    row = conn.execute(
+        """SELECT id,run_id,step_kind,step_status,result_json
+           FROM printer_memory_factory_run_steps
+           WHERE run_id=? AND id=?""",
+        (run_id, step_id),
+    ).fetchone()
+
+    if row is None:
+        raise ValueError(
+            "standard four-hour close row missing during barrier merge"
+        )
+
+    if (
+        str(row["run_id"]) != str(run_id)
+        or str(row["step_kind"]) != "CONTINUATION_CLOSE"
+        or str(row["step_status"]) != "SUCCEEDED"
+    ):
+        raise ValueError(
+            "standard four-hour barrier merge requires exact "
+            "successful continuation close"
+        )
+
+    try:
+        payload = json.loads(str(row["result_json"] or "{}"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            "invalid successful continuation close result JSON"
+        ) from exc
+
+    if not isinstance(payload, dict):
+        raise ValueError(
+            "invalid successful continuation close result payload"
+        )
+
+    barrier_payload = dict(barrier)
+    existing = payload.get("standard_four_hour_barrier")
+
+    if existing is not None:
+        if existing != barrier_payload:
+            raise ValueError(
+                "standard four-hour barrier result conflict"
+            )
+        return payload
+
+    payload["standard_four_hour_barrier"] = barrier_payload
+
+    updated = conn.execute(
+        """UPDATE printer_memory_factory_run_steps
+           SET result_json=?,updated_at=?
+           WHERE run_id=? AND id=?
+             AND step_kind='CONTINUATION_CLOSE'
+             AND step_status='SUCCEEDED'""",
+        (_json(payload), _iso(), run_id, step_id),
+    )
+
+    if int(updated.rowcount or 0) != 1:
+        raise ValueError(
+            "standard four-hour barrier merge lost exact close identity"
+        )
+
+    return payload
+
+
 def _owned_campaign_scheduler_row(
     conn: sqlite3.Connection, *, scheduler_job_id: int,
 ) -> sqlite3.Row | None:
@@ -3833,6 +3909,25 @@ def _standard_four_hour_cumulative_budget_for_run(
     )
 
 
+def _standard_four_hour_reporting_budget_for_run(
+    conn: sqlite3.Connection, run_id: str,
+) -> dict[str, Any]:
+    """Resolve reporting from the same exact standard subset owner as execution."""
+    try:
+        budget = _standard_four_hour_cumulative_budget_for_run(conn, run_id)
+    except ValueError as exc:
+        return {
+            "available": False,
+            "reason": str(exc),
+            "budget": None,
+        }
+    return {
+        "available": True,
+        "reason": None,
+        "budget": budget,
+    }
+
+
 def _enforce_budgets_before_step(conn: sqlite3.Connection, run_id: str, step: sqlite3.Row) -> None:
     """Raise _GlobalStop if executing this step would breach a hard ceiling.
 
@@ -3858,8 +3953,12 @@ def _enforce_budgets_before_step(conn: sqlite3.Connection, run_id: str, step: sq
                 raise _GlobalStop(
                     STOP_BUDGET, scope="STANDARD_FOUR_HOUR_SUBSET", detail=str(exc),
                 ) from exc
+            phase_request_ceiling = int(
+                cumulative["phase_request_ceiling"]
+            )
         else:
             cumulative = _cumulative_lifecycle_budget_for_run(conn, run_id, lane)
+            phase_request_ceiling = int(phase["phase_request_ceiling"])
         phase_used = int(conn.execute(
             "SELECT COUNT(*) FROM printer_source_requests WHERE request_key LIKE ?",
             (f"{run_id}:%4h%",),
@@ -3870,7 +3969,7 @@ def _enforce_budgets_before_step(conn: sqlite3.Connection, run_id: str, step: sq
         try:
             require_projected_capacity(
                 current=phase_used, projected=projected,
-                ceiling=int(phase["phase_request_ceiling"]),
+                ceiling=phase_request_ceiling,
                 label="4h phase request",
             )
         except ValueError as exc:
@@ -4202,8 +4301,48 @@ def _run_budgets(
                 },
             }
 
-        phase = runtime_budget(lane)
-        cumulative = _cumulative_lifecycle_budget_for_run(conn, run_id, lane)
+        standard_campaign = bool(
+            config.get("standard_four_hour_campaign")
+        )
+        reporting_unavailable_reason: str | None = None
+        reporting_lane = lane
+
+        if standard_campaign:
+            standard_report = _standard_four_hour_reporting_budget_for_run(
+                conn, run_id
+            )
+            if standard_report["available"]:
+                standard_budget = standard_report.get("budget")
+                if not isinstance(standard_budget, Mapping):
+                    raise ValueError(
+                        "standard four-hour reporting budget payload is invalid"
+                    )
+                cumulative = dict(standard_budget)
+                phase = {
+                    "phase_request_ceiling": int(
+                        cumulative["phase_request_ceiling"]
+                    ),
+                    "phase_scheduler_ceiling": int(
+                        cumulative["phase_scheduler_ceiling"]
+                    ),
+                    "holder_fallback_max": int(
+                        cumulative["phase_holder_fallback_ceiling"]
+                    ),
+                }
+                reporting_lane = "STANDARD_FOUR_HOUR_SUBSET"
+            else:
+                reporting_unavailable_reason = str(
+                    standard_report.get("reason")
+                    or "standard four-hour subset budget unavailable"
+                )
+                cumulative = None
+                phase = None
+                reporting_lane = "STANDARD_FOUR_HOUR_SUBSET"
+        else:
+            phase = runtime_budget(lane)
+            cumulative = _cumulative_lifecycle_budget_for_run(
+                conn, run_id, lane
+            )
         phase_requests = int(conn.execute(
             "SELECT COUNT(*) FROM printer_source_requests WHERE request_key LIKE ?",
             (f"{run_id}:%4h%",),
@@ -4220,6 +4359,76 @@ def _run_budgets(
         ).fetchone()[0]) if phase_started else 0
         cumulative_requests = discovery_requests + runtime_requests
 
+        if reporting_unavailable_reason is not None:
+            prefixes = sorted(
+                {_token_prefix(s["step_key"]) for s in steps}
+            )
+            per_token_requests = {
+                prefix: _token_request_count(conn, run_id, prefix)
+                for prefix in prefixes
+            }
+            return {
+                "four_hour_phase_usage": {
+                    "state": (
+                        "STARTED" if phase_started else "NOT_STARTED"
+                    ),
+                    "available": False,
+                    "reason": reporting_unavailable_reason,
+                    "tracking_lane": reporting_lane,
+                    "source_requests": phase_requests,
+                    "source_request_ceiling": None,
+                    "source_requests_within_ceiling": None,
+                    "scheduler_rows": phase_jobs,
+                    "scheduler_row_ceiling": None,
+                    "scheduler_rows_within_ceiling": None,
+                    "holder_fallbacks": phase_holder_fallbacks,
+                    "holder_fallback_ceiling": None,
+                    "automatic_retries": 0,
+                    "endpoint_rotation": False,
+                    "budget_verdict": None,
+                    "within_ceiling": None,
+                },
+                "cumulative_lifecycle_usage": {
+                    "state": "UNAVAILABLE",
+                    "available": False,
+                    "reason": reporting_unavailable_reason,
+                    "tracking_lane": reporting_lane,
+                    "source_requests": cumulative_requests,
+                    "source_request_ceiling": None,
+                    "source_requests_within_ceiling": None,
+                    "scheduler_rows": cumulative_scheduler_rows,
+                    "scheduler_row_ceiling": None,
+                    "scheduler_rows_within_ceiling": None,
+                    "discovery_source_requests": discovery_requests,
+                    "runtime_source_requests": runtime_requests,
+                    "budget_verdict": None,
+                    "within_ceiling": None,
+                },
+                "governed_requests_run": cumulative_requests,
+                "governed_requests_run_ceiling": None,
+                "governed_requests_run_within_ceiling": None,
+                "governed_requests_per_token": per_token_requests,
+                "governed_requests_per_token_ceiling": None,
+                "governed_requests_per_token_within_ceiling": None,
+                "holder_rpc_fallbacks": phase_holder_fallbacks,
+                "holder_rpc_fallbacks_ceiling": None,
+                "scheduler_run_step_jobs": all_step_jobs,
+                "scheduler_cancelled_discovery_handoffs": handoffs,
+                "scheduler_rows_total": cumulative_scheduler_rows,
+                "scheduler_rows_ceiling": None,
+                "scheduler_rows_within_ceiling": None,
+                "discovery_requests_ceiling": None,
+                "automatic_retries": 0,
+                "continuous_first_hour": continuous,
+            }
+
+        if not isinstance(phase, Mapping) or not isinstance(
+            cumulative, Mapping
+        ):
+            raise ValueError(
+                "four-hour reporting budget unexpectedly unavailable"
+            )
+
         if phase_started:
             phase_requests_ok = phase_requests <= int(phase["phase_request_ceiling"])
             phase_jobs_ok = phase_jobs <= int(phase["phase_scheduler_ceiling"])
@@ -4234,7 +4443,7 @@ def _run_budgets(
         phase_usage = {
             "state": "STARTED" if phase_started else "NOT_STARTED",
             "available": True,
-            "tracking_lane": lane,
+            "tracking_lane": reporting_lane,
             "source_requests": phase_requests,
             "source_request_ceiling": int(phase["phase_request_ceiling"]),
             "source_requests_within_ceiling": phase_requests_ok,
@@ -4255,7 +4464,7 @@ def _run_budgets(
         cumulative_usage = {
             "state": "REPORTED",
             "available": True,
-            "tracking_lane": lane,
+            "tracking_lane": reporting_lane,
             "source_requests": cumulative_requests,
             "source_request_ceiling": int(cumulative["request_ceiling"]),
             "source_requests_within_ceiling": cumulative_requests_ok,
@@ -4271,7 +4480,20 @@ def _run_budgets(
             "within_ceiling": cumulative_within,
         }
         compressed_two_token = _two_token_lifecycle(config)
-        if compressed_two_token:
+        if standard_campaign:
+            prefixes = sorted(
+                {_token_prefix(s["step_key"]) for s in steps}
+            )
+            per_token_requests = {
+                prefix: _token_request_count(conn, run_id, prefix)
+                for prefix in prefixes
+            }
+            # Standard mode has an aggregate subset ceiling. Preserve
+            # exact token-local usage without inventing a scalar
+            # per-token ceiling from the aggregate projection.
+            token_ceiling = None
+            per_token_within = None
+        elif compressed_two_token:
             prefixes = sorted({_token_prefix(s["step_key"]) for s in steps})
             per_token_requests = {
                 prefix: _token_request_count(conn, run_id, prefix)
@@ -4299,8 +4521,14 @@ def _run_budgets(
             "governed_requests_per_token": per_token_requests,
             "governed_requests_per_token_ceiling": token_ceiling,
             "governed_requests_per_token_within_ceiling": per_token_within,
-            "holder_rpc_fallbacks": holder_fallbacks,
-            "holder_rpc_fallbacks_ceiling": int(phase["holder_fallback_max"]),
+            "holder_rpc_fallbacks": (
+                phase_holder_fallbacks
+                if standard_campaign
+                else holder_fallbacks
+            ),
+            "holder_rpc_fallbacks_ceiling": int(
+                phase["holder_fallback_max"]
+            ),
             "scheduler_run_step_jobs": all_step_jobs,
             "scheduler_cancelled_discovery_handoffs": handoffs,
             "scheduler_rows_total": cumulative_scheduler_rows,
@@ -6681,9 +6909,11 @@ def run_one_command_15m_factory(
                             cycle_id=str(cycle_id),
                             factory_run_id=str(run_id),
                         )
-                        result["standard_four_hour_barrier"] = barrier
-                        _update_step(
-                            conn, int(pending["id"]), "SUCCEEDED", result
+                        result = _merge_standard_four_hour_barrier_result(
+                            conn,
+                            run_id=run_id,
+                            step_id=int(pending["id"]),
+                            barrier=barrier,
                         )
                         conn.commit()
                 else:
