@@ -17,7 +17,7 @@ Inside that stack, `docs/printer-v1-memory-growth-build-order-v2.md` is the acti
 
 ## Current durable state
 
-V2-9.8B has progressed through the first standard-four-hour consumed attempt, its repair chain, and fresh post-repair rereadiness.
+V2-9.8B has now consumed two separately authorized standard-four-hour attempts. Neither is a successful 4h proof and neither authorization may ever be reused.
 
 Durable anchors include:
 
@@ -25,88 +25,124 @@ Durable anchors include:
 - post-DTW100 E2Q audit closeout: `b07a946d56886d923129b3eacade775f19f58d71`;
 - first-hour Checkpoint 1-6 offline-composition chain closeout: `7c793dca805bccf79a8bbadaed2fb57e426c6b93`;
 - standard-four-hour current-state audit: `74bd2b48f4a1a0cd8d87e3696773d038ce59e2ca`;
-- pre-attempt standard-four-hour rereadiness closeout: `3b558d2af77ac469dd0d6c2f04e3993515988b2e`;
-- consumed standard-four-hour runtime closeout: `b3a4e16f6791c007399f0079dd2d2ad8d710ef59`;
-- repair-scope audit: `30bbeca17f723e5c7cfe6da25f7ef73cc6191256`;
-- repair design: `f83d46d02e25a53e4ab8dd60ba8cec8414f1a741`;
-- repair implementation: `ca312c737e10b38cbb34e920eb419822913b7baf`;
-- repair closeout: `6e7fb3b6d8e9e332ef66f09051e8cdfe424f2b53`;
-- post-repair standard-four-hour rereadiness closeout: `8fd74f5d13225b72ebb56890dfd17224600189c5`.
+- first consumed standard-four-hour runtime closeout: `b3a4e16f6791c007399f0079dd2d2ad8d710ef59`;
+- first-attempt repair implementation: `ca312c737e10b38cbb34e920eb419822913b7baf`;
+- first-attempt repair closeout: `6e7fb3b6d8e9e332ef66f09051e8cdfe424f2b53`;
+- post-repair standard-four-hour rereadiness closeout: `8fd74f5d13225b72ebb56890dfd17224600189c5`;
+- second standard-four-hour launch HEAD: `fdf5ea4c31afc9e62f1b9bc7263a44e32bfb33b7`;
+- second standard-four-hour runtime classification closeout: `623ea64657555341419fe92f000435e11ab52d5c`.
 
-DTW97 is permanently consumed and must not be rerun. DTW100 is closed. No historical authorization may be reused.
+DTW97 remains permanently consumed. DTW100 remains closed. No historical authorization may be reused.
 
-## Consumed standard-four-hour attempt
+## First consumed standard-four-hour attempt
 
-Authorization `V2_9_8B_STANDARD_4H_AUTH_20260810T220717Z` was consumed exactly once and is permanently non-reusable.
+Authorization `V2_9_8B_STANDARD_4H_AUTH_20260810T220717Z` was consumed exactly once at launch HEAD `3b558d2af77ac469dd0d6c2f04e3993515988b2e`.
+
+It stopped at `SAFE_STOP_PREFLIGHT_FAILED`. Independent forensics proved a committed preflight-composition defect. That defect was audited, designed, repaired, focused-proofed, closed, and followed by fresh operational rereadiness PASS.
+
+That authorization remains permanently non-reusable.
+
+## Second consumed standard-four-hour attempt
+
+Fresh authorization:
+
+- ID: `V2_9_8B_STANDARD_4H_AUTH_20260811T010152Z`;
+- SHA-256: `f58788685f836a3c0979bfb71ddd079beb84ffba568a5ad70823554fa2bb7612`;
+- frozen launch branch: `agent/v2-9-8b-post-standard-4h-fresh-authorization-preparation`;
+- exact launch HEAD: `fdf5ea4c31afc9e62f1b9bc7263a44e32bfb33b7`.
 
 Attempt identity:
 
-- launch HEAD: `3b558d2af77ac469dd0d6c2f04e3993515988b2e`;
-- execution: `20260810T221625Z-20e56a0c7f56`;
-- campaign: `20260810T221625Z-20e56a0c7f56-campaign`;
-- run: `20260810T221625Z-20e56a0c7f56-campaign-run`;
-- first terminal cause: `SAFE_STOP_PREFLIGHT_FAILED`;
+- execution: `20260811T011906Z-2e278d795b54`;
+- campaign: `20260811T011906Z-2e278d795b54-campaign`;
+- campaign run: `20260811T011906Z-2e278d795b54-campaign-run`;
+- authoritative factory run: `7a84b80b-4f51-4516-84e9-828132a45009`;
+- first terminal cause: `SAFE_STOP_4H_TERMINAL_INCOMPLETE`;
+- wrapper child exit: `0`;
+- child terminal valid: true;
 - retry / rerun / resume / restart / successor: none.
 
-Independent forensics classified the blocker as a committed two-boundary preflight-composition defect. The repair is now implemented and closed:
+The authorization passed preparation and independent review, was consumed exactly once, and is permanently non-reusable.
 
-1. standard-four-hour no longer inherits historical `operational_natural_disposition=True` from the live owner;
-2. factory continuous-first-hour preflight explicitly recognizes standard-four-hour before historical compressed/natural/one-token shapes;
-3. ordinary operational-natural behavior and historical one-token proof semantics remain preserved;
-4. focused offline proof reaches a real factory run and both opening `WINDOW_15M` stage plans under the exact persistent two-token standard shape;
-5. no holder/source/Scheduler/memory-quality/capability law was weakened.
+## Second-attempt runtime truth
 
-`HOLDER_CONTEXT_BUDGET_EXHAUSTED` from the consumed attempt remains bounded holder-context truth, not the root blocker. Holder budgets were not increased and memory-observation holder-decoupling remains intact.
+Read-only reconstruction closed PASS with root-cause classification:
 
-The consumed attempt and authorization must never be rerun, resumed, restarted, reused, or treated as successor authority.
+`COMMITTED_CODE_DEFECT_AT_WINDOW_1H_TO_WINDOW_4H_SAFETY_PROVENANCE_INTEGRATION_BOUNDARY`
 
-## Fresh post-repair rereadiness
+The runtime itself did not pass 4h proof.
 
-Fresh read-only rereadiness is now closed PASS at `8fd74f5d13225b72ebb56890dfd17224600189c5` with verdict:
+### Proven successful before the blocker
 
-`V2_9_8B_POST_STANDARD_4H_OPERATIONAL_REREADINESS_AFTER_PREFLIGHT_COMPOSITION_REPAIR_CLOSEOUT_PASS`
+Both selected tokens completed:
 
-Exact rereadiness branch/HEAD before closeout documentation:
+- physical `WINDOW_15M` rows `165` and `166`;
+- clean 15m episodes `62` and `63`;
+- all 16 scheduled 15m snapshots;
+- both 15m closes;
+- all 24 `WINDOW_1H` continuation snapshots;
+- both 1h closes;
+- physical `WINDOW_1H` rows `169` and `170`;
+- clean 1h episodes `64` and `65`;
+- campaign 1h ownership state `CLEAN_PROMOTED` for both tokens.
 
-- branch: `agent/v2-9-8b-post-standard-4h-operational-rereadiness-after-preflight-composition-repair`;
-- HEAD: `333e25d81af38c934048bd7924629f8ea4520665`;
-- repaired implementation ancestor: `ca312c737e10b38cbb34e920eb419822913b7baf`;
-- tracked tree: clean.
+The current-run 15m and 1h clean memories remain valid memory evidence. They do not make the attempted campaign a successful 4h proof.
 
-Authoritative DB state observed by rereadiness:
+### Exact 1h -> 4h failure
 
-- path: `/Users/Dtwo1/Developer/MoneyPrinter/data/printer_v1.sqlite3`;
-- SHA-256: `92c58ba196284b9ffb54b7d7b63fbe01771333eb0261d894a22ce4901a3c778c`;
-- size: `77049856`;
-- migration count/head: `54` / `054_pre_lifecycle_discovery_refresh_wait.sql`;
+The first 1h close reached `AWAITING_PEER_FIRST_HOUR_CLOSE` as designed.
+
+After the second 1h close, the standard-four-hour barrier reached its two-token decision point but returned:
+
+- barrier reached: true;
+- successful first-hour closes: `2`;
+- continuation count: `0`;
+- eligible token slots: none;
+- planned 4h jobs: `0`.
+
+Both tokens received identical `BLOCK_CONTINUATION` reasons:
+
+- `predecessor_evidence_stale`;
+- `governed_provenance_untraceable`;
+- `mandatory_safety_context_missing`.
+
+Those three reasons derive from one systemic missing authority input, not three independent market failures.
+
+The standard-4h consumer requires the exact predecessor 1h memory to retain `supporting_context_json.memory_build_evidence_overlays.safety_composite_id`. Current-run 1h rows `169` and `170` contain no `memory_build_evidence_overlays` key. The B.2 safety adapter therefore returns unknown/missing safety authority; the 4h continuation input maps that unknown safety state to freshness false, provenance untraceable, and mandatory safety missing.
+
+The fail-closed safety rule is correct. The committed producer/consumer composition is defective because the first-hour output shape does not supply the exact safety/provenance binding required by the standard 4h handoff.
+
+### What never happened
+
+For this attempt:
+
+- campaign `WINDOW_4H` rows: `0`;
+- physical `WINDOW_4H` rows: `0`;
+- 4h campaign Scheduler-work rows: `0`;
+- 4h Scheduler jobs: `0`;
+- 4h collection: not started;
+- 4h memory: none.
+
+`SAFE_STOP_4H_TERMINAL_INCOMPLETE` is a downstream terminal symptom of the absent 4h phase, not the primary root cause.
+
+`HOLDER_CONTEXT_BUDGET_EXHAUSTED` observed in accounting is not the root cause.
+
+### Post-run safety
+
+Authoritative DB after the run:
+
+- SHA-256: `1ec5bfe3bb3f554cae975720d9a9c7411bfc03c51628f75e76012138ca2d73d1`;
 - integrity: `ok`;
 - foreign-key violations: `0`;
-- sidecars: none;
-- DB unchanged during rereadiness: true.
+- sidecars: none.
 
-Host/process/lease/staging state was quiescent before and after, all active operational counts were zero, and rereadiness performed:
+The read-only classification left that SHA unchanged and performed zero source calls, zero Scheduler runtime calls, and zero authoritative DB writes.
 
-- source calls: `0`;
-- Scheduler runtime calls: `0`;
-- authoritative DB writes: `0`;
-- filesystem mutations: `0`;
-- authorization creation: false;
-- Printer/runtime start: false.
+No attempt-linked rows were created in retrieval, paper decisions, paper decision audits, paper positions, trade events, paper trade audits, or paper audit reports. All downstream financial capabilities remain locked.
 
-Retained evidence remains exact and audit-only:
+## Active first-four-hour policy remains unchanged
 
-- visible untracked evidence: `27` exact files;
-- digest: `e8e20503c391384fb1f2363d34b88d189c4c501afbfb38b3fa3950067f36f53f`;
-- migration package: exact `12/12`;
-- migration digest: `74e690d793da5d6631160fc00bda25c05056ece197d3e8c826cf4ad2ea2b3d7c`;
-- authority: `AUDIT_ONLY_NOT_RUNTIME_ALLOWLIST`;
-- Git-provenance authorization fabricated during rereadiness: false.
-
-The one standard-four-hour application marker is the expected historical marker for the consumed authorization. It remains preserved as non-reuse evidence and is not reusable authority.
-
-## Active first-four-hour policy
-
-Valid activation commits the exact same token/pair to bounded first-four-hour observation:
+Valid activation still intends:
 
 ```text
 activation
@@ -119,76 +155,63 @@ activation
 -> automatic continuation stops
 ```
 
-15m or 1h outcome, direction, profitability, trajectory class, manipulation label, `learning_need`, scoring, ranking, confidence, weighting, and `WINDOW_5M_MICRO_EVENT` do not behavior-qualify continuation.
+15m/1h outcome, direction, profitability, trajectory class, manipulation label, `learning_need`, scoring, ranking, confidence, weighting, and `WINDOW_5M_MICRO_EVENT` do not behavior-qualify continuation.
 
-Hard identity, evidence quality, freshness, provenance, safety, continuity, campaign health, cancellation, Source Governor, Central Scheduler, DB/lease integrity, bounded resources and one-shot authority remain fail-closed.
+Hard identity, evidence quality, freshness, governed provenance, mandatory safety, continuity, campaign health, cancellation, Source Governor, Central Scheduler, DB/lease integrity, bounded resources, and one-shot authority remain fail-closed.
 
-Memory quality remains separate. Dirty memory must never be relabeled clean or used for retrieval or decisions.
-
-Standard-four-hour production policy remains:
-
-- policy version: `V2-9.8-STANDARD-4H-OPERATIONAL-V1`;
-- post-supply duration: `14700s`;
-- pre-lifecycle acquisition: `900s`;
-- governed request ceiling: `230`;
-- governed requests per token: `114`;
-- Scheduler-row ceiling: `210`;
-- exactly two activation slots;
-- automatic retries/restarts/successors: none;
-- `WINDOW_12H` / `WINDOW_24H`: locked.
-
-`WINDOW_5M_MICRO_EVENT` remains support-only and cannot independently create a main outcome, start/stop the first-four-hour lifecycle, unlock retrieval, authorize paper decisions, or create positions/trades/PnL.
+Do not weaken those gates to repair the integration defect.
 
 ## Current lane sequence
 
 Completed:
 
-1. repair-scope audit — **PASS**;
-2. repair design — **PASS**;
-3. narrow implementation — **PASS**;
-4. focused offline production-shaped proof — **PASS**;
-5. repair closeout — **PASS**;
-6. fresh post-repair operational rereadiness — **PASS**.
+1. second standard-four-hour authorization preparation — PASS;
+2. independent authorization review — PASS;
+3. one separately operator-started second standard-four-hour attempt — consumed once;
+4. post-run forensic safety collection — PASS;
+5. read-only second-attempt runtime classification — PASS;
+6. runtime classification closeout — PASS with `COMMITTED_CODE_DEFECT`.
 
-Next sequence:
-
-7. **fresh one-use standard-four-hour authorization preparation**;
-8. independent authorization review and closeout;
-9. only after authorization review PASS, consider at most one separately operator-started bounded standard 15m→1h→4h operational attempt;
-10. independent runtime closeout before any further capability lane.
-
-No step authorizes the next automatically. Historical authorizations remain non-reusable.
+The runtime did **not** prove 4h memory.
 
 ## Current lane boundary
 
-The immediate next lane is:
+Immediate next lane:
 
-`FRESH_ONE_USE_STANDARD_FOUR_HOUR_AUTHORIZATION_PREPARATION`
+`SECOND_STANDARD_FOUR_HOUR_1H_TO_4H_SAFETY_PROVENANCE_REPAIR_SCOPE_AUDIT`
 
-Allowed now:
+This lane is audit-only.
 
-- exact current Git/branch/HEAD verification;
-- fresh read-only DB/host/provenance binding needed to prepare an authorization;
-- exact historical-authorization non-reuse inventory;
-- preparation of one fresh standard-profile authorization package bound to the exact then-current Git/DB/host state;
-- authorization-preparation documentation.
+Allowed:
 
-Not allowed in preparation:
+- exact Git/branch/HEAD verification;
+- static inspection of the 1h producer, B.1/B.2 authority adapters, standard-4h consumer, Scheduler ownership, and relevant tests/designs;
+- read-only inspection of the already-consumed attempt evidence and authoritative DB;
+- exact canonical-owner and contract-mismatch classification;
+- audit documentation.
 
-- applying/consuming the new authorization;
-- starting the standard-four-hour wrapper/runtime;
-- discovery/source fetching or provider calls;
-- Scheduler runtime execution;
+Not allowed:
+
+- repair implementation;
+- weakening freshness/provenance/safety gates;
+- source/provider fetching;
+- Scheduler runtime;
 - authoritative DB mutation;
-- memory generation;
-- rerun/resume/restart/successor of the consumed attempt;
-- retrieval activation;
+- new memory generation;
+- new authorization;
+- rerun/resume/restart/successor of either consumed attempt;
+- another 4h attempt;
+- 12h/24h;
+- retrieval;
 - paper decisions;
 - BUY/SELL/HOLD;
-- positions, trade events, paper-trade audits, or PnL;
-- `WINDOW_12H` / `WINDOW_24H` activation.
+- positions, trade events, paper-trade audits, or PnL.
 
-After preparation, the fresh authorization must be independently reviewed and closed PASS before any new standard-four-hour runtime can be considered.
+After the audit, preserve the required sequence:
+
+`audit/readiness -> design/specification -> implementation if approved -> bounded offline proof/test -> closeout -> fresh operational rereadiness -> only later fresh one-use authorization review`
+
+No step authorizes the next automatically.
 
 ## Permanent restrictions
 
@@ -209,10 +232,10 @@ Printer V1 remains:
 - no BUY/SELL/HOLD before its explicit approved lane;
 - no paper positions, trade events, paper-trade audits, or PnL before their explicit approved lanes.
 
+`WINDOW_5M_MICRO_EVENT` remains support-only.
+
 ## Assistant execution rule
 
-Preserve the V2 sequence: audit/readiness -> design/specification -> implementation if approved -> bounded proof/test -> closeout.
+Preserve the V2 sequence and use minimum sufficient risk-based verification.
 
-Use minimum sufficient risk-based verification. Broad/full suites belong at major closeout, pre-live-proof, releases/checkpoints, or broad architectural changes, not every step.
-
-During fresh authorization preparation, do not apply or consume the authorization, start a live wrapper, contact providers, mutate the authoritative DB, generate operational memory, or unlock downstream financial capabilities. Authorization preparation must receive a separate independent review and closeout before any bounded runtime attempt.
+Do not run another standard-four-hour attempt or create another authorization until the new repair-scope audit, design, approved implementation, bounded offline proof, closeout, and fresh operational rereadiness all pass in order.
