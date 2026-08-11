@@ -34,7 +34,8 @@ Durable anchors include:
 - second-attempt 1h→4h safety/provenance repair-scope audit: `303227dd76b96b144dab75c11bf1cb827563babc`;
 - second-attempt 1h→4h safety/provenance repair design: `695fd3e53781b1faba13d21226f323d1e586cbb1`;
 - partial implementation status checkpoint: `81ca0385ac258c496df54e5034b94b4529de0a66`;
-- second-attempt 1h→4h safety/provenance repair implementation closeout: this commit.
+- second-attempt 1h→4h safety/provenance repair implementation closeout: `0da9a5e1d5404e9ecfb9dba176028514e8de4e1f`;
+- post-safety-repair operational rereadiness audit closeout: `f153a6bc24efb3b708e6fb86c1e262f258613b67`.
 
 DTW97 remains permanently consumed. DTW100 remains closed. No historical authorization may be reused.
 
@@ -131,9 +132,9 @@ Scheduler-owned CONTINUATION_CLOSE
 
 `lane_e2o_1h_window_close.py` remains source-free. Source calls stay in `one_command_15m_factory.py`. B.2 must not fall back to an arbitrary latest safety composite. No freshness, provenance, safety, Source Governor, Scheduler, identity, or continuity gate may be weakened.
 
-## Current implementation status
+## Completed implementation status
 
-Current repair branch:
+Repair branch:
 
 `agent/v2-9-8b-second-standard-4h-safety-provenance-repair`
 
@@ -141,18 +142,21 @@ Durable implementation verdict:
 
 `V2_9_8B_SECOND_STANDARD_FOUR_HOUR_1H_TO_4H_SAFETY_PROVENANCE_REPAIR_IMPLEMENTATION_CLOSEOUT_PASS`
 
-Implementation is **complete** and the focused bounded offline proof **passes** on one exact HEAD. Closeout: `docs/printer-v1-v2-9-8b-second-standard-four-hour-1h-to-4h-safety-provenance-repair-implementation-closeout.md`.
+Exact repaired implementation HEAD:
+
+`0da9a5e1d5404e9ecfb9dba176028514e8de4e1f`
+
+Implementation is complete and the focused bounded offline proof passed.
 
 Completed implementation surfaces:
 
 - `src/printer_v1/operator_cli/first_hour_safety_binding.py` — exact source-free fail-closed first-hour safety-composite binding helper;
 - `src/printer_v1/sources/measured_transport.py` — `FIRST_HOUR_SAFETY_CONTEXT_REQUEST_COUNT = 3` and `CONTINUATION_CLOSE = 4` reservation capacity;
 - `src/printer_v1/operator_cli/one_token_4h_runtime.py` — explicit first-hour safety request components in one-token and standard campaign lifecycle budgets;
-- `src/printer_v1/operator_cli/one_command_15m_factory.py` — Scheduler-owned `CONTINUATION_CLOSE` now collects safety-only governed context before the final exact-pair snapshot, persists it against that exact closing snapshot, binds the exact fresh composite into the produced `WINDOW_1H` before outcome/audit/E2Z, threads `context_adapter_factories`, raises the local continuous/selective ceilings, and labels the three first-hour safety reservations;
-- `src/printer_v1/operator_cli/operational_standard_4h.py` — `LIFECYCLE_REQUEST_OUTER_CEILING = 236`, Scheduler outer ceiling unchanged at `210`;
-- `tests/test_v2_9_8b_first_hour_safety_provenance_repair.py` — focused offline proof executed: `5 passed, 8 subtests passed`.
+- `src/printer_v1/operator_cli/one_command_15m_factory.py` — Scheduler-owned `CONTINUATION_CLOSE` collects safety-only governed context before the final exact-pair snapshot, persists it against that exact closing snapshot, binds the exact fresh composite into the produced `WINDOW_1H` before outcome/audit/E2Z, threads `context_adapter_factories`, raises factory-local request ceilings, and labels the three first-hour safety reservations;
+- `src/printer_v1/operator_cli/operational_standard_4h.py` — `LIFECYCLE_REQUEST_OUTER_CEILING = 236`, Scheduler outer ceiling unchanged at `210`.
 
-Confirmed budget truth:
+Confirmed repaired lifecycle budget truth:
 
 | lanes | 4h eligible | requests | Scheduler |
 |---|---|---:|---:|
@@ -161,43 +165,68 @@ Confirmed budget truth:
 | NORMAL + NORMAL | both | 140 | 114 |
 | FAST + FAST | none | 98 | 82 |
 
-`CONTINUATION_CLOSE` reserves exactly `4`: one exact-pair close observation plus three worst-case fresh 1h safety transports. No new Scheduler job was introduced. The unchanged B.2 consumer `load_authoritative_window_safety()` and the source-free `lane_e2o_1h_window_close.py` were not modified.
+`CONTINUATION_CLOSE` reserves exactly `4`: one exact-pair close observation plus three worst-case fresh 1h safety transports. No new Scheduler job was introduced. The unchanged B.2 consumer `load_authoritative_window_safety()` and source-free `lane_e2o_1h_window_close.py` were not modified.
 
-## Tooling blocker resolved
+Three unrelated pre-existing Git-provenance fixture failures remain separately documented; they are not a reason to reinterpret the safety repair as failed.
 
-The previously recorded connector/CI blocker no longer applies. The two remaining canonical edits were applied as surgical line edits in a writable local worktree, so no whole-file replacement and no temporary CI harness was required. This task created no temporary workflow, trigger, patch helper, PR, or CI artifact.
+## Fresh operational rereadiness result
 
-## Known unrelated pre-existing failures
+Fresh post-safety-repair operational rereadiness is **BLOCKED** with verdict:
 
-Three tests remain red on this branch for reasons unrelated to this repair, reproduced on the untouched parent HEAD `bf2e08d0df6b46574414b53d9b8baa637264ce6d`:
+`V2_9_8B_POST_SAFETY_PROVENANCE_REPAIR_OPERATIONAL_REREADINESS_BLOCKED_PUBLIC_BUDGET_AUTHORITY_DRIFT`
 
-- `test_v2_9_2_terminal_budget_repair.py::...::test_final_report_overrides_stale_completed_reason_after_transport_failure`
-- `test_v2_9_3_early_failure_accounting_repair.py::...::test_15m_tls_failure_is_primary_and_replay_is_zero_delta`
-- `test_v2_9_3_early_failure_accounting_repair.py::...::test_1h_tls_failure_is_primary_and_pre_four_hour`
+Audit closeout:
 
-All three raise `GitProvenanceError: launch Git provenance fields are malformed` because those fixtures build a run config with no `git_provenance` payload. This is separate launch-provenance fixture/contract drift, owns its own future lane, and must not be read as a repair failure.
+`docs/printer-v1-v2-9-8b-post-safety-provenance-repair-operational-rereadiness-audit.md`
 
-## Safety status during repair work
+Primary classification:
 
-This repair work has performed no Printer provider/source run, no Central Scheduler runtime, no authoritative Printer DB mutation, no memory generation, no new authorization, no reuse of either consumed authorization, and no standard-four-hour rerun/resume/restart/successor.
+`PUBLIC_STANDARD_FOUR_HOUR_BUDGET_AUTHORITY_DRIFT_AFTER_FIRST_HOUR_SAFETY_REPAIR`
 
-No 12h/24h, retrieval, paper decision, BUY/SELL/HOLD, position, trade event, paper-trade audit, or PnL capability has been unlocked or exercised.
+Static exact-HEAD inspection proved the repair's `236` worst-case request contract did not propagate through every live public/authorization owner:
 
-The frozen consumed launch branch remains immutable.
+- `one_token_4h_runtime` and `operational_standard_4h` carry the repaired lifecycle truth;
+- `operational_memory_factory_command.py` still publishes and persists standard-four-hour `230` total / `114` per-token request capacity;
+- `standard_four_hour_one_shot_wrapper.py` still generates and validates one-use authorization documents with request outer ceiling `230`;
+- `tests/test_v2_9_8b_post_dtw100_standard_four_hour_operational_activation.py` still explicitly pins those stale `230/114` public and wrapper contracts while other repaired tests pin `236`.
+
+A fresh authorization prepared from the current committed wrapper would therefore bind a request-capacity contract that contradicts the repaired lifecycle planner/factory contract.
+
+This is sufficient to block rereadiness before host-local execution. No fresh host/DB rereadiness PASS is claimed. The historical rereadiness helper is also not reusable unchanged because it encodes older branch/DB/application-marker state and the old `230` ceiling.
+
+No Printer provider/source run, Central Scheduler runtime, authoritative DB mutation, memory generation, new authorization, authorization reuse, standard-four-hour rerun/resume/restart/successor, or downstream financial action occurred in this rereadiness audit.
 
 ## Current lane boundary
 
-The implementation lane is now closed PASS. The next roadmap-compliant step is a **fresh operational rereadiness audit**, which this task did not perform and did not authorize.
+Current audit branch:
 
-Allowed next work is only that fresh operational rereadiness. Nothing in this closeout authorizes runtime.
+`agent/v2-9-8b-post-safety-repair-operational-rereadiness-audit`
+
+The next roadmap-compliant lane is:
+
+`SECOND_STANDARD_FOUR_HOUR_PUBLIC_BUDGET_AUTHORITY_REPAIR_SCOPE_AUDIT`
+
+That next lane is **audit-only**.
+
+It may inspect:
+
+- the exact standard-four-hour capacity owners;
+- public preflight and immutable campaign-configuration propagation;
+- one-shot authorization generation/validation;
+- directly affected policy/authorization tests;
+- adjacent selective-1h `92/45` versus factory-local `98/48` representation only to determine whether the same canonical ownership/coupling is involved.
+
+It may not implement a repair or widen into an unrelated capability change.
 
 Still not allowed:
 
+- host operational rereadiness PASS before the repair chain closes;
 - provider/source fetching;
 - Central Scheduler runtime;
 - authoritative DB mutation;
-- operational rereadiness;
+- memory generation;
 - new authorization creation/review;
+- reuse of either consumed authorization;
 - rerun/resume/restart/successor of either consumed attempt;
 - another standard-four-hour attempt;
 - 12h/24h;
@@ -206,9 +235,18 @@ Still not allowed:
 - BUY/SELL/HOLD;
 - positions, trade events, paper-trade audits, or PnL.
 
-After implementation and bounded offline proof eventually close PASS, preserve the required sequence:
+Preserve the required sequence:
 
-`implementation closeout -> fresh operational rereadiness -> only later fresh one-use authorization review`
+```text
+repair-scope audit
+-> design/specification
+-> implementation if approved
+-> bounded offline proof/test
+-> closeout
+-> fresh operational rereadiness
+-> only later fresh one-use authorization preparation/review
+-> only after independent authorization closeout may another bounded standard-four-hour attempt be considered
+```
 
 No step authorizes the next automatically.
 
@@ -237,4 +275,4 @@ Printer V1 remains:
 
 Preserve the V2 sequence and use minimum sufficient risk-based verification.
 
-Do not run another standard-four-hour attempt or create another authorization until the current repair implementation, bounded offline proof, implementation closeout, and fresh operational rereadiness all pass in order.
+Do not create another authorization or run another standard-four-hour attempt until the public budget-authority blocker is audited, designed, implemented if approved, proven, closed, and followed by a fresh operational rereadiness PASS.
