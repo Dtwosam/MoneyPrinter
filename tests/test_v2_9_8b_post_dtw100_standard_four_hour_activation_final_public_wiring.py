@@ -18,8 +18,8 @@ class StandardFourHourActivationFinalPublicWiringTests(unittest.TestCase):
         self.assertTrue(policy.continuous_four_hour)
         self.assertTrue(policy.standard_four_hour_campaign)
         self.assertEqual(policy.locked_windows, ("WINDOW_12H", "WINDOW_24H"))
-        self.assertEqual(policy.governed_request_ceiling, 230)
-        self.assertEqual(policy.governed_requests_per_token, 114)
+        self.assertEqual(policy.governed_request_ceiling, 236)
+        self.assertEqual(policy.governed_requests_per_token, 117)
         self.assertEqual(policy.scheduler_row_ceiling, 210)
         self.assertFalse(command._NORMAL_CAMPAIGN_POLICY.continuous_four_hour)
         self.assertFalse(command._NORMAL_CAMPAIGN_POLICY.standard_four_hour_campaign)
@@ -47,7 +47,10 @@ class StandardFourHourActivationFinalPublicWiringTests(unittest.TestCase):
             tuple(result["standard_four_hour_policy"]["locked_windows"]),
             ("WINDOW_12H", "WINDOW_24H"),
         )
-        self.assertEqual(result["standard_four_hour_ceilings"]["governed_requests"], 230)
+        self.assertEqual(result["standard_four_hour_ceilings"]["governed_requests"], 236)
+        self.assertEqual(
+            result["standard_four_hour_ceilings"]["governed_requests_per_token"], 117
+        )
         self.assertEqual(result["standard_four_hour_ceilings"]["scheduler_rows"], 210)
         self.assertEqual(result["source_calls"], 0)
         self.assertEqual(result["scheduler_runtime_calls"], 0)

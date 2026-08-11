@@ -34,6 +34,9 @@ from printer_v1.operator_cli.git_provenance_authorization_manifest import (
     validate_git_provenance_manifest_pre_marker,
     validate_prior_authorizations_non_reusable,
 )
+from printer_v1.operator_cli.operational_standard_4h import (
+    standard_four_hour_capacity_contract,
+)
 from printer_v1.operator_cli.pre_authorization_migration_ledger_guard import (
     GuardResult,
     MigrationLedgerDriftGuardError,
@@ -78,8 +81,17 @@ ELIGIBILITY_CONTRACT_VERSION = "STANDARD_4H_ELIGIBILITY_V1"
 POLICY_VERSION = "V2-9.8-STANDARD-4H-OPERATIONAL-V1"
 POST_SUPPLY_DURATION_SECONDS = 14_700
 PRE_LIFECYCLE_DURATION_SECONDS = 900
-LIFECYCLE_REQUEST_OUTER_CEILING = 230
-LIFECYCLE_SCHEDULER_OUTER_CEILING = 210
+# Authorization capacity is projected from the one derived public standard
+# contract, which derives from the canonical ``one_token_4h_runtime`` lifecycle
+# arithmetic. This wrapper owns no independent request/Scheduler authority, so a
+# freshly constructed authorization can never disagree with the repaired policy.
+_STANDARD_CAPACITY = standard_four_hour_capacity_contract()
+LIFECYCLE_REQUEST_OUTER_CEILING = int(
+    _STANDARD_CAPACITY["lifecycle_request_outer_ceiling"]
+)
+LIFECYCLE_SCHEDULER_OUTER_CEILING = int(
+    _STANDARD_CAPACITY["lifecycle_scheduler_outer_ceiling"]
+)
 LOCKED_WINDOWS = ("WINDOW_12H", "WINDOW_24H")
 APPLICATION_ROOT = (
     Path.home() / "PrinterOperations" / "v2-9-8" / "standard-four-hour-one-shot-applications"

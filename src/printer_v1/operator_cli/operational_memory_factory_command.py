@@ -84,6 +84,9 @@ from printer_v1.operator_cli.operational_campaign_recovery import (
     production_recovery_paths,
     recover_exact_orphan,
 )
+from printer_v1.operator_cli.operational_standard_4h import (
+    standard_four_hour_capacity_contract,
+)
 from printer_v1.operator_cli.proof_db_schema_readiness import (
     CANONICAL_PERSISTENT_DB,
 )
@@ -140,9 +143,20 @@ STANDARD_FOUR_HOUR_MODE = "standard-four-hour-run"
 STANDARD_FOUR_HOUR_PREFLIGHT_MODE = "standard-four-hour-preflight"
 STANDARD_FOUR_HOUR_POLICY_VERSION = "V2-9.8-STANDARD-4H-OPERATIONAL-V1"
 STANDARD_FOUR_HOUR_TOTAL_DURATION_SECONDS = 14_700
-STANDARD_FOUR_HOUR_GOVERNED_REQUEST_CEILING = 230
-STANDARD_FOUR_HOUR_GOVERNED_REQUESTS_PER_TOKEN = 114
-STANDARD_FOUR_HOUR_SCHEDULER_ROW_CEILING = 210
+# Standard-four-hour capacity is projected from the one derived public contract
+# in ``operational_standard_4h``, which in turn derives from the canonical
+# ``one_token_4h_runtime`` lifecycle arithmetic. This command owns no
+# independent standard-four-hour numeric capacity.
+_STANDARD_FOUR_HOUR_CAPACITY = standard_four_hour_capacity_contract()
+STANDARD_FOUR_HOUR_GOVERNED_REQUEST_CEILING = int(
+    _STANDARD_FOUR_HOUR_CAPACITY["lifecycle_request_outer_ceiling"]
+)
+STANDARD_FOUR_HOUR_GOVERNED_REQUESTS_PER_TOKEN = int(
+    _STANDARD_FOUR_HOUR_CAPACITY["lifecycle_requests_per_token"]
+)
+STANDARD_FOUR_HOUR_SCHEDULER_ROW_CEILING = int(
+    _STANDARD_FOUR_HOUR_CAPACITY["lifecycle_scheduler_outer_ceiling"]
+)
 LEASE_SECONDS = 90
 HEARTBEAT_SECONDS = 30
 CANCELLATION_PROBE_SQLITE_BUSY_TIMEOUT_SECONDS = (

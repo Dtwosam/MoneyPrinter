@@ -87,8 +87,8 @@ class StandardFourHourOperationalActivationContracts(unittest.TestCase):
         policy = command.STANDARD_FOUR_HOUR_POLICY
         self.assertEqual(policy.duration_seconds, 14_700)
         self.assertEqual(policy.pre_lifecycle_acquisition_duration_seconds, 900)
-        self.assertEqual(policy.governed_request_ceiling, 230)
-        self.assertEqual(policy.governed_requests_per_token, 114)
+        self.assertEqual(policy.governed_request_ceiling, 236)
+        self.assertEqual(policy.governed_requests_per_token, 117)
         self.assertEqual(policy.scheduler_row_ceiling, 210)
         self.assertEqual(policy.locked_windows, ("WINDOW_12H", "WINDOW_24H"))
         self.assertTrue(policy.selective_1h_continuation)
@@ -202,7 +202,7 @@ class StandardFourHourOperationalActivationContracts(unittest.TestCase):
         self.assertEqual(validated["authorized_command"]["mode"], "standard-four-hour-run")
         self.assertEqual(validated["campaign_policy"]["post_supply_duration_seconds"], 14_700)
         self.assertEqual(validated["campaign_policy"]["pre_lifecycle_duration_seconds"], 900)
-        self.assertEqual(validated["campaign_policy"]["lifecycle_request_outer_ceiling"], 230)
+        self.assertEqual(validated["campaign_policy"]["lifecycle_request_outer_ceiling"], 236)
         self.assertEqual(validated["campaign_policy"]["lifecycle_scheduler_outer_ceiling"], 210)
         self.assertEqual(
             validated["campaign_policy"]["eligibility_contract_version"],

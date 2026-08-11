@@ -35,7 +35,9 @@ Durable anchors include:
 - second-attempt 1h→4h safety/provenance repair design: `695fd3e53781b1faba13d21226f323d1e586cbb1`;
 - partial implementation status checkpoint: `81ca0385ac258c496df54e5034b94b4529de0a66`;
 - second-attempt 1h→4h safety/provenance repair implementation closeout: `0da9a5e1d5404e9ecfb9dba176028514e8de4e1f`;
-- post-safety-repair operational rereadiness audit closeout: `f153a6bc24efb3b708e6fb86c1e262f258613b67`.
+- post-safety-repair operational rereadiness audit closeout: `f153a6bc24efb3b708e6fb86c1e262f258613b67`;
+- second standard-four-hour public budget-authority repair-scope audit: `146261d41cdd5ac9a13054bd3e8237d78d98db83`;
+- second standard-four-hour public budget-authority repair design: `ba2843f0e26d67ad6175d27adce0ab63e30bb308`.
 
 DTW97 remains permanently consumed. DTW100 remains closed. No historical authorization may be reused.
 
@@ -167,7 +169,7 @@ Confirmed repaired lifecycle budget truth:
 
 `CONTINUATION_CLOSE` reserves exactly `4`: one exact-pair close observation plus three worst-case fresh 1h safety transports. No new Scheduler job was introduced. The unchanged B.2 consumer `load_authoritative_window_safety()` and source-free `lane_e2o_1h_window_close.py` were not modified.
 
-Three unrelated pre-existing Git-provenance fixture failures remain separately documented; they are not a reason to reinterpret the safety repair as failed.
+Unrelated pre-existing Git-provenance fixture failures remain separately documented; they are not a reason to reinterpret the safety repair as failed. The count was previously recorded here as three; the measured count on the current branch is `31 failed, 29 passed`, identical before and after the budget-authority repair.
 
 ## Fresh operational rereadiness result
 
@@ -196,27 +198,53 @@ This is sufficient to block rereadiness before host-local execution. No fresh ho
 
 No Printer provider/source run, Central Scheduler runtime, authoritative DB mutation, memory generation, new authorization, authorization reuse, standard-four-hour rerun/resume/restart/successor, or downstream financial action occurred in this rereadiness audit.
 
+## Public budget-authority repair chain — CLOSED
+
+The blocking drift above is **repaired and closed offline**.
+
+Implementation closeout:
+
+`docs/printer-v1-v2-9-8b-second-standard-four-hour-public-budget-authority-repair-implementation-closeout.md`
+
+Verdict:
+
+`V2_9_8B_SECOND_STANDARD_FOUR_HOUR_PUBLIC_BUDGET_AUTHORITY_REPAIR_IMPLEMENTATION_CLOSEOUT_PASS`
+
+Implementation branch: `agent/v2-9-8b-public-budget-authority-repair-implementation`
+
+`operational_standard_4h.standard_four_hour_capacity_contract()` now derives the standard worst-case public capacity from the canonical `one_token_4h_runtime.standard_campaign_lifecycle_budget(...)` FAST+FAST / both-eligible calculation. The public command and the one-shot wrapper own no independent standard-four-hour numeric capacity and project that one contract.
+
+Exact cross-owner equality proven offline:
+
+- canonical worst-case lifecycle: `236 / 210`;
+- public standard contract: `236 / 117 / 210`;
+- command standard policy, standard preflight, immutable campaign config: `236 / 117 / 210`;
+- one-shot wrapper authorization: `236 / 210`;
+- a newly constructed `230` authorization document: **rejected, fail-closed**;
+- mixed/normal lifecycle budgets unchanged: `188/162` and `140/114`;
+- FAST+FAST no-4h prefix unchanged: `98/82`;
+- `CONTINUATION_CLOSE` still reserves exactly `4`;
+- no Scheduler increase; no stale-15m safety fallback.
+
+Focused proof: `48 passed, 14 subtests passed`. Selective-1h behavior unchanged; the adjacent `92/45` versus `98/48` drift remains separately recorded.
+
+No provider/source run, Central Scheduler runtime, authoritative DB mutation, memory generation, authorization creation/review/reuse, or standard-four-hour run occurred in the repair implementation lane. The frozen consumed launch branch `agent/v2-9-8b-post-standard-4h-fresh-authorization-preparation` at `fdf5ea4c31afc9e62f1b9bc7263a44e32bfb33b7` is unchanged.
+
 ## Current lane boundary
 
-Current audit branch:
+Current implementation branch:
 
-`agent/v2-9-8b-post-safety-repair-operational-rereadiness-audit`
+`agent/v2-9-8b-public-budget-authority-repair-implementation`
 
 The next roadmap-compliant lane is:
 
-`SECOND_STANDARD_FOUR_HOUR_PUBLIC_BUDGET_AUTHORITY_REPAIR_SCOPE_AUDIT`
+`POST_PUBLIC_BUDGET_AUTHORITY_REPAIR_OPERATIONAL_REREADINESS_AUDIT`
 
-That next lane is **audit-only**.
+That next lane is **audit-only** and is not unlocked automatically by the implementation closeout.
 
-It may inspect:
+It may inspect fresh host/DB/application-marker rereadiness against the repaired `236/117/210` contract.
 
-- the exact standard-four-hour capacity owners;
-- public preflight and immutable campaign-configuration propagation;
-- one-shot authorization generation/validation;
-- directly affected policy/authorization tests;
-- adjacent selective-1h `92/45` versus factory-local `98/48` representation only to determine whether the same canonical ownership/coupling is involved.
-
-It may not implement a repair or widen into an unrelated capability change.
+It may not create or review an authorization, and may not widen into an unrelated capability change.
 
 Still not allowed:
 
@@ -275,4 +303,4 @@ Printer V1 remains:
 
 Preserve the V2 sequence and use minimum sufficient risk-based verification.
 
-Do not create another authorization or run another standard-four-hour attempt until the public budget-authority blocker is audited, designed, implemented if approved, proven, closed, and followed by a fresh operational rereadiness PASS.
+The public budget-authority blocker is now audited, designed, implemented, proven offline, and closed. Do not create another authorization or run another standard-four-hour attempt until that closed repair chain is followed by a fresh operational rereadiness PASS and an independent authorization closeout.

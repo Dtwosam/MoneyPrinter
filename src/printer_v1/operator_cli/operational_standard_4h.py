@@ -47,16 +47,74 @@ SUCCESSOR_WINDOW = "WINDOW_4H"
 TOKEN_CAPACITY = 2
 POST_SUPPLY_DURATION_SECONDS = 14_700
 PRE_LIFECYCLE_DURATION_SECONDS = 900
-LIFECYCLE_REQUEST_OUTER_CEILING = 236
-LIFECYCLE_SCHEDULER_OUTER_CEILING = 210
 AUTOMATIC_RETRIES = 0
 ENDPOINT_ROTATION = False
 LOCKED_WINDOWS = ("WINDOW_12H", "WINDOW_24H")
 ELIGIBILITY_CONTRACT_VERSION = "STANDARD_4H_ELIGIBILITY_V1"
+# Worst-case standard operational shape. Both token slots run the FAST cadence
+# and both remain eligible for the WINDOW_4H suffix. This is the authorization
+# envelope, not a prediction that every request will occur.
+STANDARD_WORST_CASE_TRACKING_LANES = ("TRACK_FAST", "TRACK_FAST")
+STANDARD_WORST_CASE_CONTINUING_MASK = (True, True)
 
 
 class StandardFourHourOperationalError(ValueError):
     """Fail-closed standard-four-hour operational contract fault."""
+
+
+def standard_four_hour_capacity_contract() -> dict[str, Any]:
+    """Derive the standard worst-case public capacity from canonical arithmetic.
+
+    ``one_token_4h_runtime.standard_campaign_lifecycle_budget`` remains the only
+    owner of cadence/context/4h-phase summation. This helper projects that one
+    truth for every public standard surface so no downstream owner may maintain
+    an independent numeric capacity.
+
+    The derivation is deterministic and source-free: it reads only committed
+    cadence/runtime policy and performs no source, database, Scheduler,
+    filesystem, or environment access.
+    """
+    if TOKEN_CAPACITY != 2:
+        raise StandardFourHourOperationalError(
+            "standard four-hour capacity requires exactly two token slots"
+        )
+    budget = standard_campaign_lifecycle_budget(
+        STANDARD_WORST_CASE_TRACKING_LANES, STANDARD_WORST_CASE_CONTINUING_MASK
+    )
+    components = budget["request_components"]
+    if "discovery" not in components:
+        raise StandardFourHourOperationalError(
+            "standard four-hour capacity is missing its shared discovery component"
+        )
+    shared = int(components["discovery"])
+    outer_ceiling = int(budget["request_ceiling"])
+    non_shared = outer_ceiling - shared
+    if non_shared < 0 or non_shared % TOKEN_CAPACITY != 0:
+        raise StandardFourHourOperationalError(
+            "standard four-hour non-shared requests must divide exactly "
+            "across the two worst-case token slots"
+        )
+    return {
+        "tracking_lanes": STANDARD_WORST_CASE_TRACKING_LANES,
+        "continuing_mask": STANDARD_WORST_CASE_CONTINUING_MASK,
+        "token_capacity": TOKEN_CAPACITY,
+        "shared_discovery_requests": shared,
+        "lifecycle_request_outer_ceiling": outer_ceiling,
+        "lifecycle_requests_per_token": non_shared // TOKEN_CAPACITY,
+        "lifecycle_scheduler_outer_ceiling": int(budget["scheduler_ceiling"]),
+    }
+
+
+_STANDARD_CAPACITY = standard_four_hour_capacity_contract()
+# Derived, never independently maintained. Changing cadence/runtime policy moves
+# every public standard surface together instead of splitting them apart.
+LIFECYCLE_REQUEST_OUTER_CEILING = int(
+    _STANDARD_CAPACITY["lifecycle_request_outer_ceiling"]
+)
+LIFECYCLE_REQUESTS_PER_TOKEN = int(_STANDARD_CAPACITY["lifecycle_requests_per_token"])
+LIFECYCLE_SCHEDULER_OUTER_CEILING = int(
+    _STANDARD_CAPACITY["lifecycle_scheduler_outer_ceiling"]
+)
 
 
 def standard_four_hour_policy_contract() -> dict[str, object]:
@@ -70,6 +128,7 @@ def standard_four_hour_policy_contract() -> dict[str, object]:
         "post_supply_duration_seconds": POST_SUPPLY_DURATION_SECONDS,
         "pre_lifecycle_duration_seconds": PRE_LIFECYCLE_DURATION_SECONDS,
         "lifecycle_request_outer_ceiling": LIFECYCLE_REQUEST_OUTER_CEILING,
+        "lifecycle_requests_per_token": LIFECYCLE_REQUESTS_PER_TOKEN,
         "lifecycle_scheduler_outer_ceiling": LIFECYCLE_SCHEDULER_OUTER_CEILING,
         "automatic_retries": AUTOMATIC_RETRIES,
         "endpoint_rotation": ENDPOINT_ROTATION,
@@ -505,6 +564,7 @@ __all__ = [
     "AUTOMATIC_RETRIES",
     "ELIGIBILITY_CONTRACT_VERSION",
     "ENDPOINT_ROTATION",
+    "LIFECYCLE_REQUESTS_PER_TOKEN",
     "LIFECYCLE_REQUEST_OUTER_CEILING",
     "LIFECYCLE_SCHEDULER_OUTER_CEILING",
     "LOCKED_WINDOWS",
@@ -514,10 +574,13 @@ __all__ = [
     "ROOT_MAIN_WINDOW",
     "STANDARD_FOUR_HOUR_MODE",
     "STANDARD_FOUR_HOUR_PREFLIGHT_MODE",
+    "STANDARD_WORST_CASE_CONTINUING_MASK",
+    "STANDARD_WORST_CASE_TRACKING_LANES",
     "SUCCESSOR_WINDOW",
     "StandardFourHourOperationalError",
     "TOKEN_CAPACITY",
     "evaluate_standard_four_hour_eligibility",
     "run_standard_four_hour_campaign_barrier",
+    "standard_four_hour_capacity_contract",
     "standard_four_hour_policy_contract",
 ]

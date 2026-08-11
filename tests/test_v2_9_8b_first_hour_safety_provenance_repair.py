@@ -9,6 +9,7 @@ from printer_v1.operator_cli.first_hour_safety_binding import (
     FirstHourSafetyBindingError,
     attach_first_hour_safety_overlay,
 )
+from printer_v1.operator_cli import operational_standard_4h as standard_4h
 from printer_v1.operator_cli.one_token_4h_runtime import (
     standard_campaign_lifecycle_budget,
 )
@@ -209,9 +210,21 @@ class FirstHourSafetyRepairProof(unittest.TestCase):
         region = source[start:end]
         self.assertIn('"CONTINUATION_CLOSE_OBSERVATION"', region)
         self.assertIn('else "FIRST_HOUR_SAFETY_CONTEXT"', region)
+        # V2-9.8B second standard-four-hour public budget authority repair: the
+        # outer ceilings are now derived from the canonical lifecycle arithmetic
+        # instead of being independently maintained literals, so assert the
+        # derived values themselves rather than the source text.
         standard = STANDARD_4H.read_text(encoding="utf-8")
-        self.assertIn("LIFECYCLE_REQUEST_OUTER_CEILING = 236", standard)
-        self.assertIn("LIFECYCLE_SCHEDULER_OUTER_CEILING = 210", standard)
+        self.assertNotIn("LIFECYCLE_REQUEST_OUTER_CEILING = 236", standard)
+        self.assertIn("standard_four_hour_capacity_contract", standard)
+        self.assertEqual(standard_4h.LIFECYCLE_REQUEST_OUTER_CEILING, 236)
+        self.assertEqual(standard_4h.LIFECYCLE_SCHEDULER_OUTER_CEILING, 210)
+        self.assertEqual(
+            standard_4h.LIFECYCLE_REQUEST_OUTER_CEILING,
+            standard_campaign_lifecycle_budget(
+                ("TRACK_FAST", "TRACK_FAST"), (True, True)
+            )["request_ceiling"],
+        )
 
 
 if __name__ == "__main__":
