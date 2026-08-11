@@ -39,15 +39,17 @@ SIX_UNITS = (
     UNIT_LIFECYCLE_RESERVED_TRANSPORT_OPERATION,
 )
 
-# Single source of truth for the governed calls reserved by each WINDOW_15M
-# lifecycle step.  Both the real factory capacity boundary and campaign
-# accounting consume this mapping; callers must not reconstruct the close
-# bundle independently.
+# Single source of truth for governed calls reserved by lifecycle close work.
+# WINDOW_CLOSE retains the established 15m bundle. CONTINUATION_CLOSE reserves
+# its exact-pair close observation plus the worst-case fresh first-hour safety
+# bundle: GoPlus + holder primary + one approved holder backup.
 PRECLOSE_CONTEXT_REQUEST_COUNT = 5
+FIRST_HOUR_SAFETY_CONTEXT_REQUEST_COUNT = 3
 LIFECYCLE_RESERVED_OPERATIONS_BY_STEP_KIND = MappingProxyType(
     {
         "SNAPSHOT": 1,
         "WINDOW_CLOSE": 1 + PRECLOSE_CONTEXT_REQUEST_COUNT,
+        "CONTINUATION_CLOSE": 1 + FIRST_HOUR_SAFETY_CONTEXT_REQUEST_COUNT,
     }
 )
 
@@ -148,7 +150,6 @@ class TransportOperationIdentity:
             "reserved_from": self.reserved_from,
             "unit": UNIT_SOURCE_TRANSPORT_OPERATION,
         }
-
 
 
 def canonical_transport_identity_key(identity: Any) -> tuple[object, ...]:
@@ -660,6 +661,7 @@ def enforce_response_byte_ceiling(
 
 __all__ = [
     "BYTE_CEILINGS",
+    "FIRST_HOUR_SAFETY_CONTEXT_REQUEST_COUNT",
     "GET_MULTIPLE_ACCOUNTS_BATCH_SIZE",
     "MAX_PUMPSWAP_ACCOUNT_BATCHES",
     "LifecycleReservationIdentity",
