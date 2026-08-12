@@ -8,7 +8,9 @@ import unittest
 from printer_v1.operator_cli.multi_cycle_memory_growth import (
     AdmissionDecision,
     MAX_ACTIVE_TWO_TOKEN_CYCLES,
+    MAX_NEW_TOKENS_PER_24H_SESSION,
     MAX_THROUGH_4H_TOKENS,
+    MAX_TOTAL_CYCLE_ADMISSIONS_PER_24H_SESSION,
     MIN_CYCLE_ADMISSION_SPACING_SECONDS,
     TOKENS_PER_CYCLE,
     MultiCycleAdmissionState,
@@ -16,6 +18,7 @@ from printer_v1.operator_cli.multi_cycle_memory_growth import (
     MultiCycleSessionPhase,
     evaluate_cycle_admission,
     evaluate_session_phase,
+    scaled_session_capacity_contract,
     scaled_standard_four_hour_capacity_contract,
 )
 from printer_v1.operator_cli.operational_standard_4h import (
@@ -23,7 +26,6 @@ from printer_v1.operator_cli.operational_standard_4h import (
 )
 from printer_v1.scheduler.contracts import JobKind, JobStatus
 from printer_v1.scheduler.multi_cycle_fairness import (
-    MultiCycleSchedulerSelection,
     TwoTokenCycleWork,
     select_multi_cycle_scheduler_work,
 )
@@ -42,6 +44,7 @@ class MultiCycleCapacityPolicyTests(unittest.TestCase):
         self.policy6 = MultiCycleCapacityPolicy(
             configured_through_4h_token_ceiling=6,
             configured_active_cycle_ceiling=3,
+            total_cycle_admission_ceiling=15,
             intake_duration_seconds=86_400,
         )
 
@@ -51,6 +54,7 @@ class MultiCycleCapacityPolicyTests(unittest.TestCase):
             "intake_started_at": self.start,
             "active_through_4h_tokens": 0,
             "active_cycles": 0,
+            "admissions_completed": 0,
             "last_cycle_admitted_at": None,
             "source_budget_available": True,
             "provider_budgets_available": True,
@@ -68,32 +72,61 @@ class MultiCycleCapacityPolicyTests(unittest.TestCase):
         values.update(overrides)
         return MultiCycleAdmissionState(**values)
 
-    def test_compiled_capacity_is_six_as_three_exact_two_token_cycles(self) -> None:
+    def test_compiled_capacity_is_six_active_and_thirty_new_tokens_per_24h(self) -> None:
         self.assertEqual(MAX_THROUGH_4H_TOKENS, 6)
         self.assertEqual(MAX_ACTIVE_TWO_TOKEN_CYCLES, 3)
         self.assertEqual(TOKENS_PER_CYCLE, 2)
         self.assertEqual(MIN_CYCLE_ADMISSION_SPACING_SECONDS, 300)
+        self.assertEqual(MAX_TOTAL_CYCLE_ADMISSIONS_PER_24H_SESSION, 15)
+        self.assertEqual(MAX_NEW_TOKENS_PER_24H_SESSION, 30)
 
-    def test_configured_capacity_accepts_two_four_or_six_only(self) -> None:
-        for tokens, cycles in ((2, 1), (4, 2), (6, 3)):
+    def test_configured_active_capacity_accepts_two_four_or_six_only(self) -> None:
+        for tokens, active_cycles in ((2, 1), (4, 2), (6, 3)):
             with self.subTest(tokens=tokens):
                 policy = MultiCycleCapacityPolicy(
                     configured_through_4h_token_ceiling=tokens,
-                    configured_active_cycle_ceiling=cycles,
+                    configured_active_cycle_ceiling=active_cycles,
+                    total_cycle_admission_ceiling=15,
                     intake_duration_seconds=3_600,
                 )
                 policy.validate()
 
-        for tokens, cycles in ((0, 0), (1, 1), (3, 2), (4, 3), (6, 2), (8, 4)):
-            with self.subTest(tokens=tokens, cycles=cycles):
+        for tokens, active_cycles in (
+            (0, 0),
+            (1, 1),
+            (3, 2),
+            (4, 3),
+            (6, 2),
+            (8, 4),
+        ):
+            with self.subTest(tokens=tokens, active_cycles=active_cycles):
                 with self.assertRaises(ValueError):
                     MultiCycleCapacityPolicy(
                         configured_through_4h_token_ceiling=tokens,
-                        configured_active_cycle_ceiling=cycles,
+                        configured_active_cycle_ceiling=active_cycles,
+                        total_cycle_admission_ceiling=15,
                         intake_duration_seconds=3_600,
                     ).validate()
 
-    def test_scaled_capacity_is_derived_from_existing_two_token_contract(self) -> None:
+    def test_total_session_cycle_ceiling_is_separate_from_active_cycle_ceiling(self) -> None:
+        MultiCycleCapacityPolicy(
+            configured_through_4h_token_ceiling=6,
+            configured_active_cycle_ceiling=3,
+            total_cycle_admission_ceiling=15,
+            intake_duration_seconds=86_400,
+        ).validate()
+
+        for total in (0, 2, 16):
+            with self.subTest(total=total):
+                with self.assertRaises(ValueError):
+                    MultiCycleCapacityPolicy(
+                        configured_through_4h_token_ceiling=6,
+                        configured_active_cycle_ceiling=3,
+                        total_cycle_admission_ceiling=total,
+                        intake_duration_seconds=86_400,
+                    ).validate()
+
+    def test_scaled_active_capacity_is_derived_from_existing_two_token_contract(self) -> None:
         base = standard_four_hour_capacity_contract()
         four = scaled_standard_four_hour_capacity_contract(4)
         six = scaled_standard_four_hour_capacity_contract(6)
@@ -121,6 +154,24 @@ class MultiCycleCapacityPolicyTests(unittest.TestCase):
             int(base["lifecycle_requests_per_token"]),
         )
 
+    def test_24h_session_ceiling_projects_fifteen_two_token_cycles(self) -> None:
+        base = standard_four_hour_capacity_contract()
+        session = scaled_session_capacity_contract(
+            configured_through_4h_tokens=6,
+            total_cycle_admission_ceiling=15,
+        )
+        self.assertEqual(session["configured_active_cycles"], 3)
+        self.assertEqual(session["session_cycle_admission_ceiling"], 15)
+        self.assertEqual(session["session_new_token_admission_ceiling"], 30)
+        self.assertEqual(
+            session["session_lifecycle_request_outer_ceiling"],
+            15 * int(base["lifecycle_request_outer_ceiling"]),
+        )
+        self.assertEqual(
+            session["session_lifecycle_scheduler_outer_ceiling"],
+            15 * int(base["lifecycle_scheduler_outer_ceiling"]),
+        )
+
     def test_three_staggered_pair_admissions_reach_six_without_exceeding_it(self) -> None:
         first = evaluate_cycle_admission(self.policy6, self._state())
         second = evaluate_cycle_admission(
@@ -129,6 +180,7 @@ class MultiCycleCapacityPolicyTests(unittest.TestCase):
                 now=self.start + timedelta(minutes=5),
                 active_through_4h_tokens=2,
                 active_cycles=1,
+                admissions_completed=1,
                 last_cycle_admitted_at=self.start,
             ),
         )
@@ -138,6 +190,7 @@ class MultiCycleCapacityPolicyTests(unittest.TestCase):
                 now=self.start + timedelta(minutes=10),
                 active_through_4h_tokens=4,
                 active_cycles=2,
+                admissions_completed=2,
                 last_cycle_admitted_at=self.start + timedelta(minutes=5),
             ),
         )
@@ -147,6 +200,7 @@ class MultiCycleCapacityPolicyTests(unittest.TestCase):
                 now=self.start + timedelta(minutes=15),
                 active_through_4h_tokens=6,
                 active_cycles=3,
+                admissions_completed=3,
                 last_cycle_admitted_at=self.start + timedelta(minutes=10),
             ),
         )
@@ -163,6 +217,7 @@ class MultiCycleCapacityPolicyTests(unittest.TestCase):
                 now=self.start + timedelta(minutes=4, seconds=59),
                 active_through_4h_tokens=2,
                 active_cycles=1,
+                admissions_completed=1,
                 last_cycle_admitted_at=self.start,
             ),
         )
@@ -172,6 +227,7 @@ class MultiCycleCapacityPolicyTests(unittest.TestCase):
                 now=self.start + timedelta(minutes=5),
                 active_through_4h_tokens=2,
                 active_cycles=1,
+                admissions_completed=1,
                 last_cycle_admitted_at=self.start,
                 source_budget_available=False,
             ),
@@ -188,6 +244,7 @@ class MultiCycleCapacityPolicyTests(unittest.TestCase):
                 now=self.start + timedelta(hours=4, minutes=1),
                 active_through_4h_tokens=4,
                 active_cycles=2,
+                admissions_completed=3,
                 last_cycle_admitted_at=self.start + timedelta(minutes=10),
             ),
         )
@@ -200,6 +257,7 @@ class MultiCycleCapacityPolicyTests(unittest.TestCase):
                 now=self.start + timedelta(minutes=20),
                 active_through_4h_tokens=5,
                 active_cycles=3,
+                admissions_completed=3,
                 last_cycle_admitted_at=self.start + timedelta(minutes=10),
             ),
         )
@@ -247,12 +305,14 @@ class MultiCycleCapacityPolicyTests(unittest.TestCase):
             now=deadline,
             active_through_4h_tokens=4,
             active_cycles=2,
+            admissions_completed=10,
             last_cycle_admitted_at=deadline - timedelta(hours=1),
         )
         complete = self._state(
             now=deadline + timedelta(hours=4),
             active_through_4h_tokens=0,
             active_cycles=0,
+            admissions_completed=10,
             last_cycle_admitted_at=deadline - timedelta(hours=1),
         )
         self.assertEqual(evaluate_session_phase(self.policy6, draining), MultiCycleSessionPhase.DRAIN)
@@ -266,13 +326,60 @@ class MultiCycleCapacityPolicyTests(unittest.TestCase):
             AdmissionDecision.COMPLETE,
         )
 
-    def test_impossible_state_is_blocked(self) -> None:
-        result = evaluate_cycle_admission(
-            self.policy6,
-            self._state(active_through_4h_tokens=7, active_cycles=3),
+    def test_total_cycle_admission_ceiling_enters_drain_before_time_deadline(self) -> None:
+        draining = self._state(
+            now=self.start + timedelta(hours=20),
+            active_through_4h_tokens=2,
+            active_cycles=1,
+            admissions_completed=15,
+            last_cycle_admitted_at=self.start + timedelta(hours=19),
         )
-        self.assertEqual(result.decision, AdmissionDecision.BLOCKED)
-        self.assertTrue(result.reason.startswith("invalid_state:"))
+        complete = self._state(
+            now=self.start + timedelta(hours=20),
+            active_through_4h_tokens=0,
+            active_cycles=0,
+            admissions_completed=15,
+            last_cycle_admitted_at=self.start + timedelta(hours=19),
+        )
+        self.assertEqual(evaluate_session_phase(self.policy6, draining), MultiCycleSessionPhase.DRAIN)
+        self.assertEqual(
+            evaluate_cycle_admission(self.policy6, draining).decision,
+            AdmissionDecision.DRAIN,
+        )
+        self.assertEqual(evaluate_session_phase(self.policy6, complete), MultiCycleSessionPhase.COMPLETE)
+        self.assertEqual(
+            evaluate_cycle_admission(self.policy6, complete).decision,
+            AdmissionDecision.COMPLETE,
+        )
+
+    def test_impossible_state_or_admission_count_is_blocked(self) -> None:
+        too_many_tokens = evaluate_cycle_admission(
+            self.policy6,
+            self._state(
+                active_through_4h_tokens=7,
+                active_cycles=3,
+                admissions_completed=3,
+            ),
+        )
+        more_active_cycles_than_admissions = evaluate_cycle_admission(
+            self.policy6,
+            self._state(
+                active_through_4h_tokens=4,
+                active_cycles=2,
+                admissions_completed=1,
+            ),
+        )
+        too_many_admissions = evaluate_cycle_admission(
+            self.policy6,
+            self._state(admissions_completed=16),
+        )
+        for result in (
+            too_many_tokens,
+            more_active_cycles_than_admissions,
+            too_many_admissions,
+        ):
+            self.assertEqual(result.decision, AdmissionDecision.BLOCKED)
+            self.assertTrue(result.reason.startswith("invalid_state:"))
 
 
 class MultiCycleFairnessTests(unittest.TestCase):
@@ -329,14 +436,34 @@ class MultiCycleFairnessTests(unittest.TestCase):
             self._cycle(
                 1,
                 self.slots[0:2],
-                [self._work("close-1", self.slots[0], intent=SchedulerWorkIntent.MAIN_WINDOW_CLOSE, kind=JobKind.MEMORY_WINDOW_CLOSE, deadline_minutes=3)],
+                [
+                    self._work(
+                        "close-1",
+                        self.slots[0],
+                        intent=SchedulerWorkIntent.MAIN_WINDOW_CLOSE,
+                        kind=JobKind.MEMORY_WINDOW_CLOSE,
+                        deadline_minutes=3,
+                    )
+                ],
             ),
             self._cycle(
                 2,
                 self.slots[2:4],
-                [self._work("close-2", self.slots[2], intent=SchedulerWorkIntent.MAIN_WINDOW_CLOSE, kind=JobKind.MEMORY_WINDOW_CLOSE, deadline_minutes=1)],
+                [
+                    self._work(
+                        "close-2",
+                        self.slots[2],
+                        intent=SchedulerWorkIntent.MAIN_WINDOW_CLOSE,
+                        kind=JobKind.MEMORY_WINDOW_CLOSE,
+                        deadline_minutes=1,
+                    )
+                ],
             ),
-            self._cycle(3, self.slots[4:6], [self._work("ordinary-3", self.slots[4])]),
+            self._cycle(
+                3,
+                self.slots[4:6],
+                [self._work("ordinary-3", self.slots[4])],
+            ),
         )
         result = select_multi_cycle_scheduler_work(cycles=cycles, now=self.now)
         self.assertEqual(result.status, SchedulerSelectionStatus.SELECTED)
@@ -345,8 +472,22 @@ class MultiCycleFairnessTests(unittest.TestCase):
 
     def test_safe_stop_precedes_ordinary_work_across_cycles(self) -> None:
         cycles = (
-            self._cycle(1, self.slots[0:2], [self._work("ordinary-1", self.slots[0], created_minutes_ago=20)]),
-            self._cycle(2, self.slots[2:4], [self._work("safe-2", self.slots[2], intent=SchedulerWorkIntent.SAFE_STOP)]),
+            self._cycle(
+                1,
+                self.slots[0:2],
+                [self._work("ordinary-1", self.slots[0], created_minutes_ago=20)],
+            ),
+            self._cycle(
+                2,
+                self.slots[2:4],
+                [
+                    self._work(
+                        "safe-2",
+                        self.slots[2],
+                        intent=SchedulerWorkIntent.SAFE_STOP,
+                    )
+                ],
+            ),
         )
         result = select_multi_cycle_scheduler_work(cycles=cycles, now=self.now)
         self.assertEqual(result.selected_work.scheduler_work_id, "safe-2")
@@ -354,8 +495,16 @@ class MultiCycleFairnessTests(unittest.TestCase):
     def test_ordinary_service_count_is_fair_across_cycles(self) -> None:
         served = TwoTokenSlot(**{**self.slots[0].__dict__, "ordinary_service_count": 2})
         cycles = (
-            self._cycle(1, (served, self.slots[1]), [self._work("old-but-served", served, created_minutes_ago=50)]),
-            self._cycle(2, self.slots[2:4], [self._work("less-served", self.slots[2], created_minutes_ago=1)]),
+            self._cycle(
+                1,
+                (served, self.slots[1]),
+                [self._work("old-but-served", served, created_minutes_ago=50)],
+            ),
+            self._cycle(
+                2,
+                self.slots[2:4],
+                [self._work("less-served", self.slots[2], created_minutes_ago=1)],
+            ),
         )
         result = select_multi_cycle_scheduler_work(cycles=cycles, now=self.now)
         self.assertEqual(result.selected_work.scheduler_work_id, "less-served")
@@ -373,13 +522,33 @@ class MultiCycleFairnessTests(unittest.TestCase):
         self.assertEqual(result.status, SchedulerSelectionStatus.SELECTED)
 
         fourth_slots = (
-            TwoTokenSlot("slot-7", "token-7", "mint-7", "pair-7", "lifecycle-7", "TRACK_FAST"),
-            TwoTokenSlot("slot-8", "token-8", "mint-8", "pair-8", "lifecycle-8", "TRACK_FAST"),
+            TwoTokenSlot(
+                "slot-7",
+                "token-7",
+                "mint-7",
+                "pair-7",
+                "lifecycle-7",
+                "TRACK_FAST",
+            ),
+            TwoTokenSlot(
+                "slot-8",
+                "token-8",
+                "mint-8",
+                "pair-8",
+                "lifecycle-8",
+                "TRACK_FAST",
+            ),
         )
-        four = (*three, self._cycle(4, fourth_slots, [self._work("work-4", fourth_slots[0])]))
+        four = (
+            *three,
+            self._cycle(4, fourth_slots, [self._work("work-4", fourth_slots[0])]),
+        )
         blocked = select_multi_cycle_scheduler_work(cycles=four, now=self.now)
         self.assertEqual(blocked.status, SchedulerSelectionStatus.BLOCKED)
-        self.assertEqual(blocked.reason, "active_cycle_count_exceeds_compiled_maximum")
+        self.assertEqual(
+            blocked.reason,
+            "active_cycle_count_exceeds_compiled_maximum",
+        )
 
     def test_shared_ceiling_exhaustion_blocks_all_cycles(self) -> None:
         cycles = (
@@ -398,12 +567,17 @@ class MultiCycleFairnessTests(unittest.TestCase):
         self.assertEqual(result.reason, "scheduler_work_ceiling_exhausted")
 
     def test_token_local_failure_remains_isolated_inside_its_cycle(self) -> None:
-        failed = TwoTokenSlot(**{**self.slots[0].__dict__, "token_local_failure": True})
+        failed = TwoTokenSlot(
+            **{**self.slots[0].__dict__, "token_local_failure": True}
+        )
         cycles = (
             self._cycle(
                 1,
                 (failed, self.slots[1]),
-                [self._work("failed-work", failed), self._work("healthy-peer", self.slots[1])],
+                [
+                    self._work("failed-work", failed),
+                    self._work("healthy-peer", self.slots[1]),
+                ],
             ),
             self._cycle(2, self.slots[2:4], []),
         )
@@ -414,11 +588,22 @@ class MultiCycleFairnessTests(unittest.TestCase):
 
     def test_selection_is_deterministic_for_equal_ordinary_work(self) -> None:
         cycles = (
-            self._cycle(2, self.slots[2:4], [self._work("work-cycle-2", self.slots[2], created_minutes_ago=5)]),
-            self._cycle(1, self.slots[0:2], [self._work("work-cycle-1", self.slots[0], created_minutes_ago=5)]),
+            self._cycle(
+                2,
+                self.slots[2:4],
+                [self._work("work-cycle-2", self.slots[2], created_minutes_ago=5)],
+            ),
+            self._cycle(
+                1,
+                self.slots[0:2],
+                [self._work("work-cycle-1", self.slots[0], created_minutes_ago=5)],
+            ),
         )
         first = select_multi_cycle_scheduler_work(cycles=cycles, now=self.now)
-        second = select_multi_cycle_scheduler_work(cycles=tuple(reversed(cycles)), now=self.now)
+        second = select_multi_cycle_scheduler_work(
+            cycles=tuple(reversed(cycles)),
+            now=self.now,
+        )
         self.assertEqual(first.selected_work.scheduler_work_id, "work-cycle-1")
         self.assertEqual(second.selected_work.scheduler_work_id, "work-cycle-1")
 
