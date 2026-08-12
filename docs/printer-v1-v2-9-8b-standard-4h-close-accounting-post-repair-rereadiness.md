@@ -11,7 +11,7 @@ This review inspects committed design requirements, the local implementation dif
 - Starting implementation baseline: `a33fb6b9de1ceba6ab44f199cc5a2886ef5622d8`.
 - Root-cause audit baseline: `300010e2ea6b3edff777c7dfb43c55ef23b4871e`.
 - Repair design: `0c0087f769985d00e8b5238e563582614bde9f04`.
-- Test-first RED contract: `034b34ac176e094ee08dfba81c21f46bd57d95`.
+- Test-first RED contract: `034b34ac176e094ee08dfdfba81c21f46bd57d95`.
 - Implementation closeout: `docs/printer-v1-v2-9-8b-standard-4h-close-accounting-repair-implementation-closeout.md`.
 - Focused and nearest-owner GREEN evidence recorded in that closeout.
 
