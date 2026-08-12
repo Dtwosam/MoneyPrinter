@@ -22,6 +22,10 @@ TOKENS_PER_CYCLE = 2
 MAX_THROUGH_4H_TOKENS = 6
 MAX_ACTIVE_TWO_TOKEN_CYCLES = 3
 MIN_CYCLE_ADMISSION_SPACING_SECONDS = 300
+MAX_TOTAL_CYCLE_ADMISSIONS_PER_24H_SESSION = 15
+MAX_NEW_TOKENS_PER_24H_SESSION = (
+    MAX_TOTAL_CYCLE_ADMISSIONS_PER_24H_SESSION * TOKENS_PER_CYCLE
+)
 _ALLOWED_CONFIGURED_CAPACITIES = frozenset({2, 4, 6})
 
 
@@ -50,18 +54,34 @@ class AdmissionEvaluation:
 class MultiCycleCapacityPolicy:
     configured_through_4h_token_ceiling: int
     configured_active_cycle_ceiling: int
+    total_cycle_admission_ceiling: int
     intake_duration_seconds: int
     min_admission_spacing_seconds: int = MIN_CYCLE_ADMISSION_SPACING_SECONDS
 
     def validate(self) -> None:
         tokens = self.configured_through_4h_token_ceiling
-        cycles = self.configured_active_cycle_ceiling
+        active_cycles = self.configured_active_cycle_ceiling
+        total_cycles = self.total_cycle_admission_ceiling
         if type(tokens) is not int or tokens not in _ALLOWED_CONFIGURED_CAPACITIES:
             raise ValueError("configured through-4h token ceiling must be 2, 4, or 6")
-        if type(cycles) is not int or cycles <= 0 or cycles > MAX_ACTIVE_TWO_TOKEN_CYCLES:
+        if (
+            type(active_cycles) is not int
+            or active_cycles <= 0
+            or active_cycles > MAX_ACTIVE_TWO_TOKEN_CYCLES
+        ):
             raise ValueError("configured active cycle ceiling must be between 1 and 3")
-        if tokens != cycles * TOKENS_PER_CYCLE:
-            raise ValueError("configured token and cycle ceilings must describe exact two-token cycles")
+        if tokens != active_cycles * TOKENS_PER_CYCLE:
+            raise ValueError(
+                "configured token and active-cycle ceilings must describe exact two-token cycles"
+            )
+        if (
+            type(total_cycles) is not int
+            or total_cycles < active_cycles
+            or total_cycles > MAX_TOTAL_CYCLE_ADMISSIONS_PER_24H_SESSION
+        ):
+            raise ValueError(
+                "total cycle admission ceiling must cover active cycles and be at most 15"
+            )
         if type(self.intake_duration_seconds) is not int or self.intake_duration_seconds <= 0:
             raise ValueError("intake duration must be a positive integer")
         if (
@@ -77,6 +97,7 @@ class MultiCycleAdmissionState:
     intake_started_at: datetime
     active_through_4h_tokens: int
     active_cycles: int
+    admissions_completed: int
     last_cycle_admitted_at: datetime | None = None
     source_budget_available: bool = True
     provider_budgets_available: bool = True
@@ -98,6 +119,7 @@ class MultiCycleSessionSnapshot:
     intake_deadline: datetime
     configured_through_4h_token_ceiling: int
     configured_active_cycle_ceiling: int
+    total_cycle_admission_ceiling: int
     active_through_4h_tokens: int
     active_cycles: int
     admissions_completed: int
@@ -123,10 +145,16 @@ def _invalid_state_reason(
         return "active through-4h token count is invalid"
     if type(state.active_cycles) is not int or state.active_cycles < 0:
         return "active cycle count is invalid"
+    if type(state.admissions_completed) is not int or state.admissions_completed < 0:
+        return "completed admission count is invalid"
     if state.active_through_4h_tokens > policy.configured_through_4h_token_ceiling:
         return "active through-4h token count exceeds configured ceiling"
     if state.active_cycles > policy.configured_active_cycle_ceiling:
         return "active cycle count exceeds configured ceiling"
+    if state.admissions_completed > policy.total_cycle_admission_ceiling:
+        return "completed admission count exceeds total cycle ceiling"
+    if state.active_cycles > state.admissions_completed:
+        return "active cycles cannot exceed cycles admitted by this session"
     if state.active_cycles == 0 and state.active_through_4h_tokens != 0:
         return "active tokens cannot exist without an active cycle"
     if state.active_cycles > 0:
@@ -139,6 +167,10 @@ def _invalid_state_reason(
     started = _normalize_time(state.intake_started_at)
     if now < started:
         return "current time precedes intake start"
+    if state.admissions_completed == 0 and state.last_cycle_admitted_at is not None:
+        return "last admission time exists before any completed admission"
+    if state.admissions_completed > 0 and state.last_cycle_admitted_at is None:
+        return "completed admissions require a last admission time"
     if state.last_cycle_admitted_at is not None:
         admitted = _normalize_time(state.last_cycle_admitted_at)
         if admitted < started or admitted > now:
@@ -166,7 +198,12 @@ def evaluate_session_phase(
     deadline = _normalize_time(state.intake_started_at) + timedelta(
         seconds=policy.intake_duration_seconds
     )
-    if state.cancellation_requested or now >= deadline:
+    intake_closed = (
+        state.cancellation_requested
+        or now >= deadline
+        or state.admissions_completed >= policy.total_cycle_admission_ceiling
+    )
+    if intake_closed:
         if state.active_cycles == 0 and state.active_through_4h_tokens == 0:
             return MultiCycleSessionPhase.COMPLETE
         return MultiCycleSessionPhase.DRAIN
@@ -247,13 +284,14 @@ def evaluate_cycle_admission(
 def scaled_standard_four_hour_capacity_contract(
     configured_through_4h_tokens: int,
 ) -> dict[str, Any]:
-    """Project 2/4/6-token ceilings from the canonical two-token 4h contract."""
+    """Project simultaneous 2/4/6-token ceilings from canonical 2-token arithmetic."""
     if configured_through_4h_tokens not in _ALLOWED_CONFIGURED_CAPACITIES:
         raise ValueError("configured through-4h capacity must be 2, 4, or 6")
-    cycles = configured_through_4h_tokens // TOKENS_PER_CYCLE
+    active_cycles = configured_through_4h_tokens // TOKENS_PER_CYCLE
     policy = MultiCycleCapacityPolicy(
         configured_through_4h_token_ceiling=configured_through_4h_tokens,
-        configured_active_cycle_ceiling=cycles,
+        configured_active_cycle_ceiling=active_cycles,
+        total_cycle_admission_ceiling=active_cycles,
         intake_duration_seconds=1,
     )
     policy.validate()
@@ -263,16 +301,50 @@ def scaled_standard_four_hour_capacity_contract(
         "implementation_max_through_4h_tokens": MAX_THROUGH_4H_TOKENS,
         "implementation_max_active_cycles": MAX_ACTIVE_TWO_TOKEN_CYCLES,
         "configured_through_4h_tokens": configured_through_4h_tokens,
-        "configured_active_cycles": cycles,
+        "configured_active_cycles": active_cycles,
         "tokens_per_cycle": TOKENS_PER_CYCLE,
         "minimum_cycle_admission_spacing_seconds": MIN_CYCLE_ADMISSION_SPACING_SECONDS,
-        "shared_discovery_requests": cycles * int(base["shared_discovery_requests"]),
-        "lifecycle_request_outer_ceiling": cycles
+        "shared_discovery_requests": active_cycles * int(base["shared_discovery_requests"]),
+        "lifecycle_request_outer_ceiling": active_cycles
         * int(base["lifecycle_request_outer_ceiling"]),
         "lifecycle_requests_per_token": int(base["lifecycle_requests_per_token"]),
-        "lifecycle_scheduler_outer_ceiling": cycles
+        "lifecycle_scheduler_outer_ceiling": active_cycles
         * int(base["lifecycle_scheduler_outer_ceiling"]),
         "automatic_retries": 0,
         "endpoint_rotation": False,
         "long_windows_activated": False,
+    }
+
+
+def scaled_session_capacity_contract(
+    *,
+    configured_through_4h_tokens: int,
+    total_cycle_admission_ceiling: int,
+) -> dict[str, Any]:
+    """Derive a finite whole-session envelope without changing provider rates."""
+    active = scaled_standard_four_hour_capacity_contract(configured_through_4h_tokens)
+    active_cycles = int(active["configured_active_cycles"])
+    policy = MultiCycleCapacityPolicy(
+        configured_through_4h_token_ceiling=configured_through_4h_tokens,
+        configured_active_cycle_ceiling=active_cycles,
+        total_cycle_admission_ceiling=total_cycle_admission_ceiling,
+        intake_duration_seconds=86_400,
+    )
+    policy.validate()
+    base = standard_four_hour_capacity_contract()
+    return {
+        **active,
+        "session_cycle_admission_ceiling": total_cycle_admission_ceiling,
+        "session_new_token_admission_ceiling": (
+            total_cycle_admission_ceiling * TOKENS_PER_CYCLE
+        ),
+        "session_lifecycle_request_outer_ceiling": (
+            total_cycle_admission_ceiling
+            * int(base["lifecycle_request_outer_ceiling"])
+        ),
+        "session_lifecycle_scheduler_outer_ceiling": (
+            total_cycle_admission_ceiling
+            * int(base["lifecycle_scheduler_outer_ceiling"])
+        ),
+        "provider_rate_ceilings_changed": False,
     }
