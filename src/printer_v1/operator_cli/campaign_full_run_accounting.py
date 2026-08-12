@@ -1175,6 +1175,58 @@ def build_full_run_terminal_report(
     }
 
 
+def _scheduler_family_attribution_complete(
+    accounting: Mapping[str, Any],
+) -> bool:
+    """Validate Scheduler-family counts against the reported lifecycle family.
+
+    Ordinary WINDOW_15M reports retain the historical eighteen-job contract.
+    Standard-four-hour reports carry their exact dynamically observed lifecycle
+    count from the durable correspondence proof instead of pretending that the
+    legitimate continuation jobs are a second owner.
+    """
+    ownership = accounting.get("scheduler_ownership", {})
+    expected = ownership.get("expected_lifecycle_scheduler_count")
+    if expected is None:
+        expected = 18
+    if type(expected) is not int or expected <= 0:
+        return False
+    attribution = accounting.get("scheduler_attribution", {})
+    return bool(
+        int(attribution.get("discovery") or 0) >= 1
+        and int(attribution.get("selection") or 0) >= 1
+        and int(attribution.get("handoff") or 0) == 2
+        and int(attribution.get("lifecycle") or 0) == expected
+    )
+
+
+def _no_retry_restart_resume_successor(
+    *,
+    cleanup_truth_complete: bool,
+    scheduler_retry_count: int,
+    automatic_retry_count: int,
+    restart_count: int,
+    resume_count: int,
+    successor_count: int,
+    bound_run_count: int,
+) -> bool:
+    """Return campaign-level replay truth without conflating job attempts.
+
+    ``printer_scheduler_jobs.retry_count`` remains terminal evidence, but it is
+    job-attempt accounting rather than proof that the campaign automatically
+    retried, restarted, resumed, or created a successor.
+    """
+    _ = scheduler_retry_count
+    return bool(
+        cleanup_truth_complete
+        and automatic_retry_count == 0
+        and restart_count == 0
+        and resume_count == 0
+        and successor_count == 0
+        and bound_run_count == 1
+    )
+
+
 def evaluate_campaign_acceptance_gate(
     report: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -1313,14 +1365,7 @@ def evaluate_campaign_acceptance_gate(
             accounting.get("all_lifecycle_scheduler_jobs_succeeded", False)
         ),
         "complete_scheduler_family_attribution": (
-            int(accounting.get("scheduler_attribution", {}).get("discovery") or 0)
-            >= 1
-            and int(accounting.get("scheduler_attribution", {}).get("selection") or 0)
-            >= 1
-            and int(accounting.get("scheduler_attribution", {}).get("handoff") or 0)
-            == 2
-            and int(accounting.get("scheduler_attribution", {}).get("lifecycle") or 0)
-            == 18
+            _scheduler_family_attribution_complete(accounting)
         ),
         "runtime_terminal_completed": runtime_terminal_completed,
         "memory_quality_consistent": quality_consistent,
@@ -1605,6 +1650,169 @@ def _slot_stage_id(context: OperationalLifecycleOwnershipContext, ordinal: int) 
         stage_kind=f"WINDOW_15M_SLOT_{ordinal}",
         stage_sequence=ordinal + 1,
     )
+
+
+def _terminal_stage_matches(*, window_kind: str, stage_id: str) -> bool:
+    if window_kind == "WINDOW_1H":
+        return stage_id == "WINDOW_1H"
+    if window_kind == "WINDOW_4H":
+        return stage_id == "WINDOW_4H"
+    if window_kind != "WINDOW_15M":
+        return False
+    return bool(
+        stage_id in {"WINDOW_15M_SLOT_1", "WINDOW_15M_SLOT_2"}
+        or stage_id.endswith("|WINDOW_15M_SLOT_1|2")
+        or stage_id.endswith("|WINDOW_15M_SLOT_2|3")
+    )
+
+
+def _load_terminal_scheduler_correspondence(
+    connection: sqlite3.Connection,
+    *,
+    context: OperationalLifecycleOwnershipContext,
+    standard_four_hour_campaign: bool,
+) -> dict[str, Any]:
+    """Load exact terminal Scheduler ownership for the active lifecycle family.
+
+    The ordinary path remains WINDOW_15M-only. A standard campaign additionally
+    admits the already-owned WINDOW_1H and eligible WINDOW_4H steps, but only
+    through exact persisted step -> Scheduler job -> scoped ownership -> campaign
+    window lineage. Any missing, duplicate, mismatched, or unowned row fails the
+    correspondence closed.
+    """
+    allowed = {
+        "SNAPSHOT": "WINDOW_15M",
+        "WINDOW_CLOSE": "WINDOW_15M",
+    }
+    if standard_four_hour_campaign:
+        allowed.update(
+            {
+                "CONTINUATION_SNAPSHOT": "WINDOW_1H",
+                "CONTINUATION_CLOSE": "WINDOW_1H",
+                "LONG_CONTINUATION_SNAPSHOT": "WINDOW_4H",
+                "LONG_CONTINUATION_CLOSE": "WINDOW_4H",
+            }
+        )
+
+    placeholders = ",".join("?" for _ in allowed)
+    steps = connection.execute(
+        f"""SELECT s.id, s.scheduler_job_id, s.step_kind, s.token_id,
+                   s.pair_id, s.step_key, j.status AS scheduler_job_status
+            FROM printer_memory_factory_run_steps AS s
+            LEFT JOIN printer_scheduler_jobs AS j ON j.id=s.scheduler_job_id
+            WHERE s.run_id=? AND s.scheduler_job_id IS NOT NULL
+              AND s.step_kind IN ({placeholders})
+            ORDER BY s.id""",
+        (context.factory_run_id, *allowed.keys()),
+    ).fetchall()
+    owned_rows = connection.execute(
+        """SELECT scheduler_job_id, token_slot_id, window_id, work_state,
+                  stage_id, target_category, target_identity
+           FROM printer_memory_factory_campaign_scheduler_work
+           WHERE campaign_id=? AND run_id=? AND cycle_id=? AND factory_run_id=?
+             AND ownership_contract_version='V2_STAGE_SCOPED'
+             AND work_scope='WINDOW_LIFECYCLE'
+           ORDER BY scheduler_work_id""",
+        (
+            context.campaign_id,
+            context.campaign_run_id,
+            context.cycle_id,
+            context.factory_run_id,
+        ),
+    ).fetchall()
+    windows = connection.execute(
+        """SELECT window_id, token_slot_id, token_row_id, pair_row_id,
+                  window_kind
+           FROM printer_memory_factory_campaign_windows
+           WHERE campaign_id=? AND run_id=? AND cycle_id=?
+           ORDER BY window_id""",
+        (context.campaign_id, context.campaign_run_id, context.cycle_id),
+    ).fetchall()
+
+    windows_by_id = {str(row["window_id"]): row for row in windows}
+    owned_by_job: dict[int, list[sqlite3.Row]] = {}
+    for row in owned_rows:
+        owned_by_job.setdefault(int(row["scheduler_job_id"]), []).append(row)
+
+    expected_job_ids = [int(row["scheduler_job_id"]) for row in steps]
+    expected_job_set = set(expected_job_ids)
+    owned_job_ids = [int(row["scheduler_job_id"]) for row in owned_rows]
+    owned_job_set = set(owned_job_ids)
+    matched: set[int] = set()
+    lineage_mismatches: list[int] = []
+    lifecycle_job_states: dict[int, str] = {}
+
+    for step in steps:
+        job_id = int(step["scheduler_job_id"])
+        raw_status = str(step["scheduler_job_status"] or "").upper()
+        lifecycle_job_states[job_id] = _JOB_STATUS_TO_WORK_STATE.get(
+            raw_status, raw_status or "MISSING"
+        )
+        candidates = owned_by_job.get(job_id, [])
+        if len(candidates) != 1:
+            lineage_mismatches.append(job_id)
+            continue
+        owned = candidates[0]
+        window_id = str(owned["window_id"] or "")
+        window = windows_by_id.get(window_id)
+        window_kind = allowed[str(step["step_kind"])]
+        if window is None or not all(
+            (
+                str(window["window_kind"] or "") == window_kind,
+                int(window["token_row_id"]) == int(step["token_id"]),
+                int(window["pair_row_id"]) == int(step["pair_id"]),
+                str(window["token_slot_id"] or "")
+                == str(owned["token_slot_id"] or ""),
+                str(owned["target_category"] or "") == "CAMPAIGN_WINDOW",
+                str(owned["target_identity"] or "") == window_id,
+                str(owned["work_state"] or "").upper()
+                == lifecycle_job_states[job_id],
+                _terminal_stage_matches(
+                    window_kind=window_kind,
+                    stage_id=str(owned["stage_id"] or ""),
+                ),
+            )
+        ):
+            lineage_mismatches.append(job_id)
+            continue
+        matched.add(job_id)
+
+    duplicate_step_jobs = len(expected_job_ids) != len(expected_job_set)
+    duplicate_owned_jobs = len(owned_job_ids) != len(owned_job_set)
+    missing = expected_job_set - matched
+    extra = owned_job_set - matched
+    correspondence_exact = bool(
+        expected_job_set
+        and not duplicate_step_jobs
+        and not duplicate_owned_jobs
+        and expected_job_set == owned_job_set == matched
+        and not lineage_mismatches
+    )
+    all_succeeded = bool(lifecycle_job_states) and all(
+        state == "SUCCEEDED" for state in lifecycle_job_states.values()
+    )
+    return {
+        "lifecycle_job_ids": sorted(expected_job_set),
+        "owned_job_ids": sorted(owned_job_set),
+        "lifecycle_job_states": {
+            str(key): value
+            for key, value in sorted(lifecycle_job_states.items())
+        },
+        "missing_ownership": sorted(missing),
+        "extra_ownership": sorted(extra),
+        "lineage_mismatch_job_ids": sorted(set(lineage_mismatches)),
+        "duplicate_step_job_ids": duplicate_step_jobs,
+        "duplicate_owned_job_ids": duplicate_owned_jobs,
+        "expected_lifecycle_scheduler_count": len(expected_job_ids),
+        "standard_four_hour_campaign": bool(standard_four_hour_campaign),
+        "non_succeeded_states": {
+            str(key): value
+            for key, value in sorted(lifecycle_job_states.items())
+            if value != "SUCCEEDED"
+        },
+        "correspondence_exact": correspondence_exact,
+        "all_lifecycle_jobs_succeeded": all_succeeded,
+    }
 
 
 def _projected_reservation_count(step_kind: str) -> int:
@@ -2073,41 +2281,24 @@ def finalize_full_run_ownership_and_report(
         except CampaignOwnershipError as exc:
             blocked_reasons.append(f"SCHEDULER_PROJECTION_FAILED:{job_id}:{exc}")
 
-    lifecycle_job_ids = {int(s["scheduler_job_id"]) for s in lifecycle_steps}
-    owned_rows = connection.execute(
-        """SELECT scheduler_job_id, work_state
-           FROM printer_memory_factory_campaign_scheduler_work
-           WHERE campaign_id=? AND run_id=? AND cycle_id=?
-             AND ownership_contract_version='V2_STAGE_SCOPED'
-             AND work_scope='WINDOW_LIFECYCLE'""",
-        (context.campaign_id, context.campaign_run_id, context.cycle_id),
-    ).fetchall()
-    owned_job_ids = {int(r["scheduler_job_id"]) for r in owned_rows}
-    # Exact correspondence: every lifecycle job owned once; no extra owners.
-    correspondence_exact = (
-        owned_job_ids == lifecycle_job_ids
-        and len(owned_rows) == len(lifecycle_job_ids)
-        and not blocked_reasons
+    run_config_row = connection.execute(
+        "SELECT config_json FROM printer_memory_factory_runs WHERE run_id=?",
+        (context.factory_run_id,),
+    ).fetchone()
+    try:
+        run_config = json.loads(
+            "{}" if run_config_row is None else str(run_config_row["config_json"])
+        )
+    except (TypeError, json.JSONDecodeError):
+        run_config = {}
+    standard_four_hour_campaign = (
+        run_config.get("standard_four_hour_campaign") is True
     )
-    all_lifecycle_jobs_succeeded = bool(lifecycle_job_states) and all(
-        state == "SUCCEEDED" for state in lifecycle_job_states.values()
+    scheduler_ownership = _load_terminal_scheduler_correspondence(
+        connection,
+        context=context,
+        standard_four_hour_campaign=standard_four_hour_campaign,
     )
-    scheduler_ownership = {
-        "lifecycle_job_ids": sorted(lifecycle_job_ids),
-        "owned_job_ids": sorted(owned_job_ids),
-        "lifecycle_job_states": {
-            str(k): v for k, v in sorted(lifecycle_job_states.items())
-        },
-        "missing_ownership": sorted(lifecycle_job_ids - owned_job_ids),
-        "extra_ownership": sorted(owned_job_ids - lifecycle_job_ids),
-        "non_succeeded_states": {
-            str(k): v
-            for k, v in sorted(lifecycle_job_states.items())
-            if v != "SUCCEEDED"
-        },
-        "correspondence_exact": correspondence_exact,
-        "all_lifecycle_jobs_succeeded": all_lifecycle_jobs_succeeded,
-    }
 
     # --- Seal the four approved mandatory stages from durable evidence. ---
     slot_stage_ids: list[str] = []
@@ -2580,13 +2771,17 @@ def finalize_full_run_ownership_and_report(
             "cleanup_retry_restart_resume_successor_truth_complete": (
                 cleanup_truth_complete
             ),
-            "no_retry_restart_resume_successor": cleanup_truth_complete
-            and retry_count == 0
-            and automatic_retries == 0
-            and restart_count == 0
-            and resume_count == 0
-            and successor_count == 0
-            and bound_run_count == 1,
+            "no_retry_restart_resume_successor": (
+                _no_retry_restart_resume_successor(
+                    cleanup_truth_complete=cleanup_truth_complete,
+                    scheduler_retry_count=retry_count,
+                    automatic_retry_count=automatic_retries,
+                    restart_count=restart_count,
+                    resume_count=resume_count,
+                    successor_count=successor_count,
+                    bound_run_count=bound_run_count,
+                )
+            ),
         }
     )
     canonical = lambda value: json.dumps(

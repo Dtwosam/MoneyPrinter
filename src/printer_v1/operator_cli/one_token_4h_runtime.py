@@ -1070,8 +1070,21 @@ def close_current_run_4h(
     run_id: str,
     close_step: Mapping[str, Any],
     closing_snapshot_id: int,
+    execution_authority: FourHourExecutionAuthority | str = FourHourExecutionAuthority.DISABLED,
 ) -> dict[str, Any]:
     """Close and gate one exact current-run 4h continuation."""
+    try:
+        authority = FourHourExecutionAuthority(execution_authority)
+    except (TypeError, ValueError):
+        return {
+            "closed": False,
+            "blocked_reasons": ["invalid_4h_execution_authority"],
+        }
+    if authority == FourHourExecutionAuthority.DISABLED:
+        return {
+            "closed": False,
+            "blocked_reasons": ["WINDOW_4H close execution authority is disabled"],
+        }
     token_id = int(close_step["token_id"])
     pair_id = int(close_step["pair_id"])
     lane = str(close_step["tracking_lane"])
@@ -1082,6 +1095,7 @@ def close_current_run_4h(
         pair_id=pair_id,
         tracking_lane=lane,
         successor_kind=WINDOW_KIND,
+        allow_enabled_successor_planning=True,
     )
     if not resolved.get("resolved"):
         return {"closed": False, "blocked_reasons": resolved.get("reasons", [])}

@@ -2,69 +2,80 @@
 
 ## Scope
 
-Read-only/static rereadiness gate following the fifth-attempt root-cause audit and the approved repair design.
+Separate read-only post-implementation rereadiness review of the standard-4h close-authority and terminal-accounting repair.
 
-This review does not authorize runtime, source fetching, memory generation, database mutation, a fresh authorization, or another standard-4h campaign.
+This review inspects committed design requirements, the local implementation diff, focused disposable/in-memory proof results, directly affected regressions, and preserved capability locks. It does not authorize or prepare runtime, source fetching, memory generation, authoritative database mutation, a sixth authorization, or another standard-4h campaign.
 
 ## Inputs
 
+- Starting implementation baseline: `a33fb6b9de1ceba6ab44f199cc5a2886ef5622d8`.
 - Root-cause audit baseline: `300010e2ea6b3edff777c7dfb43c55ef23b4871e`.
 - Repair design: `0c0087f769985d00e8b5238e563582614bde9f04`.
-- Test-first RED contract: `034b34ac176e094ee08dfdfba81c21f46bd57d95`.
-- Implementation execution blocker closeout: `bd556e3f96e6993edc9ad9fb54f3a52b64cde061`.
+- Test-first RED contract: `034b34ac176e094ee08dfba81c21f46bd57d95`.
+- Implementation closeout: `docs/printer-v1-v2-9-8b-standard-4h-close-accounting-repair-implementation-closeout.md`.
+- Focused and nearest-owner GREEN evidence recorded in that closeout.
 
 ## Verdict
 
-`V2_9_8B_STANDARD_4H_POST_REPAIR_REREADINESS_NOT_READY_IMPLEMENTATION_AND_FOCUSED_PROOF_INCOMPLETE`
+`V2_9_8B_STANDARD_4H_POST_REPAIR_REREADINESS_PASS`
+
+The previous `NOT_READY_IMPLEMENTATION_AND_FOCUSED_PROOF_INCOMPLETE` conclusion is replaced because both production defects are now implemented and the minimum sufficient bounded proof passes.
+
+PASS means only that this code repair is ready for operator review and for any later, separately requested authorization-readiness process. It is not itself an authorization and does not permit a launch.
 
 ## Gate results
 
-### 1. Root-cause classification
+### 1. Root-cause/design compatibility — PASS
 
-PASS.
+The implementation follows the committed two-defect design without redesign:
 
-Two distinct committed defect families remain correctly separated:
+- explicit existing 4h authority is preserved and carried to final close;
+- terminal Scheduler correspondence is standard-campaign-aware and exact-lineage-bound;
+- 15m source/six-unit/sealing accounting remains separate and unchanged; and
+- Scheduler retry bookkeeping remains visible without being mislabeled as a campaign automatic retry.
 
-A. standard-4h final-close authority propagation;
-B. standard-4h terminal Scheduler/accounting contract drift.
+### 2. Defect A implementation — PASS
 
-### 2. Repair design
+- `STANDARD_CAMPAIGN` reaches the final `LONG_CONTINUATION_CLOSE` owner.
+- Existing proof execution supplies `PROOF` explicitly.
+- Missing/disabled/invalid authority fails closed before resolution.
+- The global enabled-successor default remains false.
+- The close operation is fixed to `WINDOW_4H`; 12h/24h remain outside the authority.
 
-PASS.
+### 3. Defect B implementation — PASS
 
-The design preserves explicit authority, exact Scheduler lineage, ordinary 15m behavior, Source Governor/Central Scheduler ownership, and all later-window/financial locks.
+- Standard 15m->1h->eligible-4h Scheduler identities reconcile only through exact persisted campaign/run/factory-run/token/pair/slot/window/stage/target/job lineage.
+- Unowned, duplicate, extra, mismatched, failed, or nonterminal work remains independently fail-closed.
+- Ordinary 15m correspondence remains narrow and its historical attribution fallback remains `18`.
+- The standard lifecycle family uses its exact durable expected Scheduler count.
+- Runtime terminal completion remains required independently, so process exit 0 cannot manufacture proof success.
 
-### 3. Production implementation
+### 4. Focused bounded proof — PASS
 
-NOT COMPLETE.
+The required focused repair file passed `8` tests. Direct accounting/wiring/close-owner verification passed `40` tests plus `6` subtests. Nearest standard-4h planning, state-accounting, close-memory, and terminal-reconciliation verification passed `37` tests. Changed production modules compile and the diff is whitespace-clean.
 
-No production source file was modified because this session lacks a safe repository-native patch/test surface and architectural workarounds were rejected.
+### 5. Existing behavior and lock preservation — PASS
 
-### 4. Focused bounded proof
+No changes were made to Source Governor, Central Scheduler, source budgets, cadence policy, ceilings, providers, 12h/24h activation, retrieval, financial decisions/capabilities, or live execution. No runtime or authoritative data action occurred.
 
-NOT COMPLETE.
+### 6. Authorization readiness boundary — PASS WITH EXPLICIT NON-AUTHORIZATION
 
-The test-first contract is committed, but no repository-native RED->GREEN execution has been completed. No green claim is permitted.
+The deterministic code/proof blockers identified by the prior NOT_READY review are retired. The fifth authorization remains consumed. No sixth authorization exists, was created, was prepared, or is authorized by this review.
 
-### 5. Implementation closeout
+Any future authorization would require a new explicit operator request and its own exact-head review. This PASS must not be treated as permission to create that artifact or run the campaign.
 
-BLOCKED.
+## Remaining blockers
 
-A blocker closeout exists; a PASS implementation closeout does not.
+No remaining code blocker was found inside this repair lane.
 
-### 6. Fresh authorization readiness
+Operationally, the following remain mandatory blockers to any run:
 
-FAIL / NOT READY.
+1. no sixth authorization exists;
+2. this task explicitly forbids creating or preparing one;
+3. no live/operational campaign is authorized; and
+4. all ordinary provider, Source Governor, Scheduler, budget, evidence, lease, cleanup, and exact-head gates would still have to pass under a separately approved future process.
 
-A fresh standard-4h authorization must not be prepared until:
-
-1. Defect A production repair is applied;
-2. Defect B production repair is applied;
-3. focused tests pass on the exact implementation head;
-4. implementation closeout passes; and
-5. a new post-repair rereadiness review passes on that exact head.
-
-Any later fresh authorization must still receive independent review before launch.
+The older `test_budget_and_plans_are_exact_and_real_collection_is_explicit` cadence expectation remains an unrelated baseline maintenance concern: its two subfailures assert that current `TRACK_FAST`/`TRACK_NORMAL` 4h collection policy is disabled. The directly affected close tests pass, and this repair does not change that policy.
 
 ## Preserved locks
 
@@ -72,52 +83,24 @@ Any later fresh authorization must still receive independent review before launc
 - Paper-only; no live wallet, private keys, real funds, or live execution.
 - No paid API dependency.
 - No scoring/ranking/confidence/weighted decision system.
-- No embeddings/vectors unless explicitly approved later.
+- No embeddings/vectors.
 - `WINDOW_5M_MICRO_EVENT` remains support-only.
-- 12h/24h remain locked.
+- `WINDOW_12H` and `WINDOW_24H` remain locked.
 - No Source Governor or Central Scheduler bypass.
-- No retrieval, paper decisions, BUY/SELL/HOLD, positions, trade events, paper trade audits, or PnL.
-- Fifth standard-4h authorization remains permanently consumed.
-- No sixth authorization exists or is authorized by this review.
+- No retrieval, paper decisions, BUY/SELL/HOLD, positions, trade events, paper audits, or PnL.
+- No sixth authorization and no standard-4h live proof.
 
 ## Money-usefulness contribution
 
-This rereadiness gate prevents another costly four-hour attempt from being consumed before the known deterministic code defects have actually been repaired and proven. It preserves evidence-collection efficiency rather than increasing capability.
-
-## What this improves
-
-- Makes the current stopping point durable and unambiguous.
-- Prevents design/test artifacts from being mistaken for a completed production repair.
-- Prevents authorization preparation from outrunning implementation proof.
-
-## What this still does not unlock
-
-Nothing operational. In particular, it does not unlock another standard-4h campaign, 12h/24h, retrieval, paper decisions, trading actions, positions, audits, or PnL.
-
-## Proof/test needed before readiness can PASS
-
-Minimum sufficient focused execution on the exact repaired head:
-
-- explicit standard close authority reaches final enabled-WINDOW_4H resolution;
-- missing/invalid authority fails closed;
-- ordinary/proof behavior remains explicitly scoped;
-- 12h/24h stay locked;
-- legitimate standard 15m->1h->4h Scheduler ownership reconciles exactly;
-- unexpected Scheduler work remains extra and blocks;
-- ordinary 15m terminal accounting keeps its existing contract;
-- Scheduler retry bookkeeping does not become a campaign automatic retry;
-- unresolved/failed Scheduler work still blocks terminal success; and
-- runtime command exit/completion cannot fabricate campaign PASS.
+The repaired code can retain approved close authority through the final standard-4h close and distinguish legitimate long-window Scheduler ownership from unexplained work. This removes two deterministic ways to waste a complete evidence campaign while preserving all evidence-quality and capability gates.
 
 ## Functionality Risks / Setbacks / Efficiency Blockers
 
-- Production defects remain present until implementation is applied.
-- Focused tests are not yet executable in the current connected environment.
-- Any shortcut directly to authorization would knowingly risk consuming another four-hour attempt on unproven code.
-- No broad suite is requested at this gate; only the exact affected surface is required first.
+- Exact lineage is intentionally strict; incomplete persisted ownership or window identity will block.
+- Scheduler retry bookkeeping no longer blocks merely by being nonzero, so independent terminal state, unresolved work, correspondence, and automatic campaign retry checks must remain intact; focused and nearest-owner tests verify those boundaries.
+- The older cadence-policy test mismatch remains outside this repair and should be reconciled in a separate baseline maintenance lane if the operator chooses.
+- No broad suite was justified by this narrow repair; the review relies on the focused proof and directly affected owner regressions.
 
-## Correct next lane
+## Correct next action
 
-**Resume the approved production implementation on a repository-native worktree/test surface, then run the focused RED->GREEN proof.**
-
-Do not prepare a fresh authorization until that implementation, proof, implementation closeout, and subsequent rereadiness PASS.
+Stop at this rereadiness PASS and return the committed repair for operator review. Do not create or prepare a new authorization and do not run a campaign.

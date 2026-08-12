@@ -2639,6 +2639,7 @@ def _execute_long_4h_step(
     conn: sqlite3.Connection,
     step: sqlite3.Row,
     *,
+    execution_authority: str,
     adapter_factory: Callable[..., Any],
     timeout_seconds: float,
     context_adapter_factories: dict[str, Callable[..., Any]] | None = None,
@@ -2707,6 +2708,7 @@ def _execute_long_4h_step(
         run_id=str(step["run_id"]),
         close_step=step,
         closing_snapshot_id=int(result["snapshot_id"]),
+        execution_authority=execution_authority,
     )
     result["window_close"] = close
     if not close.get("closed"):
@@ -6489,6 +6491,13 @@ def run_one_command_15m_factory(
                     result = _execute_long_4h_step(
                         conn,
                         pending,
+                        execution_authority=(
+                            "STANDARD_CAMPAIGN"
+                            if standard_four_hour_campaign
+                            else "PROOF"
+                            if four_hour_proof_mode
+                            else "DISABLED"
+                        ),
                         adapter_factory=adapter_factory,
                         timeout_seconds=timeout_seconds,
                         context_adapter_factories=context_adapter_factories,

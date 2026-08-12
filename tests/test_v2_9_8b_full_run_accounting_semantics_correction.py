@@ -708,7 +708,7 @@ class SemanticsCorrectionTests(_SemanticsFixture):
         self.assertFalse(outcome["report"]["terminal_safety"]["lease_released"])
         self.assertFalse(outcome["campaign_acceptance"]["checks"]["lease_released"])
 
-    def test_locked_or_retried_scheduler_work_blocks(self) -> None:
+    def test_locked_work_blocks_and_scheduler_retry_remains_observable(self) -> None:
         job_id = int(self.steps[0][3])
         self.conn.execute(
             "UPDATE printer_scheduler_jobs SET locked_at=?,lock_owner=? WHERE id=?",
@@ -727,8 +727,11 @@ class SemanticsCorrectionTests(_SemanticsFixture):
         )
         self.conn.commit()
         retried = self._finalize()
-        self.assertNotEqual(retried["verdict"], VERDICT_PASS)
-        self.assertFalse(
+        self.assertEqual(retried["verdict"], VERDICT_PASS)
+        self.assertEqual(
+            retried["report"]["terminal_safety"]["scheduler_retry_count"], 1
+        )
+        self.assertTrue(
             retried["campaign_acceptance"]["checks"][
                 "no_retry_restart_resume_successor"
             ]

@@ -12,6 +12,7 @@ import unittest
 from printer_v1.db import apply_migrations
 from printer_v1.operator_cli import one_command_15m_factory as factory
 from printer_v1.operator_cli.one_token_4h_runtime import (
+    FourHourExecutionAuthority,
     close_current_run_4h,
     plan_current_run_4h,
     run_4h_quality_gates,
@@ -220,6 +221,7 @@ class OneToken4hRuntimeTests(unittest.TestCase):
         result = close_current_run_4h(
             self.conn, run_id=run_id, close_step=close_step,
             closing_snapshot_id=closing_id,
+            execution_authority=FourHourExecutionAuthority.PROOF,
         )
         self.conn.commit()
         self.assertTrue(result["closed"])
@@ -307,6 +309,7 @@ class OneToken4hRuntimeTests(unittest.TestCase):
                 "tracking_lane": "TRACK_FAST",
             },
             closing_snapshot_id=int(closing_id),
+            execution_authority=FourHourExecutionAuthority.PROOF,
         )
         self.assertTrue(result["closed"])
         self.assertEqual(result["cadence"]["actual_snapshot_count"], 61)
