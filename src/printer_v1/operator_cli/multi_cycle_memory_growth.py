@@ -202,13 +202,18 @@ def evaluate_cycle_admission(
     if phase == MultiCycleSessionPhase.BLOCKED:
         return AdmissionEvaluation(AdmissionDecision.BLOCKED, "session_blocked")
 
+    if state.active_through_4h_tokens >= policy.configured_through_4h_token_ceiling:
+        return AdmissionEvaluation(AdmissionDecision.DEFER, "through_4h_capacity_full")
+    if state.active_cycles >= policy.configured_active_cycle_ceiling:
+        return AdmissionEvaluation(AdmissionDecision.DEFER, "active_cycle_capacity_full")
     if (
         state.active_through_4h_tokens + TOKENS_PER_CYCLE
         > policy.configured_through_4h_token_ceiling
     ):
-        return AdmissionEvaluation(AdmissionDecision.DEFER, "through_4h_capacity_full")
-    if state.active_cycles + 1 > policy.configured_active_cycle_ceiling:
-        return AdmissionEvaluation(AdmissionDecision.DEFER, "active_cycle_capacity_full")
+        return AdmissionEvaluation(
+            AdmissionDecision.DEFER,
+            "two_token_capacity_not_available",
+        )
 
     if state.last_cycle_admitted_at is not None:
         elapsed = (
