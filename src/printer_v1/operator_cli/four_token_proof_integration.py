@@ -17,15 +17,8 @@ import re
 import sqlite3
 from typing import Any, Mapping, Sequence
 
-from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
-    MultiCycleAdmissionHealth,
-    MultiCycleCampaignBinding,
-    MultiCycleCampaignSnapshot,
-    load_multi_cycle_campaign_snapshot,
-)
 from printer_v1.operator_cli.multi_cycle_memory_growth import (
     MIN_CYCLE_ADMISSION_SPACING_SECONDS,
-    AdmissionDecision,
     MultiCycleCapacityPolicy,
 )
 
@@ -131,59 +124,6 @@ def build_four_token_proof_policy(
     except ValueError as exc:
         raise FourTokenProofPolicyError(str(exc)) from exc
     return policy
-
-
-@dataclass(frozen=True)
-class FourTokenControllerReadiness:
-    """One read-only persisted admission evaluation plus deterministic wake."""
-
-    snapshot: MultiCycleCampaignSnapshot
-    wake: FourTokenFactoryWake
-
-
-@dataclass(frozen=True)
-class FourTokenProofController:
-    """Proof-only read-side controller; no admission mutation or discovery work."""
-
-    policy: MultiCycleCapacityPolicy
-
-    @classmethod
-    def exact(cls) -> "FourTokenProofController":
-        return cls(policy=build_four_token_proof_policy())
-
-    def evaluate_factory_wake(
-        self,
-        connection: sqlite3.Connection,
-        *,
-        binding: MultiCycleCampaignBinding,
-        now: datetime,
-        next_due_work_at: datetime | None,
-        proof_deadline: datetime,
-        admission_health: MultiCycleAdmissionHealth,
-    ) -> FourTokenControllerReadiness:
-        snapshot = load_multi_cycle_campaign_snapshot(
-            connection,
-            binding,
-            self.policy,
-            now=now,
-            health=admission_health,
-        )
-        evaluation = snapshot.admission_evaluation
-        next_admission_at = (
-            now
-            if evaluation.decision is AdmissionDecision.ADMIT
-            else evaluation.next_admission_at
-        )
-        wake = next_four_token_factory_wake(
-            now=now,
-            next_due_work_at=next_due_work_at,
-            next_admission_at=next_admission_at,
-            proof_deadline=proof_deadline,
-        )
-        return FourTokenControllerReadiness(
-            snapshot=snapshot,
-            wake=wake,
-        )
 
 
 def cycle_step_key(*, slot_ordinal: int, cycle_ordinal: int, suffix: str) -> str:
