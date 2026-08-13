@@ -1,15 +1,28 @@
 from __future__ import annotations
 
 import importlib
+import hashlib
 import json
 import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
 
+from printer_v1.db import apply_migrations
+from printer_v1.db.migrate import canonical_migration_count, canonical_migration_names
 from printer_v1.operator_cli import one_command_15m_factory as factory
+from printer_v1.operator_cli.campaign_supervision import (
+    acquire_campaign_supervision,
+)
 from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
     MultiCycleCampaignBinding,
 )
 from printer_v1.operator_cli.operational_standard_4h import (
     standard_four_hour_capacity_contract,
+)
+from printer_v1.operator_cli.operational_database_target_binding import (
+    PRODUCTION_AUTHORITATIVE,
+    OperationalDatabaseTargetBinding,
+    build_operational_database_target_binding,
 )
 
 
@@ -413,5 +426,262 @@ def test_scheduler_cycle_one_overconsumption_is_not_hidden_by_four_token_headroo
         assert result.attributable_job_count < result.four_token_scheduler_ceiling
         assert result.scheduler_budget_available is False
         assert "CYCLE_ONE_SCHEDULER_ENVELOPE_EXCEEDED" in result.reasons
+    finally:
+        connection.close()
+
+
+NOW = datetime(2026, 8, 13, 12, 0, tzinfo=timezone.utc)
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _operational_fixture(
+    tmp_path: Path,
+) -> tuple[
+    Path,
+    sqlite3.Connection,
+    OperationalDatabaseTargetBinding,
+    dict[str, object],
+]:
+    db_path = tmp_path / "authoritative-admission-health.sqlite3"
+    lock_path = tmp_path / "authoritative-admission-health.lease.json"
+    apply_migrations(db_path)
+    connection = sqlite3.connect(db_path)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys=ON")
+    stamp = NOW.isoformat()
+    baseline_sha = "a" * 64
+    connection.execute(
+        """
+        INSERT INTO printer_memory_factory_campaigns(
+            campaign_id,campaign_state,db_mode,db_target_identity,
+            policy_version,created_at,updated_at
+        ) VALUES ('campaign-1','RUNNING','OPERATIONAL_PERSISTENT',?,
+                  'policy-v1',?,?)
+        """,
+        (f"sha256:{baseline_sha}", stamp, stamp),
+    )
+    connection.execute(
+        """
+        INSERT INTO printer_memory_factory_campaign_configurations(
+            configuration_id,campaign_id,configuration_hash,
+            configuration_json,launch_provenance_json,created_at
+        ) VALUES ('configuration-1','campaign-1',?,'{}','{}',?)
+        """,
+        ("b" * 64, stamp),
+    )
+    connection.execute(
+        """
+        INSERT INTO printer_memory_factory_runs(
+            run_id,run_status,window_kind,db_mode,config_hash,config_json,
+            selected_token_count,started_at,created_at,updated_at
+        ) VALUES ('factory-1','RUNNING','WINDOW_15M','OPERATIONAL_PERSISTENT',
+                  ?,'{}',0,?,?,?)
+        """,
+        ("c" * 64, stamp, stamp, stamp),
+    )
+    connection.execute(
+        """
+        INSERT INTO printer_memory_factory_campaign_runs(
+            run_id,campaign_id,run_ordinal,run_state,authoritative_run_id,
+            created_at,updated_at
+        ) VALUES ('campaign-run-1','campaign-1',1,'RUNNING','factory-1',?,?)
+        """,
+        (stamp, stamp),
+    )
+    connection.execute(
+        """
+        INSERT INTO printer_memory_factory_campaign_cycles(
+            cycle_id,campaign_id,run_id,cycle_ordinal,cycle_state,
+            created_at,updated_at
+        ) VALUES ('cycle-1','campaign-1','campaign-run-1',1,'TRACKING',?,?)
+        """,
+        (stamp, stamp),
+    )
+    connection.commit()
+    connection.close()
+
+    acquire_campaign_supervision(
+        db_path,
+        lock_path=lock_path,
+        supervision_id="supervision-1",
+        campaign_id="campaign-1",
+        configuration_id="configuration-1",
+        run_id="campaign-run-1",
+        owner_id="owner-1",
+        lease_seconds=120,
+        now=NOW,
+    )
+    connection = sqlite3.connect(db_path)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys=ON")
+
+    migration_count = canonical_migration_count()
+    migration_head = canonical_migration_names()[-1]
+    binding = build_operational_database_target_binding(
+        target_kind=PRODUCTION_AUTHORITATIVE,
+        resolved_db_path=db_path,
+        authorized_pre_mutation_sha256=baseline_sha,
+        migration_count=migration_count,
+        migration_head=migration_head,
+        authorization_id="authorization-1",
+        authorization_marker_sha256="d" * 64,
+        application_marker_sha256="e" * 64,
+        execution_id="execution-1",
+        campaign_id="campaign-1",
+        campaign_run_id="campaign-run-1",
+        cycle_id="cycle-1",
+        configuration_id="configuration-1",
+        authorization_consumed_once=True,
+        invocation_count=1,
+        allowed_invocation_count=1,
+        automatic_retry_allowed=False,
+        manual_rerun_allowed=False,
+        resume_allowed=False,
+        restart_allowed=False,
+        successor_allowed=False,
+    )
+    expected: dict[str, object] = {
+        "target_kind": PRODUCTION_AUTHORITATIVE,
+        "resolved_db_path": str(db_path.resolve()),
+        "authorized_pre_mutation_sha256": baseline_sha,
+        "migration_count": migration_count,
+        "migration_head": migration_head,
+        "authorization_id": "authorization-1",
+        "authorization_marker_sha256": "d" * 64,
+        "application_marker_sha256": "e" * 64,
+        "execution_id": "execution-1",
+        "campaign_id": "campaign-1",
+        "campaign_run_id": "campaign-run-1",
+        "cycle_id": "cycle-1",
+        "configuration_id": "configuration-1",
+        "durable_db_target_identity": f"sha256:{baseline_sha}",
+        "authorization_consumed_once": True,
+        "invocation_count": 1,
+        "allowed_invocation_count": 1,
+        "automatic_retry_allowed": False,
+        "manual_rerun_allowed": False,
+        "resume_allowed": False,
+        "restart_allowed": False,
+        "successor_allowed": False,
+    }
+    return db_path, connection, binding, expected
+
+
+def _operational_projection(owner, db_path, connection, binding, expected, *, now=NOW):
+    return owner.project_operational_health(
+        connection,
+        db_path=db_path,
+        binding=_binding(),
+        first_cycle_id="cycle-1",
+        operational_db_binding=binding,
+        operational_db_expected=expected,
+        canonical_authoritative_db_path=db_path,
+        supervision_id="supervision-1",
+        supervision_owner_id="owner-1",
+        now=now,
+    )
+
+
+def test_supervision_lease_db_and_nonterminal_state_project_read_only(tmp_path: Path) -> None:
+    owner = _projection_owner()
+    db_path, connection, db_binding, expected = _operational_fixture(tmp_path)
+    try:
+        sha_before = _sha256(db_path)
+        changes_before = connection.total_changes
+
+        result = _operational_projection(
+            owner, db_path, connection, db_binding, expected
+        )
+
+        assert result.campaign_supervision_healthy is True
+        assert result.lease_healthy is True
+        assert result.db_healthy is True
+        assert result.shared_terminal_condition is False
+        assert result.cancellation_requested is False
+        assert result.lease_expires_at == datetime(
+            2026, 8, 13, 12, 2, tzinfo=timezone.utc
+        )
+        assert result.recheck_on_lifecycle_change is False
+        assert connection.total_changes == changes_before
+        assert _sha256(db_path) == sha_before
+    finally:
+        connection.close()
+
+
+def test_cancellation_is_drain_evidence_not_shared_terminal(tmp_path: Path) -> None:
+    owner = _projection_owner()
+    db_path, connection, db_binding, expected = _operational_fixture(tmp_path)
+    try:
+        connection.execute(
+            """UPDATE printer_memory_factory_campaign_supervision
+               SET supervision_state='STOPPING',cancellation_requested_at=?,
+                   cancellation_reason='operator stop',updated_at=?""",
+            (NOW.isoformat(), NOW.isoformat()),
+        )
+        connection.execute(
+            "UPDATE printer_memory_factory_campaigns SET campaign_state='STOP_REQUESTED'"
+        )
+        connection.execute(
+            "UPDATE printer_memory_factory_campaign_runs SET run_state='STOP_REQUESTED'"
+        )
+        connection.commit()
+
+        result = _operational_projection(
+            owner, db_path, connection, db_binding, expected
+        )
+
+        assert result.campaign_supervision_healthy is True
+        assert result.lease_healthy is True
+        assert result.cancellation_requested is True
+        assert result.shared_terminal_condition is False
+    finally:
+        connection.close()
+
+
+def test_db_binding_lease_and_terminal_evidence_fail_closed_independently(
+    tmp_path: Path,
+) -> None:
+    owner = _projection_owner()
+    db_path, connection, db_binding, expected = _operational_fixture(tmp_path)
+    try:
+        wrong_expected = dict(expected)
+        wrong_expected["application_marker_sha256"] = "f" * 64
+        db_blocked = _operational_projection(
+            owner, db_path, connection, db_binding, wrong_expected
+        )
+        assert db_blocked.db_healthy is False
+        assert "OPERATIONAL_DB_BINDING_APPLICATION_MARKER_MISMATCH" in (
+            db_blocked.reasons
+        )
+
+        lease_blocked = _operational_projection(
+            owner,
+            db_path,
+            connection,
+            db_binding,
+            expected,
+            now=datetime(2026, 8, 13, 12, 2, tzinfo=timezone.utc),
+        )
+        assert lease_blocked.campaign_supervision_healthy is True
+        assert lease_blocked.lease_healthy is False
+        assert "CAMPAIGN_LEASE_EXPIRED" in lease_blocked.reasons
+
+        connection.execute(
+            "UPDATE printer_memory_factory_runs SET run_status='SAFE_STOPPED'"
+        )
+        connection.commit()
+        terminal = _operational_projection(
+            owner, db_path, connection, db_binding, expected
+        )
+        assert terminal.shared_terminal_condition is True
+        assert terminal.cancellation_requested is False
+        assert "PERSISTED_SHARED_TERMINAL_STATE" in terminal.reasons
     finally:
         connection.close()
