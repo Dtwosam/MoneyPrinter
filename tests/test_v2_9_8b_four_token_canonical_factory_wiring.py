@@ -11,6 +11,7 @@ import inspect
 import unittest
 from unittest.mock import patch
 
+from printer_v1.operator_cli import one_command_15m_factory as factory
 from printer_v1.operator_cli import operational_memory_factory_command as command
 
 
@@ -89,6 +90,14 @@ class FourTokenCanonicalFactoryWiringContractTests(unittest.TestCase):
             propagated,
             "private proof controller is not wired into the existing lifecycle kwargs channel",
         )
+
+    def test_factory_has_optional_proof_controller_seam(self) -> None:
+        parameter = inspect.signature(factory.run_one_command_15m_factory).parameters.get(
+            "four_token_proof_controller"
+        )
+        self.assertIsNotNone(parameter)
+        self.assertEqual(parameter.kind, inspect.Parameter.KEYWORD_ONLY)
+        self.assertIsNone(parameter.default)
 
 
 if __name__ == "__main__":  # pragma: no cover
