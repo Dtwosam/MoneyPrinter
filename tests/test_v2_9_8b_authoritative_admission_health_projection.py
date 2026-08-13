@@ -680,6 +680,26 @@ def test_db_binding_lease_and_terminal_evidence_fail_closed_independently(
         assert lease_blocked.lease_healthy is False
         assert "CAMPAIGN_LEASE_EXPIRED" in lease_blocked.reasons
 
+        missing_supervision = owner.project_operational_health(
+            connection,
+            db_path=db_path,
+            binding=_binding(),
+            first_cycle_id="cycle-1",
+            operational_db_binding=db_binding,
+            operational_db_expected=expected,
+            canonical_authoritative_db_path=db_path,
+            supervision_id="supervision-1",
+            supervision_owner_id="wrong-owner",
+            now=NOW,
+        )
+        assert missing_supervision.campaign_supervision_healthy is False
+        assert missing_supervision.lease_healthy is False
+        assert missing_supervision.cancellation_requested is True
+        assert missing_supervision.shared_terminal_condition is True
+        assert "CAMPAIGN_SUPERVISION_EVIDENCE_INCOMPLETE" in (
+            missing_supervision.reasons
+        )
+
         connection.execute(
             "UPDATE printer_memory_factory_runs SET run_status='SAFE_STOPPED'"
         )
