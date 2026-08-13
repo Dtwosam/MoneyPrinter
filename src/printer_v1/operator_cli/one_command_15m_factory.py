@@ -491,16 +491,11 @@ def _insert_step_and_job(
     continuous = bool(run_config.get("continuous_first_hour"))
     selective_1h = _selective_1h_lifecycle(run_config)
     compressed_two_token = _two_token_lifecycle(run_config)
-    scheduler_ceiling = (
-        _SELECTIVE_1H_MAX_SCHEDULER_ROWS
-        if selective_1h
-        else _COMPRESSED_TWO_TOKEN_MAX_SCHEDULER_ROWS
-        if compressed_two_token
-        else _CONTINUOUS_MAX_SCHEDULER_ROWS
-        if continuous
-        else _MAX_SCHEDULER_ROWS
-    )
+    scheduler_ceiling = _scheduler_ceiling_for_run_config(run_config)
     discovery_handoff_allowance = (
+        0
+        if bool(run_config.get("four_token_proof"))
+        else
         2
         if selective_1h or compressed_two_token
         else _CONTINUOUS_MAX_SELECTED_TOKENS
@@ -567,12 +562,25 @@ def _plan_opening_jobs(
     scheduled_for: datetime,
     first_commit_callback: Callable[[sqlite3.Connection, str], None] | None = None,
     operation_observer: Callable[[Mapping[str, Any]], None] | None = None,
+    cycle_ordinal: int = 1,
+    four_token_proof: bool = False,
 ) -> None:
+    if four_token_proof:
+        from printer_v1.operator_cli.four_token_proof_integration import cycle_step_key
     for target_index, target in enumerate(targets):
-        prefix = f"t{target_index + 1}"
+        slot_ordinal = target_index + 1
+        step_key = (
+            cycle_step_key(
+                slot_ordinal=slot_ordinal,
+                cycle_ordinal=cycle_ordinal,
+                suffix="snapshot_00",
+            )
+            if four_token_proof
+            else f"t{slot_ordinal}_snapshot_00"
+        )
         _insert_step_and_job(
             conn, run_id=run_id, target=target,
-            step_key=f"{prefix}_snapshot_00", step_kind="SNAPSHOT",
+            step_key=step_key, step_kind="SNAPSHOT",
             scheduled_for=scheduled_for, operation_observer=operation_observer,
         )
         if target_index == 0 and first_commit_callback is not None:
@@ -3909,8 +3917,15 @@ def _cancel_campaign_discovery_jobs(
 
 
 def _token_prefix(step_key: str) -> str:
-    """Return the per-token step-key prefix (e.g. 't1') for budget accounting."""
-    return str(step_key).split("_", 1)[0]
+    """Return the exact cycle+slot prefix for token-local accounting."""
+    from printer_v1.operator_cli.four_token_proof_integration import (
+        parse_cycle_step_key,
+    )
+
+    parsed = parse_cycle_step_key(str(step_key))
+    if parsed.cycle_ordinal == 1:
+        return f"t{parsed.slot_ordinal}"
+    return f"t{parsed.slot_ordinal}_c{parsed.cycle_ordinal:04d}"
 
 
 def _run_request_count(conn: sqlite3.Connection, run_id: str) -> int:
@@ -3921,10 +3936,44 @@ def _run_request_count(conn: sqlite3.Connection, run_id: str) -> int:
 
 
 def _token_request_count(conn: sqlite3.Connection, run_id: str, token_prefix: str) -> int:
-    return int(conn.execute(
-        "SELECT COUNT(*) FROM printer_source_requests WHERE request_key LIKE ?",
-        (f"{run_id}:{token_prefix}_%",),
-    ).fetchone()[0])
+    run_prefix = f"{run_id}:"
+    rows = conn.execute(
+        "SELECT request_key FROM printer_source_requests "
+        "WHERE request_key>=? AND request_key<?",
+        (run_prefix, run_prefix + "\uffff"),
+    ).fetchall()
+    count = 0
+    for row in rows:
+        request_key = str(row[0] or "")
+        step_key = request_key[len(run_prefix):].split(":", 1)[0]
+        if _token_prefix(step_key) == token_prefix:
+            count += 1
+    return count
+
+
+def _scheduler_ceiling_for_run_config(config: Mapping[str, Any]) -> int:
+    if bool(config.get("four_token_proof")):
+        from printer_v1.operator_cli.multi_cycle_memory_growth import (
+            scaled_standard_four_hour_capacity_contract,
+        )
+
+        return int(
+            scaled_standard_four_hour_capacity_contract(4)[
+                "lifecycle_scheduler_outer_ceiling"
+            ]
+        )
+    continuous = bool(config.get("continuous_first_hour"))
+    selective_1h = _selective_1h_lifecycle(config)
+    compressed_two_token = _two_token_lifecycle(config)
+    return (
+        _SELECTIVE_1H_MAX_SCHEDULER_ROWS
+        if selective_1h
+        else _COMPRESSED_TWO_TOKEN_MAX_SCHEDULER_ROWS
+        if compressed_two_token
+        else _CONTINUOUS_MAX_SCHEDULER_ROWS
+        if continuous
+        else _MAX_SCHEDULER_ROWS
+    )
 
 
 def _run_step_job_count(conn: sqlite3.Connection, run_id: str) -> int:
@@ -6244,6 +6293,7 @@ def run_one_command_15m_factory(
         "continuous_four_hour": bool(continuous_four_hour),
         "four_hour_proof_mode": bool(four_hour_proof_mode),
         "standard_four_hour_campaign": bool(standard_four_hour_campaign),
+        "four_token_proof": bool(four_token_proof_controller is not None),
         "compressed_two_token_proof_plan": (
             asdict(compressed_two_token_proof_plan)
             if compressed_two_token_proof_plan is not None else None
@@ -6496,6 +6546,8 @@ def run_one_command_15m_factory(
                     if _post_handoff_scope_recorder is not None
                     else None
                 ),
+                cycle_ordinal=1,
+                four_token_proof=bool(four_token_proof_controller is not None),
             )
         conn.commit()
 
