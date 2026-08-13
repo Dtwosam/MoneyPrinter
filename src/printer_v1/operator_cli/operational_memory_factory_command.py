@@ -3578,6 +3578,7 @@ def _run_operational_campaign(
                     "launch_provenance": preflight["git_provenance"],
                     "cancellation_probe": cancellation_probe,
                     "factory_run_initialized": retain_factory_run_id,
+                    "four_token_proof_controller": four_token_proof_controller,
                     # Fixed by the public mode; normal run can never opt into 1h.
                     "selective_1h_continuation": (
                         policy.selective_1h_continuation
