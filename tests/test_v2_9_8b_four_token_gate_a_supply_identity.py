@@ -163,6 +163,10 @@ def test_later_cycle_adapter_uses_permanent_supply_scope_and_exact_lineage(tmp_p
             selection_seed="factory-1-cycle-2",
             migration_transport=object(),
             graduated_supply_kwargs={},
+            holder_evidence_owner=lambda supply: {
+                item.mint.lower(): {"eligible": True, "source_name": "goplus"}
+                for item in supply.graduated_supply
+            },
         )
 
     assert observed["permanent_availability"] is True

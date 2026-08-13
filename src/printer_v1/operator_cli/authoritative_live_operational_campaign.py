@@ -1743,6 +1743,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
         *,
         db_path: str | Path | None = None,
         configuration_id: str | None = None,
+        candidate_supply: Callable[..., LaterCycleCandidateSupply] | None = None,
     ) -> Callable[..., Any]:
         """Build the private proof-only later-cycle discovery seam.
 
@@ -1873,7 +1874,8 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     mark_pre_admission_attempt_running(
                         connection, attempt_id=attempt_id, now=instant
                     )
-                    if self._later_cycle_candidate_supply is None:
+                    supply_owner = candidate_supply or self._later_cycle_candidate_supply
+                    if supply_owner is None:
                         terminalize_pre_admission_attempt(
                             connection,
                             attempt_id=attempt_id,
@@ -1885,7 +1887,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             connection, job_id=attempt.scheduler_job_id, now=instant
                         )
                     else:
-                        supply = self._later_cycle_candidate_supply(
+                        supply = supply_owner(
                             campaign_id=campaign_id,
                             campaign_run_id=campaign_run_id,
                             authoritative_factory_run_id=authoritative_factory_run_id,
@@ -2697,8 +2699,106 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 "LATER_CYCLE_DISCOVERY_CALLBACK_OVERRIDE_FORBIDDEN"
             )
         if lk.get("four_token_proof_controller") is not None:
+            production_later_supply = self._later_cycle_candidate_supply
+            if production_later_supply is None and migration_transport is not None:
+                from printer_v1.operator_cli.later_cycle_graduated_supply import (
+                    build_later_cycle_graduated_supply,
+                )
+
+                later_supply_kwargs = dict(graduated_supply_kwargs or {})
+                for locally_owned in (
+                    "campaign_id", "execution_id", "run_id", "cycle_id",
+                    "campaign_source_request_scope", "discovery_request_key_prefix",
+                    "front_door_request_key_prefix", "stage_evidence_sink",
+                    "transport_identity_observer", "local_validation_identity_observer",
+                ):
+                    later_supply_kwargs.pop(locally_owned, None)
+
+                def production_later_supply(**context: Any) -> LaterCycleCandidateSupply:
+                    evaluated = context["evaluated_at"]
+
+                    def holder_evidence_owner(supply: Any) -> Mapping[str, Mapping[str, Any]]:
+                        from printer_v1.db.sqlite_write_contracts import (
+                            connect_operational,
+                            release_write_transaction,
+                        )
+                        from printer_v1.operator_cli.holder_reliability_budget_control import (
+                            build_ledger,
+                        )
+
+                        source_operations = int(
+                            supply.diagnostics.get("stage_local_source_requests")
+                            or 0
+                        )
+                        deadline = evaluated + timedelta(
+                            seconds=command.ceilings.duration_seconds
+                        )
+                        holder_connection = connect_operational(command.db_path)
+                        try:
+                            release_write_transaction(holder_connection)
+                            holder_result = self._evaluate_holder_eligibility(
+                                holder_connection,
+                                command=command,
+                                cycle_id=str(context["proposed_cycle_id"]),
+                                bounded_candidates=tuple(
+                                    supply.holder_reserve_supply
+                                    or supply.graduated_supply
+                                ),
+                                evaluated=evaluated,
+                                deadline=deadline,
+                                ledger=build_ledger(
+                                    pump_operations=0,
+                                    additional_governed_operations=source_operations,
+                                    deadline_at=deadline,
+                                ),
+                                timeout_seconds=timeout_seconds,
+                                context_factories=lk.get("context_adapter_factories"),
+                                request_pacer=None,
+                                partition_by_mint=None,
+                                tracking_pair_by_mint={
+                                    item.mint.lower(): item.pool_address
+                                    for item in supply.holder_reserve_supply
+                                },
+                                eligible_target=2,
+                                permanent_memory_observation=True,
+                                holder_transport_identity_observer=None,
+                                holder_stage_evidence_sealer=None,
+                                campaign_request_key_root=str(
+                                    supply.diagnostics.get("request_key_root") or ""
+                                ),
+                            )
+                            holder_connection.commit()
+                            if holder_result.accounting_blocker:
+                                raise LiveOperationalError(
+                                    "LATER_CYCLE_HOLDER_ACCOUNTING_BLOCKED",
+                                    str(holder_result.accounting_blocker_reason or ""),
+                                )
+                            return dict(holder_result.holder_facts)
+                        finally:
+                            holder_connection.close()
+
+                    return build_later_cycle_graduated_supply(
+                        command.db_path,
+                        campaign_id=str(context["campaign_id"]),
+                        campaign_run_id=str(context["campaign_run_id"]),
+                        authoritative_factory_run_id=str(
+                            context["authoritative_factory_run_id"]
+                        ),
+                        proposed_cycle_id=str(context["proposed_cycle_id"]),
+                        proposed_cycle_ordinal=int(context["proposed_cycle_ordinal"]),
+                        evaluated_at=evaluated,
+                        selection_seed=str(context["selection_seed"]),
+                        migration_transport=migration_transport,
+                        graduated_supply_kwargs=later_supply_kwargs,
+                        holder_evidence_owner=holder_evidence_owner,
+                    )
+
             lk["later_cycle_discovery_callback"] = (
-                self._build_later_cycle_discovery_callback()
+                self._build_later_cycle_discovery_callback(
+                    db_path=command.db_path,
+                    configuration_id=command.configuration_id,
+                    candidate_supply=production_later_supply,
+                )
             )
 
         if standard_four_hour_campaign and not fifteen_minute_only:
