@@ -3023,6 +3023,7 @@ def _run_operational_campaign(
     migration_transport: Any | None = None,
     git_provenance_authorization: ValidatedGitProvenanceAuthorization | None = None,
     disposable_proof: Any | None = None,
+    four_token_proof_controller: Any | None = None,
 ) -> dict[str, Any]:
     """Run one fixed-policy campaign through the canonical V2-9.8B owner."""
     if not operator_approved:
