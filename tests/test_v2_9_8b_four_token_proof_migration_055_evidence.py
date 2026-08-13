@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -35,7 +36,9 @@ class FourTokenProofFixture:
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name).resolve()
         self.repo = self.root / "repo"
+        self.external = self.root / "external"
         self.repo.mkdir()
+        self.external.mkdir()
         self._git("init")
         self._git("config", "user.email", "tests@example.invalid")
         self._git("config", "user.name", "Four Token Proof Tests")
@@ -111,6 +114,17 @@ class FourTokenProofFixture:
             manifest_sha256=digest,
             profile=git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE,
         )
+
+    def make_fake_venv_python(self) -> Path:
+        venv = self.repo / ".venv"
+        bindir = venv / ("Scripts" if os.name == "nt" else "bin")
+        bindir.mkdir(parents=True)
+        (venv / "pyvenv.cfg").write_text("home = fixture\n", encoding="utf-8")
+        python_name = "python.exe" if os.name == "nt" else "python"
+        executable = bindir / python_name
+        executable.write_text("fixture interpreter\n", encoding="utf-8")
+        executable.chmod(0o755)
+        return executable
 
     def close(self) -> None:
         self.tmp.cleanup()
