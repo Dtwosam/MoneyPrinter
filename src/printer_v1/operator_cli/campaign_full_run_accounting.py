@@ -1683,7 +1683,12 @@ def _slot_stage_id(context: OperationalLifecycleOwnershipContext, ordinal: int) 
     )
 
 
-def _terminal_stage_matches(*, window_kind: str, stage_id: str) -> bool:
+def _terminal_stage_matches(
+    *,
+    window_kind: str,
+    stage_id: str,
+    allow_proof_root_stage: bool = False,
+) -> bool:
     if window_kind == "WINDOW_1H":
         return stage_id == "WINDOW_1H"
     if window_kind == "WINDOW_4H":
@@ -1692,6 +1697,7 @@ def _terminal_stage_matches(*, window_kind: str, stage_id: str) -> bool:
         return False
     return bool(
         stage_id in {"WINDOW_15M_SLOT_1", "WINDOW_15M_SLOT_2"}
+        or (allow_proof_root_stage and stage_id == "WINDOW_15M")
         or stage_id.endswith("|WINDOW_15M_SLOT_1|2")
         or stage_id.endswith("|WINDOW_15M_SLOT_2|3")
     )
@@ -1702,6 +1708,7 @@ def _load_terminal_scheduler_correspondence(
     *,
     context: OperationalLifecycleOwnershipContext,
     standard_four_hour_campaign: bool,
+    factory_step_ids: Sequence[int] | None = None,
 ) -> dict[str, Any]:
     """Load exact terminal Scheduler ownership for the active lifecycle family.
 
@@ -1736,6 +1743,14 @@ def _load_terminal_scheduler_correspondence(
             ORDER BY s.id""",
         (context.factory_run_id, *allowed.keys()),
     ).fetchall()
+    if factory_step_ids is not None:
+        exact_ids = tuple(int(value) for value in factory_step_ids)
+        if not exact_ids or len(exact_ids) != len(set(exact_ids)):
+            raise FullRunAccountingError(
+                "cycle-scoped factory step identity is empty or ambiguous"
+            )
+        exact_set = set(exact_ids)
+        steps = [row for row in steps if int(row["id"]) in exact_set]
     owned_rows = connection.execute(
         """SELECT scheduler_job_id, token_slot_id, window_id, work_state,
                   stage_id, target_category, target_identity
@@ -1801,6 +1816,7 @@ def _load_terminal_scheduler_correspondence(
                 _terminal_stage_matches(
                     window_kind=window_kind,
                     stage_id=str(owned["stage_id"] or ""),
+                    allow_proof_root_stage=factory_step_ids is not None,
                 ),
             )
         ):
@@ -1843,6 +1859,318 @@ def _load_terminal_scheduler_correspondence(
         },
         "correspondence_exact": correspondence_exact,
         "all_lifecycle_jobs_succeeded": all_succeeded,
+    }
+
+
+def project_cycle_lifecycle_accounting_completeness(
+    connection: sqlite3.Connection,
+    *,
+    context: OperationalLifecycleOwnershipContext,
+    factory_step_ids: Sequence[int],
+) -> dict[str, Any]:
+    """Project canonical two-token lifecycle completeness for one proof cycle.
+
+    This is a read-only projection of the same required-stage, Scheduler,
+    quality, and slot-disposition authorities used by full-run accounting.  The
+    caller supplies only the already-resolved cycle-scoped factory-step ids; it
+    cannot supply stage names, completion flags, or quality verdicts.
+    """
+    connection.row_factory = sqlite3.Row
+    slots = connection.execute(
+        """SELECT token_slot_id,slot_ordinal,token_row_id,pair_row_id,token_state
+           FROM printer_memory_factory_campaign_token_slots
+           WHERE campaign_id=? AND run_id=? AND cycle_id=?
+           ORDER BY slot_ordinal""",
+        (context.campaign_id, context.campaign_run_id, context.cycle_id),
+    ).fetchall()
+    reasons: list[str] = []
+    if len(slots) != context.expected_token_capacity or [
+        int(row["slot_ordinal"]) for row in slots
+    ] != [1, 2]:
+        reasons.append("EXACT_TWO_SELECTED_TARGETS_UNPROVEN")
+
+    cycle = connection.execute(
+        """SELECT cycle_state FROM printer_memory_factory_campaign_cycles
+           WHERE campaign_id=? AND run_id=? AND cycle_id=?""",
+        (context.campaign_id, context.campaign_run_id, context.cycle_id),
+    ).fetchone()
+    cycle_state = None if cycle is None else str(cycle["cycle_state"])
+    if cycle_state is None:
+        reasons.append("CYCLE_OWNERSHIP_MISSING")
+
+    correspondence = _load_terminal_scheduler_correspondence(
+        connection,
+        context=context,
+        standard_four_hour_campaign=True,
+        factory_step_ids=factory_step_ids,
+    )
+    if correspondence.get("correspondence_exact") is not True:
+        reasons.append("LIFECYCLE_SCHEDULER_CORRESPONDENCE_INCOMPLETE")
+    if correspondence.get("all_lifecycle_jobs_succeeded") is not True:
+        reasons.append("LIFECYCLE_SCHEDULER_TERMINAL_SUCCESS_INCOMPLETE")
+
+    terminal_states = _OWNED_TERMINAL_WINDOW_STATES
+    from printer_v1.operator_cli.one_command_15m_factory import (
+        _standard_campaign_four_hour_terminal_validation,
+    )
+    from printer_v1.operator_cli.one_token_4h_runtime import (
+        load_standard_four_hour_eligibility_manifests,
+    )
+
+    manifests = load_standard_four_hour_eligibility_manifests(
+        connection,
+        campaign_id=context.campaign_id,
+        run_id=context.campaign_run_id,
+        cycle_id=context.cycle_id,
+        factory_run_id=context.factory_run_id,
+    )
+    if manifests is None or set(manifests) != {
+        str(row["token_slot_id"]) for row in slots
+    }:
+        reasons.append("STANDARD_FOUR_HOUR_ELIGIBILITY_MANIFEST_INCOMPLETE")
+        manifests = {}
+    four_hour = _standard_campaign_four_hour_terminal_validation(
+        connection,
+        factory_run_id=context.factory_run_id,
+        campaign_id=context.campaign_id,
+        run_id=context.campaign_run_id,
+        cycle_id=context.cycle_id,
+    )
+    if four_hour.get("enabled") is not True or four_hour.get("complete") is not True:
+        reasons.append("STANDARD_FOUR_HOUR_TERMINAL_ACCOUNTING_INCOMPLETE")
+    window_evidence: list[dict[str, Any]] = []
+    quality_results: list[dict[str, Any]] = []
+    slot_dispositions: list[dict[str, Any]] = []
+    exact_step_ids = tuple(int(value) for value in factory_step_ids)
+    exact_step_placeholders = ",".join("?" for _ in exact_step_ids)
+    for slot in slots:
+        slot_id = str(slot["token_slot_id"])
+        rows = connection.execute(
+            """SELECT window_id,window_kind,window_state,memory_window_row_id,
+                      token_row_id,pair_row_id
+               FROM printer_memory_factory_campaign_windows
+               WHERE campaign_id=? AND run_id=? AND cycle_id=? AND token_slot_id=?
+                 AND window_kind IN ('WINDOW_15M','WINDOW_1H','WINDOW_4H')
+               ORDER BY window_kind,window_id""",
+            (
+                context.campaign_id,
+                context.campaign_run_id,
+                context.cycle_id,
+                slot_id,
+            ),
+        ).fetchall()
+        by_kind: dict[str, list[sqlite3.Row]] = {}
+        for row in rows:
+            by_kind.setdefault(str(row["window_kind"]), []).append(row)
+        eligible_4h = bool(manifests.get(slot_id, {}).get("eligible"))
+        for kind in ("WINDOW_15M", "WINDOW_1H"):
+            owned = by_kind.get(kind, [])
+            if len(owned) != 1:
+                reasons.append(f"{kind}_OWNERSHIP_INCOMPLETE:{slot_id}")
+                continue
+            window = owned[0]
+            valid = bool(
+                str(window["window_state"]) in terminal_states
+                and window["memory_window_row_id"] is not None
+                and int(window["token_row_id"]) == int(slot["token_row_id"])
+                and int(window["pair_row_id"]) == int(slot["pair_row_id"])
+            )
+            if not valid:
+                reasons.append(f"{kind}_TERMINAL_EVIDENCE_INCOMPLETE:{slot_id}")
+            window_evidence.append(
+                {
+                    "token_slot_id": slot_id,
+                    "window_kind": kind,
+                    "window_id": str(window["window_id"]),
+                    "window_state": str(window["window_state"]),
+                    "memory_window_row_id": window["memory_window_row_id"],
+                    "terminal_complete": valid,
+                }
+            )
+            if kind == "WINDOW_15M" and window["memory_window_row_id"] is not None:
+                memory = connection.execute(
+                    """SELECT memory_status,data_quality_label,do_not_train
+                       FROM printer_memory_windows WHERE id=?""",
+                    (int(window["memory_window_row_id"]),),
+                ).fetchone()
+                if memory is None:
+                    reasons.append(f"WINDOW_15M_MEMORY_MISSING:{slot_id}")
+                else:
+                    episode = connection.execute(
+                        """SELECT episode_kind FROM printer_episodes
+                           WHERE memory_window_id=?
+                           ORDER BY (episode_kind=?) DESC,id LIMIT 1""",
+                        (
+                            int(window["memory_window_row_id"]),
+                            _CLEAN_EPISODE_KIND,
+                        ),
+                    ).fetchone()
+                    quality = evaluate_quality_consistency(
+                        memory_status=str(memory["memory_status"]),
+                        data_quality_label=str(memory["data_quality_label"]),
+                        do_not_train=int(memory["do_not_train"] or 0),
+                        proposed_episode_kind=(
+                            None if episode is None else str(episode["episode_kind"])
+                        ),
+                    )
+                    quality_results.append({"token_slot_id": slot_id, **quality})
+                    if quality.get("quality_consistent") is not True:
+                        reasons.append(f"MEMORY_QUALITY_INCONSISTENT:{slot_id}")
+
+        owned_4h = by_kind.get("WINDOW_4H", [])
+        if eligible_4h:
+            if len(owned_4h) != 1:
+                reasons.append(f"WINDOW_4H_OWNERSHIP_INCOMPLETE:{slot_id}")
+            else:
+                window = owned_4h[0]
+                valid = bool(
+                    str(window["window_state"]) in terminal_states
+                    and window["memory_window_row_id"] is not None
+                    and int(window["token_row_id"]) == int(slot["token_row_id"])
+                    and int(window["pair_row_id"]) == int(slot["pair_row_id"])
+                )
+                if not valid:
+                    reasons.append(
+                        f"WINDOW_4H_TERMINAL_EVIDENCE_INCOMPLETE:{slot_id}"
+                    )
+                window_evidence.append(
+                    {
+                        "token_slot_id": slot_id,
+                        "window_kind": "WINDOW_4H",
+                        "window_id": str(window["window_id"]),
+                        "window_state": str(window["window_state"]),
+                        "memory_window_row_id": window["memory_window_row_id"],
+                        "terminal_complete": valid,
+                    }
+                )
+        elif owned_4h:
+            reasons.append(f"INELIGIBLE_WINDOW_4H_OWNERSHIP_PRESENT:{slot_id}")
+
+        disposition = resolve_campaign_slot_terminal_disposition(
+            lifecycle_started=True,
+            owned_terminal_window_state=(
+                str(by_kind["WINDOW_15M"][0]["window_state"])
+                if len(by_kind.get("WINDOW_15M", [])) == 1
+                else None
+            ),
+            queue_disposition=str(slot["token_state"]),
+        )
+        # Through-4h closure is the pre-terminal campaign-slot disposition.  A
+        # later Phase-A terminal transition may move it to COOLDOWN/ARCHIVED.
+        through_4h_closed = str(slot["token_state"]) in (
+            {"WINDOW_4H_CLOSED", "COOLDOWN", "ARCHIVED"}
+            if eligible_4h
+            else {"WINDOW_1H_CLOSED", "COOLDOWN", "ARCHIVED"}
+        )
+        slot_dispositions.append(
+            {
+                "token_slot_id": slot_id,
+                "persisted_slot_state": str(slot["token_state"]),
+                "through_4h_closed": through_4h_closed,
+                "canonical_15m_disposition": disposition,
+            }
+        )
+        if not through_4h_closed:
+            reasons.append(f"SLOT_DISPOSITION_INCOMPLETE:{slot_id}")
+
+        # Cadence completeness remains owned by the canonical cadence registry.
+        # Every applicable main window must carry exactly its policy-derived
+        # observations (snapshots plus one close); no numeric cadence is copied
+        # into this projection.
+        for kind, step_kinds in (
+            ("WINDOW_15M", ("SNAPSHOT", "WINDOW_CLOSE")),
+            ("WINDOW_1H", ("CONTINUATION_SNAPSHOT", "CONTINUATION_CLOSE")),
+            (
+                "WINDOW_4H",
+                ("LONG_CONTINUATION_SNAPSHOT", "LONG_CONTINUATION_CLOSE"),
+            ),
+        ):
+            if kind == "WINDOW_4H" and not eligible_4h:
+                continue
+            lane_rows = connection.execute(
+                "SELECT DISTINCT tracking_lane FROM "
+                "printer_memory_factory_run_steps WHERE run_id=? AND token_id=? "
+                "AND pair_id=? AND step_kind IN (?,?) "
+                f"AND id IN ({exact_step_placeholders})",
+                (
+                    context.factory_run_id,
+                    int(slot["token_row_id"]),
+                    int(slot["pair_row_id"]),
+                    *step_kinds,
+                    *exact_step_ids,
+                ),
+            ).fetchall()
+            if len(lane_rows) != 1:
+                reasons.append(f"{kind}_CADENCE_LANE_INCOMPLETE:{slot_id}")
+                continue
+            policy = get_cadence_policy(kind, str(lane_rows[0][0]))
+            if policy is None or not policy.enabled_for_real_collection:
+                reasons.append(f"{kind}_CADENCE_POLICY_UNAVAILABLE:{slot_id}")
+                continue
+            actual = int(connection.execute(
+                "SELECT COUNT(*) FROM printer_memory_factory_run_steps "
+                "WHERE run_id=? AND token_id=? AND pair_id=? "
+                "AND step_kind IN (?,?) AND step_status='SUCCEEDED' "
+                "AND snapshot_id IS NOT NULL "
+                f"AND id IN ({exact_step_placeholders})",
+                (
+                    context.factory_run_id,
+                    int(slot["token_row_id"]),
+                    int(slot["pair_row_id"]),
+                    *step_kinds,
+                    *exact_step_ids,
+                ),
+            ).fetchone()[0])
+            if actual != int(policy.minimum_required_snapshots):
+                reasons.append(f"{kind}_CADENCE_COVERAGE_INCOMPLETE:{slot_id}")
+
+    slot_ids = [str(row["token_slot_id"]) for row in slots]
+    # The package is projected before shared terminalization.  The existing
+    # full-run terminal stage is therefore represented only when its durable
+    # prerequisites are already complete: exact succeeded Scheduler ownership,
+    # every applicable main window terminal, and exact slot disposition.  A
+    # caller cannot manufacture this readiness with a cycle-state flag.
+    terminal_reconciliation_ready = not reasons
+    sealed_stage_kinds = {
+        "WINDOW_15M_SLOT_1" if len(slot_ids) >= 1 and any(
+            item["window_kind"] == "WINDOW_15M"
+            and item["token_slot_id"] == slot_ids[0]
+            and item["terminal_complete"]
+            for item in window_evidence
+        ) else "",
+        "WINDOW_15M_SLOT_2" if len(slot_ids) == 2 and any(
+            item["window_kind"] == "WINDOW_15M"
+            and item["token_slot_id"] == slot_ids[1]
+            and item["terminal_complete"]
+            for item in window_evidence
+        ) else "",
+        (
+            "CAMPAIGN_TERMINAL_RECONCILIATION"
+            if terminal_reconciliation_ready
+            else ""
+        ),
+        # Exact durable cycle/slot ownership is the discovery-selection handoff
+        # authority for this post-admission accounting projection.
+        "DISCOVERY_SELECTION_SCHEDULER" if len(slots) == 2 else "",
+    }
+    missing_stages = sorted(
+        set(REQUIRED_LIFECYCLE_STAGE_KINDS) - sealed_stage_kinds
+    )
+    if missing_stages:
+        reasons.append("MANDATORY_STAGE_ACCOUNTING_INCOMPLETE")
+
+    return {
+        "complete": not reasons,
+        "reasons": tuple(reasons),
+        "expected_stage_manifest": REQUIRED_LIFECYCLE_STAGE_KINDS,
+        "missing_mandatory_stage_kinds": tuple(missing_stages),
+        "scheduler_ownership": correspondence,
+        "windows": tuple(window_evidence),
+        "quality_results": tuple(quality_results),
+        "slot_dispositions": tuple(slot_dispositions),
+        "standard_four_hour_terminal": four_hour,
+        "cycle_state": cycle_state,
+        "terminal_reconciliation_ready": terminal_reconciliation_ready,
     }
 
 

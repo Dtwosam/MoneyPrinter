@@ -19,6 +19,7 @@ from typing import Any, Callable, Mapping
 from printer_v1.operator_cli.campaign_full_run_accounting import (
     OperationalLifecycleOwnershipContext,
     load_attributable_lifecycle_source_attempts,
+    project_cycle_lifecycle_accounting_completeness,
 )
 from printer_v1.operator_cli.four_token_proof_integration import (
     FOUR_TOKEN_PROOF_MIN_SPACING_SECONDS,
@@ -239,6 +240,39 @@ def build_four_token_cycle_accounting_package(
             "cycle accounting source ownership is ambiguous"
         )
 
+    configuration_rows = connection.execute(
+        "SELECT configuration_id FROM "
+        "printer_memory_factory_campaign_configurations WHERE campaign_id=?",
+        (campaign,),
+    ).fetchall()
+    if len(configuration_rows) != 1:
+        raise FourTokenFactoryAdapterError(
+            "cycle accounting configuration ownership is missing or ambiguous"
+        )
+    lifecycle_completeness = project_cycle_lifecycle_accounting_completeness(
+        connection,
+        context=OperationalLifecycleOwnershipContext(
+            campaign_id=campaign,
+            campaign_run_id=run,
+            cycle_id=cycle,
+            configuration_id=_required(
+                configuration_rows[0][0], "configuration_id"
+            ),
+            factory_run_id=factory,
+            expected_window_kind="WINDOW_15M",
+            expected_token_capacity=2,
+        ),
+        factory_step_ids=scoped_step_ids,
+    )
+    if lifecycle_completeness.get("complete") is not True:
+        reasons = ",".join(
+            str(item) for item in lifecycle_completeness.get("reasons", ())
+        )
+        raise FourTokenFactoryAdapterError(
+            "canonical lifecycle accounting is incomplete"
+            + (f": {reasons}" if reasons else "")
+        )
+
     memory_quality: list[str] = []
     for slot in slots:
         windows = connection.execute(
@@ -273,6 +307,7 @@ def build_four_token_cycle_accounting_package(
             "scheduler_work_ids": scheduler_work_ids,
             "scheduler_statuses": tuple(str(row[3]) for row in step_rows),
             "attribution_owner": "V2_STAGE_SCOPED_SCHEDULER_AND_FULL_RUN_REQUEST_KEY",
+            "lifecycle_completeness": lifecycle_completeness,
         },
     }
 
