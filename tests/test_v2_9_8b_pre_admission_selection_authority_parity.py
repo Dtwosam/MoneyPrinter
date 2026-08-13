@@ -25,7 +25,7 @@ def _candidate(
         merged_candidate_id=f"merged-{name}",
         mint=exact_mint,
         market_identity=f"solana-mainnet:pumpswap:pool-{name}",
-        lifecycle="PUMP_GRADUATED_TO_PUMPSWAP",
+        lifecycle="PUMPSWAP_GRADUATED_CONFIRMED",
         channels=channels,
         observation_ids=[f"observation-{name}"],
         conflicts=[],

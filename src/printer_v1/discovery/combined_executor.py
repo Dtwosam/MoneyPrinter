@@ -375,6 +375,263 @@ class _Merged:
     origin_route: str = "PUMP_CREATE"
 
 
+# Public owner-local candidate shape. The existing executor and pre-admission
+# seam intentionally share this exact mutable gate carrier; there is no second
+# eligibility or selection model.
+DiscoverySelectionCandidate = _Merged
+
+
+@dataclass(frozen=True)
+class DiscoveryGateSelectionOutcome:
+    eligible: tuple[DiscoverySelectionCandidate, ...]
+    selected: tuple[DiscoverySelectionCandidate, ...]
+    rejection_causes: tuple[tuple[str, str], ...]
+
+
+def _apply_existing_discovery_gates(
+    connection: sqlite3.Connection,
+    *,
+    candidates: Sequence[DiscoverySelectionCandidate],
+    discovery_batch_id: str,
+    evaluated_at: datetime,
+    mode: str,
+    vacant_slot_ordinals: Sequence[int],
+    batch_seq: int,
+    handoffs_used: int,
+    market_authority_mints: frozenset[str] = frozenset(),
+) -> list[DiscoverySelectionCandidate]:
+    eligible: list[DiscoverySelectionCandidate] = []
+    for candidate in candidates:
+        market_authority = candidate.mint in market_authority_mints
+        failed = None
+        for gate in GATE_ORDER:
+            if gate == "OWNERSHIP":
+                if not discovery_batch_id:
+                    failed = gate
+            elif gate == "SOURCE_PROVENANCE":
+                if not candidate.observation_ids:
+                    failed = gate
+            elif gate == "SOLANA_IDENTITY":
+                if not candidate.mint or not candidate.market_identity:
+                    failed = gate
+            elif gate == "PUMPFUN_ORIGIN":
+                if not market_authority and candidate.origin_state != "CONFIRMED":
+                    failed = gate
+            elif gate == "LIFECYCLE_MARKET":
+                if market_authority:
+                    if (
+                        candidate.lifecycle != "PRESENT_POOL_CONFIRMED"
+                        or not candidate.market_identity
+                    ):
+                        failed = gate
+                elif (
+                    candidate.lifecycle != GRADUATED_LIFECYCLE
+                    or candidate.pumpswap_state != "CONFIRMED"
+                    or not candidate.market_identity.startswith(PUMPSWAP_MARKET_PREFIX)
+                ):
+                    failed = gate
+            elif gate == "TRACKING_HANDOFF":
+                pool = candidate.market_identity.rsplit(":", 1)[-1]
+                handoff = assess_tracking_handoff_by_identity(
+                    connection,
+                    token_mint=candidate.mint,
+                    pair_address=pool,
+                    tracking_lane=TokenLifecycleState.TRACK_NORMAL,
+                    assessed_at=evaluated_at,
+                )
+                if not handoff.eligible:
+                    failed = handoff.reason_code or HANDOFF_UNSUPPORTED_STATE
+            elif gate == "FRESHNESS_CUTOFF":
+                pass
+            elif gate == "EVIDENCE_QUALITY":
+                if any(
+                    gap.get("kind") in {"DIRTY", "HOLDER_EVIDENCE_INELIGIBLE"}
+                    for gap in candidate.gaps
+                ):
+                    failed = gate
+            elif gate == "CANDIDATE_ROLE":
+                if not candidate.channels:
+                    failed = gate
+            elif gate == "INFRASTRUCTURE_EXCLUSION":
+                if candidate.mint in {
+                    "So11111111111111111111111111111111111111112",
+                    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                }:
+                    failed = gate
+            elif gate == "DUPLICATE_CONFLICT":
+                if candidate.conflicts:
+                    failed = gate
+            elif gate == "B3_RECONCILIATION":
+                if mode == "REPLACEMENT" and not vacant_slot_ordinals:
+                    failed = gate
+            elif gate == "COOLDOWN":
+                pool = candidate.market_identity.rsplit(":", 1)[-1]
+                ok_token, _ = check_token_selection_cooldown(
+                    connection, candidate.mint, batch_seq
+                )
+                ok_pair, _ = check_pair_selection_cooldown(
+                    connection, pool, batch_seq
+                )
+                if not ok_token or not ok_pair:
+                    failed = gate
+            elif gate == "VACANCY":
+                if mode == "INITIAL" and len(vacant_slot_ordinals) < 2:
+                    pass
+            elif gate == "BUDGET":
+                if handoffs_used >= TRACKING_HANDOFFS:
+                    failed = gate
+            if failed:
+                break
+        candidate.first_failed_gate = failed
+        candidate.eligible = failed is None
+        if candidate.eligible:
+            eligible.append(candidate)
+    return eligible
+
+
+def _uniform_pick_existing(
+    candidates: Sequence[DiscoverySelectionCandidate],
+    cycle_seed: str,
+    domain: str,
+    count: int,
+) -> list[DiscoverySelectionCandidate]:
+    if count <= 0 or not candidates:
+        return []
+    ordered = sorted(
+        candidates,
+        key=lambda item: (
+            _token_identity(item.mint), item.market_identity, item.lifecycle
+        ),
+    )
+    return _fisher_yates(ordered, f"{cycle_seed}|{domain}")[:count]
+
+
+def _round_robin_non_latest_existing(
+    candidates: Sequence[DiscoverySelectionCandidate],
+    cycle_seed: str,
+    batch_seq: int,
+) -> str:
+    categories: set[str] = set()
+    for candidate in candidates:
+        categories |= _non_latest_categories(candidate.channels)
+    ordered = sorted(
+        categories,
+        key=lambda category: (
+            _sha256_text(f"{cycle_seed}|category|{category}"), category
+        ),
+    )
+    if not ordered:
+        return ""
+    return ordered[(max(int(batch_seq), 1) - 1) % len(ordered)]
+
+
+def _select_existing_discovery_candidates(
+    eligible: Sequence[DiscoverySelectionCandidate],
+    cycle_seed: str,
+    *,
+    vacancy_count: int,
+    batch_seq: int,
+) -> list[DiscoverySelectionCandidate]:
+    if vacancy_count <= 0:
+        return []
+    graduated = [
+        candidate
+        for candidate in eligible
+        if not candidate.conflicts
+        and candidate.lifecycle == GRADUATED_LIFECYCLE
+        and candidate.market_identity.startswith(PUMPSWAP_MARKET_PREFIX)
+    ]
+    by_mint: dict[str, list[DiscoverySelectionCandidate]] = {}
+    for candidate in graduated:
+        by_mint.setdefault(candidate.mint, []).append(candidate)
+    collapsed: list[DiscoverySelectionCandidate] = []
+    for group in by_mint.values():
+        channels: set[str] = set()
+        for item in group:
+            channels |= item.channels
+        chosen = sorted(
+            group, key=lambda item: (-len(item.channels), item.market_identity)
+        )[0]
+        chosen.channels = channels
+        collapsed.append(chosen)
+    if not collapsed:
+        return []
+    latest_only = [
+        candidate
+        for candidate in collapsed
+        if not _non_latest_categories(candidate.channels)
+    ]
+    non_latest = [
+        candidate
+        for candidate in collapsed
+        if _non_latest_categories(candidate.channels)
+    ]
+    if vacancy_count == 1:
+        return _uniform_pick_existing(collapsed, cycle_seed, "single", 1)
+    if latest_only and non_latest and vacancy_count >= 2:
+        first = _uniform_pick_existing(
+            latest_only, cycle_seed, "LATEST_GRADUATED", 1
+        )
+        category = _round_robin_non_latest_existing(
+            non_latest, cycle_seed, batch_seq
+        )
+        members = [
+            item
+            for item in non_latest
+            if category in _non_latest_categories(item.channels)
+        ]
+        return first + _uniform_pick_existing(members, cycle_seed, category, 1)
+    return _uniform_pick_existing(
+        non_latest or latest_only,
+        cycle_seed,
+        "SINGLE_CATEGORY",
+        vacancy_count,
+    )
+
+
+def apply_existing_discovery_gate_and_selection(
+    connection: sqlite3.Connection,
+    *,
+    candidates: Sequence[DiscoverySelectionCandidate],
+    discovery_batch_id: str,
+    evaluated_at: datetime,
+    mode: str,
+    vacant_slot_ordinals: Sequence[int],
+    batch_seq: int,
+    cycle_seed: str,
+    handoffs_used: int,
+    market_authority_mints: frozenset[str] = frozenset(),
+) -> DiscoveryGateSelectionOutcome:
+    """Apply the existing categorical gate and uniform selection authority."""
+    eligible = _apply_existing_discovery_gates(
+        connection,
+        candidates=candidates,
+        discovery_batch_id=discovery_batch_id,
+        evaluated_at=evaluated_at,
+        mode=mode,
+        vacant_slot_ordinals=vacant_slot_ordinals,
+        batch_seq=batch_seq,
+        handoffs_used=handoffs_used,
+        market_authority_mints=market_authority_mints,
+    )
+    selected = _select_existing_discovery_candidates(
+        eligible,
+        cycle_seed,
+        vacancy_count=len(vacant_slot_ordinals),
+        batch_seq=batch_seq,
+    )
+    rejected = tuple(
+        (candidate.merged_candidate_id, str(candidate.first_failed_gate))
+        for candidate in sorted(
+            candidates, key=lambda item: item.merged_candidate_id
+        )
+        if candidate.first_failed_gate is not None
+    )
+    return DiscoveryGateSelectionOutcome(
+        eligible=tuple(eligible), selected=tuple(selected), rejection_causes=rejected
+    )
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -2982,6 +3239,31 @@ class CombinedPumpfunCampaignExecutor:
         usage: _Usage,
     ) -> list[_Merged]:
         del command
+        market_authority_mints = frozenset(
+            item.mint
+            for item in (
+                fixtures.memory_activation_set.selected
+                if fixtures.memory_activation_set is not None
+                else ()
+            )
+            if item.admission_authority.value == "MARKET_PRESENT_POOL"
+        )
+        return _apply_existing_discovery_gates(
+            connection,
+            candidates=tuple(merged.values()),
+            discovery_batch_id=discovery_batch_id,
+            evaluated_at=datetime.fromisoformat(
+                fixtures.evaluated_at.replace("Z", "+00:00")
+            ),
+            mode=fixtures.mode,
+            vacant_slot_ordinals=fixtures.vacant_slot_ordinals,
+            batch_seq=fixtures.batch_seq,
+            handoffs_used=usage.handoffs,
+            market_authority_mints=market_authority_mints,
+        )
+        # Historical implementation retained below temporarily for source
+        # parity review; it is unreachable and the shared owner above is the
+        # sole executed gate law.
         eligible: list[_Merged] = []
         for candidate in merged.values():
             frozen_authority = None
@@ -3100,6 +3382,15 @@ class CombinedPumpfunCampaignExecutor:
         *,
         vacancy_count: int,
     ) -> list[_Merged]:
+        return _select_existing_discovery_candidates(
+            eligible,
+            cycle_seed,
+            vacancy_count=vacancy_count,
+            batch_seq=self.fixtures.batch_seq,
+        )
+        # Historical implementation retained below temporarily for source
+        # parity review; it is unreachable and the shared owner above is the
+        # sole executed selection law.
         if vacancy_count <= 0:
             return []
         # V2-9.7E.41 graduation-only law: only graduation-confirmed candidates are
