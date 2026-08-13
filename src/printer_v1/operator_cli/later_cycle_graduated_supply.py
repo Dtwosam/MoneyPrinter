@@ -9,6 +9,10 @@ from pathlib import Path
 import sqlite3
 from typing import Any, Callable, Mapping
 
+from printer_v1.db.sqlite_write_contracts import (
+    connect_operational,
+    short_write_transaction,
+)
 from printer_v1.discovery.permanent_discovery_availability import (
     build_campaign_source_request_scope,
     request_key_belongs_to_root,
@@ -133,39 +137,57 @@ def build_later_cycle_graduated_supply(
     if not isinstance(holder_facts, Mapping):
         raise LaterCycleGraduatedSupplyError("HOLDER_EVIDENCE_RESULT_INVALID")
 
-    connection = sqlite3.connect(str(db_path))
-    connection.execute("PRAGMA foreign_keys=ON")
-    try:
-        candidates: list[LaterCycleDiscoveryCandidate] = []
-        for admission in supply.graduated_supply:
-            mint = str(admission.mint)
-            pool = str(admission.pool_address)
-            identity = ensure_neutral_token_pair_identity(
-                connection,
-                mint_identity=mint,
-                pair_identity=pool,
+    prepared: list[dict[str, Any]] = []
+    for admission in supply.graduated_supply:
+        mint = str(admission.mint)
+        pool = str(admission.pool_address)
+        raw = dict(supply.holder_reserve_candidates.get(mint.lower()) or {})
+        fact = holder_facts.get(mint.lower()) or holder_facts.get(mint)
+        if not isinstance(fact, Mapping) or fact.get("eligible") is not True:
+            raise LaterCycleGraduatedSupplyError(
+                f"HOLDER_EVIDENCE_INELIGIBLE:{mint}"
             )
-            raw = dict(supply.holder_reserve_candidates.get(mint.lower()) or {})
-            fact = holder_facts.get(mint.lower()) or holder_facts.get(mint)
-            if not isinstance(fact, Mapping) or fact.get("eligible") is not True:
-                raise LaterCycleGraduatedSupplyError(
-                    f"HOLDER_EVIDENCE_INELIGIBLE:{mint}"
-                )
-            canonical = {
-                "candidate": raw,
-                "holder_evidence": dict(fact),
-                "market_identity": str(admission.market_identity),
-                "mint_identity": mint,
-                "pair_identity": pool,
-            }
-            canonical_json = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
-            observed_raw = str(admission.temporal_context.admission_observed_at_utc)
-            observed = datetime.fromisoformat(observed_raw.replace("Z", "+00:00"))
-            provenance = str(raw.get("provenance") or "").strip()
-            if not provenance:
-                raise LaterCycleGraduatedSupplyError(
-                    f"CANDIDATE_PROVENANCE_MISSING:{mint}"
-                )
+        canonical = {
+            "candidate": raw,
+            "holder_evidence": dict(fact),
+            "market_identity": str(admission.market_identity),
+            "mint_identity": mint,
+            "pair_identity": pool,
+        }
+        canonical_json = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+        observed_raw = str(admission.temporal_context.admission_observed_at_utc)
+        observed = datetime.fromisoformat(observed_raw.replace("Z", "+00:00"))
+        provenance = str(raw.get("provenance") or "").strip()
+        if not provenance:
+            raise LaterCycleGraduatedSupplyError(
+                f"CANDIDATE_PROVENANCE_MISSING:{mint}"
+            )
+        prepared.append({
+            "admission": admission,
+            "mint": mint,
+            "pool": pool,
+            "canonical_json": canonical_json,
+            "observed": observed,
+            "provenance": provenance,
+        })
+
+    connection = connect_operational(db_path)
+    try:
+        identities = []
+        with short_write_transaction(connection):
+            for item in prepared:
+                identities.append(ensure_neutral_token_pair_identity(
+                    connection,
+                    mint_identity=str(item["mint"]),
+                    pair_identity=str(item["pool"]),
+                ))
+
+        candidates: list[LaterCycleDiscoveryCandidate] = []
+        for item, identity in zip(prepared, identities, strict=True):
+            admission = item["admission"]
+            mint = str(item["mint"])
+            pool = str(item["pool"])
+            canonical_json = str(item["canonical_json"])
             candidates.append(LaterCycleDiscoveryCandidate(
                 token_identity=f"solana-mainnet:{mint}",
                 token_row_id=identity.token_row_id,
@@ -175,18 +197,14 @@ def build_later_cycle_graduated_supply(
                 lifecycle_identity="PUMPSWAP_GRADUATED_CONFIRMED",
                 canonical_market_identity=str(admission.market_identity),
                 canonical_pool_identity=pool,
-                channels=frozenset({provenance}),
+                channels=frozenset({str(item["provenance"])}),
                 holder_evidence_eligible=True,
                 canonical_evidence_json=canonical_json,
                 canonical_evidence_hash=hashlib.sha256(canonical_json.encode()).hexdigest(),
                 evidence_version="V2_9_8B_PERMANENT_GRADUATED_SUPPLY_V1",
-                observed_at=_utc(observed),
+                observed_at=_utc(item["observed"]),
             ))
         lineage = _source_lineage(connection, request_key_root=scope.request_key_root)
-        connection.commit()
         return LaterCycleCandidateSupply(tuple(candidates), lineage, None)
-    except Exception:
-        connection.rollback()
-        raise
     finally:
         connection.close()
