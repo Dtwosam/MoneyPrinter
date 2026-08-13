@@ -107,6 +107,48 @@ class FourTokenCanonicalFactoryWiringContractTests(unittest.TestCase):
         self.assertEqual(parameter.kind, inspect.Parameter.KEYWORD_ONLY)
         self.assertIsNone(parameter.default)
 
+    def test_factory_has_optional_non_invoked_later_cycle_discovery_callback_seam(self) -> None:
+        parameter = inspect.signature(
+            factory.run_one_command_15m_factory
+        ).parameters.get("later_cycle_discovery_callback")
+
+        self.assertIsNotNone(
+            parameter,
+            "canonical factory must expose optional later-cycle discovery callback seam",
+        )
+        self.assertEqual(
+            parameter.kind,
+            inspect.Parameter.KEYWORD_ONLY,
+        )
+        self.assertIsNone(parameter.default)
+
+        tree = ast.parse(
+            inspect.getsource(factory.run_one_command_15m_factory)
+        )
+        callback_invocations = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "later_cycle_discovery_callback"
+        ]
+        self.assertEqual(
+            callback_invocations,
+            [],
+            "factory callback seam must remain non-invoked at this TDD step",
+        )
+
+        for public_runner in (
+            command.run_operational_campaign,
+            command.run_standard_four_hour_campaign,
+            command.run_selective_1h_proof,
+        ):
+            with self.subTest(public_runner=public_runner.__name__):
+                self.assertNotIn(
+                    "later_cycle_discovery_callback",
+                    inspect.signature(public_runner).parameters,
+                )
+
     def test_private_four_token_capability_persists_exact_multi_cycle_authority(self) -> None:
         now = "2026-08-13T09:00:00+00:00"
         paths = {
