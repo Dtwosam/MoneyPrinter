@@ -81,6 +81,10 @@ from printer_v1.discovery.memory_observation_activation import (
     role_reference_for_candidate,
     validate_memory_activation_set,
 )
+from printer_v1.discovery.token_pair_identity import (
+    TokenPairIdentityError,
+    ensure_neutral_token_pair_identity,
+)
 from printer_v1.sources.secondary_discovery import (
     DISCARDED_NON_AUTHORITATIVE_FIELDS,
     GECKO_ACTIVE_REQUEST,
@@ -3694,61 +3698,23 @@ class CombinedPumpfunCampaignExecutor:
         mint = candidate.mint
         pool = candidate.market_identity.rsplit(":", 1)[-1]
 
-        # Checkpoint 3: an existing pair address may be reused only when its
-        # canonical token owner is this mint. A nullable legacy base-token field
-        # is accepted only when canonical token_id ownership still matches.
-        existing_pair_owner = connection.execute(
-            "SELECT token_id, base_token_mint "
-            "FROM printer_pairs WHERE pair_address = ?",
-            (pool,),
-        ).fetchone()
-        if existing_pair_owner is not None:
-            existing_token_owner = connection.execute(
-                "SELECT id FROM printer_tokens WHERE token_mint = ?",
-                (mint,),
-            ).fetchone()
-            base_token_mint = existing_pair_owner["base_token_mint"]
-            if (
-                existing_token_owner is None
-                or int(existing_pair_owner["token_id"])
-                != int(existing_token_owner["id"])
-                or (
-                    base_token_mint is not None
-                    and str(base_token_mint) != mint
-                )
-            ):
-                raise CombinedDiscoveryError("PAIR_TOKEN_IDENTITY_MISMATCH")
-
-        token_row = connection.execute(
-            "SELECT id FROM printer_tokens WHERE token_mint = ?",
-            (mint,),
-        ).fetchone()
-        if token_row is None:
-            cursor = connection.execute(
-                """
-                INSERT INTO printer_tokens(token_mint, token_status)
-                VALUES (?, 'TRACK_NORMAL')
-                """,
-                (mint,),
+        try:
+            identity = ensure_neutral_token_pair_identity(
+                connection,
+                mint_identity=mint,
+                pair_identity=pool,
             )
-            token_id = int(cursor.lastrowid)
-        else:
-            token_id = int(token_row["id"])
-        pair_row = connection.execute(
-            "SELECT id FROM printer_pairs WHERE pair_address = ?",
-            (pool,),
-        ).fetchone()
-        if pair_row is None:
-            cursor = connection.execute(
-                """
-                INSERT INTO printer_pairs(token_id, pair_address, base_token_mint)
-                VALUES (?, ?, ?)
-                """,
-                (token_id, pool, mint),
-            )
-            pair_id = int(cursor.lastrowid)
-        else:
-            pair_id = int(pair_row["id"])
+        except TokenPairIdentityError as exc:
+            raise CombinedDiscoveryError(str(exc)) from exc
+        token_id = identity.token_row_id
+        pair_id = identity.pair_row_id
+        # Identity projection is deliberately neutral.  This existing handoff
+        # remains the lifecycle owner and applies TRACK_NORMAL only immediately
+        # before assessing/claiming tracking activation in this transaction.
+        connection.execute(
+            "UPDATE printer_tokens SET token_status='TRACK_NORMAL',updated_at=? WHERE id=?",
+            (now, token_id),
+        )
 
         if force_duplicate_active:
             # Pre-create an active tracking row so the handoff duplicate check fails.
