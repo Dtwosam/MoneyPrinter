@@ -216,3 +216,53 @@ def test_callback_fails_before_attempt_without_exact_authority(database) -> None
         assert connection.execute("SELECT COUNT(*) FROM printer_scheduler_jobs").fetchone()[0] == 0
     finally:
         connection.close()
+
+
+def test_supply_failure_terminalizes_once_without_retry_or_successor(database) -> None:
+    path, _, _ = database
+    calls = 0
+
+    def failed_supply(**_):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("injected provider failure")
+
+    callback = AuthoritativeLiveOperationalCampaignOwner(
+        later_cycle_candidate_supply=failed_supply
+    )._build_later_cycle_discovery_callback(
+        db_path=path, configuration_id="configuration-1"
+    )
+    first = _invoke(callback)
+    second = _invoke(callback)
+
+    assert first == second
+    assert first.state == "FAILED"
+    assert first.first_terminal_cause == "LATER_CYCLE_SUPPLY_FAILED"
+    assert calls == 1
+    connection = sqlite3.connect(path)
+    try:
+        assert connection.execute(
+            "SELECT status,retry_count FROM printer_scheduler_jobs"
+        ).fetchone() == ("FAILED", 1)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM printer_pre_admission_discovery_attempts"
+        ).fetchone()[0] == 1
+    finally:
+        connection.close()
+
+
+def test_missing_supply_terminalizes_blocked_and_cancels_scheduler(database) -> None:
+    path, _, _ = database
+    callback = AuthoritativeLiveOperationalCampaignOwner()._build_later_cycle_discovery_callback(
+        db_path=path, configuration_id="configuration-1"
+    )
+    result = _invoke(callback)
+    assert result.state == "BLOCKED"
+    assert result.first_terminal_cause == "LATER_CYCLE_CANDIDATE_SUPPLY_NOT_WIRED"
+    connection = sqlite3.connect(path)
+    try:
+        assert connection.execute(
+            "SELECT status FROM printer_scheduler_jobs"
+        ).fetchone()[0] == "CANCELLED"
+    finally:
+        connection.close()
