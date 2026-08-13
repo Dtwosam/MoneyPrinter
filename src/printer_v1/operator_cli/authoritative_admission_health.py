@@ -8,7 +8,10 @@ admits another cycle.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 import sqlite3
+from typing import Any, Mapping
 
 from printer_v1.operator_cli import one_command_15m_factory as factory
 from printer_v1.operator_cli.campaign_active_work import (
@@ -22,10 +25,21 @@ from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
 from printer_v1.operator_cli.multi_cycle_memory_growth import (
     scaled_standard_four_hour_capacity_contract,
 )
+from printer_v1.operator_cli.campaign_supervision import (
+    CampaignSupervisionError,
+    inspect_campaign_supervision,
+)
+from printer_v1.operator_cli.operational_database_target_binding import (
+    OperationalDatabaseTargetBinding,
+    validate_operational_database_target_binding,
+)
 from printer_v1.operator_cli.operational_standard_4h import (
     standard_four_hour_capacity_contract,
 )
 from printer_v1.operator_cli.one_token_4h_runtime import require_projected_capacity
+from printer_v1.operator_cli.proof_db_schema_readiness import (
+    validate_runtime_schema_connection,
+)
 
 
 @dataclass(frozen=True)
@@ -52,6 +66,18 @@ class SchedulerHealthProjection:
     cycle_one_scheduler_ceiling: int
     second_cycle_scheduler_envelope: int
     four_token_scheduler_ceiling: int
+    recheck_on_lifecycle_change: bool
+    reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class OperationalHealthProjection:
+    campaign_supervision_healthy: bool
+    lease_healthy: bool
+    db_healthy: bool
+    shared_terminal_condition: bool
+    cancellation_requested: bool
+    lease_expires_at: datetime | None
     recheck_on_lifecycle_change: bool
     reasons: tuple[str, ...]
 
@@ -407,9 +433,213 @@ def project_scheduler_health(
     )
 
 
+def _aware_utc(value: object) -> datetime:
+    parsed = datetime.fromisoformat(str(value))
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("timestamp must be timezone-aware")
+    return parsed.astimezone(timezone.utc)
+
+
+def _connection_path(connection: sqlite3.Connection) -> Path | None:
+    rows = connection.execute("PRAGMA database_list").fetchall()
+    main = [row for row in rows if str(row[1]) == "main"]
+    if len(main) != 1 or not str(main[0][2]):
+        return None
+    return Path(str(main[0][2])).resolve()
+
+
+def project_operational_health(
+    connection: sqlite3.Connection,
+    *,
+    db_path: str | Path,
+    binding: MultiCycleCampaignBinding,
+    first_cycle_id: str,
+    operational_db_binding: OperationalDatabaseTargetBinding | None,
+    operational_db_expected: Mapping[str, Any],
+    canonical_authoritative_db_path: str | Path,
+    supervision_id: str,
+    supervision_owner_id: str,
+    now: datetime,
+) -> OperationalHealthProjection:
+    """Read schema/binding, supervision, lease, cancellation, and terminal facts."""
+    reasons: list[str] = []
+    resolved_path = Path(db_path).resolve()
+    instant = _aware_utc(now)
+
+    graph = None
+    report: Mapping[str, Any] | None = None
+    try:
+        graph = connection.execute(
+            """SELECT c.campaign_state,c.db_target_identity,
+                      r.run_state,r.authoritative_run_id,
+                      cy.cycle_state,f.run_status
+               FROM printer_memory_factory_campaigns AS c
+               JOIN printer_memory_factory_campaign_configurations AS cfg
+                 ON cfg.campaign_id=c.campaign_id AND cfg.configuration_id=?
+               JOIN printer_memory_factory_campaign_runs AS r
+                 ON r.campaign_id=c.campaign_id AND r.run_id=?
+               JOIN printer_memory_factory_campaign_cycles AS cy
+                 ON cy.campaign_id=c.campaign_id AND cy.run_id=r.run_id
+                AND cy.cycle_id=? AND cy.cycle_ordinal=1
+               JOIN printer_memory_factory_runs AS f
+                 ON f.run_id=r.authoritative_run_id
+               WHERE c.campaign_id=? AND r.authoritative_run_id=?""",
+            (
+                binding.configuration_id,
+                binding.campaign_run_id,
+                first_cycle_id,
+                binding.campaign_id,
+                binding.authoritative_factory_run_id,
+            ),
+        ).fetchone()
+        report = campaign_active_work_report(
+            connection,
+            factory_run_id=binding.authoritative_factory_run_id,
+            campaign_id=binding.campaign_id,
+            run_id=binding.campaign_run_id,
+            cycle_id=first_cycle_id,
+        )
+    except (sqlite3.Error, TypeError, ValueError, KeyError):
+        graph = None
+    if graph is None or report is None:
+        reasons.append("CAMPAIGN_OWNERSHIP_EVIDENCE_INCOMPLETE")
+
+    db_healthy = True
+    try:
+        mismatch = validate_operational_database_target_binding(
+            operational_db_binding,
+            actual_db_path=resolved_path,
+            canonical_authoritative_db_path=canonical_authoritative_db_path,
+            expected=operational_db_expected,
+        )
+        if mismatch is not None:
+            db_healthy = False
+            reasons.append(mismatch)
+        schema = validate_runtime_schema_connection(
+            connection,
+            raise_on_error=False,
+        )
+        if schema.get("runtime_ready") is not True:
+            db_healthy = False
+            reasons.append("RUNTIME_SCHEMA_NOT_READY")
+        if _connection_path(connection) != resolved_path:
+            db_healthy = False
+            reasons.append("OPERATIONAL_DB_CONNECTION_PATH_MISMATCH")
+        if (
+            graph is None
+            or operational_db_binding is None
+            or str(graph["db_target_identity"])
+            != operational_db_binding.db_target_identity
+        ):
+            db_healthy = False
+            reasons.append("DURABLE_DB_TARGET_IDENTITY_MISMATCH")
+    except (sqlite3.Error, TypeError, ValueError, KeyError, OSError):
+        db_healthy = False
+        reasons.append("OPERATIONAL_DB_EVIDENCE_INCOMPLETE")
+
+    supervision: Mapping[str, Any] | None = None
+    try:
+        supervision = inspect_campaign_supervision(
+            resolved_path,
+            supervision_id=supervision_id,
+            campaign_id=binding.campaign_id,
+            configuration_id=binding.configuration_id,
+            run_id=binding.campaign_run_id,
+            owner_id=supervision_owner_id,
+            now=instant,
+        )
+    except (CampaignSupervisionError, sqlite3.Error, OSError, ValueError):
+        reasons.append("CAMPAIGN_SUPERVISION_EVIDENCE_INCOMPLETE")
+
+    campaign_supervision_healthy = False
+    lease_healthy = False
+    lease_expires_at: datetime | None = None
+    supervision_cancelled = True
+    supervision_terminal = True
+    if supervision is not None:
+        state = str(supervision.get("supervision_state") or "")
+        campaign_supervision_healthy = (
+            supervision.get("read_only") is True
+            and state in {"ACTIVE", "STOPPING"}
+        )
+        try:
+            lease_expires_at = _aware_utc(supervision.get("lease_expires_at"))
+        except (TypeError, ValueError):
+            reasons.append("CAMPAIGN_LEASE_TIMESTAMP_INCOMPLETE")
+        lease_healthy = (
+            campaign_supervision_healthy
+            and supervision.get("lease_expired") is False
+            and lease_expires_at is not None
+        )
+        supervision_cancelled = (
+            supervision.get("cancellation_requested_at") is not None
+            or state == "STOPPING"
+        )
+        supervision_terminal = state == "TERMINAL"
+        if not campaign_supervision_healthy:
+            reasons.append("CAMPAIGN_SUPERVISION_NOT_ACTIVE_OR_STOPPING")
+        if not lease_healthy:
+            reasons.append(
+                "CAMPAIGN_LEASE_EXPIRED"
+                if supervision.get("lease_expired") is True
+                else "CAMPAIGN_LEASE_EVIDENCE_INCOMPLETE"
+            )
+
+    graph_cancelled = True
+    shared_terminal_condition = True
+    if graph is not None:
+        campaign_state = str(graph["campaign_state"])
+        run_state = str(graph["run_state"])
+        cycle_state = str(graph["cycle_state"])
+        factory_state = str(graph["run_status"])
+        graph_cancelled = (
+            campaign_state == "STOP_REQUESTED" or run_state == "STOP_REQUESTED"
+        )
+        explicit_terminal = (
+            campaign_state.startswith("TERMINAL_")
+            or run_state.startswith("TERMINAL_")
+            or cycle_state.startswith("TERMINAL_")
+            or factory_state in {"COMPLETED", "FAILED", "SAFE_STOPPED"}
+            or supervision_terminal
+        )
+        non_running_block = (
+            campaign_state not in {"RUNNING", "STOP_REQUESTED"}
+            or run_state not in {"RUNNING", "STOP_REQUESTED"}
+            or factory_state != "RUNNING"
+        )
+        shared_terminal_condition = explicit_terminal or non_running_block
+        if shared_terminal_condition:
+            reasons.append("PERSISTED_SHARED_TERMINAL_STATE")
+            if report is not None and report.get("clean_terminal") is not True:
+                reasons.append("TERMINAL_ACTIVE_WORK_DRIFT")
+
+    cancellation_requested = supervision_cancelled or graph_cancelled
+    recheck_on_lifecycle_change = any(
+        (
+            not campaign_supervision_healthy,
+            not lease_healthy,
+            not db_healthy,
+            shared_terminal_condition,
+            cancellation_requested,
+        )
+    )
+    return OperationalHealthProjection(
+        campaign_supervision_healthy=campaign_supervision_healthy,
+        lease_healthy=lease_healthy,
+        db_healthy=db_healthy,
+        shared_terminal_condition=shared_terminal_condition,
+        cancellation_requested=cancellation_requested,
+        lease_expires_at=lease_expires_at,
+        recheck_on_lifecycle_change=recheck_on_lifecycle_change,
+        reasons=tuple(dict.fromkeys(reasons)),
+    )
+
+
 __all__ = [
     "LifecycleBudgetReserveProjection",
+    "OperationalHealthProjection",
     "SchedulerHealthProjection",
     "project_lifecycle_budget_reserve",
+    "project_operational_health",
     "project_scheduler_health",
 ]
