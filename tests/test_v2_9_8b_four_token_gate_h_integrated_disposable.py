@@ -16,6 +16,7 @@ from printer_v1.operator_cli.authoritative_live_operational_campaign import (
     AuthoritativeLiveOperationalCampaignOwner,
 )
 from printer_v1.operator_cli.four_token_factory_adapter import (
+    build_four_token_cycle_accounting_package,
     finalize_four_token_shared_terminal,
     reconcile_four_token_cycle_terminal,
 )
@@ -256,28 +257,16 @@ def test_one_disposable_factory_graph_proves_four_token_integration(tmp_path) ->
     assert _token_request_count(connection, "factory-1", "t1") == 1
     assert _token_request_count(connection, "factory-1", "t1_c0002") == 1
 
-    packages = []
-    for ordinal, cycle in enumerate(("cycle-1", "cycle-1-2"), start=1):
-        targets = [dict(row) for row in connection.execute(
-            "SELECT token_row_id AS token_id,pair_row_id AS pair_id "
-            "FROM printer_memory_factory_campaign_token_slots "
-            "WHERE cycle_id=? ORDER BY slot_ordinal",
-            (cycle,),
-        ).fetchall()]
-        packages.append({
-            "cycle_id": cycle,
-            "cycle_ordinal": ordinal,
-            "factory_run_id": "factory-1",
-            "structurally_safe": True,
-            "selected_targets": targets,
-            "memory_quality": ["NO_PROMOTION", "NO_PROMOTION"],
-            "accounting_package": {
-                "expected_token_capacity": 2,
-                "factory_step_ids": cycle_steps[cycle],
-                "source_requests": 1,
-                "scheduler_jobs": len(cycle_steps[cycle]),
-            },
-        })
+    packages = [
+        build_four_token_cycle_accounting_package(
+            connection,
+            campaign_id="campaign-1",
+            campaign_run_id="campaign-run-1",
+            factory_run_id="factory-1",
+            cycle_id=cycle,
+        )
+        for cycle in ("cycle-1", "cycle-1-2")
+    ]
     aggregate = aggregate_four_token_cycle_acceptance(
         packages,
         shared={
