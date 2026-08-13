@@ -150,6 +150,7 @@ class FourTokenAdmissionBoundaryResult:
     admitted: bool
     attempt_id: str | None = None
     attempt_state: str | None = None
+    attempt_terminal_cause: str | None = None
     cycle_id: str | None = None
 
 
@@ -199,9 +200,16 @@ def _run_four_token_admission_boundary(
     )
     attempt_id = str(getattr(attempt, "attempt_id", "") or "")
     attempt_state = str(getattr(attempt, "state", "") or "")
+    attempt_terminal_cause = str(
+        getattr(attempt, "first_terminal_cause", "") or ""
+    )
     if attempt_state != "PAIR_READY" or not attempt_id:
         return FourTokenAdmissionBoundaryResult(
-            disposition, False, attempt_id or None, attempt_state or None
+            disposition,
+            False,
+            attempt_id or None,
+            attempt_state or None,
+            attempt_terminal_cause or None,
         )
 
     post_now = (clock or (lambda: now))()
@@ -209,7 +217,7 @@ def _run_four_token_admission_boundary(
     post_disposition = evaluate(post)
     if post_disposition.kind is not FourTokenAdmissionDispositionKind.CYCLE_ADMISSION:
         return FourTokenAdmissionBoundaryResult(
-            post_disposition, False, attempt_id, attempt_state
+            post_disposition, False, attempt_id, attempt_state, None
         )
     admission = admit(
         connection=connection,
@@ -221,7 +229,7 @@ def _run_four_token_admission_boundary(
     )
     if getattr(admission, "mutation_performed", False) is not True:
         return FourTokenAdmissionBoundaryResult(
-            post_disposition, False, attempt_id, attempt_state
+            post_disposition, False, attempt_id, attempt_state, None
         )
     cycle_id = str(getattr(admission, "cycle_id", "") or "")
     materialize(
@@ -236,7 +244,7 @@ def _run_four_token_admission_boundary(
     )
     plan_opening(cycle_id=cycle_id, cycle_ordinal=2, now=post_now)
     return FourTokenAdmissionBoundaryResult(
-        post_disposition, True, attempt_id, "CONSUMED", cycle_id
+        post_disposition, True, attempt_id, "CONSUMED", None, cycle_id
     )
 
 
@@ -6401,6 +6409,8 @@ def run_one_command_15m_factory(
     later_cycle_discovery_callback: Callable[..., Any] | None = None,
     four_token_health_projector: Callable[[sqlite3.Connection, datetime], Any]
     | None = None,
+    four_token_shared_terminalizer: Callable[..., Mapping[str, Any]]
+    | None = None,
     source_governor_owner: Any | None = None,
     central_scheduler_owner: Any | None = None,
     compressed_two_token_proof_plan: CompressedTwoTokenProofPlan | None = None,
@@ -6460,6 +6470,10 @@ def run_one_command_15m_factory(
             reasons.append(
                 "four-token proof controller requires authoritative admission health projector"
             )
+        if four_token_shared_terminalizer is None:
+            reasons.append(
+                "four-token proof controller requires authoritative shared terminal owner"
+            )
     elif later_cycle_discovery_callback is not None:
         reasons.append(
             "later-cycle discovery callback requires four-token proof controller"
@@ -6467,6 +6481,10 @@ def run_one_command_15m_factory(
     elif four_token_health_projector is not None:
         reasons.append(
             "admission health projector requires four-token proof controller"
+        )
+    elif four_token_shared_terminalizer is not None:
+        reasons.append(
+            "shared terminal owner requires four-token proof controller"
         )
     if _post_handoff_fault is not None:
         if not proof_mode or operational_persistent_mode:
@@ -6836,6 +6854,7 @@ def run_one_command_15m_factory(
     post_activation_checkpointed = False
     proof_fault: BaseException | None = None
     governed_observer_token = None
+    four_token_attempt_terminal_cause: str | None = None
     if lifecycle_operation_observer is not None:
         from printer_v1.sources.governed_execution import (
             set_governed_attempt_observer,
@@ -7131,6 +7150,10 @@ def run_one_command_15m_factory(
                         # remain frozen after post-discovery health changed; no
                         # retry/successor is permitted.
                         admission_attempt_finished = True
+                        if boundary.attempt_terminal_cause is not None:
+                            four_token_attempt_terminal_cause = (
+                                boundary.attempt_terminal_cause
+                            )
                     if kind is FourTokenAdmissionDispositionKind.PROOF_DEADLINE:
                         stop_reason = STOP_DURATION
                         break
@@ -7159,6 +7182,12 @@ def run_one_command_15m_factory(
                             )
                         continue
             if pending is None:
+                if four_token_attempt_terminal_cause is not None:
+                    # The sole pre-admission attempt terminalized honestly.
+                    # Preserve its exact cause only after all existing cycle-1
+                    # lifecycle work has drained; it must never terminate that
+                    # work early.
+                    stop_reason = four_token_attempt_terminal_cause
                 break
             due = datetime.fromisoformat(str(pending["scheduled_for"]))
             wait = max(0.0, (due - _now()).total_seconds())
@@ -7877,13 +7906,61 @@ def run_one_command_15m_factory(
         _emit_supervision_event(
             bool(supervision_execution_id), "TERMINAL_CAUSE", reason=stop_reason,
         )
-        _cancel_pending(conn, run_id, stop_reason)
-        if stop_reason != STOP_COMPLETED:
-            _cancel_owned_continuation_windows_for_run(
-                conn,
-                factory_run_id=run_id,
-                terminal_cause=stop_reason,
+        four_token_terminal: dict[str, Any] | None = None
+        four_token_terminal_cause: str | None = None
+        four_token_terminal_run_status: str | None = None
+        if four_token_proof_controller is not None:
+            from printer_v1.operator_cli.four_token_factory_adapter import (
+                finalize_four_token_shared_terminal,
+                reconcile_four_token_cycle_terminal,
             )
+
+            admitted_cycles = conn.execute(
+                "SELECT cycle_id FROM printer_memory_factory_campaign_cycles "
+                "WHERE campaign_id=? AND run_id=? ORDER BY cycle_ordinal",
+                (str(campaign_id), str(campaign_run_id)),
+            ).fetchall()
+            if not admitted_cycles:
+                raise ValueError("four-token terminal found no admitted cycle")
+            phase_a = []
+            cycle_run_status = (
+                "COMPLETED"
+                if (
+                    stop_reason == STOP_COMPLETED
+                    and four_token_attempt_terminal_cause is None
+                    and len(admitted_cycles) == 2
+                )
+                else "SAFE_STOPPED"
+            )
+            for admitted in admitted_cycles:
+                phase_a.append(
+                    reconcile_four_token_cycle_terminal(
+                        conn,
+                        campaign_id=str(campaign_id),
+                        campaign_run_id=str(campaign_run_id),
+                        factory_run_id=run_id,
+                        cycle_id=str(admitted[0]),
+                        cause=(
+                            four_token_attempt_terminal_cause
+                            or stop_reason
+                        ),
+                        run_status=cycle_run_status,
+                        now=_now(),
+                    )
+                )
+            four_token_terminal_cause = (
+                four_token_attempt_terminal_cause or stop_reason
+            )
+            four_token_terminal_run_status = cycle_run_status
+            four_token_terminal = {"phase_a": tuple(phase_a)}
+        else:
+            _cancel_pending(conn, run_id, stop_reason)
+            if stop_reason != STOP_COMPLETED:
+                _cancel_owned_continuation_windows_for_run(
+                    conn,
+                    factory_run_id=run_id,
+                    terminal_cause=stop_reason,
+                )
         discovery_cleanup = _cancel_campaign_discovery_jobs(
             conn,
             discovery.get("selection_handoff_report", {}).get("batch_id"),
@@ -7935,18 +8012,42 @@ def run_one_command_15m_factory(
             conn, run_id=run_id, config=config, discovery=discovery, before=before,
             stop_reason=stop_reason, started_at=started_at,
         )
+        if four_token_terminal is not None:
+            if four_token_shared_terminalizer is None:
+                raise ValueError("authoritative shared terminal owner missing")
+            phase_b = finalize_four_token_shared_terminal(
+                conn,
+                campaign_id=str(campaign_id),
+                campaign_run_id=str(campaign_run_id),
+                factory_run_id=run_id,
+                shared_terminalizer=lambda: four_token_shared_terminalizer(
+                    terminal_cause=str(four_token_terminal_cause),
+                    run_status=four_token_terminal_run_status,
+                ),
+            )
+            four_token_terminal.update(phase_b)
         report["post_cycle_lifecycle_reconciliation"] = lifecycle_reconciliation
         report["campaign_discovery_cleanup"] = discovery_cleanup
+        if four_token_terminal is not None:
+            report["four_token_terminal"] = four_token_terminal
         _apply_post_report_integrity(report)
         report["full_run_evidence_deltas"] = dict(report["table_deltas"])
         report["recovery_evidence_deltas"] = {
             table: 0 for table in report["table_deltas"]
         }
 
-        conn.execute(
-            "UPDATE printer_memory_factory_runs SET run_status=?,stop_reason=?,finished_at=?,final_report_json=?,updated_at=? WHERE run_id=?",
-            (report["run_status"], report["stop_reason"], report["finished_at"], _json(report), _iso(), run_id),
-        )
+        if four_token_terminal is None:
+            conn.execute(
+                "UPDATE printer_memory_factory_runs SET run_status=?,stop_reason=?,finished_at=?,final_report_json=?,updated_at=? WHERE run_id=?",
+                (report["run_status"], report["stop_reason"], report["finished_at"], _json(report), _iso(), run_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE printer_memory_factory_runs SET stop_reason=COALESCE(stop_reason,?),"
+                "finished_at=COALESCE(finished_at,?),final_report_json=?,updated_at=? "
+                "WHERE run_id=? AND run_status!='RUNNING'",
+                (report["stop_reason"], report["finished_at"], _json(report), _iso(), run_id),
+            )
         conn.commit()
         _emit_supervision_event(
             bool(supervision_execution_id),

@@ -30,6 +30,7 @@ from printer_v1.operator_cli.multi_cycle_memory_growth import (
     MultiCycleSessionSnapshot,
 )
 from printer_v1.operator_cli import one_command_15m_factory as factory
+from printer_v1.operator_cli import four_token_factory_adapter as four_token_adapter
 from printer_v1.operator_cli.window_15m_concrete_composition import (
     ordinary_window_15m_builder_identities,
 )
@@ -294,6 +295,14 @@ def test_real_factory_loop_wakes_future_lifecycle_before_spacing_boundary(
     monkeypatch.setattr(factory, "_now", lambda: clock[0])
     monkeypatch.setattr(factory, "_plan_opening_jobs", plan_future_lifecycle)
     monkeypatch.setattr(factory, "_sleep_with_cancellation", stop_at_first_wait)
+    monkeypatch.setattr(
+        four_token_adapter,
+        "finalize_four_token_shared_terminal",
+        lambda *args, **kwargs: {
+            "shared_terminalized": True,
+            "shared_cleanup_count": 1,
+        },
+    )
 
     report = factory.run_one_command_15m_factory(
         db,
@@ -327,6 +336,10 @@ def test_real_factory_loop_wakes_future_lifecycle_before_spacing_boundary(
         four_token_proof_controller=_SpacingController(),
         later_cycle_discovery_callback=lambda **_: None,
         four_token_health_projector=lambda _connection, _now: _healthy_projection(),
+        four_token_shared_terminalizer=lambda **_: {
+            "clean_terminal": True,
+            "lease_released": True,
+        },
         source_governor_owner=object(),
         central_scheduler_owner=object(),
         _sleep=lambda _seconds: None,

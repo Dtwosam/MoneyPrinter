@@ -44,6 +44,10 @@ from tests.test_v2_9_8b_four_token_factory_wake_ordering import (
     _prepare,
     _slot,
 )
+from tests.test_v2_9_8b_callback_consume_materialize_integration import (
+    GOVERNOR,
+    SCHEDULER,
+)
 
 
 @dataclass
@@ -176,6 +180,16 @@ def test_real_factory_terminal_path_runs_cycle_phase_then_shared_owner_once(
 
     def shared_terminalizer(*, terminal_cause, run_status):
         shared_calls.append(str(terminal_cause))
+        phase_a_connection = sqlite3.connect(db)
+        phase_a_states = phase_a_connection.execute(
+            "SELECT cycle_state FROM printer_memory_factory_campaign_cycles "
+            "ORDER BY cycle_ordinal"
+        ).fetchall()
+        phase_a_connection.close()
+        assert phase_a_states
+        assert all(
+            str(row[0]).startswith("TERMINAL_") for row in phase_a_states
+        )
         reconciled = reconcile_campaign_terminal(
             db,
             campaign_id=CAMPAIGN_ID,
@@ -222,8 +236,8 @@ def test_real_factory_terminal_path_runs_cycle_phase_then_shared_owner_once(
         later_cycle_discovery_callback=later_callback,
         four_token_health_projector=lambda _connection, _now: _healthy_projection(),
         four_token_shared_terminalizer=shared_terminalizer,
-        source_governor_owner=object(),
-        central_scheduler_owner=object(),
+        source_governor_owner=GOVERNOR,
+        central_scheduler_owner=SCHEDULER,
         _sleep=lambda _seconds: None,
         _monotonic=lambda: 0.0,
     )
@@ -233,15 +247,41 @@ def test_real_factory_terminal_path_runs_cycle_phase_then_shared_owner_once(
         "SELECT cycle_ordinal,cycle_state FROM printer_memory_factory_campaign_cycles "
         "ORDER BY cycle_ordinal"
     ).fetchall()
-    assert all(str(row[1]).startswith("TERMINAL_") for row in states)
+    assert [str(row[1]) for row in states] == (
+        ["TERMINAL_COMPLETED", "TERMINAL_COMPLETED"]
+        if two_cycles
+        else ["TERMINAL_BLOCKED"]
+    )
     assert len(states) == (2 if two_cycles else 1)
     assert connection.execute(
         "SELECT run_state FROM printer_memory_factory_campaign_runs"
-    ).fetchone()[0].startswith("TERMINAL_")
+    ).fetchone()[0] == (
+        "TERMINAL_COMPLETED" if two_cycles else "TERMINAL_BLOCKED"
+    )
+    assert connection.execute(
+        "SELECT run_status FROM printer_memory_factory_runs"
+    ).fetchone()[0] == ("COMPLETED" if two_cycles else "SAFE_STOPPED")
     if not two_cycles:
+        attempt = connection.execute(
+            "SELECT attempt_state,first_terminal_cause,consumed_cycle_id "
+            "FROM printer_pre_admission_discovery_attempts"
+        ).fetchall()
+        assert attempt == [("NO_PAIR", "NO_EXACT_PAIR", None)]
         assert connection.execute(
-            "SELECT attempt_state FROM printer_pre_admission_discovery_attempts"
-        ).fetchone()[0] == "NO_PAIR"
-    assert shared_calls == [report["stop_reason"]]
+            "SELECT COUNT(*) FROM printer_memory_factory_campaign_cycles"
+        ).fetchone()[0] == 1
+    assert shared_calls == [
+        "COMPLETED_CLEAN_OR_DIRTY_RESULTS_REPORTED"
+        if two_cycles
+        else "NO_EXACT_PAIR"
+    ]
     assert report["four_token_terminal"]["shared_cleanup_count"] == 1
+    assert len(report["four_token_terminal"]["phase_a"]) == (
+        2 if two_cycles else 1
+    )
+    assert report["four_token_terminal"]["admitted_shape"] == (
+        "TWO_CYCLE_COMPLETION"
+        if two_cycles
+        else "ONE_CYCLE_HONEST_NO_ADMISSION"
+    )
     connection.close()

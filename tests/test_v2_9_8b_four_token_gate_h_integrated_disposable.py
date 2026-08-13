@@ -53,6 +53,9 @@ from tests.test_v2_9_8b_callback_consume_materialize_integration import (
     _candidate,
     _prepare_database,
 )
+from tests.test_v2_9_8b_four_token_cycle_accounting_adapter import (
+    _completed_cycle,
+)
 
 
 def test_one_disposable_factory_graph_proves_four_token_integration(tmp_path) -> None:
@@ -257,22 +260,34 @@ def test_one_disposable_factory_graph_proves_four_token_integration(tmp_path) ->
     assert _token_request_count(connection, "factory-1", "t1") == 1
     assert _token_request_count(connection, "factory-1", "t1_c0002") == 1
 
-    packages = [
-        build_four_token_cycle_accounting_package(
-            connection,
-            campaign_id="campaign-1",
-            campaign_run_id="campaign-run-1",
-            factory_run_id="factory-1",
-            cycle_id=cycle,
-        )
-        for cycle in ("cycle-1", "cycle-1-2")
-    ]
+    complete_fx, _ = _completed_cycle()
+    complete_fx_two, _ = _completed_cycle(
+        cycle_ordinal=2,
+        token_offset=2,
+        pair_offset=102,
+        factory_step_offset=10_000,
+    )
+    package_one = build_four_token_cycle_accounting_package(
+        complete_fx.connection,
+        campaign_id="campaign-1h",
+        campaign_run_id="run-1h",
+        factory_run_id="factory-run-1",
+        cycle_id="cycle-1h",
+    )
+    package_two = build_four_token_cycle_accounting_package(
+        complete_fx_two.connection,
+        campaign_id="campaign-1h",
+        campaign_run_id="run-1h",
+        factory_run_id="factory-run-1",
+        cycle_id="cycle-2h",
+    )
+    packages = [package_one, package_two]
     aggregate = aggregate_four_token_cycle_acceptance(
         packages,
         shared={
             "campaign_id": "campaign-1",
             "campaign_run_id": "campaign-run-1",
-            "factory_run_id": "factory-1",
+            "factory_run_id": "factory-run-1",
             "admission_spacing_seconds": 300,
             "active_through_4h_peak": 4,
             "aggregate_budget_within_ceiling": True,
@@ -284,6 +299,13 @@ def test_one_disposable_factory_graph_proves_four_token_integration(tmp_path) ->
         },
     )
     assert aggregate["accounting_package_count"] == 2
+    assert all(
+        package["accounting_package"]["lifecycle_completeness"]["complete"]
+        is True
+        for package in packages
+    )
+    complete_fx.close()
+    complete_fx_two.close()
     connection.commit()
 
     for cycle in ("cycle-1", "cycle-1-2"):

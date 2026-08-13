@@ -413,18 +413,29 @@ def reconcile_campaign_terminal(
             if row is None:
                 report["factory_run"] = "not_found"
             elif str(row["run_status"]) == "RUNNING":
+                factory_terminal_status = (
+                    "COMPLETED"
+                    if new_state == "TERMINAL_COMPLETED"
+                    else "SAFE_STOPPED"
+                )
                 connection.execute(
                     """
                     UPDATE printer_memory_factory_runs
-                    SET run_status='SAFE_STOPPED',
+                    SET run_status=?,
                         stop_reason=COALESCE(stop_reason, ?),
                         finished_at=COALESCE(finished_at, ?),
                         updated_at=?
                     WHERE run_id=? AND run_status='RUNNING'
                     """,
-                    (cause, instant, instant, factory_run_id),
+                    (
+                        factory_terminal_status,
+                        cause,
+                        instant,
+                        instant,
+                        factory_run_id,
+                    ),
                 )
-                report["factory_run"] = "SAFE_STOPPED"
+                report["factory_run"] = factory_terminal_status
             else:
                 report["factory_run"] = str(row["run_status"])
 

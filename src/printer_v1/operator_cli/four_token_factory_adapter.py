@@ -852,9 +852,25 @@ def finalize_four_token_shared_terminal(
         "WHERE campaign_id=? AND run_id=? ORDER BY cycle_ordinal",
         (campaign, run),
     ).fetchall()
-    if len(rows) != 2 or [int(item[0]) for item in rows] != [1, 2]:
+    admitted_shape = "TWO_CYCLE_COMPLETION"
+    if len(rows) == 1 and [int(item[0]) for item in rows] == [1]:
+        attempt_rows = connection.execute(
+            "SELECT attempt_state,first_terminal_cause,consumed_cycle_id "
+            "FROM printer_pre_admission_discovery_attempts "
+            "WHERE campaign_id=? AND campaign_run_id=? "
+            "AND authoritative_factory_run_id=? AND proposed_cycle_ordinal=2",
+            (campaign, run, factory),
+        ).fetchall()
+        if len(attempt_rows) != 1 or str(attempt_rows[0][0]) not in {
+            "NO_PAIR", "BLOCKED", "FAILED", "CANCELLED"
+        } or not str(attempt_rows[0][1] or "").strip() or attempt_rows[0][2] is not None:
+            raise FourTokenFactoryAdapterError(
+                "one-cycle shared terminal requires exact terminal no-admission evidence"
+            )
+        admitted_shape = "ONE_CYCLE_HONEST_NO_ADMISSION"
+    elif len(rows) != 2 or [int(item[0]) for item in rows] != [1, 2]:
         raise FourTokenFactoryAdapterError(
-            "shared terminal requires exactly two admitted cycles"
+            "shared terminal requires exact admitted-cycle ownership"
         )
     if any(not str(item[1]).startswith("TERMINAL_") for item in rows):
         raise FourTokenFactoryAdapterError(
@@ -908,6 +924,7 @@ def finalize_four_token_shared_terminal(
             "shared_terminalized": False,
             "shared_cleanup_count": 0,
             "already_terminal": True,
+            "admitted_shape": admitted_shape,
         }
     result = shared_terminalizer()
     if not isinstance(result, Mapping):
@@ -940,6 +957,7 @@ def finalize_four_token_shared_terminal(
         "shared_terminalized": True,
         "shared_cleanup_count": 1,
         "already_terminal": False,
+        "admitted_shape": admitted_shape,
         "shared_evidence": dict(result),
         "active_work": active_report,
     }

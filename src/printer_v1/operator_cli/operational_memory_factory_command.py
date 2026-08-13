@@ -3582,6 +3582,58 @@ def _run_operational_campaign(
                 )
             factory_identity_retained = True
 
+        four_token_shared_terminal_evidence: dict[str, Any] = {}
+
+        def _four_token_shared_terminalizer(
+            *, terminal_cause: str, run_status: str | None
+        ) -> dict[str, Any]:
+            """Compose the existing supervision + shared terminal owners once."""
+            if four_token_shared_terminal_evidence:
+                raise OperationalMemoryFactoryError(
+                    "FOUR_TOKEN_SHARED_TERMINAL_OWNER_REINVOKED"
+                )
+            if heartbeat is not None:
+                heartbeat.stop()
+            cleanup_result = cleanup_campaign_supervision(
+                command.db_path,
+                supervision_id=command.supervision_id,
+                campaign_id=command.campaign_id,
+                configuration_id=command.configuration_id,
+                run_id=command.run_id,
+                owner_id=command.owner_id,
+                terminal_status=(
+                    "COMPLETED" if str(run_status) == "COMPLETED" else "FAILED"
+                ),
+                first_terminal_cause=terminal_cause,
+                scheduler_operation_observer=(
+                    action_local_ledger.observe_scheduler_transition
+                ),
+            )
+            reconciliation_result = reconcile_campaign_terminal(
+                command.db_path,
+                campaign_id=command.campaign_id,
+                run_id=command.run_id,
+                cycle_id=cycle_id,
+                terminal_cause=terminal_cause,
+                run_status=run_status,
+                factory_run_id=initialized_factory_run_id,
+                lifecycle_started=True,
+                now=_iso(),
+            )
+            result = {
+                "cleanup": cleanup_result,
+                "reconciliation": reconciliation_result,
+                "clean_terminal": bool(
+                    cleanup_result.get("cleanup_completed") is True
+                    and reconciliation_result.get("reconciled") is True
+                ),
+                "lease_released": bool(
+                    cleanup_result.get("lease_released") is True
+                ),
+            }
+            four_token_shared_terminal_evidence.update(result)
+            return result
+
         try:
             from printer_v1.scheduler.scheduler import (
                 reset_scheduler_operation_observer,
@@ -3610,6 +3662,11 @@ def _run_operational_campaign(
                     "cancellation_probe": cancellation_probe,
                     "factory_run_initialized": retain_factory_run_id,
                     "four_token_proof_controller": four_token_proof_controller,
+                    "four_token_shared_terminalizer": (
+                        _four_token_shared_terminalizer
+                        if four_token_proof_controller is not None
+                        else None
+                    ),
                     # Fixed by the public mode; normal run can never opt into 1h.
                     "selective_1h_continuation": (
                         policy.selective_1h_continuation
@@ -3763,32 +3820,38 @@ def _run_operational_campaign(
                 ),
                 stage_observer_state=stage_observer_state,
             )
-        cleanup = cleanup_campaign_supervision(
-            command.db_path,
-            supervision_id=command.supervision_id,
-            campaign_id=command.campaign_id,
-            configuration_id=command.configuration_id,
-            run_id=command.run_id,
-            owner_id=command.owner_id,
-            terminal_status=(
-                "FAILED" if lifecycle.get("run_status") == "FAILED" else "COMPLETED"
-            ),
-            first_terminal_cause=cause,
-            scheduler_operation_observer=(
-                action_local_ledger.observe_scheduler_transition
-            ),
-        )
-        reconciliation = reconcile_campaign_terminal(
-            command.db_path,
-            campaign_id=command.campaign_id,
-            run_id=command.run_id,
-            cycle_id=cycle_id,
-            terminal_cause=cause,
-            run_status=lifecycle.get("run_status"),
-            factory_run_id=initialized_factory_run_id,
-            lifecycle_started=bool(result.lifecycle_started),
-            now=_iso(),
-        )
+        if four_token_shared_terminal_evidence:
+            cleanup = dict(four_token_shared_terminal_evidence["cleanup"])
+            reconciliation = dict(
+                four_token_shared_terminal_evidence["reconciliation"]
+            )
+        else:
+            cleanup = cleanup_campaign_supervision(
+                command.db_path,
+                supervision_id=command.supervision_id,
+                campaign_id=command.campaign_id,
+                configuration_id=command.configuration_id,
+                run_id=command.run_id,
+                owner_id=command.owner_id,
+                terminal_status=(
+                    "FAILED" if lifecycle.get("run_status") == "FAILED" else "COMPLETED"
+                ),
+                first_terminal_cause=cause,
+                scheduler_operation_observer=(
+                    action_local_ledger.observe_scheduler_transition
+                ),
+            )
+            reconciliation = reconcile_campaign_terminal(
+                command.db_path,
+                campaign_id=command.campaign_id,
+                run_id=command.run_id,
+                cycle_id=cycle_id,
+                terminal_cause=cause,
+                run_status=lifecycle.get("run_status"),
+                factory_run_id=initialized_factory_run_id,
+                lifecycle_started=bool(result.lifecycle_started),
+                now=_iso(),
+            )
         reporting = assemble_campaign_terminal_reporting(
             command.db_path,
             run_id=command.run_id,

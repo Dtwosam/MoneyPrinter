@@ -128,7 +128,165 @@ def _succeed_owned_steps(connection, *, step_kinds, snapshot_seed: int) -> None:
         )
 
 
-def _completed_cycle():
+def _rewrite_identity_json(
+    value, *, token_offset: int, pair_offset: int, cycle_id: str
+):
+    if isinstance(value, dict):
+        rewritten = {}
+        for key, item in value.items():
+            if key in {"token_id", "token_row_id"} and item in (1, 2):
+                rewritten[key] = int(item) + token_offset
+            elif key in {"pair_id", "pair_row_id"} and item in (1, 2):
+                rewritten[key] = int(item) + pair_offset
+            elif key == "cycle_id" and item == "cycle-1h":
+                rewritten[key] = cycle_id
+            else:
+                rewritten[key] = _rewrite_identity_json(
+                    item,
+                    token_offset=token_offset,
+                    pair_offset=pair_offset,
+                    cycle_id=cycle_id,
+                )
+        return rewritten
+    if isinstance(value, list):
+        return [
+            _rewrite_identity_json(
+                item,
+                token_offset=token_offset,
+                pair_offset=pair_offset,
+                cycle_id=cycle_id,
+            )
+            for item in value
+        ]
+    return value
+
+
+def _rekey_completed_cycle(
+    connection: sqlite3.Connection,
+    *,
+    cycle_ordinal: int,
+    token_offset: int,
+    pair_offset: int,
+    factory_step_offset: int,
+) -> None:
+    """Re-key one completed disposable graph before production projection.
+
+    Canonical planners still create every lifecycle row.  This test-only
+    transform gives the second independent disposable database the exact
+    distinct cycle/target/step identities required by the aggregate contract;
+    no projected accounting package is edited or synthesized.
+    """
+    connection.commit()
+    connection.execute("PRAGMA foreign_keys=OFF")
+    immutable_triggers = (
+        "printer_campaign_cycle_identity_immutable",
+        "printer_campaign_slot_identity_immutable",
+        "printer_campaign_window_identity_immutable",
+        "printer_campaign_work_identity_immutable",
+        "printer_campaign_object_immutable_update",
+    )
+    trigger_sql = tuple(
+        str(row[0])
+        for name in immutable_triggers
+        for row in connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+            (name,),
+        ).fetchall()
+    )
+    assert len(trigger_sql) == len(immutable_triggers)
+    for name in immutable_triggers:
+        connection.execute(f"DROP TRIGGER {name}")
+    cycle_id = "cycle-1h" if cycle_ordinal == 1 else f"cycle-{cycle_ordinal}h"
+    if cycle_id != "cycle-1h":
+        for table in (
+            "printer_memory_factory_campaign_objects",
+            "printer_memory_factory_campaign_scheduler_work",
+            "printer_memory_factory_campaign_token_slots",
+            "printer_memory_factory_campaign_windows",
+        ):
+            connection.execute(
+                f"UPDATE {table} SET cycle_id=? WHERE cycle_id='cycle-1h'",
+                (cycle_id,),
+            )
+        connection.execute(
+            "UPDATE printer_memory_factory_campaign_cycles "
+            "SET cycle_id=?,cycle_ordinal=? WHERE cycle_id='cycle-1h'",
+            (cycle_id, cycle_ordinal),
+        )
+
+    for table, columns in (
+        ("printer_episodes", ("token_id", "pair_id")),
+        (
+            "printer_memory_factory_campaign_token_slots",
+            ("token_row_id", "pair_row_id"),
+        ),
+        (
+            "printer_memory_factory_campaign_windows",
+            ("token_row_id", "pair_row_id"),
+        ),
+        ("printer_memory_factory_run_steps", ("token_id", "pair_id")),
+        ("printer_memory_windows", ("token_id", "pair_id")),
+        ("printer_pairs", ("token_id",)),
+        (
+            "printer_safety_evidence_composites",
+            ("token_id", "pair_id"),
+        ),
+        ("printer_token_snapshots", ("token_id", "pair_id")),
+    ):
+        for column in columns:
+            offset = token_offset if "token" in column else pair_offset
+            connection.execute(
+                f"UPDATE {table} SET {column}={column}+? "
+                f"WHERE {column} IN (1,2)",
+                (offset,),
+            )
+    connection.execute(
+        "UPDATE printer_tokens SET id=id+? WHERE id IN (1,2)",
+        (token_offset,),
+    )
+    connection.execute(
+        "UPDATE printer_pairs SET id=id+? WHERE id IN (1,2)",
+        (pair_offset,),
+    )
+    connection.execute(
+        "UPDATE printer_scheduler_jobs SET target_id=target_id+? "
+        "WHERE target_table='printer_tokens' AND target_id IN (1,2)",
+        (token_offset,),
+    )
+    rows = connection.execute(
+        "SELECT id,result_json FROM printer_memory_factory_run_steps "
+        "WHERE result_json IS NOT NULL"
+    ).fetchall()
+    for row in rows:
+        payload = _rewrite_identity_json(
+            json.loads(str(row[1])),
+            token_offset=token_offset,
+            pair_offset=pair_offset,
+            cycle_id=cycle_id,
+        )
+        connection.execute(
+            "UPDATE printer_memory_factory_run_steps SET result_json=? WHERE id=?",
+            (json.dumps(payload, sort_keys=True), int(row[0])),
+        )
+    if factory_step_offset:
+        connection.execute(
+            "UPDATE printer_memory_factory_run_steps SET id=id+?",
+            (factory_step_offset,),
+        )
+    for statement in trigger_sql:
+        connection.execute(statement)
+    connection.commit()
+    connection.execute("PRAGMA foreign_keys=ON")
+    assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def _completed_cycle(
+    *,
+    cycle_ordinal: int = 1,
+    token_offset: int = 0,
+    pair_offset: int = 0,
+    factory_step_offset: int = 0,
+):
     helper = StandardFourHourCampaignPlanningTests()
     fx, candidates = helper._prepared()
     connection = fx.connection
@@ -307,6 +465,14 @@ def _completed_cycle():
         (request_id, NOW.isoformat()),
     )
     connection.commit()
+    if any((cycle_ordinal != 1, token_offset, pair_offset, factory_step_offset)):
+        _rekey_completed_cycle(
+            connection,
+            cycle_ordinal=cycle_ordinal,
+            token_offset=token_offset,
+            pair_offset=pair_offset,
+            factory_step_offset=factory_step_offset,
+        )
     return fx, request_id
 
 
