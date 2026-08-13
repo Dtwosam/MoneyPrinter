@@ -141,6 +141,15 @@ SELECTIVE_1H_SCHEDULER_ROW_CEILING = 82
 SELECTIVE_1H_CONTINUATION_SECONDS = 2_700
 STANDARD_FOUR_HOUR_MODE = "standard-four-hour-run"
 STANDARD_FOUR_HOUR_PREFLIGHT_MODE = "standard-four-hour-preflight"
+# Dedicated proof-only four-token mode. It is never a public capacity selector:
+# it constructs one fixed internal composition and is unreachable without the
+# dedicated four-token one-shot wrapper authorization.
+FOUR_TOKEN_PROOF_MODE = "four-token-bounded-capacity-proof-run"
+_WRAPPER_BOUND_MODE_LABELS = {
+    "run": "ordinary run",
+    STANDARD_FOUR_HOUR_MODE: "standard four-hour run",
+    FOUR_TOKEN_PROOF_MODE: "four-token bounded capacity proof run",
+}
 STANDARD_FOUR_HOUR_POLICY_VERSION = "V2-9.8-STANDARD-4H-OPERATIONAL-V1"
 STANDARD_FOUR_HOUR_TOTAL_DURATION_SECONDS = 14_700
 # Standard-four-hour capacity is projected from the one derived public contract
@@ -148,6 +157,30 @@ STANDARD_FOUR_HOUR_TOTAL_DURATION_SECONDS = 14_700
 # ``one_token_4h_runtime`` lifecycle arithmetic. This command owns no
 # independent standard-four-hour numeric capacity.
 _STANDARD_FOUR_HOUR_CAPACITY = standard_four_hour_capacity_contract()
+# Proof-only four-token capacity/timing. This command owns no independent
+# four-token numbers: they are re-exported from the dedicated four-token
+# authorization authority, which derives them from the canonical scaled
+# standard-four-hour contract.
+from printer_v1.operator_cli import (  # noqa: E402
+    four_token_proof_one_shot_wrapper as _four_token_authority,
+)
+
+_FOUR_TOKEN_PROOF_POLICY_VERSION = _four_token_authority.POLICY_VERSION
+_FOUR_TOKEN_POST_SUPPLY_PROOF_DURATION_SECONDS = (
+    _four_token_authority.POST_SUPPLY_PROOF_DURATION_SECONDS
+)
+_FOUR_TOKEN_PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS = (
+    _four_token_authority.PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS
+)
+_FOUR_TOKEN_LIFECYCLE_REQUEST_OUTER_CEILING = (
+    _four_token_authority.LIFECYCLE_REQUEST_OUTER_CEILING
+)
+_FOUR_TOKEN_LIFECYCLE_REQUESTS_PER_TOKEN = (
+    _four_token_authority.LIFECYCLE_REQUESTS_PER_TOKEN
+)
+_FOUR_TOKEN_LIFECYCLE_SCHEDULER_OUTER_CEILING = (
+    _four_token_authority.LIFECYCLE_SCHEDULER_OUTER_CEILING
+)
 STANDARD_FOUR_HOUR_GOVERNED_REQUEST_CEILING = int(
     _STANDARD_FOUR_HOUR_CAPACITY["lifecycle_request_outer_ceiling"]
 )
@@ -209,7 +242,7 @@ GIT_PROVENANCE_MANIFEST_ENV_VARS = (
     "PRINTER_V1_APPLICATION_MARKER_SHA256",
 )
 GIT_PROVENANCE_MANIFEST_SUPPORTED_MODES = (
-    "preflight-only", "run", STANDARD_FOUR_HOUR_MODE
+    "preflight-only", "run", STANDARD_FOUR_HOUR_MODE, FOUR_TOKEN_PROOF_MODE,
 )
 # Action-local run identity for blocked-command source accounting. Never inherit
 # a previous campaign's holder-ledger totals into a different public action.
@@ -276,6 +309,25 @@ STANDARD_FOUR_HOUR_POLICY = _OperationalCampaignPolicy(
     locked_windows=("WINDOW_12H", "WINDOW_24H"),
     pre_lifecycle_acquisition_duration_seconds=(
         PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS
+    ),
+    continuous_four_hour=True,
+    standard_four_hour_campaign=True,
+)
+# Proof-only four-token policy. Every ceiling is projected from the dedicated
+# four-token authorization authority, which itself derives from
+# ``scaled_standard_four_hour_capacity_contract(4)``. The two bounded clocks stay
+# separate: 900s pre-lifecycle acquisition and 18,000s post-supply proof.
+FOUR_TOKEN_PROOF_POLICY = _OperationalCampaignPolicy(
+    mode=FOUR_TOKEN_PROOF_MODE,
+    policy_version=_FOUR_TOKEN_PROOF_POLICY_VERSION,
+    duration_seconds=_FOUR_TOKEN_POST_SUPPLY_PROOF_DURATION_SECONDS,
+    selective_1h_continuation=True,
+    governed_request_ceiling=_FOUR_TOKEN_LIFECYCLE_REQUEST_OUTER_CEILING,
+    governed_requests_per_token=_FOUR_TOKEN_LIFECYCLE_REQUESTS_PER_TOKEN,
+    scheduler_row_ceiling=_FOUR_TOKEN_LIFECYCLE_SCHEDULER_OUTER_CEILING,
+    locked_windows=("WINDOW_12H", "WINDOW_24H"),
+    pre_lifecycle_acquisition_duration_seconds=(
+        _FOUR_TOKEN_PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS
     ),
     continuous_four_hour=True,
     standard_four_hour_campaign=True,
@@ -695,6 +747,12 @@ def _resolve_git_provenance_authorization(
         }
         if mode == STANDARD_FOUR_HOUR_MODE:
             validation_kwargs["profile"] = STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE
+        elif mode == FOUR_TOKEN_PROOF_MODE:
+            from printer_v1.operator_cli.git_provenance_authorization_manifest import (
+                FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE,
+            )
+
+            validation_kwargs["profile"] = FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
         return validate_git_provenance_authorization(**validation_kwargs)
     except GitProvenanceAuthorizationError as exc:
         raise OperationalMemoryFactoryError(
@@ -4147,6 +4205,39 @@ def run_standard_four_hour_campaign(
     )
 
 
+def run_four_token_bounded_capacity_proof_campaign(
+    *,
+    operator_approved: bool,
+    git_provenance_authorization: ValidatedGitProvenanceAuthorization | None,
+    owner: Any | None = None,
+    pump_transport: Any | None = None,
+    secondary_transport: Any | None = None,
+    migration_transport: Any | None = None,
+) -> dict[str, Any]:
+    """Run the one externally authorized bounded four-token capacity proof.
+
+    This constructs the already accepted internal four-token composition and then
+    calls the same canonical operational factory path exactly once. It creates no
+    second factory runner, no second event loop, no discovery polling loop, and
+    no Scheduler or Source Governor bypass. Capacity is fixed at exact 4/2/2 and
+    can never be selected by a caller.
+    """
+    from printer_v1.operator_cli.four_token_proof_integration import (
+        FourTokenProofController,
+    )
+
+    return _run_operational_campaign(
+        policy=FOUR_TOKEN_PROOF_POLICY,
+        operator_approved=operator_approved,
+        owner=owner,
+        pump_transport=pump_transport,
+        secondary_transport=secondary_transport,
+        migration_transport=migration_transport,
+        git_provenance_authorization=git_provenance_authorization,
+        four_token_proof_controller=FourTokenProofController.exact(),
+    )
+
+
 def run_selective_1h_proof(
     *,
     operator_approved: bool,
@@ -5802,7 +5893,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         choices=(
             "preflight-only", "run", SELECTIVE_1H_PREFLIGHT_MODE,
             SELECTIVE_1H_MODE, STANDARD_FOUR_HOUR_PREFLIGHT_MODE,
-            STANDARD_FOUR_HOUR_MODE, "status", "cooperative-stop", "recover-orphan",
+            STANDARD_FOUR_HOUR_MODE, FOUR_TOKEN_PROOF_MODE,
+            "status", "cooperative-stop", "recover-orphan",
             "report-only", "discovery-only",
         ),
     )
@@ -5851,9 +5943,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         provenance_binding_values = tuple(
             os.environ.get(name) for name in GIT_PROVENANCE_MANIFEST_ENV_VARS
         )
-        wrapper_bound_modes = {"run", STANDARD_FOUR_HOUR_MODE}
+        wrapper_bound_modes = {"run", STANDARD_FOUR_HOUR_MODE, FOUR_TOKEN_PROOF_MODE}
         if args.mode in wrapper_bound_modes and not any(provenance_binding_values):
-            label = "ordinary run" if args.mode == "run" else "standard four-hour run"
+            label = _WRAPPER_BOUND_MODE_LABELS[args.mode]
             raise OperationalMemoryFactoryError(
                 f"{label} requires external one-shot wrapper authorization"
             )
@@ -5868,12 +5960,12 @@ def main(argv: Iterable[str] | None = None) -> int:
         # their existing no-binding behavior.
         git_provenance_authorization = _resolve_git_provenance_authorization(args.mode)
         if args.mode in wrapper_bound_modes and git_provenance_authorization is None:
-            label = "ordinary run" if args.mode == "run" else "standard four-hour run"
+            label = _WRAPPER_BOUND_MODE_LABELS[args.mode]
             raise OperationalMemoryFactoryError(
                 f"{label} requires external one-shot wrapper authorization"
             )
         if args.mode in wrapper_bound_modes and child_terminal_binding is None:
-            label = "ordinary run" if args.mode == "run" else "standard four-hour run"
+            label = _WRAPPER_BOUND_MODE_LABELS[args.mode]
             raise OperationalMemoryFactoryError(
                 f"{label} child terminal binding requires complete wrapper provenance"
             )
@@ -5894,6 +5986,11 @@ def main(argv: Iterable[str] | None = None) -> int:
             )
         elif args.mode == STANDARD_FOUR_HOUR_MODE:
             result = run_standard_four_hour_campaign(
+                operator_approved=args.operator_approved,
+                git_provenance_authorization=git_provenance_authorization,
+            )
+        elif args.mode == FOUR_TOKEN_PROOF_MODE:
+            result = run_four_token_bounded_capacity_proof_campaign(
                 operator_approved=args.operator_approved,
                 git_provenance_authorization=git_provenance_authorization,
             )
@@ -5935,7 +6032,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         action_cycle_id = _ACTION_RUN_CONTEXT.get("cycle_id")
         action_execution_id = _ACTION_RUN_CONTEXT.get("execution_id")
         baseline = _ACTION_RUN_CONTEXT.get("action_local_baseline")
-        campaign_modes = {"run", SELECTIVE_1H_MODE, STANDARD_FOUR_HOUR_MODE}
+        campaign_modes = {
+            "run", SELECTIVE_1H_MODE, STANDARD_FOUR_HOUR_MODE, FOUR_TOKEN_PROOF_MODE,
+        }
         from printer_v1.operator_cli.action_local_terminal_truth import (
             build_action_local_terminal_truth,
             merge_action_local_into_exception_envelope,
@@ -6060,7 +6159,10 @@ def main(argv: Iterable[str] | None = None) -> int:
                 ),
                 "secondary_terminal_truth_error": None,
             }
-        if args.mode in {"run", STANDARD_FOUR_HOUR_MODE} and child_terminal_binding is not None:
+        if (
+            args.mode in {"run", STANDARD_FOUR_HOUR_MODE, FOUR_TOKEN_PROOF_MODE}
+            and child_terminal_binding is not None
+        ):
             try:
                 write_child_terminal_envelope(
                     binding=child_terminal_binding,
