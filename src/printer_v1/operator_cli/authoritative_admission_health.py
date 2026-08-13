@@ -20,6 +20,7 @@ from printer_v1.operator_cli.campaign_active_work import (
     campaign_scoped_job_ids,
 )
 from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
+    MultiCycleAdmissionHealth,
     MultiCycleCampaignBinding,
 )
 from printer_v1.operator_cli.multi_cycle_memory_growth import (
@@ -39,6 +40,12 @@ from printer_v1.operator_cli.operational_standard_4h import (
 from printer_v1.operator_cli.one_token_4h_runtime import require_projected_capacity
 from printer_v1.operator_cli.proof_db_schema_readiness import (
     validate_runtime_schema_connection,
+)
+from printer_v1.operator_cli.source_free_discovery_capacity import (
+    LaterCycleDiscoveryAttemptManifest,
+)
+from printer_v1.operator_cli.source_free_discovery_provider_capacity import (
+    compose_later_cycle_discovery_capacity,
 )
 
 
@@ -79,6 +86,24 @@ class OperationalHealthProjection:
     cancellation_requested: bool
     lease_expires_at: datetime | None
     recheck_on_lifecycle_change: bool
+    reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class AdmissionHealthFieldEvidence:
+    field: str
+    value: bool
+    owner: str
+    reason: str
+    details: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class AdmissionHealthProjection:
+    health: MultiCycleAdmissionHealth
+    recheck_at: datetime | None
+    recheck_on_lifecycle_change: bool
+    evidence: tuple[AdmissionHealthFieldEvidence, ...]
     reasons: tuple[str, ...]
 
 
@@ -635,11 +660,269 @@ def project_operational_health(
     )
 
 
+def _evidence(
+    *,
+    field: str,
+    value: bool,
+    owner: str,
+    reasons: tuple[str, ...],
+    details: tuple[tuple[str, str], ...] = (),
+) -> AdmissionHealthFieldEvidence:
+    return AdmissionHealthFieldEvidence(
+        field=field,
+        value=value,
+        owner=owner,
+        reason=";".join(reasons) if reasons else "OWNER_EVIDENCE_HEALTHY",
+        details=details,
+    )
+
+
+def project_authoritative_admission_health(
+    connection: sqlite3.Connection,
+    *,
+    db_path: str | Path,
+    binding: MultiCycleCampaignBinding,
+    first_cycle_id: str,
+    operational_db_binding: OperationalDatabaseTargetBinding | None,
+    operational_db_expected: Mapping[str, Any],
+    canonical_authoritative_db_path: str | Path,
+    supervision_id: str,
+    supervision_owner_id: str,
+    discovery_manifest: LaterCycleDiscoveryAttemptManifest,
+    now: datetime,
+) -> AdmissionHealthProjection:
+    """Compose all twelve admission fields without executing any capability."""
+    budget = project_lifecycle_budget_reserve(
+        connection,
+        factory_run_id=binding.authoritative_factory_run_id,
+    )
+    scheduler = project_scheduler_health(
+        connection,
+        binding=binding,
+        first_cycle_id=first_cycle_id,
+    )
+    operational = project_operational_health(
+        connection,
+        db_path=db_path,
+        binding=binding,
+        first_cycle_id=first_cycle_id,
+        operational_db_binding=operational_db_binding,
+        operational_db_expected=operational_db_expected,
+        canonical_authoritative_db_path=canonical_authoritative_db_path,
+        supervision_id=supervision_id,
+        supervision_owner_id=supervision_owner_id,
+        now=now,
+    )
+
+    provider_reasons: tuple[str, ...]
+    provider_recheck_at: datetime | None
+    try:
+        discovery = compose_later_cycle_discovery_capacity(
+            connection,
+            manifest=discovery_manifest,
+            now=_aware_utc(now),
+        )
+        provider_budgets_available = discovery.provider_budgets_available
+        discovery_capacity_available = discovery.discovery_capacity_available
+        provider_recheck_at = discovery.recheck_at
+        provider_reasons = tuple(discovery.reasons)
+    except (AttributeError, KeyError, TypeError, ValueError):
+        provider_budgets_available = False
+        discovery_capacity_available = False
+        provider_recheck_at = None
+        provider_reasons = ("DISCOVERY_CAPACITY_EVIDENCE_INCOMPLETE",)
+
+    health = MultiCycleAdmissionHealth(
+        source_budget_available=budget.source_budget_available,
+        provider_budgets_available=provider_budgets_available,
+        scheduler_budget_available=scheduler.scheduler_budget_available,
+        scheduler_due_work_healthy=scheduler.scheduler_due_work_healthy,
+        close_reserve_available=budget.close_reserve_available,
+        campaign_supervision_healthy=(
+            operational.campaign_supervision_healthy
+        ),
+        lease_healthy=operational.lease_healthy,
+        db_healthy=operational.db_healthy,
+        shared_terminal_condition=operational.shared_terminal_condition,
+        cancellation_requested=operational.cancellation_requested,
+        discovery_capacity_available=discovery_capacity_available,
+        protected_work_capacity_available=(
+            budget.protected_work_capacity_available
+        ),
+    )
+
+    budget_details = (
+        ("cycle_one_consumed_requests", str(budget.cycle_one_consumed_requests)),
+        ("cycle_one_request_ceiling", str(budget.cycle_one_request_ceiling)),
+        ("four_token_request_ceiling", str(budget.four_token_request_ceiling)),
+    )
+    scheduler_details = (
+        ("attributable_job_count", str(scheduler.attributable_job_count)),
+        ("cycle_one_scheduler_ceiling", str(scheduler.cycle_one_scheduler_ceiling)),
+        ("four_token_scheduler_ceiling", str(scheduler.four_token_scheduler_ceiling)),
+    )
+    provider_details = (
+        ("recheck_at", str(provider_recheck_at)),
+        ("manifest_target_count", str(getattr(discovery_manifest, "target_count", None))),
+    )
+    operational_details = (
+        ("lease_expires_at", str(operational.lease_expires_at)),
+        ("first_cycle_id", str(first_cycle_id)),
+    )
+    evidence = (
+        _evidence(
+            field="source_budget_available",
+            value=health.source_budget_available,
+            owner=(
+                "standard_campaign_lifecycle_budget/"
+                "standard_four_hour_capacity_contract/"
+                "one_command_15m_factory._run_request_count"
+            ),
+            reasons=budget.reasons,
+            details=budget_details,
+        ),
+        _evidence(
+            field="provider_budgets_available",
+            value=health.provider_budgets_available,
+            owner=(
+                "source_free_discovery_provider_capacity."
+                "compose_later_cycle_discovery_capacity"
+            ),
+            reasons=provider_reasons,
+            details=provider_details,
+        ),
+        _evidence(
+            field="scheduler_budget_available",
+            value=health.scheduler_budget_available,
+            owner=(
+                "campaign_active_work.campaign_scoped_job_ids/"
+                "scaled_standard_four_hour_capacity_contract"
+            ),
+            reasons=scheduler.reasons,
+            details=scheduler_details,
+        ),
+        _evidence(
+            field="scheduler_due_work_healthy",
+            value=health.scheduler_due_work_healthy,
+            owner="Central Scheduler rows/campaign_active_work_report",
+            reasons=scheduler.reasons,
+            details=scheduler_details,
+        ),
+        _evidence(
+            field="close_reserve_available",
+            value=health.close_reserve_available,
+            owner=(
+                "one_command_15m_factory._projected_requests_for_step/"
+                "_lifecycle_reservation_records_for_step/"
+                "_enforce_budgets_before_step"
+            ),
+            reasons=budget.reasons,
+            details=budget_details,
+        ),
+        _evidence(
+            field="campaign_supervision_healthy",
+            value=health.campaign_supervision_healthy,
+            owner="campaign_supervision.inspect_campaign_supervision",
+            reasons=operational.reasons,
+            details=operational_details,
+        ),
+        _evidence(
+            field="lease_healthy",
+            value=health.lease_healthy,
+            owner="campaign_supervision.inspect_campaign_supervision",
+            reasons=operational.reasons,
+            details=operational_details,
+        ),
+        _evidence(
+            field="db_healthy",
+            value=health.db_healthy,
+            owner=(
+                "operational_database_target_binding/"
+                "proof_db_schema_readiness.validate_runtime_schema_connection"
+            ),
+            reasons=operational.reasons,
+            details=operational_details,
+        ),
+        _evidence(
+            field="shared_terminal_condition",
+            value=health.shared_terminal_condition,
+            owner="persisted campaign/run/cycle/factory state/campaign_active_work_report",
+            reasons=operational.reasons,
+            details=operational_details,
+        ),
+        _evidence(
+            field="cancellation_requested",
+            value=health.cancellation_requested,
+            owner="campaign supervision and campaign/run STOP_REQUESTED state",
+            reasons=operational.reasons,
+            details=operational_details,
+        ),
+        _evidence(
+            field="discovery_capacity_available",
+            value=health.discovery_capacity_available,
+            owner=(
+                "source_free_discovery_provider_capacity."
+                "compose_later_cycle_discovery_capacity"
+            ),
+            reasons=provider_reasons,
+            details=provider_details,
+        ),
+        _evidence(
+            field="protected_work_capacity_available",
+            value=health.protected_work_capacity_available,
+            owner=(
+                "one_command_15m_factory lifecycle reservation/"
+                "standard_campaign_lifecycle_budget"
+            ),
+            reasons=budget.reasons,
+            details=budget_details,
+        ),
+    )
+    positive_fields = (
+        health.source_budget_available,
+        health.provider_budgets_available,
+        health.scheduler_budget_available,
+        health.scheduler_due_work_healthy,
+        health.close_reserve_available,
+        health.campaign_supervision_healthy,
+        health.lease_healthy,
+        health.db_healthy,
+        health.discovery_capacity_available,
+        health.protected_work_capacity_available,
+    )
+    blocked = (
+        not all(positive_fields)
+        or health.shared_terminal_condition
+        or health.cancellation_requested
+    )
+    recheck_on_lifecycle_change = (
+        budget.recheck_on_lifecycle_change
+        or scheduler.recheck_on_lifecycle_change
+        or operational.recheck_on_lifecycle_change
+        or (blocked and provider_recheck_at is None)
+    )
+    reasons = tuple(
+        dict.fromkeys(
+            (*budget.reasons, *scheduler.reasons, *operational.reasons, *provider_reasons)
+        )
+    )
+    return AdmissionHealthProjection(
+        health=health,
+        recheck_at=provider_recheck_at,
+        recheck_on_lifecycle_change=recheck_on_lifecycle_change,
+        evidence=evidence,
+        reasons=reasons,
+    )
+
+
 __all__ = [
+    "AdmissionHealthFieldEvidence",
+    "AdmissionHealthProjection",
     "LifecycleBudgetReserveProjection",
     "OperationalHealthProjection",
     "SchedulerHealthProjection",
     "project_lifecycle_budget_reserve",
     "project_operational_health",
+    "project_authoritative_admission_health",
     "project_scheduler_health",
 ]
