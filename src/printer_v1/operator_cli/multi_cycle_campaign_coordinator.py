@@ -638,55 +638,19 @@ def admit_two_token_cycle(
     current_health = health or MultiCycleAdmissionHealth()
     try:
         connection.execute("BEGIN IMMEDIATE")
-        snapshot = load_multi_cycle_campaign_snapshot(
+        result = _admit_two_token_cycle_in_transaction(
             connection,
             binding=binding,
             policy=policy,
             now=now,
             health=current_health,
-        )
-        evaluation = snapshot.admission_evaluation
-        if evaluation.decision != AdmissionDecision.ADMIT_TWO_TOKEN_CYCLE:
-            connection.rollback()
-            return PersistedCycleAdmissionResult(
-                evaluation=evaluation,
-                cycle_id=None,
-                cycle_ordinal=None,
-                mutation_performed=False,
-                snapshot_before=snapshot,
-            )
-
-        validated_slots = _validate_candidate_slots(
-            connection,
-            binding=binding,
             slots=slots,
         )
-        next_ordinal = snapshot.session.admissions_completed + 1
-        if next_ordinal > policy.total_cycle_admission_ceiling:
-            raise MultiCycleCoordinatorError("next cycle would exceed session ceiling")
-        cycle_id = _next_cycle_identity(snapshot.first_cycle_id, next_ordinal)
-        if connection.execute(
-            "SELECT 1 FROM printer_memory_factory_campaign_cycles WHERE cycle_id=?",
-            (cycle_id,),
-        ).fetchone() is not None:
-            raise MultiCycleCoordinatorError("derived cycle identity already exists")
-
-        create_cycle_with_two_slots(
-            connection,
-            campaign_id=binding.campaign_id,
-            run_id=binding.campaign_run_id,
-            cycle_id=cycle_id,
-            cycle_ordinal=next_ordinal,
-            slots=validated_slots,
-            now=_normalize_time(now).isoformat(),
-        )
-        return PersistedCycleAdmissionResult(
-            evaluation=evaluation,
-            cycle_id=cycle_id,
-            cycle_ordinal=next_ordinal,
-            mutation_performed=True,
-            snapshot_before=snapshot,
-        )
+        if not result.mutation_performed:
+            connection.rollback()
+            return result
+        connection.commit()
+        return result
     except MultiCycleCoordinatorError:
         if connection.in_transaction:
             connection.rollback()
@@ -696,6 +660,158 @@ def admit_two_token_cycle(
             connection.rollback()
         raise MultiCycleCoordinatorError(
             f"multi-cycle admission persistence failed: {exc}"
+        ) from exc
+    except Exception:
+        if connection.in_transaction:
+            connection.rollback()
+        raise
+
+
+def _admit_two_token_cycle_in_transaction(
+    connection: sqlite3.Connection,
+    *,
+    binding: MultiCycleCampaignBinding,
+    policy: MultiCycleCapacityPolicy,
+    now: datetime,
+    slots: Sequence[Mapping[str, Any]],
+    health: MultiCycleAdmissionHealth,
+    required_cycle_id: str | None = None,
+) -> PersistedCycleAdmissionResult:
+    snapshot = load_multi_cycle_campaign_snapshot(
+        connection,
+        binding=binding,
+        policy=policy,
+        now=now,
+        health=health,
+    )
+    evaluation = snapshot.admission_evaluation
+    if evaluation.decision != AdmissionDecision.ADMIT_TWO_TOKEN_CYCLE:
+        return PersistedCycleAdmissionResult(
+            evaluation=evaluation,
+            cycle_id=None,
+            cycle_ordinal=None,
+            mutation_performed=False,
+            snapshot_before=snapshot,
+        )
+    validated_slots = _validate_candidate_slots(
+        connection, binding=binding, slots=slots
+    )
+    next_ordinal = snapshot.session.admissions_completed + 1
+    if next_ordinal > policy.total_cycle_admission_ceiling:
+        raise MultiCycleCoordinatorError("next cycle would exceed session ceiling")
+    cycle_id = _next_cycle_identity(snapshot.first_cycle_id, next_ordinal)
+    if required_cycle_id is not None and cycle_id != required_cycle_id:
+        raise MultiCycleCoordinatorError("proposed cycle identity mismatch")
+    if connection.execute(
+        "SELECT 1 FROM printer_memory_factory_campaign_cycles WHERE cycle_id=?",
+        (cycle_id,),
+    ).fetchone() is not None:
+        raise MultiCycleCoordinatorError("derived cycle identity already exists")
+    create_cycle_with_two_slots(
+        connection,
+        campaign_id=binding.campaign_id,
+        run_id=binding.campaign_run_id,
+        cycle_id=cycle_id,
+        cycle_ordinal=next_ordinal,
+        slots=validated_slots,
+        now=_normalize_time(now).isoformat(),
+        commit_transaction=False,
+    )
+    return PersistedCycleAdmissionResult(
+        evaluation=evaluation,
+        cycle_id=cycle_id,
+        cycle_ordinal=next_ordinal,
+        mutation_performed=True,
+        snapshot_before=snapshot,
+    )
+
+
+def admit_two_token_cycle_from_attempt(
+    connection: sqlite3.Connection,
+    *,
+    binding: MultiCycleCampaignBinding,
+    policy: MultiCycleCapacityPolicy,
+    now: datetime,
+    attempt_id: str,
+    health: MultiCycleAdmissionHealth,
+) -> PersistedCycleAdmissionResult:
+    """Atomically create exact cycle 2 and consume its frozen discovery pair."""
+    from printer_v1.operator_cli.pre_admission_discovery_attempt import (
+        PreAdmissionAttemptError,
+        PreAdmissionAttemptState,
+        load_pre_admission_attempt,
+        load_pre_admission_pair,
+    )
+
+    if connection.in_transaction:
+        raise MultiCycleCoordinatorError(
+            "coordinator admission requires ownership of a fresh transaction"
+        )
+    if not isinstance(health, MultiCycleAdmissionHealth):
+        raise MultiCycleCoordinatorError("authoritative admission health is required")
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        attempt = load_pre_admission_attempt(connection, attempt_id=attempt_id)
+        if attempt.state is not PreAdmissionAttemptState.PAIR_READY:
+            raise MultiCycleCoordinatorError("pre-admission attempt is not unconsumed PAIR_READY")
+        if (
+            attempt.campaign_id != binding.campaign_id
+            or attempt.campaign_run_id != binding.campaign_run_id
+            or attempt.configuration_id != binding.configuration_id
+            or attempt.authoritative_factory_run_id
+            != binding.authoritative_factory_run_id
+            or attempt.proposed_cycle_ordinal != 2
+        ):
+            raise MultiCycleCoordinatorError("pre-admission attempt ownership mismatch")
+        items = load_pre_admission_pair(connection, attempt_id=attempt_id)
+        slots = tuple(
+            {
+                "token_slot_id": f"t{item.slot_ordinal}_c0002_slot",
+                "slot_ordinal": item.slot_ordinal,
+                "token_identity": item.token_identity,
+                "token_row_id": item.token_row_id,
+                "mint_identity": item.mint_identity,
+                "pair_identity": item.pair_identity,
+                "pair_row_id": item.pair_row_id,
+                "lifecycle_identity": item.lifecycle_identity,
+                "tracking_queue_id": None,
+                "replacement_predecessor_slot_id": None,
+            }
+            for item in items
+        )
+        result = _admit_two_token_cycle_in_transaction(
+            connection,
+            binding=binding,
+            policy=policy,
+            now=now,
+            slots=slots,
+            health=health,
+            required_cycle_id=attempt.proposed_cycle_id,
+        )
+        if not result.mutation_performed:
+            connection.rollback()
+            return result
+        instant = _normalize_time(now).isoformat()
+        consumed = connection.execute(
+            """UPDATE printer_pre_admission_discovery_attempts
+               SET attempt_state='CONSUMED',consumed_cycle_id=?,consumed_at=?,updated_at=?
+               WHERE attempt_id=? AND attempt_state='PAIR_READY'
+                 AND consumed_cycle_id IS NULL AND consumed_at IS NULL""",
+            (result.cycle_id, instant, instant, attempt_id),
+        )
+        if consumed.rowcount != 1:
+            raise MultiCycleCoordinatorError("pre-admission attempt consumption conflict")
+        connection.commit()
+        return result
+    except (MultiCycleCoordinatorError, PreAdmissionAttemptError):
+        if connection.in_transaction:
+            connection.rollback()
+        raise
+    except sqlite3.Error as exc:
+        if connection.in_transaction:
+            connection.rollback()
+        raise MultiCycleCoordinatorError(
+            f"pre-admission cycle consumption failed: {exc}"
         ) from exc
     except Exception:
         if connection.in_transaction:

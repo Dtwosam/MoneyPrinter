@@ -163,9 +163,9 @@ def test_pair_ready_attempt_is_consumed_with_exact_cycle2_atomically(connection)
     assert result.mutation_performed
     assert result.cycle_id == "cycle-1-2"
     assert result.cycle_ordinal == 2
-    assert connection.execute(
+    assert tuple(connection.execute(
         "SELECT attempt_state,consumed_cycle_id FROM printer_pre_admission_discovery_attempts"
-    ).fetchone() == ("CONSUMED", "cycle-1-2")
+    ).fetchone()) == ("CONSUMED", "cycle-1-2")
     assert connection.execute(
         "SELECT COUNT(*) FROM printer_memory_factory_campaign_token_slots "
         "WHERE cycle_id='cycle-1-2'"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -276,6 +277,7 @@ def create_cycle_with_two_slots(
     cycle_ordinal: int,
     slots: Sequence[Mapping[str, Any]],
     now: str | None = None,
+    commit_transaction: bool = True,
 ) -> None:
     if len(slots) != 2:
         raise CampaignOwnershipError("a cycle requires exactly two token slots")
@@ -283,7 +285,7 @@ def create_cycle_with_two_slots(
         raise CampaignOwnershipError("token slot ordinals must be exactly 1 and 2")
     timestamp = now or _utc_now()
     try:
-        with connection:
+        with (connection if commit_transaction else nullcontext(connection)):
             connection.execute(
                 """INSERT INTO printer_memory_factory_campaign_cycles(
                     cycle_id,campaign_id,run_id,cycle_ordinal,cycle_state,
