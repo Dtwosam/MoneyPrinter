@@ -64,17 +64,19 @@ requested_at >= cutoff  => current-window attempt
 requested_at < cutoff   => historical attempt
 ```
 
-### A. Linked response or failure evidence
+### A. Exactly linked response or failure evidence
 
-For exactly linked evidence:
+For evidence with an exact existing request link:
 
-- load the linked request;
-- require exact source/request identity consistency;
-- parse canonical `printer_source_requests.requested_at` as the attempt timestamp;
-- if `requested_at >= cutoff`, structural ambiguity or mismatch fails closed;
-- if `requested_at < cutoff`, the row cannot consume the current window and does not block present capacity.
+1. load the linked request;
+2. parse canonical `printer_source_requests.requested_at` first;
+3. if `requested_at < cutoff`, the linked evidence is outside the current capacity window and cannot block present capacity merely because of historical source/request identity drift;
+4. if `requested_at >= cutoff`, require exact source identity and, for failures, exact request-kind identity;
+5. any current-window mismatch fails closed.
 
 A linked current-window response-backed or attributable-failure row continues to become a `ConsumedProviderAttempt` exactly as Step C defines.
+
+A missing linked request or malformed/missing linked request timestamp fails closed because the row cannot be proven historical.
 
 ### B. Unlinked failure evidence
 
@@ -113,7 +115,7 @@ If an unlinked response is nevertheless observable under an unsupported or corru
 
 ### D. Linked mismatch
 
-A linked mismatch must be scoped by the linked request's canonical timestamp:
+A linked mismatch is evaluated only after the linked request timestamp establishes whether it can affect the current window:
 
 - linked request `requested_at >= cutoff` => fail closed;
 - linked request `requested_at < cutoff` => historical inconsistency does not contaminate current provider capacity;
@@ -157,11 +159,12 @@ Preferred implementation shape:
 1. require current schema;
 2. compute canonical UTC `cutoff` once;
 3. inspect provider-linked and provider-named response/failure evidence;
-4. classify structural ambiguity against the current-window frontier;
-5. select linked response-backed / attributable-failure requests;
-6. parse linked request `requested_at`;
-7. keep only attempts with `requested_at >= cutoff`;
-8. preserve deterministic ordering `(requested_at, source_request_id)`.
+4. for linked evidence, resolve and parse linked request `requested_at` before deciding whether identity drift matters to the current window;
+5. for unlinked failures, use only canonical failure-row `created_at` for negative historical exclusion;
+6. fail closed on any evidence that cannot be proven historical and cannot be linked exactly;
+7. select linked response-backed / attributable-failure requests;
+8. keep only attempts with canonical `requested_at >= cutoff`;
+9. preserve deterministic ordering `(requested_at, source_request_id)`.
 
 `count_recent_source_requests(...)` must continue to return:
 
@@ -212,8 +215,9 @@ Add focused tests proving the current Step C behavior is wrong or incomplete for
 4. missing/malformed/non-canonical `created_at` must fail closed;
 5. linked current-window source/request mismatch must fail closed;
 6. linked historical mismatch with canonical request `requested_at < cutoff` must not contaminate current capacity;
-7. existing linked response/failure selection remains unchanged;
-8. count/detail parity remains exact.
+7. missing linked request or ambiguous linked timestamp must fail closed;
+8. existing linked response/failure selection remains unchanged;
+9. count/detail parity remains exact.
 
 ### GREEN
 
