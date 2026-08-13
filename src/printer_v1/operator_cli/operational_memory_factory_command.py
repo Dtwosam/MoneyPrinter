@@ -1414,6 +1414,7 @@ def _create_campaign_command(
     policy: _OperationalCampaignPolicy = _NORMAL_CAMPAIGN_POLICY,
     authorization_runtime_facts: Mapping[str, Any] | None = None,
     disposable_proof_binding: Any | None = None,
+    four_token_proof_controller: Any | None = None,
     db_path: str | Path | None = None,
 ) -> tuple[AbstractCampaignCommand, str]:
     target_db = (
@@ -1431,6 +1432,29 @@ def _create_campaign_command(
         raise OperationalMemoryFactoryError(
             "NON_PROOF_DATABASE_TARGET_OVERRIDE_FORBIDDEN"
         )
+
+    four_token_policy = None
+    four_token_multi_cycle_capacity = None
+    if four_token_proof_controller is not None:
+        if not policy.standard_four_hour_campaign:
+            raise OperationalMemoryFactoryError(
+                "FOUR_TOKEN_PROOF_CONTROLLER_REQUIRES_STANDARD_FOUR_HOUR_POLICY"
+            )
+        from printer_v1.operator_cli.four_token_proof_integration import (
+            build_four_token_proof_policy,
+        )
+        from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
+            multi_cycle_configuration_contract,
+        )
+
+        four_token_policy = build_four_token_proof_policy()
+        four_token_multi_cycle_capacity = multi_cycle_configuration_contract(
+            four_token_policy,
+            intake_started_at=datetime.fromisoformat(
+                now.replace("Z", "+00:00")
+            ),
+        )
+
     campaign_id = f"{execution_id}-campaign"
     configuration_id = f"{execution_id}-configuration"
     run_id = f"{execution_id}-campaign-run"
@@ -1439,7 +1463,11 @@ def _create_campaign_command(
     report_identity = report_path_identity(paths["reports"])
     ceilings = CampaignCeilings(
         campaign_count=1,
-        cycle_count=1,
+        cycle_count=(
+            four_token_policy.total_cycle_admission_ceiling
+            if four_token_policy is not None
+            else 1
+        ),
         duration_seconds=policy.duration_seconds,
         source_calls=ADMISSION_OPERATION_CEILING,
         scheduler_work=policy.scheduler_row_ceiling,
@@ -1502,6 +1530,8 @@ def _create_campaign_command(
             ),
         },
     }
+    if four_token_multi_cycle_capacity is not None:
+        configuration["multi_cycle_capacity"] = four_token_multi_cycle_capacity
     if disposable_proof_binding is None:
         authorization_marker = build_authorization_marker_payload(
             marker_id=f"{execution_id}-authorization-marker",
