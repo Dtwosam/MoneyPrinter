@@ -254,10 +254,21 @@ def validate_four_token_proof_authorization_document(
     )
     proof_policy = document.get("proof_policy")
     _require(isinstance(proof_policy, Mapping), "proof policy is malformed")
+    expected_policy = exact_proof_policy()
     _require(
-        set(proof_policy) == set(exact_proof_policy()),
+        set(proof_policy) == set(expected_policy),
         "proof policy keys are malformed",
     )
+    # Exact equality against the one derived authority. A widened capacity, a
+    # third cycle, a single-token cycle, shorter spacing, a collapsed or widened
+    # clock, a copied two-token ceiling, a retry, endpoint rotation, or a long
+    # window all fail closed here rather than reaching consumption.
+    for key, expected in expected_policy.items():
+        actual = proof_policy.get(key)
+        _require(
+            type(actual) is type(expected) and actual == expected,
+            f"proof policy {key} mismatch",
+        )
     database = document.get("authoritative_database")
     _require(
         isinstance(database, Mapping) and set(database) == _DATABASE_KEYS,
