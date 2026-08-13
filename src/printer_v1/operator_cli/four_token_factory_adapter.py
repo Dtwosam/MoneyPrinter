@@ -18,9 +18,11 @@ from typing import Any, Callable, Mapping
 
 from printer_v1.operator_cli.campaign_full_run_accounting import (
     OperationalLifecycleOwnershipContext,
+    load_attributable_lifecycle_source_attempts,
 )
 from printer_v1.operator_cli.four_token_proof_integration import (
     FOUR_TOKEN_PROOF_MIN_SPACING_SECONDS,
+    cycle_scoped_factory_step_ids,
     resolve_owned_cycle_for_scheduler_job,
 )
 from printer_v1.operator_cli.multi_cycle_memory_growth import (
@@ -76,6 +78,203 @@ def four_token_scaled_capacity_contract() -> dict[str, Any]:
     if contract.get("long_windows_activated") is not False:
         raise FourTokenFactoryAdapterError("long-window activation is forbidden")
     return contract
+
+
+def build_four_token_cycle_accounting_package(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    campaign_run_id: str,
+    factory_run_id: str,
+    cycle_id: str,
+) -> dict[str, Any]:
+    """Project one read-only two-token accounting package from durable owners."""
+    campaign = _required(campaign_id, "campaign_id")
+    run = _required(campaign_run_id, "campaign_run_id")
+    factory = _required(factory_run_id, "factory_run_id")
+    cycle = _required(cycle_id, "cycle_id")
+    _require_exact_shared_run(
+        connection,
+        campaign_id=campaign,
+        campaign_run_id=run,
+        factory_run_id=factory,
+    )
+    cycle_row = connection.execute(
+        "SELECT cycle_ordinal FROM printer_memory_factory_campaign_cycles "
+        "WHERE campaign_id=? AND run_id=? AND cycle_id=?",
+        (campaign, run, cycle),
+    ).fetchone()
+    if cycle_row is None or int(cycle_row[0]) not in (1, 2):
+        raise FourTokenFactoryAdapterError(
+            "cycle accounting ownership is missing or has invalid ordinal"
+        )
+    slots = connection.execute(
+        "SELECT token_slot_id,slot_ordinal,token_row_id,pair_row_id "
+        "FROM printer_memory_factory_campaign_token_slots "
+        "WHERE campaign_id=? AND run_id=? AND cycle_id=? ORDER BY slot_ordinal",
+        (campaign, run, cycle),
+    ).fetchall()
+    if len(slots) != 2 or tuple(int(row[1]) for row in slots) != (1, 2):
+        raise FourTokenFactoryAdapterError(
+            "cycle accounting requires exact two-slot ownership"
+        )
+    targets = tuple(
+        {"token_id": int(row[2]), "pair_id": int(row[3])} for row in slots
+    )
+    if len({(item["token_id"], item["pair_id"]) for item in targets}) != 2:
+        raise FourTokenFactoryAdapterError(
+            "cycle accounting token/pair ownership is ambiguous"
+        )
+
+    scoped_step_ids = cycle_scoped_factory_step_ids(
+        connection,
+        campaign_id=campaign,
+        campaign_run_id=run,
+        factory_run_id=factory,
+        cycle_id=cycle,
+    )
+    if not scoped_step_ids:
+        raise FourTokenFactoryAdapterError(
+            "cycle accounting Scheduler ownership is missing"
+        )
+    target_step_ids: list[int] = []
+    for target in targets:
+        target_step_ids.extend(int(row[0]) for row in connection.execute(
+            "SELECT id FROM printer_memory_factory_run_steps "
+            "WHERE run_id=? AND token_id=? AND pair_id=? "
+            "AND scheduler_job_id IS NOT NULL ORDER BY id",
+            (factory, target["token_id"], target["pair_id"]),
+        ).fetchall())
+    if tuple(sorted(target_step_ids)) != tuple(sorted(scoped_step_ids)):
+        raise FourTokenFactoryAdapterError(
+            "cycle accounting factory-step ownership is missing or extra"
+        )
+
+    placeholders = ",".join("?" for _ in scoped_step_ids)
+    step_rows = connection.execute(
+        "SELECT s.id,s.step_key,s.scheduler_job_id,j.status,w.scheduler_work_id "
+        "FROM printer_memory_factory_run_steps AS s "
+        "JOIN printer_scheduler_jobs AS j ON j.id=s.scheduler_job_id "
+        "JOIN printer_memory_factory_campaign_scheduler_work AS w "
+        "ON w.scheduler_job_id=s.scheduler_job_id "
+        "AND w.ownership_contract_version='V2_STAGE_SCOPED' "
+        f"WHERE s.id IN ({placeholders}) "
+        "AND s.run_id=? AND w.campaign_id=? AND w.run_id=? "
+        "AND w.factory_run_id=? AND w.cycle_id=? "
+        "AND w.work_scope='WINDOW_LIFECYCLE' ORDER BY s.id,w.scheduler_work_id",
+        (*scoped_step_ids, factory, campaign, run, factory, cycle),
+    ).fetchall()
+    if len(step_rows) != len(scoped_step_ids):
+        raise FourTokenFactoryAdapterError(
+            "cycle accounting Scheduler ownership is missing, extra, or ambiguous"
+        )
+    scheduler_job_ids = tuple(int(row[2]) for row in step_rows)
+    scheduler_work_ids = tuple(str(row[4]) for row in step_rows)
+    if (
+        len(set(scheduler_job_ids)) != len(scheduler_job_ids)
+        or len(set(scheduler_work_ids)) != len(scheduler_work_ids)
+    ):
+        raise FourTokenFactoryAdapterError(
+            "cycle accounting Scheduler ownership is ambiguous"
+        )
+    owned_work = connection.execute(
+        "SELECT scheduler_job_id FROM printer_memory_factory_campaign_scheduler_work "
+        "WHERE campaign_id=? AND run_id=? AND factory_run_id=? AND cycle_id=? "
+        "AND ownership_contract_version='V2_STAGE_SCOPED' "
+        "AND work_scope='WINDOW_LIFECYCLE' ORDER BY scheduler_work_id",
+        (campaign, run, factory, cycle),
+    ).fetchall()
+    if sorted(int(row[0]) for row in owned_work) != sorted(scheduler_job_ids):
+        raise FourTokenFactoryAdapterError(
+            "cycle accounting Scheduler ownership is missing or extra"
+        )
+
+    all_steps = connection.execute(
+        "SELECT id,step_key FROM printer_memory_factory_run_steps "
+        "WHERE run_id=? AND scheduler_job_id IS NOT NULL ORDER BY id",
+        (factory,),
+    ).fetchall()
+    matched_requests: dict[int, int] = {}
+    cycle_source_ids: list[int] = []
+    for step in all_steps:
+        attempts = load_attributable_lifecycle_source_attempts(
+            connection,
+            factory_run_id=factory,
+            step_key=str(step[1]),
+        )
+        for attempt in attempts:
+            request_id = int(attempt["source_request_id"])
+            prior = matched_requests.get(request_id)
+            if prior is not None and prior != int(step[0]):
+                raise FourTokenFactoryAdapterError(
+                    "cycle accounting source ownership is ambiguous"
+                )
+            matched_requests[request_id] = int(step[0])
+            response_count = int(connection.execute(
+                "SELECT COUNT(*) FROM printer_source_responses WHERE source_request_id=?",
+                (request_id,),
+            ).fetchone()[0])
+            failure_count = int(connection.execute(
+                "SELECT COUNT(*) FROM printer_source_failures WHERE source_request_id=?",
+                (request_id,),
+            ).fetchone()[0])
+            if response_count > 1 or failure_count > 1 or (
+                response_count and failure_count
+            ):
+                raise FourTokenFactoryAdapterError(
+                    "cycle accounting source ownership is ambiguous"
+                )
+            if int(step[0]) in scoped_step_ids:
+                cycle_source_ids.append(request_id)
+    factory_request_ids = tuple(int(row[0]) for row in connection.execute(
+        "SELECT id FROM printer_source_requests WHERE request_key LIKE ? ORDER BY id",
+        (f"{factory}:%",),
+    ).fetchall())
+    if set(factory_request_ids) != set(matched_requests):
+        raise FourTokenFactoryAdapterError(
+            "cycle accounting source ownership is missing or extra"
+        )
+    if len(cycle_source_ids) != len(set(cycle_source_ids)):
+        raise FourTokenFactoryAdapterError(
+            "cycle accounting source ownership is ambiguous"
+        )
+
+    memory_quality: list[str] = []
+    for slot in slots:
+        windows = connection.execute(
+            "SELECT mw.memory_quality_label "
+            "FROM printer_memory_factory_campaign_windows AS cw "
+            "LEFT JOIN printer_memory_windows AS mw ON mw.id=cw.memory_window_row_id "
+            "WHERE cw.campaign_id=? AND cw.run_id=? AND cw.cycle_id=? "
+            "AND cw.token_slot_id=? AND cw.window_kind='WINDOW_15M'",
+            (campaign, run, cycle, str(slot[0])),
+        ).fetchall()
+        if len(windows) > 1:
+            raise FourTokenFactoryAdapterError(
+                "cycle accounting window ownership is ambiguous"
+            )
+        label = None if not windows else windows[0][0]
+        memory_quality.append(str(label or "NO_PROMOTION"))
+
+    return {
+        "cycle_id": cycle,
+        "cycle_ordinal": int(cycle_row[0]),
+        "factory_run_id": factory,
+        "structurally_safe": True,
+        "selected_targets": targets,
+        "memory_quality": tuple(memory_quality),
+        "accounting_package": {
+            "expected_token_capacity": 2,
+            "factory_step_ids": tuple(scoped_step_ids),
+            "source_requests": len(cycle_source_ids),
+            "source_request_ids": tuple(sorted(cycle_source_ids)),
+            "scheduler_jobs": len(scheduler_job_ids),
+            "scheduler_job_ids": scheduler_job_ids,
+            "scheduler_work_ids": scheduler_work_ids,
+            "scheduler_statuses": tuple(str(row[3]) for row in step_rows),
+            "attribution_owner": "V2_STAGE_SCOPED_SCHEDULER_AND_FULL_RUN_REQUEST_KEY",
+        },
+    }
 
 
 def _require_exact_shared_run(

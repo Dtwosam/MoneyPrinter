@@ -942,6 +942,37 @@ def _campaign_scheduler_rows(
     return [dict(row) for row in rows]
 
 
+def load_attributable_lifecycle_source_attempts(
+    connection: sqlite3.Connection,
+    *,
+    factory_run_id: str,
+    step_key: str,
+) -> tuple[sqlite3.Row, ...]:
+    """Read the exact request-key lineage used by two-token accounting.
+
+    The caller owns any cycle/step scoping. This owner-local helper preserves
+    the existing full-run attribution law so proof adapters cannot reconstruct
+    source ownership from copied counts.
+    """
+    connection.row_factory = sqlite3.Row
+    return tuple(connection.execute(
+        """SELECT q.id AS source_request_id, q.source_name,
+                  q.request_kind, q.request_key,
+                  r.id AS source_response_id,
+                  r.normalized_payload_json AS response_payload_json,
+                  f.id AS source_failure_id,
+                  f.normalized_payload_json AS failure_payload_json
+           FROM printer_source_requests AS q
+           LEFT JOIN printer_source_responses AS r
+             ON r.source_request_id=q.id
+           LEFT JOIN printer_source_failures AS f
+             ON f.source_request_id=q.id
+           WHERE q.request_key LIKE ?
+           ORDER BY q.id""",
+        (f"{factory_run_id}:{step_key}%",),
+    ).fetchall())
+
+
 def build_full_run_terminal_report(
     connection: sqlite3.Connection,
     *,
@@ -2361,21 +2392,11 @@ def finalize_full_run_ownership_and_report(
                 )
             else:
                 ress.extend(expected_reservations)
-            attempts = connection.execute(
-                """SELECT q.id AS source_request_id, q.source_name,
-                          q.request_kind, r.id AS source_response_id,
-                          r.normalized_payload_json AS response_payload_json,
-                          f.id AS source_failure_id,
-                          f.normalized_payload_json AS failure_payload_json
-                   FROM printer_source_requests AS q
-                   LEFT JOIN printer_source_responses AS r
-                     ON r.source_request_id=q.id
-                   LEFT JOIN printer_source_failures AS f
-                     ON f.source_request_id=q.id
-                   WHERE q.request_key LIKE ?
-                   ORDER BY q.id""",
-                (f"{context.factory_run_id}:{step['step_key']}%",),
-            ).fetchall()
+            attempts = load_attributable_lifecycle_source_attempts(
+                connection,
+                factory_run_id=context.factory_run_id,
+                step_key=str(step["step_key"]),
+            )
             lifecycle_source_request_count += len(attempts)
             for attempt_ordinal, attempt in enumerate(attempts, start=1):
                 payload_json = (

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import pytest
@@ -17,6 +18,15 @@ def _planned_cycle(tmp_path):
     path, _request_id, _response_id = _prepare_database(tmp_path)
     connection = sqlite3.connect(path)
     connection.row_factory = sqlite3.Row
+    connection.execute(
+        "UPDATE printer_memory_factory_runs SET config_json=? WHERE run_id=?",
+        (json.dumps({
+            "four_token_proof": True,
+            "campaign_id": BINDING.campaign_id,
+            "campaign_run_id": BINDING.campaign_run_id,
+            "configuration_id": BINDING.configuration_id,
+        }, sort_keys=True), BINDING.authoritative_factory_run_id),
+    )
     targets = [dict(row) for row in connection.execute(
         "SELECT token_row_id AS token_id,pair_row_id AS pair_id,"
         "mint_identity AS token_mint,pair_identity AS pair_address,"
@@ -91,20 +101,15 @@ def test_cycle_accounting_projects_exact_durable_scheduler_and_source_ownership(
 def test_cycle_accounting_fails_closed_on_missing_or_extra_ownership(tmp_path) -> None:
     connection, _ = _planned_cycle(tmp_path)
     connection.execute(
-        "UPDATE printer_memory_factory_campaign_scheduler_work "
-        "SET cycle_id='wrong-cycle' WHERE scheduler_work_id=("
+        "DELETE FROM printer_memory_factory_campaign_scheduler_work "
+        "WHERE scheduler_work_id=("
         "SELECT scheduler_work_id FROM printer_memory_factory_campaign_scheduler_work "
         "ORDER BY scheduler_work_id LIMIT 1)"
     )
-    connection.commit()
     with pytest.raises(adapter.FourTokenFactoryAdapterError, match="ownership"):
         _build(connection)
 
     connection.rollback()
-    connection.execute(
-        "UPDATE printer_memory_factory_campaign_scheduler_work "
-        "SET cycle_id='cycle-1' WHERE cycle_id='wrong-cycle'"
-    )
     connection.execute(
         "INSERT INTO printer_source_requests("
         "source_name,request_kind,requested_at,request_key,source_status,"
