@@ -38,6 +38,7 @@ class FourTokenProofFixture:
         migration_root: str | None = None,
         historical_authorization_id: str | None = None,
         declare_historical: bool = True,
+        database: dict | None = None,
     ) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name).resolve()
@@ -94,7 +95,8 @@ class FourTokenProofFixture:
         document = four_token.fixture_authorization_document(
             branch=self.branch,
             head=self.head,
-            database={
+            database=database
+            or {
                 "path": "/tmp/printer.sqlite3",
                 "sha256": "c" * 64,
                 "size": 4096,
