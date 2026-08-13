@@ -152,7 +152,12 @@ def parse_cycle_step_key(value: str) -> ParsedCycleStepKey:
         raise FourTokenProofPolicyError("step key is not a canonical cycle step key")
     slot = int(matched.group("slot"))
     raw_cycle = matched.group("cycle")
+    suffix = str(matched.group("suffix"))
     if raw_cycle is None:
+        if re.match(r"^c[0-9]+_", suffix):
+            raise FourTokenProofPolicyError(
+                "step key has a malformed or ambiguous cycle namespace"
+            )
         cycle = 1
     else:
         cycle = int(raw_cycle)
@@ -160,7 +165,6 @@ def parse_cycle_step_key(value: str) -> ParsedCycleStepKey:
             raise FourTokenProofPolicyError(
                 "namespaced cycle ordinal must be at least 2"
             )
-    suffix = str(matched.group("suffix"))
     return ParsedCycleStepKey(slot_ordinal=slot, cycle_ordinal=cycle, suffix=suffix)
 
 
