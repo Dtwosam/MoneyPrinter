@@ -5856,6 +5856,19 @@ def run_one_command_15m_factory(
         reasons.append("non-proof execution requires operational persistent mode")
     if proof_mode and operational_persistent_mode:
         reasons.append("proof and operational persistent modes are mutually exclusive")
+    if four_token_proof_controller is not None:
+        if not standard_four_hour_campaign:
+            reasons.append(
+                "four-token proof controller requires standard four-hour campaign authority"
+            )
+        if later_cycle_discovery_callback is None:
+            reasons.append(
+                "four-token proof controller requires authoritative later-cycle discovery callback"
+            )
+    elif later_cycle_discovery_callback is not None:
+        reasons.append(
+            "later-cycle discovery callback requires four-token proof controller"
+        )
     if _post_handoff_fault is not None:
         if not proof_mode or operational_persistent_mode:
             reasons.append(
