@@ -12,6 +12,9 @@ import unittest
 from printer_v1.operator_cli.authoritative_live_operational_campaign import (
     AuthoritativeLiveOperationalCampaignOwner,
 )
+from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
+    MultiCycleAdmissionHealth,
+)
 
 
 class FourTokenLaterCycleDiscoveryCallbackContractTests(unittest.TestCase):
@@ -32,6 +35,7 @@ class FourTokenLaterCycleDiscoveryCallbackContractTests(unittest.TestCase):
             "selection_seed",
             "source_governor",
             "central_scheduler",
+            "admission_health",
         )
 
         self.assertEqual(
@@ -46,6 +50,12 @@ class FourTokenLaterCycleDiscoveryCallbackContractTests(unittest.TestCase):
                 inspect.Parameter.KEYWORD_ONLY,
                 f"{name} must be keyword-only",
             )
+
+        self.assertIn(
+            parameters["admission_health"].annotation,
+            (MultiCycleAdmissionHealth, "MultiCycleAdmissionHealth"),
+            "later-cycle admission health must use the canonical multi-cycle carrier",
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover
