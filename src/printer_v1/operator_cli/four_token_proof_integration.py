@@ -108,6 +108,47 @@ class FourTokenAdmissionDisposition:
 
 
 @dataclass(frozen=True)
+class LaterCycleDiscoveryCandidate:
+    token_identity: str
+    token_row_id: int
+    mint_identity: str
+    pair_identity: str
+    pair_row_id: int
+    lifecycle_identity: str
+    canonical_market_identity: str
+    canonical_pool_identity: str
+    channels: frozenset[str]
+    holder_evidence_eligible: bool
+    canonical_evidence_json: str
+    canonical_evidence_hash: str
+    evidence_version: str
+    observed_at: datetime
+
+
+@dataclass(frozen=True)
+class LaterCycleSourceEvidence:
+    logical_stage: str
+    source_request_id: int
+    source_response_id: int | None = None
+    source_failure_id: int | None = None
+
+
+@dataclass(frozen=True)
+class LaterCycleCandidateSupply:
+    candidates: tuple[LaterCycleDiscoveryCandidate, ...]
+    source_evidence: tuple[LaterCycleSourceEvidence, ...]
+    terminal_cause: str | None
+
+
+@dataclass(frozen=True)
+class LaterCycleDiscoveryAttemptResult:
+    attempt_id: str
+    state: str
+    first_terminal_cause: str
+    selected_count: int
+
+
+@dataclass(frozen=True)
 class FourTokenProofController:
     """Proof-only read-side controller; admission and discovery remain separate."""
 

@@ -35,6 +35,8 @@ from printer_v1.discovery.combined_executor import (
     FixtureSourceFact,
     _candidate_categories,
     _non_latest_categories,
+    DiscoverySelectionCandidate,
+    apply_existing_discovery_gate_and_selection,
 )
 from printer_v1.operator_cli.abstract_campaign_command import (
     AbstractCampaignCommand,
@@ -1727,11 +1729,21 @@ class AuthoritativeLiveOperationalCampaignOwner:
     """Sole internal live origin→lifecycle composition entry point (DI-only)."""
 
     def __init__(
-        self, *, driver: OriginToLifecycleCampaignDriver | None = None
+        self,
+        *,
+        driver: OriginToLifecycleCampaignDriver | None = None,
+        later_cycle_candidate_supply: Callable[..., LaterCycleCandidateSupply]
+        | None = None,
     ) -> None:
         self._driver = driver or OriginToLifecycleCampaignDriver()
+        self._later_cycle_candidate_supply = later_cycle_candidate_supply
 
-    def _build_later_cycle_discovery_callback(self) -> Callable[..., Any]:
+    def _build_later_cycle_discovery_callback(
+        self,
+        *,
+        db_path: str | Path | None = None,
+        configuration_id: str | None = None,
+    ) -> Callable[..., Any]:
         """Build the private proof-only later-cycle discovery seam.
 
         The callback remains fail-closed until a later focused TDD contract
@@ -1740,7 +1752,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
         DB mutation, lifecycle work, or controller invocation.
         """
 
-        def _not_wired(
+        def _one_shot(
             *,
             campaign_id: str,
             campaign_run_id: str,
@@ -1754,11 +1766,219 @@ class AuthoritativeLiveOperationalCampaignOwner:
             central_scheduler: OwnerPort,
             admission_health: MultiCycleAdmissionHealth,
         ) -> Any:
-            raise LiveOperationalError(
-                "LATER_CYCLE_DISCOVERY_CALLBACK_NOT_WIRED"
+            from printer_v1.operator_cli.four_token_proof_integration import (
+                LaterCycleCandidateSupply,
+                LaterCycleDiscoveryAttemptResult,
             )
+            from printer_v1.db.sqlite_write_contracts import connect_operational
+            from printer_v1.operator_cli.pre_admission_discovery_attempt import (
+                PreAdmissionAttemptError,
+                PreAdmissionAttemptItem,
+                PreAdmissionAttemptState,
+                create_scheduled_pre_admission_attempt,
+                link_pre_admission_source_evidence,
+                load_pre_admission_attempt,
+                mark_pre_admission_attempt_running,
+                persist_pre_admission_pair,
+                pre_admission_attempt_lock_owner,
+                terminalize_pre_admission_attempt,
+            )
+            from printer_v1.scheduler.scheduler import claim_due_job
 
-        return _not_wired
+            if db_path is None or configuration_id is None:
+                raise LiveOperationalError("LATER_CYCLE_DISCOVERY_CALLBACK_NOT_WIRED")
+            if (
+                not isinstance(admission_health, MultiCycleAdmissionHealth)
+                or source_governor.owner_kind != SOURCE_GOVERNOR_OWNER
+                or not source_governor.available
+                or central_scheduler.owner_kind != CENTRAL_SCHEDULER_OWNER
+                or not central_scheduler.available
+                or type(cycle_ordinal) is not int
+                or cycle_ordinal != 2
+            ):
+                raise LiveOperationalError("LATER_CYCLE_CONTEXT_INVALID")
+            try:
+                instant = datetime.fromisoformat(evaluated_at.replace("Z", "+00:00"))
+                cutoff = datetime.fromisoformat(cycle_cutoff.replace("Z", "+00:00"))
+            except (TypeError, ValueError) as exc:
+                raise LiveOperationalError("LATER_CYCLE_CONTEXT_INVALID") from exc
+            attempt_id = (
+                f"pre-admission:{campaign_id}:{campaign_run_id}:"
+                f"{authoritative_factory_run_id}:c{cycle_ordinal:04d}"
+            )
+            connection = connect_operational(db_path)
+            try:
+                try:
+                    existing = load_pre_admission_attempt(
+                        connection, attempt_id=attempt_id
+                    )
+                except PreAdmissionAttemptError as exc:
+                    if str(exc) != "ATTEMPT_NOT_FOUND":
+                        raise
+                    existing = None
+                if existing is not None:
+                    return LaterCycleDiscoveryAttemptResult(
+                        attempt_id=existing.attempt_id,
+                        state=existing.state.value,
+                        first_terminal_cause=str(existing.first_terminal_cause or ""),
+                        selected_count=(2 if existing.state in {
+                            PreAdmissionAttemptState.PAIR_READY,
+                            PreAdmissionAttemptState.CONSUMED,
+                        } else 0),
+                    )
+                owner = connection.execute(
+                    """SELECT 1 FROM printer_memory_factory_campaign_runs
+                       WHERE run_id=? AND campaign_id=? AND authoritative_run_id=?""",
+                    (campaign_run_id, campaign_id, authoritative_factory_run_id),
+                ).fetchone()
+                if owner is None:
+                    raise LiveOperationalError("LATER_CYCLE_CONTEXT_INVALID")
+                attempt = create_scheduled_pre_admission_attempt(
+                    connection,
+                    attempt_id=attempt_id,
+                    campaign_id=campaign_id,
+                    campaign_run_id=campaign_run_id,
+                    configuration_id=configuration_id,
+                    authoritative_factory_run_id=authoritative_factory_run_id,
+                    proposed_cycle_ordinal=cycle_ordinal,
+                    proposed_cycle_id=cycle_id,
+                    cycle_cutoff=cutoff,
+                    evaluated_at=instant,
+                    selection_seed_identity=selection_seed,
+                    scheduled_for=instant,
+                    now=instant,
+                )
+                claimed = claim_due_job(
+                    connection,
+                    job_id=attempt.scheduler_job_id,
+                    lock_owner=pre_admission_attempt_lock_owner(attempt_id),
+                    now=instant,
+                )
+                if claimed.value != "ACQUIRED":
+                    terminalize_pre_admission_attempt(
+                        connection,
+                        attempt_id=attempt_id,
+                        state=PreAdmissionAttemptState.BLOCKED,
+                        cause="PRE_ADMISSION_SCHEDULER_CLAIM_BLOCKED",
+                        now=instant,
+                    )
+                else:
+                    mark_pre_admission_attempt_running(
+                        connection, attempt_id=attempt_id, now=instant
+                    )
+                    if self._later_cycle_candidate_supply is None:
+                        terminalize_pre_admission_attempt(
+                            connection,
+                            attempt_id=attempt_id,
+                            state=PreAdmissionAttemptState.BLOCKED,
+                            cause="LATER_CYCLE_CANDIDATE_SUPPLY_NOT_WIRED",
+                            now=instant,
+                        )
+                    else:
+                        supply = self._later_cycle_candidate_supply(
+                            campaign_id=campaign_id,
+                            campaign_run_id=campaign_run_id,
+                            authoritative_factory_run_id=authoritative_factory_run_id,
+                            proposed_cycle_id=cycle_id,
+                            proposed_cycle_ordinal=cycle_ordinal,
+                            cycle_cutoff=cutoff,
+                            evaluated_at=instant,
+                            selection_seed=selection_seed,
+                            source_governor=source_governor,
+                            central_scheduler=central_scheduler,
+                            admission_health=admission_health,
+                        )
+                        if not isinstance(supply, LaterCycleCandidateSupply):
+                            raise LiveOperationalError("LATER_CYCLE_SUPPLY_RESULT_INVALID")
+                        for ordinal, evidence in enumerate(supply.source_evidence, start=1):
+                            link_pre_admission_source_evidence(
+                                connection,
+                                attempt_id=attempt_id,
+                                link_ordinal=ordinal,
+                                logical_stage=evidence.logical_stage,
+                                source_request_id=evidence.source_request_id,
+                                source_response_id=evidence.source_response_id,
+                                source_failure_id=evidence.source_failure_id,
+                                now=instant,
+                            )
+                        gate_candidates = tuple(
+                            DiscoverySelectionCandidate(
+                                merged_candidate_id=f"pre-admission:{item.mint_identity}",
+                                mint=item.mint_identity,
+                                market_identity=item.canonical_market_identity,
+                                lifecycle=item.lifecycle_identity,
+                                channels=set(item.channels),
+                                observation_ids=[f"pre-admission:{item.mint_identity}"],
+                                conflicts=[],
+                                gaps=([] if item.holder_evidence_eligible else [
+                                    {"kind": "HOLDER_EVIDENCE_INELIGIBLE"}
+                                ]),
+                                origin_state="CONFIRMED",
+                                pumpswap_state="CONFIRMED",
+                            )
+                            for item in supply.candidates
+                        )
+                        selected_outcome = apply_existing_discovery_gate_and_selection(
+                            connection,
+                            candidates=gate_candidates,
+                            discovery_batch_id=attempt_id,
+                            evaluated_at=instant,
+                            mode="INITIAL",
+                            vacant_slot_ordinals=(1, 2),
+                            batch_seq=2,
+                            cycle_seed=selection_seed,
+                            handoffs_used=0,
+                        )
+                        by_mint = {item.mint_identity: item for item in supply.candidates}
+                        selected = [by_mint[item.mint] for item in selected_outcome.selected]
+                        if len(selected) == 2:
+                            persist_pre_admission_pair(
+                                connection,
+                                attempt_id=attempt_id,
+                                items=tuple(
+                                    PreAdmissionAttemptItem(
+                                        attempt_id=attempt_id,
+                                        slot_ordinal=ordinal,
+                                        token_identity=item.token_identity,
+                                        token_row_id=item.token_row_id,
+                                        mint_identity=item.mint_identity,
+                                        pair_identity=item.pair_identity,
+                                        pair_row_id=item.pair_row_id,
+                                        lifecycle_identity=item.lifecycle_identity,
+                                        canonical_market_identity=item.canonical_market_identity,
+                                        canonical_pool_identity=item.canonical_pool_identity,
+                                        canonical_evidence_json=item.canonical_evidence_json,
+                                        canonical_evidence_hash=item.canonical_evidence_hash,
+                                        evidence_version=item.evidence_version,
+                                        observed_at=item.observed_at,
+                                    )
+                                    for ordinal, item in enumerate(selected, start=1)
+                                ),
+                                now=instant,
+                            )
+                        else:
+                            terminalize_pre_admission_attempt(
+                                connection,
+                                attempt_id=attempt_id,
+                                state=PreAdmissionAttemptState.NO_PAIR,
+                                cause=supply.terminal_cause or "NO_EXACT_PAIR",
+                                now=instant,
+                            )
+                    connection.commit()
+                final = load_pre_admission_attempt(connection, attempt_id=attempt_id)
+                return LaterCycleDiscoveryAttemptResult(
+                    attempt_id=final.attempt_id,
+                    state=final.state.value,
+                    first_terminal_cause=str(final.first_terminal_cause or ""),
+                    selected_count=(2 if final.state is PreAdmissionAttemptState.PAIR_READY else 0),
+                )
+            except PreAdmissionAttemptError as exc:
+                connection.rollback()
+                raise LiveOperationalError(str(exc)) from exc
+            finally:
+                connection.close()
+
+        return _one_shot
 
     def _build_fixtures(
         self,
