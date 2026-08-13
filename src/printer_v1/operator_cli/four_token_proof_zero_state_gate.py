@@ -63,13 +63,21 @@ _ZERO_STATE_QUERIES: tuple[tuple[str, str], ...] = (
         "SELECT COUNT(*) FROM printer_memory_factory_campaign_scheduler_work "
         "WHERE work_state IN ('PENDING','RUNNING','COOLDOWN')",
     ),
+    # Zero supervision means zero *active* ownership, never destroyed history.
+    # Migration 033 keeps campaign supervision rows in TERMINAL and defines
+    # active ownership as ACTIVE/STOPPING; migration 030 keeps proof supervision
+    # rows in TERMINAL and defines active proof ownership as STARTING/RUNNING.
+    # Historical terminal evidence is immutable and must never need deletion to
+    # authorize a new bounded proof.
     (
         "campaign_supervision",
-        "SELECT COUNT(*) FROM printer_memory_factory_campaign_supervision",
+        "SELECT COUNT(*) FROM printer_memory_factory_campaign_supervision "
+        "WHERE supervision_state IN ('ACTIVE','STOPPING')",
     ),
     (
         "proof_supervision",
-        "SELECT COUNT(*) FROM printer_proof_run_supervision",
+        "SELECT COUNT(*) FROM printer_proof_run_supervision "
+        "WHERE execution_status IN ('STARTING','RUNNING')",
     ),
     (
         "active_discovery_work",
