@@ -12,12 +12,19 @@ It performs no source fetching, discovery, memory generation, provider changes,
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import re
 import sqlite3
 from typing import Any, Mapping, Sequence
 
+from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
+    MultiCycleAdmissionHealth,
+    MultiCycleCampaignBinding,
+    MultiCycleCampaignSnapshot,
+    load_multi_cycle_campaign_snapshot,
+)
 from printer_v1.operator_cli.multi_cycle_memory_growth import (
+    AdmissionDecision,
     MIN_CYCLE_ADMISSION_SPACING_SECONDS,
     MultiCycleCapacityPolicy,
 )
@@ -68,6 +75,70 @@ class OwnedCycleForSchedulerJob:
 class FourTokenFactoryWake:
     at: datetime
     reason: str
+
+
+@dataclass(frozen=True)
+class FourTokenControllerReadiness:
+    """One read-only persisted admission evaluation plus deterministic wake."""
+
+    snapshot: MultiCycleCampaignSnapshot
+    wake: FourTokenFactoryWake
+
+
+@dataclass(frozen=True)
+class FourTokenProofController:
+    """Proof-only read-side controller; admission and discovery remain separate."""
+
+    policy: MultiCycleCapacityPolicy
+
+    @classmethod
+    def exact(cls) -> "FourTokenProofController":
+        return cls(policy=build_four_token_proof_policy())
+
+    def evaluate_factory_wake(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        binding: MultiCycleCampaignBinding,
+        now: datetime,
+        next_due_work_at: datetime | None,
+        proof_deadline: datetime,
+        admission_health: MultiCycleAdmissionHealth,
+    ) -> FourTokenControllerReadiness:
+        snapshot = load_multi_cycle_campaign_snapshot(
+            connection,
+            binding=binding,
+            policy=self.policy,
+            now=now,
+            health=admission_health,
+        )
+        evaluation = snapshot.admission_evaluation
+        next_admission_at: datetime | None = None
+        if evaluation.decision == AdmissionDecision.ADMIT_TWO_TOKEN_CYCLE:
+            next_admission_at = now
+        elif (
+            evaluation.decision == AdmissionDecision.DEFER
+            and evaluation.reason == "minimum_admission_spacing_not_elapsed"
+        ):
+            last_admitted_at = snapshot.session.last_cycle_admitted_at
+            if last_admitted_at is None:
+                raise FourTokenProofPolicyError(
+                    "spacing defer requires persisted last-cycle admission time"
+                )
+            next_admission_at = _utc(
+                last_admitted_at,
+                "last_cycle_admitted_at",
+            ) + timedelta(seconds=self.policy.min_admission_spacing_seconds)
+
+        return FourTokenControllerReadiness(
+            snapshot=snapshot,
+            wake=next_four_token_factory_wake(
+                now=now,
+                next_due_work_at=next_due_work_at,
+                next_admission_at=next_admission_at,
+                proof_deadline=proof_deadline,
+            ),
+        )
 
 
 def build_four_token_proof_policy(
