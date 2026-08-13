@@ -180,7 +180,10 @@ def _require_registered_free_source(
         raise SourceFreeDiscoveryCapacityError(
             "PROHIBITED_SOURCE_REQUIREMENT", requirement.source_name
         )
-    if definition.supports_solana is False:
+    if not (
+        definition.supports_solana is True
+        or definition.supports_solana == "where_available"
+    ):
         raise SourceFreeDiscoveryCapacityError(
             "NON_SOLANA_SOURCE_REQUIREMENT", requirement.source_name
         )
