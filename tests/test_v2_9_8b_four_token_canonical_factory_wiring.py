@@ -107,7 +107,7 @@ class FourTokenCanonicalFactoryWiringContractTests(unittest.TestCase):
         self.assertEqual(parameter.kind, inspect.Parameter.KEYWORD_ONLY)
         self.assertIsNone(parameter.default)
 
-    def test_factory_has_optional_non_invoked_later_cycle_discovery_callback_seam(self) -> None:
+    def test_factory_has_optional_one_shot_later_cycle_discovery_callback_seam(self) -> None:
         parameter = inspect.signature(
             factory.run_one_command_15m_factory
         ).parameters.get("later_cycle_discovery_callback")
@@ -125,17 +125,17 @@ class FourTokenCanonicalFactoryWiringContractTests(unittest.TestCase):
         tree = ast.parse(
             inspect.getsource(factory.run_one_command_15m_factory)
         )
-        callback_invocations = [
+        boundary_invocations = [
             node
             for node in ast.walk(tree)
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
-            and node.func.id == "later_cycle_discovery_callback"
+            and node.func.id == "_run_four_token_admission_boundary"
         ]
         self.assertEqual(
-            callback_invocations,
-            [],
-            "factory callback seam must remain non-invoked at this TDD step",
+            len(boundary_invocations),
+            1,
+            "canonical factory loop must own exactly one admission boundary",
         )
 
         for public_runner in (
@@ -169,17 +169,10 @@ class FourTokenCanonicalFactoryWiringContractTests(unittest.TestCase):
         )
 
         tree = ast.parse(source)
-        callback_invocations = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "later_cycle_discovery_callback"
-        ]
-        self.assertEqual(
-            callback_invocations,
-            [],
-            "pair validation must not activate later-cycle discovery",
+        self.assertIn(
+            "_run_four_token_admission_boundary",
+            source,
+            "paired private proof authority must enter only the bounded loop seam",
         )
 
     def test_private_four_token_capability_persists_exact_multi_cycle_authority(self) -> None:

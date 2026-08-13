@@ -1389,6 +1389,8 @@ class OriginToLifecycleCampaignDriver:
         governor = source_governor or OwnerPort(SOURCE_GOVERNOR_OWNER, True)
         scheduler = central_scheduler or OwnerPort(CENTRAL_SCHEDULER_OWNER, True)
         lifecycle_options = dict(lifecycle_kwargs or {})
+        lifecycle_options.setdefault("source_governor_owner", governor)
+        lifecycle_options.setdefault("central_scheduler_owner", scheduler)
         full_run_stage_observer = lifecycle_options.pop(
             "full_run_stage_observer", None
         )

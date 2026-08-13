@@ -144,6 +144,102 @@ class CompressedTwoTokenProofPlan:
             )
 
 
+@dataclass(frozen=True)
+class FourTokenAdmissionBoundaryResult:
+    disposition: Any
+    admitted: bool
+    attempt_id: str | None = None
+    attempt_state: str | None = None
+    cycle_id: str | None = None
+
+
+def _run_four_token_admission_boundary(
+    *,
+    connection: Any,
+    controller: Any,
+    binding: Any,
+    first_cycle_id: str,
+    now: datetime,
+    next_due_work_at: datetime | None,
+    proof_deadline: datetime,
+    project_health: Callable[[], Any],
+    evaluate: Callable[[Any], Any],
+    later_cycle_callback: Callable[..., Any],
+    admit: Callable[..., Any],
+    materialize: Callable[..., Any],
+    plan_opening: Callable[..., Any],
+    source_governor: Any | None = None,
+    central_scheduler: Any | None = None,
+    clock: Callable[[], datetime] | None = None,
+) -> FourTokenAdmissionBoundaryResult:
+    """Consume at most one due admission inside the canonical factory loop."""
+    from printer_v1.operator_cli.four_token_proof_integration import (
+        FourTokenAdmissionDispositionKind,
+    )
+
+    pre = project_health()
+    disposition = evaluate(pre)
+    if disposition.kind is not FourTokenAdmissionDispositionKind.CYCLE_ADMISSION:
+        return FourTokenAdmissionBoundaryResult(disposition, False)
+    attempt = later_cycle_callback(
+        campaign_id=binding.campaign_id,
+        campaign_run_id=binding.campaign_run_id,
+        authoritative_factory_run_id=binding.authoritative_factory_run_id,
+        cycle_id=f"{first_cycle_id}-2",
+        cycle_ordinal=2,
+        cycle_cutoff=now.isoformat(),
+        evaluated_at=now.isoformat(),
+        selection_seed=(
+            f"{binding.authoritative_factory_run_id}:"
+            f"{binding.campaign_run_id}:c0002"
+        ),
+        source_governor=source_governor,
+        central_scheduler=central_scheduler,
+        admission_health=pre.health,
+    )
+    attempt_id = str(getattr(attempt, "attempt_id", "") or "")
+    attempt_state = str(getattr(attempt, "state", "") or "")
+    if attempt_state != "PAIR_READY" or not attempt_id:
+        return FourTokenAdmissionBoundaryResult(
+            disposition, False, attempt_id or None, attempt_state or None
+        )
+
+    post_now = (clock or (lambda: now))()
+    post = project_health()
+    post_disposition = evaluate(post)
+    if post_disposition.kind is not FourTokenAdmissionDispositionKind.CYCLE_ADMISSION:
+        return FourTokenAdmissionBoundaryResult(
+            post_disposition, False, attempt_id, attempt_state
+        )
+    admission = admit(
+        connection=connection,
+        binding=binding,
+        policy=controller.policy,
+        now=post_now,
+        attempt_id=attempt_id,
+        health=post.health,
+    )
+    if getattr(admission, "mutation_performed", False) is not True:
+        return FourTokenAdmissionBoundaryResult(
+            post_disposition, False, attempt_id, attempt_state
+        )
+    cycle_id = str(getattr(admission, "cycle_id", "") or "")
+    materialize(
+        connection=connection,
+        attempt_id=attempt_id,
+        campaign_id=binding.campaign_id,
+        campaign_run_id=binding.campaign_run_id,
+        configuration_id=binding.configuration_id,
+        authoritative_factory_run_id=binding.authoritative_factory_run_id,
+        cycle_id=cycle_id,
+        now=post_now,
+    )
+    plan_opening(cycle_id=cycle_id, cycle_ordinal=2, now=post_now)
+    return FourTokenAdmissionBoundaryResult(
+        post_disposition, True, attempt_id, "CONSUMED", cycle_id
+    )
+
+
 def _cadence_expected_snapshots(lane: str) -> int:
     """Expected WINDOW_15M snapshot count for a lane, from the cadence policy."""
     policy = _cadence_get_policy(WINDOW_KIND, lane)
@@ -457,6 +553,35 @@ def _selected_targets(conn: sqlite3.Connection, batch_id: str) -> list[dict[str,
         (batch_id,),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def _cycle_targets_for_factory(
+    conn: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    campaign_run_id: str,
+    cycle_id: str,
+) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT s.slot_ordinal,s.token_row_id AS token_id,s.pair_row_id AS pair_id,"
+        "s.mint_identity AS token_mint,s.pair_identity AS pair_address "
+        "FROM printer_memory_factory_campaign_token_slots AS s "
+        "WHERE s.campaign_id=? AND s.run_id=? AND s.cycle_id=? "
+        "ORDER BY s.slot_ordinal",
+        (campaign_id, campaign_run_id, cycle_id),
+    ).fetchall()
+    if len(rows) != 2 or tuple(int(row[0]) for row in rows) != (1, 2):
+        raise ValueError("proof cycle does not own exact two factory targets")
+    return [
+        {
+            "token_id": int(row[1]),
+            "pair_id": int(row[2]),
+            "token_mint": str(row[3]),
+            "pair_address": str(row[4]),
+            "tracking_lane": "TRACK_NORMAL",
+        }
+        for row in rows
+    ]
 
 
 def _cancel_discovery_handoffs(conn: sqlite3.Connection, discovery: dict[str, Any]) -> None:
@@ -6147,6 +6272,10 @@ def run_one_command_15m_factory(
     selective_1h_continuation: bool = False,
     four_token_proof_controller: Any | None = None,
     later_cycle_discovery_callback: Callable[..., Any] | None = None,
+    four_token_health_projector: Callable[[sqlite3.Connection, datetime], Any]
+    | None = None,
+    source_governor_owner: Any | None = None,
+    central_scheduler_owner: Any | None = None,
     compressed_two_token_proof_plan: CompressedTwoTokenProofPlan | None = None,
     operational_natural_disposition: bool = False,
     supervision_execution_id: str | None = None,
@@ -6200,9 +6329,17 @@ def run_one_command_15m_factory(
             reasons.append(
                 "four-token proof controller requires authoritative later-cycle discovery callback"
             )
+        if four_token_health_projector is None:
+            reasons.append(
+                "four-token proof controller requires authoritative admission health projector"
+            )
     elif later_cycle_discovery_callback is not None:
         reasons.append(
             "later-cycle discovery callback requires four-token proof controller"
+        )
+    elif four_token_health_projector is not None:
+        reasons.append(
+            "admission health projector requires four-token proof controller"
         )
     if _post_handoff_fault is not None:
         if not proof_mode or operational_persistent_mode:
@@ -6736,15 +6873,165 @@ def run_one_command_15m_factory(
             )
         conn.commit()
 
+        admission_attempt_finished = False
+        proof_deadline = min(
+            started_dt
+            + timedelta(seconds=float(four_token_proof_controller.policy.intake_duration_seconds)),
+            started_dt + timedelta(seconds=float(total_duration_seconds)),
+        ) if four_token_proof_controller is not None else None
+
         while stop_reason == STOP_COMPLETED:
+            _check_cancellation(cancellation_probe)
             pending = _select_next_pending_step(
                 conn, run_id=run_id, now=_now()
             )
-            if pending is None:
-                break
             elapsed = _monotonic() - start_mono
             if elapsed >= total_duration_seconds:
                 stop_reason = STOP_DURATION
+                break
+            if (
+                four_token_proof_controller is not None
+                and not admission_attempt_finished
+            ):
+                from printer_v1.discovery.pre_admission_materialization import (
+                    materialize_consumed_pre_admission_pair,
+                )
+                from printer_v1.operator_cli.four_token_proof_integration import (
+                    FourTokenAdmissionDispositionKind,
+                    decide_four_token_admission_disposition,
+                )
+                from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
+                    MultiCycleCampaignBinding,
+                    admit_two_token_cycle_from_attempt,
+                )
+
+                binding = MultiCycleCampaignBinding(
+                    campaign_id=str(campaign_id),
+                    campaign_run_id=str(campaign_run_id),
+                    configuration_id=str(configuration_id),
+                    authoritative_factory_run_id=run_id,
+                )
+                cycle_count = int(conn.execute(
+                    "SELECT COUNT(*) FROM printer_memory_factory_campaign_cycles "
+                    "WHERE campaign_id=? AND run_id=?",
+                    (str(campaign_id), str(campaign_run_id)),
+                ).fetchone()[0])
+                if cycle_count >= 2:
+                    admission_attempt_finished = True
+                else:
+                    def _next_due() -> datetime | None:
+                        row = _select_next_pending_step(
+                            conn, run_id=run_id, now=_now()
+                        )
+                        return (
+                            None
+                            if row is None
+                            else datetime.fromisoformat(str(row["scheduled_for"]))
+                        )
+
+                    def _project_health() -> Any:
+                        if four_token_health_projector is None:
+                            raise ValueError(
+                                "authoritative four-token health projector missing"
+                            )
+                        return four_token_health_projector(conn, _now())
+
+                    def _evaluate(projection: Any) -> Any:
+                        instant = _now()
+                        due_at = _next_due()
+                        readiness = four_token_proof_controller.evaluate_factory_wake(
+                            conn,
+                            binding=binding,
+                            now=instant,
+                            next_due_work_at=due_at,
+                            proof_deadline=proof_deadline,
+                            admission_health=projection.health,
+                        )
+                        return decide_four_token_admission_disposition(
+                            readiness=readiness,
+                            health_projection=projection,
+                            policy=four_token_proof_controller.policy,
+                            now=instant,
+                            next_due_work_at=due_at,
+                            proof_deadline=proof_deadline,
+                            relevant_pending_lifecycle_work=due_at is not None,
+                        )
+
+                    def _plan_second_cycle(
+                        *, cycle_id: str, cycle_ordinal: int, now: datetime
+                    ) -> None:
+                        cycle_targets = _cycle_targets_for_factory(
+                            conn,
+                            campaign_id=str(campaign_id),
+                            campaign_run_id=str(campaign_run_id),
+                            cycle_id=cycle_id,
+                        )
+                        _plan_opening_jobs(
+                            conn,
+                            run_id,
+                            cycle_targets,
+                            now,
+                            operation_observer=lifecycle_operation_observer,
+                            cycle_ordinal=cycle_ordinal,
+                            four_token_proof=True,
+                        )
+                        conn.commit()
+
+                    boundary = _run_four_token_admission_boundary(
+                        connection=conn,
+                        controller=four_token_proof_controller,
+                        binding=binding,
+                        first_cycle_id=str(cycle_id),
+                        now=_now(),
+                        next_due_work_at=_next_due(),
+                        proof_deadline=proof_deadline,
+                        project_health=_project_health,
+                        evaluate=_evaluate,
+                        later_cycle_callback=later_cycle_discovery_callback,
+                        admit=admit_two_token_cycle_from_attempt,
+                        materialize=materialize_consumed_pre_admission_pair,
+                        plan_opening=_plan_second_cycle,
+                        source_governor=source_governor_owner,
+                        central_scheduler=central_scheduler_owner,
+                        clock=_now,
+                    )
+                    kind = boundary.disposition.kind
+                    if boundary.admitted:
+                        admission_attempt_finished = True
+                        continue
+                    if boundary.attempt_state is not None:
+                        # The one durable opportunity has run. PAIR_READY may
+                        # remain frozen after post-discovery health changed; no
+                        # retry/successor is permitted.
+                        admission_attempt_finished = True
+                    if kind is FourTokenAdmissionDispositionKind.PROOF_DEADLINE:
+                        stop_reason = STOP_DURATION
+                        break
+                    if kind in {
+                        FourTokenAdmissionDispositionKind.BLOCKED,
+                        FourTokenAdmissionDispositionKind.DRAIN,
+                    }:
+                        stop_reason = STOP_PREFLIGHT
+                        break
+                    if kind is FourTokenAdmissionDispositionKind.COMPLETE:
+                        admission_attempt_finished = True
+                    if kind is FourTokenAdmissionDispositionKind.REARM:
+                        at = boundary.disposition.at
+                        if at is None:
+                            stop_reason = STOP_PREFLIGHT
+                            break
+                        wait = max(0.0, (at - _now()).total_seconds())
+                        if wait:
+                            _sleep_with_cancellation(
+                                min(
+                                    wait,
+                                    max(0.0, total_duration_seconds - elapsed),
+                                ),
+                                sleep=_sleep,
+                                probe=cancellation_probe,
+                            )
+                        continue
+            if pending is None:
                 break
             due = datetime.fromisoformat(str(pending["scheduled_for"]))
             wait = max(0.0, (due - _now()).total_seconds())

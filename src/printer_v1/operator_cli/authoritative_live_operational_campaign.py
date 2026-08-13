@@ -2800,6 +2800,61 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     candidate_supply=production_later_supply,
                 )
             )
+            if "four_token_health_projector" in lk:
+                raise LiveOperationalError(
+                    "FOUR_TOKEN_HEALTH_PROJECTOR_OVERRIDE_FORBIDDEN"
+                )
+            from printer_v1.operator_cli.authoritative_admission_health import (
+                project_authoritative_admission_health,
+            )
+            from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
+                MultiCycleCampaignBinding,
+            )
+            from printer_v1.operator_cli.operational_database_target_binding import (
+                load_durable_operational_database_target_expectation,
+            )
+            from printer_v1.operator_cli.proof_db_schema_readiness import (
+                CANONICAL_PERSISTENT_DB,
+            )
+            from printer_v1.operator_cli.source_free_discovery_capacity import (
+                build_source_free_discovery_attempt_manifest,
+            )
+
+            durable_health_expectation = (
+                load_durable_operational_database_target_expectation(
+                    command.db_path,
+                    campaign_id=command.campaign_id,
+                    campaign_run_id=command.run_id,
+                    cycle_id=cycle_id,
+                    configuration_id=command.configuration_id,
+                )
+            )
+            health_binding = MultiCycleCampaignBinding(
+                campaign_id=command.campaign_id,
+                campaign_run_id=command.run_id,
+                configuration_id=command.configuration_id,
+                authoritative_factory_run_id=str(lk.get("factory_run_id") or ""),
+            )
+            health_manifest = build_source_free_discovery_attempt_manifest()
+
+            def four_token_health_projector(
+                connection: sqlite3.Connection, instant: datetime
+            ) -> Any:
+                return project_authoritative_admission_health(
+                    connection,
+                    db_path=command.db_path,
+                    binding=health_binding,
+                    first_cycle_id=cycle_id,
+                    operational_db_binding=operational_database_target_binding,
+                    operational_db_expected=durable_health_expectation,
+                    canonical_authoritative_db_path=CANONICAL_PERSISTENT_DB,
+                    supervision_id=command.supervision_id,
+                    supervision_owner_id=command.owner_id,
+                    discovery_manifest=health_manifest,
+                    now=instant,
+                )
+
+            lk["four_token_health_projector"] = four_token_health_projector
 
         if standard_four_hour_campaign and not fifteen_minute_only:
             raise LiveOperationalError(

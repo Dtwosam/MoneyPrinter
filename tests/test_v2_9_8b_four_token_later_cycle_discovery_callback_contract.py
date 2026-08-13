@@ -73,9 +73,9 @@ class FourTokenLaterCycleDiscoveryCallbackContractTests(unittest.TestCase):
             "authoritative owner must bind its callback into the existing lifecycle channel",
         )
         self.assertIn(
-            "self._build_later_cycle_discovery_callback()",
+            "self._build_later_cycle_discovery_callback(",
             source,
-            "later-cycle callback must be built by the authoritative operational owner",
+            "later-cycle callback must be built and identity-bound by the authoritative operational owner",
         )
         self.assertIn(
             "LATER_CYCLE_DISCOVERY_CALLBACK_OVERRIDE_FORBIDDEN",
