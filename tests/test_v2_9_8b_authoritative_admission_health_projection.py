@@ -4,8 +4,11 @@ import importlib
 import hashlib
 import json
 import sqlite3
-from datetime import datetime, timezone
+from dataclasses import FrozenInstanceError, asdict, replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+import pytest
 
 from printer_v1.db import apply_migrations
 from printer_v1.db.migrate import canonical_migration_count, canonical_migration_names
@@ -24,6 +27,10 @@ from printer_v1.operator_cli.operational_database_target_binding import (
     OperationalDatabaseTargetBinding,
     build_operational_database_target_binding,
 )
+from printer_v1.operator_cli.source_free_discovery_capacity import (
+    build_source_free_discovery_attempt_manifest,
+)
+from printer_v1.sources.registry import SOURCE_REGISTRY
 
 
 def _budget_connection() -> sqlite3.Connection:
@@ -683,5 +690,211 @@ def test_db_binding_lease_and_terminal_evidence_fail_closed_independently(
         assert terminal.shared_terminal_condition is True
         assert terminal.cancellation_requested is False
         assert "PERSISTED_SHARED_TERMINAL_STATE" in terminal.reasons
+    finally:
+        connection.close()
+
+
+def _authoritative_projection(
+    owner,
+    db_path,
+    connection,
+    db_binding,
+    expected,
+    *,
+    manifest=None,
+):
+    return owner.project_authoritative_admission_health(
+        connection,
+        db_path=db_path,
+        binding=_binding(),
+        first_cycle_id="cycle-1",
+        operational_db_binding=db_binding,
+        operational_db_expected=expected,
+        canonical_authoritative_db_path=db_path,
+        supervision_id="supervision-1",
+        supervision_owner_id="owner-1",
+        discovery_manifest=(
+            manifest
+            if manifest is not None
+            else build_source_free_discovery_attempt_manifest()
+        ),
+        now=NOW,
+    )
+
+
+def _forbid(*args, **kwargs):
+    raise AssertionError("operational capability invoked by read-only projection")
+
+
+def test_final_projection_populates_all_twelve_fields_from_owner_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner = _projection_owner()
+    db_path, connection, db_binding, expected = _operational_fixture(tmp_path)
+    lock_path = tmp_path / "authoritative-admission-health.lease.json"
+    try:
+        from printer_v1.scheduler import scheduler
+        from printer_v1.sources import governed_execution
+
+        for name in ("enqueue_job", "claim_due_job", "cancel_job"):
+            monkeypatch.setattr(scheduler, name, _forbid)
+        monkeypatch.setattr(
+            governed_execution,
+            "execute_source_request_with_governor",
+            _forbid,
+        )
+        sha_before = _sha256(db_path)
+        lock_sha_before = _sha256(lock_path)
+        changes_before = connection.total_changes
+        statements: list[str] = []
+        connection.set_trace_callback(statements.append)
+
+        result = _authoritative_projection(
+            owner, db_path, connection, db_binding, expected
+        )
+
+        values = asdict(result.health)
+        assert tuple(values) == (
+            "source_budget_available",
+            "provider_budgets_available",
+            "scheduler_budget_available",
+            "scheduler_due_work_healthy",
+            "close_reserve_available",
+            "campaign_supervision_healthy",
+            "lease_healthy",
+            "db_healthy",
+            "shared_terminal_condition",
+            "cancellation_requested",
+            "discovery_capacity_available",
+            "protected_work_capacity_available",
+        )
+        assert values == {
+            "source_budget_available": True,
+            "provider_budgets_available": True,
+            "scheduler_budget_available": True,
+            "scheduler_due_work_healthy": True,
+            "close_reserve_available": True,
+            "campaign_supervision_healthy": True,
+            "lease_healthy": True,
+            "db_healthy": True,
+            "shared_terminal_condition": False,
+            "cancellation_requested": False,
+            "discovery_capacity_available": True,
+            "protected_work_capacity_available": True,
+        }
+        assert tuple(item.field for item in result.evidence) == tuple(values)
+        assert all(item.owner and item.reason for item in result.evidence)
+        assert result.recheck_at is None
+        assert result.recheck_on_lifecycle_change is False
+        with pytest.raises(FrozenInstanceError):
+            result.recheck_at = NOW
+
+        assert connection.total_changes == changes_before
+        assert _sha256(db_path) == sha_before
+        assert _sha256(lock_path) == lock_sha_before
+        assert not any(
+            statement.lstrip().upper().startswith(
+                ("INSERT", "UPDATE", "DELETE", "REPLACE")
+            )
+            for statement in statements
+        )
+    finally:
+        connection.set_trace_callback(None)
+        connection.close()
+
+
+def test_provider_block_preserves_exact_owner_recheck_and_discovery_validity(
+    tmp_path: Path,
+) -> None:
+    owner = _projection_owner()
+    db_path, connection, db_binding, expected = _operational_fixture(tmp_path)
+    try:
+        manifest = build_source_free_discovery_attempt_manifest()
+        source_name = "dexscreener"
+        request_kind = "dexscreener_fresh_profiles"
+        ceiling = SOURCE_REGISTRY[source_name].default_rate_limit_per_minute
+        requested_at = NOW - timedelta(seconds=10)
+        for index in range(ceiling):
+            cursor = connection.execute(
+                """
+                INSERT INTO printer_source_requests(
+                    source_name,request_kind,requested_at,request_key,
+                    source_status,data_quality_label
+                ) VALUES (?,?,?,?,'COMPLETE','CLEAN_DATA')
+                """,
+                (
+                    source_name,
+                    request_kind,
+                    requested_at.isoformat(),
+                    f"provider-capacity:{index}",
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO printer_source_responses(
+                    source_request_id,source_name,received_at,status_code,
+                    source_status,data_quality_label
+                ) VALUES (?,?,'2026-08-13T11:59:51+00:00',200,
+                          'COMPLETE','CLEAN_DATA')
+                """,
+                (int(cursor.lastrowid), source_name),
+            )
+        connection.commit()
+
+        result = _authoritative_projection(
+            owner,
+            db_path,
+            connection,
+            db_binding,
+            expected,
+            manifest=manifest,
+        )
+
+        assert result.health.provider_budgets_available is False
+        assert result.health.discovery_capacity_available is True
+        assert result.recheck_at == (
+            requested_at + timedelta(seconds=60) + datetime.resolution
+        )
+        assert result.recheck_on_lifecycle_change is False
+        provider_evidence = next(
+            item for item in result.evidence
+            if item.field == "provider_budgets_available"
+        )
+        assert provider_evidence.owner == (
+            "source_free_discovery_provider_capacity."
+            "compose_later_cycle_discovery_capacity"
+        )
+    finally:
+        connection.close()
+
+
+def test_invalid_discovery_manifest_fails_closed_without_healthy_fallback(
+    tmp_path: Path,
+) -> None:
+    owner = _projection_owner()
+    db_path, connection, db_binding, expected = _operational_fixture(tmp_path)
+    try:
+        invalid = replace(
+            build_source_free_discovery_attempt_manifest(),
+            target_count=3,
+        )
+        result = _authoritative_projection(
+            owner,
+            db_path,
+            connection,
+            db_binding,
+            expected,
+            manifest=invalid,
+        )
+
+        assert result.health.provider_budgets_available is False
+        assert result.health.discovery_capacity_available is False
+        assert result.recheck_at is None
+        assert result.recheck_on_lifecycle_change is True
+        assert any(
+            reason.startswith("DISCOVERY_ATTEMPT_MANIFEST_INVALID:")
+            for reason in result.reasons
+        )
     finally:
         connection.close()
