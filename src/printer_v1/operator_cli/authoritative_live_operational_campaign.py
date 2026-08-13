@@ -1783,7 +1783,12 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 pre_admission_attempt_lock_owner,
                 terminalize_pre_admission_attempt,
             )
-            from printer_v1.scheduler.scheduler import claim_due_job, complete_job
+            from printer_v1.scheduler.scheduler import (
+                cancel_job,
+                claim_due_job,
+                complete_job,
+                fail_job,
+            )
 
             if db_path is None or configuration_id is None:
                 raise LiveOperationalError("LATER_CYCLE_DISCOVERY_CALLBACK_NOT_WIRED")
@@ -1807,6 +1812,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 f"{authoritative_factory_run_id}:c{cycle_ordinal:04d}"
             )
             connection = connect_operational(db_path)
+            attempt = None
             try:
                 try:
                     existing = load_pre_admission_attempt(
@@ -1862,6 +1868,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         cause="PRE_ADMISSION_SCHEDULER_CLAIM_BLOCKED",
                         now=instant,
                     )
+                    cancel_job(connection, job_id=attempt.scheduler_job_id, now=instant)
                 else:
                     mark_pre_admission_attempt_running(
                         connection, attempt_id=attempt_id, now=instant
@@ -1873,6 +1880,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             state=PreAdmissionAttemptState.BLOCKED,
                             cause="LATER_CYCLE_CANDIDATE_SUPPLY_NOT_WIRED",
                             now=instant,
+                        )
+                        cancel_job(
+                            connection, job_id=attempt.scheduler_job_id, now=instant
                         )
                     else:
                         supply = self._later_cycle_candidate_supply(
@@ -1979,8 +1989,69 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     selected_count=(2 if final.state is PreAdmissionAttemptState.PAIR_READY else 0),
                 )
             except PreAdmissionAttemptError as exc:
+                if attempt is not None:
+                    current = load_pre_admission_attempt(
+                        connection, attempt_id=attempt.attempt_id
+                    )
+                    if current.state is PreAdmissionAttemptState.RUNNING:
+                        terminalize_pre_admission_attempt(
+                            connection,
+                            attempt_id=attempt.attempt_id,
+                            state=PreAdmissionAttemptState.FAILED,
+                            cause="LATER_CYCLE_ATTEMPT_PERSISTENCE_FAILED",
+                            now=instant,
+                        )
+                        fail_job(
+                            connection,
+                            job_id=attempt.scheduler_job_id,
+                            error="LATER_CYCLE_ATTEMPT_PERSISTENCE_FAILED",
+                            now=instant,
+                            max_retries=0,
+                        )
+                        connection.commit()
+                        final = load_pre_admission_attempt(
+                            connection, attempt_id=attempt.attempt_id
+                        )
+                        return LaterCycleDiscoveryAttemptResult(
+                            attempt_id=final.attempt_id,
+                            state=final.state.value,
+                            first_terminal_cause=str(final.first_terminal_cause or ""),
+                            selected_count=0,
+                        )
                 connection.rollback()
                 raise LiveOperationalError(str(exc)) from exc
+            except Exception:
+                if attempt is not None:
+                    current = load_pre_admission_attempt(
+                        connection, attempt_id=attempt.attempt_id
+                    )
+                    if current.state is PreAdmissionAttemptState.RUNNING:
+                        terminalize_pre_admission_attempt(
+                            connection,
+                            attempt_id=attempt.attempt_id,
+                            state=PreAdmissionAttemptState.FAILED,
+                            cause="LATER_CYCLE_SUPPLY_FAILED",
+                            now=instant,
+                        )
+                        fail_job(
+                            connection,
+                            job_id=attempt.scheduler_job_id,
+                            error="LATER_CYCLE_SUPPLY_FAILED",
+                            now=instant,
+                            max_retries=0,
+                        )
+                        connection.commit()
+                        final = load_pre_admission_attempt(
+                            connection, attempt_id=attempt.attempt_id
+                        )
+                        return LaterCycleDiscoveryAttemptResult(
+                            attempt_id=final.attempt_id,
+                            state=final.state.value,
+                            first_terminal_cause=str(final.first_terminal_cause or ""),
+                            selected_count=0,
+                        )
+                connection.rollback()
+                raise
             finally:
                 connection.close()
 

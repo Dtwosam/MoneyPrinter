@@ -370,17 +370,24 @@ def terminalize_pre_admission_attempt(
     }:
         raise PreAdmissionAttemptError("TERMINAL_STATE_INVALID")
     current = load_pre_admission_attempt(connection, attempt_id=attempt_id)
-    allowed_from = (
-        PreAdmissionAttemptState.PLANNED
-        if target in {PreAdmissionAttemptState.BLOCKED, PreAdmissionAttemptState.CANCELLED}
-        else PreAdmissionAttemptState.RUNNING
-    )
-    if current.state is not allowed_from:
+    allowed_from = {
+        PreAdmissionAttemptState.NO_PAIR: {PreAdmissionAttemptState.RUNNING},
+        PreAdmissionAttemptState.FAILED: {PreAdmissionAttemptState.RUNNING},
+        PreAdmissionAttemptState.BLOCKED: {
+            PreAdmissionAttemptState.PLANNED,
+            PreAdmissionAttemptState.RUNNING,
+        },
+        PreAdmissionAttemptState.CANCELLED: {
+            PreAdmissionAttemptState.PLANNED,
+            PreAdmissionAttemptState.RUNNING,
+        },
+    }[target]
+    if current.state not in allowed_from:
         raise PreAdmissionAttemptError("INVALID_ATTEMPT_TRANSITION")
     return _transition(
         connection,
         attempt_id=attempt_id,
-        expected=allowed_from,
+        expected=current.state,
         target=target,
         cause=cause,
         now=now,
