@@ -632,6 +632,89 @@ def apply_existing_discovery_gate_and_selection(
     )
 
 
+def persist_cycle_rooted_selection_batch(
+    connection: sqlite3.Connection,
+    *,
+    discovery_batch_id: str,
+    selection_batch_id: str,
+    campaign_id: str,
+    run_id: str,
+    cycle_id: str,
+    selected_count: int,
+    now: str,
+) -> None:
+    """Persist the existing cycle-rooted selection-batch ownership shape."""
+    connection.execute(
+        """INSERT INTO printer_selection_batches(
+               batch_id,batch_status,window_kind,selected_count,created_at
+           ) VALUES (?,'ASSEMBLED','WINDOW_15M',?,?)""",
+        (selection_batch_id, int(selected_count), now),
+    )
+    link_selection_batch(
+        connection,
+        discovery_batch_id=discovery_batch_id,
+        selection_batch_id=selection_batch_id,
+        campaign_id=campaign_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
+        now=now,
+    )
+
+
+def persist_cycle_rooted_selected_item(
+    connection: sqlite3.Connection,
+    *,
+    discovery_batch_id: str,
+    selection_batch_id: str,
+    merged_candidate_id: str,
+    campaign_id: str,
+    run_id: str,
+    cycle_id: str,
+    token_slot_id: str,
+    token_id: int,
+    pair_id: int,
+    token_mint: str,
+    pair_address: str,
+    selection_reason: str,
+    tracking_handoff_state: str,
+    first_window_15m_scheduler_job_id: int | None,
+    now: str,
+) -> int:
+    """Persist one selected item and its existing cycle/handoff junction."""
+    item_cursor = connection.execute(
+        """INSERT INTO printer_selection_batch_items(
+               batch_id,item_status,token_id,pair_id,token_mint,pair_address,
+               chain,tracking_lane,selection_reason,selected_at,created_at
+           ) VALUES (?,'SELECTED',?,?,?,?,'solana','TRACK_NORMAL',?,?,?)""",
+        (
+            selection_batch_id,
+            int(token_id),
+            int(pair_id),
+            token_mint,
+            pair_address,
+            selection_reason,
+            now,
+            now,
+        ),
+    )
+    item_id = int(item_cursor.lastrowid)
+    link_selected_item(
+        connection,
+        discovery_batch_id=discovery_batch_id,
+        selection_batch_id=selection_batch_id,
+        selection_item_id=item_id,
+        merged_candidate_id=merged_candidate_id,
+        campaign_id=campaign_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
+        token_slot_id=token_slot_id,
+        tracking_handoff_state=tracking_handoff_state,
+        first_window_15m_scheduler_job_id=first_window_15m_scheduler_job_id,
+        now=now,
+    )
+    return item_id
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -3827,37 +3910,20 @@ class CombinedPumpfunCampaignExecutor:
             selection_reason = MEMORY_OBSERVATION_SELECTION_REASON
         else:
             selection_reason = f"uniform:{cycle_seed[:12]}"
-        item_cursor = connection.execute(
-            """
-            INSERT INTO printer_selection_batch_items(
-                batch_id, item_status, token_id, pair_id, token_mint,
-                pair_address, chain, tracking_lane, selection_reason,
-                selected_at, created_at
-            ) VALUES (?, 'SELECTED', ?, ?, ?, ?, 'solana', 'TRACK_NORMAL',
-                      ?, ?, ?)
-            """,
-            (
-                selection_batch_id,
-                token_id,
-                pair_id,
-                mint,
-                pool,
-                selection_reason,
-                now,
-                now,
-            ),
-        )
-        item_id = int(item_cursor.lastrowid)
-        link_selected_item(
+        persist_cycle_rooted_selected_item(
             connection,
             discovery_batch_id=discovery_batch_id,
             selection_batch_id=selection_batch_id,
-            selection_item_id=item_id,
             merged_candidate_id=candidate.merged_candidate_id,
             campaign_id=command.campaign_id,
             run_id=command.run_id,
             cycle_id=fixtures.cycle_id,
             token_slot_id=slot_id,
+            token_id=token_id,
+            pair_id=pair_id,
+            token_mint=mint,
+            pair_address=pool,
+            selection_reason=selection_reason,
             tracking_handoff_state="HANDOFF_RECORDED",
             first_window_15m_scheduler_job_id=int(job_id),
             now=now,
@@ -3897,21 +3963,14 @@ class CombinedPumpfunCampaignExecutor:
             return
 
         # Replacement: token-local single vacancy; healthy occupied slot untouched.
-        connection.execute(
-            """
-            INSERT INTO printer_selection_batches(
-                batch_id, batch_status, window_kind, selected_count, created_at
-            ) VALUES (?, 'ASSEMBLED', 'WINDOW_15M', ?, ?)
-            """,
-            (selection_batch_id, len(selected), now),
-        )
-        link_selection_batch(
+        persist_cycle_rooted_selection_batch(
             connection,
             discovery_batch_id=discovery_batch_id,
             selection_batch_id=selection_batch_id,
             campaign_id=command.campaign_id,
             run_id=command.run_id,
             cycle_id=fixtures.cycle_id,
+            selected_count=len(selected),
             now=now,
         )
         for index, candidate in enumerate(selected):
@@ -4003,21 +4062,14 @@ class CombinedPumpfunCampaignExecutor:
         usage_handoffs_before = usage.handoffs
         connection.execute("SAVEPOINT initial_two_slot_handoff")
         try:
-            connection.execute(
-                """
-                INSERT INTO printer_selection_batches(
-                    batch_id, batch_status, window_kind, selected_count, created_at
-                ) VALUES (?, 'ASSEMBLED', 'WINDOW_15M', ?, ?)
-                """,
-                (selection_batch_id, len(selected), now),
-            )
-            link_selection_batch(
+            persist_cycle_rooted_selection_batch(
                 connection,
                 discovery_batch_id=discovery_batch_id,
                 selection_batch_id=selection_batch_id,
                 campaign_id=command.campaign_id,
                 run_id=command.run_id,
                 cycle_id=fixtures.cycle_id,
+                selected_count=len(selected),
                 now=now,
             )
             for index, candidate in enumerate(selected):

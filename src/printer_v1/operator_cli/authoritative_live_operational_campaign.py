@@ -1951,6 +1951,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                         canonical_evidence_hash=item.canonical_evidence_hash,
                                         evidence_version=item.evidence_version,
                                         observed_at=item.observed_at,
+                                        channel_labels=tuple(sorted(item.channels)),
                                     )
                                     for ordinal, item in enumerate(selected, start=1)
                                 ),

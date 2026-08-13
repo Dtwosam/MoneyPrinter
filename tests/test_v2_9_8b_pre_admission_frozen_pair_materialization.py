@@ -213,6 +213,7 @@ def test_materialization_fails_closed_on_state_identity_or_evidence_drift(connec
             "consumed_cycle_id=NULL,consumed_at=NULL WHERE attempt_id='attempt-1'"
         )
     elif mutation == "pair_substitution":
+        connection.execute("DROP TRIGGER printer_campaign_slot_identity_immutable")
         connection.execute(
             "UPDATE printer_memory_factory_campaign_token_slots SET mint_identity='mint-substitute' "
             "WHERE cycle_id='cycle-2' AND slot_ordinal=1"
@@ -239,4 +240,3 @@ def test_materialization_rejects_wrong_cycle_or_factory_owner(connection) -> Non
         _materialize(connection, authoritative_factory_run_id="wrong-factory")
     with pytest.raises(PreAdmissionMaterializationError, match="CONSUMED_CYCLE_MISMATCH"):
         _materialize(connection, cycle_id="cycle-1")
-

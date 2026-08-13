@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
+import json
 import sqlite3
 from typing import Sequence
 
@@ -63,6 +64,7 @@ class PreAdmissionAttemptItem:
     canonical_evidence_hash: str
     evidence_version: str
     observed_at: datetime
+    channel_labels: tuple[str, ...] = ()
 
 
 def _required(value: object, label: str) -> str:
@@ -399,6 +401,13 @@ def _validate_pair(attempt_id: str, items: Sequence[PreAdmissionAttemptItem]) ->
     )
     if any(len({getattr(item, field) for item in ordered}) != 2 for field in distinct_fields):
         raise PreAdmissionAttemptError("PAIR_IDENTITIES_NOT_DISTINCT")
+    for item in ordered:
+        labels = tuple(sorted(set(item.channel_labels)))
+        if not labels or any(
+            not isinstance(label, str) or not label or label != label.strip()
+            for label in labels
+        ):
+            raise PreAdmissionAttemptError("CHANNEL_LABELS_INVALID")
     return ordered  # type: ignore[return-value]
 
 
@@ -421,10 +430,10 @@ def persist_pre_admission_pair(
                 """INSERT INTO printer_pre_admission_discovery_attempt_items(
                        attempt_id,slot_ordinal,token_identity,token_row_id,mint_identity,
                        pair_identity,pair_row_id,lifecycle_identity,
-                       canonical_market_identity,canonical_pool_identity,
+                       canonical_market_identity,canonical_pool_identity,channel_labels_json,
                        canonical_evidence_json,canonical_evidence_hash,evidence_version,
                        observed_at,created_at
-                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     exact_id, item.slot_ordinal, _required(item.token_identity, "token_identity"),
                     item.token_row_id, _required(item.mint_identity, "mint_identity"),
@@ -432,6 +441,7 @@ def persist_pre_admission_pair(
                     _required(item.lifecycle_identity, "lifecycle_identity"),
                     _required(item.canonical_market_identity, "canonical_market_identity"),
                     _required(item.canonical_pool_identity, "canonical_pool_identity"),
+                    json.dumps(sorted(set(item.channel_labels)), separators=(",", ":")),
                     _required(item.canonical_evidence_json, "canonical_evidence_json"),
                     _required(item.canonical_evidence_hash, "canonical_evidence_hash"),
                     _required(item.evidence_version, "evidence_version"),
@@ -483,6 +493,7 @@ def load_pre_admission_pair(
             canonical_evidence_hash=str(row["canonical_evidence_hash"]),
             evidence_version=str(row["evidence_version"]),
             observed_at=_parse_timestamp(row["observed_at"], "observed_at"),
+            channel_labels=tuple(json.loads(str(row["channel_labels_json"]))),
         )
         for row in rows
     )

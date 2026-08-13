@@ -91,6 +91,8 @@ CREATE TABLE printer_pre_admission_discovery_attempt_items (
     lifecycle_identity TEXT NOT NULL,
     canonical_market_identity TEXT NOT NULL,
     canonical_pool_identity TEXT NOT NULL,
+    channel_labels_json TEXT NOT NULL DEFAULT '[]'
+        CHECK (json_valid(channel_labels_json) = 1),
     canonical_evidence_json TEXT NOT NULL
         CHECK (json_valid(canonical_evidence_json) = 1),
     canonical_evidence_hash TEXT NOT NULL CHECK (
@@ -237,6 +239,18 @@ BEGIN
         WHERE id = NEW.source_failure_id
           AND source_request_id = NEW.source_request_id
     ) THEN RAISE(ABORT, 'pre-admission failure/request mismatch') END;
+END;
+
+CREATE TRIGGER printer_pre_admission_source_link_immutable_update
+BEFORE UPDATE ON printer_pre_admission_discovery_attempt_source_links
+BEGIN
+    SELECT RAISE(ABORT, 'pre-admission source evidence is immutable');
+END;
+
+CREATE TRIGGER printer_pre_admission_source_link_immutable_delete
+BEFORE DELETE ON printer_pre_admission_discovery_attempt_source_links
+BEGIN
+    SELECT RAISE(ABORT, 'pre-admission source evidence is immutable');
 END;
 
 COMMIT;

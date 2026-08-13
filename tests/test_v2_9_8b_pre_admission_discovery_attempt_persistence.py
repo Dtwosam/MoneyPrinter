@@ -111,6 +111,7 @@ def _item(slot: int) -> PreAdmissionAttemptItem:
         canonical_evidence_hash=str(slot) * 64,
         evidence_version="v1",
         observed_at=NOW,
+        channel_labels=("LATEST_PUMPFUN" if slot == 1 else "TOP_PUMPFUN",),
     )
 
 
