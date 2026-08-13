@@ -5811,6 +5811,7 @@ def run_one_command_15m_factory(
     standard_four_hour_campaign: bool = False,
     selective_1h_continuation: bool = False,
     four_token_proof_controller: Any | None = None,
+    later_cycle_discovery_callback: Callable[..., Any] | None = None,
     compressed_two_token_proof_plan: CompressedTwoTokenProofPlan | None = None,
     operational_natural_disposition: bool = False,
     supervision_execution_id: str | None = None,
