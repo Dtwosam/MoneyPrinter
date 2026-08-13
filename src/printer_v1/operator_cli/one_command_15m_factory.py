@@ -5810,6 +5810,7 @@ def run_one_command_15m_factory(
     four_hour_proof_mode: bool = False,
     standard_four_hour_campaign: bool = False,
     selective_1h_continuation: bool = False,
+    four_token_proof_controller: Any | None = None,
     compressed_two_token_proof_plan: CompressedTwoTokenProofPlan | None = None,
     operational_natural_disposition: bool = False,
     supervision_execution_id: str | None = None,
