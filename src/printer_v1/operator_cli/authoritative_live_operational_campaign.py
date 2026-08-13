@@ -1739,7 +1739,19 @@ class AuthoritativeLiveOperationalCampaignOwner:
         DB mutation, lifecycle work, or controller invocation.
         """
 
-        def _not_wired(**_kwargs: Any) -> Any:
+        def _not_wired(
+            *,
+            campaign_id: str,
+            campaign_run_id: str,
+            authoritative_factory_run_id: str,
+            cycle_id: str,
+            cycle_ordinal: int,
+            cycle_cutoff: str,
+            evaluated_at: str,
+            selection_seed: str,
+            source_governor: OwnerPort,
+            central_scheduler: OwnerPort,
+        ) -> Any:
             raise LiveOperationalError(
                 "LATER_CYCLE_DISCOVERY_CALLBACK_NOT_WIRED"
             )
