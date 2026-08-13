@@ -127,6 +127,14 @@ def _seed_items(connection) -> None:
     connection.commit()
 
 
+def _claim_attempt_job(connection) -> None:
+    connection.execute(
+        "UPDATE printer_scheduler_jobs SET status='RUNNING',"
+        "lock_owner='pre-admission-discovery:attempt-1',locked_at=? WHERE id=1",
+        (NOW.isoformat(),),
+    )
+
+
 def test_create_is_immutable_owner_bound_and_one_shot(connection) -> None:
     created = _create(connection)
     assert created.state is PreAdmissionAttemptState.PLANNED
@@ -147,6 +155,7 @@ def test_state_machine_rejects_invalid_transition_rewrite_and_reopen(connection)
             cause="NO_EXACT_PAIR",
             now=NOW,
         )
+    _claim_attempt_job(connection)
     mark_pre_admission_attempt_running(connection, attempt_id="attempt-1", now=NOW)
     terminalize_pre_admission_attempt(
         connection,
@@ -170,6 +179,7 @@ def test_state_machine_rejects_invalid_transition_rewrite_and_reopen(connection)
 def test_pair_is_atomic_exact_two_distinct_and_immutable(connection) -> None:
     _seed_items(connection)
     _create(connection)
+    _claim_attempt_job(connection)
     mark_pre_admission_attempt_running(connection, attempt_id="attempt-1", now=NOW)
     with pytest.raises(PreAdmissionAttemptError, match="EXACT_TWO_ITEMS_REQUIRED"):
         persist_pre_admission_pair(

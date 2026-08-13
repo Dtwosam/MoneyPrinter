@@ -8,6 +8,9 @@ from enum import StrEnum
 import sqlite3
 from typing import Sequence
 
+from printer_v1.scheduler.contracts import JobKind, JobStatus, LockResult
+from printer_v1.scheduler.scheduler import enqueue_job
+
 
 class PreAdmissionAttemptError(ValueError):
     """Fail-closed pre-admission persistence contract violation."""
@@ -242,6 +245,19 @@ def _transition(
 def mark_pre_admission_attempt_running(
     connection: sqlite3.Connection, *, attempt_id: str, now: datetime
 ) -> PreAdmissionDiscoveryAttempt:
+    attempt = load_pre_admission_attempt(connection, attempt_id=attempt_id)
+    job = connection.execute(
+        "SELECT job_kind,status,lock_owner FROM printer_scheduler_jobs WHERE id=?",
+        (attempt.scheduler_job_id,),
+    ).fetchone()
+    expected_owner = pre_admission_attempt_lock_owner(attempt.attempt_id)
+    if (
+        job is None
+        or str(job["job_kind"]) != JobKind.PRE_ADMISSION_DISCOVERY_SELECTION.value
+        or str(job["status"]) != JobStatus.RUNNING.value
+        or str(job["lock_owner"] or "") != expected_owner
+    ):
+        raise PreAdmissionAttemptError("SCHEDULER_CLAIM_MISMATCH")
     return _transition(
         connection,
         attempt_id=attempt_id,
@@ -249,6 +265,87 @@ def mark_pre_admission_attempt_running(
         target=PreAdmissionAttemptState.RUNNING,
         now=now,
     )
+
+
+def pre_admission_attempt_lock_owner(attempt_id: str) -> str:
+    return f"pre-admission-discovery:{_required(attempt_id, 'attempt_id')}"
+
+
+def create_scheduled_pre_admission_attempt(
+    connection: sqlite3.Connection,
+    *,
+    attempt_id: str,
+    campaign_id: str,
+    campaign_run_id: str,
+    configuration_id: str,
+    authoritative_factory_run_id: str,
+    proposed_cycle_ordinal: int,
+    proposed_cycle_id: str,
+    cycle_cutoff: datetime,
+    evaluated_at: datetime,
+    selection_seed_identity: str,
+    scheduled_for: datetime,
+    now: datetime,
+) -> PreAdmissionDiscoveryAttempt:
+    """Atomically create the one exact Scheduler job and PLANNED attempt."""
+    if connection.in_transaction:
+        raise PreAdmissionAttemptError("OPEN_TRANSACTION_FORBIDDEN")
+    exact_id = _required(attempt_id, "attempt_id")
+    existing = connection.execute(
+        """SELECT 1 FROM printer_pre_admission_discovery_attempts
+           WHERE campaign_id=? AND campaign_run_id=?
+             AND authoritative_factory_run_id=? AND proposed_cycle_ordinal=?""",
+        (
+            campaign_id, campaign_run_id, authoritative_factory_run_id,
+            proposed_cycle_ordinal,
+        ),
+    ).fetchone()
+    if existing is not None:
+        raise PreAdmissionAttemptError("ATTEMPT_ALREADY_EXISTS")
+    owner = connection.execute(
+        """SELECT 1 FROM printer_memory_factory_campaign_runs AS r
+           JOIN printer_memory_factory_campaign_configurations AS c
+             ON c.campaign_id=r.campaign_id AND c.configuration_id=?
+           WHERE r.run_id=? AND r.campaign_id=? AND r.authoritative_run_id=?""",
+        (
+            configuration_id, campaign_run_id, campaign_id,
+            authoritative_factory_run_id,
+        ),
+    ).fetchone()
+    if owner is None:
+        raise PreAdmissionAttemptError("OWNERSHIP_MISMATCH")
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        result, scheduler_job_id = enqueue_job(
+            connection,
+            job_name=f"pre-admission-discovery-selection:{exact_id}",
+            job_kind=JobKind.PRE_ADMISSION_DISCOVERY_SELECTION,
+            target_table="printer_pre_admission_discovery_attempts",
+            target_id=None,
+            scheduled_for=_utc(scheduled_for, "scheduled_for"),
+        )
+        if result is not LockResult.ACQUIRED or scheduler_job_id is None:
+            raise PreAdmissionAttemptError("SCHEDULER_OWNERSHIP_CREATE_FAILED")
+        attempt = create_pre_admission_attempt(
+            connection,
+            attempt_id=exact_id,
+            campaign_id=campaign_id,
+            campaign_run_id=campaign_run_id,
+            configuration_id=configuration_id,
+            authoritative_factory_run_id=authoritative_factory_run_id,
+            proposed_cycle_ordinal=proposed_cycle_ordinal,
+            proposed_cycle_id=proposed_cycle_id,
+            scheduler_job_id=scheduler_job_id,
+            cycle_cutoff=cycle_cutoff,
+            evaluated_at=evaluated_at,
+            selection_seed_identity=selection_seed_identity,
+            now=now,
+        )
+        connection.commit()
+        return attempt
+    except Exception:
+        connection.rollback()
+        raise
 
 
 def terminalize_pre_admission_attempt(
@@ -428,8 +525,9 @@ def link_pre_admission_source_evidence(
 __all__ = [
     "PreAdmissionAttemptError", "PreAdmissionAttemptItem",
     "PreAdmissionAttemptState", "PreAdmissionDiscoveryAttempt",
-    "create_pre_admission_attempt", "link_pre_admission_source_evidence",
+    "create_pre_admission_attempt", "create_scheduled_pre_admission_attempt",
+    "link_pre_admission_source_evidence",
     "load_pre_admission_attempt", "load_pre_admission_pair",
     "mark_pre_admission_attempt_running", "persist_pre_admission_pair",
-    "terminalize_pre_admission_attempt",
+    "pre_admission_attempt_lock_owner", "terminalize_pre_admission_attempt",
 ]

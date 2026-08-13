@@ -312,7 +312,9 @@ class _TemporalBase(unittest.TestCase):
 
 class Migration054Tests(_TemporalBase):
     def test_migration_054_adds_exactly_one_narrow_wait_table(self) -> None:
-        self.assertEqual(canonical_migration_count(), 54)
+        # Migration 055 is a later additive pre-admission owner; 054 remains
+        # unchanged and its narrow wait table remains present in the chain.
+        self.assertEqual(canonical_migration_count(), 55)
         columns = {
             str(row[1]): str(row[2])
             for row in self.connection.execute(

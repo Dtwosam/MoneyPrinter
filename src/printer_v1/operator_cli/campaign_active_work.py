@@ -73,6 +73,16 @@ def _job_has_exact_scope_owner(
             "scheduler_job_id",
         ),
     )
+    if _table_exists(connection, "printer_pre_admission_discovery_attempts"):
+        row = connection.execute(
+            """SELECT 1 FROM printer_pre_admission_discovery_attempts
+               WHERE scheduler_job_id=? AND campaign_id=?
+                 AND campaign_run_id=? AND proposed_cycle_id=?
+                 AND attempt_state IN ('PLANNED','RUNNING') LIMIT 1""",
+            (scheduler_job_id, campaign_id, run_id, cycle_id),
+        ).fetchone()
+        if row is not None:
+            return True
     for table, job_column in sources:
         if not _table_exists(connection, table):
             continue
@@ -118,6 +128,7 @@ def campaign_scoped_job_ids(
         "discovery_jobs": set(),
         "campaign_scheduler_work_jobs": set(),
         "pre_lifecycle_refresh_wait_jobs": set(),
+        "pre_admission_attempt_jobs": set(),
     }
     if factory_run_id and _table_exists(connection, "printer_memory_factory_run_steps"):
         groups["factory_run_step_jobs"] = _job_ids(
@@ -197,6 +208,28 @@ def campaign_scoped_job_ids(
             "SELECT scheduler_job_id FROM "
             "printer_pre_lifecycle_discovery_refresh_waits "
             f"WHERE ({' OR '.join(clauses)})",
+            tuple(params),
+        )
+    if _table_exists(
+        connection, "printer_pre_admission_discovery_attempts"
+    ) and (factory_run_id or campaign_id or run_id or cycle_id):
+        clauses = []
+        params = []
+        for column, value in (
+            ("authoritative_factory_run_id", factory_run_id),
+            ("campaign_id", campaign_id),
+            ("campaign_run_id", run_id),
+            ("proposed_cycle_id", cycle_id),
+        ):
+            if value:
+                clauses.append(f"{column} = ?")
+                params.append(value)
+        groups["pre_admission_attempt_jobs"] = _job_ids(
+            connection,
+            "SELECT scheduler_job_id FROM "
+            "printer_pre_admission_discovery_attempts "
+            f"WHERE ({' OR '.join(clauses)}) "
+            "AND attempt_state IN ('PLANNED','RUNNING')",
             tuple(params),
         )
     if exact_scope and _table_exists(
@@ -349,6 +382,30 @@ def campaign_active_work_report(
             ).fetchone()[0]
         )
 
+    active_pre_admission_attempts = 0
+    if _table_exists(
+        connection, "printer_pre_admission_discovery_attempts"
+    ) and (factory_run_id or campaign_id or run_id or cycle_id):
+        clauses = []
+        params = []
+        for column, value in (
+            ("authoritative_factory_run_id", factory_run_id),
+            ("campaign_id", campaign_id),
+            ("campaign_run_id", run_id),
+            ("proposed_cycle_id", cycle_id),
+        ):
+            if value:
+                clauses.append(f"{column} = ?")
+                params.append(value)
+        active_pre_admission_attempts = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM printer_pre_admission_discovery_attempts "
+                f"WHERE ({' OR '.join(clauses)}) "
+                "AND attempt_state IN ('PLANNED','RUNNING')",
+                tuple(params),
+            ).fetchone()[0]
+        )
+
     pending_run_steps = 0
     if factory_run_id and _table_exists(
         connection, "printer_memory_factory_run_steps"
@@ -380,12 +437,14 @@ def campaign_active_work_report(
         "terminal_work_with_active_job": terminal_work_with_active_job,
         "pending_or_running_run_steps": pending_run_steps,
         "active_pre_lifecycle_refresh_waits": active_refresh_waits,
+        "active_pre_admission_attempts": active_pre_admission_attempts,
         "clean_terminal": (
             not active
             and not active_work_rows
             and terminal_work_with_active_job == 0
             and pending_run_steps == 0
             and active_refresh_waits == 0
+            and active_pre_admission_attempts == 0
         ),
     }
 
