@@ -32,7 +32,13 @@ class FourTokenProofFixture:
     authorization_id = "V2_9_8B_FOUR_TOKEN_AUTH_TESTONLY"
     migration_id = "MIGRATION_055_TESTONLY"
 
-    def __init__(self, *, migration_root: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        migration_root: str | None = None,
+        historical_authorization_id: str | None = None,
+        declare_historical: bool = True,
+    ) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name).resolve()
         self.repo = self.root / "repo"
@@ -65,6 +71,24 @@ class FourTokenProofFixture:
         (self.migration_root / "migration_055_application_result.json").write_text(
             json.dumps({"migration": self.migration_id}) + "\n", encoding="utf-8"
         )
+        # Historical authorization evidence is visible only; directory presence
+        # alone never creates reuse authority.
+        self.historical_authorization_id = historical_authorization_id
+        prior_non_reusable: tuple[str, ...] = ()
+        if historical_authorization_id is not None:
+            historical_root = (
+                self.repo
+                / "operator-runs/v2-9-8b-standard-four-hour-final-authorization"
+                / historical_authorization_id
+            )
+            historical_root.mkdir(parents=True)
+            (historical_root / "final_authorization.json").write_text(
+                json.dumps({"authorization_id": historical_authorization_id}) + "\n",
+                encoding="utf-8",
+            )
+            if declare_historical:
+                prior_non_reusable = (historical_authorization_id,)
+
         self.authorization_path = self.authorization_root / "final_authorization.json"
         now = datetime.now(timezone.utc)
         document = four_token.fixture_authorization_document(
@@ -85,6 +109,7 @@ class FourTokenProofFixture:
             migration_execution_id=self.migration_id,
             authorized_at=now.isoformat(),
             expires_at=(now + timedelta(hours=12)).isoformat(),
+            prior_authorizations_non_reusable=prior_non_reusable,
         )
         self.authorization_path.write_text(
             json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -118,7 +143,7 @@ class FourTokenProofFixture:
     def make_fake_venv_python(self) -> Path:
         venv = self.repo / ".venv"
         bindir = venv / ("Scripts" if os.name == "nt" else "bin")
-        bindir.mkdir(parents=True)
+        bindir.mkdir(parents=True, exist_ok=True)
         (venv / "pyvenv.cfg").write_text("home = fixture\n", encoding="utf-8")
         python_name = "python.exe" if os.name == "nt" else "python"
         executable = bindir / python_name
