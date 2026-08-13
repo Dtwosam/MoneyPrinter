@@ -1,18 +1,26 @@
 """RED contract for the proof-only four-token canonical factory wiring.
 
-This file is intentionally offline/static at this step. It must not start Printer,
+This file is intentionally offline at this step. It must not start Printer,
 perform source work, or mutate an authoritative database.
 """
 
 from __future__ import annotations
 
 import ast
+from datetime import datetime
 import inspect
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
 from printer_v1.operator_cli import one_command_15m_factory as factory
 from printer_v1.operator_cli import operational_memory_factory_command as command
+from printer_v1.operator_cli.four_token_proof_integration import (
+    build_four_token_proof_policy,
+)
+from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
+    multi_cycle_configuration_contract,
+)
 
 
 class FourTokenCanonicalFactoryWiringContractTests(unittest.TestCase):
@@ -98,6 +106,54 @@ class FourTokenCanonicalFactoryWiringContractTests(unittest.TestCase):
         self.assertIsNotNone(parameter)
         self.assertEqual(parameter.kind, inspect.Parameter.KEYWORD_ONLY)
         self.assertIsNone(parameter.default)
+
+    def test_private_four_token_capability_persists_exact_multi_cycle_authority(self) -> None:
+        now = "2026-08-13T09:00:00+00:00"
+        paths = {
+            "reports": Path("/tmp/printer-four-token-reports"),
+            "lock": Path("/tmp/printer-four-token.lock"),
+        }
+        preflight = {
+            "database_sha256": "0" * 64,
+            "database_path": "/tmp/printer-v1.sqlite3",
+            "migration_count": 53,
+            "latest_migration": "053_test.sql",
+            "git_provenance": {"commit": "test"},
+        }
+        backup = {
+            "source_identity": "sha256:" + "0" * 64,
+            "backup_hash": "1" * 64,
+            "latest_rehearsed_migration": "053_test.sql",
+        }
+        with patch.object(
+            command,
+            "build_authorization_marker_payload",
+            return_value={"marker": "test"},
+        ), patch.object(
+            command,
+            "create_operational_campaign_graph",
+            return_value={"configuration_hash": "test-hash"},
+        ) as create_graph:
+            command._create_campaign_command(
+                execution_id="four-token-test",
+                paths=paths,
+                preflight=preflight,
+                backup=backup,
+                now=now,
+                operator_approved=True,
+                policy=command.STANDARD_FOUR_HOUR_POLICY,
+                four_token_proof_controller=object(),
+            )
+
+        persisted = create_graph.call_args.kwargs["configuration"]
+        expected_multi_cycle = multi_cycle_configuration_contract(
+            build_four_token_proof_policy(),
+            intake_started_at=datetime.fromisoformat(now),
+        )
+        self.assertEqual(persisted["token_capacity"], 2)
+        self.assertEqual(persisted["ceilings"]["cycle_count"], 2)
+        self.assertEqual(persisted["multi_cycle_capacity"], expected_multi_cycle)
+        self.assertTrue(persisted["standard_four_hour_campaign"])
 
 
 if __name__ == "__main__":  # pragma: no cover
