@@ -155,6 +155,28 @@ class FourTokenCanonicalFactoryWiringContractTests(unittest.TestCase):
         self.assertEqual(persisted["multi_cycle_capacity"], expected_multi_cycle)
         self.assertTrue(persisted["standard_four_hour_campaign"])
 
+    def test_canonical_coordinator_forwards_controller_into_campaign_creation(self) -> None:
+        tree = ast.parse(inspect.getsource(command._run_operational_campaign))
+        create_calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_create_campaign_command"
+        ]
+        self.assertEqual(len(create_calls), 1)
+        controller_keywords = [
+            keyword
+            for keyword in create_calls[0].keywords
+            if keyword.arg == "four_token_proof_controller"
+        ]
+        self.assertEqual(len(controller_keywords), 1)
+        self.assertIsInstance(controller_keywords[0].value, ast.Name)
+        self.assertEqual(
+            controller_keywords[0].value.id,
+            "four_token_proof_controller",
+        )
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
