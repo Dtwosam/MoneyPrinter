@@ -42,6 +42,9 @@ from printer_v1.operator_cli.abstract_campaign_command import (
     OwnerPort,
     SOURCE_GOVERNOR_OWNER,
 )
+from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
+    MultiCycleAdmissionHealth,
+)
 from printer_v1.operator_cli.origin_lifecycle_campaign import (
     ActivationResult,
     OriginLifecycleResult,
@@ -1751,6 +1754,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
             selection_seed: str,
             source_governor: OwnerPort,
             central_scheduler: OwnerPort,
+            admission_health: MultiCycleAdmissionHealth,
         ) -> Any:
             raise LiveOperationalError(
                 "LATER_CYCLE_DISCOVERY_CALLBACK_NOT_WIRED"
