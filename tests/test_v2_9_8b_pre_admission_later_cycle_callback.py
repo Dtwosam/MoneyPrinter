@@ -179,6 +179,9 @@ def test_callback_executes_one_durable_zero_or_two_attempt(database) -> None:
             "SELECT COUNT(*) FROM printer_memory_factory_campaign_cycles "
             "WHERE cycle_ordinal=2"
         ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT status FROM printer_scheduler_jobs"
+        ).fetchone()[0] == "SUCCEEDED"
     finally:
         connection.close()
 
