@@ -149,6 +149,39 @@ class FourTokenCanonicalFactoryWiringContractTests(unittest.TestCase):
                     inspect.signature(public_runner).parameters,
                 )
 
+    def test_factory_fails_closed_on_unpaired_or_nonstandard_four_token_private_seams(self) -> None:
+        source = inspect.getsource(factory.run_one_command_15m_factory)
+
+        self.assertIn(
+            "four-token proof controller requires standard four-hour campaign authority",
+            source,
+            "private controller must not enter a non-standard-four-hour factory path",
+        )
+        self.assertIn(
+            "four-token proof controller requires authoritative later-cycle discovery callback",
+            source,
+            "private controller must not run without its authoritative discovery owner",
+        )
+        self.assertIn(
+            "later-cycle discovery callback requires four-token proof controller",
+            source,
+            "later-cycle callback must not enter the factory without proof authority",
+        )
+
+        tree = ast.parse(source)
+        callback_invocations = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "later_cycle_discovery_callback"
+        ]
+        self.assertEqual(
+            callback_invocations,
+            [],
+            "pair validation must not activate later-cycle discovery",
+        )
+
     def test_private_four_token_capability_persists_exact_multi_cycle_authority(self) -> None:
         now = "2026-08-13T09:00:00+00:00"
         paths = {
