@@ -2393,6 +2393,19 @@ class AuthoritativeLiveOperationalCampaignOwner:
         the campaign blocks with ``BLOCKED_INSUFFICIENT_GRADUATED_POOL``.
         """
         lk = dict(lifecycle_kwargs or {})
+
+        # Four-token proof-only ownership seam. The authoritative operational
+        # owner is the sole callback builder; callers may not substitute a
+        # parallel discovery owner through lifecycle kwargs.
+        if "later_cycle_discovery_callback" in lk:
+            raise LiveOperationalError(
+                "LATER_CYCLE_DISCOVERY_CALLBACK_OVERRIDE_FORBIDDEN"
+            )
+        if lk.get("four_token_proof_controller") is not None:
+            lk["later_cycle_discovery_callback"] = (
+                self._build_later_cycle_discovery_callback()
+            )
+
         if standard_four_hour_campaign and not fifteen_minute_only:
             raise LiveOperationalError(
                 "STANDARD_FOUR_HOUR_REQUIRES_OPERATIONAL_PERSISTENT_MODE",
