@@ -3200,6 +3200,7 @@ def _run_operational_campaign(
             if owner_bridge is not None
             else None
         ),
+        four_token_proof_controller=four_token_proof_controller,
         db_path=active_db,
     )
     from printer_v1.operator_cli.operational_database_target_binding import (
