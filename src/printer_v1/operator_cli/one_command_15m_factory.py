@@ -2350,21 +2350,34 @@ def _capture_same_stream_5m_support(
 
 
 def _operational_activated_token_count(
-    conn: sqlite3.Connection, run_id: str
+    conn: sqlite3.Connection, run_id: str, *, cycle_id: str | None = None
 ) -> int:
     """Count activated tokens that have a first-15m close step for this run."""
-    return int(
-        conn.execute(
+    if cycle_id is None:
+        return int(conn.execute(
             "SELECT COUNT(DISTINCT token_id || ':' || pair_id) "
             "FROM printer_memory_factory_run_steps "
             "WHERE run_id=? AND step_kind='WINDOW_CLOSE'",
             (run_id,),
-        ).fetchone()[0]
-    )
+        ).fetchone()[0])
+    return int(conn.execute(
+        "SELECT COUNT(DISTINCT s.token_id || ':' || s.pair_id) "
+        "FROM printer_memory_factory_run_steps AS s "
+        "JOIN printer_memory_factory_campaign_scheduler_work AS w "
+        "ON w.scheduler_job_id=s.scheduler_job_id "
+        "AND w.ownership_contract_version='V2_STAGE_SCOPED' "
+        "AND w.work_scope='WINDOW_LIFECYCLE' "
+        "WHERE s.run_id=? AND s.step_kind='WINDOW_CLOSE' AND w.cycle_id=?",
+        (run_id, cycle_id),
+    ).fetchone()[0])
 
 
 def _operational_terminal_15m_closes(
-    conn: sqlite3.Connection, run_id: str, *, current_step_id: int
+    conn: sqlite3.Connection,
+    run_id: str,
+    *,
+    current_step_id: int,
+    cycle_id: str | None = None,
 ) -> list[sqlite3.Row]:
     """Return every terminal 15m close (memory window attached) for this run.
 
@@ -2373,7 +2386,8 @@ def _operational_terminal_15m_closes(
     input: the operational-natural disposition may only be derived once every
     activated token appears here.
     """
-    return conn.execute(
+    if cycle_id is None:
+        return conn.execute(
         """
         SELECT * FROM printer_memory_factory_run_steps
         WHERE run_id=? AND step_kind='WINDOW_CLOSE'
@@ -2382,14 +2396,27 @@ def _operational_terminal_15m_closes(
         ORDER BY id
         """,
         (run_id, int(current_step_id)),
+        ).fetchall()
+    return conn.execute(
+        "SELECT s.* FROM printer_memory_factory_run_steps AS s "
+        "JOIN printer_memory_factory_campaign_scheduler_work AS w "
+        "ON w.scheduler_job_id=s.scheduler_job_id "
+        "AND w.ownership_contract_version='V2_STAGE_SCOPED' "
+        "AND w.work_scope='WINDOW_LIFECYCLE' "
+        "WHERE s.run_id=? AND s.step_kind='WINDOW_CLOSE' "
+        "AND s.memory_window_id IS NOT NULL "
+        "AND (s.step_status='SUCCEEDED' OR (s.id=? AND s.step_status='RUNNING')) "
+        "AND w.cycle_id=? ORDER BY s.id",
+        (run_id, int(current_step_id), cycle_id),
     ).fetchall()
 
 
 def _authoritative_terminal_15m_closes(
-    conn: sqlite3.Connection, run_id: str
+    conn: sqlite3.Connection, run_id: str, *, cycle_id: str | None = None
 ) -> list[sqlite3.Row]:
     """Return only succeeded, exactly linked starting-token 15m closes."""
-    return conn.execute(
+    if cycle_id is None:
+        return conn.execute(
         """
         SELECT * FROM printer_memory_factory_run_steps
         WHERE run_id=? AND step_kind='WINDOW_CLOSE'
@@ -2397,6 +2424,17 @@ def _authoritative_terminal_15m_closes(
         ORDER BY id
         """,
         (run_id,),
+        ).fetchall()
+    return conn.execute(
+        "SELECT s.* FROM printer_memory_factory_run_steps AS s "
+        "JOIN printer_memory_factory_campaign_scheduler_work AS w "
+        "ON w.scheduler_job_id=s.scheduler_job_id "
+        "AND w.ownership_contract_version='V2_STAGE_SCOPED' "
+        "AND w.work_scope='WINDOW_LIFECYCLE' "
+        "WHERE s.run_id=? AND s.step_kind='WINDOW_CLOSE' "
+        "AND s.memory_window_id IS NOT NULL AND s.step_status='SUCCEEDED' "
+        "AND w.cycle_id=? ORDER BY s.id",
+        (run_id, cycle_id),
     ).fetchall()
 
 
@@ -2407,10 +2445,16 @@ def _run_selective_1h_campaign_barrier(
     run_id: str,
     config: Mapping[str, Any],
     continuation_seconds: float,
+    cycle_id: str | None = None,
 ) -> dict[str, Any]:
     """Evaluate once after every activated 15m close is authoritative."""
-    expected = _operational_activated_token_count(conn, run_id)
-    closes = _authoritative_terminal_15m_closes(conn, run_id)
+    owned_cycle = cycle_id or str(config.get("cycle_id") or "")
+    expected = _operational_activated_token_count(
+        conn, run_id, cycle_id=(owned_cycle if cycle_id is not None else None)
+    )
+    closes = _authoritative_terminal_15m_closes(
+        conn, run_id, cycle_id=(owned_cycle if cycle_id is not None else None)
+    )
     if len(closes) < expected:
         return {
             "evaluation_reached": False,
@@ -2441,7 +2485,7 @@ def _run_selective_1h_campaign_barrier(
             (
                 config.get("campaign_id"),
                 config.get("campaign_run_id"),
-                config.get("cycle_id"),
+                owned_cycle,
                 int(close_row["token_id"]),
                 int(close_row["pair_id"]),
             ),
@@ -2452,7 +2496,7 @@ def _run_selective_1h_campaign_barrier(
             conn,
             campaign_id=str(config["campaign_id"]),
             run_id=str(config["campaign_run_id"]),
-            cycle_id=str(config["cycle_id"]),
+            cycle_id=owned_cycle,
             token_slot_id=str(slot["token_slot_id"]),
             token_row_id=int(close_row["token_id"]),
             pair_row_id=int(close_row["pair_id"]),
@@ -2466,7 +2510,7 @@ def _run_selective_1h_campaign_barrier(
             db_path,
             campaign_id=str(config["campaign_id"]),
             run_id=str(config["campaign_run_id"]),
-            cycle_id=str(config["cycle_id"]),
+            cycle_id=owned_cycle,
             token_slot_id=str(slot["token_slot_id"]),
             window_id=str(persisted["window_id"]),
         )
@@ -2480,7 +2524,7 @@ def _run_selective_1h_campaign_barrier(
             config.get("configuration_id") or config["campaign_id"]
         ),
         run_id=str(config["campaign_run_id"]),
-        cycle_id=str(config["cycle_id"]),
+        cycle_id=owned_cycle,
     )
     if evaluation.get("evaluation_created"):
         for close_row, _, _ in graph:
@@ -4104,6 +4148,29 @@ def _register_repaired_campaign_window_before_terminalization(
         terminal_state = "DIRTY"
     else:
         terminal_state = "NO_PROMOTION"
+    if bool(ownership_context.get("proof_cycle_owned")):
+        from printer_v1.operator_cli.operational_selective_1h import (
+            persist_15m_campaign_window,
+        )
+
+        persisted = persist_15m_campaign_window(
+            conn,
+            campaign_id=str(ownership_context["campaign_id"]),
+            run_id=str(ownership_context["campaign_run_id"]),
+            cycle_id=str(ownership_context["cycle_id"]),
+            token_slot_id=str(slot["token_slot_id"]),
+            token_row_id=int(step["token_id"]),
+            pair_row_id=int(step["pair_id"]),
+            lifecycle_identity=str(slot["lifecycle_identity"]),
+            memory_window_row_id=int(memory_window_id),
+            checkpoint_cutoff=str(memory["closed_at"] or _iso()),
+            window_state="AUDITING",
+        )
+        return {
+            **persisted,
+            "terminal_window_state": terminal_state,
+            "precreated_window_reused": True,
+        }
     campaign_window_id = (
         f"{ownership_context['cycle_id']}:window:{int(step['token_id'])}"
     )
@@ -4227,12 +4294,16 @@ def _cancel_campaign_discovery_jobs(
 
 
 def _token_prefix(step_key: str) -> str:
-    """Return the exact cycle+slot prefix for token-local accounting."""
+    """Return the exact proof prefix or the unchanged legacy token prefix."""
     from printer_v1.operator_cli.four_token_proof_integration import (
+        FourTokenProofPolicyError,
         parse_cycle_step_key,
     )
 
-    parsed = parse_cycle_step_key(str(step_key))
+    try:
+        parsed = parse_cycle_step_key(str(step_key))
+    except FourTokenProofPolicyError:
+        return str(step_key).split("_", 1)[0]
     if parsed.cycle_ordinal == 1:
         return f"t{parsed.slot_ordinal}"
     return f"t{parsed.slot_ordinal}_c{parsed.cycle_ordinal:04d}"
@@ -7047,6 +7118,31 @@ def run_one_command_15m_factory(
             if claimed != LockResult.ACQUIRED:
                 stop_reason = STOP_AMBIGUOUS
                 break
+            effective_lifecycle_ownership_context = lifecycle_ownership_context
+            owned_proof_cycle_id: str | None = None
+            if four_token_proof_controller is not None:
+                from printer_v1.operator_cli.four_token_proof_integration import (
+                    resolve_owned_cycle_for_scheduler_job,
+                )
+
+                owned = resolve_owned_cycle_for_scheduler_job(
+                    conn,
+                    scheduler_job_id=job_id,
+                    campaign_id=str(campaign_id),
+                    campaign_run_id=str(campaign_run_id),
+                    factory_run_id=run_id,
+                )
+                owned_proof_cycle_id = owned.cycle_id
+                effective_lifecycle_ownership_context = {
+                    "campaign_id": owned.campaign_id,
+                    "campaign_run_id": owned.campaign_run_id,
+                    "cycle_id": owned.cycle_id,
+                    "configuration_id": str(configuration_id),
+                    "factory_run_id": owned.factory_run_id,
+                    "expected_window_kind": WINDOW_KIND,
+                    "expected_token_capacity": 2,
+                    "proof_cycle_owned": True,
+                }
             conn.execute(
                 "UPDATE printer_memory_factory_run_steps SET step_status='RUNNING',started_at=?,updated_at=? WHERE id=?",
                 (_iso(), _iso(), int(pending["id"])),
@@ -7294,10 +7390,13 @@ def run_one_command_15m_factory(
                             # decisions are token-local, so they are identical
                             # regardless of close-arrival order.
                             expected = _operational_activated_token_count(
-                                conn, run_id
+                                conn, run_id, cycle_id=owned_proof_cycle_id
                             )
                             closes = _operational_terminal_15m_closes(
-                                conn, run_id, current_step_id=int(pending["id"])
+                                conn,
+                                run_id,
+                                current_step_id=int(pending["id"]),
+                                cycle_id=owned_proof_cycle_id,
                             )
                             if len(closes) < expected:
                                 # First terminal close: defer, schedule nothing.
@@ -7475,7 +7574,7 @@ def run_one_command_15m_factory(
                             conn,
                             step=pending,
                             result=result,
-                            ownership_context=lifecycle_ownership_context,
+                            ownership_context=effective_lifecycle_ownership_context,
                         )
                     )
                     # Re-persist enriched close-step result_json (includes
@@ -7545,6 +7644,7 @@ def run_one_command_15m_factory(
                             run_id=run_id,
                             config=config,
                             continuation_seconds=_continuation_seconds,
+                            cycle_id=owned_proof_cycle_id,
                         )
                     if (
                         pending["step_kind"] == "CONTINUATION_CLOSE"
@@ -7560,7 +7660,11 @@ def run_one_command_15m_factory(
                             campaign_id=str(campaign_id),
                             configuration_id=str(configuration_id),
                             run_id=str(campaign_run_id),
-                            cycle_id=str(cycle_id),
+                            cycle_id=str(
+                                owned_proof_cycle_id
+                                if four_token_proof_controller is not None
+                                else cycle_id
+                            ),
                             factory_run_id=str(run_id),
                         )
                         result = _merge_standard_four_hour_barrier_result(
