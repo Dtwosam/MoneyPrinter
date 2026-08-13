@@ -3028,6 +3028,13 @@ def _run_operational_campaign(
     """Run one fixed-policy campaign through the canonical V2-9.8B owner."""
     if not operator_approved:
         raise OperationalMemoryFactoryError("explicit operator approval is required")
+    if (
+        four_token_proof_controller is not None
+        and not policy.standard_four_hour_campaign
+    ):
+        raise OperationalMemoryFactoryError(
+            "FOUR_TOKEN_PROOF_CONTROLLER_REQUIRES_STANDARD_FOUR_HOUR_POLICY"
+        )
     if disposable_proof is not None and git_provenance_authorization is not None:
         raise OperationalMemoryFactoryError(
             "DISPOSABLE_PROOF_EXTERNAL_AUTHORIZATION_CONFLICT"
