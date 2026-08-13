@@ -9,6 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from printer_v1.db import apply_migrations
+from printer_v1.db.sqlite_write_contracts import connect_operational
 from printer_v1.discovery.combined_executor import CombinedPumpfunCampaignExecutor
 from printer_v1.discovery.token_pair_identity import (
     TokenPairIdentityError,
@@ -148,9 +149,38 @@ def test_later_cycle_adapter_uses_permanent_supply_scope_and_exact_lineage(tmp_p
             diagnostics={"permanent_availability": True},
         )
 
-    with patch(
-        "printer_v1.operator_cli.later_cycle_graduated_supply.build_graduated_supply",
-        side_effect=canonical_builder,
+    identity_transaction_states: list[bool] = []
+    lineage_transaction_states: list[bool] = []
+    real_identity_owner = ensure_neutral_token_pair_identity
+    from printer_v1.operator_cli import later_cycle_graduated_supply as supply_module
+    real_lineage_owner = supply_module._source_lineage
+
+    def observed_identity(connection, **kwargs):
+        identity_transaction_states.append(connection.in_transaction)
+        return real_identity_owner(connection, **kwargs)
+
+    def observed_lineage(connection, **kwargs):
+        lineage_transaction_states.append(connection.in_transaction)
+        return real_lineage_owner(connection, **kwargs)
+
+    with (
+        patch(
+            "printer_v1.operator_cli.later_cycle_graduated_supply.build_graduated_supply",
+            side_effect=canonical_builder,
+        ),
+        patch(
+            "printer_v1.operator_cli.later_cycle_graduated_supply.connect_operational",
+            wraps=connect_operational,
+        ) as operational_connect,
+        patch(
+            "printer_v1.operator_cli.later_cycle_graduated_supply."
+            "ensure_neutral_token_pair_identity",
+            side_effect=observed_identity,
+        ),
+        patch(
+            "printer_v1.operator_cli.later_cycle_graduated_supply._source_lineage",
+            side_effect=observed_lineage,
+        ),
     ):
         result = build_later_cycle_graduated_supply(
             path,
@@ -169,6 +199,9 @@ def test_later_cycle_adapter_uses_permanent_supply_scope_and_exact_lineage(tmp_p
             },
         )
 
+    operational_connect.assert_called_once_with(path)
+    assert identity_transaction_states == [True, True]
+    assert lineage_transaction_states == [False]
     assert observed["permanent_availability"] is True
     assert observed["tracking_precheck"] is True
     assert observed["required_token_capacity"] == 2
