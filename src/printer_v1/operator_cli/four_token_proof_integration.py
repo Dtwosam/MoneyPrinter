@@ -13,10 +13,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from enum import StrEnum
 import re
 import sqlite3
 from typing import Any, Mapping, Sequence
 
+from printer_v1.operator_cli.authoritative_admission_health import (
+    AdmissionHealthProjection,
+)
 from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
     MultiCycleAdmissionHealth,
     MultiCycleCampaignBinding,
@@ -85,6 +89,24 @@ class FourTokenControllerReadiness:
     wake: FourTokenFactoryWake
 
 
+class FourTokenAdmissionDispositionKind(StrEnum):
+    BLOCKED = "BLOCKED"
+    DRAIN = "DRAIN"
+    COMPLETE = "COMPLETE"
+    LIFECYCLE_WORK = "LIFECYCLE_WORK"
+    PROOF_DEADLINE = "PROOF_DEADLINE"
+    CYCLE_ADMISSION = "CYCLE_ADMISSION"
+    REARM = "REARM"
+
+
+@dataclass(frozen=True)
+class FourTokenAdmissionDisposition:
+    kind: FourTokenAdmissionDispositionKind
+    reason: str
+    at: datetime | None
+    admission_allowed: bool
+
+
 @dataclass(frozen=True)
 class FourTokenProofController:
     """Proof-only read-side controller; admission and discovery remain separate."""
@@ -139,6 +161,175 @@ class FourTokenProofController:
                 proof_deadline=proof_deadline,
             ),
         )
+
+
+def decide_four_token_admission_disposition(
+    *,
+    readiness: FourTokenControllerReadiness,
+    health_projection: AdmissionHealthProjection,
+    policy: MultiCycleCapacityPolicy,
+    now: datetime,
+    next_due_work_at: datetime | None,
+    proof_deadline: datetime,
+    relevant_pending_lifecycle_work: bool,
+) -> FourTokenAdmissionDisposition:
+    """Choose one pure bounded action without polling, admission, or mutation."""
+    if not isinstance(readiness, FourTokenControllerReadiness):
+        raise FourTokenProofPolicyError("readiness must be FourTokenControllerReadiness")
+    if not isinstance(health_projection, AdmissionHealthProjection):
+        raise FourTokenProofPolicyError("health projection is required")
+    try:
+        policy.validate()
+    except ValueError as exc:
+        raise FourTokenProofPolicyError(str(exc)) from exc
+    if type(relevant_pending_lifecycle_work) is not bool:
+        raise FourTokenProofPolicyError(
+            "relevant_pending_lifecycle_work must be boolean"
+        )
+
+    current = _utc(now, "now")
+    deadline = _utc(proof_deadline, "proof_deadline")
+    due = (
+        _utc(next_due_work_at, "next_due_work_at")
+        if next_due_work_at is not None
+        else None
+    )
+    health = health_projection.health
+
+    if health.cancellation_requested:
+        return FourTokenAdmissionDisposition(
+            FourTokenAdmissionDispositionKind.DRAIN,
+            "CANCELLATION_REQUESTED",
+            None,
+            False,
+        )
+    stop_gates = (
+        (not health.lease_healthy, "LEASE_UNHEALTHY"),
+        (not health.db_healthy, "DB_UNHEALTHY"),
+        (health.shared_terminal_condition, "SHARED_TERMINAL_CONDITION"),
+        (not health.campaign_supervision_healthy, "CAMPAIGN_SUPERVISION_UNHEALTHY"),
+    )
+    for blocked, reason in stop_gates:
+        if blocked:
+            return FourTokenAdmissionDisposition(
+                FourTokenAdmissionDispositionKind.BLOCKED,
+                reason,
+                None,
+                False,
+            )
+
+    evaluation = readiness.snapshot.admission_evaluation
+    if evaluation.decision == AdmissionDecision.BLOCKED:
+        return FourTokenAdmissionDisposition(
+            FourTokenAdmissionDispositionKind.BLOCKED,
+            evaluation.reason,
+            None,
+            False,
+        )
+    if evaluation.decision == AdmissionDecision.DRAIN:
+        return FourTokenAdmissionDisposition(
+            FourTokenAdmissionDispositionKind.DRAIN,
+            evaluation.reason,
+            None,
+            False,
+        )
+    if evaluation.decision == AdmissionDecision.COMPLETE:
+        return FourTokenAdmissionDisposition(
+            FourTokenAdmissionDispositionKind.COMPLETE,
+            evaluation.reason,
+            None,
+            False,
+        )
+
+    if relevant_pending_lifecycle_work and due is not None and due <= current:
+        return FourTokenAdmissionDisposition(
+            FourTokenAdmissionDispositionKind.LIFECYCLE_WORK,
+            "DUE_LIFECYCLE_WORK",
+            current,
+            False,
+        )
+    if deadline <= current:
+        return FourTokenAdmissionDisposition(
+            FourTokenAdmissionDispositionKind.PROOF_DEADLINE,
+            "PROOF_DEADLINE_REACHED",
+            current,
+            False,
+        )
+    if evaluation.decision == AdmissionDecision.ADMIT_TWO_TOKEN_CYCLE:
+        return FourTokenAdmissionDisposition(
+            FourTokenAdmissionDispositionKind.CYCLE_ADMISSION,
+            "ADMISSION_READY",
+            current,
+            True,
+        )
+    if evaluation.decision != AdmissionDecision.DEFER:
+        raise FourTokenProofPolicyError("unsupported admission disposition")
+
+    rearm_at: datetime | None = None
+    rearm_reason: str | None = None
+    if evaluation.reason == "minimum_admission_spacing_not_elapsed":
+        last_admitted_at = readiness.snapshot.session.last_cycle_admitted_at
+        if last_admitted_at is None:
+            return FourTokenAdmissionDisposition(
+                FourTokenAdmissionDispositionKind.BLOCKED,
+                "SPACING_BOUNDARY_EVIDENCE_MISSING",
+                None,
+                False,
+            )
+        rearm_at = _utc(
+            last_admitted_at,
+            "last_cycle_admitted_at",
+        ) + timedelta(seconds=policy.min_admission_spacing_seconds)
+        rearm_reason = "PERSISTED_ADMISSION_SPACING_BOUNDARY"
+    elif health_projection.recheck_at is not None:
+        candidate = _utc(health_projection.recheck_at, "health_recheck_at")
+        if candidate > current:
+            rearm_at = candidate
+            rearm_reason = "AUTHORITATIVE_HEALTH_RECHECK"
+
+    candidates: list[
+        tuple[datetime, int, FourTokenAdmissionDispositionKind, str]
+    ] = []
+    if (
+        health_projection.recheck_on_lifecycle_change
+        and relevant_pending_lifecycle_work
+        and due is not None
+        and due > current
+    ):
+        candidates.append(
+            (
+                due,
+                0,
+                FourTokenAdmissionDispositionKind.LIFECYCLE_WORK,
+                "LIFECYCLE_STATE_CHANGE_RECHECK",
+            )
+        )
+    if rearm_at is not None and rearm_at > current and rearm_reason is not None:
+        candidates.append(
+            (
+                rearm_at,
+                2,
+                FourTokenAdmissionDispositionKind.REARM,
+                rearm_reason,
+            )
+        )
+    if not candidates:
+        return FourTokenAdmissionDisposition(
+            FourTokenAdmissionDispositionKind.BLOCKED,
+            "NO_AUTHORITATIVE_REARM_BOUNDARY",
+            None,
+            False,
+        )
+    candidates.append(
+        (
+            deadline,
+            1,
+            FourTokenAdmissionDispositionKind.PROOF_DEADLINE,
+            "PROOF_DEADLINE_REACHED",
+        )
+    )
+    at, _, kind, reason = min(candidates, key=lambda item: (item[0], item[1]))
+    return FourTokenAdmissionDisposition(kind, reason, at, False)
 
 
 def build_four_token_proof_policy(
