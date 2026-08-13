@@ -90,12 +90,31 @@ STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE = GitAuthorizationProfile(
 )
 
 
+FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE = GitAuthorizationProfile(
+    command_mode="four-token-bounded-capacity-proof-run",
+    authorization_package_root=(
+        "operator-runs/v2-9-8b-four-token-final-authorization"
+    ),
+    authorization_package_kind="FOUR_TOKEN_PROOF_AUTHORIZATION_EVIDENCE",
+    manifest_schema_version="PRINTER_V1_GIT_PROVENANCE_MANIFEST_FOUR_TOKEN_PROOF_V1",
+    historical_authorization_package_roots=(
+        AUTHORIZATION_PACKAGE_ROOT,
+        "operator-runs/v2-9-8b-standard-four-hour-final-authorization",
+        "operator-runs/v2-9-8b-four-token-final-authorization",
+    ),
+)
+
+
 def _resolved_profile(
     profile: GitAuthorizationProfile | None,
 ) -> GitAuthorizationProfile:
     if profile is None:
         return ORDINARY_AUTHORIZATION_PROFILE
-    if profile not in (ORDINARY_AUTHORIZATION_PROFILE, STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE):
+    if profile not in (
+        ORDINARY_AUTHORIZATION_PROFILE,
+        STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE,
+        FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE,
+    ):
         raise GitProvenanceAuthorizationError("unsupported Git authorization profile")
     return profile
 
@@ -1829,6 +1848,7 @@ __all__ = [
     "MANIFEST_SCHEMA_VERSION",
     "MIGRATION_PACKAGE_KIND",
     "MIGRATION_PACKAGE_ROOT",
+    "FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE",
     "GitAuthorizationProfile",
     "ORDINARY_AUTHORIZATION_PROFILE",
     "STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE",
