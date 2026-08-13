@@ -50,7 +50,8 @@ def _terminal_db() -> sqlite3.Connection:
             first_terminal_cause TEXT,terminal_at TEXT,updated_at TEXT
         );
         CREATE TABLE printer_memory_factory_run_steps(
-            id INTEGER PRIMARY KEY,run_id TEXT,scheduler_job_id INTEGER,step_status TEXT
+            id INTEGER PRIMARY KEY,run_id TEXT,scheduler_job_id INTEGER,step_status TEXT,
+            error_or_skip_reason TEXT,finished_at TEXT,updated_at TEXT
         );
         """
     )
@@ -96,9 +97,23 @@ def _terminal_db() -> sqlite3.Connection:
                  slot_id, window_id, job_id),
             )
             connection.execute(
-                "INSERT INTO printer_memory_factory_run_steps VALUES (?, 'factory-1', ?, 'SUCCEEDED')",
+                "INSERT INTO printer_memory_factory_run_steps VALUES "
+                "(?, 'factory-1', ?, 'SUCCEEDED',NULL,'t0','t0')",
                 (job_id, job_id),
             )
+    connection.execute(
+        "UPDATE printer_scheduler_jobs SET status='PENDING',finished_at=NULL "
+        "WHERE id IN (21,22)"
+    )
+    connection.execute(
+        "UPDATE printer_memory_factory_campaign_scheduler_work "
+        "SET work_state='PENDING',first_terminal_cause=NULL,terminal_at=NULL "
+        "WHERE cycle_id='cycle-2'"
+    )
+    connection.execute(
+        "UPDATE printer_memory_factory_run_steps SET step_status='PENDING',finished_at=NULL "
+        "WHERE id IN (21,22)"
+    )
     connection.commit()
     return connection
 
@@ -126,6 +141,10 @@ def test_two_phase_terminal_waits_for_both_cycles_and_composes_shared_once() -> 
     assert connection.execute(
         "SELECT run_status FROM printer_memory_factory_runs"
     ).fetchone()[0] == "RUNNING"
+    assert connection.execute(
+        "SELECT COUNT(*) FROM printer_scheduler_jobs "
+        "WHERE id IN (21,22) AND status='PENDING'"
+    ).fetchone()[0] == 2
 
     calls: list[str] = []
 
@@ -165,6 +184,10 @@ def test_two_phase_terminal_waits_for_both_cycles_and_composes_shared_once() -> 
         run_status="COMPLETED",
         now=now,
     )
+    assert connection.execute(
+        "SELECT COUNT(*) FROM printer_scheduler_jobs "
+        "WHERE id IN (21,22) AND status='CANCELLED'"
+    ).fetchone()[0] == 2
     result = finalize_four_token_shared_terminal(
         connection,
         campaign_id="campaign-1",
@@ -185,4 +208,3 @@ def test_two_phase_terminal_waits_for_both_cycles_and_composes_shared_once() -> 
     )
     assert repeated["shared_terminalized"] is False
     assert calls == ["shared"]
-

@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import sqlite3
-from typing import Any
+from typing import Any, Callable, Mapping
 
 from printer_v1.operator_cli.campaign_full_run_accounting import (
     OperationalLifecycleOwnershipContext,
@@ -388,3 +388,324 @@ def build_cycle_lifecycle_ownership_context(
         raise FourTokenFactoryAdapterError(
             f"cycle lifecycle ownership context could not be resolved: {exc}"
         ) from exc
+
+
+def reconcile_four_token_cycle_terminal(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    campaign_run_id: str,
+    factory_run_id: str,
+    cycle_id: str,
+    cause: str,
+    run_status: str | None,
+    now: datetime,
+) -> dict[str, Any]:
+    """Phase A: terminalize one exact proof cycle without shared state."""
+    campaign = _required(campaign_id, "campaign_id")
+    run = _required(campaign_run_id, "campaign_run_id")
+    factory = _required(factory_run_id, "factory_run_id")
+    cycle = _required(cycle_id, "cycle_id")
+    reason = _required(cause, "cause")
+    instant = _utc(now, "now")
+    timestamp = instant.isoformat()
+    if connection.in_transaction:
+        raise FourTokenFactoryAdapterError(
+            "cycle terminal reconciliation requires a fresh transaction"
+        )
+    _require_exact_shared_run(
+        connection,
+        campaign_id=campaign,
+        campaign_run_id=run,
+        factory_run_id=factory,
+    )
+    row = connection.execute(
+        "SELECT cycle_ordinal,cycle_state,first_terminal_cause "
+        "FROM printer_memory_factory_campaign_cycles "
+        "WHERE campaign_id=? AND run_id=? AND cycle_id=?",
+        (campaign, run, cycle),
+    ).fetchone()
+    if row is None or int(row[0]) not in (1, 2):
+        raise FourTokenFactoryAdapterError("proof cycle identity is missing or invalid")
+    if str(row[1]).startswith("TERMINAL_"):
+        return {
+            "cycle_id": cycle,
+            "cycle_state": str(row[1]),
+            "first_terminal_cause": str(row[2]),
+            "shared_terminalized": False,
+            "already_terminal": True,
+        }
+    slot_count = int(connection.execute(
+        "SELECT COUNT(*) FROM printer_memory_factory_campaign_token_slots "
+        "WHERE campaign_id=? AND run_id=? AND cycle_id=?",
+        (campaign, run, cycle),
+    ).fetchone()[0])
+    if slot_count != 2:
+        raise FourTokenFactoryAdapterError(
+            "filled proof-cycle terminal reconciliation requires exactly two slots"
+        )
+    work_rows = connection.execute(
+        "SELECT scheduler_work_id,scheduler_job_id,ownership_contract_version,"
+        "work_scope,work_state FROM printer_memory_factory_campaign_scheduler_work "
+        "WHERE campaign_id=? AND run_id=? AND cycle_id=? ORDER BY scheduler_work_id",
+        (campaign, run, cycle),
+    ).fetchall()
+    if any(
+        str(item[2]) != "V2_STAGE_SCOPED"
+        or str(item[3]) != "WINDOW_LIFECYCLE"
+        or item[1] is None
+        for item in work_rows
+    ):
+        raise FourTokenFactoryAdapterError(
+            "cycle terminal reconciliation found non-canonical lifecycle ownership"
+        )
+    from printer_v1.operator_cli.four_token_proof_integration import (
+        cycle_scoped_factory_step_ids,
+    )
+    scoped_step_ids = cycle_scoped_factory_step_ids(
+        connection,
+        campaign_id=campaign,
+        campaign_run_id=run,
+        factory_run_id=factory,
+        cycle_id=cycle,
+    )
+
+    from printer_v1.operator_cli.unified_terminal_closure import (
+        resolve_terminal_state,
+    )
+    from printer_v1.operator_cli.campaign_ownership import transition_state
+    from printer_v1.scheduler.scheduler import cancel_job
+
+    for item in work_rows:
+        job = connection.execute(
+            "SELECT status,locked_at,lock_owner FROM printer_scheduler_jobs WHERE id=?",
+            (int(item[1]),),
+        ).fetchone()
+        if job is None:
+            raise FourTokenFactoryAdapterError(
+                "cycle lifecycle Scheduler job is missing"
+            )
+        if str(job[0]) in {"PENDING", "RUNNING", "COOLDOWN"} or (
+            job[1] is not None or job[2] is not None
+        ):
+            cancel_job(connection, job_id=int(item[1]), now=instant)
+
+    terminal_state = resolve_terminal_state(
+        run_status=run_status, terminal_cause=reason
+    )
+    for item in work_rows:
+        if str(item[4]) in {"PENDING", "RUNNING", "COOLDOWN"}:
+            transition_state(
+                connection,
+                record_kind="scheduler_work",
+                identity=str(item[0]),
+                expected_state=str(item[4]),
+                new_state="CANCELLED",
+                terminal_cause=reason,
+                now=timestamp,
+            )
+    window_rows = connection.execute(
+        "SELECT window_id,window_state FROM printer_memory_factory_campaign_windows "
+        "WHERE campaign_id=? AND run_id=? AND cycle_id=? ORDER BY window_id",
+        (campaign, run, cycle),
+    ).fetchall()
+    for window in window_rows:
+        if str(window[1]) in {"PLANNED", "COLLECTING", "CLOSE_PENDING", "AUDITING"}:
+            transition_state(
+                connection,
+                record_kind="window",
+                identity=str(window[0]),
+                expected_state=str(window[1]),
+                new_state="CANCELLED",
+                terminal_cause=reason,
+                now=timestamp,
+            )
+    slot_rows = connection.execute(
+        "SELECT token_slot_id,token_state FROM printer_memory_factory_campaign_token_slots "
+        "WHERE campaign_id=? AND run_id=? AND cycle_id=? ORDER BY slot_ordinal",
+        (campaign, run, cycle),
+    ).fetchall()
+    for slot in slot_rows:
+        if str(slot[1]) not in {"COOLDOWN", "ARCHIVED", "MANUAL_REVIEW", "FAILED"}:
+            transition_state(
+                connection,
+                record_kind="token_slot",
+                identity=str(slot[0]),
+                expected_state=str(slot[1]),
+                new_state="MANUAL_REVIEW",
+                terminal_cause=reason,
+                now=timestamp,
+            )
+    if scoped_step_ids:
+        placeholders = ",".join("?" for _ in scoped_step_ids)
+        connection.execute(
+            "UPDATE printer_memory_factory_run_steps "
+            "SET step_status='CANCELLED',error_or_skip_reason=?,"
+            "finished_at=?,updated_at=? "
+            f"WHERE id IN ({placeholders}) "
+            "AND step_status IN ('PENDING','RUNNING')",
+            (reason, timestamp, timestamp, *scoped_step_ids),
+        )
+        connection.commit()
+    transition_state(
+        connection,
+        record_kind="cycle",
+        identity=cycle,
+        expected_state=str(row[1]),
+        new_state=terminal_state,
+        terminal_cause=reason,
+        now=timestamp,
+    )
+
+    active_work = int(connection.execute(
+        "SELECT COUNT(*) FROM printer_memory_factory_campaign_scheduler_work "
+        "WHERE campaign_id=? AND run_id=? AND cycle_id=? "
+        "AND work_state IN ('PENDING','RUNNING','COOLDOWN')",
+        (campaign, run, cycle),
+    ).fetchone()[0])
+    active_jobs = 0
+    for item in work_rows:
+        job = connection.execute(
+            "SELECT status,locked_at,lock_owner FROM printer_scheduler_jobs WHERE id=?",
+            (int(item[1]),),
+        ).fetchone()
+        if job is not None and (
+            str(job[0]) in {"PENDING", "RUNNING", "COOLDOWN"}
+            or job[1] is not None
+            or job[2] is not None
+        ):
+            active_jobs += 1
+    if active_work or active_jobs:
+        raise FourTokenFactoryAdapterError(
+            "cycle terminal reconciliation left active owned work"
+        )
+    if scoped_step_ids:
+        placeholders = ",".join("?" for _ in scoped_step_ids)
+        active_steps = int(connection.execute(
+            "SELECT COUNT(*) FROM printer_memory_factory_run_steps "
+            f"WHERE id IN ({placeholders}) AND step_status IN ('PENDING','RUNNING')",
+            scoped_step_ids,
+        ).fetchone()[0])
+        if active_steps:
+            raise FourTokenFactoryAdapterError(
+                "cycle terminal reconciliation left active owned factory steps"
+            )
+    return {
+        "cycle_id": cycle,
+        "cycle_state": terminal_state,
+        "first_terminal_cause": reason,
+        "active_owned_work": 0,
+        "active_owned_jobs": 0,
+        "shared_terminalized": False,
+        "already_terminal": False,
+    }
+
+
+def finalize_four_token_shared_terminal(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    campaign_run_id: str,
+    factory_run_id: str,
+    shared_terminalizer: Callable[[], Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Phase B: compose the existing shared terminal/cleanup owner once."""
+    campaign = _required(campaign_id, "campaign_id")
+    run = _required(campaign_run_id, "campaign_run_id")
+    factory = _required(factory_run_id, "factory_run_id")
+    rows = connection.execute(
+        "SELECT cycle_ordinal,cycle_state FROM printer_memory_factory_campaign_cycles "
+        "WHERE campaign_id=? AND run_id=? ORDER BY cycle_ordinal",
+        (campaign, run),
+    ).fetchall()
+    if len(rows) != 2 or [int(item[0]) for item in rows] != [1, 2]:
+        raise FourTokenFactoryAdapterError(
+            "shared terminal requires exactly two admitted cycles"
+        )
+    if any(not str(item[1]).startswith("TERMINAL_") for item in rows):
+        raise FourTokenFactoryAdapterError(
+            "shared terminal requires both cycles to be terminal"
+        )
+    active = int(connection.execute(
+        "SELECT COUNT(*) FROM printer_memory_factory_campaign_scheduler_work AS w "
+        "JOIN printer_scheduler_jobs AS j ON j.id=w.scheduler_job_id "
+        "WHERE w.campaign_id=? AND w.run_id=? "
+        "AND (w.work_state IN ('PENDING','RUNNING','COOLDOWN') "
+        "OR j.status IN ('PENDING','RUNNING','COOLDOWN') "
+        "OR j.locked_at IS NOT NULL OR j.lock_owner IS NOT NULL)",
+        (campaign, run),
+    ).fetchone()[0])
+    if active:
+        raise FourTokenFactoryAdapterError(
+            "shared terminal requires zero active or orphan lifecycle work"
+        )
+    pending_steps = int(connection.execute(
+        "SELECT COUNT(*) FROM printer_memory_factory_run_steps "
+        "WHERE run_id=? AND step_status IN ('PENDING','RUNNING')",
+        (factory,),
+    ).fetchone()[0])
+    if pending_steps:
+        raise FourTokenFactoryAdapterError(
+            "shared terminal requires zero active factory steps"
+        )
+    from printer_v1.operator_cli.campaign_active_work import (
+        campaign_active_work_report,
+    )
+
+    active_report = campaign_active_work_report(
+        connection,
+        factory_run_id=factory,
+        campaign_id=campaign,
+        run_id=run,
+    )
+    if active_report.get("clean_terminal") is not True:
+        raise FourTokenFactoryAdapterError(
+            "shared terminal requires zero active or orphan campaign work"
+        )
+    run_row = connection.execute(
+        "SELECT run_state,authoritative_run_id FROM printer_memory_factory_campaign_runs "
+        "WHERE campaign_id=? AND run_id=?",
+        (campaign, run),
+    ).fetchone()
+    if run_row is None or str(run_row[1] or "") != factory:
+        raise FourTokenFactoryAdapterError("shared terminal identity is missing")
+    if str(run_row[0]).startswith("TERMINAL_"):
+        return {
+            "shared_terminalized": False,
+            "shared_cleanup_count": 0,
+            "already_terminal": True,
+        }
+    result = shared_terminalizer()
+    if not isinstance(result, Mapping):
+        raise FourTokenFactoryAdapterError(
+            "shared terminal owner did not return evidence"
+        )
+    if result.get("clean_terminal") is not True or result.get("lease_released") is not True:
+        raise FourTokenFactoryAdapterError(
+            "shared terminal owner did not prove clean terminal and lease release"
+        )
+    run_after = connection.execute(
+        "SELECT run_state FROM printer_memory_factory_campaign_runs "
+        "WHERE campaign_id=? AND run_id=?",
+        (campaign, run),
+    ).fetchone()
+    factory_after = connection.execute(
+        "SELECT run_status FROM printer_memory_factory_runs WHERE run_id=?",
+        (factory,),
+    ).fetchone()
+    if (
+        run_after is None
+        or not str(run_after[0]).startswith("TERMINAL_")
+        or factory_after is None
+        or str(factory_after[0]) == "RUNNING"
+    ):
+        raise FourTokenFactoryAdapterError(
+            "shared terminal owner did not terminalize shared run identities"
+        )
+    return {
+        "shared_terminalized": True,
+        "shared_cleanup_count": 1,
+        "already_terminal": False,
+        "shared_evidence": dict(result),
+        "active_work": active_report,
+    }
