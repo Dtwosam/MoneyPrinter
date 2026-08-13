@@ -107,6 +107,7 @@ class Phase3SchedulerResourceGovernorTest(unittest.TestCase):
                 JobKind.MEMORY_WINDOW_CLOSE,
                 JobKind.TRACKED_TOKEN_SAFETY_LIQUIDITY_REFRESH,
                 JobKind.DISCOVERY_REFRESH,
+                JobKind.PRE_ADMISSION_DISCOVERY_SELECTION,
                 JobKind.MARKET_REGIME_CONTEXT,
                 JobKind.SOLANA_CHAIN_HEAT_CONTEXT,
                 JobKind.BACKUP_SOURCE_CHECK,
