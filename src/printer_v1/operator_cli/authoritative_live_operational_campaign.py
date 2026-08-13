@@ -1783,7 +1783,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 pre_admission_attempt_lock_owner,
                 terminalize_pre_admission_attempt,
             )
-            from printer_v1.scheduler.scheduler import claim_due_job
+            from printer_v1.scheduler.scheduler import claim_due_job, complete_job
 
             if db_path is None or configuration_id is None:
                 raise LiveOperationalError("LATER_CYCLE_DISCOVERY_CALLBACK_NOT_WIRED")
@@ -1964,6 +1964,11 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                 cause=supply.terminal_cause or "NO_EXACT_PAIR",
                                 now=instant,
                             )
+                        complete_job(
+                            connection,
+                            job_id=attempt.scheduler_job_id,
+                            now=instant,
+                        )
                     connection.commit()
                 final = load_pre_admission_attempt(connection, attempt_id=attempt_id)
                 return LaterCycleDiscoveryAttemptResult(
