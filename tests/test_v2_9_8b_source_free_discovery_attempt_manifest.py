@@ -219,3 +219,46 @@ def test_exact_two_token_source_free_discovery_attempt_manifest_contract(
         )
         for row in holder_plan
     )
+
+
+def test_manifest_rejects_registered_non_chain_specific_source_but_allows_goplus(
+) -> None:
+    manifest_owner = importlib.import_module(
+        "printer_v1.operator_cli.source_free_discovery_capacity"
+    )
+    from printer_v1.sources.registry import SOURCE_REGISTRY
+
+    manifest = manifest_owner.build_source_free_discovery_attempt_manifest(
+        target_count=2,
+        tracker_auth=None,
+    )
+    goplus_requirement = next(
+        row for row in manifest.requirements if row.source_name == "goplus"
+    )
+    assert SOURCE_REGISTRY[goplus_requirement.source_name].supports_solana == (
+        "where_available"
+    )
+    assert (
+        manifest_owner.validate_source_free_discovery_attempt_manifest(manifest)
+        is manifest
+    )
+
+    forged_coingecko_requirement = replace(
+        manifest.requirements[0],
+        source_name="coingecko",
+        request_kind="broad_market_context",
+    )
+    with pytest.raises(
+        manifest_owner.SourceFreeDiscoveryCapacityError,
+        match="NON_SOLANA_SOURCE_REQUIREMENT",
+    ) as exc_info:
+        manifest_owner.validate_source_free_discovery_attempt_manifest(
+            replace(
+                manifest,
+                requirements=(
+                    forged_coingecko_requirement,
+                    *manifest.requirements[1:],
+                ),
+            )
+        )
+    assert exc_info.value.code == "NON_SOLANA_SOURCE_REQUIREMENT"
