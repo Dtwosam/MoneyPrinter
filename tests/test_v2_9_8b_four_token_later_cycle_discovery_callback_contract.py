@@ -57,6 +57,32 @@ class FourTokenLaterCycleDiscoveryCallbackContractTests(unittest.TestCase):
             "later-cycle admission health must use the canonical multi-cycle carrier",
         )
 
+    def test_authoritative_owner_binds_its_callback_only_for_private_four_token_controller(self) -> None:
+        source = inspect.getsource(
+            AuthoritativeLiveOperationalCampaignOwner.run_operational
+        )
+
+        self.assertIn(
+            'lk.get("four_token_proof_controller") is not None',
+            source,
+            "later-cycle callback must be gated by private four-token proof authority",
+        )
+        self.assertIn(
+            'lk["later_cycle_discovery_callback"]',
+            source,
+            "authoritative owner must bind its callback into the existing lifecycle channel",
+        )
+        self.assertIn(
+            "self._build_later_cycle_discovery_callback()",
+            source,
+            "later-cycle callback must be built by the authoritative operational owner",
+        )
+        self.assertIn(
+            "LATER_CYCLE_DISCOVERY_CALLBACK_OVERRIDE_FORBIDDEN",
+            source,
+            "externally supplied later-cycle callback must fail closed",
+        )
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
