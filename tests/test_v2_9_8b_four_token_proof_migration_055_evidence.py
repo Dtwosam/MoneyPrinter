@@ -208,7 +208,9 @@ class FourTokenProofMigration055EvidenceTests(unittest.TestCase):
             migration_root=git_auth.MIGRATION_PACKAGE_ROOT
         )
         try:
-            with self.assertRaises(git_auth.GitProvenanceAuthorizationError):
+            # The dedicated wrapper owns the failure; a foreign one-shot error
+            # type must never leak out of the four-token authority.
+            with self.assertRaises(four_token.FourTokenProofOneShotWrapperError):
                 fixture.validate()
         finally:
             fixture.close()

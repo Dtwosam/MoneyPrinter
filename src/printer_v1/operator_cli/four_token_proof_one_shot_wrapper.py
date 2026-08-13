@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
+import os
+from pathlib import Path, PurePosixPath
 import re
 from typing import Any, Mapping, Sequence
 
@@ -24,10 +26,18 @@ from printer_v1.operator_cli.authorization_temporal_validity import (
 )
 from printer_v1.operator_cli.git_provenance_authorization_manifest import (
     FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE,
+    enumerate_historical_authorization_evidence,
+    extract_approved_historical_authorization_ids,
     validate_prior_authorizations_non_reusable,
 )
 from printer_v1.operator_cli.multi_cycle_memory_growth import (
     scaled_standard_four_hour_capacity_contract,
+)
+from printer_v1.operator_cli.window_15m_one_shot_wrapper import (
+    OneShotWrapperError,
+    _canonical_json_bytes,
+    _enumerate_package,
+    _sha256_file,
 )
 
 
@@ -299,8 +309,165 @@ def validate_four_token_proof_authorization_document(
     return json.loads(json.dumps(dict(document)))
 
 
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _exact_sha256(value: Any, *, label: str) -> str:
+    _require(
+        type(value) is str and _SHA256.fullmatch(str(value)) is not None,
+        f"{label} must be lowercase SHA-256",
+    )
+    return str(value)
+
+
+def _resolve_authorization(
+    *,
+    repository_root: Path,
+    authorization_file: str | Path,
+    authorization_sha256: str,
+) -> tuple[Path, dict[str, Any], str, str]:
+    """Resolve one proof authorization inside its exact package, without aliases."""
+    expected_hash = _exact_sha256(authorization_sha256, label="authorization SHA-256")
+    candidate = Path(authorization_file)
+    if not candidate.is_absolute():
+        candidate = repository_root / candidate
+    lexical_candidate = Path(os.path.abspath(candidate))
+    canonical_root = Path(os.path.realpath(repository_root))
+    canonical_candidate = Path(os.path.realpath(lexical_candidate))
+    try:
+        relative = canonical_candidate.relative_to(canonical_root).as_posix()
+    except ValueError as exc:
+        raise FourTokenProofOneShotWrapperError(
+            "authorization file must be inside repository"
+        ) from exc
+    lexical_root = next(
+        (
+            ancestor
+            for ancestor in lexical_candidate.parents
+            if Path(os.path.realpath(ancestor)) == canonical_root
+        ),
+        None,
+    )
+    _require(
+        lexical_root is not None,
+        "authorization file repository boundary could not be established",
+    )
+    lexical_relative = lexical_candidate.relative_to(lexical_root).as_posix()
+    _require(
+        lexical_relative == relative,
+        "authorization path contains an internal filesystem alias",
+    )
+    walked = lexical_root
+    for part in PurePosixPath(lexical_relative).parts:
+        walked = walked / part
+        _require(not os.path.islink(walked), "authorization path contains a symlink")
+    _require(canonical_candidate.is_file(), "authorization file is unavailable")
+    _require(
+        _sha256_file(canonical_candidate) == expected_hash,
+        "authorization SHA-256 mismatch",
+    )
+    try:
+        document = json.loads(canonical_candidate.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise FourTokenProofOneShotWrapperError(
+            "final authorization is unreadable or malformed"
+        ) from exc
+    validated = validate_four_token_proof_authorization_document(document)
+    authorization_id = _safe_identifier(
+        validated["authorization_id"], label="authorization_id"
+    )
+    migration_execution_id = _safe_identifier(
+        validated["migration_execution_id"], label="migration_execution_id"
+    )
+    expected_relative = (
+        f"{FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE.authorization_package_root}/"
+        f"{authorization_id}/final_authorization.json"
+    )
+    _require(
+        relative == expected_relative,
+        "authorization file is outside its exact four-token proof package",
+    )
+    return canonical_candidate, validated, authorization_id, migration_execution_id
+
+
+def build_manifest_bytes(
+    *,
+    repository_root: str | Path,
+    authorization_file: str | Path,
+    authorization_sha256: str,
+    created_at: str | None = None,
+) -> tuple[dict[str, Any], bytes]:
+    """Bind the exact migration-055 and four-token authorization packages only."""
+    root = Path(repository_root).resolve()
+    (
+        authorization_path,
+        document,
+        authorization_id,
+        migration_execution_id,
+    ) = _resolve_authorization(
+        repository_root=root,
+        authorization_file=authorization_file,
+        authorization_sha256=authorization_sha256,
+    )
+    approved_historical_ids = extract_approved_historical_authorization_ids(
+        document, current_authorization_id=authorization_id
+    )
+    branch = str(document["repository"]["branch"])
+    head = str(document["repository"]["head"])
+    profile = FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
+    migration_root = f"{profile.migration_package_root}/{migration_execution_id}"
+    authorization_root = (
+        f"{profile.authorization_package_root}/{authorization_id}"
+    )
+    try:
+        files = _enumerate_package(
+            root, migration_root, profile.migration_package_kind
+        )
+        files.extend(
+            _enumerate_package(
+                root, authorization_root, profile.authorization_package_kind
+            )
+        )
+    except OneShotWrapperError as exc:
+        raise FourTokenProofOneShotWrapperError(
+            f"four-token current evidence package is unavailable: {exc}"
+        ) from exc
+    files.sort(key=lambda item: item["path"])
+    historical = list(
+        enumerate_historical_authorization_evidence(
+            repository_root=root,
+            current_authorization_id=authorization_id,
+            approved_historical_authorization_ids=approved_historical_ids,
+            authorization_package_roots=(
+                profile.historical_authorization_package_roots
+            ),
+            current_authorization_package_root=profile.authorization_package_root,
+        )
+    )
+    payload = {
+        "schema_version": profile.manifest_schema_version,
+        "authorization_id": authorization_id,
+        "authorization_file": {
+            "path": authorization_path.relative_to(root).as_posix(),
+            "sha256": authorization_sha256,
+        },
+        "repository": {"branch": branch, "head": head},
+        "authorized_command": {
+            "mode": AUTHORIZED_COMMAND_MODE,
+            "operator_approved": True,
+        },
+        "migration_execution_id": migration_execution_id,
+        "created_at": created_at or _utc_now(),
+        "files": files,
+        "historical_authorization_evidence": historical,
+    }
+    return payload, _canonical_json_bytes(payload)
+
+
 __all__ = [
     "AUTHORIZED_COMMAND_MODE",
+    "build_manifest_bytes",
     "FINAL_AUTHORIZATION_SCHEMA_VERSION",
     "FourTokenProofOneShotWrapperError",
     "LIFECYCLE_REQUEST_OUTER_CEILING",

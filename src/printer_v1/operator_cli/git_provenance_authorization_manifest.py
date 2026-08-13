@@ -55,6 +55,12 @@ OPERATOR_RUNS_ROOT = "operator-runs"
 MIGRATION_PACKAGE_ROOT = "operator-runs/v2-9-8b-authoritative-mig050"
 AUTHORIZATION_PACKAGE_ROOT = "operator-runs/v2-9-8b-window-15m-final-authorization"
 
+# The controlled migration-055 application is the schema transition that produced
+# the current authoritative database. It is a distinct current-evidence identity
+# and never a rename of the historical migration-050 evidence contract.
+MIGRATION_055_PACKAGE_KIND = "MIGRATION_055_EVIDENCE"
+MIGRATION_055_PACKAGE_ROOT = "operator-runs/v2-9-8b-migration-055-application"
+
 REQUIRED_MAIN_WINDOW = "WINDOW_15M"
 REQUIRED_COMMAND_MODE = "run"
 
@@ -66,6 +72,10 @@ class GitAuthorizationProfile:
     authorization_package_kind: str
     manifest_schema_version: str
     historical_authorization_package_roots: tuple[str, ...]
+    # Exact current migration evidence for this profile. The defaults preserve
+    # identical migration-050 behavior for every previously defined profile.
+    migration_package_root: str = MIGRATION_PACKAGE_ROOT
+    migration_package_kind: str = MIGRATION_PACKAGE_KIND
 
 
 ORDINARY_AUTHORIZATION_PROFILE = GitAuthorizationProfile(
@@ -102,6 +112,8 @@ FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE = GitAuthorizationProfile(
         "operator-runs/v2-9-8b-standard-four-hour-final-authorization",
         "operator-runs/v2-9-8b-four-token-final-authorization",
     ),
+    migration_package_root=MIGRATION_055_PACKAGE_ROOT,
+    migration_package_kind=MIGRATION_055_PACKAGE_KIND,
 )
 
 
@@ -1318,17 +1330,34 @@ def _validate_authorization_document(
         package_binding_from_document,
     )
 
-    if profile == STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE:
-        try:
-            from printer_v1.operator_cli.standard_four_hour_one_shot_wrapper import (
-                StandardFourHourOneShotWrapperError,
-                validate_standard_four_hour_authorization_document,
-            )
-            validated_document = validate_standard_four_hour_authorization_document(document)
-        except StandardFourHourOneShotWrapperError as exc:
-            raise GitProvenanceAuthorizationError(
-                f"standard four-hour authorization document rejected: {exc}"
-            ) from exc
+    if profile in (
+        STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE,
+        FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE,
+    ):
+        if profile == STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE:
+            try:
+                from printer_v1.operator_cli.standard_four_hour_one_shot_wrapper import (
+                    StandardFourHourOneShotWrapperError,
+                    validate_standard_four_hour_authorization_document,
+                )
+                validated_document = validate_standard_four_hour_authorization_document(document)
+            except StandardFourHourOneShotWrapperError as exc:
+                raise GitProvenanceAuthorizationError(
+                    f"standard four-hour authorization document rejected: {exc}"
+                ) from exc
+        else:
+            try:
+                from printer_v1.operator_cli.four_token_proof_one_shot_wrapper import (
+                    FourTokenProofOneShotWrapperError,
+                    validate_four_token_proof_authorization_document,
+                )
+                validated_document = validate_four_token_proof_authorization_document(
+                    document
+                )
+            except FourTokenProofOneShotWrapperError as exc:
+                raise GitProvenanceAuthorizationError(
+                    f"four-token proof authorization document rejected: {exc}"
+                ) from exc
         repository = validated_document["repository"]
         if repository.get("branch") != branch:
             raise GitProvenanceAuthorizationError(
@@ -1430,7 +1459,7 @@ def _validate_files(
         raise GitProvenanceAuthorizationError(
             "manifest files must be a non-empty array"
         )
-    valid_kinds = {MIGRATION_PACKAGE_KIND, profile.authorization_package_kind}
+    valid_kinds = {profile.migration_package_kind, profile.authorization_package_kind}
     seen: set[str] = set()
     ordered: list[str] = []
     for entry in files:
@@ -1443,8 +1472,8 @@ def _validate_files(
                 f"manifest file package_kind is invalid: {package_kind!r}"
             )
         package_root = (
-            f"{MIGRATION_PACKAGE_ROOT}/{migration_execution_id}"
-            if package_kind == MIGRATION_PACKAGE_KIND
+            f"{profile.migration_package_root}/{migration_execution_id}"
+            if package_kind == profile.migration_package_kind
             else f"{profile.authorization_package_root}/{authorization_id}"
         )
         normalized = _validate_repository_relative_path(
@@ -1749,7 +1778,7 @@ def validate_git_provenance_manifest_pre_marker(
     )
     inventory_paths = _inventory_operator_runs(root)
     current_package_roots = (
-        f"{MIGRATION_PACKAGE_ROOT}/{migration_execution_id}",
+        f"{active_profile.migration_package_root}/{migration_execution_id}",
         f"{active_profile.authorization_package_root}/{authorization_id}",
     )
     _reconcile_evidence_sets(
