@@ -41,12 +41,13 @@ GOPLUS_SOLANA_TOKEN_SECURITY_URL = GOPLUS_SOLANA_SECURITY_URL
 GOPLUS_TIMEOUT_SECONDS = 10.0
 GOPLUS_PROVIDER_RATE_LIMIT_PER_MINUTE = 30
 GOPLUS_TRANSPORT_OPERATION_COST = 1
+GOPLUS_SAFETY_REQUEST_KIND = "safety_reference"
 GOPLUS_PUBLIC_API_HEADERS = {
     "User-Agent": "PrinterV1/0.1 (+paper-only safety check)",
     "Accept": "application/json",
 }
 
-ALLOWED_REQUEST_KINDS = frozenset({"safety_reference"})
+ALLOWED_REQUEST_KINDS = frozenset({GOPLUS_SAFETY_REQUEST_KIND})
 
 
 @dataclass(frozen=True)
@@ -163,7 +164,7 @@ def build_goplus_token_safety_transport(
             stage="HOLDER_SAFETY",
             source_name=GOPLUS_SOURCE_NAME,
             endpoint_owner="api.gopluslabs.io",
-            governed_request_kind="safety_reference",
+            governed_request_kind=GOPLUS_SAFETY_REQUEST_KIND,
             method_or_endpoint="GET_TOKEN_SECURITY",
             within_request_ordinal=1,
             target_category="TOKEN_MINT",

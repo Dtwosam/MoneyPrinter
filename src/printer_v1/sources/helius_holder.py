@@ -21,6 +21,7 @@ from printer_v1.sources.contracts import (
     validate_source_adapter_contract,
 )
 from printer_v1.sources.solana_rpc_holder import (
+    SOLANA_RPC_HOLDER_TRANSPORT_OPERATION_COST,
     SOLANA_RPC_TIMEOUT_SECONDS,
     _fetch_holder_data,
     normalize_solana_rpc_holder_response,
@@ -36,6 +37,10 @@ HELIUS_FIXED_MAINNET_URL = SHARED_HELIUS_FIXED_MAINNET_URL
 HELIUS_API_KEY_ENV = "PRINTER_HELIUS_API_KEY"
 HELIUS_FREE_RPC_RATE_LIMIT_PER_SECOND = 10
 HELIUS_STANDARD_RPC_CREDITS_PER_OPERATION = 1
+# Helius uses the same exact two-method holder transport as the primary owner.
+HELIUS_HOLDER_TRANSPORT_OPERATION_COST = (
+    SOLANA_RPC_HOLDER_TRANSPORT_OPERATION_COST
+)
 
 
 class HeliusHolderConfigurationError(RuntimeError):

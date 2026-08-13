@@ -16,6 +16,9 @@ from typing import Any, Callable, Mapping
 
 from printer_v1.discovery.scheduler_parity import reconcile_discovery_work_jobs
 from printer_v1.operator_cli.campaign_active_work import campaign_active_work_report
+from printer_v1.operator_cli.safety_context_source_redundancy import (
+    HOLDER_REQUEST_KIND as HOLDER_CONCENTRATION_REQUEST_KIND,
+)
 from printer_v1.operator_cli.git_provenance import (
     GitProvenanceError,
     capture_git_provenance,
@@ -936,6 +939,103 @@ class PrecloseContextPartialError(RuntimeError):
         super().__init__(f"{self.code}:stage={self.failed_stage}")
 
 
+@dataclass(frozen=True)
+class HolderSafetyRequestPlanEntry:
+    """One source-free request family in the existing holder safety path."""
+
+    source_name: str
+    request_kind: str
+    condition: str
+    condition_evidence: str
+    governed_request_ceiling: int
+    underlying_transport_ceiling: int
+    rate_limit_owner: str
+    execution_owner: str
+
+
+def holder_safety_request_plan() -> tuple[HolderSafetyRequestPlanEntry, ...]:
+    """Project the current GoPlus -> primary RPC -> Helius fallback plan.
+
+    This helper is declarative only.  It derives transport costs from the three
+    adapter owners and fails closed if their split stops matching the existing
+    aggregate holder-budget contract.
+    """
+    from printer_v1.operator_cli.holder_reliability_budget_control import (
+        HOLDER_WORST_CASE_GOVERNED_REQUESTS,
+        HOLDER_WORST_CASE_TRANSPORT_OPERATIONS,
+    )
+    from printer_v1.sources.goplus import (
+        GOPLUS_SAFETY_REQUEST_KIND,
+        GOPLUS_SOURCE_NAME,
+        GOPLUS_TRANSPORT_OPERATION_COST,
+    )
+    from printer_v1.sources.helius_holder import (
+        HELIUS_HOLDER_TRANSPORT_OPERATION_COST,
+        HELIUS_SOURCE_NAME,
+    )
+    from printer_v1.sources.solana_rpc_holder import (
+        SOLANA_RPC_HOLDER_TRANSPORT_OPERATION_COST,
+        SOLANA_RPC_SOURCE_NAME,
+    )
+
+    request_families = (
+        (
+            GOPLUS_SOURCE_NAME,
+            GOPLUS_SAFETY_REQUEST_KIND,
+            "ALWAYS",
+            "PRE_CLOSE_SAFETY_REQUESTED",
+            GOPLUS_TRANSPORT_OPERATION_COST,
+            "_collect_preclose_context",
+        ),
+        (
+            SOLANA_RPC_SOURCE_NAME,
+            HOLDER_CONCENTRATION_REQUEST_KIND,
+            "GOPLUS_HOLDER_CONCENTRATION_UNKNOWN",
+            "GOPLUS_HOLDER_LABEL_EQUALS_UNKNOWN",
+            SOLANA_RPC_HOLDER_TRANSPORT_OPERATION_COST,
+            "_collect_preclose_context",
+        ),
+        (
+            HELIUS_SOURCE_NAME,
+            HOLDER_CONCENTRATION_REQUEST_KIND,
+            "ELIGIBLE_TRANSIENT_PRIMARY_FAILURE",
+            "is_eligible_transient_solana_rpc_failure",
+            HELIUS_HOLDER_TRANSPORT_OPERATION_COST,
+            "execute_solana_rpc_holder_backup",
+        ),
+    )
+    if HOLDER_WORST_CASE_GOVERNED_REQUESTS != len(request_families):
+        raise RuntimeError("HOLDER_GOVERNED_REQUEST_PLAN_DRIFT")
+    governed_request_ceiling = (
+        HOLDER_WORST_CASE_GOVERNED_REQUESTS // len(request_families)
+    )
+    plan = tuple(
+        HolderSafetyRequestPlanEntry(
+            source_name=source_name,
+            request_kind=request_kind,
+            condition=condition,
+            condition_evidence=condition_evidence,
+            governed_request_ceiling=governed_request_ceiling,
+            underlying_transport_ceiling=transport_ceiling,
+            rate_limit_owner=f"SOURCE_REGISTRY[{source_name}]",
+            execution_owner=execution_owner,
+        )
+        for (
+            source_name,
+            request_kind,
+            condition,
+            condition_evidence,
+            transport_ceiling,
+            execution_owner,
+        ) in request_families
+    )
+    if sum(row.underlying_transport_ceiling for row in plan) != (
+        HOLDER_WORST_CASE_TRANSPORT_OPERATIONS
+    ):
+        raise RuntimeError("HOLDER_TRANSPORT_REQUEST_PLAN_DRIFT")
+    return plan
+
+
 def _collect_preclose_context(
     conn: sqlite3.Connection,
     step: sqlite3.Row,
@@ -964,6 +1064,7 @@ def _collect_preclose_context(
     )
     from printer_v1.sources.contracts import build_governed_source_request
     from printer_v1.sources.goplus import (
+        GOPLUS_SAFETY_REQUEST_KIND,
         build_goplus_adapter,
         build_goplus_token_safety_transport,
     )
@@ -1124,7 +1225,7 @@ def _collect_preclose_context(
         if "safety" in requested:
             stage[0] = "safety"
             executions["safety"] = execute(
-                "goplus", "safety_reference", "safety", {}, safety_adapter
+                "goplus", GOPLUS_SAFETY_REQUEST_KIND, "safety", {}, safety_adapter
             )
         if "entry_quote" in requested:
             stage[0] = "entry_quote"
@@ -1186,7 +1287,7 @@ def _collect_preclose_context(
             )
             primary_holder = execute(
                 "solana_rpc",
-                "holder_concentration_reference",
+                HOLDER_CONCENTRATION_REQUEST_KIND,
                 "holder",
                 {},
                 holder_adapter,

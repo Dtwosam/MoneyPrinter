@@ -536,10 +536,8 @@ class LiveSecondaryDiscoveryAdapter:
         fact, ok = self._get(
             source_governor=source_governor,
             central_scheduler=central_scheduler,
-            source_name=_sd.DEXSCREENER_SOURCE_NAME
-            if hasattr(_sd, "DEXSCREENER_SOURCE_NAME")
-            else "dexscreener",
-            request_kind="dexscreener_fresh_profiles",
+            source_name=_sd.DEXSCREENER_SOURCE_NAME,
+            request_kind=_sd.DEXSCREENER_FRESH_REQUEST,
             url="https://api.dexscreener.com/token-profiles/latest/v1",
             params=None,
             headers=None,
