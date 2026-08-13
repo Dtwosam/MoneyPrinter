@@ -96,6 +96,7 @@ def _require_current_attempt_schema(conn: sqlite3.Connection) -> None:
             "source_name",
             "request_kind",
             "failure_type",
+            "created_at",
         },
     }
     for table, required in required_columns.items():
@@ -107,53 +108,116 @@ def _require_current_attempt_schema(conn: sqlite3.Connection) -> None:
             )
 
 
-def _require_unambiguous_attempt_linkage(
+def _canonical_sqlite_created_at_utc(
+    raw: object,
+    *,
+    failure_id: int,
+) -> datetime:
+    if not isinstance(raw, str):
+        raise SourceBudgetAccountingEvidenceError(
+            "CONSUMED_ATTEMPT_LINKAGE_AMBIGUOUS",
+            f"printer_source_failures:{failure_id}",
+        )
+    try:
+        parsed = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
+    except ValueError as exc:
+        raise SourceBudgetAccountingEvidenceError(
+            "CONSUMED_ATTEMPT_LINKAGE_AMBIGUOUS",
+            f"printer_source_failures:{failure_id}",
+        ) from exc
+    if parsed.strftime("%Y-%m-%d %H:%M:%S") != raw:
+        raise SourceBudgetAccountingEvidenceError(
+            "CONSUMED_ATTEMPT_LINKAGE_AMBIGUOUS",
+            f"printer_source_failures:{failure_id}",
+        )
+    return parsed.replace(tzinfo=timezone.utc)
+
+
+def _require_unambiguous_current_window_attempt_linkage(
     conn: sqlite3.Connection,
     source_name: str,
+    *,
+    cutoff: datetime,
 ) -> None:
-    response_problem = conn.execute(
+    response_rows = conn.execute(
         """
-        SELECT resp.id
+        SELECT
+            resp.id,
+            resp.source_request_id,
+            resp.source_name,
+            r.id,
+            r.source_name,
+            r.requested_at
         FROM printer_source_responses resp
         LEFT JOIN printer_source_requests r ON r.id = resp.source_request_id
         WHERE (resp.source_name = ? OR r.source_name = ?)
-          AND (
-              resp.source_request_id IS NULL
-              OR r.id IS NULL
-              OR resp.source_name <> r.source_name
-          )
-        LIMIT 1
+        ORDER BY resp.id ASC
         """,
         (source_name, source_name),
-    ).fetchone()
-    if response_problem is not None:
-        raise SourceBudgetAccountingEvidenceError(
-            "CONSUMED_ATTEMPT_LINKAGE_AMBIGUOUS",
-            f"printer_source_responses:{response_problem[0]}",
-        )
+    ).fetchall()
+    for row in response_rows:
+        response_id = int(row[0])
+        if row[1] is None or row[3] is None:
+            raise SourceBudgetAccountingEvidenceError(
+                "CONSUMED_ATTEMPT_LINKAGE_AMBIGUOUS",
+                f"printer_source_responses:{response_id}",
+            )
+        requested_at = _canonical_utc_timestamp(row[5], request_id=int(row[3]))
+        if requested_at < cutoff:
+            continue
+        if str(row[2]) != str(row[4]):
+            raise SourceBudgetAccountingEvidenceError(
+                "CONSUMED_ATTEMPT_LINKAGE_AMBIGUOUS",
+                f"printer_source_responses:{response_id}",
+            )
 
-    failure_problem = conn.execute(
+    failure_rows = conn.execute(
         """
-        SELECT f.id
+        SELECT
+            f.id,
+            f.source_request_id,
+            f.source_name,
+            f.request_kind,
+            f.failure_type,
+            f.created_at,
+            r.id,
+            r.source_name,
+            r.request_kind,
+            r.requested_at
         FROM printer_source_failures f
         LEFT JOIN printer_source_requests r ON r.id = f.source_request_id
         WHERE (f.source_name = ? OR r.source_name = ?)
-          AND (
-              f.source_request_id IS NULL
-              OR r.id IS NULL
-              OR f.source_name <> r.source_name
-              OR f.request_kind <> r.request_kind
-              OR trim(coalesce(f.failure_type, '')) = ''
-          )
-        LIMIT 1
+        ORDER BY f.id ASC
         """,
         (source_name, source_name),
-    ).fetchone()
-    if failure_problem is not None:
-        raise SourceBudgetAccountingEvidenceError(
-            "CONSUMED_ATTEMPT_LINKAGE_AMBIGUOUS",
-            f"printer_source_failures:{failure_problem[0]}",
-        )
+    ).fetchall()
+    for row in failure_rows:
+        failure_id = int(row[0])
+        if row[1] is None or row[6] is None:
+            created_at = _canonical_sqlite_created_at_utc(
+                row[5],
+                failure_id=failure_id,
+            )
+            if created_at < cutoff:
+                continue
+            raise SourceBudgetAccountingEvidenceError(
+                "CONSUMED_ATTEMPT_LINKAGE_AMBIGUOUS",
+                f"printer_source_failures:{failure_id}",
+            )
+
+        requested_at = _canonical_utc_timestamp(row[9], request_id=int(row[6]))
+        if requested_at < cutoff:
+            continue
+        if (
+            str(row[2]) != str(row[7])
+            or str(row[3]) != str(row[8])
+            or not isinstance(row[4], str)
+            or not row[4].strip()
+        ):
+            raise SourceBudgetAccountingEvidenceError(
+                "CONSUMED_ATTEMPT_LINKAGE_AMBIGUOUS",
+                f"printer_source_failures:{failure_id}",
+            )
 
 
 def _canonical_utc_timestamp(raw: object, *, request_id: int) -> datetime:
@@ -188,7 +252,11 @@ def _select_consumed_provider_attempts(
     cutoff: datetime,
 ) -> tuple[ConsumedProviderAttempt, ...]:
     _require_current_attempt_schema(conn)
-    _require_unambiguous_attempt_linkage(conn, source_name)
+    _require_unambiguous_current_window_attempt_linkage(
+        conn,
+        source_name,
+        cutoff=cutoff,
+    )
     failure_filter, failure_params = _failure_filter_sql()
     rows = conn.execute(
         f"""
