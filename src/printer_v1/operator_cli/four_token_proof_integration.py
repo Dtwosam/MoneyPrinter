@@ -329,49 +329,51 @@ def decide_four_token_admission_disposition(
             rearm_at = candidate
             rearm_reason = "AUTHORITATIVE_HEALTH_RECHECK"
 
-    candidates: list[
-        tuple[datetime, int, FourTokenAdmissionDispositionKind, str]
-    ] = []
-    if (
-        health_projection.recheck_on_lifecycle_change
-        and relevant_pending_lifecycle_work
-        and due is not None
-        and due > current
-    ):
-        candidates.append(
-            (
-                due,
-                0,
-                FourTokenAdmissionDispositionKind.LIFECYCLE_WORK,
-                "LIFECYCLE_STATE_CHANGE_RECHECK",
-            )
-        )
-    if rearm_at is not None and rearm_at > current and rearm_reason is not None:
-        candidates.append(
-            (
-                rearm_at,
-                2,
-                FourTokenAdmissionDispositionKind.REARM,
-                rearm_reason,
-            )
-        )
-    if not candidates:
+    future_lifecycle_at = (
+        due
+        if relevant_pending_lifecycle_work and due is not None and due > current
+        else None
+    )
+    future_rearm_at = (
+        rearm_at
+        if rearm_at is not None and rearm_at > current and rearm_reason is not None
+        else None
+    )
+    if future_lifecycle_at is None and future_rearm_at is None:
         return FourTokenAdmissionDisposition(
             FourTokenAdmissionDispositionKind.BLOCKED,
             "NO_AUTHORITATIVE_REARM_BOUNDARY",
             None,
             False,
         )
-    candidates.append(
-        (
-            deadline,
-            1,
+    wake = next_four_token_factory_wake(
+        now=current,
+        next_due_work_at=future_lifecycle_at,
+        next_admission_at=future_rearm_at,
+        proof_deadline=deadline,
+    )
+    if wake.reason == "LIFECYCLE_WORK":
+        return FourTokenAdmissionDisposition(
+            FourTokenAdmissionDispositionKind.LIFECYCLE_WORK,
+            "LIFECYCLE_STATE_CHANGE_RECHECK",
+            wake.at,
+            False,
+        )
+    if wake.reason == "PROOF_DEADLINE":
+        return FourTokenAdmissionDisposition(
             FourTokenAdmissionDispositionKind.PROOF_DEADLINE,
             "PROOF_DEADLINE_REACHED",
+            wake.at,
+            False,
         )
+    if wake.reason != "CYCLE_ADMISSION" or rearm_reason is None:
+        raise FourTokenProofPolicyError("unsupported deferred wake disposition")
+    return FourTokenAdmissionDisposition(
+        FourTokenAdmissionDispositionKind.REARM,
+        rearm_reason,
+        wake.at,
+        False,
     )
-    at, _, kind, reason = min(candidates, key=lambda item: (item[0], item[1]))
-    return FourTokenAdmissionDisposition(kind, reason, at, False)
 
 
 def build_four_token_proof_policy(
