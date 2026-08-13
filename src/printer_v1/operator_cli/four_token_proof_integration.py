@@ -31,6 +31,7 @@ from printer_v1.operator_cli.multi_cycle_memory_growth import (
     AdmissionDecision,
     MIN_CYCLE_ADMISSION_SPACING_SECONDS,
     MultiCycleCapacityPolicy,
+    scaled_standard_four_hour_capacity_contract,
 )
 
 
@@ -627,6 +628,9 @@ def aggregate_four_token_cycle_acceptance(
     targets: list[tuple[int, int]] = []
     quality: list[str] = []
     cycle_ids: list[str] = []
+    aggregate_factory_step_ids: list[int] = []
+    aggregate_source_requests = 0
+    aggregate_scheduler_jobs = 0
     for package in ordered:
         cycle_id = _aggregate_required(package, "cycle_id")
         cycle_ids.append(cycle_id)
@@ -651,11 +655,53 @@ def aggregate_four_token_cycle_acceptance(
         if not isinstance(raw_quality, Sequence) or isinstance(raw_quality, (str, bytes)):
             raise FourTokenAggregateError("memory quality outcomes must be a sequence")
         quality.extend(str(item) for item in raw_quality)
+        accounting = package.get("accounting_package")
+        if not isinstance(accounting, Mapping):
+            raise FourTokenAggregateError(
+                f"cycle accounting package is missing: {cycle_id}"
+            )
+        if int(accounting.get("expected_token_capacity", 0)) != 2:
+            raise FourTokenAggregateError(
+                "cycle accounting package must retain two-token capacity"
+            )
+        step_ids = accounting.get("factory_step_ids")
+        if (
+            not isinstance(step_ids, Sequence)
+            or isinstance(step_ids, (str, bytes))
+            or not step_ids
+        ):
+            raise FourTokenAggregateError(
+                "cycle accounting package requires owned factory steps"
+            )
+        try:
+            normalized_step_ids = tuple(int(item) for item in step_ids)
+            source_requests = int(accounting["source_requests"])
+            scheduler_jobs = int(accounting["scheduler_jobs"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise FourTokenAggregateError(
+                "cycle accounting package evidence is malformed"
+            ) from exc
+        if (
+            any(item <= 0 for item in normalized_step_ids)
+            or len(normalized_step_ids) != len(set(normalized_step_ids))
+            or source_requests < 0
+            or scheduler_jobs < 0
+        ):
+            raise FourTokenAggregateError(
+                "cycle accounting package evidence is invalid"
+            )
+        aggregate_source_requests += source_requests
+        aggregate_scheduler_jobs += scheduler_jobs
+        aggregate_factory_step_ids.extend(normalized_step_ids)
 
     if len(set(cycle_ids)) != 2:
         raise FourTokenAggregateError("proof cycle identities must be distinct")
     if len(targets) != 4 or len(set(targets)) != 4:
         raise FourTokenAggregateError("four-token proof targets must be four distinct token/pair identities")
+    if len(aggregate_factory_step_ids) != len(set(aggregate_factory_step_ids)):
+        raise FourTokenAggregateError(
+            "cycle accounting packages share factory-step ownership"
+        )
 
     try:
         spacing = int(shared.get("admission_spacing_seconds"))
@@ -679,6 +725,18 @@ def aggregate_four_token_cycle_acceptance(
         if shared.get(key) is not False:
             raise FourTokenAggregateError(f"forbidden shared proof state: {key}")
 
+    capacity = scaled_standard_four_hour_capacity_contract(4)
+    if aggregate_source_requests > int(capacity["lifecycle_request_outer_ceiling"]):
+        raise FourTokenAggregateError(
+            "aggregate source requests exceed derived four-token capacity"
+        )
+    if aggregate_scheduler_jobs > int(
+        capacity["lifecycle_scheduler_outer_ceiling"]
+    ):
+        raise FourTokenAggregateError(
+            "aggregate Scheduler jobs exceed derived four-token capacity"
+        )
+
     return {
         "pass": True,
         "verdict": "FOUR_TOKEN_CAPACITY_PROOF_STRUCTURAL_PASS",
@@ -691,6 +749,10 @@ def aggregate_four_token_cycle_acceptance(
         "memory_quality_outcomes": tuple(quality),
         "memory_quality_is_not_pass_quota": True,
         "factory_run_id": shared_factory,
+        "accounting_package_count": 2,
+        "aggregate_source_requests": aggregate_source_requests,
+        "aggregate_scheduler_jobs": aggregate_scheduler_jobs,
+        "derived_four_token_capacity": capacity,
     }
 
 

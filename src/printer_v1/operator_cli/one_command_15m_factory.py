@@ -4379,14 +4379,17 @@ def _projected_requests_for_step(step: sqlite3.Row) -> int:
 
 
 def _standard_four_hour_cumulative_budget_for_run(
-    conn: sqlite3.Connection, run_id: str,
+    conn: sqlite3.Connection,
+    run_id: str,
+    *,
+    cycle_id: str | None = None,
 ) -> dict[str, Any]:
     """Resolve the exact standard 4h subset budget from durable campaign truth."""
     config = _load_run_config(conn, run_id)
     campaign_id = str(config.get("campaign_id") or "").strip()
     campaign_run_id = str(config.get("campaign_run_id") or "").strip()
-    cycle_id = str(config.get("cycle_id") or "").strip()
-    if not all((campaign_id, campaign_run_id, cycle_id, run_id)):
+    owned_cycle_id = str(cycle_id or config.get("cycle_id") or "").strip()
+    if not all((campaign_id, campaign_run_id, owned_cycle_id, run_id)):
         raise ValueError("standard four-hour execution budget identity is incomplete")
 
     from printer_v1.operator_cli.one_token_4h_runtime import (
@@ -4399,7 +4402,7 @@ def _standard_four_hour_cumulative_budget_for_run(
            FROM printer_memory_factory_campaign_token_slots
            WHERE campaign_id=? AND run_id=? AND cycle_id=?
            ORDER BY slot_ordinal""",
-        (campaign_id, campaign_run_id, cycle_id),
+        (campaign_id, campaign_run_id, owned_cycle_id),
     ).fetchall()
     if len(slots) != 2 or {int(row["slot_ordinal"]) for row in slots} != {1, 2}:
         raise ValueError("standard four-hour execution budget requires exact two campaign slots")
@@ -4408,7 +4411,7 @@ def _standard_four_hour_cumulative_budget_for_run(
         conn,
         campaign_id=campaign_id,
         run_id=campaign_run_id,
-        cycle_id=cycle_id,
+        cycle_id=owned_cycle_id,
         factory_run_id=run_id,
     )
     if manifests is None:
@@ -4416,15 +4419,45 @@ def _standard_four_hour_cumulative_budget_for_run(
 
     lanes: list[str] = []
     mask: list[bool] = []
+    scoped_step_ids: tuple[int, ...] | None = None
+    if cycle_id is not None:
+        from printer_v1.operator_cli.four_token_proof_integration import (
+            cycle_scoped_factory_step_ids,
+        )
+
+        scoped_step_ids = cycle_scoped_factory_step_ids(
+            conn,
+            campaign_id=campaign_id,
+            campaign_run_id=campaign_run_id,
+            factory_run_id=run_id,
+            cycle_id=owned_cycle_id,
+        )
+        if not scoped_step_ids:
+            raise ValueError("standard four-hour cycle has no owned factory steps")
     for slot in slots:
         slot_id = str(slot["token_slot_id"])
-        closes = conn.execute(
-            """SELECT tracking_lane FROM printer_memory_factory_run_steps
-               WHERE run_id=? AND token_id=? AND pair_id=?
-                 AND step_kind='CONTINUATION_CLOSE' AND step_status='SUCCEEDED'
-               ORDER BY id""",
-            (run_id, int(slot["token_row_id"]), int(slot["pair_row_id"])),
-        ).fetchall()
+        if scoped_step_ids is None:
+            closes = conn.execute(
+                """SELECT tracking_lane FROM printer_memory_factory_run_steps
+                   WHERE run_id=? AND token_id=? AND pair_id=?
+                     AND step_kind='CONTINUATION_CLOSE' AND step_status='SUCCEEDED'
+                   ORDER BY id""",
+                (run_id, int(slot["token_row_id"]), int(slot["pair_row_id"])),
+            ).fetchall()
+        else:
+            placeholders = ",".join("?" for _ in scoped_step_ids)
+            closes = conn.execute(
+                "SELECT tracking_lane FROM printer_memory_factory_run_steps "
+                "WHERE run_id=? AND token_id=? AND pair_id=? "
+                "AND step_kind='CONTINUATION_CLOSE' AND step_status='SUCCEEDED' "
+                f"AND id IN ({placeholders}) ORDER BY id",
+                (
+                    run_id,
+                    int(slot["token_row_id"]),
+                    int(slot["pair_row_id"]),
+                    *scoped_step_ids,
+                ),
+            ).fetchall()
         if len(closes) != 1:
             raise ValueError(
                 f"standard four-hour execution budget close identity missing/ambiguous for {slot_id}"
@@ -4437,9 +4470,15 @@ def _standard_four_hour_cumulative_budget_for_run(
         lanes.append(str(closes[0]["tracking_lane"]))
         mask.append(bool(manifest["eligible"]))
 
-    return standard_campaign_lifecycle_budget(
+    budget = standard_campaign_lifecycle_budget(
         (lanes[0], lanes[1]), (mask[0], mask[1])
     )
+    return {
+        **budget,
+        "cycle_id": owned_cycle_id,
+        "expected_token_capacity": 2,
+        "factory_step_ids": scoped_step_ids,
+    }
 
 
 def _standard_four_hour_reporting_budget_for_run(
@@ -4479,8 +4518,25 @@ def _enforce_budgets_before_step(conn: sqlite3.Connection, run_id: str, step: sq
         phase = runtime_budget(lane)
         if bool(config.get("standard_four_hour_campaign")):
             try:
+                budget_cycle_id: str | None = None
+                if bool(config.get("four_token_proof")):
+                    from printer_v1.operator_cli.four_token_proof_integration import (
+                        resolve_owned_cycle_for_scheduler_job,
+                    )
+
+                    if step["scheduler_job_id"] is None:
+                        raise ValueError(
+                            "four-token standard step has no Scheduler identity"
+                        )
+                    budget_cycle_id = resolve_owned_cycle_for_scheduler_job(
+                        conn,
+                        scheduler_job_id=int(step["scheduler_job_id"]),
+                        campaign_id=str(config.get("campaign_id") or ""),
+                        campaign_run_id=str(config.get("campaign_run_id") or ""),
+                        factory_run_id=run_id,
+                    ).cycle_id
                 cumulative = _standard_four_hour_cumulative_budget_for_run(
-                    conn, run_id
+                    conn, run_id, cycle_id=budget_cycle_id
                 )
             except ValueError as exc:
                 raise _GlobalStop(

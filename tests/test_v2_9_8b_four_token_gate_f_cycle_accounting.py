@@ -127,3 +127,35 @@ def test_aggregate_acceptance_requires_two_cycle_local_packages_within_derived_c
     assert result["aggregate_source_requests"] == 400
     assert result["aggregate_scheduler_jobs"] == 400
 
+
+def test_aggregate_acceptance_rejects_derived_capacity_or_step_ownership_breach() -> None:
+    shared = {
+        "campaign_id": "campaign-1",
+        "campaign_run_id": "campaign-run-1",
+        "factory_run_id": "factory-1",
+        "admission_spacing_seconds": 300,
+        "active_through_4h_peak": 4,
+        "aggregate_budget_within_ceiling": True,
+        "zero_active_work": True,
+        "zero_forbidden_deltas": True,
+        "restart_created": False,
+        "successor_created": False,
+        "long_windows_activated": False,
+    }
+    over = _cycle(2)
+    over["accounting_package"]["scheduler_jobs"] = 221
+    try:
+        aggregate_four_token_cycle_acceptance([_cycle(1), over], shared=shared)
+    except ValueError as exc:
+        assert "derived four-token capacity" in str(exc)
+    else:
+        raise AssertionError("aggregate Scheduler capacity breach was accepted")
+
+    duplicate = _cycle(2)
+    duplicate["accounting_package"]["factory_step_ids"] = (11, 22)
+    try:
+        aggregate_four_token_cycle_acceptance([_cycle(1), duplicate], shared=shared)
+    except ValueError as exc:
+        assert "share factory-step ownership" in str(exc)
+    else:
+        raise AssertionError("cross-cycle factory-step ownership was accepted")

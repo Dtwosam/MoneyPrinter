@@ -284,6 +284,12 @@ class FourTokenAggregateTests(unittest.TestCase):
                 {"token_id": token_base + 2, "pair_id": token_base + 102},
             ],
             "memory_quality": ["CLEAN_MEMORY", "DIRTY_MEMORY"],
+            "accounting_package": {
+                "expected_token_capacity": 2,
+                "factory_step_ids": (token_base + 1, token_base + 2),
+                "source_requests": 200,
+                "scheduler_jobs": 200,
+            },
         }
 
     def test_aggregate_accepts_two_safe_cycle_packages_without_clean_quota(self) -> None:
