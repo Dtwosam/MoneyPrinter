@@ -1,0 +1,273 @@
+"""Read-only pre-consumption zero-state gate for the four-token proof.
+
+This gate runs immediately before an application marker could be created, so a
+known blocker is discovered while the authorization is still unconsumed. It is
+strictly read-only: it opens the authoritative database through the existing
+sidecar-safe immutable inspector, creates no campaign, reservation, lease,
+discovery attempt, Scheduler job, or source request, and starts no process.
+
+It replaces nothing. The final operational child preflight remains an additional
+defence downstream.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+from typing import Any, Callable, Iterable, Mapping
+
+from printer_v1.operator_cli.four_token_proof_one_shot_wrapper import (
+    FourTokenProofOneShotWrapperError,
+    LOCKED_WINDOWS,
+    exact_proof_policy,
+    validate_four_token_proof_authorization_document,
+)
+from printer_v1.operator_cli.pre_authorization_migration_ledger_guard import (
+    GuardResult,
+    MigrationLedgerDriftGuardError,
+    assert_migration_ledger_ready,
+    inspect_authoritative_database,
+    package_binding_from_document,
+)
+from printer_v1.sources.operational_source_contracts import (
+    SolanaRpcConfigurationError,
+    validate_window_15m_source_configuration,
+)
+
+
+ZERO_STATE_SCHEMA_VERSION = "PRINTER_V1_FOUR_TOKEN_PROOF_ZERO_STATE_GATE_V1"
+REQUIRED_MIGRATION_COUNT = 55
+REQUIRED_MIGRATION_HEAD = "055_pre_admission_discovery_attempt_ownership.sql"
+LOCKED_LONG_WINDOWS = LOCKED_WINDOWS
+
+#: Every domain that must be exactly zero before this proof may start. Each
+#: entry is a read-only count over durable ownership; none of them mutate.
+_ZERO_STATE_QUERIES: tuple[tuple[str, str], ...] = (
+    (
+        "active_campaigns",
+        "SELECT COUNT(*) FROM printer_memory_factory_campaigns "
+        "WHERE campaign_state NOT LIKE 'TERMINAL_%'",
+    ),
+    (
+        "active_campaign_runs",
+        "SELECT COUNT(*) FROM printer_memory_factory_campaign_runs "
+        "WHERE run_state NOT LIKE 'TERMINAL_%'",
+    ),
+    (
+        "active_campaign_cycles",
+        "SELECT COUNT(*) FROM printer_memory_factory_campaign_cycles "
+        "WHERE cycle_state NOT LIKE 'TERMINAL_%'",
+    ),
+    (
+        "active_campaign_scheduler_work",
+        "SELECT COUNT(*) FROM printer_memory_factory_campaign_scheduler_work "
+        "WHERE work_state IN ('PENDING','RUNNING','COOLDOWN')",
+    ),
+    (
+        "campaign_supervision",
+        "SELECT COUNT(*) FROM printer_memory_factory_campaign_supervision",
+    ),
+    (
+        "proof_supervision",
+        "SELECT COUNT(*) FROM printer_proof_run_supervision",
+    ),
+    (
+        "active_discovery_work",
+        "SELECT COUNT(*) FROM printer_discovery_work "
+        "WHERE work_state IN ('PENDING','RUNNING','COOLDOWN')",
+    ),
+    (
+        "active_factory_runs",
+        "SELECT COUNT(*) FROM printer_memory_factory_runs "
+        "WHERE run_status IN ('PENDING','RUNNING')",
+    ),
+    (
+        "active_factory_steps",
+        "SELECT COUNT(*) FROM printer_memory_factory_run_steps "
+        "WHERE step_status IN ('PENDING','RUNNING')",
+    ),
+    (
+        "pre_admission_discovery_attempts",
+        "SELECT COUNT(*) FROM printer_pre_admission_discovery_attempts",
+    ),
+    (
+        "active_scheduler_jobs",
+        "SELECT COUNT(*) FROM printer_scheduler_jobs "
+        "WHERE status IN ('PENDING','RUNNING','COOLDOWN')",
+    ),
+)
+
+REQUIRED_ZERO_STATE_DOMAINS: tuple[str, ...] = tuple(
+    domain for domain, _query in _ZERO_STATE_QUERIES
+)
+
+
+class FourTokenProofZeroStateError(RuntimeError):
+    """Fail-closed four-token proof pre-consumption zero-state fault."""
+
+
+def project_four_token_proof_zero_state(
+    connection: sqlite3.Connection,
+) -> dict[str, int]:
+    """Project every required zero-state domain count. Read-only."""
+    projection: dict[str, int] = {}
+    for domain, query in _ZERO_STATE_QUERIES:
+        projection[domain] = int(connection.execute(query).fetchone()[0])
+    return projection
+
+
+def _blocker(code: str, detail: str) -> str:
+    return f"{code}: {detail}"
+
+
+def _read_only_connection(db_path: str | Path) -> sqlite3.Connection:
+    """Open the database immutable so the gate cannot write or create sidecars."""
+    uri = Path(db_path).resolve().as_uri().replace("file://", "file:", 1)
+    return sqlite3.connect(f"{uri}?immutable=1", uri=True)
+
+
+def assert_four_token_proof_zero_state(
+    *,
+    db_path: str | Path,
+    authorization_document: Mapping[str, Any],
+    environment: Mapping[str, str],
+    printer_process_probe: Callable[[], Iterable[int]],
+    migrations_dir: str | Path | None = None,
+    migration_ledger_guard: Callable[..., GuardResult | None] = (
+        assert_migration_ledger_ready
+    ),
+) -> dict[str, Any]:
+    """Prove the authoritative state is quiescent for this exact proof start.
+
+    Every reachable check runs before the caller may create an application
+    marker, so the authorization is never consumed to discover a known blocker.
+    """
+    blockers: list[str] = []
+
+    try:
+        document = validate_four_token_proof_authorization_document(
+            authorization_document
+        )
+    except FourTokenProofOneShotWrapperError as exc:
+        raise FourTokenProofZeroStateError(
+            _blocker("authorization_document_invalid", str(exc))
+        ) from exc
+
+    policy = dict(document["proof_policy"])
+    if policy != exact_proof_policy():
+        blockers.append(
+            _blocker("proof_policy_not_exact", "proof policy is not the exact 4/2/2 policy")
+        )
+    locked_windows = list(policy.get("locked_windows") or ())
+    if tuple(locked_windows) != tuple(LOCKED_LONG_WINDOWS):
+        blockers.append(
+            _blocker("long_windows_unlocked", f"locked windows are {locked_windows}")
+        )
+
+    try:
+        binding = package_binding_from_document(document)
+        migration_ledger_guard(
+            mode="review",
+            db_path=db_path,
+            migrations_dir=migrations_dir,
+            package_binding=binding,
+        )
+    except MigrationLedgerDriftGuardError as exc:
+        blockers.append(_blocker("migration_ledger_drift", str(exc)))
+
+    identity = inspect_authoritative_database(db_path)
+    sidecars = list(identity.get("sidecars") or ())
+    if sidecars:
+        blockers.append(
+            _blocker("authoritative_sidecars_present", ", ".join(sidecars))
+        )
+    migration_count = identity.get("migration_count")
+    migration_head = identity.get("migration_head")
+    if migration_count != REQUIRED_MIGRATION_COUNT:
+        blockers.append(
+            _blocker("migration_count_mismatch", f"observed {migration_count!r}")
+        )
+    if migration_head != REQUIRED_MIGRATION_HEAD:
+        blockers.append(
+            _blocker("migration_head_mismatch", f"observed {migration_head!r}")
+        )
+    integrity_rows = list(identity.get("integrity") or ())
+    integrity = "ok" if integrity_rows == ["ok"] else ",".join(integrity_rows)
+    if integrity != "ok":
+        blockers.append(_blocker("integrity_check_failed", f"observed {integrity!r}"))
+    foreign_key_violations = int(identity.get("foreign_key_violations") or 0)
+    if foreign_key_violations:
+        blockers.append(
+            _blocker(
+                "foreign_key_violations", f"observed {foreign_key_violations}"
+            )
+        )
+
+    processes = list(printer_process_probe() or ())
+    if processes:
+        blockers.append(
+            _blocker(
+                "printer_process_present",
+                ", ".join(str(item) for item in processes),
+            )
+        )
+
+    try:
+        validate_window_15m_source_configuration(environment)
+    except SolanaRpcConfigurationError as exc:
+        blockers.append(_blocker("source_configuration_invalid", str(exc)))
+
+    projection: dict[str, int] = {}
+    if identity.get("readable"):
+        connection = _read_only_connection(db_path)
+        try:
+            projection = project_four_token_proof_zero_state(connection)
+        except sqlite3.Error as exc:
+            blockers.append(_blocker("zero_state_projection_failed", str(exc)))
+        finally:
+            connection.close()
+        for domain in REQUIRED_ZERO_STATE_DOMAINS:
+            observed = int(projection.get(domain, -1))
+            if observed != 0:
+                blockers.append(_blocker(domain, f"observed {observed}"))
+    else:
+        blockers.append(
+            _blocker(
+                "authoritative_database_unreadable",
+                str(identity.get("error") or "database is unreadable"),
+            )
+        )
+
+    if blockers:
+        raise FourTokenProofZeroStateError(
+            "four-token proof zero-state gate blocked before consumption: "
+            + "; ".join(blockers)
+        )
+
+    return {
+        "schema_version": ZERO_STATE_SCHEMA_VERSION,
+        "zero_state_ready": True,
+        "blockers": [],
+        "authorization_id": str(document["authorization_id"]),
+        "migration_count": int(migration_count),
+        "migration_head": str(migration_head),
+        "integrity_check": str(integrity),
+        "foreign_key_violations": foreign_key_violations,
+        "sidecars": sidecars,
+        "printer_processes": len(processes),
+        "locked_windows": list(locked_windows),
+        "zero_state_domains": dict(projection),
+    }
+
+
+
+__all__ = [
+    "FourTokenProofZeroStateError",
+    "LOCKED_LONG_WINDOWS",
+    "REQUIRED_MIGRATION_COUNT",
+    "REQUIRED_MIGRATION_HEAD",
+    "REQUIRED_ZERO_STATE_DOMAINS",
+    "ZERO_STATE_SCHEMA_VERSION",
+    "assert_four_token_proof_zero_state",
+    "project_four_token_proof_zero_state",
+]

@@ -167,10 +167,16 @@ class FourTokenProofZeroStateGateTests(unittest.TestCase):
             self._assert_ready(path, authorization_document=document)
 
     def test_invalid_source_configuration_blocks(self) -> None:
+        # An absent RPC URL is the documented public fallback and stays valid.
+        # A present but malformed one must block before consumption.
         path = _quiescent_database(self.tmp_path)
-        with self.assertRaises(gate.FourTokenProofZeroStateError) as caught:
-            self._assert_ready(path, environment={})
-        self.assertIn("source_configuration", str(caught.exception))
+        for value in ("http://insecure.example", "YOUR_RPC_URL_HERE"):
+            with self.subTest(rpc_url=value):
+                with self.assertRaises(gate.FourTokenProofZeroStateError) as caught:
+                    self._assert_ready(
+                        path, environment={"PRINTER_SOLANA_RPC_URL": value}
+                    )
+                self.assertIn("source_configuration", str(caught.exception))
 
     def test_long_windows_remain_locked(self) -> None:
         self.assertEqual(
