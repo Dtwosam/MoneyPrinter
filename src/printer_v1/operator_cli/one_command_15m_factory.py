@@ -539,6 +539,17 @@ def _insert_step_and_job(
             _iso(scheduled_for), job_id, _iso(), _iso(),
         ),
     )
+    if bool(run_config.get("four_token_proof")) and step_kind in {
+        "SNAPSHOT", "WINDOW_CLOSE"
+    }:
+        _project_proof_15m_scheduler_owner(
+            conn,
+            run_id=run_id,
+            step_key=step_key,
+            step_kind=step_kind,
+            scheduled_for=scheduled_for,
+            scheduler_job_id=int(job_id),
+        )
     # V2-9.8B action-local observation at the real Scheduler-enqueue boundary.
     # Verification-only: the observer never mutates factory state and fires only
     # when a coordinator threads it through. Reports exactly what was enqueued.
@@ -569,6 +580,15 @@ def _plan_opening_jobs(
         from printer_v1.operator_cli.four_token_proof_integration import cycle_step_key
     for target_index, target in enumerate(targets):
         slot_ordinal = target_index + 1
+        if four_token_proof:
+            _precreate_proof_15m_window(
+                conn,
+                run_id=run_id,
+                cycle_ordinal=cycle_ordinal,
+                slot_ordinal=slot_ordinal,
+                target=target,
+                checkpoint_cutoff=_iso(scheduled_for),
+            )
         step_key = (
             cycle_step_key(
                 slot_ordinal=slot_ordinal,
@@ -586,6 +606,171 @@ def _plan_opening_jobs(
         if target_index == 0 and first_commit_callback is not None:
             conn.commit()
             first_commit_callback(conn, run_id)
+
+
+def _proof_15m_owner(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    cycle_ordinal: int,
+    slot_ordinal: int,
+) -> dict[str, Any]:
+    config = _load_run_config(conn, run_id)
+    campaign_id = str(config.get("campaign_id") or "")
+    campaign_run_id = str(config.get("campaign_run_id") or "")
+    if not campaign_id or not campaign_run_id:
+        raise ValueError("proof 15m ownership campaign identity missing")
+    row = conn.execute(
+        "SELECT c.cycle_id,s.token_slot_id,s.token_row_id,s.pair_row_id,"
+        "s.lifecycle_identity,w.window_id "
+        "FROM printer_memory_factory_campaign_cycles AS c "
+        "JOIN printer_memory_factory_campaign_token_slots AS s "
+        "ON s.campaign_id=c.campaign_id AND s.run_id=c.run_id AND s.cycle_id=c.cycle_id "
+        "LEFT JOIN printer_memory_factory_campaign_windows AS w "
+        "ON w.campaign_id=s.campaign_id AND w.run_id=s.run_id "
+        "AND w.cycle_id=s.cycle_id AND w.token_slot_id=s.token_slot_id "
+        "AND w.window_kind='WINDOW_15M' "
+        "WHERE c.campaign_id=? AND c.run_id=? AND c.cycle_ordinal=? "
+        "AND s.slot_ordinal=?",
+        (campaign_id, campaign_run_id, cycle_ordinal, slot_ordinal),
+    ).fetchone()
+    if row is None:
+        raise ValueError("proof 15m cycle/slot ownership missing")
+    return {
+        "campaign_id": campaign_id,
+        "campaign_run_id": campaign_run_id,
+        "cycle_id": str(row[0]),
+        "token_slot_id": str(row[1]),
+        "token_row_id": int(row[2]),
+        "pair_row_id": int(row[3]),
+        "lifecycle_identity": str(row[4]),
+        "window_id": None if row[5] is None else str(row[5]),
+    }
+
+
+def _precreate_proof_15m_window(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    cycle_ordinal: int,
+    slot_ordinal: int,
+    target: Mapping[str, Any],
+    checkpoint_cutoff: str,
+) -> str:
+    owner = _proof_15m_owner(
+        conn,
+        run_id=run_id,
+        cycle_ordinal=cycle_ordinal,
+        slot_ordinal=slot_ordinal,
+    )
+    if (
+        owner["token_row_id"] != int(target["token_id"])
+        or owner["pair_row_id"] != int(target["pair_id"])
+    ):
+        raise ValueError("proof 15m target/slot identity mismatch")
+    from printer_v1.operator_cli.operational_selective_1h import (
+        precreate_15m_campaign_window,
+    )
+
+    return precreate_15m_campaign_window(
+        conn,
+        campaign_id=owner["campaign_id"],
+        run_id=owner["campaign_run_id"],
+        cycle_id=owner["cycle_id"],
+        token_slot_id=owner["token_slot_id"],
+        token_row_id=owner["token_row_id"],
+        pair_row_id=owner["pair_row_id"],
+        lifecycle_identity=owner["lifecycle_identity"],
+        checkpoint_cutoff=checkpoint_cutoff,
+        now=checkpoint_cutoff,
+    )
+
+
+def _project_proof_15m_scheduler_owner(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    step_key: str,
+    step_kind: str,
+    scheduled_for: datetime,
+    scheduler_job_id: int,
+) -> None:
+    from printer_v1.operator_cli.campaign_ownership import (
+        project_campaign_scheduler_job,
+    )
+    from printer_v1.operator_cli.four_token_proof_integration import (
+        parse_cycle_step_key,
+    )
+
+    parsed = parse_cycle_step_key(step_key)
+    owner = _proof_15m_owner(
+        conn,
+        run_id=run_id,
+        cycle_ordinal=parsed.cycle_ordinal,
+        slot_ordinal=parsed.slot_ordinal,
+    )
+    if owner["window_id"] is None:
+        raise ValueError("proof 15m Scheduler owner window missing")
+    project_campaign_scheduler_job(
+        conn,
+        scheduler_work_id=(
+            f"cw15m:{owner['campaign_id']}:{owner['campaign_run_id']}:"
+            f"{owner['cycle_id']}:{owner['token_slot_id']}:"
+            f"{owner['window_id']}:{scheduler_job_id}"
+        ),
+        campaign_id=owner["campaign_id"],
+        run_id=owner["campaign_run_id"],
+        cycle_id=owner["cycle_id"],
+        token_slot_id=owner["token_slot_id"],
+        window_id=owner["window_id"],
+        factory_run_id=run_id,
+        work_intent=f"WINDOW_15M_{step_kind}",
+        deadline_at=_iso(scheduled_for),
+        scheduler_job_id=scheduler_job_id,
+        stage_id="WINDOW_15M",
+        target_category="CAMPAIGN_WINDOW",
+        target_identity=owner["window_id"],
+        work_state="PENDING",
+    )
+
+
+def _advance_owned_proof_15m_window(
+    conn: sqlite3.Connection,
+    *,
+    scheduler_job_id: int,
+    step_kind: str,
+) -> None:
+    row = conn.execute(
+        "SELECT w.window_id,w.window_state "
+        "FROM printer_memory_factory_campaign_scheduler_work AS sw "
+        "JOIN printer_memory_factory_campaign_windows AS w ON w.window_id=sw.window_id "
+        "WHERE sw.scheduler_job_id=? AND sw.ownership_contract_version='V2_STAGE_SCOPED' "
+        "AND sw.work_scope='WINDOW_LIFECYCLE' AND sw.stage_id='WINDOW_15M'",
+        (scheduler_job_id,),
+    ).fetchone()
+    if row is None:
+        return
+    from printer_v1.operator_cli.campaign_ownership import transition_state
+
+    state = str(row[1])
+    window_id = str(row[0])
+    if state == "PLANNED":
+        transition_state(
+            conn,
+            record_kind="window",
+            identity=window_id,
+            expected_state="PLANNED",
+            new_state="COLLECTING",
+        )
+        state = "COLLECTING"
+    if step_kind == "WINDOW_CLOSE" and state == "COLLECTING":
+        transition_state(
+            conn,
+            record_kind="window",
+            identity=window_id,
+            expected_state="COLLECTING",
+            new_state="CLOSE_PENDING",
+        )
 
 
 def _plan_anchored_jobs(
@@ -6581,6 +6766,11 @@ def run_one_command_15m_factory(
             )
             _sync_owned_campaign_scheduler_job(
                 conn, scheduler_job_id=job_id
+            )
+            _advance_owned_proof_15m_window(
+                conn,
+                scheduler_job_id=job_id,
+                step_kind=str(pending["step_kind"]),
             )
             _mark_owned_continuation_window_collecting(
                 conn,

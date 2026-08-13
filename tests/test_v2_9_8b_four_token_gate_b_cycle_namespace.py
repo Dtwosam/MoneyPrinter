@@ -5,6 +5,7 @@ import json
 import sqlite3
 
 from printer_v1.db import apply_migrations
+from printer_v1.operator_cli.campaign_ownership import create_cycle_with_two_slots
 from printer_v1.operator_cli.four_token_proof_integration import cycle_step_key
 from printer_v1.operator_cli.multi_cycle_memory_growth import (
     scaled_standard_four_hour_capacity_contract,
@@ -21,12 +22,28 @@ NOW = datetime(2026, 8, 13, 12, 0, tzinfo=timezone.utc)
 
 
 def _run(connection: sqlite3.Connection) -> None:
-    config = {"four_token_proof": True, "standard_four_hour_campaign": True}
+    config = {
+        "four_token_proof": True,
+        "standard_four_hour_campaign": True,
+        "campaign_id": "campaign-1",
+        "campaign_run_id": "campaign-run-1",
+    }
+    connection.execute(
+        "INSERT INTO printer_memory_factory_campaigns("
+        "campaign_id,campaign_state,db_mode,db_target_identity,policy_version) "
+        "VALUES ('campaign-1','RUNNING','OPERATIONAL_PERSISTENT','db','policy')"
+    )
     connection.execute(
         "INSERT INTO printer_memory_factory_runs("
         "run_id,run_status,window_kind,db_mode,config_hash,config_json,started_at) "
         "VALUES ('factory-1','RUNNING','WINDOW_15M','PROOF_ONLY',?,?,?)",
         ("a" * 64, json.dumps(config), NOW.isoformat()),
+    )
+    connection.execute(
+        "INSERT INTO printer_memory_factory_campaign_runs("
+        "run_id,campaign_id,run_ordinal,run_state,authoritative_run_id,created_at,updated_at) "
+        "VALUES ('campaign-run-1','campaign-1',1,'RUNNING','factory-1',?,?)",
+        (NOW.isoformat(), NOW.isoformat()),
     )
 
 
@@ -55,6 +72,25 @@ def test_cycle_two_opening_and_request_accounting_are_namespaced(tmp_path) -> No
             "INSERT INTO printer_pairs(id,token_id,pair_address) VALUES (?,?,?)",
             (target["pair_id"], target["token_id"], target["pair_address"]),
         )
+    create_cycle_with_two_slots(
+        connection,
+        campaign_id="campaign-1",
+        run_id="campaign-run-1",
+        cycle_id="cycle-2",
+        cycle_ordinal=2,
+        slots=tuple({
+            "token_slot_id": f"t{slot}_c0002_slot",
+            "slot_ordinal": slot,
+            "token_identity": f"solana-mainnet:mint-{target['token_id']}",
+            "token_row_id": target["token_id"],
+            "mint_identity": target["token_mint"],
+            "pair_identity": target["pair_address"],
+            "pair_row_id": target["pair_id"],
+            "lifecycle_identity": "PUMPSWAP_GRADUATED_CONFIRMED",
+            "tracking_queue_id": None,
+        } for slot, target in enumerate(targets, start=1)),
+        now=NOW.isoformat(),
+    )
     _plan_opening_jobs(
         connection,
         "factory-1",

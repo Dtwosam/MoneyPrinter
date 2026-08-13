@@ -187,6 +187,58 @@ def campaign_window_id_for(
     )
 
 
+def precreate_15m_campaign_window(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    run_id: str,
+    cycle_id: str,
+    token_slot_id: str,
+    token_row_id: int,
+    pair_row_id: int,
+    lifecycle_identity: str,
+    checkpoint_cutoff: str,
+    now: str | None = None,
+) -> str:
+    """Create/reuse the deterministic PLANNED root window before enqueue."""
+    window_id = campaign_window_id_for(
+        campaign_id=campaign_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
+        token_slot_id=token_slot_id,
+        window_kind=WINDOW_15M,
+        period_key="factory-root",
+    )
+    existing = connection.execute(
+        "SELECT token_row_id,pair_row_id,window_state,memory_window_row_id "
+        "FROM printer_memory_factory_campaign_windows WHERE window_id=?",
+        (window_id,),
+    ).fetchone()
+    if existing is None:
+        persist_window(
+            connection,
+            window_id=window_id,
+            campaign_id=campaign_id,
+            run_id=run_id,
+            cycle_id=cycle_id,
+            token_slot_id=token_slot_id,
+            token_row_id=token_row_id,
+            pair_row_id=pair_row_id,
+            window_kind=WINDOW_15M,
+            root_15m_lifecycle_identity=lifecycle_identity,
+            checkpoint_cutoff=checkpoint_cutoff,
+            now=now,
+        )
+    elif (
+        int(existing[0]) != int(token_row_id)
+        or int(existing[1]) != int(pair_row_id)
+        or str(existing[2]) != "PLANNED"
+        or existing[3] is not None
+    ):
+        raise Selective1hError("precreated 15m campaign window identity/state drift")
+    return window_id
+
+
 def persist_15m_campaign_window(
     connection: sqlite3.Connection,
     *,
@@ -204,20 +256,25 @@ def persist_15m_campaign_window(
 ) -> dict[str, Any]:
     """Persist or re-bind one WINDOW_15M campaign window for a closed memory row."""
     stamp = now or _utc_now()
-    period_key = str(memory_window_row_id)
-    window_id = campaign_window_id_for(
-        campaign_id=campaign_id,
-        run_id=run_id,
-        cycle_id=cycle_id,
-        token_slot_id=token_slot_id,
-        window_kind=WINDOW_15M,
-        period_key=period_key,
-    )
     existing = connection.execute(
-        "SELECT window_id, memory_window_row_id, window_state "
-        "FROM printer_memory_factory_campaign_windows WHERE window_id=?",
-        (window_id,),
+        "SELECT window_id,memory_window_row_id,window_state "
+        "FROM printer_memory_factory_campaign_windows "
+        "WHERE campaign_id=? AND run_id=? AND cycle_id=? AND token_slot_id=? "
+        "AND window_kind='WINDOW_15M'",
+        (campaign_id, run_id, cycle_id, token_slot_id),
     ).fetchone()
+    window_id = (
+        str(existing[0])
+        if existing is not None
+        else campaign_window_id_for(
+            campaign_id=campaign_id,
+            run_id=run_id,
+            cycle_id=cycle_id,
+            token_slot_id=token_slot_id,
+            window_kind=WINDOW_15M,
+            period_key=str(memory_window_row_id),
+        )
+    )
     if existing is None:
         persist_window(
             connection,
@@ -271,6 +328,30 @@ def persist_15m_campaign_window(
         elif int(existing[1]) != int(memory_window_row_id):
             raise Selective1hError(
                 "15m campaign window already bound to a different memory row"
+            )
+        path = ("PLANNED", "COLLECTING", "CLOSE_PENDING", "AUDITING")
+        current = str(existing[2])
+        target = window_state if window_state in path else "AUDITING"
+        while current in path and path.index(current) < path.index(target):
+            new_state = path[path.index(current) + 1]
+            transition_state(
+                connection,
+                record_kind="window",
+                identity=window_id,
+                expected_state=current,
+                new_state=new_state,
+                now=stamp,
+            )
+            current = new_state
+        if window_state not in path and current == "AUDITING":
+            transition_state(
+                connection,
+                record_kind="window",
+                identity=window_id,
+                expected_state="AUDITING",
+                new_state=window_state,
+                terminal_cause=f"15M_{window_state}",
+                now=stamp,
             )
     return {
         "window_id": window_id,

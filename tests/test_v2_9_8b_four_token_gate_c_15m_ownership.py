@@ -7,6 +7,9 @@ import sqlite3
 from printer_v1.db import apply_migrations
 from printer_v1.operator_cli.campaign_ownership import create_cycle_with_two_slots
 from printer_v1.operator_cli.one_command_15m_factory import _plan_opening_jobs
+from printer_v1.operator_cli.operational_selective_1h import (
+    persist_15m_campaign_window,
+)
 
 
 NOW = datetime(2026, 8, 13, 12, 0, tzinfo=timezone.utc)
@@ -106,4 +109,36 @@ def test_proof_opening_precreates_planned_windows_and_exact_scheduler_owners(tmp
         "AND work_scope='WINDOW_LIFECYCLE' AND stage_id='WINDOW_15M' "
         "AND factory_run_id='factory-1'"
     ).fetchone()[0] == 2
+    original_ids = [str(row[0]) for row in connection.execute(
+        "SELECT window_id FROM printer_memory_factory_campaign_windows ORDER BY token_slot_id"
+    )]
+    for ordinal in (1, 2):
+        memory_id = int(connection.execute(
+            "INSERT INTO printer_memory_windows("
+            "token_id,pair_id,window_kind,opened_at,closed_at,memory_status,"
+            "data_quality_label,do_not_train) "
+            "VALUES (?,?, 'WINDOW_15M',?,?,'AUDIT_ONLY','CLEAN_DATA',1)",
+            (ordinal, 100 + ordinal, NOW.isoformat(), NOW.isoformat()),
+        ).lastrowid)
+        persisted = persist_15m_campaign_window(
+            connection,
+            campaign_id="campaign-1",
+            run_id="campaign-run-1",
+            cycle_id="cycle-1",
+            token_slot_id=f"t{ordinal}_c0001_slot",
+            token_row_id=ordinal,
+            pair_row_id=100 + ordinal,
+            lifecycle_identity="PUMPSWAP_GRADUATED_CONFIRMED",
+            memory_window_row_id=memory_id,
+            checkpoint_cutoff=NOW.isoformat(),
+            window_state="AUDITING",
+            now=NOW.isoformat(),
+        )
+        assert persisted["window_id"] == original_ids[ordinal - 1]
+    assert connection.execute(
+        "SELECT COUNT(*) FROM printer_memory_factory_campaign_windows"
+    ).fetchone()[0] == 2
+    assert [row[0] for row in connection.execute(
+        "SELECT window_state FROM printer_memory_factory_campaign_windows ORDER BY token_slot_id"
+    )] == ["AUDITING", "AUDITING"]
     connection.close()
