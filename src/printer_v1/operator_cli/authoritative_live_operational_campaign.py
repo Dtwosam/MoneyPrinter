@@ -1730,6 +1730,22 @@ class AuthoritativeLiveOperationalCampaignOwner:
     ) -> None:
         self._driver = driver or OriginToLifecycleCampaignDriver()
 
+    def _build_later_cycle_discovery_callback(self) -> Callable[..., Any]:
+        """Build the private proof-only later-cycle discovery seam.
+
+        The callback remains fail-closed until a later focused TDD contract
+        binds its exact inputs to the existing operational discovery/selection
+        pipeline. Building it performs no source request, Scheduler work,
+        DB mutation, lifecycle work, or controller invocation.
+        """
+
+        def _not_wired(**_kwargs: Any) -> Any:
+            raise LiveOperationalError(
+                "LATER_CYCLE_DISCOVERY_CALLBACK_NOT_WIRED"
+            )
+
+        return _not_wired
+
     def _build_fixtures(
         self,
         *,
