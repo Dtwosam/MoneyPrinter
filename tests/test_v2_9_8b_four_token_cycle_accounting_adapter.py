@@ -74,6 +74,20 @@ def _build(connection):
     )
 
 
+def test_opening_only_cycle_cannot_project_structurally_safe_through_4h(
+    tmp_path,
+) -> None:
+    connection, _request_id = _planned_cycle(tmp_path)
+    writes_before = connection.total_changes
+    with pytest.raises(
+        adapter.FourTokenFactoryAdapterError,
+        match="canonical lifecycle accounting is incomplete",
+    ):
+        _build(connection)
+    assert connection.total_changes == writes_before
+    connection.close()
+
+
 def test_cycle_accounting_projects_exact_durable_scheduler_and_source_ownership(
     tmp_path,
 ) -> None:
