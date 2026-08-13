@@ -6,6 +6,7 @@ perform source work, or mutate an authoritative database.
 
 from __future__ import annotations
 
+import ast
 import inspect
 import unittest
 from unittest.mock import patch
@@ -58,6 +59,36 @@ class FourTokenCanonicalFactoryWiringContractTests(unittest.TestCase):
                             four_token_proof_controller=controller,
                         )
                 preflight.assert_not_called()
+
+    def test_proof_controller_is_forwarded_through_existing_lifecycle_kwargs(self) -> None:
+        tree = ast.parse(inspect.getsource(command._run_operational_campaign))
+        run_calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "run_operational"
+        ]
+        self.assertEqual(len(run_calls), 1)
+        lifecycle_keywords = [
+            keyword
+            for keyword in run_calls[0].keywords
+            if keyword.arg == "lifecycle_kwargs"
+        ]
+        self.assertEqual(len(lifecycle_keywords), 1)
+        lifecycle_dict = lifecycle_keywords[0].value
+        self.assertIsInstance(lifecycle_dict, ast.Dict)
+        propagated = any(
+            isinstance(key, ast.Constant)
+            and key.value == "four_token_proof_controller"
+            and isinstance(value, ast.Name)
+            and value.id == "four_token_proof_controller"
+            for key, value in zip(lifecycle_dict.keys, lifecycle_dict.values)
+        )
+        self.assertTrue(
+            propagated,
+            "private proof controller is not wired into the existing lifecycle kwargs channel",
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover
