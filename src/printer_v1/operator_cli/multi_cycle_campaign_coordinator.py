@@ -319,12 +319,11 @@ def _historical_slot_identity_sets(
         "mint_identity",
         "pair_identity",
         "pair_row_id",
-        "lifecycle_identity",
     )
     values = {field: set() for field in fields}
     cursor = connection.execute(
         """SELECT token_slot_id,token_identity,token_row_id,mint_identity,
-                  pair_identity,pair_row_id,lifecycle_identity
+                  pair_identity,pair_row_id
            FROM printer_memory_factory_campaign_token_slots
            WHERE campaign_id=? AND run_id=?""",
         (binding.campaign_id, binding.campaign_run_id),
@@ -373,7 +372,6 @@ def _validate_cycle_history(
             "mint_identity",
             "pair_identity",
             "pair_row_id",
-            "lifecycle_identity",
         )
     }
 
@@ -588,7 +586,9 @@ def _validate_candidate_slots(
             if type(value) is not int or value <= 0:
                 raise MultiCycleCoordinatorError(f"{field} must be a positive integer")
 
-    distinct_fields = tuple(identity_kinds) + row_fields
+    distinct_fields = tuple(
+        field for field in identity_kinds if field != "lifecycle_identity"
+    ) + row_fields
     for field in distinct_fields:
         if len({slot.get(field) for slot in ordered}) != TOKENS_PER_CYCLE:
             raise MultiCycleCoordinatorError(
