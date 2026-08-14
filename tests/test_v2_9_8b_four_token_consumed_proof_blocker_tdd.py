@@ -316,3 +316,59 @@ def test_unknown_supply_exception_persists_bounded_class_only(tmp_path) -> None:
         assert secret not in stored
     finally:
         connection.close()
+
+
+@pytest.mark.parametrize("raise_after_drift", (False, True))
+def test_phase_c_authority_drift_fails_closed_without_overwrite_or_admission(
+    tmp_path, raise_after_drift
+) -> None:
+    path = _callback_database(tmp_path)
+
+    def supply(**_):
+        probe = sqlite3.connect(path)
+        try:
+            cursor = probe.execute(
+                "UPDATE printer_scheduler_jobs "
+                "SET status='CANCELLED', locked_at=NULL, lock_owner=NULL "
+                "WHERE job_kind='PRE_ADMISSION_DISCOVERY_SELECTION'"
+            )
+            assert cursor.rowcount == 1
+            probe.commit()
+        finally:
+            probe.close()
+
+        if raise_after_drift:
+            raise RuntimeError("provider detail must not overwrite drifted authority")
+        return LaterCycleCandidateSupply((), (), "NO_EXACT_PAIR")
+
+    callback = AuthoritativeLiveOperationalCampaignOwner(
+        later_cycle_candidate_supply=supply
+    )._build_later_cycle_discovery_callback(
+        db_path=path, configuration_id="configuration-1"
+    )
+
+    with pytest.raises(
+        LiveOperationalError,
+        match="LATER_CYCLE_PRE_ADMISSION_AUTHORITY_DRIFT",
+    ):
+        _invoke(callback)
+
+    connection = sqlite3.connect(path)
+    try:
+        attempt = connection.execute(
+            "SELECT attempt_state,first_terminal_cause "
+            "FROM printer_pre_admission_discovery_attempts"
+        ).fetchone()
+        job = connection.execute(
+            "SELECT status,retry_count,last_error,locked_at,lock_owner "
+            "FROM printer_scheduler_jobs"
+        ).fetchone()
+        admitted = connection.execute(
+            "SELECT COUNT(*) FROM printer_pre_admission_discovery_attempt_items"
+        ).fetchone()[0]
+
+        assert attempt == ("RUNNING", None)
+        assert job == ("CANCELLED", 0, None, None, None)
+        assert admitted == 0
+    finally:
+        connection.close()
