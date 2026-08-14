@@ -1243,7 +1243,14 @@ def enumerate_historical_migration_evidence(
     active profile declares. The package root itself is never broadly trusted:
     any other package beneath it that still holds untracked files fails closed,
     and every accepted regular file is bound by normalized path, size and
-    SHA-256. Missing roots simply contribute nothing.
+    SHA-256.
+
+    Every declared package is required, not optional. Its exact root and exact
+    execution directory must exist as real readable directories and the exact
+    package must yield at least one bound regular file, so preserved historical
+    migration evidence cannot be removed before preparation to make the manifest
+    silently emit an empty array. A profile that declares no package keeps the
+    empty-default behavior and performs no filesystem work at all.
     """
     packages = tuple(historical_migration_packages)
     if not packages:
@@ -1303,11 +1310,42 @@ def enumerate_historical_migration_evidence(
                 + package.package_root
             )
         if not package_root_path.exists():
-            continue
+            raise GitProvenanceAuthorizationError(
+                "declared historical migration package root is missing: "
+                + package.package_root
+            )
         if not package_root_path.is_dir():
             raise GitProvenanceAuthorizationError(
                 "historical migration package root is not a directory: "
                 + package.package_root
+            )
+        if not os.access(package_root_path, os.R_OK | os.X_OK):
+            raise GitProvenanceAuthorizationError(
+                "declared historical migration package root is not readable: "
+                + package.package_root
+            )
+        # The exact declared execution directory is required evidence, not an
+        # optional discovery. Absence, aliasing or unreadability fails closed.
+        execution_dir = package_root_path / package.execution_id
+        if os.path.islink(execution_dir):
+            raise GitProvenanceAuthorizationError(
+                "declared historical migration execution directory must not be "
+                "a symlink: " + package.package_prefix
+            )
+        if not execution_dir.exists():
+            raise GitProvenanceAuthorizationError(
+                "declared historical migration execution directory is missing: "
+                + package.package_prefix
+            )
+        if not execution_dir.is_dir():
+            raise GitProvenanceAuthorizationError(
+                "declared historical migration execution directory is not a "
+                "directory: " + package.package_prefix
+            )
+        if not os.access(execution_dir, os.R_OK | os.X_OK):
+            raise GitProvenanceAuthorizationError(
+                "declared historical migration execution directory is not "
+                "readable: " + package.package_prefix
             )
         try:
             entries = sorted(
@@ -1319,6 +1357,7 @@ def enumerate_historical_migration_evidence(
             ) from exc
 
         approved_ids = approved_by_root[package.package_root]
+        bound_for_package = 0
         for entry in entries:
             entry_relative = f"{package.package_root}/{entry.name}"
             if entry.is_symlink():
@@ -1365,6 +1404,7 @@ def enumerate_historical_migration_evidence(
                         f"duplicate historical migration evidence path: {path}"
                     )
                 seen_paths.add(path)
+                bound_for_package += 1
                 records.append(
                     {
                         "path": path,
@@ -1374,6 +1414,11 @@ def enumerate_historical_migration_evidence(
                         "migration_execution_id": package.execution_id,
                     }
                 )
+        if bound_for_package == 0:
+            raise GitProvenanceAuthorizationError(
+                "declared historical migration package contains no bound "
+                "untracked evidence: " + package.package_prefix
+            )
     records.sort(key=lambda record: record["path"])
     return tuple(records)
 

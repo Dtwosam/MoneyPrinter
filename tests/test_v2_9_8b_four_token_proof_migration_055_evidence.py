@@ -39,6 +39,7 @@ class FourTokenProofFixture:
         historical_authorization_id: str | None = None,
         declare_historical: bool = True,
         database: dict | None = None,
+        create_historical_migration: bool = True,
     ) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name).resolve()
@@ -72,6 +73,20 @@ class FourTokenProofFixture:
         (self.migration_root / "migration_055_application_result.json").write_text(
             json.dumps({"migration": self.migration_id}) + "\n", encoding="utf-8"
         )
+        # The four-token profile declares the preserved migration-050 package as
+        # required historical migration evidence, so every disposable four-token
+        # repository must carry it. It stays historical and never becomes the
+        # current schema transition, which remains migration 055 alone.
+        self.historical_migration_root = (
+            self.repo
+            / git_auth.MIGRATION_PACKAGE_ROOT
+            / git_auth.FOUR_TOKEN_HISTORICAL_MIGRATION_EXECUTION_ID
+        )
+        if create_historical_migration:
+            self.historical_migration_root.mkdir(parents=True)
+            (self.historical_migration_root / "post_migration_proof.json").write_text(
+                json.dumps({"migration_count": 50}) + "\n", encoding="utf-8"
+            )
         # Historical authorization evidence is visible only; directory presence
         # alone never creates reuse authority.
         self.historical_authorization_id = historical_authorization_id
@@ -223,7 +238,11 @@ class FourTokenProofMigration055EvidenceTests(unittest.TestCase):
             )
             prepared = fixture.validate()
             self.assertEqual(prepared.authorization_id, fixture.authorization_id)
-            self.assertEqual(prepared.file_count, 2)
+            # Two current files plus the one required historical migration-050
+            # file. Historical evidence widens the untracked allowlist only; it
+            # never enters the current package set asserted above.
+            self.assertEqual(prepared.file_count, 3)
+            self.assertEqual(len(payload["historical_migration_evidence"]), 1)
         finally:
             fixture.close()
 

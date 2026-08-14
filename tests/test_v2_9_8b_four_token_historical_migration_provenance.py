@@ -588,7 +588,7 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
                         .historical_migration_packages
                     ),
                 )
-            with self.assertRaises(four_token.FourTokenProofOneShotWrapperError):
+            with self.assertRaises(git_auth.GitProvenanceAuthorizationError):
                 fixture.manifest()
         finally:
             fixture.close()
@@ -610,7 +610,7 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
                         .historical_migration_packages
                     ),
                 )
-            with self.assertRaises(four_token.FourTokenProofOneShotWrapperError):
+            with self.assertRaises(git_auth.GitProvenanceAuthorizationError):
                 fixture.manifest()
         finally:
             fixture.close()
@@ -632,7 +632,7 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
                         .historical_migration_packages
                     ),
                 )
-            with self.assertRaises(four_token.FourTokenProofOneShotWrapperError):
+            with self.assertRaises(git_auth.GitProvenanceAuthorizationError):
                 fixture.manifest()
         finally:
             fixture.close()
