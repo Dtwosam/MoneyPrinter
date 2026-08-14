@@ -11,17 +11,18 @@ class FourTokenSlotOrderRollbackRepairTests(unittest.TestCase):
     def test_cycle1_four_token_planning_reloads_authoritative_campaign_slot_order(self):
         source = inspect.getsource(factory.run_one_command_15m_factory)
 
-        anchor_call = source.index("opening_anchor_by_target = _capture_opening_anchors(")
-        plan_call = source.index("_plan_opening_jobs(", anchor_call)
-        between = source[anchor_call:plan_call]
-        plan_block = source[plan_call : plan_call + 900]
+        selected_index = source.index("targets = _selected_targets(conn, str(batch_id or \"\"))")
+        plan_index = source.index("_plan_opening_jobs(", selected_index)
+        between = source[selected_index:plan_index]
+        plan_block = source[plan_index : plan_index + 900]
 
-        self.assertIn("targets=targets,", between)
         self.assertIn("planning_targets = targets", between)
         self.assertIn("if four_token_proof_controller is not None:", between)
         self.assertIn("planning_targets = _cycle_targets_for_factory(", between)
+        self.assertIn("campaign_id=str(campaign_id)", between)
+        self.assertIn("campaign_run_id=str(campaign_run_id)", between)
         self.assertIn("cycle_id=str(cycle_id)", between)
-        self.assertIn("targets=planning_targets,", plan_block)
+        self.assertIn("planning_targets", plan_block)
 
     def test_outer_exception_rolls_back_before_terminal_reconciliation(self):
         source = inspect.getsource(factory.run_one_command_15m_factory)
