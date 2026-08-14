@@ -1753,6 +1753,43 @@ class AuthoritativeLiveOperationalCampaignOwner:
         DB mutation, lifecycle work, or controller invocation.
         """
 
+        def _safe_supply_exception_identifier(exc: BaseException) -> str:
+            def _normalize(value: object) -> str:
+                raw = str(value).upper()
+                normalized = "".join(
+                    character
+                    if (
+                        "A" <= character <= "Z"
+                        or "0" <= character <= "9"
+                        or character == "_"
+                    )
+                    else "_"
+                    for character in raw
+                )
+                while "__" in normalized:
+                    normalized = normalized.replace("__", "_")
+                return normalized.strip("_")
+
+            safe_code = (
+                exc.code
+                if isinstance(
+                    exc,
+                    (
+                        LiveOperationalError,
+                        LiveTransportError,
+                        PumpContractError,
+                        OriginRegistryError,
+                    ),
+                )
+                else None
+            )
+            if safe_code is not None:
+                normalized_code = _normalize(safe_code)
+                if normalized_code:
+                    return normalized_code[:128]
+            class_name = _normalize(exc.__class__.__name__) or "EXCEPTION"
+            return f"LATER_CYCLE_SUPPLY_EXCEPTION_{class_name}"[:128]
+
         def _one_shot(
             *,
             campaign_id: str,
@@ -1887,19 +1924,107 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             connection, job_id=attempt.scheduler_job_id, now=instant
                         )
                     else:
-                        supply = supply_owner(
-                            campaign_id=campaign_id,
-                            campaign_run_id=campaign_run_id,
-                            authoritative_factory_run_id=authoritative_factory_run_id,
-                            proposed_cycle_id=cycle_id,
-                            proposed_cycle_ordinal=cycle_ordinal,
-                            cycle_cutoff=cutoff,
-                            evaluated_at=instant,
-                            selection_seed=selection_seed,
-                            source_governor=source_governor,
-                            central_scheduler=central_scheduler,
-                            admission_health=admission_health,
+                        connection.commit()
+                        connection.close()
+
+                        try:
+                            supply = supply_owner(
+                                campaign_id=campaign_id,
+                                campaign_run_id=campaign_run_id,
+                                authoritative_factory_run_id=authoritative_factory_run_id,
+                                proposed_cycle_id=cycle_id,
+                                proposed_cycle_ordinal=cycle_ordinal,
+                                cycle_cutoff=cutoff,
+                                evaluated_at=instant,
+                                selection_seed=selection_seed,
+                                source_governor=source_governor,
+                                central_scheduler=central_scheduler,
+                                admission_health=admission_health,
+                            )
+                        except Exception as supply_exc:
+                            failure_cause = _safe_supply_exception_identifier(supply_exc)
+                            connection = connect_operational(db_path)
+                            current = load_pre_admission_attempt(
+                                connection, attempt_id=attempt.attempt_id
+                            )
+                            job = connection.execute(
+                                "SELECT job_kind,status,locked_at,lock_owner "
+                                "FROM printer_scheduler_jobs WHERE id=?",
+                                (attempt.scheduler_job_id,),
+                            ).fetchone()
+                            expected_lock_owner = pre_admission_attempt_lock_owner(
+                                attempt.attempt_id
+                            )
+                            if (
+                                current.state is not PreAdmissionAttemptState.RUNNING
+                                or current.scheduler_job_id != attempt.scheduler_job_id
+                                or job is None
+                                or str(job["job_kind"])
+                                != "PRE_ADMISSION_DISCOVERY_SELECTION"
+                                or str(job["status"]) != "RUNNING"
+                                or job["locked_at"] is None
+                                or str(job["lock_owner"] or "") != expected_lock_owner
+                            ):
+                                if connection.in_transaction:
+                                    connection.rollback()
+                                raise LiveOperationalError(
+                                    "LATER_CYCLE_PRE_ADMISSION_AUTHORITY_DRIFT"
+                                )
+                            terminalize_pre_admission_attempt(
+                                connection,
+                                attempt_id=attempt.attempt_id,
+                                state=PreAdmissionAttemptState.FAILED,
+                                cause=failure_cause,
+                                now=instant,
+                            )
+                            fail_job(
+                                connection,
+                                job_id=attempt.scheduler_job_id,
+                                error=failure_cause,
+                                now=instant,
+                                max_retries=0,
+                            )
+                            connection.commit()
+                            final = load_pre_admission_attempt(
+                                connection, attempt_id=attempt.attempt_id
+                            )
+                            return LaterCycleDiscoveryAttemptResult(
+                                attempt_id=final.attempt_id,
+                                state=final.state.value,
+                                first_terminal_cause=str(
+                                    final.first_terminal_cause or ""
+                                ),
+                                selected_count=0,
+                            )
+
+                        connection = connect_operational(db_path)
+                        current = load_pre_admission_attempt(
+                            connection, attempt_id=attempt.attempt_id
                         )
+                        job = connection.execute(
+                            "SELECT job_kind,status,locked_at,lock_owner "
+                            "FROM printer_scheduler_jobs WHERE id=?",
+                            (attempt.scheduler_job_id,),
+                        ).fetchone()
+                        expected_lock_owner = pre_admission_attempt_lock_owner(
+                            attempt.attempt_id
+                        )
+                        if (
+                            current.state is not PreAdmissionAttemptState.RUNNING
+                            or current.scheduler_job_id != attempt.scheduler_job_id
+                            or job is None
+                            or str(job["job_kind"])
+                            != "PRE_ADMISSION_DISCOVERY_SELECTION"
+                            or str(job["status"]) != "RUNNING"
+                            or job["locked_at"] is None
+                            or str(job["lock_owner"] or "") != expected_lock_owner
+                        ):
+                            if connection.in_transaction:
+                                connection.rollback()
+                            raise LiveOperationalError(
+                                "LATER_CYCLE_PRE_ADMISSION_AUTHORITY_DRIFT"
+                            )
+
                         if not isinstance(supply, LaterCycleCandidateSupply):
                             raise LiveOperationalError("LATER_CYCLE_SUPPLY_RESULT_INVALID")
                         for ordinal, evidence in enumerate(supply.source_evidence, start=1):
@@ -2022,7 +2147,14 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         )
                 connection.rollback()
                 raise LiveOperationalError(str(exc)) from exc
-            except Exception:
+            except Exception as exc:
+                if (
+                    isinstance(exc, LiveOperationalError)
+                    and exc.code == "LATER_CYCLE_PRE_ADMISSION_AUTHORITY_DRIFT"
+                ):
+                    if connection.in_transaction:
+                        connection.rollback()
+                    raise
                 if attempt is not None:
                     current = load_pre_admission_attempt(
                         connection, attempt_id=attempt.attempt_id

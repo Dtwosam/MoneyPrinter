@@ -237,7 +237,7 @@ def test_supply_failure_terminalizes_once_without_retry_or_successor(database) -
 
     assert first == second
     assert first.state == "FAILED"
-    assert first.first_terminal_cause == "LATER_CYCLE_SUPPLY_FAILED"
+    assert first.first_terminal_cause == "LATER_CYCLE_SUPPLY_EXCEPTION_RUNTIMEERROR"
     assert calls == 1
     connection = sqlite3.connect(path)
     try:

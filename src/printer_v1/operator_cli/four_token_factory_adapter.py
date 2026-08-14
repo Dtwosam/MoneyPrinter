@@ -26,6 +26,7 @@ from printer_v1.operator_cli.four_token_proof_integration import (
     cycle_scoped_factory_step_ids,
     resolve_owned_cycle_for_scheduler_job,
 )
+from printer_v1.operator_cli.campaign_ownership import WORK_SCOPES
 from printer_v1.operator_cli.multi_cycle_memory_growth import (
     scaled_standard_four_hour_capacity_contract,
 )
@@ -686,7 +687,7 @@ def reconcile_four_token_cycle_terminal(
     ).fetchall()
     if any(
         str(item[2]) != "V2_STAGE_SCOPED"
-        or str(item[3]) != "WINDOW_LIFECYCLE"
+        or str(item[3]) not in WORK_SCOPES
         or item[1] is None
         for item in work_rows
     ):
