@@ -8,6 +8,8 @@ on:
 jobs:
   closeout:
     runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: src
     steps:
       - uses: actions/checkout@v4
         with:
