@@ -568,16 +568,115 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
         finally:
             fixture.close()
 
-    def test_missing_historical_migration_root_is_not_required(self) -> None:
-        """A repository without the preserved package stays valid and empty."""
+    def test_missing_declared_package_root_fails_closed(self) -> None:
+        """Required presence 1: a declared package root may not be absent.
+
+        The four-token profile explicitly declares the preserved migration-050
+        package. Removing it before preparation must not silently produce an
+        empty ``historical_migration_evidence`` array.
+        """
         fixture = FourTokenHistoricalMigrationFixture(
             create_historical_migration=False
         )
         try:
-            payload, _path, _digest = fixture.manifest()
-            self.assertEqual(payload["historical_migration_evidence"], [])
-            prepared = fixture.validate()
-            self.assertEqual(prepared.file_count, 3)
+            self.assertFalse((fixture.repo / HISTORICAL_MIGRATION_ROOT).exists())
+            with self.assertRaises(git_auth.GitProvenanceAuthorizationError):
+                git_auth.enumerate_historical_migration_evidence(
+                    repository_root=fixture.repo,
+                    historical_migration_packages=(
+                        git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
+                        .historical_migration_packages
+                    ),
+                )
+            with self.assertRaises(four_token.FourTokenProofOneShotWrapperError):
+                fixture.manifest()
+        finally:
+            fixture.close()
+
+    def test_missing_exact_execution_directory_fails_closed(self) -> None:
+        """Required presence 2: the exact execution directory may not be absent."""
+        fixture = FourTokenHistoricalMigrationFixture(
+            create_historical_migration=False
+        )
+        try:
+            (fixture.repo / HISTORICAL_MIGRATION_ROOT).mkdir(parents=True)
+            self.assertTrue((fixture.repo / HISTORICAL_MIGRATION_ROOT).is_dir())
+            self.assertFalse(fixture.historical_migration_root.exists())
+            with self.assertRaises(git_auth.GitProvenanceAuthorizationError):
+                git_auth.enumerate_historical_migration_evidence(
+                    repository_root=fixture.repo,
+                    historical_migration_packages=(
+                        git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
+                        .historical_migration_packages
+                    ),
+                )
+            with self.assertRaises(four_token.FourTokenProofOneShotWrapperError):
+                fixture.manifest()
+        finally:
+            fixture.close()
+
+    def test_empty_exact_execution_directory_fails_closed(self) -> None:
+        """Required presence 3: the exact package must hold bound evidence."""
+        fixture = FourTokenHistoricalMigrationFixture(
+            create_historical_migration=False
+        )
+        try:
+            fixture.historical_migration_root.mkdir(parents=True)
+            self.assertTrue(fixture.historical_migration_root.is_dir())
+            self.assertEqual(list(fixture.historical_migration_root.iterdir()), [])
+            with self.assertRaises(git_auth.GitProvenanceAuthorizationError):
+                git_auth.enumerate_historical_migration_evidence(
+                    repository_root=fixture.repo,
+                    historical_migration_packages=(
+                        git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
+                        .historical_migration_packages
+                    ),
+                )
+            with self.assertRaises(four_token.FourTokenProofOneShotWrapperError):
+                fixture.manifest()
+        finally:
+            fixture.close()
+
+    def test_declared_package_root_must_be_a_real_directory(self) -> None:
+        """Required presence: a file or symlink standing in for the root fails."""
+        fixture = FourTokenHistoricalMigrationFixture(
+            create_historical_migration=False
+        )
+        try:
+            root_path = fixture.repo / HISTORICAL_MIGRATION_ROOT
+            root_path.parent.mkdir(parents=True, exist_ok=True)
+            root_path.write_text("not a directory\n", encoding="utf-8")
+            fixture.exclude(root_path)
+            with self.assertRaises(git_auth.GitProvenanceAuthorizationError):
+                git_auth.enumerate_historical_migration_evidence(
+                    repository_root=fixture.repo,
+                    historical_migration_packages=(
+                        git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
+                        .historical_migration_packages
+                    ),
+                )
+        finally:
+            fixture.close()
+
+    def test_symlinked_exact_execution_directory_fails_closed(self) -> None:
+        """Required presence: an aliased execution directory is not real evidence."""
+        fixture = FourTokenHistoricalMigrationFixture(
+            create_historical_migration=False
+        )
+        try:
+            real = fixture.repo / "elsewhere-mig050"
+            real.mkdir(parents=True)
+            (real / "preflight.json").write_text("{}\n", encoding="utf-8")
+            fixture.historical_migration_root.parent.mkdir(parents=True)
+            fixture.historical_migration_root.symlink_to(real, target_is_directory=True)
+            with self.assertRaises(git_auth.GitProvenanceAuthorizationError):
+                git_auth.enumerate_historical_migration_evidence(
+                    repository_root=fixture.repo,
+                    historical_migration_packages=(
+                        git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
+                        .historical_migration_packages
+                    ),
+                )
         finally:
             fixture.close()
 
