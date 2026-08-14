@@ -30,7 +30,9 @@ from printer_v1.operator_cli.git_provenance_authorization_manifest import (
     FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE,
     PreparedGitProvenanceAuthorization,
     ValidatedGitProvenanceAuthorization,
+    HISTORICAL_MIGRATION_EVIDENCE_KEY,
     enumerate_historical_authorization_evidence,
+    enumerate_historical_migration_evidence,
     extract_approved_historical_authorization_ids,
     validate_git_provenance_authorization,
     validate_git_provenance_manifest_pre_marker,
@@ -476,6 +478,15 @@ def build_manifest_bytes(
             current_authorization_package_root=profile.authorization_package_root,
         )
     )
+    # Preserved historical migration evidence is a separate, exact, profile-bound
+    # class. It explains how the current database evolved and never becomes the
+    # current schema transition, which stays migration 055 alone.
+    historical_migration = list(
+        enumerate_historical_migration_evidence(
+            repository_root=root,
+            historical_migration_packages=profile.historical_migration_packages,
+        )
+    )
     payload = {
         "schema_version": profile.manifest_schema_version,
         "authorization_id": authorization_id,
@@ -492,6 +503,7 @@ def build_manifest_bytes(
         "created_at": created_at or _utc_now(),
         "files": files,
         "historical_authorization_evidence": historical,
+        HISTORICAL_MIGRATION_EVIDENCE_KEY: historical_migration,
     }
     return payload, _canonical_json_bytes(payload)
 

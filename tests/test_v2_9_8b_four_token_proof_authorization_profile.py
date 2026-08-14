@@ -65,7 +65,7 @@ class FourTokenProofAuthorizationProfileTests(unittest.TestCase):
         )
         self.assertEqual(
             profile.manifest_schema_version,
-            "PRINTER_V1_GIT_PROVENANCE_MANIFEST_FOUR_TOKEN_PROOF_V1",
+            "PRINTER_V1_GIT_PROVENANCE_MANIFEST_FOUR_TOKEN_PROOF_V2",
         )
         self.assertEqual(
             four_token.FINAL_AUTHORIZATION_SCHEMA_VERSION,

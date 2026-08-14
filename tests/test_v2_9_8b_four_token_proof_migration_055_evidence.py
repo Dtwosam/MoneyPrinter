@@ -193,7 +193,7 @@ class FourTokenProofMigration055EvidenceTests(unittest.TestCase):
             payload, _path, _digest = fixture.manifest()
             self.assertEqual(
                 payload["schema_version"],
-                "PRINTER_V1_GIT_PROVENANCE_MANIFEST_FOUR_TOKEN_PROOF_V1",
+                "PRINTER_V1_GIT_PROVENANCE_MANIFEST_FOUR_TOKEN_PROOF_V2",
             )
             kinds = {item["package_kind"] for item in payload["files"]}
             self.assertEqual(
