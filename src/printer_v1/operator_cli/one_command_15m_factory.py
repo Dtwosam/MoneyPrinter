@@ -7003,10 +7003,22 @@ def run_one_command_15m_factory(
                         "AFTER_FIRST_RUN_STEP_AND_SCHEDULER_COMMIT",
                     )
 
+            planning_targets = targets
+            if four_token_proof_controller is not None:
+                if campaign_id is None or campaign_run_id is None or cycle_id is None:
+                    raise ValueError(
+                        "four-token Cycle-1 planning requires campaign/run/cycle identity"
+                    )
+                planning_targets = _cycle_targets_for_factory(
+                    conn,
+                    campaign_id=str(campaign_id),
+                    campaign_run_id=str(campaign_run_id),
+                    cycle_id=str(cycle_id),
+                )
             _plan_opening_jobs(
                 conn,
                 run_id,
-                targets,
+                planning_targets,
                 _now(),
                 operation_observer=lifecycle_operation_observer,
                 first_commit_callback=(
@@ -7884,6 +7896,8 @@ def run_one_command_15m_factory(
     except KeyboardInterrupt:
         stop_reason = STOP_INTERRUPTED
     except Exception as exc:
+        if conn.in_transaction:
+            conn.rollback()
         if getattr(exc, "post_handoff_proof_fault", False):
             proof_fault = exc
         else:
