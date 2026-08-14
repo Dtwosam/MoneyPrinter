@@ -98,7 +98,9 @@ _ZERO_STATE_QUERIES: tuple[tuple[str, str], ...] = (
     ),
     (
         "pre_admission_discovery_attempts",
-        "SELECT COUNT(*) FROM printer_pre_admission_discovery_attempts",
+        "SELECT COUNT(*) FROM printer_pre_admission_discovery_attempts "
+        "WHERE attempt_state NOT IN "
+        "('NO_PAIR','BLOCKED','FAILED','CANCELLED','CONSUMED')",
     ),
     (
         "active_scheduler_jobs",
