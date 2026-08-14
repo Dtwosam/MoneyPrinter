@@ -12,10 +12,12 @@ defence downstream.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
+from printer_v1.operator_cli.proof_supervision import process_is_alive
 from printer_v1.operator_cli.four_token_proof_one_shot_wrapper import (
     FourTokenProofOneShotWrapperError,
     LOCKED_WINDOWS,
@@ -122,6 +124,69 @@ def project_four_token_proof_zero_state(
     for domain, query in _ZERO_STATE_QUERIES:
         projection[domain] = int(connection.execute(query).fetchone()[0])
     return projection
+
+
+def active_printer_runtime_processes(
+    db_path: str | Path,
+    *,
+    liveness_probe: Callable[[int | None], bool] | None = None,
+    self_pids: Iterable[int] | None = None,
+) -> tuple[int, ...]:
+    """Return live Printer runtime PIDs recorded by durable supervision.
+
+    This is a single bounded read-only pass, never a polling loop. Candidate
+    PIDs come only from proof-supervision rows that still claim active ownership
+    (``STARTING``/``RUNNING``); terminal history is not a runtime. Liveness is
+    decided by the existing :func:`process_is_alive` owner, which inspects the
+    process without signalling, killing, or otherwise mutating it.
+
+    The wrapper's own process tree is never classified as an active Printer run.
+    Any inability to read durable state or to inspect a process fails closed.
+    """
+    probe = liveness_probe if liveness_probe is not None else process_is_alive
+    excluded = set(self_pids) if self_pids is not None else {os.getpid(), os.getppid()}
+
+    identity = inspect_authoritative_database(db_path)
+    if not identity.get("readable"):
+        raise FourTokenProofZeroStateError(
+            _blocker(
+                "printer_process_state_unavailable",
+                str(identity.get("error") or "authoritative database is unreadable"),
+            )
+        )
+    try:
+        connection = _read_only_connection(db_path)
+    except sqlite3.Error as exc:
+        raise FourTokenProofZeroStateError(
+            _blocker("printer_process_state_unavailable", str(exc))
+        ) from exc
+    try:
+        rows = connection.execute(
+            "SELECT process_id FROM printer_proof_run_supervision "
+            "WHERE execution_status IN ('STARTING','RUNNING') "
+            "AND process_id IS NOT NULL ORDER BY process_id"
+        ).fetchall()
+    except sqlite3.Error as exc:
+        raise FourTokenProofZeroStateError(
+            _blocker("printer_process_state_unavailable", str(exc))
+        ) from exc
+    finally:
+        connection.close()
+
+    live: list[int] = []
+    for row in rows:
+        pid = int(row[0])
+        if pid in excluded:
+            continue
+        try:
+            alive = probe(pid)
+        except Exception as exc:  # fail closed on any unreliable inspection
+            raise FourTokenProofZeroStateError(
+                _blocker("printer_process_state_unavailable", f"pid {pid}: {exc}")
+            ) from exc
+        if alive:
+            live.append(pid)
+    return tuple(sorted(set(live)))
 
 
 def _blocker(code: str, detail: str) -> str:
@@ -276,6 +341,7 @@ __all__ = [
     "REQUIRED_MIGRATION_HEAD",
     "REQUIRED_ZERO_STATE_DOMAINS",
     "ZERO_STATE_SCHEMA_VERSION",
+    "active_printer_runtime_processes",
     "assert_four_token_proof_zero_state",
     "project_four_token_proof_zero_state",
 ]

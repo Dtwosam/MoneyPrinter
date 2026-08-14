@@ -537,25 +537,40 @@ def _default_zero_state_gate(
     *,
     authorization_document: Mapping[str, Any],
     environment: Mapping[str, str],
+    authoritative_db_path: str | Path | None = None,
+    printer_runtime_liveness_probe: Callable[[int | None], bool] | None = None,
     **_unused: Any,
 ) -> Mapping[str, Any]:
+    """Run the real read-only pre-consumption gate against live host state."""
     from printer_v1.operator_cli.four_token_proof_zero_state_gate import (
         FourTokenProofZeroStateError,
+        active_printer_runtime_processes,
         assert_four_token_proof_zero_state,
     )
     from printer_v1.operator_cli.operational_memory_factory_command import (
         AUTHORITATIVE_DB,
     )
 
-    def _no_process_probe() -> tuple[int, ...]:
-        return ()
+    database = (
+        Path(authoritative_db_path)
+        if authoritative_db_path is not None
+        else AUTHORITATIVE_DB
+    )
+
+    def _printer_process_probe() -> tuple[int, ...]:
+        # One bounded read-only pass over durable supervision ownership. It
+        # never polls, signals, or mutates a process, and it fails closed when
+        # process state cannot be inspected reliably.
+        return active_printer_runtime_processes(
+            database, liveness_probe=printer_runtime_liveness_probe
+        )
 
     try:
         return assert_four_token_proof_zero_state(
-            db_path=AUTHORITATIVE_DB,
+            db_path=database,
             authorization_document=authorization_document,
             environment=environment,
-            printer_process_probe=_no_process_probe,
+            printer_process_probe=_printer_process_probe,
         )
     except FourTokenProofZeroStateError as exc:
         raise FourTokenProofOneShotWrapperError(
@@ -577,6 +592,8 @@ def apply_authorization_once(
     process_launcher: Callable[..., Mapping[str, Any]] | None = None,
     migration_ledger_guard: Callable[..., Any] | None = None,
     zero_state_gate: Callable[..., Mapping[str, Any]] | None = None,
+    authoritative_db_path: str | Path | None = None,
+    printer_runtime_liveness_probe: Callable[[int | None], bool] | None = None,
     pre_marker_validator: Callable[
         ..., PreparedGitProvenanceAuthorization
     ] = validate_git_provenance_manifest_pre_marker,
@@ -646,6 +663,8 @@ def apply_authorization_once(
             authorization_document=document,
             environment=child_env_preview,
             repository_root=root,
+            authoritative_db_path=authoritative_db_path,
+            printer_runtime_liveness_probe=printer_runtime_liveness_probe,
         )
         or {}
     )
