@@ -539,6 +539,7 @@ def _default_zero_state_gate(
     environment: Mapping[str, str],
     authoritative_db_path: str | Path | None = None,
     printer_runtime_liveness_probe: Callable[[int | None], bool] | None = None,
+    printer_host_process_inventory: Callable[..., Any] | None = None,
     **_unused: Any,
 ) -> Mapping[str, Any]:
     """Run the real read-only pre-consumption gate against live host state."""
@@ -562,7 +563,9 @@ def _default_zero_state_gate(
         # never polls, signals, or mutates a process, and it fails closed when
         # process state cannot be inspected reliably.
         return active_printer_runtime_processes(
-            database, liveness_probe=printer_runtime_liveness_probe
+            database,
+            liveness_probe=printer_runtime_liveness_probe,
+            host_process_inventory=printer_host_process_inventory,
         )
 
     try:
@@ -594,6 +597,7 @@ def apply_authorization_once(
     zero_state_gate: Callable[..., Mapping[str, Any]] | None = None,
     authoritative_db_path: str | Path | None = None,
     printer_runtime_liveness_probe: Callable[[int | None], bool] | None = None,
+    printer_host_process_inventory: Callable[..., Any] | None = None,
     pre_marker_validator: Callable[
         ..., PreparedGitProvenanceAuthorization
     ] = validate_git_provenance_manifest_pre_marker,
@@ -665,6 +669,7 @@ def apply_authorization_once(
             repository_root=root,
             authoritative_db_path=authoritative_db_path,
             printer_runtime_liveness_probe=printer_runtime_liveness_probe,
+            printer_host_process_inventory=printer_host_process_inventory,
         )
         or {}
     )

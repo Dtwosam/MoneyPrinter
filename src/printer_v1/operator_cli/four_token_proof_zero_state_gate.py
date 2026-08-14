@@ -126,25 +126,94 @@ def project_four_token_proof_zero_state(
     return projection
 
 
+#: The one public operational command whose runtime modes represent a live
+#: Printer run. Auxiliary read-only modes (status, report-only, preflight) are
+#: deliberately excluded: they are not a Printer runtime.
+PRINTER_OPERATIONAL_COMMAND_MODULE = (
+    "printer_v1.operator_cli.operational_memory_factory_command"
+)
+PRINTER_OPERATIONAL_LAUNCHERS = (
+    PRINTER_OPERATIONAL_COMMAND_MODULE,
+    "Start-PrinterV1-MemoryFactory",
+    "printer-run-v2-9-8-memory-factory",
+)
+PRINTER_OPERATIONAL_RUNTIME_MODES = (
+    "run",
+    "standard-four-hour-run",
+    "four-token-bounded-capacity-proof-run",
+)
+
+
+def is_printer_operational_runtime_command(command_line: str) -> bool:
+    """Return whether one host command line is a live Printer operational run.
+
+    A match requires both a known operational launcher and one exact runtime
+    mode carried as its own whitespace-delimited argument, so an unrelated
+    Python process, a text search mentioning the module, or a read-only
+    auxiliary mode of the same command never counts as a Printer runtime.
+    """
+    text = str(command_line or "")
+    if not any(launcher in text for launcher in PRINTER_OPERATIONAL_LAUNCHERS):
+        return False
+    tokens = text.split()
+    return any(mode in tokens for mode in PRINTER_OPERATIONAL_RUNTIME_MODES)
+
+
 def active_printer_runtime_processes(
     db_path: str | Path,
     *,
     liveness_probe: Callable[[int | None], bool] | None = None,
     self_pids: Iterable[int] | None = None,
+    host_process_inventory: Callable[[], Iterable[tuple[int, str]]] | None = None,
 ) -> tuple[int, ...]:
-    """Return live Printer runtime PIDs recorded by durable supervision.
+    """Return live Printer runtime PIDs from host state and durable supervision.
 
-    This is a single bounded read-only pass, never a polling loop. Candidate
-    PIDs come only from proof-supervision rows that still claim active ownership
-    (``STARTING``/``RUNNING``); terminal history is not a runtime. Liveness is
-    decided by the existing :func:`process_is_alive` owner, which inspects the
-    process without signalling, killing, or otherwise mutating it.
+    Two independent authorities are combined in one bounded read-only pass, and
+    neither is treated as complete on its own:
 
-    The wrapper's own process tree is never classified as an active Printer run.
-    Any inability to read durable state or to inspect a process fails closed.
+    * host state — one inventory pass over the platform process listing,
+      matching the current wrapper-bound operational command shapes. This is the
+      authority that covers a live operational child owning no supervision row.
+    * durable supervision — proof-supervision rows still claiming active
+      ownership, whose PIDs are checked with the existing
+      :func:`process_is_alive` owner.
+
+    Nothing polls, signals, kills, or mutates a process, and the durable
+    zero-state database domains remain a separate defence. The wrapper's own
+    process tree is never classified as an active Printer run, and any inability
+    to inspect host or durable state fails closed.
     """
     probe = liveness_probe if liveness_probe is not None else process_is_alive
     excluded = set(self_pids) if self_pids is not None else {os.getpid(), os.getppid()}
+
+    inventory_owner = host_process_inventory
+    if inventory_owner is None:
+        from printer_v1.operator_cli.operational_campaign_recovery import (
+            host_process_inventory as _platform_host_process_inventory,
+        )
+
+        inventory_owner = _platform_host_process_inventory
+    try:
+        inventory = tuple(inventory_owner() or ())
+    except FourTokenProofZeroStateError:
+        raise
+    except Exception as exc:  # fail closed on any unreliable host inspection
+        raise FourTokenProofZeroStateError(
+            _blocker("printer_process_state_unavailable", str(exc))
+        ) from exc
+    host_live: list[int] = []
+    for entry in inventory:
+        try:
+            pid = int(entry[0])
+            command_line = str(entry[1])
+        except (IndexError, TypeError, ValueError) as exc:
+            raise FourTokenProofZeroStateError(
+                _blocker("printer_process_state_unavailable", f"host entry: {exc}")
+            ) from exc
+        if pid in excluded:
+            continue
+        if is_printer_operational_runtime_command(command_line):
+            host_live.append(pid)
 
     identity = inspect_authoritative_database(db_path)
     if not identity.get("readable"):
@@ -173,7 +242,7 @@ def active_printer_runtime_processes(
     finally:
         connection.close()
 
-    live: list[int] = []
+    live: list[int] = list(host_live)
     for row in rows:
         pid = int(row[0])
         if pid in excluded:

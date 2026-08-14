@@ -213,8 +213,21 @@ def _assert_exact_pre_recovery_delta(
         current.close()
 
 
-def _default_live_process_probe(execution_id: str) -> bool:
-    """Conservatively detect a different active Printer production process."""
+HOST_PROCESS_INSPECTION_TIMEOUT_SECONDS = 5.0
+
+
+def host_process_inventory(
+    *,
+    timeout_seconds: float = HOST_PROCESS_INSPECTION_TIMEOUT_SECONDS,
+    runner: Callable[..., Any] = subprocess.run,
+) -> tuple[tuple[int, str], ...]:
+    """Return one bounded read-only ``(pid, command_line)`` host inventory.
+
+    This is the single platform process-enumeration owner. It performs exactly
+    one inspection pass with a fixed timeout ceiling, never polls, and never
+    signals, kills, or otherwise mutates a process. Any inability to inspect
+    host state fails closed.
+    """
     if os.name == "nt":  # pragma: no cover - production operator is currently macOS
         command = [
             "powershell", "-NoProfile", "-Command",
@@ -224,8 +237,8 @@ def _default_live_process_probe(execution_id: str) -> bool:
     else:
         command = ["ps", "-axo", "pid=,command="]
     try:
-        result = subprocess.run(
-            command, capture_output=True, text=True, timeout=5.0,
+        result = runner(
+            command, capture_output=True, text=True, timeout=timeout_seconds,
             check=False, shell=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -236,7 +249,9 @@ def _default_live_process_probe(execution_id: str) -> bool:
         raise OperationalCampaignRecoveryError(
             "live Printer process state could not be verified"
         )
-    own_pid = os.getpid()
+    if os.name == "nt":  # pragma: no cover - production operator is currently macOS
+        return _windows_process_inventory(result.stdout)
+    inventory: list[tuple[int, str]] = []
     for line in result.stdout.splitlines():
         stripped = line.strip()
         if not stripped:
@@ -246,7 +261,43 @@ def _default_live_process_probe(execution_id: str) -> bool:
             pid = int(fields[0])
         except (ValueError, IndexError):
             continue
-        command_line = fields[1] if len(fields) == 2 else ""
+        inventory.append((pid, fields[1] if len(fields) == 2 else ""))
+    return tuple(inventory)
+
+
+def _windows_process_inventory(
+    stdout: str,
+) -> tuple[tuple[int, str], ...]:  # pragma: no cover - macOS production operator
+    """Parse the Windows CIM JSON listing, failing closed on malformed output."""
+    try:
+        payload = json.loads(stdout or "[]")
+    except json.JSONDecodeError as exc:
+        raise OperationalCampaignRecoveryError(
+            "live Printer process state could not be verified"
+        ) from exc
+    records = payload if isinstance(payload, list) else [payload]
+    inventory: list[tuple[int, str]] = []
+    for record in records:
+        if not isinstance(record, dict):
+            raise OperationalCampaignRecoveryError(
+                "live Printer process state could not be verified"
+            )
+        try:
+            pid = int(record["ProcessId"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        inventory.append((pid, str(record.get("CommandLine") or "")))
+    return tuple(inventory)
+
+
+def _default_live_process_probe(
+    execution_id: str,
+    *,
+    runner: Callable[..., Any] = subprocess.run,
+) -> bool:
+    """Conservatively detect a different active Printer production process."""
+    own_pid = os.getpid()
+    for pid, command_line in host_process_inventory(runner=runner):
         if pid == own_pid:
             continue
         production_run = (
