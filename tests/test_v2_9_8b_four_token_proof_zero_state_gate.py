@@ -8,7 +8,7 @@ no Printer process, and never touches the authoritative database.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import sqlite3
 import unittest
 
@@ -41,8 +41,6 @@ def _document(db_path):
         branch="agent/test-branch",
         head="a" * 40,
         database=_database_binding(db_path),
-        authorized_at=NOW.isoformat(),
-        expires_at=(NOW + timedelta(hours=12)).isoformat(),
     )
 
 
