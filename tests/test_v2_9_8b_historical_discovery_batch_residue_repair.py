@@ -56,7 +56,12 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _insert_exact_batch_and_work(db: Path, fixture) -> None:
+def _insert_exact_batch_and_work(
+    db: Path,
+    fixture,
+    *,
+    canonical_hash: str = CANONICAL_HASH,
+) -> None:
     connection = sqlite3.connect(db)
     try:
         connection.execute("PRAGMA foreign_keys=ON")
@@ -82,7 +87,7 @@ def _insert_exact_batch_and_work(db: Path, fixture) -> None:
                 CYCLE_SEED_HASH,
                 None,
                 None,
-                CANONICAL_HASH,
+                canonical_hash,
                 fixture.START.isoformat(),
             ),
         )
@@ -115,10 +120,14 @@ def _insert_exact_batch_and_work(db: Path, fixture) -> None:
         connection.close()
 
 
-def _prepare_exact_batch_residue(tmp_path: Path):
+def _prepare_exact_batch_residue(
+    tmp_path: Path,
+    *,
+    canonical_hash: str = CANONICAL_HASH,
+):
     fixture = _fixture_module()
     db, pre_campaign, root, contract = fixture._prepare_exact_residue(tmp_path)
-    _insert_exact_batch_and_work(db, fixture)
+    _insert_exact_batch_and_work(db, fixture, canonical_hash=canonical_hash)
     rebound = type(contract)(
         expected_current_sha256=_sha256(db),
         pre_campaign_backup_sha256=contract.pre_campaign_backup_sha256,
@@ -166,25 +175,14 @@ def test_exact_historical_batch_is_tenth_approved_reconciliation_identity(
 def test_exact_historical_batch_identity_drift_fails_before_mutation(
     tmp_path: Path,
 ) -> None:
-    fixture, db, pre_campaign, root, contract = _prepare_exact_batch_residue(tmp_path)
-    connection = sqlite3.connect(db)
-    try:
-        connection.execute(
-            "UPDATE printer_discovery_batches SET canonical_hash=? WHERE discovery_batch_id=?",
-            ("f" * 64, BATCH_ID),
-        )
-        connection.commit()
-    finally:
-        connection.close()
-    rebound = type(contract)(
-        expected_current_sha256=_sha256(db),
-        pre_campaign_backup_sha256=contract.pre_campaign_backup_sha256,
-        expected_artifact_sha256=contract.expected_artifact_sha256,
+    fixture, db, pre_campaign, root, contract = _prepare_exact_batch_residue(
+        tmp_path,
+        canonical_hash="f" * 64,
     )
     before_sha = _sha256(db)
 
     with pytest.raises(recovery.OperationalCampaignRecoveryError, match="discovery batch"):
-        fixture._run_recovery(db, pre_campaign, root, rebound, tmp_path)
+        fixture._run_recovery(db, pre_campaign, root, contract, tmp_path)
 
     assert _sha256(db) == before_sha
     assert (root / "campaign.lease.lock").exists()
