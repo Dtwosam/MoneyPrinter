@@ -710,6 +710,14 @@ _HISTORICAL_FOUR_TOKEN_ARTIFACT_SHA256 = {
     "child-stderr.txt": "eab9a9236a3735658915db3a8e5bff934ae65a46d8b81caf61f6176fc4b7f504",
     "terminal-summary.json": "21d0e6fe4046e69b15a3239caea26703c280a8303302dc85c3bd63ec3a41d7c1",
 }
+_HISTORICAL_APPLICATION_ARTIFACT_NAMES = (
+    "application-marker.json",
+    "git-provenance-manifest.json",
+    "wrapper-terminal.json",
+    "child-terminal.json",
+    "child-stderr.txt",
+)
+_HISTORICAL_EXECUTION_ARTIFACT_NAMES = ("terminal-summary.json",)
 
 
 @dataclass(frozen=True)
@@ -797,24 +805,54 @@ def _historical_reject_sidecars(db_path: Path) -> None:
 
 def _historical_validate_artifacts(
     artifact_root: Path,
+    application_artifact_root: Path,
     contract: HistoricalFourTokenRecoveryContract,
 ) -> dict[str, str]:
+    expected = dict(contract.expected_artifact_sha256)
+    required_names = set(_HISTORICAL_APPLICATION_ARTIFACT_NAMES).union(
+        _HISTORICAL_EXECUTION_ARTIFACT_NAMES
+    )
+    if set(expected) != required_names:
+        raise OperationalCampaignRecoveryError(
+            "historical artifact contract ownership set mismatch"
+        )
+    if not artifact_root.is_dir():
+        raise OperationalCampaignRecoveryError(
+            "historical execution artifact root missing"
+        )
+    if not application_artifact_root.is_dir():
+        raise OperationalCampaignRecoveryError(
+            "historical application artifact root missing"
+        )
+
     observed: dict[str, str] = {}
-    for name, expected in dict(contract.expected_artifact_sha256).items():
+    for name in _HISTORICAL_EXECUTION_ARTIFACT_NAMES:
         path = artifact_root / name
         if not path.is_file():
             raise OperationalCampaignRecoveryError(
-                f"historical artifact missing: {name}"
+                f"historical execution artifact missing: {name}"
             )
         digest = _sha256(path)
-        if digest != str(expected):
+        if digest != str(expected[name]):
+            raise OperationalCampaignRecoveryError(
+                f"historical artifact SHA mismatch: {name}"
+            )
+        observed[name] = digest
+    for name in _HISTORICAL_APPLICATION_ARTIFACT_NAMES:
+        path = application_artifact_root / name
+        if not path.is_file():
+            raise OperationalCampaignRecoveryError(
+                f"historical application artifact missing: {name}"
+            )
+        digest = _sha256(path)
+        if digest != str(expected[name]):
             raise OperationalCampaignRecoveryError(
                 f"historical artifact SHA mismatch: {name}"
             )
         observed[name] = digest
     try:
         child = json.loads(
-            (artifact_root / "child-stderr.txt").read_text(encoding="utf-8")
+            (application_artifact_root / "child-stderr.txt").read_text(encoding="utf-8")
         )
         summary = json.loads(
             (artifact_root / "terminal-summary.json").read_text(encoding="utf-8")
@@ -967,6 +1005,7 @@ def _historical_already_reconciled(
     *,
     db_path: Path,
     artifact_root: Path,
+    application_artifact_root: Path,
     contract: HistoricalFourTokenRecoveryContract,
     physical_lease_path: Path,
     lease_path_override_enabled: bool,
@@ -1068,7 +1107,9 @@ def _historical_already_reconciled(
     finally:
         connection.close()
     if exact:
-        _historical_validate_artifacts(artifact_root, contract)
+        _historical_validate_artifacts(
+            artifact_root, application_artifact_root, contract
+        )
     return exact
 
 
@@ -1077,6 +1118,7 @@ def _historical_preflight(
     db_path: Path,
     pre_campaign_backup: Path,
     artifact_root: Path,
+    application_artifact_root: Path,
     contract: HistoricalFourTokenRecoveryContract,
     live_process_probe: Callable[[str], bool],
     now: datetime,
@@ -1094,7 +1136,9 @@ def _historical_preflight(
         )
     if live_process_probe(contract.execution_id):
         raise OperationalCampaignRecoveryError("live Printer owner process exists")
-    artifacts = _historical_validate_artifacts(artifact_root, contract)
+    artifacts = _historical_validate_artifacts(
+        artifact_root, application_artifact_root, contract
+    )
 
     connection = _read_only(db_path)
     try:
@@ -1481,6 +1525,7 @@ def reconcile_exact_historical_four_token_execution(
     current_db: str | Path,
     pre_campaign_backup: str | Path,
     artifact_root: str | Path,
+    application_artifact_root: str | Path,
     recovery_root: str | Path,
     contract: HistoricalFourTokenRecoveryContract | None = None,
     live_process_probe: Callable[[str], bool] = _default_live_process_probe,
@@ -1496,6 +1541,7 @@ def reconcile_exact_historical_four_token_execution(
     db_path = Path(current_db).resolve()
     baseline = Path(pre_campaign_backup).resolve()
     artifacts = Path(artifact_root).resolve()
+    application_artifacts = Path(application_artifact_root).resolve()
     instant = now or datetime.now(timezone.utc)
     artifact_lease_path = (artifacts / "campaign.lease.lock").resolve()
     lease_path_override_enabled = lease_lock_path_override is not None
@@ -1512,6 +1558,7 @@ def reconcile_exact_historical_four_token_execution(
     if _historical_already_reconciled(
         db_path=db_path,
         artifact_root=artifacts,
+        application_artifact_root=application_artifacts,
         contract=active,
         physical_lease_path=physical_lease_path,
         lease_path_override_enabled=lease_path_override_enabled,
@@ -1530,6 +1577,7 @@ def reconcile_exact_historical_four_token_execution(
         db_path=db_path,
         pre_campaign_backup=baseline,
         artifact_root=artifacts,
+        application_artifact_root=application_artifacts,
         contract=active,
         live_process_probe=live_process_probe,
         now=instant,
@@ -1743,6 +1791,7 @@ def reconcile_exact_historical_four_token_execution(
     if not _historical_already_reconciled(
         db_path=db_path,
         artifact_root=artifacts,
+        application_artifact_root=application_artifacts,
         contract=active,
         physical_lease_path=physical_lease_path,
         lease_path_override_enabled=lease_path_override_enabled,

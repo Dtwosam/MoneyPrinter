@@ -381,6 +381,7 @@ def _run_recovery(db, pre_campaign, root, contract, tmp_path, **overrides):
         "current_db": db,
         "pre_campaign_backup": pre_campaign,
         "artifact_root": root,
+        "application_artifact_root": root,
         "recovery_root": tmp_path / "recovery",
         "contract": contract,
         "live_process_probe": lambda _execution: False,
