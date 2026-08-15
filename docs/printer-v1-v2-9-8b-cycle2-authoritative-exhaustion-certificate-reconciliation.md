@@ -25,16 +25,24 @@ market-flavoured terminal instead.
 TRACKING_STATE_CAPACITY_BLOCKED
 ```
 
-### Python Builder Guide primary classification
+### Python Builder Guide §13 primary blocker classification
 
 ```text
-PRINTER_BINDING
+COMMITTED_CODE_DEFECT
 ```
 
-Not `EXPECTED_OPERATIONAL_BLOCKER__NO_CODE_CHANGE`: committed behaviour violated
-an approved certificate/reporting contract that the code itself states in its own
-docstring. The defect category is **evidence loss / contract drift in the Cycle-2
-supply reporting path**, binding on the active Printer design.
+Per §13.3: *"A reproducible mismatch exists between committed behavior and
+official/Printer contracts."* Not
+`EXPECTED_OPERATIONAL_BLOCKER__NO_CODE_CHANGE` — the code did not merely fail
+closed on a real-world outcome; it produced a terminal its own committed contract
+forbids. The mismatch is reproducible from source and is exhibited by the two
+defect manifestations proven in §6.1 and §6.2.
+
+**Authority classification of the violated Printer contract:** `PRINTER_BINDING`
+(§1) — the certificate/reporting contract is required by the active Printer
+source stack and design, not by official Python/SQLite/pytest documentation.
+`PRINTER_BINDING` is an authority classification and is **not** used here as the
+blocker classification.
 
 ## 2. Read-only discipline
 
@@ -110,7 +118,87 @@ exhausted (17 of 30 remaining); duration was not exhausted; and no channel was
 unavailable with zero counted provider failures at the liquidity stage. The
 attempt did not stop early or hide a reachable candidate.
 
-## 6. Certificate vs host terminal artifact — evidence lost
+## 6. Proven defect manifestations — certificate vs host terminal artifact
+
+Two committed-code defect manifestations are proven from source. Neither concerns
+the tracking-state exclusion itself: **the exclusion behaviour and the resulting
+`TRACKING_STATE_CAPACITY_BLOCKED` classification are correct and are not claimed
+to be defective anywhere in this document.** Both defects are in the *ownership
+binding* and *evidence propagation* around that correct classification.
+
+### 6.1 Cycle-2 exhaustion ownership binds `execution_id` to `selection_seed`
+
+`src/printer_v1/operator_cli/later_cycle_graduated_supply.py`
+(`build_later_cycle_graduated_supply`) passes the selection seed where the
+canonical execution id is required — twice:
+
+```python
+scope = build_campaign_source_request_scope(
+    execution_id=selection_seed,        # line 105
+    ...
+)
+kwargs.update({
+    ...
+    "execution_id": selection_seed,     # line 116
+    ...
+})
+```
+
+The exhaustion-certificate owner records `execution_id` from that kwarg, so the
+persisted Cycle-2 certificate carries the composite selection seed
+`9296ffff-7e71-46d2-8e63-dd7b755780c9:20260815T194831Z-6d09a756e8d1-campaign-run:c0002`
+instead of the canonical execution id `20260815T194831Z-6d09a756e8d1`. All 11
+earlier certificates use the canonical id, so a canonical-id lookup returns zero
+rows for Cycle-2 — the exact reason the preceding audit did not find the
+certificate. The campaign/run/cycle bindings are unaffected and correct.
+
+### 6.2 The blocked later-cycle adapter drops exhaustion diagnostics before terminal reporting
+
+`graduated_supply_front_door.py` (≈ lines 1031–1048) assembles the full evidence
+into `GraduatedSupply.diagnostics`:
+
+```python
+diagnostics.update({
+    "exhaustion_certificate": (None if persistent.exhaustion_certificate is None
+                               else persistent.exhaustion_certificate.to_dict()),
+    "shortage_classification": persistent.shortage_classification,
+    ...
+})
+```
+
+The later-cycle adapter then discards it on the blocked path
+(`later_cycle_graduated_supply.py` lines 132–133):
+
+```python
+if not supply.ready or len(supply.graduated_supply) != 2:
+    return LaterCycleCandidateSupply((), (), supply.terminal)
+```
+
+`LaterCycleCandidateSupply` (`four_token_proof_integration.py` lines 138–141) is a
+frozen dataclass with exactly three fields — `candidates`, `source_evidence`,
+`terminal_cause` — and **no `diagnostics` field**. The certificate and the
+classification cannot survive the boundary.
+
+The consequences follow mechanically in
+`authoritative_live_operational_campaign.py`:
+
+- `_graduated_supply_terminal_cause()` reads
+  `getattr(supply, "diagnostics", {})`. For a `LaterCycleCandidateSupply` that
+  yields `{}`, so `classification` is empty and the function falls through to
+  `return BLOCKED_INSUFFICIENT_GRADUATED_POOL` — the market conclusion its own
+  docstring forbids for this classification. The
+  `TRACKING_STATE_CAPACITY_BLOCKED` branch is unreachable on the later-cycle
+  path.
+- `_project_supply_exhaustion_certificate(supply_diagnostics)` reads
+  `exhaustion_certificate` from the same absent diagnostics, producing
+  `report.exhaustion_certificate = null` and
+  `report.shortage_classification = null`.
+- line 2102 terminalizes the attempt with `supply.terminal_cause or
+  "NO_EXACT_PAIR"`, which is why
+  `printer_pre_admission_discovery_attempts` ordinal 2 records the generic
+  `BLOCKED_INSUFFICIENT_ELIGIBLE_CANDIDATE_POOL`.
+
+### 6.3 Observed evidence loss
 
 The DB persisted the certificate correctly and completely. The host artifacts did
 not carry it.
@@ -189,11 +277,15 @@ mislabelling every future shortage as a market outcome.
 - The Cycle-2 certificate is located, validated and fully transcribed.
 - `TRACKING_STATE_CAPACITY_BLOCKED` is established as the governing shortage.
 - `HONEST_EXHAUSTION` is proven, so the attempt itself is exonerated.
+- The blocker is classified `COMMITTED_CODE_DEFECT` under Builder Guide §13.3,
+  with two manifestations proven from source at their canonical owner
+  (`later_cycle_graduated_supply.py`), not inferred from artifacts.
 - The certificate/reporting contract violation is pinned to a named surface with
   the code's own contract quoted against the observed behaviour.
 - The prior closeout's "external supply" characterisation is corrected on the
   record.
-- The composite `execution_id` binding inconsistency is documented.
+- The composite `execution_id` binding is proven to originate at
+  `execution_id=selection_seed` (§6.1), not merely observed as an inconsistency.
 
 ## 11. What remains locked
 
@@ -206,10 +298,12 @@ paper-only remain in force. No repair was implemented in this lane.
 
 ## 12. Functionality Risks / Setbacks / Efficiency Blockers
 
-- The reporting defect is **diagnosis-corrupting**: every shortage currently
-  surfaces as an insufficient-pool market conclusion regardless of the true
-  classification. Any operator reading only host artifacts will reach the wrong
-  decision, as happened here.
+- The §6.2 defect is **diagnosis-corrupting and unconditional on the later-cycle
+  path**: because `LaterCycleCandidateSupply` carries no diagnostics at all,
+  *every* later-cycle shortage surfaces as an insufficient-pool market conclusion
+  regardless of the true classification. It is not specific to this run's
+  tracking-state condition. Any operator reading only host artifacts will reach
+  the wrong decision, as happened here.
 - `report.exhaustion_certificate` and `report.shortage_classification` are `null`
   while the certificate exists in the DB, so host-artifact-only audits cannot
   detect the divergence — it is only visible by reading the authoritative DB.
@@ -235,19 +329,29 @@ paper-only remain in force. No repair was implemented in this lane.
 ## 13. Exact next permitted lane
 
 `V2-9.8B Cycle-2 Exhaustion-Certificate Reporting Contract Repair Design` —
-design-only, no code change in that lane either. It must:
+design-only, no code change in that lane either. `COMMITTED_CODE_DEFECT` opens the
+§13.4 coding-recommendation gate, but the gate is not exercised in this lane and
+no repair was implemented here.
 
-1. specify propagation of `exhaustion_certificate`, `shortage_classification`,
-   and `last_reason_discovery_could_not_continue` into `terminal-summary.json`,
+Canonical owner: `src/printer_v1/operator_cli/later_cycle_graduated_supply.py`,
+with the carrier `LaterCycleCandidateSupply` in
+`four_token_proof_integration.py`. The design lane must:
+
+1. specify the correction of §6.1 — `build_later_cycle_graduated_supply` must
+   bind the canonical execution id, keeping the selection seed as `cycle_seed` /
+   scope input only, and state whether existing rows are re-bound or left as
+   historical evidence;
+2. specify the correction of §6.2 — the blocked path must carry
+   `supply.diagnostics` (at minimum `exhaustion_certificate`,
+   `shortage_classification`, `last_reason_discovery_could_not_continue`) across
+   the `LaterCycleCandidateSupply` boundary into `terminal-summary.json`,
    `child-terminal.json`, and the pre-admission attempt terminal cause;
-2. specify that `TRACKING_STATE_CAPACITY_BLOCKED` must surface
+3. specify that `TRACKING_STATE_CAPACITY_BLOCKED` must surface
    `tracking_terminal_cause` / `COOLDOWN_REOPEN_REQUIRED` and never
    `BLOCKED_INSUFFICIENT_ELIGIBLE_CANDIDATE_POOL`, per the existing docstring
-   contract;
-3. decide whether the certificate `execution_id` must carry the canonical
-   execution id alongside the composite adapter key;
-4. define the focused RED tests, including the stale/rate-limited precedence
-   boundary.
+   contract in `_graduated_supply_terminal_cause()`;
+4. define the focused RED tests, including the later-cycle blocked path and the
+   stale/rate-limited precedence boundary.
 
 A separate lane should then investigate why liquidity-proven reserve entries are
 `EXCLUDED`/`REMOVED`. No authorization may be created until both close.
