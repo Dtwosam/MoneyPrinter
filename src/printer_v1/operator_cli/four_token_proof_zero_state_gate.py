@@ -38,8 +38,19 @@ from printer_v1.sources.operational_source_contracts import (
 
 
 ZERO_STATE_SCHEMA_VERSION = "PRINTER_V1_FOUR_TOKEN_PROOF_ZERO_STATE_GATE_V1"
-REQUIRED_MIGRATION_COUNT = 55
-REQUIRED_MIGRATION_HEAD = "055_pre_admission_discovery_attempt_ownership.sql"
+# Exact authorized schema for a bounded four-token proof. Migration 056 owns the
+# immutable pre-lifecycle terminal provenance that
+# ``ONE_CYCLE_PRE_LIFECYCLE_ZERO_ATTEMPT`` requires; at head 055 that shape fails
+# closed on a missing provenance table and strands campaign ownership instead of
+# terminalizing it.
+#
+# These are deliberately explicit literals, never derived from the migrations
+# directory. Adding a migration must not silently re-authorize bounded-proof
+# admission: a future head requires its own gate review and an explicit re-pin
+# here. The canonical migration-ledger drift guard still runs independently and
+# is not replaced by this pin.
+REQUIRED_MIGRATION_COUNT = 56
+REQUIRED_MIGRATION_HEAD = "056_four_token_pre_lifecycle_terminal_provenance.sql"
 LOCKED_LONG_WINDOWS = LOCKED_WINDOWS
 
 #: Every domain that must be exactly zero before this proof may start. Each

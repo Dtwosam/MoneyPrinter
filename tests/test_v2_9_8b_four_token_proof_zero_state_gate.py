@@ -181,7 +181,7 @@ class FourTokenProofZeroStateGateTests(unittest.TestCase):
         arguments.update(overrides)
         return gate.assert_four_token_proof_zero_state(**arguments)
 
-    def test_quiescent_post_055_database_passes_read_only(self) -> None:
+    def test_quiescent_post_056_database_passes_read_only(self) -> None:
         path = _quiescent_database(self.tmp_path)
         before = path.stat()
         evidence = self._assert_ready(path)
@@ -191,10 +191,10 @@ class FourTokenProofZeroStateGateTests(unittest.TestCase):
         )
         self.assertIs(evidence["zero_state_ready"], True)
         self.assertEqual(evidence["blockers"], [])
-        self.assertEqual(evidence["migration_count"], 55)
+        self.assertEqual(evidence["migration_count"], 56)
         self.assertEqual(
             evidence["migration_head"],
-            "055_pre_admission_discovery_attempt_ownership.sql",
+            "056_four_token_pre_lifecycle_terminal_provenance.sql",
         )
         self.assertEqual(evidence["integrity_check"], "ok")
         self.assertEqual(evidence["foreign_key_violations"], 0)

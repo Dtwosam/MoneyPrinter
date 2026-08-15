@@ -61,6 +61,13 @@ AUTHORIZATION_PACKAGE_ROOT = "operator-runs/v2-9-8b-window-15m-final-authorizati
 MIGRATION_055_PACKAGE_KIND = "MIGRATION_055_EVIDENCE"
 MIGRATION_055_PACKAGE_ROOT = "operator-runs/v2-9-8b-migration-055-application"
 
+# The controlled migration-056 application is the schema transition that admits a
+# bounded four-token proof, because it owns the immutable pre-lifecycle terminal
+# provenance. It is its own current-evidence identity and never a rename of the
+# migration-050 or migration-055 evidence contracts.
+MIGRATION_056_PACKAGE_KIND = "MIGRATION_056_EVIDENCE"
+MIGRATION_056_PACKAGE_ROOT = "operator-runs/v2-9-8b-migration-056-application"
+
 # Preserved historical schema-transition evidence. This class explains how the
 # current database evolved; it never becomes current schema-transition authority
 # and never carries authorization reuse authority.
@@ -68,6 +75,12 @@ HISTORICAL_MIGRATION_EVIDENCE_CLASS = "HISTORICAL_MIGRATION_050_EVIDENCE"
 FOUR_TOKEN_HISTORICAL_MIGRATION_EXECUTION_ID = (
     "V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f"
 )
+
+# Migration 055 became preserved historical evidence once migration 056 took over
+# current schema-transition authority. It keeps its own evidence class and
+# execution identity; it is demoted, never renamed or absorbed.
+HISTORICAL_MIGRATION_055_EVIDENCE_CLASS = "HISTORICAL_MIGRATION_055_EVIDENCE"
+FOUR_TOKEN_HISTORICAL_MIGRATION_055_EXECUTION_ID = "MIGRATION_055_20260813T220109Z"
 
 REQUIRED_MAIN_WINDOW = "WINDOW_15M"
 REQUIRED_COMMAND_MODE = "run"
@@ -142,8 +155,17 @@ FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE = GitAuthorizationProfile(
         "operator-runs/v2-9-8b-standard-four-hour-final-authorization",
         "operator-runs/v2-9-8b-four-token-final-authorization",
     ),
-    migration_package_root=MIGRATION_055_PACKAGE_ROOT,
-    migration_package_kind=MIGRATION_055_PACKAGE_KIND,
+    migration_package_root=MIGRATION_056_PACKAGE_ROOT,
+    migration_package_kind=MIGRATION_056_PACKAGE_KIND,
+    # Migration 050 remains the one declared *required* historical package.
+    #
+    # Migration 055 is deliberately NOT declared here. Every entry in this tuple
+    # is mandatory for every manifest build, so declaring 055 would newly require
+    # its operator evidence to exist forever — a broader contract change than the
+    # approved 056 admission repair, and one that would fail closed if that
+    # untracked operator evidence were ever pruned. 055 keeps its own constants
+    # and identity above; promoting it to a required historical package is a
+    # separate, explicitly deferred decision.
     historical_migration_packages=(
         HistoricalMigrationPackage(
             package_root=MIGRATION_PACKAGE_ROOT,

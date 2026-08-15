@@ -295,14 +295,14 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
             self.assertEqual(
                 current_kinds,
                 {
-                    git_auth.MIGRATION_055_PACKAGE_KIND,
+                    git_auth.MIGRATION_056_PACKAGE_KIND,
                     "FOUR_TOKEN_PROOF_AUTHORIZATION_EVIDENCE",
                 },
             )
             current_paths = {item["path"] for item in payload["files"]}
             for path in fixture.historical_migration_paths():
                 self.assertNotIn(path, current_paths)
-                self.assertFalse(path.startswith(git_auth.MIGRATION_055_PACKAGE_ROOT))
+                self.assertFalse(path.startswith(git_auth.MIGRATION_056_PACKAGE_ROOT))
             for item in payload["historical_migration_evidence"]:
                 self.assertEqual(
                     item["evidence_class"],
