@@ -36,13 +36,13 @@ Normal and authoritative cleanup must continue to release the SQLite-recorded le
 
 The disposable mode is not a generic runtime lease override and must not be exposed through discovery, Scheduler, factory, or campaign runtime surfaces.
 
-## Canonical recorded path
+## Recorded lease identity
 
-The exact historical recorded lease remains the canonical original path derived from the existing historical artifact convention:
+Do not hard-code or derive a user-specific absolute Mac path in the contract.
 
-`Path.home() / "PrinterOperations" / "v2-9-8" / execution_id / "campaign.lease.lock"`
+The already-required exact pre-reconciliation DB SHA cryptographically binds the persisted `lease_lock_path` value. Therefore the recorded lease path read from the exact-SHA supervision row is itself the authoritative historical path for this one execution.
 
-Do not persist a replacement path in SQLite and do not add an absolute user-specific path to the recovery contract.
+Do not persist a replacement path in SQLite.
 
 ## Historical recovery API
 
@@ -54,17 +54,20 @@ Default `None` preserves current authoritative behavior.
 
 When supplied, all of the following are mandatory before any DB write:
 
-1. `artifact_root` is not the canonical original historical artifact root;
-2. `disposable_lease_alias.resolve() == (artifact_root / "campaign.lease.lock").resolve()`;
-3. SQLite `lease_lock_path` resolves to the canonical original historical lease path;
-4. the original recorded lease exists;
-5. the disposable alias exists;
-6. original and alias lease bytes are identical at preflight;
-7. both payloads satisfy the existing exact supervision ownership checks;
-8. lease expiry/payload facts match the durable supervision row;
-9. authoritative DB SHA and all existing historical preflight guards remain unchanged.
+1. `disposable_lease_alias.resolve() == (artifact_root / "campaign.lease.lock").resolve()`;
+2. the SQLite-recorded lease path remains unchanged and is distinct from the alias;
+3. the original recorded lease exists;
+4. the disposable alias exists;
+5. original and alias lease bytes are identical at preflight;
+6. both payloads satisfy the existing exact supervision ownership checks;
+7. lease expiry/payload facts match the durable supervision row;
+8. authoritative DB SHA and all existing historical preflight guards remain unchanged.
 
-Store the original lease bytes/hash in preflight evidence so post-proof preservation is independently checked.
+Because the DB SHA is checked before these path checks, a caller cannot relocate the persisted lease path without failing the existing authoritative identity gate.
+
+Store the original recorded lease bytes/hash in preflight evidence so post-proof preservation is independently checked.
+
+Without `disposable_lease_alias`, preserve the existing rule that the recorded lease path must equal `artifact_root / "campaign.lease.lock"`.
 
 ## Cleanup ownership
 
@@ -72,7 +75,7 @@ Do not create a second terminalization implementation.
 
 Refactor only enough for the existing `cleanup_campaign_supervision()` body to have one internal implementation with an optional private release-path input. Public `cleanup_campaign_supervision()` must continue to call that implementation without an override.
 
-The exact historical recovery path may call the internal implementation with the validated disposable alias.
+The exact historical recovery path may call the internal implementation with the preflight-validated disposable alias.
 
 The internal alias branch must:
 
@@ -123,7 +126,7 @@ Minimum sufficient TDD:
 6. alias missing before first run fails before DB mutation;
 7. alias bytes/payload differing from recorded lease fails before DB mutation;
 8. alias pointing at the recorded original path fails before DB mutation;
-9. disposable mode with the canonical original artifact root fails before DB mutation;
+9. default historical mode still rejects a relocated artifact root without alias;
 10. default cleanup still releases its recorded lease and existing operational lease tests remain green;
 11. historical discovery-batch repair tests remain green;
 12. `py_compile` and `git diff --check` pass.
