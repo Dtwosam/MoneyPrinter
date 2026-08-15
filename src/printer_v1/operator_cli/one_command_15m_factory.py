@@ -6855,6 +6855,7 @@ def run_one_command_15m_factory(
     proof_fault: BaseException | None = None
     governed_observer_token = None
     four_token_attempt_terminal_cause: str | None = None
+    four_token_cycle_one_opening_completed = False
     if lifecycle_operation_observer is not None:
         from printer_v1.sources.governed_execution import (
             set_governed_attempt_observer,
@@ -7029,6 +7030,8 @@ def run_one_command_15m_factory(
                 cycle_ordinal=1,
                 four_token_proof=bool(four_token_proof_controller is not None),
             )
+            if four_token_proof_controller is not None:
+                four_token_cycle_one_opening_completed = True
         conn.commit()
 
         admission_attempt_finished = False
@@ -7960,6 +7963,14 @@ def run_one_command_15m_factory(
                         ),
                         run_status=cycle_run_status,
                         now=_now(),
+                        terminal_phase=(
+                            "CAMPAIGN_PRE_LIFECYCLE"
+                            if (
+                                str(admitted[0]) == str(cycle_id)
+                                and not four_token_cycle_one_opening_completed
+                            )
+                            else None
+                        ),
                     )
                 )
             four_token_terminal_cause = (
