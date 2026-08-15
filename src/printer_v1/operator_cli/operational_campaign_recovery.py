@@ -21,6 +21,7 @@ import uuid
 
 from printer_v1.operator_cli.campaign_active_work import campaign_active_work_report
 from printer_v1.operator_cli.campaign_supervision import (
+    _cleanup_campaign_supervision_impl,
     cleanup_campaign_supervision,
 )
 from printer_v1.operator_cli.final_campaign_report import LOCKED_CAPABILITY_TABLES
@@ -963,11 +964,46 @@ def _historical_expected_discovery_work_rows(
     )
 
 
+def _historical_lease_bytes(
+    path: Path,
+    *,
+    contract: HistoricalFourTokenRecoveryContract,
+    expected_expiry: str,
+) -> bytes:
+    if not path.is_file():
+        raise OperationalCampaignRecoveryError("historical lease file is missing")
+    try:
+        raw = path.read_bytes()
+        lease = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise OperationalCampaignRecoveryError(
+            "historical lease payload is unreadable"
+        ) from exc
+    if not isinstance(lease, dict):
+        raise OperationalCampaignRecoveryError(
+            "historical lease payload is unreadable"
+        )
+    expected_lease = {
+        "scope": "OPERATIONAL_CAMPAIGN",
+        "supervision_id": contract.supervision_id,
+        "campaign_id": contract.campaign_id,
+        "configuration_id": contract.configuration_id,
+        "run_id": contract.run_id,
+        "owner_id": contract.owner_id,
+    }
+    if any(lease.get(key) != value for key, value in expected_lease.items()):
+        raise OperationalCampaignRecoveryError("historical lease ownership mismatch")
+    if str(lease.get("lease_expires_at")) != str(expected_expiry):
+        raise OperationalCampaignRecoveryError("historical lease expiry mismatch")
+    return raw
+
+
 def _historical_already_reconciled(
     *,
     db_path: Path,
     artifact_root: Path,
     contract: HistoricalFourTokenRecoveryContract,
+    disposable_lease_alias: Path | None = None,
 ) -> bool:
     if not db_path.is_file():
         return False
@@ -990,7 +1026,7 @@ def _historical_already_reconciled(
         ).fetchone()
         supervision = connection.execute(
             "SELECT supervision_state,terminal_status,first_terminal_cause,"
-            "cleanup_completed_at,lease_released_at,lease_lock_path "
+            "cleanup_completed_at,lease_released_at,lease_lock_path,lease_expires_at "
             "FROM printer_memory_factory_campaign_supervision WHERE supervision_id=?",
             (contract.supervision_id,),
         ).fetchone()
@@ -1012,6 +1048,27 @@ def _historical_already_reconciled(
         ).fetchone()
         discovery_batches = _historical_discovery_batch_rows(connection, contract)
         discovery_batch = discovery_batches[0] if len(discovery_batches) == 1 else None
+        lease_terminal_ok = False
+        if supervision is not None:
+            recorded_lease_path = Path(str(supervision[5])).resolve()
+            if disposable_lease_alias is None:
+                lease_terminal_ok = not recorded_lease_path.exists()
+            else:
+                alias = disposable_lease_alias.resolve()
+                lease_terminal_ok = (
+                    alias != recorded_lease_path
+                    and not alias.exists()
+                    and recorded_lease_path.is_file()
+                )
+                if lease_terminal_ok:
+                    try:
+                        _historical_lease_bytes(
+                            recorded_lease_path,
+                            contract=contract,
+                            expected_expiry=str(supervision[6]),
+                        )
+                    except OperationalCampaignRecoveryError:
+                        lease_terminal_ok = False
         exact = bool(
             campaign is not None
             and tuple(campaign) == (
@@ -1029,7 +1086,7 @@ def _historical_already_reconciled(
             and supervision[2] == contract.original_terminal_cause
             and supervision[3] is not None
             and supervision[4] is not None
-            and not Path(str(supervision[5])).exists()
+            and lease_terminal_ok
             and len(slots) == 2
             and all(
                 row[0] == "MANUAL_REVIEW"
@@ -1074,6 +1131,7 @@ def _historical_preflight(
     contract: HistoricalFourTokenRecoveryContract,
     live_process_probe: Callable[[str], bool],
     now: datetime,
+    disposable_lease_alias: Path | None = None,
 ) -> dict[str, Any]:
     _historical_reject_sidecars(db_path)
     if _sha256(db_path) != contract.expected_current_sha256:
@@ -1399,40 +1457,38 @@ def _historical_preflight(
             )
 
         lease_path = Path(str(supervision["lease_lock_path"])).resolve()
-        if lease_path != (artifact_root / "campaign.lease.lock").resolve():
-            raise OperationalCampaignRecoveryError(
-                "historical lease path mismatch"
+        expected_artifact_lease = (artifact_root / "campaign.lease.lock").resolve()
+        recorded_lease_bytes = _historical_lease_bytes(
+            lease_path,
+            contract=contract,
+            expected_expiry=str(supervision["lease_expires_at"]),
+        )
+        if disposable_lease_alias is None:
+            if lease_path != expected_artifact_lease:
+                raise OperationalCampaignRecoveryError(
+                    "historical lease path mismatch"
+                )
+            lease_release_path = lease_path
+        else:
+            alias = disposable_lease_alias.resolve()
+            if alias != expected_artifact_lease:
+                raise OperationalCampaignRecoveryError(
+                    "historical disposable lease alias path mismatch"
+                )
+            if alias == lease_path:
+                raise OperationalCampaignRecoveryError(
+                    "historical disposable lease alias must differ from recorded lease"
+                )
+            alias_bytes = _historical_lease_bytes(
+                alias,
+                contract=contract,
+                expected_expiry=str(supervision["lease_expires_at"]),
             )
-        if not lease_path.is_file():
-            raise OperationalCampaignRecoveryError(
-                "historical lease file is missing"
-            )
-        try:
-            lease = json.loads(lease_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise OperationalCampaignRecoveryError(
-                "historical lease payload is unreadable"
-            ) from exc
-        expected_lease = {
-            "scope": "OPERATIONAL_CAMPAIGN",
-            "supervision_id": contract.supervision_id,
-            "campaign_id": contract.campaign_id,
-            "configuration_id": contract.configuration_id,
-            "run_id": contract.run_id,
-            "owner_id": contract.owner_id,
-        }
-        if any(
-            lease.get(key) != value for key, value in expected_lease.items()
-        ):
-            raise OperationalCampaignRecoveryError(
-                "historical lease ownership mismatch"
-            )
-        if str(lease.get("lease_expires_at")) != str(
-            supervision["lease_expires_at"]
-        ):
-            raise OperationalCampaignRecoveryError(
-                "historical lease expiry mismatch"
-            )
+            if alias_bytes != recorded_lease_bytes:
+                raise OperationalCampaignRecoveryError(
+                    "historical disposable lease alias is not byte-identical"
+                )
+            lease_release_path = alias
         if _parse(str(supervision["lease_expires_at"])) > now:
             raise OperationalCampaignRecoveryError(
                 "historical lease is still live"
@@ -1455,6 +1511,9 @@ def _historical_preflight(
         "slot_ids": slot_ids,
         "zero_counts": zero_counts,
         "discovery_batch_before": discovery_batch_before,
+        "recorded_lease_path": str(lease_path),
+        "recorded_lease_sha256": hashlib.sha256(recorded_lease_bytes).hexdigest(),
+        "lease_release_path": str(lease_release_path),
     }
 
 
@@ -1468,6 +1527,7 @@ def reconcile_exact_historical_four_token_execution(
     contract: HistoricalFourTokenRecoveryContract | None = None,
     live_process_probe: Callable[[str], bool] = _default_live_process_probe,
     now: datetime | None = None,
+    disposable_lease_alias: str | Path | None = None,
 ) -> dict[str, Any]:
     """Reconcile only the exact consumed four-token execution after full proof."""
     if not operator_approved:
@@ -1478,12 +1538,17 @@ def reconcile_exact_historical_four_token_execution(
     db_path = Path(current_db).resolve()
     baseline = Path(pre_campaign_backup).resolve()
     artifacts = Path(artifact_root).resolve()
+    lease_alias = (
+        None if disposable_lease_alias is None
+        else Path(disposable_lease_alias).resolve()
+    )
     instant = now or datetime.now(timezone.utc)
 
     if _historical_already_reconciled(
         db_path=db_path,
         artifact_root=artifacts,
         contract=active,
+        disposable_lease_alias=lease_alias,
     ):
         return {
             "status": "V2_9_8B_HISTORICAL_FOUR_TOKEN_ALREADY_RECONCILED",
@@ -1502,6 +1567,7 @@ def reconcile_exact_historical_four_token_execution(
         contract=active,
         live_process_probe=live_process_probe,
         now=instant,
+        disposable_lease_alias=lease_alias,
     )
 
     recovery_directory = Path(recovery_root).resolve()
@@ -1555,17 +1621,33 @@ def reconcile_exact_historical_four_token_execution(
             "historical reconciliation fabricated migration-056 provenance"
         )
 
-    cleanup = cleanup_campaign_supervision(
-        db_path,
-        supervision_id=active.supervision_id,
-        campaign_id=active.campaign_id,
-        configuration_id=active.configuration_id,
-        run_id=active.run_id,
-        owner_id=active.owner_id,
-        terminal_status="FAILED",
-        first_terminal_cause=active.original_terminal_cause,
-        now=instant,
-    )
+    cleanup_kwargs = {
+        "supervision_id": active.supervision_id,
+        "campaign_id": active.campaign_id,
+        "configuration_id": active.configuration_id,
+        "run_id": active.run_id,
+        "owner_id": active.owner_id,
+        "terminal_status": "FAILED",
+        "first_terminal_cause": active.original_terminal_cause,
+        "now": instant,
+    }
+    if lease_alias is None:
+        cleanup = cleanup_campaign_supervision(db_path, **cleanup_kwargs)
+    else:
+        cleanup = _cleanup_campaign_supervision_impl(
+            db_path,
+            **cleanup_kwargs,
+            lease_release_path=lease_alias,
+        )
+    expected_lease_mode = "RECORDED" if lease_alias is None else "DISPOSABLE_ALIAS"
+    if cleanup.get("lease_release_mode") != expected_lease_mode:
+        raise OperationalCampaignRecoveryError(
+            "historical lease cleanup mode mismatch"
+        )
+    if lease_alias is not None and cleanup.get("recorded_lease_preserved") is not True:
+        raise OperationalCampaignRecoveryError(
+            "historical recorded lease was not preserved"
+        )
     if (
         int(cleanup.get("terminalized_discovery_batches", -1)) != 1
         or int(cleanup.get("cancelled_discovery_work", -1)) != 0
@@ -1704,10 +1786,20 @@ def reconcile_exact_historical_four_token_execution(
             raise OperationalCampaignRecoveryError(
                 f"historical discovery batch immutable field changed: {key}"
             )
+    if lease_alias is not None:
+        recorded_lease_path = Path(preflight["recorded_lease_path"])
+        if (
+            not recorded_lease_path.is_file()
+            or _sha256(recorded_lease_path) != preflight["recorded_lease_sha256"]
+        ):
+            raise OperationalCampaignRecoveryError(
+                "historical recorded lease changed during disposable reconciliation"
+            )
     if not _historical_already_reconciled(
         db_path=db_path,
         artifact_root=artifacts,
         contract=active,
+        disposable_lease_alias=lease_alias,
     ):
         raise OperationalCampaignRecoveryError(
             "historical reconciliation did not reach exact terminal state"

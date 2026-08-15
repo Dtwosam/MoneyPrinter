@@ -727,7 +727,7 @@ def _finish_released_lease(
         connection.close()
 
 
-def cleanup_campaign_supervision(
+def _cleanup_campaign_supervision_impl(
     db_path: str | Path,
     *,
     supervision_id: str,
@@ -739,6 +739,7 @@ def cleanup_campaign_supervision(
     first_terminal_cause: str,
     now: datetime | None = None,
     scheduler_operation_observer: Callable[[Mapping[str, Any]], None] | None = None,
+    lease_release_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Use one transactional cleanup path, then release the exact lease."""
     if terminal_status not in _TERMINAL_STATUSES:
@@ -753,12 +754,36 @@ def cleanup_campaign_supervision(
     job_cursor = None
     window_cursor = None
     cycle_cursor = None
+    recorded_lease_path: Path | None = None
+    recorded_lease_bytes: bytes | None = None
+    selected_release_path: Path | None = None
     try:
         _begin_immediate(connection)
         row = _load_exact(
             connection, supervision_id=supervision_id, campaign_id=campaign_id,
             configuration_id=configuration_id, run_id=run_id, owner_id=owner_id,
         )
+        recorded_lease_path = Path(str(row["lease_lock_path"])).resolve()
+        selected_release_path = recorded_lease_path
+        if lease_release_path is not None:
+            selected_release_path = Path(lease_release_path).resolve()
+            if selected_release_path == recorded_lease_path:
+                raise CampaignSupervisionError(
+                    "disposable lease alias must differ from recorded lease path"
+                )
+            try:
+                recorded_lease_bytes = recorded_lease_path.read_bytes()
+                alias_lease_bytes = selected_release_path.read_bytes()
+            except OSError as exc:
+                raise CampaignSupervisionError(
+                    "disposable lease alias evidence is unreadable"
+                ) from exc
+            if alias_lease_bytes != recorded_lease_bytes:
+                raise CampaignSupervisionError(
+                    "disposable lease alias is not byte-identical to recorded lease"
+                )
+            _exact_lock(_lock_payload(recorded_lease_path), row)
+            _exact_lock(_lock_payload(selected_release_path), row)
         if row["supervision_state"] == "TERMINAL":
             # Idempotent same-identity cleanup always preserves the first
             # terminal status/cause (first-fault). Ownership mismatches still
@@ -1009,9 +1034,32 @@ def cleanup_campaign_supervision(
             ).fetchone()[0])
     finally:
         connection.close()
-    released = _release_lock(Path(terminal_row["lease_lock_path"]), terminal_row)
+    release_target = selected_release_path or Path(
+        str(terminal_row["lease_lock_path"])
+    ).resolve()
+    released = _release_lock(release_target, terminal_row)
     if not released:
         raise CampaignSupervisionError("operational campaign lease release failed")
+    lease_release_mode = "RECORDED"
+    recorded_lease_preserved = False
+    if lease_release_path is not None:
+        if recorded_lease_path is None or recorded_lease_bytes is None:
+            raise CampaignSupervisionError(
+                "disposable lease alias preservation evidence is incomplete"
+            )
+        try:
+            current_recorded_bytes = recorded_lease_path.read_bytes()
+        except OSError as exc:
+            raise CampaignSupervisionError(
+                "recorded lease was not preserved during disposable cleanup"
+            ) from exc
+        if current_recorded_bytes != recorded_lease_bytes:
+            raise CampaignSupervisionError(
+                "recorded lease changed during disposable cleanup"
+            )
+        _exact_lock(_lock_payload(recorded_lease_path), terminal_row)
+        lease_release_mode = "DISPOSABLE_ALIAS"
+        recorded_lease_preserved = True
     _finish_released_lease(db_path, terminal_row, released_at=timestamp)
     # Durable read-back of the exact persisted timestamps. Never trust the local
     # ``timestamp`` variable: the durable row owns the truth (COALESCE preserves a
@@ -1048,6 +1096,8 @@ def cleanup_campaign_supervision(
         "active_owned_work_after": active_after,
         "cleanup_completed": True,
         "lease_released": True,
+        "lease_release_mode": lease_release_mode,
+        "recorded_lease_preserved": recorded_lease_preserved,
         "new_child_work_allowed": False,
         "idempotent_replay": replay,
         "automatic_retries": 0,
@@ -1055,3 +1105,31 @@ def cleanup_campaign_supervision(
         "successor_created": False,
         "restart_created": False,
     }
+
+
+def cleanup_campaign_supervision(
+    db_path: str | Path,
+    *,
+    supervision_id: str,
+    campaign_id: str,
+    configuration_id: str,
+    run_id: str,
+    owner_id: str,
+    terminal_status: str,
+    first_terminal_cause: str,
+    now: datetime | None = None,
+    scheduler_operation_observer: Callable[[Mapping[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """Canonical public cleanup; always releases the SQLite-recorded lease."""
+    return _cleanup_campaign_supervision_impl(
+        db_path,
+        supervision_id=supervision_id,
+        campaign_id=campaign_id,
+        configuration_id=configuration_id,
+        run_id=run_id,
+        owner_id=owner_id,
+        terminal_status=terminal_status,
+        first_terminal_cause=first_terminal_cause,
+        now=now,
+        scheduler_operation_observer=scheduler_operation_observer,
+    )
