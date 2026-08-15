@@ -1128,6 +1128,21 @@ def _historical_preflight(
                     "historical tracking queue state drifted"
                 )
 
+        nonterminal_discovery_batches = 0
+        if _historical_table_exists(connection, "printer_discovery_batches"):
+            nonterminal_discovery_batches = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM printer_discovery_batches "
+                    "WHERE campaign_id=? AND run_id=? "
+                    "AND batch_state NOT LIKE 'TERMINAL_%'",
+                    (contract.campaign_id, contract.run_id),
+                ).fetchone()[0]
+            )
+        if nonterminal_discovery_batches:
+            raise OperationalCampaignRecoveryError(
+                "historical nonterminal discovery batch exists"
+            )
+
         zero_counts = {
             "windows": int(
                 connection.execute(
