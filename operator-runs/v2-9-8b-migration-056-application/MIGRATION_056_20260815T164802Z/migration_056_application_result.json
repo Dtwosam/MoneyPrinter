@@ -1,0 +1,8 @@
+{
+  "database": "/Users/Dtwo1/Developer/MoneyPrinter/data/printer_v1.sqlite3",
+  "invocation": "printer_v1.db.migrate.apply_migrations",
+  "invocations": 1,
+  "manual_sql": false,
+  "post_sha256": "555f9558a4f83ac4639ed5d909768a0c9d4b23871f65c31b251a702efb13273e",
+  "pre_sha256": "9d0addd9e2b4859a33d07810cee26ec0893ada3ae884bde740719a4ec20e3b39"
+}
