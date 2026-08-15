@@ -51,31 +51,6 @@ def _bind_factory_run(db: Path) -> sqlite3.Connection:
     return connection
 
 
-def _ensure_red_provenance_table(connection: sqlite3.Connection) -> None:
-    # RED isolates the missing Python classification even before migration 056
-    # exists. Once 056 lands this is a no-op because the real table already exists.
-    connection.execute(
-        """
-        CREATE TABLE IF NOT EXISTS printer_four_token_pre_lifecycle_terminal_provenance(
-            campaign_id TEXT NOT NULL,
-            campaign_run_id TEXT NOT NULL,
-            authoritative_factory_run_id TEXT NOT NULL,
-            cycle_id TEXT NOT NULL,
-            cycle_ordinal INTEGER NOT NULL,
-            proposed_cycle_ordinal INTEGER NOT NULL,
-            terminal_phase TEXT NOT NULL,
-            first_terminal_cause TEXT NOT NULL,
-            recorded_at TEXT NOT NULL,
-            PRIMARY KEY(
-                campaign_id,campaign_run_id,authoritative_factory_run_id,
-                proposed_cycle_ordinal
-            )
-        )
-        """
-    )
-    connection.commit()
-
-
 def _shared_terminalizer(db: Path):
     def run():
         reconciled = reconcile_campaign_terminal(
@@ -94,12 +69,22 @@ def _shared_terminalizer(db: Path):
     return run
 
 
+def _marker_count(connection: sqlite3.Connection) -> int:
+    return int(
+        connection.execute(
+            "SELECT COUNT(*) FROM printer_four_token_pre_lifecycle_terminal_provenance "
+            "WHERE campaign_id=? AND campaign_run_id=? "
+            "AND authoritative_factory_run_id=? AND proposed_cycle_ordinal=2",
+            (CAMPAIGN_ID, CAMPAIGN_RUN_ID, FACTORY_RUN_ID),
+        ).fetchone()[0]
+    )
+
+
 def test_exact_pre_lifecycle_zero_attempt_shape_terminalizes_with_provenance(
     tmp_path,
 ) -> None:
     db, _, _ = _prepare(tmp_path)
     connection = _bind_factory_run(db)
-    _ensure_red_provenance_table(connection)
 
     phase_a = reconcile_four_token_cycle_terminal(
         connection,
@@ -109,39 +94,12 @@ def test_exact_pre_lifecycle_zero_attempt_shape_terminalizes_with_provenance(
         cycle_id=CYCLE_ID,
         cause="RUNNER_EXCEPTION",
         run_status="SAFE_STOPPED",
+        terminal_phase="CAMPAIGN_PRE_LIFECYCLE",
         now=START,
     )
     assert phase_a["cycle_state"].startswith("TERMINAL_")
-
-    # Current RED code does not record the marker. Insert it only when Phase A
-    # did not; after the repair the real migration forbids post-terminal inserts,
-    # so this branch must not execute on GREEN.
-    marker_count = connection.execute(
-        "SELECT COUNT(*) FROM printer_four_token_pre_lifecycle_terminal_provenance "
-        "WHERE campaign_id=? AND campaign_run_id=? "
-        "AND authoritative_factory_run_id=? AND proposed_cycle_ordinal=2",
-        (CAMPAIGN_ID, CAMPAIGN_RUN_ID, FACTORY_RUN_ID),
-    ).fetchone()[0]
-    if marker_count == 0:
-        connection.execute(
-            """
-            INSERT INTO printer_four_token_pre_lifecycle_terminal_provenance(
-                campaign_id,campaign_run_id,authoritative_factory_run_id,
-                cycle_id,cycle_ordinal,proposed_cycle_ordinal,terminal_phase,
-                first_terminal_cause,recorded_at
-            ) VALUES (?,?,?,?,1,2,'CAMPAIGN_PRE_LIFECYCLE',?,?)
-            """,
-            (
-                CAMPAIGN_ID,
-                CAMPAIGN_RUN_ID,
-                FACTORY_RUN_ID,
-                CYCLE_ID,
-                "RUNNER_EXCEPTION",
-                START.isoformat(),
-            ),
-        )
-        connection.commit()
-
+    assert phase_a["pre_lifecycle_zero_attempt_provenance_recorded"] is True
+    assert _marker_count(connection) == 1
     assert connection.execute(
         "SELECT COUNT(*) FROM printer_pre_admission_discovery_attempts "
         "WHERE campaign_id=? AND campaign_run_id=? "
@@ -166,10 +124,43 @@ def test_exact_pre_lifecycle_zero_attempt_shape_terminalizes_with_provenance(
     connection.close()
 
 
+def test_zero_attempt_without_explicit_phase_does_not_gain_provenance(
+    tmp_path,
+) -> None:
+    db, _, _ = _prepare(tmp_path)
+    connection = _bind_factory_run(db)
+
+    phase_a = reconcile_four_token_cycle_terminal(
+        connection,
+        campaign_id=CAMPAIGN_ID,
+        campaign_run_id=CAMPAIGN_RUN_ID,
+        factory_run_id=FACTORY_RUN_ID,
+        cycle_id=CYCLE_ID,
+        cause="RUNNER_EXCEPTION",
+        run_status="SAFE_STOPPED",
+        now=START,
+    )
+    assert phase_a["cycle_state"].startswith("TERMINAL_")
+    assert phase_a["pre_lifecycle_zero_attempt_provenance_recorded"] is False
+    assert _marker_count(connection) == 0
+
+    with pytest.raises(
+        FourTokenFactoryAdapterError,
+        match="exact terminal no-admission evidence|pre-lifecycle zero-attempt",
+    ):
+        finalize_four_token_shared_terminal(
+            connection,
+            campaign_id=CAMPAIGN_ID,
+            campaign_run_id=CAMPAIGN_RUN_ID,
+            factory_run_id=FACTORY_RUN_ID,
+            shared_terminalizer=lambda: {},
+        )
+    connection.close()
+
+
 def test_zero_attempt_without_provenance_still_fails_closed(tmp_path) -> None:
     db, _, _ = _prepare(tmp_path)
     connection = _bind_factory_run(db)
-    _ensure_red_provenance_table(connection)
     connection.execute(
         "UPDATE printer_memory_factory_campaign_cycles "
         "SET cycle_state='TERMINAL_BLOCKED',first_terminal_cause='RUNNER_EXCEPTION',"
@@ -198,5 +189,53 @@ def test_zero_attempt_without_provenance_still_fails_closed(tmp_path) -> None:
     connection.close()
 
 
-def test_forward_only_migration_056_is_present() -> None:
+def test_pre_lifecycle_provenance_is_immutable(tmp_path) -> None:
+    db, _, _ = _prepare(tmp_path)
+    connection = _bind_factory_run(db)
+    reconcile_four_token_cycle_terminal(
+        connection,
+        campaign_id=CAMPAIGN_ID,
+        campaign_run_id=CAMPAIGN_RUN_ID,
+        factory_run_id=FACTORY_RUN_ID,
+        cycle_id=CYCLE_ID,
+        cause="RUNNER_EXCEPTION",
+        run_status="SAFE_STOPPED",
+        terminal_phase="CAMPAIGN_PRE_LIFECYCLE",
+        now=START,
+    )
+    assert _marker_count(connection) == 1
+
+    with pytest.raises(sqlite3.IntegrityError, match="provenance is immutable"):
+        connection.execute(
+            "UPDATE printer_four_token_pre_lifecycle_terminal_provenance "
+            "SET first_terminal_cause='OTHER' WHERE campaign_id=?",
+            (CAMPAIGN_ID,),
+        )
+    connection.rollback()
+    with pytest.raises(sqlite3.IntegrityError, match="provenance is immutable"):
+        connection.execute(
+            "DELETE FROM printer_four_token_pre_lifecycle_terminal_provenance "
+            "WHERE campaign_id=?",
+            (CAMPAIGN_ID,),
+        )
+    connection.rollback()
+    connection.close()
+
+
+def test_migration_056_and_attempt_delete_guard_are_present(tmp_path) -> None:
     assert MIGRATION_056.is_file()
+    db, _, _ = _prepare(tmp_path)
+    connection = sqlite3.connect(db)
+    try:
+        triggers = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger'"
+            ).fetchall()
+        }
+        assert "printer_four_token_pre_lifecycle_provenance_exact_shape" in triggers
+        assert "printer_four_token_pre_lifecycle_provenance_immutable_update" in triggers
+        assert "printer_four_token_pre_lifecycle_provenance_immutable_delete" in triggers
+        assert "printer_pre_admission_attempt_immutable_delete" in triggers
+    finally:
+        connection.close()
