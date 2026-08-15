@@ -5,193 +5,167 @@
 - Starting commit: `8fbfb088b70d8849d558f1c8b05f3bb6694958de`
 - Required parent anchor: `c7279622247a7e18ff2b29c6ebc63597d4774b92`
 - Branch: `agent/v2-9-8b-shared-terminal-pre-lifecycle-repair`
-- Scope: repair design only at this commit.
 - Prior slot-order/rollback repair is closed and is not reopened.
-- Historical execution `20260814T172224Z-490856f405bf` remains preserved; this design does not mutate or reconcile it.
+- Historical execution `20260814T172224Z-490856f405bf` remains preserved; this repair does not mutate or reconcile it.
 
 ## Design verdict
 
 `V2_9_8B_SHARED_TERMINAL_PRE_LIFECYCLE_ZERO_ATTEMPT_SHAPE_DESIGN_PASS_READY_FOR_FOCUSED_TDD_REPAIR`
 
-The post-repair audit finding is confirmed in committed code. `finalize_four_token_shared_terminal()` accepts a one-cycle terminal only when exactly one terminal Cycle-2 pre-admission attempt row exists. A legitimate Cycle-1 pre-lifecycle terminal can have one admitted Cycle-1 row, no Cycle-2 row, no Cycle-2 attempt row, and no lifecycle windows. That exact shape currently fails Phase B.
+The audit finding is confirmed by focused RED. Current Phase B rejects the legitimate one-Cycle-1 / zero-Cycle-2-attempt shape.
 
-## Existing accepted shapes
+### Safety amendment after RED
 
-### 1. `TWO_CYCLE_COMPLETION`
+Empty tables alone are not strong enough to prove lifecycle phase. The implementation therefore must not infer `CAMPAIGN_PRE_LIFECYCLE` merely from `zero windows + zero Cycle-2 attempts`.
 
-Keep unchanged:
+The canonical factory already owns the exact control-flow boundary. It must keep one in-memory witness for Cycle 1:
 
-- exact admitted cycle ordinals `[1, 2]`;
-- both cycles terminal before shared cleanup;
-- zero active campaign work/jobs;
-- zero running factory steps;
-- clean campaign-active-work report.
+- initially `opening_completed = False`;
+- set `True` immediately after the Cycle-1 `_plan_opening_jobs()` call returns successfully;
+- in the terminal `finally:` path, pass `terminal_phase='CAMPAIGN_PRE_LIFECYCLE'` to Phase A only when Cycle 1 is being terminalized while that witness is still false;
+- all other Phase-A calls pass no pre-lifecycle phase.
 
-### 2. `ONE_CYCLE_HONEST_NO_ADMISSION`
+This witness is not itself durable. Phase A converts it into durable provenance only after independently rechecking the exact persisted shape. The combination of positive control-flow witness + structural DB guards is the fail-closed contract.
 
-Keep unchanged:
+## Accepted terminal shapes
 
-- exact admitted cycle ordinal `[1]`;
-- exactly one proposed-Cycle-2 pre-admission attempt;
-- attempt state is one of `NO_PAIR`, `BLOCKED`, `FAILED`, `CANCELLED`;
-- immutable terminal cause exists;
-- `consumed_cycle_id IS NULL`;
-- Cycle 1 is terminal;
-- all existing zero-active-work and shared-cleanup guards pass.
+### `TWO_CYCLE_COMPLETION`
 
-## New accepted shape
+Unchanged: exact cycle ordinals `[1,2]`, both terminal, and all existing zero-active-work/shared-cleanup guards pass.
 
-### 3. `ONE_CYCLE_PRE_LIFECYCLE_ZERO_ATTEMPT`
+### `ONE_CYCLE_HONEST_NO_ADMISSION`
 
-This shape must be narrower than `one cycle + zero attempts`.
+Unchanged: exact cycle `[1]` plus exactly one terminal proposed-Cycle-2 pre-admission attempt (`NO_PAIR`/`BLOCKED`/`FAILED`/`CANCELLED`), non-empty immutable cause, and `consumed_cycle_id IS NULL`.
 
-Required evidence at Phase B:
+### `ONE_CYCLE_PRE_LIFECYCLE_ZERO_ATTEMPT`
 
-1. exact admitted cycle ordinal list is `[1]`;
+Required Phase-B evidence:
+
+1. exact admitted cycle ordinal list `[1]`;
 2. Cycle 1 is terminal;
-3. proposed Cycle-2 attempt count is exactly zero;
-4. Cycle-2 cycle count is exactly zero;
-5. Cycle-1 lifecycle-window count is exactly zero;
-6. exactly one immutable provenance row exists for the same campaign, campaign run, authoritative factory run, Cycle 1 and proposed Cycle 2;
-7. provenance phase is exactly `CAMPAIGN_PRE_LIFECYCLE`;
-8. provenance terminal cause is non-empty and exactly equals Cycle 1's immutable first terminal cause;
-9. all existing active-work, Scheduler-job, factory-step and shared-cleanup guards pass.
+3. proposed Cycle-2 attempt count exactly zero;
+4. no Cycle-2 row;
+5. zero Cycle-1 campaign lifecycle windows;
+6. exactly one immutable provenance row bound to campaign/run/factory/Cycle 1/proposed Cycle 2;
+7. provenance phase exactly `CAMPAIGN_PRE_LIFECYCLE`;
+8. provenance cause non-empty and exactly equal to Cycle 1 immutable first terminal cause;
+9. all existing active-work, Scheduler-job, factory-step and campaign-active-work guards pass.
 
-If any condition is absent, duplicated, contradictory or malformed, Phase B must reject.
+Anything missing, duplicated, contradictory or malformed rejects.
 
-## Durable provenance owner
+## Durable provenance
 
-Existing tables do not safely own this fact:
-
-- supervision owns process/campaign supervision, not admission-phase provenance;
-- heartbeat evidence owns liveness failure evidence;
-- factory `stop_reason` and cycle `first_terminal_cause` own cause, not lifecycle phase;
-- the pre-admission attempt ledger owns a real Scheduler-governed Cycle-2 discovery/selection opportunity and must not receive a fabricated synthetic attempt.
-
-Add forward-only migration `056_four_token_pre_lifecycle_terminal_provenance.sql` with one dedicated immutable table:
+Add forward-only migration `056_four_token_pre_lifecycle_terminal_provenance.sql` and table:
 
 `printer_four_token_pre_lifecycle_terminal_provenance`
 
-Minimum identity/evidence fields:
+Minimum fields:
 
 - `campaign_id`
 - `campaign_run_id`
 - `authoritative_factory_run_id`
 - `cycle_id`
-- `cycle_ordinal` constrained to `1`
-- `proposed_cycle_ordinal` constrained to `2`
+- `cycle_ordinal` constrained to 1
+- `proposed_cycle_ordinal` constrained to 2
 - `terminal_phase` constrained to `CAMPAIGN_PRE_LIFECYCLE`
 - `first_terminal_cause` non-empty
 - `recorded_at` non-empty
 
-Use one composite primary/unique identity per campaign/run/factory/proposed Cycle 2, canonical ownership foreign keys, an insert guard proving the exact one-cycle/zero-attempt/zero-window shape, and immutable update/delete triggers.
+Use canonical ownership foreign keys, one composite identity per campaign/run/factory/proposed Cycle 2, exact-shape insert guards, and immutable update/delete triggers.
 
-Migration 056 must also add a delete-protection trigger to `printer_pre_admission_discovery_attempts`. Migration 055 already makes attempt identity and first terminal cause immutable but does not forbid deletion of the attempt row itself. Future zero-attempt classification must not become valid merely because an earlier attempt row disappeared.
+Migration 056 also adds delete protection to `printer_pre_admission_discovery_attempts`; migration 055 protects identity/cause updates but must not allow an attempt to disappear and later make a zero-attempt shape look legitimate.
 
-## Provenance recording point
+## Canonical owners and recording point
 
-The smallest canonical production owner is Phase A in `four_token_factory_adapter.py`, not the discovery callback and not the outer launcher.
+Two existing owners cooperate without creating a parallel lifecycle engine:
 
-Before Cycle 1 is transitioned terminal, `reconcile_four_token_cycle_terminal()` may record the provenance row only when all of the following are true in the same transaction:
+1. `one_command_15m_factory.py` owns the positive control-flow witness because it owns Cycle-1 opening planning and the terminal `finally:` call to Phase A.
+2. `four_token_factory_adapter.py::reconcile_four_token_cycle_terminal()` owns durable provenance because it owns Phase A and immediately precedes the Cycle-1 terminal transition.
 
+Phase A may insert provenance only when:
+
+- caller explicitly supplies `terminal_phase='CAMPAIGN_PRE_LIFECYCLE'`;
 - current cycle ordinal is exactly 1;
-- run status being reconciled is not `COMPLETED`;
-- the campaign/run owns exactly one cycle and it is Cycle 1;
-- there is no Cycle-2 pre-admission attempt;
-- there is no Cycle-2 cycle;
-- there are zero campaign lifecycle windows for Cycle 1;
-- terminal cause is non-empty;
-- migration 056 table exists.
+- run status is not `COMPLETED`;
+- campaign/run owns exactly one cycle and it is the supplied Cycle 1;
+- Cycle 1 has exactly two slots;
+- no Cycle-2 attempt exists;
+- no Cycle-2 cycle exists;
+- no Cycle-1 campaign window exists;
+- cause is non-empty;
+- migration 056 exists.
 
-The provenance insert and Cycle-1 terminal transition must commit atomically. If the evidence is not exact, no provenance row is written and existing Phase B fail-closed behavior remains.
+The provenance insert occurs immediately before the canonical Cycle-1 `transition_state()` so the transition owner's transaction commits both together. If any evidence is not exact, no provenance is written and Phase B remains fail closed.
 
-This avoids changing the main factory orchestration merely to carry a shadow phase flag and keeps classification evidence next to the Phase A/B owner that consumes it.
+## Always rejected
 
-## Rejected shapes
-
-Always reject:
-
-- one cycle + zero attempts without provenance;
+- one cycle + zero attempts without the explicit factory phase witness having produced durable provenance;
+- generic `RUNNER_EXCEPTION` by itself;
 - one cycle + zero attempts with any lifecycle window;
-- one cycle + zero attempts with a Cycle-2 cycle;
-- one cycle + zero attempts with duplicate/mismatched provenance;
-- provenance whose cause differs from Cycle 1 terminal cause;
-- provenance plus any Cycle-2 attempt row;
-- generic `RUNNER_EXCEPTION` without the exact structural provenance contract;
+- one cycle + zero attempts with Cycle 2 present;
+- provenance plus a Cycle-2 attempt row;
+- missing/duplicate/mismatched provenance;
+- provenance/cycle terminal-cause mismatch;
 - malformed cycle ordinals;
 - non-terminal admitted cycles;
-- active campaign work, active Scheduler jobs or running factory steps;
+- active campaign/Scheduler/factory work;
 - unknown terminal shapes.
 
-## Focused TDD repair
+## Focused TDD
 
-### RED tests
+RED already proved two intended failures on commit `ae2a90425165e33ecc164b8b7c764748b096ed70` / workflow run `31853811127`:
 
-Minimum new failures before production implementation:
+- current Phase B raises `one-cycle shared terminal requires exact terminal no-admission evidence` for the new shape;
+- migration 056 does not exist.
 
-1. exact one-cycle, zero-attempt, zero-window pre-lifecycle provenance shape should terminalize as `ONE_CYCLE_PRE_LIFECYCLE_ZERO_ATTEMPT` — must fail on the current implementation;
-2. one-cycle + zero attempts + no provenance remains rejected;
-3. provenance plus an attempt row is rejected;
-4. provenance plus a lifecycle window is rejected;
-5. provenance/cycle terminal-cause mismatch is rejected;
-6. migration valid insert succeeds only for the exact shape;
-7. invalid provenance inserts fail;
-8. provenance update/delete fail;
-9. pre-admission attempt deletion fails after migration 056.
+Implementation/GREEN must cover only the minimum risk surface:
 
-### GREEN regressions
+- explicit pre-lifecycle factory witness -> Phase-A durable provenance -> Phase-B new shape acceptance;
+- zero attempt without provenance still rejects;
+- an explicit phase passed after opening completion is impossible from the canonical caller and malformed direct evidence rejects structurally;
+- provenance + attempt rejects;
+- provenance + window rejects;
+- cause mismatch rejects;
+- migration valid insert and immutability/delete guards;
+- existing two-cycle shared terminal path;
+- existing one-cycle honest-no-admission path;
+- existing pre-admission callback zero-row failure contract.
 
-Run only the nearest existing coverage needed to protect the change:
-
-- two-cycle shared terminal path;
-- one-cycle honest no-admission path;
-- Phase-A-before-Phase-B sequencing;
-- pre-admission callback zero-row failure contract;
-- migration ordering/integrity around 055/056.
-
-Do not broaden to unrelated suites unless a focused failure proves the dependency surface is wider.
+No broad suite unless focused evidence proves a wider dependency surface.
 
 ## Bounded proof after implementation
 
-After focused GREEN, use only an offline/disposable SQLite database. Prove:
-
-- migration 056 applies forward-only;
-- Phase A atomically creates provenance only for the exact pre-lifecycle shape;
-- Phase B accepts that exact new shape;
-- missing/contradictory evidence still fails closed;
-- existing two-cycle and honest-no-admission shapes remain accepted;
-- no source fetch, discovery run, memory generation, operational scheduler execution or authoritative DB mutation occurs.
+Use disposable SQLite only. Prove migration 056 applies, the exact control-flow/Phase-A/Phase-B chain works, contradictory states still reject, and the two existing shapes remain unchanged. No source fetch, discovery run, memory generation, operational scheduler execution, authoritative DB mutation, or fresh authorization.
 
 ## Historical reconciliation sequencing
 
-The implementation must not rewrite the consumed historical execution.
+The consumed historical execution predates this provenance owner. Do not silently backfill it during this repair. After repair closeout, a separate reconciliation lane may use the preserved audit/artifact evidence to design and prove an execution-scoped historical reconciliation on a disposable copy before any authoritative mutation.
 
-After repair closeout, a separate reconciliation lane may assess `20260814T172224Z-490856f405bf` against its preserved audit evidence. Because that execution predates migration 056, no new provenance may be silently inferred during this repair. Any historical provenance/backfill required for reconciliation must be explicit, narrowly justified by the completed audit, and proved on a disposable copy before authoritative mutation.
-
-Fresh authorization can only follow successful historical cleanup/reconciliation and a new authoritative DB identity.
+Fresh authorization may only follow successful cleanup/reconciliation and a new authoritative DB identity.
 
 ## Money-usefulness contribution
 
-This repair prevents legitimate bounded four-token campaigns that fail before lifecycle start from leaving abandoned active ownership. Reliable terminal cleanup reduces operator recovery work and makes later memory-growth proofs more trustworthy; it does not itself create trading capability or financial decisions.
+Prevents a legitimate early-failing bounded four-token proof from stranding durable active ownership and consuming scarce one-shot authority without a clean terminal path. It improves operational recoverability and trust in later memory-growth proofs; it unlocks no trading capability.
 
-## What this improves
+## What improves
 
+- truthful pre-lifecycle provenance;
 - exact shared-terminal classification;
-- durable distinction between legitimate pre-lifecycle zero-attempt termination and ambiguous missing attempt history;
-- terminal cleanup reliability;
-- future recoverability of bounded four-token operations.
+- recurrence protection for early Cycle-1 failures;
+- fail-closed distinction between legitimate zero-attempt termination and corrupt missing history.
 
 ## What remains locked
 
-No new authorization, operational proof run, six-token widening, 12h/24h activation, retrieval, paper decision, BUY/SELL/HOLD, paper position, trade event, trade audit or PnL is unlocked by this repair.
+No fresh authorization, operational proof run, six-token widening, 12h/24h activation, retrieval, paper decision, BUY/SELL/HOLD, paper position, trade event, paper audit or PnL is unlocked.
 
 ## Functionality Risks / Setbacks / Efficiency Blockers
 
-- The historical residue predates migration 056 and therefore still needs a separate reconciliation design/proof after this repair closes.
-- Any broad fallback such as `one cycle + zero attempts = valid` would weaken fail-closed ownership and is forbidden.
-- A schema addition increases migration surface slightly; keeping it additive, single-purpose and immutable is the smallest safe durable solution.
-- Current connected environment does not imply authorization to mutate the authoritative SQLite database; all implementation proof remains offline/disposable.
+- Historical residue predates migration 056 and remains a separate reconciliation problem.
+- A broad `one cycle + zero attempts = valid` fallback remains forbidden.
+- Migration 056 adds a small schema surface, kept single-purpose and immutable.
+- The explicit runtime witness must remain owned by the canonical factory; duplicating it elsewhere would create phase drift.
+- All repair proof remains offline/disposable; connected GitHub access is not authority to mutate the operational database.
 
 ## Next lane
 
-Focused TDD repair only: RED -> minimal migration/adapter implementation -> focused GREEN -> disposable proof -> repair closeout. Stop before historical reconciliation or fresh operational authorization.
+Focused TDD repair -> focused GREEN -> disposable proof -> repair closeout. Stop before historical reconciliation or fresh operational authorization.
