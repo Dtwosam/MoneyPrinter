@@ -88,6 +88,7 @@ def build_later_cycle_graduated_supply(
     proposed_cycle_id: str,
     proposed_cycle_ordinal: int,
     evaluated_at: datetime,
+    execution_id: str,
     selection_seed: str,
     migration_transport: Any,
     graduated_supply_kwargs: Mapping[str, Any],
@@ -95,14 +96,29 @@ def build_later_cycle_graduated_supply(
 ) -> LaterCycleCandidateSupply:
     """Run the canonical permanent supply once and adapt its exact durable facts.
 
+    ``execution_id`` is the canonical execution identity of the outer V2-9.8B
+    command. It owns the governed source-request scope and the exhaustion
+    certificate. ``selection_seed`` is selection input only and is passed on as
+    ``cycle_seed``.
+
     Holder eligibility is supplied only by the existing operational holder owner;
     absence is fail-closed and never interpreted as healthy.
     """
     if proposed_cycle_ordinal != 2:
         raise LaterCycleGraduatedSupplyError("PROPOSED_CYCLE_ORDINAL_INVALID")
+    canonical_execution_id = str(execution_id or "").strip()
+    if not canonical_execution_id:
+        raise LaterCycleGraduatedSupplyError("CANONICAL_EXECUTION_ID_REQUIRED")
     instant = _utc(evaluated_at)
+    # The front door validates the scope identity against the ``execution_id``
+    # kwarg and blocks any root a durable source request already owns, so one
+    # canonical-execution-bound identity must serve both. The cycle qualifier
+    # keeps this cycle's root and certificate id exclusive within the execution.
+    cycle_execution_identity = (
+        f"{canonical_execution_id}:c{int(proposed_cycle_ordinal):04d}"
+    )
     scope = build_campaign_source_request_scope(
-        execution_id=selection_seed,
+        execution_id=cycle_execution_identity,
         campaign_id=campaign_id,
         run_id=campaign_run_id,
         cycle_id=proposed_cycle_id,
@@ -113,7 +129,7 @@ def build_later_cycle_graduated_supply(
         "tracking_precheck": True,
         "required_token_capacity": 2,
         "campaign_id": campaign_id,
-        "execution_id": selection_seed,
+        "execution_id": cycle_execution_identity,
         "run_id": campaign_run_id,
         "cycle_id": proposed_cycle_id,
         "campaign_source_request_scope": scope,
@@ -129,8 +145,12 @@ def build_later_cycle_graduated_supply(
     )
     if not isinstance(supply, GraduatedSupply):
         raise LaterCycleGraduatedSupplyError("GRADUATED_SUPPLY_RESULT_INVALID")
+    # Carry the canonical supply diagnostics across this boundary. Without them
+    # the exhaustion certificate and shortage classification cannot reach the
+    # existing authoritative campaign mapping and reporting.
+    diagnostics = dict(supply.diagnostics)
     if not supply.ready or len(supply.graduated_supply) != 2:
-        return LaterCycleCandidateSupply((), (), supply.terminal)
+        return LaterCycleCandidateSupply((), (), supply.terminal, diagnostics)
     if holder_evidence_owner is None:
         raise LaterCycleGraduatedSupplyError("HOLDER_EVIDENCE_OWNER_REQUIRED")
     holder_facts = holder_evidence_owner(supply)
@@ -205,6 +225,8 @@ def build_later_cycle_graduated_supply(
                 observed_at=_utc(item["observed"]),
             ))
         lineage = _source_lineage(connection, request_key_root=scope.request_key_root)
-        return LaterCycleCandidateSupply(tuple(candidates), lineage, None)
+        return LaterCycleCandidateSupply(
+            tuple(candidates), lineage, None, diagnostics
+        )
     finally:
         connection.close()

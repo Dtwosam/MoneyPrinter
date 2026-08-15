@@ -11,7 +11,7 @@ It performs no source fetching, discovery, memory generation, provider changes,
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 import re
@@ -136,9 +136,18 @@ class LaterCycleSourceEvidence:
 
 @dataclass(frozen=True)
 class LaterCycleCandidateSupply:
+    """Cycle-2 candidate carrier.
+
+    ``diagnostics`` carries the canonical ``GraduatedSupply.diagnostics`` across
+    this boundary so the exhaustion certificate and shortage classification can
+    reach the existing authoritative campaign mapping. It is defaulted so the
+    established three-positional construction stays valid.
+    """
+
     candidates: tuple[LaterCycleDiscoveryCandidate, ...]
     source_evidence: tuple[LaterCycleSourceEvidence, ...]
     terminal_cause: str | None
+    diagnostics: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

@@ -190,6 +190,7 @@ def test_later_cycle_adapter_uses_permanent_supply_scope_and_exact_lineage(tmp_p
             proposed_cycle_id="cycle-2",
             proposed_cycle_ordinal=2,
             evaluated_at=datetime(2026, 8, 13, 12, 5, tzinfo=timezone.utc),
+            execution_id="execution-1",
             selection_seed="factory-1-cycle-2",
             migration_transport=object(),
             graduated_supply_kwargs={},
@@ -208,7 +209,11 @@ def test_later_cycle_adapter_uses_permanent_supply_scope_and_exact_lineage(tmp_p
     scope = observed["campaign_source_request_scope"]
     assert scope.cycle_id == "cycle-2"
     assert scope.run_id == "campaign-run-1"
-    assert scope.execution_id == "factory-1-cycle-2"
+    # The canonical execution id owns the scope; the selection seed stays a
+    # selection input only.
+    assert scope.execution_id == "execution-1:c0002"
+    assert observed["execution_id"] == "execution-1:c0002"
+    assert observed["cycle_seed"] == "factory-1-cycle-2"
     assert len(result.candidates) == 2
     assert len(result.source_evidence) == 1
     assert result.source_evidence[0].source_response_id is not None

@@ -2095,11 +2095,27 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                 now=instant,
                             )
                         else:
+                            # A supply that carried its shortage classification
+                            # is mapped by the single authoritative owner, so a
+                            # non-market shortage can never be terminalized as a
+                            # market conclusion. Without a classification the
+                            # existing cause is preserved exactly.
+                            supply_diagnostics = dict(
+                                getattr(supply, "diagnostics", {}) or {}
+                            )
+                            if supply_diagnostics.get("shortage_classification"):
+                                blocked_cause = _graduated_supply_terminal_cause(
+                                    supply
+                                )
+                            else:
+                                blocked_cause = (
+                                    supply.terminal_cause or "NO_EXACT_PAIR"
+                                )
                             terminalize_pre_admission_attempt(
                                 connection,
                                 attempt_id=attempt_id,
                                 state=PreAdmissionAttemptState.NO_PAIR,
-                                cause=supply.terminal_cause or "NO_EXACT_PAIR",
+                                cause=blocked_cause,
                                 now=instant,
                             )
                         complete_job(
@@ -2919,6 +2935,11 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         proposed_cycle_id=str(context["proposed_cycle_id"]),
                         proposed_cycle_ordinal=int(context["proposed_cycle_ordinal"]),
                         evaluated_at=evaluated,
+                        # The canonical execution identity of this command owns
+                        # the later-cycle source scope and exhaustion
+                        # certificate. The later-cycle selection seed carried in
+                        # ``context`` is selection input only.
+                        execution_id=selection_seed,
                         selection_seed=str(context["selection_seed"]),
                         migration_transport=migration_transport,
                         graduated_supply_kwargs=later_supply_kwargs,
