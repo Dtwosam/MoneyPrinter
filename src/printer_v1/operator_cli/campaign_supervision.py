@@ -739,6 +739,7 @@ def cleanup_campaign_supervision(
     first_terminal_cause: str,
     now: datetime | None = None,
     scheduler_operation_observer: Callable[[Mapping[str, Any]], None] | None = None,
+    lease_lock_path_override: str | Path | None = None,
 ) -> dict[str, Any]:
     """Use one transactional cleanup path, then release the exact lease."""
     if terminal_status not in _TERMINAL_STATUSES:
@@ -1009,7 +1010,12 @@ def cleanup_campaign_supervision(
             ).fetchone()[0])
     finally:
         connection.close()
-    released = _release_lock(Path(terminal_row["lease_lock_path"]), terminal_row)
+    release_path = (
+        Path(lease_lock_path_override).resolve()
+        if lease_lock_path_override is not None
+        else Path(terminal_row["lease_lock_path"]).resolve()
+    )
+    released = _release_lock(release_path, terminal_row)
     if not released:
         raise CampaignSupervisionError("operational campaign lease release failed")
     _finish_released_lease(db_path, terminal_row, released_at=timestamp)

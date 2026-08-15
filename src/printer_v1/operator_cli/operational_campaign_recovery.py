@@ -968,6 +968,8 @@ def _historical_already_reconciled(
     db_path: Path,
     artifact_root: Path,
     contract: HistoricalFourTokenRecoveryContract,
+    physical_lease_path: Path,
+    lease_path_override_enabled: bool,
 ) -> bool:
     if not db_path.is_file():
         return False
@@ -1029,7 +1031,11 @@ def _historical_already_reconciled(
             and supervision[2] == contract.original_terminal_cause
             and supervision[3] is not None
             and supervision[4] is not None
-            and not Path(str(supervision[5])).exists()
+            and (
+                lease_path_override_enabled
+                or Path(str(supervision[5])).resolve() == physical_lease_path
+            )
+            and not physical_lease_path.exists()
             and len(slots) == 2
             and all(
                 row[0] == "MANUAL_REVIEW"
@@ -1074,6 +1080,8 @@ def _historical_preflight(
     contract: HistoricalFourTokenRecoveryContract,
     live_process_probe: Callable[[str], bool],
     now: datetime,
+    physical_lease_path: Path,
+    lease_path_override_enabled: bool,
 ) -> dict[str, Any]:
     _historical_reject_sidecars(db_path)
     if _sha256(db_path) != contract.expected_current_sha256:
@@ -1398,11 +1406,20 @@ def _historical_preflight(
                 "historical active work unexpectedly exists"
             )
 
-        lease_path = Path(str(supervision["lease_lock_path"])).resolve()
-        if lease_path != (artifact_root / "campaign.lease.lock").resolve():
+        persisted_lease_path = Path(str(supervision["lease_lock_path"])).resolve()
+        expected_artifact_lease_path = (artifact_root / "campaign.lease.lock").resolve()
+        if physical_lease_path != expected_artifact_lease_path:
+            raise OperationalCampaignRecoveryError(
+                "historical lease override must equal artifact-root lease"
+            )
+        if (
+            not lease_path_override_enabled
+            and persisted_lease_path != physical_lease_path
+        ):
             raise OperationalCampaignRecoveryError(
                 "historical lease path mismatch"
             )
+        lease_path = physical_lease_path
         if not lease_path.is_file():
             raise OperationalCampaignRecoveryError(
                 "historical lease file is missing"
@@ -1468,6 +1485,7 @@ def reconcile_exact_historical_four_token_execution(
     contract: HistoricalFourTokenRecoveryContract | None = None,
     live_process_probe: Callable[[str], bool] = _default_live_process_probe,
     now: datetime | None = None,
+    lease_lock_path_override: str | Path | None = None,
 ) -> dict[str, Any]:
     """Reconcile only the exact consumed four-token execution after full proof."""
     if not operator_approved:
@@ -1479,11 +1497,24 @@ def reconcile_exact_historical_four_token_execution(
     baseline = Path(pre_campaign_backup).resolve()
     artifacts = Path(artifact_root).resolve()
     instant = now or datetime.now(timezone.utc)
+    artifact_lease_path = (artifacts / "campaign.lease.lock").resolve()
+    lease_path_override_enabled = lease_lock_path_override is not None
+    physical_lease_path = (
+        Path(lease_lock_path_override).resolve()
+        if lease_path_override_enabled
+        else artifact_lease_path
+    )
+    if lease_path_override_enabled and physical_lease_path != artifact_lease_path:
+        raise OperationalCampaignRecoveryError(
+            "historical lease override must equal artifact-root lease"
+        )
 
     if _historical_already_reconciled(
         db_path=db_path,
         artifact_root=artifacts,
         contract=active,
+        physical_lease_path=physical_lease_path,
+        lease_path_override_enabled=lease_path_override_enabled,
     ):
         return {
             "status": "V2_9_8B_HISTORICAL_FOUR_TOKEN_ALREADY_RECONCILED",
@@ -1502,6 +1533,8 @@ def reconcile_exact_historical_four_token_execution(
         contract=active,
         live_process_probe=live_process_probe,
         now=instant,
+        physical_lease_path=physical_lease_path,
+        lease_path_override_enabled=lease_path_override_enabled,
     )
 
     recovery_directory = Path(recovery_root).resolve()
@@ -1565,6 +1598,9 @@ def reconcile_exact_historical_four_token_execution(
         terminal_status="FAILED",
         first_terminal_cause=active.original_terminal_cause,
         now=instant,
+        lease_lock_path_override=(
+            physical_lease_path if lease_path_override_enabled else None
+        ),
     )
     if (
         int(cleanup.get("terminalized_discovery_batches", -1)) != 1
@@ -1708,6 +1744,8 @@ def reconcile_exact_historical_four_token_execution(
         db_path=db_path,
         artifact_root=artifacts,
         contract=active,
+        physical_lease_path=physical_lease_path,
+        lease_path_override_enabled=lease_path_override_enabled,
     ):
         raise OperationalCampaignRecoveryError(
             "historical reconciliation did not reach exact terminal state"
