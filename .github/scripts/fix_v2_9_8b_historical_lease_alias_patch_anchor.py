@@ -2,6 +2,7 @@ from pathlib import Path
 
 path = Path('.github/scripts/apply_v2_9_8b_historical_lease_alias_repair.py')
 text = path.read_text(encoding='utf-8')
+
 old = '''replace_once(
     supervision,
     \'\'\'        row = _load_exact(
@@ -85,5 +86,37 @@ new = '''replace_once(
 )
 '''
 if text.count(old) != 1:
-    raise SystemExit(f'patch-script anchor block: expected 1, found {text.count(old)}')
-path.write_text(text.replace(old, new, 1), encoding='utf-8')
+    raise SystemExit(f'patch-script cleanup anchor block: expected 1, found {text.count(old)}')
+text = text.replace(old, new, 1)
+
+label_index = text.find('    "initial replay alias",')
+if label_index < 0:
+    raise SystemExit('initial replay alias label missing')
+block_start = text.rfind('replace_once(\n    recovery,', 0, label_index)
+block_end_marker = ')\n\nreplace_once('
+block_end = text.find(block_end_marker, label_index)
+if block_start < 0 or block_end < 0:
+    raise SystemExit('initial replay alias block boundaries missing')
+block_end += 2
+replacement = '''replace_once(
+    recovery,
+    \'\'\'    if _historical_already_reconciled(
+        db_path=db_path,
+        artifact_root=artifacts,
+        contract=active,
+    ):
+        return {
+\'\'\',
+    \'\'\'    if _historical_already_reconciled(
+        db_path=db_path,
+        artifact_root=artifacts,
+        contract=active,
+        disposable_lease_alias=lease_alias,
+    ):
+        return {
+\'\'\',
+    "initial replay alias",
+)'''
+text = text[:block_start] + replacement + text[block_end:]
+
+path.write_text(text, encoding='utf-8')
