@@ -113,26 +113,34 @@ def test_exact_pre_lifecycle_zero_attempt_shape_terminalizes_with_provenance(
     )
     assert phase_a["cycle_state"].startswith("TERMINAL_")
 
-    # On the RED baseline Phase A does not yet own this marker. Insert the exact
-    # designed evidence so the assertion below isolates Phase B classification.
-    connection.execute(
-        """
-        INSERT OR IGNORE INTO printer_four_token_pre_lifecycle_terminal_provenance(
-            campaign_id,campaign_run_id,authoritative_factory_run_id,
-            cycle_id,cycle_ordinal,proposed_cycle_ordinal,terminal_phase,
-            first_terminal_cause,recorded_at
-        ) VALUES (?,?,?,?,1,2,'CAMPAIGN_PRE_LIFECYCLE',?,?)
-        """,
-        (
-            CAMPAIGN_ID,
-            CAMPAIGN_RUN_ID,
-            FACTORY_RUN_ID,
-            CYCLE_ID,
-            "RUNNER_EXCEPTION",
-            START.isoformat(),
-        ),
-    )
-    connection.commit()
+    # Current RED code does not record the marker. Insert it only when Phase A
+    # did not; after the repair the real migration forbids post-terminal inserts,
+    # so this branch must not execute on GREEN.
+    marker_count = connection.execute(
+        "SELECT COUNT(*) FROM printer_four_token_pre_lifecycle_terminal_provenance "
+        "WHERE campaign_id=? AND campaign_run_id=? "
+        "AND authoritative_factory_run_id=? AND proposed_cycle_ordinal=2",
+        (CAMPAIGN_ID, CAMPAIGN_RUN_ID, FACTORY_RUN_ID),
+    ).fetchone()[0]
+    if marker_count == 0:
+        connection.execute(
+            """
+            INSERT INTO printer_four_token_pre_lifecycle_terminal_provenance(
+                campaign_id,campaign_run_id,authoritative_factory_run_id,
+                cycle_id,cycle_ordinal,proposed_cycle_ordinal,terminal_phase,
+                first_terminal_cause,recorded_at
+            ) VALUES (?,?,?,?,1,2,'CAMPAIGN_PRE_LIFECYCLE',?,?)
+            """,
+            (
+                CAMPAIGN_ID,
+                CAMPAIGN_RUN_ID,
+                FACTORY_RUN_ID,
+                CYCLE_ID,
+                "RUNNER_EXCEPTION",
+                START.isoformat(),
+            ),
+        )
+        connection.commit()
 
     assert connection.execute(
         "SELECT COUNT(*) FROM printer_pre_admission_discovery_attempts "
