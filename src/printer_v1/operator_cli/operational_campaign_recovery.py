@@ -671,6 +671,37 @@ _HISTORICAL_FOUR_TOKEN_MINTS = (
 )
 _HISTORICAL_FOUR_TOKEN_QUEUE_IDS = (58, 59)
 _HISTORICAL_FOUR_TOKEN_SCHEDULER_JOB_IDS = tuple(range(2011, 2021))
+_HISTORICAL_DISCOVERY_BATCH_ID = (
+    "discovery-batch:20260814T172224Z-490856f405bf-campaign:"
+    "20260814T172224Z-490856f405bf-campaign-run:"
+    "20260814T172224Z-490856f405bf-cycle"
+)
+_HISTORICAL_DISCOVERY_BATCH_CANONICAL_HASH = (
+    "4071014af1e602c399482f07b1da357dad9ec48474edc67a6a787945838f0443"
+)
+_HISTORICAL_DISCOVERY_BATCH_CYCLE_SEED_HASH = (
+    "092dcebfe80c993630c94d6e5b6e29fefc84194acf64e50e6b69121ec98c7288"
+)
+_HISTORICAL_DISCOVERY_BATCH_SELECTION_SEED_IDENTITY = (
+    "b4c15ed2f729d353afa0d3e6cc1ae600b9fbfc37cbd9c35733be5a30fdffb4c7"
+)
+_HISTORICAL_DISCOVERY_BATCH_POLICY_VERSION = (
+    "V2-9.8B-FOUR-TOKEN-BOUNDED-CAPACITY-PROOF-V1"
+)
+_HISTORICAL_DISCOVERY_BATCH_PROVIDER_CONTRACTS_JSON = (
+    '{"direct":"V2-9.7E.11","geckoterminal":"V2-9.7D.7B.4B"}'
+)
+_HISTORICAL_DISCOVERY_BATCH_GIT_PROVENANCE = "live-operational:V2-9.7E.11"
+_HISTORICAL_DISCOVERY_WORK_TYPES = (
+    "DISCOVERY_PUMPFUN_LATEST",
+    "DISCOVERY_IDENTITY_MERGE",
+    "DISCOVERY_ORIGIN_VERIFICATION",
+    "DISCOVERY_PUMPSWAP_CONFIRMATION",
+    "DISCOVERY_FIXED_ELIGIBILITY_GATES",
+    "DISCOVERY_UNIFORM_SELECTION",
+    "DISCOVERY_TRACKING_HANDOFF_SLOT_1",
+    "DISCOVERY_TRACKING_HANDOFF_SLOT_2",
+)
 _HISTORICAL_FOUR_TOKEN_ARTIFACT_SHA256 = {
     "application-marker.json": "1e0038b4515156244dad586d6d90692857dc53ab12f7df67d4b03a981ea4665c",
     "git-provenance-manifest.json": "ee76043850f7569fe21d05f2770e51ac64e5de36f39362c962f09f7b7ae73f18",
@@ -694,6 +725,28 @@ class HistoricalFourTokenRecoveryContract:
     expected_queue_ids: tuple[int, int] = _HISTORICAL_FOUR_TOKEN_QUEUE_IDS
     expected_scheduler_job_ids: tuple[int, ...] = (
         _HISTORICAL_FOUR_TOKEN_SCHEDULER_JOB_IDS
+    )
+    expected_discovery_batch_id: str = _HISTORICAL_DISCOVERY_BATCH_ID
+    expected_discovery_batch_canonical_hash: str = (
+        _HISTORICAL_DISCOVERY_BATCH_CANONICAL_HASH
+    )
+    expected_discovery_batch_cycle_seed_hash: str = (
+        _HISTORICAL_DISCOVERY_BATCH_CYCLE_SEED_HASH
+    )
+    expected_discovery_batch_selection_seed_identity: str = (
+        _HISTORICAL_DISCOVERY_BATCH_SELECTION_SEED_IDENTITY
+    )
+    expected_discovery_batch_policy_version: str = (
+        _HISTORICAL_DISCOVERY_BATCH_POLICY_VERSION
+    )
+    expected_discovery_batch_provider_contracts_json: str = (
+        _HISTORICAL_DISCOVERY_BATCH_PROVIDER_CONTRACTS_JSON
+    )
+    expected_discovery_batch_git_provenance: str = (
+        _HISTORICAL_DISCOVERY_BATCH_GIT_PROVENANCE
+    )
+    expected_discovery_work_types: tuple[str, ...] = (
+        _HISTORICAL_DISCOVERY_WORK_TYPES
     )
     expected_artifact_sha256: Mapping[str, str] = field(
         default_factory=lambda: dict(_HISTORICAL_FOUR_TOKEN_ARTIFACT_SHA256)
@@ -811,6 +864,7 @@ def _historical_identity_maps(
         "printer_memory_factory_campaign_supervision": "supervision_id",
         "printer_tracking_queue": "id",
         "printer_memory_factory_runs": "run_id",
+        "printer_discovery_batches": "discovery_batch_id",
     }
     result: dict[str, dict[str, dict[str, Any]]] = {}
     for table, identity_column in identities.items():
@@ -850,6 +904,62 @@ def _historical_provenance_rows(
             "WHERE campaign_id=? AND campaign_run_id=?",
             (contract.campaign_id, contract.run_id),
         ).fetchone()[0]
+    )
+
+
+def _historical_discovery_batch_rows(
+    connection: sqlite3.Connection,
+    contract: HistoricalFourTokenRecoveryContract,
+) -> list[sqlite3.Row]:
+    return connection.execute(
+        "SELECT discovery_batch_id,campaign_id,configuration_id,run_id,cycle_id,"
+        "canonical_hash,cycle_seed_hash,campaign_selection_seed_identity,"
+        "policy_version,provider_contract_versions_json,git_provenance_identity,"
+        "pump_cursor_slot,pump_cursor_signature,pump_continuity_state,"
+        "batch_state,first_terminal_cause,terminal_at "
+        "FROM printer_discovery_batches WHERE campaign_id=? AND run_id=? "
+        "ORDER BY discovery_batch_id",
+        (contract.campaign_id, contract.run_id),
+    ).fetchall()
+
+
+def _historical_discovery_batch_identity_matches(
+    row: sqlite3.Row,
+    contract: HistoricalFourTokenRecoveryContract,
+) -> bool:
+    return tuple(row[:14]) == (
+        contract.expected_discovery_batch_id,
+        contract.campaign_id,
+        contract.configuration_id,
+        contract.run_id,
+        contract.cycle_id,
+        contract.expected_discovery_batch_canonical_hash,
+        contract.expected_discovery_batch_cycle_seed_hash,
+        contract.expected_discovery_batch_selection_seed_identity,
+        contract.expected_discovery_batch_policy_version,
+        contract.expected_discovery_batch_provider_contracts_json,
+        contract.expected_discovery_batch_git_provenance,
+        None,
+        None,
+        "UNKNOWN",
+    )
+
+
+def _historical_expected_discovery_work_rows(
+    contract: HistoricalFourTokenRecoveryContract,
+) -> tuple[tuple[object, ...], ...]:
+    return tuple(
+        (
+            f"work:{work_type}:{contract.expected_discovery_batch_id}",
+            job_id,
+            work_type,
+            "SUCCEEDED",
+        )
+        for job_id, work_type in zip(
+            range(2011, 2019),
+            contract.expected_discovery_work_types,
+            strict=True,
+        )
     )
 
 
@@ -900,6 +1010,8 @@ def _historical_already_reconciled(
             "FROM printer_memory_factory_runs WHERE run_id=?",
             (contract.factory_run_id,),
         ).fetchone()
+        discovery_batches = _historical_discovery_batch_rows(connection, contract)
+        discovery_batch = discovery_batches[0] if len(discovery_batches) == 1 else None
         exact = bool(
             campaign is not None
             and tuple(campaign) == (
@@ -938,6 +1050,13 @@ def _historical_already_reconciled(
             and factory[0] == "SAFE_STOPPED"
             and factory[1] == contract.original_terminal_cause
             and factory[2] is not None
+            and discovery_batch is not None
+            and _historical_discovery_batch_identity_matches(
+                discovery_batch, contract
+            )
+            and discovery_batch[14] == "TERMINAL_FAILED"
+            and discovery_batch[15] == contract.original_terminal_cause
+            and discovery_batch[16] is not None
             and _historical_provenance_rows(connection, contract) == 0
         )
     finally:
@@ -1128,20 +1247,52 @@ def _historical_preflight(
                     "historical tracking queue state drifted"
                 )
 
-        nonterminal_discovery_batches = 0
-        if _historical_table_exists(connection, "printer_discovery_batches"):
-            nonterminal_discovery_batches = int(
-                connection.execute(
-                    "SELECT COUNT(*) FROM printer_discovery_batches "
-                    "WHERE campaign_id=? AND run_id=? "
-                    "AND batch_state NOT LIKE 'TERMINAL_%'",
-                    (contract.campaign_id, contract.run_id),
-                ).fetchone()[0]
-            )
-        if nonterminal_discovery_batches:
+        discovery_batches = _historical_discovery_batch_rows(connection, contract)
+        if len(discovery_batches) != 1:
             raise OperationalCampaignRecoveryError(
-                "historical nonterminal discovery batch exists"
+                "historical discovery batch count mismatch"
             )
+        discovery_batch = discovery_batches[0]
+        if (
+            not _historical_discovery_batch_identity_matches(discovery_batch, contract)
+            or discovery_batch[14] != "DISCOVERING"
+            or discovery_batch[15] is not None
+            or discovery_batch[16] is not None
+        ):
+            raise OperationalCampaignRecoveryError(
+                "historical discovery batch identity or pre-state drifted"
+            )
+        nonterminal_discovery_batches = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM printer_discovery_batches "
+                "WHERE batch_state NOT LIKE 'TERMINAL_%'"
+            ).fetchone()[0]
+        )
+        if nonterminal_discovery_batches != 1:
+            raise OperationalCampaignRecoveryError(
+                "historical discovery batch nonterminal cardinality drifted"
+            )
+        discovery_work = connection.execute(
+            "SELECT discovery_work_id,scheduler_job_id,work_type,work_state "
+            "FROM printer_discovery_work WHERE discovery_batch_id=? "
+            "ORDER BY scheduler_job_id",
+            (contract.expected_discovery_batch_id,),
+        ).fetchall()
+        if tuple(tuple(row) for row in discovery_work) != (
+            _historical_expected_discovery_work_rows(contract)
+        ):
+            raise OperationalCampaignRecoveryError(
+                "historical discovery batch linked work drifted"
+            )
+        discovery_batch_before_row = connection.execute(
+            "SELECT * FROM printer_discovery_batches WHERE discovery_batch_id=?",
+            (contract.expected_discovery_batch_id,),
+        ).fetchone()
+        if discovery_batch_before_row is None:
+            raise OperationalCampaignRecoveryError(
+                "historical discovery batch disappeared during preflight"
+            )
+        discovery_batch_before = dict(discovery_batch_before_row)
 
         zero_counts = {
             "windows": int(
@@ -1303,6 +1454,7 @@ def _historical_preflight(
         "identity_maps": identity_maps,
         "slot_ids": slot_ids,
         "zero_counts": zero_counts,
+        "discovery_batch_before": discovery_batch_before,
     }
 
 
@@ -1414,6 +1566,13 @@ def reconcile_exact_historical_four_token_execution(
         first_terminal_cause=active.original_terminal_cause,
         now=instant,
     )
+    if (
+        int(cleanup.get("terminalized_discovery_batches", -1)) != 1
+        or int(cleanup.get("cancelled_discovery_work", -1)) != 0
+    ):
+        raise OperationalCampaignRecoveryError(
+            "historical discovery cleanup rowcount mismatch"
+        )
     reconciliation = reconcile_campaign_terminal(
         db_path,
         campaign_id=active.campaign_id,
@@ -1449,6 +1608,9 @@ def reconcile_exact_historical_four_token_execution(
                 str(item) for item in active.expected_queue_ids
             },
             "printer_memory_factory_runs": {active.factory_run_id},
+            "printer_discovery_batches": {
+                active.expected_discovery_batch_id
+            },
         }
         if changed != expected_changed:
             raise OperationalCampaignRecoveryError(
@@ -1506,6 +1668,15 @@ def reconcile_exact_historical_four_token_execution(
                 (active.campaign_id, active.run_id),
             ).fetchone()[0]
         )
+        discovery_batch_after_row = connection.execute(
+            "SELECT * FROM printer_discovery_batches WHERE discovery_batch_id=?",
+            (active.expected_discovery_batch_id,),
+        ).fetchone()
+        if discovery_batch_after_row is None:
+            raise OperationalCampaignRecoveryError(
+                "historical discovery batch missing after reconciliation"
+            )
+        discovery_batch_after = dict(discovery_batch_after_row)
     finally:
         connection.close()
 
@@ -1517,6 +1688,22 @@ def reconcile_exact_historical_four_token_execution(
         raise OperationalCampaignRecoveryError(
             "historical reconciliation left forbidden active/provenance residue"
         )
+    if (
+        discovery_batch_after.get("batch_state") != "TERMINAL_FAILED"
+        or discovery_batch_after.get("first_terminal_cause")
+        != active.original_terminal_cause
+        or discovery_batch_after.get("terminal_at") is None
+    ):
+        raise OperationalCampaignRecoveryError(
+            "historical discovery batch terminal state mismatch"
+        )
+    for key, before_value in preflight["discovery_batch_before"].items():
+        if key in {"batch_state", "first_terminal_cause", "terminal_at"}:
+            continue
+        if discovery_batch_after.get(key) != before_value:
+            raise OperationalCampaignRecoveryError(
+                f"historical discovery batch immutable field changed: {key}"
+            )
     if not _historical_already_reconciled(
         db_path=db_path,
         artifact_root=artifacts,

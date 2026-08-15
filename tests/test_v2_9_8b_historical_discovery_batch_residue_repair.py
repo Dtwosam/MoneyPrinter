@@ -160,8 +160,8 @@ def test_exact_historical_batch_is_tenth_approved_reconciliation_identity(
 
     assert result["status"] == "V2_9_8B_HISTORICAL_FOUR_TOKEN_RECONCILED"
     assert result["changed_database_row_identities"] == 10
-    assert result["cleanup"]["discovery_batch_rowcount"] == 1
-    assert result["cleanup"]["discovery_work_rowcount"] == 0
+    assert result["cleanup"]["terminalized_discovery_batches"] == 1
+    assert result["cleanup"]["cancelled_discovery_work"] == 0
 
     after = _batch_row(db)
     assert after["batch_state"] == "TERMINAL_FAILED"
@@ -189,12 +189,21 @@ def test_exact_historical_batch_identity_drift_fails_before_mutation(
 
 
 def test_already_reconciled_requires_terminal_historical_batch(tmp_path: Path) -> None:
-    fixture = _fixture_module()
-    db, pre_campaign, root, contract = fixture._prepare_exact_residue(tmp_path)
+    fixture, db, pre_campaign, root, contract = _prepare_exact_batch_residue(tmp_path)
     first = fixture._run_recovery(db, pre_campaign, root, contract, tmp_path)
     assert first["status"] == "V2_9_8B_HISTORICAL_FOUR_TOKEN_RECONCILED"
 
-    _insert_exact_batch_and_work(db, fixture)
+    connection = sqlite3.connect(db)
+    try:
+        connection.execute(
+            "UPDATE printer_discovery_batches "
+            "SET batch_state='DISCOVERING',first_terminal_cause=NULL,terminal_at=NULL "
+            "WHERE discovery_batch_id=?",
+            (BATCH_ID,),
+        )
+        connection.commit()
+    finally:
+        connection.close()
     rebound = type(contract)(
         expected_current_sha256=_sha256(db),
         pre_campaign_backup_sha256=contract.pre_campaign_backup_sha256,

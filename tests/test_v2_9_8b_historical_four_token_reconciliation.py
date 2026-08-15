@@ -96,7 +96,7 @@ def _artifact_payloads() -> dict[str, bytes]:
     }
 
 
-def _prepare_exact_residue(tmp_path: Path):
+def _prepare_exact_residue(tmp_path: Path, *, include_discovery_batch: bool = False):
     db = tmp_path / "historical.sqlite3"
     apply_migrations(db)
     _downgrade_fixture_to_055(db)
@@ -291,6 +291,72 @@ def _prepare_exact_residue(tmp_path: Path):
                 START.isoformat(),
             ),
         )
+    if include_discovery_batch:
+        batch_id = (
+            "discovery-batch:20260814T172224Z-490856f405bf-campaign:"
+            "20260814T172224Z-490856f405bf-campaign-run:"
+            "20260814T172224Z-490856f405bf-cycle"
+        )
+        work_types = (
+            "DISCOVERY_PUMPFUN_LATEST",
+            "DISCOVERY_IDENTITY_MERGE",
+            "DISCOVERY_ORIGIN_VERIFICATION",
+            "DISCOVERY_PUMPSWAP_CONFIRMATION",
+            "DISCOVERY_FIXED_ELIGIBILITY_GATES",
+            "DISCOVERY_UNIFORM_SELECTION",
+            "DISCOVERY_TRACKING_HANDOFF_SLOT_1",
+            "DISCOVERY_TRACKING_HANDOFF_SLOT_2",
+        )
+        connection.execute(
+            """INSERT INTO printer_discovery_batches(
+                   discovery_batch_id,campaign_id,configuration_id,run_id,cycle_id,
+                   cycle_cutoff,policy_version,provider_contract_versions_json,
+                   git_provenance_identity,campaign_selection_seed_identity,
+                   cycle_seed_hash,pump_cursor_slot,pump_cursor_signature,
+                   pump_continuity_state,batch_state,canonical_hash,created_at
+               ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'UNKNOWN','DISCOVERING',?,?)""",
+            (
+                batch_id,
+                CAMPAIGN_ID,
+                CONFIGURATION_ID,
+                RUN_ID,
+                CYCLE_ID,
+                START.isoformat(),
+                "V2-9.8B-FOUR-TOKEN-BOUNDED-CAPACITY-PROOF-V1",
+                '{"direct":"V2-9.7E.11","geckoterminal":"V2-9.7D.7B.4B"}',
+                "live-operational:V2-9.7E.11",
+                "b4c15ed2f729d353afa0d3e6cc1ae600b9fbfc37cbd9c35733be5a30fdffb4c7",
+                "092dcebfe80c993630c94d6e5b6e29fefc84194acf64e50e6b69121ec98c7288",
+                None,
+                None,
+                "4071014af1e602c399482f07b1da357dad9ec48474edc67a6a787945838f0443",
+                START.isoformat(),
+            ),
+        )
+        for index, (job_id, work_type) in enumerate(
+            zip(range(2011, 2019), work_types, strict=True), start=1
+        ):
+            connection.execute(
+                """INSERT INTO printer_discovery_work(
+                       discovery_work_id,discovery_batch_id,campaign_id,run_id,cycle_id,
+                       scheduler_job_id,work_type,work_state,deadline_at,
+                       first_terminal_cause,terminal_at,created_at,updated_at
+                   ) VALUES (?,?,?,?,?,?,?,'SUCCEEDED',?,?,?,?,?)""",
+                (
+                    f"work:{work_type}:{batch_id}",
+                    batch_id,
+                    CAMPAIGN_ID,
+                    RUN_ID,
+                    CYCLE_ID,
+                    job_id,
+                    work_type,
+                    START.isoformat(),
+                    f"HISTORICAL_DISCOVERY_WORK_SUCCEEDED_{index}",
+                    START.isoformat(),
+                    START.isoformat(),
+                    START.isoformat(),
+                ),
+            )
     connection.commit()
     connection.close()
 
@@ -325,7 +391,9 @@ def _run_recovery(db, pre_campaign, root, contract, tmp_path, **overrides):
 
 
 def test_exact_historical_reconciliation_closes_only_approved_residue(tmp_path: Path) -> None:
-    db, pre_campaign, root, contract = _prepare_exact_residue(tmp_path)
+    db, pre_campaign, root, contract = _prepare_exact_residue(
+        tmp_path, include_discovery_batch=True
+    )
     locked_before = _locked_snapshot(db)
     result = _run_recovery(db, pre_campaign, root, contract, tmp_path)
 
@@ -333,7 +401,7 @@ def test_exact_historical_reconciliation_closes_only_approved_residue(tmp_path: 
     assert result["source_calls"] == 0
     assert result["scheduler_runtime_calls"] == 0
     assert result["migration_056_provenance_rows"] == 0
-    assert result["changed_database_row_identities"] == 9
+    assert result["changed_database_row_identities"] == 10
     assert not (root / "campaign.lease.lock").exists()
 
     connection = sqlite3.connect(db)
@@ -431,7 +499,9 @@ def test_exact_historical_reconciliation_rejects_queue_drift_and_live_process(tm
 
 
 def test_exact_historical_reconciliation_is_idempotent_without_second_mutation(tmp_path: Path) -> None:
-    db, pre_campaign, root, contract = _prepare_exact_residue(tmp_path)
+    db, pre_campaign, root, contract = _prepare_exact_residue(
+        tmp_path, include_discovery_batch=True
+    )
     first = _run_recovery(db, pre_campaign, root, contract, tmp_path)
     first_sha = _sha256(db)
     second = _run_recovery(
