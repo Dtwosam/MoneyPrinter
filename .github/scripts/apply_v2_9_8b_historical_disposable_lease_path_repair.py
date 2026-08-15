@@ -51,8 +51,8 @@ replace_once(
 )
 replace_once(
     recovery,
-    '''    live_process_probe: Callable[[str], bool] = _default_live_process_probe,\n    now: datetime | None = None,\n) -> dict[str, Any]:\n''',
-    '''    live_process_probe: Callable[[str], bool] = _default_live_process_probe,\n    now: datetime | None = None,\n    lease_lock_path_override: str | Path | None = None,\n) -> dict[str, Any]:\n''',
+    '''def reconcile_exact_historical_four_token_execution(\n    *,\n    operator_approved: bool,\n    current_db: str | Path,\n    pre_campaign_backup: str | Path,\n    artifact_root: str | Path,\n    recovery_root: str | Path,\n    contract: HistoricalFourTokenRecoveryContract | None = None,\n    live_process_probe: Callable[[str], bool] = _default_live_process_probe,\n    now: datetime | None = None,\n) -> dict[str, Any]:\n''',
+    '''def reconcile_exact_historical_four_token_execution(\n    *,\n    operator_approved: bool,\n    current_db: str | Path,\n    pre_campaign_backup: str | Path,\n    artifact_root: str | Path,\n    recovery_root: str | Path,\n    contract: HistoricalFourTokenRecoveryContract | None = None,\n    live_process_probe: Callable[[str], bool] = _default_live_process_probe,\n    now: datetime | None = None,\n    lease_lock_path_override: str | Path | None = None,\n) -> dict[str, Any]:\n''',
     "reconciliation signature",
 )
 replace_once(
@@ -63,14 +63,14 @@ replace_once(
 )
 replace_once(
     recovery,
-    '''        live_process_probe=live_process_probe,\n        now=instant,\n    )\n''',
-    '''        live_process_probe=live_process_probe,\n        now=instant,\n        physical_lease_path=physical_lease_path,\n        lease_path_override_enabled=lease_path_override_enabled,\n    )\n''',
+    '''        live_process_probe=live_process_probe,\n        now=instant,\n    )\n\n    recovery_directory = Path(recovery_root).resolve()\n''',
+    '''        live_process_probe=live_process_probe,\n        now=instant,\n        physical_lease_path=physical_lease_path,\n        lease_path_override_enabled=lease_path_override_enabled,\n    )\n\n    recovery_directory = Path(recovery_root).resolve()\n''',
     "preflight call",
 )
 replace_once(
     recovery,
-    '''        first_terminal_cause=active.original_terminal_cause,\n        now=instant,\n    )\n''',
-    '''        first_terminal_cause=active.original_terminal_cause,\n        now=instant,\n        lease_lock_path_override=(\n            physical_lease_path if lease_path_override_enabled else None\n        ),\n    )\n''',
+    '''        first_terminal_cause=active.original_terminal_cause,\n        now=instant,\n    )\n    if (\n        int(cleanup.get("terminalized_discovery_batches", -1)) != 1\n''',
+    '''        first_terminal_cause=active.original_terminal_cause,\n        now=instant,\n        lease_lock_path_override=(\n            physical_lease_path if lease_path_override_enabled else None\n        ),\n    )\n    if (\n        int(cleanup.get("terminalized_discovery_batches", -1)) != 1\n''',
     "cleanup call physical lease",
 )
 replace_once(
