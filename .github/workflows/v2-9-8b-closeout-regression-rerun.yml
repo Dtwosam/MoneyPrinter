@@ -8,6 +8,7 @@ on:
 permissions:
   contents: read
 
+# Final closeout rerun after migrating the stale integrated-readiness fixture.
 jobs:
   broad-regression:
     runs-on: ubuntu-latest
