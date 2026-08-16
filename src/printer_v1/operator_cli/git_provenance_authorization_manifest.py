@@ -68,6 +68,13 @@ MIGRATION_055_PACKAGE_ROOT = "operator-runs/v2-9-8b-migration-055-application"
 MIGRATION_056_PACKAGE_KIND = "MIGRATION_056_EVIDENCE"
 MIGRATION_056_PACKAGE_ROOT = "operator-runs/v2-9-8b-migration-056-application"
 
+# The controlled migration-057 application is the current schema transition for
+# the four-token proof after persistent pre-lifecycle discovery-refresh ownership
+# was added. It is its own current-evidence identity and never renames or absorbs
+# the migration-050, migration-055, or migration-056 evidence contracts.
+MIGRATION_057_PACKAGE_KIND = "MIGRATION_057_EVIDENCE"
+MIGRATION_057_PACKAGE_ROOT = "operator-runs/v2-9-8b-migration-057-application"
+
 # Preserved historical schema-transition evidence. This class explains how the
 # current database evolved; it never becomes current schema-transition authority
 # and never carries authorization reuse authority.
@@ -155,17 +162,17 @@ FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE = GitAuthorizationProfile(
         "operator-runs/v2-9-8b-standard-four-hour-final-authorization",
         "operator-runs/v2-9-8b-four-token-final-authorization",
     ),
-    migration_package_root=MIGRATION_056_PACKAGE_ROOT,
-    migration_package_kind=MIGRATION_056_PACKAGE_KIND,
+    migration_package_root=MIGRATION_057_PACKAGE_ROOT,
+    migration_package_kind=MIGRATION_057_PACKAGE_KIND,
     # Migration 050 remains the one declared *required* historical package.
     #
-    # Migration 055 is deliberately NOT declared here. Every entry in this tuple
-    # is mandatory for every manifest build, so declaring 055 would newly require
-    # its operator evidence to exist forever — a broader contract change than the
-    # approved 056 admission repair, and one that would fail closed if that
-    # untracked operator evidence were ever pruned. 055 keeps its own constants
-    # and identity above; promoting it to a required historical package is a
-    # separate, explicitly deferred decision.
+    # Migrations 055 and 056 are deliberately NOT declared here. Every entry in
+    # this tuple is mandatory for every manifest build, so declaring either would
+    # newly require its operator evidence to exist forever — a broader contract
+    # change than this 057 proof re-readiness repair, and one that would fail
+    # closed if that untracked operator evidence were ever pruned. Their distinct
+    # constants and identities remain preserved above; promoting either to a
+    # required historical package is a separate, explicitly deferred decision.
     historical_migration_packages=(
         HistoricalMigrationPackage(
             package_root=MIGRATION_PACKAGE_ROOT,

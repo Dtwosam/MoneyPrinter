@@ -40,17 +40,19 @@ from printer_v1.sources.operational_source_contracts import (
 ZERO_STATE_SCHEMA_VERSION = "PRINTER_V1_FOUR_TOKEN_PROOF_ZERO_STATE_GATE_V1"
 # Exact authorized schema for a bounded four-token proof. Migration 056 owns the
 # immutable pre-lifecycle terminal provenance that
-# ``ONE_CYCLE_PRE_LIFECYCLE_ZERO_ATTEMPT`` requires; at head 055 that shape fails
-# closed on a missing provenance table and strands campaign ownership instead of
-# terminalizing it.
+# ``ONE_CYCLE_PRE_LIFECYCLE_ZERO_ATTEMPT`` requires. Migration 057 adds durable
+# Scheduler-owned pre-lifecycle discovery-refresh work, so proof admission must
+# bind the 057 head and prove that no live RUNNING refresh ownership remains.
+# Historical terminal refresh-work rows remain evidence and are never deleted or
+# counted as active ownership.
 #
 # These are deliberately explicit literals, never derived from the migrations
 # directory. Adding a migration must not silently re-authorize bounded-proof
 # admission: a future head requires its own gate review and an explicit re-pin
 # here. The canonical migration-ledger drift guard still runs independently and
 # is not replaced by this pin.
-REQUIRED_MIGRATION_COUNT = 56
-REQUIRED_MIGRATION_HEAD = "056_four_token_pre_lifecycle_terminal_provenance.sql"
+REQUIRED_MIGRATION_COUNT = 57
+REQUIRED_MIGRATION_HEAD = "057_pre_lifecycle_discovery_refresh_work.sql"
 LOCKED_LONG_WINDOWS = LOCKED_WINDOWS
 
 #: Every domain that must be exactly zero before this proof may start. Each
@@ -112,6 +114,13 @@ _ZERO_STATE_QUERIES: tuple[tuple[str, str], ...] = (
         "SELECT COUNT(*) FROM printer_pre_admission_discovery_attempts "
         "WHERE attempt_state NOT IN "
         "('NO_PAIR','BLOCKED','FAILED','CANCELLED','CONSUMED')",
+    ),
+    # Migration 057 preserves terminal refresh-work history by design. Only a
+    # live RUNNING row owns refresh work and therefore blocks a fresh proof.
+    (
+        "active_pre_lifecycle_discovery_refresh_work",
+        "SELECT COUNT(*) FROM printer_pre_lifecycle_discovery_refresh_work "
+        "WHERE work_state = 'RUNNING'",
     ),
     (
         "active_scheduler_jobs",
