@@ -1,0 +1,79 @@
+name: V2-9.8B differential broad regression
+
+on:
+  push:
+    branches:
+      - agent/v2-9-8b-broad-regression-diagnostic
+
+permissions:
+  contents: read
+
+jobs:
+  differential:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Install dependencies
+        shell: bash
+        run: python -m pip install -q -e . pytest pytest-timeout
+      - name: Fetch approved design baseline
+        shell: bash
+        run: git fetch --depth=1 origin c9fb16b8f214e4e527f574e7c7dcbeb5cf351455
+      - name: Compare current failures to baseline failures
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          BASE=c9fb16b8f214e4e527f574e7c7dcbeb5cf351455
+          CURRENT="$GITHUB_SHA"
+          mapfile -t FILES < <(git ls-tree -r --name-only "$BASE" tests | python -c '
+          import os, sys
+          shard = int(os.environ["SHARD"])
+          excluded = {
+              "tests/test_v2_9_8b_window_15m_final_integrated_readiness_repair.py",
+              "tests/test_post_lane10_lane_u_cadence_policy.py",
+          }
+          files = [line.strip() for line in sys.stdin if line.strip().startswith("tests/test") and line.strip().endswith(".py") and line.strip() not in excluded]
+          for i, path in enumerate(files):
+              if i % 16 == shard:
+                  print(path)
+          ')
+          echo "Differential shard ${SHARD}: ${#FILES[@]} baseline test files"
+          git worktree add --detach /tmp/baseline "$BASE"
+          set +e
+          PYTHONPATH=src python -m pytest -q --timeout=60 --timeout-method=thread --junitxml=/tmp/current.xml "${FILES[@]}"
+          CURRENT_RC=$?
+          (cd /tmp/baseline && PYTHONPATH=src python -m pytest -q --timeout=60 --timeout-method=thread --junitxml=/tmp/baseline.xml "${FILES[@]}")
+          BASE_RC=$?
+          set -e
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          def failures(path):
+              root = ET.parse(path).getroot()
+              out = set()
+              for case in root.iter("testcase"):
+                  if case.find("failure") is not None or case.find("error") is not None:
+                      classname = case.attrib.get("classname", "")
+                      name = case.attrib.get("name", "")
+                      out.add(f"{classname}::{name}")
+              return out
+          current = failures("/tmp/current.xml")
+          baseline = failures("/tmp/baseline.xml")
+          new = sorted(current - baseline)
+          resolved = sorted(baseline - current)
+          print("CURRENT_FAILURES", sorted(current))
+          print("BASELINE_FAILURES", sorted(baseline))
+          print("NEW_FAILURES", new)
+          print("RESOLVED_BASELINE_FAILURES", resolved)
+          if new:
+              raise SystemExit("CURRENT_BRANCH_INTRODUCED_NEW_BROAD_REGRESSION_FAILURES")
+          PY
+          git diff --check "$BASE" "$CURRENT"
