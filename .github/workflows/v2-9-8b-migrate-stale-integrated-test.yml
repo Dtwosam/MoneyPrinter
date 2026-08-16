@@ -39,6 +39,18 @@ jobs:
               raise SystemExit('import insertion anchor not found')
           text = text.replace(insert_after, insert_after + helper, 1)
 
+          old_ctx = '''                    "discovery_label": "PUMP_GRADUATED",\n                }'''
+          new_ctx = '''                    "discovery_label": "PUMP_GRADUATED",\n                    "e2q_audited": True,\n                    "snapshot_id": 1,\n                }'''
+          if old_ctx not in text:
+              raise SystemExit('initial fingerprint context anchor not found')
+          text = text.replace(old_ctx, new_ctx, 1)
+
+          old_window = '''                   ) VALUES (1, 1, 'WINDOW_15M', ?, ?, 'CLEAN_MEMORY', 'CLEAN_DATA', 0,\n                             'WINDOW_CLOSED', 'SUSTAINED_PUMP', 'CLEAN_MEMORY', ?, 'test')'''
+          new_window = '''                   ) VALUES (1, 1, 'WINDOW_15M', ?, ?, 'PARTIAL_MEMORY', 'CLEAN_DATA', 0,\n                             'WINDOW_CLOSED', 'SUSTAINED_PUMP', 'PARTIAL_MEMORY', ?, 'test')'''
+          if old_window not in text:
+              raise SystemExit('stale clean-window fixture anchor not found')
+          text = text.replace(old_window, new_window, 1)
+
           episode_start_marker = '''            conn.execute(\n                \"\"\"INSERT INTO printer_episodes ('''
           episode_start = text.find(episode_start_marker)
           if episode_start < 0:
@@ -48,6 +60,12 @@ jobs:
           if commit_at < 0:
               raise SystemExit('episode fixture end anchor not found')
           text = text[:episode_start] + text[commit_at:]
+
+          old_unknown_ctx = '''(json.dumps({"tracking_lane": "TRACK_NORMAL"}),),'''
+          new_unknown_ctx = '''(json.dumps({"tracking_lane": "TRACK_NORMAL", "e2q_audited": True, "snapshot_id": 1}),),'''
+          if old_unknown_ctx not in text:
+              raise SystemExit('unknown-source context anchor not found')
+          text = text.replace(old_unknown_ctx, new_unknown_ctx, 1)
 
           old_call = '_attach_fingerprint_for_episode(self.db, episode_id=1, window_id=1)'
           if text.count(old_call) != 2:
