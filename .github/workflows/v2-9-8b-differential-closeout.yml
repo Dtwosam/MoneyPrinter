@@ -33,7 +33,7 @@ jobs:
       matrix:
         shard: [0, 1, 2, 3, 4, 5]
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -46,65 +46,88 @@ jobs:
           BASELINE: c9fb16b8f214e4e527f574e7c7dcbeb5cf351455
         run: |
           set -euo pipefail
-          python -m pip install -q -e . pytest
+          python -m pip install -q -e . pytest pytest-timeout
           python -m compileall -q src/printer_v1
           git worktree add --detach /tmp/v298b-baseline "$BASELINE"
 
-          mapfile -t FILES < <(find tests -maxdepth 1 -type f -name 'test*.py' | sort)
-          new_regressions=0
-          baseline_debt=0
-          current_passes=0
-          selected=0
+          mapfile -t ALL_FILES < <(find tests -maxdepth 1 -type f -name 'test*.py' | sort)
+          CURRENT_FILES=()
+          BASELINE_FILES=()
           idx=0
-
-          for file in "${FILES[@]}"; do
-            if (( idx % SHARD_COUNT != SHARD )); then
-              idx=$((idx + 1))
-              continue
+          for file in "${ALL_FILES[@]}"; do
+            if (( idx % SHARD_COUNT == SHARD )); then
+              CURRENT_FILES+=("$file")
+              if [[ -f "/tmp/v298b-baseline/$file" ]]; then
+                BASELINE_FILES+=("$file")
+              fi
             fi
             idx=$((idx + 1))
-            selected=$((selected + 1))
-            echo "::group::CURRENT $file"
-            set +e
-            timeout 75s env PYTHONPATH="$GITHUB_WORKSPACE/src" python -m pytest -q "$file" > /tmp/current.log 2>&1
-            current_rc=$?
-            set -e
-            if [[ $current_rc -eq 0 ]]; then
-              current_passes=$((current_passes + 1))
-              echo "PASS"
-              echo "::endgroup::"
-              continue
-            fi
-            cat /tmp/current.log
-            echo "::endgroup::"
+          done
 
-            if [[ ! -f "/tmp/v298b-baseline/$file" ]]; then
-              echo "::error file=$file::Current-only test failed (rc=$current_rc); no baseline analogue exists"
-              new_regressions=$((new_regressions + 1))
-              continue
-            fi
+          echo "Shard $SHARD: ${#CURRENT_FILES[@]} current files; ${#BASELINE_FILES[@]} baseline counterparts"
 
-            echo "::group::BASELINE $file"
+          set +e
+          env PYTHONPATH="$GITHUB_WORKSPACE/src" python -m pytest -q \
+            --timeout=45 --timeout-method=thread \
+            --junitxml=/tmp/current.xml "${CURRENT_FILES[@]}"
+          current_rc=$?
+          set -e
+          echo "Current shard exit: $current_rc"
+
+          if (( ${#BASELINE_FILES[@]} > 0 )); then
             set +e
             (
               cd /tmp/v298b-baseline
-              timeout 75s env PYTHONPATH="/tmp/v298b-baseline/src" python -m pytest -q "$file"
-            ) > /tmp/baseline.log 2>&1
+              env PYTHONPATH="/tmp/v298b-baseline/src" python -m pytest -q \
+                --timeout=45 --timeout-method=thread \
+                --junitxml=/tmp/baseline.xml "${BASELINE_FILES[@]}"
+            )
             baseline_rc=$?
             set -e
-            cat /tmp/baseline.log
-            echo "::endgroup::"
-
-            if [[ $baseline_rc -eq 0 ]]; then
-              echo "::error file=$file::NEW REGRESSION: baseline passes, current fails (current rc=$current_rc)"
-              new_regressions=$((new_regressions + 1))
-            else
-              echo "BASELINE_DEBT file=$file current_rc=$current_rc baseline_rc=$baseline_rc"
-              baseline_debt=$((baseline_debt + 1))
-            fi
-          done
-
-          echo "SHARD_SUMMARY shard=$SHARD selected=$selected current_passes=$current_passes baseline_debt=$baseline_debt new_regressions=$new_regressions"
-          if (( new_regressions > 0 )); then
-            exit 1
+          else
+            baseline_rc=0
+            printf '%s\n' '<testsuites />' > /tmp/baseline.xml
           fi
+          echo "Baseline shard exit: $baseline_rc"
+
+          python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          def read(path):
+              root = ET.parse(path).getroot()
+              seen = set()
+              failed = set()
+              for case in root.iter('testcase'):
+                  file_name = case.get('file') or case.get('classname') or ''
+                  name = case.get('name') or ''
+                  key = (file_name, name)
+                  seen.add(key)
+                  if case.find('failure') is not None or case.find('error') is not None:
+                      failed.add(key)
+              return seen, failed
+
+          current_seen, current_failed = read('/tmp/current.xml')
+          baseline_seen, baseline_failed = read('/tmp/baseline.xml')
+
+          new_regressions = sorted(
+              key for key in current_failed
+              if key not in baseline_failed
+          )
+          baseline_debt = sorted(
+              key for key in current_failed
+              if key in baseline_failed
+          )
+
+          print(f"SHARD_SUMMARY shard={os.environ['SHARD']} current_cases={len(current_seen)} current_failures={len(current_failed)} baseline_cases={len(baseline_seen)} baseline_debt={len(baseline_debt)} new_regressions={len(new_regressions)}")
+          for key in baseline_debt:
+              print('BASELINE_DEBT', key)
+          for key in new_regressions:
+              print('NEW_REGRESSION', key)
+
+          if new_regressions:
+              raise SystemExit(1)
+          PY
+
+          git diff --check
