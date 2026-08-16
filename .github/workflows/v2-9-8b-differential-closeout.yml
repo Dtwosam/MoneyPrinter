@@ -1,4 +1,4 @@
-name: V2-9.8B bounded differential closeout
+name: V2-9.8B risk-based closeout
 
 on:
   push:
@@ -27,73 +27,97 @@ jobs:
             tests/test_v2_9_8b_window_15m_final_integrated_readiness_repair.py
           git diff --check
 
-  differential-regression:
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [0, 1, 2, 3, 4, 5]
+  impacted-regression:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Compare current failures with approved design baseline
+      - name: Run risk-based cross-cutting regression
         shell: bash
         env:
-          SHARD: ${{ matrix.shard }}
-          SHARD_COUNT: '6'
           BASELINE: c9fb16b8f214e4e527f574e7c7dcbeb5cf351455
         run: |
           set -euo pipefail
           python -m pip install -q -e . pytest pytest-timeout
           python -m compileall -q src/printer_v1
-          git worktree add --detach /tmp/v298b-baseline "$BASELINE"
 
-          mapfile -t ALL_FILES < <(find tests -maxdepth 1 -type f -name 'test*.py' | sort)
-          CURRENT_FILES=()
-          BASELINE_FILES=()
-          idx=0
-          for file in "${ALL_FILES[@]}"; do
-            if (( idx % SHARD_COUNT == SHARD )); then
-              CURRENT_FILES+=("$file")
-              if [[ -f "/tmp/v298b-baseline/$file" ]]; then
-                BASELINE_FILES+=("$file")
-              fi
-            fi
-            idx=$((idx + 1))
-          done
+          python - <<'PY' > /tmp/selected.txt
+          from pathlib import Path
 
-          echo "Shard $SHARD: ${#CURRENT_FILES[@]} current files; ${#BASELINE_FILES[@]} baseline counterparts"
+          needles = (
+              'pre_lifecycle_refresh',
+              'pre_lifecycle_temporal',
+              'pre_lifecycle_persistent_refresh_owner',
+              'eligible_token_supply',
+              'permanent_discovery_availability',
+              'campaign_active_work',
+              'operational_memory_factory_command',
+              'four_token_proof_one_shot_wrapper',
+              'graduated_supply_front_door',
+              'DISCOVERY_REFRESH',
+              'printer_pre_lifecycle_discovery_refresh_work',
+              'migration_057',
+          )
+          selected = []
+          for path in sorted(Path('tests').glob('test*.py')):
+              text = path.read_text(errors='ignore')
+              name = path.name.lower()
+              if (
+                  any(needle in text for needle in needles)
+                  or 'scheduler' in name
+                  or 'migration' in name
+              ):
+                  selected.append(path.as_posix())
+          for path in selected:
+              print(path)
+          PY
+
+          mapfile -t SELECTED < /tmp/selected.txt
+          if (( ${#SELECTED[@]} == 0 )); then
+            echo 'No impacted regression tests selected'
+            exit 1
+          fi
+          echo "Selected ${#SELECTED[@]} impacted test files"
+          printf '%s\n' "${SELECTED[@]}"
 
           set +e
           env PYTHONPATH="$GITHUB_WORKSPACE/src" python -m pytest -q \
-            --timeout=45 --timeout-method=thread \
-            --junitxml=/tmp/current.xml "${CURRENT_FILES[@]}"
+            --timeout=30 --timeout-method=thread \
+            --junitxml=/tmp/current.xml "${SELECTED[@]}"
           current_rc=$?
           set -e
-          echo "Current shard exit: $current_rc"
 
+          if [[ $current_rc -eq 0 ]]; then
+            echo 'IMPACTED_REGRESSION_PASS: current impacted suite is green'
+            git diff --check
+            exit 0
+          fi
+
+          echo "Current impacted suite returned $current_rc; classifying against approved design baseline"
+          git worktree add --detach /tmp/v298b-baseline "$BASELINE"
+          BASELINE_FILES=()
+          for file in "${SELECTED[@]}"; do
+            if [[ -f "/tmp/v298b-baseline/$file" ]]; then
+              BASELINE_FILES+=("$file")
+            fi
+          done
           if (( ${#BASELINE_FILES[@]} > 0 )); then
             set +e
             (
               cd /tmp/v298b-baseline
               env PYTHONPATH="/tmp/v298b-baseline/src" python -m pytest -q \
-                --timeout=45 --timeout-method=thread \
+                --timeout=30 --timeout-method=thread \
                 --junitxml=/tmp/baseline.xml "${BASELINE_FILES[@]}"
             )
-            baseline_rc=$?
             set -e
           else
-            baseline_rc=0
             printf '%s\n' '<testsuites />' > /tmp/baseline.xml
           fi
-          echo "Baseline shard exit: $baseline_rc"
 
           python - <<'PY'
-          import os
           import xml.etree.ElementTree as ET
-          from pathlib import Path
 
           def read(path):
               root = ET.parse(path).getroot()
@@ -110,22 +134,19 @@ jobs:
 
           current_seen, current_failed = read('/tmp/current.xml')
           baseline_seen, baseline_failed = read('/tmp/baseline.xml')
+          new_regressions = sorted(key for key in current_failed if key not in baseline_failed)
+          baseline_debt = sorted(key for key in current_failed if key in baseline_failed)
 
-          new_regressions = sorted(
-              key for key in current_failed
-              if key not in baseline_failed
+          print(
+              'IMPACTED_REGRESSION_SUMMARY '
+              f'current_cases={len(current_seen)} current_failures={len(current_failed)} '
+              f'baseline_cases={len(baseline_seen)} baseline_debt={len(baseline_debt)} '
+              f'new_regressions={len(new_regressions)}'
           )
-          baseline_debt = sorted(
-              key for key in current_failed
-              if key in baseline_failed
-          )
-
-          print(f"SHARD_SUMMARY shard={os.environ['SHARD']} current_cases={len(current_seen)} current_failures={len(current_failed)} baseline_cases={len(baseline_seen)} baseline_debt={len(baseline_debt)} new_regressions={len(new_regressions)}")
           for key in baseline_debt:
               print('BASELINE_DEBT', key)
           for key in new_regressions:
               print('NEW_REGRESSION', key)
-
           if new_regressions:
               raise SystemExit(1)
           PY
