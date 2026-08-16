@@ -18,26 +18,10 @@ def test_horizon_allows_three_delayed_refreshes_only():
     assert PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS == 2400
     start = "2026-08-16T00:00:00+00:00"
     deadline = acquisition_deadline_at(start)
-    assert refresh_window_fits(
-        now=start,
-        acquisition_deadline_at=deadline,
-        refresh_interval_seconds=600,
-    )
-    assert refresh_window_fits(
-        now="2026-08-16T00:10:00+00:00",
-        acquisition_deadline_at=deadline,
-        refresh_interval_seconds=600,
-    )
-    assert refresh_window_fits(
-        now="2026-08-16T00:20:00+00:00",
-        acquisition_deadline_at=deadline,
-        refresh_interval_seconds=600,
-    )
-    assert not refresh_window_fits(
-        now="2026-08-16T00:30:00+00:00",
-        acquisition_deadline_at=deadline,
-        refresh_interval_seconds=600,
-    )
+    assert refresh_window_fits(now=start, acquisition_deadline_at=deadline, refresh_interval_seconds=600)
+    assert refresh_window_fits(now="2026-08-16T00:10:00+00:00", acquisition_deadline_at=deadline, refresh_interval_seconds=600)
+    assert refresh_window_fits(now="2026-08-16T00:20:00+00:00", acquisition_deadline_at=deadline, refresh_interval_seconds=600)
+    assert not refresh_window_fits(now="2026-08-16T00:30:00+00:00", acquisition_deadline_at=deadline, refresh_interval_seconds=600)
 
 
 def _install_stage_fakes(monkeypatch, calls):
@@ -104,10 +88,7 @@ def _install_stage_fakes(monkeypatch, calls):
     monkeypatch.setattr(
         composition,
         "record_fresh_pool_nominations",
-        lambda *args, **kwargs: {
-            "accepted": list(kwargs["observations"]),
-            "exclusions": [],
-        },
+        lambda *args, **kwargs: {"accepted": list(kwargs["observations"]), "exclusions": []},
     )
 
 
@@ -121,23 +102,24 @@ def _stage(tmp_path, monkeypatch, calls):
     )
 
 
-def test_full_refresh_round_rotates_sources_and_dedups_exact_identities(
-    tmp_path, monkeypatch
-):
-    calls = []
-    stage = _stage(tmp_path, monkeypatch, calls)
-    connection = sqlite3.connect(":memory:")
-    first = stage(
-        connection,
+def _run(stage, *, remaining=30, ordinal=1):
+    return stage(
+        sqlite3.connect(":memory:"),
         campaign_id="c",
         run_id="r",
         cycle_id="y",
-        discovery_work_id="w1",
-        scheduler_job_id=1,
-        refresh_ordinal=1,
-        source_operations_remaining=30,
-        now="2026-08-16T00:10:00+00:00",
+        discovery_work_id=f"w{ordinal}",
+        scheduler_job_id=ordinal,
+        refresh_ordinal=ordinal,
+        source_operations_remaining=remaining,
+        now=f"2026-08-16T00:{ordinal * 10:02d}:00+00:00",
     )
+
+
+def test_full_refresh_round_rotates_sources_and_dedups_exact_identities(tmp_path, monkeypatch):
+    calls = []
+    stage = _stage(tmp_path, monkeypatch, calls)
+    first = _run(stage, remaining=30, ordinal=1)
     assert calls[:3] == ["pump", "dex", "gt"]
     assert calls[3:] == ["backup", "protocol"]
     assert first["source_operations"] == 5
@@ -147,42 +129,18 @@ def test_full_refresh_round_rotates_sources_and_dedups_exact_identities(
         {"mint": "MINT_B", "pool": "POOL_B"},
         {"mint": "MINT_C", "pool": "POOL_C"},
     )
-    assert first["promoted_observation_eligible"] == (
-        {"mint": "MINT_C", "pool": "POOL_C"},
-    )
+    assert first["promoted_observation_eligible"] == ({"mint": "MINT_C", "pool": "POOL_C"},)
 
     calls.clear()
-    second = stage(
-        connection,
-        campaign_id="c",
-        run_id="r",
-        cycle_id="y",
-        discovery_work_id="w2",
-        scheduler_job_id=2,
-        refresh_ordinal=2,
-        source_operations_remaining=25,
-        now="2026-08-16T00:20:00+00:00",
-    )
+    second = _run(stage, remaining=25, ordinal=2)
     assert calls[:3] == ["dex", "gt", "pump"]
     assert second["source_operations"] == 5
 
 
-def test_low_remaining_budget_skips_pump_but_keeps_peer_sources(
-    tmp_path, monkeypatch
-):
+def test_low_remaining_budget_skips_pump_but_keeps_peer_sources(tmp_path, monkeypatch):
     calls = []
     stage = _stage(tmp_path, monkeypatch, calls)
-    result = stage(
-        sqlite3.connect(":memory:"),
-        campaign_id="c",
-        run_id="r",
-        cycle_id="y",
-        discovery_work_id="w",
-        scheduler_job_id=1,
-        refresh_ordinal=1,
-        source_operations_remaining=3,
-        now="2026-08-16T00:10:00+00:00",
-    )
+    result = _run(stage, remaining=3)
     assert "pump" not in calls
     assert calls[:2] == ["dex", "gt"]
     assert result["source_operations"] <= 3
@@ -193,26 +151,44 @@ def test_low_remaining_budget_skips_pump_but_keeps_peer_sources(
     )
 
 
-def test_candidate_local_pump_rejection_does_not_stop_peer_sources(
-    tmp_path, monkeypatch
-):
+def test_candidate_local_pump_rejection_does_not_stop_peer_sources(tmp_path, monkeypatch):
     calls = []
     stage = _stage(tmp_path, monkeypatch, calls)
-    result = stage(
-        sqlite3.connect(":memory:"),
-        campaign_id="c",
-        run_id="r",
-        cycle_id="y",
-        discovery_work_id="w",
-        scheduler_job_id=1,
-        refresh_ordinal=1,
-        source_operations_remaining=30,
-        now="2026-08-16T00:10:00+00:00",
-    )
+    result = _run(stage)
     assert calls[:3] == ["pump", "dex", "gt"]
     assert result["provider_failures"] == 0
-    assert {x["mint"] for x in result["newly_observed_exact_identities"]} == {
-        "MINT_A",
-        "MINT_B",
-        "MINT_C",
-    }
+    assert {x["mint"] for x in result["newly_observed_exact_identities"]} == {"MINT_A", "MINT_B", "MINT_C"}
+
+
+def test_source_local_geckoterminal_failure_does_not_suppress_other_channels(tmp_path, monkeypatch):
+    calls = []
+    stage = _stage(tmp_path, monkeypatch, calls)
+
+    def failing_gt(*args, **kwargs):
+        calls.append("gt")
+        return {
+            "status": "FAILED",
+            "failure_type": "fixture_gt_unavailable",
+            "source_requests": 1,
+            "nominations": [],
+        }
+
+    monkeypatch.setattr(composition, "run_geckoterminal_fresh_nomination", failing_gt)
+    result = _run(stage)
+    assert calls[:3] == ["pump", "dex", "gt"]
+    assert "backup" in calls
+    assert "protocol" in calls
+    assert result["provider_failures"] == 1
+    assert result["channels_unavailable"] == (composition.GECKOTERMINAL_NOMINATION_CHANNEL,)
+    assert {x["mint"] for x in result["newly_observed_exact_identities"]} == {"MINT_A", "MINT_B"}
+
+
+def test_zero_budget_performs_no_source_work(tmp_path, monkeypatch):
+    calls = []
+    stage = _stage(tmp_path, monkeypatch, calls)
+    result = _run(stage, remaining=0)
+    assert calls == []
+    assert result["source_operations"] == 0
+    assert result["budget_exhausted_before_refresh"] is True
+    assert result["channels_attempted"] == ()
+    assert len(result["channels_skipped"]) == 5
