@@ -1,18 +1,9 @@
-"""V2-9.7E.47 A3 — exact campaign-scoped active-work accounting.
+"""Exact campaign-scoped active-work accounting.
 
-The pre-repair terminal report exposed only ``running_jobs_after_stop``, computed
-as "jobs joined through this run's factory run-steps whose status is ``RUNNING``
-or which hold a lock". That interpretation is narrow in two independent ways:
-
-* it never sees a ``PENDING`` or ``COOLDOWN`` job, and
-* it never sees a job that is not reachable through a factory run-step —
-  which is exactly the ``DISCOVERY_REFRESH`` job class that V2-9.7E.46 left
-  ``PENDING`` after a governed terminal (§10.2).
-
-This module replaces that interpretation with campaign-scoped accounting over
-every job attributable to the campaign / run / cycle, plus the work rows that
-own them. A terminal campaign requires zero active jobs and zero active work
-rows. It performs no source call, no Scheduler mutation and no write.
+Terminal campaign truth includes every attributable Scheduler job and every
+active durable work owner, including V2-9.8B pre-lifecycle refresh waits and
+persistent refresh-work rows. This module is read-only: it performs no source
+call, Scheduler mutation, or write.
 """
 
 from __future__ import annotations
@@ -47,31 +38,13 @@ def _job_has_exact_scope_owner(
     run_id: str,
     cycle_id: str,
 ) -> bool:
-    """Whether one durable owner binds a job to all three scope identities.
-
-    A factory run-step alone cannot establish ``cycle_id`` and is therefore not
-    an exact campaign owner.  Exact ownership comes from the rows that durably
-    carry campaign, run, cycle, and Scheduler-job identity together.
-
-    ``printer_pre_lifecycle_discovery_refresh_waits`` is such an owner: it binds
-    a *future-dated PENDING* ``DISCOVERY_REFRESH`` job to the exact campaign,
-    run and cycle before the job is due, so safe stop can capture and cancel it.
-    It is ownership evidence only — it never implies that discovery work exists.
-    """
+    """Whether one durable owner binds a job to all three scope identities."""
     sources = (
         ("printer_discovery_work", "scheduler_job_id"),
-        (
-            "printer_memory_factory_campaign_scheduler_work",
-            "scheduler_job_id",
-        ),
-        (
-            "printer_discovery_selected_item_links",
-            "first_window_15m_scheduler_job_id",
-        ),
-        (
-            "printer_pre_lifecycle_discovery_refresh_waits",
-            "scheduler_job_id",
-        ),
+        ("printer_memory_factory_campaign_scheduler_work", "scheduler_job_id"),
+        ("printer_discovery_selected_item_links", "first_window_15m_scheduler_job_id"),
+        ("printer_pre_lifecycle_discovery_refresh_waits", "scheduler_job_id"),
+        ("printer_pre_lifecycle_discovery_refresh_work", "scheduler_job_id"),
     )
     if _table_exists(connection, "printer_pre_admission_discovery_attempts"):
         row = connection.execute(
@@ -111,13 +84,7 @@ def campaign_scoped_job_ids(
     cycle_id: str | None = None,
     exact_scope: bool = False,
 ) -> dict[str, set[int]]:
-    """Every Scheduler job attributable to this campaign, grouped by owner.
-
-    The historical compatibility mode (``exact_scope=False``) retains its broad
-    campaign/run/cycle ``OR`` attribution.  Cleanup capture uses the explicit
-    read-only exact mode: every broad candidate is filtered through one complete
-    durable-owner resolver requiring the same campaign, run, *and* cycle.
-    """
+    """Every Scheduler job attributable to this campaign, grouped by owner."""
     connection.row_factory = sqlite3.Row
     if exact_scope and not (campaign_id and run_id and cycle_id):
         raise ValueError(
@@ -128,6 +95,7 @@ def campaign_scoped_job_ids(
         "discovery_jobs": set(),
         "campaign_scheduler_work_jobs": set(),
         "pre_lifecycle_refresh_wait_jobs": set(),
+        "pre_lifecycle_refresh_work_jobs": set(),
         "pre_admission_attempt_jobs": set(),
     }
     if factory_run_id and _table_exists(connection, "printer_memory_factory_run_steps"):
@@ -201,12 +169,30 @@ def campaign_scoped_job_ids(
             if value:
                 clauses.append(f"{column} = ?")
                 params.append(value)
-        # A WAITING (or CLAIMED) wait makes its Scheduler job visible to
-        # campaign active-work accounting while it is still merely PENDING.
         groups["pre_lifecycle_refresh_wait_jobs"] = _job_ids(
             connection,
             "SELECT scheduler_job_id FROM "
             "printer_pre_lifecycle_discovery_refresh_waits "
+            f"WHERE ({' OR '.join(clauses)})",
+            tuple(params),
+        )
+    if _table_exists(
+        connection, "printer_pre_lifecycle_discovery_refresh_work"
+    ) and (campaign_id or run_id or cycle_id):
+        clauses = []
+        params = []
+        for column, value in (
+            ("campaign_id", campaign_id),
+            ("run_id", run_id),
+            ("cycle_id", cycle_id),
+        ):
+            if value:
+                clauses.append(f"{column} = ?")
+                params.append(value)
+        groups["pre_lifecycle_refresh_work_jobs"] = _job_ids(
+            connection,
+            "SELECT scheduler_job_id FROM "
+            "printer_pre_lifecycle_discovery_refresh_work "
             f"WHERE ({' OR '.join(clauses)})",
             tuple(params),
         )
@@ -267,12 +253,7 @@ def campaign_active_work_report(
     run_id: str | None = None,
     cycle_id: str | None = None,
 ) -> dict[str, Any]:
-    """Exact active-job / active-work report for one campaign.
-
-    ``active_jobs`` counts every attributable Scheduler job that is ``PENDING``,
-    ``RUNNING`` or ``COOLDOWN``, or that still holds a lock (``locked_at`` or
-    ``lock_owner`` non-null), regardless of which owner enqueued it.
-    """
+    """Exact active-job / active-work report for one campaign."""
     connection.row_factory = sqlite3.Row
     groups = campaign_scoped_job_ids(
         connection,
@@ -325,11 +306,12 @@ def campaign_active_work_report(
                 clauses.append(f"w.{column} = ?")
                 params.append(value)
         scope = " OR ".join(clauses)
-        active_work_rows = [
+        active_work_rows.extend(
             {
                 "discovery_work_id": str(row["discovery_work_id"]),
                 "work_type": str(row["work_type"]),
                 "work_state": str(row["work_state"]),
+                "owner_table": "printer_discovery_work",
             }
             for row in connection.execute(
                 f"""
@@ -341,8 +323,8 @@ def campaign_active_work_report(
                 """,
                 (*params, *ACTIVE_WORK_STATES),
             ).fetchall()
-        ]
-        terminal_work_with_active_job = int(
+        )
+        terminal_work_with_active_job += int(
             connection.execute(
                 f"""
                 SELECT COUNT(*)
@@ -355,6 +337,53 @@ def campaign_active_work_report(
                       ({','.join('?' * len(ACTIVE_JOB_STATUSES))})
                 """,
                 (*params, *ACTIVE_WORK_STATES, *ACTIVE_JOB_STATUSES),
+            ).fetchone()[0]
+        )
+
+    if _table_exists(connection, "printer_pre_lifecycle_discovery_refresh_work") and (
+        campaign_id or run_id or cycle_id
+    ):
+        clauses = []
+        params = []
+        for column, value in (
+            ("campaign_id", campaign_id),
+            ("run_id", run_id),
+            ("cycle_id", cycle_id),
+        ):
+            if value:
+                clauses.append(f"w.{column} = ?")
+                params.append(value)
+        scope = " OR ".join(clauses)
+        active_work_rows.extend(
+            {
+                "refresh_work_id": str(row["refresh_work_id"]),
+                "work_type": "PRE_LIFECYCLE_DISCOVERY_REFRESH",
+                "work_state": str(row["work_state"]),
+                "refresh_ordinal": int(row["refresh_ordinal"]),
+                "owner_table": "printer_pre_lifecycle_discovery_refresh_work",
+            }
+            for row in connection.execute(
+                f"""
+                SELECT refresh_work_id, refresh_ordinal, work_state
+                FROM printer_pre_lifecycle_discovery_refresh_work AS w
+                WHERE ({scope}) AND w.work_state = 'RUNNING'
+                ORDER BY refresh_ordinal, refresh_work_id
+                """,
+                tuple(params),
+            ).fetchall()
+        )
+        terminal_work_with_active_job += int(
+            connection.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM printer_pre_lifecycle_discovery_refresh_work AS w
+                JOIN printer_scheduler_jobs AS j ON j.id = w.scheduler_job_id
+                WHERE ({scope})
+                  AND w.work_state <> 'RUNNING'
+                  AND j.status IN
+                      ({','.join('?' * len(ACTIVE_JOB_STATUSES))})
+                """,
+                (*params, *ACTIVE_JOB_STATUSES),
             ).fetchone()[0]
         )
 
