@@ -10,21 +10,323 @@ permissions:
   contents: write
 
 jobs:
-  inspect-current-wiring:
+  implement-and-prove:
     if: ${{ !contains(github.event.head_commit.message || '', '[v2-9-8b-skip]') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Inspect exact refresh wiring
+      - name: Apply remaining approved implementation
         shell: bash
         run: |
           set -euo pipefail
-          grep -n -A140 -B10 'def _build_pre_lifecycle_temporal_refresh_owner' src/printer_v1/operator_cli/operational_memory_factory_command.py
-          echo '--- permanent source owners ---'
-          grep -n -E '^def (run_geckoterminal_fresh_nomination|run_bounded_unknown_liquidity_backup|process_protocol_confirmation_queue|run_dexscreener_batch_market_resolution)' src/printer_v1/discovery/permanent_discovery_availability.py
-          echo '--- locator signature ---'
-          grep -n -A35 -B5 '^def run_fresh_profile_locator' src/printer_v1/operator_cli/graduated_supply_front_door.py
-          echo '--- direct migration signature ---'
-          grep -n -A45 -B5 '^def run_direct_migration_discovery' src/printer_v1/discovery/direct_migration_discovery.py
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one match, found {count}: {old[:80]!r}")
+              p.write_text(text.replace(old, new, 1))
+
+          # Extend the durable acquisition ledger with the approved per-refresh facts.
+          path = "src/printer_v1/discovery/pre_lifecycle_temporal_acquisition.py"
+          replace_once(
+              path,
+              "    channels_unavailable: tuple[str, ...] = ()\n    promoted_observation_eligible: tuple[Mapping[str, Any], ...] = ()\n",
+              "    channels_unavailable: tuple[str, ...] = ()\n    channels_attempted: tuple[str, ...] = ()\n    channels_skipped: tuple[Mapping[str, Any], ...] = ()\n    newly_observed_exact_identities: tuple[Mapping[str, Any], ...] = ()\n    promoted_observation_eligible: tuple[Mapping[str, Any], ...] = ()\n",
+          )
+          replace_once(
+              path,
+              '            "channels_unavailable": list(self.channels_unavailable),\n            "promoted_observation_eligible_count": len(\n',
+              '            "channels_unavailable": list(self.channels_unavailable),\n            "channels_attempted": list(self.channels_attempted),\n            "channels_skipped": [dict(item) for item in self.channels_skipped],\n            "newly_observed_exact_identities": [\n                dict(item) for item in self.newly_observed_exact_identities\n            ],\n            "newly_observed_exact_identity_count": len(\n                self.newly_observed_exact_identities\n            ),\n            "promoted_observation_eligible_count": len(\n',
+          )
+
+          # Carry stage facts from the persistent Scheduler owner into that ledger.
+          path = "src/printer_v1/operator_cli/pre_lifecycle_persistent_refresh_owner.py"
+          replace_once(
+              path,
+              "channels_unavailable=unavailable,promoted_observation_eligible=tuple(dict(x) for x in stage.get('promoted_observation_eligible',())),reserve_depth_before=reserve_depth",
+              "channels_unavailable=unavailable,channels_attempted=tuple(str(x) for x in stage.get('channels_attempted',())),channels_skipped=tuple(dict(x) for x in stage.get('channels_skipped',()) if isinstance(x,Mapping)),newly_observed_exact_identities=tuple(dict(x) for x in stage.get('newly_observed_exact_identities',()) if isinstance(x,Mapping)),promoted_observation_eligible=tuple(dict(x) for x in stage.get('promoted_observation_eligible',())),reserve_depth_before=reserve_depth",
+          )
+
+          # Production wiring: reuse the same migration and graduated-supply transports.
+          path = "src/printer_v1/operator_cli/operational_memory_factory_command.py"
+          replace_once(
+              path,
+              "    local_validation_identity_observer: Callable[[Any], None] | None = None,\n    geckoterminal_nomination_transport: Any | None = None,\n",
+              "    local_validation_identity_observer: Callable[[Any], None] | None = None,\n    migration_transport: Any | None = None,\n    graduated_supply_kwargs: Mapping[str, Any] | None = None,\n    geckoterminal_nomination_transport: Any | None = None,\n",
+          )
+          replace_once(
+              path,
+              "    return PreLifecycleTemporalRefreshOwner(\n",
+              "    supply_kwargs = dict(graduated_supply_kwargs or {})\n\n    return PreLifecycleTemporalRefreshOwner(\n",
+          )
+          replace_once(
+              path,
+              "        refresh_stage=build_pre_lifecycle_refresh_stage(\n            request_key_prefix=execution_id,\n",
+              "        refresh_stage=build_pre_lifecycle_refresh_stage(\n            db_path=command.db_path,\n            request_key_prefix=execution_id,\n            migration_transport=migration_transport,\n            verifier_transport_factory=supply_kwargs.get(\"verifier_transport_factory\"),\n            locator_transport=supply_kwargs.get(\"locator_transport\"),\n",
+          )
+          replace_once(
+              path,
+              "                local_validation_identity_observer=(\n                    _observe_local_validation_identity\n                ),\n                geckoterminal_nomination_transport=(\n",
+              "                local_validation_identity_observer=(\n                    _observe_local_validation_identity\n                ),\n                migration_transport=active_migration,\n                graduated_supply_kwargs=bridge_graduated_supply_kwargs,\n                geckoterminal_nomination_transport=(\n",
+          )
+          text = Path(path).read_text()
+          text = text.replace(
+              "the same 900s horizon recorded in the\n        # immutable configuration.",
+              "the bounded pre-lifecycle horizon recorded in the\n        # immutable configuration.",
+          )
+          Path(path).write_text(text)
+
+          # Proof-only policy must project the same bounded acquisition horizon.
+          path = "src/printer_v1/operator_cli/four_token_proof_one_shot_wrapper.py"
+          replace_once(
+              path,
+              "PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS = 900\n",
+              "PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS = 2_400\n",
+          )
+
+          # A provider-local failure is not a terminal all-source verdict. Budget/time
+          # and the bounded refresh horizon remain the termination authorities.
+          path = "src/printer_v1/discovery/eligible_token_supply.py"
+          replace_once(
+              path,
+              "                provider_terminal_failure=bool(channels_unavailable),\n",
+              "                provider_terminal_failure=False,\n",
+          )
+          replace_once(
+              path,
+              "            connection.commit()\n\n            inventory_rows = export_graduated_candidates(connection)\n",
+              "            connection.commit()\n\n            # Complete the per-refresh certificate facts after retained rows are\n            # stale-marked and direct protocol promotions are admitted. Graduated\n            # registry candidates still re-enter the front door before counting.\n            depth_after_refresh = len(campaign_eligible)\n            if acquisition_ledger.reserve_depth_transitions:\n                acquisition_ledger.reserve_depth_transitions[-1][\n                    \"reserve_depth_after\"\n                ] = depth_after_refresh\n            if acquisition_ledger.outcomes:\n                acquisition_ledger.outcomes[-1][\"reserve_depth_after\"] = (\n                    depth_after_refresh\n                )\n\n            inventory_rows = export_graduated_candidates(connection)\n",
+          )
+
+          # Update exact tests that bind the proof-only acquisition clock, without
+          # changing the 15m evidence window itself.
+          for p in Path("tests").glob("test*.py"):
+              text = p.read_text()
+              if "PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS" in text:
+                  text = text.replace(
+                      "PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS == 900",
+                      "PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS == 2_400",
+                  )
+                  text = text.replace(
+                      '"pre_lifecycle_acquisition_duration_seconds"] == 900',
+                      '"pre_lifecycle_acquisition_duration_seconds"] == 2_400',
+                  )
+                  p.write_text(text)
+
+          test_path = Path("tests/test_v2_9_8b_persistent_multisource_refresh.py")
+          test_path.write_text(r'''from __future__ import annotations
+
+import sqlite3
+
+from printer_v1.discovery import pre_lifecycle_refresh_composition as composition
+from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
+    PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS,
+    acquisition_deadline_at,
+    refresh_window_fits,
+)
+
+
+def test_horizon_allows_three_delayed_refreshes_only():
+    assert PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS == 2400
+    start = "2026-08-16T00:00:00+00:00"
+    deadline = acquisition_deadline_at(start)
+    assert refresh_window_fits(now=start, acquisition_deadline_at=deadline, refresh_interval_seconds=600)
+    assert refresh_window_fits(now="2026-08-16T00:10:00+00:00", acquisition_deadline_at=deadline, refresh_interval_seconds=600)
+    assert refresh_window_fits(now="2026-08-16T00:20:00+00:00", acquisition_deadline_at=deadline, refresh_interval_seconds=600)
+    assert not refresh_window_fits(now="2026-08-16T00:30:00+00:00", acquisition_deadline_at=deadline, refresh_interval_seconds=600)
+
+
+def _install_stage_fakes(monkeypatch, calls):
+    def fake_pump(*args, **kwargs):
+        calls.append("pump")
+        return {
+            "status": "COMPLETE",
+            "source_request_ids": [101, 102],
+            "verifications": [
+                {"mint": "MINT_A", "pool": "POOL_A", "verified": True},
+                {"mint": "MINT_REJECT", "pool": "POOL_REJECT", "verified": False},
+            ],
+        }
+
+    def fake_locator(*args, **kwargs):
+        calls.append("dex")
+        return {
+            "status": "ok",
+            "source_requests": 1,
+            "request_id": 201,
+            "response_id": 202,
+            "pool_observations": [
+                {"mint": "MINT_B", "pool": "POOL_B", "liquidity_usd": 5000},
+            ],
+        }
+
+    def fake_gt(*args, **kwargs):
+        calls.append("gt")
+        return {
+            "status": "COMPLETE",
+            "failure_type": None,
+            "source_requests": 1,
+            "nominations": [
+                {"mint": "MINT_B", "pool": "POOL_B", "liquidity_usd": 5000},
+                {"mint": "MINT_C", "pool": "POOL_C", "liquidity_usd": 6000},
+            ],
+        }
+
+    def fake_backup(*args, **kwargs):
+        calls.append("backup")
+        return {"source_requests": 0, "accounting_blocker": False}
+
+    def fake_protocol(*args, **kwargs):
+        calls.append("protocol")
+        return {
+            "source_requests": 1,
+            "shared_source_failures": 0,
+            "promoted_observation_eligible": [
+                {"mint": "MINT_C", "pool": "POOL_C"},
+            ],
+        }
+
+    monkeypatch.setattr(
+        "printer_v1.discovery.direct_migration_discovery.run_direct_migration_discovery",
+        fake_pump,
+    )
+    monkeypatch.setattr(
+        "printer_v1.operator_cli.graduated_supply_front_door.run_fresh_profile_locator",
+        fake_locator,
+    )
+    monkeypatch.setattr(composition, "run_geckoterminal_fresh_nomination", fake_gt)
+    monkeypatch.setattr(composition, "run_bounded_unknown_liquidity_backup", fake_backup)
+    monkeypatch.setattr(composition, "process_protocol_confirmation_queue", fake_protocol)
+    monkeypatch.setattr(
+        composition,
+        "record_fresh_pool_nominations",
+        lambda *args, **kwargs: {"accepted": list(kwargs["observations"]), "exclusions": []},
+    )
+
+
+def test_full_refresh_round_rotates_sources_and_dedups_exact_identities(tmp_path, monkeypatch):
+    calls = []
+    _install_stage_fakes(monkeypatch, calls)
+    stage = composition.build_pre_lifecycle_refresh_stage(
+        db_path=tmp_path / "proof.sqlite3",
+        request_key_prefix="proof",
+        migration_transport=lambda _ctx: {},
+        locator_transport=lambda _ctx: {},
+    )
+    connection = sqlite3.connect(":memory:")
+    first = stage(
+        connection,
+        campaign_id="c",
+        run_id="r",
+        cycle_id="y",
+        discovery_work_id="w1",
+        scheduler_job_id=1,
+        refresh_ordinal=1,
+        source_operations_remaining=30,
+        now="2026-08-16T00:10:00+00:00",
+    )
+    assert calls[:3] == ["pump", "dex", "gt"]
+    assert calls[3:] == ["backup", "protocol"]
+    assert first["source_operations"] == 5
+    assert first["channels_unavailable"] == ()
+    assert first["newly_observed_exact_identities"] == (
+        {"mint": "MINT_A", "pool": "POOL_A"},
+        {"mint": "MINT_B", "pool": "POOL_B"},
+        {"mint": "MINT_C", "pool": "POOL_C"},
+    )
+    assert first["promoted_observation_eligible"] == (
+        {"mint": "MINT_C", "pool": "POOL_C"},
+    )
+
+    calls.clear()
+    second = stage(
+        connection,
+        campaign_id="c",
+        run_id="r",
+        cycle_id="y",
+        discovery_work_id="w2",
+        scheduler_job_id=2,
+        refresh_ordinal=2,
+        source_operations_remaining=25,
+        now="2026-08-16T00:20:00+00:00",
+    )
+    assert calls[:3] == ["dex", "gt", "pump"]
+    assert second["source_operations"] == 5
+
+
+def test_low_remaining_budget_skips_pump_but_keeps_peer_sources(tmp_path, monkeypatch):
+    calls = []
+    _install_stage_fakes(monkeypatch, calls)
+    stage = composition.build_pre_lifecycle_refresh_stage(
+        db_path=tmp_path / "proof.sqlite3",
+        request_key_prefix="proof",
+        migration_transport=lambda _ctx: {},
+        locator_transport=lambda _ctx: {},
+    )
+    result = stage(
+        sqlite3.connect(":memory:"),
+        campaign_id="c",
+        run_id="r",
+        cycle_id="y",
+        discovery_work_id="w",
+        scheduler_job_id=1,
+        refresh_ordinal=1,
+        source_operations_remaining=3,
+        now="2026-08-16T00:10:00+00:00",
+    )
+    assert "pump" not in calls
+    assert calls[:2] == ["dex", "gt"]
+    assert result["source_operations"] <= 3
+    assert any(
+        item["channel"] == composition.PUMP_FRESH_CHANNEL
+        and item["reason"] == "INSUFFICIENT_WORST_CASE_SOURCE_BUDGET"
+        for item in result["channels_skipped"]
+    )
+
+
+def test_candidate_local_pump_rejection_does_not_stop_peer_sources(tmp_path, monkeypatch):
+    calls = []
+    _install_stage_fakes(monkeypatch, calls)
+    stage = composition.build_pre_lifecycle_refresh_stage(
+        db_path=tmp_path / "proof.sqlite3",
+        request_key_prefix="proof",
+        migration_transport=lambda _ctx: {},
+        locator_transport=lambda _ctx: {},
+    )
+    result = stage(
+        sqlite3.connect(":memory:"),
+        campaign_id="c",
+        run_id="r",
+        cycle_id="y",
+        discovery_work_id="w",
+        scheduler_job_id=1,
+        refresh_ordinal=1,
+        source_operations_remaining=30,
+        now="2026-08-16T00:10:00+00:00",
+    )
+    assert calls[:3] == ["pump", "dex", "gt"]
+    assert result["provider_failures"] == 0
+    assert {x["mint"] for x in result["newly_observed_exact_identities"]} == {
+        "MINT_A", "MINT_B", "MINT_C"
+    }
+''')
+          PY
+
+          python -m compileall -q src/printer_v1
+          python -m pip install -q pytest
+          python -m pytest -q \
+            tests/test_v2_9_8b_persistent_multisource_refresh.py \
+            tests/test_post_dtw98_pre_lifecycle_temporal_persistence.py
+          git diff --check
+
+          git config user.name "Printer V1 Implementation Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add src/printer_v1 tests
+          git commit -m "V2-9.8B wire persistent multisource refresh [v2-9-8b-skip]"
+          git push origin HEAD:agent/v2-9-8b-persistent-multisource-fresh-acquisition-implementation
