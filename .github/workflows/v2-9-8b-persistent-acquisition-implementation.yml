@@ -1,0 +1,30 @@
+name: V2-9.8B persistent acquisition implementation
+
+on:
+  push:
+    branches:
+      - agent/v2-9-8b-persistent-multisource-fresh-acquisition-implementation
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  inspect-current-wiring:
+    if: ${{ !contains(github.event.head_commit.message || '', '[v2-9-8b-skip]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Inspect exact refresh wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -n -A140 -B10 'def _build_pre_lifecycle_temporal_refresh_owner' src/printer_v1/operator_cli/operational_memory_factory_command.py
+          echo '--- permanent source owners ---'
+          grep -n -E '^def (run_geckoterminal_fresh_nomination|run_bounded_unknown_liquidity_backup|process_protocol_confirmation_queue|run_dexscreener_batch_market_resolution)' src/printer_v1/discovery/permanent_discovery_availability.py
+          echo '--- locator signature ---'
+          grep -n -A35 -B5 '^def run_fresh_profile_locator' src/printer_v1/operator_cli/graduated_supply_front_door.py
+          echo '--- direct migration signature ---'
+          grep -n -A45 -B5 '^def run_direct_migration_discovery' src/printer_v1/discovery/direct_migration_discovery.py
