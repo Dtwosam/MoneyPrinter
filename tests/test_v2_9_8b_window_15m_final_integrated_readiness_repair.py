@@ -25,9 +25,7 @@ from printer_v1.operator_cli.action_local_terminal_truth import (
     build_action_local_terminal_truth,
     capture_action_local_baseline,
 )
-from printer_v1.operator_cli.lane_k_e2z_pipeline_wiring import (
-    _attach_fingerprint_for_episode,
-)
+from printer_v1.memory.clean_object_promotion import promote_clean_object
 from printer_v1.operator_cli.window_15m_concrete_composition import (
     ConcreteCompositionError,
     ordinary_window_15m_builder_identities,
@@ -41,6 +39,14 @@ from printer_v1.sources.geckoterminal import (
     build_geckoterminal_adapter,
     build_geckoterminal_token_pools_transport,
 )
+
+
+def _promote_fingerprint(db_path: Path, *, window_id: int) -> int:
+    conn = sqlite3.connect(db_path)
+    try:
+        return int(promote_clean_object(conn, window_id=window_id).fingerprint_id)
+    finally:
+        conn.close()
 
 
 class CompositionOwnerTests(unittest.TestCase):
@@ -225,6 +231,8 @@ class LaneKFingerprintTests(unittest.TestCase):
                     "token_age_bucket": "TOKEN_AGE_0_15M",
                     "pair_age_bucket": "PAIR_AGE_0_15M",
                     "discovery_label": "PUMP_GRADUATED",
+                    "e2q_audited": True,
+                    "snapshot_id": 1,
                 }
             )
             conn.execute(
@@ -233,46 +241,9 @@ class LaneKFingerprintTests(unittest.TestCase):
                        memory_status, data_quality_label, do_not_train,
                        window_status, outcome_label, memory_quality_label,
                        supporting_context_json, created_by_phase
-                   ) VALUES (1, 1, 'WINDOW_15M', ?, ?, 'CLEAN_MEMORY', 'CLEAN_DATA', 0,
-                             'WINDOW_CLOSED', 'SUSTAINED_PUMP', 'CLEAN_MEMORY', ?, 'test')""",
+                   ) VALUES (1, 1, 'WINDOW_15M', ?, ?, 'PARTIAL_MEMORY', 'CLEAN_DATA', 0,
+                             'WINDOW_CLOSED', 'SUSTAINED_PUMP', 'PARTIAL_MEMORY', ?, 'test')""",
                 (opened, closed, ctx),
-            )
-            conn.execute(
-                """INSERT INTO printer_episodes (
-                       memory_window_id, token_id, pair_id, episode_kind, episode_status,
-                       memory_status, data_quality_label, do_not_train, window_kind,
-                       episode_outcome_label, memory_quality_label, action_lesson_label,
-                       rejection_reasons_json, episode_summary_json, supporting_context_json
-                   ) VALUES (1, 1, 1, 'TOKEN_WINDOW_EPISODE', 'EPISODE_BUILT',
-                             'CLEAN_MEMORY', 'CLEAN_DATA', 0, 'WINDOW_15M',
-                             'SUSTAINED_PUMP', 'CLEAN_MEMORY', 'HOLD_OBSERVE',
-                             '[]', '{}', ?)""",
-                (
-                    json.dumps(
-                        {
-                            "market": {"market_regime_label": "NEUTRAL"},
-                            "chain_heat": {"chain_heat_label": "HEAT_NORMAL"},
-                            "safety": {
-                                "safety_status_label": "SAFETY_ACCEPTABLE",
-                                "rug_risk_label": "RUG_RISK_LOW",
-                            },
-                            "liquidity_exit": {
-                                "liquidity_state_label": "LIQUIDITY_USABLE",
-                                "exit_realism_label": "EXIT_REALISTIC",
-                            },
-                            "trading_flow": {
-                                "flow_direction_label": "FLOW_ACCUMULATION"
-                            },
-                            "chart_volatility": {
-                                "trend_structure_label": "TREND_UP",
-                                "volatility_label": "VOL_MODERATE",
-                            },
-                            "micro_events": [
-                                {"micro_event_state_label": "TRADABLE_MICRO_PUMP"}
-                            ],
-                        }
-                    ),
-                ),
             )
             conn.commit()
         finally:
@@ -282,7 +253,7 @@ class LaneKFingerprintTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_lane_k_fingerprint_exact_identity_and_real_outcome(self) -> None:
-        fp_id = _attach_fingerprint_for_episode(self.db, episode_id=1, window_id=1)
+        fp_id = _promote_fingerprint(self.db, window_id=1)
         self.assertIsNotNone(fp_id)
         conn = sqlite3.connect(self.db)
         try:
@@ -311,7 +282,7 @@ class LaneKFingerprintTests(unittest.TestCase):
             conn.execute(
                 """UPDATE printer_memory_windows
                    SET supporting_context_json=? WHERE id=1""",
-                (json.dumps({"tracking_lane": "TRACK_NORMAL"}),),
+                (json.dumps({"tracking_lane": "TRACK_NORMAL", "e2q_audited": True, "snapshot_id": 1}),),
             )
             conn.execute(
                 "DELETE FROM printer_memory_fingerprints WHERE episode_id=1"
@@ -319,7 +290,7 @@ class LaneKFingerprintTests(unittest.TestCase):
             conn.commit()
         finally:
             conn.close()
-        fp_id = _attach_fingerprint_for_episode(self.db, episode_id=1, window_id=1)
+        fp_id = _promote_fingerprint(self.db, window_id=1)
         conn = sqlite3.connect(self.db)
         try:
             payload = json.loads(
