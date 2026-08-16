@@ -1945,6 +1945,7 @@ def run_geckoterminal_fresh_nomination(
     transport: Any | None = None,
     stage_evidence_sink: Any | None = None,
     transport_identity_observer: Any | None = None,
+    stage_sequence: int = 1,
 ) -> dict[str, Any]:
     """Run one governed current GeckoTerminal new-pool nomination request."""
     from printer_v1.contracts.enums import SourceStatus
@@ -2083,9 +2084,9 @@ def run_geckoterminal_fresh_nomination(
         "source_name": GECKOTERMINAL_SOURCE_NAME,
         "request_kind": "geckoterminal_new_pool_discovery",
         "logical_stage_id": (
-            f"{campaign_id}|{run_id}|{cycle_id}|FRESH_POOL_NOMINATION|1"
+            f"{campaign_id}|{run_id}|{cycle_id}|FRESH_POOL_NOMINATION|{int(stage_sequence)}"
             if campaign_id and run_id and cycle_id
-            else f"FRESH_POOL_NOMINATION|1|{request_key}"
+            else f"FRESH_POOL_NOMINATION|{int(stage_sequence)}|{request_key}"
         ),
         "transport_identity_count": transport_identity_count,
         "transport_identity_keys": gecko_transport_keys,
@@ -2103,10 +2104,10 @@ def run_geckoterminal_fresh_nomination(
                 ledger=ledger,
                 stage_id=build_campaign_stage_id(
                     campaign_id=str(campaign_id), run_id=str(run_id), cycle_id=str(cycle_id),
-                    stage_kind="FRESH_POOL_NOMINATION", stage_sequence=1,
+                    stage_kind="FRESH_POOL_NOMINATION", stage_sequence=int(stage_sequence),
                 ),
                 stage_kind="FRESH_POOL_NOMINATION",
-                stage_sequence=1,
+                stage_sequence=int(stage_sequence),
                 stage_terminal_status=stage_terminal,
                 stage_first_terminal_cause=stage_first_cause,
                 campaign_id=str(campaign_id), run_id=str(run_id), cycle_id=str(cycle_id),
@@ -5035,6 +5036,7 @@ def run_bounded_unknown_liquidity_backup(
     transport_identity_observer: Any | None = None,
     stage_evidence_sink: Any | None = None,
     max_backups: int | None = None,
+    stage_sequence_base: int = 0,
 ) -> dict[str, Any]:
     """One lawful opposite-source exact-pool backup for LIQUIDITY_UNKNOWN rows.
 
@@ -5247,9 +5249,9 @@ def run_bounded_unknown_liquidity_backup(
             "source_name": source_name,
             "request_kind": request_kind,
             "logical_stage_id": (
-                f"{campaign_id}|{run_id}|{cycle_id}|UNKNOWN_LIQUIDITY_BACKUP|{attempted}"
+                f"{campaign_id}|{run_id}|{cycle_id}|UNKNOWN_LIQUIDITY_BACKUP|{int(stage_sequence_base) + attempted}"
                 if campaign_id and run_id and cycle_id
-                else f"UNKNOWN_LIQUIDITY_BACKUP|{attempted}"
+                else f"UNKNOWN_LIQUIDITY_BACKUP|{int(stage_sequence_base) + attempted}"
             ),
             "transport_identity_count": transport_identity_count,
             "transport_identity_keys": backup_keys,
@@ -5273,7 +5275,7 @@ def run_bounded_unknown_liquidity_backup(
             campaign_id=campaign_id,
             run_id=run_id,
             cycle_id=cycle_id,
-            stage_sequence=attempted,
+            stage_sequence=int(stage_sequence_base) + attempted,
             terminal_status=str(coverage["terminal_status"]),
             first_terminal_cause=(
                 str(result.failure_type or "UNKNOWN_LIQUIDITY_BACKUP_SOURCE_UNAVAILABLE")

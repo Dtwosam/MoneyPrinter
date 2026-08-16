@@ -244,3 +244,58 @@ def test_all_fresh_refresh_sources_unavailable_remains_terminal_source_fact():
     )
     assert failures == 3
     assert unavailable == sorted(all_fresh)
+
+
+
+def test_delayed_refresh_stage_sequences_start_after_campaign_start(tmp_path, monkeypatch):
+    seen = {"pump": [], "dex": [], "gt": [], "backup_base": [], "protocol": []}
+
+    def fake_pump(*args, **kwargs):
+        seen["pump"].append(kwargs["stage_sequence"])
+        return {"status": "COMPLETE", "source_request_ids": [1], "verifications": []}
+
+    def fake_dex(*args, **kwargs):
+        seen["dex"].append(kwargs["stage_sequence"])
+        return {
+            "status": "empty", "source_requests": 1, "request_id": 2,
+            "response_id": 3, "pool_observations": [],
+        }
+
+    def fake_gt(*args, **kwargs):
+        seen["gt"].append(kwargs["stage_sequence"])
+        return {"status": "COMPLETE", "failure_type": None, "source_requests": 1, "nominations": []}
+
+    def fake_backup(*args, **kwargs):
+        seen["backup_base"].append(kwargs["stage_sequence_base"])
+        return {"source_requests": 0, "accounting_blocker": False}
+
+    def fake_protocol(*args, **kwargs):
+        seen["protocol"].append(kwargs["stage_sequence"])
+        return {"source_requests": 0, "shared_source_failures": 0, "promoted_observation_eligible": []}
+
+    monkeypatch.setattr(
+        "printer_v1.discovery.direct_migration_discovery.run_direct_migration_discovery",
+        fake_pump,
+    )
+    monkeypatch.setattr(
+        "printer_v1.operator_cli.graduated_supply_front_door.run_fresh_profile_locator",
+        fake_dex,
+    )
+    monkeypatch.setattr(composition, "run_geckoterminal_fresh_nomination", fake_gt)
+    monkeypatch.setattr(composition, "run_bounded_unknown_liquidity_backup", fake_backup)
+    monkeypatch.setattr(composition, "process_protocol_confirmation_queue", fake_protocol)
+
+    stage = composition.build_pre_lifecycle_refresh_stage(
+        db_path=tmp_path / "proof.sqlite3",
+        request_key_prefix="proof",
+        migration_transport=lambda _ctx: {},
+        locator_transport=lambda _ctx: {},
+    )
+    for ordinal in (1, 2, 3):
+        _run(stage, remaining=30, ordinal=ordinal)
+
+    assert seen["pump"] == [2, 3, 4]
+    assert seen["dex"] == [2, 3, 4]
+    assert seen["gt"] == [2, 3, 4]
+    assert seen["backup_base"] == [1, 2, 3]
+    assert seen["protocol"] == [2, 3, 4]

@@ -170,6 +170,7 @@ def build_pre_lifecycle_refresh_stage(
         if remaining < 0:
             raise PreLifecycleRefreshCompositionError("NEGATIVE_SOURCE_OPERATIONS_REMAINING")
 
+        refresh_stage_sequence = int(refresh_ordinal) + 1
         source_operations = 0
         provider_failures = 0
         channels_unavailable: list[str] = []
@@ -254,7 +255,7 @@ def build_pre_lifecycle_refresh_stage(
                         campaign_id=campaign_id,
                         run_id=run_id,
                         cycle_id=cycle_id,
-                        stage_sequence=int(refresh_ordinal),
+                        stage_sequence=refresh_stage_sequence,
                     )
                 )
                 report["source_requests"] = len(report.get("source_request_ids") or ())
@@ -296,7 +297,7 @@ def build_pre_lifecycle_refresh_stage(
                         campaign_id=campaign_id,
                         run_id=run_id,
                         cycle_id=cycle_id,
-                        stage_sequence=int(refresh_ordinal),
+                        stage_sequence=refresh_stage_sequence,
                     )
                 )
                 charge(report, channel=channel)
@@ -351,6 +352,7 @@ def build_pre_lifecycle_refresh_stage(
                         transport=geckoterminal_nomination_transport,
                         stage_evidence_sink=stage_evidence_sink,
                         transport_identity_observer=transport_identity_observer,
+                        stage_sequence=refresh_stage_sequence,
                     )
                 )
                 charge(report, channel=channel)
@@ -392,6 +394,7 @@ def build_pre_lifecycle_refresh_stage(
                     transport_identity_observer=transport_identity_observer,
                     stage_evidence_sink=stage_evidence_sink,
                     max_backups=1,
+                    stage_sequence_base=int(refresh_ordinal),
                 )
             )
             charge(report, channel=UNKNOWN_LIQUIDITY_BACKUP_CHANNEL)
@@ -428,7 +431,7 @@ def build_pre_lifecycle_refresh_stage(
                     local_validation_identity_observer=(
                         local_validation_identity_observer
                     ),
-                    stage_sequence=int(refresh_ordinal),
+                    stage_sequence=refresh_stage_sequence,
                     request_key_prefix=(
                         f"{request_key_prefix}-refresh-{refresh_ordinal}-protocol"
                     ),

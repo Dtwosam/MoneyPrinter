@@ -556,9 +556,9 @@ def run_fresh_profile_locator(
             "source_name": "dexscreener",
             "request_kind": "dexscreener_fresh_profiles",
             "logical_stage_id": (
-                f"{campaign_id}|{run_id}|{cycle_id}|DEXSCREENER_FRESH_LOCATOR|1"
+                f"{campaign_id}|{run_id}|{cycle_id}|DEXSCREENER_FRESH_LOCATOR|{int(stage_sequence)}"
                 if campaign_id and run_id and cycle_id
-                else f"DEXSCREENER_FRESH_LOCATOR|{request_key}"
+                else f"DEXSCREENER_FRESH_LOCATOR|{int(stage_sequence)}|{request_key}"
             ),
             "transport_identity_count": transport_identity_count,
             "transport_identity_keys": transport_identity_keys,
