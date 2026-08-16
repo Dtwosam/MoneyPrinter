@@ -1748,6 +1748,8 @@ def _build_pre_lifecycle_temporal_refresh_owner(
     stage_evidence_sink: Callable[[Mapping[str, Any]], None] | None = None,
     transport_identity_observer: Callable[[Any], None] | None = None,
     local_validation_identity_observer: Callable[[Any], None] | None = None,
+    migration_transport: Any | None = None,
+    graduated_supply_kwargs: Mapping[str, Any] | None = None,
     geckoterminal_nomination_transport: Any | None = None,
     protocol_account_batch_transport: Any | None = None,
 ) -> "PreLifecycleTemporalRefreshOwner":
@@ -1805,6 +1807,8 @@ def _build_pre_lifecycle_temporal_refresh_owner(
         # canonical 600s refresh interval. No polling loop is introduced.
         return bounded_interruptible_wait(seconds, failure_event)
 
+    supply_kwargs = dict(graduated_supply_kwargs or {})
+
     return PreLifecycleTemporalRefreshOwner(
         command.db_path,
         campaign_id=command.campaign_id,
@@ -1825,7 +1829,11 @@ def _build_pre_lifecycle_temporal_refresh_owner(
             )
         ),
         refresh_stage=build_pre_lifecycle_refresh_stage(
+            db_path=command.db_path,
             request_key_prefix=execution_id,
+            migration_transport=migration_transport,
+            verifier_transport_factory=supply_kwargs.get("verifier_transport_factory"),
+            locator_transport=supply_kwargs.get("locator_transport"),
             geckoterminal_nomination_transport=(
                 geckoterminal_nomination_transport
             ),
@@ -3593,7 +3601,7 @@ def _run_operational_campaign(
         #
         # Exactly one owner, bound to this authorized campaign/run/cycle/
         # supervision, the same Source Governor and Central Scheduler ports the
-        # campaign already uses, and the same 900s horizon recorded in the
+        # campaign already uses, and the bounded pre-lifecycle horizon recorded in the
         # immutable configuration. Without it the supply service keeps its old
         # immediate-terminal behaviour, which is precisely the DTW98 defect.
         pre_lifecycle_temporal_refresh_owner = (
@@ -3614,6 +3622,8 @@ def _run_operational_campaign(
                 local_validation_identity_observer=(
                     _observe_local_validation_identity
                 ),
+                migration_transport=active_migration,
+                graduated_supply_kwargs=bridge_graduated_supply_kwargs,
                 geckoterminal_nomination_transport=(
                     owner_bridge.geckoterminal_nomination_transport
                     if owner_bridge is not None

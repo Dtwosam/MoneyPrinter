@@ -1239,7 +1239,7 @@ def run_persistent_eligible_token_supply(
                 required_capacity=int(required_token_capacity),
                 universe_state=universe_state,
                 source_operations_remaining=_ops_remaining(),
-                provider_terminal_failure=bool(channels_unavailable),
+                provider_terminal_failure=False,
                 now=_utc_now_iso(),
             )
             if not isinstance(outcome, TemporalRefreshOutcome):
@@ -1323,6 +1323,15 @@ def run_persistent_eligible_token_supply(
                 evaluated_mints.add(mint)
                 all_candidates.append(cand)
             connection.commit()
+
+            # Complete per-refresh certificate depth after stale-marking and
+            # direct protocol promotions; graduated registry rows still must
+            # re-enter the canonical front door before counting.
+            depth_after_refresh = len(campaign_eligible)
+            if acquisition_ledger.reserve_depth_transitions:
+                acquisition_ledger.reserve_depth_transitions[-1]["reserve_depth_after"] = depth_after_refresh
+            if acquisition_ledger.outcomes:
+                acquisition_ledger.outcomes[-1]["reserve_depth_after"] = depth_after_refresh
 
             inventory_rows = export_graduated_candidates(connection)
             inventory_mints = {str(r["mint_identity"]) for r in inventory_rows}

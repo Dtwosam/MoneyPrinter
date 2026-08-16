@@ -112,6 +112,9 @@ class TemporalRefreshOutcome:
     source_operations: int = 0
     provider_failures: int = 0
     channels_unavailable: tuple[str, ...] = ()
+    channels_attempted: tuple[str, ...] = ()
+    channels_skipped: tuple[Mapping[str, Any], ...] = ()
+    newly_observed_exact_identities: tuple[Mapping[str, Any], ...] = ()
     promoted_observation_eligible: tuple[Mapping[str, Any], ...] = ()
     reserve_depth_before: int = 0
     reserve_depth_after: int = 0
@@ -136,6 +139,14 @@ class TemporalRefreshOutcome:
             "source_operations": self.source_operations,
             "provider_failures": self.provider_failures,
             "channels_unavailable": list(self.channels_unavailable),
+            "channels_attempted": list(self.channels_attempted),
+            "channels_skipped": [dict(item) for item in self.channels_skipped],
+            "newly_observed_exact_identities": [
+                dict(item) for item in self.newly_observed_exact_identities
+            ],
+            "newly_observed_exact_identity_count": len(
+                self.newly_observed_exact_identities
+            ),
             "promoted_observation_eligible_count": len(
                 self.promoted_observation_eligible
             ),
