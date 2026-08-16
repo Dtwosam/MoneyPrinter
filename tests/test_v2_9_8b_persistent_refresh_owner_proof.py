@@ -140,9 +140,9 @@ def test_same_authorization_completes_three_scheduler_owned_refresh_ordinals(tmp
                ORDER BY id"""
         ).fetchall()
         assert [str(row["status"]) for row in job_rows] == [
-            "COMPLETED",
-            "COMPLETED",
-            "COMPLETED",
+            "SUCCEEDED",
+            "SUCCEEDED",
+            "SUCCEEDED",
         ]
 
         # The repair must not consume or collide with the legacy one-per-cycle
