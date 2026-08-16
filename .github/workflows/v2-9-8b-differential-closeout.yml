@@ -1,0 +1,110 @@
+name: V2-9.8B bounded differential closeout
+
+on:
+  push:
+    branches:
+      - agent/v2-9-8b-persistent-multisource-fresh-acquisition-implementation
+
+permissions:
+  contents: read
+
+jobs:
+  focused-closeout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run focused V2-9.8B closeout proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -q -e . pytest
+          python -m compileall -q src/printer_v1
+          PYTHONPATH=src python -m pytest -q \
+            tests/test_v2_9_8b_persistent_multisource_fresh_acquisition.py \
+            tests/test_v2_9_8b_persistent_refresh_owner.py \
+            tests/test_v2_9_8b_migration_057_upgrade.py \
+            tests/test_v2_9_8b_window_15m_final_integrated_readiness_repair.py
+          git diff --check
+
+  differential-regression:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Compare current failures with approved design baseline
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARD_COUNT: '6'
+          BASELINE: c9fb16b8f214e4e527f574e7c7dcbeb5cf351455
+        run: |
+          set -euo pipefail
+          python -m pip install -q -e . pytest
+          python -m compileall -q src/printer_v1
+          git worktree add --detach /tmp/v298b-baseline "$BASELINE"
+
+          mapfile -t FILES < <(find tests -maxdepth 1 -type f -name 'test*.py' | sort)
+          new_regressions=0
+          baseline_debt=0
+          current_passes=0
+          selected=0
+          idx=0
+
+          for file in "${FILES[@]}"; do
+            if (( idx % SHARD_COUNT != SHARD )); then
+              idx=$((idx + 1))
+              continue
+            fi
+            idx=$((idx + 1))
+            selected=$((selected + 1))
+            echo "::group::CURRENT $file"
+            set +e
+            timeout 75s env PYTHONPATH="$GITHUB_WORKSPACE/src" python -m pytest -q "$file" > /tmp/current.log 2>&1
+            current_rc=$?
+            set -e
+            if [[ $current_rc -eq 0 ]]; then
+              current_passes=$((current_passes + 1))
+              echo "PASS"
+              echo "::endgroup::"
+              continue
+            fi
+            cat /tmp/current.log
+            echo "::endgroup::"
+
+            if [[ ! -f "/tmp/v298b-baseline/$file" ]]; then
+              echo "::error file=$file::Current-only test failed (rc=$current_rc); no baseline analogue exists"
+              new_regressions=$((new_regressions + 1))
+              continue
+            fi
+
+            echo "::group::BASELINE $file"
+            set +e
+            (
+              cd /tmp/v298b-baseline
+              timeout 75s env PYTHONPATH="/tmp/v298b-baseline/src" python -m pytest -q "$file"
+            ) > /tmp/baseline.log 2>&1
+            baseline_rc=$?
+            set -e
+            cat /tmp/baseline.log
+            echo "::endgroup::"
+
+            if [[ $baseline_rc -eq 0 ]]; then
+              echo "::error file=$file::NEW REGRESSION: baseline passes, current fails (current rc=$current_rc)"
+              new_regressions=$((new_regressions + 1))
+            else
+              echo "BASELINE_DEBT file=$file current_rc=$current_rc baseline_rc=$baseline_rc"
+              baseline_debt=$((baseline_debt + 1))
+            fi
+          done
+
+          echo "SHARD_SUMMARY shard=$SHARD selected=$selected current_passes=$current_passes baseline_debt=$baseline_debt new_regressions=$new_regressions"
+          if (( new_regressions > 0 )); then
+            exit 1
+          fi
