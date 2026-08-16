@@ -192,3 +192,55 @@ def test_zero_budget_performs_no_source_work(tmp_path, monkeypatch):
     assert result["budget_exhausted_before_refresh"] is True
     assert result["channels_attempted"] == ()
     assert len(result["channels_skipped"]) == 5
+
+
+
+def test_partial_refresh_source_failure_is_not_terminal_source_exhaustion():
+    from types import SimpleNamespace
+    from printer_v1.discovery.eligible_token_supply import (
+        _temporal_terminal_source_failure_facts,
+    )
+
+    ledger = SimpleNamespace(outcomes=[{
+        "status": "REFRESH_COMPLETED",
+        "channels_attempted": [
+            composition.PUMP_FRESH_CHANNEL,
+            composition.DEXSCREENER_FRESH_CHANNEL,
+            composition.GECKOTERMINAL_NOMINATION_CHANNEL,
+        ],
+        "channels_unavailable": [composition.GECKOTERMINAL_NOMINATION_CHANNEL],
+    }])
+    failures, unavailable = _temporal_terminal_source_failure_facts(
+        provider_failures=1,
+        channels_unavailable=[composition.GECKOTERMINAL_NOMINATION_CHANNEL],
+        acquisition_ledger=ledger,
+        last_stop_reason="DISCOVERY_OPERATION_BUDGET_EXHAUSTED",
+    )
+    assert failures == 0
+    assert unavailable == []
+
+
+def test_all_fresh_refresh_sources_unavailable_remains_terminal_source_fact():
+    from types import SimpleNamespace
+    from printer_v1.discovery.eligible_token_supply import (
+        _temporal_terminal_source_failure_facts,
+    )
+
+    all_fresh = [
+        composition.PUMP_FRESH_CHANNEL,
+        composition.DEXSCREENER_FRESH_CHANNEL,
+        composition.GECKOTERMINAL_NOMINATION_CHANNEL,
+    ]
+    ledger = SimpleNamespace(outcomes=[{
+        "status": "REFRESH_COMPLETED",
+        "channels_attempted": all_fresh,
+        "channels_unavailable": all_fresh,
+    }])
+    failures, unavailable = _temporal_terminal_source_failure_facts(
+        provider_failures=3,
+        channels_unavailable=all_fresh,
+        acquisition_ledger=ledger,
+        last_stop_reason="ALL_REACHABLE_CANDIDATES_EVALUATED",
+    )
+    assert failures == 3
+    assert unavailable == sorted(all_fresh)

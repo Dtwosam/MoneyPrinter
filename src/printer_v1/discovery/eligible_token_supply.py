@@ -132,6 +132,54 @@ def _validate_reconciliation_stage_charge(*, offered: int, actual: int) -> int:
     return actual
 
 
+_TEMPORAL_FRESH_SOURCE_CHANNELS = frozenset({
+    "direct_pump_finalized_live_tail",
+    "dexscreener_fresh_profiles",
+    "geckoterminal_fresh_pool_nomination",
+})
+
+
+def _temporal_terminal_source_failure_facts(
+    *,
+    provider_failures: int,
+    channels_unavailable: Sequence[str],
+    acquisition_ledger: Any | None,
+    last_stop_reason: str | None,
+) -> tuple[int, list[str]]:
+    """Return only source-failure facts that may control terminal shortage.
+
+    Historical or source-local failures remain certificate provenance, but they
+    cannot become the terminal reason while another fresh source channel stayed
+    lawful. A shared refresh-stage failure remains terminal. Otherwise all
+    three approved fresh-source channels must have been attempted and unavailable
+    in the latest completed refresh before source availability may control.
+    """
+    unavailable = sorted(set(str(x) for x in channels_unavailable))
+    if acquisition_ledger is None:
+        return int(provider_failures), unavailable
+    if last_stop_reason == "SOURCE_AVAILABILITY_FAILURE_DURING_REFRESH":
+        return int(provider_failures), unavailable
+    completed = [
+        item
+        for item in getattr(acquisition_ledger, "outcomes", ())
+        if str(item.get("status") or "") == REFRESH_COMPLETED
+    ]
+    if not completed:
+        return int(provider_failures), unavailable
+    latest = completed[-1]
+    attempted = {str(x) for x in latest.get("channels_attempted") or ()}
+    latest_unavailable = {
+        str(x) for x in latest.get("channels_unavailable") or ()
+    }
+    all_fresh_unavailable = (
+        _TEMPORAL_FRESH_SOURCE_CHANNELS.issubset(attempted)
+        and _TEMPORAL_FRESH_SOURCE_CHANNELS.issubset(latest_unavailable)
+    )
+    if all_fresh_unavailable:
+        return int(provider_failures), unavailable
+    return 0, []
+
+
 def _apply_permanent_shortage_precedence(
     *, shortage: str, last_stop_reason: str | None,
     tracking_dispositions: Mapping[str, Mapping[str, Any]],
@@ -1234,6 +1282,19 @@ def run_persistent_eligible_token_supply(
                 last_stop_reason = universe_state
                 return False
             depth_before = len(campaign_eligible)
+            # Settle the prior completed refresh after its newly reachable
+            # registry rows have traversed the canonical front door. This keeps
+            # per-round reserve transitions honest without a second admission
+            # authority.
+            if (
+                acquisition_ledger.outcomes
+                and acquisition_ledger.outcomes[-1].get("status") == REFRESH_COMPLETED
+            ):
+                acquisition_ledger.outcomes[-1]["reserve_depth_after"] = depth_before
+                if acquisition_ledger.reserve_depth_transitions:
+                    acquisition_ledger.reserve_depth_transitions[-1][
+                        "reserve_depth_after"
+                    ] = depth_before
             outcome = temporal_refresh_owner.request_temporal_refresh(
                 reserve_depth=depth_before,
                 required_capacity=int(required_token_capacity),
@@ -1708,6 +1769,20 @@ def run_persistent_eligible_token_supply(
                     continue
                 break
 
+        # Settle the final completed refresh after its canonical front-door
+        # traversal, before residual post-loop protocol reconciliation.
+        if (
+            acquisition_ledger is not None
+            and acquisition_ledger.outcomes
+            and acquisition_ledger.outcomes[-1].get("status") == REFRESH_COMPLETED
+        ):
+            final_refresh_depth = len(campaign_eligible)
+            acquisition_ledger.outcomes[-1]["reserve_depth_after"] = final_refresh_depth
+            if acquisition_ledger.reserve_depth_transitions:
+                acquisition_ledger.reserve_depth_transitions[-1][
+                    "reserve_depth_after"
+                ] = final_refresh_depth
+
         # Refresh inventory size after discovery (new confirms).
         inventory_rows = export_graduated_candidates(connection)
         inventory_mints = {str(r["mint_identity"]) for r in inventory_rows}
@@ -1978,9 +2053,17 @@ def run_persistent_eligible_token_supply(
                 "DISCOVERY_OPERATION_BUDGET_EXHAUSTED",
                 "CAMPAIGN_DURATION_EXHAUSTED",
             } and unexplored_remaining > 0
+            terminal_provider_failures, terminal_channels_unavailable = (
+                _temporal_terminal_source_failure_facts(
+                    provider_failures=provider_failures,
+                    channels_unavailable=channels_unavailable,
+                    acquisition_ledger=acquisition_ledger,
+                    last_stop_reason=last_stop_reason,
+                )
+            )
             shortage = classify_shortage(
-                provider_failures=provider_failures,
-                channels_unavailable=sorted(set(channels_unavailable)),
+                provider_failures=terminal_provider_failures,
+                channels_unavailable=terminal_channels_unavailable,
                 duration_remaining_seconds=duration_remaining,
                 source_operations_remaining=_ops_remaining(),
                 unexplored_unique_remaining=unexplored_remaining,
@@ -2003,8 +2086,8 @@ def run_persistent_eligible_token_supply(
                 shortage=shortage,
                 last_stop_reason=last_stop_reason,
                 tracking_dispositions=tracking_dispositions,
-                provider_failures=provider_failures,
-                channels_unavailable=sorted(set(channels_unavailable)),
+                provider_failures=terminal_provider_failures,
+                channels_unavailable=terminal_channels_unavailable,
                 liquidity_source_unavailable=liquidity_outcome_counts.get(LIQUIDITY_SOURCE_UNAVAILABLE, 0),
                 liquidity_stale_or_rate_limited=liquidity_outcome_counts.get(LIQUIDITY_SOURCE_RATE_LIMITED_OR_STALE, 0),
                 liquidity_malformed_or_partial=liquidity_outcome_counts.get(LIQUIDITY_RESPONSE_MALFORMED_OR_PARTIAL, 0),
