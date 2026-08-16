@@ -1,0 +1,27 @@
+name: V2-9.8B hardening finding diagnostic
+
+on:
+  push:
+    branches:
+      - agent/v2-9-8b-broad-regression-diagnostic
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Print live-capability findings
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -q -e .
+          PYTHONPATH=src python - <<'PY'
+          from pathlib import Path
+          from printer_v1.hardening.schema_checks import check_no_live_capability_terms_in_source
+          result = check_no_live_capability_terms_in_source(Path.cwd())
+          print(result)
+          PY
