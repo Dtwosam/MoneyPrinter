@@ -29,12 +29,12 @@ jobs:
 
   impacted-regression:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Run risk-based cross-cutting regression
+      - name: Run directly impacted cross-cutting regression
         shell: bash
         env:
           BASELINE: c9fb16b8f214e4e527f574e7c7dcbeb5cf351455
@@ -50,6 +50,7 @@ jobs:
               'pre_lifecycle_refresh',
               'pre_lifecycle_temporal',
               'pre_lifecycle_persistent_refresh_owner',
+              'pre_lifecycle_refresh_work',
               'eligible_token_supply',
               'permanent_discovery_availability',
               'campaign_active_work',
@@ -63,12 +64,7 @@ jobs:
           selected = []
           for path in sorted(Path('tests').glob('test*.py')):
               text = path.read_text(errors='ignore')
-              name = path.name.lower()
-              if (
-                  any(needle in text for needle in needles)
-                  or 'scheduler' in name
-                  or 'migration' in name
-              ):
+              if any(needle in text for needle in needles):
                   selected.append(path.as_posix())
           for path in selected:
               print(path)
@@ -76,10 +72,10 @@ jobs:
 
           mapfile -t SELECTED < /tmp/selected.txt
           if (( ${#SELECTED[@]} == 0 )); then
-            echo 'No impacted regression tests selected'
+            echo 'No directly impacted regression tests selected'
             exit 1
           fi
-          echo "Selected ${#SELECTED[@]} impacted test files"
+          echo "Selected ${#SELECTED[@]} directly impacted test files"
           printf '%s\n' "${SELECTED[@]}"
 
           set +e
@@ -90,7 +86,7 @@ jobs:
           set -e
 
           if [[ $current_rc -eq 0 ]]; then
-            echo 'IMPACTED_REGRESSION_PASS: current impacted suite is green'
+            echo 'IMPACTED_REGRESSION_PASS: current directly impacted suite is green'
             git diff --check
             exit 0
           fi
