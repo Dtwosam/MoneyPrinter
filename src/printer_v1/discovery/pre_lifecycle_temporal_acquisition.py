@@ -1,17 +1,17 @@
-"""V2-9.8B Post-DTW98 pre-lifecycle temporal acquisition contract.
+"""V2-9.8B persistent pre-lifecycle temporal acquisition contract.
 
-Owns the *shared vocabulary and durable ownership rows* for a bounded,
-Scheduler-owned pre-lifecycle acquisition wait:
+Owns the shared vocabulary and durable ownership rows for bounded,
+Scheduler-owned pre-lifecycle acquisition waits:
 
-* the 900-second bounded acquisition horizon;
+* the 2400-second bounded acquisition horizon;
 * the nonterminal ``WAITING_FOR_ELIGIBLE_SUPPLY`` state;
 * the categorical wait-eligibility predicate;
 * persistence for ``printer_pre_lifecycle_discovery_refresh_waits``.
 
-It deliberately owns **no** Scheduler call, **no** provider request, **no**
-timer and **no** orchestration. Enqueue/claim/terminalize belong to
-``operator_cli.pre_lifecycle_temporal_refresh_owner``; provider work belongs to
-the Source Governor; delayed work belongs to the Central Scheduler.
+It deliberately owns no Scheduler call, provider request, timer or orchestration.
+Enqueue/claim/terminalize belong to the pre-lifecycle temporal refresh owner;
+provider work belongs to the Source Governor; delayed work belongs to the
+Central Scheduler.
 
 Locked: no scoring/ranking/confidence/weights, no retrieval/decisions/positions/
 trades/audits/PnL, no retry/restart/resume/successor, no second authorization,
@@ -27,36 +27,17 @@ from typing import Any, Mapping, Sequence
 
 WAIT_TABLE = "printer_pre_lifecycle_discovery_refresh_waits"
 
-# --------------------------------------------------------------------------- #
-# Bounded horizon                                                              #
-# --------------------------------------------------------------------------- #
+# Four bounded acquisition opportunities are possible: campaign-start intake,
+# then due refreshes at +600s, +1200s and +1800s. Strict due < deadline keeps
+# +2400s outside the horizon.
+PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS = 2400
 
-# Reuse of the existing bounded discovery-only duration. This is an acquisition
-# horizon only: it is not a WINDOW_15M memory window, it creates no memory, and
-# it does not extend or borrow from the post-supply lifecycle envelope.
-PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS = 900
-
-# --------------------------------------------------------------------------- #
-# States                                                                       #
-# --------------------------------------------------------------------------- #
-
-#: Nonterminal reporting state. Current universe exhausted, lawful future
-#: refresh remains inside the acquisition horizon.
 WAITING_FOR_ELIGIBLE_SUPPLY = "WAITING_FOR_ELIGIBLE_SUPPLY"
-
-#: Certificate/universe marker distinguishing an instantaneous universe
-#: exhaustion under a live horizon from a true terminal exhaustion.
 CURRENT_UNIVERSE_EXHAUSTED_WAITING = "CURRENT_UNIVERSE_EXHAUSTED_WAITING"
 CURRENT_UNIVERSE_EXHAUSTED_TERMINAL = "CURRENT_UNIVERSE_EXHAUSTED_TERMINAL"
-
-#: Supply-loop stop reason when the horizon can no longer contain one further
-#: normal Scheduler refresh interval.
 PRE_LIFECYCLE_ACQUISITION_DURATION_EXHAUSTED = (
     "PRE_LIFECYCLE_ACQUISITION_DURATION_EXHAUSTED"
 )
-
-#: The two existing current-universe exhaustion stop reasons that may become
-#: nonterminal when a lawful future refresh remains.
 CURRENT_UNIVERSE_EXHAUSTION_REASONS = (
     "ALL_REACHABLE_CANDIDATES_EVALUATED",
     "NO_ADDITIONAL_UNIQUE_CANDIDATES_REACHABLE",
@@ -64,10 +45,6 @@ CURRENT_UNIVERSE_EXHAUSTION_REASONS = (
 
 WAIT_STATES = ("WAITING", "CLAIMED", "SUCCEEDED", "FAILED", "CANCELLED")
 ACTIVE_WAIT_STATES = ("WAITING", "CLAIMED")
-
-# --------------------------------------------------------------------------- #
-# Temporal refresh outcome statuses (categorical, fail-closed)                 #
-# --------------------------------------------------------------------------- #
 
 REFRESH_COMPLETED = "REFRESH_COMPLETED"
 NO_LAWFUL_REFRESH_WINDOW = "NO_LAWFUL_REFRESH_WINDOW"
@@ -82,8 +59,6 @@ CAPACITY_ALREADY_MET = "CAPACITY_ALREADY_MET"
 UNIVERSE_NOT_EXHAUSTED = "UNIVERSE_NOT_EXHAUSTED"
 NOT_ELIGIBLE = "NOT_ELIGIBLE"
 
-#: Ordered, fail-closed controlling-terminal precedence (design §8). Anything
-#: earlier in this tuple wins over anything later.
 TERMINAL_PRECEDENCE = (
     SUPERVISION_FAILED,
     CANCELLED,
@@ -98,10 +73,6 @@ TERMINAL_PRECEDENCE = (
 class PreLifecycleTemporalAcquisitionError(RuntimeError):
     """Fail-closed pre-lifecycle temporal-acquisition fault."""
 
-
-# --------------------------------------------------------------------------- #
-# Time helpers                                                                 #
-# --------------------------------------------------------------------------- #
 
 def parse_iso(value: str) -> datetime:
     parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
@@ -128,10 +99,6 @@ def acquisition_deadline_at(
     return iso(parse_iso(started_at) + timedelta(seconds=duration))
 
 
-# --------------------------------------------------------------------------- #
-# Outcome                                                                      #
-# --------------------------------------------------------------------------- #
-
 @dataclass(frozen=True)
 class TemporalRefreshOutcome:
     """Result of one requested Scheduler-owned temporal refresh opportunity."""
@@ -142,14 +109,9 @@ class TemporalRefreshOutcome:
     refresh_ordinal: int = 0
     scheduled_for: str | None = None
     claimed: bool = False
-    #: Cumulative-accountable governed source operations this refresh consumed.
-    #: Waiting itself always contributes zero.
     source_operations: int = 0
     provider_failures: int = 0
     channels_unavailable: tuple[str, ...] = ()
-    #: Rows the existing protocol-confirmation owner promoted during the
-    #: refresh. They are carried, never judged: admission remains the supply
-    #: service's existing promotion path, and this owner adds no gate.
     promoted_observation_eligible: tuple[Mapping[str, Any], ...] = ()
     reserve_depth_before: int = 0
     reserve_depth_after: int = 0
@@ -241,12 +203,8 @@ class AcquisitionLedger:
             "acquisition_remaining_seconds": self.remaining_seconds(now),
             "temporal_refresh_opportunities_scheduled": self.opportunities_scheduled,
             "temporal_refresh_opportunities_claimed": self.opportunities_claimed,
-            "temporal_refresh_opportunities_completed": (
-                self.opportunities_completed
-            ),
-            "temporal_refresh_opportunities_cancelled": (
-                self.opportunities_cancelled
-            ),
+            "temporal_refresh_opportunities_completed": self.opportunities_completed,
+            "temporal_refresh_opportunities_cancelled": self.opportunities_cancelled,
             "waiting_states_entered": self.waiting_states_entered,
             "eligible_reserve_depth_transitions": [
                 dict(item) for item in self.reserve_depth_transitions
@@ -256,15 +214,9 @@ class AcquisitionLedger:
             ],
             "temporal_refresh_outcomes": [dict(item) for item in self.outcomes],
             "final_current_universe_state": self.final_current_universe_state,
-            "controlling_shortage_classification": (
-                self.controlling_shortage_classification
-            ),
+            "controlling_shortage_classification": self.controlling_shortage_classification,
         }
 
-
-# --------------------------------------------------------------------------- #
-# Wait eligibility (design §2)                                                 #
-# --------------------------------------------------------------------------- #
 
 @dataclass(frozen=True)
 class WaitEligibility:
@@ -285,11 +237,7 @@ def evaluate_wait_eligibility(
     cancellation_requested: bool,
     pending_refresh_exists: bool,
 ) -> WaitEligibility:
-    """Categorical, fail-closed eligibility to enter ``WAITING_FOR_ELIGIBLE_SUPPLY``.
-
-    Every condition in design §2 must hold. No condition is scored, weighted or
-    traded off against another.
-    """
+    """Categorical, fail-closed eligibility to enter the waiting state."""
     if int(reserve_depth) >= int(required_capacity):
         return WaitEligibility(False, CAPACITY_ALREADY_MET)
     if str(universe_state) not in CURRENT_UNIVERSE_EXHAUSTION_REASONS:
@@ -319,10 +267,6 @@ def refresh_window_fits(
     due = parse_iso(now) + timedelta(seconds=int(refresh_interval_seconds))
     return due < parse_iso(acquisition_deadline_at)
 
-
-# --------------------------------------------------------------------------- #
-# Durable wait ownership rows                                                  #
-# --------------------------------------------------------------------------- #
 
 def wait_table_exists(connection: sqlite3.Connection) -> bool:
     return (
@@ -495,9 +439,7 @@ def summarize_waits(
     return {
         "rows": sum(by_state.values()),
         "by_state": by_state,
-        "active": sum(
-            by_state.get(state, 0) for state in ACTIVE_WAIT_STATES
-        ),
+        "active": sum(by_state.get(state, 0) for state in ACTIVE_WAIT_STATES),
     }
 
 
