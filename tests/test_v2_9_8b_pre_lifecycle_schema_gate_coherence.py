@@ -21,6 +21,7 @@ from printer_v1.operator_cli import operational_campaign_recovery as recovery
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GATE_SOURCE = REPO_ROOT / "src/printer_v1/operator_cli/four_token_proof_zero_state_gate.py"
+MIGRATION_057_NAME = "057_pre_lifecycle_discovery_refresh_work.sql"
 MIGRATION_056_NAME = "056_four_token_pre_lifecycle_terminal_provenance.sql"
 MIGRATION_055_NAME = "055_pre_admission_discovery_attempt_ownership.sql"
 
@@ -67,14 +68,15 @@ def _canonical_names() -> list[str]:
 # --------------------------------------------------------------------------
 
 
-def test_zero_state_gate_admits_migration_056_only() -> None:
-    assert gate.REQUIRED_MIGRATION_COUNT == 56
-    assert gate.REQUIRED_MIGRATION_HEAD == MIGRATION_056_NAME
+def test_zero_state_gate_admits_migration_057_only() -> None:
+    assert gate.REQUIRED_MIGRATION_COUNT == 57
+    assert gate.REQUIRED_MIGRATION_HEAD == MIGRATION_057_NAME
 
 
-def test_zero_state_gate_rejects_the_superseded_055_pin() -> None:
-    assert gate.REQUIRED_MIGRATION_COUNT != 55
+def test_zero_state_gate_rejects_the_superseded_055_and_056_pins() -> None:
+    assert gate.REQUIRED_MIGRATION_COUNT not in (55, 56)
     assert gate.REQUIRED_MIGRATION_HEAD != MIGRATION_055_NAME
+    assert gate.REQUIRED_MIGRATION_HEAD != MIGRATION_056_NAME
 
 
 def test_gate_migration_pins_are_explicit_literals_not_derived() -> None:
@@ -96,8 +98,8 @@ def test_gate_migration_pins_are_explicit_literals_not_derived() -> None:
     assert set(found) == {"REQUIRED_MIGRATION_COUNT", "REQUIRED_MIGRATION_HEAD"}
     for name, value in found.items():
         assert isinstance(value, ast.Constant), f"{name} must be a literal constant"
-    assert found["REQUIRED_MIGRATION_COUNT"].value == 56
-    assert found["REQUIRED_MIGRATION_HEAD"].value == MIGRATION_056_NAME
+    assert found["REQUIRED_MIGRATION_COUNT"].value == 57
+    assert found["REQUIRED_MIGRATION_HEAD"].value == MIGRATION_057_NAME
     source = GATE_SOURCE.read_text()
     assert "canonical_migration_count" not in source
     assert "canonical_migration_names" not in source
@@ -115,19 +117,19 @@ def test_canonical_ledger_drift_guard_is_still_wired_into_the_gate() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_disposable_schema_56_satisfies_the_gate_migration_pins(tmp_path) -> None:
+def test_disposable_schema_57_satisfies_the_gate_migration_pins(tmp_path) -> None:
     applied = _apply(tmp_path / "migrated.sqlite3", _canonical_names())
     assert len(applied) == gate.REQUIRED_MIGRATION_COUNT
     assert applied[-1] == gate.REQUIRED_MIGRATION_HEAD
 
 
-def test_disposable_schema_55_does_not_satisfy_the_gate_migration_pins(
+def test_disposable_schema_56_does_not_satisfy_the_gate_migration_pins(
     tmp_path,
 ) -> None:
-    names = [n for n in _canonical_names() if n != MIGRATION_056_NAME]
+    names = [n for n in _canonical_names() if n != MIGRATION_057_NAME]
     applied = _apply(tmp_path / "stale.sqlite3", names)
-    assert len(applied) == 55
-    assert applied[-1] == MIGRATION_055_NAME
+    assert len(applied) == 56
+    assert applied[-1] == MIGRATION_056_NAME
     assert len(applied) != gate.REQUIRED_MIGRATION_COUNT
     assert applied[-1] != gate.REQUIRED_MIGRATION_HEAD
 
@@ -165,43 +167,72 @@ def test_migration_056_provenance_objects_exist_on_disposable_schema(
 
 
 # --------------------------------------------------------------------------
-# 3. Evidence profile: 056 current, 050 still the required historical package,
-#    055 constants preserved but deliberately not promoted
+# 3. Evidence profile: 057 current; 050, 055 and 056 are the required immutable
+#    historical packages; 055/056 keep their own distinct identities
 # --------------------------------------------------------------------------
 
 
-def test_profile_current_migration_evidence_is_056() -> None:
+def test_profile_current_migration_evidence_is_057() -> None:
     profile = git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
-    assert git_auth.MIGRATION_056_PACKAGE_ROOT == (
-        "operator-runs/v2-9-8b-migration-056-application"
+    assert git_auth.MIGRATION_057_PACKAGE_ROOT == (
+        "operator-runs/v2-9-8b-migration-057-application"
     )
-    assert git_auth.MIGRATION_056_PACKAGE_KIND == "MIGRATION_056_EVIDENCE"
-    assert profile.migration_package_root == git_auth.MIGRATION_056_PACKAGE_ROOT
-    assert profile.migration_package_kind == git_auth.MIGRATION_056_PACKAGE_KIND
+    assert git_auth.MIGRATION_057_PACKAGE_KIND == "MIGRATION_057_EVIDENCE"
+    assert profile.migration_package_root == git_auth.MIGRATION_057_PACKAGE_ROOT
+    assert profile.migration_package_kind == git_auth.MIGRATION_057_PACKAGE_KIND
+    # 056 is no longer current; it kept its own constants as historical identity.
+    assert profile.migration_package_root != git_auth.MIGRATION_056_PACKAGE_ROOT
 
 
-def test_profile_keeps_050_as_the_declared_required_historical_package() -> None:
+def test_profile_declares_050_055_056_as_required_historical_packages() -> None:
     profile = git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
     roots = {
         package.package_root: package
         for package in profile.historical_migration_packages
     }
-    assert set(roots) == {git_auth.MIGRATION_PACKAGE_ROOT}
+    assert set(roots) == {
+        git_auth.MIGRATION_PACKAGE_ROOT,
+        git_auth.MIGRATION_055_PACKAGE_ROOT,
+        git_auth.MIGRATION_056_PACKAGE_ROOT,
+    }
     mig050 = roots[git_auth.MIGRATION_PACKAGE_ROOT]
     assert mig050.execution_id == git_auth.FOUR_TOKEN_HISTORICAL_MIGRATION_EXECUTION_ID
     assert mig050.evidence_class == git_auth.HISTORICAL_MIGRATION_EVIDENCE_CLASS
+    assert mig050.expected_file_count == 12
+    assert mig050.expected_inventory_sha256 == (
+        git_auth.FOUR_TOKEN_HISTORICAL_MIGRATION_EXPECTED_INVENTORY_SHA256
+    )
 
 
-def test_055_is_not_newly_promoted_to_a_required_historical_package() -> None:
-    """Declaring 055 here would make its evidence mandatory forever.
+def test_055_and_056_are_promoted_required_historical_packages() -> None:
+    """Declaring 055/056 here makes their evidence mandatory forever.
 
-    Every declared historical package is required for every manifest build, so
-    promoting 055 is a broader contract change than the approved 056 admission
-    repair. It is deferred, not silently adopted.
+    That obligation is accepted deliberately: it is the only way to explain
+    their untracked bytes without publishing SQLite database images into the
+    public Git remote. Each carries its own immutable completeness identity, so
+    partial erosion cannot silently redefine the package.
     """
     profile = git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
-    declared = {p.package_root for p in profile.historical_migration_packages}
-    assert git_auth.MIGRATION_055_PACKAGE_ROOT not in declared
+    declared = {p.package_root: p for p in profile.historical_migration_packages}
+    assert git_auth.MIGRATION_055_PACKAGE_ROOT in declared
+    assert git_auth.MIGRATION_056_PACKAGE_ROOT in declared
+
+    mig055 = declared[git_auth.MIGRATION_055_PACKAGE_ROOT]
+    assert mig055.execution_id == (
+        git_auth.FOUR_TOKEN_HISTORICAL_MIGRATION_055_EXECUTION_ID
+    )
+    assert mig055.evidence_class == git_auth.HISTORICAL_MIGRATION_055_EVIDENCE_CLASS
+    assert mig055.expected_file_count == 5
+
+    mig056 = declared[git_auth.MIGRATION_056_PACKAGE_ROOT]
+    assert mig056.execution_id == (
+        git_auth.FOUR_TOKEN_HISTORICAL_MIGRATION_056_EXECUTION_ID
+    )
+    assert mig056.evidence_class == git_auth.HISTORICAL_MIGRATION_056_EVIDENCE_CLASS
+    assert mig056.expected_file_count == 6
+
+    # Promotion never makes either of them the current schema transition.
+    assert git_auth.MIGRATION_057_PACKAGE_ROOT not in declared
 
 
 def test_055_constants_are_preserved_and_not_repurposed() -> None:

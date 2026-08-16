@@ -7,6 +7,7 @@ no source is called, and no authoritative database is touched.
 
 from __future__ import annotations
 
+import contextlib
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -15,6 +16,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 from printer_v1.operator_cli import git_provenance_authorization_manifest as git_auth
 from printer_v1.operator_cli import (
@@ -24,6 +26,62 @@ from printer_v1.operator_cli import (
 
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _synthetic_hm_profile(repo: Path, package_dir: Path):
+    """Build a fixture-scoped profile declaring the synthetic package identity.
+
+    The disposable package never claims the real production 12-file mig050
+    identity. It declares exactly its own synthetic inventory, so the immutable
+    completeness law is exercised rather than bypassed.
+    """
+    production = git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
+    files = [
+        {
+            "path": item.relative_to(repo).as_posix(),
+            "sha256": _sha(item),
+            "size": item.stat().st_size,
+        }
+        for item in sorted(package_dir.rglob("*"))
+        if item.is_file() and not item.is_symlink()
+    ]
+    digest = git_auth.compute_historical_migration_inventory_sha256(
+        package_root=git_auth.MIGRATION_PACKAGE_ROOT,
+        execution_id=git_auth.FOUR_TOKEN_HISTORICAL_MIGRATION_EXECUTION_ID,
+        evidence_class=git_auth.HISTORICAL_MIGRATION_EVIDENCE_CLASS,
+        files=files,
+    )
+    return git_auth.GitAuthorizationProfile(
+        command_mode=production.command_mode,
+        authorization_package_root=production.authorization_package_root,
+        authorization_package_kind=production.authorization_package_kind,
+        manifest_schema_version=production.manifest_schema_version,
+        historical_authorization_package_roots=(
+            production.historical_authorization_package_roots
+        ),
+        migration_package_root=production.migration_package_root,
+        migration_package_kind=production.migration_package_kind,
+        historical_migration_packages=(
+            git_auth.HistoricalMigrationPackage(
+                package_root=git_auth.MIGRATION_PACKAGE_ROOT,
+                execution_id=git_auth.FOUR_TOKEN_HISTORICAL_MIGRATION_EXECUTION_ID,
+                evidence_class=git_auth.HISTORICAL_MIGRATION_EVIDENCE_CLASS,
+                expected_file_count=len(files) or 1,
+                expected_inventory_sha256=digest,
+            ),
+        ),
+    )
+
+
+@contextlib.contextmanager
+def _patched_four_token_profile(profile):
+    """Scope one fixture profile over both production import bindings."""
+    with mock.patch.object(
+        git_auth, "FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE", profile
+    ), mock.patch.object(
+        four_token, "FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE", profile
+    ):
+        yield profile
 
 
 class FourTokenProofFixture:
@@ -139,24 +197,31 @@ class FourTokenProofFixture:
             ["git", *args], cwd=self.repo, capture_output=True, text=True, check=True
         )
 
+    @property
+    def profile(self):
+        return _synthetic_hm_profile(self.repo, self.historical_migration_root)
+
     def manifest(self):
-        payload, data = four_token.build_manifest_bytes(
-            repository_root=self.repo,
-            authorization_file=self.authorization_path,
-            authorization_sha256=self.authorization_sha256,
-        )
+        with _patched_four_token_profile(self.profile):
+            payload, data = four_token.build_manifest_bytes(
+                repository_root=self.repo,
+                authorization_file=self.authorization_path,
+                authorization_sha256=self.authorization_sha256,
+            )
         path = self.root / "git-provenance-manifest.json"
         path.write_bytes(data)
         return payload, path, hashlib.sha256(data).hexdigest()
 
     def validate(self):
         _payload, path, digest = self.manifest()
-        return git_auth.validate_git_provenance_manifest_pre_marker(
-            repository_root=self.repo,
-            manifest_path=str(path),
-            manifest_sha256=digest,
-            profile=git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE,
-        )
+        profile = self.profile
+        with _patched_four_token_profile(profile):
+            return git_auth.validate_git_provenance_manifest_pre_marker(
+                repository_root=self.repo,
+                manifest_path=str(path),
+                manifest_sha256=digest,
+                profile=profile,
+            )
 
     def make_fake_venv_python(self) -> Path:
         venv = self.repo / ".venv"
@@ -182,14 +247,17 @@ class FourTokenProofMigration055EvidenceTests(unittest.TestCase):
         self.assertEqual(
             git_auth.MIGRATION_055_PACKAGE_KIND, "MIGRATION_055_EVIDENCE"
         )
-        # Migration 055 kept its own identity when 056 took over current
-        # schema-transition authority. It was demoted, never renamed.
+        # Migration 055 kept its own identity when 056, and then 057, took over
+        # current schema-transition authority. It was demoted, never renamed.
         profile = git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
         self.assertEqual(
-            profile.migration_package_root, git_auth.MIGRATION_056_PACKAGE_ROOT
+            profile.migration_package_root, git_auth.MIGRATION_057_PACKAGE_ROOT
         )
         self.assertEqual(
-            profile.migration_package_kind, git_auth.MIGRATION_056_PACKAGE_KIND
+            profile.migration_package_kind, git_auth.MIGRATION_057_PACKAGE_KIND
+        )
+        self.assertNotEqual(
+            git_auth.MIGRATION_055_PACKAGE_ROOT, git_auth.MIGRATION_057_PACKAGE_ROOT
         )
         self.assertNotEqual(
             git_auth.MIGRATION_055_PACKAGE_ROOT, git_auth.MIGRATION_056_PACKAGE_ROOT
@@ -223,19 +291,19 @@ class FourTokenProofMigration055EvidenceTests(unittest.TestCase):
             self.assertEqual(
                 kinds,
                 {
-                    git_auth.MIGRATION_056_PACKAGE_KIND,
+                    git_auth.MIGRATION_057_PACKAGE_KIND,
                     "FOUR_TOKEN_PROOF_AUTHORIZATION_EVIDENCE",
                 },
             )
             migration_files = [
                 item
                 for item in payload["files"]
-                if item["package_kind"] == git_auth.MIGRATION_056_PACKAGE_KIND
+                if item["package_kind"] == git_auth.MIGRATION_057_PACKAGE_KIND
             ]
             self.assertEqual(len(migration_files), 1)
             self.assertTrue(
                 migration_files[0]["path"].startswith(
-                    f"{git_auth.MIGRATION_056_PACKAGE_ROOT}/{fixture.migration_id}/"
+                    f"{git_auth.MIGRATION_057_PACKAGE_ROOT}/{fixture.migration_id}/"
                 )
             )
             self.assertEqual(

@@ -29,15 +29,41 @@ def test_four_token_zero_state_is_explicitly_pinned_to_057() -> None:
     )
 
 
-def test_migration_050_remains_the_only_required_historical_migration() -> None:
+def test_migrations_050_055_056_are_the_required_historical_migrations() -> None:
+    """050, 055 and 056 are all required, immutable historical packages.
+
+    The earlier "050 only" contract is superseded: 055 and 056 were promoted so
+    their untracked evidence is explained without publishing SQLite database
+    images into the public Git remote. 057 remains the sole current transition.
+    """
     profile = git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
-    assert len(profile.historical_migration_packages) == 1
-    package = profile.historical_migration_packages[0]
-    assert package.package_root == git_auth.MIGRATION_PACKAGE_ROOT
-    assert package.execution_id == git_auth.FOUR_TOKEN_HISTORICAL_MIGRATION_EXECUTION_ID
-    assert package.evidence_class == git_auth.HISTORICAL_MIGRATION_EVIDENCE_CLASS
-    assert package.package_root not in {
+    assert len(profile.historical_migration_packages) == 3
+    by_root = {item.package_root: item for item in profile.historical_migration_packages}
+    assert set(by_root) == {
+        git_auth.MIGRATION_PACKAGE_ROOT,
         git_auth.MIGRATION_055_PACKAGE_ROOT,
         git_auth.MIGRATION_056_PACKAGE_ROOT,
-        git_auth.MIGRATION_057_PACKAGE_ROOT,
     }
+
+    mig050 = by_root[git_auth.MIGRATION_PACKAGE_ROOT]
+    assert mig050.execution_id == git_auth.FOUR_TOKEN_HISTORICAL_MIGRATION_EXECUTION_ID
+    assert mig050.evidence_class == git_auth.HISTORICAL_MIGRATION_EVIDENCE_CLASS
+    assert mig050.expected_file_count == 12
+
+    mig055 = by_root[git_auth.MIGRATION_055_PACKAGE_ROOT]
+    assert mig055.execution_id == (
+        git_auth.FOUR_TOKEN_HISTORICAL_MIGRATION_055_EXECUTION_ID
+    )
+    assert mig055.evidence_class == git_auth.HISTORICAL_MIGRATION_055_EVIDENCE_CLASS
+    assert mig055.expected_file_count == 5
+
+    mig056 = by_root[git_auth.MIGRATION_056_PACKAGE_ROOT]
+    assert mig056.execution_id == (
+        git_auth.FOUR_TOKEN_HISTORICAL_MIGRATION_056_EXECUTION_ID
+    )
+    assert mig056.evidence_class == git_auth.HISTORICAL_MIGRATION_056_EVIDENCE_CLASS
+    assert mig056.expected_file_count == 6
+
+    # No historical package may be the current schema transition.
+    assert git_auth.MIGRATION_057_PACKAGE_ROOT not in by_root
+    assert profile.migration_package_root == git_auth.MIGRATION_057_PACKAGE_ROOT

@@ -89,26 +89,121 @@ FOUR_TOKEN_HISTORICAL_MIGRATION_EXECUTION_ID = (
 HISTORICAL_MIGRATION_055_EVIDENCE_CLASS = "HISTORICAL_MIGRATION_055_EVIDENCE"
 FOUR_TOKEN_HISTORICAL_MIGRATION_055_EXECUTION_ID = "MIGRATION_055_20260813T220109Z"
 
+# Migration 056 became preserved historical evidence once migration 057 took over
+# current schema-transition authority. It keeps its own evidence class and
+# execution identity; it is demoted, never renamed or absorbed.
+HISTORICAL_MIGRATION_056_EVIDENCE_CLASS = "HISTORICAL_MIGRATION_056_EVIDENCE"
+FOUR_TOKEN_HISTORICAL_MIGRATION_056_EXECUTION_ID = "MIGRATION_056_20260815T164802Z"
+
+# Immutable COMPLETE inventory identity for every declared historical migration
+# package. These are committed constants bound by the authorization's Git HEAD.
+# Filesystem discovery may only prove equality against them or fail closed; it
+# never defines a new trusted package identity.
+FOUR_TOKEN_HISTORICAL_MIGRATION_EXPECTED_FILE_COUNT = 12
+FOUR_TOKEN_HISTORICAL_MIGRATION_EXPECTED_INVENTORY_SHA256 = (
+    "2bcbfdd3e9b1bf0a2f53bcdd386d0f782b698b883d5d4bb43d1a8a7bd795f8d5"
+)
+FOUR_TOKEN_HISTORICAL_MIGRATION_055_EXPECTED_FILE_COUNT = 5
+FOUR_TOKEN_HISTORICAL_MIGRATION_055_EXPECTED_INVENTORY_SHA256 = (
+    "c00443733269993b40353b61390753a49dad184541120916c6e2a400fdd9e625"
+)
+FOUR_TOKEN_HISTORICAL_MIGRATION_056_EXPECTED_FILE_COUNT = 6
+FOUR_TOKEN_HISTORICAL_MIGRATION_056_EXPECTED_INVENTORY_SHA256 = (
+    "4918774b95998aab821d69d06854665697347664faf04a3340f2299db95868f3"
+)
+
 REQUIRED_MAIN_WINDOW = "WINDOW_15M"
 REQUIRED_COMMAND_MODE = "run"
+
+
+# Domain separator for the immutable historical-package completeness identity.
+# It binds a digest to this exact purpose, so an inventory digest can never be
+# replayed from another digest domain.
+HISTORICAL_MIGRATION_INVENTORY_DOMAIN = (
+    "PRINTER_V1_HISTORICAL_MIGRATION_PACKAGE_INVENTORY_V1"
+)
+
+
+def compute_historical_migration_inventory_sha256(
+    *,
+    package_root: str,
+    execution_id: str,
+    evidence_class: str,
+    files: Iterable[Mapping[str, Any]],
+) -> str:
+    """Canonically digest one COMPLETE historical migration package inventory.
+
+    The digest binds the exact package identity and every member file by
+    normalized repository-relative path, byte size and SHA-256. It is
+    deterministic and domain-separated, so it cannot be replayed for a different
+    package root, execution ID, evidence class, or digest purpose.
+    """
+    records = sorted(
+        (
+            {
+                "path": _require_str(
+                    item["path"], label="historical migration inventory path"
+                ),
+                "sha256": _require_hex64(
+                    item["sha256"], label="historical migration inventory sha256"
+                ),
+                "size": int(item["size"]),
+            }
+            for item in files
+        ),
+        key=lambda record: record["path"],
+    )
+    canonical = json.dumps(
+        {
+            "domain": HISTORICAL_MIGRATION_INVENTORY_DOMAIN,
+            "package_root": package_root,
+            "execution_id": execution_id,
+            "evidence_class": evidence_class,
+            "file_count": len(records),
+            "files": records,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
+    return hashlib.sha256(canonical.encode("ascii")).hexdigest()
 
 
 @dataclass(frozen=True)
 class HistoricalMigrationPackage:
     """One exact, profile-bound preserved historical migration package.
 
-    Trust is the exact package root plus the exact execution ID. Directory
+    Trust is the exact package root plus the exact execution ID, plus an
+    immutable declaration of the package's COMPLETE inventory. Directory
     presence alone creates nothing, no sibling package under the same root is
     implied, and this class never satisfies current-package identity.
+
+    ``expected_file_count`` and ``expected_inventory_sha256`` are mandatory and
+    carry no defaults. They come from committed source at the bound Git HEAD,
+    never from filesystem discovery, so a partially eroded, byte-modified or
+    intruded package can never be silently redefined by a fresh manifest
+    preparation.
     """
 
     package_root: str
     execution_id: str
+    expected_file_count: int
+    expected_inventory_sha256: str
     evidence_class: str = HISTORICAL_MIGRATION_EVIDENCE_CLASS
 
     @property
     def package_prefix(self) -> str:
         return f"{self.package_root}/{self.execution_id}"
+
+    def inventory_sha256(self, files: Iterable[Mapping[str, Any]]) -> str:
+        """Digest an actual inventory under this package's exact identity."""
+        return compute_historical_migration_inventory_sha256(
+            package_root=self.package_root,
+            execution_id=self.execution_id,
+            evidence_class=self.evidence_class,
+            files=files,
+        )
 
 
 @dataclass(frozen=True)
@@ -164,20 +259,55 @@ FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE = GitAuthorizationProfile(
     ),
     migration_package_root=MIGRATION_057_PACKAGE_ROOT,
     migration_package_kind=MIGRATION_057_PACKAGE_KIND,
-    # Migration 050 remains the one declared *required* historical package.
+    # Migrations 050, 055 and 056 are the declared *required* historical
+    # packages for this profile.
     #
-    # Migrations 055 and 056 are deliberately NOT declared here. Every entry in
-    # this tuple is mandatory for every manifest build, so declaring either would
-    # newly require its operator evidence to exist forever — a broader contract
-    # change than this 057 proof re-readiness repair, and one that would fail
-    # closed if that untracked operator evidence were ever pruned. Their distinct
-    # constants and identities remain preserved above; promoting either to a
-    # required historical package is a separate, explicitly deferred decision.
+    # Migrations 055 and 056 were previously deferred because every entry here is
+    # mandatory for every manifest build, so declaring them permanently requires
+    # their operator evidence to exist. That obligation is now accepted
+    # deliberately: it is the only way to explain their untracked bytes without
+    # publishing SQLite database images into the public Git remote. Each keeps its
+    # own distinct evidence class and execution identity; none is renamed,
+    # absorbed, or promoted to current schema-transition authority, which remains
+    # migration 057 alone.
+    #
+    # Every entry declares its COMPLETE inventory identity, so partial erosion,
+    # byte modification, intrusion, and a member that quietly became tracked all
+    # fail closed at fresh preparation rather than being silently re-bound into a
+    # new manifest.
     historical_migration_packages=(
         HistoricalMigrationPackage(
             package_root=MIGRATION_PACKAGE_ROOT,
             execution_id=FOUR_TOKEN_HISTORICAL_MIGRATION_EXECUTION_ID,
             evidence_class=HISTORICAL_MIGRATION_EVIDENCE_CLASS,
+            expected_file_count=(
+                FOUR_TOKEN_HISTORICAL_MIGRATION_EXPECTED_FILE_COUNT
+            ),
+            expected_inventory_sha256=(
+                FOUR_TOKEN_HISTORICAL_MIGRATION_EXPECTED_INVENTORY_SHA256
+            ),
+        ),
+        HistoricalMigrationPackage(
+            package_root=MIGRATION_055_PACKAGE_ROOT,
+            execution_id=FOUR_TOKEN_HISTORICAL_MIGRATION_055_EXECUTION_ID,
+            evidence_class=HISTORICAL_MIGRATION_055_EVIDENCE_CLASS,
+            expected_file_count=(
+                FOUR_TOKEN_HISTORICAL_MIGRATION_055_EXPECTED_FILE_COUNT
+            ),
+            expected_inventory_sha256=(
+                FOUR_TOKEN_HISTORICAL_MIGRATION_055_EXPECTED_INVENTORY_SHA256
+            ),
+        ),
+        HistoricalMigrationPackage(
+            package_root=MIGRATION_056_PACKAGE_ROOT,
+            execution_id=FOUR_TOKEN_HISTORICAL_MIGRATION_056_EXECUTION_ID,
+            evidence_class=HISTORICAL_MIGRATION_056_EVIDENCE_CLASS,
+            expected_file_count=(
+                FOUR_TOKEN_HISTORICAL_MIGRATION_056_EXPECTED_FILE_COUNT
+            ),
+            expected_inventory_sha256=(
+                FOUR_TOKEN_HISTORICAL_MIGRATION_056_EXPECTED_INVENTORY_SHA256
+            ),
         ),
     ),
 )
@@ -1301,6 +1431,11 @@ def enumerate_historical_migration_evidence(
             or not package.execution_id
             or not isinstance(package.evidence_class, str)
             or not package.evidence_class
+            or type(package.expected_file_count) is not int
+            or type(package.expected_file_count) is bool
+            or package.expected_file_count < 1
+            or type(package.expected_inventory_sha256) is not str
+            or _SHA256_PATTERN.fullmatch(package.expected_inventory_sha256) is None
         ):
             raise GitProvenanceAuthorizationError(
                 "historical migration package declaration is malformed"
@@ -1426,6 +1561,39 @@ def enumerate_historical_migration_evidence(
                 continue
             if entry.name != package.execution_id:
                 continue
+            # Immutable completeness law. The COMPLETE accepted inventory of the
+            # exact declared package must equal its committed declaration before
+            # any record is emitted. This runs at fresh preparation, so a missing
+            # member, a modified byte, an intruded file, or a member that quietly
+            # became tracked can never be silently re-bound into a new manifest.
+            if len(package_files) != package.expected_file_count:
+                raise GitProvenanceAuthorizationError(
+                    "declared historical migration package inventory file count "
+                    "does not match its immutable declaration: "
+                    f"{package.package_prefix} "
+                    f"(expected {package.expected_file_count}, "
+                    f"found {len(package_files)})"
+                )
+            if len(untracked_files) != len(package_files):
+                tracked_members = sorted(
+                    item["path"]
+                    for item in package_files
+                    if item["path"] in tracked
+                )
+                raise GitProvenanceAuthorizationError(
+                    "declared historical migration package member is tracked at "
+                    "HEAD instead of preserved untracked evidence: "
+                    + ", ".join(tracked_members)
+                )
+            actual_inventory_sha256 = package.inventory_sha256(package_files)
+            if actual_inventory_sha256 != package.expected_inventory_sha256:
+                raise GitProvenanceAuthorizationError(
+                    "declared historical migration package inventory digest does "
+                    "not match its immutable declaration: "
+                    f"{package.package_prefix} "
+                    f"(expected {package.expected_inventory_sha256}, "
+                    f"computed {actual_inventory_sha256})"
+                )
             for item in untracked_files:
                 path = item["path"]
                 if path in seen_paths:
@@ -2416,7 +2584,19 @@ __all__ = [
     "HISTORICAL_AUTHORIZATION_EVIDENCE_CLASS",
     "HISTORICAL_MIGRATION_EVIDENCE_CLASS",
     "HISTORICAL_MIGRATION_EVIDENCE_KEY",
+    "HISTORICAL_MIGRATION_INVENTORY_DOMAIN",
+    "HISTORICAL_MIGRATION_055_EVIDENCE_CLASS",
+    "HISTORICAL_MIGRATION_056_EVIDENCE_CLASS",
     "FOUR_TOKEN_HISTORICAL_MIGRATION_EXECUTION_ID",
+    "FOUR_TOKEN_HISTORICAL_MIGRATION_055_EXECUTION_ID",
+    "FOUR_TOKEN_HISTORICAL_MIGRATION_056_EXECUTION_ID",
+    "FOUR_TOKEN_HISTORICAL_MIGRATION_EXPECTED_FILE_COUNT",
+    "FOUR_TOKEN_HISTORICAL_MIGRATION_EXPECTED_INVENTORY_SHA256",
+    "FOUR_TOKEN_HISTORICAL_MIGRATION_055_EXPECTED_FILE_COUNT",
+    "FOUR_TOKEN_HISTORICAL_MIGRATION_055_EXPECTED_INVENTORY_SHA256",
+    "FOUR_TOKEN_HISTORICAL_MIGRATION_056_EXPECTED_FILE_COUNT",
+    "FOUR_TOKEN_HISTORICAL_MIGRATION_056_EXPECTED_INVENTORY_SHA256",
+    "compute_historical_migration_inventory_sha256",
     "MANIFEST_SCHEMA_VERSION",
     "MIGRATION_PACKAGE_KIND",
     "MIGRATION_PACKAGE_ROOT",

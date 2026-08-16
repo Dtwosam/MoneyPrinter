@@ -19,6 +19,7 @@ the complete operator-runs inventory. Current-package equality stays ``C == M``.
 
 from __future__ import annotations
 
+import contextlib
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -27,6 +28,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 from printer_v1.operator_cli import git_provenance_authorization_manifest as git_auth
 from printer_v1.operator_cli import (
@@ -55,6 +57,61 @@ _HISTORICAL_MIGRATION_FILES = {
 
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _synthetic_completeness_identity(
+    *, repo: Path, package_root: str, execution_id: str, evidence_class: str
+) -> tuple[int, str]:
+    """Derive a synthetic package's OWN immutable completeness identity.
+
+    A disposable fixture never claims the real production package's 12-file
+    identity. It declares exactly what its own synthetic tree contains, so the
+    completeness law is genuinely exercised rather than bypassed.
+    """
+    base = repo / package_root / execution_id
+    files = [
+        {
+            "path": item.relative_to(repo).as_posix(),
+            "sha256": _sha(item),
+            "size": item.stat().st_size,
+        }
+        for item in sorted(base.rglob("*"))
+        if item.is_file() and not item.is_symlink()
+    ]
+    digest = git_auth.compute_historical_migration_inventory_sha256(
+        package_root=package_root,
+        execution_id=execution_id,
+        evidence_class=evidence_class,
+        files=files,
+    )
+    return len(files), digest
+
+
+@contextlib.contextmanager
+def _patched_four_token_profile(profile):
+    """Temporarily scope one fixture profile over both production bindings."""
+    with mock.patch.object(
+        git_auth, "FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE", profile
+    ), mock.patch.object(
+        four_token, "FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE", profile
+    ):
+        yield profile
+
+
+def _replace_historical_migration_packages(profile, packages):
+    """Return a fixture-scoped profile differing only in its Hm declarations."""
+    return git_auth.GitAuthorizationProfile(
+        command_mode=profile.command_mode,
+        authorization_package_root=profile.authorization_package_root,
+        authorization_package_kind=profile.authorization_package_kind,
+        manifest_schema_version=profile.manifest_schema_version,
+        historical_authorization_package_roots=(
+            profile.historical_authorization_package_roots
+        ),
+        migration_package_root=profile.migration_package_root,
+        migration_package_kind=profile.migration_package_kind,
+        historical_migration_packages=packages,
+    )
 
 
 class FourTokenHistoricalMigrationFixture:
@@ -129,6 +186,35 @@ class FourTokenHistoricalMigrationFixture:
                 self.historical_migration_root, _HISTORICAL_MIGRATION_FILES
             )
 
+        # The fixture declares its OWN immutable completeness identity for the
+        # synthetic package. It never borrows the real production declaration.
+        if create_historical_migration:
+            count, digest = _synthetic_completeness_identity(
+                repo=self.repo,
+                package_root=HISTORICAL_MIGRATION_ROOT,
+                execution_id=historical_migration_execution_id,
+                evidence_class=git_auth.HISTORICAL_MIGRATION_EVIDENCE_CLASS,
+            )
+        else:
+            # Absent-package cases still declare a real identity so the missing
+            # root/execution directory is what fails closed, not a malformed
+            # declaration.
+            count, digest = len(_HISTORICAL_MIGRATION_FILES), "0" * 64
+        self.synthetic_expected_file_count = count
+        self.synthetic_expected_inventory_sha256 = digest
+        self.profile = _replace_historical_migration_packages(
+            git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE,
+            (
+                git_auth.HistoricalMigrationPackage(
+                    package_root=HISTORICAL_MIGRATION_ROOT,
+                    execution_id=historical_migration_execution_id,
+                    evidence_class=git_auth.HISTORICAL_MIGRATION_EVIDENCE_CLASS,
+                    expected_file_count=count,
+                    expected_inventory_sha256=digest,
+                ),
+            ),
+        )
+
         self.authorization_path = self.authorization_root / "final_authorization.json"
         now = datetime.now(timezone.utc)
         document = four_token.fixture_authorization_document(
@@ -198,32 +284,39 @@ class FourTokenHistoricalMigrationFixture:
             f"{base}/{relative}" for relative in _HISTORICAL_MIGRATION_FILES
         )
 
+    def active_profile(self):
+        """Scope the fixture profile over both production import bindings.
+
+        ``build_manifest_bytes()`` reads the profile from its own module global
+        and ``_resolved_profile()`` accepts only the module-level profiles, so
+        both bindings are patched together. ``mock.patch.object`` restores each
+        one on every exit path, including exceptions.
+        """
+        return _patched_four_token_profile(self.profile)
+
     def manifest(self):
-        payload, data = four_token.build_manifest_bytes(
-            repository_root=self.repo,
-            authorization_file=self.authorization_path,
-            authorization_sha256=self.authorization_sha256,
-        )
+        with self.active_profile():
+            payload, data = four_token.build_manifest_bytes(
+                repository_root=self.repo,
+                authorization_file=self.authorization_path,
+                authorization_sha256=self.authorization_sha256,
+            )
         path = self.root / "git-provenance-manifest.json"
         path.write_bytes(data)
         return payload, path, hashlib.sha256(data).hexdigest()
 
     def validate(self):
         _payload, path, digest = self.manifest()
-        return git_auth.validate_git_provenance_manifest_pre_marker(
-            repository_root=self.repo,
-            manifest_path=str(path),
-            manifest_sha256=digest,
-            profile=git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE,
-        )
+        return self.validate_prebuilt(path, digest)
 
     def validate_prebuilt(self, manifest_path: Path, digest: str):
-        return git_auth.validate_git_provenance_manifest_pre_marker(
-            repository_root=self.repo,
-            manifest_path=str(manifest_path),
-            manifest_sha256=digest,
-            profile=git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE,
-        )
+        with self.active_profile():
+            return git_auth.validate_git_provenance_manifest_pre_marker(
+                repository_root=self.repo,
+                manifest_path=str(manifest_path),
+                manifest_sha256=digest,
+                profile=self.profile,
+            )
 
     def close(self) -> None:
         self.tmp.cleanup()
@@ -267,13 +360,45 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
     def test_historical_migration_binding_is_exact_and_profile_scoped(self) -> None:
         """GREEN 1: only the four-token profile carries the exact binding."""
         profile = git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
-        self.assertEqual(len(profile.historical_migration_packages), 1)
-        package = profile.historical_migration_packages[0]
+        # 050, 055 and 056 are all required, immutable historical packages.
+        self.assertEqual(len(profile.historical_migration_packages), 3)
+        by_root = {
+            item.package_root: item
+            for item in profile.historical_migration_packages
+        }
+        package = by_root[HISTORICAL_MIGRATION_ROOT]
         self.assertEqual(package.package_root, HISTORICAL_MIGRATION_ROOT)
         self.assertEqual(package.execution_id, HISTORICAL_MIGRATION_EXECUTION_ID)
         self.assertEqual(
             package.evidence_class,
             git_auth.HISTORICAL_MIGRATION_EVIDENCE_CLASS,
+        )
+        # Each declared package carries its own immutable completeness identity.
+        self.assertEqual(package.expected_file_count, 12)
+        self.assertEqual(
+            package.expected_inventory_sha256,
+            git_auth.FOUR_TOKEN_HISTORICAL_MIGRATION_EXPECTED_INVENTORY_SHA256,
+        )
+        # 055 and 056 keep distinct roots, executions and evidence classes.
+        self.assertEqual(
+            set(by_root),
+            {
+                HISTORICAL_MIGRATION_ROOT,
+                git_auth.MIGRATION_055_PACKAGE_ROOT,
+                git_auth.MIGRATION_056_PACKAGE_ROOT,
+            },
+        )
+        self.assertEqual(
+            {item.evidence_class for item in profile.historical_migration_packages},
+            {
+                git_auth.HISTORICAL_MIGRATION_EVIDENCE_CLASS,
+                git_auth.HISTORICAL_MIGRATION_055_EVIDENCE_CLASS,
+                git_auth.HISTORICAL_MIGRATION_056_EVIDENCE_CLASS,
+            },
+        )
+        # None of them is the current schema transition, which stays 057.
+        self.assertNotIn(
+            profile.migration_package_root, set(by_root)
         )
         # The historical migration class is not an authorization class and does
         # not reuse the authorization trust root.
@@ -292,17 +417,18 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
         try:
             payload, _path, _digest = fixture.manifest()
             current_kinds = {item["package_kind"] for item in payload["files"]}
+            # Migration 057 is the current schema transition for this profile.
             self.assertEqual(
                 current_kinds,
                 {
-                    git_auth.MIGRATION_056_PACKAGE_KIND,
+                    git_auth.MIGRATION_057_PACKAGE_KIND,
                     "FOUR_TOKEN_PROOF_AUTHORIZATION_EVIDENCE",
                 },
             )
             current_paths = {item["path"] for item in payload["files"]}
             for path in fixture.historical_migration_paths():
                 self.assertNotIn(path, current_paths)
-                self.assertFalse(path.startswith(git_auth.MIGRATION_056_PACKAGE_ROOT))
+                self.assertFalse(path.startswith(git_auth.MIGRATION_057_PACKAGE_ROOT))
             for item in payload["historical_migration_evidence"]:
                 self.assertEqual(
                     item["evidence_class"],
@@ -584,8 +710,7 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
                 git_auth.enumerate_historical_migration_evidence(
                     repository_root=fixture.repo,
                     historical_migration_packages=(
-                        git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
-                        .historical_migration_packages
+                        fixture.profile.historical_migration_packages
                     ),
                 )
             with self.assertRaises(git_auth.GitProvenanceAuthorizationError):
@@ -606,8 +731,7 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
                 git_auth.enumerate_historical_migration_evidence(
                     repository_root=fixture.repo,
                     historical_migration_packages=(
-                        git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
-                        .historical_migration_packages
+                        fixture.profile.historical_migration_packages
                     ),
                 )
             with self.assertRaises(git_auth.GitProvenanceAuthorizationError):
@@ -628,8 +752,7 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
                 git_auth.enumerate_historical_migration_evidence(
                     repository_root=fixture.repo,
                     historical_migration_packages=(
-                        git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
-                        .historical_migration_packages
+                        fixture.profile.historical_migration_packages
                     ),
                 )
             with self.assertRaises(git_auth.GitProvenanceAuthorizationError):
@@ -651,8 +774,7 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
                 git_auth.enumerate_historical_migration_evidence(
                     repository_root=fixture.repo,
                     historical_migration_packages=(
-                        git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
-                        .historical_migration_packages
+                        fixture.profile.historical_migration_packages
                     ),
                 )
         finally:
@@ -673,8 +795,7 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
                 git_auth.enumerate_historical_migration_evidence(
                     repository_root=fixture.repo,
                     historical_migration_packages=(
-                        git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
-                        .historical_migration_packages
+                        fixture.profile.historical_migration_packages
                     ),
                 )
         finally:
