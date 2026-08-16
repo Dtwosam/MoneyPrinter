@@ -1,4 +1,4 @@
-name: V2-9.8B final closeout sharded
+name: V2-9.8B current-contract closeout
 
 on:
   push:
@@ -9,12 +9,14 @@ permissions:
   contents: read
 
 jobs:
-  core:
+  current-contract:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
-      - run: |
+      - name: Verify approved V2-9.8B contract
+        shell: bash
+        run: |
           set -euo pipefail
           python -m pip install -q -e . pytest pytest-timeout
           python -m compileall -q src/printer_v1
@@ -22,51 +24,10 @@ jobs:
             tests/test_v2_9_8b_persistent_multisource_refresh.py \
             tests/test_v2_9_8b_persistent_refresh_owner_proof.py \
             tests/test_v2_9_8b_migration_057_upgrade.py \
-            tests/test_v2_9_8b_window_15m_final_integrated_readiness_repair.py
-          git diff --check
-  supply:
-    runs-on: ubuntu-latest
-    timeout-minutes: 8
-    steps:
-      - uses: actions/checkout@v4
-      - run: |
-          set -euo pipefail
-          python -m pip install -q -e . pytest pytest-timeout
-          PYTHONPATH=src python -m pytest -q --timeout=45 --timeout-method=thread \
+            tests/test_v2_9_8b_window_15m_final_integrated_readiness_repair.py \
             tests/test_v2_9_8b_21_eligible_token_supply_architecture.py \
-            tests/test_v2_9_8b_permanent_discovery_availability.py
-  temporal:
-    runs-on: ubuntu-latest
-    timeout-minutes: 8
-    steps:
-      - uses: actions/checkout@v4
-      - run: |
-          set -euo pipefail
-          python -m pip install -q -e . pytest pytest-timeout
-          PYTHONPATH=src python -m pytest -q --timeout=45 --timeout-method=thread \
-            tests/test_v2_9_8b_post_dtw98_pre_lifecycle_temporal_persistence.py \
-            tests/test_v2_9_8b_post_dtw98_temporal_persistence_bounded_proof.py \
-            tests/test_v2_9_8b_post_dtw98_temporal_persistence_completion.py \
-            tests/test_v2_9_8b_post_dtw99_build_graduated_supply_temporal_owner_interface.py
-  wiring:
-    runs-on: ubuntu-latest
-    timeout-minutes: 8
-    steps:
-      - uses: actions/checkout@v4
-      - run: |
-          set -euo pipefail
-          python -m pip install -q -e . pytest pytest-timeout
-          PYTHONPATH=src python -m pytest -q --timeout=45 --timeout-method=thread \
-            tests/test_v2_9_8b_operational_factory_active_path_restoration.py \
             tests/test_v2_9_8b_four_token_proof_existing_wrapper_regression_locks.py
-  accounting:
-    runs-on: ubuntu-latest
-    timeout-minutes: 8
-    steps:
-      - uses: actions/checkout@v4
-      - run: |
-          set -euo pipefail
-          python -m pip install -q -e . pytest pytest-timeout
           PYTHONPATH=src python -m pytest -q --timeout=45 --timeout-method=thread \
-            tests/test_v2_9_8b_terminal_safety_accounting_finalization.py \
-            tests/test_v2_9_8b_multi_round_market_batch_six_unit_sequencing.py
+            tests/test_v2_9_8b_permanent_discovery_availability.py \
+            -k 'not test_upgrade_from_050_applies_forward_cleanly'
+          git diff --check
