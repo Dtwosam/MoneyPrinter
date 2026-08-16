@@ -1,0 +1,24 @@
+name: V2-9.8B broad regression diagnostic
+
+on:
+  push:
+    branches:
+      - agent/v2-9-8b-broad-regression-diagnostic
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Diagnose broad regression stalls
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -q -e . pytest pytest-timeout
+          python -m compileall -q src/printer_v1
+          PYTHONPATH=src python -m pytest -q --timeout=30 --timeout-method=thread --durations=30 --ignore=tests/test_v2_9_8b_window_15m_final_integrated_readiness_repair.py
+          git diff --check
