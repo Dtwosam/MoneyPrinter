@@ -1709,6 +1709,7 @@ def _load_terminal_scheduler_correspondence(
     context: OperationalLifecycleOwnershipContext,
     standard_four_hour_campaign: bool,
     factory_step_ids: Sequence[int] | None = None,
+    proof_root_stage_step_ids: Sequence[int] | None = None,
 ) -> dict[str, Any]:
     """Load exact terminal Scheduler ownership for the active lifecycle family.
 
@@ -1717,7 +1718,16 @@ def _load_terminal_scheduler_correspondence(
     through exact persisted step -> Scheduler job -> scoped ownership -> campaign
     window lineage. Any missing, duplicate, mismatched, or unowned row fails the
     correspondence closed.
+
+    ``proof_root_stage_step_ids`` carries the exact proof-owned factory step
+    identities. A bare ``stage_id='WINDOW_15M'`` root owner is accepted only for
+    a step whose identity is in that set — stage acceptance is never broadened
+    globally, and the ordinary WINDOW_15M slot-stage rules plus the exact
+    WINDOW_1H / WINDOW_4H rules are unchanged.
     """
+    proof_root_step_id_set = frozenset(
+        int(value) for value in (proof_root_stage_step_ids or ())
+    )
     allowed = {
         "SNAPSHOT": "WINDOW_15M",
         "WINDOW_CLOSE": "WINDOW_15M",
@@ -1816,7 +1826,10 @@ def _load_terminal_scheduler_correspondence(
                 _terminal_stage_matches(
                     window_kind=window_kind,
                     stage_id=str(owned["stage_id"] or ""),
-                    allow_proof_root_stage=factory_step_ids is not None,
+                    allow_proof_root_stage=(
+                        factory_step_ids is not None
+                        or int(step["id"]) in proof_root_step_id_set
+                    ),
                 ),
             )
         ):
@@ -2409,6 +2422,141 @@ _JOB_STATUS_TO_WORK_STATE = {
 # One normalized exact-pair row is produced per lifecycle observation.
 _LIFECYCLE_NORMALIZED_ROWS_PER_TRANSPORT = 1
 
+# The exact identity columns a pre-existing canonical WINDOW_LIFECYCLE Scheduler
+# owner must already carry for the closeout to verify it instead of projecting a
+# second owner. Any deviation is a fail-closed ownership conflict.
+_CANONICAL_LIFECYCLE_OWNER_CONTRACT = "V2_STAGE_SCOPED"
+_CANONICAL_LIFECYCLE_OWNER_SCOPE = "WINDOW_LIFECYCLE"
+
+
+def _legacy_close_boundary_window_id(
+    context: OperationalLifecycleOwnershipContext, token_id: int
+) -> str:
+    """The historical non-precreated close-boundary campaign window identity."""
+    return f"{context.cycle_id}:window:{token_id}"
+
+
+def _resolve_close_boundary_campaign_window(
+    connection: sqlite3.Connection,
+    *,
+    context: OperationalLifecycleOwnershipContext,
+    token_slot_id: str,
+    token_id: int,
+    pair_id: int,
+    memory_row_id: int,
+) -> tuple[str, str | None, list[str]]:
+    """Resolve the authoritative campaign window for one closed lifecycle token.
+
+    The already-persisted canonical campaign window is the authority: a
+    precreated proof-owned root carries the deterministic ``cw:`` identity, so
+    the closeout can never recompute it. This owner *verifies only* — it never
+    creates, rewrites, or replaces a campaign window row.
+
+    Returns ``(window_id, terminal_window_state | None, blocked_reasons)``. A
+    ``None`` terminal state means the caller must fall through to its existing
+    lawful legacy lookup for a genuinely non-precreated window.
+    """
+    rows = connection.execute(
+        """SELECT window_id, window_state, memory_window_row_id,
+                  token_row_id, pair_row_id
+           FROM printer_memory_factory_campaign_windows
+           WHERE campaign_id=? AND run_id=? AND cycle_id=? AND token_slot_id=?
+             AND window_kind='WINDOW_15M'
+           ORDER BY window_id""",
+        (
+            context.campaign_id,
+            context.campaign_run_id,
+            context.cycle_id,
+            token_slot_id,
+        ),
+    ).fetchall()
+    if len(rows) > 1:
+        # A duplicate binding for one slot can never be silently disambiguated.
+        return (
+            _legacy_close_boundary_window_id(context, token_id),
+            None,
+            [f"CAMPAIGN_WINDOW_IDENTITY_AMBIGUOUS:{token_id}"],
+        )
+    if not rows:
+        # Lawful legacy non-precreated shape: preserve the historical identity
+        # and let the caller's existing exact lookup decide.
+        return _legacy_close_boundary_window_id(context, token_id), None, []
+
+    row = rows[0]
+    window_id = str(row["window_id"])
+    if int(row["token_row_id"]) != int(token_id) or int(
+        row["pair_row_id"]
+    ) != int(pair_id):
+        return window_id, None, [f"CAMPAIGN_WINDOW_IDENTITY_MISMATCH:{token_id}"]
+    bound_memory = row["memory_window_row_id"]
+    if bound_memory is None or int(bound_memory) != int(memory_row_id):
+        return (
+            window_id,
+            None,
+            [f"WINDOW_NOT_REGISTERED_AT_CLOSE_BOUNDARY:{token_id}"],
+        )
+    return window_id, str(row["window_state"]), []
+
+
+def _resolve_lifecycle_scheduler_owner_disposition(
+    connection: sqlite3.Connection,
+    *,
+    context: OperationalLifecycleOwnershipContext,
+    scheduler_job_id: int,
+    token_slot_id: str,
+    window_id: str,
+) -> tuple[str, str | None]:
+    """Decide whether a lifecycle Scheduler job is already canonically owned.
+
+    One job maps to exactly one campaign ownership row. When the exact canonical
+    ``V2_STAGE_SCOPED`` ``WINDOW_LIFECYCLE`` owner already exists this returns
+    ``VERIFIED`` and the closeout projects nothing — projecting would request a
+    second owner for a job that already has one. Genuinely unowned legacy work
+    returns ``PROJECT`` and keeps the historical projection. A conflicting or
+    duplicate owner returns ``BLOCKED`` and fails closed.
+
+    ``stage_id`` is deliberately not evaluated here: stage acceptance remains the
+    sole responsibility of the terminal Scheduler correspondence owner.
+    """
+    rows = connection.execute(
+        """SELECT scheduler_work_id, campaign_id, run_id, cycle_id,
+                  factory_run_id, token_slot_id, window_id, work_scope,
+                  target_category, target_identity, ownership_contract_version
+           FROM printer_memory_factory_campaign_scheduler_work
+           WHERE scheduler_job_id=?
+           ORDER BY scheduler_work_id""",
+        (int(scheduler_job_id),),
+    ).fetchall()
+    if not rows:
+        return "PROJECT", None
+    if len(rows) > 1:
+        return "BLOCKED", f"SCHEDULER_OWNERSHIP_DUPLICATE:{scheduler_job_id}"
+
+    owned = rows[0]
+    expected: tuple[tuple[str, Any, Any], ...] = (
+        (
+            "ownership_contract_version",
+            owned["ownership_contract_version"],
+            _CANONICAL_LIFECYCLE_OWNER_CONTRACT,
+        ),
+        ("work_scope", owned["work_scope"], _CANONICAL_LIFECYCLE_OWNER_SCOPE),
+        ("campaign_id", owned["campaign_id"], context.campaign_id),
+        ("run_id", owned["run_id"], context.campaign_run_id),
+        ("cycle_id", owned["cycle_id"], context.cycle_id),
+        ("factory_run_id", owned["factory_run_id"], context.factory_run_id),
+        ("token_slot_id", owned["token_slot_id"], token_slot_id),
+        ("window_id", owned["window_id"], window_id),
+        ("target_category", owned["target_category"], "CAMPAIGN_WINDOW"),
+        ("target_identity", owned["target_identity"], window_id),
+    )
+    for field, actual, wanted in expected:
+        if str(actual or "") != str(wanted or ""):
+            return (
+                "BLOCKED",
+                f"SCHEDULER_OWNERSHIP_CONFLICT:{scheduler_job_id}:{field}",
+            )
+    return "VERIFIED", None
+
 
 def finalize_full_run_ownership_and_report(
     connection: sqlite3.Connection,
@@ -2425,6 +2573,7 @@ def finalize_full_run_ownership_and_report(
     runtime_first_terminal_cause: str | None = None,
     queue_dispositions: Mapping[int, str] | None = None,
     forbidden_capability_deltas: Mapping[str, int] | None = None,
+    four_token_proof_owned: bool = False,
     now: str | None = None,
 ) -> dict[str, Any]:
     """Register ownership, seal accounting, reconcile, report, and gate a run.
@@ -2519,7 +2668,22 @@ def finalize_full_run_ownership_and_report(
             if str(memory["memory_status"]) == "CLEAN_MEMORY"
             else "DIRTY"
         )
-        window_id = f"{context.cycle_id}:window:{token_id}"
+        # R1: the already-persisted canonical campaign window is the authority.
+        # A proof-owned precreated root carries the deterministic ``cw:``
+        # identity; a lawful legacy non-precreated close keeps the historical
+        # identity and the exact lookup below.
+        (
+            window_id,
+            canonical_window_state,
+            window_identity_blocks,
+        ) = _resolve_close_boundary_campaign_window(
+            connection,
+            context=context,
+            token_slot_id=token_slot_id,
+            token_id=token_id,
+            pair_id=pair_id,
+            memory_row_id=int(memory_row_id),
+        )
         token_to_window[token_id] = window_id
         token_to_slot[token_id] = token_slot_id
         token_to_terminal_state[token_id] = terminal_state
@@ -2537,31 +2701,39 @@ def finalize_full_run_ownership_and_report(
                 "campaign_window_id": window_id,
                 "memory_window_id": int(memory_row_id),
         }
-        owned_window = connection.execute(
-            """SELECT window_state, memory_window_row_id
-               FROM printer_memory_factory_campaign_windows
-               WHERE window_id=? AND campaign_id=? AND run_id=? AND cycle_id=?
-                 AND token_slot_id=?""",
-            (
-                window_id,
-                context.campaign_id,
-                context.campaign_run_id,
-                context.cycle_id,
-                token_slot_id,
-            ),
-        ).fetchone()
-        if (
-            owned_window is None
-            or owned_window["memory_window_row_id"] is None
-            or int(owned_window["memory_window_row_id"]) != int(memory_row_id)
-        ):
-            blocked_reasons.append(
-                f"WINDOW_NOT_REGISTERED_AT_CLOSE_BOUNDARY:{token_id}"
-            )
-        else:
-            terminal_state = str(owned_window["window_state"])
+        if window_identity_blocks:
+            blocked_reasons.extend(window_identity_blocks)
+        elif canonical_window_state is not None:
+            # Verified against the canonical ownership row; never re-created.
+            terminal_state = canonical_window_state
             token_to_terminal_state[token_id] = terminal_state
             registered_windows.append(window_id)
+        else:
+            owned_window = connection.execute(
+                """SELECT window_state, memory_window_row_id
+                   FROM printer_memory_factory_campaign_windows
+                   WHERE window_id=? AND campaign_id=? AND run_id=? AND cycle_id=?
+                     AND token_slot_id=?""",
+                (
+                    window_id,
+                    context.campaign_id,
+                    context.campaign_run_id,
+                    context.cycle_id,
+                    token_slot_id,
+                ),
+            ).fetchone()
+            if (
+                owned_window is None
+                or owned_window["memory_window_row_id"] is None
+                or int(owned_window["memory_window_row_id"]) != int(memory_row_id)
+            ):
+                blocked_reasons.append(
+                    f"WINDOW_NOT_REGISTERED_AT_CLOSE_BOUNDARY:{token_id}"
+                )
+            else:
+                terminal_state = str(owned_window["window_state"])
+                token_to_terminal_state[token_id] = terminal_state
+                registered_windows.append(window_id)
 
     lifecycle_steps = connection.execute(
         """SELECT s.id, s.scheduler_job_id, s.step_kind, s.token_id, s.pair_id,
@@ -2583,6 +2755,7 @@ def finalize_full_run_ownership_and_report(
 
     # --- Scheduler ownership carrying each job's real terminal state (§6). ---
     projected_jobs: list[int] = []
+    verified_jobs: list[int] = []
     lifecycle_job_states: dict[int, str] = {}
     for step in lifecycle_steps:
         job_id = int(step["scheduler_job_id"])
@@ -2601,6 +2774,23 @@ def finalize_full_run_ownership_and_report(
             lifecycle_job_states[job_id] = raw_status or "MISSING"
             continue
         lifecycle_job_states[job_id] = work_state
+        # R2: one job, one owner. When the exact canonical stage-scoped owner
+        # already exists, verify it — projecting would request a second owner.
+        disposition, ownership_block = (
+            _resolve_lifecycle_scheduler_owner_disposition(
+                connection,
+                context=context,
+                scheduler_job_id=job_id,
+                token_slot_id=slot_id,
+                window_id=window_id,
+            )
+        )
+        if disposition == "BLOCKED":
+            blocked_reasons.append(str(ownership_block))
+            continue
+        if disposition == "VERIFIED":
+            verified_jobs.append(job_id)
+            continue
         try:
             project_campaign_scheduler_job(
                 connection,
@@ -2653,10 +2843,27 @@ def finalize_full_run_ownership_and_report(
     standard_four_hour_campaign = (
         run_config.get("standard_four_hour_campaign") is True
     )
+    # R3: inside the already-approved proof-aware context only, thread the exact
+    # proof-owned factory step identities so the canonical bare WINDOW_15M root
+    # stage is accepted for those steps and no others.
+    proof_root_stage_step_ids: tuple[int, ...] | None = None
+    if four_token_proof_owned:
+        from printer_v1.operator_cli.four_token_proof_integration import (
+            cycle_scoped_factory_step_ids,
+        )
+
+        proof_root_stage_step_ids = cycle_scoped_factory_step_ids(
+            connection,
+            campaign_id=context.campaign_id,
+            campaign_run_id=context.campaign_run_id,
+            factory_run_id=context.factory_run_id,
+            cycle_id=context.cycle_id,
+        )
     scheduler_ownership = _load_terminal_scheduler_correspondence(
         connection,
         context=context,
         standard_four_hour_campaign=standard_four_hour_campaign,
+        proof_root_stage_step_ids=proof_root_stage_step_ids,
     )
 
     # --- Seal the four approved mandatory stages from durable evidence. ---
@@ -3207,6 +3414,7 @@ def finalize_full_run_ownership_and_report(
         "scheduler_ownership": scheduler_ownership,
         "registered_windows": registered_windows,
         "projected_scheduler_jobs": projected_jobs,
+        "verified_scheduler_jobs": verified_jobs,
         "blocked_reasons": blocked_reasons,
     }
 

@@ -2692,6 +2692,53 @@ from printer_v1.operator_cli.campaign_full_run_accounting import (  # noqa: E402
 )
 
 
+def _child_terminal_truth_projection(
+    *,
+    cycle_id: str,
+    supervision_id: Any,
+    lifecycle_started: bool,
+    cleanup_result: Mapping[str, Any] | None,
+    report: Mapping[str, Any] | None,
+    scheduler_runtime_calls: int,
+    db_path: Any,
+) -> dict[str, Any]:
+    """Project the child-owned terminal truth available at the campaign boundary.
+
+    V2-9.8B post-four-token-proof repair R4. Every value comes from a durable
+    owner already computed at this boundary — the cleanup owner, the persisted
+    terminal report, the Central Scheduler runtime observer, and a read-only
+    identity capture of the authoritative database file. Nothing is invented and
+    no proof or campaign verdict is carried: process success is never proof
+    success, so ``CHILD_EXITED_ZERO`` remains meaningless as a proof signal.
+
+    ``database_writes`` is deliberately absent — no authoritative scalar write
+    count exists here, and a net row delta is not a write count.
+    """
+    from printer_v1.operator_cli.action_local_terminal_truth import (
+        capture_database_identity,
+    )
+
+    cleanup = dict(cleanup_result or {})
+    report_facts = dict(report or {})
+    active_owned_work_after = cleanup.get("active_owned_work_after")
+    return {
+        "cycle_id": cycle_id,
+        "supervision_id": supervision_id,
+        "lifecycle_started": bool(lifecycle_started),
+        "cleanup_complete": cleanup.get("cleanup_completed") is True,
+        "lease_released": cleanup.get("lease_released") is True,
+        "active_locked_work": (
+            {"active_owned_work_after": int(active_owned_work_after)}
+            if type(active_owned_work_after) is int
+            else None
+        ),
+        "database_identity_after": capture_database_identity(db_path),
+        "source_calls": report_facts.get("campaign_source_calls"),
+        "scheduler_runtime_calls": int(scheduler_runtime_calls),
+        "terminal_report_path": report_facts.get("artifact_path"),
+    }
+
+
 def _apply_full_run_campaign_acceptance(
     *,
     db_path: Any,
@@ -2712,6 +2759,7 @@ def _apply_full_run_campaign_acceptance(
     runtime_terminal_status: str | None = None,
     runtime_first_terminal_cause: str | None = None,
     cleanup_result: Mapping[str, Any] | None = None,
+    four_token_proof_owned: bool = False,
 ) -> dict[str, Any]:
     """Register ownership, reconcile, and gate Campaign PASS for the full run.
 
@@ -2778,6 +2826,7 @@ def _apply_full_run_campaign_acceptance(
                 runtime_first_terminal_cause=runtime_first_terminal_cause,
                 cleanup_result=cleanup_result,
                 forbidden_capability_deltas=dict(forbidden_deltas or {}),
+                four_token_proof_owned=bool(four_token_proof_owned),
             )
         finally:
             connection.close()
@@ -4020,6 +4069,7 @@ def _run_operational_campaign(
             ),
             runtime_first_terminal_cause=cause,
             cleanup_result=cleanup,
+            four_token_proof_owned=four_token_proof_controller is not None,
         )
         aggregated_six_unit_totals = campaign_units.six_unit_totals()
         aggregated_six_unit_evidence = campaign_units.durable_evidence()
@@ -4096,6 +4146,17 @@ def _run_operational_campaign(
             "execution_id": execution_id,
             "campaign_id": command.campaign_id,
             "run_id": command.run_id,
+            # V2-9.8B post-four-token-proof repair R4: the child-owned terminal
+            # truth that already exists at this exact boundary.
+            **_child_terminal_truth_projection(
+                cycle_id=cycle_id,
+                supervision_id=command.supervision_id,
+                lifecycle_started=bool(result.lifecycle_started),
+                cleanup_result=cleanup,
+                report=report,
+                scheduler_runtime_calls=len(scheduler_runtime_records),
+                db_path=command.db_path,
+            ),
             "run_status": lifecycle.get("run_status"),
             "first_terminal_cause": cause,
             "report": report,
