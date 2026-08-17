@@ -1,0 +1,45 @@
+name: V2-9.8B Baseline Sharded
+
+on:
+  push:
+    branches:
+      - agent/v2-9-8b-baseline-suite-verification
+  workflow_dispatch:
+
+jobs:
+  baseline-shard:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact audited baseline
+        uses: actions/checkout@v4
+        with:
+          ref: 1d0903c7ecb68dc9738f18ee0e5aafcca09c781e
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install package and test runner
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . pytest
+      - name: Select shard
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import os
+          shard=int(os.environ['SHARD'])
+          files=sorted(str(p) for p in Path('tests').glob('test_*.py'))
+          chosen=[p for i,p in enumerate(files) if i % 6 == shard]
+          Path('shard.txt').write_text('\n'.join(chosen)+'\n')
+          print(f'shard={shard} files={len(chosen)}')
+          PY
+      - name: Run baseline shard
+        run: python -m pytest -q $(cat shard.txt)
