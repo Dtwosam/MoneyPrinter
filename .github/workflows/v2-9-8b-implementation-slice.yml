@@ -1,0 +1,161 @@
+name: V2-9.8B Implementation Slice
+
+on:
+  push:
+    branches:
+      - agent/v2-9-8b-baseline-suite-verification
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  implement:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/v2-9-8b-later-cycle-acquisition-lifecycle-implementation
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install
+        run: python -m pip install -e . pytest
+      - name: Write focused RED tests
+        run: |
+          cat > tests/test_v2_9_8b_later_cycle_acquisition_lifecycle_repair.py <<'PY'
+          from datetime import datetime, timezone
+          import inspect
+          from pathlib import Path
+
+          from printer_v1.operator_cli.campaign_authority_adapters import build_4a_authority_facts
+          from printer_v1.operator_cli.authoritative_live_operational_campaign import AuthoritativeLiveOperationalCampaignOwner
+          from printer_v1.operator_cli.later_cycle_graduated_supply import build_later_cycle_graduated_supply
+          from printer_v1.operator_cli.pre_lifecycle_persistent_refresh_owner import PreLifecycleTemporalRefreshOwner
+          from printer_v1.safety.composite import SAFETY_CONTEXT_ACCEPTABLE, SAFETY_CONTEXT_BLOCKED
+
+          ID = {"campaign_id":"campaign-x","run_id":"run-x","cycle_id":"cycle-x","token_slot_id":"slot-x","window_id":"window-x"}
+
+          def _promotion():
+              return {"authority":"B.1_AUTHORITATIVE_PROMOTION", **ID, "promotion_status":"CLEAN_PROMOTED", "authoritative_episode_id":1}
+
+          def _safety(blockers="[]", reasons=None):
+              return {
+                  "authority":"B.2_EFFECTIVE_SAFETY", **ID,
+                  "safety_composite_id":1,
+                  "effective_safety_context":{"effective_safety_context_result":SAFETY_CONTEXT_BLOCKED},
+                  "raw_composite":{
+                      "safety_contract_label":"SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY",
+                      "liquidity_lock_or_burn_label":"LIQUIDITY_LOCK_OR_BURN_UNKNOWN",
+                      "known_risk_flag_label":"KNOWN_RISK_FLAGS_UNKNOWN",
+                      "blockers_json":blockers,
+                  },
+                  "reasons": ["authoritative_safety_gate_blocked"] if reasons is None else reasons,
+              }
+
+          def test_optional_unknown_liquidity_and_risk_do_not_block_continuation():
+              facts = build_4a_authority_facts(_promotion(), _safety())
+              assert facts["safety_context_result"] == SAFETY_CONTEXT_ACCEPTABLE
+
+          def test_explicit_safety_blocker_still_blocks_continuation():
+              facts = build_4a_authority_facts(_promotion(), _safety('["liquidity_lock_or_burn_label"]'))
+              assert facts["safety_context_result"] == SAFETY_CONTEXT_BLOCKED
+
+          class Port:
+              available=True
+
+          def test_refresh_owner_can_be_rebound_to_later_cycle_without_new_authority(tmp_path: Path):
+              owner = PreLifecycleTemporalRefreshOwner(
+                  tmp_path / "db.sqlite3", campaign_id="c", run_id="r", cycle_id="cycle-1",
+                  supervision_id="s", source_governor=Port(), central_scheduler=Port(),
+                  acquisition_deadline_at="2026-08-17T00:40:00+00:00",
+                  work_deadline_at="2026-08-17T04:00:00+00:00",
+                  refresh_stage=lambda *a, **k: {}, refresh_interval_seconds=600,
+              )
+              rebound = owner.for_cycle(cycle_id="cycle-2", acquisition_deadline_at="2026-08-17T00:50:00+00:00")
+              assert rebound.cycle_id == "cycle-2"
+              assert rebound.refresh_interval_seconds == 600
+              assert rebound.source_governor is owner.source_governor
+              assert rebound.central_scheduler is owner.central_scheduler
+
+          def test_later_cycle_supply_accepts_bounded_temporal_owner_contract():
+              params = inspect.signature(build_later_cycle_graduated_supply).parameters
+              assert "deadline_at" in params
+              assert "temporal_refresh_owner" in params
+
+          def test_live_owner_wires_later_cycle_temporal_clone():
+              source = inspect.getsource(AuthoritativeLiveOperationalCampaignOwner.run_operational)
+              assert "later_cycle_refresh_owner" in source
+              assert "for_cycle" in source
+              assert "deadline_at=later_cycle_deadline" in source
+              assert "temporal_refresh_owner=later_cycle_refresh_owner" in source
+          PY
+      - name: RED proof
+        shell: bash
+        run: |
+          set +e
+          python -m pytest -q tests/test_v2_9_8b_later_cycle_acquisition_lifecycle_repair.py
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ]; then
+            echo 'Expected RED tests to fail before implementation.' >&2
+            exit 1
+          fi
+          echo "RED_PROOF_EXIT=$code"
+      - name: Apply approved implementation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p=Path(path); text=p.read_text()
+              if text.count(old)!=1:
+                  raise SystemExit(f"replacement count {text.count(old)} for {path}")
+              p.write_text(text.replace(old,new,1))
+
+          path='src/printer_v1/operator_cli/campaign_authority_adapters.py'
+          old='''    effective = safety.get("effective_safety_context") or {}\n    return {\n        "predecessor_evidence_eligible": promoted,\n        "predecessor_memory_quality": "CLEAN_MEMORY" if promoted else "DO_NOT_TRAIN",\n        "safety_context_present": safety.get("safety_composite_id") is not None,\n        "safety_context_result": effective.get(\n            "effective_safety_context_result", SAFETY_CONTEXT_UNKNOWN\n        ),\n        "authority_sources": ("B.1", "B.2"),\n    }'''
+          new='''    effective = safety.get("effective_safety_context") or {}\n    effective_result = effective.get(\n        "effective_safety_context_result", SAFETY_CONTEXT_UNKNOWN\n    )\n    # V2-9.8B later-cycle/lifecycle design: the persisted composite remains\n    # UNKNOWN when optional free-source coverage is unresolved. Continuation\n    # may treat the already-approved 15m-memory-only contract as acceptable\n    # only when there are no hard safety blockers and no structural B.2 faults.\n    # UNKNOWN is never rewritten to SAFETY_CLEAN in storage.\n    if effective_result == "SAFETY_CONTEXT_BLOCKED":\n        raw = safety.get("raw_composite")\n        structural_reasons = {\n            str(reason) for reason in (safety.get("reasons") or ())\n            if str(reason) != "authoritative_safety_gate_blocked"\n        }\n        if isinstance(raw, Mapping) and not structural_reasons:\n            try:\n                blockers = json.loads(str(raw.get("blockers_json") or "[]"))\n            except (TypeError, ValueError, json.JSONDecodeError):\n                blockers = ["SAFETY_BLOCKER_PAYLOAD_INVALID"]\n            if (\n                not blockers\n                and str(raw.get("safety_contract_label") or "")\n                == "SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY"\n            ):\n                effective_result = "SAFETY_CONTEXT_ACCEPTABLE"\n    return {\n        "predecessor_evidence_eligible": promoted,\n        "predecessor_memory_quality": "CLEAN_MEMORY" if promoted else "DO_NOT_TRAIN",\n        "safety_context_present": safety.get("safety_composite_id") is not None,\n        "safety_context_result": effective_result,\n        "authority_sources": ("B.1", "B.2"),\n    }'''
+          replace_once(path,old,new)
+
+          path='src/printer_v1/operator_cli/pre_lifecycle_persistent_refresh_owner.py'
+          old='''    def _connect(self):\n        c=sqlite3.connect(self.db_path); c.row_factory=sqlite3.Row; c.execute('PRAGMA foreign_keys=ON'); return c'''
+          new='''    def for_cycle(self, *, cycle_id: str, acquisition_deadline_at: str):\n        """Rebind the proven bounded refresh machinery to one later cycle.\n\n        This creates no new authority: Source Governor, Central Scheduler,\n        supervision, cumulative work deadline and refresh stage are preserved.\n        Only the cycle-scoped durable identities and bounded acquisition deadline\n        change.\n        """\n        return type(self)(\n            self.db_path,\n            campaign_id=self.campaign_id, run_id=self.run_id, cycle_id=str(cycle_id),\n            supervision_id=self.supervision_id, source_governor=self.source_governor,\n            central_scheduler=self.central_scheduler,\n            acquisition_deadline_at=str(acquisition_deadline_at),\n            work_deadline_at=self.work_deadline_at, refresh_stage=self._refresh_stage,\n            discovery_batch_resolver=self._discovery_batch_resolver,\n            supervision_probe=self._supervision_probe, waiter=self._waiter, clock=self._clock,\n            publisher=self._publisher, abort_event=self._abort_event,\n            refresh_interval_seconds=self.refresh_interval_seconds,\n        )\n    def _connect(self):\n        c=sqlite3.connect(self.db_path); c.row_factory=sqlite3.Row; c.execute('PRAGMA foreign_keys=ON'); return c'''
+          replace_once(path,old,new)
+
+          path='src/printer_v1/operator_cli/later_cycle_graduated_supply.py'
+          old='''    graduated_supply_kwargs: Mapping[str, Any],\n    holder_evidence_owner: HolderEvidenceOwner | None = None,\n) -> LaterCycleCandidateSupply:'''
+          new='''    graduated_supply_kwargs: Mapping[str, Any],\n    holder_evidence_owner: HolderEvidenceOwner | None = None,\n    deadline_at: str | None = None,\n    temporal_refresh_owner: Any | None = None,\n) -> LaterCycleCandidateSupply:'''
+          replace_once(path,old,new)
+          old='''    kwargs.update({\n        "permanent_availability": True,\n        "tracking_precheck": True,\n        "required_token_capacity": 2,'''
+          new='''    if (deadline_at is None) != (temporal_refresh_owner is None):\n        raise LaterCycleGraduatedSupplyError("TEMPORAL_ACQUISITION_BINDING_INCOMPLETE")\n    kwargs.update({\n        "permanent_availability": True,\n        "tracking_precheck": True,\n        "required_token_capacity": 2,'''
+          replace_once(path,old,new)
+          old='''        "front_door_request_key_prefix": scope.request_key_root,\n    })\n    supply = build_graduated_supply('''
+          new='''        "front_door_request_key_prefix": scope.request_key_root,\n    })\n    if deadline_at is not None:\n        kwargs["deadline_at"] = str(deadline_at)\n        kwargs["temporal_refresh_owner"] = temporal_refresh_owner\n    supply = build_graduated_supply('''
+          replace_once(path,old,new)
+
+          path='src/printer_v1/operator_cli/authoritative_live_operational_campaign.py'
+          old='''                    return build_later_cycle_graduated_supply(\n                        command.db_path,'''
+          new='''                    later_cycle_deadline = pre_lifecycle_acquisition_deadline_at(\n                        evaluated.isoformat(),\n                        acquisition_duration_seconds=int(pre_lifecycle_acquisition_seconds),\n                    )\n                    later_cycle_refresh_owner = None\n                    if pre_lifecycle_temporal_refresh_owner is not None:\n                        rebind = getattr(pre_lifecycle_temporal_refresh_owner, "for_cycle", None)\n                        if not callable(rebind):\n                            raise LiveOperationalError("LATER_CYCLE_TEMPORAL_REFRESH_OWNER_INVALID")\n                        later_cycle_refresh_owner = rebind(\n                            cycle_id=str(context["proposed_cycle_id"]),\n                            acquisition_deadline_at=later_cycle_deadline,\n                        )\n                    return build_later_cycle_graduated_supply(\n                        command.db_path,'''
+          replace_once(path,old,new)
+          old='''                        graduated_supply_kwargs=later_supply_kwargs,\n                        holder_evidence_owner=holder_evidence_owner,\n                    )'''
+          new='''                        graduated_supply_kwargs=later_supply_kwargs,\n                        holder_evidence_owner=holder_evidence_owner,\n                        deadline_at=later_cycle_deadline,\n                        temporal_refresh_owner=later_cycle_refresh_owner,\n                    )'''
+          replace_once(path,old,new)
+          PY
+      - name: GREEN focused proof
+        run: |
+          python -m pytest -q \
+            tests/test_v2_9_8b_later_cycle_acquisition_lifecycle_repair.py \
+            tests/test_v2_9_8b_pre_admission_later_cycle_callback.py \
+            tests/test_v2_9_8b_four_token_later_cycle_discovery_callback_contract.py \
+            tests/test_v2_9_8b_post_dtw98_pre_lifecycle_temporal_persistence.py \
+            tests/test_v2_9_8b_operational_selective_1h.py
+      - name: Commit implementation slice
+        run: |
+          git config user.name 'OpenAI'
+          git config user.email 'noreply@openai.com'
+          git add src tests/test_v2_9_8b_later_cycle_acquisition_lifecycle_repair.py
+          git commit -m 'Implement bounded later-cycle acquisition and continuation safety semantics'
+          git push origin HEAD:refs/heads/agent/v2-9-8b-later-cycle-acquisition-lifecycle-implementation
