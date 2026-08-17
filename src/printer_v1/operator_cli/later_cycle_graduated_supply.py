@@ -107,9 +107,7 @@ def classify_later_cycle_failure(
         if isinstance(exception, (LaterCycleGraduatedSupplyError, LiveOperationalError)):
             return FAILURE_DOMAIN_INTERNAL
     cause = str(terminal_cause or "").strip()
-    if cause in _SOURCE_SHORTAGE_CLASSIFICATIONS or cause.startswith(
-        ("SOURCE_", "PROVIDER_")
-    ):
+    if cause in _SOURCE_SHORTAGE_CLASSIFICATIONS:
         return FAILURE_DOMAIN_SOURCE
     if cause in _INTERNAL_SHORTAGE_CLASSIFICATIONS or cause.startswith(
         (

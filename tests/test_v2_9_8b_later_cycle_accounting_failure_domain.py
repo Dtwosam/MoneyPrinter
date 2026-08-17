@@ -13,6 +13,7 @@ from printer_v1.discovery.permanent_discovery_availability import (
     derive_campaign_source_request_key_root,
 )
 from printer_v1.operator_cli.authoritative_live_operational_campaign import (
+    LiveOperationalError,
     LiveTransportError,
 )
 from printer_v1.operator_cli.four_token_proof_integration import (
@@ -110,6 +111,59 @@ def test_classify_internal_versus_source_versus_eligibility() -> None:
     )
     assert (
         classify_later_cycle_failure(terminal_cause="UNKNOWN_UNMAPPED_CAUSE")
+        == FAILURE_DOMAIN_INTERNAL
+    )
+
+
+@pytest.mark.parametrize(
+    "terminal_cause",
+    [
+        "SOURCE_AVAILABILITY_FAILURE",
+        "SOURCE_VISIBILITY_SHORTAGE",
+        "BUDGET_EXHAUSTION",
+        "DURATION_EXHAUSTION",
+        "TRUE_MARKET_SUPPLY_SHORTAGE",
+        "REFRESH_SOURCE_FAILURE",
+    ],
+)
+def test_explicit_canonical_source_terminal_causes_remain_source(
+    terminal_cause: str,
+) -> None:
+    assert (
+        classify_later_cycle_failure(terminal_cause=terminal_cause)
+        == FAILURE_DOMAIN_SOURCE
+    )
+
+
+@pytest.mark.parametrize(
+    "terminal_cause",
+    [
+        "SOURCE_GOVERNOR_UNAVAILABLE",
+        "MIGRATE_ACCOUNT_LAYOUT_MISMATCH",
+        "DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE",
+        "UNKNOWN_ARBITRARY_LOCAL_TERMINAL",
+    ],
+)
+def test_internal_and_unknown_terminal_causes_never_become_source(
+    terminal_cause: str,
+) -> None:
+    assert (
+        classify_later_cycle_failure(terminal_cause=terminal_cause)
+        == FAILURE_DOMAIN_INTERNAL
+    )
+
+
+def test_exception_types_preserve_source_versus_internal_boundary() -> None:
+    assert (
+        classify_later_cycle_failure(
+            exception=LiveTransportError("TRANSPORT_UNAVAILABLE", "getTransaction")
+        )
+        == FAILURE_DOMAIN_SOURCE
+    )
+    assert (
+        classify_later_cycle_failure(
+            exception=LiveOperationalError("SOURCE_GOVERNOR_UNAVAILABLE")
+        )
         == FAILURE_DOMAIN_INTERNAL
     )
 

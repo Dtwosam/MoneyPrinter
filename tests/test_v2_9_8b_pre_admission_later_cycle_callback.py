@@ -20,6 +20,11 @@ from printer_v1.operator_cli.four_token_proof_integration import (
     LaterCycleDiscoveryCandidate,
     LaterCycleSourceEvidence,
 )
+from printer_v1.operator_cli.graduated_supply_front_door import GraduatedSupply
+from printer_v1.operator_cli.later_cycle_graduated_supply import (
+    FAILURE_DOMAIN_INTERNAL,
+    build_later_cycle_graduated_supply,
+)
 from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
     MultiCycleAdmissionHealth,
 )
@@ -266,3 +271,67 @@ def test_missing_supply_terminalizes_blocked_and_cancels_scheduler(database) -> 
         ).fetchone()[0] == "CANCELLED"
     finally:
         connection.close()
+
+
+def test_internal_refresh_outcome_remains_internal_at_final_attempt_result(
+    database,
+    monkeypatch,
+) -> None:
+    path, _, _ = database
+
+    monkeypatch.setattr(
+        "printer_v1.operator_cli.later_cycle_graduated_supply.build_graduated_supply",
+        lambda db_path, **kwargs: GraduatedSupply(
+            ready=False,
+            terminal="BLOCKED_INSUFFICIENT_ELIGIBLE_CANDIDATE_POOL",
+            graduated_supply=(),
+            graduation_proofs={},
+            candidate_a=None,
+            candidate_b=None,
+            two_candidate_selection={},
+            handoff_readiness={},
+            discovery_report={},
+            front_door_report={},
+            diagnostics={
+                "shortage_classification": "DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE",
+                "pre_lifecycle_acquisition": {
+                    "temporal_refresh_outcomes": [
+                        {
+                            "status": "INTERNAL_INVARIANT",
+                            "failure_domain": "INTERNAL",
+                        }
+                    ]
+                },
+            },
+            holder_reserve_supply=(),
+            holder_reserve_candidates={},
+        ),
+    )
+
+    def supply(**context):
+        return build_later_cycle_graduated_supply(
+            path,
+            campaign_id=context["campaign_id"],
+            campaign_run_id=context["campaign_run_id"],
+            authoritative_factory_run_id=context["authoritative_factory_run_id"],
+            proposed_cycle_id=context["proposed_cycle_id"],
+            proposed_cycle_ordinal=context["proposed_cycle_ordinal"],
+            evaluated_at=context["evaluated_at"],
+            execution_id="execution-internal-refresh",
+            selection_seed=context["selection_seed"],
+            migration_transport=object(),
+            graduated_supply_kwargs={},
+        )
+
+    callback = AuthoritativeLiveOperationalCampaignOwner(
+        later_cycle_candidate_supply=supply
+    )._build_later_cycle_discovery_callback(
+        db_path=path,
+        configuration_id="configuration-1",
+    )
+
+    result = _invoke(callback)
+
+    assert result.state == "NO_PAIR"
+    assert result.first_terminal_cause == "DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE"
+    assert result.failure_domain == FAILURE_DOMAIN_INTERNAL

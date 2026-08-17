@@ -9,6 +9,7 @@ never self-compares the same totals field.
 from __future__ import annotations
 
 import copy
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Sequence
@@ -863,7 +864,7 @@ class CampaignSixUnitOwner:
 
 
 def _transport_identity_key(raw: Mapping[str, Any] | TransportOperationIdentity) -> tuple[Any, ...]:
-    """Stable identity key for exact owner/action-local set comparison."""
+    """Stable exact-record key for owner/action-local set or multiset comparison."""
     if isinstance(raw, TransportOperationIdentity):
         return (
             str(raw.stage or ""),
@@ -903,7 +904,7 @@ class CampaignSixUnitProjection:
     """Read-only campaign projection derived from strict cycle owners.
 
     Stage evidence is ingested exactly once by its cycle owner. This projection
-    only validates and unions those already-owned ledgers for terminal
+    only validates and concatenates those already-owned ledgers for terminal
     reconciliation/reporting; it has no evidence-ingestion or cycle-registration
     authority.
     """
@@ -929,11 +930,10 @@ class CampaignSixUnitProjection:
         owners = tuple(cycle_owners)
         cycle_ids: list[str] = []
         stage_ids: set[str] = set()
-        combined_ledger = MeasuredTransportLedger(
-            campaign_id=self.campaign_id,
-            run_id=self.run_id,
-            cycle_id=self.cycle_id,
-        )
+        combined_transports: list[TransportOperationIdentity] = []
+        combined_local_validations = 0
+        combined_scheduler_work_items = 0
+        combined_lifecycle_reservations = 0
         combined_non_transport: dict[str, list[dict[str, Any]]] = {
             field_name: [] for field_name in _NON_TRANSPORT_IDENTITY_FIELDS
         }
@@ -968,18 +968,26 @@ class CampaignSixUnitProjection:
                     + sorted(duplicate_stage_ids)[0]
                 )
             stage_ids.update(owner.ingested_stage_ids)
-            try:
-                combined_ledger.extend(owner.ledger)
-            except MeasuredTransportError as exc:
-                if "DUPLICATE_TRANSPORT_IDENTITY" in str(exc):
-                    raise CampaignSixUnitError(
-                        f"SIX_UNIT_CAMPAIGN_DUPLICATE_TRANSPORT_IDENTITY:{exc}"
-                    ) from exc
-                raise CampaignSixUnitError(
-                    f"SIX_UNIT_CAMPAIGN_LEDGER_MALFORMED:{exc}"
-                ) from exc
-
             owner_evidence = owner.durable_evidence()
+            owner_totals = reconstruct_six_unit_totals_from_evidence(
+                owner_evidence
+            )
+            if owner_totals != owner.six_unit_totals():
+                raise CampaignSixUnitError(
+                    "SIX_UNIT_CAMPAIGN_CYCLE_OWNER_TOTAL_MISMATCH:"
+                    f"{owner_cycle_id}"
+                )
+            # Each owner has already applied the strict single-cycle duplicate,
+            # ceiling, and measurement laws. Campaign projection is a read-only
+            # concatenation: the same canonical transport key in two different
+            # cycle owners represents two lawful operations and must retain
+            # multiplicity rather than being re-ingested through ``extend``.
+            combined_transports.extend(copy.deepcopy(owner.ledger.transports))
+            combined_local_validations += int(owner.ledger.local_validations)
+            combined_scheduler_work_items += int(owner.ledger.scheduler_work_items)
+            combined_lifecycle_reservations += int(
+                owner.ledger.lifecycle_reservations
+            )
             cycle_evidences.append(copy.deepcopy(owner_evidence))
             cycle_owner_ids.append(owner.owner_id)
             for field_name in _NON_TRANSPORT_IDENTITY_FIELDS:
@@ -1009,6 +1017,15 @@ class CampaignSixUnitProjection:
                 "SIX_UNIT_CAMPAIGN_PRIMARY_CYCLE_OWNER_MISSING"
             )
 
+        combined_ledger = MeasuredTransportLedger(
+            campaign_id=self.campaign_id,
+            run_id=self.run_id,
+            cycle_id=self.cycle_id,
+            transports=combined_transports,
+            local_validations=combined_local_validations,
+            scheduler_work_items=combined_scheduler_work_items,
+            lifecycle_reservations=combined_lifecycle_reservations,
+        )
         totals = combined_ledger.six_unit_totals()
         identity_units = {
             _SCHEDULER_IDENTITY_FIELD: UNIT_SCHEDULER_WORK_ITEM,
@@ -1431,7 +1448,7 @@ def _keys_and_duplicate(
 
 
 def reconcile_full_run_owner_to_action_local(
-    owner: CampaignSixUnitOwner,
+    owner: CampaignSixUnitOwner | CampaignSixUnitProjection,
     action_local: CampaignActionLocalLedger | None,
     *,
     required_stage_kinds: Sequence[str] | None = None,
@@ -1439,10 +1456,13 @@ def reconcile_full_run_owner_to_action_local(
 ) -> dict[str, Any]:
     """Prove exact six-unit equality between owner and an independent observer.
 
-    Every unit is compared as an exact identity set in both directions. A
+    Every unit is compared as an exact identity set in both directions, except
+    projection transport records, which use an exact multiset so one identical
+    canonical operation owned by each of two cycles retains multiplicity two. A
     lifecycle-started run with a missing action-local surface, a missing mandatory
-    sealed stage, a duplicate identity, or a count/identity mismatch fails closed.
-    This never returns ``equal=True`` merely because an argument is absent.
+    sealed stage, a forbidden single-cycle duplicate, or a count/identity mismatch
+    fails closed. This never returns ``equal=True`` merely because an argument is
+    absent.
 
     ``required_stage_kinds`` is the mandatory sealed-stage manifest (every listed
     kind must have been sealed on the owner or the run fails closed).
@@ -1490,11 +1510,25 @@ def reconcile_full_run_owner_to_action_local(
         # (transport ``stage`` field and non-transport ``stage_id``).
         return equality_scope is None or (key and key[0] in equality_scope)
 
-    owner_transport_keys = {
-        key
-        for key in (_transport_identity_key(item) for item in owner.ledger.transports)
-        if _in_scope(key)
-    }
+    projection_transport_multiset = isinstance(owner, CampaignSixUnitProjection)
+    if projection_transport_multiset:
+        owner_transport_keys: set[tuple[Any, ...]] | Counter[tuple[Any, ...]] = (
+            Counter(
+                key
+                for key in (
+                    _transport_identity_key(item) for item in owner.ledger.transports
+                )
+                if _in_scope(key)
+            )
+        )
+    else:
+        owner_transport_keys = {
+            key
+            for key in (
+                _transport_identity_key(item) for item in owner.ledger.transports
+            )
+            if _in_scope(key)
+        }
     owner_non_transport = {
         unit: {key for key in keys if _in_scope(key)}
         for unit, keys in owner.non_transport_identity_keys().items()
@@ -1530,8 +1564,17 @@ def reconcile_full_run_owner_to_action_local(
     )
 
     for unit, owner_keys, action_entries, key_func in comparisons:
+        multiplicity_aware = bool(
+            projection_transport_multiset
+            and unit == "SOURCE_TRANSPORT_OPERATION"
+        )
+        owner_count = (
+            sum(owner_keys.values())
+            if multiplicity_aware and isinstance(owner_keys, Counter)
+            else len(owner_keys)
+        )
         result: dict[str, Any] = {
-            "owner_count": len(owner_keys),
+            "owner_count": owner_count,
             "action_local_count": None,
             "identity_sets_equal": None,
             "unit_block_reason": None,
@@ -1542,15 +1585,34 @@ def reconcile_full_run_owner_to_action_local(
             )
         else:
             try:
-                action_keys, duplicate = _keys_and_duplicate(action_entries, key_func)
+                if multiplicity_aware:
+                    action_keys = Counter(
+                        key_func(item)
+                        for item in action_entries
+                        if isinstance(item, Mapping)
+                    )
+                    if sum(action_keys.values()) != len(action_entries):
+                        raise CampaignSixUnitError(
+                            "ACTION_LOCAL_IDENTITY_MALFORMED"
+                        )
+                    duplicate = False
+                else:
+                    action_keys, duplicate = _keys_and_duplicate(
+                        action_entries, key_func
+                    )
             except CampaignSixUnitError:
                 result["unit_block_reason"] = "ACTION_LOCAL_IDENTITY_MALFORMED"
             else:
                 result["action_local_count"] = len(action_entries)
                 result["identity_sets_equal"] = owner_keys == action_keys
-                if duplicate:
+                if multiplicity_aware and owner_keys != action_keys:
+                    result["unit_block_reason"] = "UNIT_IDENTITY_MULTISET_MISMATCH"
+                elif duplicate:
                     result["unit_block_reason"] = "DUPLICATE_ACTION_LOCAL_IDENTITY"
-                elif len(action_keys) != len(action_entries):
+                elif (
+                    not multiplicity_aware
+                    and len(action_keys) != len(action_entries)
+                ):
                     result["unit_block_reason"] = "DUPLICATE_ACTION_LOCAL_IDENTITY"
                 elif owner_keys != action_keys:
                     result["unit_block_reason"] = "UNIT_IDENTITY_SET_MISMATCH"
@@ -1577,7 +1639,7 @@ def reconcile_full_run_owner_to_action_local(
 
 
 def reconcile_owner_to_action_local(
-    owner: CampaignSixUnitOwner,
+    owner: CampaignSixUnitOwner | CampaignSixUnitProjection,
     *,
     action_local_source_operations: int | None = None,
     action_local_transport_identities: Sequence[Mapping[str, Any]] | None = None,
@@ -1620,9 +1682,16 @@ def reconcile_owner_to_action_local(
             required_stage_kinds=required_stage_kinds,
         )
     owner_ops = int(owner.owner_transport_operation_count)
-    owner_identity_keys = {
-        _transport_identity_key(item) for item in owner.ledger.transports
-    }
+    projection_transport_multiset = isinstance(owner, CampaignSixUnitProjection)
+    owner_identity_keys: set[tuple[Any, ...]] | Counter[tuple[Any, ...]]
+    if projection_transport_multiset:
+        owner_identity_keys = Counter(
+            _transport_identity_key(item) for item in owner.ledger.transports
+        )
+    else:
+        owner_identity_keys = {
+            _transport_identity_key(item) for item in owner.ledger.transports
+        }
     action_local_count = (
         None
         if action_local_source_operations is None
@@ -1631,7 +1700,9 @@ def reconcile_owner_to_action_local(
     diagnostics = owner.accounting_diagnostics()
     mismatch_reason: str | None = None
     action_local_identity_count: int | None = None
-    action_local_identity_keys: set[tuple[Any, ...]] | None = None
+    action_local_identity_keys: (
+        set[tuple[Any, ...]] | Counter[tuple[Any, ...]] | None
+    ) = None
 
     if owner.accounting_block_reason is not None:
         mismatch_reason = str(owner.accounting_block_reason)
@@ -1642,20 +1713,29 @@ def reconcile_owner_to_action_local(
             mismatch_reason = "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH"
         else:
             try:
-                action_local_identity_keys = {
-                    _transport_identity_key(item)
-                    for item in action_local_transport_identities
-                    if isinstance(item, Mapping)
-                }
-                if len(action_local_identity_keys) != len(
-                    action_local_transport_identities
-                ):
+                if projection_transport_multiset:
+                    action_local_identity_keys = Counter(
+                        _transport_identity_key(item)
+                        for item in action_local_transport_identities
+                        if isinstance(item, Mapping)
+                    )
+                    observed_identity_count = sum(
+                        action_local_identity_keys.values()
+                    )
+                else:
+                    action_local_identity_keys = {
+                        _transport_identity_key(item)
+                        for item in action_local_transport_identities
+                        if isinstance(item, Mapping)
+                    }
+                    observed_identity_count = len(action_local_identity_keys)
+                if observed_identity_count != len(action_local_transport_identities):
                     # Malformed or non-mapping entries cannot prove equality.
                     mismatch_reason = (
                         "CAMPAIGN_STAGE_OPERATION_RECONCILIATION_MISMATCH"
                     )
                 else:
-                    action_local_identity_count = len(action_local_identity_keys)
+                    action_local_identity_count = observed_identity_count
                     if action_local_count is None:
                         action_local_count = action_local_identity_count
                     if owner_ops != action_local_identity_count:
@@ -1688,7 +1768,11 @@ def reconcile_owner_to_action_local(
         "owner_transport_operation_count": owner_ops,
         "action_local_source_operations": action_local_count,
         "action_local_transport_identity_count": action_local_identity_count,
-        "owner_transport_identity_count": len(owner_identity_keys),
+        "owner_transport_identity_count": (
+            sum(owner_identity_keys.values())
+            if isinstance(owner_identity_keys, Counter)
+            else len(owner_identity_keys)
+        ),
         "identity_sets_equal": (
             None
             if action_local_identity_keys is None
@@ -1745,6 +1829,11 @@ def reconstruct_six_unit_totals_from_evidence(
     non-transport unit totals are derived from the unique identity list sizes and
     cross-checked against the paired integer counters. A duplicate identity or a
     counter/identity mismatch fails closed so the total cannot be forged.
+
+    A multi-cycle projection is reconstructed from its independently strict nested
+    cycle evidence. Its top-level transport list is compared to the nested records
+    as a multiset, allowing lawful cross-cycle multiplicity without weakening the
+    duplicate law inside any one cycle owner.
     """
     if not isinstance(evidence, Mapping):
         raise CampaignSixUnitError("SIX_UNIT_EVIDENCE_MISSING")
@@ -1758,6 +1847,82 @@ def reconstruct_six_unit_totals_from_evidence(
     transports = evidence.get("transport_operations") or ()
     if not isinstance(transports, Sequence) or isinstance(transports, (str, bytes)):
         raise CampaignSixUnitError("SIX_UNIT_EVIDENCE_TRANSPORTS_MALFORMED")
+
+    projection_cycle_totals: dict[str, int] | None = None
+    if evidence.get("accounting_scope") == "CAMPAIGN_MULTI_CYCLE_PROJECTION":
+        raw_cycle_evidences = evidence.get("cycle_evidences")
+        if (
+            not isinstance(raw_cycle_evidences, Sequence)
+            or isinstance(raw_cycle_evidences, (str, bytes))
+            or not raw_cycle_evidences
+        ):
+            raise CampaignSixUnitError(
+                "SIX_UNIT_CAMPAIGN_PROJECTION_CYCLE_EVIDENCE_MALFORMED"
+            )
+        projection_cycle_totals = empty_six_unit_totals()
+        nested_transports: list[Mapping[str, Any]] = []
+        nested_cycle_ids: list[str] = []
+        for raw_cycle_evidence in raw_cycle_evidences:
+            if (
+                not isinstance(raw_cycle_evidence, Mapping)
+                or raw_cycle_evidence.get("accounting_scope")
+                == "CAMPAIGN_MULTI_CYCLE_PROJECTION"
+            ):
+                raise CampaignSixUnitError(
+                    "SIX_UNIT_CAMPAIGN_PROJECTION_CYCLE_EVIDENCE_MALFORMED"
+                )
+            if (
+                raw_cycle_evidence.get("campaign_id") != evidence.get("campaign_id")
+                or raw_cycle_evidence.get("run_id") != evidence.get("run_id")
+            ):
+                raise CampaignSixUnitError(
+                    "SIX_UNIT_CAMPAIGN_PROJECTION_CYCLE_IDENTITY_MISMATCH"
+                )
+            cycle_id = _require_nonempty_text(
+                raw_cycle_evidence.get("cycle_id"), field_name="cycle_id"
+            )
+            if cycle_id in nested_cycle_ids:
+                raise CampaignSixUnitError(
+                    f"SIX_UNIT_CAMPAIGN_DUPLICATE_CYCLE_OWNER:{cycle_id}"
+                )
+            nested_cycle_ids.append(cycle_id)
+            cycle_totals = reconstruct_six_unit_totals_from_evidence(
+                raw_cycle_evidence
+            )
+            for unit in SIX_UNITS:
+                projection_cycle_totals[unit] += int(cycle_totals[unit])
+            raw_nested_transports = (
+                raw_cycle_evidence.get("transport_operations") or ()
+            )
+            nested_transports.extend(raw_nested_transports)
+
+        raw_cycle_ids = evidence.get("cycle_ids")
+        if (
+            not isinstance(raw_cycle_ids, Sequence)
+            or isinstance(raw_cycle_ids, (str, bytes))
+            or [str(item) for item in raw_cycle_ids] != nested_cycle_ids
+        ):
+            raise CampaignSixUnitError(
+                "SIX_UNIT_CAMPAIGN_PROJECTION_CYCLE_PROVENANCE_MISMATCH"
+            )
+        try:
+            top_transport_multiset = Counter(
+                _transport_identity_key(raw) for raw in transports
+            )
+            nested_transport_multiset = Counter(
+                _transport_identity_key(raw) for raw in nested_transports
+            )
+        except (TypeError, ValueError) as exc:
+            raise CampaignSixUnitError(
+                "SIX_UNIT_EVIDENCE_IDENTITY_MALFORMED"
+            ) from exc
+        if (
+            len(transports) != len(nested_transports)
+            or top_transport_multiset != nested_transport_multiset
+        ):
+            raise CampaignSixUnitError(
+                "SIX_UNIT_CAMPAIGN_PROJECTION_TRANSPORT_MULTISET_MISMATCH"
+            )
 
     def _integer(value: Any) -> int:
         try:
@@ -1782,7 +1947,7 @@ def reconstruct_six_unit_totals_from_evidence(
             raw.get("target_category"),
             raw.get("target_identity"),
         )
-        if key in seen:
+        if key in seen and projection_cycle_totals is None:
             raise CampaignSixUnitError("SIX_UNIT_EVIDENCE_DUPLICATE_IDENTITY")
         seen.add(key)
         response_bytes += _integer(raw.get("response_bytes"))
@@ -1835,7 +2000,7 @@ def reconstruct_six_unit_totals_from_evidence(
                 f"SIX_UNIT_EVIDENCE_IDENTITY_COUNT_MISMATCH:{field_name}"
             )
 
-    return {
+    reconstructed = {
         "SOURCE_TRANSPORT_OPERATION": len(transports),
         "LOCAL_VALIDATION_STEP": counters["local_validations"],
         "SCHEDULER_WORK_ITEM": counters["scheduler_work_items"],
@@ -1845,6 +2010,14 @@ def reconstruct_six_unit_totals_from_evidence(
             "lifecycle_reservations"
         ],
     }
+    if (
+        projection_cycle_totals is not None
+        and reconstructed != projection_cycle_totals
+    ):
+        raise CampaignSixUnitError(
+            "SIX_UNIT_CAMPAIGN_PROJECTION_TOTAL_MISMATCH"
+        )
+    return reconstructed
 
 
 def compare_report_totals_to_evidence(

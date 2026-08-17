@@ -10,9 +10,11 @@ import pytest
 import printer_v1.operator_cli.authoritative_live_operational_campaign as live_campaign
 import printer_v1.operator_cli.operational_memory_factory_command as operational
 from printer_v1.sources.campaign_six_unit_accounting import (
+    CampaignActionLocalLedger,
     CampaignCycleAccountingRegistry,
     CampaignSixUnitError,
     build_campaign_stage_id,
+    reconcile_full_run_owner_to_action_local,
     seal_campaign_stage_evidence,
 )
 from printer_v1.sources.measured_transport import (
@@ -82,7 +84,7 @@ def _transport_evidence(
         stage=transport_stage,
         source_name="dexscreener",
         endpoint_owner="dexscreener",
-        governed_request_kind="fresh_profiles",
+        governed_request_kind="dexscreener_fresh_profiles",
         method_or_endpoint="/token-profiles/latest/v1",
         within_request_ordinal=1,
         target_category="solana_memecoin",
@@ -205,9 +207,47 @@ def test_campaign_projection_is_sum_with_cycle_provenance() -> None:
     ]
 
 
-@pytest.mark.parametrize("duplicate_kind", ["transport", "non_transport"])
-def test_campaign_projection_rejects_cross_cycle_duplicate_identity(
-    duplicate_kind: str,
+def test_campaign_projection_preserves_cross_cycle_transport_multiplicity() -> None:
+    registry = _registry()
+    registry.register_authoritative_cycle(
+        campaign_id=CAMPAIGN_ID,
+        run_id=RUN_ID,
+        cycle_id=CYCLE_2,
+        started_at=NOW,
+    )
+    registry.stage_evidence_sink_for_cycle(CYCLE_1)(
+        _transport_evidence(
+            CYCLE_1, 1, transport_stage="DEXSCREENER_DISCOVERY"
+        )
+    )
+    registry.stage_evidence_sink_for_cycle(CYCLE_2)(
+        _transport_evidence(
+            CYCLE_2, 1, transport_stage="DEXSCREENER_DISCOVERY"
+        )
+    )
+
+    projection = registry.campaign_projection()
+    evidence = projection.durable_evidence()
+
+    assert projection.six_unit_totals()["SOURCE_TRANSPORT_OPERATION"] == 2
+    assert len(evidence["transport_operations"]) == 2
+    assert [item["cycle_id"] for item in evidence["cycle_evidences"]] == [
+        CYCLE_1,
+        CYCLE_2,
+    ]
+    assert [
+        len(item["transport_operations"])
+        for item in evidence["cycle_evidences"]
+    ] == [1, 1]
+
+
+@pytest.mark.parametrize(
+    ("observed_multiplicity", "expected_equal"),
+    [(2, True), (1, False), (3, False)],
+)
+def test_campaign_projection_reconciles_exact_transport_multiplicity(
+    observed_multiplicity: int,
+    expected_equal: bool,
 ) -> None:
     registry = _registry()
     registry.register_authoritative_cycle(
@@ -216,32 +256,83 @@ def test_campaign_projection_rejects_cross_cycle_duplicate_identity(
         cycle_id=CYCLE_2,
         started_at=NOW,
     )
-    if duplicate_kind == "transport":
-        registry.stage_evidence_sink_for_cycle(CYCLE_1)(
-            _transport_evidence(CYCLE_1, 1, transport_stage="duplicate-stage")
-        )
-        registry.stage_evidence_sink_for_cycle(CYCLE_2)(
-            _transport_evidence(CYCLE_2, 1, transport_stage="duplicate-stage")
-        )
-    else:
-        duplicate_identity_stage = "duplicate-validation-stage"
-        duplicate_subject = "duplicate-subject"
-        registry.stage_evidence_sink_for_cycle(CYCLE_1)(
-            _validation_evidence(
-                CYCLE_1,
-                1,
-                validation_stage_id=duplicate_identity_stage,
-                subject_identity=duplicate_subject,
+    for cycle_id in (CYCLE_1, CYCLE_2):
+        registry.stage_evidence_sink_for_cycle(cycle_id)(
+            _transport_evidence(
+                cycle_id, 1, transport_stage="DEXSCREENER_DISCOVERY"
             )
         )
-        registry.stage_evidence_sink_for_cycle(CYCLE_2)(
-            _validation_evidence(
-                CYCLE_2,
-                1,
-                validation_stage_id=duplicate_identity_stage,
-                subject_identity=duplicate_subject,
+    projection = registry.campaign_projection()
+    transport = projection.durable_evidence()["transport_operations"][0]
+    action_local = CampaignActionLocalLedger(
+        campaign_id=CAMPAIGN_ID,
+        run_id=RUN_ID,
+        cycle_id=CYCLE_1,
+        lifecycle_started=True,
+    )
+    for _ in range(observed_multiplicity):
+        action_local.observe_transport(transport)
+
+    reconciliation = reconcile_full_run_owner_to_action_local(
+        projection,
+        action_local,
+    )
+
+    assert reconciliation["equal"] is expected_equal, reconciliation
+    assert reconciliation["unit_results"]["SOURCE_TRANSPORT_OPERATION"][
+        "owner_count"
+    ] == 2
+    assert reconciliation["unit_results"]["SOURCE_TRANSPORT_OPERATION"][
+        "action_local_count"
+    ] == observed_multiplicity
+
+
+def test_duplicate_transport_inside_one_cycle_still_fails_closed() -> None:
+    owner = _registry().owner_for_cycle(CYCLE_1)
+    owner.ingest_stage_evidence(
+        _transport_evidence(
+            CYCLE_1, 1, transport_stage="DEXSCREENER_DISCOVERY"
+        )
+    )
+
+    with pytest.raises(
+        CampaignSixUnitError,
+        match="SIX_UNIT_STAGE_EVIDENCE_DUPLICATE_TRANSPORT",
+    ):
+        owner.ingest_stage_evidence(
+            _transport_evidence(
+                CYCLE_1, 2, transport_stage="DEXSCREENER_DISCOVERY"
             )
         )
+
+
+def test_campaign_projection_rejects_cross_cycle_duplicate_non_transport_identity(
+) -> None:
+    registry = _registry()
+    registry.register_authoritative_cycle(
+        campaign_id=CAMPAIGN_ID,
+        run_id=RUN_ID,
+        cycle_id=CYCLE_2,
+        started_at=NOW,
+    )
+    duplicate_identity_stage = "duplicate-validation-stage"
+    duplicate_subject = "duplicate-subject"
+    registry.stage_evidence_sink_for_cycle(CYCLE_1)(
+        _validation_evidence(
+            CYCLE_1,
+            1,
+            validation_stage_id=duplicate_identity_stage,
+            subject_identity=duplicate_subject,
+        )
+    )
+    registry.stage_evidence_sink_for_cycle(CYCLE_2)(
+        _validation_evidence(
+            CYCLE_2,
+            1,
+            validation_stage_id=duplicate_identity_stage,
+            subject_identity=duplicate_subject,
+        )
+    )
 
     with pytest.raises(CampaignSixUnitError, match="SIX_UNIT_CAMPAIGN_DUPLICATE"):
         registry.campaign_projection()
