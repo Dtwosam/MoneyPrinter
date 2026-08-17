@@ -134,7 +134,8 @@ class PreLifecycleTemporalRefreshOwner:
         self.published_states=[]; self._acquisition_mark=None
     def for_cycle(self, *, cycle_id:str, cycle_cutoff:str, evaluated_at:str,
         request_key_prefix:str,
-        stage_evidence_sink: Callable[[Mapping[str, Any]], None] | None = None):
+        stage_evidence_sink: Callable[[Mapping[str, Any]], None] | None = None,
+        cooperative_yield: bool = False):
         """Rebuild this bounded owner for a later cycle under canonical authority."""
         if self._cycle_rebinder is None:
             raise PreLifecycleTemporalRefreshError('TEMPORAL_CYCLE_REBINDER_NOT_CONFIGURED')
@@ -166,6 +167,8 @@ class PreLifecycleTemporalRefreshOwner:
             raise PreLifecycleTemporalRefreshError('TEMPORAL_CYCLE_REBINDER_AUTHORITY_DRIFT')
         if parse_iso(rebound.acquisition_deadline_at) >= parse_iso(rebound.work_deadline_at):
             raise PreLifecycleTemporalRefreshError('TEMPORAL_CYCLE_REBINDER_DEADLINE_DRIFT')
+        if cooperative_yield:
+            rebound._waiter=None
         return rebound
     def _connect(self):
         c=sqlite3.connect(self.db_path); c.row_factory=sqlite3.Row; c.execute('PRAGMA foreign_keys=ON'); return c
@@ -194,23 +197,38 @@ class PreLifecycleTemporalRefreshOwner:
         if not self._owners_available(): return TemporalRefreshOutcome(status=UNSAFE_SCHEDULER_STATE,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='source governor or central scheduler owner unavailable')
         if c.in_transaction: return TemporalRefreshOutcome(status=UNSAFE_SCHEDULER_STATE,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='open sqlite write transaction held at wait boundary')
         active,cancelled=self._supervision()
-        eligibility=evaluate_wait_eligibility(reserve_depth=reserve_depth,required_capacity=required_capacity,universe_state=universe_state,now=now,acquisition_deadline_at=self.acquisition_deadline_at,source_operations_remaining=source_operations_remaining,provider_terminal_failure=provider_terminal_failure,supervision_active=active,cancellation_requested=cancelled,pending_refresh_exists=bool(active_refresh_waits(c,campaign_id=self.campaign_id,run_id=self.run_id,cycle_id=self.cycle_id)))
-        if not eligibility.eligible: return TemporalRefreshOutcome(status=eligibility.reason,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='wait eligibility not satisfied')
-        if not refresh_window_fits(now=now,acquisition_deadline_at=self.acquisition_deadline_at,refresh_interval_seconds=self.refresh_interval_seconds):
-            return TemporalRefreshOutcome(status='NO_LAWFUL_REFRESH_WINDOW',reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='next canonical DISCOVERY_REFRESH interval is not strictly before acquisition deadline')
-        due=parse_iso(now)+timedelta(seconds=self.refresh_interval_seconds)
-        ordinal=next_refresh_ordinal(c,campaign_id=self.campaign_id,run_id=self.run_id,cycle_id=self.cycle_id)
-        job_name=f'PRE_LIFECYCLE_DISCOVERY_REFRESH:{self.campaign_id}:{self.run_id}:{self.cycle_id}:{ordinal}'
-        result,job_id=enqueue_job(c,job_name=job_name,job_kind=JobKind.DISCOVERY_REFRESH,target_table='printer_discovery_batches',scheduled_for=due)
-        if job_id is None: return TemporalRefreshOutcome(status=ALREADY_PENDING_REFRESH if result==LockResult.DUPLICATE_ACTIVE_JOB else UNSAFE_SCHEDULER_STATE,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail=f'enqueue refused: {result}')
-        wait_id=f'prelifecycle-refresh-wait:{self.campaign_id}:{self.run_id}:{self.cycle_id}:{ordinal}'; scheduled=iso(due)
-        insert_refresh_wait(c,wait_id=wait_id,campaign_id=self.campaign_id,run_id=self.run_id,cycle_id=self.cycle_id,supervision_id=self.supervision_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,acquisition_deadline_at=self.acquisition_deadline_at,now=now); c.commit()
-        self._publish(WAITING_FOR_ELIGIBLE_SUPPLY,wait_id=wait_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,eligible_reserve_depth=reserve_depth,required_eligible_capacity=required_capacity,acquisition_deadline_at=self.acquisition_deadline_at)
-        waiting=TemporalRefreshOutcome(status=WAITING_FOR_ELIGIBLE_SUPPLY,wait_id=wait_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='pre-lifecycle acquisition waiting for a due Scheduler refresh')
-        if self._waiter is None: return waiting
-        aborted=bool(self._waiter(max(0.0,(due-parse_iso(now)).total_seconds()))); woke=self._now(scheduled); self._acquisition_mark=woke
+        pending=active_refresh_waits(c,campaign_id=self.campaign_id,run_id=self.run_id,cycle_id=self.cycle_id)
+        resuming=bool(pending)
+        if resuming:
+            if len(pending)!=1 or str(pending[0]['wait_state'])!='WAITING':
+                return TemporalRefreshOutcome(status=UNSAFE_SCHEDULER_STATE,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='pending refresh ownership is ambiguous')
+            row=pending[0]
+            wait_id=str(row['wait_id']); job_id=int(row['scheduler_job_id'])
+            ordinal=int(row['refresh_ordinal']); scheduled=str(row['scheduled_for'])
+            job_name=f'PRE_LIFECYCLE_DISCOVERY_REFRESH:{self.campaign_id}:{self.run_id}:{self.cycle_id}:{ordinal}'
+            due=parse_iso(scheduled)
+            waiting=TemporalRefreshOutcome(status=WAITING_FOR_ELIGIBLE_SUPPLY,wait_id=wait_id,scheduler_job_id=job_id,refresh_ordinal=ordinal,scheduled_for=scheduled,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='pre-lifecycle acquisition waiting for a due Scheduler refresh')
+            if parse_iso(now)<due:
+                return waiting
+            woke=now
+        else:
+            eligibility=evaluate_wait_eligibility(reserve_depth=reserve_depth,required_capacity=required_capacity,universe_state=universe_state,now=now,acquisition_deadline_at=self.acquisition_deadline_at,source_operations_remaining=source_operations_remaining,provider_terminal_failure=provider_terminal_failure,supervision_active=active,cancellation_requested=cancelled,pending_refresh_exists=False)
+            if not eligibility.eligible: return TemporalRefreshOutcome(status=eligibility.reason,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='wait eligibility not satisfied')
+            if not refresh_window_fits(now=now,acquisition_deadline_at=self.acquisition_deadline_at,refresh_interval_seconds=self.refresh_interval_seconds):
+                return TemporalRefreshOutcome(status='NO_LAWFUL_REFRESH_WINDOW',reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='next canonical DISCOVERY_REFRESH interval is not strictly before acquisition deadline')
+            due=parse_iso(now)+timedelta(seconds=self.refresh_interval_seconds)
+            ordinal=next_refresh_ordinal(c,campaign_id=self.campaign_id,run_id=self.run_id,cycle_id=self.cycle_id)
+            job_name=f'PRE_LIFECYCLE_DISCOVERY_REFRESH:{self.campaign_id}:{self.run_id}:{self.cycle_id}:{ordinal}'
+            result,job_id=enqueue_job(c,job_name=job_name,job_kind=JobKind.DISCOVERY_REFRESH,target_table='printer_discovery_batches',scheduled_for=due)
+            if job_id is None: return TemporalRefreshOutcome(status=ALREADY_PENDING_REFRESH if result==LockResult.DUPLICATE_ACTIVE_JOB else UNSAFE_SCHEDULER_STATE,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail=f'enqueue refused: {result}')
+            wait_id=f'prelifecycle-refresh-wait:{self.campaign_id}:{self.run_id}:{self.cycle_id}:{ordinal}'; scheduled=iso(due)
+            insert_refresh_wait(c,wait_id=wait_id,campaign_id=self.campaign_id,run_id=self.run_id,cycle_id=self.cycle_id,supervision_id=self.supervision_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,acquisition_deadline_at=self.acquisition_deadline_at,now=now); c.commit()
+            self._publish(WAITING_FOR_ELIGIBLE_SUPPLY,wait_id=wait_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,eligible_reserve_depth=reserve_depth,required_eligible_capacity=required_capacity,acquisition_deadline_at=self.acquisition_deadline_at)
+            waiting=TemporalRefreshOutcome(status=WAITING_FOR_ELIGIBLE_SUPPLY,wait_id=wait_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='pre-lifecycle acquisition waiting for a due Scheduler refresh')
+            if self._waiter is None: return waiting
+            aborted=bool(self._waiter(max(0.0,(due-parse_iso(now)).total_seconds()))); woke=self._now(scheduled); self._acquisition_mark=woke
         active,cancelled=self._supervision()
-        if aborted or not active or cancelled:
+        if (not resuming and aborted) or not active or cancelled:
             cause=WAIT_ABORT_SUPERVISION if not active else WAIT_ABORT_CANCELLED; status=SUPERVISION_FAILED if not active else CANCELLED
             self._abandon(c,wait_id,int(job_id),'CANCELLED',cause,woke)
             return TemporalRefreshOutcome(status=status,wait_id=wait_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail=cause)

@@ -315,6 +315,54 @@ def complete_job(
         )
 
 
+def yield_job(
+    db_or_connection: str | Path | sqlite3.Connection,
+    *,
+    job_id: int,
+    scheduled_for: datetime,
+    now: datetime | None = None,
+) -> None:
+    """Cooperatively release one running job for a later Scheduler claim."""
+    current_time = now or utc_now()
+    next_due = scheduled_for.astimezone(timezone.utc)
+    with connect(db_or_connection) as connection:
+        row = connection.execute(
+            "SELECT status,locked_at,lock_owner FROM printer_scheduler_jobs WHERE id=?",
+            (job_id,),
+        ).fetchone()
+        if (
+            row is None
+            or str(row["status"]) != JobStatus.RUNNING.value
+            or row["locked_at"] is None
+            or not str(row["lock_owner"] or "")
+        ):
+            raise ValueError(f"Scheduler job is not running: {job_id}")
+        connection.execute(
+            """
+            UPDATE printer_scheduler_jobs
+            SET status = ?,
+                scheduled_for = ?,
+                locked_at = NULL,
+                lock_owner = NULL,
+                started_at = NULL,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                JobStatus.PENDING.value,
+                to_timestamp(next_due),
+                to_timestamp(current_time),
+                job_id,
+            ),
+        )
+        _observe(
+            "SCHEDULER_YIELD",
+            scheduler_job_id=int(job_id),
+            yielded_at=to_timestamp(current_time),
+            scheduled_for=to_timestamp(next_due),
+        )
+
+
 def fail_job(
     db_or_connection: str | Path | sqlite3.Connection,
     *,

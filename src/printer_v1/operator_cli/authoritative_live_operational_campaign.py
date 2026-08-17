@@ -112,6 +112,10 @@ DEFAULT_CALL_TIMEOUT_SECONDS = 30.0
 DEFAULT_RESPONSE_BYTE_CEILING = 1_572_864  # 1.5 MiB
 READINESS_STORAGE_BYTE_CEILING = 8 * 1024 * 1024
 READINESS_DURATION_CEILING_SECONDS = 360.0
+# Ordinary WINDOW_15M source constructors are configured with this existing
+# hard timeout. Slice G uses the same bound only for later-cycle quantum
+# admission; it does not alter any provider transport or source budget.
+LATER_CYCLE_SOURCE_OPERATION_TIMEOUT_SECONDS = 5.0
 
 # Secondary per-cycle request ceilings (frozen design).
 GECKO_TRENDING_MAX = 1
@@ -191,6 +195,7 @@ def _bind_later_cycle_accounting_owner(
             evaluated_at=str(evaluated_at),
             request_key_prefix=str(request_key_prefix),
             stage_evidence_sink=stage_evidence_sink,
+            cooperative_yield=True,
         )
         if (
             str(getattr(rebound, "campaign_id", "")) != canonical_campaign_id
@@ -1852,6 +1857,8 @@ class AuthoritativeLiveOperationalCampaignOwner:
             class_name = _normalize(exc.__class__.__name__) or "EXCEPTION"
             return f"LATER_CYCLE_SUPPLY_EXCEPTION_{class_name}"[:128]
 
+        yielded_source_operations: dict[str, int] = {}
+
         def _one_shot(
             *,
             campaign_id: str,
@@ -1891,6 +1898,13 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 claim_due_job,
                 complete_job,
                 fail_job,
+                yield_job,
+            )
+            from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
+                WAITING_FOR_ELIGIBLE_SUPPLY,
+            )
+            from printer_v1.discovery.eligible_token_supply import (
+                ACQUISITION_QUANTUM_YIELDED,
             )
 
             if db_path is None or configuration_id is None:
@@ -1926,7 +1940,10 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     if str(exc) != "ATTEMPT_NOT_FOUND":
                         raise
                     existing = None
-                if existing is not None:
+                if (
+                    existing is not None
+                    and existing.state is not PreAdmissionAttemptState.RUNNING
+                ):
                     return LaterCycleDiscoveryAttemptResult(
                         attempt_id=existing.attempt_id,
                         state=existing.state.value,
@@ -1945,28 +1962,31 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         }
                         else None,
                     )
-                owner = connection.execute(
-                    """SELECT 1 FROM printer_memory_factory_campaign_runs
-                       WHERE run_id=? AND campaign_id=? AND authoritative_run_id=?""",
-                    (campaign_run_id, campaign_id, authoritative_factory_run_id),
-                ).fetchone()
-                if owner is None:
-                    raise LiveOperationalError("LATER_CYCLE_CONTEXT_INVALID")
-                attempt = create_scheduled_pre_admission_attempt(
-                    connection,
-                    attempt_id=attempt_id,
-                    campaign_id=campaign_id,
-                    campaign_run_id=campaign_run_id,
-                    configuration_id=configuration_id,
-                    authoritative_factory_run_id=authoritative_factory_run_id,
-                    proposed_cycle_ordinal=cycle_ordinal,
-                    proposed_cycle_id=cycle_id,
-                    cycle_cutoff=cutoff,
-                    evaluated_at=instant,
-                    selection_seed_identity=selection_seed,
-                    scheduled_for=instant,
-                    now=instant,
-                )
+                if existing is None:
+                    owner = connection.execute(
+                        """SELECT 1 FROM printer_memory_factory_campaign_runs
+                           WHERE run_id=? AND campaign_id=? AND authoritative_run_id=?""",
+                        (campaign_run_id, campaign_id, authoritative_factory_run_id),
+                    ).fetchone()
+                    if owner is None:
+                        raise LiveOperationalError("LATER_CYCLE_CONTEXT_INVALID")
+                    attempt = create_scheduled_pre_admission_attempt(
+                        connection,
+                        attempt_id=attempt_id,
+                        campaign_id=campaign_id,
+                        campaign_run_id=campaign_run_id,
+                        configuration_id=configuration_id,
+                        authoritative_factory_run_id=authoritative_factory_run_id,
+                        proposed_cycle_ordinal=cycle_ordinal,
+                        proposed_cycle_id=cycle_id,
+                        cycle_cutoff=cutoff,
+                        evaluated_at=instant,
+                        selection_seed_identity=selection_seed,
+                        scheduled_for=instant,
+                        now=instant,
+                    )
+                else:
+                    attempt = existing
                 claimed = claim_due_job(
                     connection,
                     job_id=attempt.scheduler_job_id,
@@ -1983,9 +2003,10 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     )
                     cancel_job(connection, job_id=attempt.scheduler_job_id, now=instant)
                 else:
-                    mark_pre_admission_attempt_running(
-                        connection, attempt_id=attempt_id, now=instant
-                    )
+                    if attempt.state is PreAdmissionAttemptState.PLANNED:
+                        mark_pre_admission_attempt_running(
+                            connection, attempt_id=attempt_id, now=instant
+                        )
                     supply_owner = candidate_supply or self._later_cycle_candidate_supply
                     if supply_owner is None:
                         terminalize_pre_admission_attempt(
@@ -2108,6 +2129,52 @@ class AuthoritativeLiveOperationalCampaignOwner:
 
                         if not isinstance(supply, LaterCycleCandidateSupply):
                             raise LiveOperationalError("LATER_CYCLE_SUPPLY_RESULT_INVALID")
+                        diagnostics = dict(supply.diagnostics or {})
+                        reported_operations = diagnostics.get(
+                            "stage_local_source_requests"
+                        )
+                        if reported_operations is not None:
+                            if (
+                                isinstance(reported_operations, bool)
+                                or not isinstance(reported_operations, int)
+                                or reported_operations < yielded_source_operations.get(
+                                    attempt_id, 0
+                                )
+                            ):
+                                raise LiveOperationalError(
+                                    "LATER_CYCLE_CUMULATIVE_BUDGET_REGRESSION"
+                                )
+                        if supply.terminal_cause in {
+                            WAITING_FOR_ELIGIBLE_SUPPLY,
+                            ACQUISITION_QUANTUM_YIELDED,
+                        }:
+                            if (
+                                supply.candidates
+                                or supply.source_evidence
+                                or diagnostics.get("shortage_classification")
+                                or int(diagnostics.get("provider_failures") or 0) != 0
+                            ):
+                                raise LiveOperationalError(
+                                    "LATER_CYCLE_SCHEDULER_YIELD_INVALID"
+                                )
+                            yielded_source_operations[attempt_id] = int(
+                                reported_operations or 0
+                            )
+                            yield_job(
+                                connection,
+                                job_id=attempt.scheduler_job_id,
+                                scheduled_for=instant,
+                                now=instant,
+                            )
+                            connection.commit()
+                            return LaterCycleDiscoveryAttemptResult(
+                                attempt_id=attempt.attempt_id,
+                                state=PreAdmissionAttemptState.RUNNING.value,
+                                first_terminal_cause="",
+                                selected_count=0,
+                                failure_domain=None,
+                            )
+                        yielded_source_operations.pop(attempt_id, None)
                         for ordinal, evidence in enumerate(supply.source_evidence, start=1):
                             link_pre_admission_source_evidence(
                                 connection,
@@ -2926,6 +2993,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
             PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS
         ),
         pre_lifecycle_temporal_refresh_owner: Any | None = None,
+        later_cycle_source_operation_timeout_seconds: float = (
+            LATER_CYCLE_SOURCE_OPERATION_TIMEOUT_SECONDS
+        ),
     ) -> Any:
         """Run one authoritative live two-token operational-natural campaign.
 
@@ -2974,8 +3044,12 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 ):
                     later_supply_kwargs.pop(locally_owned, None)
 
+                later_cycle_progress: dict[str, dict[str, Any]] = {}
+
                 def production_later_supply(**context: Any) -> LaterCycleCandidateSupply:
                     evaluated = context["evaluated_at"]
+                    progress_key = str(context["proposed_cycle_id"])
+                    progress = later_cycle_progress.get(progress_key)
                     later_cycle_refresh_owner = None
                     later_cycle_deadline = None
                     later_cycle_stage_evidence_sink = None
@@ -2999,7 +3073,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             if isinstance(cutoff_value, datetime)
                             else str(cutoff_value)
                         )
-                        if accounting_stage_evidence_sink_for_cycle is None:
+                        if progress is not None:
+                            later_cycle_refresh_owner = progress["refresh_owner"]
+                        elif accounting_stage_evidence_sink_for_cycle is None:
                             if accounting_stage_evidence_sink is not None:
                                 raise LiveOperationalError(
                                     "LATER_CYCLE_ACCOUNTING_SINK_RESOLVER_REQUIRED"
@@ -3010,6 +3086,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                     cycle_cutoff=cutoff_text,
                                     evaluated_at=evaluated.isoformat(),
                                     request_key_prefix=cycle_scope.request_key_root,
+                                    cooperative_yield=True,
                                 )
                             )
                         else:
@@ -3123,7 +3200,92 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         finally:
                             holder_connection.close()
 
-                    return build_later_cycle_graduated_supply(
+                    prior_operations = int(
+                        (progress or {}).get("source_operations_used") or 0
+                    )
+                    if (
+                        progress is not None
+                        and bool(progress.get("waiting_for_refresh"))
+                        and later_cycle_refresh_owner is not None
+                    ):
+                        from printer_v1.discovery.eligible_token_supply import (
+                            DEFAULT_DISCOVERY_OPERATION_BUDGET,
+                        )
+                        from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
+                            REFRESH_COMPLETED,
+                            WAITING_FOR_ELIGIBLE_SUPPLY,
+                        )
+                        from printer_v1.operator_cli.later_cycle_graduated_supply import (
+                            classify_later_cycle_failure,
+                        )
+
+                        operation_budget = int(
+                            later_supply_kwargs.get("discovery_operation_budget")
+                            or DEFAULT_DISCOVERY_OPERATION_BUDGET
+                        )
+                        outcome = later_cycle_refresh_owner.request_temporal_refresh(
+                            reserve_depth=int(progress.get("reserve_depth") or 0),
+                            required_capacity=4,
+                            universe_state="ALL_REACHABLE_CANDIDATES_EVALUATED",
+                            source_operations_remaining=max(
+                                0, operation_budget - prior_operations
+                            ),
+                            provider_terminal_failure=False,
+                            now=evaluated.isoformat(),
+                        )
+                        if outcome.status == WAITING_FOR_ELIGIBLE_SUPPLY:
+                            return LaterCycleCandidateSupply(
+                                (),
+                                (),
+                                WAITING_FOR_ELIGIBLE_SUPPLY,
+                                {
+                                    "stage_local_source_requests": prior_operations,
+                                    "provider_failures": 0,
+                                    "shortage_classification": None,
+                                    "scheduler_yield": outcome.to_dict(),
+                                },
+                                None,
+                            )
+                        if outcome.status != REFRESH_COMPLETED:
+                            terminal = str(outcome.status)
+                            later_cycle_progress.pop(progress_key, None)
+                            return LaterCycleCandidateSupply(
+                                (),
+                                (),
+                                terminal,
+                                {
+                                    "stage_local_source_requests": prior_operations
+                                    + int(outcome.source_operations),
+                                    "provider_failures": int(outcome.provider_failures),
+                                    "shortage_classification": terminal,
+                                },
+                                classify_later_cycle_failure(
+                                    terminal_cause=terminal,
+                                    shortage_classification=terminal,
+                                ),
+                            )
+                        prior_operations += int(outcome.source_operations)
+                        # The claimed DISCOVERY_REFRESH opportunity is this
+                        # Scheduler claim's single acquisition quantum. Persist
+                        # its cumulative accounting and return before any market
+                        # batch can start under the same claim.
+                        return LaterCycleCandidateSupply(
+                            (),
+                            (),
+                            "ACQUISITION_QUANTUM_YIELDED",
+                            {
+                                "stage_local_source_requests": prior_operations,
+                                "provider_failures": 0,
+                                "shortage_classification": None,
+                                "eligible_reserve_count": int(
+                                    progress.get("reserve_depth") or 0
+                                ),
+                                "completed_refresh": outcome.to_dict(),
+                            },
+                            None,
+                        )
+
+                    result = build_later_cycle_graduated_supply(
                         command.db_path,
                         campaign_id=str(context["campaign_id"]),
                         campaign_run_id=str(context["campaign_run_id"]),
@@ -3144,7 +3306,31 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         holder_evidence_owner=holder_evidence_owner,
                         deadline_at=later_cycle_deadline,
                         temporal_refresh_owner=later_cycle_refresh_owner,
+                        cooperative_resume=progress is not None,
+                        prior_source_operations_used=prior_operations,
+                        cooperative_quantum=True,
                     )
+                    if result.terminal_cause in {
+                        "WAITING_FOR_ELIGIBLE_SUPPLY",
+                        "ACQUISITION_QUANTUM_YIELDED",
+                    }:
+                        diagnostics = dict(result.diagnostics or {})
+                        later_cycle_progress[progress_key] = {
+                            "refresh_owner": later_cycle_refresh_owner,
+                            "source_operations_used": int(
+                                diagnostics.get("stage_local_source_requests") or 0
+                            ),
+                            "reserve_depth": int(
+                                diagnostics.get("eligible_reserve_count") or 0
+                            ),
+                            "waiting_for_refresh": (
+                                result.terminal_cause
+                                == "WAITING_FOR_ELIGIBLE_SUPPLY"
+                            ),
+                        }
+                    else:
+                        later_cycle_progress.pop(progress_key, None)
+                    return result
 
             lk["later_cycle_discovery_callback"] = (
                 self._build_later_cycle_discovery_callback(
@@ -3153,6 +3339,18 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     candidate_supply=production_later_supply,
                 )
             )
+            from printer_v1.discovery.eligible_token_supply import (
+                COOPERATIVE_QUANTUM_MAX_SOURCE_OPERATIONS,
+            )
+
+            # The largest cooperative unit is the production startup quantum's
+            # exact 22-operation ceiling. One resumed market batch (including
+            # existing Gecko pacing) and one temporal refresh are both smaller.
+            # The configured hard per-operation transport timeout supplies the
+            # duration bound; observed average latency is never used.
+            lk["later_cycle_acquisition_quantum_seconds"] = float(
+                COOPERATIVE_QUANTUM_MAX_SOURCE_OPERATIONS
+            ) * float(later_cycle_source_operation_timeout_seconds)
             if "four_token_health_projector" in lk:
                 raise LiveOperationalError(
                     "FOUR_TOKEN_HEALTH_PROJECTOR_OVERRIDE_FORBIDDEN"

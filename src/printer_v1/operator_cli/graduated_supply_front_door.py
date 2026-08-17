@@ -808,6 +808,9 @@ def build_graduated_supply(
     enable_geckoterminal_reconciliation: bool = True,
     campaign_source_request_scope: Any | None = None,
     temporal_refresh_owner: Any | None = None,
+    cooperative_resume: bool = False,
+    prior_source_operations_used: int = 0,
+    cooperative_quantum: bool = False,
 ) -> GraduatedSupply:
     """Compose discovery + front door via persistent multi-round supply loop.
 
@@ -873,7 +876,7 @@ def build_graduated_supply(
             )
         finally:
             collision_connection.close()
-        if collision.get("status") != "OK":
+        if collision.get("status") != "OK" and not cooperative_resume:
             raise GraduatedSupplyError(
                 str(collision.get("detail") or collision.get("blocker"))
             )
@@ -932,6 +935,9 @@ def build_graduated_supply(
         # parameter; the front door previously dropped it, which raised
         # TypeError at this seam and consumed a one-use authorization.
         temporal_refresh_owner=temporal_refresh_owner,
+        cooperative_resume=cooperative_resume,
+        prior_source_operations_used=prior_source_operations_used,
+        cooperative_quantum=cooperative_quantum,
     )
 
     discovery = dict(persistent.discovery_report)
@@ -1019,9 +1025,15 @@ def build_graduated_supply(
         required_token_capacity=required_token_capacity,
         permanent_availability=permanent_availability,
     )
+    nonterminal = persistent.terminal in {
+        "WAITING_FOR_ELIGIBLE_SUPPLY",
+        "ACQUISITION_QUANTUM_YIELDED",
+    }
     terminal = (
         (CANDIDATE_SUPPLY_READY if permanent_availability else "GRADUATED_SUPPLY_READY")
         if ready
+        else persistent.terminal
+        if nonterminal
         else (
             BLOCKED_INSUFFICIENT_ELIGIBLE_CANDIDATE_POOL
             if permanent_availability

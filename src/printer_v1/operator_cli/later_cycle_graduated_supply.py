@@ -188,6 +188,9 @@ def build_later_cycle_graduated_supply(
     holder_evidence_owner: HolderEvidenceOwner | None = None,
     deadline_at: str | None = None,
     temporal_refresh_owner: Any | None = None,
+    cooperative_resume: bool = False,
+    prior_source_operations_used: int = 0,
+    cooperative_quantum: bool = False,
 ) -> LaterCycleCandidateSupply:
     """Run the canonical permanent supply once and adapt its exact durable facts.
 
@@ -246,6 +249,9 @@ def build_later_cycle_graduated_supply(
     if temporal_refresh_owner is not None:
         kwargs["deadline_at"] = str(deadline_at)
         kwargs["temporal_refresh_owner"] = temporal_refresh_owner
+    kwargs["cooperative_resume"] = bool(cooperative_resume)
+    kwargs["prior_source_operations_used"] = int(prior_source_operations_used)
+    kwargs["cooperative_quantum"] = bool(cooperative_quantum)
     supply = build_graduated_supply(
         db_path,
         cycle_seed=selection_seed,
@@ -259,14 +265,20 @@ def build_later_cycle_graduated_supply(
     # the exhaustion certificate and shortage classification cannot reach the
     # existing authoritative campaign mapping and reporting.
     diagnostics = dict(supply.diagnostics)
-    failure_domain = classify_later_cycle_failure(
-        shortage_classification=(
-            None
-            if diagnostics.get("shortage_classification") is None
-            else str(diagnostics.get("shortage_classification"))
-        ),
-        terminal_cause=supply.terminal,
-    )
+    if supply.terminal in {
+        "WAITING_FOR_ELIGIBLE_SUPPLY",
+        "ACQUISITION_QUANTUM_YIELDED",
+    }:
+        failure_domain = None
+    else:
+        failure_domain = classify_later_cycle_failure(
+            shortage_classification=(
+                None
+                if diagnostics.get("shortage_classification") is None
+                else str(diagnostics.get("shortage_classification"))
+            ),
+            terminal_cause=supply.terminal,
+        )
     if not supply.ready or len(supply.graduated_supply) != 2:
         connection = connect_operational(db_path)
         try:

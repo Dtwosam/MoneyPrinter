@@ -71,6 +71,7 @@ from printer_v1.discovery.permanent_discovery_availability import (
     run_dexscreener_batch_market_resolution,
     run_geckoterminal_fresh_nomination,
 )
+from printer_v1.sources.direct_pump_migration import MAX_TRANSACTION_LOOKUPS
 from printer_v1.sources.pumpswap_graduated_registry import (
     export_graduated_candidates,
 )
@@ -80,6 +81,22 @@ EVALUATION_BATCH_SIZE = 6
 DEFAULT_DISCOVERY_OPERATION_BUDGET = 30
 LIFECYCLE_OPERATION_CEILING = 45
 CERTIFICATE_VERSION = "V2_9_8B_LIQUIDITY_EVIDENCE_EXHAUSTION_V2"
+ACQUISITION_QUANTUM_YIELDED = "ACQUISITION_QUANTUM_YIELDED"
+COOPERATIVE_QUANTUM_MAX_DIRECT_CANDIDATES = 5
+# Existing production startup unit: one fresh-profile request; one direct Pump
+# page, at most twelve transaction reads, and at most five exact verifications;
+# one GeckoTerminal nomination; one opposite-source backup; and one batched
+# protocol confirmation request. Later market and temporal-refresh quanta have
+# smaller source-operation/time ceilings.
+COOPERATIVE_QUANTUM_MAX_SOURCE_OPERATIONS = (
+    1  # fresh-profile locator
+    + 1  # direct Pump signature page
+    + int(MAX_TRANSACTION_LOOKUPS)
+    + COOPERATIVE_QUANTUM_MAX_DIRECT_CANDIDATES
+    + 1  # GeckoTerminal nomination
+    + 1  # opposite-source backup
+    + 1  # batched protocol confirmation
+)
 
 # Eligibility reserve statuses.
 ELIGIBLE_FRESH = "ELIGIBLE_FRESH"
@@ -715,6 +732,9 @@ def run_persistent_eligible_token_supply(
     enable_geckoterminal_reconciliation: bool = True,
     protocol_account_batch_transport: Any | None = None,
     protocol_account_batch_transport_factory: Any | None = None,
+    cooperative_resume: bool = False,
+    prior_source_operations_used: int = 0,
+    cooperative_quantum: bool = False,
 ) -> PersistentSupplyResult:
     """Run persistent multi-round eligible discovery inside one campaign.
 
@@ -728,6 +748,15 @@ def run_persistent_eligible_token_supply(
         raise EligibleTokenSupplyError("INVALID_REQUIRED_CAPACITY")
     if front_door_max_candidates < 1:
         raise EligibleTokenSupplyError("INVALID_EVALUATION_BATCH_SIZE")
+    if type(prior_source_operations_used) is not int or prior_source_operations_used < 0:
+        raise EligibleTokenSupplyError("INVALID_PRIOR_SOURCE_OPERATIONS")
+    if cooperative_resume and not permanent_availability:
+        raise EligibleTokenSupplyError("COOPERATIVE_RESUME_REQUIRES_PERMANENT_AVAILABILITY")
+    if (
+        cooperative_quantum
+        and max_candidates > COOPERATIVE_QUANTUM_MAX_DIRECT_CANDIDATES
+    ):
+        raise EligibleTokenSupplyError("COOPERATIVE_QUANTUM_CANDIDATE_CAP_EXCEEDED")
     if permanent_availability:
         # Two selected plus one fully eligible alternate per slot. This is a
         # reserve capacity, never a ranking or permission to consume four slots.
@@ -753,7 +782,14 @@ def run_persistent_eligible_token_supply(
             locator_stage_kwargs["transport_identity_observer"] = (
                 transport_identity_observer
             )
-    if locator_runner is not None and run_locator:
+    if cooperative_resume:
+        locator = {
+            "status": "COOPERATIVE_RESUME_EXISTING_INVENTORY",
+            "matched_count": 0,
+            "source_requests": 0,
+            "request_id": None,
+        }
+    elif locator_runner is not None and run_locator:
         locator = dict(
             locator_runner(
                 db_path,
@@ -806,24 +842,40 @@ def run_persistent_eligible_token_supply(
             discovery_stage_kwargs["local_validation_identity_observer"] = (
                 local_validation_identity_observer
             )
-    discovery = run_direct_migration_discovery(
-        db_path,
-        migration_transport=migration_transport,
-        verifier_transport_factory=verifier_transport_factory,
-        now=now,
-        request_key_prefix=discovery_request_key_prefix,
-        max_candidates=max_candidates,
-        collection_rounds=collection_rounds,
-        settle_seconds=settle_seconds,
-        reverify_on_transient=reverify_on_transient,
-        reverify_settle_seconds=reverify_settle_seconds,
-        **discovery_stage_kwargs,
-    )
+    if cooperative_resume:
+        discovery = {
+            "status": "COOPERATIVE_RESUME_EXISTING_INVENTORY",
+            "confirmed_this_cycle": (),
+            "candidate_mix": (),
+            "source_request_coverage": (),
+            "source_operation_ledger": {
+                "source_requests": 0,
+                "source_request_coverage": (),
+            },
+            "campaign_safe_stop": False,
+            "accounting_blocker": False,
+        }
+    else:
+        discovery = run_direct_migration_discovery(
+            db_path,
+            migration_transport=migration_transport,
+            verifier_transport_factory=verifier_transport_factory,
+            now=now,
+            request_key_prefix=discovery_request_key_prefix,
+            max_candidates=max_candidates,
+            collection_rounds=collection_rounds,
+            settle_seconds=settle_seconds,
+            reverify_on_transient=reverify_on_transient,
+            reverify_settle_seconds=reverify_settle_seconds,
+            **discovery_stage_kwargs,
+        )
     latest_mints = set(discovery.get("confirmed_this_cycle") or ())
 
-    ops_used = int(locator.get("source_requests") or 0) + int(
+    ops_used = int(prior_source_operations_used) + int(locator.get("source_requests") or 0) + int(
         (discovery.get("source_operation_ledger") or {}).get("source_requests") or 0
     )
+    if ops_used > int(discovery_operation_budget):
+        raise EligibleTokenSupplyError("PRIOR_SOURCE_OPERATIONS_EXCEED_BUDGET")
     # A terminal status is not an attributable failure fact. Count only exact
     # Source-Governor failure rows (or, where a stage has no durable row, a
     # separately proven transport identity). This prevents a single governed
@@ -903,7 +955,7 @@ def run_persistent_eligible_token_supply(
 
     connection = _connect(db_path)
     try:
-        if permanent_availability:
+        if permanent_availability and not cooperative_resume:
             intake_before_gecko = int(locator.get("source_requests") or 0) + 1
             stage_budget.consume("intake", min(3, intake_before_gecko))
             locator_request_id = locator.get("request_id")
@@ -964,6 +1016,7 @@ def run_persistent_eligible_token_supply(
                     ),
                     transport_identity_observer=transport_identity_observer,
                     stage_evidence_sink=stage_evidence_sink,
+                    max_backups=(1 if cooperative_quantum else None),
                 )
                 ops_used += int(liquidity_backup_report.get("source_requests") or 0)
             else:
@@ -1272,6 +1325,8 @@ def run_persistent_eligible_token_supply(
                 ),
             }.get(status, status)
 
+        quantum_rounds = 0
+
         def _request_temporal_refresh(universe_state: str) -> bool:
             """Ask the orchestration owner for one lawful refresh opportunity.
 
@@ -1282,6 +1337,9 @@ def run_persistent_eligible_token_supply(
             nonlocal ops_used, last_stop_reason, max_rounds
             nonlocal provider_failures, revalidation_focus_pending
             nonlocal inventory_rows, inventory_mints
+            if cooperative_quantum and quantum_rounds >= 1:
+                last_stop_reason = ACQUISITION_QUANTUM_YIELDED
+                return False
             if temporal_refresh_owner is None or acquisition_ledger is None:
                 last_stop_reason = universe_state
                 return False
@@ -1407,6 +1465,12 @@ def run_persistent_eligible_token_supply(
             return True
 
         while len(campaign_eligible) < required_token_capacity:
+            if cooperative_quantum and not cooperative_resume and quantum_rounds == 0:
+                last_stop_reason = ACQUISITION_QUANTUM_YIELDED
+                break
+            if cooperative_quantum and quantum_rounds >= 1:
+                last_stop_reason = ACQUISITION_QUANTUM_YIELDED
+                break
             if discovery_rounds >= max_rounds:
                 if _request_temporal_refresh("ALL_REACHABLE_CANDIDATES_EVALUATED"):
                     continue
@@ -1518,6 +1582,7 @@ def run_persistent_eligible_token_supply(
                 except ValueError:
                     last_stop_reason = "DISCOVERY_OPERATION_BUDGET_EXHAUSTED"
                     break
+                quantum_rounds += 1
                 from printer_v1.discovery.permanent_discovery_availability import (
                     build_mint_market_batch_request_key,
                     next_mint_market_batch_stage_sequence,
@@ -1793,7 +1858,7 @@ def run_persistent_eligible_token_supply(
         pools_confirmed = len(inventory_mints)
         unexplored_remaining = len(inventory_mints - evaluated_mints)
 
-        if permanent_availability:
+        if permanent_availability and not cooperative_quantum:
             from printer_v1.discovery.permanent_discovery_availability import (
                 process_protocol_confirmation_queue,
             )
@@ -2010,12 +2075,15 @@ def run_persistent_eligible_token_supply(
         if ready:
             terminal = GRADUATED_SUPPLY_READY
             last_stop_reason = "ELIGIBLE_CAPACITY_MET"
-        elif last_stop_reason == WAITING_FOR_ELIGIBLE_SUPPLY:
+        elif last_stop_reason in {
+            WAITING_FOR_ELIGIBLE_SUPPLY,
+            ACQUISITION_QUANTUM_YIELDED,
+        }:
             # Design §8.6 — current-universe exhaustion with a lawful, durably
             # owned future refresh is a nonterminal acquisition state. No
             # shortage classification and no exhaustion certificate is emitted,
             # because no shortage has been proven.
-            terminal = WAITING_FOR_ELIGIBLE_SUPPLY
+            terminal = last_stop_reason
         else:
             terminal = BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL
             all_channels_exhausted = (
@@ -2627,6 +2695,9 @@ __all__ = [
     "EVALUATION_BATCH_SIZE",
     "DEFAULT_DISCOVERY_OPERATION_BUDGET",
     "LIFECYCLE_OPERATION_CEILING",
+    "ACQUISITION_QUANTUM_YIELDED",
+    "COOPERATIVE_QUANTUM_MAX_DIRECT_CANDIDATES",
+    "COOPERATIVE_QUANTUM_MAX_SOURCE_OPERATIONS",
     "ELIGIBLE_FRESH",
     "ELIGIBLE_STALE",
     "REMOVED",

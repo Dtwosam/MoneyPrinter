@@ -154,6 +154,27 @@ class FourTokenAdmissionBoundaryResult:
     cycle_id: str | None = None
 
 
+def _later_cycle_acquisition_deadline_conflict(
+    *,
+    now: datetime,
+    earliest_lifecycle_deadline: datetime | None,
+    worst_case_quantum_seconds: float,
+) -> bool:
+    """Return whether one bounded acquisition quantum could cross lifecycle work."""
+    if earliest_lifecycle_deadline is None:
+        return False
+    if worst_case_quantum_seconds <= 0:
+        raise ValueError("acquisition quantum duration must be positive")
+    current = now.astimezone(timezone.utc)
+    deadline = earliest_lifecycle_deadline.astimezone(timezone.utc)
+    return current + timedelta(seconds=worst_case_quantum_seconds) >= deadline
+
+
+def _later_cycle_attempt_is_terminal(state: str | None) -> bool:
+    value = str(state or "")
+    return bool(value) and value != "RUNNING"
+
+
 def _run_four_token_admission_boundary(
     *,
     connection: Any,
@@ -172,6 +193,7 @@ def _run_four_token_admission_boundary(
     source_governor: Any | None = None,
     central_scheduler: Any | None = None,
     clock: Callable[[], datetime] | None = None,
+    acquisition_quantum_worst_case_seconds: float = 60.0,
 ) -> FourTokenAdmissionBoundaryResult:
     """Consume at most one due admission inside the canonical factory loop."""
     from printer_v1.operator_cli.four_token_proof_integration import (
@@ -182,6 +204,24 @@ def _run_four_token_admission_boundary(
     disposition = evaluate(pre)
     if disposition.kind is not FourTokenAdmissionDispositionKind.CYCLE_ADMISSION:
         return FourTokenAdmissionBoundaryResult(disposition, False)
+    if _later_cycle_acquisition_deadline_conflict(
+        now=now,
+        earliest_lifecycle_deadline=next_due_work_at,
+        worst_case_quantum_seconds=acquisition_quantum_worst_case_seconds,
+    ):
+        from printer_v1.operator_cli.four_token_proof_integration import (
+            FourTokenAdmissionDisposition,
+        )
+
+        return FourTokenAdmissionBoundaryResult(
+            FourTokenAdmissionDisposition(
+                FourTokenAdmissionDispositionKind.LIFECYCLE_WORK,
+                "LIFECYCLE_DEADLINE_PROTECTS_CADENCE",
+                next_due_work_at,
+                False,
+            ),
+            False,
+        )
     attempt = later_cycle_callback(
         campaign_id=binding.campaign_id,
         campaign_run_id=binding.campaign_run_id,
@@ -6407,6 +6447,7 @@ def run_one_command_15m_factory(
     selective_1h_continuation: bool = False,
     four_token_proof_controller: Any | None = None,
     later_cycle_discovery_callback: Callable[..., Any] | None = None,
+    later_cycle_acquisition_quantum_seconds: float = 60.0,
     four_token_health_projector: Callable[[sqlite3.Connection, datetime], Any]
     | None = None,
     four_token_shared_terminalizer: Callable[..., Mapping[str, Any]]
@@ -6474,6 +6515,8 @@ def run_one_command_15m_factory(
             reasons.append(
                 "four-token proof controller requires authoritative shared terminal owner"
             )
+        if later_cycle_acquisition_quantum_seconds <= 0:
+            reasons.append("later-cycle acquisition quantum duration must be positive")
     elif later_cycle_discovery_callback is not None:
         reasons.append(
             "later-cycle discovery callback requires four-token proof controller"
@@ -7155,12 +7198,15 @@ def run_one_command_15m_factory(
                         source_governor=source_governor_owner,
                         central_scheduler=central_scheduler_owner,
                         clock=_now,
+                        acquisition_quantum_worst_case_seconds=(
+                            later_cycle_acquisition_quantum_seconds
+                        ),
                     )
                     kind = boundary.disposition.kind
                     if boundary.admitted:
                         admission_attempt_finished = True
                         continue
-                    if boundary.attempt_state is not None:
+                    if _later_cycle_attempt_is_terminal(boundary.attempt_state):
                         # The one durable opportunity has run. PAIR_READY may
                         # remain frozen after post-discovery health changed; no
                         # retry/successor is permitted.
