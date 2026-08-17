@@ -2859,11 +2859,50 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     "campaign_source_request_scope", "discovery_request_key_prefix",
                     "front_door_request_key_prefix", "stage_evidence_sink",
                     "transport_identity_observer", "local_validation_identity_observer",
+                    "deadline_at", "temporal_refresh_owner",
                 ):
                     later_supply_kwargs.pop(locally_owned, None)
 
                 def production_later_supply(**context: Any) -> LaterCycleCandidateSupply:
                     evaluated = context["evaluated_at"]
+                    later_cycle_refresh_owner = None
+                    later_cycle_deadline = None
+                    if pre_lifecycle_temporal_refresh_owner is not None:
+                        from printer_v1.discovery.permanent_discovery_availability import (
+                            build_campaign_source_request_scope,
+                        )
+                        rebind = getattr(
+                            pre_lifecycle_temporal_refresh_owner, "for_cycle", None
+                        )
+                        if not callable(rebind):
+                            raise LiveOperationalError(
+                                "LATER_CYCLE_TEMPORAL_REFRESH_OWNER_INVALID"
+                            )
+                        cycle_ordinal = int(context["proposed_cycle_ordinal"])
+                        cycle_source_execution_identity = (
+                            f"{selection_seed}:c{cycle_ordinal:04d}"
+                        )
+                        cycle_scope = build_campaign_source_request_scope(
+                            execution_id=cycle_source_execution_identity,
+                            campaign_id=str(context["campaign_id"]),
+                            run_id=str(context["campaign_run_id"]),
+                            cycle_id=str(context["proposed_cycle_id"]),
+                        )
+                        cutoff_value = context["cycle_cutoff"]
+                        cutoff_text = (
+                            cutoff_value.isoformat()
+                            if isinstance(cutoff_value, datetime)
+                            else str(cutoff_value)
+                        )
+                        later_cycle_refresh_owner = rebind(
+                            cycle_id=str(context["proposed_cycle_id"]),
+                            cycle_cutoff=cutoff_text,
+                            evaluated_at=evaluated.isoformat(),
+                            request_key_prefix=cycle_scope.request_key_root,
+                        )
+                        later_cycle_deadline = (
+                            later_cycle_refresh_owner.acquisition_deadline_at
+                        )
 
                     def holder_evidence_owner(supply: Any) -> Mapping[str, Mapping[str, Any]]:
                         from printer_v1.db.sqlite_write_contracts import (
@@ -2944,6 +2983,8 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         migration_transport=migration_transport,
                         graduated_supply_kwargs=later_supply_kwargs,
                         holder_evidence_owner=holder_evidence_owner,
+                        deadline_at=later_cycle_deadline,
+                        temporal_refresh_owner=later_cycle_refresh_owner,
                     )
 
             lk["later_cycle_discovery_callback"] = (

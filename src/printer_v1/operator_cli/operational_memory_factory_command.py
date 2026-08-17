@@ -1808,56 +1808,78 @@ def _build_pre_lifecycle_temporal_refresh_owner(
         return bounded_interruptible_wait(seconds, failure_event)
 
     supply_kwargs = dict(graduated_supply_kwargs or {})
+    campaign_selection_seed = execution_id
+    shared_work_deadline_at = _iso(
+        datetime.fromisoformat(evaluated_at.replace("Z", "+00:00"))
+        + timedelta(
+            seconds=int(acquisition_seconds) + int(lifecycle_duration_seconds)
+        )
+    )
 
-    return PreLifecycleTemporalRefreshOwner(
-        command.db_path,
-        campaign_id=command.campaign_id,
-        run_id=command.run_id,
-        cycle_id=cycle_id,
-        supervision_id=command.supervision_id,
-        source_governor=OwnerPort(SOURCE_GOVERNOR_OWNER, True),
-        central_scheduler=OwnerPort(CENTRAL_SCHEDULER_OWNER, True),
-        acquisition_deadline_at=acquisition_deadline_at(
-            evaluated_at, acquisition_duration_seconds=int(acquisition_seconds)
-        ),
-        # Refresh discovery work is bounded by the campaign's own lifecycle
-        # envelope, measured from the real post-acquisition instant.
-        work_deadline_at=_iso(
-            datetime.fromisoformat(evaluated_at.replace("Z", "+00:00"))
-            + timedelta(
-                seconds=int(acquisition_seconds) + int(lifecycle_duration_seconds)
-            )
-        ),
-        refresh_stage=build_pre_lifecycle_refresh_stage(
-            db_path=command.db_path,
-            request_key_prefix=execution_id,
-            migration_transport=migration_transport,
-            verifier_transport_factory=supply_kwargs.get("verifier_transport_factory"),
-            locator_transport=supply_kwargs.get("locator_transport"),
-            geckoterminal_nomination_transport=(
-                geckoterminal_nomination_transport
-            ),
-            protocol_account_batch_transport=protocol_account_batch_transport,
-            stage_evidence_sink=stage_evidence_sink,
-            transport_identity_observer=transport_identity_observer,
-            local_validation_identity_observer=(
-                local_validation_identity_observer
-            ),
-        ),
-        discovery_batch_resolver=build_cycle_discovery_batch_resolver(
+    def compose_owner(
+        *, owner_cycle_id: str, owner_cycle_cutoff: str,
+        owner_evaluated_at: str, owner_request_key_prefix: str,
+    ) -> PreLifecycleTemporalRefreshOwner:
+        return PreLifecycleTemporalRefreshOwner(
+            command.db_path,
             campaign_id=command.campaign_id,
-            configuration_id=command.configuration_id,
             run_id=command.run_id,
-            cycle_id=cycle_id,
-            cycle_cutoff=cycle_cutoff,
-            policy_version=command.policy_version,
-            provider_contract_versions=contract_versions,
-            git_provenance_identity=git_identity,
-            campaign_selection_seed=execution_id,
-        ),
-        supervision_probe=supervision_probe,
-        waiter=waiter,
-        abort_event=failure_event,
+            cycle_id=owner_cycle_id,
+            supervision_id=command.supervision_id,
+            source_governor=OwnerPort(SOURCE_GOVERNOR_OWNER, True),
+            central_scheduler=OwnerPort(CENTRAL_SCHEDULER_OWNER, True),
+            acquisition_deadline_at=acquisition_deadline_at(
+                owner_evaluated_at,
+                acquisition_duration_seconds=int(acquisition_seconds),
+            ),
+            # Later acquisition cannot extend the original authorization's
+            # shared work/lifecycle envelope.
+            work_deadline_at=shared_work_deadline_at,
+            refresh_stage=build_pre_lifecycle_refresh_stage(
+                db_path=command.db_path,
+                request_key_prefix=owner_request_key_prefix,
+                migration_transport=migration_transport,
+                verifier_transport_factory=supply_kwargs.get("verifier_transport_factory"),
+                locator_transport=supply_kwargs.get("locator_transport"),
+                geckoterminal_nomination_transport=geckoterminal_nomination_transport,
+                protocol_account_batch_transport=protocol_account_batch_transport,
+                stage_evidence_sink=stage_evidence_sink,
+                transport_identity_observer=transport_identity_observer,
+                local_validation_identity_observer=local_validation_identity_observer,
+            ),
+            discovery_batch_resolver=build_cycle_discovery_batch_resolver(
+                campaign_id=command.campaign_id,
+                configuration_id=command.configuration_id,
+                run_id=command.run_id,
+                cycle_id=owner_cycle_id,
+                cycle_cutoff=owner_cycle_cutoff,
+                policy_version=command.policy_version,
+                provider_contract_versions=contract_versions,
+                git_provenance_identity=git_identity,
+                campaign_selection_seed=campaign_selection_seed,
+            ),
+            supervision_probe=supervision_probe,
+            waiter=waiter,
+            abort_event=failure_event,
+            cycle_rebinder=cycle_rebinder,
+        )
+
+    def cycle_rebinder(
+        *, cycle_id: str, cycle_cutoff: str, evaluated_at: str,
+        request_key_prefix: str,
+    ) -> PreLifecycleTemporalRefreshOwner:
+        return compose_owner(
+            owner_cycle_id=cycle_id,
+            owner_cycle_cutoff=cycle_cutoff,
+            owner_evaluated_at=evaluated_at,
+            owner_request_key_prefix=request_key_prefix,
+        )
+
+    return compose_owner(
+        owner_cycle_id=cycle_id,
+        owner_cycle_cutoff=cycle_cutoff,
+        owner_evaluated_at=evaluated_at,
+        owner_request_key_prefix=execution_id,
     )
 
 
