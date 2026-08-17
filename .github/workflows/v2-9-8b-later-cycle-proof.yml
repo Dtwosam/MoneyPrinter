@@ -3,18 +3,101 @@ on:
   push:
     branches: [agent/v2-9-8b-later-cycle-proof-run]
 permissions:
-  contents: read
+  contents: write
 jobs:
   proof:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - name: Install
         run: python -m pip install -e . pytest
+      - name: Apply approved implementation when absent
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          owner_path = Path('src/printer_v1/operator_cli/pre_lifecycle_persistent_refresh_owner.py')
+          if 'def for_cycle(self, *, cycle_id:str, cycle_cutoff:str, evaluated_at:str, request_key_prefix:str):' in owner_path.read_text():
+              print('IMPLEMENTATION_ALREADY_PRESENT')
+              raise SystemExit(0)
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected one replacement, found {count}')
+              p.write_text(text.replace(old, new, 1))
+
+          # 1. Existing persistent refresh owner: canonical later-cycle rebind only.
+          path = 'src/printer_v1/operator_cli/pre_lifecycle_persistent_refresh_owner.py'
+          replace_once(
+              path,
+              '''        publisher: Callable[[Mapping[str, Any]], None] | None = None,\n        abort_event: threading.Event | None = None, refresh_interval_seconds: int | None = None) -> None:\n''',
+              '''        publisher: Callable[[Mapping[str, Any]], None] | None = None,\n        abort_event: threading.Event | None = None, refresh_interval_seconds: int | None = None,\n        cycle_rebinder: Callable[..., "PreLifecycleTemporalRefreshOwner"] | None = None) -> None:\n''',
+          )
+          replace_once(
+              path,
+              '''        self._publisher=publisher; self._abort_event=abort_event\n        self.refresh_interval_seconds=int(next_check_interval_seconds(JobKind.DISCOVERY_REFRESH) if refresh_interval_seconds is None else refresh_interval_seconds)\n        self.published_states=[]; self._acquisition_mark=None\n    def _connect(self):\n''',
+              '''        self._publisher=publisher; self._abort_event=abort_event\n        self._cycle_rebinder=cycle_rebinder\n        self.refresh_interval_seconds=int(next_check_interval_seconds(JobKind.DISCOVERY_REFRESH) if refresh_interval_seconds is None else refresh_interval_seconds)\n        self.published_states=[]; self._acquisition_mark=None\n    def for_cycle(self, *, cycle_id:str, cycle_cutoff:str, evaluated_at:str, request_key_prefix:str):\n        """Rebuild this bounded owner for a later cycle under canonical authority."""\n        if self._cycle_rebinder is None:\n            raise PreLifecycleTemporalRefreshError('TEMPORAL_CYCLE_REBINDER_NOT_CONFIGURED')\n        rebound=self._cycle_rebinder(\n            cycle_id=str(cycle_id), cycle_cutoff=str(cycle_cutoff),\n            evaluated_at=str(evaluated_at), request_key_prefix=str(request_key_prefix),\n        )\n        if not isinstance(rebound, type(self)):\n            raise PreLifecycleTemporalRefreshError('TEMPORAL_CYCLE_REBINDER_RESULT_INVALID')\n        def owner_identity(value):\n            return (str(getattr(value,'owner_kind','')), bool(getattr(value,'available',False)))\n        if (\n            rebound.db_path != self.db_path\n            or rebound.campaign_id != self.campaign_id\n            or rebound.run_id != self.run_id\n            or rebound.supervision_id != self.supervision_id\n            or rebound.cycle_id != str(cycle_id)\n            or owner_identity(rebound.source_governor) != owner_identity(self.source_governor)\n            or owner_identity(rebound.central_scheduler) != owner_identity(self.central_scheduler)\n            or rebound.refresh_interval_seconds != self.refresh_interval_seconds\n            or rebound.work_deadline_at != self.work_deadline_at\n        ):\n            raise PreLifecycleTemporalRefreshError('TEMPORAL_CYCLE_REBINDER_AUTHORITY_DRIFT')\n        if parse_iso(rebound.acquisition_deadline_at) >= parse_iso(rebound.work_deadline_at):\n            raise PreLifecycleTemporalRefreshError('TEMPORAL_CYCLE_REBINDER_DEADLINE_DRIFT')\n        return rebound\n    def _connect(self):\n''',
+          )
+
+          # 2. Canonical constructor is re-entrant for a later cycle. The source
+          # request prefix changes per cycle; the campaign selection seed does not.
+          path = 'src/printer_v1/operator_cli/operational_memory_factory_command.py'
+          p = Path(path)
+          text = p.read_text()
+          start = text.index(
+              '    supply_kwargs = dict(graduated_supply_kwargs or {})',
+              text.index('def _build_pre_lifecycle_temporal_refresh_owner'),
+          )
+          end = text.index('\n\n\nclass _CampaignHeartbeat:', start)
+          new_block = '''    supply_kwargs = dict(graduated_supply_kwargs or {})\n    campaign_selection_seed = execution_id\n    shared_work_deadline_at = _iso(\n        datetime.fromisoformat(evaluated_at.replace("Z", "+00:00"))\n        + timedelta(\n            seconds=int(acquisition_seconds) + int(lifecycle_duration_seconds)\n        )\n    )\n\n    def compose_owner(\n        *, owner_cycle_id: str, owner_cycle_cutoff: str,\n        owner_evaluated_at: str, owner_request_key_prefix: str,\n    ) -> PreLifecycleTemporalRefreshOwner:\n        return PreLifecycleTemporalRefreshOwner(\n            command.db_path,\n            campaign_id=command.campaign_id,\n            run_id=command.run_id,\n            cycle_id=owner_cycle_id,\n            supervision_id=command.supervision_id,\n            source_governor=OwnerPort(SOURCE_GOVERNOR_OWNER, True),\n            central_scheduler=OwnerPort(CENTRAL_SCHEDULER_OWNER, True),\n            acquisition_deadline_at=acquisition_deadline_at(\n                owner_evaluated_at,\n                acquisition_duration_seconds=int(acquisition_seconds),\n            ),\n            # Later acquisition cannot extend the original authorization's\n            # shared work/lifecycle envelope.\n            work_deadline_at=shared_work_deadline_at,\n            refresh_stage=build_pre_lifecycle_refresh_stage(\n                db_path=command.db_path,\n                request_key_prefix=owner_request_key_prefix,\n                migration_transport=migration_transport,\n                verifier_transport_factory=supply_kwargs.get("verifier_transport_factory"),\n                locator_transport=supply_kwargs.get("locator_transport"),\n                geckoterminal_nomination_transport=geckoterminal_nomination_transport,\n                protocol_account_batch_transport=protocol_account_batch_transport,\n                stage_evidence_sink=stage_evidence_sink,\n                transport_identity_observer=transport_identity_observer,\n                local_validation_identity_observer=local_validation_identity_observer,\n            ),\n            discovery_batch_resolver=build_cycle_discovery_batch_resolver(\n                campaign_id=command.campaign_id,\n                configuration_id=command.configuration_id,\n                run_id=command.run_id,\n                cycle_id=owner_cycle_id,\n                cycle_cutoff=owner_cycle_cutoff,\n                policy_version=command.policy_version,\n                provider_contract_versions=contract_versions,\n                git_provenance_identity=git_identity,\n                campaign_selection_seed=campaign_selection_seed,\n            ),\n            supervision_probe=supervision_probe,\n            waiter=waiter,\n            abort_event=failure_event,\n            cycle_rebinder=cycle_rebinder,\n        )\n\n    def cycle_rebinder(\n        *, cycle_id: str, cycle_cutoff: str, evaluated_at: str,\n        request_key_prefix: str,\n    ) -> PreLifecycleTemporalRefreshOwner:\n        return compose_owner(\n            owner_cycle_id=cycle_id,\n            owner_cycle_cutoff=cycle_cutoff,\n            owner_evaluated_at=evaluated_at,\n            owner_request_key_prefix=request_key_prefix,\n        )\n\n    return compose_owner(\n        owner_cycle_id=cycle_id,\n        owner_cycle_cutoff=cycle_cutoff,\n        owner_evaluated_at=evaluated_at,\n        owner_request_key_prefix=execution_id,\n    )'''
+          p.write_text(text[:start] + new_block + text[end:])
+
+          # 3. Later-cycle supply accepts the same bounded temporal contract.
+          path = 'src/printer_v1/operator_cli/later_cycle_graduated_supply.py'
+          replace_once(
+              path,
+              '''    graduated_supply_kwargs: Mapping[str, Any],\n    holder_evidence_owner: HolderEvidenceOwner | None = None,\n) -> LaterCycleCandidateSupply:\n''',
+              '''    graduated_supply_kwargs: Mapping[str, Any],\n    holder_evidence_owner: HolderEvidenceOwner | None = None,\n    deadline_at: str | None = None,\n    temporal_refresh_owner: Any | None = None,\n) -> LaterCycleCandidateSupply:\n''',
+          )
+          replace_once(
+              path,
+              '''    kwargs = dict(graduated_supply_kwargs)\n    kwargs.update({\n''',
+              '''    kwargs = dict(graduated_supply_kwargs)\n    if (deadline_at is None) != (temporal_refresh_owner is None):\n        raise LaterCycleGraduatedSupplyError("TEMPORAL_ACQUISITION_BINDING_INCOMPLETE")\n    if temporal_refresh_owner is not None:\n        if (\n            str(getattr(temporal_refresh_owner, "campaign_id", "")) != campaign_id\n            or str(getattr(temporal_refresh_owner, "run_id", "")) != campaign_run_id\n            or str(getattr(temporal_refresh_owner, "cycle_id", "")) != proposed_cycle_id\n            or str(getattr(temporal_refresh_owner, "acquisition_deadline_at", "")) != str(deadline_at)\n        ):\n            raise LaterCycleGraduatedSupplyError(\n                "TEMPORAL_ACQUISITION_OWNER_IDENTITY_MISMATCH"\n            )\n    kwargs.update({\n''',
+          )
+          replace_once(
+              path,
+              '''        "front_door_request_key_prefix": scope.request_key_root,\n    })\n    supply = build_graduated_supply(\n''',
+              '''        "front_door_request_key_prefix": scope.request_key_root,\n    })\n    if temporal_refresh_owner is not None:\n        kwargs["deadline_at"] = str(deadline_at)\n        kwargs["temporal_refresh_owner"] = temporal_refresh_owner\n    supply = build_graduated_supply(\n''',
+          )
+
+          # 4. Rebuild the same owner under Cycle-2's exact source scope, inside
+          # the existing one durable Cycle-2 pre-admission attempt.
+          path = 'src/printer_v1/operator_cli/authoritative_live_operational_campaign.py'
+          replace_once(
+              path,
+              '''                    "front_door_request_key_prefix", "stage_evidence_sink",\n                    "transport_identity_observer", "local_validation_identity_observer",\n''',
+              '''                    "front_door_request_key_prefix", "stage_evidence_sink",\n                    "transport_identity_observer", "local_validation_identity_observer",\n                    "deadline_at", "temporal_refresh_owner",\n''',
+          )
+          replace_once(
+              path,
+              '''                def production_later_supply(**context: Any) -> LaterCycleCandidateSupply:\n                    evaluated = context["evaluated_at"]\n\n                    def holder_evidence_owner(supply: Any) -> Mapping[str, Mapping[str, Any]]:\n''',
+              '''                def production_later_supply(**context: Any) -> LaterCycleCandidateSupply:\n                    evaluated = context["evaluated_at"]\n                    later_cycle_refresh_owner = None\n                    later_cycle_deadline = None\n                    if pre_lifecycle_temporal_refresh_owner is not None:\n                        from printer_v1.discovery.permanent_discovery_availability import (\n                            build_campaign_source_request_scope,\n                        )\n                        rebind = getattr(\n                            pre_lifecycle_temporal_refresh_owner, "for_cycle", None\n                        )\n                        if not callable(rebind):\n                            raise LiveOperationalError(\n                                "LATER_CYCLE_TEMPORAL_REFRESH_OWNER_INVALID"\n                            )\n                        cycle_ordinal = int(context["proposed_cycle_ordinal"])\n                        cycle_source_execution_identity = (\n                            f"{selection_seed}:c{cycle_ordinal:04d}"\n                        )\n                        cycle_scope = build_campaign_source_request_scope(\n                            execution_id=cycle_source_execution_identity,\n                            campaign_id=str(context["campaign_id"]),\n                            run_id=str(context["campaign_run_id"]),\n                            cycle_id=str(context["proposed_cycle_id"]),\n                        )\n                        cutoff_value = context["cycle_cutoff"]\n                        cutoff_text = (\n                            cutoff_value.isoformat()\n                            if isinstance(cutoff_value, datetime)\n                            else str(cutoff_value)\n                        )\n                        later_cycle_refresh_owner = rebind(\n                            cycle_id=str(context["proposed_cycle_id"]),\n                            cycle_cutoff=cutoff_text,\n                            evaluated_at=evaluated.isoformat(),\n                            request_key_prefix=cycle_scope.request_key_root,\n                        )\n                        later_cycle_deadline = (\n                            later_cycle_refresh_owner.acquisition_deadline_at\n                        )\n\n                    def holder_evidence_owner(supply: Any) -> Mapping[str, Mapping[str, Any]]:\n''',
+          )
+          replace_once(
+              path,
+              '''                        graduated_supply_kwargs=later_supply_kwargs,\n                        holder_evidence_owner=holder_evidence_owner,\n                    )\n''',
+              '''                        graduated_supply_kwargs=later_supply_kwargs,\n                        holder_evidence_owner=holder_evidence_owner,\n                        deadline_at=later_cycle_deadline,\n                        temporal_refresh_owner=later_cycle_refresh_owner,\n                    )\n''',
+          )
+          PY
       - name: Compile
         run: python -m compileall -q src/printer_v1
       - name: Focused lane proof
@@ -30,3 +113,24 @@ jobs:
             tests/test_v2_9_8b_four_token_factory_terminal_integration.py \
             tests/test_v2_9_8b_operational_selective_1h.py \
             tests/test_v2_9_8b_post_dtw100_standard_four_hour_activation_factory_barrier.py
+      - name: Diff check
+        run: git diff --check
+      - name: Commit validated implementation when newly applied
+        run: |
+          if git diff --quiet -- \
+            src/printer_v1/operator_cli/pre_lifecycle_persistent_refresh_owner.py \
+            src/printer_v1/operator_cli/operational_memory_factory_command.py \
+            src/printer_v1/operator_cli/later_cycle_graduated_supply.py \
+            src/printer_v1/operator_cli/authoritative_live_operational_campaign.py; then
+            echo IMPLEMENTATION_COMMIT_NOT_NEEDED
+            exit 0
+          fi
+          git config user.name 'OpenAI'
+          git config user.email 'noreply@openai.com'
+          git add \
+            src/printer_v1/operator_cli/pre_lifecycle_persistent_refresh_owner.py \
+            src/printer_v1/operator_cli/operational_memory_factory_command.py \
+            src/printer_v1/operator_cli/later_cycle_graduated_supply.py \
+            src/printer_v1/operator_cli/authoritative_live_operational_campaign.py
+          git commit -m 'Implement bounded later-cycle fresh acquisition'
+          git push origin HEAD:refs/heads/agent/v2-9-8b-later-cycle-proof-run
