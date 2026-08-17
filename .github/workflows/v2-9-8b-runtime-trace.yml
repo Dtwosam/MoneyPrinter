@@ -14,10 +14,10 @@ jobs:
       - name: Trace temporal owner and four-token paths
         run: |
           echo '=== temporal owner construction/calls ==='
-          rg -n "PreLifecycleTemporalRefreshOwner|pre_lifecycle_temporal_refresh_owner|temporal_refresh_owner" src tests || true
+          grep -RInE "PreLifecycleTemporalRefreshOwner|pre_lifecycle_temporal_refresh_owner|temporal_refresh_owner" src tests || true
           echo '=== four-token admission boundary/cause ==='
-          rg -n "_run_four_token_admission_boundary|four_token_attempt_terminal_cause|TERMINAL_TRACKING_STATE|LaterCycleCandidateSupply" src tests || true
+          grep -RInE "_run_four_token_admission_boundary|four_token_attempt_terminal_cause|TERMINAL_TRACKING_STATE|LaterCycleCandidateSupply" src tests || true
           echo '=== later supply / acquisition tests ==='
-          rg -n "later_cycle_graduated_supply|later cycle|LaterCycle" tests | head -n 300 || true
+          grep -RInE "later_cycle_graduated_supply|later cycle|LaterCycle" tests | head -n 300 || true
           echo '=== safety continuation tests ==='
-          rg -n "SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY|SAFETY_CONTEXT_BLOCKED|build_4a_authority_facts|ONE_CONTINUATION_ONE_BLOCK" tests | head -n 300 || true
+          grep -RInE "SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY|SAFETY_CONTEXT_BLOCKED|build_4a_authority_facts|ONE_CONTINUATION_ONE_BLOCK" tests | head -n 300 || true
