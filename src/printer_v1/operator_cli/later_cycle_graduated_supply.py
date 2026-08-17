@@ -93,6 +93,8 @@ def build_later_cycle_graduated_supply(
     migration_transport: Any,
     graduated_supply_kwargs: Mapping[str, Any],
     holder_evidence_owner: HolderEvidenceOwner | None = None,
+    deadline_at: str | None = None,
+    temporal_refresh_owner: Any | None = None,
 ) -> LaterCycleCandidateSupply:
     """Run the canonical permanent supply once and adapt its exact durable facts.
 
@@ -124,6 +126,18 @@ def build_later_cycle_graduated_supply(
         cycle_id=proposed_cycle_id,
     )
     kwargs = dict(graduated_supply_kwargs)
+    if (deadline_at is None) != (temporal_refresh_owner is None):
+        raise LaterCycleGraduatedSupplyError("TEMPORAL_ACQUISITION_BINDING_INCOMPLETE")
+    if temporal_refresh_owner is not None:
+        if (
+            str(getattr(temporal_refresh_owner, "campaign_id", "")) != campaign_id
+            or str(getattr(temporal_refresh_owner, "run_id", "")) != campaign_run_id
+            or str(getattr(temporal_refresh_owner, "cycle_id", "")) != proposed_cycle_id
+            or str(getattr(temporal_refresh_owner, "acquisition_deadline_at", "")) != str(deadline_at)
+        ):
+            raise LaterCycleGraduatedSupplyError(
+                "TEMPORAL_ACQUISITION_OWNER_IDENTITY_MISMATCH"
+            )
     kwargs.update({
         "permanent_availability": True,
         "tracking_precheck": True,
@@ -136,6 +150,9 @@ def build_later_cycle_graduated_supply(
         "discovery_request_key_prefix": scope.request_key_root,
         "front_door_request_key_prefix": scope.request_key_root,
     })
+    if temporal_refresh_owner is not None:
+        kwargs["deadline_at"] = str(deadline_at)
+        kwargs["temporal_refresh_owner"] = temporal_refresh_owner
     supply = build_graduated_supply(
         db_path,
         cycle_seed=selection_seed,

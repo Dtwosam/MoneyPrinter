@@ -39,7 +39,8 @@ class PreLifecycleTemporalRefreshOwner:
         supervision_probe: Callable[[], Mapping[str, Any]] | None = None,
         waiter: Callable[[float], bool] | None = None, clock: Callable[[], str] | None = None,
         publisher: Callable[[Mapping[str, Any]], None] | None = None,
-        abort_event: threading.Event | None = None, refresh_interval_seconds: int | None = None) -> None:
+        abort_event: threading.Event | None = None, refresh_interval_seconds: int | None = None,
+        cycle_rebinder: Callable[..., "PreLifecycleTemporalRefreshOwner"] | None = None) -> None:
         self.db_path=Path(db_path); self.campaign_id=str(campaign_id); self.run_id=str(run_id)
         self.cycle_id=str(cycle_id); self.supervision_id=str(supervision_id)
         self.source_governor=source_governor; self.central_scheduler=central_scheduler
@@ -48,8 +49,36 @@ class PreLifecycleTemporalRefreshOwner:
         self._discovery_batch_resolver=discovery_batch_resolver
         self._supervision_probe=supervision_probe; self._waiter=waiter; self._clock=clock
         self._publisher=publisher; self._abort_event=abort_event
+        self._cycle_rebinder=cycle_rebinder
         self.refresh_interval_seconds=int(next_check_interval_seconds(JobKind.DISCOVERY_REFRESH) if refresh_interval_seconds is None else refresh_interval_seconds)
         self.published_states=[]; self._acquisition_mark=None
+    def for_cycle(self, *, cycle_id:str, cycle_cutoff:str, evaluated_at:str, request_key_prefix:str):
+        """Rebuild this bounded owner for a later cycle under canonical authority."""
+        if self._cycle_rebinder is None:
+            raise PreLifecycleTemporalRefreshError('TEMPORAL_CYCLE_REBINDER_NOT_CONFIGURED')
+        rebound=self._cycle_rebinder(
+            cycle_id=str(cycle_id), cycle_cutoff=str(cycle_cutoff),
+            evaluated_at=str(evaluated_at), request_key_prefix=str(request_key_prefix),
+        )
+        if not isinstance(rebound, type(self)):
+            raise PreLifecycleTemporalRefreshError('TEMPORAL_CYCLE_REBINDER_RESULT_INVALID')
+        def owner_identity(value):
+            return (str(getattr(value,'owner_kind','')), bool(getattr(value,'available',False)))
+        if (
+            rebound.db_path != self.db_path
+            or rebound.campaign_id != self.campaign_id
+            or rebound.run_id != self.run_id
+            or rebound.supervision_id != self.supervision_id
+            or rebound.cycle_id != str(cycle_id)
+            or owner_identity(rebound.source_governor) != owner_identity(self.source_governor)
+            or owner_identity(rebound.central_scheduler) != owner_identity(self.central_scheduler)
+            or rebound.refresh_interval_seconds != self.refresh_interval_seconds
+            or rebound.work_deadline_at != self.work_deadline_at
+        ):
+            raise PreLifecycleTemporalRefreshError('TEMPORAL_CYCLE_REBINDER_AUTHORITY_DRIFT')
+        if parse_iso(rebound.acquisition_deadline_at) >= parse_iso(rebound.work_deadline_at):
+            raise PreLifecycleTemporalRefreshError('TEMPORAL_CYCLE_REBINDER_DEADLINE_DRIFT')
+        return rebound
     def _connect(self):
         c=sqlite3.connect(self.db_path); c.row_factory=sqlite3.Row; c.execute('PRAGMA foreign_keys=ON'); return c
     def _now(self,fallback): return self._clock() if self._clock is not None else fallback
