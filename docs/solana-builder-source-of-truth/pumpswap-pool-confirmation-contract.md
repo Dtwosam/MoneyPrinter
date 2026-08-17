@@ -14,11 +14,15 @@ executes, signs, builds instructions, routes, or moves funds.
 
 The active join uses the pinned official Pump and PumpSwap IDLs in
 `pump_contracts.py`. A candidate is confirmed only when the exact finalized Pump
-`migrate` instruction joins to the canonical PumpSwap pool PDA and the account
-has the exact PumpSwap owner, Pool discriminator/layout, canonical index, base
-mint, wrapped-SOL quote mint, creator, LP mint and vault identities. Wrong
-program, pool, base mint, layout, PDA or ambiguous/missing data fails closed.
-Aggregator observations never substitute for this join.
+`migrate` or `migrate_v2` instruction joins to the canonical PumpSwap pool PDA
+and the account has the exact PumpSwap owner, Pool discriminator/layout,
+canonical index, base mint, wrapped-SOL quote mint, creator, LP mint and vault
+identities. Mint comes from migrate account 2 / migrate_v2 `base_mint` (index 2).
+Pool comes from migrate account 9 / migrate_v2 `pool` (index 10). Trailing
+`migrate_v2` remaining accounts are not pool evidence. Wrong program, pool, base
+mint, layout, PDA or ambiguous/missing data fails closed. Aggregator
+observations never substitute for this join. A migration event without a valid
+supported instruction cannot satisfy this join.
 
 ## PumpSwap AMM Program ID (verified on-chain 2026-07-12)
 
@@ -188,6 +192,7 @@ of the confirmation event. Per this sprint's lock:
 | 2026-07-12 | Authored from A6 implementation; confirmation, timestamp, dedup, and governed-signature rules documented; live endpoint gaps marked UNKNOWN_REQUIRES_RESEARCH | Claude Opus 4.8 / PumpPortal-PumpSwap readiness |
 | 2026-07-12 | Governed on-chain confirmation implemented and proven live: program ID verified on-chain, base_mint@43 layout verified, migration block-time as evidence-only. Program-ID UNKNOWN resolved; full IDL/PDA/quote_mint remain open | Claude Opus 4.8 / PumpSwap live confirmation |
 | 2026-08-04 | Refreshed and pinned official `pump-fun/pump-public-docs` commit `9c82f61cb711b044a17f770ab8ce9f9bdf78f333`; Pump IDL SHA-256 `b90bc471327f671449271d5d1d42354d1fae6f5a06502f5834459a3108138e49`; PumpSwap IDL SHA-256 `6b5c7ec4e5ef9742fa99dc57b0d75b1031b379bba02a7e1b3c5a4cad68d77e56`. Current Pool prefix includes exact quote mint, cashback flag and appended signed i128 `virtual_quote_reserves`. | Permanent Discovery Availability |
+| 2026-08-17 | Pump pin refreshed to official commit `3c6721a67c0b206b39130b454c8ba22a83ce972e`; Pump IDL digest recomputed from the exact official blob and remains `b90bc471327f671449271d5d1d42354d1fae6f5a06502f5834459a3108138e49`. Join now accepts official `migrate_v2` (27 declared roles; witnessed 29-meta remaining accounts are non-evidentiary). PumpSwap confirmation and WSOL-quote restriction are unchanged. | V2-9.8B Slice A migrate_v2 contract |
 
 ## 2026-08-04 quote and effective-reserve amendment
 
