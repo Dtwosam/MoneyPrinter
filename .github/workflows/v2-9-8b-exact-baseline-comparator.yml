@@ -1,0 +1,25 @@
+name: V2-9.8B Exact Baseline Comparator
+on:
+  push:
+    branches: [agent/v2-9-8b-baseline-suite-verification]
+permissions:
+  contents: read
+jobs:
+  exact-baseline:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 1d0903c7ecb68dc9738f18ee0e5aafcca09c781e
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e . pytest
+      - name: Run exact five comparison tests
+        run: |
+          python -m pytest -q \
+            tests/test_v2_9_8b_post_dtw98_pre_lifecycle_temporal_persistence.py::Migration054Tests::test_migration_054_adds_exactly_one_narrow_wait_table \
+            tests/test_v2_9_8b_post_dtw98_pre_lifecycle_temporal_persistence.py::TemporalRefreshOwnerTests::test_case_04_at_due_exact_claim_precedes_discovery_work_running \
+            tests/test_v2_9_8b_post_dtw98_pre_lifecycle_temporal_persistence.py::TemporalSupplyIntegrationTests::test_acquisition_horizon_is_bounded_at_900_seconds \
+            tests/test_v2_9_8b_post_dtw98_pre_lifecycle_temporal_persistence.py::TemporalSupplyIntegrationTests::test_case_09_source_failure_classification_is_unchanged \
+            tests/test_v2_9_8b_post_dtw98_pre_lifecycle_temporal_persistence.py::TemporalSupplyIntegrationTests::test_refresh_stage_failure_is_source_availability_failure
