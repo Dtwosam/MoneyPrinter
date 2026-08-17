@@ -1012,6 +1012,7 @@ def _cooperative_supply(
     verifier_factory=None,
     seed="slice-b-coop",
     cycle_id="cycle-b-2",
+    stage_evidence_sink=None,
 ):
     from printer_v1.discovery.permanent_discovery_availability import (
         build_campaign_source_request_scope,
@@ -1025,6 +1026,11 @@ def _cooperative_supply(
         campaign_id="campaign-b",
         run_id="campaign-run-b",
         cycle_id=cycle_id,
+    )
+    stage_kwargs = (
+        {"stage_evidence_sink": stage_evidence_sink}
+        if stage_evidence_sink is not None
+        else {}
     )
     return build_graduated_supply(
         db_path,
@@ -1046,6 +1052,7 @@ def _cooperative_supply(
         cooperative_stage_budget=stage_budget,
         cooperative_direct_mode=direct_mode,
         max_candidates=1,
+        **stage_kwargs,
     )
 
 
@@ -1081,14 +1088,23 @@ def test_b19_clean_live_tail_yields_then_schedules_backfill(db_path) -> None:
 
 
 def test_b20_backfill_claim_runs_one_page_then_hands_off_to_market(db_path) -> None:
+    """The real two-claim state machine inside ONE campaign/run/cycle."""
     budget = _fresh_budget()
-    live_rows = [_row(_sig(f"Hand{i}"), 10_000 + i) for i in range(6)]
+    owner = _six_unit_owner()
+    live_rows = [_row(_sig(f"Hand{i}"), 10_000 + i) for i in range(3)]
     live = RecordingTransport(
         {None: live_rows},
         {row["signature"]: _non_migration_tx(row["slot"]) for row in live_rows},
     )
-    first = _cooperative_supply(db_path, live, stage_budget=budget)
+    first = _cooperative_supply(
+        db_path,
+        live,
+        stage_budget=budget,
+        cycle_id=_SAME_CYCLE,
+        stage_evidence_sink=owner.ingest_stage_evidence,
+    )
     assert first.diagnostics["next_direct_acquisition_mode"] == BACKFILL_MODE
+    assert first.terminal == "ACQUISITION_QUANTUM_YIELDED"
 
     backfill_rows = [_row(_sig(f"Older{i}"), 11_000 + i) for i in range(3)]
     backfill = RecordingTransport(
@@ -1100,9 +1116,16 @@ def test_b20_backfill_claim_runs_one_page_then_hands_off_to_market(db_path) -> N
         backfill,
         stage_budget=budget,
         direct_mode=BACKFILL_MODE,
-        cycle_id="cycle-b-3",
+        # SAME cycle: the direct stage sequence, not the cycle identity, is
+        # what separates the two claims.
+        cycle_id=_SAME_CYCLE,
+        stage_evidence_sink=owner.ingest_stage_evidence,
     )
 
+    assert [item.split("|")[-2:] for item in owner.ingested_stage_ids] == [
+        ["DIRECT_MIGRATION", "1"],
+        ["DIRECT_MIGRATION", "2"],
+    ]
     assert backfill.page_count == 1
     assert backfill.page_payloads[0]["cursor_before"] == live_rows[-1]["signature"]
     diagnostics = second.diagnostics
@@ -1200,12 +1223,12 @@ def test_b26_stage_budget_is_cumulative_across_live_tail_and_backfill(
     tx, infos, _mint, _pool = _migrate_v2_case()
     signature = _sig("BudgetHit")
 
-    live_rows = [_row(_sig(f"Bud{i}"), 12_000 + i) for i in range(6)]
+    live_rows = [_row(_sig(f"Bud{i}"), 12_000 + i) for i in range(3)]
     live = RecordingTransport(
         {None: live_rows},
         {row["signature"]: _non_migration_tx(row["slot"]) for row in live_rows},
     )
-    _cooperative_supply(db_path, live, stage_budget=budget)
+    _cooperative_supply(db_path, live, stage_budget=budget, cycle_id=_SAME_CYCLE)
     after_live = budget.snapshot()
     assert after_live["used_by_stage"]["intake"] == 1
     assert after_live["used_by_stage"]["protocol_confirmation"] == 0
@@ -1220,7 +1243,9 @@ def test_b26_stage_budget_is_cumulative_across_live_tail_and_backfill(
         stage_budget=budget,
         direct_mode=BACKFILL_MODE,
         verifier_factory=_verifier_factory(tx, infos),
-        cycle_id="cycle-b-4",
+        # SAME cycle across both claims: budget continuity is proven on the
+        # real production identity, not on a fresh cycle.
+        cycle_id=_SAME_CYCLE,
     )
     after_backfill = budget.snapshot()
 
@@ -1252,3 +1277,313 @@ def test_b30_slice_b_adds_no_new_budget_capacity() -> None:
     }
     assert DEFAULT_DISCOVERY_OPERATION_BUDGET == 30
     assert LIFECYCLE_OPERATION_CEILING == 45
+
+
+# --------------------------------------------------------------------------- #
+# SAME-CYCLE ACCOUNTING IDENTITY CLOSEOUT                                      #
+#                                                                              #
+# Production runs LIVE_TAIL -> Scheduler yield -> BACKFILL inside ONE           #
+# campaign/run/cycle. These proofs never vary the cycle identity to pass.      #
+# --------------------------------------------------------------------------- #
+
+_SAME_CAMPAIGN = "campaign-b"
+_SAME_RUN = "campaign-run-b"
+_SAME_CYCLE = "cycle-b-same"
+
+
+def _six_unit_owner():
+    from printer_v1.sources.campaign_six_unit_accounting import CampaignSixUnitOwner
+
+    return CampaignSixUnitOwner(
+        campaign_id=_SAME_CAMPAIGN,
+        run_id=_SAME_RUN,
+        cycle_id=_SAME_CYCLE,
+        started_at=_NOW,
+    )
+
+
+def _same_cycle_claim(
+    db_path,
+    transport,
+    owner,
+    *,
+    mode,
+    verifier_factory=None,
+    prefix="slice-b-same",
+):
+    """One direct claim under the SAME campaign/run/cycle and the SAME owner."""
+    return run_direct_migration_discovery(
+        db_path,
+        migration_transport=transport,
+        verifier_transport_factory=verifier_factory or _never_verify,
+        now=_NOW,
+        request_key_prefix=prefix,
+        max_candidates=1,
+        max_transaction_lookups=_COOPERATIVE_LOOKUPS,
+        acquisition_mode=mode,
+        campaign_id=_SAME_CAMPAIGN,
+        run_id=_SAME_RUN,
+        cycle_id=_SAME_CYCLE,
+        stage_evidence_sink=owner.ingest_stage_evidence,
+    )
+
+
+def _page_keys(owner):
+    from printer_v1.sources.measured_transport import (
+        canonical_transport_identity_key,
+    )
+    from printer_v1.sources.direct_pump_migration import (
+        SIGNATURE_PAGE_TARGET_CATEGORY,
+    )
+
+    return [
+        canonical_transport_identity_key(item)
+        for item in owner.ledger.transports
+        if item.target_category == SIGNATURE_PAGE_TARGET_CATEGORY
+    ]
+
+
+def test_bsc1_same_cycle_live_then_backfill_stage_ids_are_distinct(db_path) -> None:
+    """Regression for the d0b129c duplicate DIRECT_MIGRATION|1 stage ID."""
+    owner = _six_unit_owner()
+
+    live_rows = [_row(_sig(f"Same{i}"), 20_000 + i) for i in range(3)]
+    live = RecordingTransport(
+        {None: live_rows},
+        {row["signature"]: _non_migration_tx(row["slot"]) for row in live_rows},
+    )
+    _same_cycle_claim(db_path, live, owner, mode=LIVE_TAIL_MODE)
+
+    assert owner.ingested_stage_ids == [
+        f"{_SAME_CAMPAIGN}|{_SAME_RUN}|{_SAME_CYCLE}|DIRECT_MIGRATION|1"
+    ]
+
+    cursor_sig = live_rows[-1]["signature"]
+    backfill_rows = [_row(_sig(f"Older{i}"), 21_000 + i) for i in range(3)]
+    backfill = RecordingTransport(
+        {cursor_sig: backfill_rows},
+        {row["signature"]: _non_migration_tx(row["slot"]) for row in backfill_rows},
+    )
+    # SAME campaign / run / cycle / owner. Nothing about the identity varies.
+    _same_cycle_claim(db_path, backfill, owner, mode=BACKFILL_MODE)
+
+    assert owner.ingested_stage_ids == [
+        f"{_SAME_CAMPAIGN}|{_SAME_RUN}|{_SAME_CYCLE}|DIRECT_MIGRATION|1",
+        f"{_SAME_CAMPAIGN}|{_SAME_RUN}|{_SAME_CYCLE}|DIRECT_MIGRATION|2",
+    ]
+    assert len(set(owner.ingested_stage_ids)) == 2
+    assert owner.sealed_stage_count == 2
+
+
+def test_bsc2_same_cycle_signature_page_transport_identities_are_distinct(
+    db_path,
+) -> None:
+    from printer_v1.sources.direct_pump_migration import (
+        SIGNATURE_PAGE_TARGET_CATEGORY,
+        direct_migration_signature_page_target_identity,
+    )
+
+    owner = _six_unit_owner()
+
+    live_rows = [_row(_sig(f"Key{i}"), 22_000 + i) for i in range(3)]
+    live = RecordingTransport(
+        {None: live_rows},
+        {row["signature"]: _non_migration_tx(row["slot"]) for row in live_rows},
+    )
+    _same_cycle_claim(db_path, live, owner, mode=LIVE_TAIL_MODE)
+    live_transports = len(owner.ledger.transports)
+    assert live_transports == 4  # one page + three lookups
+
+    cursor_sig = live_rows[-1]["signature"]
+    backfill_rows = [_row(_sig(f"KeyOld{i}"), 23_000 + i) for i in range(3)]
+    backfill = RecordingTransport(
+        {cursor_sig: backfill_rows},
+        {row["signature"]: _non_migration_tx(row["slot"]) for row in backfill_rows},
+    )
+    _same_cycle_claim(db_path, backfill, owner, mode=BACKFILL_MODE)
+
+    # Both actual outbound pages are retained by the one owner; none dropped.
+    assert len(owner.ledger.transports) == live_transports + 4
+    assert owner.owner_transport_operation_count == 8
+
+    keys = _page_keys(owner)
+    assert len(keys) == 2
+    live_key, backfill_key = keys
+    assert live_key != backfill_key
+
+    expected_live = direct_migration_signature_page_target_identity(
+        indexed_address=PUMP_WITHDRAW_AUTHORITY_ID, cursor_before=None
+    )
+    expected_backfill = direct_migration_signature_page_target_identity(
+        indexed_address=PUMP_WITHDRAW_AUTHORITY_ID, cursor_before=cursor_sig
+    )
+    assert expected_live == f"{PUMP_WITHDRAW_AUTHORITY_ID}|before=HEAD"
+    assert expected_backfill == f"{PUMP_WITHDRAW_AUTHORITY_ID}|before={cursor_sig}"
+    assert live_key[-1] == expected_live
+    assert backfill_key[-1] == expected_backfill
+    # The transport stage is unchanged, so the existing ceiling stays authoritative.
+    assert live_key[0] == "DIRECT_PUMP_NOMINATION"
+    assert backfill_key[0] == "DIRECT_PUMP_NOMINATION"
+    assert live_key[-2] == SIGNATURE_PAGE_TARGET_CATEGORY
+
+
+def test_bsc3_same_cycle_request_keys_do_not_collide(db_path) -> None:
+    owner = _six_unit_owner()
+
+    live_rows = [_row(_sig(f"Req{i}"), 24_000 + i) for i in range(2)]
+    live = RecordingTransport(
+        {None: live_rows},
+        {row["signature"]: _non_migration_tx(row["slot"]) for row in live_rows},
+    )
+    _same_cycle_claim(db_path, live, owner, mode=LIVE_TAIL_MODE)
+
+    cursor_sig = live_rows[-1]["signature"]
+    backfill_rows = [_row(_sig(f"ReqOld{i}"), 25_000 + i) for i in range(2)]
+    backfill = RecordingTransport(
+        {cursor_sig: backfill_rows},
+        {row["signature"]: _non_migration_tx(row["slot"]) for row in backfill_rows},
+    )
+    _same_cycle_claim(db_path, backfill, owner, mode=BACKFILL_MODE)
+
+    connection = sqlite3.connect(db_path)
+    try:
+        keys = [
+            str(row[0])
+            for row in connection.execute(
+                "SELECT request_key FROM printer_source_requests ORDER BY id"
+            )
+        ]
+    finally:
+        connection.close()
+
+    assert len(keys) == len(set(keys)), keys
+    assert "slice-b-same-migration-page-live-tail" in keys
+    assert "slice-b-same-migration-page-backfill" in keys
+    assert "slice-b-same-live-tail-migration-tx-1" in keys
+    assert "slice-b-same-backfill-migration-tx-1" in keys
+
+
+def test_bsc4_same_cycle_coverage_identities_distinguish_the_two_claims(
+    db_path,
+) -> None:
+    owner = _six_unit_owner()
+
+    live_rows = [_row(_sig("Cov0"), 26_000)]
+    live = RecordingTransport(
+        {None: live_rows}, {live_rows[0]["signature"]: _non_migration_tx(26_000)}
+    )
+    live_report = _same_cycle_claim(db_path, live, owner, mode=LIVE_TAIL_MODE)
+
+    cursor_sig = live_rows[-1]["signature"]
+    backfill_rows = [_row(_sig("CovOld0"), 27_000)]
+    backfill = RecordingTransport(
+        {cursor_sig: backfill_rows},
+        {backfill_rows[0]["signature"]: _non_migration_tx(27_000)},
+    )
+    backfill_report = _same_cycle_claim(db_path, backfill, owner, mode=BACKFILL_MODE)
+
+    live_stages = {
+        row["logical_stage_id"] for row in live_report["source_request_coverage"]
+    }
+    backfill_stages = {
+        row["logical_stage_id"] for row in backfill_report["source_request_coverage"]
+    }
+    prefix = f"{_SAME_CAMPAIGN}|{_SAME_RUN}|{_SAME_CYCLE}"
+    assert live_stages == {
+        f"{prefix}|DIRECT_MIGRATION_INTAKE|1|1",
+        f"{prefix}|DIRECT_MIGRATION_INTAKE|1|2",
+    }
+    assert backfill_stages == {
+        f"{prefix}|DIRECT_MIGRATION_INTAKE|2|1",
+        f"{prefix}|DIRECT_MIGRATION_INTAKE|2|2",
+    }
+    assert live_stages.isdisjoint(backfill_stages)
+
+
+def test_bsc5_backfill_may_not_seal_at_the_live_tail_stage_sequence(db_path) -> None:
+    """An explicit caller sequence can never recreate the collision."""
+    transport = RecordingTransport({None: []}, {})
+    with pytest.raises(ValueError) as excinfo:
+        run_direct_migration_discovery(
+            db_path,
+            migration_transport=transport,
+            verifier_transport_factory=_never_verify,
+            now=_NOW,
+            request_key_prefix="slice-b-seq",
+            max_candidates=1,
+            max_transaction_lookups=_COOPERATIVE_LOOKUPS,
+            acquisition_mode=BACKFILL_MODE,
+            stage_sequence=1,
+        )
+    assert "STAGE_SEQUENCE_COLLIDES" in str(excinfo.value)
+    assert transport.page_count == 0
+    assert dmd.DIRECT_MIGRATION_STAGE_SEQUENCE_BY_MODE == {
+        LIVE_TAIL_MODE: 1,
+        BACKFILL_MODE: 2,
+    }
+
+
+def test_bsc6_direct_pump_nomination_stage_ceiling_remains_authoritative(
+    db_path,
+) -> None:
+    """The existing DIRECT_PUMP_NOMINATION ceiling is not widened by Slice B.
+
+    Keeping ``stage = DIRECT_PUMP_NOMINATION`` for both claims means the one
+    pre-existing ceiling (13) still governs the whole cycle. A worst-case
+    attempt — six transaction lookups in the live tail AND six in the backfill —
+    is 14 stage transports and therefore fails closed at the 14th.
+
+    This is recorded, not repaired: raising the ceiling would add source
+    capacity and shrinking the page would change the approved six-signature
+    cooperative page. Both are outside this repair.
+    """
+    from printer_v1.sources.campaign_six_unit_accounting import CampaignSixUnitError
+    from printer_v1.sources.measured_transport import STAGE_CEILINGS
+
+    assert STAGE_CEILINGS["DIRECT_PUMP_NOMINATION"] == 13
+
+    owner = _six_unit_owner()
+    live_rows = [_row(_sig(f"Ceil{i}"), 30_000 + i) for i in range(6)]
+    live = RecordingTransport(
+        {None: live_rows},
+        {row["signature"]: _non_migration_tx(row["slot"]) for row in live_rows},
+    )
+    _same_cycle_claim(db_path, live, owner, mode=LIVE_TAIL_MODE)
+    assert owner.owner_transport_operation_count == 7
+
+    backfill_rows = [_row(_sig(f"CeilOld{i}"), 31_000 + i) for i in range(6)]
+    backfill = RecordingTransport(
+        {live_rows[-1]["signature"]: backfill_rows},
+        {row["signature"]: _non_migration_tx(row["slot"]) for row in backfill_rows},
+    )
+    with pytest.raises(CampaignSixUnitError) as excinfo:
+        _same_cycle_claim(db_path, backfill, owner, mode=BACKFILL_MODE)
+    assert "STAGE_TRANSPORT_CEILING:DIRECT_PUMP_NOMINATION:13" in str(excinfo.value)
+
+    # Fails closed: the owner keeps only the lawfully sealed live-tail stage.
+    assert owner.owner_transport_operation_count == 7
+    assert owner.ingested_stage_ids == [
+        f"{_SAME_CAMPAIGN}|{_SAME_RUN}|{_SAME_CYCLE}|DIRECT_MIGRATION|1"
+    ]
+
+
+def test_bsc7_five_lookup_backfill_fits_under_the_existing_ceiling(db_path) -> None:
+    """Six live-tail lookups plus five backfill lookups is exactly 13."""
+    owner = _six_unit_owner()
+    live_rows = [_row(_sig(f"Fit{i}"), 32_000 + i) for i in range(6)]
+    live = RecordingTransport(
+        {None: live_rows},
+        {row["signature"]: _non_migration_tx(row["slot"]) for row in live_rows},
+    )
+    _same_cycle_claim(db_path, live, owner, mode=LIVE_TAIL_MODE)
+
+    backfill_rows = [_row(_sig(f"FitOld{i}"), 33_000 + i) for i in range(5)]
+    backfill = RecordingTransport(
+        {live_rows[-1]["signature"]: backfill_rows},
+        {row["signature"]: _non_migration_tx(row["slot"]) for row in backfill_rows},
+    )
+    _same_cycle_claim(db_path, backfill, owner, mode=BACKFILL_MODE)
+
+    assert owner.owner_transport_operation_count == 13
+    assert len(owner.ingested_stage_ids) == 2
+    assert len(set(_page_keys(owner))) == 2

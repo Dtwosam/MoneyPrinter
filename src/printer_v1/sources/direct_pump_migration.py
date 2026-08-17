@@ -64,6 +64,15 @@ DIRECT_MIGRATION_INDEXED_ADDRESS = PUMP_WITHDRAW_AUTHORITY_ID
 DIRECT_PUMP_MIGRATION_DECODER_VERSION = "DIRECT_PUMP_MIGRATION_DECODER_V2_MIGRATE_V2"
 DIRECT_PUMP_MIGRATION_CONTRACT_HASH = PUMP_IDL_SHA256
 
+#: Canonical transport target category for one signature *page*. The page target
+#: is the indexed address plus its pagination boundary, never the bare address:
+#: a LIVE_TAIL page and a BACKFILL page are two distinct outbound RPC calls and
+#: must carry two distinct canonical transport identities.
+SIGNATURE_PAGE_TARGET_CATEGORY = "pump_migration_withdraw_authority_page"
+
+#: Deterministic boundary token for a page issued with no cursor.
+SIGNATURE_PAGE_HEAD_BOUNDARY = "HEAD"
+
 SIGNATURE_PAGE_LIMIT = 12
 MAX_TRANSACTION_LOOKUPS = 12
 RPC_TIMEOUT_SECONDS = 12.0
@@ -101,6 +110,7 @@ class DirectPumpMigrationAdapter:
                 context.request.request_kind,
                 "direct_pump_migration_transport_error",
                 str(exc),
+                cursor_before=(context.request.payload or {}).get("cursor_before"),
             )
         request_payload = context.request.payload or {}
         return normalize_direct_pump_migration_response(
@@ -112,6 +122,30 @@ class DirectPumpMigrationAdapter:
                 "signature_limit", MAX_TRANSACTION_LOOKUPS
             ),
         )
+
+
+def direct_migration_signature_page_target_identity(
+    *,
+    indexed_address: str,
+    cursor_before: str | None,
+) -> str:
+    """Return the canonical transport target identity of one signature page.
+
+    The canonical transport identity excludes response bytes and results, so two
+    pages of the same indexed address would otherwise collide inside one
+    campaign. The actual RPC target of a page is the indexed address *and* its
+    pagination boundary, so both are named here.
+
+    Bounded and deterministic: no clock, no campaign identity, no random data.
+    The cursor signature is carried verbatim because it is already a bounded
+    fixed-width on-chain identity.
+    """
+    boundary = (
+        cursor_before.strip()
+        if isinstance(cursor_before, str) and cursor_before.strip()
+        else SIGNATURE_PAGE_HEAD_BOUNDARY
+    )
+    return f"{indexed_address}|before={boundary}"
 
 
 def build_direct_pump_migration_adapter_contract() -> SourceAdapterContract:
@@ -270,18 +304,21 @@ def normalize_direct_pump_migration_response(
             request_kind,
             "direct_pump_rpc_malformed",
             "Solana RPC payload is not an object",
+            cursor_before=normalized_cursor_before,
         )
     if payload.get("fixture_status") == "failure":
         return _failure(
             request_kind,
             str(payload.get("failure_type") or "direct_pump_rpc_failure"),
             str(payload.get("failure_message") or "direct Pump RPC failure"),
+            cursor_before=normalized_cursor_before,
         )
     if payload.get("error") is not None or "result" not in payload:
         return _failure(
             request_kind,
             "direct_pump_rpc_error_or_result_missing",
             "Solana RPC returned an error or omitted result",
+            cursor_before=normalized_cursor_before,
         )
 
     result = payload.get("result")
@@ -291,6 +328,7 @@ def normalize_direct_pump_migration_response(
                 request_kind,
                 "direct_pump_signature_page_malformed",
                 "getSignaturesForAddress result is not a list",
+                cursor_before=normalized_cursor_before,
             )
         rows: list[dict[str, Any]] = []
         seen: set[str] = set()
@@ -300,6 +338,7 @@ def normalize_direct_pump_migration_response(
                     request_kind,
                     "direct_pump_signature_row_malformed",
                     "signature page contains a non-object row",
+                    cursor_before=normalized_cursor_before,
                 )
             signature = row.get("signature")
             slot = row.get("slot")
@@ -313,6 +352,7 @@ def normalize_direct_pump_migration_response(
                     request_kind,
                     "direct_pump_signature_row_not_finalized",
                     "signature row lacks exact finalized identity",
+                    cursor_before=normalized_cursor_before,
                 )
             if signature in seen:
                 continue
@@ -339,8 +379,11 @@ def normalize_direct_pump_migration_response(
             "governed_request_kind": request_kind,
             "method_or_endpoint": "getSignaturesForAddress",
             "within_request_ordinal": 1,
-            "target_category": "pump_migration_withdraw_authority",
-            "target_identity": DIRECT_MIGRATION_INDEXED_ADDRESS,
+            "target_category": SIGNATURE_PAGE_TARGET_CATEGORY,
+            "target_identity": direct_migration_signature_page_target_identity(
+                indexed_address=DIRECT_MIGRATION_INDEXED_ADDRESS,
+                cursor_before=normalized_cursor_before,
+            ),
             "response_bytes": response_bytes,
             "normalized_rows": len(rows),
             "result": "OK",
@@ -483,6 +526,7 @@ def _failure(
     *,
     response_bytes: int = 0,
     target_identity: str | None = None,
+    cursor_before: object = None,
     migration_rejection_digest: Mapping[str, Any] | None = None,
 ) -> NormalizedSourceResult:
     method = (
@@ -498,12 +542,19 @@ def _failure(
         "method_or_endpoint": method,
         "within_request_ordinal": 1,
         "target_category": (
-            "pump_migration_withdraw_authority"
+            SIGNATURE_PAGE_TARGET_CATEGORY
             if request_kind == SIGNATURE_PAGE_REQUEST_KIND
             else "migration_signature"
         ),
+        # A failed page is still one distinct outbound call against one exact
+        # pagination boundary; its identity must stay page-specific.
         "target_identity": target_identity or (
-            DIRECT_MIGRATION_INDEXED_ADDRESS
+            direct_migration_signature_page_target_identity(
+                indexed_address=DIRECT_MIGRATION_INDEXED_ADDRESS,
+                cursor_before=(
+                    cursor_before if isinstance(cursor_before, str) else None
+                ),
+            )
             if request_kind == SIGNATURE_PAGE_REQUEST_KIND
             else None
         ),
@@ -621,6 +672,9 @@ __all__ = [
     "DIRECT_MIGRATION_INDEXED_ADDRESS",
     "DIRECT_PUMP_MIGRATION_DECODER_VERSION",
     "DIRECT_PUMP_MIGRATION_CONTRACT_HASH",
+    "SIGNATURE_PAGE_TARGET_CATEGORY",
+    "SIGNATURE_PAGE_HEAD_BOUNDARY",
+    "direct_migration_signature_page_target_identity",
     "DirectPumpMigrationAdapter",
     "build_direct_pump_migration_adapter",
     "build_direct_pump_migration_transport",

@@ -4089,12 +4089,17 @@ def validate_cooperative_resume_source_request_scope(
         if not request_key_belongs_to_root(request_key, owned.request_key_root):
             return False
         suffix = request_key[len(owned.request_key_root) :]
+        # Slice B: the direct lane issues one LIVE_TAIL page and one BACKFILL
+        # page per attempt inside the SAME cycle, so their request keys carry
+        # the exact direct acquisition mode. Only these two approved slugs are
+        # accepted — the contract stays exact, never a wildcard.
+        mode = r"(?:live-tail|backfill)"
         exact_contracts = (
             (r"-locator", "dexscreener", "dexscreener_fresh_profiles"),
             (r"-gt-new-pools", "geckoterminal", "geckoterminal_new_pool_discovery"),
-            (r"-migration-page", "solana_rpc", "restored_pump_migration_signature_page"),
-            (r"-migration-tx-[1-9][0-9]*", "solana_rpc", "restored_pump_migration_transaction"),
-            (r"-verify-.+-a[1-9][0-9]*", "pumpswap", "pumpswap_signature_pool_resolution"),
+            (rf"-migration-page-{mode}", "solana_rpc", "restored_pump_migration_signature_page"),
+            (rf"-{mode}-migration-tx-[1-9][0-9]*", "solana_rpc", "restored_pump_migration_transaction"),
+            (rf"-{mode}-verify-.+-a[1-9][0-9]*", "pumpswap", "pumpswap_signature_pool_resolution"),
             (r"-protocol(?:-residual)?-[1-9][0-9]*", "solana_rpc", "pumpswap_pool_account_batch"),
             (r"-protocol-q[1-9][0-9]*-[1-9][0-9]*", "solana_rpc", "pumpswap_pool_account_batch"),
             (r"-protocol-residual-q[1-9][0-9]*-[1-9][0-9]*", "solana_rpc", "pumpswap_pool_account_batch"),
@@ -4103,9 +4108,9 @@ def validate_cooperative_resume_source_request_scope(
             (r"-(?:mint-batch-r|protocol-resume-mb)[1-9][0-9]*-gt-[1-6]-.+", "geckoterminal", "candidate_market_batch"),
             (r"-refresh-[1-9][0-9]*-dex-fresh", "dexscreener", "dexscreener_fresh_profiles"),
             (r"-refresh-[1-9][0-9]*-gt-new-pools", "geckoterminal", "geckoterminal_new_pool_discovery"),
-            (r"-refresh-[1-9][0-9]*-pump-migration-page", "solana_rpc", "restored_pump_migration_signature_page"),
-            (r"-refresh-[1-9][0-9]*-pump-migration-tx-[1-9][0-9]*", "solana_rpc", "restored_pump_migration_transaction"),
-            (r"-refresh-[1-9][0-9]*-pump-verify-.+-a[1-9][0-9]*", "pumpswap", "pumpswap_signature_pool_resolution"),
+            (rf"-refresh-[1-9][0-9]*-pump-migration-page-{mode}", "solana_rpc", "restored_pump_migration_signature_page"),
+            (rf"-refresh-[1-9][0-9]*-pump-{mode}-migration-tx-[1-9][0-9]*", "solana_rpc", "restored_pump_migration_transaction"),
+            (rf"-refresh-[1-9][0-9]*-pump-{mode}-verify-.+-a[1-9][0-9]*", "pumpswap", "pumpswap_signature_pool_resolution"),
             (r"-refresh-[1-9][0-9]*-protocol-[1-9][0-9]*", "solana_rpc", "pumpswap_pool_account_batch"),
             (r"-refresh-[1-9][0-9]*-protocol-q[1-9][0-9]*-[1-9][0-9]*", "solana_rpc", "pumpswap_pool_account_batch"),
         )

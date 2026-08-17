@@ -86,6 +86,24 @@ LIVE_TAIL_MODE = "LIVE_TAIL"
 BACKFILL_MODE = "BACKFILL"
 DIRECT_ACQUISITION_MODES = (LIVE_TAIL_MODE, BACKFILL_MODE)
 
+#: One later-cycle attempt performs at most one LIVE_TAIL page and at most one
+#: BACKFILL page, in separate Scheduler claims but inside the SAME campaign /
+#: run / cycle. Both claims seal DIRECT_MIGRATION stage evidence, so their stage
+#: sequence — not their cycle identity — is what keeps the two stage IDs
+#: distinct. A fixed mapping is sufficient and is never a dynamic counter.
+DIRECT_MIGRATION_STAGE_SEQUENCE_BY_MODE = {
+    LIVE_TAIL_MODE: 1,
+    BACKFILL_MODE: 2,
+}
+
+
+def direct_migration_stage_sequence(mode: str) -> int:
+    """Return the canonical DIRECT_MIGRATION stage sequence for one mode."""
+    try:
+        return DIRECT_MIGRATION_STAGE_SEQUENCE_BY_MODE[str(mode)]
+    except KeyError as exc:
+        raise ValueError("DIRECT_PUMP_ACQUISITION_MODE_INVALID") from exc
+
 DIRECT_MIGRATION_NETWORK = "solana-mainnet"
 DIRECT_MIGRATION_CURSOR_TABLE = "printer_direct_pump_migration_cursor"
 
@@ -733,7 +751,7 @@ def run_direct_migration_discovery(
     campaign_id: str | None = None,
     run_id: str | None = None,
     cycle_id: str | None = None,
-    stage_sequence: int = 1,
+    stage_sequence: int | None = None,
     max_transaction_lookups: int = MAX_TRANSACTION_LOOKUPS,
     acquisition_mode: str = LIVE_TAIL_MODE,
 ) -> dict[str, Any]:
@@ -778,6 +796,22 @@ def run_direct_migration_discovery(
         raise ValueError("DIRECT_PUMP_TRANSACTION_LOOKUP_CAP_INVALID")
     if acquisition_mode not in DIRECT_ACQUISITION_MODES:
         raise ValueError("DIRECT_PUMP_ACQUISITION_MODE_INVALID")
+    # LIVE_TAIL and BACKFILL are two claims of the SAME campaign/run/cycle, so
+    # every identity they emit must be separated by the direct stage sequence,
+    # never by a different cycle identity.
+    direct_stage_sequence = direct_migration_stage_sequence(acquisition_mode)
+    direct_mode_slug = str(acquisition_mode).lower().replace("_", "-")
+    if stage_sequence is None:
+        # Cooperative production never supplies one: the mode is authoritative.
+        stage_sequence = direct_stage_sequence
+    elif (
+        acquisition_mode == BACKFILL_MODE
+        and int(stage_sequence)
+        == DIRECT_MIGRATION_STAGE_SEQUENCE_BY_MODE[LIVE_TAIL_MODE]
+    ):
+        # Sealing a backfill claim at the live-tail sequence would recreate the
+        # duplicate DIRECT_MIGRATION stage ID inside one campaign/run/cycle.
+        raise ValueError("DIRECT_PUMP_BACKFILL_STAGE_SEQUENCE_COLLIDES_WITH_LIVE_TAIL")
     if verifier_transport_factory is None:
         verified_now_epoch = int(
             datetime.fromisoformat(now.replace("Z", "+00:00")).timestamp()
@@ -907,11 +941,17 @@ def run_direct_migration_discovery(
                 "source_request_id": rid,
                 "source_name": MIGRATION_SOURCE,
                 "request_kind": request_kind,
+                # The direct stage sequence separates the LIVE_TAIL claim from
+                # the BACKFILL claim inside one campaign/run/cycle. Without it
+                # both claims would report the same logical intake identity.
                 "logical_stage_id": (
                     f"{campaign_id}|{run_id}|{cycle_id}|DIRECT_MIGRATION_INTAKE|"
-                    f"{migration_request_count}"
+                    f"{direct_stage_sequence}|{migration_request_count}"
                     if campaign_id and run_id and cycle_id
-                    else f"DIRECT_MIGRATION_INTAKE|{migration_request_count}"
+                    else (
+                        f"DIRECT_MIGRATION_INTAKE|{direct_stage_sequence}|"
+                        f"{migration_request_count}"
+                    )
                 ),
                 "transport_identity_count": transport_count,
                 "transport_identity_keys": transport_keys,
@@ -968,7 +1008,9 @@ def run_direct_migration_discovery(
 
         page = _execute_direct_request(
             request_kind=SIGNATURE_PAGE_REQUEST_KIND,
-            request_key=f"{request_key_prefix}-migration-page",
+            request_key=(
+                f"{request_key_prefix}-migration-page-{direct_mode_slug}"
+            ),
             payload={
                 "request_kind": SIGNATURE_PAGE_REQUEST_KIND,
                 "chain": "solana",
@@ -1061,7 +1103,10 @@ def run_direct_migration_discovery(
                 continue
             tx = _execute_direct_request(
                 request_kind=TRANSACTION_REQUEST_KIND,
-                request_key=f"{request_key_prefix}-migration-tx-{index + 1}",
+                request_key=(
+                    f"{request_key_prefix}-{direct_mode_slug}"
+                    f"-migration-tx-{index + 1}"
+                ),
                 payload={
                     "request_kind": TRANSACTION_REQUEST_KIND,
                     "chain": "solana",
@@ -1137,7 +1182,10 @@ def run_direct_migration_discovery(
         request = build_governed_source_request(
             VERIFY_SOURCE,
             VERIFY_REQUEST_KIND,
-            request_key=f"{request_key_prefix}-verify-{mint}-a{attempt}",
+            request_key=(
+                f"{request_key_prefix}-{direct_mode_slug}"
+                f"-verify-{mint}-a{attempt}"
+            ),
             tracking_priority=0,
             payload={
                 "request_kind": VERIFY_REQUEST_KIND,
@@ -1192,9 +1240,12 @@ def run_direct_migration_discovery(
                 "request_kind": VERIFY_REQUEST_KIND,
                 "logical_stage_id": (
                     f"{campaign_id}|{run_id}|{cycle_id}|DIRECT_MIGRATION_VERIFY|"
-                    f"{pumpswap_request_count}"
+                    f"{direct_stage_sequence}|{pumpswap_request_count}"
                     if campaign_id and run_id and cycle_id
-                    else f"DIRECT_MIGRATION_VERIFY|{pumpswap_request_count}"
+                    else (
+                        f"DIRECT_MIGRATION_VERIFY|{direct_stage_sequence}|"
+                        f"{pumpswap_request_count}"
+                    )
                 ),
                 "transport_identity_count": transport_count,
                 "transport_identity_keys": transport_keys,

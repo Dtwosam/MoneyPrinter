@@ -37,6 +37,7 @@ from printer_v1.discovery.direct_migration_discovery import (
     CONTINUITY_CONTIGUOUS,
     DIRECT_ACQUISITION_MODES,
     LIVE_TAIL_MODE,
+    direct_migration_stage_sequence,
     run_direct_migration_discovery,
 )
 from printer_v1.discovery.graduated_liquidity_front_door import (
@@ -1016,7 +1017,13 @@ def run_persistent_eligible_token_supply(
             "campaign_id": campaign_id,
             "run_id": run_id,
             "cycle_id": cycle_id,
-            "stage_sequence": 1,
+            # LIVE_TAIL and BACKFILL are two Scheduler claims of the SAME
+            # campaign/run/cycle. The direct acquisition mode — never a
+            # different cycle identity — separates their DIRECT_MIGRATION
+            # stage IDs, so the sequence is derived from the mode.
+            "stage_sequence": direct_migration_stage_sequence(
+                direct_acquisition_mode
+            ),
         }
         if stage_evidence_sink is not None:
             discovery_stage_kwargs["stage_evidence_sink"] = stage_evidence_sink
