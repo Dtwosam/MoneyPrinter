@@ -83,8 +83,12 @@ _COOPERATIVE_LOOKUPS = 6
 
 
 def _sig(label: str) -> str:
-    """Deterministic 88-character base58-ish signature identity."""
-    return (label + "1" * 88)[:88]
+    """Deterministic 88-character base58-ish signature identity.
+
+    The ``z`` separator keeps labels that differ only by trailing pad
+    characters distinct (``Ord1`` vs ``Ord11``).
+    """
+    return (label + "z" + "1" * 88)[:88]
 
 
 @pytest.fixture()
@@ -1523,67 +1527,231 @@ def test_bsc5_backfill_may_not_seal_at_the_live_tail_stage_sequence(db_path) -> 
     }
 
 
-def test_bsc6_direct_pump_nomination_stage_ceiling_remains_authoritative(
+# --------------------------------------------------------------------------- #
+# DIRECT-NOMINATION CEILING CLOSEOUT                                           #
+#                                                                              #
+# Both same-cycle claims emit DIRECT_PUMP_NOMINATION transports into one       #
+# CampaignSixUnitOwner whose pre-existing ceiling is 13. The cooperative        #
+# lookup allowance is therefore mode-specific (live 6, backfill 5) so the       #
+# attempt's worst case is exactly 13. The ceiling itself is never touched.     #
+# --------------------------------------------------------------------------- #
+
+
+def test_bsc6_cooperative_mode_lookup_caps_are_exact(db_path) -> None:
+    from printer_v1.discovery.direct_migration_discovery import (
+        COOPERATIVE_DIRECT_NOMINATION_TRANSPORT_CEILING,
+        COOPERATIVE_DIRECT_TRANSACTION_LOOKUPS_BY_MODE,
+        cooperative_direct_transaction_lookup_cap,
+    )
+    from printer_v1.sources.measured_transport import STAGE_CEILINGS
+
+    assert cooperative_direct_transaction_lookup_cap(LIVE_TAIL_MODE) == 6
+    assert cooperative_direct_transaction_lookup_cap(BACKFILL_MODE) == 5
+    assert COOPERATIVE_DIRECT_TRANSACTION_LOOKUPS_BY_MODE == {
+        LIVE_TAIL_MODE: 6,
+        BACKFILL_MODE: 5,
+    }
+    # (1 page + 6 lookups) + (1 page + 5 lookups) == 13 == the existing ceiling.
+    assert COOPERATIVE_DIRECT_NOMINATION_TRANSPORT_CEILING == 13
+    assert (
+        COOPERATIVE_DIRECT_NOMINATION_TRANSPORT_CEILING
+        == STAGE_CEILINGS["DIRECT_PUMP_NOMINATION"]
+    )
+
+    for unknown in ("", "LIVE", "backfill", "PERSISTED_REFRESH", None):
+        with pytest.raises(ValueError):
+            cooperative_direct_transaction_lookup_cap(unknown)
+
+
+def test_bsc7_real_cooperative_live_page_requests_exactly_six(db_path) -> None:
+    """Through the real cooperative caller — not a hand-passed cap."""
+    rows = [_row(_sig(f"LiveCap{i}"), 50_000 + i) for i in range(8)]
+    transport = RecordingTransport(
+        {None: rows},
+        {row["signature"]: _non_migration_tx(row["slot"]) for row in rows},
+    )
+    _cooperative_supply(
+        db_path, transport, stage_budget=_fresh_budget(), cycle_id=_SAME_CYCLE
+    )
+
+    assert transport.page_count == 1
+    assert transport.page_payloads[0]["signature_limit"] == 6
+    assert len(transport.transaction_signatures) == 6
+
+
+def test_bsc8_real_cooperative_backfill_page_requests_exactly_five(db_path) -> None:
+    """Through the real cooperative caller — not a hand-passed cap."""
+    budget = _fresh_budget()
+    live_rows = [_row(_sig(f"BackCap{i}"), 51_000 + i) for i in range(6)]
+    live = RecordingTransport(
+        {None: live_rows},
+        {row["signature"]: _non_migration_tx(row["slot"]) for row in live_rows},
+    )
+    _cooperative_supply(db_path, live, stage_budget=budget, cycle_id=_SAME_CYCLE)
+
+    # The fixture exposes eight older rows; production must take only five.
+    older = [_row(_sig(f"BackOld{i}"), 52_000 + i) for i in range(8)]
+    backfill = RecordingTransport(
+        {live_rows[-1]["signature"]: older},
+        {row["signature"]: _non_migration_tx(row["slot"]) for row in older},
+    )
+    _cooperative_supply(
+        db_path,
+        backfill,
+        stage_budget=budget,
+        direct_mode=BACKFILL_MODE,
+        cycle_id=_SAME_CYCLE,
+    )
+
+    assert backfill.page_count == 1
+    assert backfill.page_payloads[0]["signature_limit"] == 5
+    assert len(backfill.transaction_signatures) == 5
+    # Never request six and inspect five.
+    assert backfill.transaction_signatures == [row["signature"] for row in older[:5]]
+
+
+def test_bsc9_same_cycle_maximum_lands_exactly_on_the_existing_ceiling(
     db_path,
 ) -> None:
-    """The existing DIRECT_PUMP_NOMINATION ceiling is not widened by Slice B.
+    """Full same-cycle maximum through the real cooperative caller."""
+    from printer_v1.sources.measured_transport import STAGE_CEILINGS
 
-    Keeping ``stage = DIRECT_PUMP_NOMINATION`` for both claims means the one
-    pre-existing ceiling (13) still governs the whole cycle. A worst-case
-    attempt — six transaction lookups in the live tail AND six in the backfill —
-    is 14 stage transports and therefore fails closed at the 14th.
+    budget = _fresh_budget()
+    owner = _six_unit_owner()
 
-    This is recorded, not repaired: raising the ceiling would add source
-    capacity and shrinking the page would change the approved six-signature
-    cooperative page. Both are outside this repair.
-    """
-    from printer_v1.sources.campaign_six_unit_accounting import CampaignSixUnitError
+    live_rows = [_row(_sig(f"MaxLive{i}"), 53_000 + i) for i in range(8)]
+    live = RecordingTransport(
+        {None: live_rows},
+        {row["signature"]: _non_migration_tx(row["slot"]) for row in live_rows},
+    )
+    _cooperative_supply(
+        db_path,
+        live,
+        stage_budget=budget,
+        cycle_id=_SAME_CYCLE,
+        stage_evidence_sink=owner.ingest_stage_evidence,
+    )
+    assert owner.owner_transport_operation_count == 7
+
+    cursor_sig = live_rows[5]["signature"]
+    older = [_row(_sig(f"MaxOld{i}"), 54_000 + i) for i in range(8)]
+    backfill = RecordingTransport(
+        {cursor_sig: older},
+        {row["signature"]: _non_migration_tx(row["slot"]) for row in older},
+    )
+    _cooperative_supply(
+        db_path,
+        backfill,
+        stage_budget=budget,
+        direct_mode=BACKFILL_MODE,
+        cycle_id=_SAME_CYCLE,
+        stage_evidence_sink=owner.ingest_stage_evidence,
+    )
+
+    # 7 + 6 == 13: the attempt lands exactly on the untouched ceiling.
+    assert owner.owner_transport_operation_count == 13
+    assert owner.owner_transport_operation_count == (
+        STAGE_CEILINGS["DIRECT_PUMP_NOMINATION"]
+    )
+    assert owner.ingested_stage_ids == [
+        f"{_SAME_CAMPAIGN}|{_SAME_RUN}|{_SAME_CYCLE}|DIRECT_MIGRATION|1",
+        f"{_SAME_CAMPAIGN}|{_SAME_RUN}|{_SAME_CYCLE}|DIRECT_MIGRATION|2",
+    ]
+    assert owner.sealed_stage_count == 2
+    assert len(set(_page_keys(owner))) == 2
+
+
+def test_bsc10_sixth_older_signature_survives_the_five_row_backfill(
+    db_path,
+) -> None:
+    """A B C D E F: backfill takes A..E, and F stays reachable next cycle."""
+    budget = _fresh_budget()
+    live_rows = [_row(_sig(f"HeadRow{i}"), 55_000 + i) for i in range(3)]
+    live = RecordingTransport(
+        {None: live_rows},
+        {row["signature"]: _non_migration_tx(row["slot"]) for row in live_rows},
+    )
+    _cooperative_supply(db_path, live, stage_budget=budget, cycle_id=_SAME_CYCLE)
+    anchor = live_rows[-1]["signature"]
+
+    history = [_row(_sig(f"Hist{label}"), 56_000 + index)
+               for index, label in enumerate("ABCDEF")]
+    backfill = RecordingTransport(
+        {anchor: history},
+        {row["signature"]: _non_migration_tx(row["slot"]) for row in history},
+    )
+    _cooperative_supply(
+        db_path,
+        backfill,
+        stage_budget=budget,
+        direct_mode=BACKFILL_MODE,
+        cycle_id=_SAME_CYCLE,
+    )
+
+    # Only A..E were requested and inspected.
+    assert backfill.page_payloads[0]["signature_limit"] == 5
+    assert backfill.transaction_signatures == [row["signature"] for row in history[:5]]
+
+    # The cursor stops at E, so F is never crossed.
+    cursor = _cursor(db_path)
+    assert cursor.next_before_signature == history[4]["signature"]
+    assert cursor.continuity_state == CONTINUITY_CONTIGUOUS
+
+    # Next cycle's backfill starts strictly before E and reaches F.
+    next_budget = _fresh_budget()
+    tail = RecordingTransport(
+        {history[4]["signature"]: history[5:]},
+        {history[5]["signature"]: _non_migration_tx(history[5]["slot"])},
+    )
+    _cooperative_supply(
+        db_path,
+        tail,
+        stage_budget=next_budget,
+        direct_mode=BACKFILL_MODE,
+        cycle_id=_SAME_CYCLE,
+    )
+    assert tail.page_payloads[0]["cursor_before"] == history[4]["signature"]
+    assert tail.transaction_signatures == [history[5]["signature"]]
+    assert _cursor(db_path).next_before_signature == history[5]["signature"]
+
+
+def test_bsc11_non_cooperative_direct_lane_still_allows_twelve(db_path) -> None:
+    """The reduction is cooperative-only; the ordinary one-page cap is intact."""
+    from printer_v1.sources.direct_pump_migration import (
+        MAX_TRANSACTION_LOOKUPS,
+        SIGNATURE_PAGE_LIMIT,
+    )
+
+    assert MAX_TRANSACTION_LOOKUPS == 12
+    assert SIGNATURE_PAGE_LIMIT == 12
+
+    rows = [_row(_sig(f"Ord{i}"), 57_000 + i) for i in range(12)]
+    transport = RecordingTransport(
+        {None: rows},
+        {row["signature"]: _non_migration_tx(row["slot"]) for row in rows},
+    )
+    _run(db_path, transport, lookups=MAX_TRANSACTION_LOOKUPS, max_candidates=5)
+
+    assert transport.page_payloads[0]["signature_limit"] == 12
+    assert len(transport.transaction_signatures) == 12
+
+
+def test_bsc12_stage_ceiling_and_quantum_bound_are_untouched() -> None:
+    from printer_v1.sources import measured_transport
     from printer_v1.sources.measured_transport import STAGE_CEILINGS
 
     assert STAGE_CEILINGS["DIRECT_PUMP_NOMINATION"] == 13
 
-    owner = _six_unit_owner()
-    live_rows = [_row(_sig(f"Ceil{i}"), 30_000 + i) for i in range(6)]
-    live = RecordingTransport(
-        {None: live_rows},
-        {row["signature"]: _non_migration_tx(row["slot"]) for row in live_rows},
-    )
-    _same_cycle_claim(db_path, live, owner, mode=LIVE_TAIL_MODE)
-    assert owner.owner_transport_operation_count == 7
-
-    backfill_rows = [_row(_sig(f"CeilOld{i}"), 31_000 + i) for i in range(6)]
-    backfill = RecordingTransport(
-        {live_rows[-1]["signature"]: backfill_rows},
-        {row["signature"]: _non_migration_tx(row["slot"]) for row in backfill_rows},
-    )
-    with pytest.raises(CampaignSixUnitError) as excinfo:
-        _same_cycle_claim(db_path, backfill, owner, mode=BACKFILL_MODE)
-    assert "STAGE_TRANSPORT_CEILING:DIRECT_PUMP_NOMINATION:13" in str(excinfo.value)
-
-    # Fails closed: the owner keeps only the lawfully sealed live-tail stage.
-    assert owner.owner_transport_operation_count == 7
-    assert owner.ingested_stage_ids == [
-        f"{_SAME_CAMPAIGN}|{_SAME_RUN}|{_SAME_CYCLE}|DIRECT_MIGRATION|1"
+    bound = acquisition_quantum_bound(AcquisitionQuantumKind.DIRECT_MIGRATION)
+    assert bound.worst_case_seconds == 115.0
+    assert bound.transport_count == 11
+    assert [
+        (item.name, item.count, item.timeout_seconds) for item in bound.components
+    ] == [
+        ("direct_pump_page_and_transactions_rpc", 7, 5.0),
+        ("pumpswap_exact_verifier_rpc", 4, 20.0),
     ]
 
-
-def test_bsc7_five_lookup_backfill_fits_under_the_existing_ceiling(db_path) -> None:
-    """Six live-tail lookups plus five backfill lookups is exactly 13."""
-    owner = _six_unit_owner()
-    live_rows = [_row(_sig(f"Fit{i}"), 32_000 + i) for i in range(6)]
-    live = RecordingTransport(
-        {None: live_rows},
-        {row["signature"]: _non_migration_tx(row["slot"]) for row in live_rows},
-    )
-    _same_cycle_claim(db_path, live, owner, mode=LIVE_TAIL_MODE)
-
-    backfill_rows = [_row(_sig(f"FitOld{i}"), 33_000 + i) for i in range(5)]
-    backfill = RecordingTransport(
-        {live_rows[-1]["signature"]: backfill_rows},
-        {row["signature"]: _non_migration_tx(row["slot"]) for row in backfill_rows},
-    )
-    _same_cycle_claim(db_path, backfill, owner, mode=BACKFILL_MODE)
-
-    assert owner.owner_transport_operation_count == 13
-    assert len(owner.ingested_stage_ids) == 2
-    assert len(set(_page_keys(owner))) == 2
+    # The ceiling owner is not part of this repair's production delta.
+    source = Path(measured_transport.__file__).read_text(encoding="utf-8")
+    assert '"DIRECT_PUMP_NOMINATION": 13' in source

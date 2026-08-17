@@ -104,6 +104,50 @@ def direct_migration_stage_sequence(mode: str) -> int:
     except KeyError as exc:
         raise ValueError("DIRECT_PUMP_ACQUISITION_MODE_INVALID") from exc
 
+
+#: Fixed cooperative transaction-lookup allowance per direct acquisition mode.
+#:
+#: Both claims of one attempt emit DIRECT_PUMP_NOMINATION transports into the
+#: SAME CampaignSixUnitOwner, whose pre-existing stage ceiling is 13. One page
+#: plus its lookups is the whole cost of a claim, so the attempt's worst case is
+#:
+#:     LIVE_TAIL  1 page + 6 lookups = 7
+#:     BACKFILL   1 page + 5 lookups = 6
+#:                                   ---
+#:                                     13
+#:
+#: exactly the existing ceiling. This is a reduction of the previously reachable
+#: 14, never an increase: no budget, ceiling or schema changes with it.
+#:
+#: The live tail keeps the larger allowance on purpose — newest migration
+#: observation has priority over historical backfill. Static per-mode caps are
+#: sufficient because B permits at most one LIVE_TAIL and one BACKFILL page per
+#: attempt, so no dynamic budget reconstruction or extra counter is needed.
+COOPERATIVE_DIRECT_TRANSACTION_LOOKUPS_BY_MODE = {
+    LIVE_TAIL_MODE: 6,
+    BACKFILL_MODE: 5,
+}
+
+#: Worst-case DIRECT_PUMP_NOMINATION transports one cooperative attempt can
+#: emit: one signature page per claim plus that claim's lookup allowance.
+COOPERATIVE_DIRECT_NOMINATION_TRANSPORT_CEILING = sum(
+    1 + lookups
+    for lookups in COOPERATIVE_DIRECT_TRANSACTION_LOOKUPS_BY_MODE.values()
+)
+
+
+def cooperative_direct_transaction_lookup_cap(mode: str) -> int:
+    """Return the cooperative transaction-lookup cap for one direct mode.
+
+    Fails closed on an unknown mode: cooperative production never supplies an
+    arbitrary cap.
+    """
+    try:
+        return COOPERATIVE_DIRECT_TRANSACTION_LOOKUPS_BY_MODE[str(mode)]
+    except KeyError as exc:
+        raise ValueError("DIRECT_PUMP_ACQUISITION_MODE_INVALID") from exc
+
+
 DIRECT_MIGRATION_NETWORK = "solana-mainnet"
 DIRECT_MIGRATION_CURSOR_TABLE = "printer_direct_pump_migration_cursor"
 

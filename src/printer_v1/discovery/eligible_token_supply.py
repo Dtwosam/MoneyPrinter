@@ -37,6 +37,7 @@ from printer_v1.discovery.direct_migration_discovery import (
     CONTINUITY_CONTIGUOUS,
     DIRECT_ACQUISITION_MODES,
     LIVE_TAIL_MODE,
+    cooperative_direct_transaction_lookup_cap,
     direct_migration_stage_sequence,
     run_direct_migration_discovery,
 )
@@ -1056,7 +1057,16 @@ def run_persistent_eligible_token_supply(
             now=now,
             request_key_prefix=discovery_request_key_prefix,
             max_candidates=(1 if cooperative_quantum else max_candidates),
-            max_transaction_lookups=(6 if cooperative_quantum else MAX_TRANSACTION_LOOKUPS),
+            # The cooperative allowance is mode-specific so one attempt's two
+            # claims stay inside the existing DIRECT_PUMP_NOMINATION ceiling.
+            # The page limit follows this cap, so a backfill never requests a
+            # signature it cannot inspect. Ordinary one-page behaviour is
+            # unchanged.
+            max_transaction_lookups=(
+                cooperative_direct_transaction_lookup_cap(direct_acquisition_mode)
+                if cooperative_quantum
+                else MAX_TRANSACTION_LOOKUPS
+            ),
             # One page per Scheduler claim, in exactly one categorical mode.
             acquisition_mode=direct_acquisition_mode,
             collection_rounds=collection_rounds,
